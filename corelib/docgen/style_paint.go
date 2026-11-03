@@ -20,6 +20,9 @@ func paintPageChrome(pdf *gopdf.GoPdf, layout pdfPageLayout, style Style) {
 	case MotifRail:
 		pdf.SetFillColor(accent[0], accent[1], accent[2])
 		pdf.RectFromUpperLeftWithStyle(0, 0, 8, layout.pageH, "F")
+		// Three ticks at the top-right answer the color column.
+		pdfTickRow(pdf, layout.pageW-52, 14, 16, 3.2, 4, 3, 1,
+			cssHex(style.Colors.Accent), "FFFFFF")
 	case MotifFrame:
 		pdf.SetStrokeColor(gold[0], gold[1], gold[2])
 		pdf.SetLineWidth(1.15)

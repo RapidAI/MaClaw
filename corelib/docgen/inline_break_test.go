@@ -194,7 +194,9 @@ func pdfLines(texts []gopdf.ExtractedText) []string {
 			lines = append(lines, line{y: item.Y, items: []gopdf.ExtractedText{item}})
 		}
 	}
-	sort.Slice(lines, func(i, j int) bool { return lines[i].y > lines[j].y })
+	// The reader reports Y measured from the page top; ascending Y therefore
+	// keeps the page's first line at index 0 like the old baseline axis did.
+	sort.Slice(lines, func(i, j int) bool { return lines[i].y < lines[j].y })
 	out := make([]string, 0, len(lines))
 	for _, ln := range lines {
 		sort.Slice(ln.items, func(i, j int) bool { return ln.items[i].X < ln.items[j].X })

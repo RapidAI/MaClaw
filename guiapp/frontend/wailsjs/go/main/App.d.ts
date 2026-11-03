@@ -739,6 +739,10 @@ export function ImportFileCompanionShare(arg1:string,arg2:string):Promise<Record
 
 export function SyncFileCompanionShare(arg1:string,arg2:string):Promise<Record<string, any>>;
 
+export function SyncFileCompanionShareMarks(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function FetchFileCompanionShareMarks(arg1:string):Promise<Record<string, any>>;
+
 export function AddFileCompanionShareNote(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function ReviewFileCompanionShareNote(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;

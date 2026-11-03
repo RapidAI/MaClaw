@@ -23,6 +23,8 @@ export function isPptxFileName(name: string): boolean {
 export interface PptxPreviewPanelProps {
     /** Local absolute path of the .pptx deck. */
     absPath: string;
+    /** Changes when the deck file is rewritten. A page check keeps the same value. */
+    revision?: string;
     theme: CodePreviewTheme;
     lang: string;
 }
@@ -33,7 +35,7 @@ export interface PptxPreviewPanelProps {
  * default. Rendering happens on demand in the Go backend (cached next to the
  * deck); slide images stream in as data URLs.
  */
-export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps) {
+export function PptxPreviewPanel({ absPath, revision = "", theme, lang }: PptxPreviewPanelProps) {
     const isZh = lang.startsWith("zh");
     // Messages captured inside the fetch effect read lang through a ref so a
     // language toggle does not re-render every slide.
@@ -51,14 +53,17 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
     const [barOn, setBarOn] = useState(false);
     const versionRef = useRef(0);
 
+    const absPathRef = useRef(absPath);
     useEffect(() => {
+        const pathChanged = absPathRef.current !== absPath;
+        absPathRef.current = absPath;
         const version = ++versionRef.current;
         setImages(null);
         setError("");
         setThumbs(new Map());
         fullUrlRef.current = null;
         setFullUrl(null);
-        setSelected(0);
+        if (pathChanged) setSelected(0);
         let cancelled = false;
         setBarOn(false);
         const barTimer = window.setTimeout(() => {
@@ -109,7 +114,7 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
             cancelled = true;
             window.clearTimeout(barTimer);
         };
-    }, [absPath]);
+    }, [absPath, revision]);
 
     // The full-fidelity slide loads for the selected page only. The previous
     // page's bytes are dropped; the thumbnail strip is what stays.

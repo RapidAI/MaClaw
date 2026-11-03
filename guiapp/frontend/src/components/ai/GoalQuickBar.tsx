@@ -1,7 +1,8 @@
 /**
  * Goal controls on the composer, for both chat sessions and the coding agent.
- * The 目标清单 card in the transcript is unchanged. This bar stays until the
- * goal succeeds or the user confirms delete. Continue re-runs the same goal
+ * The transcript renders that goal's own 目标清单 card (GoalChecklistCard).
+ * This bar stays until the goal succeeds or the user confirms delete.
+ * Continue re-runs the same goal
  * after any other stop. Pause and delete also stop the live turn. Edit writes
  * the new command into that turn when one is still running.
  */

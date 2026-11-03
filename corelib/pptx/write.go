@@ -184,7 +184,7 @@ func buildContentSlide(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, pag
 		box := paintLightChrome(slide, theme, spec.Kicker, spec.Title, footer, page, total)
 		region := computeSlideContentLayout(spec, box)
 		buildBulletBody(slide, contentBox{x: region.bulletX, y: region.bulletY, w: region.bulletW, h: region.bulletH}, spec.Bullets, theme)
-		if err := buildSlideImages(slide, spec.Images, region.imageX, region.imageY, region.imageW, region.imageH); err != nil {
+		if err := buildSlideImages(slide, spec.Images, region.imageX, region.imageY, region.imageW, region.imageH, theme); err != nil {
 			return err
 		}
 		if err := buildSlideCharts(slide, spec.Charts, region.chartX, region.chartY, region.chartW, region.chartH, theme); err != nil {
@@ -479,7 +479,7 @@ const deckInchEMU = 914400
 // ratio unless the outline pins an explicit inch size. A missing or unreadable
 // image file fails the whole write: the model must see the failure and fix
 // the path instead of shipping a deck with silent gaps.
-func buildSlideImages(slide *ppt.Slide, images []OutlineImage, x, y, contentWidth, height int64) error {
+func buildSlideImages(slide *ppt.Slide, images []OutlineImage, x, y, contentWidth, height int64, theme deckTheme) error {
 	if len(images) == 0 {
 		return nil
 	}
@@ -495,14 +495,21 @@ func buildSlideImages(slide *ppt.Slide, images []OutlineImage, x, y, contentWidt
 		if path == "" {
 			return fmt.Errorf("pptx_slide_image_path_required: slide image %d", i+1)
 		}
+		width, h := imageBoxEMU(path, spec, slot-2*deckGutter, height)
+		imgX := x + int64(i)*slot + (slot-width)/2
+		imgY := y + (height-h)/2
+		// The image sits on a padded matte card with a hairline edge and a soft
+		// shadow — photo-album treatment, so light photos keep their edge. The
+		// card is created before the picture: later shapes render on top.
+		pad := emuIn(0.14)
+		modernCard(slide, theme, imgX-pad, imgY-pad, width+2*pad, h+2*pad, theme.navy, false)
 		shape, err := slide.AddImage(path)
 		if err != nil {
 			return fmt.Errorf("pptx_slide_image_unreadable: %s: %v", path, err)
 		}
-		width, h := imageBoxEMU(path, spec, slot-2*deckGutter, height)
 		shape.SetWidth(width).SetHeight(h)
-		shape.SetOffsetX(x + int64(i)*slot + (slot-width)/2)
-		shape.SetOffsetY(y + (height-h)/2)
+		shape.SetOffsetX(imgX)
+		shape.SetOffsetY(imgY)
 	}
 	return nil
 }

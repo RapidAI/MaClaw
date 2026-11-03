@@ -4586,7 +4586,60 @@ input.cwshare-url {
 .companion-pdf-bookmark-resize:focus-visible {
   outline: none;
 }
-.companion-pdf-bookmarks {
+/* Two lists share the column: bookmarks on top, notes below. Each list has
+   its own scroll box, so a long bookmark list cannot push the notes off the
+   screen. The cap leaves the notes at least half the column. */
+.companion-pdf-rail-section {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 0;
+  --wails-draggable: no-drag;
+}
+.companion-pdf-rail-section--bookmarks {
+  flex: 1 1 auto;
+}
+.companion-pdf-rail-section--bookmarks.companion-pdf-rail-section--capped {
+  flex: 0 1 auto;
+  max-height: 50%;
+}
+.companion-pdf-rail-section--annotations {
+  flex: 1 1 auto;
+  /* The usual minimum keeps the title and a couple of rows. A pane shorter
+     than that gives the section 45% instead, so its scrollbar stays inside
+     the rail instead of being clipped at the bottom. */
+  min-height: min(96px, 45%);
+}
+/* The rule only separates two lists. A notes-only rail starts at the top. */
+.companion-pdf-rail-section--annotations.companion-pdf-rail-section--divided {
+  padding-top: 6px;
+  border-top: 1px solid var(--theme-border, #d5e0ef);
+}
+.companion-pdf-rail-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin: 0 0 4px;
+  padding: 0 2px;
+  color: var(--theme-text-secondary, #46586f);
+  font: 600 11px/1.3 "Segoe UI", "Microsoft YaHei", sans-serif;
+  letter-spacing: 0.02em;
+}
+.companion-pdf-rail-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-text-muted, #6b7c93) 14%, transparent);
+  color: var(--theme-text-secondary, #46586f);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.companion-pdf-bookmarks,
+.companion-pdf-annotations {
   position: relative;
   z-index: 1;
   display: flex;
@@ -4595,9 +4648,30 @@ input.cwshare-url {
   flex: 1 1 auto;
   width: auto;
   min-height: 0;
-  overflow: auto;
-  padding: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0 2px 0 0;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--theme-text-muted, #6b7c93) 55%, transparent) transparent;
   --wails-draggable: no-drag;
+}
+/* A thumb that is easy to see and grab. The global 8px bar stays for the
+   rest of the app; these two lists get a wider one. */
+.companion-pdf-bookmarks::-webkit-scrollbar,
+.companion-pdf-annotations::-webkit-scrollbar {
+  width: 10px;
+}
+.companion-pdf-bookmarks::-webkit-scrollbar-thumb,
+.companion-pdf-annotations::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--theme-text-muted, #6b7c93) 55%, transparent);
+  border-radius: var(--radius-pill);
+}
+.companion-pdf-bookmarks::-webkit-scrollbar-thumb:hover,
+.companion-pdf-annotations::-webkit-scrollbar-thumb:hover,
+.companion-pdf-bookmarks::-webkit-scrollbar-thumb:active,
+.companion-pdf-annotations::-webkit-scrollbar-thumb:active {
+  background: color-mix(in srgb, var(--theme-text-muted, #6b7c93) 72%, transparent);
 }
 .companion-pdf-bookmark {
   display: flex;
@@ -4645,6 +4719,52 @@ input.cwshare-url {
   height: 100%;
 }
 .companion-pdf-bookmark-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* A note row mirrors a bookmark chip: page, a small pen glyph, then the name. */
+.companion-pdf-note-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 26px;
+  margin: 0;
+  padding: 3px 8px 3px 6px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: 999px;
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-primary, #1c2834);
+  font: 12px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+}
+.companion-pdf-note-item:hover,
+.companion-pdf-note-item:focus-visible,
+.companion-pdf-note-item--here {
+  border-color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-pdf-note-item--here {
+  background: var(--theme-primary-soft, rgba(47, 120, 208, 0.12));
+}
+.companion-pdf-note-swatch {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: var(--theme-primary, #2e75cb);
+}
+.companion-pdf-note-swatch svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.companion-pdf-note-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7264,29 +7384,91 @@ body.companion-pdf-translation-dragging * {
   background: var(--theme-surface);
 }
 .file-companion-annotations {
-  flex: 0 0 auto;
+  box-sizing: border-box;
+  flex: 0 1 auto;
+  min-height: 40px;
+  display: flex;
+  flex-direction: column;
   max-height: 260px;
-  overflow: auto;
+  overflow: hidden;
   margin: 0 12px 8px;
-  padding: 8px 10px;
-  border: var(--theme-border);
+  padding: 0;
+  border: 1px solid var(--theme-border);
   border-radius: var(--radius-lg);
   background: var(--theme-surface);
 }
-.file-companion-annotations-kicker {
-  margin: 0 0 6px;
+.file-companion-annotations-head {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 40px;
+  height: 40px;
+  margin: 0;
+  padding: 0 10px;
+  background: var(--theme-surface);
+  cursor: pointer;
+  user-select: none;
+}
+.file-companion-annotations-head .file-companion-annotations-kicker {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
   color: var(--theme-primary);
   font-size: 11px;
   font-weight: 600;
+  line-height: 28px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
-.file-companion-annotations-author {
+.file-companion-annotations-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+}
+.file-companion-annotations-toggle:hover,
+.file-companion-annotations-toggle:focus-visible {
+  background: var(--theme-surface-muted);
+  color: var(--theme-text);
+}
+.file-companion-annotations-toggle:focus-visible {
+  outline: 2px solid var(--theme-primary, #2e75cb);
+  outline-offset: 2px;
+}
+.file-companion-annotations-toggle svg {
+  display: block;
+}
+.file-companion-annotations-body {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Cap stays under the 40px label. min-height 0 lets a short window shrink the list instead of covering the composer. */
+  overflow: auto;
+  overscroll-behavior: contain;
+  max-height: calc(260px - 40px);
+  padding: 0 10px 8px;
+}
+.file-companion-annotations-body[hidden] {
+  display: none;
+}
+.file-companion-annotations .file-companion-annotations-author {
   display: block;
   margin: 0 0 2px;
   color: var(--theme-text-muted);
   font-size: 11px;
-}
-.file-companion-annotation-row .file-companion-annotations-author {
-  margin: 0 0 2px;
+  line-height: 1.4;
 }
 .file-companion-annotations p {
   margin: 0 0 6px;
@@ -7295,13 +7477,17 @@ body.companion-pdf-translation-dragging * {
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.file-companion-annotations-empty {
+.file-companion-annotations .file-companion-annotations-empty {
   margin: 0;
   color: var(--theme-text-muted);
   font-size: 12px;
+  line-height: 1.45;
 }
 .file-companion-annotation-row {
   margin: 0 0 7px;
+}
+.file-companion-annotation-row:last-child {
+  margin-bottom: 0;
 }
 .file-companion-annotation-row p {
   margin: 0;
@@ -7349,7 +7535,7 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-annotation-action {
   padding: 1px 8px;
-  border: var(--theme-border);
+  border: 1px solid var(--theme-border);
   border-radius: 999px;
   background: var(--theme-surface);
   color: var(--theme-text);

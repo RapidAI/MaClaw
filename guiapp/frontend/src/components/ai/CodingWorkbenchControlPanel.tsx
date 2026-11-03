@@ -715,7 +715,7 @@ export function CodingControlSection({
             <div
                 style={{
                     fontSize: 12,
-                    fontWeight: 650,
+                    fontWeight: 600,
                     letterSpacing: "normal",
                     color: chrome.muted,
                     marginBottom: 6,

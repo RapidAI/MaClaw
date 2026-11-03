@@ -1712,7 +1712,7 @@ export function AssistantWelcomeView({
 
             {/* Reference quick tasks: exactly four composer fills. */}
             <div data-testid="welcome-reference-quick-tasks" style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH, display: "flex", flexDirection: "column", gap: 8 }}>
-                <h3 style={{ margin: 0, fontSize: 15, lineHeight: 1.3, fontWeight: 650, color: t.text, fontFamily: "system-ui, -apple-system, sans-serif" }}>
+                <h3 style={{ margin: 0, fontSize: 15, lineHeight: 1.3, fontWeight: 600, color: t.text, fontFamily: "system-ui, -apple-system, sans-serif" }}>
                     {st(lang, "Quick tasks", "快捷任务")}
                 </h3>
                 <div className="awv-quick-tasks">
@@ -1848,7 +1848,7 @@ export function AssistantWelcomeView({
                                     color: selected ? referenceCategorySelectedColors.fg : t.textMuted,
                                     cursor: "pointer",
                                     fontSize: 12,
-                                    fontWeight: selected ? 650 : 500,
+                                    fontWeight: selected ? 600 : 500,
                                     fontFamily: "system-ui, -apple-system, sans-serif",
                                 }}
                             >{st(lang, category.labelEn, category.label)}</button>

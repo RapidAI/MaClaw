@@ -5,6 +5,7 @@ import { OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/ma
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot } from "./useAIAssistant";
 import { isHostGoalChecklistText, rewriteHostGoalChecklistBody } from "./aiAssistantPanelSessionUtils";
+import { GoalChecklistCard, goalChecklistBodyFromText } from "./GoalChecklistCard";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, normalizeMarkdownTableLine, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
@@ -1905,7 +1906,7 @@ export function renderMessage(
                         gap: 7,
                         color: retryProgress ? t.text : t.textMuted,
                         fontSize: retryProgress ? "13px" : "11px",
-                        fontWeight: retryProgress ? 650 : undefined,
+                        fontWeight: retryProgress ? 600 : undefined,
                         lineHeight: 1.45,
                         overflow: "hidden",
                     }}>
@@ -1919,12 +1920,22 @@ export function renderMessage(
             }
         case "system":
             if (msg.kind === "goalChecklist") {
+                // Published checklists are plain text, so re-parse them into
+                // struct state; unparsable stored bodies keep the legacy text
+                // card below rather than rendering an empty shell.
+                const goalBody = goalChecklistBodyFromText(msg.content || "");
                 return (
                     <div key={msg.id} role="status" data-testid={`assistant-goal-checklist-${msg.id}`} className="aamd-msg-row">
-                        <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "9px 12px", borderRadius: "8px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.55", whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
-                            <div style={{ marginBottom: 4, color: t.textMuted, fontSize: 11, fontWeight: 700 }}>{isTraditionalLang(lang) ? "目標" : (localizeText(lang, "Goal", "目标"))}</div>
-                            {prepareChatBodyForDisplay(msg.content)}
-                        </div>
+                        {goalBody ? (
+                            <div style={{ maxWidth: "84%", boxSizing: "border-box", minWidth: 0 }}>
+                                <GoalChecklistCard lang={lang} body={goalBody} />
+                            </div>
+                        ) : (
+                            <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "9px 12px", borderRadius: "8px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.55", whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
+                                <div style={{ marginBottom: 4, color: t.textMuted, fontSize: 11, fontWeight: 700 }}>{isTraditionalLang(lang) ? "目標" : (localizeText(lang, "Goal", "目标"))}</div>
+                                {prepareChatBodyForDisplay(msg.content)}
+                            </div>
+                        )}
                     </div>
                 );
             }

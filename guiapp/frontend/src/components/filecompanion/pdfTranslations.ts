@@ -26,6 +26,9 @@ export type PdfTranslation = {
     clipped?: boolean;
     place?: PdfTranslationPlace;
     size?: PdfTranslationSize;
+    // name is the short label an annotation carries in the left list. It is
+    // renamed like a bookmark and defaults to the source's first characters.
+    name?: string;
     // An annotation is a reader's own note on the selection, displayed in the
     // same card as a translation. The note body is stored in translation.
     kind?: "annotation";
@@ -48,6 +51,8 @@ const MAX_PARTS = 30;
 const MAX_RECTS = 160;
 const MAX_SOURCE = 4000;
 const MAX_TRANSLATION = 12000;
+// Same budget as a bookmark name. The project cleaner clips to this length.
+export const PDF_ANNOTATION_NAME_LIMIT = 40;
 
 const fallback = new Map<string, PdfTranslation[]>();
 
@@ -159,6 +164,20 @@ export function clipPdfAnnotationBody(text: string): string {
     return clipChars(text.trim(), MAX_TRANSLATION);
 }
 
+// A note's name is one line, like a bookmark's. The list clips it again, so
+// the stored value stays inside the project cleaner's 40-character budget.
+export function clipPdfAnnotationName(text: string): string {
+    return clipChars(String(text || "").replace(/\s+/g, " ").trim(), PDF_ANNOTATION_NAME_LIMIT);
+}
+
+// What the left list shows for a note. Older notes have no name, so the
+// source passage supplies the label instead of an empty row.
+export function pdfAnnotationName(note: PdfTranslation): string {
+    const name = clipPdfAnnotationName(note.name ?? "");
+    if (name) return name;
+    return clipChars(note.text.replace(/\s+/g, " ").trim(), PDF_ANNOTATION_NAME_LIMIT);
+}
+
 // While the field is open, keep spaces the user is still typing. Only a
 // paste past the budget collapses to the text that would actually be saved.
 // A string whose UTF-16 length is already inside the budget cannot be over
@@ -187,7 +206,7 @@ function oneRect(value: unknown): PdfMarkRect | null {
 
 function oneTranslation(value: unknown): PdfTranslation | null {
     if (!value || typeof value !== "object") return null;
-    const raw = value as { id?: unknown; text?: unknown; translation?: unknown; parts?: unknown; clipped?: unknown; place?: unknown; size?: unknown; kind?: unknown; shared?: unknown };
+    const raw = value as { id?: unknown; text?: unknown; translation?: unknown; parts?: unknown; clipped?: unknown; place?: unknown; size?: unknown; name?: unknown; kind?: unknown; shared?: unknown };
     const id = String(raw.id || "").trim().slice(0, 80);
     const text = clipChars(String(raw.text || "").replace(/\s+/g, " ").trim(), MAX_SOURCE);
     const translation = clipPdfAnnotationBody(String(raw.translation || ""));
@@ -210,7 +229,8 @@ function oneTranslation(value: unknown): PdfTranslation | null {
     if (parts.length === 0) return null;
     const place = onePlace(raw.place);
     const size = oneSize(raw.size);
-    const kept: PdfTranslation = { id, text, translation, parts, ...(place ? { place } : {}), ...(size ? { size } : {}) };
+    const name = clipPdfAnnotationName(String(raw.name || ""));
+    const kept: PdfTranslation = { id, text, translation, parts, ...(name ? { name } : {}), ...(place ? { place } : {}), ...(size ? { size } : {}) };
     if (raw.kind === "annotation") kept.kind = "annotation";
     if (raw.shared === true) kept.shared = true;
     return raw.clipped === true ? { ...kept, clipped: true } : kept;

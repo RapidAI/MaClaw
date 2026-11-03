@@ -439,7 +439,7 @@ go test -race ./corelib/agentruntime ./corelib/agentservice
 - 新增可选 `RunAdmissionStore` / `RunAdmissionEventStore` 扩展，Service 通过单一 `saveRunAdmissionWithEvents` 边界提交 user message、初始 run 与 `run.started`；未迁移的 Store 仍可只实现旧接口。
 - 新增可选 `RunCompletionStore` / `RunCompletionEventStore` 扩展，终态 assistant message、run 与 `ask_user`/`assistant.message`/`run.completed` 通过同一边界提交；失败/取消则使用 `RunTerminalEventStore`。
 - 新增 `RunLifecycleTransactionStore` 统一事务扩展：自定义 Store 只需实现一个 `CommitRunLifecycle`，并将 `RunEventStore` 嵌入同一 repository，即可让 Service 对 admission/completion/terminal 三个阶段共用单一数据库事务契约；Service 优先使用该扩展，GUI、srv、TUI 不再感知具体 Store 类型。
-- `MemoryStore`、`FileStore`、`SQLiteStore` 现在同时实现 `RunEventStore`、`RunLifecycleTransactionStore` 与 admission/completion/terminal event transaction 扩展；默认 Service composition 会优先把同一 repository 作为 run outbox，确保 `run.started`、assistant message + `run.completed`（以及失败/取消终态）与 run/message 在同一锁/原子文件替换或 SQLite 事务中提交。未迁移的自定义 Store 仍通过 SQLite/内存事件 store 兼容运行。
+- `MemoryStore`、`FileStore`、`SQLiteStore` 现在同时实现 `RunEventStore`、`RunLifecycleTransactionStore` 与 admission/completion/terminal event transaction 扩展；默认 Service composition 会优先把同一 repository 作为 run outbox，确保 `run.started`、assistant message + `run.completed`（以及失败/取消终态）与 run/message 在同一锁或 SQLite 事务中提交。未迁移的自定义 Store 仍通过 SQLite/内存事件 store 兼容运行。
 - 对尚未迁移的自定义 Store，Service 的兼容分支在第二次生命周期写入失败时会尽力删除刚写入的孤立 message，并继续以 `best_effort` 能力级别对外声明；这降低了半提交残留，但不冒充数据库事务。迁移顺序建议先实现 `RunLifecycleTransactionStore`，再把 outbox 查询切换到同一数据库，最后移除兼容回退。
 - `DescribeLifecyclePersistence` 会根据 Store 扩展接口计算 `atomic`/`mixed`/`best_effort` 保证级别；Runtime capability snapshot 的 metadata 同时公布 `lifecycle_persistence_mode`、`durable_outbox` 以及 admission/completion/terminal 的事务能力。GUI、srv、TUI 可以据此决定是否安全重试或依赖断线重放，而不需要猜测后端类型。
 - `agentservice.ErrorCode` 为共享 Service 错误提供稳定 snake_case code；MaClawSrv 的统一 `writeRedactedError` 响应现在同时返回 `code` 与脱敏 `error` 文本。跨入口客户端可按 code 分支，不再依赖 srv/GUI 的语言或文案差异。
@@ -448,8 +448,9 @@ go test -race ./corelib/agentruntime ./corelib/agentservice
 - `agentruntime.UserFacingText` 统一清理 Agent working-state 标记；GUI 保留的 `sharedLoopUserFacingText` 仅是兼容包装，srv/TUI 可直接复用相同的可见文本投影。
 - Service assistant message 持久化现在统一经过 `agentruntime.UserFacingText`，因此 HTTP/SSE、GUI 兼容层和其他宿主不会把 loop 内部 working-state 泄露给用户。
 - 参数 schema 拒绝后的模型恢复指引已下沉到 `agentruntime.ParameterRejectionGuidance`；GUI 仅保留包装，srv/TUI 在复用同一工具面时可得到相同的拒绝与重试语义。
-- 新增 `SQLiteStore` 控制面 repository：以版本化 SQLite state row 作为单一提交边界，完整实现 `Store`、`RunEventStore` 与 admission/completion/terminal event transaction 扩展；支持跨进程读刷新、WAL/busy timeout、重启恢复和 repository 级幂等约束。`Config.StoreBackend="sqlite"` 可显式启用，MaClawSrv 默认使用该后端（可通过 `MACLAW_STORE_BACKEND=file` 临时回退）；`file/json` 仍保留兼容回退。
-- SQLite 首次启用时会从同目录的旧 `store.json` 导入控制面状态，并通过 `MemoryStore` 的凭据归一化去除历史明文 `api_key`；旧文件保留为回滚备份，不在启动迁移中删除。
+- 新增 `SQLiteStore` 控制面 repository：以版本化 SQLite state row 作为单一提交边界，完整实现 `Store`、`RunEventStore` 与 admission/completion/terminal event transaction 扩展；支持跨进程读刷新、WAL/busy timeout、重启恢复和 repository 级幂等约束。`Config.StoreBackend="sqlite"` 可显式启用，MaClawSrv 默认使用该后端（可通过 `MACLAW_STORE_BACKEND=file` 临时回退）；`file/json` 后端现在同样落在 SQLite（`store.db`），与 `sqlite` 后端仅差文件名。
+- SQLite 首次启用时会从同目录的旧 `store.json` 导入控制面状态，并通过 `MemoryStore` 的凭据归一化去除历史明文 `api_key`；`service.db` 路径的导入保留旧文件作为回滚备份，不在启动迁移中删除。
+- `FileStore`（默认 `file/json` 后端）已迁移为 `SQLiteStore` 的薄包装：持久化落在同目录 `store.db`，`store.json` 仅作为迁移前文件——全新库首次打开时一次性导入（凭据明文归一化同步生效）随后删除，之后控制面状态走按实体表 + 索引列的 SQLite 直写（WAL、busy timeout），不再做整文件 JSON 快照重写；生命周期与 outbox 事务语义和 `sqlite` 后端完全一致。
 - GUI 的设备闹钟 prompt 规则已迁移到 `corelib/agentruntime.BuildClientToolPrompt`；`gui/im_system_prompt.go` 仅保留类型转换和 LoopContext 适配，srv/未来宿主可直接复用同一文案与门控测试。
 - Assistant/Bot 绑定的工作目录、文档目录和管理员约束投影已迁移到 `corelib/agentruntime.BuildAssistantBindingPrompt`；GUI 入口仅保留兼容代理，headless/TUI 可复用同一授权范围提示，避免不同宿主对绑定身份和路径边界产生漂移。
 - 轻量 turn 的身份、低复杂度动作边界、执行 profile、客户端能力和绑定上下文已集中在 `agentruntime.BuildLightPrompt`；GUI 只负责专家身份解析和最后的语义 grant fence，srv/headless 可直接复用同一 light prompt contract。

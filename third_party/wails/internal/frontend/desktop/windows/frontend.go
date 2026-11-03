@@ -484,13 +484,32 @@ func (f *Frontend) WindowPrint() {
 	f.ExecJS("window.print();")
 }
 
+// browserDisableFeatures is the --disable-features list passed to WebView2.
+// HideCursorWhileTyping is always included: WebView2 runtime 152+ implements
+// the Windows "Hide pointer while typing" setting, but its hide path can leave
+// the host thread's cursor display count below zero. The pointer then stays
+// invisible over the window while clicks and typing still work, and the stuck
+// count survives lock/unlock and window hide/show until the browser process
+// exits. A process with a second WebView2 controller (the companion player)
+// has been reported to trigger it (MicrosoftEdge/WebView2Feedback #5687,
+// #5708); the runtime fix is in 157+. Disabling the feature keeps the runtime
+// from hiding the cursor at all, so the count cannot get stuck.
+func browserDisableFeatures(appoptions *options.App) []string {
+	features := []string{}
+	if !appoptions.EnableFraudulentWebsiteDetection {
+		features = append(features, "msSmartScreenProtection")
+	}
+	features = append(features, "HideCursorWhileTyping")
+	if appoptions.Windows != nil && appoptions.Windows.WebviewDisableRendererCodeIntegrity {
+		features = append(features, "RendererCodeIntegrity")
+	}
+	return features
+}
+
 func (f *Frontend) setupChromium() {
 	chromium := f.chromium
 
-	disableFeatues := []string{}
-	if !f.frontendOptions.EnableFraudulentWebsiteDetection {
-		disableFeatues = append(disableFeatues, "msSmartScreenProtection")
-	}
+	disableFeatues := browserDisableFeatures(f.frontendOptions)
 
 	if opts := f.frontendOptions.Windows; opts != nil {
 		chromium.DataPath = opts.WebviewUserDataPath
@@ -498,9 +517,6 @@ func (f *Frontend) setupChromium() {
 
 		if opts.WebviewGpuIsDisabled {
 			chromium.AdditionalBrowserArgs = append(chromium.AdditionalBrowserArgs, "--disable-gpu")
-		}
-		if opts.WebviewDisableRendererCodeIntegrity {
-			disableFeatues = append(disableFeatues, "RendererCodeIntegrity")
 		}
 	}
 

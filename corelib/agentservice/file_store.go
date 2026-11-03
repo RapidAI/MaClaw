@@ -8,6 +8,7 @@ package agentservice
 // semantics come from the embedded SQLiteStore.
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,9 @@ type FileStore struct {
 
 func NewFileStore(path string) (*FileStore, error) {
 	jsonPath, dbPath := fileStorePaths(path)
+	if dbPath == "" {
+		return nil, errors.New("agentservice: file store path is required")
+	}
 	dbExisted := fileExists(dbPath)
 	sqlite, err := NewSQLiteStoreWithLegacy(dbPath, jsonPath)
 	if err != nil {

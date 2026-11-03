@@ -53,6 +53,8 @@ import {
     SendFileCompanionMessage,
     SendFileCompanionWebMessage,
     SyncFileCompanionShare,
+    SyncFileCompanionShareMarks,
+    FetchFileCompanionShareMarks,
 } from "../../../wailsjs/go/main/App";
 import { WindowFullscreen, WindowGetPosition, WindowGetSize, WindowHide, WindowSetSize, WindowUnfullscreen } from "../../../wailsjs/runtime";
 import { createWindowMaximizeRestoreSession } from "../../utils/windowRestoreGeometry";
@@ -1964,6 +1966,23 @@ function companionArxivPage(raw: unknown): CompanionArxivPage {
     };
 }
 
+// The open panel folds down onto its label; the closed bar opens back up.
+function CompanionAnnotationsFoldIcon({ collapsed }: { collapsed: boolean }) {
+    return (
+        <svg data-icon={collapsed ? "expand" : "collapse"} viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+            <path d="M2.25 13.25h11.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <path
+                d={collapsed ? "M4 9.25 8 5.25l4 4" : "M4 5.75 8 9.75l4-4"}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            />
+        </svg>
+    );
+}
+
 function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } = {}) {
     const appearance = useCompanionAppearance();
     const [tabs, setTabs] = useState<CompanionTab[]>([]);
@@ -2139,6 +2158,13 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // approval buttons only appear when the list said this Hub supports it.
     const [notesReview, setNotesReview] = useState(false);
     const [reviewingNoteID, setReviewingNoteID] = useState("");
+    // Folded per document. One shared flag would hide the next paper's notes.
+    const [collapsedAnnotationKeys, setCollapsedAnnotationKeys] = useState<ReadonlySet<string>>(() => new Set());
+    const annotationScrollsRef = useRef(new Map<string, number>());
+    const annotationBodyRef = useRef<HTMLDivElement | null>(null);
+    // The path whose list is on screen. Updated after the offset is restored,
+    // so a scroll event from the swap cannot file the previous place under the new path.
+    const appliedAnnotationKeyRef = useRef("");
     // A second click can land before React re-renders the disabled buttons, so
     // the guard also keeps the note in a ref.
     const reviewingNoteRef = useRef("");
@@ -2159,6 +2185,20 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const sharePushTimerRef = useRef(new Map<string, number>());
     const sharePushInFlightRef = useRef(new Set<string>());
     const sharePushPendingRef = useRef(new Set<string>());
+    // Reader marks (highlights, annotations, drawings, bookmarks, answer
+    // marks) travel separately from the transcript: kilobytes instead of the
+    // whole project zip with the paper. A marks push that the Hub cannot take
+    // (an older Hub without the endpoint) falls back to the full transcript
+    // push, which is the behavior readers had before.
+    const pushShareMarksRef = useRef<(path: string) => void>(() => undefined);
+    const shareMarksTimerRef = useRef(new Map<string, number>());
+    const shareMarksInFlightRef = useRef(new Set<string>());
+    const shareMarksPendingRef = useRef(new Set<string>());
+    // Participant side: the marks revision already applied per path, and the
+    // paths currently fetching, so one library list does not stack requests.
+    const appliedShareMarksRef = useRef(new Map<string, number>());
+    const pullingShareMarksRef = useRef(new Set<string>());
+    const pullShareMarksRef = useRef<(path: string, revision: number) => void>(() => undefined);
     // A document whose automatic upload failed is reported once, not on every
     // turn while the network is down.
     const sharePushWarnedRef = useRef(new Set<string>());
@@ -2248,6 +2288,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 clearShareNotes(null);
             }
             return;
+        }
+        // Reader marks move on their own revision. A received share whose
+        // marks revision is newer than what this machine applied fetches the
+        // small marks blob; the project zip only downloads when the revision
+        // itself moves (new transcript).
+        for (const row of rows) {
+            if (row.mine || !row.marksRevision) continue;
+            pullShareMarksRef.current(row.path, row.marksRevision);
         }
         const grouped = new Map<string, typeof rows>();
         for (const row of rows) {
@@ -2502,6 +2550,13 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             sharePushPendingRef.current.delete(path);
             sharePushWarnedRef.current.delete(path);
             pendingShareMarksRef.current.delete(path);
+            const heldMarks = shareMarksTimerRef.current.get(path);
+            if (heldMarks !== undefined) {
+                window.clearTimeout(heldMarks);
+                shareMarksTimerRef.current.delete(path);
+            }
+            shareMarksPendingRef.current.delete(path);
+            appliedShareMarksRef.current.delete(companionSharePathKey(path));
             forgetIntro(path);
         }
         return true;
@@ -2543,9 +2598,90 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         }, 1200));
     };
     pushShareTranscriptRef.current = pushShareTranscript;
+    const runShareMarksPush = (path: string) => {
+        if (shareMarksInFlightRef.current.has(path)) {
+            shareMarksPendingRef.current.add(path);
+            return;
+        }
+        shareMarksInFlightRef.current.add(path);
+        void SyncFileCompanionShareMarks(path, companionProjectMarksJSON(path))
+            .catch(() => {
+                // An older Hub has no marks endpoint. The full transcript push
+                // carries the marks too, so fall back to it; its own warning
+                // covers a Hub that is actually unreachable.
+                runSharePush(path);
+            })
+            .finally(() => {
+                shareMarksInFlightRef.current.delete(path);
+                if (shareMarksPendingRef.current.delete(path)) runShareMarksPush(path);
+            });
+    };
+    const pushShareMarks = (path: string) => {
+        if (!path || !hostSharesByPathRef.current.has(companionSharePathKey(path))) return;
+        const timers = shareMarksTimerRef.current;
+        const held = timers.get(path);
+        if (held !== undefined) window.clearTimeout(held);
+        timers.set(path, window.setTimeout(() => {
+            timers.delete(path);
+            runShareMarksPush(path);
+        }, 1200));
+    };
+    pushShareMarksRef.current = pushShareMarks;
+    // A participant whose copy of a hosted document is open picks the host's
+    // reader marks up without downloading the project zip again. The revision
+    // check runs on every library list; the fetch is small and per-path
+    // deduplicated.
+    const pullShareMarks = (path: string, revision: number) => {
+        const key = companionSharePathKey(path);
+        if (!key || pullingShareMarksRef.current.has(key)) return;
+        if ((appliedShareMarksRef.current.get(key) ?? 0) >= revision) return;
+        pullingShareMarksRef.current.add(key);
+        void FetchFileCompanionShareMarks(path)
+            .then((raw) => {
+                const record = (raw ?? {}) as { marks?: string; Marks?: string; revision?: number; Revision?: number };
+                const body = typeof record.marks === "string" ? record.marks : typeof record.Marks === "string" ? record.Marks : "";
+                if (!body) return;
+                let parsed: Record<string, unknown> = {};
+                try {
+                    const value = JSON.parse(body) as unknown;
+                    if (value && typeof value === "object" && !Array.isArray(value)) parsed = value as Record<string, unknown>;
+                } catch {
+                    return;
+                }
+                const stringField = (value: unknown): string => (typeof value === "string" ? value : JSON.stringify(value ?? []));
+                applyShareUpdateRef.current({
+                    path,
+                    highlights: stringField(parsed.highlights),
+                    chatMarks: stringField(parsed.chatMarks),
+                    chatMarksKnown: true,
+                    annotations: stringField(parsed.annotations),
+                    annotationsKnown: true,
+                    drawings: stringField(parsed.drawings),
+                    drawingsKnown: true,
+                    bookmarks: stringField(parsed.bookmarks),
+                    bookmarksKnown: true,
+                    messages: [],
+                    project: true,
+                    replaceMessages: false,
+                });
+                const applied = typeof record.revision === "number" ? record.revision : typeof record.Revision === "number" ? record.Revision : revision;
+                appliedShareMarksRef.current.set(key, Math.max(revision, applied));
+            })
+            .catch(() => {
+                // SHARE_MARKS_NOT_FOUND means the host has not pushed marks
+                // yet; a later revision retries. Anything else (offline Hub)
+                // retries on the next list too.
+            })
+            .finally(() => {
+                pullingShareMarksRef.current.delete(key);
+            });
+    };
+    pullShareMarksRef.current = pullShareMarks;
     useEffect(() => () => {
         for (const timer of sharePushTimerRef.current.values()) window.clearTimeout(timer);
         sharePushTimerRef.current.clear();
+        for (const timer of shareMarksTimerRef.current.values()) window.clearTimeout(timer);
+        shareMarksTimerRef.current.clear();
     }, []);
     // Highlights painted on the document are part of the share project too.
     // The reader has already saved them synchronously; reuse the same debounced
@@ -2556,7 +2692,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             const path = String(detail?.path || "").trim();
             if (!path) return;
             if (hostSharesByPathRef.current.has(companionSharePathKey(path))) {
-                pushShareTranscriptRef.current(path);
+                // Marks changed: the light marks push. The transcript push
+                // stays for chat lines, which only the full project carries.
+                pushShareMarksRef.current(path);
                 return;
             }
             // The paint can land before the library list says this file is
@@ -2581,7 +2719,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         for (const path of [...pendingShareMarksRef.current]) {
             if (!hostSharesByPathRef.current.has(companionSharePathKey(path))) continue;
             pendingShareMarksRef.current.delete(path);
-            pushShareTranscriptRef.current(path);
+            pushShareMarksRef.current(path);
         }
     }, [hostSharesByPath]);
     // The library panel is not the only reader. A removed member, or a newer
@@ -3508,6 +3646,38 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     };
 
     const activeTab = tabs.find((tab) => tab.path === active) ?? null;
+    const annotationKey = activeTab ? companionSharePathKey(activeTab.path) : "";
+    const annotationsCollapsed = annotationKey !== "" && collapsedAnnotationKeys.has(annotationKey);
+    const toggleAnnotationsCollapsed = () => {
+        if (!annotationKey) return;
+        // Read the offset before the list is hidden. Hiding can clamp it to zero.
+        if (!collapsedAnnotationKeys.has(annotationKey) && annotationBodyRef.current) {
+            annotationScrollsRef.current.set(annotationKey, annotationBodyRef.current.scrollTop);
+        }
+        setCollapsedAnnotationKeys((current) => {
+            const next = new Set(current);
+            if (next.has(annotationKey)) next.delete(annotationKey);
+            else next.add(annotationKey);
+            return next;
+        });
+    };
+    const annotationsOpen = Boolean(activeTab?.shareToken && (!activeTab.shareMine || (activeTab.notes && activeTab.notes.length > 0)));
+    const rememberAnnotationScroll = (scrollTop: number) => {
+        const body = annotationBodyRef.current;
+        // Hiding the list clamps the offset and emits scroll. So does swapping
+        // in another document, and that event still carries the previous place.
+        if (!body || body.hidden || !annotationKey || annotationsCollapsed) return;
+        if (appliedAnnotationKeyRef.current !== annotationKey) return;
+        annotationScrollsRef.current.set(annotationKey, scrollTop);
+    };
+    useLayoutEffect(() => {
+        const body = annotationBodyRef.current;
+        if (body && annotationKey && !body.hidden) {
+            const saved = annotationScrollsRef.current.get(annotationKey) ?? 0;
+            if (body.scrollTop !== saved) body.scrollTop = saved;
+        }
+        appliedAnnotationKeyRef.current = annotationKey;
+    }, [annotationKey, annotationsCollapsed, annotationsOpen]);
     // The share this document already has, if this person created it.
     const sharedRow = active ? mineSharesByPath.get(companionSharePathKey(active)) ?? null : null;
     const hostSeat = active ? hostSharesByPath.get(companionSharePathKey(active)) ?? null : null;
@@ -5968,7 +6138,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             onTouchMove={handleUserScrollIntent}
                             onPointerDown={handleUserScrollIntent}
                             onContextMenu={onChatContextMenu}
-                            style={{ flex: 1, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}
+                            // 160px is the share this thread keeps before it shrinks. A zero basis lets the annotation list take the whole column and hide the conversation.
+                            style={{ flex: "1 1 160px", minHeight: 0, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}
                         >
                             {activeTab.messages.length === 0 && discussionReplies.length === 0 ? <p data-testid="file-companion-chat-empty" style={{ margin: 0, color: "var(--theme-text-muted, #94a3b8)", fontSize: 13 }}>{cs("针对当前文件提问")}</p> : null}
                             {activeTab.messages.map((message, index) => {
@@ -6112,9 +6283,27 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 onClose={() => setChatMenu(null)}
                             />
                         ) : null}
-                        {activeTab.shareToken && (!activeTab.shareMine || (activeTab.notes && activeTab.notes.length > 0)) ? (
-                            <div className="file-companion-annotations" data-testid="file-companion-annotations">
-                                <p className="file-companion-annotations-kicker">{pendingReviewCount > 0 ? companionFill(uiLang, "批注 · 待审核 ${count}", { count: pendingReviewCount }) : cs("批注")}</p>
+                        {annotationsOpen ? (
+                            <div className="file-companion-annotations" data-testid="file-companion-annotations" data-collapsed={annotationsCollapsed ? "true" : "false"}>
+                                <div className="file-companion-annotations-head" onClick={toggleAnnotationsCollapsed}>
+                                    <p className="file-companion-annotations-kicker">{pendingReviewCount > 0 ? companionFill(uiLang, "批注 · 待审核 ${count}", { count: pendingReviewCount }) : cs("批注")}</p>
+                                    <button
+                                        type="button"
+                                        className="file-companion-annotations-toggle"
+                                        data-testid="file-companion-annotations-toggle"
+                                        aria-expanded={!annotationsCollapsed}
+                                        aria-controls="file-companion-annotations-body"
+                                        aria-label={annotationsCollapsed ? cs("展开批注") : cs("折叠批注")}
+                                        title={annotationsCollapsed ? cs("展开批注") : cs("折叠批注")}
+                                        onClick={(event) => {
+                                            event.stopPropagation();
+                                            toggleAnnotationsCollapsed();
+                                        }}
+                                    >
+                                        <CompanionAnnotationsFoldIcon collapsed={annotationsCollapsed} />
+                                    </button>
+                                </div>
+                                <div id="file-companion-annotations-body" className="file-companion-annotations-body" data-testid="file-companion-annotations-body" hidden={annotationsCollapsed} ref={annotationBodyRef} onScroll={(event) => rememberAnnotationScroll(event.currentTarget.scrollTop)}>
                                 {activeTab.notes && activeTab.notes.length > 0 ? activeTab.notes.map((note) => {
                                     const answered = activeTab.notes?.some((other) => other.host && other.replyTo === note.id) ?? false;
                                     const decision = note.host ? "" : (note.decision ?? "");
@@ -6194,6 +6383,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 }) : (
                                     <p className="file-companion-annotations-empty">{cs("你的讨论会成为批注，同步给能看到这份分享的人。")}</p>
                                 )}
+                                </div>
                             </div>
                         ) : null}
                         <FileCompanionComposer

@@ -931,9 +931,10 @@ func TestOCRImagePDFPageBatchReadsObjectStreamJPEG(t *testing.T) {
 		imagePDFPage{jpeg: jpeg1, width: 32, height: 32},
 		imagePDFPage{jpeg: jpeg2, width: 32, height: 40},
 	)
-	_, rawErr := gopdf2.ExtractImagesFromPage(data, 0)
-	if rawErr == nil || !strings.Contains(rawErr.Error(), "out of range (0..-1)") {
-		t.Fatalf("raw parser = %v; object-stream page tree should be invisible", rawErr)
+	// The raw parser expands object streams, so it reads this page tree.
+	raw, rawErr := gopdf2.ExtractImagesFromPage(data, 0)
+	if rawErr != nil || len(raw) != 1 || !bytes.Equal(raw[0].Data, jpeg1) {
+		t.Fatalf("raw parser = %#v, %v; object-stream page tree should be visible", raw, rawErr)
 	}
 	if plaintextHasPDFPageObject(data) {
 		t.Fatal("compressed page tree should skip the raw parser")
@@ -1024,9 +1025,11 @@ func TestExtractPDFTextOCRsObjectStreamPageImage(t *testing.T) {
 	if plaintextHasPDFPageObject(data) {
 		t.Fatal("compressed page tree should skip the raw parser")
 	}
+	// The raw parser expands object streams, so it sees the compressed
+	// page tree and returns both page JPEGs; page 2 has none.
 	all, allErr := gopdf2.ExtractImagesFromAllPages(data)
-	if allErr != nil || len(all) != 0 {
-		t.Fatalf("ExtractImagesFromAllPages = %d, %v; an object-stream page tree is an empty map", len(all), allErr)
+	if allErr != nil || len(all) != 2 || !bytes.Equal(all[0][0].Data, jpeg1) || !bytes.Equal(all[2][0].Data, jpeg3) {
+		t.Fatalf("ExtractImagesFromAllPages = %d, %v; an object-stream page tree now surfaces its images", len(all), allErr)
 	}
 	var got [][]byte
 	SetOfficeImagePDFOCR(nil, func(imageBase64 string) (string, error) {
@@ -1122,8 +1125,8 @@ func TestExtractPDFTextVisionReadsObjectStreamPageImage(t *testing.T) {
 		imagePDFPage{jpeg: jpeg2, width: 32, height: 40},
 	)
 	all, allErr := gopdf2.ExtractImagesFromAllPages(data)
-	if allErr != nil || len(all) != 0 {
-		t.Fatalf("ExtractImagesFromAllPages = %d, %v", len(all), allErr)
+	if allErr != nil || len(all) != 2 || !bytes.Equal(all[0][0].Data, jpeg1) {
+		t.Fatalf("ExtractImagesFromAllPages = %d, %v; the object-stream page tree now surfaces its images", len(all), allErr)
 	}
 	calls := 0
 	SetOfficeImagePDFOCR(nil, func(string) (string, error) {

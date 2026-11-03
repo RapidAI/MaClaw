@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -28,6 +29,21 @@ func TestVisualPreviewDoesNotReplaceDesktopShot(t *testing.T) {
 	live := applyLatestDesktopShot(nil, "desktop", []ToolModelImage{{Base64: "live"}}, nil)
 	if live == nil || live.Base64 != "live" {
 		t.Fatalf("desktop image did not become the shot: %#v", live)
+	}
+}
+
+func TestVisualPreviewMessageKeepsPageCaption(t *testing.T) {
+	msg := buildVisualPreviewMessage("openai", []ToolModelImage{{
+		MIME: "image/png", Base64: "aaaa", Purpose: VisualPreviewImagePurpose,
+		Caption: "预览图已附上：第 4-6 页 / 共 9 页。",
+	}})
+	blocks, _ := msg["content"].([]interface{})
+	if len(blocks) == 0 {
+		t.Fatalf("content = %#v", msg["content"])
+	}
+	text, _ := blocks[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(text, "第 4-6 页") || !strings.Contains(text, VisualPreviewImageMarker) {
+		t.Fatalf("caption missing: %q", text)
 	}
 }
 

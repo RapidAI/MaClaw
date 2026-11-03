@@ -444,7 +444,7 @@ function SheetPages({ sheets }: { sheets: SheetPage[] }) {
             {sheets.map((sheet) => (
                 <div key={sheet.name}>
                     {sheets.length > 1 ? (
-                        <div style={{ fontSize: 12, fontWeight: 650, color: "#44403c", marginBottom: 4 }}>{sheet.name}</div>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: "#44403c", marginBottom: 4 }}>{sheet.name}</div>
                     ) : null}
                     <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13, lineHeight: 1.35, color: "#1c1917" }}>
                         <tbody>

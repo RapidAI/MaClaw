@@ -25,6 +25,7 @@ func setupMobileUploadDuplicateTest(t *testing.T, email string) (*auth.IdentityS
 
 	blobRoot := t.TempDir()
 	setMobileStatePathForTest(t, filepath.Join(t.TempDir(), "mobile-state.json"))
+	waitMobileAgentJobsSettledForTest(t)
 	t.Setenv(mobileBlobDirEnv, blobRoot)
 	mobileStatePersistence.Lock()
 	mobileStatePersistence.loaded = true

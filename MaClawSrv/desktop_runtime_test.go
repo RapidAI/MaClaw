@@ -829,10 +829,13 @@ func TestAppRunTypesIntoATerminalWhenTheBrowserSocketIsDown(t *testing.T) {
 		}
 		return browserDown
 	})
+	// The failed browser read now probes for an open native file dialog
+	// before it yields to the focused terminal: dialog search, modifier
+	// release, Whisker dismiss, terminal activation, class read, type.
 	if err != nil || reads != 1 || text != "" {
 		t.Fatalf("reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
 	}
-	if len(calls) != 5 || strings.Join(calls[0], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[1], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[2], " ") != "search --onlyvisible --name Terminal 终端 - windowactivate --sync" || strings.Join(calls[3], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[4], " ") != "type --delay 20 --args 1 -- echo hi key Return" {
+	if len(calls) != 6 || strings.Join(calls[0], " ") != strings.Join([]string{"search", "--onlyvisible", "--name", desktopFileDialogSearchPattern}, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "search --onlyvisible --name Terminal 终端 - windowactivate --sync" || strings.Join(calls[4], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[5], " ") != "type --delay 20 --args 1 -- echo hi key Return" {
 		t.Fatalf("named terminal=%v", calls)
 	}
 	calls = nil
@@ -843,15 +846,18 @@ func TestAppRunTypesIntoATerminalWhenTheBrowserSocketIsDown(t *testing.T) {
 		},
 	}, func() error {
 		reads++
-		if len(calls) != 1 || strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") {
-			return fmt.Errorf("window was read after the browser could raise: %v", calls)
+		if len(calls) != 1 || strings.Join(calls[0], " ") != strings.Join(desktopWindowClassRead, " ") {
+			return fmt.Errorf("focused class was not read first: %v", calls)
 		}
 		return browserDown
 	})
-	if err != nil || reads != 1 || text != "" || len(calls) != 6 {
+	// The focused class is a terminal, so the browser read is skipped
+	// entirely (no dialog probe): class read, restore read, modifier release,
+	// Whisker dismiss, window restore, type.
+	if err != nil || reads != 0 || text != "" || len(calls) != 6 {
 		t.Fatalf("focused reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
 	}
-	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[5], " ") != "type --delay 20 --args 1 -- pwd key Return" {
+	if strings.Join(calls[0], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[2], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[3], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[4], " ") != "windowactivate --sync 8388609" || strings.Join(calls[5], " ") != "type --delay 20 --args 1 -- pwd key Return" {
 		t.Fatalf("focused terminal=%v", calls)
 	}
 	// A password field in the browser is not the terminal. The command still runs.
@@ -938,18 +944,27 @@ func TestAppRunKeepsABrowserTypeClosedWhenTheBrowserSocketIsDown(t *testing.T) {
 		map[string]any{"action": "focus", "name": "Terminal"},
 		map[string]any{"action": "type", "text": secret},
 	})
-	// No window id and no named focus: do not ask for a class, and do not type.
+	// A readable non-browser class is enough evidence that the keystrokes
+	// cannot reach a browser password field: the type goes to xdotool
+	// without the browser read even when the window name cannot be read.
 	class = "Xfce4-terminal"
 	readWindow = false
 	calls = nil
-	_, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
+	browserReads := 0
+	typedText, err := operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
 		"steps": []any{map[string]any{"action": "type", "text": secret}},
-	}, func() error { return browserDown })
-	if err == nil || !strings.Contains(err.Error(), "desktop browser") || strings.Contains(err.Error(), secret) {
-		t.Fatalf("unread window err=%v", err)
+	}, func() error { browserReads++; return browserDown })
+	if err != nil || typedText != "" || browserReads != 0 {
+		t.Fatalf("terminal type text=%q err=%v browserReads=%d", typedText, err, browserReads)
 	}
-	if len(calls) != 1 || strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || containsArg(calls[0], secret) {
-		t.Fatalf("unread window calls=%v", calls)
+	typed := false
+	for _, call := range calls {
+		if len(call) > 0 && call[0] == "type" && containsArg(call, secret) {
+			typed = true
+		}
+	}
+	if !typed {
+		t.Fatalf("terminal type never reached xdotool: %v", calls)
 	}
 }
 

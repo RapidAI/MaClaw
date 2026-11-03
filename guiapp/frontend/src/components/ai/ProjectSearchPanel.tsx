@@ -216,7 +216,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
             next?.scrollIntoView?.({ block: "nearest" });
         }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "10px 12px", flexShrink: 0, borderBottom: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg }}>
-                <span style={{ color: t.text, fontSize: "13px", fontWeight: 650, flexShrink: 0 }}>{localizeText(lang, "Search results", "搜索结果", "搜尋結果")}</span>
+                <span style={{ color: t.text, fontSize: "13px", fontWeight: 600, flexShrink: 0 }}>{localizeText(lang, "Search results", "搜索结果", "搜尋結果")}</span>
                 <span style={{ flex: 1, minWidth: 0, color: t.textMuted, fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{search.query.trim()}</span>
                 {onForkCurrentChat && (
                     <button

@@ -1,12 +1,12 @@
 module github.com/RapidAI/CodeClaw
 
-go 1.25.5
+go 1.26.0
 
 require (
 	github.com/RapidAI/OfficeRead v0.0.0-20260809051355-9682f0878d08
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/VantageDataChat/GoExcel v0.0.0-20260626231344-644ce957794e
-	github.com/VantageDataChat/GoPDF2 v0.0.0-20260711230316-e8684adfd6f2
+	github.com/VantageDataChat/GoPDF2 v0.0.0-20261103011601-0d29802a4481
 	github.com/Vantagics/GoPPT v0.0.0-20260925002107-5e8328b8348b
 	github.com/alexbrainman/odbc v0.0.0-20250601004241-49e6b2bc0cf0
 	github.com/braheezy/shine-mp3 v0.1.0
@@ -43,10 +43,10 @@ require (
 	golang.org/x/crypto v0.45.0
 	golang.org/x/image v0.37.0
 	golang.org/x/net v0.47.0
-	golang.org/x/sync v0.20.0
+	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.44.0
 	golang.org/x/term v0.37.0
-	golang.org/x/text v0.35.0
+	golang.org/x/text v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.46.1
 	pgregory.net/rapid v1.2.0
@@ -56,18 +56,18 @@ require (
 	github.com/JohannesKaufmann/dom v0.2.0 // indirect
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.4.0 // indirect
 	github.com/creack/goselect v0.1.2 // indirect
-	github.com/raitucarp/epub v0.5.1 // indirect
-	github.com/unitedrhino/go-cad v0.0.0-20261001090957-ddd91eea9618 // indirect
+	github.com/raitucarp/epub v0.5.1
+	github.com/unitedrhino/go-cad v0.0.0-20261001090957-ddd91eea9618
 	go.bug.st/serial v1.6.2
 )
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/ebitengine/purego v0.11.1
-	github.com/emersion/go-imap v1.2.1 // indirect
-	github.com/emersion/go-message v0.18.2 // indirect
-	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
-	github.com/emersion/go-smtp v0.21.3 // indirect
+	github.com/emersion/go-imap v1.2.1
+	github.com/emersion/go-message v0.18.2
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
+	github.com/emersion/go-smtp v0.21.3
 	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9 // indirect
 	github.com/golang-sql/sqlexp v0.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
@@ -75,7 +75,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/rogpeppe/go-internal v1.16.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
-	github.com/tetratelabs/wazero v1.12.0 // indirect
+	github.com/tetratelabs/wazero v1.12.0
 )
 
 require (
@@ -169,3 +169,6 @@ replace github.com/braheezy/shine-mp3 => ./third_party/shine-mp3
 
 // Patched Darwin launch-file batch hook. Do not point this at the module cache.
 replace github.com/wailsapp/wails/v2 => ./third_party/wails
+
+// TEMP validation harness - remove after upstream fix lands
+replace github.com/VantageDataChat/GoPDF2 => ./tmp/gopdf2_fix

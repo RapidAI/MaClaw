@@ -71,7 +71,7 @@ export function AssistantReasoningPanel({
         minHeight: 26,
         padding: "2px 9px 2px 8px",
         color: liveFg,
-        fontWeight: 650,
+        fontWeight: 600,
         opacity: live ? 1 : 0.94,
         listStyleType: "none",
         minWidth: 0,

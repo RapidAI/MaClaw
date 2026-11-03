@@ -370,6 +370,8 @@ const ROWS: readonly Row[] = [
     ["${brand}伴读", "${brand} companion", "${brand} дагалдан унших"],
     ["批注 · 待审核 ${count}", "Comments · ${count} waiting for review", "Тэмдэглэл · ${count} шалгалт хүлээж байна"],
     ["批注", "Comments", "Тэмдэглэл"],
+    ["展开批注", "Expand comments", "Тэмдэглэлийг дэлгэх"],
+    ["折叠批注", "Collapse comments", "Тэмдэглэлийг хураах"],
     ["每个项目包含文档、高亮和讨论，共 ${count} 个", "Each project holds the document, highlights, and discussion. ${count} in all", "Төсөл бүр баримт, тодруулга, хэлэлцүүлэг агуулна. Нийт ${count}"],
     ["每个项目包含文档、高亮和讨论，还没有项目", "Each project holds the document, highlights, and discussion. No projects yet", "Төсөл бүр баримт, тодруулга, хэлэлцүүлэг агуулна. Төсөл хараахан алга"],
     ["当前 ${audience} · 至 ${date}", "Now ${audience} · until ${date}", "Одоо ${audience} · ${date} хүртэл"],

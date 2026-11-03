@@ -1614,8 +1614,15 @@ func buildTimeline(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box con
 		if rowCount > 1 {
 			trackX := box.x + cardW/2
 			trackW := int64(rowCount-1) * (cardW + gap)
-			fadeRule(slide, trackX, rowY+nodeD/2-emuIn(0.02), trackW, 4, blend(theme.accent, theme.paper, 0.45), theme.paper)
-			shapeBadge(slide, trackX+trackW+emuIn(0.1), rowY+nodeD/2-emuIn(0.1), emuIn(0.2), ppt.AutoShapeChevron, blend(theme.accent, theme.paper, 0.15))
+			// Formal motifs track with a fading line and a terminal chevron;
+			// hand-drawn ones keep a dotted marker track instead.
+			if theme.motif == motifPoster || theme.motif == motifBoard ||
+				theme.motif == motifSketch || theme.motif == motifCraft {
+				dashedLine(slide, trackX, rowY+nodeD/2, trackX+trackW, blend(theme.ink, theme.paper, 0.3), 1, ppt.BorderDot, false)
+			} else {
+				fadeRule(slide, trackX, rowY+nodeD/2-emuIn(0.02), trackW, 4, blend(theme.accent, theme.paper, 0.45), theme.paper)
+				shapeBadge(slide, trackX+trackW+emuIn(0.1), rowY+nodeD/2-emuIn(0.1), emuIn(0.2), ppt.AutoShapeChevron, blend(theme.accent, theme.paper, 0.15))
+			}
 		}
 	}
 	for i, text := range texts {
@@ -1666,10 +1673,11 @@ func buildComparison(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box c
 	if stack < box.h {
 		y0 = box.y + (box.h-stack)/2
 	}
-	// Central divider line between the two comparison columns.
+	// Central divider line between the two comparison columns, carrying a
+	// diamond badge at its middle.
 	midX := box.x + colW + colGap/2
 	rect(slide, midX-emuIn(0.01), y0, emuIn(0.02), stack, blend(theme.accent, theme.paper, 0.55))
-	oval(slide, midX-emuIn(0.11), y0+stack/2-emuIn(0.11), emuIn(0.22), emuIn(0.22), theme.accent)
+	shapeBadge(slide, midX-emuIn(0.12), y0+stack/2-emuIn(0.12), emuIn(0.24), ppt.AutoShapeDiamond, theme.accent)
 	for i, text := range texts {
 		col := i % 2
 		row := i / 2

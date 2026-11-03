@@ -304,9 +304,13 @@ type fileCompanionAnnotationSize struct {
 	H float64 `json:"h"`
 }
 
+// Same one-line budget the reader uses for a note's label.
+const fileCompanionAnnotationNameMax = 40
+
 type fileCompanionAnnotation struct {
 	ID          string                        `json:"id"`
 	Kind        string                        `json:"kind"`
+	Name        string                        `json:"name,omitempty"`
 	Text        string                        `json:"text"`
 	Translation string                        `json:"translation"`
 	Parts       []fileCompanionAnnotationPart `json:"parts"`
@@ -336,6 +340,12 @@ func fileCompanionCleanAnnotation(item fileCompanionAnnotation) (fileCompanionAn
 	if runes := []rune(body); len(runes) > 12000 {
 		body = string(runes[:12000])
 	}
+	// A note's name is a one-line label, like a bookmark's. The reader's list
+	// clips it too, so keep the same 40-character budget here.
+	name := strings.Join(strings.Fields(item.Name), " ")
+	if runes := []rune(name); len(runes) > fileCompanionAnnotationNameMax {
+		name = string(runes[:fileCompanionAnnotationNameMax])
+	}
 	parts := make([]fileCompanionAnnotationPart, 0, len(item.Parts))
 	for _, part := range item.Parts {
 		if len(parts) >= 30 {
@@ -364,7 +374,7 @@ func fileCompanionCleanAnnotation(item fileCompanionAnnotation) (fileCompanionAn
 	if len(parts) == 0 {
 		return fileCompanionAnnotation{}, false
 	}
-	next := fileCompanionAnnotation{ID: id, Kind: "annotation", Text: text, Translation: body, Parts: parts}
+	next := fileCompanionAnnotation{ID: id, Kind: "annotation", Name: name, Text: text, Translation: body, Parts: parts}
 	if item.Place != nil && fileCompanionFinite(item.Place.X) && fileCompanionFinite(item.Place.Y) {
 		x := math.Min(4, math.Max(-4, item.Place.X))
 		y := math.Min(4, math.Max(-4, item.Place.Y))

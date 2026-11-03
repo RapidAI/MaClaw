@@ -55,7 +55,7 @@ func TestIMSemanticFileReadUsesClosedHostAdapter(t *testing.T) {
 		t.Fatalf("managed file read cannot locate files by name: %#v", properties)
 	}
 	startLineSpec, _ := properties["start_line"].(map[string]interface{})
-	if startLineSpec["description"] != "1-based start of one host-sized text page. The page length is fixed. Do not combine with query or file_pattern." {
+	if startLineSpec["description"] != "1-based start of one host-sized text page. The page length is fixed. Do not combine with query or file_pattern. For a .pptx this is the 1-based slide where a 3-slide visual check starts; omit it to see the first slides." {
 		t.Fatalf("model-facing start_line description=%#v", startLineSpec)
 	}
 	// The renderer publishes the capability summary, not the adapter's
@@ -555,6 +555,22 @@ func TestIMSemanticFileReadProjectionKeepsPagedText(t *testing.T) {
 	}
 }
 
+func TestPPTXReadStartLineSkipsFullExtract(t *testing.T) {
+	dir := t.TempDir()
+	deck := filepath.Join(dir, "deck.pptx")
+	if err := os.WriteFile(deck, []byte("not-a-deck"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readResolvedTrustedFile(dir, deck, "deck.pptx", "", "", 4)
+	if err != nil || !strings.Contains(got, "第 4 页") {
+		t.Fatalf("later page = %q err %v", got, err)
+	}
+	first, err := readResolvedTrustedFile(dir, deck, "deck.pptx", "", "", 1)
+	if err != nil || !strings.Contains(first, "第 1 页") || strings.Contains(first, "not-a-deck") {
+		t.Fatalf("first picture page = %q err %v", first, err)
+	}
+}
+
 func TestFetchedDocumentReadStartLineKeepsGrant(t *testing.T) {
 	if err := semanticFileReadDocumentStartLineCheck(map[string]interface{}{"path": "notes.txt", "start_line": json.Number("1")}); err != nil {
 		t.Fatal(err)
@@ -563,6 +579,9 @@ func TestFetchedDocumentReadStartLineKeepsGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := semanticFileReadDocumentStartLineCheck(map[string]interface{}{"path": "Pump.DWG", "start_line": float64(0)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := semanticFileReadDocumentStartLineCheck(map[string]interface{}{"path": "deck.pptx", "start_line": json.Number("4")}); err != nil {
 		t.Fatal(err)
 	}
 	rejected := semanticFileReadDocumentStartLineCheck(map[string]interface{}{"path": "pump.dwg", "start_line": json.Number("1")})

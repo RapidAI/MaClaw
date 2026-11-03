@@ -1654,7 +1654,7 @@ describe("companion pdf reader", () => {
         const handle = await screen.findByTestId("pdf-bookmark-resize");
         const column = screen.getByTestId("pdf-bookmark-column");
         expect(column.style.width).toBe("156px");
-        expect(handle.getAttribute("aria-label")).toBe("拖动调整书签列表宽度");
+        expect(handle.getAttribute("aria-label")).toBe("拖动调整侧栏宽度");
         const stage = column.parentElement as HTMLElement;
         Object.defineProperty(stage, "clientWidth", { configurable: true, value: 800 });
 
@@ -1931,6 +1931,224 @@ describe("companion pdf reader", () => {
         fireEvent.click(screen.getByTestId("pdf-bookmark-b"));
         expect(screen.getByTestId("pdf-bookmark-b").classList.contains("companion-pdf-bookmark--here")).toBe(true);
         expect(screen.getByTestId("pdf-bookmark-a").classList.contains("companion-pdf-bookmark--here")).toBe(false);
+    });
+
+    it("lists notes below the bookmarks, jumps to a note, and renames it from the row menu", async () => {
+        pdfWithPages(2, "OnlyOne");
+        const changed = vi.fn();
+        window.addEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, changed);
+        try {
+            hydratePdfBookmarks({
+                "c:/docs/paper.pdf": [{ id: "b1", page: 1, x: 0.2, y: 0.3, color: "yellow", name: "书签一" }],
+            });
+            hydratePdfTranslations({
+                "c:/docs/paper.pdf": [
+                    { id: "n1", kind: "annotation", name: "方法复核", text: "OnlyOne", translation: "这里要复核", parts: [{ page: 1, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.05 }] }] },
+                    { id: "n2", kind: "annotation", text: "OnlyOne", translation: "第二条", parts: [{ page: 2, rects: [{ x: 0.2, y: 0.1, w: 0.3, h: 0.05 }] }] },
+                ],
+            });
+            render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+            await screen.findByText("OnlyOne");
+            const scroller = screen.getByTestId("companion-pdf-scroll");
+            const page1 = screen.getByTestId("companion-pdf-page-1");
+            const page2 = screen.getByTestId("companion-pdf-page-2");
+            scroller.getBoundingClientRect = () => clientRect(0, 0, 300, 400);
+            page1.getBoundingClientRect = () => clientRect(40, 0, 200, 400) as DOMRect;
+            page2.getBoundingClientRect = () => clientRect(40, 900, 200, 400) as DOMRect;
+
+            // Bookmarks stay on top; every note is listed below them, apart.
+            const column = screen.getByTestId("pdf-bookmark-column");
+            const titles = Array.from(column.querySelectorAll(".companion-pdf-rail-title")).map((node) => node.textContent);
+            expect(titles[0]).toContain("书签");
+            expect(titles[1]).toContain("批注");
+            expect(screen.getByTestId("pdf-bookmark-rail").querySelector(".companion-pdf-bookmark")).toBeTruthy();
+            const noteRail = screen.getByTestId("pdf-note-rail");
+            const noteRows = () => Array.from(noteRail.querySelectorAll<HTMLElement>(".companion-pdf-note-item"));
+            expect(noteRows().map((row) => row.querySelector(".companion-pdf-note-name")?.textContent)).toEqual(["方法复核", "OnlyOne"]);
+            // A note with no name falls back to its source, like an old note.
+            expect(noteRows()[1].getAttribute("aria-label")).toBe("第 2 页，OnlyOne");
+
+            await act(async () => {
+                fireEvent.click(noteRows()[1]);
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+            });
+            expect(scroller.scrollTop).toBe(868);
+            expect(noteRows()[1].classList.contains("companion-pdf-note-item--here")).toBe(true);
+            expect(noteRows()[0].classList.contains("companion-pdf-note-item--here")).toBe(false);
+
+            fireEvent.contextMenu(noteRows()[0]);
+            expect(screen.getByTestId("pdf-highlight-menu").getAttribute("aria-label")).toBe("批注操作");
+            expect(screen.queryByTestId("pdf-bookmark-add")).toBeNull();
+            expect(screen.queryByTestId("pdf-note-rename")).toBeTruthy();
+            fireEvent.mouseDown(screen.getByTestId("pdf-note-rename"));
+            const input = screen.getByTestId("pdf-note-name") as HTMLInputElement;
+            expect(input.value).toBe("方法复核");
+            fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+            expect(screen.getByTestId("pdf-note-name")).toBeTruthy();
+            fireEvent.change(input, { target: { value: "  改过   的名字 " } });
+            fireEvent.keyDown(input, { key: "Enter" });
+            expect(screen.queryByTestId("pdf-note-name")).toBeNull();
+            expect(noteRows()[0].querySelector(".companion-pdf-note-name")?.textContent).toBe("改过 的名字");
+            const stored = loadPdfTranslations("C:/docs/Paper.PDF").filter((item) => item.kind === "annotation");
+            expect(stored[0]?.name).toBe("改过 的名字");
+            expect(stored[1]?.name).toBeUndefined();
+            expect(changed).toHaveBeenCalledTimes(1);
+
+            fireEvent.contextMenu(noteRows()[1]);
+            fireEvent.mouseDown(screen.getByTestId("pdf-translate-clear"));
+            expect(noteRows()).toHaveLength(1);
+            expect(loadPdfTranslations("C:/docs/Paper.PDF").filter((item) => item.kind === "annotation")).toHaveLength(1);
+        } finally {
+            window.removeEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, changed);
+        }
+    });
+
+    it("drops the bookmark highlight when a note jump takes over", async () => {
+        pdfWithPages(2, "OnlyOne");
+        hydratePdfBookmarks({
+            "c:/docs/paper.pdf": [{ id: "b2", page: 2, x: 0.2, y: 0.1, color: "yellow", name: "第二页书签" }],
+        });
+        hydratePdfTranslations({
+            "c:/docs/paper.pdf": [
+                { id: "n1", kind: "annotation", name: "第一页批注", text: "OnlyOne", translation: "正文", parts: [{ page: 1, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.05 }] }] },
+            ],
+        });
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        await screen.findByText("OnlyOne");
+        const scroller = screen.getByTestId("companion-pdf-scroll");
+        const page1 = screen.getByTestId("companion-pdf-page-1");
+        const page2 = screen.getByTestId("companion-pdf-page-2");
+        scroller.getBoundingClientRect = () => clientRect(0, 0, 300, 400);
+        page1.getBoundingClientRect = () => clientRect(40, 0, 200, 400) as DOMRect;
+        page2.getBoundingClientRect = () => clientRect(40, 900, 200, 400) as DOMRect;
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("pdf-bookmark-b2"));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        expect(screen.getByTestId("pdf-bookmark-b2").classList.contains("companion-pdf-bookmark--here")).toBe(true);
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("pdf-note-n1"));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        expect(screen.getByTestId("pdf-note-n1").classList.contains("companion-pdf-note-item--here")).toBe(true);
+        // The bookmark's jump named it current; the note jump must let it go,
+        // or page 2 would keep a highlight while the reader sits on page 1.
+        expect(screen.getByTestId("pdf-bookmark-b2").classList.contains("companion-pdf-bookmark--here")).toBe(false);
+
+        // The same holds the other way: a bookmark jump must drop the note row.
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("pdf-bookmark-b2"));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        expect(screen.getByTestId("pdf-bookmark-b2").classList.contains("companion-pdf-bookmark--here")).toBe(true);
+        expect(screen.getByTestId("pdf-note-n1").classList.contains("companion-pdf-note-item--here")).toBe(false);
+    });
+
+    it("releases the jumped note highlight when the reader scrolls", async () => {
+        pdfWithPages(2, "OnlyOne");
+        hydratePdfTranslations({
+            "c:/docs/paper.pdf": [
+                { id: "n1", kind: "annotation", name: "第一页批注", text: "OnlyOne", translation: "正文", parts: [{ page: 1, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.05 }] }] },
+                { id: "n2", kind: "annotation", name: "第二页批注", text: "OnlyOne", translation: "正文", parts: [{ page: 2, rects: [{ x: 0.1, y: 0.05, w: 0.3, h: 0.05 }] }] },
+            ],
+        });
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        await screen.findByText("OnlyOne");
+        const scroller = screen.getByTestId("companion-pdf-scroll");
+        Object.defineProperty(scroller, "clientHeight", { configurable: true, get: () => 400 });
+        scroller.getBoundingClientRect = () => clientRect(0, 0, 300, 400);
+        screen.getByTestId("companion-pdf-page-1").getBoundingClientRect = () => clientRect(0, -scroller.scrollTop, 200, 400) as DOMRect;
+        screen.getByTestId("companion-pdf-page-2").getBoundingClientRect = () => clientRect(0, 400 - scroller.scrollTop, 200, 400) as DOMRect;
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("pdf-note-n2"));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        // The anchor sits 72px down, so page 1 still owns the top edge.
+        expect(scroller.scrollTop).toBe(348);
+        expect(screen.getByTestId("pdf-note-n2").classList.contains("companion-pdf-note-item--here")).toBe(true);
+
+        scroller.scrollTop = 0;
+        await act(async () => {
+            fireEvent.scroll(scroller);
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        });
+        expect(screen.getByTestId("pdf-note-n1").classList.contains("companion-pdf-note-item--here")).toBe(true);
+        expect(screen.getByTestId("pdf-note-n2").classList.contains("companion-pdf-note-item--here")).toBe(false);
+    });
+
+    it("keeps a hand-scrolled note list in place when an unrelated translation saves", async () => {
+        pdfWithPages(1, "OnlyOne");
+        hydratePdfTranslations({
+            "c:/docs/paper.pdf": [
+                { id: "n1", kind: "annotation", name: "第一条", text: "OnlyOne", translation: "正文", parts: [{ page: 1, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.05 }] }] },
+                { id: "n2", kind: "annotation", name: "第二条", text: "OnlyOne", translation: "正文", parts: [{ page: 1, rects: [{ x: 0.2, y: 0.3, w: 0.3, h: 0.05 }] }] },
+            ],
+        });
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        await screen.findByText("OnlyOne");
+        const noteRail = screen.getByTestId("pdf-note-rail");
+        // A rail 100px tall with the first row well below its window.
+        noteRail.getBoundingClientRect = () => clientRect(0, 0, 150, 100) as DOMRect;
+        for (const row of Array.from(noteRail.querySelectorAll<HTMLElement>(".companion-pdf-note-item"))) {
+            row.getBoundingClientRect = () => clientRect(0, 300, 140, 26) as DOMRect;
+        }
+        // A same-content store write runs the reveal with the mocked boxes.
+        act(() => {
+            savePdfTranslations("C:/docs/Paper.PDF", loadPdfTranslations("C:/docs/Paper.PDF"));
+        });
+        expect(noteRail.scrollTop).toBe(226);
+
+        noteRail.scrollTop = 500;
+        act(() => {
+            savePdfTranslations("C:/docs/Paper.PDF", [
+                ...loadPdfTranslations("C:/docs/Paper.PDF"),
+                { id: "t1", text: "Hello", translation: "你好", parts: [{ page: 1, rects: [{ x: 0.3, y: 0.4, w: 0.2, h: 0.04 }] }] },
+            ]);
+        });
+        // A translation save must not drag the note list back to the page.
+        expect(noteRail.scrollTop).toBe(500);
+    });
+
+    it("offers no rename for the host's shared note", async () => {
+        pdfWithPages(1, "OnlyOne");
+        hydratePdfTranslations({
+            "c:/docs/paper.pdf": [
+                { id: "sh1", kind: "annotation", shared: true, name: "宿主批注", text: "OnlyOne", translation: "主持人批注", parts: [{ page: 1, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.05 }] }] },
+            ],
+        });
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        await screen.findByText("OnlyOne");
+        expect(screen.getByTestId("pdf-note-rail").textContent).toContain("宿主批注");
+        fireEvent.contextMenu(screen.getByTestId("pdf-note-sh1"));
+        expect(screen.getByTestId("pdf-highlight-menu").getAttribute("aria-label")).toBe("批注操作");
+        expect(screen.queryByTestId("pdf-note-rename")).toBeNull();
+        expect(screen.getByTestId("pdf-translate-clear")).toBeTruthy();
+    });
+
+    it("names a new annotation after its source and shows it in the note list", async () => {
+        pdfWithPages(1);
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const page = await screen.findByTestId("companion-pdf-page-1");
+        selectHello(page);
+        fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
+        fireEvent.mouseDown(screen.getByTestId("pdf-annotate"));
+        fireEvent.change(screen.getByTestId("pdf-annotation-input"), { target: { value: "这里的假设需要检验" } });
+        fireEvent.click(screen.getByTestId("pdf-annotation-save"));
+
+        const noteRail = screen.getByTestId("pdf-note-rail");
+        expect(noteRail.querySelector(".companion-pdf-note-name")?.textContent).toBe("Hello");
+        const saved = loadPdfTranslations("C:/docs/Paper.PDF")[0];
+        expect(saved?.name).toBe("Hello");
+        // The card itself stays the generic 批注 lane; the name belongs to the list.
+        expect(screen.getByRole("dialog").querySelector(".companion-pdf-translation-kicker")?.textContent).toBe("批注");
     });
 
     it("follows a bookmark after the page grows out of the placeholder size", async () => {

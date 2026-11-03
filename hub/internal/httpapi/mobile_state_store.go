@@ -225,6 +225,9 @@ func mobileSyncPurgeTombstones(db *sql.DB) {
 	mobilePurgeTombstonesLoaded.Store(true)
 }
 
+// mobileCloseStateDBForTest closes the pooled state handle. Callers that close
+// mid-test and reopen the same database must use this variant: the files stay
+// on disk so a reopen keeps its data.
 func mobileCloseStateDBForTest() {
 	mobileSQLiteState.Lock()
 	if mobileSQLiteState.db != nil {
@@ -235,6 +238,50 @@ func mobileCloseStateDBForTest() {
 	mobileSQLiteState.fallback = false
 	mobileSQLiteState.Unlock()
 	mobilePurgeTombstonesLoaded.Store(false)
+}
+
+// mobileCleanupStateDBForTest closes the pooled handle and waits until Windows
+// actually releases the database files, removing them so a later t.TempDir
+// cleanup cannot fail with "being used by another process". Background persist
+// goroutines can finish a few hundred milliseconds after the last handler
+// response; their connection holds the file open until then.
+func mobileCleanupStateDBForTest() {
+	mobileSQLiteState.Lock()
+	dbPath := mobileSQLiteState.path
+	if mobileSQLiteState.db != nil {
+		_ = mobileSQLiteState.db.Close()
+	}
+	mobileSQLiteState.db = nil
+	mobileSQLiteState.path = ""
+	mobileSQLiteState.fallback = false
+	mobileSQLiteState.Unlock()
+	mobilePurgeTombstonesLoaded.Store(false)
+	if dbPath == "" {
+		return
+	}
+	// A background persist goroutine leaked from an earlier test can reopen the
+	// database after our first successful removal: mobileStatePath() reads the
+	// still-active env var and points at this test's file. Require the file to
+	// stay absent for a few consecutive checks before trusting the removal.
+	deadline := time.Now().Add(10 * time.Second)
+	quiet := 0
+	for time.Now().Before(deadline) {
+		locked := false
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			if err := os.Remove(dbPath + suffix); err != nil && !os.IsNotExist(err) {
+				locked = true
+			}
+		}
+		if _, err := os.Stat(dbPath); err == nil || locked {
+			quiet = 0
+		} else {
+			quiet++
+			if quiet >= 3 {
+				return
+			}
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
 }
 
 func mobileReadLegacyState(path string) (mobilePersistentState, error) {

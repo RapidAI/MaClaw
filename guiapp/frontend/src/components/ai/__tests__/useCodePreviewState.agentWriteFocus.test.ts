@@ -26,7 +26,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     EventsOff: vi.fn(),
 }));
 
-import { applyFileUpdate, fileEventSurfacesPreview, useCodePreviewState } from '../useCodePreviewState';
+import { applyFileUpdate, fileEventSurfacesPreview, initialState, useCodePreviewState } from '../useCodePreviewState';
 
 describe('fileEventSurfacesPreview', () => {
     it('surfaces create/modify always, and reads only when explicitly flagged', () => {
@@ -335,5 +335,49 @@ describe('applyFileUpdate purity guard', () => {
         const second = applyFileUpdate(state as any, file as any);
 
         expect(second).toEqual(first);
+    });
+});
+
+describe('pptx preview revision', () => {
+    it('keeps the open deck until a rewrite changes the revision', () => {
+        const deck = {
+            sessionID: 's',
+            filePath: 'demo.pptx',
+            fileName: 'demo.pptx',
+            absPath: 'D:/decks/demo.pptx',
+            content: '',
+            opType: 'modify' as const,
+            language: 'pptx',
+            updatedAt: 1,
+            forceOpen: true,
+            previewRevision: '1:10',
+        };
+        const opened = applyFileUpdate(initialState(), deck);
+        const checked = applyFileUpdate(opened, { ...deck, updatedAt: 2 });
+        expect(checked).toBe(opened);
+        const rewritten = applyFileUpdate(opened, { ...deck, updatedAt: 3, previewRevision: '2:10' });
+        expect(rewritten).not.toBe(opened);
+        expect(rewritten.files.get('demo.pptx')?.previewRevision).toBe('2:10');
+    });
+
+    it('reloads the open page when a stylesheet write changes the revision', () => {
+        const page = {
+            sessionID: 's',
+            filePath: 'index.html',
+            fileName: 'index.html',
+            absPath: 'D:/site/index.html',
+            content: '<h1>Hi</h1>',
+            opType: 'modify' as const,
+            language: 'html',
+            updatedAt: 1,
+            forceOpen: true,
+            previewRevision: 'app.css:1',
+        };
+        const opened = applyFileUpdate(initialState(), page);
+        const reread = applyFileUpdate(opened, { ...page, updatedAt: 2, previewRevision: undefined });
+        expect(reread).toBe(opened);
+        const restyled = applyFileUpdate(opened, { ...page, updatedAt: 3, previewRevision: 'app.css:2' });
+        expect(restyled).not.toBe(opened);
+        expect(restyled.files.get('index.html')?.previewRevision).toBe('app.css:2');
     });
 });

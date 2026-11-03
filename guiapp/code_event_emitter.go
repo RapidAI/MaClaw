@@ -21,6 +21,9 @@ type CodeFileEvent struct {
 	PreviewTruncated bool   `json:"preview_truncated,omitempty"` // preview is a complete leading chunk, not the full remote file
 	OriginalMissing  bool   `json:"original_missing,omitempty"`  // modified file's prior content could not be fetched
 	ProjectPath      string `json:"project_path,omitempty"`      // project/working directory for frontend tab routing
+	// PreviewRevision changes when a deck is rewritten. The path and content
+	// stay the same, so the preview uses this to load the new slides.
+	PreviewRevision string `json:"preview_revision,omitempty"`
 }
 
 // CodeEventEmitter emits code file events to the frontend via Wails runtime.

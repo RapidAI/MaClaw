@@ -58,6 +58,12 @@ func buildVisualPreviewMessage(protocol string, images []ToolModelImage) map[str
 		atts = append(atts, MessageAttachment{MimeType: mime, Data: img.Base64})
 	}
 	text := VisualPreviewImageMarker + " Rendered page or slide preview. Judge layout, overflow, overlap, spacing, color, and whether styles applied. Coordinates are not desktop clicks."
+	for _, img := range images {
+		if caption := strings.TrimSpace(img.Caption); caption != "" {
+			text += "\n" + caption
+			break
+		}
+	}
 	var content interface{}
 	if strings.EqualFold(strings.TrimSpace(protocol), "anthropic") {
 		content = BuildAnthropicVisionContent(text, atts)

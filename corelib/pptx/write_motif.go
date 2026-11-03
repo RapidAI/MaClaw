@@ -367,6 +367,7 @@ func paintCraftCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker 
 		rect(slide, emuIn(x+1.45), emuIn(y-0.08), emuIn(0.95), emuIn(0.28), blend(theme.gold, theme.white, 0.15))
 	}
 	deckText(slide, emuIn(0.7), emuIn(6.35), emuIn(12), emuIn(0.7), subtitle, 16, false, textOn(theme.ink, theme.paper, theme), ppt.HorizontalLeft)
+	dotGrid(slide, emuIn(11.65), emuIn(6.4), emuIn(0.05), emuIn(0.17), emuIn(0.14), 4, 2, blend(theme.mute, theme.paper, 0.65))
 }
 
 func paintDefenseCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
@@ -430,6 +431,7 @@ func paintOfficialCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kick
 	}
 	placeCoverTitle(slide, 0.85, 2.05, 5.6, 2.4, title, 36, textOn(theme.white, theme.accent, theme), ppt.HorizontalLeft)
 	oval(slide, emuIn(0.9), emuIn(5.55), emuIn(0.72), emuIn(0.72), theme.gold)
+	shapeBadge(slide, emuIn(1.08), emuIn(5.37), emuIn(0.36), ppt.AutoShapeDonut, theme.accent)
 	deckText(slide, emuIn(panel+0.4), emuIn(2.15), emuIn(5.3), emuIn(2.2), subtitle, 18, false, textOn(theme.ink, theme.paper, theme), ppt.HorizontalLeft)
 	deckText(slide, emuIn(panel+0.4), emuIn(6.7), emuIn(4), emuIn(0.3), pageMark(page, total), 12, false, textOn(theme.mute, theme.paper, theme), ppt.HorizontalLeft)
 }
@@ -801,6 +803,8 @@ func paintFieldSection(slide *ppt.Slide, field, titleColor, rule ppt.Color, titl
 	deckText(slide, emuIn(0.75), emuIn(2.55), emuIn(11.6), emuIn(1.5), title, coverTitlePointSize(title, 40, 11.6, 1.5), true, textOn(titleColor, field, deckTheme{white: titleColor, ink: titleColor, navy: field, onDark: titleColor}), ppt.HorizontalLeft)
 	rect(slide, emuIn(0.75), emuIn(4.25), emuIn(1.6), emuIn(0.035), rule)
 	deckText(slide, emuIn(0.75), emuIn(4.45), emuIn(11), emuIn(0.8), subtitle, 18, false, textOn(titleColor, field, deckTheme{white: titleColor, ink: titleColor, navy: field, onDark: titleColor}), ppt.HorizontalLeft)
+	// A small field of marks keeps the dark divider from reading as a flat wall.
+	dotGrid(slide, emuIn(10.9), emuIn(1.6), emuIn(0.05), emuIn(0.18), emuIn(0.15), 5, 2, blend(titleColor, field, 0.62))
 	paintPageMark(slide, page, total, textOn(titleColor, field, deckTheme{white: titleColor, ink: titleColor, navy: field, onDark: titleColor}))
 }
 

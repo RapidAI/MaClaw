@@ -91,6 +91,7 @@ const shareDocument = vi.fn(async () => ({ url: "https://hub.example/hub/documen
 const importShare = vi.fn(async (..._args: any[]): Promise<{ id: string; name: string; path: string; source: string; highlights?: string; chatMarks?: string; annotations?: string; drawings?: string }> => ({ id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", path: "C:/library/shared.pdf", source: "cloud" }));
 const listGroups = vi.fn(async () => [] as Array<Record<string, unknown>>);
 const syncShare = vi.fn(async () => ({ revision: 2 }));
+const syncShareMarks = vi.fn(async () => ({ marksRevision: 3 }));
 const updateShare = vi.fn(async (..._args: unknown[]) => ({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "论文.pdf", visibility: "private", permanent: false, expiresAt: "2026-11-24T00:00:00Z" }));
 // AddFileCompanionShareNote returns the legacy notes array or the newer
 // { notes, notesRevision } object; companionNotePost accepts both.
@@ -157,6 +158,8 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     ImportFileCompanionShare: (...args: Parameters<typeof importShare>) => importShare(...args),
     ListFileCompanionGroups: (...args: Parameters<typeof listGroups>) => listGroups(...args),
     SyncFileCompanionShare: (...args: Parameters<typeof syncShare>) => syncShare(...args),
+    SyncFileCompanionShareMarks: (...args: Parameters<typeof syncShareMarks>) => syncShareMarks(...args),
+    FetchFileCompanionShareMarks: vi.fn(async () => ({ marks: "", revision: 0 })),
     AddFileCompanionShareNote: (...args: Parameters<typeof addShareNote>) => addShareNote(...args),
     ReviewFileCompanionShareNote: (...args: Parameters<typeof reviewShareNote>) => reviewShareNote(...args),
     CreateFileCompanionGroup: (...args: Parameters<typeof createGroup>) => createGroup(...args),
@@ -346,6 +349,8 @@ beforeEach(() => {
     listGroups.mockResolvedValue([]);
     syncShare.mockReset();
     syncShare.mockResolvedValue({ revision: 2 });
+    syncShareMarks.mockReset();
+    syncShareMarks.mockResolvedValue({ marksRevision: 3 });
     updateShare.mockReset();
     updateShare.mockResolvedValue({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "论文.pdf", visibility: "private", permanent: false, expiresAt: "2026-11-24T00:00:00Z" });
     addShareNote.mockReset();
@@ -777,7 +782,7 @@ describe("FileCompanionWindow", () => {
     it("restores an imported project's notes and drawings from the open box", async () => {
         boot.mockResolvedValue({ paths: [] });
         open.mockImplementation(async (path: string) => doc(path));
-        const annotation = { id: "a1", kind: "annotation" as const, text: "原文", translation: "导入的批注", parts: [{ page: 1, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }] }] };
+        const annotation = { id: "a1", kind: "annotation" as const, name: "导入批注", text: "原文", translation: "导入的批注", parts: [{ page: 1, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }] }] };
         const drawing = { id: "d1", page: 1, color: "green" as const, tool: "box" as const, points: [{ x: 0.1, y: 0.1 }, { x: 0.5, y: 0.4 }] };
         importShare.mockResolvedValue({
             id: "cd_0123456789abcdef0123456789abcdef",
@@ -794,7 +799,7 @@ describe("FileCompanionWindow", () => {
         await screen.findByTestId("file-companion-open-menu");
         await pasteOpenBox(shareLink);
         await screen.findByTestId("file-companion-tab-shared.pdf");
-        expect(loadPdfTranslations("C:/library/shared.pdf")[0]).toMatchObject({ id: "a1", shared: true });
+        expect(loadPdfTranslations("C:/library/shared.pdf")[0]).toMatchObject({ id: "a1", name: "导入批注", shared: true });
         expect(loadPdfDrawings("C:/library/shared.pdf")[0]).toMatchObject({ id: "d1", tool: "box", shared: true });
     });
 
@@ -2516,8 +2521,8 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(screen.getByTestId("file-companion-share-open").getAttribute("aria-label")).toBe("修改分享"));
         const mark = { id: "m1", page: 1, color: "yellow" as const, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "重点" };
         act(() => { savePdfMarks("C:/notes/a.pdf", [mark], true); });
-        await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
-        const args = syncShare.mock.calls.at(-1) as unknown as [string, string];
+        await waitFor(() => expect(syncShareMarks).toHaveBeenCalled(), { timeout: 4000 });
+        const args = syncShareMarks.mock.calls.at(-1) as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
         expect(JSON.parse(args[1])).toEqual({ highlights: [mark], chatMarks: [], annotations: [], drawings: [], bookmarks: [] });
     });
@@ -2535,8 +2540,8 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(screen.getByTestId("file-companion-share-open").getAttribute("aria-label")).toBe("修改分享"));
         const chatMark = { message: 0, color: "yellow" as const, start: 0, end: 2, text: "重点" };
         act(() => { saveChatMarks("C:/notes/a.pdf", [chatMark], true); });
-        await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
-        const args = syncShare.mock.calls.at(-1) as unknown as [string, string];
+        await waitFor(() => expect(syncShareMarks).toHaveBeenCalled(), { timeout: 4000 });
+        const args = syncShareMarks.mock.calls.at(-1) as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
         expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [chatMark], annotations: [], drawings: [], bookmarks: [] });
     });
@@ -2555,6 +2560,7 @@ describe("FileCompanionWindow", () => {
         const annotation = {
             id: "a1",
             kind: "annotation" as const,
+            name: "复核",
             text: "重点段落",
             translation: "这里需要复核",
             parts: [{ page: 1, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }] }],
@@ -2563,8 +2569,8 @@ describe("FileCompanionWindow", () => {
             savePdfTranslations("C:/notes/a.pdf", [annotation]);
             notifyPdfAnnotationsChanged("C:/notes/a.pdf");
         });
-        await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
-        const args = syncShare.mock.calls.at(-1) as unknown as [string, string];
+        await waitFor(() => expect(syncShareMarks).toHaveBeenCalled(), { timeout: 4000 });
+        const args = syncShareMarks.mock.calls.at(-1) as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
         expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], annotations: [annotation], drawings: [], bookmarks: [] });
     });
@@ -2591,8 +2597,8 @@ describe("FileCompanionWindow", () => {
             savePdfDrawings("C:/notes/a.pdf", [drawing]);
             notifyPdfDrawingsChanged("C:/notes/a.pdf");
         });
-        await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
-        const args = syncShare.mock.calls.at(-1) as unknown as [string, string];
+        await waitFor(() => expect(syncShareMarks).toHaveBeenCalled(), { timeout: 4000 });
+        const args = syncShareMarks.mock.calls.at(-1) as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
         expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], annotations: [], drawings: [drawing], bookmarks: [] });
     });
@@ -2608,15 +2614,15 @@ describe("FileCompanionWindow", () => {
         await screen.findByTestId("file-companion-input");
         const mark = { id: "m1", page: 1, color: "yellow" as const, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "重点" };
         act(() => { savePdfMarks("C:/notes/a.pdf", [mark], true); });
-        expect(syncShare).not.toHaveBeenCalled();
+        expect(syncShareMarks).not.toHaveBeenCalled();
         await act(async () => {
             releaseList({
                 items: [{ id: token, token, name: "a.pdf", path: "C:/notes/a.pdf", source: "cloud", owner: "me@example.com", visibility: "public", permanent: true, mine: true }],
                 notice: "",
             });
         });
-        await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
-        const args = syncShare.mock.calls.at(-1) as unknown as [string, string];
+        await waitFor(() => expect(syncShareMarks).toHaveBeenCalled(), { timeout: 4000 });
+        const args = syncShareMarks.mock.calls.at(-1) as unknown as [string, string];
         expect(JSON.parse(args[1])).toEqual({ highlights: [mark], chatMarks: [], annotations: [], drawings: [], bookmarks: [] });
     });
 
@@ -4089,6 +4095,103 @@ describe("FileCompanionWindow", () => {
         expect(strong).toContain("Daniel Garcia Peña");
         expect(body.textContent).not.toContain("**");
         expect(screen.getByTestId("file-companion-annotation-cn_md").textContent).toContain("主持人");
+    });
+
+    it("folds the shared annotation panel down to one bar and opens it again", async () => {
+        const note = { id: "cn_fold", author: "reader@example.com", text: "折叠后这条不该占高度", createdAt: "2026-10-25T00:00:00Z" };
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                notes: [note],
+            }],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("折叠后这条不该占高度");
+        const panel = screen.getByTestId("file-companion-annotations");
+        const body = screen.getByTestId("file-companion-annotations-body");
+        expect(panel.getAttribute("data-collapsed")).toBe("false");
+        expect(body.hidden).toBe(false);
+        const toggle = screen.getByRole("button", { name: "折叠批注" });
+        expect(toggle.getAttribute("aria-expanded")).toBe("true");
+        expect(toggle.getAttribute("aria-controls")).toBe(body.id);
+        expect(panel.querySelector(".file-companion-annotations-head")?.lastElementChild).toBe(toggle);
+        expect(toggle.querySelector("svg")?.getAttribute("data-icon")).toBe("collapse");
+        fireEvent.click(toggle);
+        expect(panel.getAttribute("data-collapsed")).toBe("true");
+        expect(body.hidden).toBe(true);
+        expect(screen.getByText("折叠后这条不该占高度").closest("[hidden]")).toBe(body);
+        expect(panel.querySelector(".file-companion-annotations-kicker")?.textContent).toBe("批注");
+        fireEvent.click(panel.querySelector(".file-companion-annotations-kicker") as HTMLElement);
+        expect(panel.getAttribute("data-collapsed")).toBe("false");
+        expect(body.hidden).toBe(false);
+        fireEvent.click(screen.getByRole("button", { name: "折叠批注" }));
+        expect(body.hidden).toBe(true);
+        const expand = screen.getByRole("button", { name: "展开批注" });
+        expect(expand.getAttribute("aria-expanded")).toBe("false");
+        expect(panel.querySelector(".file-companion-annotations-head")?.lastElementChild).toBe(expand);
+        expect(expand.querySelector("svg")?.getAttribute("data-icon")).toBe("expand");
+        fireEvent.click(expand);
+        expect(panel.getAttribute("data-collapsed")).toBe("false");
+        expect(body.hidden).toBe(false);
+        expect(screen.getByText("折叠后这条不该占高度")).toBeTruthy();
+        expect(screen.getByRole("button", { name: "折叠批注" }).getAttribute("aria-expanded")).toBe("true");
+    });
+
+    it("folds annotations for the open document only", async () => {
+        const noteA = { id: "cn_a", author: "reader@example.com", text: "甲文档的批注", createdAt: "2026-10-25T00:00:00Z" };
+        const noteB = { id: "cn_b", author: "reader@example.com", text: "乙文档的批注", createdAt: "2026-10-25T00:00:00Z" };
+        boot.mockResolvedValue({ paths: ["C:/library/a.pdf", "C:/library/b.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [
+                { path: "C:/library/a.pdf", source: "cloud", token: "cd_0123456789abcdef0123456789abcdef", mine: false, notes: [noteA] },
+                { path: "C:/library/b.pdf", source: "cloud", token: "cd_fedcba9876543210fedcba9876543210", mine: false, notes: [noteB] },
+            ],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.pdf");
+        await screen.findByTestId("file-companion-tab-b.pdf");
+        fireEvent.click(screen.getByTestId("file-companion-tab-a.pdf"));
+        await screen.findByText("甲文档的批注");
+        const bodyA = screen.getByTestId("file-companion-annotations-body");
+        let scrolled = 0;
+        Object.defineProperty(bodyA, "scrollTop", {
+            configurable: true,
+            get: () => scrolled,
+            set: (value: number) => {
+                if (scrolled === value) return;
+                scrolled = value;
+                // Chrome emits scroll while applying the new offset. That event
+                // still carries the previous document's place and must not be stored.
+                fireEvent.scroll(bodyA);
+            },
+        });
+        bodyA.scrollTop = 80;
+        fireEvent.click(screen.getByTestId("file-companion-tab-b.pdf"));
+        await screen.findByText("乙文档的批注");
+        expect(screen.getByTestId("file-companion-annotations").getAttribute("data-collapsed")).toBe("false");
+        expect(screen.getByTestId("file-companion-annotations-body").scrollTop).toBe(0);
+        fireEvent.click(screen.getByTestId("file-companion-tab-a.pdf"));
+        await screen.findByText("甲文档的批注");
+        expect(screen.getByTestId("file-companion-annotations-body").scrollTop).toBe(80);
+        fireEvent.click(screen.getByRole("button", { name: "折叠批注" }));
+        expect(screen.getByTestId("file-companion-annotations-body").hidden).toBe(true);
+        fireEvent.click(screen.getByTestId("file-companion-tab-b.pdf"));
+        await screen.findByText("乙文档的批注");
+        expect(screen.getByTestId("file-companion-annotations").getAttribute("data-collapsed")).toBe("false");
+        fireEvent.click(screen.getByTestId("file-companion-tab-a.pdf"));
+        expect(screen.getByTestId("file-companion-annotations").getAttribute("data-collapsed")).toBe("true");
+        fireEvent.click(screen.getByRole("button", { name: "展开批注" }));
+        expect(screen.getByTestId("file-companion-annotations-body").scrollTop).toBe(80);
     });
 
     it("the host can ignore a reader note and the participant sees the marker", async () => {

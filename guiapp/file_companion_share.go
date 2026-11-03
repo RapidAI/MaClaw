@@ -1324,6 +1324,13 @@ func (a *App) SyncFileCompanionShare(path, highlights string) (FileCompanionShar
 	if len(result) > 0 && result[0].ShareURL != "" {
 		url = result[0].ShareURL
 	}
+	// The zip carries the same marks; refresh the marks blob so readers polling
+	// marks_revision do not re-apply an older payload. Best-effort: a marks
+	// endpoint failure does not undo a successful project sync, and the next
+	// marks change retries.
+	if marksErr := a.SyncFileCompanionShareMarksQuiet(path, highlights); marksErr != nil {
+		logFileCompanion("share marks push after sync failed path=%s: %v", path, marksErr)
+	}
 	return FileCompanionShareResult{
 		URL:        url,
 		Name:       last.Name,
@@ -1333,6 +1340,191 @@ func (a *App) SyncFileCompanionShare(path, highlights string) (FileCompanionShar
 		Token:      last.Token,
 		Revision:   lastView.Revision,
 	}, nil
+}
+
+// postFileCompanionShareMarks uploads one marks payload — the five reader-mark
+// arrays — without the project zip. The response carries the new marks
+// revision.
+func postFileCompanionShareMarks(hub, viewer, token, marks string) (int, error) {
+	req, err := http.NewRequest(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/marks", strings.NewReader(marks))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewer)
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, errors.New("暂时无法连接云端")
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
+	}
+	var view struct {
+		Token         string `json:"token"`
+		MarksRevision int    `json:"marks_revision"`
+	}
+	if json.Unmarshal(body, &view) != nil || !fileCompanionShareTokenMatch.MatchString(view.Token) {
+		return 0, errors.New("云端没有返回分享标注")
+	}
+	return view.MarksRevision, nil
+}
+
+// SyncFileCompanionShareMarks uploads only the reader marks for every share
+// this file hosts. A highlight, annotation, bookmark, drawing, or chat-mark
+// edit is kilobytes; sending the whole project zip with the paper on each one
+// is what this replaces. The chat transcript still travels in the full
+// SyncFileCompanionShare.
+func (a *App) SyncFileCompanionShareMarks(path, marks string) (FileCompanionShareResult, error) {
+	return a.syncFileCompanionShareMarks(path, marks)
+}
+
+// SyncFileCompanionShareMarksQuiet is the best-effort variant: it reports the
+// error instead of wrapping it, for callers that already succeeded at their
+// main task.
+func (a *App) SyncFileCompanionShareMarksQuiet(path, marks string) error {
+	_, err := a.syncFileCompanionShareMarks(path, marks)
+	return err
+}
+
+func (a *App) syncFileCompanionShareMarks(path, marks string) (FileCompanionShareResult, error) {
+	if a == nil {
+		return FileCompanionShareResult{}, errors.New("app unavailable")
+	}
+	_, canonical, err := a.fileCompanionGrant(path)
+	if err != nil {
+		return FileCompanionShareResult{}, err
+	}
+	shares := a.fileCompanionSyncShares(canonical)
+	if len(shares) == 0 {
+		return FileCompanionShareResult{}, errors.New("还没有分享这份文档，无法同步更新")
+	}
+	hub, viewer, err := a.fileCompanionHubLogin()
+	if err != nil {
+		return FileCompanionShareResult{}, err
+	}
+	marks = strings.TrimSpace(marks)
+	if marks == "" {
+		marks = `{"highlights":[],"chatMarks":[],"annotations":[],"drawings":[],"bookmarks":[]}`
+	}
+	var last FileCompanionLibraryItem
+	var synced bool
+	var realErr error
+	var goneErr error
+	for _, share := range shares {
+		marksRevision, postErr := postFileCompanionShareMarks(hub, viewer, share.Token, marks)
+		if postErr != nil {
+			// A missing or expired share cannot take an update. Leave it out
+			// so the next sync is not stuck on it, exactly like the full sync.
+			if fileCompanionShareGone(postErr) {
+				a.retireFileCompanionShare(share.Token)
+				if goneErr == nil {
+					goneErr = postErr
+				}
+				continue
+			}
+			if realErr == nil {
+				realErr = postErr
+			}
+			continue
+		}
+		share.MarksRevision = marksRevision
+		share.Path = canonical
+		share.Mine = true
+		share.Source = "cloud"
+		if err := a.upsertFileCompanionCloud(share); err != nil {
+			if realErr == nil {
+				realErr = errors.New("文档列表无法保存")
+			}
+			continue
+		}
+		last = share
+		synced = true
+	}
+	if realErr != nil {
+		return FileCompanionShareResult{}, realErr
+	}
+	if !synced {
+		if goneErr == nil {
+			goneErr = errors.New("还没有分享这份文档，无法同步更新")
+		}
+		return FileCompanionShareResult{}, goneErr
+	}
+	return FileCompanionShareResult{
+		URL:           last.ShareURL,
+		Name:          last.Name,
+		ExpiresAt:     last.ExpiresAt,
+		Visibility:    last.Visibility,
+		Permanent:     last.Permanent,
+		Token:         last.Token,
+		Revision:      last.Revision,
+		MarksRevision: last.MarksRevision,
+	}, nil
+}
+
+// FileCompanionShareMarksResult is one marks payload fetch for a participant.
+type FileCompanionShareMarksResult struct {
+	// Marks is the host's reader-marks JSON: highlights, chat marks,
+	// annotations, drawings, and bookmarks in one object.
+	Marks string `json:"marks"`
+	// Revision is the Hub marks revision this payload carries.
+	Revision int `json:"revision"`
+}
+
+// FetchFileCompanionShareMarks downloads the host's reader marks for the
+// share bound to this path. It is the participant half of the incremental
+// marks sync: small, and it never touches the project zip.
+func (a *App) FetchFileCompanionShareMarks(path string) (FileCompanionShareMarksResult, error) {
+	if a == nil {
+		return FileCompanionShareMarksResult{}, errors.New("app unavailable")
+	}
+	_, canonical, err := a.fileCompanionGrant(path)
+	if err != nil {
+		return FileCompanionShareMarksResult{}, err
+	}
+	hub, viewer, err := a.fileCompanionHubLogin()
+	if err != nil {
+		return FileCompanionShareMarksResult{}, err
+	}
+	token := ""
+	fileCompanionLibraryMu.Lock()
+	items, ok := a.readFileCompanionLibraryLocked()
+	if ok {
+		for _, item := range items {
+			if item.Source == "cloud" && strings.TrimSpace(item.Path) == canonical && fileCompanionShareTokenMatch.MatchString(item.Token) {
+				token = item.Token
+				break
+			}
+		}
+	}
+	fileCompanionLibraryMu.Unlock()
+	if token == "" {
+		return FileCompanionShareMarksResult{}, errors.New("这份文档还没有导入分享")
+	}
+	req, err := http.NewRequest(http.MethodGet, hub+"/api/mobile/documents/shares/"+token+"/marks", nil)
+	if err != nil {
+		return FileCompanionShareMarksResult{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewer)
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return FileCompanionShareMarksResult{}, errors.New("暂时无法连接云端")
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return FileCompanionShareMarksResult{}, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
+	}
+	revision := 0
+	if raw := strings.TrimSpace(resp.Header.Get("X-Companion-Marks-Revision")); raw != "" {
+		if value, convErr := strconv.Atoi(raw); convErr == nil {
+			revision = value
+		}
+	}
+	return FileCompanionShareMarksResult{Marks: string(body), Revision: revision}, nil
 }
 
 // FileCompanionShareNotesResult is the note list after one reader's line is

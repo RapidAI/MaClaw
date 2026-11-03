@@ -1477,6 +1477,14 @@ export function SyncFileCompanionShare(arg1, arg2) {
   return window['go']['main']['App']['SyncFileCompanionShare'](arg1, arg2);
 }
 
+export function SyncFileCompanionShareMarks(arg1, arg2) {
+  return window['go']['main']['App']['SyncFileCompanionShareMarks'](arg1, arg2);
+}
+
+export function FetchFileCompanionShareMarks(arg1) {
+  return window['go']['main']['App']['FetchFileCompanionShareMarks'](arg1);
+}
+
 export function AddFileCompanionShareNote(arg1, arg2) {
   return window['go']['main']['App']['AddFileCompanionShareNote'](arg1, arg2);
 }

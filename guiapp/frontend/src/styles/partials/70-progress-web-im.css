@@ -2132,7 +2132,7 @@
     inset: 0;
     /* Dialog scrims outrank both app title bars; see .modal-overlay in
        50-pet-provider.css. */
-    z-index: 40000;
+    z-index: var(--z-panel-top);
     display: flex;
     align-items: center;
     justify-content: center;

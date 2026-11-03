@@ -1248,7 +1248,7 @@
     font-size: 12px;
     font-weight: 600;
     cursor: pointer;
-    transition: all 120ms ease;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
 }
 
 .desktop-bot-chat__ops button:hover:not(:disabled) {

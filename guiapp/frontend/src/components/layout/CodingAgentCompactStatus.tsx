@@ -65,7 +65,7 @@ export const CodingAgentCompactStatus = ({ progress, lang, testId, variant, isDa
                 background: tone.bg,
                 color: isSidebar ? 'var(--theme-text)' : tone.accent,
                 fontSize: isSidebar ? '0.7rem' : '0.68rem',
-                fontWeight: isSidebar ? undefined : 650,
+                fontWeight: isSidebar ? undefined : 600,
                 lineHeight: isSidebar ? 1.3 : 1.25,
                 whiteSpace: isSidebar ? undefined : 'nowrap',
                 overflow: 'hidden',

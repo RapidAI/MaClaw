@@ -99,6 +99,12 @@ type companionDocShare struct {
 	// and a host sync of the paper must not drop them.
 	Notes         []companionShareNote `json:"notes,omitempty"`
 	NotesRevision int                  `json:"notes_revision,omitempty"`
+	// MarksRevision starts at 0. The host bumps it on the marks endpoint for
+	// highlight/annotation/drawing/bookmark/chat-mark changes, so a reader who
+	// already has the paper picks those up without re-downloading the project
+	// zip. MarksPath is the small JSON blob holding the five payloads.
+	MarksRevision int    `json:"marks_revision,omitempty"`
+	MarksPath     string `json:"marks_path,omitempty"`
 }
 
 // companionShareNote is one reader's discussion on a share. The host's own
@@ -126,9 +132,14 @@ type companionShareNote struct {
 	DecidedAt time.Time `json:"decided_at,omitempty"`
 }
 
+// seq is a process-local change counter: every mutation that alters what a
+// participant can see bumps it, so a client holding a previous value learns
+// from one cheap compare that nothing changed. It is not monotonic across
+// restarts; a client that presents a newer value simply gets a full answer.
 var companionDocShares = struct {
 	sync.Mutex
 	loaded bool
+	seq    uint64
 	items  map[string]companionDocShare
 }{items: map[string]companionDocShare{}}
 
@@ -308,7 +319,21 @@ func persistCompanionDocSharesLocked() error {
 	if err != nil || path == "" {
 		return err
 	}
-	return writeCompanionShareSnapshot(path, body, gen)
+	if err := writeCompanionShareSnapshot(path, body, gen); err != nil {
+		return err
+	}
+	companionDocShares.seq++
+	return nil
+}
+
+// scheduleCompanionSharePersistLocked records a content change and copies the
+// index for a background write. Callers that mutate on every user action
+// (sync, notes) use this instead of persistCompanionDocSharesLocked so the
+// global lock is not held across marshal and disk I/O; a failed background
+// write marks the index dirty and the next save rewrites it.
+func scheduleCompanionSharePersistLocked() companionShareIndexSnapshot {
+	companionDocShares.seq++
+	return cloneCompanionShareIndexLocked()
 }
 
 func (s companionDocShare) expired(now time.Time) bool {
@@ -645,6 +670,7 @@ func companionShareView(share companionDocShare, r *http.Request) map[string]any
 		"url":            companionShareURL(r, share.Token),
 		"created_at":     share.CreatedAt.UTC().Format(time.RFC3339),
 		"revision":       share.Revision,
+		"marks_revision": share.MarksRevision,
 	}
 	if !share.ExpiresAt.IsZero() {
 		view["expires_at"] = share.ExpiresAt.UTC().Format(time.RFC3339)
@@ -692,9 +718,21 @@ func writeCompanionShareList(w http.ResponseWriter, r *http.Request, identity *a
 	groups := companionAcceptedGroupIDs(ownerID, contacts)
 	loadCompanionDocShares()
 	now := time.Now().UTC()
+	// The seq lets a polling participant learn "nothing changed" from a
+	// compare instead of a rebuilt list. It is process-local; a restart makes
+	// every holder revalidate, which is the safe direction.
+	companionDocShares.Lock()
+	seq := companionDocShares.seq
+	if match := strings.TrimSpace(r.Header.Get("If-None-Match")); match != "" {
+		if match == strconv.Quote(strconv.FormatUint(seq, 10)) {
+			companionDocShares.Unlock()
+			w.Header().Set("ETag", strconv.Quote(strconv.FormatUint(seq, 10)))
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
 	mine := make([]map[string]any, 0)
 	received := make([]map[string]any, 0)
-	companionDocShares.Lock()
 	for _, share := range companionDocShares.items {
 		if share.expired(now) {
 			continue
@@ -734,6 +772,7 @@ func writeCompanionShareList(w http.ResponseWriter, r *http.Request, identity *a
 	// ServerTime lets the owner's watermark use this Hub's clock. The two
 	// machines can disagree by minutes, and comparing a note time from one
 	// clock with an install time from the other silently skips live notes.
+	w.Header().Set("ETag", strconv.Quote(strconv.FormatUint(seq, 10)))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mine":         mine,
 		"received":     received,
@@ -741,6 +780,64 @@ func writeCompanionShareList(w http.ResponseWriter, r *http.Request, identity *a
 		"notes_review": true,
 		"server_time":  now.UTC().Format(time.RFC3339),
 	})
+}
+
+// CompanionDocumentShareChangesHandler answers the cheap question a polling
+// participant actually asks: did anything I can see move? The response is
+// token → revision pairs only — no notes, no file metadata — so a 5-second
+// poll stays near-realtime without paying for the full list each time.
+//
+//	GET /api/mobile/documents/shares/changes
+func CompanionDocumentShareChangesHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+			return
+		}
+		ownerID := mobilePrincipalOwnerID(principal)
+		if ownerID == "" {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+			return
+		}
+		contacts := companionViewerContactSet(identity, r.Context(), principal)
+		groups := companionAcceptedGroupIDs(ownerID, contacts)
+		loadCompanionDocShares()
+		now := time.Now().UTC()
+		type changeRow struct {
+			Token         string `json:"token"`
+			Revision      int    `json:"revision"`
+			NotesRevision int    `json:"notes_revision"`
+			MarksRevision int    `json:"marks_revision"`
+		}
+		companionDocShares.Lock()
+		seq := companionDocShares.seq
+		rows := make([]changeRow, 0, len(companionDocShares.items))
+		for _, share := range companionDocShares.items {
+			if share.expired(now) {
+				continue
+			}
+			if share.OwnerID != ownerID && !companionShareReceived(share, ownerID, contacts, groups) {
+				continue
+			}
+			rows = append(rows, changeRow{
+				Token:         share.Token,
+				Revision:      share.Revision,
+				NotesRevision: share.NotesRevision,
+				MarksRevision: share.MarksRevision,
+			})
+		}
+		companionDocShares.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"seq":         seq,
+			"server_time": now.UTC().Format(time.RFC3339),
+			"shares":      rows,
+		})
+	}
 }
 
 // writeCompanionShareDuplicate tells the desktop which live link already
@@ -997,6 +1094,9 @@ func CompanionDocumentShareDeleteHandler(identity *auth.IdentityService) http.Ha
 		go revokeCompanionShareNotification(share.Token)
 		go revokeCompanionHostTransferNotifications(share.Token)
 		mobileDeleteDocumentBlob(share.BlobPath)
+		if share.MarksPath != "" {
+			mobileDeleteDocumentBlob(share.MarksPath)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": token})
 	}
 }
@@ -1308,6 +1408,7 @@ func CompanionDocumentShareImportHandler(identity *auth.IdentityService) http.Ha
 		var snap companionShareIndexSnapshot
 		if durable {
 			snap = cloneCompanionShareIndexLocked()
+			companionDocShares.seq++
 		}
 		blobPath := share.BlobPath
 		name := share.Name
@@ -1435,19 +1536,16 @@ func CompanionDocumentShareSyncHandler(identity *auth.IdentityService) http.Hand
 			writeError(w, status, code, message)
 			return
 		}
-		previous := share
 		share.BlobPath = blobPath
 		share.Size = int64(len(raw))
 		share.Revision++
 		companionDocShares.items[token] = share
-		err = persistCompanionDocSharesLocked()
-		if err != nil {
-			companionDocShares.items[token] = previous
-			companionDocShares.Unlock()
-			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享")
-			return
-		}
+		// The index write continues after the response. A hub crash between
+		// here and the background write only loses the bump, and a failed
+		// write marks the index dirty so the next save rewrites it.
+		snap := scheduleCompanionSharePersistLocked()
 		companionDocShares.Unlock()
+		scheduleCompanionShareIndex(snap)
 		view := companionShareView(share, r)
 		// The owner is syncing their own link; keep the audience fields the
 		// desktop row needs to prefill 修改 after the row is rewritten.
@@ -1458,6 +1556,169 @@ func CompanionDocumentShareSyncHandler(identity *auth.IdentityService) http.Hand
 			view["group_id"] = share.GroupID
 		}
 		writeJSON(w, http.StatusOK, view)
+	}
+}
+
+// companionMarksMaxBytes bounds one marks payload: the five mark arrays for a
+// document. A generous cap keeps a runaway payload from bloating the blob
+// store while normal projects stay far below it.
+const companionMarksMaxBytes = 8 << 20
+
+// CompanionDocumentShareMarksUpdateHandler stores the host's reader marks —
+// highlights, chat marks, annotations, drawings, bookmarks — without touching
+// the project zip. Readers who already imported the paper poll the change
+// sequence and fetch only this small blob.
+//
+//	POST /api/mobile/documents/shares/{token}/marks
+func CompanionDocumentShareMarksUpdateHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+			return
+		}
+		ownerID := mobilePrincipalOwnerID(principal)
+		if ownerID == "" {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+			return
+		}
+		token := strings.TrimSpace(r.PathValue("token"))
+		if !companionShareTokenPattern.MatchString(token) {
+			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			return
+		}
+		raw, err := io.ReadAll(io.LimitReader(r.Body, companionMarksMaxBytes+1))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "标注无法读取")
+			return
+		}
+		if len(raw) == 0 {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "标注无法读取")
+			return
+		}
+		if len(raw) > companionMarksMaxBytes {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "标注过大")
+			return
+		}
+		loadCompanionDocShares()
+		companionDocShares.Lock()
+		share, ok := companionDocShares.items[token]
+		if status, code, message := companionShareSyncRejection(share, ok, ownerID, time.Now().UTC()); status != 0 {
+			companionDocShares.Unlock()
+			writeError(w, status, code, message)
+			return
+		}
+		companionDocShares.Unlock()
+		blobPath, err := mobileWriteDocumentBlob(ownerID, "share-marks", token, raw)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享")
+			return
+		}
+		companionDocShares.Lock()
+		share, ok = companionDocShares.items[token]
+		if status, code, message := companionShareSyncRejection(share, ok, ownerID, time.Now().UTC()); status != 0 {
+			companionDocShares.Unlock()
+			mobileDeleteDocumentBlob(blobPath)
+			writeError(w, status, code, message)
+			return
+		}
+		previous := share.MarksPath
+		share.MarksPath = blobPath
+		share.MarksRevision++
+		companionDocShares.items[token] = share
+		snap := scheduleCompanionSharePersistLocked()
+		companionDocShares.Unlock()
+		scheduleCompanionShareIndex(snap)
+		if previous != "" && previous != blobPath {
+			mobileDeleteDocumentBlob(previous)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token":          share.Token,
+			"revision":       share.Revision,
+			"marks_revision": share.MarksRevision,
+		})
+	}
+}
+
+// CompanionDocumentShareMarksHandler returns the stored reader marks for one
+// share. Anyone who can read the share can read them: a logged-in
+// participant, or a cross-Hub reader presenting the grant it got at import.
+//
+//	GET /api/mobile/documents/shares/{token}/marks
+func CompanionDocumentShareMarksHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+			return
+		}
+		principal, ownerID, ok := companionViewerIfPresent(w, r, identity)
+		if !ok {
+			return
+		}
+		grant := companionReaderGrantHeaderValue(r)
+		token := strings.TrimSpace(r.PathValue("token"))
+		if !companionShareTokenPattern.MatchString(token) {
+			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			return
+		}
+		loadCompanionDocShares()
+		companionDocShares.Lock()
+		share, found := companionDocShares.items[token]
+		if !found {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			return
+		}
+		if share.expired(time.Now().UTC()) {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusGone, "SHARE_EXPIRED", "分享链接已过期")
+			return
+		}
+		if ownerID != "" {
+			contacts := companionViewerContactSet(identity, r.Context(), principal)
+			groups := companionAcceptedGroupIDs(ownerID, contacts)
+			if status, message := companionShareReadAccess(share, ownerID, contacts, groups, ""); status != 0 {
+				companionDocShares.Unlock()
+				code := "SHARE_FORBIDDEN"
+				if status == http.StatusUnauthorized {
+					code = "UNAUTHORIZED"
+				}
+				writeError(w, status, code, message)
+				return
+			}
+		} else {
+			_, _, known := companionShareGuestByGrant(share, grant)
+			if !known || !companionShareAllowsGuest(share.Visibility) {
+				companionDocShares.Unlock()
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请重新导入分享链接")
+				return
+			}
+		}
+		blobPath := share.MarksPath
+		revision := share.MarksRevision
+		companionDocShares.Unlock()
+		if blobPath == "" {
+			writeError(w, http.StatusNotFound, "SHARE_MARKS_NOT_FOUND", "分享还没有同步标注")
+			return
+		}
+		file, size, err := mobileOpenDocumentBlob(blobPath)
+		if err != nil || size <= 0 {
+			if file != nil {
+				_ = file.Close()
+			}
+			writeError(w, http.StatusNotFound, "SHARE_MARKS_NOT_FOUND", "分享标注已经不在")
+			return
+		}
+		defer file.Close()
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		w.Header().Set("X-Companion-Marks-Revision", strconv.Itoa(revision))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, file)
 	}
 }
 
@@ -1665,8 +1926,6 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 			writeError(w, status, code, accessMessage)
 			return
 		}
-		previous := share
-		previous.Notes = cloneCompanionShareNotes(share.Notes)
 		hostID := companionShareHostID(share)
 		isHost := ownerID != "" && hostID == ownerID
 		if replyTo != "" {
@@ -1743,13 +2002,9 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 		}
 		share.NotesRevision++
 		companionDocShares.items[token] = share
-		if err := persistCompanionDocSharesLocked(); err != nil {
-			companionDocShares.items[token] = previous
-			companionDocShares.Unlock()
-			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存批注")
-			return
-		}
+		snap := scheduleCompanionSharePersistLocked()
 		companionDocShares.Unlock()
+		scheduleCompanionShareIndex(snap)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"notes":          companionShareNotesJSON(share.Notes, share),
 			"notes_revision": share.NotesRevision,
@@ -1857,23 +2112,18 @@ func CompanionDocumentShareNoteReviewHandler(identity *auth.IdentityService) htt
 			writeError(w, http.StatusConflict, "NOTE_ANSWERED", "批注已经回答，不能再审核")
 			return
 		}
+		var snap companionShareIndexSnapshot
 		if strings.TrimSpace(target.Decision) != decision {
-			previous := share
-			previous.Notes = cloneCompanionShareNotes(share.Notes)
 			share.Notes[index].Decision = decision
 			share.Notes[index].DecidedAt = time.Now().UTC()
 			share.NotesRevision++
 			companionDocShares.items[token] = share
-			if err := persistCompanionDocSharesLocked(); err != nil {
-				companionDocShares.items[token] = previous
-				companionDocShares.Unlock()
-				writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存审核结果")
-				return
-			}
+			snap = scheduleCompanionSharePersistLocked()
 		}
 		notes := companionShareNotesJSON(share.Notes, share)
 		revision := share.NotesRevision
 		companionDocShares.Unlock()
+		scheduleCompanionShareIndex(snap)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"notes":          notes,
 			"notes_revision": revision,

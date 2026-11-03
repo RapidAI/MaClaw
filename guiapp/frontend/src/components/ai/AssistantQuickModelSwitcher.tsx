@@ -175,7 +175,7 @@ export const AssistantQuickModelSwitcher = memo(function AssistantQuickModelSwit
         padding: "2px 8px",
         borderRadius: 999,
         fontSize: 11,
-        fontWeight: 650,
+        fontWeight: 600,
         lineHeight: 1.2,
         cursor: profileSavePending ? "default" : "pointer",
         userSelect: "none",
@@ -190,7 +190,10 @@ export const AssistantQuickModelSwitcher = memo(function AssistantQuickModelSwit
     if (!hasModelMenu) return null;
 
     return (
-        <div className="aqs-model-wrap" style={{ minWidth: 0, maxWidth: "100%" }}>
+        // Flex, not block: an inline-flex chip on a block wrapper picks up the
+        // parent's descender, so the chip sat ~3px below the composer toolbar's
+        // icon buttons and inflated the 28px control row to 34px.
+        <div className="aqs-model-wrap" style={{ display: "flex", alignItems: "center", minWidth: 0, maxWidth: "100%" }}>
             <button
                 type="button"
                 ref={setModelChipRef}

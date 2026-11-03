@@ -255,6 +255,10 @@ type ToolModelImage struct {
 	MIME    string // e.g. image/png
 	Base64  string
 	Purpose string
+	// Caption is the page range for a visual preview. It stays with the
+	// image so a JSON tool result, which cannot take a trailing sentence,
+	// still tells the model which slides it is looking at.
+	Caption string
 }
 
 // VisualPreviewCloser releases a turn-scoped preview browser when RunLoop

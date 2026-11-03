@@ -1557,9 +1557,9 @@ function CodingAgentInlineLineDelta({
             {text.slice(0, start)}
             <span data-testid="coding-agent-line-delta">
                 (
-                <span data-testid="coding-agent-line-added" style={{ color: addColor, fontWeight: 650 }}>+{added}</span>
+                <span data-testid="coding-agent-line-added" style={{ color: addColor, fontWeight: 600 }}>+{added}</span>
                 {" "}
-                <span data-testid="coding-agent-line-removed" style={{ color: delColor, fontWeight: 650 }}>-{removed}</span>
+                <span data-testid="coding-agent-line-removed" style={{ color: delColor, fontWeight: 600 }}>-{removed}</span>
                 )
             </span>
             {text.slice(end)}
@@ -1623,7 +1623,7 @@ function CodingAgentFileChangeStat({
                 gap: 6,
                 fontFamily: monoFont,
                 fontVariantNumeric: "tabular-nums",
-                fontWeight: 650,
+                fontWeight: 600,
                 fontSize: 11,
             }}
         >

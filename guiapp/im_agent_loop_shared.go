@@ -7711,6 +7711,9 @@ func (c *sharedAgentLoopCallbacks) executeTrustedFileRead(_ tool.PlannedSelectio
 	if err != nil {
 		return "[system rejected] " + err.Error()
 	}
+	if query == "" && filePattern == "" && strings.EqualFold(filepath.Ext(path), ".pptx") {
+		c.noteTrustedVisualPreviewPage(path, startLine)
+	}
 	return out
 }
 
@@ -9818,7 +9821,9 @@ func (c *sharedAgentLoopCallbacks) systemPromptWithTaskAnchor(systemPrompt strin
 	if c.loopCtx != nil && strings.TrimSpace(c.loopCtx.capabilityExtensionReason) != "" {
 		systemPrompt += "\n\n" + capabilityExtensionPrompt(c.loopCtx.capabilityExtensionReason, c.loopCtx.capabilityExtensionPaths, capabilityExtensionToolDefs(c.handler))
 	}
-	systemPrompt += "\n\n" + visualPreviewPromptSentence
+	if !strings.Contains(systemPrompt, visualPreviewPromptSentence) {
+		systemPrompt += "\n\n" + visualPreviewPromptSentence
+	}
 	return appendTaskIdentityAnchorPrompt(systemPrompt, c.taskAnchor)
 }
 

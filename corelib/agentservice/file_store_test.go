@@ -165,6 +165,15 @@ func TestFileStoreMigratesLegacyPlaintextAPIKeys(t *testing.T) {
 	}
 }
 
+func TestNewFileStoreRejectsEmptyPath(t *testing.T) {
+	if _, err := NewFileStore(""); err == nil {
+		t.Fatal("expected empty path to be rejected")
+	}
+	if _, err := NewFileStore("   "); err == nil {
+		t.Fatal("expected blank path to be rejected")
+	}
+}
+
 func TestNewFileStoreCreatesPrivateStateDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "store.json")
 	newTestFileStore(t, path)

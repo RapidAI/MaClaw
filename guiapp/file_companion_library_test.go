@@ -2862,3 +2862,132 @@ func TestImportFileCompanionShareUsesTheLinkHub(t *testing.T) {
 		t.Fatalf("noted = %#v", noted)
 	}
 }
+
+func TestSyncFileCompanionShareMarksPushesOnlyMarks(t *testing.T) {
+	const (
+		hostToken = "cd_0123456789abcdef0123456789abcdef"
+		goneToken = "cd_abcdef0123456789abcdef0123456789"
+	)
+	var app *App
+	var openedPath string
+	var pushed []string
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/marks") {
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		token := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/mobile/documents/shares/"), "/marks")
+		if token == goneToken {
+			http.Error(w, `{"message":"分享链接不存在"}`, http.StatusNotFound)
+			return
+		}
+		pushed = append(pushed, token)
+		bodies = append(bodies, string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"token":"%s","revision":4,"marks_revision":7}`, token)
+	}))
+	defer server.Close()
+	app = &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	source := filepath.Join(t.TempDir(), "论文.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := app.FileCompanionOpen(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openedPath = opened.Path
+	_ = app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: hostToken, Token: hostToken, Name: "论文.pdf", Path: openedPath,
+		Source: "cloud", Visibility: "group", Mine: true, Host: true, Revision: 4,
+	})
+	_ = app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: goneToken, Token: goneToken, Name: "论文.pdf", Path: openedPath,
+		Source: "cloud", Visibility: "group", Mine: true, Host: true, Revision: 2,
+	})
+	marks := `{"highlights":[{"id":"m1","page":1}],"chatMarks":[],"annotations":[],"drawings":[],"bookmarks":[]}`
+	result, err := app.SyncFileCompanionShareMarks(openedPath, marks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pushed) != 1 || pushed[0] != hostToken {
+		t.Fatalf("pushed = %v, want only the live host share", pushed)
+	}
+	if len(bodies) != 1 || bodies[0] != marks {
+		t.Fatalf("marks body = %q", bodies)
+	}
+	if result.MarksRevision != 7 {
+		t.Fatalf("marks revision = %d", result.MarksRevision)
+	}
+	fileCompanionLibraryMu.Lock()
+	stored, ok := app.readFileCompanionLibraryLocked()
+	fileCompanionLibraryMu.Unlock()
+	if !ok {
+		t.Fatal("library missing")
+	}
+	byToken := map[string]FileCompanionLibraryItem{}
+	for _, item := range stored {
+		byToken[item.Token] = item
+	}
+	if row := byToken[hostToken]; row.MarksRevision != 7 {
+		t.Fatalf("stored marks revision = %+v", row)
+	}
+	if _, exists := byToken[goneToken]; exists {
+		t.Fatalf("gone share was not retired: %+v", byToken[goneToken])
+	}
+}
+
+func TestFetchFileCompanionShareMarksReadsTheBlob(t *testing.T) {
+	const token = "cd_0123456789abcdef0123456789abcdef"
+	marksBody := `{"highlights":[{"id":"m1","page":1}],"chatMarks":[],"annotations":[],"drawings":[],"bookmarks":[{"id":"b1","page":2,"x":0.1,"y":0.2,"color":"yellow","name":"重点"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/mobile/documents/shares/"+token+"/marks" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer viewer-token" {
+			http.Error(w, `{"message":"请先登录"}`, http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("X-Companion-Marks-Revision", "9")
+		_, _ = io.WriteString(w, marksBody)
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	source := filepath.Join(t.TempDir(), "论文.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := app.FileCompanionOpen(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "论文.pdf", Path: opened.Path,
+		Source: "cloud", Visibility: "group", Mine: false, Revision: 4,
+	})
+	got, err := app.FetchFileCompanionShareMarks(opened.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Marks != marksBody || got.Revision != 9 {
+		t.Fatalf("marks = %q revision = %d", got.Marks, got.Revision)
+	}
+}

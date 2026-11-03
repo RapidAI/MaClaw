@@ -44,6 +44,138 @@ var (
 	fileCompanionShareEpoch = map[string]uint64{}
 )
 
+// fileCompanionShareListSeq is the Hub change sequence from the most recent
+// successful share-list response (the Hub sends it as the ETag header). The
+// refresh pre-check compares against it to skip a full refresh when nothing
+// on the Hub moved.
+var fileCompanionShareListSeq atomic.Uint64
+
+// fileCompanionShareRefreshCheck remembers what the last full library refresh
+// saw, so the 5-second poll can ask the cheap changes endpoint instead of
+// re-downloading the whole share list. Keyed by Hub URL: switching hubs (or
+// tests pointing at a fresh one) starts over with a full refresh.
+type fileCompanionShareRefreshState struct {
+	mu          sync.Mutex
+	hub         string
+	seq         uint64
+	lastFull    time.Time
+	fullDone    bool
+	unsupported bool
+	hadLogin    bool
+}
+
+var fileCompanionShareRefreshCheck fileCompanionShareRefreshState
+
+// fileCompanionShareRefreshFullInterval forces a full refresh even when the
+// changes endpoint reports nothing new: expiry, revocation probes, and clock
+// skew all reconcile on the full path.
+const fileCompanionShareRefreshFullInterval = 10 * time.Minute
+
+// errFileCompanionShareChangesUnsupported marks a Hub that predates the
+// changes endpoint; the refresh check then falls back to full refreshes.
+var errFileCompanionShareChangesUnsupported = errors.New("companion share changes unsupported")
+
+func (st *fileCompanionShareRefreshState) reset(hub string) {
+	st.hub = hub
+	st.seq = 0
+	st.lastFull = time.Time{}
+	st.fullDone = false
+	st.unsupported = false
+	st.hadLogin = false
+}
+
+// fetchFileCompanionShareChanges asks the Hub for its change sequence. The
+// answer is a small JSON body, unlike the full list that carries every share
+// and note, so a poll round costs almost nothing.
+func (a *App) fetchFileCompanionShareChanges(hub, viewer string) (uint64, error) {
+	req, err := http.NewRequest(http.MethodGet, hub+"/api/mobile/documents/shares/changes", nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewer)
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+		return 0, errFileCompanionShareChangesUnsupported
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
+	}
+	var payload struct {
+		Seq uint64 `json:"seq"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return 0, errors.New("云端分享状态无法读取")
+	}
+	return payload.Seq, nil
+}
+
+// fileCompanionShareRefreshQuiet reports whether the next library refresh can
+// skip the Hub round trip: a full refresh already ran recently on this Hub,
+// the Hub has the changes endpoint, and its sequence still matches. Any doubt
+// (fresh login, unreachable Hub, older Hub) returns false so the refresh runs
+// and reconciles.
+func (a *App) fileCompanionShareRefreshQuiet(hub, viewer string, loginOK bool) bool {
+	st := &fileCompanionShareRefreshCheck
+	st.mu.Lock()
+	if st.hub != hub {
+		st.reset(hub)
+	}
+	if st.unsupported {
+		st.mu.Unlock()
+		return false
+	}
+	if !loginOK {
+		st.hadLogin = false
+		quiet := st.fullDone
+		st.mu.Unlock()
+		return quiet
+	}
+	if !st.hadLogin {
+		st.hadLogin = true
+		st.mu.Unlock()
+		return false
+	}
+	if !st.fullDone || time.Since(st.lastFull) > fileCompanionShareRefreshFullInterval {
+		st.mu.Unlock()
+		return false
+	}
+	st.mu.Unlock()
+	seq, err := a.fetchFileCompanionShareChanges(hub, viewer)
+	if err != nil {
+		if errors.Is(err, errFileCompanionShareChangesUnsupported) {
+			st.mu.Lock()
+			st.unsupported = true
+			st.mu.Unlock()
+			return false
+		}
+		// The Hub is unreachable; a full refresh would fail the same way, so
+		// skip it and keep serving the stored library.
+		return true
+	}
+	st.mu.Lock()
+	quiet := seq == st.seq
+	st.mu.Unlock()
+	return quiet
+}
+
+// noteFileCompanionShareFullRefresh records that a full refresh succeeded, so
+// the next pre-check has a sequence to compare and a clock to age against.
+func noteFileCompanionShareFullRefresh(hub string) {
+	st := &fileCompanionShareRefreshCheck
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.hub = hub
+	st.fullDone = true
+	st.lastFull = time.Now()
+	st.seq = fileCompanionShareListSeq.Load()
+}
+
 // FileCompanionLibraryItem is one row in 文档管理.
 type FileCompanionLibraryItem struct {
 	ID       string `json:"id"`
@@ -94,6 +226,11 @@ type FileCompanionLibraryItem struct {
 	Notes         []FileCompanionShareNote `json:"notes,omitempty"`
 	NotesRevision int                      `json:"notesRevision,omitempty"`
 	NotesKnown    bool                     `json:"-"`
+	// MarksRevision is the host's reader-marks sequence (highlights,
+	// annotations, drawings, bookmarks, chat marks). A reader who already has
+	// the paper fetches only the marks blob while it moves without a full
+	// project revision bump. An older Hub omits the field and it stays 0.
+	MarksRevision int `json:"marksRevision,omitempty"`
 	// Highlights is set on an import that unpacked a companion project.
 	// It is not stored in the library file.
 	Highlights string `json:"highlights,omitempty"`
@@ -169,13 +306,14 @@ var fileCompanionLibrarySyncEpoch atomic.Uint64
 
 // FileCompanionShareResult is the link created for the open file.
 type FileCompanionShareResult struct {
-	URL        string `json:"url"`
-	Name       string `json:"name"`
-	ExpiresAt  string `json:"expiresAt,omitempty"`
-	Visibility string `json:"visibility"`
-	Permanent  bool   `json:"permanent"`
-	Token      string `json:"token,omitempty"`
-	Revision   int    `json:"revision,omitempty"`
+	URL           string `json:"url"`
+	Name          string `json:"name"`
+	ExpiresAt     string `json:"expiresAt,omitempty"`
+	Visibility    string `json:"visibility"`
+	Permanent     bool   `json:"permanent"`
+	Token         string `json:"token,omitempty"`
+	Revision      int    `json:"revision,omitempty"`
+	MarksRevision int    `json:"marksRevision,omitempty"`
 }
 
 // FileCompanionShareUpdate is a newer project the reader should show.
@@ -219,6 +357,8 @@ type fileCompanionShareView struct {
 	GroupID          string                   `json:"group_id"`
 	Notes            *[]fileCompanionNoteWire `json:"notes"`
 	NotesRevision    *int                     `json:"notes_revision"`
+	// MarksRevision is a pointer so an older Hub (field absent) reads as 0.
+	MarksRevision *int `json:"marks_revision"`
 }
 
 type fileCompanionNoteWire struct {
@@ -444,9 +584,19 @@ func (a *App) startFileCompanionLibrarySync() bool {
 	fileCompanionLibrarySyncEpoch.Store(fileCompanionLibrarySyncGen.Load())
 	go func() {
 		defer fileCompanionLibrarySyncRunning.Store(false)
+		// The fast poll ticks every few seconds while a share is open. When
+		// the Hub reports no change since the last full refresh, skip the
+		// whole round trip: no list, no probes, no downloads.
+		hub, viewer, loginErr := a.fileCompanionHubLogin()
+		if a.fileCompanionShareRefreshQuiet(hub, viewer, loginErr == nil) {
+			return
+		}
 		listed, err := a.listFileCompanionLibrary()
 		if err != nil {
 			return
+		}
+		if loginErr == nil {
+			noteFileCompanionShareFullRefresh(hub)
 		}
 		listed.Syncing = false
 		listed.SyncGen = fileCompanionLibrarySyncGen.Add(1)
@@ -768,6 +918,11 @@ func mergeFileCompanionSharesWithRevoked(items, remote []FileCompanionLibraryIte
 				item.Notes = prev.Notes
 				item.NotesRevision = prev.NotesRevision
 			}
+			// An older Hub omits marks_revision. Keep the newer sequence this
+			// machine already saw so a reader does not re-apply old marks.
+			if prev.MarksRevision > item.MarksRevision {
+				item.MarksRevision = prev.MarksRevision
+			}
 		}
 		// The Hub row has no local path. A dropped cloud row, or a probe
 		// dismissal that this list just took back, still has the file.
@@ -831,6 +986,9 @@ func applyForeignCompanionShares(items []FileCompanionLibraryItem, views map[str
 		}
 		if view.Revision > item.Revision {
 			item.Revision = view.Revision
+		}
+		if view.MarksRevision != nil && *view.MarksRevision > item.MarksRevision {
+			item.MarksRevision = *view.MarksRevision
 		}
 		if view.Notes != nil {
 			notes := notesFromCompanionShareView(view)
@@ -1071,6 +1229,11 @@ func (a *App) fetchFileCompanionShareList(hub, viewer string) ([]FileCompanionLi
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, false, false, time.Time{}, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
 	}
+	if etag := strings.Trim(resp.Header.Get("ETag"), `"`); etag != "" {
+		if value, convErr := strconv.ParseUint(etag, 10, 64); convErr == nil {
+			fileCompanionShareListSeq.Store(value)
+		}
+	}
 	var payload struct {
 		Mine        []fileCompanionShareView `json:"mine"`
 		Received    []fileCompanionShareView `json:"received"`
@@ -1130,6 +1293,9 @@ func libraryItemsFromShares(views []fileCompanionShareView, mine bool, hub strin
 		}
 		if view.NotesRevision != nil {
 			item.NotesRevision = *view.NotesRevision
+		}
+		if view.MarksRevision != nil {
+			item.MarksRevision = *view.MarksRevision
 		}
 		if item.Name == "" {
 			item.Name = "document"
@@ -1921,6 +2087,9 @@ func (a *App) upsertFileCompanionCloudLocked(item FileCompanionLibraryItem) erro
 			if current.NotesRevision > item.NotesRevision {
 				item.Notes = current.Notes
 				item.NotesRevision = current.NotesRevision
+			}
+			if current.MarksRevision > item.MarksRevision {
+				item.MarksRevision = current.MarksRevision
 			}
 			continue
 		}

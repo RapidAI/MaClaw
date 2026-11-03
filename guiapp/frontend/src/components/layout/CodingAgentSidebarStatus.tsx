@@ -387,7 +387,7 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
                                                     background: tool.outcome ? traceTone.bg : 'rgba(100, 116, 139, 0.06)',
                                                     borderRadius: '4px',
                                                     padding: '0 4px',
-                                                    fontWeight: tool.outcome ? 650 : 500,
+                                                    fontWeight: tool.outcome ? 600 : 500,
                                                     fontSize: '0.62rem',
                                                 }}
                                             >

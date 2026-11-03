@@ -58,6 +58,42 @@ var fileCompanionShareDiscussion struct {
 // minutes, so lifecycle stop never waits on it.
 var fileCompanionShareDiscussionPollMu sync.Mutex
 
+// fileCompanionShareDiscussionSync is the watcher's view of the Hub's change
+// sequence. A full poll fetches every share and note; the pre-check asks the
+// tiny changes endpoint first and only pays for the full poll when a note
+// actually moved. Keyed by Hub URL like the library refresh state.
+type fileCompanionShareDiscussionSync struct {
+	mu          sync.Mutex
+	hub         string
+	seq         uint64
+	fullDone    bool
+	unsupported bool
+	hadLogin    bool
+	lastMine    int
+}
+
+var fileCompanionShareDiscussionSyncState fileCompanionShareDiscussionSync
+
+func (st *fileCompanionShareDiscussionSync) reset(hub string) {
+	st.hub = hub
+	st.seq = 0
+	st.fullDone = false
+	st.unsupported = false
+	st.hadLogin = false
+	st.lastMine = 0
+}
+
+// fileCompanionShareDiscussionRecordFullRefresh marks that a full poll just
+// saw the Hub at the current change sequence.
+func fileCompanionShareDiscussionRecordFullRefresh(hub string) {
+	st := &fileCompanionShareDiscussionSyncState
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.hub = hub
+	st.fullDone = true
+	st.seq = fileCompanionShareListSeq.Load()
+}
+
 // The maps below are in-memory limits, not durable state. The Hub's reply_to
 // link is what survives a restart.
 var (
@@ -102,7 +138,7 @@ func (a *App) startFileCompanionShareDiscussionWatch() {
 					count = 1
 				}
 			}()
-			count, _ = a.pollFileCompanionShareDiscussions()
+			count = a.pollFileCompanionShareDiscussionsQuiet()
 			return count
 		}
 		for {
@@ -139,6 +175,58 @@ func (a *App) stopFileCompanionShareDiscussionWatch() {
 	}
 }
 
+// pollFileCompanionShareDiscussionsQuiet decides whether this tick needs the
+// full poll. When the Hub's change sequence is unchanged since the last full
+// poll, nothing moved and the expensive fetch (every share, every note) is
+// skipped. The returned count is the last known number of hosted shares, so
+// the cadence stays as it was.
+func (a *App) pollFileCompanionShareDiscussionsQuiet() int {
+	st := &fileCompanionShareDiscussionSyncState
+	st.mu.Lock()
+	unsupported := st.unsupported
+	st.mu.Unlock()
+	if !unsupported {
+		hub, viewer, err := a.fileCompanionHubLogin()
+		if err != nil {
+			st.mu.Lock()
+			st.hadLogin = false
+			count := st.lastMine
+			st.mu.Unlock()
+			return count
+		}
+		st.mu.Lock()
+		if st.hub != hub {
+			st.reset(hub)
+		}
+		hadLogin := st.hadLogin
+		st.hadLogin = true
+		st.mu.Unlock()
+		if hadLogin {
+			seq, err := a.fetchFileCompanionShareChanges(hub, viewer)
+			if err == nil {
+				st.mu.Lock()
+				quiet := st.fullDone && seq == st.seq
+				count := st.lastMine
+				st.mu.Unlock()
+				if quiet {
+					return count
+				}
+			} else if errors.Is(err, errFileCompanionShareChangesUnsupported) {
+				st.mu.Lock()
+				st.unsupported = true
+				st.mu.Unlock()
+			}
+			// Any other error falls through to the full poll, which surfaces
+			// the failure exactly as before.
+		}
+	}
+	count, _ := a.pollFileCompanionShareDiscussions()
+	st.mu.Lock()
+	st.lastMine = count
+	st.mu.Unlock()
+	return count
+}
+
 // pollFileCompanionShareDiscussions answers at most a few pending notes and
 // returns how many shares this account owns. A share with no local file is
 // skipped: the host agent answers from the local copy, not from the download.
@@ -156,6 +244,7 @@ func (a *App) pollFileCompanionShareDiscussions() (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	fileCompanionShareDiscussionRecordFullRefresh(hub)
 	// An older Hub cannot mark a host note or link it to a reader note. Running
 	// the agent there would answer every host line again and again.
 	if !replySupported {

@@ -41,6 +41,8 @@ export type FilePreviewSource = {
     projectPath?: string;
     previewTruncated?: boolean;
     updatedAt?: number;
+    /** Changes when a deck is rewritten so the slide pane loads the new pages. */
+    previewRevision?: string;
 };
 
 export type FilePreviewViewProps = {
@@ -545,7 +547,7 @@ export function FilePreviewView({
     if (yieldToParent) return <>{children}</>;
 
     if (kind === 'pptx' && file.absPath) {
-        return <PptxPreviewPanel key={fileKey} absPath={file.absPath} theme={theme} lang={lang} />;
+        return <PptxPreviewPanel key={fileKey} absPath={file.absPath} revision={file.previewRevision || ""} theme={theme} lang={lang} />;
     }
     if (kind === 'docx' && file.absPath) {
         return <DocxPreviewPanel key={fileKey} absPath={file.absPath} theme={theme} lang={lang} />;

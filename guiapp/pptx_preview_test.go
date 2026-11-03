@@ -6,12 +6,24 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/pptx"
 )
+
+func TestPptxPreviewLockFoldsWindowsCase(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip()
+	}
+	a := pptxPreviewLock(`D:\Deck\A.pptx`)
+	b := pptxPreviewLock(`d:\deck\a.pptx`)
+	if a != b {
+		t.Fatal("preview lock split by case")
+	}
+}
 
 func TestPptxPreviewEnsureRejectsInvalidInput(t *testing.T) {
 	app := &App{}
@@ -106,6 +118,63 @@ func TestPptxPreviewEnsureRendersWhenCacheIsPartial(t *testing.T) {
 	}
 }
 
+func TestPptxPreviewEnsureGapIsNotFilledByAnExtraFile(t *testing.T) {
+	deck, outDir := renderTestDeck(t)
+	if err := os.Remove(filepath.Join(outDir, "slide_003.png")); err != nil {
+		t.Fatal(err)
+	}
+	extra := filepath.Join(outDir, "slide_099.png")
+	if err := os.WriteFile(extra, []byte("extra"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(extra, old, old); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(outDir, "slide_001.png")
+	if err := os.WriteFile(marker, []byte("CACHED"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := os.Chtimes(marker, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&App{}).PptxPreviewEnsure(deck); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(outDir, "slide_003.png"))
+	if err != nil || !bytes.HasPrefix(content, pngMagic) {
+		t.Fatalf("gap was treated as a complete cache: %v", err)
+	}
+}
+
+func TestPptxPreviewEnsureIgnoresStaleExtraFile(t *testing.T) {
+	deck, outDir := renderTestDeck(t)
+	extra := filepath.Join(outDir, "slide_001.jpg")
+	if err := os.WriteFile(extra, []byte("old-jpeg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(extra, old, old); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(outDir, "slide_001.png")
+	if err := os.WriteFile(marker, []byte("CACHED"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := os.Chtimes(marker, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&App{}).PptxPreviewEnsure(deck); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(marker)
+	if err != nil || string(content) != "CACHED" {
+		t.Fatalf("stale extra file forced a re-render: %v", err)
+	}
+}
+
 func TestPptxSlideThumbnailDataURLBoundsTheImage(t *testing.T) {
 	_, outDir := renderTestDeck(t)
 	slide := filepath.Join(outDir, "slide_001.png")
@@ -133,6 +202,22 @@ func TestPptxSlideThumbnailDataURLBoundsTheImage(t *testing.T) {
 	}
 	if _, err := (&App{}).PptxSlideThumbnailDataURL(filepath.Join(t.TempDir(), "missing.png")); err == nil {
 		t.Fatal("expected an error for a missing image")
+	}
+}
+
+func TestDeckForSlideImageUsesSiblingDeck(t *testing.T) {
+	dir := t.TempDir()
+	deck := filepath.Join(dir, "demo.pptx")
+	if err := os.WriteFile(deck, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	slide := filepath.Join(dir, "demo_preview", "slide_001.png")
+	got, ok := deckForSlideImage(slide)
+	if !ok || !strings.EqualFold(got, deck) {
+		t.Fatalf("deck = %q ok=%v", got, ok)
+	}
+	if _, ok := deckForSlideImage(filepath.Join(dir, "other", "slide_001.png")); ok {
+		t.Fatal("an image outside a deck cache was treated as a slide")
 	}
 }
 

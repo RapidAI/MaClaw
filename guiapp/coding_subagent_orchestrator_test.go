@@ -413,6 +413,20 @@ func TestRunAllTasksSerializesConfiguredSubAgentConcurrencyForCodingSafety(t *te
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
+	t.Cleanup(func() {
+		codingKnowledgeStoreMu.Lock()
+		if app.codingKnowledgeStore != nil {
+			_ = app.codingKnowledgeStore.Close()
+			app.codingKnowledgeStore = nil
+		}
+		codingKnowledgeStoreMu.Unlock()
+		app.codingRuntimeStoreMu.Lock()
+		if app.codingRuntimeStore != nil {
+			_ = app.codingRuntimeStore.Close()
+			app.codingRuntimeStore = nil
+		}
+		app.codingRuntimeStoreMu.Unlock()
+	})
 	if err := app.SetSubAgentConcurrency(2); err != nil {
 		t.Fatalf("SetSubAgentConcurrency: %v", err)
 	}

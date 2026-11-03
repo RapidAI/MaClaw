@@ -612,7 +612,7 @@ function FileTabContextMenu({
                 border: `1px solid ${theme.border}`,
                 borderRadius: 6,
                 boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
-                zIndex: 99999,
+                zIndex: Z.topmost,
                 padding: '4px 0',
                 minWidth: 180,
             }}

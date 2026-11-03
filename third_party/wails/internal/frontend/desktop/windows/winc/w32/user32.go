@@ -122,6 +122,7 @@ var (
 	procGetCursorPos                  = moduser32.NewProc("GetCursorPos")
 	procSetCursorPos                  = moduser32.NewProc("SetCursorPos")
 	procSetCursor                     = moduser32.NewProc("SetCursor")
+	procShowCursor                    = moduser32.NewProc("ShowCursor")
 	procCreateIcon                    = moduser32.NewProc("CreateIcon")
 	procDestroyIcon                   = moduser32.NewProc("DestroyIcon")
 	procMonitorFromPoint              = moduser32.NewProc("MonitorFromPoint")
@@ -1082,6 +1083,14 @@ func SetCursor(cursor HCURSOR) HCURSOR {
 		uintptr(cursor),
 	)
 	return HCURSOR(ret)
+}
+
+// ShowCursor increments or decrements the calling thread's cursor display
+// count and returns the new count. The cursor is displayed only while the
+// count is greater than or equal to zero.
+func ShowCursor(show bool) int32 {
+	ret, _, _ := procShowCursor.Call(uintptr(BoolToBOOL(show)))
+	return int32(ret)
 }
 
 func CreateIcon(instance HINSTANCE, nWidth, nHeight int, cPlanes, cBitsPerPixel byte, ANDbits, XORbits *byte) HICON {

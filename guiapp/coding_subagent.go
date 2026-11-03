@@ -2762,6 +2762,18 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			if msg := c.requireProjectReadScope(p, "read_file"); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("read_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
+			if strings.EqualFold(filepath.Ext(p), ".pptx") {
+				abs := codingVisualPreviewAbs(p, c.projectPath())
+				info, statErr := os.Stat(abs)
+				if abs != "" && statErr == nil && !info.IsDir() {
+					start := 1
+					if n, ok := codingSubAgentArgumentIntegerValue(fileArgs["start_line"]); ok && n >= 1 {
+						start = int(n)
+					}
+					c.noteCodingVisualPreviewPage(p, start-1)
+					return codingToolExecutionResult{Text: "正在查看这份幻灯片。", Outcome: codingToolOutcomeSuccess}
+				}
+			}
 		}
 		// No position: this is a survey of an indexed file, answered by
 		// code_navigation. lines only caps that survey. start_line and offset
@@ -18894,7 +18906,7 @@ func applyCodingSubAgentToolHints(fn map[string]interface{}) {
 	case "read_file":
 		appendCodingSubAgentToolDescription(fn, "When codegraph has indexed the file and this call does not pass start_line or offset, the result is that file's symbol map, not the body. lines only caps a survey. Pass start_line or offset to read that window from disk; the window does not unlock edit_file. Call code_navigation with operation node for one symbol. A file codegraph does not index is read directly.")
 		ensureCodingSubAgentToolIntegerProp(props, "lines", "Max lines to read (optional, default 200, maximum 2000). Also accepts limit/num_lines/line_count.")
-		ensureCodingSubAgentToolIntegerProp(props, "start_line", "Starting line number, 1-based (optional). Also accepts start/startLine.")
+		ensureCodingSubAgentToolIntegerProp(props, "start_line", "Starting line number, 1-based (optional). Also accepts start/startLine. For a .pptx this is the 1-based slide where a 3-slide visual check starts.")
 		ensureCodingSubAgentToolIntegerProp(props, "offset", "Read the last N lines of the file. Use this after adaptive output says earlier content was skipped or when inspecting logs/tails.")
 	case "write_file":
 		setCodingSubAgentToolPropDescription(props, "content", "File content. No length limit; you can write complete scripts or documents in a single call. For very large files (>6000 chars), consider splitting into overwrite + append chunks.")

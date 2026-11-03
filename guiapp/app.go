@@ -12484,6 +12484,13 @@ const (
 // image data rather than a file URL, so the WebView never needs direct
 // filesystem access.
 func (a *App) AIAssistantAttachmentFullDataURL(path string) (string, error) {
+	if _, ok := deckForSlideImage(path); ok {
+		data, err := readStableSlideImage(path)
+		if err != nil {
+			return "", err
+		}
+		return fullDataURLFromImageBytes(data)
+	}
 	file, format, err := openAIAssistantAttachmentImage(path)
 	if err != nil {
 		return "", err
@@ -12521,6 +12528,51 @@ func (a *App) AIAssistantAttachmentFullDataURL(path string) (string, error) {
 	// Photographic sources stay JPEG so a downscaled 12 MB capture does not
 	// come back as an even larger lossless payload; anything that may carry
 	// alpha keeps PNG.
+	mime := "image/png"
+	if format == "jpeg" {
+		mime = "image/jpeg"
+		err = jpeg.Encode(&out, bounded, &jpeg.Options{Quality: 85})
+	} else {
+		err = png.Encode(&out, bounded)
+	}
+	if err != nil {
+		return "", err
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(out.Bytes()), nil
+}
+
+func fullDataURLFromImageBytes(data []byte) (string, error) {
+	if len(data) > 12*1024*1024 {
+		return "", fmt.Errorf("attachment must be an image file no larger than 12 MB")
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return "", fmt.Errorf("inspect attachment image: %w", err)
+	}
+	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 32_000_000 {
+		return "", fmt.Errorf("attachment image dimensions are not supported")
+	}
+	if mime, inlineable := aiAssistantInlineImageMIMEByFormat[format]; inlineable && int64(len(data)) <= aiAssistantFullPreviewInlineLimit {
+		return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+	}
+	source, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return "", fmt.Errorf("decode attachment image: %w", err)
+	}
+	bounds := source.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	if width > aiAssistantFullPreviewMaxEdge || height > aiAssistantFullPreviewMaxEdge {
+		if width >= height {
+			height = max(1, height*aiAssistantFullPreviewMaxEdge/width)
+			width = aiAssistantFullPreviewMaxEdge
+		} else {
+			width = max(1, width*aiAssistantFullPreviewMaxEdge/height)
+			height = aiAssistantFullPreviewMaxEdge
+		}
+	}
+	bounded := image.NewRGBA(image.Rect(0, 0, width, height))
+	draw.CatmullRom.Scale(bounded, bounded.Bounds(), source, bounds, draw.Over, nil)
+	var out bytes.Buffer
 	mime := "image/png"
 	if format == "jpeg" {
 		mime = "image/jpeg"

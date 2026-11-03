@@ -42,7 +42,7 @@ func TestFileCompanionProjectRoundTripKeepsThePDFHighlightsAndChat(t *testing.T)
 	})
 	highlights := `[{"id":"m1","page":1,"color":"pink","rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.05}],"text":"方法"}]`
 	chatMarks := `[{"message":1,"color":"green","start":0,"end":2,"text":"摘要"}]`
-	annotations := `[{"id":"a1","kind":"annotation","text":"方法","translation":"这里要复核","parts":[{"page":1,"rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.05}]}]}]`
+	annotations := `[{"id":"a1","kind":"annotation","name":"  方法   复核 ","text":"方法","translation":"这里要复核","parts":[{"page":1,"rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.05}]}]}]`
 	drawings := `[{"id":"d1","page":1,"color":"blue","tool":"line","points":[{"x":0.1,"y":0.2},{"x":0.3,"y":0.4}]}]`
 	bookmarks := `[{"id":"b2","page":7,"x":0.4,"y":0.8,"color":"orange","name":"后加"},{"id":"b1","page":2,"x":0.2,"y":0.1,"color":"teal","name":"先加"},{"id":"bad","page":1,"x":0.2,"y":0.1,"color":"navy","name":"丢掉"}]`
 	exportPayload := `{"highlights":` + highlights + `,"chatMarks":` + chatMarks + `,"annotations":` + annotations + `,"drawings":` + drawings + `,"bookmarks":` + bookmarks + `}`
@@ -107,6 +107,10 @@ func TestFileCompanionProjectRoundTripKeepsThePDFHighlightsAndChat(t *testing.T)
 	if len(imported.ChatMarks) == 0 || len(imported.Annotations) == 0 || len(imported.Drawings) == 0 {
 		t.Fatalf("restored marks: chat=%s annotations=%s drawings=%s", imported.ChatMarks, imported.Annotations, imported.Drawings)
 	}
+	var restoredAnnotations []fileCompanionAnnotation
+	if err := json.Unmarshal(imported.Annotations, &restoredAnnotations); err != nil || len(restoredAnnotations) != 1 || restoredAnnotations[0].Name != "方法 复核" {
+		t.Fatalf("restored annotation name: %s %v", imported.Annotations, err)
+	}
 	var restoredBookmarks []fileCompanionProjectBookmark
 	if err := json.Unmarshal(imported.Bookmarks, &restoredBookmarks); err != nil || len(restoredBookmarks) != 2 || restoredBookmarks[0].Name != "后加" || restoredBookmarks[1].Color != "teal" {
 		t.Fatalf("restored bookmarks: %s %v", imported.Bookmarks, err)
@@ -117,8 +121,42 @@ func TestFileCompanionProjectRoundTripKeepsThePDFHighlightsAndChat(t *testing.T)
 	}
 }
 
+func TestFileCompanionCleanAnnotationsKeepsANameWithinBudget(t *testing.T) {
+	longName := strings.Repeat("名", 41)
+	raw := json.RawMessage(`[
+		{"id":"a1","kind":"annotation","name":"  复核 \n 推导  ","text":"方法","translation":"正文","parts":[{"page":1,"rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.05}]}]},
+		{"id":"a2","kind":"annotation","name":"` + longName + `","text":"方法","translation":"正文","parts":[{"page":1,"rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.05}]}]},
+		{"id":"a3","kind":"annotation","text":"方法","translation":"正文","parts":[{"page":1,"rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.05}]}]}
+	]`)
+	cleaned, err := fileCompanionCleanAnnotations(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notes []fileCompanionAnnotation
+	if err := json.Unmarshal(cleaned, &notes); err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 3 {
+		t.Fatalf("notes: %d", len(notes))
+	}
+	if notes[0].Name != "复核 推导" {
+		t.Fatalf("collapsed name: %q", notes[0].Name)
+	}
+	if notes[1].Name != strings.Repeat("名", 40) {
+		t.Fatalf("clipped name: %q", notes[1].Name)
+	}
+	if notes[2].Name != "" {
+		t.Fatalf("legacy note gained a name: %q", notes[2].Name)
+	}
+}
+
 func TestFileCompanionProjectPaperCardComesBack(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.imHandler != nil && app.imHandler.memory != nil {
+			app.imHandler.memory.Stop()
+		}
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	app.ctx = ctx

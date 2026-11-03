@@ -156,7 +156,7 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
                 }
                 submitTyped();
             }}
-            style={{ position: "relative", padding: 12, background: "var(--theme-surface, #ffffff)", borderTop: "1px solid var(--theme-border, #e2e8f0)" }}
+            style={{ position: "relative", flexShrink: 0, padding: 12, background: "var(--theme-surface, #ffffff)", borderTop: "1px solid var(--theme-border, #e2e8f0)" }}
         >
             <InputHistoryAutocomplete
                 open={autocomplete.open}

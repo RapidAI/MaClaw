@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Z } from "./ui/zIndex";
 import { EventsOn } from '../../wailsjs/runtime/runtime';
 
 type MigrationProgress = {
@@ -47,7 +48,7 @@ export const DataMigrationOverlay = () => {
         <div style={{
             position: 'fixed',
             inset: 0,
-            zIndex: 99999,
+            zIndex: Z.topmost,
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',

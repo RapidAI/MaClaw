@@ -146,12 +146,14 @@ export function agentWebPreviewRequestKey(file: {
     opType?: string;
     forceOpen?: boolean;
     updatedAt?: number;
+    previewRevision?: string;
 } | null | undefined): string {
     if (!file || !webPreviewTargetFromFile(file)) return '';
     const requested = file.opType === 'create' || file.opType === 'modify' || file.forceOpen === true;
     if (!requested) return '';
     const id = file.filePath || file.absPath || file.fileName || '';
-    return `${id}:${file.updatedAt || 0}:${String(file.content || '').length}`;
+    const revision = file.previewRevision ? `:${file.previewRevision}` : '';
+    return `${id}:${file.updatedAt || 0}:${String(file.content || '').length}${revision}`;
 }
 
 /** A path reported by the framed page. Invalid escapes stay as sent. */

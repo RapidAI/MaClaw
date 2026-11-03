@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { PreviewTaskResultFile, TranslateFileCompanionSelection } from "../../../wailsjs/go/main/App";
 import { copyTextToClipboard } from "./AssistantReplyCopyButton";
 import type { CodePreviewTheme } from "./FileTabBar";
@@ -59,9 +59,12 @@ import {
     loadPdfTranslationDrafts,
     capPdfAnnotationDraft,
     clipPdfAnnotationBody,
+    clipPdfAnnotationName,
     loadPdfTranslations,
     newPdfTranslationId,
     notifyPdfAnnotationsChanged,
+    PDF_ANNOTATION_NAME_LIMIT,
+    pdfAnnotationName,
     pdfTranslationError,
     pdfTranslationPlace,
     rememberPdfTranslationPlace,
@@ -160,6 +163,17 @@ function pdfBookmarkChipLabel(lang: string, bookmark: PdfBookmark): string {
         `Page ${bookmark.page}, ${bookmark.name}`,
         `第 ${bookmark.page} 页，${bookmark.name}`,
         `${bookmark.page}-р хуудас, ${bookmark.name}`,
+    );
+}
+
+function pdfAnnotationChipLabel(lang: string, note: PdfTranslation): string {
+    const page = note.parts[0]?.page ?? 1;
+    const name = pdfAnnotationName(note);
+    return pdfReaderText(
+        lang,
+        `Page ${page}, ${name}`,
+        `第 ${page} 页，${name}`,
+        `${page}-р хуудас, ${name}`,
     );
 }
 
@@ -615,6 +629,8 @@ type PdfSelectionMenuProps = {
     selectionText: string;
     bookmarkName: string;
     bookmarkColorId: PdfBookmarkColor;
+    noteName: string;
+    noteEditable: boolean;
     onTranslate: () => void;
     onCopy: () => void;
     onPaint: (color: PdfMarkColor) => void;
@@ -622,6 +638,7 @@ type PdfSelectionMenuProps = {
     onAddBookmark: (name: string, color: PdfBookmarkColor) => void;
     onRenameBookmark: (name: string, color: PdfBookmarkColor) => void;
     onDeleteBookmark: () => void;
+    onRenameNote: (name: string) => void;
     onClearNote: () => void;
     onClearMark: () => void;
     onClose: () => void;
@@ -639,6 +656,8 @@ function PdfSelectionMenu({
     selectionText,
     bookmarkName,
     bookmarkColorId,
+    noteName,
+    noteEditable,
     onTranslate,
     onCopy,
     onPaint,
@@ -646,6 +665,7 @@ function PdfSelectionMenu({
     onAddBookmark,
     onRenameBookmark,
     onDeleteBookmark,
+    onRenameNote,
     onClearNote,
     onClearMark,
     onClose,
@@ -657,6 +677,8 @@ function PdfSelectionMenu({
     const [bookmarkEditor, setBookmarkEditor] = useState<"" | "add" | "rename">("");
     const [bookmarkDraft, setBookmarkDraft] = useState("");
     const [bookmarkColor, setBookmarkColor] = useState<PdfBookmarkColor>("yellow");
+    const [noteEditor, setNoteEditor] = useState(false);
+    const [noteDraft, setNoteDraft] = useState("");
 
     useLayoutEffect(() => {
         const root = rootRef.current;
@@ -674,7 +696,7 @@ function PdfSelectionMenu({
         measure();
         window.addEventListener("resize", measure);
         return () => window.removeEventListener("resize", measure);
-    }, [state.x, state.y, selectionText, state.hitId, state.hitNoteId, state.hitBookmarkId, annotationOpen, bookmarkEditor]);
+    }, [state.x, state.y, selectionText, state.hitId, state.hitNoteId, state.hitBookmarkId, annotationOpen, bookmarkEditor, noteEditor]);
 
     useEffect(() => {
         rootRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true });
@@ -765,6 +787,11 @@ function PdfSelectionMenu({
         if (bookmarkEditor === "rename") onRenameBookmark(name, bookmarkColor);
         else onAddBookmark(name, bookmarkColor);
     };
+    const submitNoteRename = () => {
+        const name = noteDraft.trim();
+        if (!name) return;
+        onRenameNote(name);
+    };
     const openBookmarkAdd = () => {
         setBookmarkEditor("add");
         // A selection already names the place. A bare click still asks for one.
@@ -829,6 +856,39 @@ function PdfSelectionMenu({
     // selection so a truncated head can still be read in full.
     const quoteTitle = quoteText.replace(/\s+/g, " ").trim();
 
+    // A note's name is renamed like a bookmark's, but a note has no colour.
+    const noteForm = (
+        <div data-testid="pdf-note-name-editor" className="companion-pdf-bookmark-editor">
+            <input
+                data-testid="pdf-note-name"
+                value={noteDraft}
+                autoFocus
+                maxLength={PDF_ANNOTATION_NAME_LIMIT}
+                placeholder={pdfReaderText(lang, "Note name", "批注名", "Тэмдэглэлийн нэр")}
+                aria-label={pdfReaderText(lang, "Note name", "批注名", "Тэмдэглэлийн нэр")}
+                onChange={(event) => setNoteDraft(event.target.value)}
+                onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setNoteEditor(false);
+                        return;
+                    }
+                    if (event.key === "Enter") {
+                        // Enter confirms an IME candidate. The name is not done.
+                        if (pdfImeKey(event)) return;
+                        event.preventDefault();
+                        submitNoteRename();
+                    }
+                }}
+            />
+            <div className="companion-pdf-bookmark-editor-actions">
+                <button type="button" data-testid="pdf-note-name-cancel" onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => setNoteEditor(false)}>{pdfReaderText(lang, "Cancel", "取消", "Болих")}</button>
+                <button type="button" data-testid="pdf-note-name-save" disabled={!noteDraft.trim()} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={submitNoteRename}>{pdfReaderText(lang, "Save", "确认", "Баталгаажуулах")}</button>
+            </div>
+        </div>
+    );
+
     return (
         <div
             ref={rootRef}
@@ -837,7 +897,9 @@ function PdfSelectionMenu({
             role="menu"
             aria-label={state.hitBookmarkId
                 ? pdfReaderText(lang, "Bookmark actions", "书签操作", "Хавчуургын үйлдэл")
-                : tailText(lang, "Selection actions", "选中文本操作")}
+                : state.hitNoteKind === "annotation"
+                    ? pdfReaderText(lang, "Note actions", "批注操作", "Тэмдэглэлийн үйлдэл")
+                    : tailText(lang, "Selection actions", "选中文本操作")}
             style={{ left: place.left, top: place.top }}
             onMouseDown={(event) => event.stopPropagation()}
             onContextMenu={(event) => {
@@ -997,16 +1059,35 @@ function PdfSelectionMenu({
             {state.hitNoteId || state.hitId ? (
                 <div className="companion-pdf-menu-group">
                     {state.hitNoteId ? (
-                        <button
-                            type="button"
-                            role="menuitem"
-                            data-testid="pdf-translate-clear"
-                            className="companion-pdf-menu-item companion-pdf-menu-item--danger"
-                            {...activate(onClearNote)}
-                        >
-                            <PdfMenuGlyph kind="erase" />
-                            <span className="companion-pdf-menu-item-label">{state.hitNoteKind === "annotation" ? tailText(lang, "Delete note", "删除批注") : tailText(lang, "Remove translation", "取消翻译")}</span>
-                        </button>
+                        <>
+                            {state.hitNoteKind === "annotation" && noteEditable ? (
+                                noteEditor ? noteForm : (
+                                    <button
+                                        type="button"
+                                        role="menuitem"
+                                        data-testid="pdf-note-rename"
+                                        className="companion-pdf-menu-item"
+                                        {...activate(() => {
+                                            setNoteEditor(true);
+                                            setNoteDraft(noteName);
+                                        })}
+                                    >
+                                        <PdfMenuGlyph kind="note" />
+                                        <span className="companion-pdf-menu-item-label">{pdfReaderText(lang, "Rename note", "批注改名", "Тэмдэглэлийн нэр солих")}</span>
+                                    </button>
+                                )
+                            ) : null}
+                            <button
+                                type="button"
+                                role="menuitem"
+                                data-testid="pdf-translate-clear"
+                                className="companion-pdf-menu-item companion-pdf-menu-item--danger"
+                                {...activate(onClearNote)}
+                            >
+                                <PdfMenuGlyph kind="erase" />
+                                <span className="companion-pdf-menu-item-label">{state.hitNoteKind === "annotation" ? tailText(lang, "Delete note", "删除批注") : tailText(lang, "Remove translation", "取消翻译")}</span>
+                            </button>
+                        </>
                     ) : null}
                     {state.hitId ? (
                         <button
@@ -2399,22 +2480,23 @@ function PdfPager({
     );
 }
 
-function revealBookmarkChip(rail: HTMLElement, chip: HTMLElement) {
+function revealRailItem(rail: HTMLElement, chip: HTMLElement): boolean {
     const railBox = rail.getBoundingClientRect();
     const chipBox = chip.getBoundingClientRect();
-    if (railBox.height < 1 || chipBox.height < 1) return;
+    if (railBox.height < 1 || chipBox.height < 1) return false;
     if (chipBox.top < railBox.top) rail.scrollTop += chipBox.top - railBox.top;
     else if (chipBox.bottom > railBox.bottom) rail.scrollTop += chipBox.bottom - railBox.bottom;
+    return true;
 }
 
-type BookmarkFocus = {
+type RailFocus = {
     id: string;
     page: number;
     gen: number;
     listeners: Set<() => void>;
 };
 
-function publishBookmarkFocus(focus: BookmarkFocus, id: string, page: number): number {
+function publishRailFocus(focus: RailFocus, id: string, page: number): number {
     focus.gen += 1;
     focus.id = id;
     focus.page = page;
@@ -2422,7 +2504,7 @@ function publishBookmarkFocus(focus: BookmarkFocus, id: string, page: number): n
     return focus.gen;
 }
 
-function releaseBookmarkFocus(focus: BookmarkFocus, gen: number): void {
+function releaseRailFocus(focus: RailFocus, gen: number): void {
     if (focus.gen !== gen || !focus.id) return;
     focus.id = "";
     focus.page = 0;
@@ -2454,7 +2536,7 @@ function pdfBookmarkPageLoading(root: HTMLElement, page: number): boolean {
     return !target?.hasAttribute("data-pdf-ready");
 }
 
-/** Left bookmark list. The paper keeps at least PDF_BOOKMARK_RAIL_PDF_MIN. */
+/** Left side list: bookmarks above, notes below. The paper keeps at least PDF_BOOKMARK_RAIL_PDF_MIN. */
 export const PDF_BOOKMARK_RAIL_DEFAULT = 156;
 export const PDF_BOOKMARK_RAIL_MIN = 96;
 export const PDF_BOOKMARK_RAIL_MAX = 480;
@@ -2502,23 +2584,36 @@ function writePdfBookmarkRailWidth(width: number): void {
     }
 }
 
-/** The list owns its page highlight. A scroll must not re-render every page. */
-function PdfBookmarkRail({
+/** The side rail: bookmarks on top, notes below. The list owns its page
+ *  highlight. A scroll must not re-render every page. */
+function PdfReaderRail({
     lang,
     path,
     bookmarks,
+    annotations,
     scrollerRef,
     focusRef,
+    annotationFocusRef,
     onJump,
+    onJumpAnnotation,
 }: {
     lang: string;
     path: string;
     bookmarks: PdfBookmark[];
+    annotations: PdfTranslation[];
     scrollerRef: React.RefObject<HTMLDivElement | null>;
-    focusRef: React.MutableRefObject<BookmarkFocus>;
+    focusRef: React.MutableRefObject<RailFocus>;
+    annotationFocusRef: React.MutableRefObject<RailFocus>;
     onJump: (bookmark: PdfBookmark) => void;
+    onJumpAnnotation: (note: PdfTranslation) => void;
 }) {
     const railRef = useRef<HTMLDivElement>(null);
+    const notesRailRef = useRef<HTMLDivElement>(null);
+    // A store write (a translation starting, a card drag) rebuilds the lists
+    // even when the rail did not change. Re-revealing on those writes would
+    // yank a list the reader scrolled by hand back to the current page.
+    const bookmarkRevealKey = useRef("");
+    const noteRevealKey = useRef("");
     const columnRef = useRef<HTMLDivElement>(null);
     const [readingPage, setReadingPage] = useState(1);
     const [focusEpoch, setFocusEpoch] = useState(0);
@@ -2559,21 +2654,27 @@ function PdfBookmarkRail({
     }, []);
 
     useEffect(() => {
-        const focus = focusRef.current;
-        focus.gen += 1;
-        focus.id = "";
-        focus.page = 0;
+        for (const focus of [focusRef.current, annotationFocusRef.current]) {
+            focus.gen += 1;
+            focus.id = "";
+            focus.page = 0;
+        }
+        // A share import can keep the host's ids. The new document still has
+        // to reveal its own first row, so forget the previous reveal.
+        bookmarkRevealKey.current = "";
+        noteRevealKey.current = "";
         setReadingPage(1);
-    }, [path, focusRef]);
+    }, [path, focusRef, annotationFocusRef]);
 
     useEffect(() => {
-        const focus = focusRef.current;
-        const onFocus = () => {
+        const bookmarkFocus = focusRef.current;
+        const noteFocus = annotationFocusRef.current;
+        const onFocus = (focus: RailFocus) => () => {
             if (focus.page > 0) {
                 setReadingPage(focus.page);
             } else {
-                // The jump let go, or the bookmark was removed. The highlight
-                // belongs to the page under the bar again.
+                // The jump let go, or the bookmark/note was removed. The
+                // highlight belongs to the page under the bar again.
                 const scroller = scrollerRef.current;
                 const pages = scroller?.querySelectorAll<HTMLElement>("[data-pdf-page]");
                 const next = scroller && pages ? pdfPageAtScrollerTop(scroller, pages) : 0;
@@ -2581,11 +2682,15 @@ function PdfBookmarkRail({
             }
             setFocusEpoch((epoch) => epoch + 1);
         };
-        focus.listeners.add(onFocus);
+        const onBookmarkFocus = onFocus(bookmarkFocus);
+        const onNoteFocus = onFocus(noteFocus);
+        bookmarkFocus.listeners.add(onBookmarkFocus);
+        noteFocus.listeners.add(onNoteFocus);
         return () => {
-            focus.listeners.delete(onFocus);
+            bookmarkFocus.listeners.delete(onBookmarkFocus);
+            noteFocus.listeners.delete(onNoteFocus);
         };
-    }, [focusRef]);
+    }, [focusRef, annotationFocusRef, scrollerRef]);
 
     useEffect(() => {
         const scroller = scrollerRef.current;
@@ -2595,8 +2700,15 @@ function PdfBookmarkRail({
             frame = 0;
             // A jump parks the mark 72px down, so the previous page can still
             // own the top edge. Keep the jumped page until the reader scrolls.
-            const focus = focusRef.current;
-            if (focus.id && focus.page > 0) {
+            // Either list's jump pins its page the same way.
+            const bookmarkPin = focusRef.current;
+            const notePin = annotationFocusRef.current;
+            const focus = bookmarkPin.id && bookmarkPin.page > 0
+                ? bookmarkPin
+                : notePin.id && notePin.page > 0
+                    ? notePin
+                    : null;
+            if (focus) {
                 setReadingPage((current) => (current === focus.page ? current : focus.page));
                 return;
             }
@@ -2613,12 +2725,16 @@ function PdfBookmarkRail({
             scroller.removeEventListener("scroll", onScroll);
             if (frame) cancelAnimationFrame(frame);
         };
-    }, [scrollerRef, focusRef]);
+    }, [scrollerRef, focusRef, annotationFocusRef]);
 
     useEffect(() => {
         const rail = railRef.current;
         if (!rail) return;
         const focus = focusRef.current;
+        // A store write can rebuild the list without changing what the rail
+        // shows. Skip the DOM work when page, target, and row order all match.
+        const key = `${readingPage}|${focus.id}|${bookmarks.map((bookmark) => bookmark.id).join(",")}`;
+        if (bookmarkRevealKey.current === key) return;
         // Match the attribute. An id is not a CSS identifier, and a selector
         // built from it breaks on quotes.
         const focused = focus.id
@@ -2633,11 +2749,39 @@ function PdfBookmarkRail({
             focus.id = "";
             focus.page = 0;
             focus.listeners.forEach((listener) => listener());
+            return;
         }
-        if (chip) revealBookmarkChip(rail, chip);
+        if (chip && revealRailItem(rail, chip)) bookmarkRevealKey.current = key;
     }, [readingPage, bookmarks, focusEpoch, focusRef]);
 
-    const resizeLabel = pdfReaderText(lang, "Drag to resize the bookmark list", "拖动调整书签列表宽度", "Хавчуургын жагсаалтын өргөнийг өөрчлөх");
+    // The note list keeps its own current row for the same reasons: a note
+    // that spans pages is current on each of them, and a jump names one note.
+    useEffect(() => {
+        const rail = notesRailRef.current;
+        if (!rail) return;
+        const focus = annotationFocusRef.current;
+        const key = `${readingPage}|${focus.id}|${annotations.map((note) => note.id).join(",")}`;
+        if (noteRevealKey.current === key) return;
+        const focused = focus.id
+            ? Array.from(rail.querySelectorAll<HTMLElement>("[data-pdf-note]")).find((el) => el.getAttribute("data-pdf-note") === focus.id) ?? null
+            : null;
+        const onThisPage = focused
+            ? (focused.getAttribute("data-pdf-note-pages") ?? "").split(/\s+/).includes(String(readingPage))
+            : false;
+        const chip = onThisPage
+            ? focused
+            : rail.querySelector<HTMLElement>(`[data-pdf-note-pages~="${readingPage}"]`);
+        if (focus.id && !annotations.some((note) => note.id === focus.id)) {
+            focus.gen += 1;
+            focus.id = "";
+            focus.page = 0;
+            focus.listeners.forEach((listener) => listener());
+            return;
+        }
+        if (chip && revealRailItem(rail, chip)) noteRevealKey.current = key;
+    }, [readingPage, annotations, focusEpoch, annotationFocusRef]);
+
+    const resizeLabel = pdfReaderText(lang, "Drag to resize the side list", "拖动调整侧栏宽度", "Хажуугийн жагсаалтын өргөнийг өөрчлөх");
     const railMax = clampPdfBookmarkRailWidth(PDF_BOOKMARK_RAIL_MAX, stageWidth);
 
     const startRailResize = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -2690,45 +2834,111 @@ function PdfBookmarkRail({
             data-testid="pdf-bookmark-column"
             style={{ width: railWidth, flexBasis: railWidth }}
         >
-            <div
-                ref={railRef}
-                className="companion-pdf-bookmarks"
-                data-testid="pdf-bookmark-rail"
-                role="navigation"
-                aria-label={pdfReaderText(lang, "Bookmarks", "书签", "Хавчуурга")}
-            >
-                {bookmarks.map((bookmark) => {
-                    // A jump names one bookmark. Otherwise every bookmark on
-                    // the page under the bar is the current one.
-                    const focusedId = focusRef.current.id;
-                    const here = focusedId ? bookmark.id === focusedId : bookmark.page === readingPage;
-                    return (
-                    <button
-                        key={bookmark.id}
-                        type="button"
-                        className={here ? "companion-pdf-bookmark companion-pdf-bookmark--here" : "companion-pdf-bookmark"}
-                        data-pdf-bookmark={bookmark.id}
-                        data-pdf-bookmark-page={bookmark.page}
-                        data-testid={`pdf-bookmark-${bookmark.id}`}
-                        title={pdfBookmarkChipLabel(lang, bookmark)}
-                        aria-label={pdfBookmarkChipLabel(lang, bookmark)}
-                        aria-current={here ? "true" : undefined}
-                        onClick={() => onJump(bookmark)}
-                    >
-                        <span className="companion-pdf-bookmark-page">{bookmark.page}</span>
-                        <span className="companion-pdf-bookmark-swatch" aria-hidden="true">
-                            <PdfBookmarkRibbon color={bookmark.color} />
-                        </span>
-                        <span className="companion-pdf-bookmark-name">{bookmark.name}</span>
-                    </button>
-                    );
-                })}
-                {bookmarks.length >= PDF_BOOKMARK_LIMIT ? (
-                    <p className="companion-pdf-bookmark-cap" data-testid="pdf-bookmark-cap">
-                        {pdfReaderText(lang, "Showing the latest 200 bookmarks", "只保留最近 200 条书签", "Сүүлийн 200 хавчуурга")}
+            {bookmarks.length > 0 ? (
+                <section
+                    className={annotations.length > 0
+                        ? "companion-pdf-rail-section companion-pdf-rail-section--bookmarks companion-pdf-rail-section--capped"
+                        : "companion-pdf-rail-section companion-pdf-rail-section--bookmarks"}
+                >
+                    <p className="companion-pdf-rail-title" data-testid="pdf-bookmark-title">
+                        {pdfReaderText(lang, "Bookmarks", "书签", "Хавчуурга")}
+                        <span className="companion-pdf-rail-count">{bookmarks.length}</span>
                     </p>
-                ) : null}
-            </div>
+                    <div
+                        ref={railRef}
+                        className="companion-pdf-bookmarks"
+                        data-testid="pdf-bookmark-rail"
+                        role="navigation"
+                        aria-label={pdfReaderText(lang, "Bookmarks", "书签", "Хавчуурга")}
+                    >
+                        {bookmarks.map((bookmark) => {
+                            // A jump names one bookmark. Otherwise every bookmark on
+                            // the page under the bar is the current one.
+                            const focusedId = focusRef.current.id;
+                            const here = focusedId ? bookmark.id === focusedId : bookmark.page === readingPage;
+                            return (
+                            <button
+                                key={bookmark.id}
+                                type="button"
+                                className={here ? "companion-pdf-bookmark companion-pdf-bookmark--here" : "companion-pdf-bookmark"}
+                                data-pdf-bookmark={bookmark.id}
+                                data-pdf-bookmark-page={bookmark.page}
+                                data-testid={`pdf-bookmark-${bookmark.id}`}
+                                title={pdfBookmarkChipLabel(lang, bookmark)}
+                                aria-label={pdfBookmarkChipLabel(lang, bookmark)}
+                                aria-current={here ? "true" : undefined}
+                                onClick={() => onJump(bookmark)}
+                            >
+                                <span className="companion-pdf-bookmark-page">{bookmark.page}</span>
+                                <span className="companion-pdf-bookmark-swatch" aria-hidden="true">
+                                    <PdfBookmarkRibbon color={bookmark.color} />
+                                </span>
+                                <span className="companion-pdf-bookmark-name">{bookmark.name}</span>
+                            </button>
+                            );
+                        })}
+                        {bookmarks.length >= PDF_BOOKMARK_LIMIT ? (
+                            <p className="companion-pdf-bookmark-cap" data-testid="pdf-bookmark-cap">
+                                {pdfReaderText(lang, "Showing the latest 200 bookmarks", "只保留最近 200 条书签", "Сүүлийн 200 хавчуурга")}
+                            </p>
+                        ) : null}
+                    </div>
+                </section>
+            ) : null}
+            {annotations.length > 0 ? (
+                <section
+                    className={bookmarks.length > 0
+                        ? "companion-pdf-rail-section companion-pdf-rail-section--annotations companion-pdf-rail-section--divided"
+                        : "companion-pdf-rail-section companion-pdf-rail-section--annotations"}
+                >
+                    <p className="companion-pdf-rail-title" data-testid="pdf-note-title">
+                        {pdfReaderText(lang, "Notes", "批注", "Тэмдэглэл")}
+                        <span className="companion-pdf-rail-count">{annotations.length}</span>
+                    </p>
+                    <div
+                        ref={notesRailRef}
+                        className="companion-pdf-annotations"
+                        data-testid="pdf-note-rail"
+                        role="navigation"
+                        aria-label={pdfReaderText(lang, "Notes", "批注", "Тэмдэглэл")}
+                    >
+                        {annotations.map((note) => {
+                            // A jump names one note. Otherwise every note whose
+                            // anchor is on the page under the bar is current.
+                            const focusedId = annotationFocusRef.current.id;
+                            const here = focusedId
+                                ? note.id === focusedId
+                                : note.parts.some((part) => part.page === readingPage);
+                            const page = note.parts[0]?.page ?? 1;
+                            const pages = Array.from(new Set(note.parts.map((part) => part.page))).join(" ");
+                            return (
+                                <button
+                                    key={note.id}
+                                    type="button"
+                                    className={here ? "companion-pdf-note-item companion-pdf-note-item--here" : "companion-pdf-note-item"}
+                                    data-pdf-note={note.id}
+                                    data-pdf-note-pages={pages}
+                                    data-testid={`pdf-note-${note.id}`}
+                                    title={pdfAnnotationChipLabel(lang, note)}
+                                    aria-label={pdfAnnotationChipLabel(lang, note)}
+                                    aria-current={here ? "true" : undefined}
+                                    onClick={() => onJumpAnnotation(note)}
+                                >
+                                    <span className="companion-pdf-bookmark-page">{page}</span>
+                                    <span className="companion-pdf-note-swatch" aria-hidden="true">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" focusable="false">
+                                            <path d="m14 5 5 5-8.5 8.5a2 2 0 0 1-2.8 0l-2.2-2.2a2 2 0 0 1 0-2.8z" />
+                                            <path d="m8.5 10.5 5 5" />
+                                            <path d="M5 20h14" />
+                                        </svg>
+                                    </span>
+                                    <span className="companion-pdf-note-name">{pdfAnnotationName(note)}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
+                </section>
+            ) : null}
             <div
                 role="separator"
                 aria-orientation="vertical"
@@ -2781,6 +2991,9 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     const [marks, setMarks] = useState<PdfMark[]>(() => loadPdfMarks(absPath));
     const [bookmarks, setBookmarks] = useState<PdfBookmark[]>(() => loadPdfBookmarks(absPath));
     const [translations, setTranslations] = useState<PdfTranslation[]>(() => loadPdfTranslations(absPath));
+    // The note rail only lists annotations. Keep the array stable across
+    // renders that did not touch the store; the rail's reveal effect uses it.
+    const annotations = useMemo(() => translations.filter((item) => item.kind === "annotation"), [translations]);
     const [drawings, setDrawings] = useState<PdfDrawing[]>(() => loadPdfDrawings(absPath));
     const [drawMode, setDrawMode] = useState(false);
     const [drawColor, setDrawColor] = useState<PdfMarkColor>("yellow");
@@ -2797,9 +3010,10 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     marksRef.current = marks;
     const bookmarksRef = useRef(bookmarks);
     bookmarksRef.current = bookmarks;
-    const bookmarkJumpToken = useRef(0);
-    const bookmarkJumpStop = useRef<(() => void) | null>(null);
-    const bookmarkFocusRef = useRef<BookmarkFocus>({ id: "", page: 0, gen: 0, listeners: new Set() });
+    const placeJumpToken = useRef(0);
+    const placeJumpStop = useRef<(() => void) | null>(null);
+    const bookmarkFocusRef = useRef<RailFocus>({ id: "", page: 0, gen: 0, listeners: new Set() });
+    const annotationFocusRef = useRef<RailFocus>({ id: "", page: 0, gen: 0, listeners: new Set() });
     const translationsRef = useRef(translations);
     translationsRef.current = translations;
     const translateBusyRef = useRef(loadPdfTranslationDrafts(absPath).length > 0);
@@ -2815,9 +3029,9 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         if (focus.id && !next.some((item) => item.id === focus.id)) {
             // The jump closure still holds the old place. Stop it before the
             // list forgets the bookmark, or a late page resize scrolls back.
-            bookmarkJumpToken.current += 1;
-            bookmarkJumpStop.current?.();
-            releaseBookmarkFocus(focus, focus.gen);
+            placeJumpToken.current += 1;
+            placeJumpStop.current?.();
+            releaseRailFocus(focus, focus.gen);
         }
         setBookmarks(next);
     }, []);
@@ -2830,15 +3044,24 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         setTranslations(next);
         setPendingNote(pendingTranslation(drafts[drafts.length - 1]));
         setTranslateError(pdfTranslationError(path));
+        // A note that was just deleted must not keep the jump alive; a late
+        // page resize would scroll back to where it used to be.
+        const focus = annotationFocusRef.current;
+        if (focus.id && !next.some((item) => item.id === focus.id && item.kind === "annotation")) {
+            placeJumpToken.current += 1;
+            placeJumpStop.current?.();
+            releaseRailFocus(focus, focus.gen);
+        }
     }, []);
 
     useEffect(() => {
-        bookmarkJumpToken.current += 1;
-        bookmarkJumpStop.current?.();
-        const focus = bookmarkFocusRef.current;
-        focus.gen += 1;
-        focus.id = "";
-        focus.page = 0;
+        placeJumpToken.current += 1;
+        placeJumpStop.current?.();
+        for (const focus of [bookmarkFocusRef.current, annotationFocusRef.current]) {
+            focus.gen += 1;
+            focus.id = "";
+            focus.page = 0;
+        }
         applyStoredTranslations(absPath);
         setMarks(loadPdfMarks(absPath));
         setBookmarks(loadPdfBookmarks(absPath));
@@ -2976,8 +3199,8 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     }, [src, lang]);
 
     useEffect(() => () => {
-        bookmarkJumpToken.current += 1;
-        bookmarkJumpStop.current?.();
+        placeJumpToken.current += 1;
+        placeJumpStop.current?.();
     }, []);
 
     useEffect(() => {
@@ -3020,7 +3243,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             // Escape inside the annotation editor closes only the editor; the
             // menu stays open so the note can be written or the action chosen.
             const target = event.target as HTMLElement | null;
-            if (target?.closest?.("[data-testid='pdf-annotation-input'], [data-testid='pdf-bookmark-name']")) return;
+            if (target?.closest?.("[data-testid='pdf-annotation-input'], [data-testid='pdf-bookmark-name'], [data-testid='pdf-note-name']")) return;
             event.preventDefault();
             event.stopPropagation();
             setMenu(null);
@@ -3127,13 +3350,16 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         commitBookmarks(bookmarksRef.current.filter((item) => item.id !== id));
     };
 
-    const jumpBookmark = (bookmark: PdfBookmark) => {
-        revealPage(bookmark.page);
-        bookmarkJumpToken.current += 1;
-        const token = bookmarkJumpToken.current;
-        bookmarkJumpStop.current?.();
-        bookmarkJumpStop.current = null;
-        const focusGen = publishBookmarkFocus(bookmarkFocusRef.current, bookmark.id, bookmark.page);
+    // A bookmark and a note jump to the same kind of place: a page plus a
+    // fraction of its height. focus names whichever rail row stays current
+    // until the reader scrolls.
+    const jumpToPlace = (page: number, y: number, focus: RailFocus, focusId: string) => {
+        revealPage(page);
+        placeJumpToken.current += 1;
+        const token = placeJumpToken.current;
+        placeJumpStop.current?.();
+        placeJumpStop.current = null;
+        const focusGen = publishRailFocus(focus, focusId, page);
         // An unseen page is a letter-size shell until pdf.js returns, and a
         // shell above it can still grow after this page has its real size.
         // Follow the pages box until the reader scrolls. The jump's own write
@@ -3159,33 +3385,33 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             if (quiet) window.clearTimeout(quiet);
             timer = 0;
             quiet = 0;
-            if (bookmarkJumpStop.current === stop) bookmarkJumpStop.current = null;
+            if (placeJumpStop.current === stop) placeJumpStop.current = null;
         };
         const align = () => {
-            if (stopped || bookmarkJumpToken.current !== token) return;
+            if (stopped || placeJumpToken.current !== token) return;
             const root = scrollerRef.current;
             if (!root) return;
-            const sample = pdfBookmarkPageSample(root, bookmark.page);
+            const sample = pdfBookmarkPageSample(root, page);
             if (!sample) return;
             if (!pdfBookmarkLayoutMoved(prev, sample)) return;
-            const nextTop = pdfBookmarkScrollTop(sample.pageTop, sample.pageHeight, bookmark.y);
+            const nextTop = pdfBookmarkScrollTop(sample.pageTop, sample.pageHeight, y);
             writing = true;
             root.scrollTop = nextTop;
             placed = root.scrollTop;
             writing = false;
-            const after = pdfBookmarkPageSample(root, bookmark.page);
+            const after = pdfBookmarkPageSample(root, page);
             prev = after ? { ...after, scrollTop: placed } : { ...sample, scrollTop: placed };
         };
         onScroll = () => {
-            if (writing || stopped || bookmarkJumpToken.current !== token) return;
+            if (writing || stopped || placeJumpToken.current !== token) return;
             if (placed < 0 || !prev) return;
             const root = scrollerRef.current;
             if (!root) return;
             if (Math.abs(root.scrollTop - placed) <= 1) return;
-            const sample = pdfBookmarkPageSample(root, bookmark.page);
+            const sample = pdfBookmarkPageSample(root, page);
             if (!sample) return;
             if (pdfBookmarkScrollIsReader(prev, sample)) {
-                releaseBookmarkFocus(bookmarkFocusRef.current, focusGen);
+                releaseRailFocus(focus, focusGen);
                 stop();
                 return;
             }
@@ -3200,7 +3426,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             placed = sample.scrollTop;
         };
         // The pages are done moving. Drop the resize watch, and keep the scroll
-        // listener: the list stays on this bookmark until the reader scrolls.
+        // listener: the list stays on this mark until the reader scrolls.
         // layoutEnded stays set so a callback already queued cannot start the
         // watch again after the shells have their real size, or the 8s cap.
         const endLayoutWatch = () => {
@@ -3214,16 +3440,16 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             quiet = 0;
         };
         const armQuiet = () => {
-            if (stopped || layoutEnded || bookmarkJumpToken.current !== token) return;
+            if (stopped || layoutEnded || placeJumpToken.current !== token) return;
             if (quiet) window.clearTimeout(quiet);
             quiet = window.setTimeout(() => {
                 quiet = 0;
-                if (stopped || layoutEnded || bookmarkJumpToken.current !== token) return;
+                if (stopped || layoutEnded || placeJumpToken.current !== token) return;
                 const root = scrollerRef.current;
                 // The target page can be ready while a page above it, revealed
                 // by this jump, is still the letter-size shell. Ending here
                 // would let that shell's real height slide the mark away.
-                if (root && pdfBookmarkPageLoading(root, bookmark.page)) {
+                if (root && pdfBookmarkPageLoading(root, page)) {
                     armQuiet();
                     return;
                 }
@@ -3231,9 +3457,9 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             }, 400);
         };
         scrollerRef.current?.addEventListener("scroll", onScroll, scrollListen);
-        bookmarkJumpStop.current = stop;
+        placeJumpStop.current = stop;
         requestAnimationFrame(() => requestAnimationFrame(() => {
-            if (bookmarkJumpToken.current !== token) return;
+            if (placeJumpToken.current !== token) return;
             align();
             const box = pagesBoxRef.current;
             if (!box || typeof ResizeObserver === "undefined") return;
@@ -3246,6 +3472,23 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             armQuiet();
             timer = window.setTimeout(endLayoutWatch, 8000);
         }));
+    };
+
+    const jumpBookmark = (bookmark: PdfBookmark) => {
+        // A note jump names a note, so the bookmark row it replaces must let go.
+        // Otherwise its highlight would outlive the jump that set it.
+        releaseRailFocus(annotationFocusRef.current, annotationFocusRef.current.gen);
+        jumpToPlace(bookmark.page, bookmark.y, bookmarkFocusRef.current, bookmark.id);
+    };
+
+    // A note's anchor is its first selection box. The card may hang above or
+    // beside the selection later, but the passage is the place to return to.
+    const jumpAnnotation = (note: PdfTranslation) => {
+        const part = note.parts[0];
+        const rect = part?.rects[0];
+        if (!part || !rect) return;
+        releaseRailFocus(bookmarkFocusRef.current, bookmarkFocusRef.current.gen);
+        jumpToPlace(part.page, rect.y, annotationFocusRef.current, note.id);
     };
 
     const closeMenu = useCallback(() => setMenu(null), []);
@@ -3289,7 +3532,10 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         const source = (menu.parts[0]?.text || menu.hitMark?.text || "").trim();
         if (!body || parts.length === 0 || !source) return;
         const id = newPdfTranslationId();
-        const notes: PdfTranslation = { id, kind: "annotation", text: source, translation: body, parts };
+        // A new note starts with the passage as its name, the way a bookmark
+        // starts with the selection. Right-click the row to rename it.
+        const name = clipPdfAnnotationName(source);
+        const notes: PdfTranslation = { id, kind: "annotation", text: source, translation: body, parts, ...(name ? { name } : {}) };
         const stored = loadPdfTranslations(absPath).filter((item) => item.id !== id);
         savePdfTranslations(absPath, [...stored, notes]);
         setOpenNoteId(id);
@@ -3312,6 +3558,23 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         const next = stored.map((item) => (item.id === id ? { ...item, translation: body } : item));
         savePdfTranslations(pathRef.current, next);
         notifyPdfAnnotationsChanged(pathRef.current);
+    };
+
+    // Renames a note the reader wrote. A received note is the host's copy,
+    // so the next project sync would replace the name; it is not editable.
+    const renameAnnotation = (name: string) => {
+        const id = menu?.hitNoteId ?? "";
+        const nextName = clipPdfAnnotationName(name);
+        if (!id || !nextName) return;
+        const stored = loadPdfTranslations(pathRef.current);
+        const target = stored.find((item) => item.id === id);
+        if (!target || target.kind !== "annotation" || target.shared) return;
+        if (target.name !== nextName) {
+            const next = stored.map((item) => (item.id === id ? { ...item, name: nextName } : item));
+            savePdfTranslations(pathRef.current, next);
+            notifyPdfAnnotationsChanged(pathRef.current);
+        }
+        setMenu(null);
     };
 
     const resizeNote = (id: string, size: PdfTranslationSize | null) => {
@@ -3466,6 +3729,24 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             });
             return;
         }
+        // A note row in the left list has no page underneath it, but rename
+        // and delete work the same way as on the card.
+        const noteId = target?.closest?.("[data-pdf-note]")?.getAttribute("data-pdf-note")?.trim() ?? "";
+        if (noteId && translationsRef.current.some((item) => item.id === noteId && item.kind === "annotation")) {
+            event.preventDefault();
+            setMenu({
+                x: event.clientX,
+                y: event.clientY,
+                hitId: "",
+                hitMark: null,
+                hitNoteId: noteId,
+                hitNoteKind: "annotation",
+                hitBookmarkId: "",
+                anchor: null,
+                parts: [],
+            });
+            return;
+        }
         event.preventDefault();
         const root = scrollerRef.current;
         if (!root) return;
@@ -3522,6 +3803,8 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     for (let page = 1; page <= pdf.numPages; page += 1) pages.push(page);
     const pendingVisible = pendingNote && !translations.some((item) => item.id === pendingNote.id) ? pendingNote : null;
     const shownNotes: ShownTranslation[] = pendingVisible ? [...translations, pendingVisible] : translations;
+    const showRail = bookmarks.length > 0 || annotations.length > 0;
+    const menuNote = menu ? translations.find((item) => item.id === menu.hitNoteId && item.kind === "annotation") : undefined;
     const selectionText = menu?.parts[0]?.text.trim() ?? "";
 
     return (
@@ -3536,15 +3819,18 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             {translateError ? (
                 <p className="companion-pdf-translate-error" role="status" data-testid="pdf-translate-error">{translateError}</p>
             ) : null}
-            <div className={bookmarks.length > 0 ? "companion-pdf-stage companion-pdf-stage--bookmarks" : "companion-pdf-stage"}>
-            {bookmarks.length > 0 ? (
-                <PdfBookmarkRail
+            <div className={showRail ? "companion-pdf-stage companion-pdf-stage--bookmarks" : "companion-pdf-stage"}>
+            {showRail ? (
+                <PdfReaderRail
                     lang={lang}
                     path={absPath}
                     bookmarks={bookmarks}
+                    annotations={annotations}
                     scrollerRef={scrollerRef}
                     focusRef={bookmarkFocusRef}
+                    annotationFocusRef={annotationFocusRef}
                     onJump={jumpBookmark}
+                    onJumpAnnotation={jumpAnnotation}
                 />
             ) : null}
             <div
@@ -3682,11 +3968,16 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
             </div>
             {menu ? (
                 <PdfSelectionMenu
+                    // A different target is a different menu; a half-typed
+                    // name or bookmark form must not carry over to it.
+                    key={menu.hitNoteId || menu.hitBookmarkId || "selection"}
                     lang={lang}
                     state={menu}
                     selectionText={selectionText}
                     bookmarkName={bookmarks.find((item) => item.id === menu.hitBookmarkId)?.name ?? ""}
                     bookmarkColorId={bookmarks.find((item) => item.id === menu.hitBookmarkId)?.color ?? "yellow"}
+                    noteName={menuNote ? pdfAnnotationName(menuNote) : ""}
+                    noteEditable={Boolean(menuNote) && menuNote?.shared !== true}
                     onTranslate={translateSelection}
                     onCopy={copySelection}
                     onPaint={paint}
@@ -3694,6 +3985,7 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                     onAddBookmark={addBookmark}
                     onRenameBookmark={renameBookmark}
                     onDeleteBookmark={deleteBookmark}
+                    onRenameNote={renameAnnotation}
                     onClearNote={clearNote}
                     onClearMark={clearHit}
                     onClose={closeMenu}

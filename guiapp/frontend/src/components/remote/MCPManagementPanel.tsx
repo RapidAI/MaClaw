@@ -434,10 +434,10 @@ function LocalMCPPanel({ translate }: Props) {
                     {servers.length} {translate("mcpLocalCount")}
                 </span>
                 <div style={{ display: "flex", gap: "6px" }}>
-                    <button className="btn-secondary" style={{ fontSize: "0.72rem", padding: "3px 10px" }} onClick={() => { setShowJsonImport(true); setJsonText(""); setJsonError(""); }} disabled={busy}>
+                    <button className="btn-secondary btn--sm" onClick={() => { setShowJsonImport(true); setJsonText(""); setJsonError(""); }} disabled={busy}>
                         {translate("mcpImportJson")}
                     </button>
-                    <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={openCreateForm} disabled={busy}>
+                    <button className="btn-primary" onClick={openCreateForm} disabled={busy}>
                         {translate("mcpAdd")}
                     </button>
                 </div>
@@ -578,7 +578,7 @@ function LocalMCPPanel({ translate }: Props) {
                         </div>
                         <div className="modal-footer">
                             <button className="btn-secondary" onClick={() => setShowJsonImport(false)} disabled={busy}>{translate("cancel")}</button>
-                            <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={handleJsonImport} disabled={busy || !jsonText.trim()}>
+                            <button className="btn-primary" onClick={handleJsonImport} disabled={busy || !jsonText.trim()}>
                                 {busy ? translate("mcpImporting") : translate("mcpImport")}
                             </button>
                         </div>
@@ -642,10 +642,10 @@ function LocalMCPPanel({ translate }: Props) {
                                             placeholder="value"
                                             spellCheck={false}
                                         />
-                                        <button className="btn-secondary btn-danger" style={{ fontSize: "0.68rem", padding: "2px 6px" }} onClick={() => setEnvPairs(envPairs.filter((_, i) => i !== idx))}>DEL</button>
+                                        <button className="btn-secondary btn-danger btn--xs" onClick={() => setEnvPairs(envPairs.filter((_, i) => i !== idx))}>DEL</button>
                                     </div>
                                 ))}
-                                <button className="btn-secondary" style={{ fontSize: "0.72rem", padding: "2px 8px" }} onClick={() => setEnvPairs([...envPairs, { key: "", value: "" }])}>
+                                <button className="btn-secondary btn--xs" onClick={() => setEnvPairs([...envPairs, { key: "", value: "" }])}>
                                     {translate("mcpAddEnvVar")}
                                 </button>
                             </div>
@@ -665,7 +665,7 @@ function LocalMCPPanel({ translate }: Props) {
                         </div>
                         <div className="modal-footer">
                             <button className="btn-secondary" onClick={closeForm} disabled={busy}>{translate("cancel")}</button>
-                            <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={handleSubmit} disabled={busy}>
+                            <button className="btn-primary" onClick={handleSubmit} disabled={busy}>
                                 {busy ? translate("mcpSubmitting") : editingServer ? translate("mcpSave") : translate("mcpAdd")}
                             </button>
                         </div>
@@ -1186,10 +1186,10 @@ function RemoteMCPPanel({ translate }: Props) {
                     {servers.length} {translate("mcpServersRegistered")}
                 </span>
                 <div style={{ display: "flex", gap: "6px" }}>
-                    <button className="btn-secondary" style={{ fontSize: "0.72rem", padding: "3px 10px" }} onClick={() => { setShowJsonImport(true); setJsonText(""); setJsonError(""); }} disabled={busy}>
+                    <button className="btn-secondary btn--sm" onClick={() => { setShowJsonImport(true); setJsonText(""); setJsonError(""); }} disabled={busy}>
                         {translate("mcpImportJson")}
                     </button>
-                    <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={openCreateForm} disabled={busy}>
+                    <button className="btn-primary" onClick={openCreateForm} disabled={busy}>
                         {translate("mcpRegisterServer")}
                     </button>
                 </div>
@@ -1359,7 +1359,7 @@ function RemoteMCPPanel({ translate }: Props) {
                         </div>
                         <div className="modal-footer">
                             <button className="btn-secondary" onClick={closeForm} disabled={busy}>{translate("cancel")}</button>
-                            <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={handleSubmit} disabled={busy}>
+                            <button className="btn-primary" onClick={handleSubmit} disabled={busy}>
                                 {busy ? translate("mcpSubmitting") : editingServer ? translate("mcpSave") : translate("mcpRegister")}
                             </button>
                         </div>
@@ -1405,7 +1405,7 @@ function RemoteMCPPanel({ translate }: Props) {
                         </div>
                         <div className="modal-footer">
                             <button className="btn-secondary" onClick={() => setShowJsonImport(false)} disabled={busy}>{translate("cancel")}</button>
-                            <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={handleJsonImport} disabled={busy || !jsonText.trim()}>
+                            <button className="btn-primary" onClick={handleJsonImport} disabled={busy || !jsonText.trim()}>
                                 {busy ? translate("mcpImporting") : translate("mcpImport")}
                             </button>
                         </div>

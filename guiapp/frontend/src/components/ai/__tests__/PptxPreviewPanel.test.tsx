@@ -81,6 +81,18 @@ describe("PptxPreviewPanel", () => {
         expect(getAllByTestId("pptx-preview-thumbnail")[1].getAttribute("data-active")).toBe("true");
     });
 
+    it("reloads the deck when its revision changes and stays on the selected page", async () => {
+        const props = { absPath: "D:\\decks\\demo.pptx", theme, lang: "zh" };
+        const view = render(<PptxPreviewPanel {...props} revision="1:10" />);
+        await waitFor(() => expect(view.getByTestId("pptx-preview-panel")).toBeTruthy());
+        fireEvent.click(view.getAllByTestId("pptx-preview-thumbnail")[1]);
+        await waitFor(() => expect(view.getByTestId("pptx-preview-page-indicator").textContent).toBe("2 / 3"));
+        ensure.mockClear();
+        view.rerender(<PptxPreviewPanel {...props} revision="2:10" />);
+        await waitFor(() => expect(ensure).toHaveBeenCalledWith("D:\\decks\\demo.pptx"));
+        await waitFor(() => expect(view.getByTestId("pptx-preview-page-indicator").textContent).toBe("2 / 3"));
+    });
+
     it("loads the full slide again when the reader comes back to it", async () => {
         fullDataURL.mockImplementation(async (path: string) => `data:image/png;base64,full:${path}`);
         const { getByTestId, getAllByTestId } = renderPanel();

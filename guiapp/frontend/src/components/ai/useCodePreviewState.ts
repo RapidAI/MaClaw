@@ -26,6 +26,8 @@ export interface CodeFile {
     projectPath?: string;
     /** Create or rewrite that is this task's result, not a coding-source edit. */
     taskResult?: boolean;
+    /** Deck identity. Changes when the file is rewritten, not when a page is checked. */
+    previewRevision?: string;
 }
 
 /**
@@ -729,31 +731,37 @@ export function applyFileUpdate(
     // workspace/workspace. The task path stays; content and read outcome come
     // from the event, so a successful write clears a previous read error.
     const effective = keepOpenLatexWorkbench(existing, file);
+    // An event that does not carry a preview revision must not wipe one that
+    // is already showing, and must not by itself count as a new preview.
+    const revisioned = existing?.previewRevision && !effective.previewRevision
+        ? { ...effective, previewRevision: existing.previewRevision }
+        : effective;
     // Skip no-op updates (identical payload / redelivery) to avoid Map churn during streaming.
     if (
         existing
-        && existing.content === effective.content
-        && existing.original === effective.original
-        && existing.opType === effective.opType
-        && existing.language === effective.language
-        && existing.fileName === effective.fileName
-        && existing.absPath === effective.absPath
-        && existing.previewTruncated === effective.previewTruncated
-        && existing.latexReadError === effective.latexReadError
-        && existing.sessionID === effective.sessionID
-        && existing.projectPath === effective.projectPath
+        && existing.content === revisioned.content
+        && existing.original === revisioned.original
+        && existing.opType === revisioned.opType
+        && existing.language === revisioned.language
+        && existing.fileName === revisioned.fileName
+        && existing.absPath === revisioned.absPath
+        && existing.previewTruncated === revisioned.previewTruncated
+        && existing.latexReadError === revisioned.latexReadError
+        && existing.sessionID === revisioned.sessionID
+        && existing.projectPath === revisioned.projectPath
         && state.activeFilePath === nextActive
         && state.active === nextActiveFlag
         && state.userClosed === nextUserClosed
         && state.sessionID === nextSessionID
         && state.sessionActive === nextSessionActive
         && (!shouldAutoSelect || state.mruOrder[0] === file.filePath)
+        && existing.previewRevision === revisioned.previewRevision
     ) {
         return state;
     }
 
     const nextFiles = new Map(state.files);
-    nextFiles.set(file.filePath, effective);
+    nextFiles.set(file.filePath, revisioned);
 
     return {
         ...state,
@@ -1367,6 +1375,7 @@ export function useCodePreviewState(
                 autoOpenPreview: data.auto_open_preview === true,
                 previewTruncated: data.preview_truncated === true,
                 projectPath: eventProjectPath || undefined,
+                previewRevision: typeof data.preview_revision === "string" ? data.preview_revision : undefined,
             };
             const latexResult = latexResultTab && latexFile;
             if (latexResult) file = prepareLatexResultFile(file, activeTabProjectPath);

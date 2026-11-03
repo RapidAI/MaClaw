@@ -2111,7 +2111,7 @@ export function CodePreviewPanel({
                 >
                     {showWebPreview && activeFile && webTarget ? (
                         <WebPreviewBrowser
-                            key={`${webTarget.kind}:${webTarget.kind === 'remote' ? webTarget.url : webTarget.path}:${activeFile.updatedAt || 0}:${activeFile.content.length}`}
+                            key={`${webTarget.kind}:${webTarget.kind === 'remote' ? webTarget.url : webTarget.path}:${activeFile.updatedAt || 0}:${activeFile.content.length}${activeFile.previewRevision ? `:${activeFile.previewRevision}` : ''}`}
                             absPath={webTarget.kind === 'file' ? webTarget.path : undefined}
                             content={webTarget.kind === 'file' ? activeFile.content : undefined}
                             url={webTarget.kind === 'remote' ? webTarget.url : undefined}

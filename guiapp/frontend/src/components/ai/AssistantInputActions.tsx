@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
+import { Z } from "../ui/zIndex";
 import { createPortal } from "react-dom";
 import { localizeText } from "./aiAssistantI18n";
 import {
@@ -367,7 +368,7 @@ export function AssistantInputActionsLeft({
                                 border: `1px solid ${t.inputBarBorder || t.fieldBorder}`,
                                 background: menuBg,
                                 boxShadow: menuShadow,
-                                zIndex: 40000,
+                                zIndex: Z.panelTop,
                                 color: t.text,
                             }}
                         >
@@ -444,33 +445,44 @@ export function AssistantInputActionsLeft({
     );
 }
 
+/**
+ * Clear and send are one compact trailing pair: both keep the shared composer
+ * control footprint (see baseInputBtnStyle) so they line up with the icon
+ * buttons on the left instead of one control outgrowing the row. Module scope
+ * keeps the object stable across renders.
+ */
+const TRAILING_ACTION_PAIR_STYLE: CSSProperties = { display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 };
+
 export function AssistantInputActionsRight({ canSend, cancelSession, handleCancel, handleClearInput, handleSend, inputValue, isBusy, lang, showBusySpinner, theme: t, themeMode, sendButtonTestId, sendButtonStyle }: Pick<AssistantInputActionsProps, "canSend" | "cancelSession" | "handleCancel" | "handleClearInput" | "handleSend" | "inputValue" | "isBusy" | "lang" | "ready" | "showBusySpinner" | "theme" | "themeMode" | "sendButtonTestId" | "sendButtonStyle">) {
+    // The send sits last — the primary action owns the corner.
     return isBusy && cancelSession ? (
-        <button
-            type="button"
-            onClick={handleCancel}
-            data-testid="ai-cancel-progress"
-            style={getInputActionButtonStyle(t, themeMode, "cancel")}
-            title={localizeText(
-                lang,
-                "Stop generation (also stops desktop Computer Use if active)",
-                "停止生成（若桌面 Computer Use 进行中会一并停止）",
-                "停止生成（若桌面 Computer Use 進行中會一併停止）",
-            )}
-            aria-label={localizeText(lang, "Cancel", "\u53d6\u6d88")}
-        >
-            {showBusySpinner ? <span aria-hidden="true" style={{ width: "14px", height: "14px", borderRadius: "50%", border: `2px solid ${themeMode === "dark" ? "rgba(199, 215, 232, 0.24)" : `color-mix(in srgb, ${t.btnColor} 18%, transparent)`}`, borderTopColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, borderRightColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="stop" size={13} />}
-            <span className="aia-cancel-a11y">{localizeText(lang, "Cancel", "\u53d6\u6d88")}</span>
-        </button>
-    ) : (
-        <>
-            <button type="button" className="ai-composer-send" onClick={handleSend} disabled={!canSend} style={{ ...getInputActionButtonStyle(t, themeMode, canSend ? "send" : "neutral", !canSend), ...sendButtonStyle }} title={localizeText(lang, "Send", "\u53d1\u9001") + " (Enter)"} aria-label={localizeText(lang, "Send", "\u53d1\u9001")} data-testid={sendButtonTestId}>
-                {isBusy ? <span style={{ width: "12px", height: "12px", borderRadius: "50%", border: `2px solid ${t.textMuted}`, borderTopColor: "transparent", animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="cornerDownLeft" size={13} />}
+        <span style={TRAILING_ACTION_PAIR_STYLE}>
+            <button
+                type="button"
+                onClick={handleCancel}
+                data-testid="ai-cancel-progress"
+                style={getInputActionButtonStyle(t, themeMode, "cancel")}
+                title={localizeText(
+                    lang,
+                    "Stop generation (also stops desktop Computer Use if active)",
+                    "停止生成（若桌面 Computer Use 进行中会一并停止）",
+                    "停止生成（若桌面 Computer Use 進行中會一併停止）",
+                )}
+                aria-label={localizeText(lang, "Cancel", "\u53d6\u6d88")}
+            >
+                {showBusySpinner ? <span aria-hidden="true" style={{ width: "14px", height: "14px", borderRadius: "50%", border: `2px solid ${themeMode === "dark" ? "rgba(199, 215, 232, 0.24)" : `color-mix(in srgb, ${t.btnColor} 18%, transparent)`}`, borderTopColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, borderRightColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="stop" size={13} />}
+                <span className="aia-cancel-a11y">{localizeText(lang, "Cancel", "\u53d6\u6d88")}</span>
             </button>
+        </span>
+    ) : (
+        <span style={TRAILING_ACTION_PAIR_STYLE}>
             <button type="button" onClick={handleClearInput} disabled={!inputValue} style={getInputActionButtonStyle(t, themeMode, "neutral", !inputValue)} title={localizeText(lang, "Clear input", "\u6e05\u9664\u8f93\u5165")} aria-label={localizeText(lang, "Clear input", "\u6e05\u9664\u8f93\u5165")} data-testid="ai-clear-input">
                 <AssistantInputIcon name="eraser" size={13} />
             </button>
-        </>
+            <button type="button" className="ai-composer-send" onClick={handleSend} disabled={!canSend} style={{ ...getInputActionButtonStyle(t, themeMode, canSend ? "send" : "neutral", !canSend), ...sendButtonStyle }} title={localizeText(lang, "Send", "\u53d1\u9001") + " (Enter)"} aria-label={localizeText(lang, "Send", "\u53d1\u9001")} data-testid={sendButtonTestId}>
+                {isBusy ? <span style={{ width: "12px", height: "12px", borderRadius: "50%", border: `2px solid ${t.textMuted}`, borderTopColor: "transparent", animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="cornerDownLeft" size={13} />}
+            </button>
+        </span>
     );
 }
 

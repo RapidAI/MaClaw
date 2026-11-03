@@ -118,7 +118,7 @@ func TestWorkflowInitiation_MatchWorkflow(t *testing.T) {
 		if resp == nil {
 			t.Fatal("expected non-nil response")
 		}
-		if !strings.Contains(resp.Text, "未找到匹配") {
+		if !strings.Contains(resp.Text, "No matching approval workflow") {
 			t.Errorf("response should indicate no match, got: %s", resp.Text)
 		}
 		if !strings.Contains(resp.Text, "请假审批") || !strings.Contains(resp.Text, "报销审批") {
@@ -184,7 +184,7 @@ func TestWorkflowInitiation_FieldExtraction(t *testing.T) {
 		if len(session.MissingFields) == 0 {
 			t.Error("expected missing fields since no field values were provided")
 		}
-		if !strings.Contains(resp.Text, "信息") {
+		if !strings.Contains(resp.Text, "information is still required") {
 			t.Errorf("response should ask for missing info, got: %s", resp.Text)
 		}
 		handler.deleteSession("user-ext-2")
@@ -239,8 +239,8 @@ func TestWorkflowInitiation_ConfirmationFlow(t *testing.T) {
 		if !strings.Contains(resp.Text, "") {
 			t.Errorf("response should contain , got: %s", resp.Text)
 		}
-		if !strings.Contains(resp.Text, "审批已发起") {
-			t.Errorf("response should contain '审批已发起', got: %s", resp.Text)
+		if !strings.Contains(resp.Text, "Approval initiated") {
+			t.Errorf("response should contain 'Approval initiated', got: %s", resp.Text)
 		}
 		if !strings.Contains(resp.Text, "WF-") {
 			t.Errorf("response should contain 'WF-', got: %s", resp.Text)
@@ -257,7 +257,7 @@ func TestWorkflowInitiation_ConfirmationFlow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(resp.Text, "已取消") {
+		if !strings.Contains(resp.Text, "Cancelled the initiation flow for") {
 			t.Errorf("response should confirm cancellation, got: %s", resp.Text)
 		}
 		if handler.getSession("user-cancel-1") != nil {
@@ -272,7 +272,7 @@ func TestWorkflowInitiation_ConfirmationFlow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(resp.Text, "已更新") {
+		if !strings.Contains(resp.Text, "Updated information:") {
 			t.Errorf("response should show update, got: %s", resp.Text)
 		}
 		session := handler.getSession("user-modify-1")
@@ -408,7 +408,7 @@ func TestWorkflowInitiation_MultiTurnConversation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("turn 3 error: %v", err)
 	}
-	if !strings.Contains(resp.Text, "") || !strings.Contains(resp.Text, "审批已发起") {
+	if !strings.Contains(resp.Text, "Approval initiated") {
 		t.Errorf("turn 3: expected success, got: %s", resp.Text)
 	}
 	if handler.getSession(userID) != nil {
@@ -454,15 +454,12 @@ func TestWorkflowInitiation_SuccessResponseFormat(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify: "审批已发起，单号：WF-{date}-{seq}"
-	if !strings.Contains(resp.Text, "") {
-		t.Errorf("missing in response: %s", resp.Text)
+	// Verify: "Approval initiated. Number: WF-{date}-{seq}" (i18n fallback is en)
+	if !strings.Contains(resp.Text, "Approval initiated") {
+		t.Errorf("missing 'Approval initiated': %s", resp.Text)
 	}
-	if !strings.Contains(resp.Text, "审批已发起") {
-		t.Errorf("missing '审批已发起': %s", resp.Text)
-	}
-	if !strings.Contains(resp.Text, "单号：WF-") {
-		t.Errorf("missing '单号：WF-': %s", resp.Text)
+	if !strings.Contains(resp.Text, "Number: WF-") {
+		t.Errorf("missing 'Number: WF-': %s", resp.Text)
 	}
 
 	dateStr := time.Now().Format("20060102")

@@ -901,3 +901,222 @@ func postCompanionShareImport(t *testing.T, identity *auth.IdentityService, bear
 	CompanionDocumentShareImportHandler(identity).ServeHTTP(rec, req)
 	return rec
 }
+
+func TestCompanionDocumentShareChangesEndpointAndListETag(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "share-owner@example.com")
+	otherToken, _ := issueViewerToken(t, identity, "share-reader@example.com")
+
+	publicRec := postCompanionShareWithFields(t, identity, ownerToken, "public", "", "", "0", "公开.pdf", "", []byte("%PDF public"))
+	if publicRec.Code != http.StatusOK {
+		t.Fatalf("public create: %d %s", publicRec.Code, publicRec.Body.String())
+	}
+	publicToken := companionShareTokenFrom(t, publicRec)
+	personRec := postCompanionShareWithFields(t, identity, ownerToken, "person", "", "share-reader@example.com", "0", "指定.pdf", "", []byte("%PDF person"))
+	if personRec.Code != http.StatusOK {
+		t.Fatalf("person create: %d %s", personRec.Code, personRec.Body.String())
+	}
+	personToken := companionShareTokenFrom(t, personRec)
+
+	getChanges := func(bearer string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares/changes", nil)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		rec := httptest.NewRecorder()
+		CompanionDocumentShareChangesHandler(identity).ServeHTTP(rec, req)
+		return rec
+	}
+
+	ownerChanges := getChanges(ownerToken)
+	if ownerChanges.Code != http.StatusOK {
+		t.Fatalf("owner changes: %d %s", ownerChanges.Code, ownerChanges.Body.String())
+	}
+	var ownerPayload struct {
+		Seq    uint64 `json:"seq"`
+		Shares []struct {
+			Token         string `json:"token"`
+			Revision      int    `json:"revision"`
+			NotesRevision int    `json:"notes_revision"`
+		} `json:"shares"`
+	}
+	if err := json.Unmarshal(ownerChanges.Body.Bytes(), &ownerPayload); err != nil {
+		t.Fatal(err)
+	}
+	if ownerPayload.Seq == 0 || len(ownerPayload.Shares) != 2 {
+		t.Fatalf("owner changes payload: %s", ownerChanges.Body.String())
+	}
+	seen := map[string]int{}
+	for _, row := range ownerPayload.Shares {
+		seen[row.Token] = row.Revision
+	}
+	if seen[publicToken] != 1 || seen[personToken] != 1 {
+		t.Fatalf("owner change rows: %s", ownerChanges.Body.String())
+	}
+
+	otherChanges := getChanges(otherToken)
+	if otherChanges.Code != http.StatusOK {
+		t.Fatalf("other changes: %d %s", otherChanges.Code, otherChanges.Body.String())
+	}
+	var otherPayload struct {
+		Seq    uint64 `json:"seq"`
+		Shares []struct {
+			Token string `json:"token"`
+		} `json:"shares"`
+	}
+	if err := json.Unmarshal(otherChanges.Body.Bytes(), &otherPayload); err != nil {
+		t.Fatal(err)
+	}
+	// The person share names this reader; the public one does not until they
+	// import it, so only one row is visible now.
+	if len(otherPayload.Shares) != 1 || otherPayload.Shares[0].Token != personToken {
+		t.Fatalf("other change rows: %s", otherChanges.Body.String())
+	}
+
+	// The full list carries the same sequence as an ETag, and a matching
+	// If-None-Match gets a 304 instead of a rebuilt body.
+	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares", nil)
+	listReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	listRec := httptest.NewRecorder()
+	CompanionDocumentSharesHandler(identity).ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", listRec.Code, listRec.Body.String())
+	}
+	etag := listRec.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("list response missing ETag")
+	}
+	cachedReq := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares", nil)
+	cachedReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	cachedReq.Header.Set("If-None-Match", etag)
+	cachedRec := httptest.NewRecorder()
+	CompanionDocumentSharesHandler(identity).ServeHTTP(cachedRec, cachedReq)
+	if cachedRec.Code != http.StatusNotModified {
+		t.Fatalf("conditional list: %d %s", cachedRec.Code, cachedRec.Body.String())
+	}
+
+	// A mutation that moves the sequence: the other reader imports the public
+	// link and becomes an importer, which is durable state.
+	importRec := postCompanionShareImport(t, identity, otherToken, publicToken, `{}`)
+	if importRec.Code != http.StatusOK {
+		t.Fatalf("import: %d %s", importRec.Code, importRec.Body.String())
+	}
+	companionSharePersistWG.Wait()
+	afterChanges := getChanges(ownerToken)
+	var afterPayload struct {
+		Seq uint64 `json:"seq"`
+	}
+	if err := json.Unmarshal(afterChanges.Body.Bytes(), &afterPayload); err != nil {
+		t.Fatal(err)
+	}
+	if afterPayload.Seq != ownerPayload.Seq+1 {
+		t.Fatalf("seq did not bump once after import: before=%d after=%d", ownerPayload.Seq, afterPayload.Seq)
+	}
+	// The stale ETag no longer matches.
+	staleReq := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares", nil)
+	staleReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	staleReq.Header.Set("If-None-Match", etag)
+	staleRec := httptest.NewRecorder()
+	CompanionDocumentSharesHandler(identity).ServeHTTP(staleRec, staleReq)
+	if staleRec.Code != http.StatusOK {
+		t.Fatalf("stale conditional list: %d", staleRec.Code)
+	}
+}
+
+func TestCompanionDocumentShareMarksSyncAndFetch(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "share-owner@example.com")
+	otherToken, _ := issueViewerToken(t, identity, "share-reader@example.com")
+
+	created := postCompanionShareWithFields(t, identity, ownerToken, "person", "", "share-reader@example.com", "0", "标注.pdf", "", []byte("%PDF marks"))
+	if created.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	token := companionShareTokenFrom(t, created)
+
+	marksBody := `{"highlights":[{"id":"m1","page":1}],"chatMarks":[],"annotations":[],"drawings":[],"bookmarks":[]}`
+	postMarks := func(bearer, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/marks", strings.NewReader(body))
+		req.SetPathValue("token", token)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		CompanionDocumentShareMarksUpdateHandler(identity).ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Only the host seat writes marks.
+	stranger := postMarks(otherToken, marksBody)
+	if stranger.Code != http.StatusForbidden {
+		t.Fatalf("reader marks post: %d %s", stranger.Code, stranger.Body.String())
+	}
+	host := postMarks(ownerToken, marksBody)
+	if host.Code != http.StatusOK {
+		t.Fatalf("host marks post: %d %s", host.Code, host.Body.String())
+	}
+	var posted struct {
+		MarksRevision int `json:"marks_revision"`
+	}
+	if err := json.Unmarshal(host.Body.Bytes(), &posted); err != nil || posted.MarksRevision != 1 {
+		t.Fatalf("marks post view: %s", host.Body.String())
+	}
+	companionSharePersistWG.Wait()
+
+	// A second push bumps the marks revision without touching the project
+	// revision.
+	again := postMarks(ownerToken, marksBody)
+	var reposted struct {
+		MarksRevision int `json:"marks_revision"`
+		Revision      int `json:"revision"`
+	}
+	if err := json.Unmarshal(again.Body.Bytes(), &reposted); err != nil || reposted.MarksRevision != 2 || reposted.Revision != 1 {
+		t.Fatalf("marks repost view: %s", again.Body.String())
+	}
+	companionSharePersistWG.Wait()
+
+	getMarks := func(bearer string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares/"+token+"/marks", nil)
+		req.SetPathValue("token", token)
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		rec := httptest.NewRecorder()
+		CompanionDocumentShareMarksHandler(identity).ServeHTTP(rec, req)
+		return rec
+	}
+	got := getMarks(otherToken)
+	if got.Code != http.StatusOK || got.Body.String() != marksBody {
+		t.Fatalf("reader marks get: %d %s", got.Code, got.Body.String())
+	}
+	if got.Header().Get("X-Companion-Marks-Revision") != "2" {
+		t.Fatalf("marks revision header: %q", got.Header().Get("X-Companion-Marks-Revision"))
+	}
+	// A signed-in user with no access is refused.
+	thirdToken, _ := issueViewerToken(t, identity, "share-outsider@example.com")
+	if denied := getMarks(thirdToken); denied.Code != http.StatusForbidden {
+		t.Fatalf("outsider marks get: %d", denied.Code)
+	}
+
+	// The changes endpoint carries the marks revision for the recipient.
+	changesReq := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares/changes", nil)
+	changesReq.Header.Set("Authorization", "Bearer "+otherToken)
+	changesRec := httptest.NewRecorder()
+	CompanionDocumentShareChangesHandler(identity).ServeHTTP(changesRec, changesReq)
+	if changesRec.Code != http.StatusOK || !strings.Contains(changesRec.Body.String(), `"marks_revision":2`) {
+		t.Fatalf("changes rows: %d %s", changesRec.Code, changesRec.Body.String())
+	}
+
+	// Deleting the share cleans the marks blob up too.
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/mobile/documents/shares/"+token, nil)
+	delReq.SetPathValue("token", token)
+	delReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	delRec := httptest.NewRecorder()
+	CompanionDocumentShareDeleteHandler(identity).ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", delRec.Code, delRec.Body.String())
+	}
+	companionSharePersistWG.Wait()
+	if gone := getMarks(otherToken); gone.Code != http.StatusNotFound {
+		t.Fatalf("marks after delete: %d", gone.Code)
+	}
+}

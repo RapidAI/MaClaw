@@ -1222,7 +1222,7 @@
     /* Above the inline assistant title bar (z-index 30000). The bar is its own
        stacking context, so a lower scrim leaves the whole header unmasked and
        still clickable while a dialog is open. */
-    z-index: 40000;
+    z-index: var(--z-panel-top);
     animation: fadeIn 0.15s ease-out;
     -webkit-app-region: no-drag;
     --wails-draggable: no-drag;

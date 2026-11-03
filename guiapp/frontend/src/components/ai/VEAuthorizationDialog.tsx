@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { Z } from "../ui/zIndex";
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
@@ -580,7 +581,7 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                         background: theme.bg,
                         color: theme.text,
                         boxShadow: "0 18px 48px rgba(0,0,0,0.28)",
-                        zIndex: 40000,
+                        zIndex: Z.panelTop,
                     }}
                 >
                     <div className="vead-pop-head">

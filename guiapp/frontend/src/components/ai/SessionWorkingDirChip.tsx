@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Z } from "../ui/zIndex";
 import { createPortal } from "react-dom";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { GetTabWorkingDir, SetTabWorkingDir, OpenProjectDirectory, SelectWorkingDir } from "../../../wailsjs/go/main/App";
@@ -405,7 +406,7 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                         style={{
                             position: "fixed", left: menuPosition.left, top: menuPosition.top,
                             transform: menuPosition.openUp ? "translateY(-100%)" : undefined,
-                            zIndex: 40000,
+                            zIndex: Z.panelTop,
                             background: t.bg, border: `1px solid ${t.fieldBorder}`,
                             borderRadius: 6, boxShadow: "0 4px 8px rgba(15, 23, 42, 0.14)",
                             padding: 4, minWidth: MENU_WIDTH,

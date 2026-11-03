@@ -393,7 +393,11 @@ func checkDirectoryWritable(name, target string) readinessCheck {
 		check.Error = "directory path is empty"
 		return check
 	}
-	if err := os.MkdirAll(target, 0o700); err != nil {
+	// A readiness probe must not mutate the system: report a missing
+	// directory instead of creating it, otherwise a probe would mask a
+	// deleted or unmounted data root on the very call meant to detect it.
+	info, err := os.Stat(target)
+	if err != nil || !info.IsDir() {
 		check.Status = "fail"
 		check.Error = "directory is not writable"
 		return check

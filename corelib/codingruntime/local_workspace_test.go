@@ -10,7 +10,21 @@ import (
 	"testing"
 )
 
+// isolateLocalWorkspaceGit stops git from discovering a repository above the
+// temp workspace. Some hosts keep their user home under version control; the
+// coding-runtime tests assume a temp workspace is outside any repository and
+// would otherwise inherit the parent repo's HEAD and its untracked-file scan.
+func isolateLocalWorkspaceGit(t *testing.T) {
+	t.Helper()
+	ceiling := os.TempDir()
+	if current := os.Getenv("GIT_CEILING_DIRECTORIES"); current != "" {
+		ceiling = current + string(os.PathListSeparator) + ceiling
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", ceiling)
+}
+
 func TestLocalGitWorkspaceProberFailsClosedOutsideRepository(t *testing.T) {
+	isolateLocalWorkspaceGit(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("untracked"), 0o600); err != nil {
 		t.Fatal(err)
@@ -55,6 +69,7 @@ func TestLocalGitWorkspaceProberCapturesHeadAndDirtyStatus(t *testing.T) {
 }
 
 func TestLocalGitWorkspaceProberHonorsCancelledContextWithoutWriting(t *testing.T) {
+	isolateLocalWorkspaceGit(t)
 	dir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -68,6 +83,7 @@ func TestLocalGitWorkspaceProberHonorsCancelledContextWithoutWriting(t *testing.
 }
 
 func TestEnsureLocalGitBaselineInitializesEmptyDirectory(t *testing.T) {
+	isolateLocalWorkspaceGit(t)
 	dir := t.TempDir()
 	if err := EnsureLocalGitBaseline(context.Background(), dir); err != nil {
 		t.Fatal(err)
@@ -103,6 +119,7 @@ func TestEnsureLocalGitBaselineIsIdempotentOnExistingRepository(t *testing.T) {
 }
 
 func TestEnsureLocalGitBaselineCommitsRepositoryWithoutHead(t *testing.T) {
+	isolateLocalWorkspaceGit(t)
 	dir := t.TempDir()
 	runLocalWorkspaceGit(t, dir, "init")
 	if err := EnsureLocalGitBaseline(context.Background(), dir); err != nil {

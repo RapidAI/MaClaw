@@ -114,6 +114,8 @@
     --z-floating-panel: 4000;   /* in-panel floating toolbars, composer popovers */
     --z-overlay: 9999;          /* full-viewport scrim + feature modal panel */
     --z-sticky-toast: 10000;    /* toasts/banners that must clear an overlay */
+    --z-panel-top: 40000;       /* composer dropdowns, context menus, in-app authorization panels */
+    --z-topmost: 99999;         /* pane-level topmost (tab-bar menus, migration overlay); below the anchors */
 }
 
 /*
@@ -11229,7 +11231,7 @@ button.knowledge-chip:disabled {
     /* Above the inline assistant title bar (z-index 30000). The bar is its own
        stacking context, so a lower scrim leaves the whole header unmasked and
        still clickable while a dialog is open. */
-    z-index: 40000;
+    z-index: var(--z-panel-top);
     animation: fadeIn 0.15s ease-out;
     -webkit-app-region: no-drag;
     --wails-draggable: no-drag;
@@ -19348,7 +19350,7 @@ button.tbk-pill {
     inset: 0;
     /* Dialog scrims outrank both app title bars; see .modal-overlay in
        50-pet-provider.css. */
-    z-index: 40000;
+    z-index: var(--z-panel-top);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -26805,10 +26807,39 @@ button.tbk-pill {
 .rsc-error { color: var(--theme-danger); font-size: 12px; margin-bottom: 8px; }
 .rsc-live-actions { display: flex; gap: 8px; }
 
-/* CodingAgentPlanChecklist.tsx */
-.capc-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+/* CodingAgentPlanChecklist.tsx — modern collapsible task card (T1/T2/…) */
+.capc-checklist { padding: 9px 10px 10px; border-radius: 12px; box-shadow: 0 4px 16px rgba(34, 56, 82, 0.06); font-size: 12px; line-height: 1.45; }
+.capc-toggle { display: block; width: 100%; border: 0; margin: 0; padding: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.capc-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 60%, transparent); outline-offset: 2px; }
+.capc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 8px; margin: -3px -8px 7px; border-radius: 8px; transition: background-color 0.15s ease; }
+.capc-toggle:hover:not(:disabled) .capc-head { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 5%, transparent); }
+.capc-toggle:disabled { cursor: default; }
+.capc-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-weight: 600; }
+.capc-title svg { flex-shrink: 0; }
+.capc-progress { display: inline-flex; align-items: center; gap: 6px; margin-left: 2px; font-weight: 500; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.capc-track { width: 48px; height: 4px; border-radius: 999px; background: color-mix(in srgb, currentColor 18%, transparent); overflow: hidden; }
+.capc-fill { display: block; height: 100%; border-radius: 999px; transition: width 0.25s ease; }
+.capc-head-end { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap; }
+.capc-current { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; }
+.capc-pulse-dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; flex-shrink: 0; animation: capc-pulse 1.2s ease-in-out infinite; }
+.capc-chevron { display: inline-flex; flex-shrink: 0; color: var(--theme-text-muted, #5b6b80); transition: transform 0.18s ease; }
+.capc-collapsed .capc-chevron { transform: rotate(-90deg); }
+/* The collapsible body rides grid-template-rows 1fr⇄0fr, so no fixed heights
+   are needed; visibility keeps a collapsed body out of tab order and screen
+   readers while the close transition finishes. */
+.capc-body { display: grid; grid-template-rows: 1fr; min-height: 0; visibility: visible; transition: grid-template-rows 0.2s ease, visibility 0.2s; }
+.capc-collapsed .capc-body { grid-template-rows: 0fr; visibility: hidden; }
+.capc-body-flow { min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 8px; padding: 1px 0 2px; }
+.capc-understanding { padding: 7px 9px; border-radius: 8px; }
+.capc-u-title { font-weight: 600; margin-bottom: 3px; }
 .capc-steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
-.capc-glyph { width: 14px; flex-shrink: 0; text-align: center; }
+.capc-step { display: flex; gap: 8px; align-items: baseline; padding: 2px 6px; margin: 0 -6px; border-radius: 6px; transition: background-color 0.15s ease; }
+.capc-step:hover { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 4%, transparent); }
+.capc-step-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.capc-step-note { font-weight: 400; white-space: pre-wrap; max-width: 100%; }
+.capc-glyph { width: 14px; flex-shrink: 0; }
+.capc-glyph svg { display: block; transform: translateY(2px); }
+.capc-spin { transform-box: fill-box; transform-origin: center; animation: capc-spin 0.9s linear infinite; }
 /* Fixed-width index column keeps T1…T99 titles on one vertical line
    (24px covers two digits; spans still grow past it if needed). */
 .capc-step-idx { flex-shrink: 0; min-width: 24px; opacity: 0.86; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -26816,7 +26847,60 @@ button.tbk-pill {
    already caps the border; inheriting it would also break T10 and the buttons. */
 .capc-step-title { min-width: 0; flex: 1; overflow-wrap: anywhere; }
 [data-testid='coding-agent-plan-understanding'] { overflow-wrap: anywhere; }
-.capc-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.capc-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.capc-gate { min-height: 27px; padding: 0 12px; border-radius: 6px; font: inherit; font-size: 12px; line-height: 1; cursor: pointer; }
+.capc-gate:disabled { cursor: not-allowed; opacity: 0.55; }
+.capc-gate:hover:not(:disabled) { filter: brightness(0.97); }
+@keyframes capc-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(0.7); opacity: 0.55; } }
+@keyframes capc-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .capc-pulse-dot, .capc-spin, .gkc-pulse-dot, .gkc-spin { animation: none; }
+  .capc-fill, .capc-chevron, .capc-body, .capc-head, .capc-step, .gkc-count-fill, .gkc-fill, .gkc-step { transition: none; }
+}
+
+/* GoalChecklistCard.tsx (transcript goalChecklist card; shares capc keyframes).
+   The tinted surface + accent border lives here: CodingAgentPlanChecklist gets
+   its card fill from inline style chrome, this card has none. */
+.gkc-card { padding: 10px 12px 10px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--theme-primary, #2e75cb) 18%, var(--theme-border-subtle, #e2e9f3)); background: color-mix(in srgb, var(--theme-primary, #2e75cb) 4%, var(--theme-surface-muted, #f1f6fc)); box-shadow: 0 4px 16px rgba(34, 56, 82, 0.06); font-size: 12px; line-height: 1.5; color: var(--theme-text-primary, #24364e); box-sizing: border-box; max-width: 100%; min-width: 0; }
+.gkc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px; }
+.gkc-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-weight: 600; letter-spacing: .01em; }
+.gkc-title-icon { display: inline-flex; flex-shrink: 0; color: var(--theme-primary, #2e75cb); }
+.gkc-head-end { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap; }
+.gkc-count { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 500; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; }
+.gkc-count-track { width: 46px; height: 4px; border-radius: 999px; background: color-mix(in srgb, currentColor 18%, transparent); overflow: hidden; }
+.gkc-count-fill { display: block; height: 100%; border-radius: 999px; background: currentColor; transition: width 0.25s var(--ease-out, ease); }
+.gkc-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2.5px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: .01em; }
+.gkc-chip--run { color: var(--theme-primary-strong, #1e6bc5); background: var(--theme-primary-soft, rgba(47, 120, 208, 0.1)); }
+.gkc-chip--done { color: var(--theme-success, #11813a); background: var(--theme-success-bg, rgba(22, 163, 74, 0.07)); }
+.gkc-chip--fail { color: var(--theme-danger, #dc1f25); background: var(--theme-danger-bg, rgba(229, 72, 77, 0.06)); }
+.gkc-chip--hold { color: var(--theme-warning, #aa5d05); background: var(--theme-warning-bg, rgba(217, 119, 6, 0.07)); }
+.gkc-pulse-dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; flex-shrink: 0; animation: capc-pulse 1.2s ease-in-out infinite; }
+.gkc-track { position: relative; height: 4px; border-radius: 999px; margin-top: 9px; background: color-mix(in srgb, var(--theme-text-muted, #5b6b80) 16%, transparent); overflow: hidden; }
+.gkc-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--theme-primary, #2e75cb) 70%, transparent), var(--theme-primary, #2e75cb)); transition: width 0.3s var(--ease-out, ease); }
+.gkc-activity { display: flex; align-items: center; gap: 7px; margin-top: 9px; padding: 5px 9px; border-radius: 8px; background: var(--theme-primary-soft, rgba(47, 120, 208, 0.1)); color: var(--theme-primary-strong, #1e6bc5); font-weight: 500; }
+.gkc-activity--solo { padding: 7px 10px; }
+.gkc-activity svg { flex-shrink: 0; }
+.gkc-activity-text { min-width: 0; overflow-wrap: anywhere; }
+.gkc-steps { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.gkc-step { display: flex; align-items: baseline; gap: 8px; padding: 3px 8px; margin: 0 -8px; border-radius: 7px; transition: background-color 0.15s ease; }
+.gkc-step:hover { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 4%, transparent); }
+.gkc-step[data-mark="pending"] { color: var(--theme-text-muted, #5b6b80); }
+.gkc-step[data-mark="progress"] { background: var(--theme-primary-soft, rgba(47, 120, 208, 0.1)); color: var(--theme-primary-strong, #1e6bc5); font-weight: 600; }
+.gkc-step[data-mark="done"] { color: var(--theme-text-secondary, #46586f); }
+.gkc-step[data-mark="done"] .gkc-glyph { color: var(--theme-success, #11813a); }
+.gkc-step[data-mark="failed"] { color: var(--theme-danger, #dc1f25); }
+.gkc-glyph { width: 15px; flex-shrink: 0; display: inline-flex; }
+.gkc-glyph svg { display: block; transform: translateY(2px); }
+.gkc-step-idx { flex-shrink: 0; min-width: 18px; font-variant-numeric: tabular-nums; opacity: 0.75; white-space: nowrap; }
+.gkc-step-title { min-width: 0; overflow-wrap: anywhere; }
+.gkc-reason { margin-top: 8px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.gkc-reason--fail { color: var(--theme-danger, #dc1f25); }
+.gkc-reason--hold { color: var(--theme-warning, #aa5d05); }
+.gkc-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; margin-top: 9px; padding-top: 7px; border-top: 1px solid var(--theme-border-subtle, #e2e9f3); }
+.gkc-meta-chip { font-size: 11px; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; }
+/* Rotates the svg root: view-box keeps the origin at the glyph center (the
+   capc variant spins a <g> sized by its own fill-box). */
+.gkc-spin { transform-box: view-box; transform-origin: center; animation: capc-spin 0.9s linear infinite; }
 
 /* CodingAgentProgressStatus.tsx */
 .caps-file-head { font-weight: 600; flex: 1; min-width: 0; }
@@ -29441,7 +29525,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .vet-spinning { animation: vet-icon-spin 0.9s linear infinite; }
 /* Rendered inside the scaled app shell, so it must outrank the inline
    assistant title bar (z-index 30000), same as .modal-overlay. */
-.vet-dialog-overlay { position: fixed; inset: 0; z-index: 40000; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.32); }
+.vet-dialog-overlay { position: fixed; inset: 0; z-index: var(--z-panel-top); display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.32); }
 .vet-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .vet-info-avatar-block { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 20px; }
 .vet-info-avatar-wrap { position: relative; }
@@ -31886,34 +31970,100 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-task-result-card__upload--error { color: var(--theme-danger); }
 .mc-task-summary-status { margin: 0 0 6px; color: var(--theme-text-muted); font-size: 12px; }
 .mc-task-summary-status[data-status='incomplete'] { color: var(--theme-danger, #a33b32); }
-.mc-task-artifacts { margin-top: 10px; }
-.mc-task-artifacts__label { margin-bottom: 8px; color: var(--theme-text-muted); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+/* Task artifacts: a quiet "deliverable" section holding one card per file.
+   The card carries the file chip and its action strip, so the deliverable
+   reads as one object instead of a chip floating over loose buttons. */
+.mc-task-artifacts {
+  margin-top: 12px; padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 9%, var(--theme-border));
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--theme-primary) 5%, var(--theme-surface)), var(--theme-surface) 68%);
+}
+.mc-task-artifacts__head { display: flex; align-items: center; gap: 7px; margin-bottom: 10px; }
+.mc-task-artifacts__glyph {
+  display: inline-grid; place-items: center; width: 18px; height: 18px; flex: none;
+  border-radius: 6px; background: var(--theme-primary-soft); color: var(--mc-accent, #2e75cb); font-size: 10px;
+}
+.mc-task-artifacts__label { color: var(--theme-text-secondary); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.mc-task-artifacts__count {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 6px;
+  border-radius: var(--radius-pill); background: var(--theme-primary-soft); color: var(--mc-accent, #2e75cb);
+  font-size: 10.5px; font-weight: 700;
+}
+/* filecompanion and similar legacy surfaces render the label bare, without
+   the head row; keep its spacing here. */
+.mc-task-artifacts > .mc-task-artifacts__label { margin-bottom: 10px; }
 .mc-task-artifacts__row { display: flex; flex-wrap: wrap; gap: 12px; }
-.mc-task-artifact-item { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 6px; max-width: 100%; min-width: 0; }
-.mc-task-artifact-item__head { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; }
-/* Compound selectors out-rank the shared .mc-task-result-card__actions rules
-   below regardless of file order — colors still come from the shared + dark
-   rules, only sizing/spacing are per-file here. */
-.mc-task-artifact-item__actions.mc-task-result-card__actions { margin-top: 0; gap: 6px; }
-.mc-task-artifact-item__actions.mc-task-result-card__actions button { min-height: 26px; padding: 0 10px; border-radius: 8px; font-size: 11.5px; transition: border-color 120ms ease, color 120ms ease, background 120ms ease; }
+.mc-task-artifact-item {
+  position: relative; display: flex; flex-direction: column; align-items: stretch;
+  min-width: min(340px, 100%); max-width: 100%;
+  border: 1px solid var(--theme-border); border-radius: var(--radius-lg);
+  background: var(--theme-surface); overflow: hidden; box-shadow: var(--shadow-sm);
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+.mc-task-artifact-item:hover {
+  border-color: color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border));
+  box-shadow: var(--shadow-md); transform: translateY(-1px);
+}
+.mc-task-artifact-item__head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 10px 12px 9px; }
+.mc-task-artifact-item__head .mc-task-artifact { flex: 0 1 auto; }
+/* The cloud-upload affordance rides the card's right edge. */
+.mc-task-artifact-item__head .mc-task-result-card__upload { margin-left: auto; }
+/* 120-app-responsive excludes .mc-task-artifact-item__actions from the generic
+   #App repaint, so this strip owns its own palette and hover states outright. */
+.mc-task-artifact-item__actions.mc-task-result-card__actions {
+  margin-top: 0; gap: 8px; padding: 9px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--theme-border) 66%, transparent);
+  background: color-mix(in srgb, var(--theme-surface-muted) 44%, var(--theme-surface));
+}
+.mc-task-artifact-item__actions.mc-task-result-card__actions button { min-height: 30px; padding: 0 12px; border-radius: 9px; font-size: 12px; transition: border-color 140ms ease, color 140ms ease, background 140ms ease, box-shadow 140ms ease; }
+/* Filled primary (预览) leads the strip. The class says "fill", not
+   "primary": a global office-repaint repaints button[class*='primary']
+   with --office-accent and would fight this theme-token fill here. */
+.mc-task-artifact-item__actions .mc-artifact-btn--fill {
+  border: 1px solid transparent; border-radius: 9px;
+  background: linear-gradient(180deg, var(--theme-primary), var(--theme-primary-strong));
+  color: var(--theme-on-primary); font-weight: 600;
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--theme-primary) 32%, transparent);
+}
+.mc-task-artifact-item__actions .mc-artifact-btn--fill:hover:not(:disabled) {
+  background: linear-gradient(180deg, var(--theme-primary-strong), var(--mc-accent-strong, var(--theme-primary-strong)));
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-primary) 38%, transparent);
+}
 .mc-task-artifact-item__actions button:focus-visible { outline: 2px solid color-mix(in srgb, var(--mc-accent, #2e75cb) 45%, transparent); outline-offset: 1px; }
 .mc-task-artifact {
-  display: inline-flex; align-items: center; gap: 8px; max-width: 260px; min-width: 0;
-  padding: 8px 12px; border: 1px solid var(--theme-border); border-radius: var(--radius-lg);
+  display: inline-flex; align-items: center; gap: 9px; flex: 0 1 auto; max-width: 340px; min-width: 0;
+  padding: 7px 10px; border: 1px solid var(--theme-border); border-radius: var(--radius-lg);
   background: var(--theme-surface); color: var(--theme-text-primary); text-decoration: none;
+  transition: border-color 140ms ease, background 140ms ease;
 }
+/* Inside the item card the chip drops its own chrome — the card carries it. */
+.mc-task-artifact-item__head .mc-task-artifact { padding: 0; border-color: transparent; background: transparent; }
 .mc-task-artifact:hover { border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); }
+.mc-task-artifact-item__head .mc-task-artifact:hover { border-color: transparent; }
 .mc-task-artifact__icon {
-  display: inline-grid; place-items: center; width: 28px; height: 28px; flex: none;
-  border-radius: var(--radius-md); background: var(--theme-primary-soft); color: var(--mc-accent, #2e75cb); font-size: 14px;
+  display: inline-grid; place-items: center; width: 32px; height: 32px; flex: none;
+  border-radius: 10px;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--theme-primary) 17%, var(--theme-surface)), color-mix(in srgb, var(--theme-primary) 8%, var(--theme-surface)));
+  color: var(--mc-accent, #2e75cb); font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 16%, transparent);
 }
-.mc-task-artifact__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
-.mc-task-artifact__open { flex: none; color: var(--theme-text-muted); font-size: 12px; }
+.mc-task-artifact__icon--glyph { font-size: 15px; font-weight: 500; }
+/* The OS association icon arrives with its own colors (PDF red, Word blue).
+   The tinted tile would fight it, so the shell disappears; the img keeps a
+   little air inside the tile's footprint. */
+.mc-task-artifact__icon--os { background: transparent; box-shadow: none; }
+.mc-task-artifact__img { display: block; width: 24px; height: 24px; object-fit: contain; }
+.mc-task-artifact__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; color: var(--theme-text-primary); }
+.mc-task-artifact__open { flex: none; color: var(--theme-text-muted); font-size: 13px; margin-left: 2px; transition: transform 140ms ease, color 140ms ease; }
+.mc-task-artifact:hover .mc-task-artifact__open { transform: translate(2px, -2px); color: var(--mc-accent, #2e75cb); }
 .mc-task-artifacts__more {
-  margin-top: 8px; padding: 0; border: none; background: transparent; color: var(--theme-text-secondary);
-  font-size: 12px; cursor: pointer;
+  margin-top: 10px; padding: 0 10px; min-height: 26px;
+  border: 1px dashed color-mix(in srgb, var(--theme-border) 90%, transparent); border-radius: var(--radius-pill);
+  background: transparent; color: var(--theme-text-secondary); font-size: 12px; cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease;
 }
-.mc-task-artifacts__more:hover { color: var(--mc-accent, #2e75cb); }
+.mc-task-artifacts__more:hover { color: var(--mc-accent, #2e75cb); border-color: color-mix(in srgb, var(--theme-primary) 40%, transparent); }
 .mc-task-result-card__actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .mc-task-result-card__actions button { min-height: 28px; padding: 0 10px; border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: var(--theme-surface); color: var(--theme-text-secondary); font-size: 11px; cursor: pointer; }
 .mc-task-result-card__actions button:hover { border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); color: var(--mc-accent, #2e75cb); background: var(--theme-primary-soft); }
@@ -31928,6 +32078,35 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 #App[data-ai-theme='dark'] .mc-task-result-card__upload { color: var(--theme-text-secondary); }
 #App[data-ai-theme='dark'] .mc-task-result-card__upload--idle:hover:not(:disabled) { background: var(--theme-surface-muted); color: var(--theme-primary-strong); }
 #App[data-ai-theme='dark'] .mc-task-result-card__actions button { border-color: var(--theme-border); background: var(--theme-surface-muted); color: var(--theme-text-secondary); }
+#App[data-ai-theme='dark'] .mc-task-artifacts {
+  border-color: color-mix(in srgb, var(--theme-primary) 14%, var(--theme-border));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--theme-primary) 6%, var(--theme-surface)), var(--theme-surface) 68%);
+}
+#App[data-ai-theme='dark'] .mc-task-artifacts__glyph,
+#App[data-ai-theme='dark'] .mc-task-artifacts__count { background: color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface)); color: var(--theme-primary-strong); }
+#App[data-ai-theme='dark'] .mc-task-artifacts__label { color: var(--theme-text-secondary); }
+#App[data-ai-theme='dark'] .mc-task-artifact-item { border-color: var(--theme-border); background: var(--theme-surface); }
+#App[data-ai-theme='dark'] .mc-task-artifact-item:hover { border-color: color-mix(in srgb, var(--theme-primary) 36%, var(--theme-border)); }
+#App[data-ai-theme='dark'] .mc-task-artifact-item__actions.mc-task-result-card__actions {
+  border-top-color: color-mix(in srgb, var(--theme-border) 70%, transparent);
+  background: color-mix(in srgb, var(--theme-surface-muted) 55%, var(--theme-surface));
+}
+/* Scoped so they out-rank the generic dark action rule above. */
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions button { border-color: var(--theme-border); background: transparent; color: var(--theme-text-secondary); }
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--theme-primary) 42%, var(--theme-border)); background: var(--theme-primary-soft); color: var(--theme-primary-strong); }
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-artifact-btn--fill,
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-artifact-btn--fill:hover:not(:disabled) {
+  border-color: transparent;
+  background: linear-gradient(180deg, var(--theme-primary), var(--theme-primary-strong));
+  color: var(--theme-on-primary);
+}
+#App[data-ai-theme='dark'] .mc-task-artifact__icon {
+  background: linear-gradient(160deg, color-mix(in srgb, var(--theme-primary) 22%, var(--theme-surface)), color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface)));
+  color: var(--theme-primary-strong);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 22%, transparent);
+}
+#App[data-ai-theme='dark'] .mc-task-artifact__icon--os { background: transparent; box-shadow: none; }
+#App[data-ai-theme='dark'] .mc-task-artifacts__more { border-color: var(--theme-border); color: var(--theme-text-secondary); }
 #App[data-ai-theme='dark'] .mc-execution-step:not(:last-child)::after { background: var(--theme-border) !important; }
 #App[data-ai-theme='dark'] .mc-execution-step > span:first-child { background: var(--theme-primary-soft) !important; color: var(--theme-primary-strong) !important; }
 #App[data-ai-theme='dark'] .mc-execution-step[data-status='passed'] > span:first-child { background: color-mix(in srgb, var(--mc-done) 16%, var(--theme-surface)) !important; color: var(--mc-done) !important; }
@@ -34140,7 +34319,60 @@ input.cwshare-url {
 .companion-pdf-bookmark-resize:focus-visible {
   outline: none;
 }
-.companion-pdf-bookmarks {
+/* Two lists share the column: bookmarks on top, notes below. Each list has
+   its own scroll box, so a long bookmark list cannot push the notes off the
+   screen. The cap leaves the notes at least half the column. */
+.companion-pdf-rail-section {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 0;
+  --wails-draggable: no-drag;
+}
+.companion-pdf-rail-section--bookmarks {
+  flex: 1 1 auto;
+}
+.companion-pdf-rail-section--bookmarks.companion-pdf-rail-section--capped {
+  flex: 0 1 auto;
+  max-height: 50%;
+}
+.companion-pdf-rail-section--annotations {
+  flex: 1 1 auto;
+  /* The usual minimum keeps the title and a couple of rows. A pane shorter
+     than that gives the section 45% instead, so its scrollbar stays inside
+     the rail instead of being clipped at the bottom. */
+  min-height: min(96px, 45%);
+}
+/* The rule only separates two lists. A notes-only rail starts at the top. */
+.companion-pdf-rail-section--annotations.companion-pdf-rail-section--divided {
+  padding-top: 6px;
+  border-top: 1px solid var(--theme-border, #d5e0ef);
+}
+.companion-pdf-rail-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin: 0 0 4px;
+  padding: 0 2px;
+  color: var(--theme-text-secondary, #46586f);
+  font: 600 11px/1.3 "Segoe UI", "Microsoft YaHei", sans-serif;
+  letter-spacing: 0.02em;
+}
+.companion-pdf-rail-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-text-muted, #6b7c93) 14%, transparent);
+  color: var(--theme-text-secondary, #46586f);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.companion-pdf-bookmarks,
+.companion-pdf-annotations {
   position: relative;
   z-index: 1;
   display: flex;
@@ -34149,9 +34381,30 @@ input.cwshare-url {
   flex: 1 1 auto;
   width: auto;
   min-height: 0;
-  overflow: auto;
-  padding: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0 2px 0 0;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--theme-text-muted, #6b7c93) 55%, transparent) transparent;
   --wails-draggable: no-drag;
+}
+/* A thumb that is easy to see and grab. The global 8px bar stays for the
+   rest of the app; these two lists get a wider one. */
+.companion-pdf-bookmarks::-webkit-scrollbar,
+.companion-pdf-annotations::-webkit-scrollbar {
+  width: 10px;
+}
+.companion-pdf-bookmarks::-webkit-scrollbar-thumb,
+.companion-pdf-annotations::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--theme-text-muted, #6b7c93) 55%, transparent);
+  border-radius: var(--radius-pill);
+}
+.companion-pdf-bookmarks::-webkit-scrollbar-thumb:hover,
+.companion-pdf-annotations::-webkit-scrollbar-thumb:hover,
+.companion-pdf-bookmarks::-webkit-scrollbar-thumb:active,
+.companion-pdf-annotations::-webkit-scrollbar-thumb:active {
+  background: color-mix(in srgb, var(--theme-text-muted, #6b7c93) 72%, transparent);
 }
 .companion-pdf-bookmark {
   display: flex;
@@ -34199,6 +34452,52 @@ input.cwshare-url {
   height: 100%;
 }
 .companion-pdf-bookmark-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* A note row mirrors a bookmark chip: page, a small pen glyph, then the name. */
+.companion-pdf-note-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 26px;
+  margin: 0;
+  padding: 3px 8px 3px 6px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: 999px;
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-primary, #1c2834);
+  font: 12px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+}
+.companion-pdf-note-item:hover,
+.companion-pdf-note-item:focus-visible,
+.companion-pdf-note-item--here {
+  border-color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-pdf-note-item--here {
+  background: var(--theme-primary-soft, rgba(47, 120, 208, 0.12));
+}
+.companion-pdf-note-swatch {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: var(--theme-primary, #2e75cb);
+}
+.companion-pdf-note-swatch svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.companion-pdf-note-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -36818,29 +37117,91 @@ body.companion-pdf-translation-dragging * {
   background: var(--theme-surface);
 }
 .file-companion-annotations {
-  flex: 0 0 auto;
+  box-sizing: border-box;
+  flex: 0 1 auto;
+  min-height: 40px;
+  display: flex;
+  flex-direction: column;
   max-height: 260px;
-  overflow: auto;
+  overflow: hidden;
   margin: 0 12px 8px;
-  padding: 8px 10px;
-  border: var(--theme-border);
+  padding: 0;
+  border: 1px solid var(--theme-border);
   border-radius: var(--radius-lg);
   background: var(--theme-surface);
 }
-.file-companion-annotations-kicker {
-  margin: 0 0 6px;
+.file-companion-annotations-head {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 40px;
+  height: 40px;
+  margin: 0;
+  padding: 0 10px;
+  background: var(--theme-surface);
+  cursor: pointer;
+  user-select: none;
+}
+.file-companion-annotations-head .file-companion-annotations-kicker {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
   color: var(--theme-primary);
   font-size: 11px;
   font-weight: 600;
+  line-height: 28px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
-.file-companion-annotations-author {
+.file-companion-annotations-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+}
+.file-companion-annotations-toggle:hover,
+.file-companion-annotations-toggle:focus-visible {
+  background: var(--theme-surface-muted);
+  color: var(--theme-text);
+}
+.file-companion-annotations-toggle:focus-visible {
+  outline: 2px solid var(--theme-primary, #2e75cb);
+  outline-offset: 2px;
+}
+.file-companion-annotations-toggle svg {
+  display: block;
+}
+.file-companion-annotations-body {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Cap stays under the 40px label. min-height 0 lets a short window shrink the list instead of covering the composer. */
+  overflow: auto;
+  overscroll-behavior: contain;
+  max-height: calc(260px - 40px);
+  padding: 0 10px 8px;
+}
+.file-companion-annotations-body[hidden] {
+  display: none;
+}
+.file-companion-annotations .file-companion-annotations-author {
   display: block;
   margin: 0 0 2px;
   color: var(--theme-text-muted);
   font-size: 11px;
-}
-.file-companion-annotation-row .file-companion-annotations-author {
-  margin: 0 0 2px;
+  line-height: 1.4;
 }
 .file-companion-annotations p {
   margin: 0 0 6px;
@@ -36849,13 +37210,17 @@ body.companion-pdf-translation-dragging * {
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.file-companion-annotations-empty {
+.file-companion-annotations .file-companion-annotations-empty {
   margin: 0;
   color: var(--theme-text-muted);
   font-size: 12px;
+  line-height: 1.45;
 }
 .file-companion-annotation-row {
   margin: 0 0 7px;
+}
+.file-companion-annotation-row:last-child {
+  margin-bottom: 0;
 }
 .file-companion-annotation-row p {
   margin: 0;
@@ -36903,7 +37268,7 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-annotation-action {
   padding: 1px 8px;
-  border: var(--theme-border);
+  border: 1px solid var(--theme-border);
   border-radius: 999px;
   background: var(--theme-surface);
   color: var(--theme-text);
@@ -39489,12 +39854,17 @@ body.companion-pdf-translation-dragging * {
 #App .mc-task-result-card__upload--idle:hover:not(:disabled) { background: color-mix(in srgb, var(--mc-accent) 10%, var(--mc-surface)) !important; color: var(--mc-accent) !important; }
 #App .mc-task-result-card__upload--done { color: var(--theme-success) !important; }
 #App .mc-task-result-card__upload--error { color: var(--theme-danger) !important; }
-#App .mc-task-result-card__actions button {
+/* The per-file artifact action strip (deliverable cards) is excluded here:
+   .mc-task-artifact-item__actions brings its own palette, hover states and a
+   filled primary button, so the generic repaint below would fight them.
+   Ghost buttons there reuse the same token values (--mc-* alias the
+   theme-* tokens), keeping the chrome uniform. */
+#App .mc-task-result-card__actions:not(.mc-task-artifact-item__actions) button {
   border-color: var(--mc-line) !important;
   background: var(--mc-surface) !important;
   color: var(--mc-copy) !important;
 }
-#App .mc-task-result-card__actions button:hover:not(:disabled) {
+#App .mc-task-result-card__actions:not(.mc-task-artifact-item__actions) button:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--mc-accent) 42%, var(--mc-line)) !important;
   background: color-mix(in srgb, var(--mc-accent) 7%, var(--mc-surface)) !important;
   color: var(--mc-accent-strong) !important;

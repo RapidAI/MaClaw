@@ -16,7 +16,41 @@ import (
 func setMobileStatePathForTest(t *testing.T, path string) {
 	t.Helper()
 	t.Setenv(mobileStatePathEnv, path)
-	t.Cleanup(mobileCloseStateDBForTest)
+	t.Cleanup(mobileCleanupStateDBForTest)
+}
+
+// waitMobileAgentJobsSettledForTest drains background agent and document
+// process jobs before a cleanup closes the state database. Upload/process
+// handlers answer 202 and finish asynchronously; a job still running at
+// cleanup time either keeps a state.db connection checked out or reopens the
+// database after the close, and Windows then refuses to remove the TempDir.
+func waitMobileAgentJobsSettledForTest(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			running := 0
+			mobileAgentJobs.Lock()
+			for _, job := range mobileAgentJobs.jobs {
+				if job.Status == mobileAgentJobStatusRunning {
+					running++
+				}
+			}
+			mobileAgentJobs.Unlock()
+			mobileDocumentProcessJobs.Lock()
+			for _, job := range mobileDocumentProcessJobs.jobs {
+				if job.Status == mobileDocProcessStatusRunning {
+					running++
+				}
+			}
+			mobileDocumentProcessJobs.Unlock()
+			if running == 0 {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Log("timed out waiting for mobile jobs to settle")
+	})
 }
 
 func mobileStateDBForTest(t *testing.T, statePath string) *sql.DB {

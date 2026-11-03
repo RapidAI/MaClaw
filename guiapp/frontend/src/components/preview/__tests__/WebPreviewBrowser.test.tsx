@@ -64,6 +64,7 @@ describe('webPreviewAddress', () => {
         expect(webPreviewTargetFromFile({ fileName: 'photo.png', absPath: 'D:/photo.png' })).toBeNull();
         expect(webPreviewTargetFromFile({ fileName: 'main.ts', content: 'const x = 1' })).toBeNull();
         expect(agentWebPreviewRequestKey({ fileName: 'index.html', filePath: 'site/index.html', opType: 'create', updatedAt: 4, content: 'hi' })).toBe('site/index.html:4:2');
+        expect(agentWebPreviewRequestKey({ fileName: 'index.html', filePath: 'site/index.html', opType: 'modify', updatedAt: 4, content: 'hi', previewRevision: 'app.css:2' })).toBe('site/index.html:4:2:app.css:2');
         expect(agentWebPreviewRequestKey({ fileName: 'icon.svg', filePath: 'icon.svg', opType: 'modify', updatedAt: 5 })).toBe('icon.svg:5:0');
         expect(agentWebPreviewRequestKey({ fileName: 'index.html', filePath: 'site/index.html', opType: 'read', updatedAt: 4 })).toBe('');
         expect(agentWebPreviewRequestKey({ fileName: 'main.ts', filePath: 'main.ts', opType: 'create', updatedAt: 4 })).toBe('');

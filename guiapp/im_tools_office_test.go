@@ -378,6 +378,9 @@ func TestToolOfficeWritePPTXDispatch(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("deck missing: %v", err)
 	}
+	if _, err := os.Stat(strings.TrimSuffix(path, filepath.Ext(path)) + "_preview"); err == nil {
+		t.Fatal("write rendered a preview beside the deck")
+	}
 	// The alias reaches the same writer.
 	got = h.toolOffice(map[string]interface{}{
 		"action": "generate_pptx",

@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -259,13 +260,14 @@ func TestRestoreKeepsNeighborCellTextOutOfTheFormula(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// One TJ reports every glyph at the run origin, so the origin check does
-	// not see the advance. These full-width glyphs advance about one em, and
-	// the fitted size is what keeps each run out of the formula.
+	// Each drawn run arrives as one fragment placed at the run origin, so
+	// the origin check does not see the advance. These full-width glyphs
+	// advance about one em, and the fitted size is what keeps each run out
+	// of the formula.
 	seen, otherSeen := 0, 0
 	var labelX, labelSize, otherX, otherSize float64
 	for _, frag := range fragments {
-		if frag.Text == "" {
+		if frag.Text == "" || frag.Text == "\uFFFD" {
 			continue
 		}
 		if strings.Contains(label, frag.Text) {
@@ -274,22 +276,22 @@ func TestRestoreKeepsNeighborCellTextOutOfTheFormula(t *testing.T) {
 				labelSize = frag.FontSize
 			}
 			if frag.X < 70 || frag.X >= 170 || math.Abs(frag.X-labelX) > 0.1 || math.Abs(frag.FontSize-labelSize) > 0.1 {
-				t.Fatalf("cell glyph %q at x=%.1f size=%.2f", frag.Text, frag.X, frag.FontSize)
+				t.Fatalf("cell run %q at x=%.1f size=%.2f", frag.Text, frag.X, frag.FontSize)
 			}
 			seen++
 			continue
 		}
 		if frag.Text == other {
 			if frag.X < 170 || frag.X >= 190 {
-				t.Fatalf("other cell glyph at x=%.1f", frag.X)
+				t.Fatalf("other cell run at x=%.1f", frag.X)
 			}
 			otherX = frag.X
 			otherSize = frag.FontSize
 			otherSeen++
 		}
 	}
-	if seen < len([]rune(label)) || otherSeen < 1 {
-		t.Fatalf("label glyphs = %d other = %d fragments = %+v", seen, otherSeen, fragments)
+	if seen < 1 || otherSeen < 1 {
+		t.Fatalf("label runs = %d other = %d fragments = %+v", seen, otherSeen, fragments)
 	}
 	// Ten full-width glyphs at the row-height size run far past x=170.
 	// The other cell's one glyph stops at the formula, which starts at 190.
@@ -385,8 +387,10 @@ func TestRestoreKeepsASuperscriptInsideTheFormula(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Baselines are PDF Y, bottom to top. The superscript rise is already
-	// in that baseline. The em box has to stay inside the formula rectangle.
+	// Baselines are PDF Y, bottom to top. The reader reports Y measured from
+	// the page top, so baselines are converted back here. The superscript
+	// rise is already in that baseline. The em box has to stay inside the
+	// formula rectangle.
 	top := pageH - formula.Y
 	bottom := pageH - (formula.Y + formula.H)
 	var sawSup, sawBase, sawLabel bool
@@ -395,21 +399,22 @@ func TestRestoreKeepsASuperscriptInsideTheFormula(t *testing.T) {
 		if frag.Text == "" || frag.Text == "\uFFFD" {
 			continue
 		}
-		glyphTop := frag.Y + ascend*frag.FontSize
-		glyphBottom := frag.Y + descend*frag.FontSize
+		baseline := pageH - frag.Y
+		glyphTop := baseline + ascend*frag.FontSize
+		glyphBottom := baseline + descend*frag.FontSize
 		switch frag.Text {
 		case "2":
 			sawSup = true
 			supTop = glyphTop
-			supY = frag.Y
+			supY = baseline
 			if glyphTop > top+0.6 || glyphBottom < bottom-0.6 {
-				t.Fatalf("superscript leaves the formula: y=%.2f size=%.2f top=%.2f bottom=%.2f box %.2f..%.2f", frag.Y, frag.FontSize, glyphTop, glyphBottom, bottom, top)
+				t.Fatalf("superscript leaves the formula: y=%.2f size=%.2f top=%.2f bottom=%.2f box %.2f..%.2f", baseline, frag.FontSize, glyphTop, glyphBottom, bottom, top)
 			}
 		case "x":
 			sawBase = true
-			baseY = frag.Y
+			baseY = baseline
 			if glyphTop > top+0.6 || glyphBottom < bottom-0.6 {
-				t.Fatalf("base leaves the formula: y=%.2f size=%.2f top=%.2f bottom=%.2f box %.2f..%.2f", frag.Y, frag.FontSize, glyphTop, glyphBottom, bottom, top)
+				t.Fatalf("base leaves the formula: y=%.2f size=%.2f top=%.2f bottom=%.2f box %.2f..%.2f", baseline, frag.FontSize, glyphTop, glyphBottom, bottom, top)
 			}
 		case label:
 			sawLabel = true
@@ -444,7 +449,9 @@ func TestRestoreReturnsToTheBaselineAfterASuperscript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pdfContentHas(out, " Ts\n") {
+	// A non-zero rise that stays set would drag the base class text off its
+	// baseline. The renderer's no-op "0 Ts" padding is not a rise.
+	if pdfContentHasNonZeroRise(out) {
 		t.Fatal("formula rise stayed in the text state")
 	}
 	fragments, err := gopdf2.ExtractTextFromPage(out, 0)
@@ -458,10 +465,14 @@ func TestRestoreReturnsToTheBaselineAfterASuperscript(t *testing.T) {
 		if frag.Text == "" || frag.Text == "\uFFFD" {
 			continue
 		}
-		glyphTop := frag.Y + ascend*frag.FontSize
-		glyphBottom := frag.Y + descend*frag.FontSize
+		// The reader reports Y measured from the page top; convert it to the
+		// PDF baseline axis the assertions below reason in.
+		baseline := pageH - frag.Y
+		glyphTop := baseline + ascend*frag.FontSize
+		glyphBottom := baseline + descend*frag.FontSize
 		var boxTop, boxBottom float64
-		switch frag.Text {
+		script := strings.Trim(frag.Text, "+")
+		switch script {
 		case "x", "2", "y":
 			boxTop = pageH - sup.Y
 			boxBottom = pageH - (sup.Y + sup.H)
@@ -472,23 +483,23 @@ func TestRestoreReturnsToTheBaselineAfterASuperscript(t *testing.T) {
 			continue
 		}
 		if glyphTop > boxTop+0.6 || glyphBottom < boxBottom-0.6 {
-			t.Fatalf("%q leaves its formula: y=%.2f size=%.2f top=%.2f bottom=%.2f box %.2f..%.2f", frag.Text, frag.Y, frag.FontSize, glyphTop, glyphBottom, boxBottom, boxTop)
+			t.Fatalf("%q leaves its formula: y=%.2f size=%.2f top=%.2f bottom=%.2f box %.2f..%.2f", frag.Text, baseline, frag.FontSize, glyphTop, glyphBottom, boxBottom, boxTop)
 		}
-		switch frag.Text {
+		switch script {
 		case "x":
-			xY, xSize = frag.Y, frag.FontSize
+			xY, xSize = baseline, frag.FontSize
 		case "y":
-			yY = frag.Y
+			yY = baseline
 		case "2":
-			twoY, twoSize = frag.Y, frag.FontSize
+			twoY, twoSize = baseline, frag.FontSize
 		case "a":
-			aY, aTop = frag.Y, glyphTop
+			aY, aTop = baseline, glyphTop
 		case "b":
-			bY = frag.Y
+			bY = baseline
 		case "i":
 			iTop, iSize = glyphTop, frag.FontSize
 		}
-		seen[frag.Text] = true
+		seen[script] = true
 	}
 	if !seen["x"] || !seen["2"] || !seen["y"] || !seen["a"] || !seen["i"] || !seen["b"] {
 		t.Fatalf("glyphs = %+v fragments = %+v", seen, fragments)
@@ -515,6 +526,7 @@ func TestRestoreFitsCellTextBesideAnOverlappingFormula(t *testing.T) {
 	}
 	src := buildRestorableScanPDF(t, mustJPEG(t, 40, 20), 72, 100, 200, 100)
 	doc := NewScanRestore(src)
+	_, pageH := doc.pageSize(1)
 	const label = "甲乙丙丁戊己庚辛壬癸"
 	formula := PlacedScanLine{Text: `\frac{a}{b}`, Formula: true, X: 120, Y: 112, W: 80, H: 28}
 	table := RestoredTable{
@@ -540,28 +552,30 @@ func TestRestoreFitsCellTextBesideAnOverlappingFormula(t *testing.T) {
 	}
 	// The narrow span beside the formula is about 4.6pt. The band under the
 	// formula fits the same run at about 9pt, and that band sits lower on
-	// the page than the formula glyphs.
+	// the page than the formula glyphs. Reader Y runs top to bottom, so
+	// convert it to the PDF baseline axis; the label arrives as one merged
+	// run rather than one fragment per glyph.
 	seen := 0
 	var labelX, labelY, labelSize, formulaY float64
 	for _, frag := range fragments {
-		if frag.Text == "" {
+		if frag.Text == "" || frag.Text == "\uFFFD" {
 			continue
 		}
 		if strings.Contains(label, frag.Text) {
 			if seen == 0 {
 				labelX = frag.X
-				labelY = frag.Y
+				labelY = pageH - frag.Y
 				labelSize = frag.FontSize
 			}
 			seen++
 			continue
 		}
 		if strings.Contains("(a)/(b)", frag.Text) && formulaY == 0 {
-			formulaY = frag.Y
+			formulaY = pageH - frag.Y
 		}
 	}
-	if seen < len([]rune(label)) || labelX >= 120 || labelSize <= 7 || labelSize >= 14 || formulaY == 0 || labelY > formulaY-15 {
-		t.Fatalf("label glyphs = %d x=%.1f y=%.1f size=%.2f formulaY=%.1f fragments = %+v", seen, labelX, labelY, labelSize, formulaY, fragments)
+	if seen < 1 || labelX >= 120 || labelSize <= 7 || labelSize >= 14 || formulaY == 0 || labelY > formulaY-15 {
+		t.Fatalf("label runs = %d x=%.1f y=%.1f size=%.2f formulaY=%.1f fragments = %+v", seen, labelX, labelY, labelSize, formulaY, fragments)
 	}
 }
 
@@ -607,6 +621,7 @@ func TestRestoreDrawsLayoutTextAtTheBlock(t *testing.T) {
 	}
 	src := buildRestorableScanPDF(t, mustJPEG(t, 40, 20), 72, 100, 200, 100)
 	doc := NewScanRestore(src)
+	_, pageH := doc.pageSize(1)
 	lines := []PlacedScanLine{
 		{Text: "左栏", X: 72, Y: 100, W: 80, H: 16},
 		{Text: "右栏重复", X: 300, Y: 100, W: 80, H: 16},
@@ -628,21 +643,25 @@ func TestRestoreDrawsLayoutTextAtTheBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// ExtractTextFromPage returns one glyph at a time. The line box is the
+	// Each drawn run arrives as one merged fragment. The line box is the
 	// position: x stays 300, and the baseline matches the other line at the
-	// same y. A block reflow would start at x=280 with a larger size.
+	// same y. A block reflow would start at x=280 with a larger size. Reader
+	// Y runs top to bottom, so convert it to the matching line's axis.
 	var leftY float64
 	var leftFound bool
 	var right strings.Builder
 	var rightY, rightSize float64
 	for _, frag := range fragments {
-		if math.Abs(frag.X-72) < 8 && (frag.Text == "左" || frag.Text == "栏") {
-			leftY = frag.Y
+		if frag.Text == "" || frag.Text == "\uFFFD" {
+			continue
+		}
+		if math.Abs(frag.X-72) < 8 && strings.Contains("左栏", frag.Text) {
+			leftY = pageH - frag.Y
 			leftFound = true
 		}
 		if math.Abs(frag.X-300) < 8 {
 			right.WriteString(frag.Text)
-			rightY = frag.Y
+			rightY = pageH - frag.Y
 			rightSize = frag.FontSize
 		}
 	}
@@ -1637,15 +1656,15 @@ func scanPlacementEqual(a, b ScanImagePlacement) bool {
 		math.Abs(a.Turn-b.Turn) < 0.6
 }
 
-func pdfContentHas(data []byte, needle string) bool {
-	if bytes.Contains(data, []byte(needle)) {
-		return true
-	}
+// pdfScannableBlobs returns the raw file bytes plus every decoded stream, so
+// byte substring scans cover both plaintext operators and compressed ones.
+func pdfScannableBlobs(data []byte) [][]byte {
+	out := [][]byte{data}
 	rest := data
 	for {
 		i := bytes.Index(rest, []byte("stream"))
 		if i < 0 {
-			return false
+			return out
 		}
 		rest = rest[i+len("stream"):]
 		if len(rest) > 0 && (rest[0] == '\r' || rest[0] == '\n') {
@@ -1657,19 +1676,52 @@ func pdfContentHas(data []byte, needle string) bool {
 		}
 		j := bytes.Index(rest, []byte("endstream"))
 		if j < 0 {
-			return false
+			return out
 		}
 		raw := bytes.TrimRight(rest[:j], "\r\n")
 		zr, err := zlib.NewReader(bytes.NewReader(raw))
 		if err == nil {
 			decoded, readErr := io.ReadAll(zr)
 			zr.Close()
-			if readErr == nil && bytes.Contains(decoded, []byte(needle)) {
-				return true
+			if readErr == nil {
+				out = append(out, decoded)
 			}
 		}
 		rest = rest[j+len("endstream"):]
 	}
+}
+
+func pdfContentHas(data []byte, needle string) bool {
+	needleB := []byte(needle)
+	for _, blob := range pdfScannableBlobs(data) {
+		if bytes.Contains(blob, needleB) {
+			return true
+		}
+	}
+	return false
+}
+
+// pdfContentHasNonZeroRise reports whether any Ts text-rise operator carries
+// a non-zero argument. A rise that stays set on the glyphs after the script
+// is the drift this guards against; the renderer's no-op "0 Ts" padding is
+// harmless because it pins the rise back to the baseline.
+func pdfContentHasNonZeroRise(data []byte) bool {
+	for _, blob := range pdfScannableBlobs(data) {
+		for _, line := range bytes.Split(blob, []byte{'\n'}) {
+			i := bytes.Index(line, []byte(" Ts"))
+			if i < 1 {
+				continue
+			}
+			fields := bytes.Fields(line[:i])
+			if len(fields) == 0 {
+				continue
+			}
+			if v, err := strconv.ParseFloat(string(fields[len(fields)-1]), 64); err == nil && (v < -1e-9 || v > 1e-9) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func buildRestorableScanPDF(t *testing.T, jpeg []byte, x, y, w, h float64) []byte {

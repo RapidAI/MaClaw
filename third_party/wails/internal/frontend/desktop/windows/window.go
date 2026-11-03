@@ -3,6 +3,7 @@
 package windows
 
 import (
+	"log"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -157,6 +158,42 @@ func (w *Window) contentShown() bool {
 	return !w.IsMinimised() && w.IsVisible()
 }
 
+// restoreCursorDisplayCount raises a cursor display count that WebView2 left
+// below zero. Runtime 152-156 hide the pointer for the Windows "Hide pointer
+// while typing" setting, but can skip the matching ShowCursor(TRUE). The
+// count then stays negative across lock/unlock and window hide/show: the
+// pointer is invisible over this window while clicks and typing still work.
+// There is no API to read the count, so the probe increment is undone when
+// the cursor was already visible; a negative count is raised to zero. The
+// caller must be the window procedure: the count belongs to this UI thread,
+// which is also where WebView2 updates the cursor.
+func restoreCursorDisplayCount() {
+	if original := restoreCursorDisplayCountWith(w32.ShowCursor); original < 0 {
+		log.Printf("[cursor] display count was %d; raised toward zero", original)
+	}
+}
+
+// restoreCursorDisplayCountWith is restoreCursorDisplayCount with the Win32
+// call injected, so the probe-and-undo sequence is testable. showCursor must
+// increment on true and decrement on false, returning the new count. The
+// return value is the count before the probe, so the caller can log a real
+// recovery without changing the helper's behavior.
+func restoreCursorDisplayCountWith(showCursor func(bool) int32) int32 {
+	count := showCursor(true)
+	original := count - 1
+	if count >= 0 {
+		if count > 0 {
+			showCursor(false)
+		}
+		return original
+	}
+	// Repeated hides can leave the count more than one below zero.
+	for i := 0; i < 32 && count < 0; i++ {
+		count = showCursor(true)
+	}
+	return original
+}
+
 func NewWindow(parent winc.Controller, appoptions *options.App, versionInfo *operatingsystem.WindowsVersionInfo, chromium *edge.Chromium) *Window {
 	windowsOptions := appoptions.Windows
 
@@ -196,6 +233,9 @@ func NewWindow(parent winc.Controller, appoptions *options.App, versionInfo *ope
 	winc.RegClassOnlyOnce(windowClassName)
 	handle := winc.CreateWindow(windowClassName, parent, uint(exStyle), uint(dwStyle))
 	result.SetHandle(handle)
+	// Lock/unlock does not deactivate this window, so the unlock notification
+	// is what restores a cursor count WebView2 left below zero.
+	registerSessionNotification(uintptr(handle))
 	winc.RegMsgHandler(result)
 	result.SetParent(parent)
 
@@ -335,6 +375,7 @@ func (w *Window) WndProc(msg uint32, wparam, lparam uintptr) uintptr {
 			if w.OnResume != nil {
 				w.OnResume()
 			}
+			restoreCursorDisplayCount()
 		}
 	case w32.WM_SETTINGCHANGE:
 		settingChanged := w32.UTF16PtrToString((*uint16)(unsafe.Pointer(lparam)))
@@ -357,8 +398,23 @@ func (w *Window) WndProc(msg uint32, wparam, lparam uintptr) uintptr {
 		} else {
 			w.isActive = true
 			w.UpdateTheme()
+			// A lock screen or another app can take activation while WebView2
+			// has the cursor hidden. Regaining activation is the first moment
+			// the pointer can be restored without fighting an active page.
+			restoreCursorDisplayCount()
 			//}
 		}
+
+	case w32.WM_SETFOCUS:
+		restoreCursorDisplayCount()
+
+	case wmWtsSessionChange:
+		if wparam == wtsSessionUnlock {
+			restoreCursorDisplayCount()
+		}
+
+	case w32.WM_DESTROY:
+		unregisterSessionNotification(uintptr(w.Handle()))
 
 	case 0x02E0: //w32.WM_DPICHANGED
 		newWindowSize := (*w32.RECT)(unsafe.Pointer(lparam))

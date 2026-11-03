@@ -108,6 +108,8 @@
     --z-floating-panel: 4000;   /* in-panel floating toolbars, composer popovers */
     --z-overlay: 9999;          /* full-viewport scrim + feature modal panel */
     --z-sticky-toast: 10000;    /* toasts/banners that must clear an overlay */
+    --z-panel-top: 40000;       /* composer dropdowns, context menus, in-app authorization panels */
+    --z-topmost: 99999;         /* pane-level topmost (tab-bar menus, migration overlay); below the anchors */
 }
 
 /*

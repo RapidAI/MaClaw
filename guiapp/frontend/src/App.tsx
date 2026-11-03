@@ -2859,8 +2859,10 @@ function App() {
             });
         };
         pingLLM();
-        const timer = setInterval(pingLLM, 60000);
-        return () => clearInterval(timer);
+        // Status poll only: pause while the window is hidden (a fresh ping
+        // still fires the moment the app becomes visible again).
+        const stopPing = startVisibleInterval(pingLLM, 60000);
+        return () => stopPing();
     }, []);
 
     // Open the LLM step only after config and the first ping both exist.
@@ -3399,15 +3401,14 @@ function App() {
             return;
         }
         refreshGroupDiscussionStatus();
-        const timer = window.setInterval(refreshGroupDiscussionStatus, 60000);
-        return () => window.clearInterval(timer);
+        return startVisibleInterval(refreshGroupDiscussionStatus, 60000);
     }, [config, groupDiscussionConfig.enabled, refreshGroupDiscussionStatus]);
 
     useEffect(() => {
         if (!config || groupDiscussionConfig.enabled === false || groupDiscussionConfig.discoverable === false) return;
         publishGroupDiscussionProfile();
-        const timer = window.setInterval(publishGroupDiscussionProfile, 300000);
-        return () => window.clearInterval(timer);
+        // Profile publish: receiver dedupes frames, so the refocus tick is free.
+        return startVisibleInterval(publishGroupDiscussionProfile, 300000);
     }, [config, groupDiscussionConfig.enabled, groupDiscussionConfig.discoverable, publishGroupDiscussionProfile]);
 
     const aiAssistant = useAIAssistant({ refreshSessionsOnly, lang, showConfirm });
@@ -4160,10 +4161,10 @@ function App() {
     // Profile health is intentionally refreshed through its own dual-profile
     // API. The legacy assistant-only ping below remains for onboarding only.
     useEffect(() => {
-        const timer = setInterval(() => { void refreshLLMProfileHealth(); }, 60000);
+        const stopHealth = startVisibleInterval(() => { void refreshLLMProfileHealth(); }, 60000);
         return () => {
             llmProfileHealthRefreshSeqRef.current += 1;
-            clearInterval(timer);
+            stopHealth();
         };
     }, [refreshLLMProfileHealth]);
 
@@ -4293,10 +4294,10 @@ function App() {
             // hub-llm-service-changed is rare (redeem, provider switch) — refresh immediately.
             void refreshSidebarTokenUsage();
         });
-        const usageRefreshTimer = window.setInterval(() => { void refreshSidebarTokenUsage(); }, 60 * 1000);
+        const stopUsagePoll = startVisibleInterval(() => { void refreshSidebarTokenUsage(); }, 60 * 1000);
         return () => {
             sidebarTokenUsageSeqRef.current += 1;
-            window.clearInterval(usageRefreshTimer);
+            stopUsagePoll();
             if (tokenUsageDebounceTimer !== undefined) window.clearTimeout(tokenUsageDebounceTimer);
             delayedRefreshTimers.forEach((timer) => window.clearTimeout(timer));
             if (typeof offTokenUsageChanged === 'function') offTokenUsageChanged(); else safeEventsOff("llm-token-usage-changed");
@@ -5161,8 +5162,10 @@ function App() {
 
     // Age labels ("12 分钟") change without a task-list edit. Push on a
     // half-minute tick; an unchanged label does not become a new state frame.
+    // Skipped while hidden: the receiver dedupes frames, and the tick fires
+    // once on visibility restore to refresh stale age labels.
     useEffect(() => {
-        const id = window.setInterval(() => {
+        const stopBuddyTick = startVisibleInterval(() => {
             const payload = JSON.stringify(
                 buildBuddySnapshot(
                     taskItems,
@@ -5179,7 +5182,7 @@ function App() {
                 // Binding absent in embedded or test shells.
             }
         }, 30_000);
-        return () => window.clearInterval(id);
+        return () => stopBuddyTick();
     }, [taskItems, busyTaskRuns, activeAssistantTaskRunning, activeAssistantTask]);
 
     useEffect(() => {

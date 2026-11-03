@@ -2751,10 +2751,14 @@ func TestReadyEndpointReturnsUnavailableWhenDataRootMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	// Close before deleting: the server recreates the data root at boot and
+	// holds SQLite handles inside it, so the runtime-loss scenario starts
+	// only once those handles are released.
+	server.Close()
 	if err := os.RemoveAll(dataRoot); err != nil {
 		t.Fatalf("RemoveAll data root: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -2829,10 +2833,14 @@ func TestAdminSystemReadinessEndpointReturnsUnavailableWhenDataRootMissing(t *te
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	// Close before deleting: the server recreates the data root at boot and
+	// holds SQLite handles inside it, so the runtime-loss scenario starts
+	// only once those handles are released.
+	server.Close()
 	if err := os.RemoveAll(dataRoot); err != nil {
 		t.Fatalf("RemoveAll data root: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/readiness", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()

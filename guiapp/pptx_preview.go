@@ -8,7 +8,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
-	"sort"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +24,10 @@ import (
 var pptxPreviewLocks sync.Map // map[string]*sync.Mutex
 
 func pptxPreviewLock(path string) *sync.Mutex {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(path)
+	}
 	lock, _ := pptxPreviewLocks.LoadOrStore(path, &sync.Mutex{})
 	return lock.(*sync.Mutex)
 }
@@ -40,6 +44,11 @@ func (a *App) PptxPreviewEnsure(filePath string) (*pptx.PreviewResult, error) {
 	if !strings.EqualFold(filepath.Ext(cleaned), ".pptx") {
 		return nil, fmt.Errorf("仅支持预览 .pptx 文件: %s", cleaned)
 	}
+	lock := pptxPreviewLock(cleaned)
+	lock.Lock()
+	defer lock.Unlock()
+	// Stat after the lock is held. A mtime taken while waiting would treat a
+	// deck that was just rewritten as still matched by the previous pictures.
 	info, err := os.Stat(cleaned)
 	if err != nil {
 		return nil, fmt.Errorf("文件不存在: %s", cleaned)
@@ -47,14 +56,19 @@ func (a *App) PptxPreviewEnsure(filePath string) (*pptx.PreviewResult, error) {
 	if info.IsDir() {
 		return nil, fmt.Errorf("不是 PPTX 文件: %s", cleaned)
 	}
-	lock := pptxPreviewLock(cleaned)
-	lock.Lock()
-	defer lock.Unlock()
 	outDir := pptx.DefaultPreviewDir(cleaned)
 	if cached := cachedPptxPreview(cleaned, outDir, info.ModTime()); cached != nil {
 		return cached, nil
 	}
-	return pptx.RenderPreview(cleaned, pptx.PreviewOptions{OutputDir: outDir, Width: pptx.DefaultPreviewWidth})
+	result, err := pptx.RenderPreview(cleaned, pptx.PreviewOptions{OutputDir: outDir, Width: pptx.DefaultPreviewWidth})
+	if err != nil {
+		return nil, err
+	}
+	again, statErr := os.Stat(cleaned)
+	if statErr == nil && (!again.ModTime().Equal(info.ModTime()) || again.Size() != info.Size()) {
+		return pptx.RenderPreview(cleaned, pptx.PreviewOptions{OutputDir: outDir, Width: pptx.DefaultPreviewWidth})
+	}
+	return result, nil
 }
 
 // pptxSlideThumbnailMaxEdge bounds the per-slide thumbnails served to the
@@ -65,12 +79,21 @@ const pptxSlideThumbnailMaxEdge = 320
 // image, so the preview strip does not hold one full-resolution data URL per
 // page in WebView memory.
 func (a *App) PptxSlideThumbnailDataURL(path string) (string, error) {
-	file, _, err := openAIAssistantAttachmentImage(path)
+	data, err := readStableSlideImage(path)
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
-	source, _, err := image.Decode(file)
+	if len(data) > 12*1024*1024 {
+		return "", fmt.Errorf("attachment must be an image file no larger than 12 MB")
+	}
+	config, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return "", fmt.Errorf("decode slide image: %w", err)
+	}
+	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 32_000_000 {
+		return "", fmt.Errorf("attachment image dimensions are not supported")
+	}
+	source, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return "", fmt.Errorf("decode slide image: %w", err)
 	}
@@ -94,16 +117,66 @@ func (a *App) PptxSlideThumbnailDataURL(path string) (string, error) {
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(out.Bytes()), nil
 }
 
+// deckForSlideImage reports the deck that owns a cached slide picture.
+// The cache directory is "<name>_preview" beside the .pptx file.
+func deckForSlideImage(imagePath string) (string, bool) {
+	imagePath = strings.TrimSpace(imagePath)
+	if imagePath == "" {
+		return "", false
+	}
+	dir := filepath.Dir(imagePath)
+	base := filepath.Base(dir)
+	const suffix = "_preview"
+	if len(base) <= len(suffix) || !strings.EqualFold(base[len(base)-len(suffix):], suffix) {
+		return "", false
+	}
+	name := base[:len(base)-len(suffix)]
+	candidate := filepath.Join(filepath.Dir(dir), name+".pptx")
+	info, err := os.Stat(candidate)
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	return candidate, true
+}
+
+// readStableSlideImage copies a cached slide while the deck render lock is
+// held, so a refresh cannot hand back a half-written file. Pictures that are
+// not in a deck cache are read directly.
+func readStableSlideImage(path string) ([]byte, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("attachment path is required")
+	}
+	read := func() ([]byte, error) {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if info.IsDir() || info.Size() > 12*1024*1024 {
+			return nil, fmt.Errorf("attachment must be an image file no larger than 12 MB")
+		}
+		return os.ReadFile(path)
+	}
+	if deck, ok := deckForSlideImage(path); ok {
+		lock := pptxPreviewLock(deck)
+		lock.Lock()
+		defer lock.Unlock()
+		return read()
+	}
+	return read()
+}
+
 // cachedPptxPreview reconstructs a PreviewResult from an earlier render. The
-// cache is only trusted when every cached slide image is at least as new as
-// the deck itself AND the image count covers the whole deck (bounded by the
-// renderer's slide cap) — a partial or stale render falls back to rendering.
+// cache is trusted only when slides 1..N each have an image at least as new
+// as the deck (bounded by the renderer's slide cap). A missing number, or a
+// stale image for one of those slides, falls back to rendering. A stale extra
+// file does not.
 func cachedPptxPreview(filePath, outDir string, sourceTime time.Time) *pptx.PreviewResult {
 	entries, err := os.ReadDir(outDir)
 	if err != nil {
 		return nil
 	}
-	var images []string
+	var fresh map[int]string
 	format := ""
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -125,18 +198,31 @@ func cachedPptxPreview(filePath, outDir string, sourceTime time.Time) *pptx.Prev
 		}
 		item, err := entry.Info()
 		if err != nil || item.ModTime().Before(sourceTime) {
-			return nil
+			continue
 		}
-		if format == "" {
+		n := slideNumberFromPreviewName(name)
+		if n <= 0 {
+			continue
+		}
+		if fresh == nil {
+			fresh = make(map[int]string)
+		}
+		prev, ok := fresh[n]
+		path := filepath.Join(outDir, name)
+		if ok && strings.EqualFold(filepath.Ext(prev), ".png") && ext != "png" {
+			continue
+		}
+		fresh[n] = path
+		if format == "" || ext == "png" {
 			format = ext
 		}
-		images = append(images, filepath.Join(outDir, name))
 	}
-	if len(images) == 0 {
+	if len(fresh) == 0 {
 		return nil
 	}
 	// Completeness check: opening the deck only parses the zip directory, it
-	// does not render anything.
+	// does not render anything. Slides 1..N must each have a fresh image.
+	// An older extra file, or a later slide number, does not fill a gap.
 	pres, err := ppt.Open(filePath)
 	if err != nil {
 		return nil
@@ -147,10 +233,17 @@ func cachedPptxPreview(filePath, outDir string, sourceTime time.Time) *pptx.Prev
 	if want > pptx.MaxPreviewSlides {
 		want = pptx.MaxPreviewSlides
 	}
-	if len(images) < want {
+	if want <= 0 || len(fresh) < want {
 		return nil
 	}
-	sort.Strings(images)
+	images := make([]string, 0, want)
+	for n := 1; n <= want; n++ {
+		path, ok := fresh[n]
+		if !ok {
+			return nil
+		}
+		images = append(images, path)
+	}
 	return &pptx.PreviewResult{
 		FilePath:      filePath,
 		OutputDir:     outDir,

@@ -29,7 +29,7 @@ type fakeBoundUserRouteDeleter struct {
 }
 
 func TestUserDataPurgerRemovesAllUserOwnedSQLAndFiles(t *testing.T) {
-	defer mobileCloseStateDBForTest()
+	defer mobileCleanupStateDBForTest()
 	services := newAdminRouterTestContext(t)
 	// The knowledge purge pulls in the mobile core agent, which opens
 	// knowledge.db under the context's TempDir. Register the reset AFTER the

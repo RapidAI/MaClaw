@@ -91,6 +91,9 @@ export type CompanionShareBinding = {
     mine: boolean;
     notes: CompanionShareNote[];
     revision: number;
+    // marksRevision is the host's reader-marks sequence. A reader whose copy
+    // is behind fetches the small marks blob instead of the project zip.
+    marksRevision: number;
 };
 
 export type CompanionShareUpdate = {
@@ -596,6 +599,7 @@ export function companionShareNotes(raw: unknown): CompanionShareBinding[] {
             mine: host,
             notes: companionNotesFrom(row.notes ?? row.Notes),
             revision: numberOf(row, "notesRevision", "NotesRevision"),
+            marksRevision: numberOf(row, "marksRevision", "MarksRevision"),
         });
     }
     return out;

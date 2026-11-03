@@ -101,6 +101,9 @@ func TestWritePPTXDetailedReportsTheOutcomeThroughTheError(t *testing.T) {
 	if _, statErr := os.Stat(path); statErr != nil {
 		t.Fatalf("deck missing: %v", statErr)
 	}
+	if _, previewErr := os.Stat(strings.TrimSuffix(path, filepath.Ext(path)) + "_preview"); previewErr == nil {
+		t.Fatal("write rendered a preview beside the deck")
+	}
 
 	chartPath := filepath.Join(t.TempDir(), "charts.pptx")
 	text, err = WritePPTXDetailed(map[string]interface{}{"path": chartPath, "data": map[string]interface{}{

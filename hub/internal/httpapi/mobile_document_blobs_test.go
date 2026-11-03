@@ -199,7 +199,9 @@ func TestMobilePersistStateStripsSourceBytesToDisk(t *testing.T) {
 
 	mobilePersistDraft(mobileDocuments.drafts["pd1"])
 
-	payload, err := mobileStateRowPayloadForTest(mobileStateDBForTest(t, statePath), "drafts", "", "pd1")
+	inspectDB := mobileStateDBForTest(t, statePath)
+	defer inspectDB.Close()
+	payload, err := mobileStateRowPayloadForTest(inspectDB, "drafts", "", "pd1")
 	if err != nil {
 		t.Fatal(err)
 	}

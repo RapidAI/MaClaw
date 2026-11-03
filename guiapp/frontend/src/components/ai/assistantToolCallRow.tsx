@@ -43,7 +43,7 @@ export const AssistantToolCallRow = React.memo(function AssistantToolCallRow({ c
             </span>
             <div style={{ minWidth: 0, flex: "1 1 auto" }}>
                 <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "2px 8px" }}>
-                    <span style={{ fontFamily: CODE_FENCE_FONT, fontSize: 12, fontWeight: 650, color: theme.text }}>
+                    <span style={{ fontFamily: CODE_FENCE_FONT, fontSize: 12, fontWeight: 600, color: theme.text }}>
                         {title}
                     </span>
                     {action && (

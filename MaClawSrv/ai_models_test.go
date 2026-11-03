@@ -441,6 +441,15 @@ func TestSrvAIModelManagerEmbeddingPathChangeDropsStaleRuntimeOnLoadFailure(t *t
 	manager.embeddingMgr = old
 	manager.embeddingPath = filepath.Join(dataRoot, "models", "old-"+srvEmbeddingModelFilename())
 
+	// The loader is stubbed so the path change fails deterministically even
+	// on hosts whose local inference runtime would otherwise parse (or
+	// lazily accept) a garbage model file.
+	previousLoad := srvLoadEmbedder
+	srvLoadEmbedder = func(string) (embedding.Embedder, error) {
+		return nil, errors.New("injected embedding load failure")
+	}
+	t.Cleanup(func() { srvLoadEmbedder = previousLoad })
+
 	_, err := manager.embedBatch(context.Background(), corelib.AppConfig{}, []string{"hello"})
 	if err == nil {
 		t.Fatalf("expected bad model load to fail")

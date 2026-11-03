@@ -108,9 +108,10 @@ describe("CodingAgentPlanChecklist", () => {
         expect(done.style.color).toBe(asRendered(chrome.stepDoneFg));
         expect(done.style.color).not.toMatch(/#16a34a|rgb\(22,\s*163,\s*74\)/i);
         // Current step: accent pill + bold; finished steps stay plain rows.
+        // (650 collapsed onto the standard 600 stop in the weight-ramp pass.)
         const active = getByTestId("coding-agent-plan-step-2") as HTMLElement;
         expect(active.style.background).toBe(asRendered(chrome.chipActiveBg));
-        expect(active.style.fontWeight).toBe("650");
+        expect(active.style.fontWeight).toBe("600");
         expect(done.style.background).toBe("");
         const failed = getByTestId("coding-agent-plan-step-3") as HTMLElement;
         expect(failed.style.color).toBe(asRendered(chrome.stepFailedFg));
@@ -245,6 +246,76 @@ describe("CodingAgentPlanChecklist", () => {
         );
         fireEvent.click(getByTestId("coding-agent-plan-approve"));
         expect(onApprove).toHaveBeenCalledTimes(1);
+    });
+
+    it("summarizes progress in the header with a fraction and a bar", () => {
+        const { getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[
+                    { index: 1, title: "定位入口", status: "passed" },
+                    { index: 2, title: "改登录", status: "running" },
+                    { index: 3, title: "补测试", status: "pending" },
+                ]}
+            />,
+        );
+        const progress = getByTestId("coding-agent-plan-progress");
+        expect(progress.textContent).toContain("1/3");
+        const fill = progress.querySelector(".capc-fill") as HTMLElement;
+        expect(fill.style.width).toBe("33%");
+    });
+
+    it("collapses the step list behind the header and keeps it awake while approval is pending", () => {
+        const { getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[
+                    { index: 1, title: "定位入口", status: "running" },
+                    { index: 2, title: "改登录", status: "pending" },
+                ]}
+            />,
+        );
+        const toggle = getByTestId("coding-agent-plan-toggle");
+        expect(toggle.getAttribute("aria-expanded")).toBe("true");
+        expect(getByTestId("coding-agent-plan-body").getAttribute("aria-hidden")).toBe("false");
+        expect(getByTestId("coding-agent-plan-step-1")).toBeTruthy();
+        fireEvent.click(toggle);
+        expect(toggle.getAttribute("aria-expanded")).toBe("false");
+        const body = getByTestId("coding-agent-plan-body");
+        expect(body.getAttribute("aria-hidden")).toBe("true");
+        // Rows stay in the DOM, so expanding restores them without a refetch.
+        expect(getByTestId("coding-agent-plan-step-1")).toBeTruthy();
+        // The preference is remembered for the next visit of this panel…
+        expect(window.localStorage.getItem("mc.planChecklist.collapsed")).toBe("1");
+        fireEvent.click(toggle);
+        expect(toggle.getAttribute("aria-expanded")).toBe("true");
+        // …and cleared again when the user expands it back, so later sessions
+        // start expanded.
+        expect(window.localStorage.getItem("mc.planChecklist.collapsed")).toBe("0");
+    });
+
+    it("forces the list open while the plan awaits its start decision", () => {
+        const { getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                pendingApproval
+                steps={[
+                    { index: 1, title: "写代码", status: "pending" },
+                    { index: 2, title: "验证", status: "pending" },
+                ]}
+            />,
+        );
+        const toggle = getByTestId("coding-agent-plan-toggle");
+        expect(toggle.getAttribute("aria-expanded")).toBe("true");
+        // The header is not a working control while the gate is open.
+        expect(toggle.hasAttribute("disabled")).toBe(true);
+        expect(getByTestId("coding-agent-plan-approve")).toBeTruthy();
     });
 
     it("uses the composer side inset so the card matches the input width", () => {

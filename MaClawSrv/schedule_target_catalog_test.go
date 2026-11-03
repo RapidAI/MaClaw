@@ -42,7 +42,7 @@ func TestListSrvPeerDeliveryTargetsUsesProvidedPrincipalStore(t *testing.T) {
 	if got := joined(refsB); !strings.Contains(got, "2002") || strings.Contains(got, "1001") {
 		t.Fatalf("principal B refs=%q", got)
 	}
-	if _, err := os.Stat(filepath.Join(root, "a", scheduler.DeliveryStateFileName)); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "a", "scheduled_delivery_state.db")); err != nil {
 		t.Fatalf("principal A state not persisted: %v", err)
 	}
 }

@@ -40,6 +40,8 @@
 - 同一个 `reply_to` 只接受一条主持人回答。重复 POST（第二台主持机器、响应丢失后的重试）返回当前列表，不增加新批注。
 - 批注持久化增加 `host` 与 `reply_to`。更早写入的批注没有 `host`，读取时用已保存的 `author_id == owner_id` 推导，避免把主持人旧批注当成读者问题再答一遍。
 - `GET /api/mobile/documents/shares` 的响应增加 `notes_reply: true`、`notes_review: true` 和 `server_time`（Hub 当前时间）。旧 Hub 没有这些字段，桌面端据此关闭主持人自动回答；否则旧 Hub 不记录 `reply_to`，每条主持人发言都会被当成未回答的问题，形成循环。`server_time` 用于把讨论水位放在 Hub 时钟上，避免两端时钟偏差跳过现场批注。
+- 同步性能：`GET /api/mobile/documents/shares` 现在带 `ETag`（Hub 进程内的变更序号），`If-None-Match` 命中时返回 304。另新增轻量轮询端点 `GET /api/mobile/documents/shares/changes`，只返回 `{seq, server_time, shares: [{token, revision, notes_revision}]}`，不含批注正文。参与者的 5 秒快轮询和主持人的讨论 watcher 都先问 changes：序号没变就跳过整轮全量拉取（无变化时一次轮询只有几百字节）；序号变了或距上次全量刷新超过 10 分钟才走全量列表。旧 Hub 没有该端点（404）时桌面端回退为每次全量刷新。分享索引的高频变更（同步、批注、审核）改为后台快照写盘，不再在全锁内做序列化和落盘。
+- 读者标注增量同步：高亮、回答标注、批注贴、涂鸦、书签这五项(reader marks)原来每次变更都随整个项目 zip（含论文原文）重新上传给每个分享。现在主持人只把这几项的小 JSON 推到 `POST /api/mobile/documents/shares/{token}/marks`（仅主持人可写，自增 `marks_revision`，不触碰项目 `revision`）；聊天记录（只在完整项目里）仍走原 `POST .../sync`。参与者发现自己的 `marks_revision` 落后时，用 `GET .../marks` 只拉这几项并就地应用到已打开的文档，不再重下 zip；`marks_revision` 未变或旧 Hub 没有该字段时行为与原来一致（全量 zip 同步）。全量同步成功后主持人会顺带推一次标注，保证两个副本一致。
 - 桌面端的库列表把 `notes_reply` 转成 `notesReply`、把 `notes_review` 转成 `notesReview` 返回给窗口。参与者只有在确认 Hub 支持主持人回复后，才停用本机回答；旧 Hub，或第一次列表请求还没成功时，仍按原逻辑由本机 agent 回答，避免桌面端先升级、Hub 后升级时问题无人回答。列表请求失败时保留上一次成功的能力值。
 
 批注列表里每条记录新增：

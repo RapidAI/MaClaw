@@ -62,7 +62,7 @@ func semanticTrustedFileReadInvocationSchema() map[string]interface{} {
 			// the model to pass the forbidden lines knob.
 			"start_line": map[string]interface{}{
 				"type":        "integer",
-				"description": "1-based start of one host-sized text page. The page length is fixed. Do not combine with query or file_pattern.",
+				"description": "1-based start of one host-sized text page. The page length is fixed. Do not combine with query or file_pattern. For a .pptx this is the 1-based slide where a 3-slide visual check starts; omit it to see the first slides.",
 			},
 		},
 		"required":             []string{},
@@ -210,8 +210,13 @@ func readResolvedTrustedFile(workspace, absPath, path, query, filePattern string
 	if err != nil {
 		return "", effectNotStarted(fmt.Errorf("trusted_file_read_not_found"))
 	}
-	if startLine > 0 {
+	if startLine > 0 && !strings.EqualFold(filepath.Ext(absPath), ".pptx") {
 		return trustedFileReadFromStartLine(absPath, info, startLine)
+	}
+	// Any requested slide page is a picture check. Omitting start_line still
+	// reads the deck text and attaches the first pictures.
+	if startLine > 0 && strings.EqualFold(filepath.Ext(absPath), ".pptx") && !info.IsDir() {
+		return fmt.Sprintf("从第 %d 页起查看幻灯片画面。", startLine), nil
 	}
 	display := trustedFileWriteDisplayPath(workspace, absPath, path)
 	if info.IsDir() {
@@ -369,6 +374,9 @@ func semanticFileReadDocumentStartLineCheck(values map[string]interface{}) error
 		return nil
 	}
 	path, _ := values["path"].(string)
+	if strings.EqualFold(filepath.Ext(strings.TrimSpace(path)), ".pptx") {
+		return nil
+	}
 	if !trustedFileReadUsesDocumentReader(path) {
 		return nil
 	}

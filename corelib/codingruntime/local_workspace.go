@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+// gitCommandTimeout bounds every host git invocation. Windows hosts with
+// aggressive antivirus or stuck index locks have been observed to hang a git
+// child for minutes; a probe or baseline must fail instead of blocking the
+// caller forever.
+const (
+	gitBaselineCommandTimeout = 5 * time.Minute
+	gitProbeCommandTimeout    = 2 * time.Minute
+)
+
 // EnsureLocalGitBaseline makes sure projectPath has a usable Git baseline so a
 // gated writer can pass the read-only workspace probe. A repository whose HEAD
 // already resolves (including one inherited from a parent directory) is left
@@ -34,7 +43,9 @@ func EnsureLocalGitBaseline(ctx context.Context, projectPath string) error {
 		ctx = context.Background()
 	}
 	runGit := func(args ...string) error {
-		cmd := exec.CommandContext(ctx, "git", args...)
+		cmdCtx, cancel := context.WithTimeout(ctx, gitBaselineCommandTimeout)
+		defer cancel()
+		cmd := exec.CommandContext(cmdCtx, "git", args...)
 		cmd.Dir = projectPath
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -73,11 +84,13 @@ func NewLocalGitWorkspaceProber(projectPath string) WorkspaceProber {
 		readGit := func(args ...string) (string, error) {
 			// core.longpaths keeps read-only inspection working for workspaces
 			// beyond the Windows MAX_PATH limit; it is a no-op elsewhere.
-			cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.longpaths=true"}, args...)...)
+			cmdCtx, cancel := context.WithTimeout(ctx, gitProbeCommandTimeout)
+			defer cancel()
+			cmd := exec.CommandContext(cmdCtx, "git", append([]string{"-c", "core.longpaths=true"}, args...)...)
 			cmd.Dir = projectPath
-			out, err := cmd.Output()
+			out, err := cmd.CombinedOutput()
 			if err != nil {
-				return "", err
+				return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 			}
 			return strings.TrimSpace(string(out)), nil
 		}

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -201,6 +202,29 @@ func companionGroupName(name string) (string, string) {
 	return cleaned, ""
 }
 
+// companionViewerContactSet polls run every few seconds per online desktop,
+// and each call costs two identity-store queries. Verified identities change
+// rarely, so the resolved set is cached briefly per account: fresh enough that
+// a newly verified address opens a share within the TTL, cheap enough that
+// the polling traffic stops hammering the store.
+const companionContactSetCacheTTL = 30 * time.Second
+
+var companionContactSetCache = struct {
+	mu    sync.Mutex
+	items map[string]companionContactSetEntry
+}{items: map[string]companionContactSetEntry{}}
+
+type companionContactSetEntry struct {
+	set map[string]struct{}
+	at  time.Time
+}
+
+func companionContactSetCacheReset() {
+	companionContactSetCache.mu.Lock()
+	defer companionContactSetCache.mu.Unlock()
+	companionContactSetCache.items = map[string]companionContactSetEntry{}
+}
+
 func companionViewerContactSet(identity *auth.IdentityService, ctx context.Context, principal *auth.ViewerPrincipal) map[string]struct{} {
 	set := map[string]struct{}{}
 	if principal == nil {
@@ -219,9 +243,42 @@ func companionViewerContactSet(identity *auth.IdentityService, ctx context.Conte
 	if identity == nil {
 		return set
 	}
+	key := fmt.Sprintf("%p|%s", identity, strings.TrimSpace(principal.UserID))
+	if key == "%p|" {
+		key = fmt.Sprintf("%p|%s", identity, strings.TrimSpace(principal.Email))
+	}
+	now := time.Now()
+	companionContactSetCache.mu.Lock()
+	if entry, ok := companionContactSetCache.items[key]; ok && now.Sub(entry.at) < companionContactSetCacheTTL {
+		cached := make(map[string]struct{}, len(entry.set))
+		for value := range entry.set {
+			cached[value] = struct{}{}
+		}
+		companionContactSetCache.mu.Unlock()
+		for value := range cached {
+			set[value] = struct{}{}
+		}
+		return set
+	}
+	companionContactSetCache.mu.Unlock()
 	for _, contact := range identity.ViewerContacts(ctx, principal) {
 		add(contact)
 	}
+	companionContactSetCache.mu.Lock()
+	if len(companionContactSetCache.items) > 512 {
+		cutoff := now.Add(-companionContactSetCacheTTL)
+		for id, entry := range companionContactSetCache.items {
+			if entry.at.Before(cutoff) {
+				delete(companionContactSetCache.items, id)
+			}
+		}
+	}
+	entry := make(map[string]struct{}, len(set))
+	for value := range set {
+		entry[value] = struct{}{}
+	}
+	companionContactSetCache.items[key] = companionContactSetEntry{set: entry, at: now}
+	companionContactSetCache.mu.Unlock()
 	return set
 }
 

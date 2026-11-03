@@ -116,7 +116,10 @@ describe("renderContentWithCodeBlocks", () => {
         const borderRgb = `rgb(${Number.parseInt(borderHex.slice(0, 2), 16)}, ${Number.parseInt(borderHex.slice(2, 4), 16)}, ${Number.parseInt(borderHex.slice(4, 6), 16)})`;
         expect(pre.style.fontFamily).toContain("ui-monospace");
         expect(pre.style.color).toBe(cssRgb(lightTheme.text));
-        expect(pre.style.backgroundColor).toBe("rgb(255, 255, 255)");
+        // The well inherits the active light-scheme page background, so assert
+        // the derived value instead of pinning a hex (which drifted when the
+        // light schemes were re-tinted).
+        expect(pre.style.backgroundColor).toBe(cssRgb(lightTheme.bg));
         expect(pre.style.borderTopColor).toBe(borderRgb);
         expect(pre.style.whiteSpace).toBe("pre");
         expect(pre.style.fontSize).toBe("12px");
