@@ -956,6 +956,12 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	if err := desktopRichPreCheck(ctx, session, action, args); err != nil {
 		return "", err
 	}
+	// The working row names the site and the step (正在登录 CSDN), not the tool.
+	if action == "navigate" {
+		desktopNoteActivityPage(scope.RunID, desktopArg(args, "url"))
+	} else {
+		desktopNoteActivityPage(scope.RunID, session.CurrentURL())
+	}
 	var text string
 	switch action {
 	case "navigate":
@@ -980,7 +986,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		state, callErr := browser.RunAgentFastBatchUntilPerson(session, steps, desktopArg(args, "text"))
 		text, err = desktopTaskText(state, callErr)
 	case "click":
-		defer beginDesktopActivity(scope.RunID, "正在点击")()
+		defer beginDesktopActivity(scope.RunID, desktopWebStepPhrase(scope.RunID, "正在点击"))()
 		var result *browser.BrowserActionResult
 		var callErr error
 		if ref := desktopArg(args, "ref"); ref != "" {
@@ -990,13 +996,13 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		}
 		text, err = desktopActionText(result, callErr)
 	case "type":
-		defer beginDesktopActivity(scope.RunID, "正在输入")()
+		defer beginDesktopActivity(scope.RunID, desktopWebStepPhrase(scope.RunID, "正在输入"))()
 		result, callErr := session.Type(desktopArg(args, "snapshot_id"), desktopArg(args, "ref"), "", desktopArg(args, "text"))
 		text, err = desktopActionText(result, callErr)
 		text, err = desktopVerifyBrowserType(session, desktopArg(args, "text"), text, err)
 		desktopNoteAppliedProgress(scope, session, desktopArg(args, "text"), text, err)
 	case "press":
-		defer beginDesktopActivity(scope.RunID, desktopKeyPhrase(desktopArg(args, "key")))()
+		defer beginDesktopActivity(scope.RunID, desktopWebStepPhrase(scope.RunID, desktopKeyPhrase(desktopArg(args, "key"))))()
 		result, callErr := session.Press(desktopArg(args, "key"))
 		text, err = desktopActionText(result, callErr)
 	case "script":
@@ -1031,7 +1037,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		defer beginDesktopActivity(scope.RunID, "正在查看")()
 		text, err = desktopShopReadback(session)
 	case "skill_run":
-		defer beginDesktopActivity(scope.RunID, "正在操作网页")()
+		defer beginDesktopActivity(scope.RunID, desktopWebStepPhrase(scope.RunID, "正在操作网页"))()
 		result, callErr := browser.RunSavedPageScript(session, userKey, desktopArg(args, "name"), desktopBrowserSkillRoot)
 		text, err = desktopActionText(result, callErr)
 		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)

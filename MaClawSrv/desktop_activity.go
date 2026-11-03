@@ -1,10 +1,12 @@
 package main
 
 import (
+	neturl "net/url"
 	"strings"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/browser"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // desktopActivityThinking is the gap after one desktop step, while the model
@@ -33,6 +35,10 @@ var desktopActivityPhrases = map[string]struct{}{
 	"正在选择":   {},
 	"正在操作网页": {},
 	"正在等待":   {},
+	"正在登录":   {},
+	"正在发布":   {},
+	"正在上传文件": {},
+	"正在填写":   {},
 	desktopActivityThinking: {},
 }
 
@@ -49,7 +55,67 @@ func setDesktopActivity(runID, phrase string) {
 	if runID == "" || !desktopActivityAllowed(phrase) {
 		return
 	}
-	desktopActivities.Store(runID, phrase)
+	desktopActivities.Store(runID, desktopActivityWithSite(runID, phrase))
+}
+
+// The site a run's browser is on, kept per run so a web step reads as
+// 「正在登录 CSDN」 rather than a bare 「正在输入」. Only closed site names.
+var desktopActivitySites sync.Map
+
+// desktopWebPhrases take the site; container and screen steps do not.
+var desktopWebPhrases = map[string]bool{"正在输入": true, "正在点击": true, "正在按键": true, "正在翻页": true, "正在打开网页": true, "正在查看": true, "正在操作网页": true, "正在登录": true, "正在发布": true, "正在上传文件": true, "正在填写": true, "正在查找": true, "正在选择": true}
+
+func desktopActivityWithSite(runID, phrase string) string {
+	if !desktopWebPhrases[phrase] {
+		return phrase
+	}
+	if v, ok := desktopActivitySites.Load(runID); ok {
+		if site, _ := v.(string); site != "" {
+			return phrase + " " + site
+		}
+	}
+	return phrase
+}
+
+// desktopNoteActivityPage records which site the run is on and whether the
+// page is a sign-in page; a step on a sign-in page reads as 正在登录.
+func desktopNoteActivityPage(runID, rawURL string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	u, err := neturl.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return
+	}
+	desktopActivitySites.Store(runID, desktopbot.ActivitySiteForHost(u.Hostname()))
+	desktopActivityLogin.Store(runID, desktopLoginURL(u))
+}
+
+var desktopActivityLogin sync.Map
+
+func desktopLoginURL(u *neturl.URL) bool {
+	s := strings.ToLower(u.Hostname() + u.Path)
+	for _, k := range []string{"login", "signin", "sign_in", "passport", "account/", "/auth"} {
+		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// desktopWebStepPhrase: typing or clicking on a sign-in page is signing in.
+func desktopWebStepPhrase(runID, phrase string) string {
+	if v, ok := desktopActivityLogin.Load(strings.TrimSpace(runID)); ok && v == true {
+		switch phrase {
+		case "正在输入", "正在点击", "正在按键", "正在填写", "正在操作网页":
+			return "正在登录"
+		}
+	}
+	if phrase == "正在输入" {
+		return "正在填写"
+	}
+	return phrase
 }
 
 func loadDesktopActivity(runID string) string {
@@ -62,7 +128,7 @@ func loadDesktopActivity(runID string) string {
 		return ""
 	}
 	text, _ := value.(string)
-	if !desktopActivityAllowed(text) {
+	if desktopbot.ActivityPhrase(text) == "" {
 		return ""
 	}
 	return text
@@ -74,6 +140,8 @@ func clearDesktopActivity(runID string) {
 		return
 	}
 	desktopActivities.Delete(runID)
+	desktopActivitySites.Delete(runID)
+	desktopActivityLogin.Delete(runID)
 }
 
 // beginDesktopActivity shows phrase for the step that is about to run, then

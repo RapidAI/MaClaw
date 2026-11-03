@@ -6528,7 +6528,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <button type="button" className="btn-secondary desktop-bot-chat__rooms-btn" data-testid="bot-rooms-open" onClick={() => setRoomsOpen(true)}>群聊</button>
                             ) : null}
                         </header>
-                        {collab.features.assignments ? <BotCollabStatus assignments={collab.assignments} bots={bots} lang={lang} busy={bots.flatMap(bot => { const phase = busyPhase(bot.id, messagesByBot[bot.id] || messagesForBot(userId, bot.id)); return phase === 'execute' || phase === 'plan' ? [{ bot: bot.id, phase }] : []; })} /> : null}
+                        {collab.features.assignments ? <BotCollabStatus assignments={collab.assignments} bots={bots} lang={lang} busy={bots.flatMap(bot => { const phase = busyPhase(bot.id, messagesByBot[bot.id] || messagesForBot(userId, bot.id)); return phase === 'execute' || phase === 'plan' ? [{ bot: bot.id, phase, task: activityByBot[bot.id]?.text || '' }] : []; })} /> : null}
                         <div
                             ref={logRef}
                             className="desktop-bot-chat__log"

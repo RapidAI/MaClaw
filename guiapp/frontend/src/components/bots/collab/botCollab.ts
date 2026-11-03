@@ -116,6 +116,8 @@ export function statusRowText(assignments: Assignment[], bots: BotRef[], max = 3
         const stage = shorten(b.task || '', 18);
         const verbZh = b.phase === 'plan' ? '在安排' : '正在做';
         const verbEn = b.phase === 'plan' ? 'is planning' : 'is working';
+        // A live step (正在登录 CSDN) is the row itself: 「Bot 1 正在登录 CSDN」.
+        if (zh && /^正在/.test(stage)) { parts.push(`${name} ${stage}`); continue; }
         parts.push(stage ? tailText(lang, `${name} ${verbEn}: ${stage}`, `${name} ${verbZh}：${stage}`) : tailText(lang, `${name} ${verbEn}`, `${name} ${verbZh}`));
     }
     if (!parts.length) return '';

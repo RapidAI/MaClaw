@@ -54,3 +54,10 @@ describe('inline says only after the latest message', () => {
         expect(saidForChat([old, fresh], 'b', false).map(i => i.id)).toEqual(['n1', 'n2']);
     });
 });
+
+describe('live step in the header', () => {
+    it('shows each busy bot with its current step', () => {
+        const row = statusRowText([], bots, 3, 'zh-Hans', [{ bot: 'a', phase: 'execute', task: '正在登录 CSDN' }, { bot: 'b', phase: 'execute', task: '正在发布 小红书' }]);
+        expect(row).toBe('小A 正在登录 CSDN；小B 正在发布 小红书');
+    });
+});

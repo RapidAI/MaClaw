@@ -16,7 +16,9 @@ const NAMED_FILLERS = new Set([
 const EMPTY_RUN_FILLER = /^run \S+ ended as \S+ without a result$/;
 
 // Same working-row rule the desktop page already uses. Not a new verb list.
-const ACTIVITY_PHRASE = /^正在[\u4e00-\u9fff]{2,6}$/;
+// Same closed site list as corelib/desktopbot ActivitySites.
+export const ACTIVITY_SITES = ['CSDN', '知乎', '小红书', '微博', '掘金', 'B站', '抖音', '公众号', '头条', 'GitHub', '百度', '淘宝', '京东', '飞书', '钉钉', '邮箱', '论文站'];
+const ACTIVITY_PHRASE = new RegExp(`^正在[\\u4e00-\\u9fff]{2,6}(?: (?:${ACTIVITY_SITES.join('|')}))?$`);
 const ACTIVITY_BLOCKED = new Set(['正在处理', '正在一点点推进', '正在询问']);
 
 export type VisibleDesktopInput = {

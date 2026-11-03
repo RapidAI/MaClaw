@@ -47,7 +47,31 @@ var emptyRunFiller = regexp.MustCompile(`^run \S+ ended as \S+ without a result$
 
 // activityPhrase matches the working row. Typed text, a tool name, and model
 // thinking do not. The blocked phrases are the row's own words, not steps.
-var activityPhrase = regexp.MustCompile(`^正在\p{Han}{2,6}$`)
+var activityPhrase = regexp.MustCompile(`^正在\p{Han}{2,6}(?: (` + strings.Join(ActivitySites, "|") + `))?$`)
+
+// ActivitySites are the only site names a working-row step may carry
+// ("正在登录 CSDN"). A host outside this set shows the bare step, so a URL,
+// account or page title never reaches the row.
+var ActivitySites = []string{"CSDN", "知乎", "小红书", "微博", "掘金", "B站", "抖音", "公众号", "头条", "GitHub", "百度", "淘宝", "京东", "飞书", "钉钉", "邮箱", "论文站"}
+
+// ActivitySiteForHost maps a host to its closed site name, or "".
+func ActivitySiteForHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, m := range activityHostSites {
+		if host == m[0] || strings.HasSuffix(host, "."+m[0]) {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+var activityHostSites = [][2]string{
+	{"csdn.net", "CSDN"}, {"zhihu.com", "知乎"}, {"xiaohongshu.com", "小红书"}, {"weibo.com", "微博"},
+	{"juejin.cn", "掘金"}, {"bilibili.com", "B站"}, {"douyin.com", "抖音"}, {"mp.weixin.qq.com", "公众号"},
+	{"toutiao.com", "头条"}, {"github.com", "GitHub"}, {"baidu.com", "百度"}, {"taobao.com", "淘宝"},
+	{"jd.com", "京东"}, {"feishu.cn", "飞书"}, {"dingtalk.com", "钉钉"}, {"mail.qq.com", "邮箱"},
+	{"mail.163.com", "邮箱"}, {"mypapers.top", "论文站"},
+}
 
 var activityBlocked = map[string]struct{}{
 	"正在处理":    {},

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { visibleActivityPhrase } from './visibleDesktopTurn';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
@@ -342,5 +343,13 @@ describe('desktop-bot single exit', () => {
         expect(view.notify).toBe(false);
         expect(view.bubble).toBe(false);
         expect(messagesForBot('alice', 'bot_1')).toEqual(before);
+    });
+});
+
+describe('step phrase with a site', () => {
+    it('keeps closed sites and drops anything else', () => {
+        expect(visibleActivityPhrase('正在登录 CSDN')).toBe('正在登录 CSDN');
+        expect(visibleActivityPhrase('正在登录 evil.com')).toBe('');
+        expect(visibleActivityPhrase('browser_click')).toBe('');
     });
 });
