@@ -230,17 +230,26 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     const rememberInstalledExpert = useCallback((raw: unknown) => {
         const expert = expertDefinitionFromInstallResult(raw);
         if (!expert) return;
-        const option: ExpertOption = {
+        const option: ExpertOption & { updated_at?: string } = {
             id: expert.id,
             name: expert.name || expert.id,
             description: expert.description || "",
             icon: expert.icon || "",
+            updated_at: expert.updated_at || "",
         };
         freshlyInstalledExpertsRef.current = [
             ...freshlyInstalledExpertsRef.current.filter(item => item.item.id !== option.id),
             { item: option, stamp: taskConfigExpertsLoadGenRef.current },
         ];
-        setTaskConfigExperts(current => current.some(item => item.id === option.id) ? current : [...current, option]);
+        setTaskConfigExperts(current => {
+            const index = current.findIndex(item => item.id === option.id);
+            if (index < 0) return [...current, option];
+            const existing = current[index];
+            if (existing.name === option.name && existing.description === option.description && existing.icon === option.icon) return current;
+            const next = current.slice();
+            next[index] = option;
+            return next;
+        });
     }, []);
 
     const loadTaskConfigExperts = useCallback(async () => {

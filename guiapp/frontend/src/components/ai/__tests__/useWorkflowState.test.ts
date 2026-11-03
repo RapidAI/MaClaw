@@ -747,6 +747,65 @@ describe('workflow state document collection', () => {
         vi.useRealTimers();
     });
 
+    it('does not apply another task that shares the expert tab', () => {
+        const { result } = renderHook(() => useWorkflowState('expert-book', 'D:/tasks/quantum'));
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'wf-mongolian',
+                status: 'active',
+                type: 'document',
+                current_phase: 'write',
+                project_path: 'D:/tasks/mongolian',
+                event_scope_id: 'expert-book',
+            });
+        });
+        expect(result.current.state.active).toBe(false);
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'wf-quantum',
+                status: 'active',
+                type: 'document',
+                current_phase: 'write',
+                project_path: 'D:\\tasks\\quantum\\',
+                event_scope_id: 'expert-book',
+            });
+        });
+        expect(result.current.state.active).toBe(true);
+        expect(result.current.state.workflowID).toBe('wf-quantum');
+    });
+
+    it('does not open or close the preview for another task on the same expert tab', () => {
+        const { result } = renderHook(() => useWorkflowState('expert-book', 'D:/tasks/quantum'));
+
+        act(() => {
+            eventHandlers.get('workflow:suggest_maximize')?.({
+                workflow_type: 'document',
+                event_scope_id: 'expert-book',
+                project_path: 'D:/tasks/mongolian',
+            });
+        });
+        expect(result.current.state.suggestMaximize).toBe(false);
+
+        act(() => {
+            eventHandlers.get('workflow:suggest_maximize')?.({
+                workflow_type: 'document',
+                event_scope_id: 'expert-book',
+                project_path: 'D:/tasks/quantum',
+            });
+        });
+        expect(result.current.state.suggestMaximize).toBe(true);
+
+        act(() => {
+            eventHandlers.get('workflow:suggest_maximize_dismiss')?.({
+                event_scope_id: 'expert-book',
+                project_path: 'D:/tasks/mongolian',
+            });
+        });
+        expect(result.current.state.suggestMaximize).toBe(true);
+    });
+
     it('rejects doc_update events from a different workflow instance (cross-tab isolation)', () => {
         const { result } = renderHook(() => useWorkflowState("D:/project-A"));
 

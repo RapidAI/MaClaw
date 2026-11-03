@@ -16,6 +16,24 @@ type fakePrefEmb struct {
 	fail   bool
 }
 
+func TestTypedNilEmbedderIsAbsent(t *testing.T) {
+	var typedNil *Qwen3Embedder
+	var emb Embedder = typedNil
+	if !IsNoop(emb) {
+		t.Fatal("typed nil embedder was treated as live")
+	}
+	if family := EmbedderFamily(emb); family != "" {
+		t.Fatalf("family = %q, want empty", family)
+	}
+	if typedNil.Dim() != 0 || typedNil.ModelID() != "" {
+		t.Fatal("nil qwen3 embedder still dereferences")
+	}
+	var gemmaNil *GemmaEmbedder
+	if gemmaNil.Dim() != 0 || gemmaNil.ModelID() != "" {
+		t.Fatal("nil gemma embedder still dereferences")
+	}
+}
+
 func (f *fakePrefEmb) Embed(string) ([]float32, error) {
 	if f.fail {
 		return nil, errors.New("boom")

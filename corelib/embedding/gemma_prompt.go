@@ -52,6 +52,9 @@ const gemmaGraphVersion = "gemma3-graph3"
 // treated as one space, and retrieval would keep returning confident garbage
 // after a model swap.
 func (g *GemmaEmbedder) ModelID() string {
+	if g == nil {
+		return ""
+	}
 	name := g.modelName
 	if name == "" {
 		name = "gemma-embedding"

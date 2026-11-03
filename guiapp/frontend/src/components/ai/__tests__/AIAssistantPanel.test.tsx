@@ -12,6 +12,7 @@ import { EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_TASK_
 import { __resetCloudWorkspaceLeaseEnsureForTests } from '../codingTaskMode';
 import { ExportTaskResultFile, PreviewTaskResultFile } from '../../../../wailsjs/go/main/App';
 import { projectSessionKey } from '../aiAssistantPanelSessionUtils';
+import { expertTaskPreviewKey } from '../assistantPreviewState';
 import { noteNonAppendStreamText } from '../streamTextRevision';
 
 const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMock, loadProjectContextMock, loadProjectConversationHistoryMock, loadProjectTabConversationMock, loadProjectTabIndexMock, createProjectTabSessionMock, cancelSessionForSessionMock, clearAIAssistantHistoryForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, renameTaskMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, prepareRemoteOpsDiagnosisEnvironmentMock, setCodingWorkbenchSessionPlanMock, getTabWorkingDirMock, setTabWorkingDirMock, selectWorkingDirMock, startWorkflowTemplateInTabMock, resumeCloudWorkspaceTaskMock, createTaskUnifiedMock, listManagedIndustryExpertsMock, listPendingScopeApprovalsMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
@@ -495,6 +496,13 @@ describe('AIAssistantPanel property tests', () => {
             expect(onActiveAssistantTaskChange).toHaveBeenCalled();
         });
         expect(onActiveAssistantTaskChange).toHaveBeenLastCalledWith(null);
+    });
+
+    it('keeps each expert task preview under its own directory', () => {
+        const quantum = expertTaskPreviewKey('expert-book', 'D:/tasks/quantum');
+        const mongolian = expertTaskPreviewKey('expert-book', 'D:\\tasks\\mongolian\\');
+        expect(quantum).not.toBe(mongolian);
+        expect(expertTaskPreviewKey('expert-book', 'D:/tasks/quantum/')).toBe(quantum);
     });
 
     it('does not allow coding preview panes on digital employee tabs', () => {

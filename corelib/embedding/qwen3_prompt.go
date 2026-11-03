@@ -85,6 +85,9 @@ func (q *Qwen3Embedder) EmbedBatchWithRole(texts []string, role Role) ([][]float
 // regime and Qwen3 instruct recipe. It never collides with Gemma's IDs (the
 // GGUF names differ and the recipe suffix is Qwen3-specific).
 func (q *Qwen3Embedder) ModelID() string {
+	if q == nil {
+		return ""
+	}
 	name := q.modelName
 	if name == "" {
 		name = "qwen3-embedding"

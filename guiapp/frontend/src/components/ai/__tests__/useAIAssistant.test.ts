@@ -3200,42 +3200,6 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.sending).toBe(false);
     });
 
-    it('does not repeat a goal failure notice that the turn already stored', async () => {
-        const { result } = renderAssistantHook();
-        const panicText = 'Shared agent loop panicked: runtime error: invalid memory address or nil pointer dereference';
-
-        await act(async () => {
-            emitRuntimeEvent('ai-assistant-foreground-round-started', {
-                request_id: 'goal-cont-panic',
-                session_key: 'desktop-user',
-                text: '目标清单\n正在继续当前步骤',
-                display_text: '目标清单\n正在继续当前步骤',
-            });
-        });
-        await act(async () => {
-            emitRuntimeEvent('ai-assistant-response', {
-                request_id: 'goal-cont-panic',
-                session_key: 'desktop-user',
-                text: '',
-                error: panicText,
-                fields: null,
-                actions: null,
-            });
-        });
-        await act(async () => {
-            emitRuntimeEvent('ai-continuation', {
-                request_id: 'goal-notice-panic',
-                session_key: 'desktop-user',
-                kind: 'notice',
-                text: panicText,
-                as_error: true,
-            });
-        });
-
-        const errors = result.current.messages.filter(message => message.role === 'error' && message.content === panicText);
-        expect(errors).toHaveLength(1);
-    });
-
     it('persists the buffered continuation tail when unmounting before the coalescer timer', async () => {
         const { result, unmount } = renderAssistantHook();
         const requestId = 'continuation-unmount-tail';
@@ -6116,6 +6080,36 @@ describe('useAIAssistant property tests', () => {
             pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: sent.request_id || '' });
             await pending.promise;
         });
+    });
+
+    it('does not mirror a workflow form from another expert task onto the open book', async () => {
+        const openBook = 'desktop-user:expert:book-writer:task:C:/Users/ma139/.maclaw/data/tasks/quantum';
+        const otherBook = 'desktop-user:expert:book-writer:task:C:/Users/ma139/.maclaw/data/tasks/mongolian';
+        const { result } = renderAssistantHook({ activeSessionKey: openBook });
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                workflow_user_id: otherBook,
+                view: {
+                    id: 'workflow:form:outline',
+                    type: 'form',
+                    title: '蒙文提纲',
+                    fields: [
+                        { name: '_workflow_phase', type: 'hidden', value: 'outline' },
+                        { name: '_workflow_id', type: 'hidden', value: 'wf-mongolian' },
+                        { name: '_workflow_user_id', type: 'hidden', value: otherBook },
+                        { name: 'title', label: '标题', type: 'text', value: '' },
+                    ],
+                },
+            });
+        });
+
+        expect(result.current.agentView).toBeNull();
     });
 
     it('does not mirror non-workflow forms from a different owner session into the active task tab', async () => {

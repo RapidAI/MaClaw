@@ -188,10 +188,16 @@ func tryLoad(path string, load func(string) (Embedder, error), smoke bool) (emb 
 // FamilyGemma is only reported for legacy / foreign embedders (by ModelID or
 // width) so stale Gemma-space heads and vectors can be recognised and refused.
 func EmbedderFamily(e Embedder) string {
+	// A nil pointer stored in the interface still matches *Qwen3Embedder.
+	// It has no weights and no width; treating it as Qwen3 makes the next
+	// Dim call panic.
+	if embedderAbsent(e) {
+		return ""
+	}
 	if _, ok := e.(*Qwen3Embedder); ok {
 		return FamilyQwen3
 	}
-	if e == nil || IsNoop(e) {
+	if IsNoop(e) {
 		return ""
 	}
 	if m, ok := e.(interface{ ModelID() string }); ok {

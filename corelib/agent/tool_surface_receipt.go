@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -1180,13 +1181,31 @@ func (transport *toolSurfaceReceiptRoundTripper) SetToolSurfaceNext(next http.Ro
 	transport.next = next
 }
 
+// roundTripperAbsent reports a missing transport. An interface holding a nil
+// *http.Transport is not nil, and RoundTrip on it panics.
+func roundTripperAbsent(next http.RoundTripper) bool {
+	if next == nil {
+		return true
+	}
+	if transport, ok := next.(*http.Transport); ok {
+		return transport == nil
+	}
+	value := reflect.ValueOf(next)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
 func (transport *toolSurfaceReceiptRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	if transport == nil {
 		return nil, fmt.Errorf("surface_integrity_failure: missing tool surface transport")
 	}
 	// Snapshot the hop so a later wrap cannot retarget this in-flight request.
 	next := transport.next
-	if next == nil {
+	if roundTripperAbsent(next) {
 		next = http.DefaultTransport
 	}
 	if request == nil || request.Body == nil {

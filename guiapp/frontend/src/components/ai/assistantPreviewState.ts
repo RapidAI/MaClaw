@@ -91,6 +91,13 @@ export function commitRestoredCodePreview(
     return clone;
 }
 
+/** Snapshot key for one expert task. Several tasks share a tab id, so the path is part of the key. */
+export function expertTaskPreviewKey(tabId: string, projectPath?: string | null): string {
+    const id = String(tabId || "").trim();
+    const path = normalizeProjectSessionPath(projectPath);
+    return path ? `${id}\0${path}` : id;
+}
+
 /**
  * Whether a localStorage-restored source/workflow preview snapshot may be painted
  * onto the currently active tab.

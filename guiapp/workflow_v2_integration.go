@@ -698,6 +698,7 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 		})
 		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{
 			"event_scope_id": h.app.getEventScopeID(prevState.UserID),
+			"project_path":   workflowEventProjectPath(prevState),
 		})
 		log.Printf("[workflow-v2] cancelled previous workflow before starting new one: user=%s", msg.UserID)
 	} else {
@@ -837,7 +838,10 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 		} else {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
 		}
-		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{"event_scope_id": h.app.getEventScopeID(msg.UserID)})
+		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{
+			"event_scope_id": h.app.getEventScopeID(msg.UserID),
+			"project_path":   projectPathFromSessionOwnerID(msg.UserID),
+		})
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流已取消"}}
 	case v2.ActionCancelAndExecute:
 		h.workflowV2Adapters.Delete(msg.UserID)
@@ -852,7 +856,10 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 		} else {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", nil)
 		}
-		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{"event_scope_id": h.app.getEventScopeID(msg.UserID)})
+		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{
+			"event_scope_id": h.app.getEventScopeID(msg.UserID),
+			"project_path":   projectPathFromSessionOwnerID(msg.UserID),
+		})
 		if originalRequest != "" {
 			h.pendingCancelExecuteRequest.Store(msg.UserID, originalRequest)
 		}
@@ -1116,11 +1123,13 @@ func (h *IMMessageHandler) emitWorkflowV2Progress(userID string, state *v2.Workf
 			emitWorkflowV2Event(h.app, "workflow:suggest_maximize", map[string]interface{}{
 				"workflow_type":  state.Type,
 				"event_scope_id": h.app.getEventScopeID(state.UserID),
+				"project_path":   workflowEventProjectPath(state),
 			})
 		}
 	} else {
 		emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{
 			"event_scope_id": h.app.getEventScopeID(state.UserID),
+			"project_path":   workflowEventProjectPath(state),
 		})
 		// The per-owner adapter retains instance metadata for persistence. Once
 		// the workflow is terminal, release it so a later task cannot inherit
@@ -1946,6 +1955,7 @@ func (h *IMMessageHandler) cancelWorkflowV2(userID string) {
 	}
 	emitWorkflowV2Event(h.app, "workflow:suggest_maximize_dismiss", map[string]interface{}{
 		"event_scope_id": h.app.getEventScopeID(userID),
+		"project_path":   projectPathFromSessionOwnerID(userID),
 	})
 }
 

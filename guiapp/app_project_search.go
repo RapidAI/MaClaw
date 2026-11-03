@@ -203,9 +203,14 @@ func projectPathFromSessionOwnerID(ownerID string) string {
 		return ""
 	}
 	rest := strings.TrimPrefix(ownerID, desktopUserID+":")
-	// Expert sessions ("desktop-user:expert:<id>") carry an expert id, not a
-	// project path — never let downstream code treat it as a directory.
-	if strings.HasPrefix(rest, "expert:") || strings.HasPrefix(rest, "acp:") || strings.HasPrefix(rest, "task:") {
+	// An expert id is not a directory. A task of that expert appends
+	// ":task:<path>", and that path is the directory the live row belongs to.
+	// Dropping it makes every running book invisible to the task list, so the
+	// list keeps whatever snapshot the previous book left behind.
+	if strings.HasPrefix(rest, "expert:") {
+		return projectPathFromExpertTaskUserID(ownerID)
+	}
+	if strings.HasPrefix(rest, "acp:") || strings.HasPrefix(rest, "task:") {
 		return ""
 	}
 	// A background chat task runs as desktop-user:<project>:task:<id>. The

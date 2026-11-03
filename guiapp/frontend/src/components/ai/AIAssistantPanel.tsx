@@ -137,7 +137,7 @@ import { useAssistantExternalChatEvents } from "./useAssistantExternalChatEvents
 import { useWorkflowStartingLabel } from "./useWorkflowStartingLabel";
 import { shareAssistantTask } from "./shareAssistantTask";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
-import { agentViewHiddenFieldValue, canShowAssistantCodingPreviewForTab, codePreviewEventsEnabled, codePreviewHasTaskResult, codePreviewModeFromState, commitRestoredCodePreview, hasRestorableProjectConversation, isWorkflowPhaseRunningStatus, isWorkflowPhaseTerminalStatus, loadRestoredProjectConversationHistory, normalizeRestoredProjectHistoryContent, normalizeWorkflowPhaseStatus, readStoredAssistantPreviewState, shouldApplyRestoredAssistantPreview, shouldReopenTaskResultPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, suppressWorkflowReviewActions, withCodePreviewVisibleIfContent, writeStoredAssistantPreviewState, type ConversationBranchPointLike, type StoredAssistantPreviewState } from "./assistantPreviewState";
+import { agentViewHiddenFieldValue, canShowAssistantCodingPreviewForTab, codePreviewEventsEnabled, codePreviewHasTaskResult, codePreviewModeFromState, commitRestoredCodePreview, expertTaskPreviewKey, hasRestorableProjectConversation, isWorkflowPhaseRunningStatus, isWorkflowPhaseTerminalStatus, loadRestoredProjectConversationHistory, normalizeRestoredProjectHistoryContent, normalizeWorkflowPhaseStatus, readStoredAssistantPreviewState, shouldApplyRestoredAssistantPreview, shouldReopenTaskResultPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, suppressWorkflowReviewActions, withCodePreviewVisibleIfContent, writeStoredAssistantPreviewState, type ConversationBranchPointLike, type StoredAssistantPreviewState } from "./assistantPreviewState";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
 import { useAssistantPreviewOpenEvents } from "./useAssistantPreviewOpenEvents";
 import { useCloudWorkspaceSearchFileOpen } from "./useCloudWorkspaceSearchFileOpen";
@@ -199,7 +199,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const actions = props.actions || props;
     const panelWindow = props.window || props;
     const { messages, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, offscreenLiveSessionKeys: rawOffscreenLiveSessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], submittedPromptAttachments = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, active: panelActive = true, agentView = null, chatTasks = [] } = state;
-    const { browseFile, clearSelectedFile, setSelectedFilePaths, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, resumeChatTask, cancelChatTask, steerChatTask, answerChatTask, isSessionIdle, waitForForegroundIdle } = actions;
+    const { browseFile, clearSelectedFile, setSelectedFilePaths, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, resumeChatTask, cancelChatTask, steerChatTask, answerChatTask, isSessionIdle, waitForForegroundIdle, isExpertSessionIdle, waitForExpertSessionIdle } = actions;
     const selectedFilePaths = Array.isArray(state.selectedFilePaths) ? state.selectedFilePaths : (selectedFilePathFromState ? [selectedFilePathFromState] : []);
     const selectedFilePath = selectedFilePaths[0] || "";
     const { inline, maximized = false, onToggleMaximize, onHideWindow } = panelWindow || {};
@@ -4040,7 +4040,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         createExpertTab,
         activateTab: activateSwitchingTab,
         beforeUserProjectOpen: (projectPath, cloudWorkspaceId) => { dismissCoveredNewTaskRef.current?.(); releaseIdleTaskTabs(idleTaskSwitchRef.current, { projectPath, cloudWorkspaceId }); },
-        beforeUserExpertOpen: (expertId) => { dismissCoveredNewTaskRef.current?.(); releaseIdleTaskTabs(idleTaskSwitchRef.current, { expertId }); }, newTaskCoverHeld: () => dismissCoveredNewTaskRef.current != null, visibleExpertId: () => activeTabRef.current?.type === "expert" ? String(activeTabRef.current.expertId || "") : "", expertSessionIdle: (expertId) => isSessionIdle?.(expertSessionKey(expertId)) !== false, whenExpertSessionIdle: (expertId) => waitForForegroundIdle?.(expertSessionKey(expertId)),
+        beforeUserExpertOpen: (expertId) => { dismissCoveredNewTaskRef.current?.(); releaseIdleTaskTabs(idleTaskSwitchRef.current, { expertId }); }, newTaskCoverHeld: () => dismissCoveredNewTaskRef.current != null, visibleExpertId: () => activeTabRef.current?.type === "expert" ? String(activeTabRef.current.expertId || "") : "", expertSessionIdle: (expertId) => isExpertSessionIdle ? isExpertSessionIdle(expertId) : isSessionIdle?.(expertSessionKey(expertId)) !== false, whenExpertSessionIdle: (expertId) => waitForExpertSessionIdle ? waitForExpertSessionIdle(expertId) : waitForForegroundIdle?.(expertSessionKey(expertId)),
         getTabState,
         saveTabState,
         getTabList: getTabs,
@@ -4108,9 +4108,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [tabLimitError, clearTabLimitError]);
     const codingPreviewOwnerTab = tabState.tabs.find(tab => tab.id === previewOwnerTabRef.current);
     // The event scope determines which workflow events are accepted by useWorkflowState.
-    // Each tab has a unique scope ID (tab.id): "local" for the AI assistant tab,
-    // "proj-{hash}" for project tabs. Events carry this scope ID from the backend,
-    // ensuring perfect per-tab isolation without path comparison.
+    // Each tab has a scope ID (tab.id). Expert tasks share one tab, so those events
+    // also carry the task directory and a path change swaps the saved preview.
     const codingPreviewEventScope = canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.id : (codingPreviewOwnerTab?.id || "local");
     // Code preview events still use project_path for routing (they don't carry event_scope_id yet).
     const codePreviewPathScope = (canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.projectPath : codingPreviewOwnerTab?.projectPath) || undefined;
@@ -4214,6 +4213,46 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [activeTab.id, activeTab.type, activeTab.projectPath, tabState.tabs, restoreWorkflowState, restoreCodePreviewState]);
     const workflowStateRef = useRef(workflowState);
     workflowStateRef.current = workflowState;
+    const expertTaskPreviewRef = useRef<Map<string, { workflow: WorkflowUIState; code: CodePreviewUIState; previewMode: "workflow" | "code" }>>(new Map());
+    const expertPreviewBindingRef = useRef<{ tabId: string; path: string }>({
+        tabId: activeTab.id,
+        path: activeTab.type === "expert" ? normalizeProjectSessionPath(activeTab.projectPath) : "",
+    });
+    useEffect(() => {
+        const nextPath = activeTab.type === "expert" ? normalizeProjectSessionPath(activeTab.projectPath) : "";
+        const prev = expertPreviewBindingRef.current;
+        expertPreviewBindingRef.current = { tabId: activeTab.id, path: nextPath };
+        // A tab-id change is handled by the tab-switch snapshot. This only runs
+        // when the same expert tab is rebound to another task.
+        if (activeTab.type !== "expert" || prev.tabId !== activeTab.id || prev.path === nextPath) return;
+        if (prev.path) {
+            expertTaskPreviewRef.current.set(expertTaskPreviewKey(activeTab.id, prev.path), {
+                workflow: getWorkflowSnapshot(),
+                code: cloneCodePreviewState(codePreviewStateRef.current),
+                previewMode: codePreviewModeFromState(codePreviewStateRef.current),
+            });
+        }
+        const saved = nextPath ? expertTaskPreviewRef.current.get(expertTaskPreviewKey(activeTab.id, nextPath)) : undefined;
+        if (saved) {
+            const workflowClone = cloneWorkflowUIState(saved.workflow);
+            workflowStateRef.current = workflowClone;
+            restoreWorkflowState(workflowClone);
+            const codeClone = commitRestoredCodePreview(saved.code, restoreCodePreviewState, codePreviewStateRef);
+            previewStateMapRef.current.set(activeTab.id, {
+                workflow: workflowClone,
+                code: codeClone,
+                previewMode: codePreviewModeFromState(codeClone),
+            });
+        } else {
+            resetWorkflowState();
+            resetCodePreviewState();
+            codePreviewStateRef.current = initialCodePreviewState();
+            previewStateMapRef.current.delete(activeTab.id);
+        }
+        if (nextPath) {
+            RefreshWorkflowV2StateForTab(nextPath, [activeTab.id]).catch(() => {});
+        }
+    }, [activeTab.id, activeTab.projectPath, activeTab.type, getWorkflowSnapshot, resetCodePreviewState, resetWorkflowState, restoreCodePreviewState, restoreWorkflowState]);
     codePreviewStateRef.current = codePreviewState;
     const currentPreviewModeRef = useRef<"workflow" | "code">("workflow");
     const persistPreviewStateRef = useRef<number | null>(null);

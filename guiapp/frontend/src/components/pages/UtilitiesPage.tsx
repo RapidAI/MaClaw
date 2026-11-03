@@ -560,7 +560,8 @@ export const UtilitiesPage = ({
 				setManagedIndustryExperts(items);
 			}
         } catch {
-            // Backend unavailable (tests / pre-wails) — keep the section empty.
+            // Keep the experts already on screen, including a card just inserted
+            // from an install result. A failed reload must not clear that list.
         }
     }, []);
 
@@ -568,13 +569,18 @@ export const UtilitiesPage = ({
         const expert = expertDefinitionFromInstallResult(raw);
         if (!expert) return;
         pendingInstalledExpertRef.current = { item: expert, stamp: expertsRequestRef.current };
-        // A search or source filter that was active before the install would
-        // hide the new card. Clear both so the installed list can show it.
-        setExpertSearch('');
-        setExpertFilter('all');
+        const query = expertSearch.trim().toLowerCase();
+        const matchesQuery = !query
+            || expert.name.toLowerCase().includes(query)
+            || expert.description.toLowerCase().includes(query)
+            || expert.skills.some(label => label.toLowerCase().includes(query))
+            || expert.tools.some(label => label.toLowerCase().includes(query));
+        // Only drop a search or source filter that would hide this card.
+        if (!matchesQuery) setExpertSearch('');
+        if (expertFilter === 'system') setExpertFilter('all');
         setExperts(current => withInstalledExpert(current, expert));
         setRevealInstalledExpertId(expert.id);
-    }, []);
+    }, [expertFilter, expertSearch]);
 
 	const handlePurchaseAndInstallManagedIndustryExpert = useCallback(async (expert: ExpertDefinition) => {
 		if (!expert.industry_asset_id || !expert.industry_listing_id || expertActionBusy) return;

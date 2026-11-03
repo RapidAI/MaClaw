@@ -27,6 +27,17 @@ type nilEventSink struct{}
 
 func (*nilEventSink) Emit(context.Context, Event) error { return nil }
 
+func TestEventSinkAbsentIncludesTypedNil(t *testing.T) {
+	var typedNil *nilEventSink
+	var sink EventSink = typedNil
+	if !EventSinkAbsent(sink) {
+		t.Fatal("typed nil sink was treated as present")
+	}
+	if EventSinkAbsent(EventSinkFunc(func(context.Context, Event) error { return nil })) {
+		t.Fatal("function sink was treated as absent")
+	}
+}
+
 func TestFanoutEventSinkSkipsTypedNilSink(t *testing.T) {
 	var typedNil *nilEventSink
 	called := false

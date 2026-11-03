@@ -1087,16 +1087,33 @@ func (h *IMMessageHandler) emitLocalToolCodeFilePreview(ownerID, absPath string,
 	// The LaTeX tab is identified by the task directory, while the file lives
 	// in the working directory the template was exported into. Routing with
 	// the working directory makes the pane drop a rewrite of that export.
-	if expertID := expertIDFromUserID(ownerID); expertID == builtinLatexExpertID && h.app != nil {
-		if taskPath := h.app.resolveLatexExpertProjectPath(expertID); taskPath != "" {
-			routePath = taskPath
-		}
+	// A session that already names its paper keeps that directory. Asking for
+	// the newest paper here would open this write on a different paper.
+	newestPaper := ""
+	if expertIDFromUserID(ownerID) == builtinLatexExpertID && projectPathFromExpertTaskUserID(ownerID) == "" && h.app != nil {
+		newestPaper = h.app.resolveLatexExpertProjectPath(builtinLatexExpertID)
 	}
+	routePath = routeLatexFilePreview(ownerID, routePath, newestPaper)
 	if hasOriginal {
 		emitCodeFilePreviewForPath(h.app, sessionID, projectPath, routePath, absPath, created, true, original)
 		return
 	}
 	emitCodeFilePreviewForPath(h.app, sessionID, projectPath, routePath, absPath, created, true)
+}
+
+// routeLatexFilePreview keeps a paper on the directory its session names.
+// The newest-paper path is only for an expert session that has no task yet.
+func routeLatexFilePreview(ownerID, routePath, newestPath string) string {
+	if expertIDFromUserID(ownerID) != builtinLatexExpertID {
+		return routePath
+	}
+	if projectPathFromExpertTaskUserID(ownerID) != "" {
+		return routePath
+	}
+	if newest := strings.TrimSpace(newestPath); newest != "" {
+		return newest
+	}
+	return routePath
 }
 
 func localToolCodePreviewSessionID(ownerID string) string {

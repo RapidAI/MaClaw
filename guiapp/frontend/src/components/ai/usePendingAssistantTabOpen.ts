@@ -786,10 +786,9 @@ export function usePendingAssistantTabOpen({
             if (index >= 0) parked.splice(index, 1);
         };
         const queued = pendingExpertOpen;
-        // Accepting a send returns while that expert's turn is still running.
-        // The next scheduled task of the same expert must wait, whether it
-        // was parked under the cover or arrives after the slot was released.
-        // Resetting now would cancel the turn on the shared session.
+        // Accepting a send returns while a task of that expert is still running.
+        // The next scheduled task shares this expert's tab, so it waits. Resetting
+        // the tab now would drop the conversation that turn is still writing.
         const backgroundExpertTurnBusy = (candidate: PendingExpertOpen | null | undefined) => {
             if (candidate?.backgroundLaunch !== true) return false;
             const id = String(candidate.expert?.id || "").trim();

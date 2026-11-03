@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"context"
+	"errors"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 )
@@ -28,13 +29,44 @@ func projectGUIRuntimeEvents(events agentruntime.EventSink, onToken func(string)
 	if !shouldProjectRuntimeCallbacks(onToken, onProgress, onNewRound) {
 		return events
 	}
-	return agentruntime.FanoutEventSink{Sinks: []agentruntime.EventSink{
-		events,
-		runtimeEventProjectionSink{onToken: onToken, onProgress: onProgress, onNewRound: onNewRound},
-	}}
+	projection := &runtimeEventProjectionSink{onToken: onToken, onProgress: onProgress, onNewRound: onNewRound}
+	// Both sides are fixed for this turn. An absent primary is dropped once
+	// here, so a streamed delta does not repeat the nil-pointer check.
+	if agentruntime.EventSinkAbsent(events) {
+		return projection
+	}
+	return &guiRuntimeFanout{primary: events, projection: projection}
 }
 
-func (s runtimeEventProjectionSink) Emit(_ context.Context, event agentruntime.Event) error {
+// guiRuntimeFanout delivers one event to the host sink and the desktop
+// callbacks. The primary was already checked when the fanout was built.
+type guiRuntimeFanout struct {
+	primary    agentruntime.EventSink
+	projection *runtimeEventProjectionSink
+}
+
+func (f *guiRuntimeFanout) Emit(ctx context.Context, event agentruntime.Event) error {
+	if f == nil {
+		return nil
+	}
+	err := f.primary.Emit(ctx, event)
+	var perr error
+	if f.projection != nil {
+		perr = f.projection.Emit(ctx, event)
+	}
+	if err == nil || perr == nil {
+		if err != nil {
+			return err
+		}
+		return perr
+	}
+	return errors.Join(err, perr)
+}
+
+func (s *runtimeEventProjectionSink) Emit(_ context.Context, event agentruntime.Event) error {
+	if s == nil {
+		return nil
+	}
 	switch event.Type {
 	case agentruntime.EventAssistantDelta:
 		if s.onToken == nil || event.Payload == nil {

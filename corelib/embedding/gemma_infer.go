@@ -170,7 +170,12 @@ func (g *GemmaEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
 }
 
 // Dim returns the output embedding dimension.
-func (g *GemmaEmbedder) Dim() int { return g.dim }
+func (g *GemmaEmbedder) Dim() int {
+	if g == nil {
+		return 0
+	}
+	return g.dim
+}
 
 // ensureScratch returns scratch buffers large enough for the given seq length.
 // Only used by the mutex-protected Embed path.

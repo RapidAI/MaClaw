@@ -158,6 +158,9 @@ func TestCreateTaskUnifiedExpertBranch(t *testing.T) {
 	if rec.Name != "review my paper" {
 		t.Fatalf("expert task name = %q, want the instruction title", rec.Name)
 	}
+	if got := app.sessionOwnerForProjectPath(path.ProjectPath); got != expertTaskSessionUserID("expert-paper", path.ProjectPath) {
+		t.Fatalf("session owner = %q, want the expert task session", got)
+	}
 }
 
 func TestCreateTaskUnifiedExpertBranchStoresWorkingDir(t *testing.T) {

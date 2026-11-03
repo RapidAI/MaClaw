@@ -1012,6 +1012,28 @@ export function purgeDeletedExpertTabLocalCache(expertId?: string | null): void 
     }
 }
 
+/**
+ * Session keys that belong to this expert. A task key and the unscoped
+ * expert key both count: the next scheduled launch of the same expert
+ * resets the one shared tab, so it has to see every live turn.
+ */
+export function sessionKeysForExpert(
+    expertId: string | null | undefined,
+    sessionKeys: readonly (string | null | undefined)[],
+): string[] {
+    const id = String(expertId || "").trim();
+    if (!id) return [];
+    const seen = new Set<string>();
+    const keys: string[] = [];
+    for (const raw of sessionKeys) {
+        const key = normalizeAssistantSessionKey(raw);
+        if (!key || expertIdFromSessionKey(key) !== id || seen.has(key)) continue;
+        seen.add(key);
+        keys.push(key);
+    }
+    return keys;
+}
+
 export function normalizeAssistantSessionKey(sessionKey?: string | null): string {
     const key = typeof sessionKey === "string" ? sessionKey.trim() : "";
     if (!key) return "";

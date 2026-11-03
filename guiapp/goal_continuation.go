@@ -233,9 +233,12 @@ func taskCarriesGoalContinuation(task *TaskItem, reqCtx string) bool {
 //   - User messages can interleave (normal queue priority)
 //   - Frontend sees each continuation as a new round (progress feedback)
 type GoalContinuationEngine struct {
-	mu              sync.Mutex
-	store           *goal.Store
-	app             *App
+	mu    sync.Mutex
+	store *goal.Store
+	app   *App
+	// noticeObserver records a host notice that is about to be shown. Tests set
+	// it on the engine they own. Production leaves it nil.
+	noticeObserver  func(userID, text string, asError bool)
 	scheduledTimers map[string]*time.Timer // userID → pending continuation timer
 	pendingExpect   map[string]goalContinuationExpect
 	// planMiss is set when the one corrective plan turn is scheduled. Dropping
@@ -2283,6 +2286,9 @@ func (e *GoalContinuationEngine) emitGoalNotice(userID, text string, asError boo
 	if e == nil || e.app == nil || strings.TrimSpace(text) == "" {
 		return
 	}
+	if e.noticeObserver != nil {
+		e.noticeObserver(userID, text, asError)
+	}
 	e.app.emitAIContinuationEvent(newGoalNoticeEvent(userID, text, asError))
 }
 
@@ -2490,9 +2496,10 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 		}
 		log.Printf("[goal-continuation] failing goal after turn error user=%s", userID)
 		clearRetry()
-		// The bar status alone does not say why the turn stopped. The notice
-		// is the error row the user sees after a failed goal turn.
-		engine.failGoal(goalKey, g.GoalID, turnErr, true)
+		// The turn response is already the error row in the chat. Announcing
+		// the same sentence again is a second row. Host-only failures
+		// ("未能分解任务", channel not ready) still announce: no turn row exists.
+		engine.failGoal(goalKey, g.GoalID, turnErr, false)
 		if goalKey != userID {
 			engine.clearContinuationExpect(userID)
 		}

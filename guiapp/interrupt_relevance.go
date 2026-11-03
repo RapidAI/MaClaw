@@ -66,7 +66,7 @@ func (c *relevanceFileCache) load(path string) *progress.RelevanceModel {
 
 // relevanceModelMatches reports whether m was built for emb's vector space.
 func relevanceModelMatches(m *progress.RelevanceModel, emb embedding.Embedder) bool {
-	if m == nil || emb == nil {
+	if m == nil || embedding.IsNoop(emb) {
 		return false
 	}
 	if m.Dims > 0 && m.Dims != emb.Dim() {

@@ -38,15 +38,28 @@ func (f FanoutEventSink) Emit(ctx context.Context, event Event) error {
 	return errors.Join(errs...)
 }
 
+// EventSinkAbsent reports a missing sink. An interface that holds a nil
+// pointer is not a sink: Emit on that pointer panics, and sink == nil is false.
+func EventSinkAbsent(sink EventSink) bool {
+	return isNilEventSink(sink)
+}
+
 func isNilEventSink(sink EventSink) bool {
 	if sink == nil {
 		return true
 	}
-	value := reflect.ValueOf(sink)
-	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return value.IsNil()
-	default:
+	switch s := sink.(type) {
+	case EventSinkFunc:
+		return s == nil
+	case FanoutEventSink:
 		return false
+	default:
+		value := reflect.ValueOf(sink)
+		switch value.Kind() {
+		case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+			return value.IsNil()
+		default:
+			return false
+		}
 	}
 }

@@ -481,6 +481,17 @@ func TestRunLoopResponsesCompatReceiptSurvivesStreamFallback(t *testing.T) {
 
 var _ LoopCallbacks = (*retryingOpenAICompatCallbacks)(nil)
 
+func TestRoundTripperAbsentIncludesTypedNil(t *testing.T) {
+	var typedNil *http.Transport
+	var next http.RoundTripper = typedNil
+	if !roundTripperAbsent(next) {
+		t.Fatal("typed nil transport was treated as present")
+	}
+	if roundTripperAbsent(http.DefaultTransport) {
+		t.Fatal("default transport was treated as absent")
+	}
+}
+
 type rewriteTransport struct {
 	target string
 }

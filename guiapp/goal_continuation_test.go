@@ -1199,12 +1199,25 @@ func TestGoalContinuationTurnErrorAndMissingPlanFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := NewGoalContinuationEngine(store, nil)
-	handler := &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+	app := &App{goalContinuation: engine}
+	engine.app = app
+	handler := &IMMessageHandler{app: app, goalStore: store}
+
+	var notices []string
+	recordNotice := func(_, text string, asError bool) {
+		if asError {
+			notices = append(notices, text)
+		}
+	}
+	engine.noticeObserver = recordNotice
 
 	handler.maybeScheduleGoalContinuation(userID, &IMAgentResponse{Error: "编译失败"}, "goal-continuation")
 	got := store.Get(userID)
 	if got == nil || got.Status != goal.StatusFailed || !strings.Contains(got.Summary, "编译失败") {
 		t.Fatalf("turn error should fail the goal: %+v", got)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("turn error was announced again: %v", notices)
 	}
 
 	userID = "goal-no-plan"
@@ -1214,7 +1227,10 @@ func TestGoalContinuationTurnErrorAndMissingPlanFail(t *testing.T) {
 	engine = NewGoalContinuationEngine(store, nil)
 	engine.cooldown = time.Hour
 	t.Cleanup(func() { engine.CancelPending(userID) })
-	handler = &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+	app = &App{goalContinuation: engine}
+	engine.app = app
+	engine.noticeObserver = recordNotice
+	handler = &IMMessageHandler{app: app, goalStore: store}
 	handler.maybeScheduleGoalContinuation(userID, &IMAgentResponse{Text: "好的"}, "goal-continuation")
 	got = store.Get(userID)
 	if got == nil || got.Status != goal.StatusActive || len(got.Steps) != 0 {
@@ -1240,10 +1256,14 @@ func TestGoalContinuationTurnErrorAndMissingPlanFail(t *testing.T) {
 		t.Fatalf("failure notice = %+v", notice)
 	}
 
+	notices = nil
 	handler.maybeScheduleGoalContinuation(userID, &IMAgentResponse{Text: "还是没有"}, "goal-continuation")
 	got = store.Get(userID)
 	if got == nil || got.Status != goal.StatusFailed || !strings.Contains(got.Summary, "未能分解任务") {
 		t.Fatalf("second missing plan should fail the goal: %+v", got)
+	}
+	if len(notices) != 1 || notices[0] != "未能分解任务" {
+		t.Fatalf("host-only plan failure notice = %v", notices)
 	}
 }
 

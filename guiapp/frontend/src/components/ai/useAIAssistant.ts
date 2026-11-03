@@ -6,7 +6,7 @@ import type { AgentView } from "./agentViewTypes";
 import { appendPromptHistory, normalizePromptHistory, promptHistoryFromPersisted, PROMPT_HISTORY_LIMIT, type PromptHistoryAttachment, type PromptHistoryEntry } from "./promptHistory";
 import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./aiAssistantPanelTypes";
 import { localizeText } from "./aiAssistantI18n";
-import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertTaskSessionKey, isHostGoalChecklistText, formatGoalChecklistFromRecord, goalChecklistMessageId, messageBelongsToSession, upsertGoalChecklistInHistory, fileTerminalResponseWithoutRound, type GoalChecklistRecord } from "./aiAssistantPanelSessionUtils";
+import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertTaskSessionKey, sessionKeysForExpert, isHostGoalChecklistText, formatGoalChecklistFromRecord, goalChecklistMessageId, messageBelongsToSession, upsertGoalChecklistInHistory, fileTerminalResponseWithoutRound, type GoalChecklistRecord } from "./aiAssistantPanelSessionUtils";
 import { noteAIScrollStreamFlush, noteAIScrollStreamRoundEnd, noteAIScrollStreamToken } from "./assistantScrollDiag";
 import { appendRolePrefixStrip, createRolePrefixStreamCursor, findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay, type RolePrefixStreamCursor } from "./rolePrefixDisplay";
 import { isHistoryResetCommandText } from "./composeAction";
@@ -3815,6 +3815,14 @@ function isTaskManagedSessionKey(sessionKey: string): boolean {
     return normalizeRuntimeSessionKey(sessionKey).replace(/\\/g, '/').toLowerCase().includes('/.maclaw/data/tasks/');
 }
 
+function workflowFormNamesAnotherTask(ownerSessionKey: string, activeSessionKey: string): boolean {
+    const ownerPath = normalizedProjectPathFromSessionKey(ownerSessionKey);
+    const activePath = normalizedProjectPathFromSessionKey(activeSessionKey);
+    if (!ownerPath || !activePath || ownerPath === activePath) return false;
+    if (expertIdFromSessionKey(ownerSessionKey) || expertIdFromSessionKey(activeSessionKey)) return true;
+    return isTaskManagedSessionKey(ownerSessionKey) && isTaskManagedSessionKey(activeSessionKey);
+}
+
 function agentViewSessionKey(view: AgentView | null | undefined, fallbackSessionKey = 'desktop-user'): string {
     return normalizeRuntimeSessionKey(agentViewFieldValue(view, '_workflow_user_id') || fallbackSessionKey);
 }
@@ -4187,6 +4195,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
      */
     const offscreenLiveRoundsByRequestRef = useRef<Map<string, { sessionKey: string; lastSeenAt: number }>>(new Map());
     const idleWaitersBySessionRef = useRef<Map<string, Set<() => void>>>(new Map());
+    const expertIdleWaitersRef = useRef<Map<string, Set<() => void>>>(new Map());
+    const notifyExpertIdleRef = useRef<() => void>(() => {});
     const initStatusRef = useRef<AIAssistantInitStatus>("connecting");
     const latestNewsPayloadRef = useRef<string>("[]");
     const progressMessagesBySessionRef = useRef<Map<string, ChatMessage[]>>(new Map());
@@ -4305,6 +4315,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const normalizedOwnerSessionKey = normalizeRuntimeSessionKey(ownerSessionKey);
         const activeSessionKey = activeAgentViewSessionKeyRef.current;
         if (!activeSessionKey || activeSessionKey === normalizedOwnerSessionKey) return '';
+        // A form addressed to another task stays there. The alias below only
+        // covers one task whose workflow owner is its working directory while
+        // the open tab is that task's record.
+        if (workflowFormNamesAnotherTask(normalizedOwnerSessionKey, activeSessionKey)) return '';
         if (isTaskManagedSessionKey(activeSessionKey)) return activeSessionKey;
         const currentRound = activeRoundRef.current;
         if (currentRound.phase !== 'idle' && normalizeRuntimeSessionKey(currentRound.sessionKey || 'desktop-user') === activeSessionKey) {
@@ -4414,6 +4428,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             idleWaitersBySessionRef.current.delete(sessionKey);
             for (const resolve of Array.from(waitersForSession)) resolve();
         }
+        notifyExpertIdleRef.current();
     }, [isSessionIdle]);
 
     const waitForForegroundIdle = useCallback((sessionKey = 'desktop-user') => {
@@ -4425,6 +4440,56 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             idleWaitersBySessionRef.current.set(normalizedSessionKey, waitersForSession);
         });
     }, [isSessionIdle]);
+
+    // A running book is keyed by its task path. Asking only the unscoped
+    // expert id reports idle, and the next scheduled book then resets the
+    // shared tab while that turn is still writing.
+    const liveExpertSessionKeys = useCallback((expertId: string): string[] => {
+        const currentRound = activeRoundRef.current;
+        const currentSessionKey = currentRound.sessionKey || 'desktop-user';
+        const candidates: string[] = [];
+        if (currentRound.phase !== 'idle') candidates.push(currentRound.sessionKey || 'desktop-user');
+        for (const round of inFlightRoundsByRequestRef.current.values()) {
+            if (round.phase === 'idle') continue;
+            candidates.push(round.sessionKey || 'desktop-user');
+        }
+        for (const task of pendingTasksByRequestRef.current.values()) {
+            candidates.push(task.sessionKey || currentSessionKey || 'desktop-user');
+        }
+        // A continuation that started while another tab was visible never
+        // enters the in-flight list. It is still this expert's live turn.
+        const now = Date.now();
+        const offscreenTtlMs = Math.max(responseActivityTimeoutSec, 60) * 1000 * 4;
+        for (const round of offscreenLiveRoundsByRequestRef.current.values()) {
+            if (now - round.lastSeenAt > offscreenTtlMs) continue;
+            candidates.push(round.sessionKey);
+        }
+        for (const [sessionKey, expiresAt] of quietOffscreenHoldUntilRef.current) {
+            if (expiresAt > now) candidates.push(sessionKey);
+        }
+        return sessionKeysForExpert(expertId, candidates);
+    }, [responseActivityTimeoutSec]);
+
+    const isExpertSessionIdle = useCallback((expertId: string) => liveExpertSessionKeys(expertId).length === 0, [liveExpertSessionKeys]);
+
+    const notifyExpertIdle = useCallback(() => {
+        for (const [expertId, waiters] of Array.from(expertIdleWaitersRef.current)) {
+            if (liveExpertSessionKeys(expertId).length > 0) continue;
+            expertIdleWaitersRef.current.delete(expertId);
+            for (const resolve of Array.from(waiters)) resolve();
+        }
+    }, [liveExpertSessionKeys]);
+    notifyExpertIdleRef.current = notifyExpertIdle;
+
+    const waitForExpertSessionIdle = useCallback((expertId: string) => {
+        const id = String(expertId || '').trim();
+        if (!id || liveExpertSessionKeys(id).length === 0) return Promise.resolve();
+        return new Promise<void>(resolve => {
+            const waiters = expertIdleWaitersRef.current.get(id) || new Set<() => void>();
+            waiters.add(resolve);
+            expertIdleWaitersRef.current.set(id, waiters);
+        });
+    }, [liveExpertSessionKeys]);
 
     const setPendingTaskState = useCallback((nextTask: AIAssistantPendingTask | null) => {
         const currentTask = pendingTaskRef.current;
@@ -4546,7 +4611,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 }
                 nextExpiry = Math.min(nextExpiry, expiresAt);
             }
-            if (changed) setOffscreenLiveRoundVersion(version => version + 1);
+            if (changed) {
+                setOffscreenLiveRoundVersion(version => version + 1);
+                notifyExpertIdleRef.current();
+            }
             if (Number.isFinite(nextExpiry)) {
                 timer = setTimeout(pruneExpired, Math.max(1000, nextExpiry - Date.now()));
             }
@@ -4753,6 +4821,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (!id) return false;
         if (!offscreenLiveRoundsByRequestRef.current.delete(id)) return false;
         setOffscreenLiveRoundVersion(version => version + 1);
+        notifyExpertIdleRef.current();
         return true;
     }, []);
 
@@ -4765,7 +4834,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             offscreenLiveRoundsByRequestRef.current.delete(requestId);
             changed = true;
         }
-        if (changed) setOffscreenLiveRoundVersion(version => version + 1);
+        if (changed) {
+            setOffscreenLiveRoundVersion(version => version + 1);
+            notifyExpertIdleRef.current();
+        }
         return changed;
     }, []);
 
@@ -4773,6 +4845,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const owner = normalizeRuntimeSessionKey(sessionKey || '');
         if (!owner || !quietOffscreenHoldUntilRef.current.delete(owner)) return;
         setOffscreenLiveRoundVersion(version => version + 1);
+        notifyExpertIdleRef.current();
     }, []);
 
     const holdQuietOffscreenSession = useCallback((sessionKey: string | undefined) => {
@@ -4785,6 +4858,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             if (quietOffscreenHoldUntilRef.current.get(owner) !== expiresAt) return;
             quietOffscreenHoldUntilRef.current.delete(owner);
             setOffscreenLiveRoundVersion(version => version + 1);
+            notifyExpertIdleRef.current();
         }, QUIET_CONTINUATION_HOLD_MS);
         quietContinuationHoldTimersRef.current.push(timer);
     }, []);
@@ -6247,24 +6321,13 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 emitPetStateForAssistant('alert', 'ai:continuation-notice', 1500);
                 // as_error is a host failure (goal stop, missed plan). It stays
                 // an error row. A notice must not open a user bubble.
-                // A failed goal turn already stored this sentence on the round.
-                // The host notice repeats it; appending again drew two identical
-                // error rows for one panic.
-                setMessages(prev => {
-                    if (event.as_error) {
-                        const last = prev[prev.length - 1];
-                        if (last && last.role === 'error' && (last.content || '').trim() === text) {
-                            return prev;
-                        }
-                    }
-                    return [...prev, {
-                        id: nextId(),
-                        role: (event.as_error ? 'error' : 'assistant') as 'error' | 'assistant',
-                        content: text,
-                        sessionKey,
-                        timestamp: Date.now(),
-                    }];
-                });
+                setMessages(prev => [...prev, {
+                    id: nextId(),
+                    role: (event.as_error ? 'error' : 'assistant') as 'error' | 'assistant',
+                    content: text,
+                    sessionKey,
+                    timestamp: Date.now(),
+                }]);
                 return;
             }
             // P0-4 credential gate: a mid-loop confirmation card (sensitive
@@ -7910,7 +7973,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         answerChatTask,
         isSessionIdle,
         waitForForegroundIdle,
-    }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, resumeChatTask, cancelChatTask, steerChatTask, answerChatTask, isSessionIdle, waitForForegroundIdle]);
+        isExpertSessionIdle,
+        waitForExpertSessionIdle,
+    }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, resumeChatTask, cancelChatTask, steerChatTask, answerChatTask, isSessionIdle, waitForForegroundIdle, isExpertSessionIdle, waitForExpertSessionIdle]);
 
     return { messages, submittedPrompts, submittedPromptAttachments, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, offscreenLiveSessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
 }

@@ -91,3 +91,76 @@ func TestEmitRuntimeEventToSinkAssignsStableSequenceAndID(t *testing.T) {
 		t.Fatalf("event ids = %#v", sink.events)
 	}
 }
+
+func TestEmitRuntimeEventToSinkSkipsTypedNil(t *testing.T) {
+	var typedNil *recordingRuntimeEventSink
+	if err := emitRuntimeEventToSink(typedNil, agentruntime.Scope{RunID: "run-1"}, agentruntime.EventRunStarted, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTypedNilRuntimeSinkUsesLegacyCallbacks(t *testing.T) {
+	var typedNil *recordingRuntimeEventSink
+	var rounds, progress int
+	cb := &sharedAgentLoopCallbacks{
+		events:     typedNil,
+		onNewRound: func() { rounds++ },
+		onProgress: func(string) { progress++ },
+	}
+	cb.OnToken("delta")
+	cb.OnLLMNewRound()
+	cb.OnProgress("step")
+	if rounds != 1 || progress != 1 {
+		t.Fatalf("legacy callbacks rounds=%d progress=%d", rounds, progress)
+	}
+}
+
+func TestLiveRuntimeSinkStaysOnTheEventPath(t *testing.T) {
+	sink := &recordingRuntimeEventSink{}
+	var rounds int
+	cb := &sharedAgentLoopCallbacks{
+		events:     sink,
+		eventScope: agentruntime.Scope{RunID: "run-1"},
+		onNewRound: func() { rounds++ },
+	}
+	cb.OnLLMNewRound()
+	cb.OnToken("delta")
+	if rounds != 0 {
+		t.Fatalf("legacy new-round ran alongside a live sink: %d", rounds)
+	}
+	if len(sink.events) != 2 {
+		t.Fatalf("events = %d, want turn start and delta", len(sink.events))
+	}
+}
+
+func TestOnTokenProjectsDirectlyWhenThereIsNoHostSink(t *testing.T) {
+	var got string
+	cb := &sharedAgentLoopCallbacks{
+		events: projectGUIRuntimeEvents(nil, func(delta string) { got += delta }, nil, nil),
+	}
+	cb.OnToken("ab")
+	cb.OnToken("")
+	if got != "ab" {
+		t.Fatalf("delta = %q", got)
+	}
+}
+
+func TestOnTokenStillEmitsWhenAHostSinkIsPresent(t *testing.T) {
+	primary := &recordingRuntimeEventSink{}
+	var got string
+	cb := &sharedAgentLoopCallbacks{
+		events:     projectGUIRuntimeEvents(primary, func(delta string) { got += delta }, nil, nil),
+		eventScope: agentruntime.Scope{RunID: "run-1"},
+	}
+	cb.OnToken("ab")
+	if got != "ab" {
+		t.Fatalf("projected = %q", got)
+	}
+	if len(primary.events) != 1 || primary.events[0].Type != agentruntime.EventAssistantDelta {
+		t.Fatalf("host events = %#v", primary.events)
+	}
+	payload, _ := primary.events[0].Payload["delta"].(string)
+	if payload != "ab" {
+		t.Fatalf("host delta = %q", payload)
+	}
+}

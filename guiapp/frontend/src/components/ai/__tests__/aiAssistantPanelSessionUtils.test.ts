@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, busyTaskRunIdentities, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, expertIdFromSessionKey, expertSessionForProjectTask, expertTaskSessionKey, projectTabOwnsExpertQueue, fileTerminalResponseWithoutRound, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, transcriptLiveWorkSessionKey, upsertGoalChecklistInHistory, visibleProjectTranscript } from "../aiAssistantPanelSessionUtils";
+import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, busyTaskRunIdentities, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, expertIdFromSessionKey, expertSessionForProjectTask, expertTaskSessionKey, sessionKeysForExpert, projectTabOwnsExpertQueue, fileTerminalResponseWithoutRound, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, transcriptLiveWorkSessionKey, upsertGoalChecklistInHistory, visibleProjectTranscript } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -377,6 +377,16 @@ describe("aiAssistantPanelSessionUtils", () => {
             expertIds: ["exp-book"],
         });
         expect(busyTaskRunIdentities([key]).expertIds).toEqual([]);
+        expect(sessionKeysForExpert("exp-book", [
+            "desktop-user",
+            "desktop-user:expert:other:task:D:/tasks/other",
+            "desktop-user:expert:exp-book",
+            "desktop-user:expert:exp-book:task:d:\\tasks\\book\\",
+            key,
+        ])).toEqual([
+            "desktop-user:expert:exp-book",
+            key,
+        ]);
         const tasks = [
             { project_path: "d:\\tasks\\book\\", tags: ["source:expert:exp-book"] },
             { project_path: "D:/tasks/copy", tags: ["source:expert:exp-book", "task_copy"] },

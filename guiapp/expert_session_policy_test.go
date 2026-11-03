@@ -108,9 +108,14 @@ func TestFilterSkillsForExpert(t *testing.T) {
 }
 
 func TestProjectPathGuardForExpertSessions(t *testing.T) {
-	// Expert session userIDs must not be mistaken for project paths.
+	// An expert id is not a directory. A task key names that task's directory.
 	if got := projectPathFromSessionOwnerID("desktop-user:expert:builtin-pptx-maker"); got != "" {
 		t.Fatalf("expert session userID should not resolve to a project path, got %q", got)
+	}
+	taskKey := expertTaskSessionUserID("builtin-pptx-maker", `D:\tasks\book\.`)
+	want := normalizeProjectSessionPath(`D:\tasks\book\.`)
+	if got := projectPathFromSessionOwnerID(taskKey); got != want {
+		t.Fatalf("expert task session = %q, want %q", got, want)
 	}
 	// Real project sessions still resolve.
 	if got := projectPathFromSessionOwnerID("desktop-user:D:/proj/demo"); got == "" {
@@ -119,6 +124,23 @@ func TestProjectPathGuardForExpertSessions(t *testing.T) {
 	// Local session unchanged.
 	if got := projectPathFromSessionOwnerID(desktopUserID); got != "" {
 		t.Fatalf("local session should not resolve to a path, got %q", got)
+	}
+}
+
+func TestLatexFilePreviewRouteStaysOnTask(t *testing.T) {
+	owner := expertTaskSessionUserID(builtinLatexExpertID, `D:\papers\one`)
+	thisPaper := projectPathFromSessionOwnerID(owner)
+	otherPaper := normalizeProjectSessionPath(`D:\papers\two`)
+	if got := routeLatexFilePreview(owner, thisPaper, otherPaper); got != thisPaper {
+		t.Fatalf("task session routed to %q, want %q", got, thisPaper)
+	}
+	unscoped := expertSessionUserID(builtinLatexExpertID)
+	if got := routeLatexFilePreview(unscoped, "", otherPaper); got != otherPaper {
+		t.Fatalf("unscoped session routed to %q, want %q", got, otherPaper)
+	}
+	book := expertTaskSessionUserID("book-writer", `D:\tasks\book`)
+	if got := routeLatexFilePreview(book, "D:/tasks/book", otherPaper); got != "D:/tasks/book" {
+		t.Fatalf("non-latex session routed to %q", got)
 	}
 }
 

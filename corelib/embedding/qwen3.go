@@ -600,7 +600,12 @@ func (q *Qwen3Embedder) EmbedBatch(texts []string) ([][]float32, error) {
 }
 
 // Dim returns the output embedding dimension.
-func (q *Qwen3Embedder) Dim() int { return q.dim }
+func (q *Qwen3Embedder) Dim() int {
+	if q == nil {
+		return 0
+	}
+	return q.dim
+}
 
 // HParams returns the model hyperparameters.
 func (q *Qwen3Embedder) HParams() Qwen3HParams { return q.hp }

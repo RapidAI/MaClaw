@@ -145,10 +145,15 @@ function shouldAcceptWorkflowEvent(
     currentProjectPath: string,
     strict: boolean = true,
 ): boolean {
-    // Primary isolation: event_scope_id match (tab-level ID routing).
-    // This is the definitive signal — if both sides have a scope ID, use it.
+    // The tab scope says which pane may hear the event. Several tasks of one
+    // expert share that pane, so a matching scope is not enough when both
+    // sides name a directory: the other book must not move this book's preview.
     if (eventScopeID && currentScopeID) {
-        return eventScopeID === currentScopeID;
+        if (eventScopeID !== currentScopeID) return false;
+        const scopedEventPath = eventProjectPath ? normalizeWorkflowProjectPath(eventProjectPath) : "";
+        const scopedCurrentPath = currentProjectPath ? normalizeWorkflowProjectPath(currentProjectPath) : "";
+        if (scopedEventPath && scopedCurrentPath && scopedEventPath !== scopedCurrentPath) return false;
+        return true;
     }
 
     const normalizedEventProjectPath = eventProjectPath ? normalizeWorkflowProjectPath(eventProjectPath) : "";
@@ -446,9 +451,9 @@ export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath
     useEffect(() => {
         const unsub = EventsOn("workflow:suggest_maximize", (data: any) => {
             if (!data?.workflow_type) return;
-            // Filter by event_scope_id if present.
             const eventScopeID = typeof data.event_scope_id === "string" ? data.event_scope_id.trim() : "";
-            if (eventScopeID && activeTabScopeIDRef.current && eventScopeID !== activeTabScopeIDRef.current) {
+            const eventProjectPath = typeof data.project_path === "string" ? data.project_path.trim() : "";
+            if (!shouldAcceptWorkflowEvent(eventScopeID, "", eventProjectPath, activeTabScopeIDRef.current, "", activeTabProjectPathRef.current)) {
                 return;
             }
             setSuggestMaximize(true);
@@ -463,9 +468,9 @@ export function useWorkflowState(activeTabScopeID?: string, activeTabProjectPath
     // Listen for maximize suggestion dismissal (workflow cancelled/completed/reset)
     useEffect(() => {
         const unsub = EventsOn("workflow:suggest_maximize_dismiss", (data: any) => {
-            // Filter by event_scope_id if present.
             const eventScopeID = typeof data?.event_scope_id === "string" ? data.event_scope_id.trim() : "";
-            if (eventScopeID && activeTabScopeIDRef.current && eventScopeID !== activeTabScopeIDRef.current) {
+            const eventProjectPath = typeof data?.project_path === "string" ? data.project_path.trim() : "";
+            if (!shouldAcceptWorkflowEvent(eventScopeID, "", eventProjectPath, activeTabScopeIDRef.current, "", activeTabProjectPathRef.current)) {
                 return;
             }
             setSuggestMaximize(false);

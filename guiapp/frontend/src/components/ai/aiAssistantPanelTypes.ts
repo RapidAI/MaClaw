@@ -104,6 +104,10 @@ export interface AIAssistantPanelHookActions {
     isSessionIdle: (sessionKey?: string) => boolean;
     /** Resolves when that session's foreground turn has finished. */
     waitForForegroundIdle: (sessionKey?: string) => Promise<void>;
+    /** True when no task of this expert has a foreground turn. */
+    isExpertSessionIdle?: (expertId: string) => boolean;
+    /** Resolves when every live task of this expert has finished. */
+    waitForExpertSessionIdle?: (expertId: string) => Promise<void>;
 }
 
 export interface AIAssistantPanelAppActions {

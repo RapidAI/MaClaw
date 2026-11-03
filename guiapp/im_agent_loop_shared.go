@@ -375,7 +375,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 	leaseStop := make(chan struct{})
 	defer close(leaseStop)
 	runtimeSink := events
-	if runtimeSink == nil {
+	if agentruntime.EventSinkAbsent(runtimeSink) {
 		runtimeSink = runtimeEventSinkForLoop(ctx)
 	}
 	runtimeScope := runtimeEventScopeForLoop(ctx, userID, loopID)
@@ -400,17 +400,6 @@ func (h *IMMessageHandler) executeSharedTurn(
 			result = &IMAgentResponse{Error: fmt.Sprintf("Shared agent loop panicked: %v", r)}
 			log.Printf("[agent-loop] shared panic owner=%q request_id=%q loop=%q panic=%v\n%s", userID, requestID, loopID, r, debug.Stack())
 		}
-		// Cleanup runs after the turn panic is already on result. A second nil
-		// deref here used to escape this recover and replace that error, or
-		// drop the turn with no response at all.
-		defer func() {
-			if r := recover(); r != nil {
-				if result == nil {
-					result = &IMAgentResponse{Error: fmt.Sprintf("Shared agent loop panicked: %v", r)}
-				}
-				log.Printf("[agent-loop] shared cleanup panicked owner=%q request_id=%q loop=%q panic=%v\n%s", userID, requestID, loopID, r, debug.Stack())
-			}
-		}()
 		status, outcomeErr := classifyIMAgentResponseOutcome(result)
 		// Direct main-agent coding turns can contribute verified recall
 		// outcomes without entering the codingruntime writer ledger. A nil
@@ -1919,12 +1908,16 @@ type sharedAgentLoopCallbacks struct {
 	onToken              llm.TokenCallback
 	onNewRound           NewRoundCallback
 	events               agentruntime.EventSink
-	eventScope           agentruntime.Scope
-	eventOrdinal         atomic.Uint64
-	eventSequence        *atomic.Uint64
-	eventErrMu           sync.Mutex
-	eventErr             error
-	maxIter              int
+	// eventsOnce resolves eventsLive once. The sink is fixed when the callback
+	// is built, and OnToken runs on every streamed delta.
+	eventsOnce    sync.Once
+	eventsLive    bool
+	eventScope    agentruntime.Scope
+	eventOrdinal  atomic.Uint64
+	eventSequence *atomic.Uint64
+	eventErrMu    sync.Mutex
+	eventErr      error
+	maxIter       int
 	// loopMaxAtStart is the parent ceiling when this turn began. A later
 	// explicit raise is adopted. Restoring a smaller limit for the next
 	// message does not shrink this turn.
@@ -9315,11 +9308,18 @@ func (c *sharedAgentLoopCallbacks) ProjectToolResult(name string, result agent.T
 	return proj.Preview
 }
 
+// runtimeEventsLive reports a sink that can accept Emit. A nil pointer stored
+// in the interface is absent. The answer is fixed for this callback, so the
+// token path does not repeat the check.
+func (c *sharedAgentLoopCallbacks) runtimeEventsLive() bool {
+	c.eventsOnce.Do(func() {
+		c.eventsLive = !agentruntime.EventSinkAbsent(c.events)
+	})
+	return c.eventsLive
+}
+
 func (c *sharedAgentLoopCallbacks) emitRuntimeEvent(eventType string, payload map[string]any) {
-	if c == nil {
-		return
-	}
-	if c.events == nil {
+	if c == nil || !c.runtimeEventsLive() {
 		return
 	}
 	ordinal := c.nextEventSequence()
@@ -9369,7 +9369,7 @@ func (c *sharedAgentLoopCallbacks) nextEventSequence() uint64 {
 }
 
 func emitRuntimeEventToSink(sink agentruntime.EventSink, scope agentruntime.Scope, eventType string, payload map[string]any, sequence ...*atomic.Uint64) error {
-	if sink == nil {
+	if agentruntime.EventSinkAbsent(sink) {
 		return nil
 	}
 	sequenceNumber := nextEventSequenceValue(sequence)
@@ -9399,6 +9399,18 @@ func nextEventSequenceValue(sequence []*atomic.Uint64) uint64 {
 }
 
 func (c *sharedAgentLoopCallbacks) OnToken(delta string) {
+	if c == nil {
+		return
+	}
+	// A desktop turn with no host sink stores only the chat projection. Building
+	// an event for each delta, then unwrapping that same string, is the whole
+	// cost of the token path. A host sink still receives the event.
+	if sink, ok := c.events.(*runtimeEventProjectionSink); ok {
+		if sink != nil && sink.onToken != nil && delta != "" {
+			sink.onToken(delta)
+		}
+		return
+	}
 	c.emitRuntimeEvent(agentruntime.EventAssistantDelta, map[string]any{"delta": delta})
 }
 
@@ -9428,7 +9440,7 @@ func (c *sharedAgentLoopCallbacks) OnLLMNewRound() {
 	if c == nil {
 		return
 	}
-	if c.events != nil {
+	if c.runtimeEventsLive() {
 		c.emitRuntimeEvent(agentruntime.EventTurnStarted, nil)
 		return
 	}
@@ -9438,7 +9450,7 @@ func (c *sharedAgentLoopCallbacks) OnLLMNewRound() {
 }
 
 func (c *sharedAgentLoopCallbacks) OnProgress(text string) {
-	if c != nil && c.events != nil {
+	if c != nil && c.runtimeEventsLive() {
 		c.emitRuntimeEvent(agentruntime.EventProgress, map[string]any{"text": text})
 		return
 	}

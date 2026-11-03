@@ -159,11 +159,19 @@ export function expertDefinitionFromInstallResult(raw: unknown): ExpertDefinitio
     };
 }
 
-/** Keep a just-installed expert on the list until a later snapshot includes it. */
+/** Append a new install, or replace the same id when its card fields changed. */
 export function withInstalledExpert(list: ExpertDefinition[], installed: ExpertDefinition | null | undefined): ExpertDefinition[] {
     if (!installed?.id) return list;
-    if (list.some(expert => expert.id === installed.id)) return list;
-    return [...list, installed];
+    const index = list.findIndex(expert => expert.id === installed.id);
+    if (index < 0) return [...list, installed];
+    const current = list[index];
+    if (current.name === installed.name
+        && current.description === installed.description
+        && current.icon === installed.icon
+        && current.updated_at === installed.updated_at) return list;
+    const next = list.slice();
+    next[index] = { ...current, ...installed, builtin: false };
+    return next;
 }
 
 /**
@@ -171,7 +179,7 @@ export function withInstalledExpert(list: ExpertDefinition[], installed: ExpertD
  * see it. Keep the card on that read only. A newer read is authoritative, so
  * an uninstall is not put back by the install that just happened.
  */
-export function overlayInstalledItems<T extends { id: string }>(
+export function overlayInstalledItems<T extends { id: string; updated_at?: string }>(
     listed: T[],
     pending: Array<{ item: T; stamp: number }>,
     responseStamp: number,
@@ -179,13 +187,32 @@ export function overlayInstalledItems<T extends { id: string }>(
     if (pending.length === 0) return { list: listed, pending };
     const kept: Array<{ item: T; stamp: number }> = [];
     const extra: T[] = [];
+    const fresher = new Map<string, T>();
     for (const entry of pending) {
         const id = entry?.item?.id;
-        if (!id || listed.some(item => item.id === id) || responseStamp > entry.stamp) continue;
+        if (!id || responseStamp > entry.stamp) continue;
+        const existing = listed.find(item => item.id === id);
+        if (existing) {
+            // This read already contains the id, but it may have started before
+            // a reinstall. Keep the install result when its timestamp is newer
+            // so the old card is not put back on screen.
+            const pendingAt = entry.item.updated_at || "";
+            const listedAt = existing.updated_at || "";
+            if (pendingAt && pendingAt > listedAt) fresher.set(id, entry.item);
+            continue;
+        }
         kept.push(entry);
         extra.push(entry.item);
     }
-    return { list: extra.length === 0 ? listed : [...listed, ...extra], pending: kept };
+    let list = listed;
+    if (fresher.size > 0) {
+        list = listed.map(item => {
+            const next = fresher.get(item.id);
+            return next ? { ...item, ...next } : item;
+        });
+    }
+    if (extra.length > 0) list = [...list, ...extra];
+    return { list, pending: kept };
 }
 
 /** 1-based page that contains `index` when each page holds `pageSize` cards. */

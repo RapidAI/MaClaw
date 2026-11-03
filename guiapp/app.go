@@ -4399,7 +4399,10 @@ func (a *App) RefreshWorkflowV2StateForTab(projectPath string, tabIDs []string) 
 	if projectPath == "" {
 		return
 	}
-	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
+	// An expert task's workflow lives on its task session, not the shared
+	// project-path session. Resolving only the project path reloaded another
+	// task's board into this expert tab.
+	userID := a.sessionOwnerForProjectPath(projectPath)
 	if userID == "" {
 		return
 	}

@@ -337,6 +337,7 @@ func (a *GUIWorkflowAdapter) EmitSuggestMaximize(userID, workflowType string) {
 			"user_id":        userID,
 			"workflow_type":  workflowType,
 			"event_scope_id": a.app.getEventScopeID(userID),
+			"project_path":   projectPathFromSessionOwnerID(userID),
 		})
 	}
 }
@@ -350,6 +351,7 @@ func (a *GUIWorkflowAdapter) ResetSuggestMaximize(userID string) {
 		a.app.emitEvent("workflow:suggest_maximize_dismiss", map[string]string{
 			"user_id":        userID,
 			"event_scope_id": a.app.getEventScopeID(userID),
+			"project_path":   projectPathFromSessionOwnerID(userID),
 		})
 	}
 }

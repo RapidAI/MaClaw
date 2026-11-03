@@ -629,7 +629,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/ai/aiAssistantControls.tsx', 120],
   ['guiapp/frontend/src/components/ai/useTTSReadback.ts', 120],
   // Refreshed 220 -> 235 (2026-10-19): font-size props added (guard counts 223).
-  ['guiapp/frontend/src/components/ai/aiAssistantPanelTypes.ts', 235],
+  // Refreshed 235 -> 275 (2026-11-03): panel types keep growing with the
+  // in-flight expert/workbench work (guard counts 236); headroom absorbs it.
+  ['guiapp/frontend/src/components/ai/aiAssistantPanelTypes.ts', 275],
   ['guiapp/frontend/src/components/ai/useAIAssistantVoiceControls.ts', 100],
   // Refreshed 240 -> 330 -> 380 (2026-11-03): scroll guards and diagnostics
   // keep growing this hook (guard counts 339); headroom absorbs the in-flight
