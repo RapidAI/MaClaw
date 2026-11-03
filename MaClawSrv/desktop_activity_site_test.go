@@ -3,6 +3,7 @@ package main
 import "testing"
 
 func TestDesktopActivityNamesSiteAndLogin(t *testing.T) {
+	t.Setenv("MACLAW_ACTIVITY_SITE", "1")
 	run := "run_site_test"
 	defer clearDesktopActivity(run)
 	desktopNoteActivityPage(run, "https://passport.csdn.net/login?code=x")

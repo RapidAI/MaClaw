@@ -2,6 +2,7 @@ package main
 
 import (
 	neturl "net/url"
+	"os"
 	"strings"
 	"sync"
 
@@ -66,7 +67,9 @@ var desktopActivitySites sync.Map
 var desktopWebPhrases = map[string]bool{"正在输入": true, "正在点击": true, "正在按键": true, "正在翻页": true, "正在打开网页": true, "正在查看": true, "正在操作网页": true, "正在登录": true, "正在发布": true, "正在上传文件": true, "正在填写": true, "正在查找": true, "正在选择": true}
 
 func desktopActivityWithSite(runID, phrase string) string {
-	if !desktopWebPhrases[phrase] {
+	// Off until the hub's filter accepts the site form (an older hub drops
+	// 「正在登录 CSDN」 and the row falls back to the static text).
+	if !desktopWebPhrases[phrase] || os.Getenv("MACLAW_ACTIVITY_SITE") != "1" {
 		return phrase
 	}
 	if v, ok := desktopActivitySites.Load(runID); ok {
