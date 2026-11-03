@@ -224,7 +224,11 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 		return msg
 	}
 	text := ""
-	if r, ok := desktopPublishRecordOf(run.ID); ok {
+	if base := desktopTaskSpecBase(run.ID); len(base.Sites) > 1 {
+		if recs := desktopPublishRunRecords(run.ID); len(recs) > 0 {
+			text = desktopReplyMulti(base, recs, desktopTaskSitesPending(run.ID), "")
+		}
+	} else if r, ok := desktopPublishRecordOf(run.ID); ok {
 		text = desktopReplyTemplate(r)
 	}
 	if text == "" {

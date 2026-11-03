@@ -159,6 +159,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"script":          map[string]any{"type": "string", "description": "Statements for action=script. click(\"保存\") or click(\"button.primary\") clicks. type(\"#q\", \"weather\") types. select(\"状态\", \"完成\") chooses an option. press(\"Enter\"), scroll(600), and waitFor(\"下一步\", 3000) run in the same script. Do not read cookies, storage, or passwords."},
 				"files":           map[string]any{"type": "array", "description": "upload: absolute file paths on the desktop to put into the page's file input. publish: the pictures, in the order the body's [[img:N]] anchors name them", "items": map[string]any{"type": "string"}},
 				"body":            map[string]any{"type": "string", "description": "publish: full body. Write it in PARAGRAPHS: 2-4 sentences each, a blank line (\\n\\n) between paragraphs, never one block. Structure it in light Markdown: ## headings per section, **bold** on each key point and number, - lists, > quotes. Put each picture on its own line where it belongs: [[img:N|caption]] places files[N-1] there (rich editors get formatted text with every picture at its anchor; note sites with a picture gallery get plain text with bold as 【…】). The read-back fails the publish if a picture is missing or out of place or the formatting is lost."},
+				"body_file":       map[string]any{"type": "string", "description": "publish: absolute path of a text/Markdown file on the desktop holding the full body (instead of body=). Never pass a shell expression like $(cat …) as body"},
 				"title_selector":  map[string]any{"type": "string", "description": "publish: CSS selector of the title field if not auto-found"},
 				"body_selector":   map[string]any{"type": "string", "description": "publish: CSS selector of the body editor if not auto-found"},
 				"upload_selector": map[string]any{"type": "string", "description": "publish: CSS selector of the file input"},
@@ -1032,7 +1033,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)
 	case "publish":
 		defer beginDesktopActivity(scope.RunID, "正在发布")()
-		text, err = desktopPublish(desktopOwner(scope), session, args)
+		if err = desktopResolvePublishBody(ctx, scope, args); err == nil {
+			text, err = desktopPublish(desktopOwner(scope), session, args)
+		}
 	case "shop_readback":
 		defer beginDesktopActivity(scope.RunID, "正在查看")()
 		text, err = desktopShopReadback(session)

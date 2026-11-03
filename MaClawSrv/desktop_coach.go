@@ -96,6 +96,21 @@ func desktopProgressFor(scope agentruntime.Scope) (*desktopRunState, *desktopPro
 	return st, st.progress
 }
 
+// desktopProgressNextSite clears what one site's publish left in the
+// coach (published, filled text, result page) when the run goes on to the
+// next requested site.
+func desktopProgressNextSite(scope agentruntime.Scope) {
+	st, p := desktopProgressFor(scope)
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	p.publishSeen, p.publishTried, p.staleWarned, p.readBackHinted = false, false, false, false
+	p.filled, p.writeURL = nil, ""
+	p.idle, p.notApplied = 0, 0
+	st.mu.Unlock()
+}
+
 // desktopNoProgressCheck refuses work after a long stretch without change.
 func desktopNoProgressCheckFull(scope agentruntime.Scope, action string, publishOK, publishStep bool) error {
 	stop := desktopNoProgressStop()

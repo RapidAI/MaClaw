@@ -220,6 +220,12 @@ func desktopSpeculateSnapshot(scope agentruntime.Scope, session *browser.Browser
 	if url == "" {
 		return "", nil
 	}
+	// A post's result page this run did not reach is an earlier task's
+	// (run_6fa834e0 started on the previous CSDN success page): it is not
+	// this run's progress.
+	if _, ok := desktopPublishRecordOf(scope.RunID); !ok && browser.IsPostResultURL(url) {
+		return "", nil
+	}
 	desktopLedgerRememberProgress(scope, url, "", "", "page_state")
 	return "speculate: page URL kept outside the desktop: " + url, nil
 }

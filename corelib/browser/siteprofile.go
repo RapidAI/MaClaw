@@ -214,6 +214,62 @@ func ProfileForRequest(request string) *SiteProfile {
 	return nil
 }
 
+// ProfilesForRequest lists every site the request names (a URL or a
+// profile's request word), in the order the request first mentions them, so
+// one task that posts to several sites can go through them one by one.
+func ProfilesForRequest(request string) []*SiteProfile {
+	type hit struct {
+		p   *SiteProfile
+		pos int
+	}
+	var hits []hit
+	add := func(p *SiteProfile, pos int) {
+		if p == nil || pos < 0 {
+			return
+		}
+		for i := range hits {
+			if hits[i].p.ID == p.ID {
+				if pos < hits[i].pos {
+					hits[i].pos = pos
+				}
+				return
+			}
+		}
+		hits = append(hits, hit{p, pos})
+	}
+	for _, loc := range requestURLRe.FindAllStringIndex(request, -1) {
+		add(ProfileForURL(request[loc[0]:loc[1]]), loc[0])
+	}
+	low := strings.ToLower(request)
+	for _, p := range SiteProfiles() {
+		for _, w := range p.RequestWords {
+			if w == "" {
+				continue
+			}
+			if i := strings.Index(low, strings.ToLower(w)); i >= 0 {
+				add(p, i)
+			}
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].pos < hits[j].pos })
+	out := make([]*SiteProfile, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, h.p)
+	}
+	return out
+}
+
+// IsPostResultURL: the URL is a site's page for a post already out (its
+// profile's success_url), i.e. the result of some earlier publish.
+func IsPostResultURL(raw string) bool {
+	p := ProfileForURL(raw)
+	if p == nil || p.SuccessURL == "" {
+		return false
+	}
+	re, err := regexp.Compile(p.SuccessURL)
+	return err == nil && re.MatchString(strings.TrimSpace(raw))
+}
+
 var requestURLRe = regexp.MustCompile(`https?://[^\s，。)'"]+`)
 
 // SiteRequestWords lists every profile's request words (for intent checks).

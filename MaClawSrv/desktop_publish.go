@@ -54,6 +54,12 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		Deadline: time.Now().Add(desktopStepTimeout("publish") - 30*time.Second),
 	}
 	ts := desktopTaskSpecFor(scope.RunID)
+	// A request naming several sites: the call is for the requested site its
+	// editor_url or open page is on, else the next one not done yet.
+	if base := desktopTaskSpecBase(scope.RunID); len(base.Sites) > 1 {
+		ts = desktopPublishTarget(scope.RunID, base, ts, desktopArg(args, "editor_url"), session.CurrentURL())
+		desktopPublishUseSite(scope.RunID, ts.Site)
+	}
 	spec.EditorURL = desktopArg(args, "editor_url")
 	if spec.EditorURL == "" {
 		spec.EditorURL = ts.EditorURL
@@ -101,7 +107,7 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		return "", fmt.Errorf("publish refused: title or body is a placeholder (%q / %q); pass the full finished title and body text (nothing was filled or posted)", desktopRuneHead(spec.Title, 20), desktopRuneHead(spec.Body, 20))
 	}
 	if r, ok := desktopPublishRecordOf(scope.RunID); ok && r.posted() {
-		return desktopPublishRecordText(r), nil
+		return desktopPublishStepText(scope, r), nil
 	}
 	if out, done, err := desktopPublishLedgerGuard(scope, session, spec, args); done {
 		return out, err
@@ -132,12 +138,43 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		}
 	}
 	if rec.posted() {
-		return out + "\n" + desktopPublishRecordText(rec), nil
+		return out + "\n" + desktopPublishStepText(scope, rec), nil
 	}
 	if err == nil {
 		err = fmt.Errorf("publish ended without a result")
 	}
-	return "", fmt.Errorf("%s\n%s\n%s", err.Error(), out, desktopPublishRecordText(rec))
+	return "", fmt.Errorf("%s\n%s\n%s", err.Error(), out, desktopPublishStepText(scope, rec))
+}
+
+// desktopPublishTarget picks the requested site a publish call is for.
+func desktopPublishTarget(runID string, base, cur desktopTaskSpec, editorURL, pageURL string) desktopTaskSpec {
+	if p := browser.ProfileForURL(editorURL); p != nil && base.site(p.ID) != nil {
+		return base.withSite(base.site(p.ID))
+	}
+	if p := browser.ProfileForURL(pageURL); p != nil {
+		for _, q := range desktopTaskSitesPending(runID) {
+			if q.ID == p.ID {
+				return base.withSite(q)
+			}
+		}
+	}
+	return cur
+}
+
+// desktopPublishStepText is the record's text, or — when the record's site
+// is settled and the request names sites still to do — the next-site step;
+// the record is set aside so the next site starts fresh.
+func desktopPublishStepText(scope agentruntime.Scope, r desktopPublishRecord) string {
+	if !r.settled() {
+		return desktopPublishRecordText(r)
+	}
+	pend := desktopTaskSitesPending(scope.RunID)
+	if len(pend) == 0 {
+		return desktopPublishRecordText(r)
+	}
+	desktopPublishParkCurrent(scope.RunID)
+	desktopProgressNextSite(scope)
+	return desktopPublishNextSiteText(r, pend)
 }
 
 // desktopPostURLFor builds a listed post's public URL from its id through

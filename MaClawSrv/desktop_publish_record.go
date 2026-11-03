@@ -15,6 +15,9 @@ import (
 // verified result page) writes it; the coach, the guards, a repeated publish
 // call and the reply all read it instead of parsing result or error text.
 type desktopPublishRecord struct {
+	// Site: the profile id the record is for. A request naming several
+	// sites keeps one record per site (see desktopPublishUseSite).
+	Site    string               `json:"site,omitempty"`
 	State   browser.PublishState `json:"state"`
 	URL     string               `json:"url,omitempty"`
 	PostID  string               `json:"post_id,omitempty"`
@@ -48,10 +51,96 @@ func (r desktopPublishRecord) posted() bool {
 	return r.State == browser.PublishLive || r.State == browser.PublishLiveIncomplete || r.State == browser.PublishSubmitted
 }
 
+// settled: nothing more to do on this record's site — the submit went out,
+// or the page shows a blocking notice only the person can clear.
+func (r desktopPublishRecord) settled() bool {
+	return r.posted() || (r.State == browser.PublishNotSubmitted && r.Notice != "")
+}
+
 var (
 	desktopPublishRecordsMu sync.Mutex
-	desktopPublishRecords   = map[string]*desktopPublishRecord{} // run id -> record
+	desktopPublishRecords   = map[string]*desktopPublishRecord{} // run id -> current site's record
+	// desktopPublishDone: the records of the other sites a multi-site run
+	// already worked on (run id -> records), guarded by the same lock.
+	desktopPublishDone = map[string][]desktopPublishRecord{}
 )
+
+// desktopPublishUseSite makes site the run's current record: the current
+// one of another site is kept aside, and an earlier record of this site
+// comes back. A single-site run never switches.
+func desktopPublishUseSite(runID, site string) {
+	if runID == "" || site == "" {
+		return
+	}
+	desktopPublishRecordsMu.Lock()
+	defer desktopPublishRecordsMu.Unlock()
+	cur := desktopPublishRecords[runID]
+	if cur != nil && (cur.Site == site || cur.Site == "") {
+		cur.Site = site
+		return
+	}
+	done := desktopPublishDone[runID]
+	var back *desktopPublishRecord
+	for i := range done {
+		if done[i].Site == site {
+			c := done[i]
+			back = &c
+			done = append(done[:i:i], done[i+1:]...)
+			break
+		}
+	}
+	if cur != nil {
+		done = append(done, *cur)
+	}
+	if len(done) > 0 {
+		desktopPublishDone[runID] = done
+	} else {
+		delete(desktopPublishDone, runID)
+	}
+	if back != nil {
+		desktopPublishRecords[runID] = back
+	} else {
+		delete(desktopPublishRecords, runID)
+	}
+}
+
+// desktopPublishParkCurrent sets the current record aside (its site is
+// settled and the run goes on to the next requested site): the run then has
+// no current record, so the guards and the phase plan treat the next site
+// as a fresh publish.
+func desktopPublishParkCurrent(runID string) {
+	desktopPublishRecordsMu.Lock()
+	defer desktopPublishRecordsMu.Unlock()
+	if r := desktopPublishRecords[runID]; r != nil {
+		desktopPublishDone[runID] = append(desktopPublishDone[runID], *r)
+		delete(desktopPublishRecords, runID)
+	}
+}
+
+// desktopPublishRunRecords: every record of the run, the earlier sites'
+// first and the current one last.
+func desktopPublishRunRecords(runID string) []desktopPublishRecord {
+	desktopPublishRecordsMu.Lock()
+	defer desktopPublishRecordsMu.Unlock()
+	out := append([]desktopPublishRecord(nil), desktopPublishDone[runID]...)
+	if r := desktopPublishRecords[runID]; r != nil {
+		out = append(out, *r)
+	}
+	return out
+}
+
+// desktopPublishRunTake returns every record of the run and forgets them.
+func desktopPublishRunTake(runID string) []desktopPublishRecord {
+	desktopPublishRecordsMu.Lock()
+	defer desktopPublishRecordsMu.Unlock()
+	out := append([]desktopPublishRecord(nil), desktopPublishDone[runID]...)
+	if r := desktopPublishRecords[runID]; r != nil {
+		out = append(out, *r)
+	}
+	delete(desktopPublishDone, runID)
+	delete(desktopPublishRecords, runID)
+	return out
+}
 
 // desktopPublishRecordOf returns a copy of the run's record (ok=false: none).
 func desktopPublishRecordOf(runID string) (desktopPublishRecord, bool) {
@@ -73,6 +162,7 @@ func desktopPublishRecordTake(runID string) (desktopPublishRecord, bool) {
 		return desktopPublishRecord{}, false
 	}
 	delete(desktopPublishRecords, runID)
+	delete(desktopPublishDone, runID)
 	return *r, true
 }
 
@@ -103,6 +193,11 @@ func desktopRecordPublish(scope agentruntime.Scope, spec browser.PublishSpec, re
 	rec := desktopPublishRecordUpdate(scope, func(r *desktopPublishRecord) {
 		r.Calls++
 		r.Title = spec.Title
+		if r.Site == "" {
+			if p := browser.ProfileForURL(spec.EditorURL); p != nil {
+				r.Site = p.ID
+			}
+		}
 		if len(spec.Files) > r.PlannedImages {
 			r.PlannedImages = len(spec.Files)
 		}
@@ -190,6 +285,22 @@ func desktopPublishRecordFacts(r desktopPublishRecord) string {
 		}
 	}
 	return promptparts.Fact("PUBLISH_RESULT", "state", state, "link", r.URL, "missing", r.Missing, "notice", r.Notice, "evidence", evidence, "next_allowed", next)
+}
+
+// desktopPublishNextSiteText follows a settled record when the request
+// names more sites: the run is not done, the next site is.
+func desktopPublishNextSiteText(r desktopPublishRecord, pend []*browser.SiteProfile) string {
+	names := make([]string, 0, len(pend))
+	for _, p := range pend {
+		names = append(names, desktopSiteName(p))
+	}
+	next := pend[0]
+	if promptparts.Enabled() {
+		return promptparts.Fact("PUBLISH_RESULT", "site", r.Site, "state", string(r.State), "link", r.URL, "missing", r.Missing, "notice", r.Notice,
+			"sites_left", strings.Join(names, ","), "next_allowed", "publish", "next_site", desktopSiteName(next), "next_editor_url", next.EditorURL)
+	}
+	return "PUBLISH STATE: " + string(r.State) + " on " + r.Site + " " + r.URL + " — this site is done. The task also asks for " + strings.Join(names, ", ") +
+		": do not touch the post above; now run action=publish for " + desktopSiteName(next) + " with editor_url=" + next.EditorURL + " and the same title, body and files (fit that site's limits)."
 }
 
 // desktopPublishRecordLegacyText is the pre-style-layer wording
