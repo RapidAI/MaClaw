@@ -259,7 +259,12 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 			// A failed baseline remains useful bounded evidence for recovery, but
 			// it cannot authorize a mutating attempt when the final workspace gate
 			// is enabled.  Read-only and legacy non-gated callers retain the old
-			// diagnostic-only behavior.
+			// diagnostic-only behavior. A cancellation that arrives while git
+			// status is still running is not a baseline failure: the attempt
+			// stays interrupted, and the executor sees the cancelled context.
+			if ctx != nil && ctx.Err() != nil {
+				ctxLive = false
+			}
 			digest := "workspace_before_probe_failed"
 			if probeErr != nil {
 				digest = codingRuntimeErrorDigest(probeErr.Error())

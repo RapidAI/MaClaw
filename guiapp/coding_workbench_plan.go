@@ -2745,7 +2745,7 @@ func (h *IMMessageHandler) rewindInterruptedCodingChecklist(userID string) bool 
 // insertCodingChecklistResumeNote places the rewind note after the opening
 // [系统续接] line. The marker has to stay at the start: goalContinuationSource
 // only treats the description as the phase contract when it begins with that
-// marker, and otherwise falls back to the 80-rune title.
+// marker. The panel title is the objective, so it is not a fallback contract.
 func insertCodingChecklistResumeNote(description, note string) string {
 	description = strings.TrimSpace(description)
 	note = strings.TrimSpace(note)
@@ -2863,6 +2863,10 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	// the only live line is the command bar. Release that ownership and any
 	// unanswered approve. The step rows stay for the agent's todos to update.
 	if isGoalSystemContinuation(userText) {
+		// The phase contract is the model prompt (Description). The panel
+		// title is the objective, so the live card is not a numbered script
+		// sliced at 80 runes.
+		single[0].Title = goalContinuationDisplayTitle(requestText)
 		log.Printf("[coding-plan] single-task path user=%s reason=goal continuation", userID)
 		owned := false
 		rewound := false

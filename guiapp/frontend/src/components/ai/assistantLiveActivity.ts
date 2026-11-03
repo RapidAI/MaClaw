@@ -729,7 +729,7 @@ const CODING_THOUGHT_SEPARATOR_LINE = /^(?:[-*_]{1,3}|•|·)$/;
 const CODING_THOUGHT_STEP_HEADING = /^###[ \t]*T\d+(?:$|[:： \t])/;
 
 function codingThoughtLineIsChrome(line: string): boolean {
-    return CODING_THOUGHT_SEPARATOR_LINE.test(line) || CODING_THOUGHT_STEP_HEADING.test(line);
+    return CODING_THOUGHT_SEPARATOR_LINE.test(line) || CODING_THOUGHT_STEP_HEADING.test(line) || line.startsWith("[系统续接]");
 }
 
 function codingThoughtFenceLine(line: string): boolean {

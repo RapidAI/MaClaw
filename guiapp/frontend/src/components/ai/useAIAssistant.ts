@@ -2979,6 +2979,11 @@ function stripRolePrefixFrontend(text: string): string {
     return stripRolePrefixForDisplay(text);
 }
 
+/** A coding timeline owns the bubble. Pending thoughts are the chat reasoning buffer. */
+function codingTimelineOwnsFinalBody(message: ChatMessage): boolean {
+    return (message.codingTimeline?.length ?? 0) > 0;
+}
+
 /** Keep tool-call markers when the completed answer replaces the running transcript. */
 function preserveEmbeddedToolCalls(chosen: string, streamed: string): string {
     if (!contentHasAssistantToolCall(streamed)) return chosen;
@@ -3001,7 +3006,7 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
     const chosen = selectFinalRoundContent(message, response);
     const rawFinal = typeof response?.text === "string" ? response.text.trim() : "";
     // The coding finish is the stage report. Do not glue the working stream back on.
-    if (rawFinal && ((message.codingTimeline?.length ?? 0) > 0 || (message.pendingCodingThoughts?.length ?? 0) > 0)) {
+    if (rawFinal && codingTimelineOwnsFinalBody(message)) {
         return chosen;
     }
     return preserveEmbeddedToolCalls(chosen, message.content || "");
@@ -3104,7 +3109,7 @@ function selectFinalRoundContent(message: ChatMessage, response: any): string {
 
     // A coding stage already keeps its working trail on the timeline.
     // The bubble is the official finish report, even when the stream is longer.
-    if (finalText && ((message.codingTimeline?.length ?? 0) > 0 || (message.pendingCodingThoughts?.length ?? 0) > 0)) {
+    if (finalText && codingTimelineOwnsFinalBody(message)) {
         return finalText;
     }
 
@@ -5077,7 +5082,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             forgetOffscreenLiveRound(requestId);
             return null;
         }
-        const sessionKey = normalizeRuntimeSessionKey(event.session_key || activeSessionKeyForEvents() || 'desktop-user');
+        const explicitSession = String(event.session_key || '').trim();
+        const activeKey = normalizeRuntimeSessionKey(activeSessionKeyForEvents() || 'desktop-user');
+        // An event that names no session belongs to the local transcript only.
+        // Stamping it with the tab in front made that tab continue another task.
+        if (!explicitSession && activeKey !== 'desktop-user') return null;
+        const sessionKey = normalizeRuntimeSessionKey(explicitSession || 'desktop-user');
         // ACP Mode B (programming agent): accept rounds even if another tab is
         // active so request_id-matched tokens still stream into the chat.
         const isDetachedBackendRound = requestId.startsWith('acp-') || requestId.startsWith('horizon-');

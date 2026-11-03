@@ -315,12 +315,10 @@ func ScheduleChannelDispatchSelection(selection PlannedSelection) bool {
 
 // TurnRequiredDeliveryComplete reports that every required planned selection
 // completed and at least one completed selection delivered the artifact,
-// either on the current channel or to the specified IM target. Optional
-// needs (optionalByNeed) never gate the stop. A later repeat sibling is an
-// exposure ceiling even when the host's recomputed need list omitted it:
-// only the family base can be an obligation. Hosts still compute base
-// optionality from their classification; this helper applies that map and
-// the repeat contract.
+// either on the current channel or to the specified IM target. A selection
+// the planner marked Optional, and a need the host proved optional, never
+// gate the stop. A later repeat sibling is an exposure ceiling: only the
+// family base can be an obligation.
 func TurnRequiredDeliveryComplete(plan ToolPlan, completed, optionalByNeed map[string]bool) bool {
 	if len(plan.Selections) == 0 {
 		return false
@@ -333,7 +331,7 @@ func TurnRequiredDeliveryComplete(plan ToolPlan, completed, optionalByNeed map[s
 			}
 			continue
 		}
-		if optionalByNeed[selection.NeedID] || repeatSiblingCeiling(selection.NeedID) {
+		if selection.Optional || optionalByNeed[selection.NeedID] || repeatSiblingCeiling(selection.NeedID) {
 			continue
 		}
 		return false

@@ -3568,6 +3568,13 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	// prompt and run file changes before goal(action=plan|step). A session
 	// round resumes the plan that is already open; it is not the user
 	// approving a different pending plan.
+	if next, stop := h.prepareCodingPlanDialogue(userID, userText, projectPath, true, onProgress, onToken); stop != nil {
+		return stop
+	} else if next != userText && strings.TrimSpace(next) != "" {
+		userText = next
+		recordUserText = sessionRoundCodingTask(userText)
+		sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+	}
 	tookApprovedPlan := false
 	if !isGoalSystemContinuation(userText) && !isSessionRoundContinuation(userText) {
 		if approved, ok := h.takeStickyApprovedCodingPlan(userID); ok {
@@ -4402,6 +4409,13 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	planStepTotal := 0
 	resumeIncompletePlan := false
 	recordUserText := sessionRoundCodingTask(userText)
+	if next, stop := h.prepareCodingPlanDialogue(userID, userText, remoteCtx.ProjectDir, !remoteCtx.Maintenance, onProgress, onToken); stop != nil {
+		return stop
+	} else if next != userText && strings.TrimSpace(next) != "" {
+		userText = next
+		recordUserText = sessionRoundCodingTask(userText)
+		sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+	}
 	decisionForRecord := func() codingRequestDecision {
 		if decision, ok := normalizeCodingRequestDecision(codingRequestDecision{
 			Kind:       remoteCtx.RequestKind,

@@ -248,6 +248,7 @@ func (h *IMMessageHandler) executeSkippedCodingPlan(
 		return &IMAgentResponse{Text: "无法直接执行；当前计划已保留。\n\n" + targetErr}
 	}
 	h.clearStickyPendingCodingPlan(userID)
+	h.clearCodingPlanDialogue(userID)
 	// Force single-task for this original request.
 	m := h.getStickyCodingWorkbenchMemory(userID)
 	m.SkipNextPlan = true
@@ -373,6 +374,7 @@ func codingWorkbenchSlashHelpText() string {
 		"| /hooks | 查看 .maclaw/hooks.json 生命周期钩子 |\n" +
 		"| /coding-help | 本帮助 |\n\n" +
 		"自动决策会让简单任务直接执行；多步骤任务会先展示计划，点「开始实施」或发送 /plan approve 再执行。/plan mode approve 会优先先给计划。\n" +
+		"说「先规划再开发」会进入规划对话：先一起改方案，你确认后才写代码。确认可以说「开始」，跳过可以说「直接做」。\n" +
 		"Worktree：auto 时并行写改步骤在隔离 worktree 中执行并合并回主树。")
 }
 
@@ -418,9 +420,7 @@ func (h *IMMessageHandler) handleCodingPlanSlash(userID, projectPath, trimmed st
 		}
 
 	case lower == "reject" || lower == "cancel" || lower == "clear":
-		h.clearStickyPendingCodingPlan(userID)
-		h.clearStickyCodingExecutionPlan(userID)
-		h.clearStickyCodingStepStatuses(userID)
+		h.exitCodingPlanDialogue(userID, true)
 		return &IMAgentResponse{Text: "已拒绝并清除待批准执行计划。"}
 
 	case strings.HasPrefix(lower, "edit") || strings.HasPrefix(lower, "set") || strings.HasPrefix(lower, "rewrite"):
@@ -473,6 +473,9 @@ func (h *IMMessageHandler) codingPlanStatusResponse(userID string) *IMAgentRespo
 		b.WriteString("- **会话目标**: ")
 		b.WriteString(truncateRunesForSubAgent(s, 200))
 		b.WriteString("\n")
+	}
+	if mem.PlanDialogue {
+		b.WriteString("- **规划对话**: 进行中（确认前不会改文件）\n")
 	}
 	if pending, ok := h.loadStickyPendingCodingPlan(userID); ok {
 		b.WriteString(fmt.Sprintf("- **待批准计划**: %d 步\n\n", len(pending.Tasks)))

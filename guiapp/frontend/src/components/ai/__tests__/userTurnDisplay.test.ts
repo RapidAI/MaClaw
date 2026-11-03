@@ -17,6 +17,12 @@ describe("userTurnDisplay", () => {
         expect(stripUserTurnPromptArtifacts(text)).toBe("看看这张图");
     });
 
+    it("hides the goal continuation header and keeps the step text", () => {
+        const view = userTurnDisplayView("[系统续接][execute] 按步骤执行目标：开发 c++ 贪吃蛇游戏\n\n本轮只能提交步骤 4：实现绘制与界面。");
+        expect(view.text).toBe("本轮只能提交步骤 4：实现绘制与界面。");
+        expect(view.text).not.toContain("[系统续接]");
+    });
+
     it("keeps ordinary user prose untouched", () => {
         const text = "重构 utils 目录，注意顺序\n第二行保留";
         expect(stripUserTurnPromptArtifacts(text)).toBe(text);

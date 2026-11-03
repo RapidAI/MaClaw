@@ -29,6 +29,12 @@ func TestDefaultGUICodingRuntimeOptionsDeclareWriterScope(t *testing.T) {
 	if inquiry == nil || !inquiry.ReadOnly || inquiry.RequireFinalWorkspaceGate || len(inquiry.DeclaredWrites) != 0 {
 		t.Fatalf("inquiry options=%+v", inquiry)
 	}
+	plan := defaultGUICodingRuntimeOptions(&TaskItem{
+		Description: "[系统续接][plan] 先理解并分解目标，不要实现。\n\n目标：开发一个贪吃蛇游戏\n\n本轮只做规划：\n1. 复述。\n2. 分解。\n",
+	}, root)
+	if plan == nil || !plan.ReadOnly || plan.RequireFinalWorkspaceGate || len(plan.DeclaredWrites) != 0 {
+		t.Fatalf("goal plan options=%+v", plan)
+	}
 	rootClaim := defaultGUICodingRuntimeOptions(&TaskItem{RequestKind: codingRequestImplementation}, root)
 	if rootClaim == nil || len(rootClaim.DeclaredWrites) != 1 || !strings.HasSuffix(rootClaim.DeclaredWrites[0], string(filepath.Separator)) {
 		t.Fatalf("dynamic writer root claim=%+v", rootClaim)
@@ -36,6 +42,37 @@ func TestDefaultGUICodingRuntimeOptionsDeclareWriterScope(t *testing.T) {
 	relative := defaultGUICodingRuntimeOptions(&TaskItem{RequestKind: codingRequestImplementation}, "repo")
 	if relative == nil || len(relative.DeclaredWrites) != 1 || relative.DeclaredWrites[0] != "."+string(filepath.Separator) {
 		t.Fatalf("relative writer root claim=%+v", relative)
+	}
+}
+
+func TestGoalPlanTurnStartsWithoutWorkspaceProbe(t *testing.T) {
+	root := t.TempDir()
+	options := defaultGUICodingRuntimeOptions(&TaskItem{
+		Description: "[系统续接][plan] 先理解并分解目标，不要实现。\n\n目标：开发一个贪吃蛇游戏\n\n本轮只做规划：\n1. 复述。\n2. 分解。\n",
+	}, root)
+	store := codingruntime.NewMemoryStore()
+	calls := 0
+	result, attempt, err := runGUICodingTaskWithLedgerWithOptions(
+		context.Background(), store, "gui:test", "workflow", "phase", root, "plan", nil, nil, options,
+		func() *CodingSubAgentResult {
+			calls++
+			return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "planned"}
+		},
+	)
+	if err != nil || calls != 1 || result == nil || result.Status != TaskExecPassed || attempt == nil {
+		t.Fatalf("result=%#v attempt=%#v err=%v calls=%d", result, attempt, err, calls)
+	}
+	if !attempt.Policy.ReadOnly || attempt.Policy.FinalWorkspaceGateRequired || attempt.WorkspaceBefore != nil {
+		t.Fatalf("plan attempt=%#v", attempt)
+	}
+	events, eventErr := store.ListEvents(attempt.AttemptID)
+	if eventErr != nil {
+		t.Fatal(eventErr)
+	}
+	for _, event := range events {
+		if strings.Contains(event.Type, "workspace_") {
+			t.Fatalf("plan turn probed the workspace: %s", event.Type)
+		}
 	}
 }
 

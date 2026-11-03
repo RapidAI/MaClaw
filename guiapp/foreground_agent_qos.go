@@ -33,9 +33,11 @@ var foregroundAgentOwners = struct {
 	mu         sync.Mutex
 	counts     map[string]int
 	lastDoneNs map[string]int64 // per-owner last foreground-done UnixNano
+	enteredNs  map[string]int64 // per-owner first enter of the current live run
 }{
 	counts:     make(map[string]int),
 	lastDoneNs: make(map[string]int64),
+	enteredNs:  make(map[string]int64),
 }
 
 func (a *App) beginForegroundAgentLoop(ownerID, requestID, loopID string) func() {
@@ -88,6 +90,9 @@ func beginForegroundAgentOwner(ownerID string) (int64, bool) {
 	foregroundAgentOwners.mu.Lock()
 	defer foregroundAgentOwners.mu.Unlock()
 	count := foregroundAgentOwners.counts[ownerID]
+	if count == 0 {
+		foregroundAgentOwners.enteredNs[ownerID] = time.Now().UnixNano()
+	}
 	foregroundAgentOwners.counts[ownerID] = count + 1
 	if count > 0 {
 		return foregroundAgentWork.Load(), false
@@ -105,6 +110,7 @@ func endForegroundAgentOwner(ownerID string) (int64, bool) {
 	count := foregroundAgentOwners.counts[ownerID]
 	if count <= 1 {
 		delete(foregroundAgentOwners.counts, ownerID)
+		delete(foregroundAgentOwners.enteredNs, ownerID)
 		// Record per-owner completion time for the quiet-period check.
 		foregroundAgentOwners.lastDoneNs[ownerID] = time.Now().UnixNano()
 		active := foregroundAgentWork.Add(-1)

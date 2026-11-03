@@ -2637,6 +2637,8 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		}
 		if executionProjectPath == "" {
 			executionProjectPath = a.EffectiveWorkingDirForOwner(userID)
+		} else {
+			executionProjectPath = a.exclusiveWorkRoot(projectPath, executionProjectPath)
 		}
 		if executionProjectPath != projectPath {
 			log.Printf("[AI assistant] route tab to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
@@ -3126,6 +3128,7 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	handler := hubClient.ensureIMHandler()
 	ensureIMHandlerElapsed = time.Since(imHandlerStartedAt)
 	status(i18n.MsgStatusEnvReady)
+	a.restoreProjectAgentSession(handler, msg.UserID, projectPath)
 	if shouldReconcileAIAssistantClientHistory(req, msg.UserID) {
 		status(i18n.MsgStatusSyncContext)
 		a.reconcileAIAssistantClientHistory(handler, msg.UserID, req.RecentMessages)

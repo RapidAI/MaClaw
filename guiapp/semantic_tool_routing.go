@@ -75,6 +75,7 @@ type semanticCallSurface struct {
 	registry         *tool.CapabilityRegistry
 	optionalMu       sync.Mutex
 	optionalCacheKey string
+	optionalCacheSet bool
 	hopEvidence      map[string]HopStepEvidence
 	optionalByNeed   map[string]bool
 	optionalKnown    bool
@@ -2657,31 +2658,33 @@ func semanticSpentBudgetNote(surface *semanticCallSurface, selectionID string) s
 // failed, and the hard-exit guard (which runs only on tool-less stops) would
 // never get a look.
 func semanticTurnDeliveryComplete(surface *semanticCallSurface) bool {
-	// Optionality is need-level and the plan does not retain needs; recompute
-	// them deterministically from the stored classification (rule templates
-	// only, no LLM) under the bundle key the plan was published with. Unknown
-	// base need IDs fail toward required — a selection whose optionality cannot
-	// be proven must still complete. A later repeat sibling is not that case:
-	// the repeat contract makes only the family base an obligation, including
-	// a baseline ceiling the bundle-key recompute does not replay.
-	optionalByNeed, ok := semanticSurfaceOptionalNeeds(surface)
-	if !ok {
+	if surface == nil || len(surface.plan.Selections) == 0 {
 		return false
+	}
+	// Recorded plans read the Optional bit. Older plans fall back to
+	// classification, and an unknown base stays required. Repeat siblings
+	// are an exposure ceiling, not a second obligation.
+	var optionalByNeed map[string]bool
+	optionalKnown := surface.plan.ObligationsRecorded
+	if !optionalKnown {
+		var ok bool
+		optionalByNeed, ok = semanticSurfaceOptionalNeeds(surface)
+		if !ok {
+			return false
+		}
+		optionalKnown = true
 	}
 	if !tool.TurnRequiredDeliveryComplete(surface.plan, completedWithSatisfiedFamilies(surface), optionalByNeed) {
 		return false
 	}
-	// Mirror hopRunSnapshot's unmet accounting: skip unmet needs a selection
-	// already covers, then hold the turn open on every non-optional one.
 	selectedNeeds := make(map[string]bool, len(surface.plan.Selections))
 	for _, selection := range surface.plan.Selections {
-		selectedNeeds[selection.NeedID] = true
+		selectedNeeds[strings.TrimSpace(selection.NeedID)] = true
 	}
 	for _, unmet := range surface.plan.Unmet {
-		if selectedNeeds[unmet.NeedID] || optionalByNeed[unmet.NeedID] {
-			continue
+		if unmetStillOwed(unmet, selectedNeeds, optionalByNeed, optionalKnown) {
+			return false
 		}
-		return false
 	}
 	return true
 }

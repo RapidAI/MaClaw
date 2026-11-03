@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -594,5 +595,103 @@ func TestForkRecentTaskConcurrentCallsReturnCopiedConversation(t *testing.T) {
 	}
 	if history[0].Content != "copied under concurrency" || history[1].Content != "concurrent answer" {
 		t.Fatalf("history = %+v, want copied conversation", history)
+	}
+}
+
+func TestReopenProjectTabRestoresTranscriptIntoTheAgentSession(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	projectPath := filepath.Join(t.TempDir(), "npu-task")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	olderAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        "proj-old",
+		ProjectPath:  projectPath,
+		LastActiveAt: olderAt,
+		Conversation: []interface{}{
+			map[string]interface{}{"role": "user", "content": "检查本机 NPU"},
+			map[string]interface{}{"role": "assistant", "content": "NPU 空闲"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if msg := app.CreateProjectTabSession("proj-new", projectPath); strings.TrimSpace(msg) == "" {
+		t.Fatal("CreateProjectTabSession returned empty")
+	}
+	opened, err := persist.LoadSession("proj-new")
+	if err != nil || opened == nil || !sessionSnapshotHasUserTurn(opened.Conversation) {
+		t.Fatalf("reopened tab = %+v err=%v, want the existing transcript", opened, err)
+	}
+
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	handler := &IMMessageHandler{memory: memory}
+	owner := projectSessionOwnerID(projectPath)
+	app.restoreProjectAgentSession(handler, owner, projectPath)
+	loaded := memory.Load(owner)
+	if len(loaded) < 2 || loaded[0].Content != "检查本机 NPU" {
+		t.Fatalf("agent session = %#v, want the opened transcript", loaded)
+	}
+
+	memory.Save(owner, []agent.ConversationEntry{{Role: "user", Content: "live turn"}})
+	app.restoreProjectAgentSession(handler, owner, projectPath)
+	if again := memory.Load(owner); len(again) != 1 || again[0].Content != "live turn" {
+		t.Fatalf("live session = %#v, want it kept", again)
+	}
+}
+
+func TestRestoreProjectAgentSessionKeepsRequestFoldedOutOfTheHotTail(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	projectPath := filepath.Join(t.TempDir(), "npu-task")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:       "proj-hot",
+		ProjectPath: projectPath,
+		Conversation: []interface{}{
+			map[string]interface{}{"role": "assistant", "content": "还在看字体"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := persist.SaveConversationViewArchive("proj-hot", []interface{}{
+		map[string]interface{}{"role": "user", "content": "检查本机 NPU"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	handler := &IMMessageHandler{memory: memory}
+	owner := projectSessionOwnerID(projectPath)
+	app.restoreProjectAgentSession(handler, owner, projectPath)
+	loaded := memory.Load(owner)
+	if len(loaded) < 2 || loaded[0].Content != "检查本机 NPU" {
+		t.Fatalf("agent session = %#v, want the request that was folded out of the hot tail", loaded)
+	}
+
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:                 "proj-cleared",
+		ProjectPath:           projectPath,
+		ConversationClearedAt: time.Now().UnixMilli(),
+		Conversation:          []interface{}{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := persist.SaveConversationViewArchive("proj-cleared", []interface{}{
+		map[string]interface{}{"role": "user", "content": "检查本机 NPU"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clearedMemory := agent.NewConversationMemory()
+	defer clearedMemory.Stop()
+	app.restoreProjectAgentSession(&IMMessageHandler{memory: clearedMemory}, owner, projectPath)
+	if again := clearedMemory.Load(owner); len(again) != 0 {
+		t.Fatalf("cleared session restored %#v", again)
 	}
 }

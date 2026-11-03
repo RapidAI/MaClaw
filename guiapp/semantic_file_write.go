@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -214,6 +215,9 @@ func (h *IMMessageHandler) writeTrustedFile(principalID, path, content, mode str
 		return h.semanticTrustedFileWrite(principalID, path, content, mode)
 	}
 	workspace := trustedPrincipalBoundWorkspace(h, principalID)
+	if task := projectPathFromUserID(principalID); task != "" && h.app != nil && filepath.IsAbs(path) {
+		path = h.app.exclusiveWorkRoot(task, path)
+	}
 	absPath, err := trustedFileWriteResolvePath(workspace, path)
 	if err != nil {
 		return "", fileWriteBeforeEffect(err)
@@ -276,6 +280,9 @@ func (h *IMMessageHandler) editTrustedFile(principalID, path, oldString, newStri
 		return h.semanticTrustedFileEdit(principalID, path, oldString, newString)
 	}
 	workspace := trustedPrincipalBoundWorkspace(h, principalID)
+	if task := projectPathFromUserID(principalID); task != "" && h.app != nil && filepath.IsAbs(path) {
+		path = h.app.exclusiveWorkRoot(task, path)
+	}
 	absPath, err := trustedFileWriteResolvePath(workspace, path)
 	if err != nil {
 		return "", fileWriteBeforeEffect(err)

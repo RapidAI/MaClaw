@@ -765,6 +765,21 @@ func TestGoalContinuationCodingTaskIsThePhaseContract(t *testing.T) {
 	if goalContinuationPhase("请本轮只做规划，先别写代码") != "" {
 		t.Fatal("a user sentence must not become a goal plan phase")
 	}
+	echoed := "[系统续接][execute] 按步骤执行目标：开发一个贪吃蛇游戏\n\n当前步骤：\n  1. 本轮只做规划\n"
+	if goalContinuationPhase(echoed) != "execute" || taskIsGoalPlanPhase(&TaskItem{Description: echoed}, "") {
+		t.Fatal("an execute step that repeats the planning sentence must stay an implementation turn")
+	}
+	planTitle := goalContinuationDisplayTitle(prompt)
+	if planTitle != "分解目标：实现一个图形界面版愤怒的小鸟" {
+		t.Fatalf("plan display title = %q", planTitle)
+	}
+	if strings.Contains(planTitle, "本轮只做规划") || strings.Contains(planTitle, "\n") {
+		t.Fatalf("plan display title leaked the phase contract: %q", planTitle)
+	}
+	executeTitle := goalContinuationDisplayTitle("[系统续接][execute] 按步骤执行目标：开发一个贪吃蛇游戏\n\n本轮只能提交步骤 1：画棋盘。")
+	if executeTitle != "开发一个贪吃蛇游戏" {
+		t.Fatalf("execute display title = %q", executeTitle)
+	}
 
 	cb := &codingSubAgentCallbacks{
 		subagent: &CodingSubAgent{exposeGoalTool: true},
@@ -2421,5 +2436,26 @@ func TestUserTurnErrorDoesNotFailActiveGoal(t *testing.T) {
 	got = store.Get(contID)
 	if got == nil || got.Status != goal.StatusFailed || !strings.Contains(got.Summary, "编译失败") {
 		t.Fatalf("goal-continuation error should still fail the goal: %+v", got)
+	}
+}
+
+func TestGoalContinuationHeaderIsHiddenFromChatAndKeptForTheModel(t *testing.T) {
+	prompt := "[系统续接][execute] 按步骤执行目标：开发 c++ 贪吃蛇游戏\n\n本轮只能提交步骤 4：实现绘制与界面。\n"
+	if goalContinuationHeaderLine(prompt) != "[系统续接][execute] 按步骤执行目标：开发 c++ 贪吃蛇游戏" {
+		t.Fatalf("header = %q", goalContinuationHeaderLine(prompt))
+	}
+	visible := omitGoalContinuationHeader(prompt)
+	if strings.Contains(visible, "[系统续接]") || !strings.Contains(visible, "本轮只能提交步骤 4") {
+		t.Fatalf("visible = %q", visible)
+	}
+	if omitGoalContinuationHeader("请看这段：[系统续接] 不是宿主阶段") != "请看这段：[系统续接] 不是宿主阶段" {
+		t.Fatal("a quoted marker inside a sentence must stay")
+	}
+	if !strings.HasPrefix(prompt, "[系统续接][execute]") {
+		t.Fatal("the model prompt must keep the header")
+	}
+	withCode := "[系统续接][execute] 标题\n\n```\n\n\ncode\n```"
+	if got := omitGoalContinuationHeader(withCode); got != "```\n\n\ncode\n```" {
+		t.Fatalf("blank lines inside the answer changed: %q", got)
 	}
 }

@@ -161,11 +161,18 @@ func parseSessionLastActiveAt(value string) (time.Time, bool) {
 }
 
 // sessionOutranksLatest decides which snapshot is the paper's transcript.
-// A later activity time wins. When two files share a second-precision stamp,
-// an explicit clear wins over leftover text, and otherwise the fuller copy wins
-// so an unflushed tail is not hidden by the shorter snapshot.
+// A later activity time wins. An empty reopen is not a later conversation:
+// whichever side it is on, the snapshot that still has turns remains. An
+// explicit clear is the newer fact. When two files share a second-precision
+// stamp, the fuller copy wins so an unflushed tail is not hidden.
 func sessionOutranksLatest(session, latest *TabSessionData, sessionLen, latestLen int, activeAt, latestAt time.Time, hasTimestamp, latestHasTimestamp bool) bool {
 	if latest == nil {
+		return true
+	}
+	if sessionLen == 0 && latestLen > 0 && session.ConversationClearedAt == 0 {
+		return false
+	}
+	if latestLen == 0 && sessionLen > 0 && latest.ConversationClearedAt == 0 {
 		return true
 	}
 	if hasTimestamp != latestHasTimestamp {
@@ -211,6 +218,7 @@ func (p *ProjectTabSessionPersist) LoadLatestSessionForProject(projectPath strin
 	var latest *sessionHead
 	var latestAt time.Time
 	var latestHasTimestamp bool
+	latestLen := 0
 	for i := range heads {
 		head := &heads[i]
 		if normalizeProjectSessionPath(head.data.ProjectPath) != projectPath {
@@ -223,14 +231,22 @@ func (p *ProjectTabSessionPersist) LoadLatestSessionForProject(projectPath strin
 		// A real saved LastActiveAt is stronger than the row's write time. The
 		// latter is only a legacy fallback and can be newer after a copied or
 		// repaired session, despite containing older conversation content.
+		sessionLen := head.convLen
+		if sessionLen == 0 && head.data.ConversationClearedAt == 0 {
+			// Turns folded out of the hot tail still belong to this tab. An
+			// empty reopen must not hide them. The archive read stays on the
+			// database lock this function already holds.
+			if archive, archiveErr := p.loadConversationArchiveDB(head.data.TabID); archiveErr == nil && sessionSnapshotHasUserTurn(archive) {
+				sessionLen = 1
+			}
+		}
 		var latestSession *TabSessionData
-		latestLen := 0
 		if latest != nil {
 			latestSession = &latest.data
-			latestLen = latest.convLen
 		}
-		if sessionOutranksLatest(&head.data, latestSession, head.convLen, latestLen, activeAt, latestAt, hasTimestamp, latestHasTimestamp) {
+		if sessionOutranksLatest(&head.data, latestSession, sessionLen, latestLen, activeAt, latestAt, hasTimestamp, latestHasTimestamp) {
 			latest = head
+			latestLen = sessionLen
 			latestAt = activeAt
 			latestHasTimestamp = hasTimestamp
 		}

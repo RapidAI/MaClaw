@@ -963,7 +963,7 @@ func TestToolPlannerMailboxSendWaitsForTheGeneratedPDF(t *testing.T) {
 	}
 	alone, err := NewToolPlanner(registry).Plan(RouteRequest{
 		RootTaskID: "task-1", TurnID: "turn-2", Snapshot: semanticSnapshot(t, registry, []ProviderSpec{send}),
-		Needs:      []CapabilityNeed{{ID: "send", Capability: CapabilityMessageSendMailbox, Required: true}},
+		Needs: []CapabilityNeed{{ID: "send", Capability: CapabilityMessageSendMailbox, Required: true}},
 	})
 	if err != nil || len(alone.Selections) != 1 || len(alone.Selections[0].Requires) != 0 {
 		t.Fatalf("send without a PDF must stay ready: %#v err=%v", alone.Selections, err)
@@ -1108,6 +1108,51 @@ func TestIsLookupCapabilityIncludesSearchFetchAndClock(t *testing.T) {
 	}
 	if IsLookupCapability("document.generate.file") || IsLookupCapability("") {
 		t.Fatal("generate and empty must not look like lookup evidence")
+	}
+}
+
+func TestPlanRetainsNeedObligation(t *testing.T) {
+	registry := semanticRegistry(t)
+	snapshot := semanticSnapshot(t, registry, []ProviderSpec{
+		semanticProvider("capture_adapter", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly),
+	})
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{
+		RootTaskID:   "task-obligation",
+		TurnID:       "turn-obligation",
+		ChannelScope: "desktop",
+		Snapshot:     snapshot,
+		Needs: []CapabilityNeed{
+			{ID: "need:required", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Polarity: NeedRequire, Required: true},
+			{ID: "need:optional", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Polarity: NeedRequire, Required: false},
+		},
+	})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	var required, optional *PlannedSelection
+	for i := range plan.Selections {
+		switch plan.Selections[i].NeedID {
+		case "need:required":
+			required = &plan.Selections[i]
+		case "need:optional":
+			optional = &plan.Selections[i]
+		}
+	}
+	if !plan.ObligationsRecorded {
+		t.Fatal("planner dropped the obligation record")
+	}
+	if required == nil || required.Optional {
+		t.Fatalf("required selection=%#v", required)
+	}
+	if optional == nil || !optional.Optional {
+		t.Fatalf("optional selection=%#v", optional)
+	}
+	granted := map[string]CapabilityNeed{}
+	for _, need := range GrantedNeedsFromPlan(plan) {
+		granted[need.ID] = need
+	}
+	if !granted["need:required"].Required || granted["need:optional"].Required {
+		t.Fatalf("granted obligation=%#v", granted)
 	}
 }
 

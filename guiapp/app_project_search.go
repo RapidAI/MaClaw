@@ -1637,6 +1637,72 @@ func (a *App) restoreExpertMemory(expertID, projectPath string, conversation []i
 	handler.memory.Save(owner, entries)
 }
 
+// restoreProjectAgentSession installs this task's transcript into the agent
+// session the turn will load. The view already reads that transcript when the
+// in-memory session is empty. The turn has to read it too, or "继续" is classified
+// as a new task on top of a conversation the user can see.
+//
+// A session that already has turns is left alone: it keeps tool calls and may
+// be newer than the tab snapshot. The snapshot is only the fallback.
+func (a *App) restoreProjectAgentSession(handler *IMMessageHandler, userID, projectPath string) {
+	userID = strings.TrimSpace(userID)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || handler == nil || handler.memory == nil || userID == "" || userID == desktopUserID || projectPath == "" {
+		return
+	}
+	if conversationEntriesHaveTurns(handler.memory.Load(userID)) {
+		return
+	}
+	projectOwner := projectSessionOwnerID(projectPath)
+	if projectOwner != userID {
+		if entries := handler.memory.Load(projectOwner); conversationEntriesHaveTurns(entries) {
+			handler.memory.Save(userID, append([]agent.ConversationEntry(nil), entries...))
+			log.Printf("[AI assistant] restored project session from task memory user=%s project=%q turns=%d", userID, projectPath, len(entries))
+			return
+		}
+	}
+	entries := conversationEntriesFromTabSnapshot(a.projectTranscriptSnapshot(projectPath))
+	if !conversationEntriesHaveTurns(entries) {
+		return
+	}
+	handler.memory.Save(userID, entries)
+	log.Printf("[AI assistant] restored project session from tab transcript user=%s project=%q turns=%d", userID, projectPath, len(entries))
+}
+
+func (a *App) projectTranscriptSnapshot(projectPath string) []interface{} {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" {
+		return nil
+	}
+	return transcriptForTabSession(a.ensureProjectTabSessionPersist(), projectPath)
+}
+
+// transcriptForTabSession is the task's durable transcript: the hot tail plus
+// turns folded into the view archive. An explicit clear stays empty. A hot
+// tail that no longer contains the user message still keeps that message.
+func transcriptForTabSession(persist *ProjectTabSessionPersist, projectPath string) []interface{} {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if persist == nil || projectPath == "" {
+		return nil
+	}
+	session, err := persist.LoadLatestSessionForProject(projectPath)
+	if err != nil || session == nil {
+		return nil
+	}
+	conversation := append([]interface{}(nil), session.Conversation...)
+	if tabID := strings.TrimSpace(session.TabID); tabID != "" {
+		if archive, archiveErr := persist.LoadConversationViewArchive(tabID); archiveErr == nil && len(archive) > 0 {
+			if session.ConversationClearedAt == 0 || tabConversationPassesClearFence(session, archive) {
+				conversation = mergeConversationSnapshots(archive, conversation)
+			}
+		}
+	}
+	if !sessionSnapshotHasUserTurn(conversation) {
+		return nil
+	}
+	return conversation
+}
+
 func conversationEntriesFromTabSnapshot(conversation []interface{}) []agent.ConversationEntry {
 	if len(conversation) == 0 {
 		return nil
@@ -2869,6 +2935,9 @@ type CodingWorkbenchStatus struct {
 	PlanMode string `json:"plan_mode,omitempty"`
 	// PendingApproval is true when a multi-step plan awaits /plan approve.
 	PendingApproval bool `json:"pending_approval,omitempty"`
+	// PlanDialogue is true while the coding agent is still shaping a plan
+	// with the user and must not change files.
+	PlanDialogue bool `json:"plan_dialogue,omitempty"`
 	// StepStatuses is live Todo status for the active plan.
 	StepStatuses []codingWorkbenchStepStatus `json:"step_statuses,omitempty"`
 	// StepsRevision matches the live event's steps_revision. A status read
@@ -2993,6 +3062,7 @@ func (a *App) codingWorkbenchStatusFromHandler(projectPath string, handler *IMMe
 	st.RequirementRestatement = strings.TrimSpace(mem.RequirementRestatement)
 	st.PlanMode = normalizeCodingPlanMode(mem.PlanMode)
 	st.PendingApproval = strings.TrimSpace(mem.PendingPlanJSON) != ""
+	st.PlanDialogue = mem.PlanDialogue
 	if len(mem.StepStatuses) > 0 {
 		// Project notes at the exit boundary, like the live event does: a legacy
 		// row must not hand the checklist a report body.
@@ -6107,8 +6177,8 @@ func (a *App) LoadProjectConversationHistory(projectPath string) []ProjectConver
 		default:
 			continue
 		}
-		content := stringifyProjectConversationContent(entry.Content)
-		reasoning := strings.TrimSpace(entry.ReasoningContent)
+		content := omitGoalContinuationHeader(stringifyProjectConversationContent(entry.Content))
+		reasoning := omitGoalContinuationHeader(strings.TrimSpace(entry.ReasoningContent))
 		if content == "" && reasoning == "" {
 			continue
 		}
@@ -6232,10 +6302,10 @@ func projectConversationHistoryFromTabSession(conversation []interface{}) []Proj
 		default:
 			continue
 		}
-		content := stringifyProjectConversationContent(entry.Content)
-		reasoning := stringifyProjectConversationContent(entry.ReasoningContent)
+		content := omitGoalContinuationHeader(stringifyProjectConversationContent(entry.Content))
+		reasoning := omitGoalContinuationHeader(stringifyProjectConversationContent(entry.ReasoningContent))
 		if reasoning == "" {
-			reasoning = stringifyProjectConversationContent(entry.Reasoning)
+			reasoning = omitGoalContinuationHeader(stringifyProjectConversationContent(entry.Reasoning))
 		}
 		if content == "" && reasoning == "" {
 			continue
@@ -7566,6 +7636,20 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 		CreatedAt:    now.UTC().Format(time.RFC3339),
 		LastActiveAt: now.UTC().Format(time.RFC3339),
 	}
+	// This tab is a new view of the same task. Start it from the transcript
+	// the task already has, including turns folded out of the hot tail, so
+	// the empty file cannot become the latest session. An explicit clear
+	// stays empty.
+	if prior, priorErr := persist.LoadLatestSessionForProject(projectPath); priorErr == nil && prior != nil && prior.ConversationClearedAt == 0 {
+		if conversation := transcriptForTabSession(persist, projectPath); len(conversation) > 0 {
+			session.Conversation = conversation
+		}
+		if archive, archiveErr := persist.LoadConversationViewArchive(prior.TabID); archiveErr == nil && len(archive) > 0 {
+			if saveErr := persist.SaveConversationViewArchive(tabID, archive); saveErr != nil {
+				log.Printf("[CreateProjectTabSession] copy transcript archive tab=%s project=%q err=%v", tabID, projectPath, saveErr)
+			}
+		}
+	}
 	adoptCloudWorkspaceSessionSnapshot(persist, session, projectPath)
 	// A forked task's first tab starts empty. Seed it from the transcript the
 	// fork staged, otherwise this newer empty session hides the copied history
@@ -8686,7 +8770,16 @@ func (a *App) BoundWorkingDirForOwner(ownerID string) string {
 // working_dir tag; a project-session owner otherwise stays in the project
 // named by its owner id; an unconfigured managed task runs in its workspace
 // sandbox; every other unconfigured owner follows the main tab.
+//
+// A directory another live session already holds is not this session's tree.
+// The claimed directory stays on the task record; execution uses a private
+// checkout until that earlier session leaves.
 func (a *App) EffectiveWorkingDirForOwner(ownerID string) string {
+	projectPath := projectPathFromSessionOwnerID(ownerID)
+	return a.exclusiveWorkRoot(projectPath, a.effectiveWorkingDirUnisolated(ownerID))
+}
+
+func (a *App) effectiveWorkingDirUnisolated(ownerID string) string {
 	projectPath := projectPathFromSessionOwnerID(ownerID)
 	cloudDir := ""
 	if a != nil && projectPath != "" {

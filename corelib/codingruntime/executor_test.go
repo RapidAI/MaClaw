@@ -252,6 +252,35 @@ func TestRunnerCancelledContextNeverBlocksGatedWriterOnBaselineProbe(t *testing.
 	}
 }
 
+func TestRunnerCancelDuringBaselineProbeDoesNotBlock(t *testing.T) {
+	store := NewMemoryStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	runner := Runner{
+		Store: store, LeaseOwner: "gated-writer",
+		WorkspaceProber: WorkspaceProberFunc(func(context.Context, Task, Attempt) (*WorkspaceProbe, error) {
+			cancel()
+			return nil, errors.New("read-only git status: timed out")
+		}),
+	}
+	task, attempt, err := runner.Run(ctx, Task{ProjectRef: "repo", Mode: "local"}, PolicySnapshot{
+		ProjectRoot: "repo", Mode: "local", FinalWorkspaceGateRequired: true,
+	}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+		calls++
+		return ExecutionResult{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task == nil || task.Status != TaskInterrupted || attempt == nil || attempt.Status != TaskInterrupted || attempt.ErrorCode == "workspace_before_probe_failed" {
+		t.Fatalf("cancel during the probe must not block the turn: task=%+v attempt=%+v", task, attempt)
+	}
+	if calls != 1 {
+		t.Fatalf("executor calls=%d; cancellation still reaches the executor and its result is overridden", calls)
+	}
+}
+
 func TestRunnerBlocksGatedWriterBeforeExecutorWithoutWorkspaceProber(t *testing.T) {
 	store := NewMemoryStore()
 	calls := 0

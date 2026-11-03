@@ -402,6 +402,8 @@ func (h *IMMessageHandler) promotePendingToApprovedCodingPlan(userID string) (co
 		mem.PendingPlanJSON = ""
 		mem.PendingPlanMarkdown = ""
 		mem.PendingPlanUserText = ""
+		mem.PlanDialogue = false
+		mem.PlanDialogueBrief = ""
 	})
 	return pending, true
 }
@@ -711,6 +713,7 @@ func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
 			"execution_plan":          strings.TrimSpace(mem.ExecutionPlan),
 			"requirement_restatement": strings.TrimSpace(mem.RequirementRestatement),
 			"pending_approval":        strings.TrimSpace(mem.PendingPlanJSON) != "",
+			"plan_dialogue":           mem.PlanDialogue,
 			"steps_revision":          mem.StepsEmitSeq,
 		}
 	})

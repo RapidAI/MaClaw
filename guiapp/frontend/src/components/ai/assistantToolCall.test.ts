@@ -112,6 +112,9 @@ describe("assistant tool call transcript", () => {
         expect(completedAssistantSummary("只有一句。\n\n<!--maclaw-tool:call-1-->\n\n短")).toBe("短");
         expect(completedAssistantSummary("先试一次。\n\n<!--maclaw-tool:call-1-->\n\n")).toBe("先试一次。");
         expect(completedAssistantSummary("没有调用的普通答复。")).toBe("没有调用的普通答复。");
+        const header = "[系统续接][execute] 按步骤执行目标：开发 c++ 贪吃蛇游戏";
+        expect(completedAssistantSummary("过程。", `${header}\n\n本轮只能提交步骤 4：实现绘制与界面。`)).toBe("本轮只能提交步骤 4：实现绘制与界面。");
+        expect(completedAssistantSummary(`${header}\n\n接口已经改好。`)).toBe("接口已经改好。");
         expect(assistantTaskSettledIncomplete("incomplete", "部署已经完成。")).toBe(true);
         expect(assistantTaskSettledIncomplete("completed", "正文里引用了任务已经应用户要求取消。")).toBe(false);
         expect(assistantTaskSettledIncomplete(undefined, "任务已经应用户要求取消")).toBe(true);

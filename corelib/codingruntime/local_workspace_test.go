@@ -68,6 +68,73 @@ func TestLocalGitWorkspaceProberCapturesHeadAndDirtyStatus(t *testing.T) {
 	}
 }
 
+func TestLocalGitStatusSkipsUntrackedWalkOnHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	if localGitStatusUntrackedMode(home) != "--untracked-files=no" {
+		t.Fatalf("home mode = %s", localGitStatusUntrackedMode(home))
+	}
+	other := t.TempDir()
+	if localGitStatusUntrackedMode(other) != "--untracked-files=normal" {
+		t.Fatalf("project mode = %s", localGitStatusUntrackedMode(other))
+	}
+	if localGitProjectIsHome(home+string(filepath.Separator)) != true {
+		t.Fatal("trailing separator should still match the home directory")
+	}
+}
+
+func TestLocalGitStatusStaysInsideProjectDirectory(t *testing.T) {
+	root := initLocalWorkspaceGitRepo(t)
+	project := filepath.Join(root, "game")
+	if err := os.Mkdir(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	probe := func() *WorkspaceProbe {
+		t.Helper()
+		got, err := NewLocalGitWorkspaceProber(project).ProbeWorkspace(context.Background(), Task{ProjectRef: project}, Attempt{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	before := probe()
+	if err := os.WriteFile(filepath.Join(root, "outside.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := probe()
+	if before.StatusHash != outside.StatusHash {
+		t.Fatalf("a sibling file changed the project probe: before=%s outside=%s", before.StatusHash, outside.StatusHash)
+	}
+	if err := os.WriteFile(filepath.Join(project, "inside.txt"), []byte("y"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if inside := probe(); inside.StatusHash == outside.StatusHash {
+		t.Fatal("a new file inside the project did not change the probe")
+	}
+}
+
+func TestGitStatusDirectoryNoiseDoesNotFailTheProbe(t *testing.T) {
+	noise := "warning: could not open directory '.codex.old/plugins/cache/openai-bundled/chrome/latest/': No such file or directory\n" +
+		"warning: could not open directory 'AppData/Local/Application Data/': Permission denied\n" +
+		"warning: unable to access 'AppData/Local/History/': Permission denied\n"
+	if !gitStatusStderrIsDirectoryNoise(noise) {
+		t.Fatal("unreadable-directory warnings should not fail the probe")
+	}
+	if gitStatusStderrIsDirectoryNoise(noise + "fatal: not a git repository") {
+		t.Fatal("a fatal line must still fail the probe")
+	}
+	if gitStatusStderrIsDirectoryNoise("") {
+		t.Fatal("an empty failure is not directory noise")
+	}
+	if got := gitStatusFailureLine(noise+"fatal: not a git repository (or any of the parent directories): .git", errors.New("exit status 128")); got != "fatal: not a git repository (or any of the parent directories): .git" {
+		t.Fatalf("failure line = %q", got)
+	}
+	if got := gitStatusFailureLine("", errors.New("exit status 1")); got != "exit status 1" {
+		t.Fatalf("bare failure line = %q", got)
+	}
+}
+
 func TestLocalGitWorkspaceProberHonorsCancelledContextWithoutWriting(t *testing.T) {
 	isolateLocalWorkspaceGit(t)
 	dir := t.TempDir()

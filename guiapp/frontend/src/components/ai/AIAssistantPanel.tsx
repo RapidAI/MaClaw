@@ -271,6 +271,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [codingRequirementRestatement, setCodingRequirementRestatement] = useState("");
     const [codingPlanMode, setCodingPlanMode] = useState<"auto" | "approve" | "off">("auto");
     const [codingPendingApproval, setCodingPendingApproval] = useState(false);
+    const [codingPlanDialogue, setCodingPlanDialogue] = useState(false);
     const [codingPendingPlanEditing, setCodingPendingPlanEditing] = useState(false);
     const [codingPendingPlanDraft, setCodingPendingPlanDraft] = useState("");
     const [codingPendingPlanSaving, setCodingPendingPlanSaving] = useState(false);
@@ -965,6 +966,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setCodingRequirementRestatement("");
             setCodingPlanMode("auto");
             setCodingPendingApproval(false);
+            setCodingPlanDialogue(false);
             codingStepsClockRef.current = { seq: 0, unix: 0, started: false };
             setCodingStepStatuses([]);
             setCodingSessionCost("");
@@ -1030,6 +1032,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setCodingSessionPlan(plan);
             const mode = String(st.plan_mode || "auto").toLowerCase();
             setCodingPlanMode(mode === "approve" || mode === "off" ? mode : "auto");
+            setCodingPlanDialogue(!!st.plan_dialogue);
             // Opening a project starts this read immediately. A steps snapshot
             // that arrives while it is in flight already has the confirmed plan.
             const incomingSteps = codingWorkbenchStepsFromPayload(st.step_statuses);
@@ -1331,6 +1334,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 if (!applySteps(payload?.step_statuses ?? payload?.stepStatuses, payload?.steps_revision ?? payload?.stepsRevision)) return;
                 codingWorkbenchStepsGenRef.current += 1;
                 applyPendingApproval(payload);
+                if (Object.prototype.hasOwnProperty.call(payload, "plan_dialogue") || Object.prototype.hasOwnProperty.call(payload, "planDialogue")) {
+                    setCodingPlanDialogue(!!(payload.plan_dialogue ?? payload.planDialogue));
+                }
                 // The event is a snapshot. An empty plan or restatement is a
                 // clear: resume drops the generic continue paraphrase, and a
                 // new single-task turn drops the previous execution plan.
@@ -1375,6 +1381,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 setCodingSessionPlan(String(st.session_plan || "").trim());
                 const mode = String(st.plan_mode || "auto").toLowerCase();
                 setCodingPlanMode(mode === "approve" || mode === "off" ? mode : "auto");
+                setCodingPlanDialogue(!!st.plan_dialogue);
                 // A steps snapshot that landed while this poll was in flight is
                 // newer. Keep its plan, steps, and approval flag.
                 const incomingSteps = codingWorkbenchStepsFromPayload(st.step_statuses);
@@ -2896,7 +2903,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 const joinedIds = prevTab.type === "project"
                     ? new Set(filterLiveProjectTranscriptMessages(historyToSave, sinceRound, prevSessionKey).map((message) => message.id))
                     : null;
-                const inFlightMessages = sinceRound.filter((message: ChatMessage) => messageBelongsToSessionOrLegacy(message, prevSessionKey) || !!joinedIds?.has(message.id));
+                // A blank owner is the local transcript. It must not ride into
+                // this task just because the tab was sending when we left it.
+                const inFlightMessages = sinceRound.filter((message: ChatMessage) => (
+                    prevTab.type === "project"
+                        ? messageBelongsToSession(message, prevSessionKey)
+                        : messageBelongsToSessionOrLegacy(message, prevSessionKey)
+                ) || !!joinedIds?.has(message.id));
                 if (inFlightMessages.length > 0) {
                     const incoming = prevTab.type === "expert"
                         ? inFlightMessages.filter((m: ChatMessage) => messageAfterSessionFloor(m, sessionFloorFor(prevTab.id, prevTab.sessionFloorMs)))
@@ -3132,11 +3145,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         const activeProjectRound = findProjectRoundForTab(activeTab.id, activeTab.projectPath);
         if (!sending || !activeProjectRound) return mergedProjectMessages;
-        // During an active round, also include messages that arrived since the
-        // round's baseline and belong to this session but may not carry an
-        // explicit sessionKey (messageBelongsToSessionOrLegacy accepts both).
-        // Replace the same id, and keep a coding trail the round copy stopped short of.
-        const roundMessages = messages.slice(activeProjectRound.baseline).filter((message: ChatMessage) => messageBelongsToSessionOrLegacy(message, activeSessionKey));
+        // Only rows that name this session. A missing key used to match every
+        // open task (messageBelongsToSessionOrLegacy), so another run's
+        // unscoped tokens were painted into whichever tab was in front.
+        const roundMessages = messages.slice(activeProjectRound.baseline).filter((message: ChatMessage) => messageBelongsToSession(message, activeSessionKey));
         if (roundMessages.length === 0) return mergedProjectMessages;
         return mergeProjectRoundHistory(mergedProjectMessages, mergedProjectMessages, roundMessages, undefined, thisSessionSending);
     }, [activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.sessionFloorMs, findProjectRoundForTab, isExpertTabActive, isProjectTabActive, messages, panelSendInFlightSessionKeys, projectTabMessages, projectTabRouteVersion, rawBusySessionKeys, rawSendingSessionKey, sending]);
@@ -3179,7 +3191,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             for (const [roundKey, round] of rounds) {
                 const roundSessionKey = round.sessionKey || roundKey;
                 const newMessages = roundSessionKey
-                    ? messages.slice(round.baseline).filter((message: ChatMessage) => messageBelongsToSessionOrLegacy(message, roundSessionKey))
+                    ? messages.slice(round.baseline).filter((message: ChatMessage) => messageBelongsToSession(message, roundSessionKey))
                     : [];
                 if (round.tabId) {
                     const existingState = getTabState(round.tabId);
@@ -6755,6 +6767,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                             : localizeText(lang, "Fast execute", "快速执行", "快速執行")}
                                                 </button>
                                             ))}
+                                            {codingPlanDialogue && (
+                                                <span data-testid="coding-plan-dialogue" style={{ fontWeight: 600, color: codingBannerChrome.accentStrong }}>
+                                                    {localizeText(lang, "Planning", "规划中", "規劃中")}
+                                                </span>
+                                            )}
                                             <span style={{ fontWeight: 600, color: codingBannerChrome.muted, marginLeft: 4 }}>
                                                 {localizeText(lang, "Worktree", "Worktree", "Worktree")}
                                             </span>

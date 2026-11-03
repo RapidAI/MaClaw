@@ -552,6 +552,20 @@ describe("fileTerminalResponseWithoutRound", () => {
     });
 });
 
+describe("messageBelongsToSession", () => {
+    const taskKey = "desktop-user:C:/Users/me/.maclaw/data/tasks/npu";
+
+    it("does not give a missing owner to the task that happens to be open", () => {
+        const blank = { id: "x", role: "assistant" as const, content: "font migration", sessionKey: "", timestamp: 1 };
+        expect(messageBelongsToSession(blank, taskKey)).toBe(false);
+        expect(messageBelongsToSession(blank, "desktop-user")).toBe(false);
+        expect(messageBelongsToSession(
+            { id: "y", role: "assistant" as const, content: "npu", sessionKey: "desktop-user:C:\\Users\\me\\.maclaw\\data\\tasks\\npu", timestamp: 2 },
+            taskKey,
+        )).toBe(true);
+    });
+});
+
 describe("visibleProjectTranscript", () => {
     const taskKey = "desktop-user:C:/Users/me/.maclaw/data/tasks/textproc";
     const essay = { id: "s0", role: "assistant" as const, content: "下一轮只执行 S0。", sessionKey: "desktop-user:C:\\Users\\me\\.maclaw\\data\\tasks\\textproc", timestamp: 1 };

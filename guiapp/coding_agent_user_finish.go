@@ -61,7 +61,7 @@ func formatCodingAgentUserFinish(results []v2.TaskRunResult, cancelled bool) str
 func formatCodingAgentResultParagraph(result v2.TaskRunResult) string {
 	summary := stripCodingAgentAuditSections(result.Summary)
 	err := formatCodingAgentVisibleError(result.Error)
-	title := strings.TrimSpace(compactSubAgentTaskTitle(result.Title))
+	title := codingAgentResultTitle(result.Title)
 	files := formatCodingAgentTouchedFiles(result.FilesCreated, result.FilesModified)
 	switch result.Status {
 	case v2.TaskFailed:
@@ -96,6 +96,11 @@ func formatCodingAgentResultParagraph(result v2.TaskRunResult) string {
 		return title + " did not finish."
 	case v2.TaskSkipped:
 		if err != "" {
+			// A workspace-probe failure is already one sentence. Prefixing the
+			// phase title repeats the objective and brings "Skipped" back.
+			if strings.HasPrefix(err, "工作区检查失败") {
+				return err
+			}
 			if title == "" {
 				title = codingExecText("this step", "this step", "this step")
 			}
@@ -180,10 +185,21 @@ func codingWorkbenchResultsForReport(results []v2.TaskRunResult, continuing bool
 	return kept
 }
 
+func codingAgentResultTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if isGoalSystemContinuation(title) {
+		return goalContinuationDisplayTitle(title)
+	}
+	return strings.TrimSpace(compactSubAgentTaskTitle(title))
+}
+
 func formatCodingAgentVisibleError(err string) string {
 	err = strings.TrimSpace(compactSubAgentErrorSummary(err))
 	if err == "" {
 		return ""
+	}
+	if condensed := condenseGitWorkspaceProbeError(err); condensed != "" {
+		return condensed
 	}
 	stripped := stripCodingAgentAuditErrorPrefix(err)
 	if detail, ok := codingAgentFailedCommandDetail(stripped); ok {
@@ -193,6 +209,24 @@ func formatCodingAgentVisibleError(err string) string {
 		return codingExecText("Checks did not pass.", "Checks did not pass.", "Checks did not pass.")
 	}
 	return stripped
+}
+
+// condenseGitWorkspaceProbeError replaces a git status dump (the phase
+// contract plus one warning per unreadable directory) with one sentence.
+func condenseGitWorkspaceProbeError(err string) string {
+	// Only the probe's own error. A later command that says "Permission denied"
+	// or "could not open directory" is a real step failure and must stay.
+	if !strings.Contains(err, "read-only git status") {
+		return ""
+	}
+	if strings.Contains(err, "could not open directory") || strings.Contains(err, "Permission denied") || strings.Contains(err, "unable to access") {
+		return "工作区检查失败：git 无法读取工作目录中的部分文件夹，这一步没有开始。"
+	}
+	line := err
+	if i := strings.IndexAny(line, "\r\n"); i >= 0 {
+		line = strings.TrimSpace(line[:i])
+	}
+	return capGoalPromptRunes(line, 180)
 }
 
 func stripCodingAgentAuditErrorPrefix(err string) string {

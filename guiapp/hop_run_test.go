@@ -161,11 +161,15 @@ func TestHopRunRequiredUnmetAndOptionalNeeds(t *testing.T) {
 		t.Fatalf("required unmet missing from contract: %#v", got)
 	}
 	optional := tool.PlannedSelection{ID: "optional", NeedID: "need:optional"}
-	if hopSelectionRequired(optional, map[string]bool{"need:optional": true}, true) {
+	if hopSelectionRequired(optional, map[string]bool{"need:optional": true}, true, false) {
 		t.Fatal("proved optional need blocked the run")
 	}
+	recorded := tool.PlannedSelection{ID: "git", NeedID: "need:repo.inspect.vcs:base"}
+	if !hopSelectionRequired(recorded, map[string]bool{recorded.NeedID: true}, true, true) {
+		t.Fatal("classification map released a recorded obligation")
+	}
 	sibling := tool.PlannedSelection{ID: "sibling", NeedID: tool.RepeatSiblingNeedID("need:shell", 1)}
-	if hopSelectionRequired(sibling, nil, false) {
+	if hopSelectionRequired(sibling, nil, false, true) {
 		t.Fatal("repeat sibling became a separate completion obligation")
 	}
 	companion := tool.PlannedSelection{
@@ -174,7 +178,7 @@ func TestHopRunRequiredUnmetAndOptionalNeeds(t *testing.T) {
 		EvidenceIDs: []string{"intent:archetype_bundle"},
 		FitProof:    tool.FitProof{MatchedCapability: tool.CapabilityArtifactAcquireRemote},
 	}
-	if hopSelectionRequired(companion, nil, false) {
+	if hopSelectionRequired(companion, nil, false, false) {
 		t.Fatal("archetype companion became required when optionality could not be recomputed")
 	}
 	baseline := tool.PlannedSelection{
@@ -183,8 +187,132 @@ func TestHopRunRequiredUnmetAndOptionalNeeds(t *testing.T) {
 		EvidenceIDs: []string{"intent:baseline_workspace"},
 		FitProof:    tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteLocal},
 	}
-	if hopSelectionRequired(baseline, nil, false) {
+	if hopSelectionRequired(baseline, nil, false, false) {
 		t.Fatal("baseline workspace offer became a required effect")
+	}
+	offered := tool.PlannedSelection{
+		ID:       "selection:need:tool-head:shell.execute.local:63d070da4fef",
+		NeedID:   "need:tool-head:shell.execute.local:63d070da4fef",
+		Optional: true,
+		FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteLocal},
+	}
+	if hopSelectionRequired(offered, nil, true, false) || hopSelectionRequired(offered, nil, false, true) {
+		t.Fatal("plan-time optional selection became a required effect")
+	}
+	unrecorded := tool.PlannedSelection{
+		ID:       "selection:need:tool-head:shell.execute.local:legacy",
+		NeedID:   "need:tool-head:shell.execute.local:legacy",
+		FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteLocal},
+	}
+	if !hopSelectionRequired(unrecorded, nil, false, false) {
+		t.Fatal("a selection without the plan obligation bit must stay fail-closed")
+	}
+}
+
+func TestHopRunToolHeadShellDoesNotBlockAFinishedInspect(t *testing.T) {
+	surface, _ := newHopRunTestSurface(t)
+	surface.plan.Selections = []tool.PlannedSelection{
+		{ID: "git", NeedID: "need:repo.inspect.vcs:ea8af2139251", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityRepoInspectVCS}},
+		{
+			ID:       "bash",
+			NeedID:   "need:tool-head:shell.execute.local:63d070da4fef",
+			Optional: true,
+			FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteLocal},
+		},
+		{
+			ID:       "bash-repeat",
+			NeedID:   tool.RepeatSiblingNeedID("need:tool-head:shell.execute.local:63d070da4fef", 1),
+			Optional: true,
+			FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteLocal},
+		},
+	}
+	surface.completed["git"] = true
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface, checkpointRunID: "run-stash", userText: "git的stash是什么意思？"}
+	snapshot := cb.hopRunSnapshot()
+	if cb.RequiredEffectUnsettled() || snapshot.Remaining != 0 {
+		t.Fatalf("unused tool-head bash kept the answer open: remaining=%d steps=%#v", snapshot.Remaining, snapshot.Steps)
+	}
+	final := finalizeHopRun(snapshot, agent.LoopResult{})
+	if final.Status != "completed" {
+		t.Fatalf("status=%s remaining=%d", final.Status, final.Remaining)
+	}
+}
+
+func TestRecordedPlanReadsObligationWithoutClassification(t *testing.T) {
+	surface, _ := newHopRunTestSurface(t)
+	surface.plan.ID = "plan-recorded"
+	surface.plan.ObligationsRecorded = true
+	surface.plan.Selections = []tool.PlannedSelection{
+		{ID: "git", NeedID: "need:repo.inspect.vcs:base", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityRepoInspectVCS}},
+		{ID: "bash", NeedID: "need:tool-head:shell.execute.local:x", Optional: true, FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteLocal}},
+	}
+	surface.optionalKnown = true
+	surface.optionalCacheKey = semanticOptionalCacheKey(surface)
+	surface.optionalByNeed = map[string]bool{"need:repo.inspect.vcs:base": true}
+	optional, known := semanticSurfaceOptionalNeeds(surface)
+	if !known || !optional["need:tool-head:shell.execute.local:x"] || optional["need:repo.inspect.vcs:base"] {
+		t.Fatalf("recorded obligation=%v known=%v", optional, known)
+	}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	if snapshot := cb.hopRunSnapshot(); snapshot.Remaining == 0 {
+		t.Fatal("stale optional map released the recorded inspect")
+	}
+	if _, knownAgain := semanticSurfaceOptionalNeeds(surface); !knownAgain {
+		t.Fatal("recorded obligation was resolved again as unknown")
+	}
+}
+
+func TestHopRunAdmittedUnmetDoesNotKeepAFinishedPrefixOpen(t *testing.T) {
+	surface, _ := newHopRunTestSurface(t)
+	surface.plan.ObligationsRecorded = true
+	surface.plan.Selections = []tool.PlannedSelection{
+		{ID: "search", NeedID: "need:search", FitProof: tool.FitProof{MatchedCapability: "information.search.web"}},
+	}
+	surface.completed["search"] = true
+	surface.plan.Unmet = []tool.UnmetNeed{
+		{NeedID: "need:generate", ReasonCode: "budget_exceeded"},
+		{NeedID: "need:~installed-mcp:x:mcp:demo:tool", ReasonCode: "no_feasible_provider"},
+	}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	snapshot := cb.hopRunSnapshot()
+	if snapshot.Remaining != 0 || cb.RequiredEffectUnsettled() {
+		t.Fatalf("admitted unmet kept the turn open: remaining=%d steps=%#v", snapshot.Remaining, snapshot.Steps)
+	}
+	surface.plan.Unmet = append(surface.plan.Unmet, tool.UnmetNeed{NeedID: "need:worklog", ReasonCode: "provider_unavailable"})
+	if snapshot = cb.hopRunSnapshot(); snapshot.Remaining == 0 || !cb.RequiredEffectUnsettled() {
+		t.Fatalf("uncovered provider gap was admitted: %#v", snapshot)
+	}
+}
+
+func TestUnrecordedOptionalityFailureStaysCached(t *testing.T) {
+	surface, _ := newHopRunTestSurface(t)
+	surface.replan = &semanticReplanInput{}
+	if _, known := semanticSurfaceOptionalNeeds(surface); known || surface.optionalCacheKey == "" {
+		t.Fatal("missing registry was treated as a resolved optional set")
+	}
+	cached := surface.optionalCacheKey
+	surface.plan.Selections[0].Optional = true
+	optional, known := semanticSurfaceOptionalNeeds(surface)
+	if surface.optionalCacheKey != cached || !known || !optional[surface.plan.Selections[0].NeedID] {
+		t.Fatalf("cached failure did not keep the current optional bit: known=%v cache=%q optional=%v", known, surface.optionalCacheKey, optional)
+	}
+}
+
+func TestHopRunAuthoringFaultStaysRequiredWhenMarkedOptional(t *testing.T) {
+	surface, _ := newHopRunTestSurface(t)
+	surface.plan.ID = "plan-authoring"
+	surface.plan.Selections = []tool.PlannedSelection{
+		{ID: "other", NeedID: "need:other", Optional: true, FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteLocal}},
+	}
+	surface.plan.Unmet = []tool.UnmetNeed{{NeedID: "need:typo", ReasonCode: "unknown_capability"}}
+	surface.optionalKnown = true
+	surface.optionalCacheSet = true
+	surface.optionalCacheKey = semanticOptionalCacheKey(surface)
+	surface.optionalByNeed = map[string]bool{"need:typo": true, "need:other": true}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	snapshot := cb.hopRunSnapshot()
+	if snapshot.Remaining == 0 || !cb.RequiredEffectUnsettled() {
+		t.Fatalf("optional map hid an authoring fault: %#v", snapshot)
 	}
 }
 
@@ -203,6 +331,12 @@ func TestHopRunIsRecordedInTrajectory(t *testing.T) {
 	}
 	if recorder.session.HopRun.Goal != cb.userText || len(recorder.session.HopRun.Steps) != 2 {
 		t.Fatalf("structured spec missing: %#v", recorder.session.HopRun)
+	}
+}
+
+func TestSemanticTurnDeliveryCompleteRejectsNilSurface(t *testing.T) {
+	if semanticTurnDeliveryComplete(nil) {
+		t.Fatal("nil surface completed a delivery")
 	}
 }
 

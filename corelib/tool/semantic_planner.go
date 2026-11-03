@@ -33,11 +33,14 @@ type CapabilityNeed struct {
 // back to the selection identity so a host cannot invent a later replay key.
 func GrantedNeedFromSelection(selection PlannedSelection) CapabilityNeed {
 	need := CapabilityNeed{
-		ID:          strings.TrimSpace(selection.NeedID),
-		Capability:  selection.FitProof.MatchedCapability,
-		Qualifiers:  map[string]string{},
-		Polarity:    NeedRequire,
-		Required:    true,
+		ID:         strings.TrimSpace(selection.NeedID),
+		Capability: selection.FitProof.MatchedCapability,
+		Qualifiers: map[string]string{},
+		Polarity:   NeedRequire,
+		// Optional is the obligation the planner accepted. A selection that
+		// predates the bit stays required, which is what this projection
+		// used to hard-code for every selection.
+		Required:    !selection.Optional,
 		EvidenceIDs: append([]string(nil), selection.EvidenceIDs...),
 	}
 	if len(need.EvidenceIDs) == 0 {
@@ -318,6 +321,11 @@ type PlannedSelection struct {
 	// from selections, and an archetype companion has no id prefix of its own.
 	// Dropping the evidence made that download or search the task.
 	EvidenceIDs []string
+	// Optional is the obligation the planner accepted from CapabilityNeed.Required.
+	// Completion reads this bit. Re-resolving the classification does not
+	// reproduce needs added after that resolve, and a missing id used to
+	// fail closed as a required effect.
+	Optional bool `json:",omitempty"`
 	// Continuation is set only on the one sibling opened after a budgeted
 	// family's published wave was spent. That node is the host's single
 	// promise of another call. It is not a new budget: its result must not
@@ -396,7 +404,7 @@ type UnmetNeed struct {
 	ReasonCode string
 }
 
-// unmetIsAuthoringFault separates a rule that names something wrong from an
+// UnmetIsAuthoringFault separates a rule that names something wrong from an
 // environment that cannot serve something named correctly.
 //
 // The distinction only matters for optional needs. An optional need exists to
@@ -406,7 +414,7 @@ type UnmetNeed struct {
 // rejects, is neither of those: it is a rule that could never be served on any
 // host, and letting Required:false swallow it would turn optionality into a
 // place for authoring mistakes to hide.
-func unmetIsAuthoringFault(reasonCode string) bool {
+func UnmetIsAuthoringFault(reasonCode string) bool {
 	switch reasonCode {
 	case "unknown_capability", "invalid_capability_need":
 		return true
@@ -474,9 +482,14 @@ type ToolPlan struct {
 	// out of Unmet because they must not fail the plan, and kept out of
 	// silence because "the model was never offered this capability" is
 	// something review and audit have to be able to see after the fact.
-	Omitted   []UnmetNeed
-	Decisions []ToolDecision
-	Trace     ExplainTrace
+	Omitted []UnmetNeed
+	// ObligationsRecorded means every selection's Optional bit is the
+	// obligation the planner accepted. Completion must not re-resolve the
+	// classification: that resolve does not include needs added or downgraded
+	// after it, and a missing id fails closed as required.
+	ObligationsRecorded bool
+	Decisions           []ToolDecision
+	Trace               ExplainTrace
 }
 
 // ReadySelections returns only the selections whose declared dependencies are
@@ -615,7 +628,7 @@ func (p *ToolPlanner) Plan(req RouteRequest) (ToolPlan, error) {
 		// single withheld provider collapsed the whole turn.
 		record := func(reasonCode string) {
 			unmet := UnmetNeed{NeedID: need.ID, ReasonCode: reasonCode}
-			if need.Required || unmetIsAuthoringFault(reasonCode) {
+			if need.Required || UnmetIsAuthoringFault(reasonCode) {
 				plan.Unmet = append(plan.Unmet, unmet)
 				return
 			}
@@ -678,6 +691,7 @@ func (p *ToolPlanner) Plan(req RouteRequest) (ToolPlan, error) {
 			Consumes:               append([]ArtifactContract(nil), candidate.Consumes...),
 			Produces:               append([]ArtifactContract(nil), candidate.Produces...),
 			EvidenceIDs:            append([]string(nil), need.EvidenceIDs...),
+			Optional:               !need.Required,
 		}
 		if requiresConfirm {
 			selection.ConfirmationID = ConfirmationRequirementID(need.ID)
@@ -695,6 +709,7 @@ func (p *ToolPlanner) Plan(req RouteRequest) (ToolPlan, error) {
 	attachLiveDataVisualDependencies(&plan, needs)
 	applyPlanningBudget(&plan, req.Budget, needs)
 	recordExplainTrace(&plan, needs)
+	plan.ObligationsRecorded = true
 	return plan, nil
 }
 

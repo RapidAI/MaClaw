@@ -21,7 +21,7 @@ import {
     type RolePrefixStreamCursor,
 } from "./rolePrefixDisplay";
 import { createReasoningTrailCleanCache, rememberReasoningTrailClean } from "./reasoningTrailCleanCache";
-import { sanitizeVisibleChatText } from "./visibleChatText";
+import { omitGoalContinuationHeader, sanitizeVisibleChatText } from "./visibleChatText";
 
 export const REASONING_BODY_MIN_CHARS = 600;
 export const REASONING_BODY_MIN_RATIO = 3;
@@ -71,9 +71,9 @@ const MONOLOGUE_COMMIT_RE =
 
 /** Same trail cleaning as the thinking panel, so persist and render agree. */
 export function cleanReasoningTrailForBody(reasoning: string): string {
-    return repairReasoningLineBreaks(stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning(
+    return omitGoalContinuationHeader(repairReasoningLineBreaks(stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning(
         truncateRolePrefixForDisplay(sanitizeVisibleChatText(reasoning || "")),
-    )));
+    ))));
 }
 
 const replyTrailClean = createReasoningTrailCleanCache();
@@ -217,6 +217,8 @@ export function visibleAssistantReplyForMessage(
     reasoning: string,
     opts?: { live?: boolean; coding?: boolean; toolCalls?: boolean },
 ): { content: string; reasoning: string } {
+    content = omitGoalContinuationHeader(content || "");
+    reasoning = omitGoalContinuationHeader(reasoning || "");
     if (opts?.coding) return separateReasoningFromBody(content, reasoning);
     if (opts?.toolCalls) return { content: content || "", reasoning: (reasoning || "").trim() };
     return resolveVisibleAssistantReply(content, reasoning, { live: opts?.live });
@@ -270,6 +272,9 @@ export function parkReplacedStreamInReasoning(streamed: string, finalBody: strin
     if (!stream || stream === final) return prior;
     let displaced = "";
     if (final && stream.endsWith(final) && stream.length > final.length + 20) {
+        // The bubble already kept this prefix when it was the answer. This
+        // branch only runs after the bubble has shrunk to the tail, so the
+        // displaced lead-in is the note the user already saw.
         displaced = stream.slice(0, stream.length - final.length).trim();
     } else if (
         final

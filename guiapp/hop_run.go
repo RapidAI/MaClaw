@@ -78,7 +78,13 @@ func (c *sharedAgentLoopCallbacks) hopRunSnapshot() *HopRunSnapshot {
 		return nil
 	}
 	surface := c.semanticSurface
-	optional, optionalKnown := semanticSurfaceOptionalNeeds(surface)
+	// A recorded plan's Optional bit is the obligation. Rebuilding the
+	// classification map here only repeated work the planner already finished.
+	var optional map[string]bool
+	var optionalKnown bool
+	if !surface.plan.ObligationsRecorded {
+		optional, optionalKnown = semanticSurfaceOptionalNeeds(surface)
+	}
 	satisfiedFamilies := satisfiedHopFamilies(surface)
 	fetchSettledSearch := informationFetchSucceeded(surface)
 	soleSearch := soleRequiredWebSearch(surface, optional, optionalKnown)
@@ -92,7 +98,7 @@ func (c *sharedAgentLoopCallbacks) hopRunSnapshot() *HopRunSnapshot {
 		Steps:       make([]HopRunStep, 0, len(surface.plan.Selections)+len(surface.plan.Unmet)),
 	}
 	for _, selection := range surface.plan.Selections {
-		required := hopSelectionRequired(selection, optional, optionalKnown)
+		required := hopSelectionRequired(selection, optional, optionalKnown, surface.plan.ObligationsRecorded)
 		step := HopRunStep{
 			SelectionID: selection.ID,
 			NeedID:      selection.NeedID,
@@ -148,11 +154,10 @@ func (c *sharedAgentLoopCallbacks) hopRunSnapshot() *HopRunSnapshot {
 	}
 	selectedNeeds := make(map[string]bool, len(snapshot.Steps))
 	for _, step := range snapshot.Steps {
-		selectedNeeds[step.NeedID] = true
+		selectedNeeds[strings.TrimSpace(step.NeedID)] = true
 	}
 	for _, unmet := range surface.plan.Unmet {
-		required := optionalKnown == false || !optional[unmet.NeedID]
-		if !required || selectedNeeds[unmet.NeedID] {
+		if !unmetStillOwed(unmet, selectedNeeds, optional, optionalKnown) {
 			continue
 		}
 		snapshot.Remaining++
@@ -248,7 +253,7 @@ func soleRequiredWebSearch(surface *semanticCallSurface, optional map[string]boo
 		if string(selection.FitProof.MatchedCapability) != hopInformationSearchWeb {
 			continue
 		}
-		if !hopSelectionRequired(selection, optional, optionalKnown) {
+		if !hopSelectionRequired(selection, optional, optionalKnown, surface.plan.ObligationsRecorded) {
 			continue
 		}
 		required++
@@ -326,25 +331,42 @@ func hopEvidenceKey(surface *semanticCallSurface, selectionID string) string {
 
 // satisfiedHopFamilies returns every repeat family whose obligation a
 // trusted success settled: a selection the host completed, or a durable
-// succeeded execution record (consulting the plan-scoped evidence cache
-// before the store). A base attempt may fail while a later sibling
-// succeeds; the family need is then satisfied and no completion gate may
-// keep counting it as open.
+// succeeded execution record. One scope query covers the store. A cached
+// terminal record still wins over that query, matching hopSelectionEvidence,
+// so a snapshot cannot call the store once per selection while deciding
+// which families are done. A base attempt may fail while a later sibling
+// succeeds; the family need is then satisfied.
 func satisfiedHopFamilies(surface *semanticCallSurface) map[string]bool {
 	satisfied := map[string]bool{}
 	if surface == nil {
 		return satisfied
+	}
+	var succeeded map[string]bool
+	if surface.executor != nil {
+		if ids, err := surface.executor.Completed(surface.scope); err == nil {
+			succeeded = ids
+		}
 	}
 	for _, selection := range surface.plan.Selections {
 		family := tool.RepeatFamilyID(selection.NeedID)
 		if family == "" || satisfied[family] {
 			continue
 		}
-		if hopSelectionEvidence(surface, selection.ID).State == tool.PlanExecutionSucceeded {
+		if hopFamilySettled(surface, selection.ID, succeeded) {
 			satisfied[family] = true
 		}
 	}
 	return satisfied
+}
+
+func hopFamilySettled(surface *semanticCallSurface, selectionID string, succeeded map[string]bool) bool {
+	if surface == nil {
+		return false
+	}
+	if cached, ok := surface.hopEvidence[hopEvidenceKey(surface, selectionID)]; ok && !surface.completed[selectionID] {
+		return cached.State == tool.PlanExecutionSucceeded
+	}
+	return surface.completed[selectionID] || succeeded[selectionID]
 }
 
 // completedWithSatisfiedFamilies overlays repeat families a trusted success
@@ -375,7 +397,29 @@ func completedWithSatisfiedFamilies(surface *semanticCallSurface) map[string]boo
 	return completed
 }
 
-func hopSelectionRequired(selection tool.PlannedSelection, optional map[string]bool, optionalKnown bool) bool {
+// unmetStillOwed is the completion contract for one Unmet row.
+// A selection that already carries the need owns that contract. Budget cuts
+// and dropped installed MCP rows are the ones the host already admitted
+// when it published the plan; the model has no call that can settle them.
+// Any other authoring fault stays owed. An optional map entry releases a
+// row only when it is not an authoring fault.
+func unmetStillOwed(unmet tool.UnmetNeed, selected, optional map[string]bool, optionalKnown bool) bool {
+	if selected[strings.TrimSpace(unmet.NeedID)] || semanticUnmetIsBudget(unmet) || semanticUnmetIsInstalledMCP(unmet) {
+		return false
+	}
+	if !tool.UnmetIsAuthoringFault(unmet.ReasonCode) && optionalKnown && optional[strings.TrimSpace(unmet.NeedID)] {
+		return false
+	}
+	return true
+}
+
+func hopSelectionRequired(selection tool.PlannedSelection, optional map[string]bool, optionalKnown, recorded bool) bool {
+	// The plan records the obligation it accepted. A later re-resolve of the
+	// classification does not see needs added after that resolve, and treating
+	// the missing id as required is what held a finished turn open.
+	if selection.Optional {
+		return false
+	}
 	// Archetype and baseline offers are not the task. Their evidence is on
 	// the selection. A failed optionality recompute must not promote them
 	// into obligations: that is how an unused download bundle kept a finished
@@ -383,11 +427,20 @@ func hopSelectionRequired(selection tool.PlannedSelection, optional map[string]b
 	if tool.RepeatSelectionIsCompanion(selection) {
 		return false
 	}
-	if optionalKnown && optional[selection.NeedID] {
+	needID := strings.TrimSpace(selection.NeedID)
+	if needID != "" && tool.RepeatFamilyID(needID) != needID {
 		return false
 	}
-	needID := strings.TrimSpace(selection.NeedID)
-	return needID == "" || tool.RepeatFamilyID(needID) == needID
+	// Recorded plans do not consult the classification map. That map can
+	// only name needs the resolve produced, and must not release a base the
+	// planner accepted as required.
+	if recorded {
+		return true
+	}
+	if optionalKnown && optional[needID] {
+		return false
+	}
+	return true
 }
 
 func finalizeHopRun(snapshot *HopRunSnapshot, result agent.LoopResult) *HopRunSnapshot {

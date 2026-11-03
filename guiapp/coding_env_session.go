@@ -75,6 +75,12 @@ type stickyCodingWorkbenchMemory struct {
 	ApprovedDirs []string `json:"approved_dirs,omitempty"`
 	// PlanMode: "auto" | "approve" | "off" — multi-step plan policy.
 	PlanMode string `json:"plan_mode,omitempty"`
+	// PlanDialogue is the interactive planning conversation: the user asked to
+	// plan before coding, and no file changes run until they confirm.
+	PlanDialogue bool `json:"plan_dialogue,omitempty"`
+	// PlanDialogueBrief is the original request being planned. Follow-up
+	// messages revise the plan; they do not replace this goal.
+	PlanDialogueBrief string `json:"plan_dialogue_brief,omitempty"`
 	// Pending plan awaiting user approve (JSON of codingWorkbenchPendingPlan).
 	PendingPlanJSON     string `json:"pending_plan_json,omitempty"`
 	PendingPlanMarkdown string `json:"pending_plan_markdown,omitempty"`

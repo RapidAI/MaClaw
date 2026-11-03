@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parkReplacedStreamInReasoning } from '../assistantReasoningBody';
 import { resolveFinalRoundContent, responseIsQuietContinuation, terminalAssistantResult, terminalAssistantResultStatus, type ChatMessage } from '../useAIAssistant';
 
 /**
@@ -171,6 +172,50 @@ describe('resolveFinalRoundContent — reasoning-trail collapse', () => {
         const result = resolveFinalRoundContent(message, { text: finalText, response_source: 'agent_loop' });
         expect(result).toBe(finalText);
         expect(result).not.toContain('missing scratch-prompt baseline');
+    });
+
+    it('keeps the streamed answer when pending thoughts exist and the last round is a one-line offer', () => {
+        const offer = '需要的话，我可以再展开两点：stash 冲突怎么解、以及「用 stash 还是临时分支」怎么选。';
+        const answer = '**git stash = 把当前还没提交的改动临时保存起来，让工作区变干净；需要时再把这些改动取回来。**\n\n常用命令：\n\n- git stash pop：取出最近一条并删除该记录';
+        const streamed = `${answer}\n\n${offer}`;
+        const scratch = "The user asked a simple question and I already answered.\n\nI'll finalize.";
+        expect(streamed.length).toBeGreaterThanOrEqual(offer.length * 2);
+        const message: ChatMessage = {
+            ...makeMessage(streamed, scratch),
+            pendingCodingThoughts: [{
+                id: 't1',
+                sequence: 1,
+                kind: 'thinking',
+                content: scratch,
+                timestamp: Date.now(),
+            }],
+        };
+        const result = resolveFinalRoundContent(message, { text: offer, response_source: 'shared_agent_loop' });
+        expect(result).toContain('git stash');
+        expect(result).toContain(offer);
+        expect(result).not.toContain("I'll finalize");
+        const parked = parkReplacedStreamInReasoning(streamed, result, scratch);
+        expect(parked).toBe(scratch);
+        expect(parked).not.toContain('git stash');
+    });
+
+    it('still collapses a short lead-in when pending thoughts exist and the final answer is the long part', () => {
+        const finalText = '看来生成PPT的工具当前不可用。让我为你整理一份完整的布偶宝宝5岁生日PPT内容，你可以直接复制到PowerPoint或Canva中制作：……（完整长答复）';
+        const streamed = '找到了布偶猫图片资源。\n\noffice工具被拒绝了。\n\n' + finalText;
+        const scratch = '先搜索图片资源。再尝试生成 PPT。';
+        expect(streamed.length).toBeLessThan(finalText.length * 2);
+        const message: ChatMessage = {
+            ...makeMessage(streamed, scratch),
+            pendingCodingThoughts: [{
+                id: 't1',
+                sequence: 1,
+                kind: 'thinking',
+                content: scratch,
+                timestamp: 1,
+            }],
+        };
+        const result = resolveFinalRoundContent(message, { text: finalText, response_source: 'shared_agent_loop' });
+        expect(result).toBe(finalText);
     });
 
     it('keeps a long streamed deliverable when shared_agent_loop final text is a short later fragment', () => {

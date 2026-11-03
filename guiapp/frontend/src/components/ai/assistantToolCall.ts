@@ -1,4 +1,5 @@
 import type { CodingAgentProcessKind } from "./CodingAgentProcessIcon";
+import { omitGoalContinuationHeader } from "./visibleChatText";
 
 /** One tool invocation kept in the assistant transcript, not the 3-line progress tray. */
 export interface AssistantToolCall {
@@ -47,9 +48,11 @@ export function contentHasAssistantToolCall(text: string | undefined): boolean {
  * that remains so the bubble is not blank.
  */
 export function completedAssistantSummary(content: string, resultText?: string): string {
-    const answer = stripAssistantToolCallMarkers(resultText || "").trim();
+    // A settled turn shows resultText, not the live transcript. The host
+    // continuation header can land there and would otherwise skip the bubble filter.
+    const answer = omitGoalContinuationHeader(stripAssistantToolCallMarkers(resultText || "").trim());
     if (answer) return answer;
-    const source = content || "";
+    const source = omitGoalContinuationHeader(content || "");
     if (!source.includes("maclaw-tool:")) return source.trim();
     const parts = source
         .split(/<!--maclaw-tool:[A-Za-z0-9_-]+-->/g)

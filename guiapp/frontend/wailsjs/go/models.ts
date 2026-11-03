@@ -9293,6 +9293,7 @@ export namespace main {
 	    requirement_restatement?: string;
 	    plan_mode?: string;
 	    pending_approval?: boolean;
+	    plan_dialogue?: boolean;
 	    step_statuses?: codingWorkbenchStepStatus[];
     steps_revision?: number;
 	    project_instruction_sources?: string[];
@@ -9352,6 +9353,7 @@ export namespace main {
 	        this.requirement_restatement = source["requirement_restatement"];
 	        this.plan_mode = source["plan_mode"];
 	        this.pending_approval = source["pending_approval"];
+	        this.plan_dialogue = source["plan_dialogue"];
 	        this.step_statuses = this.convertValues(source["step_statuses"], codingWorkbenchStepStatus);
 	        this.project_instruction_sources = source["project_instruction_sources"];
 	        this.checkpoint_label = source["checkpoint_label"];

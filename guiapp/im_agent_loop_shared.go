@@ -1126,7 +1126,7 @@ func (c *sharedAgentLoopCallbacks) settleHostProducedPlanEffects(resp *IMAgentRe
 		if c.semanticSurface.completed[selection.ID] {
 			continue
 		}
-		if !hopSelectionRequired(selection, optional, optionalKnown) {
+		if !hopSelectionRequired(selection, optional, optionalKnown, c.semanticSurface.plan.ObligationsRecorded) {
 			continue
 		}
 		if !hostAttachedFilesSatisfySelection(names, selection) {
@@ -9866,7 +9866,11 @@ func (c *sharedAgentLoopCallbacks) deliverableGapNames(flushGenerate bool, answe
 		return skillMissing
 	}
 	completed := completedWithSatisfiedFamilies(c.semanticSurface)
-	optional, ok := semanticSurfaceOptionalNeeds(c.semanticSurface)
+	var optional map[string]bool
+	ok := c.semanticSurface.plan.ObligationsRecorded
+	if !ok {
+		optional, ok = semanticSurfaceOptionalNeeds(c.semanticSurface)
+	}
 	if !ok {
 		missing := unassignedFileDeliverableNames(c.semanticSurface.plan, completed, nil)
 		return mergeDeliverableNames(skillMissing, missing)

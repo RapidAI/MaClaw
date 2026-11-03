@@ -1,4 +1,5 @@
 import { isBinaryDocumentAttachment } from "./attachmentClassification";
+import { omitGoalContinuationHeader } from "./visibleChatText";
 
 /**
  * Display-time view of one user turn.
@@ -294,5 +295,5 @@ export function userTurnDisplayView(text: string, existingAttachments?: readonly
     };
     for (const attachment of existingAttachments || []) push(attachment);
     for (const filePath of selectedFilePathsInCleanText(cleaned)) push(attachmentFromFilePath(filePath));
-    return { text: stripUserTurnPromptArtifactsClean(cleaned), attachments };
+    return { text: omitGoalContinuationHeader(stripUserTurnPromptArtifactsClean(cleaned)), attachments };
 }

@@ -108,6 +108,89 @@ func TestLoadLatestSessionForProjectUsesNewestMatchingSessionWithoutIndex(t *tes
 	}
 }
 
+func TestEmptyReopenDoesNotOutrankATranscript(t *testing.T) {
+	now := time.Now()
+	transcript := &TabSessionData{}
+	reopen := &TabSessionData{}
+	if sessionOutranksLatest(reopen, transcript, 0, 3, now.Add(time.Minute), now, true, true) {
+		t.Fatal("newer empty reopen outranked the transcript")
+	}
+	if !sessionOutranksLatest(transcript, reopen, 3, 0, now, now.Add(time.Minute), true, true) {
+		t.Fatal("older transcript lost to an empty reopen already selected")
+	}
+	cleared := &TabSessionData{ConversationClearedAt: now.UnixMilli()}
+	if !sessionOutranksLatest(cleared, transcript, 0, 3, now.Add(time.Minute), now, true, true) {
+		t.Fatal("explicit clear lost to the older transcript")
+	}
+	if sessionOutranksLatest(transcript, cleared, 3, 0, now, now.Add(time.Minute), true, true) {
+		t.Fatal("older transcript outranked an explicit clear")
+	}
+	legacy := &TabSessionData{}
+	if sessionOutranksLatest(reopen, legacy, 0, 2, now, time.Time{}, true, false) {
+		t.Fatal("timestamped empty reopen outranked a legacy transcript")
+	}
+	if !sessionOutranksLatest(legacy, reopen, 2, 0, time.Time{}, now, false, true) {
+		t.Fatal("legacy transcript lost to a timestamped empty reopen")
+	}
+}
+
+func TestLoadLatestSessionForProjectKeepsArchiveOverEmptyReopen(t *testing.T) {
+	persist := NewProjectTabSessionPersistForBaseDir(t.TempDir())
+	projectPath := filepath.Join(t.TempDir(), "history-task")
+	olderAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	newerAt := time.Now().UTC().Format(time.RFC3339)
+	if err := persist.SaveSession(&TabSessionData{
+		TabID: "older", ProjectPath: projectPath, LastActiveAt: olderAt,
+		Conversation: []interface{}{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := persist.SaveConversationViewArchive("older", []interface{}{
+		map[string]interface{}{"role": "user", "content": "检查本机 NPU"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := persist.SaveSession(&TabSessionData{
+		TabID: "reopen", ProjectPath: projectPath, LastActiveAt: newerAt,
+		Conversation: []interface{}{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := persist.LoadLatestSessionForProject(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.TabID != "older" {
+		t.Fatalf("latest session = %+v, want the tab whose archive still has the request", latest)
+	}
+}
+
+func TestLoadLatestSessionForProjectKeepsTranscriptOverEmptyReopen(t *testing.T) {
+	persist := NewProjectTabSessionPersistForBaseDir(t.TempDir())
+	projectPath := filepath.Join(t.TempDir(), "history-task")
+	olderAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	newerAt := time.Now().UTC().Format(time.RFC3339)
+	if err := persist.SaveSession(&TabSessionData{
+		TabID: "older", ProjectPath: projectPath, LastActiveAt: olderAt,
+		Conversation: []interface{}{map[string]interface{}{"role": "user", "content": "检查 NPU"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := persist.SaveSession(&TabSessionData{
+		TabID: "reopen", ProjectPath: projectPath, LastActiveAt: newerAt,
+		Conversation: []interface{}{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := persist.LoadLatestSessionForProject(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.TabID != "older" {
+		t.Fatalf("latest session = %+v, want the transcript an empty reopen must not hide", latest)
+	}
+}
+
 func TestLoadLatestSessionForProjectPrefersSavedTimestampOverNewerLegacyFile(t *testing.T) {
 	persist := NewProjectTabSessionPersistForBaseDir(t.TempDir())
 	projectPath := filepath.Join(t.TempDir(), "history-task")

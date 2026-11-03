@@ -448,6 +448,41 @@ describe("parkReplacedStreamInReasoning", () => {
         expect(kept).not.toContain("24~30℃");
     });
 
+    it("parks a monologue prefix when the answer is the streamed tail", () => {
+        const thinking = "The user is asking for Chongqing weather. Let me think through the search snippets and then write a short forecast.";
+        const answer = "重庆今天小雨，约 24~30℃，北风。明天多云，约 24~31℃。";
+        const kept = parkReplacedStreamInReasoning(`${thinking}\n\n${answer}`, answer, "");
+        expect(kept).toContain("The user is asking");
+        expect(kept).not.toContain("24~30℃");
+    });
+
+    it("does not file the answer when the bubble already kept the later offer with it", () => {
+        const answer = "git stash = 把当前还没提交的改动临时保存起来，让工作区变干净。常用命令包括 pop 和 apply。";
+        const offer = "需要的话，我可以再展开两点：stash 冲突怎么解。";
+        const streamed = `${answer}\n\n${offer}`;
+        const scratch = "Let me not call tools. I'll finalize.";
+        expect(parkReplacedStreamInReasoning(streamed, streamed, scratch)).toBe(scratch);
+    });
+
+    it("keeps a long working note that a short report replaces", () => {
+        const note = "工作过程已经核对完指标，并把结果写进阶段记录。".repeat(4);
+        const report = "第 3 步已完成并归档。";
+        expect(note.length).toBeGreaterThan(report.length);
+        const kept = parkReplacedStreamInReasoning(`${note}\n\n${report}`, report, "");
+        expect(kept).toContain("工作过程");
+        expect(kept).not.toContain("第 3 步已完成");
+    });
+
+    it("parks a short lead-in when the final answer is the longer part", () => {
+        const lead = "找到了布偶猫图片资源，但是 office 工具被拒绝了，这一步先停在搜索结果上。";
+        const answer = "看来生成PPT的工具当前不可用。让我为你整理一份完整的布偶宝宝5岁生日PPT内容，你可以直接复制到PowerPoint或Canva中制作。";
+        expect(lead.length).toBeLessThanOrEqual(answer.length);
+        const kept = parkReplacedStreamInReasoning(`${lead}\n\n${answer}`, answer, "先搜索图片资源。");
+        expect(kept).toContain("布偶猫");
+        expect(kept).toContain("先搜索图片资源。");
+        expect(kept).not.toContain("PowerPoint");
+    });
+
     it("does not copy the answer into the thinking panel when nothing was replaced", () => {
         const answer = "重庆今天小雨，约 24~30℃，北风。明天多云，约 24~31℃。外出建议带伞。";
         expect(parkReplacedStreamInReasoning(answer, answer, "Checking the forecast.")).toBe("Checking the forecast.");
@@ -573,5 +608,14 @@ describe("reply render cache", () => {
                 visibleAssistantReplyForMessage(content, cleanReasoningTrailForBody(trail), { coding: true }),
             );
         }
+    });
+
+    it("hides the goal continuation header from the answer and the thinking trail", () => {
+        const header = "[系统续接][execute] 按步骤执行目标：开发 c++ 贪吃蛇游戏";
+        const body = "本轮只能提交步骤 4：实现绘制与界面。";
+        const shown = visibleAssistantReplyForMessage(`${header}\n\n${body}`, `${header}\n先画窗口。`, { coding: true });
+        expect(shown.content).toBe(body);
+        expect(shown.reasoning).toBe("先画窗口。");
+        expect(`${shown.content}\n${shown.reasoning}`).not.toContain("[系统续接]");
     });
 });

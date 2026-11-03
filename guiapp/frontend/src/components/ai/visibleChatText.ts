@@ -11,6 +11,29 @@ export function sanitizeVisibleChatText(value: unknown): string {
     return content.replace(VE_TOFU_RE, "");
 }
 
+/**
+ * The host continuation header is a phase contract for the model.
+ * A line that starts with it stays out of the transcript. A quoted marker
+ * inside a sentence stays. Text without that line is returned unchanged.
+ */
+export function omitGoalContinuationHeader(text: string): string {
+    if (!text || !text.includes("[系统续接]")) return text;
+    const lines = text.split("\n");
+    let changed = false;
+    const kept: string[] = [];
+    for (const line of lines) {
+        if (line.trimStart().startsWith("[系统续接]")) {
+            changed = true;
+            continue;
+        }
+        kept.push(line);
+    }
+    if (!changed) return text;
+    // Only the blank left by the removed header goes. Later blank lines,
+    // including ones inside a code block, stay.
+    return kept.join("\n").replace(/^\n+/, "");
+}
+
 export function sanitizeVisibleVEText(value: unknown): string {
     return sanitizeVisibleChatText(value);
 }

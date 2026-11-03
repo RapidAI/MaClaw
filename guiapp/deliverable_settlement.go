@@ -10,33 +10,87 @@ import (
 )
 
 // semanticSurfaceOptionalNeeds caches optional needs per immutable replan
-// identity. Completion gates do not re-plan unless a petition changes that
-// identity. ok is false when optionality cannot be proved; callers fail closed.
+// identity. A plan that recorded obligations is projected from its selections
+// and does not resolve classification again. Older plans cache that resolve,
+// then overlay the current Optional bits so an appended sibling cannot reuse
+// a stale map. ok is false only when neither source can prove optionality.
 func semanticSurfaceOptionalNeeds(surface *semanticCallSurface) (map[string]bool, bool) {
-	if surface == nil || len(surface.plan.Selections) == 0 || surface.registry == nil || surface.replan == nil {
+	if surface == nil || len(surface.plan.Selections) == 0 {
 		return nil, false
+	}
+	if surface.plan.ObligationsRecorded {
+		return optionalNeedsFromPlan(surface.plan), true
 	}
 	surface.optionalMu.Lock()
 	defer surface.optionalMu.Unlock()
 	cacheKey := semanticOptionalCacheKey(surface)
-	if cacheKey != surface.optionalCacheKey {
-		needsCtx := withSemanticArchetypeBundleKeyOverride(context.Background(), surface.replan.BundleKey)
-		needs, _, err := semanticNeedsFromClassificationContext(needsCtx, surface.registry, surface.replan.Classification)
-		if err != nil {
-			surface.optionalByNeed, surface.optionalKnown = nil, false
-			surface.optionalCacheKey = ""
-		} else {
-			surface.optionalByNeed = make(map[string]bool, len(needs))
-			for _, need := range needs {
-				if !need.Required {
-					surface.optionalByNeed[need.ID] = true
+	// A failed resolve is cached too. Gating the hit on optionalKnown re-ran
+	// classification on every completion check after the first error. The set
+	// flag distinguishes that cached failure from the zero key, which would
+	// otherwise look like a hit before the first resolve. Bits are overlaid
+	// on the way out, so an appended sibling does not need a new resolve.
+	if !surface.optionalCacheSet || cacheKey != surface.optionalCacheKey {
+		byNeed := map[string]bool{}
+		known := false
+		if surface.registry != nil && surface.replan != nil {
+			needsCtx := withSemanticArchetypeBundleKeyOverride(context.Background(), surface.replan.BundleKey)
+			needs, _, err := semanticNeedsFromClassificationContext(needsCtx, surface.registry, surface.replan.Classification)
+			if err == nil {
+				known = true
+				for _, need := range needs {
+					if !need.Required {
+						if id := strings.TrimSpace(need.ID); id != "" {
+							byNeed[id] = true
+						}
+					}
 				}
 			}
-			surface.optionalKnown = true
-			surface.optionalCacheKey = cacheKey
 		}
+		if !known {
+			byNeed = nil
+		}
+		surface.optionalByNeed = byNeed
+		surface.optionalKnown = known
+		surface.optionalCacheKey = cacheKey
+		surface.optionalCacheSet = true
 	}
-	return surface.optionalByNeed, surface.optionalKnown
+	return overlayPlanOptional(surface.optionalByNeed, surface.optionalKnown, surface.plan)
+}
+
+func overlayPlanOptional(base map[string]bool, known bool, plan tool.ToolPlan) (map[string]bool, bool) {
+	extra := optionalNeedsFromPlan(plan)
+	if len(extra) == 0 {
+		return base, known
+	}
+	if !known {
+		return extra, true
+	}
+	merged := make(map[string]bool, len(base)+len(extra))
+	for id := range base {
+		merged[id] = true
+	}
+	for id := range extra {
+		merged[id] = true
+	}
+	return merged, true
+}
+
+func optionalNeedsFromPlan(plan tool.ToolPlan) map[string]bool {
+	var byNeed map[string]bool
+	for _, selection := range plan.Selections {
+		if !selection.Optional {
+			continue
+		}
+		id := strings.TrimSpace(selection.NeedID)
+		if id == "" {
+			continue
+		}
+		if byNeed == nil {
+			byNeed = make(map[string]bool)
+		}
+		byNeed[id] = true
+	}
+	return byNeed
 }
 
 func semanticOptionalCacheKey(surface *semanticCallSurface) string {
@@ -83,7 +137,7 @@ func unassignedFileDeliverableNames(plan tool.ToolPlan, completed, optionalByNee
 		if completed[selection.ID] {
 			continue
 		}
-		if optionalByNeed[selection.NeedID] {
+		if selection.Optional || optionalByNeed[selection.NeedID] {
 			continue
 		}
 		needID := strings.TrimSpace(selection.NeedID)

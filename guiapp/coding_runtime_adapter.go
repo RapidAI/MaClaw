@@ -263,9 +263,16 @@ func runGUICodingTaskWithLedgerWithOptions(ctx context.Context, store codingrunt
 			notify(conflict.Reason)
 		}
 	}
+	// Read-only turns (inquiry, goal planning) do not write, so they do not
+	// take a workspace baseline. Probing first would run git status on the
+	// working directory before the model starts.
+	var workspaceProber codingruntime.WorkspaceProber
+	if options == nil || !options.ReadOnly {
+		workspaceProber = newGUILocalWorkspaceProber(projectPath)
+	}
 	runner := codingruntime.Runner{
 		Store: store, LeaseOwner: ownerID, LeaseDuration: 15 * time.Minute,
-		ApprovalGate: approvalGate, WorkspaceProber: newGUILocalWorkspaceProber(projectPath),
+		ApprovalGate: approvalGate, WorkspaceProber: workspaceProber,
 		OnAdmissionWait: waitHook,
 	}
 	adapter := &guiCodingRuntimeAdapter{run: run, onStart: onStart}

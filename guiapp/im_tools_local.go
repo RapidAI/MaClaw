@@ -495,7 +495,7 @@ func (h *IMMessageHandler) resolveFileToolPathForOwner(path, ownerID string) (st
 		}
 		return resolved, nil
 	}
-	return resolveFileToolPathWithBase(path, func() string {
+	resolved, err := resolveFileToolPathWithBase(path, func() string {
 		if dir := h.projectTabWorkDirForOwner(ownerID); dir != "" {
 			return dir
 		}
@@ -511,6 +511,15 @@ func (h *IMMessageHandler) resolveFileToolPathForOwner(path, ownerID string) (st
 		// maclaw installation directory on Windows.
 		return corelib.EffectiveWorkspaceDir()
 	})
+	if err != nil {
+		return "", err
+	}
+	// An absolute path inside a directory another live session holds is that
+	// session's tree. Read and list it from this task's checkout instead.
+	if task := projectPathFromUserID(ownerID); task != "" && h != nil && h.app != nil {
+		resolved = h.app.exclusiveWorkRoot(task, resolved)
+	}
+	return resolved, nil
 }
 
 // validateAssistantBindingFilePath keeps a bot profile from escaping its
@@ -664,8 +673,13 @@ func (h *IMMessageHandler) projectTabWorkDirForOwner(ownerID string) string {
 	// is the current working directory.
 	if h.app != nil && h.app.isManagedRecentTaskWorkspacePath(rawProjectPath) {
 		if h.app.projectPathIsLocalCodingWorkbench(rawProjectPath) {
-			// Local coding never falls through to taskDir/workspace.
-			return strings.TrimSpace(h.app.codingWorkbenchLocalExecDirOrDesktop(rawProjectPath))
+			// Local coding never falls through to taskDir/workspace. A shared
+			// root still belongs to the session already executing there.
+			exec := strings.TrimSpace(h.app.codingWorkbenchLocalExecDirOrDesktop(rawProjectPath))
+			if exec == "" {
+				return ""
+			}
+			return h.app.exclusiveWorkRoot(rawProjectPath, exec)
 		}
 		if info, err := os.Stat(rawProjectPath); err != nil || !info.IsDir() {
 			_ = h.ensureRecentTaskWorkspaceForProjectPath(rawProjectPath)
@@ -683,16 +697,14 @@ func (h *IMMessageHandler) projectTabWorkDirForOwner(ownerID string) string {
 		if exec == "" {
 			exec = filepath.Join(rawProjectPath, "workspace")
 		}
-		if info, err := os.Stat(exec); err == nil && info.IsDir() {
-			return exec
+		if info, err := os.Stat(exec); err != nil || !info.IsDir() {
+			// Create workspace/ (and task.md) then re-check.
+			_ = h.ensureRecentTaskWorkspaceForProjectPath(rawProjectPath)
+			if info, err := os.Stat(exec); err != nil || !info.IsDir() {
+				log.Printf("[projectTabWorkDir] managed task exec path missing owner=%q task=%q exec=%q", ownerID, rawProjectPath, exec)
+			}
 		}
-		// Create workspace/ (and task.md) then re-check.
-		_ = h.ensureRecentTaskWorkspaceForProjectPath(rawProjectPath)
-		if info, err := os.Stat(exec); err == nil && info.IsDir() {
-			return exec
-		}
-		log.Printf("[projectTabWorkDir] managed task exec path missing owner=%q task=%q exec=%q", ownerID, rawProjectPath, exec)
-		return exec
+		return h.app.exclusiveWorkRoot(rawProjectPath, exec)
 	}
 
 	// Non-managed project tab: prefer execution path, else raw project path.
@@ -764,7 +776,11 @@ func (h *IMMessageHandler) resolveToolWorkDirForOwner(workingDir, ownerID string
 		return filepath.Clean(strings.TrimSpace(binding.WorkingDirectory))
 	}
 	if workingDir != "" {
-		return resolvePath(workingDir)
+		resolved := resolvePath(workingDir)
+		if task := projectPathFromUserID(ownerID); h != nil && h.app != nil && task != "" {
+			return h.app.exclusiveWorkRoot(task, resolved)
+		}
+		return resolved
 	}
 	// Project Tab: use projectPath as default working directory.
 	if dir := h.projectTabWorkDirForOwner(ownerID); dir != "" {

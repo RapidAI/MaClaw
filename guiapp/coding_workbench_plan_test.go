@@ -2240,6 +2240,22 @@ func TestFormatCodingAgentSkippedPrefersVisibleErrorOverLedgerSummary(t *testing
 	}); got != "Skipped Untitled task: workspace probe failed" {
 		t.Fatalf("untitled skipped paragraph should still name the reason: %q", got)
 	}
+	dump := "read-only git status: git status --porcelain=v1 --untracked-files=all: exit status 1: warning: could not open directory 'AppData/Local/Application Data/': Permission denied\n" +
+		"warning: could not open directory 'AppData/Local/History/': Permission denied"
+	got := formatCodingAgentResultParagraph(v2.TaskRunResult{
+		Title:  "[系统续接][plan] 先理解并分解目标，不要实现。\n\n目标：开发一个贪吃蛇游戏\n\n本轮只做规划：\n1. 用你自己的话复述任务，确认你理解要交付的结果。\n2.",
+		Status: v2.TaskSkipped,
+		Error:  dump,
+	})
+	if strings.Contains(got, "could not open directory") || strings.Contains(got, "本轮只做规划") || strings.Contains(got, "untracked-files") || strings.Contains(got, "Skipped") {
+		t.Fatalf("skipped goal should not paste the phase contract or git warnings: %q", got)
+	}
+	if got != "工作区检查失败：git 无法读取工作目录中的部分文件夹，这一步没有开始。" {
+		t.Fatalf("skipped goal = %q", got)
+	}
+	if plain := formatCodingAgentVisibleError("write_file: Permission denied"); strings.Contains(plain, "工作区检查失败") {
+		t.Fatalf("unrelated permission error was rewritten: %q", plain)
+	}
 }
 
 func TestIsCodingAgentUserProgressTextKeepsTrailOnly(t *testing.T) {
@@ -2644,6 +2660,12 @@ func TestGoalContinuationIsNotAUserCodingPlan(t *testing.T) {
 	}
 	if tasks[0].Title == "用你自己的话复述任务，确认你理解要交付的结果。" {
 		t.Fatalf("plan instructions were parsed as steps: %s", tasks[0].Title)
+	}
+	if tasks[0].Title != "分解目标：实现一个图形界面版支持中文显示的愤怒的小鸟游戏，需要有物理效果，有声音，画面精致" {
+		t.Fatalf("panel title = %q", tasks[0].Title)
+	}
+	if strings.Contains(tasks[0].Title, "本轮只做规划") || strings.Contains(tasks[0].Title, "\n2.") {
+		t.Fatalf("panel title is the phase contract: %q", tasks[0].Title)
 	}
 	if _, pending := h.loadStickyPendingCodingPlan(userID); pending {
 		t.Fatal("continuation must not wait for /plan approve")

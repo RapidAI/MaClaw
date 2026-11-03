@@ -256,6 +256,7 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 	if handler == nil {
 		return nil, fmt.Errorf("AI assistant handler not ready")
 	}
+	a.restoreProjectAgentSession(handler, msg.UserID, projectPath)
 	// ACP programming runs in a project-owned session. Apply the same guard as
 	// the desktop binding: its browser/bridge transcript must never replenish a
 	// project session with context captured from a different conversation.

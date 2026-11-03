@@ -42,12 +42,102 @@ func goalTurnErrorIsRetryable(errText string) bool {
 	return agentruntime.IsRetryableLLMError(errors.New(text))
 }
 
+// goalContinuationObjective is the user's goal, not the phase contract.
+// The contract is a numbered host script; using it as a task title cuts the
+// coding panel mid-list (the 80-rune cap lands on "2.").
+func goalContinuationObjective(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if rest, ok := strings.CutPrefix(line, "目标："); ok {
+			if objective := strings.TrimSpace(rest); objective != "" {
+				return objective
+			}
+		}
+		const executeMarker = "按步骤执行目标："
+		if i := strings.Index(line, executeMarker); i >= 0 {
+			if objective := strings.TrimSpace(line[i+len(executeMarker):]); objective != "" {
+				return objective
+			}
+		}
+	}
+	return ""
+}
+
+// goalContinuationDisplayTitle is the one line the coding panel shows for a
+// host continuation. The model still receives the full phase contract.
+func goalContinuationDisplayTitle(text string) string {
+	objective := goalContinuationObjective(text)
+	switch goalContinuationPhase(text) {
+	case "plan":
+		if objective == "" {
+			return "分解目标"
+		}
+		return capGoalPromptRunes("分解目标："+objective, 80)
+	case "execute":
+		if objective == "" {
+			return "执行目标"
+		}
+		return capGoalPromptRunes(objective, 80)
+	default:
+		if objective != "" {
+			return capGoalPromptRunes(objective, 80)
+		}
+		return capGoalPromptRunes(strings.TrimSpace(text), 80)
+	}
+}
+
+// goalContinuationHeaderLine is the host line the chat must not show.
+// The model prompt keeps it. A quoted marker inside a sentence is not a header.
+func goalContinuationHeaderLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[系统续接]") {
+			return trimmed
+		}
+		return ""
+	}
+	return ""
+}
+
+// omitGoalContinuationHeader drops that host line from text the user can see.
+// The rest of the turn stays. Text without the line is returned unchanged.
+func omitGoalContinuationHeader(text string) string {
+	if text == "" || !strings.Contains(text, "[系统续接]") {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	kept := make([]string, 0, len(lines))
+	changed := false
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "[系统续接]") {
+			changed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !changed {
+		return text
+	}
+	// Only the blank left by the removed header goes. Later blank lines,
+	// including ones inside a code block, stay.
+	return strings.TrimLeft(strings.Join(kept, "\n"), "\n")
+}
+
 // goalContinuationPhase is the host phase encoded in the continuation text.
 // "plan" must not edit files. "execute" does one step and then reports it.
 func goalContinuationPhase(text string) string {
 	trimmed := strings.TrimSpace(text)
 	if !strings.HasPrefix(trimmed, "[系统续接]") {
 		return ""
+	}
+	// An execute prompt quotes the current step. That step can repeat the
+	// planning sentence. The phase tag wins, or the turn is treated as
+	// read-only and the implementation never starts.
+	if strings.HasPrefix(trimmed, "[系统续接][execute]") {
+		return "execute"
 	}
 	if strings.HasPrefix(trimmed, "[系统续接][plan]") || strings.Contains(trimmed, "本轮只做规划") {
 		return "plan"
@@ -1488,6 +1578,10 @@ func (e *GoalContinuationEngine) dispatchContinuation(userID, goalID string, kin
 	}
 	e.noteContinuationExpect(userID, g)
 	log.Printf("[goal-continuation] firing continuation: user=%s goal_id=%s turn=%d", userID, goalID, g.TurnsUsed)
+	if header := goalContinuationHeaderLine(prompt); header != "" {
+		// The chat hides this line. maclaw.log lives under ~/.maclaw/logs.
+		log.Printf("[goal-continuation] hidden from chat: %s", header)
+	}
 
 	// Dispatch via HandleIMMessage with platform="goal-continuation".
 	// We cannot use continueAIAssistantWorkflowMessage because it sets

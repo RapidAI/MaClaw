@@ -19047,7 +19047,11 @@ func RunTaskWithSubAgent(
 // Isolated worktree execution is a separate options path.
 func defaultGUICodingRuntimeOptions(task *TaskItem, projectPath string) *guiCodingRuntimeOptions {
 	options := &guiCodingRuntimeOptions{}
-	if codingTaskLooksInquiry(task) {
+	// Inquiry and a goal plan turn do not write the workspace. A plan turn
+	// used to be admitted as a gated writer, so git status of the working
+	// directory ran before the model and a failure skipped the turn. The
+	// coding panel then stayed on the truncated phase contract.
+	if codingTaskLooksInquiry(task) || taskIsGoalPlanPhase(task, "") {
 		options.ReadOnly = true
 		return options
 	}
