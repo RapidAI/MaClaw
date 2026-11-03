@@ -26,6 +26,10 @@ type AccelInfo struct {
 	// gate accepted it. Hosts use it to keep the hardware-acceleration toggle
 	// enabled on machines that have a GPU but no NPU.
 	GPUAvailable bool `json:"gpu_available"`
+	// Chain is the device priority order that was tried, most preferred first,
+	// e.g. ["npu","vulkan","cpu"]. It makes the automatic choice auditable:
+	// Backend is the entry that won.
+	Chain []string `json:"chain,omitempty"`
 }
 
 var (
@@ -172,6 +176,9 @@ func SetDetectOverrideForTest(info AccelInfo) {
 	detectInfo = info
 	detectMu.Unlock()
 	detectDone.Store(true)
+	// The NPU probe verdict is derived from the detect cache, so a new detect
+	// answer invalidates it (outside detectMu to keep the lock order one-way).
+	ResetNPUProbe()
 }
 
 // AccelEmbedder is implemented by embedders that report (and can retarget)
@@ -221,14 +228,25 @@ func (q *Qwen3Embedder) setGPUGate(g GPUGate) {
 	q.gpuMu.Unlock()
 }
 
-// Accel reports the Qwen3 instance's backend. On Windows/Linux with a Vulkan
-// device that passed the numeric self-check the forward runs on the GPU
-// (BackendVulkan); otherwise it is CPU SIMD with Device carrying the numeric
-// path (ComputeMode, e.g. "q8p:avx512:2pass" or "float").
+// Accel reports the Qwen3 instance's backend plus the device chain that was
+// tried. The forward runs on the NPU when a provider is linked and passed the
+// numeric self-check (BackendAMDNPU), otherwise on a GPU that passed its own
+// self-check (BackendVulkan / BackendMetal), otherwise on CPU SIMD with Device
+// carrying the numeric path (ComputeMode, e.g. "q8p:avx512:2pass" or "float").
 func (q *Qwen3Embedder) Accel() AccelInfo {
+	info := q.accelInfoNow()
+	info.Chain = EmbedDeviceChain()
+	return info
+}
+
+func (q *Qwen3Embedder) accelInfoNow() AccelInfo {
 	det := CurrentAccelInfo()
 	if q == nil {
 		return AccelInfo{Backend: BackendCPUSIMD, Device: "float", NPUPresent: det.NPUPresent, Reason: "no embedder"}
+	}
+	if ng := q.npu.Load(); ng != nil {
+		return AccelInfo{Backend: BackendAMDNPU, Device: ng.name, NPUPresent: det.NPUPresent,
+			GPUAvailable: q.GPUGateInfo().Backend != "", Reason: "qwen3 runs on the NPU"}
 	}
 	if g := q.vkGPU.Load(); g != nil {
 		return AccelInfo{Backend: BackendVulkan, Device: g.dev.Info.Name, NPUPresent: det.NPUPresent,
@@ -243,8 +261,17 @@ func (q *Qwen3Embedder) Accel() AccelInfo {
 	gpuPresent := q.GPUGateInfo().Backend != ""
 	info := AccelInfo{Backend: BackendCPUSIMD, Device: q.ComputeMode(), NPUPresent: det.NPUPresent,
 		GPUAvailable: gpuPresent, Reason: "qwen3 runs on CPU SIMD"}
+	// Explain the whole chain, not just the last gate: why the NPU was skipped
+	// and why the GPU was skipped are different answers.
+	var reasons []string
+	if reason := q.NPUReason(); reason != "" {
+		reasons = append(reasons, reason)
+	}
 	if reason := q.GPUReason(); reason != "" {
-		info.Reason = "qwen3 CPU SIMD (" + reason + ")"
+		reasons = append(reasons, reason)
+	}
+	if len(reasons) > 0 {
+		info.Reason = "qwen3 CPU SIMD (" + strings.Join(reasons, "; ") + ")"
 	}
 	if q.q8pFallback != "" {
 		info.Reason = "qwen3 float path (Q8P disabled: " + q.q8pFallback + ")"
@@ -268,6 +295,8 @@ func (q *Qwen3Embedder) ApplyAccel(enabled bool) {
 		return // nothing to toggle once the embedder is torn down
 	}
 	if !enabled {
+		q.releaseNPU()
+		q.setNPUReason("hardware acceleration off")
 		if g := q.vkGPU.Swap(nil); g != nil {
 			g.shutdown()
 			log.Printf("qwen3: Vulkan backend released by the hardware-acceleration toggle")
@@ -278,14 +307,18 @@ func (q *Qwen3Embedder) ApplyAccel(enabled bool) {
 		}
 		return
 	}
-	if q.vkGPU.Load() != nil || q.gpu.Load() != nil {
+	if q.vkGPU.Load() != nil || q.gpu.Load() != nil || q.npu.Load() != nil {
 		return
 	}
-	q.initGPU()    // Metal (darwin only; no-op elsewhere)
-	q.initVulkan() // Vulkan (windows/linux only)
+	// Re-run the same chain the loader used: NPU, then the platform GPU, then
+	// CPU SIMD (device_select.go). The cached NPU verdict is dropped first: the
+	// toggle being switched on is the user's way to retry after a driver update.
+	ResetNPUProbe()
+	q.initBackends()
 	// Close may have run while the backend was being built; it would have
 	// swapped an empty slot, so release anything we just created.
 	if q.isClosed() {
+		q.releaseNPU()
 		if g := q.vkGPU.Swap(nil); g != nil {
 			g.shutdown()
 		}

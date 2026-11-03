@@ -353,7 +353,8 @@ esp_err_t buddy_sound_init(void) {
     const i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = SOUND_I2C_ADDR,
-        .scl_speed_hz = 400000,
+        // 100 kHz like iot-agentos' codec profile; 400 kHz went unacknowledged.
+        .scl_speed_hz = 100000,
     };
     esp_err_t err = i2c_master_bus_add_device(bus, &dev_cfg, &s_codec);
     if (err != ESP_OK) return err;

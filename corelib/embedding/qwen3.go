@@ -121,6 +121,14 @@ type Qwen3Embedder struct {
 	// Vulkan GPU backend (qwen3_vulkan.go); nil = not in use. Only one of gpu
 	// and vkGPU is ever non-nil (Metal is darwin-only, Vulkan is win/linux).
 	vkGPU atomic.Pointer[qwen3VKGPU]
+
+	// NPU backend (device_select.go); nil unless a provider was registered, the
+	// hardware was present and the numeric self-check passed. It sits ahead of
+	// gpu/vkGPU in the device chain, so at most one of the three is non-nil.
+	npu   atomic.Pointer[qwen3NPUDevice]
+	npuMu sync.Mutex
+	// npuReason explains why no NPU backend is in use (read by diagnostics).
+	npuReason string
 }
 
 type qwen3Scratch struct {
@@ -203,8 +211,9 @@ func NewQwen3Embedder(modelPath string, dim int) (*Qwen3Embedder, error) {
 	addBOS := gguf.GetMetaBool(mf.Meta, "tokenizer.ggml.add_bos_token", false)
 	q.tokenizer = NewBPETokenizer(tokens, merges, tokenTypes, bos, eos, addBOS, addEOS)
 	q.ensureRoPE(64)
-	q.initGPU()
-	q.initVulkan()
+	// One ordered chain decides the backend: NPU, then the platform GPU, then
+	// CPU SIMD (device_select.go).
+	q.initBackends()
 	return q, nil
 }
 
@@ -556,7 +565,7 @@ func (q *Qwen3Embedder) EmbedBatch(texts []string) ([][]float32, error) {
 	// Both GPU backends share embedBatchGPU, which packs many texts into one
 	// forward. Dispatch on either: a Vulkan batch that fell through here would
 	// issue one submit per text instead of a handful.
-	if q.gpu.Load() != nil || q.vkGPU.Load() != nil {
+	if q.gpu.Load() != nil || q.vkGPU.Load() != nil || q.npu.Load() != nil {
 		if res, ok := q.embedBatchGPU(texts); ok {
 			return res, nil
 		}
@@ -644,6 +653,9 @@ func (q *Qwen3Embedder) Close() {
 	arena := q.q8pArena
 	q.q8pArena = nil
 	q.mu.Unlock()
+	if g := q.npu.Swap(nil); g != nil {
+		g.release() // in-flight forwards have drained (inflight.close waits)
+	}
 	if g := q.gpu.Swap(nil); g != nil {
 		g.release()
 	}

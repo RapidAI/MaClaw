@@ -76,22 +76,24 @@ var qwen3MetalBatchRows = func() int {
 	return 2048
 }()
 
-func (q *Qwen3Embedder) initGPU() {
+// initGPU brings the Metal backend up on macOS. It reports whether the backend
+// was adopted, so the device chain (device_select.go) knows to stop here.
+func (q *Qwen3Embedder) initGPU() bool {
 	if runtime.GOOS != "darwin" {
-		return
+		return false
 	}
 	if os.Getenv("MACLAW_QWEN3_METAL") == "0" {
 		q.setGPUReason("disabled by MACLAW_QWEN3_METAL=0")
-		return
+		return false
 	}
 	if !HWAccelPreferred() {
 		q.setGPUReason("hardware acceleration off")
-		return
+		return false
 	}
 	g, err := newQwen3GPU(q)
 	if err != nil {
 		q.setGPUReason(err.Error())
-		return
+		return false
 	}
 	// Correctness gate: the candidate backend must reproduce the CPU vectors
 	// before it is allowed to serve requests. Every probe text is compared (not
@@ -102,11 +104,12 @@ func (q *Qwen3Embedder) initGPU() {
 		g.release()
 		q.setGPUReason("self-check: " + err.Error())
 		log.Printf("qwen3: Metal disabled — %s", q.GPUReason())
-		return
+		return false
 	}
 	q.setGPUReason("")
 	q.gpu.Store(g)
 	log.Printf("qwen3: Metal GPU backend active (%s, %d MB weights)", g.dev.Name, g.WeightBytes>>20)
+	return true
 }
 
 func qwen3MetalCos(a, b []float32) float64 {
@@ -140,12 +143,27 @@ func (q *Qwen3Embedder) GPUMemoryBytes() (weights, acts int) {
 	return 0, 0
 }
 
-// embedGPU embeds tokenised sequences on the GPU. ok=false means the GPU
-// is not in use (or just failed and was disabled); the caller runs the CPU.
-// Metal and Vulkan expose the same forward(q, seqs, outs) contract, so the
-// backend choice is a single pointer check.
+// embedGPU embeds tokenised sequences on the adopted hardware backend. ok=false
+// means no backend is in use (or one just failed and was disabled); the caller
+// runs the CPU. NPU, Metal and Vulkan expose the same forward(q, seqs, outs)
+// contract, so the backend choice is a single pointer check — the order here
+// mirrors the device chain, which only ever adopts one of them.
 func (q *Qwen3Embedder) embedGPU(seqs [][]int) (vecs [][]float32, ok bool) {
 	var hid [][]float32
+	if ng := q.npu.Load(); ng != nil {
+		hid = make([][]float32, len(seqs))
+		for i := range hid {
+			hid[i] = make([]float32, q.hp.Dim)
+		}
+		if err := ng.forward(q, seqs, hid); err != nil {
+			if q.npu.CompareAndSwap(ng, nil) {
+				q.setNPUReason("runtime failure: " + err.Error())
+				log.Printf("qwen3: NPU backend failed, falling back to CPU: %v", err)
+			}
+			return nil, false
+		}
+		return q.poolVectors(hid), true
+	}
 	if vg := q.vkGPU.Load(); vg != nil {
 		// Long sequences are slower on the GPU than on the CPU (see
 		// qwen3VKMaxSeqTokens), so hand them back to the caller's CPU path.

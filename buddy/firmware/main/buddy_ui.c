@@ -14,6 +14,16 @@
 #include "buddy_sound.h"
 #include "buddy_task_cursor.h"
 
+/* Cell-grid text entry points implemented in buddy_font.c. Declared here rather
+ * than in buddy_font.h so the header stays untouched by this change; the
+ * straight-line cell renderer is used by the UI only. */
+void buddy_font_draw_cells(uint16_t *fb, int fw, int fh, int x, int y, const char *text,
+                           uint16_t fg, uint16_t bg, float zoom, int max_px);
+int buddy_font_cells_width(const char *text, float zoom, int max_px);
+void buddy_font_draw_small(uint16_t *fb, int fw, int fh, int x, int y, const char *text,
+                           uint16_t fg, uint16_t bg, float zoom, int max_px);
+int buddy_font_small_width(const char *text, float zoom, int max_px);
+
 #define W 360
 #define H 360
 
@@ -21,6 +31,50 @@
  * largest glyphs on the panel, but the weather reading is the one line the
  * user scans from a distance, so it is drawn 25% larger. */
 #define WEATHER_TEXT_ZOOM 1.25f
+
+/** Standby type scale for the square glass only.
+ *
+ * The UI composes a 360x360 canvas; the NV3023 module is 240x240, so
+ * buddy_display point-samples it 3:2. A size is pixel-exact only when every
+ * source row and column reaches exactly one glass pixel, which for the 24px
+ * table happens at zoom 1.0 (16 glass), 1.5 (24) and 2.0 (32) -- and nowhere in
+ * between. The labels below therefore come from the 16px Unifont table, whose
+ * 16 source rows can hit 20 glass px exactly at zoom 1.875.
+ *
+ *   brand / date   24px table @ 1.5  -> 24 glass, exact
+ *   status/weather 16px table @ 1.875 -> 20 glass, exact
+ *
+ * The old 1.25 label zoom (24px table -> 20 glass) was not mappable at any
+ * origin phase: it dropped 6 of 24 source rows and 6 of 24 columns, which is
+ * why small labels looked chewed rather than merely small.
+ * The round 360 ST77916 keeps its curved text, where the canvas is the glass. */
+#define STANDBY_TITLE_ZOOM 1.5f
+#define STANDBY_LABEL_ZOOM 1.875f
+
+/** Zoom for the task / attention / celebrate / prompt pages on the square glass.
+ *
+ * Those lines mix Latin with Chinese (a task name, a phase, a prompt), so they
+ * all come from the 16px Unifont table. At 1.5 the cell is 24 canvas px and
+ * lands on 16 glass px with every source row and column sampled exactly once
+ * (see band_x/band_y). The 24px table at zoom 1.0 produced the same 16 glass px
+ * but dropped 8 of its 24 source rows on every line, which is what made the
+ * strokes look broken rather than small.
+ *
+ * The round 360 ST77916 has no downsampling, so it keeps its own sizes. */
+#define TASK_TEXT_ZOOM 1.5f
+
+/** Top of the standby status band. The enlarged label cell is 30px tall, so it
+ * sits at y=50..80 and clears the 176px pet asset, whose top edge is y=82. The
+ * 36px title band above it ends at y=44, leaving a 6px gap.
+ *
+ * 50 rather than 46 is deliberate: the panel shows canvas row py*1.5, so a
+ * 4-canvas-row shift is 2.67 physical px and lands as exactly 3 glass rows
+ * (the first ink row moves from glass 30 to glass 33). */
+#define STANDBY_STATUS_Y 50
+
+/** Status band top on the round 360 glass, which draws the canvas 1:1 and keeps
+ * the 24px line it always had. */
+#define STANDBY_STATUS_Y_ROUND 61
 
 #define COL_BG buddy_color(0x0E, 0x11, 0x16)
 #define COL_PANEL buddy_color(0x18, 0x1E, 0x28)
@@ -129,6 +183,143 @@ static void draw_centered(uint16_t *fb, int y, const char *text, uint16_t fg, ui
     draw_text(fb, (W - width) / 2, y, text, fg, bg, scale, W - 24);
 }
 
+/** Straight text on the 24px cell grid (see buddy_font_draw_cells). Use this
+ * for any line that can mix Latin with Chinese: the 5x7 ASCII table at scale 1
+ * is 7px tall, so a name like "install buddy" rendered next to 24px ideographs
+ * reads as a footnote. */
+static void draw_text_cells(uint16_t *fb, int x, int y, const char *text, uint16_t fg,
+                            uint16_t bg, float zoom, int max_px) {
+    buddy_font_draw_cells(fb, W, H, x, y, text, fg, bg, zoom, max_px);
+}
+
+static void draw_centered_cells(uint16_t *fb, int y, const char *text, uint16_t fg, uint16_t bg,
+                                float zoom, int max_px) {
+    const int limit = max_px > 0 ? max_px : W - 24;
+    const int width = buddy_font_cells_width(text, zoom, limit);
+    draw_text_cells(fb, (W - width) / 2, y, text, fg, bg, zoom, limit);
+}
+
+/** Text from the 16px Unifont table, drawn at `zoom`.
+ *
+ * This is the only way to get a crisp 16-glass-px line on the 240x240 NV3023
+ * module. The 24px table is crisp only at 24 glass px: at zoom 1.0 the panel's
+ * 3:2 point sampling drops 8 of its 24 rows and 8 of its 24 columns, which is
+ * why a small task name looked like a broken stroke instead of small text. A
+ * 16px cell at zoom 1.5 is 24 canvas px -> 16 glass px, so every source pixel
+ * reaches the panel exactly once.
+ *
+ * The origin is snapped by band_x/band_y below, so callers pass layout
+ * coordinates unchanged and the 16->24->16 mapping stays one-to-one. */
+static int band_x(int x);
+static int band_y(int y);
+
+static void draw_text_small(uint16_t *fb, int x, int y, const char *text, uint16_t fg,
+                            uint16_t bg, float zoom, int max_px) {
+    buddy_font_draw_small(fb, W, H, band_x(x), band_y(y), text, fg, bg, zoom, max_px);
+}
+
+static void draw_centered_small(uint16_t *fb, int y, const char *text, uint16_t fg, uint16_t bg,
+                                float zoom, int max_px) {
+    const int limit = max_px > 0 ? max_px : W - 24;
+    const int width = buddy_font_small_width(text, zoom, limit);
+    // draw_text_small applies band_x/band_y, so pass the plain centred origin.
+    draw_text_small(fb, (W - width) / 2, y, text, fg, bg, zoom, limit);
+}
+
+/** True when the canvas is point-sampled down onto a smaller panel, i.e. the
+ * 240x240 NV3023. The round 360 ST77916 draws the canvas 1:1. */
+static bool small_glass(void) { return !ui_layout()->arc_standby; }
+
+/** Page body text, sized to what each panel can show without resampling.
+ *
+ *   square 240, sampled -> 16px table @1.5: 24 canvas px -> 16 glass px, and
+ *                          every source row/column lands exactly once
+ *   round 360, 1:1      -> the 24px cell grid @1.0 it already shipped with
+ *
+ * Both branches fill the same 24 canvas px cell, so the layout constants in
+ * buddy_layout.c stay valid for either glass. Only the square module changes. */
+static void draw_text_body(uint16_t *fb, int x, int y, const char *text, uint16_t fg, uint16_t bg,
+                           int max_px, int legacy_scale) {
+    if (small_glass()) {
+        draw_text_small(fb, x, y, text, fg, bg, TASK_TEXT_ZOOM, max_px);
+    } else {
+        draw_text(fb, x, y, text, fg, bg, legacy_scale, max_px);
+    }
+}
+
+static void draw_centered_body(uint16_t *fb, int y, const char *text, uint16_t fg, uint16_t bg,
+                               int max_px, int legacy_scale) {
+    const int limit = max_px > 0 ? max_px : W - 24;
+    if (small_glass()) {
+        draw_centered_small(fb, y, text, fg, bg, TASK_TEXT_ZOOM, limit);
+    } else {
+        draw_centered(fb, y, text, fg, bg, legacy_scale);
+    }
+}
+
+/** Standby status line: the only line whose zoom differs by glass. The sampled
+ * 240 panel gets the 16px table at 1.875 (20 glass px, every source row and
+ * column sampled once); the round 360 panel draws 1:1 and keeps its 24px line
+ * at the origin it shipped with. */
+static void draw_status_line(uint16_t *fb, int y, const char *text, uint16_t fg, int max_px) {
+    if (small_glass()) {
+        draw_centered_small(fb, y, text, fg, COL_BG, STANDBY_LABEL_ZOOM, max_px);
+    } else {
+        draw_centered(fb, y, text, fg, COL_BG, 1);
+    }
+}
+
+/** fit_text twin of draw_text_body: measures with whichever table the branch
+ * above will render, so truncation and drawing agree on both glasses. */
+static size_t fit_text(char *dst, size_t dst_size, const char *src, int scale, int max_px,
+                       bool ellipsis);
+static size_t fit_text_small(char *dst, size_t dst_size, const char *src, float zoom, int max_px,
+                             bool ellipsis);
+static size_t fit_text_body(char *dst, size_t dst_size, const char *src, int max_px,
+                            int legacy_scale, bool ellipsis) {
+    if (small_glass()) return fit_text_small(dst, dst_size, src, TASK_TEXT_ZOOM, max_px, ellipsis);
+    return fit_text(dst, dst_size, src, legacy_scale, max_px, ellipsis);
+}
+
+/** Width twin of draw_text_body, for right-aligned lines. */
+static int body_width(const char *text, int max_px, int legacy_scale) {
+    if (small_glass()) return buddy_font_small_width(text, TASK_TEXT_ZOOM, max_px);
+    return buddy_font_width(text, legacy_scale, max_px);
+}
+
+/** Rounds a text-band top onto a canvas row the panel actually samples.
+ *
+ * buddy_display turns the 360 canvas into the 240 glass by point sampling:
+ * glass row gy reads canvas row (gy * 360) // 240, which is the canvas rows
+ * with (c % 3) in {0, 1}. Columns are mirrored (the panel's MADCTL MX bit does
+ * nothing, so the 180 degree mount is corrected in software), so glass column
+ * gx reads canvas column 359 - (gx * 360) // 240, i.e. the columns with
+ * (c % 3) in {0, 2}.
+ *
+ * A band whose top is at canvas row 3k is therefore the worst case: its first
+ * source row sits on a canvas row that is never sampled. Keeping the top at
+ * 3k+1 or 3k+2 makes a 16px cell at zoom 1.5 map source row r to glass row r
+ * with nothing lost and nothing duplicated. */
+static int band_y(int y) {
+    const int phase = ((y % 3) + 3) % 3;
+    if (phase == 0) return y + 1;
+    return y;
+}
+
+/** Column twin of band_y, and the reason it snaps to phase 0.
+ *
+ * On the mirrored column axis only origin % 3 == 0 keeps all 16 source columns
+ * of a 16px cell at zoom 1.875: phase 2 loses source columns 7 and 15, phase 1
+ * loses every odd column. Phase 0 is therefore the only exact choice, so both
+ * other phases are pushed to it. Advances are 3-snapped (advance16 in
+ * buddy_font.c), so this one correction holds for the whole line. */
+static int band_x(int x) {
+    const int phase = ((x % 3) + 3) % 3;
+    if (phase == 1) return x + 2;
+    if (phase == 2) return x + 1;
+    return x;
+}
+
 /** Copies a prefix that fits `max_px`, appending an ellipsis when truncated.
  * Returns the number of source bytes consumed. */
 static size_t fit_text(char *dst, size_t dst_size, const char *src, int scale, int max_px,
@@ -173,6 +364,88 @@ static size_t fit_text(char *dst, size_t dst_size, const char *src, int scale, i
     dst[out] = '\0';
     return (size_t)(p - src);
 }
+
+/** Cell-mode twin of fit_text: same contract, but measures with the 24px grid
+ * metrics so the truncation point matches what buddy_font_draw_cells renders. */
+static size_t fit_text_cells(char *dst, size_t dst_size, const char *src, float zoom, int max_px,
+                             bool ellipsis) {
+    if (!dst || dst_size == 0) return 0;
+    dst[0] = '\0';
+    if (!src) return 0;
+    if (!(zoom > 0.0f)) zoom = 1.0f;
+    if (max_px <= 0) max_px = W - 24;
+
+    const char *ell = "\xE2\x80\xA6";  // U+2026
+    const int ell_adv = ellipsis ? (int)lroundf((float)buddy_font_arc_advance(0x2026) * zoom) : 0;
+    size_t out = 0;
+    int pen = 0;
+    const char *p = src;
+    while (*p) {
+        uint32_t cp = 0;
+        const int len = buddy_font_utf8_next(p, &cp);
+        if (len <= 0) break;
+        const int adv = (int)lroundf((float)buddy_font_arc_advance(cp) * zoom);
+        if (pen + adv > max_px - ell_adv) {
+            if (ellipsis && out + 3 < dst_size) {
+                memcpy(dst + out, ell, 3);
+                out += 3;
+            }
+            dst[out] = '\0';
+            return (size_t)(p - src);
+        }
+        if (out + (size_t)len >= dst_size) break;
+        memcpy(dst + out, p, (size_t)len);
+        out += (size_t)len;
+        pen += adv;
+        p += len;
+    }
+    dst[out] = '\0';
+    return (size_t)(p - src);
+}
+
+/** 16px-table twin of fit_text_cells. Advances differ (ASCII is 8 source
+ * columns wide, not 18 canvas px), so truncation has to measure with
+ * buddy_font_small_width to match what buddy_font_draw_small renders. */
+static size_t fit_text_small(char *dst, size_t dst_size, const char *src, float zoom, int max_px,
+                             bool ellipsis) {
+    if (!dst || dst_size == 0) return 0;
+    dst[0] = '\0';
+    if (!src) return 0;
+    if (!(zoom > 0.0f)) zoom = 1.0f;
+    if (max_px <= 0) max_px = W - 24;
+
+    const char *ell = "\xE2\x80\xA6";  // U+2026
+    const int ell_adv = ellipsis ? buddy_font_small_width(ell, zoom, max_px) : 0;
+    size_t out = 0;
+    int pen = 0;
+    const char *p = src;
+    while (*p) {
+        uint32_t cp = 0;
+        const int len = buddy_font_utf8_next(p, &cp);
+        if (len <= 0) break;
+        // Measure through buddy_font_small_width so truncation uses the same
+        // 3-snapped advance the renderer uses (see advance16 in buddy_font.c).
+        char rune[5] = {0};
+        memcpy(rune, p, (size_t)(len < 4 ? len : 4));
+        const int adv = buddy_font_small_width(rune, zoom, 0);
+        if (pen + adv > max_px - ell_adv) {
+            if (ellipsis && out + 3 < dst_size) {
+                memcpy(dst + out, ell, 3);
+                out += 3;
+            }
+            dst[out] = '\0';
+            return (size_t)(p - src);
+        }
+        if (out + (size_t)len >= dst_size) break;
+        memcpy(dst + out, p, (size_t)len);
+        out += (size_t)len;
+        pen += adv;
+        p += len;
+    }
+    dst[out] = '\0';
+    return (size_t)(p - src);
+}
+
 
 /** Draws a right-aligned ASCII value, e.g. the counter numbers. */
 static void draw_value_right(uint16_t *fb, int right_x, int y, int value, uint16_t fg,
@@ -282,7 +555,9 @@ static void draw_task_bar(uint16_t *fb, const buddy_view_t *v, int active, int64
         fill_rect(fb, bar_x, bar_y, fill_w, bar_h, COL_ACCENT);
         char pct[8];
         snprintf(pct, sizeof(pct), "%d%%", (int)(progress * 100.0f + 0.5f));
-        draw_centered(fb, 312, pct, COL_MUTED, COL_BG, 2);
+        // Same treatment as the rest of the task body: the square panel gets the
+        // 16px table at 16 glass px, the round panel keeps its 5x7 ASCII at 2x.
+        draw_centered_body(fb, 312, pct, COL_MUTED, COL_BG, W, 2);
         return;
     }
     const int block = 30;
@@ -338,13 +613,18 @@ static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms, 
 
     const int label_x = layout->label_x;
     const int value_right = layout->value_right;
-    draw_text(fb, label_x, 74, "总任务", COL_TEXT, COL_BG, 1, 120);
+    // The three counters keep the 24px cell height they had, but come from the
+    // 16px table at 1.5 (see draw_text_small): 24 canvas px -> 16 glass px with
+    // every source row and column landing on the panel exactly once. The 24px
+    // table at zoom 1.0 drew the same 16 glass px while dropping 8 of its 24
+    // source rows, which is what chewed the strokes.
+    draw_text_body(fb, label_x, 74, "总任务", COL_TEXT, COL_BG, 120, 1);
     draw_value_right(fb, value_right, 62, v->counts.total, COL_TEXT, COL_BG, 4);
 
-    draw_text(fb, label_x, 126, "进行中", COL_ACCENT, COL_BG, 1, 120);
+    draw_text_body(fb, label_x, 126, "进行中", COL_ACCENT, COL_BG, 120, 1);
     draw_value_right(fb, value_right, 114, v->counts.in_progress, COL_ACCENT, COL_BG, 4);
 
-    draw_text(fb, label_x, 178, "已完成", COL_SUCCESS, COL_BG, 1, 120);
+    draw_text_body(fb, label_x, 178, "已完成", COL_SUCCESS, COL_BG, 120, 1);
     draw_value_right(fb, value_right, 166, v->counts.done, COL_SUCCESS, COL_BG, 4);
 
     hline(fb, layout->rule_x0, layout->rule_x1, 204, COL_PANEL);
@@ -358,16 +638,17 @@ static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms, 
     if (v->current_count > 0 && v->current[active].title[0]) {
         // The first line is a clean break. An ellipsis here would mark a title
         // as cut off even when the rest is drawn on the next line.
-        const size_t used = fit_text(line1, sizeof(line1), v->current[active].title, 1, text_w, false);
+        const size_t used =
+            fit_text_body(line1, sizeof(line1), v->current[active].title, text_w, 1, false);
         const char *rest = v->current[active].title + used;
         if (*rest) {
-            fit_text(line2, sizeof(line2), rest, 1, text_w, true);
+            fit_text_body(line2, sizeof(line2), rest, text_w, 1, true);
         }
     } else {
         strlcpy(line1, "当前没有进行中的任务", sizeof(line1));
     }
-    draw_text(fb, text_x, 206, line1, COL_TEXT, COL_BG, 1, text_w);
-    if (line2[0]) draw_text(fb, text_x, 234, line2, COL_TEXT, COL_BG, 1, text_w);
+    draw_text_body(fb, text_x, 206, line1, COL_TEXT, COL_BG, text_w, 1);
+    if (line2[0]) draw_text_body(fb, text_x, 234, line2, COL_TEXT, COL_BG, text_w, 1);
 
     draw_task_bar(fb, v, active, now_ms);
 
@@ -410,8 +691,8 @@ static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms, 
     }
     if (tail[0]) {
         char shown[BUDDY_TITLE_BYTES + 24];
-        fit_text(shown, sizeof(shown), tail, 1, layout->tail_w, true);
-        draw_centered(fb, 270, shown, tail_color, COL_BG, 1);
+        fit_text_body(shown, sizeof(shown), tail, layout->tail_w, 1, true);
+        draw_centered_body(fb, 270, shown, tail_color, COL_BG, layout->tail_w, 1);
     }
     if (v->current_count > 1 && v->current_count <= BUDDY_MAX_TASKS && active >= 0 &&
         active < BUDDY_MAX_TASKS) {
@@ -420,9 +701,10 @@ static void draw_task_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms, 
         index[1] = '/';
         index[2] = (char)('0' + v->current_count);
         index[3] = '\0';
-        const int width = buddy_font_width(index, 1, 48);
+        const int width = body_width(index, 48, 1);
         const uint16_t index_color = buddy_task_cursor_pinned(&s_cursor) ? COL_ACCENT : COL_MUTED;
-        draw_text(fb, layout->index_right - width, layout->index_y, index, index_color, COL_BG, 1, 48);
+        draw_text_body(fb, layout->index_right - width, layout->index_y, index, index_color, COL_BG,
+                       48, 1);
     }
     draw_task_chip(fb, mood);
 }
@@ -439,17 +721,18 @@ static void draw_attention_page(uint16_t *fb, const buddy_view_t *v, int mood) {
     char label[32];
     if (extra > 1) snprintf(label, sizeof(label), "%s %d", attention_label(v), extra);
     else strlcpy(label, attention_label(v), sizeof(label));
-    draw_centered(fb, 88, label, label_color, COL_BG, 1);
+    draw_centered_body(fb, 88, label, label_color, COL_BG, layout->title_w, 1);
 
     char line1[BUDDY_TITLE_BYTES + 8];
     char line2[BUDDY_TITLE_BYTES + 8];
     line2[0] = '\0';
-    const size_t used = fit_text(line1, sizeof(line1), v->attention.title, 1, layout->title_w, false);
+    const size_t used =
+        fit_text_body(line1, sizeof(line1), v->attention.title, layout->title_w, 1, false);
     if (v->attention.title[used]) {
-        fit_text(line2, sizeof(line2), v->attention.title + used, 1, layout->title_w, true);
+        fit_text_body(line2, sizeof(line2), v->attention.title + used, layout->title_w, 1, true);
     }
-    draw_centered(fb, 132, line1, COL_TEXT, COL_BG, 1);
-    if (line2[0]) draw_centered(fb, 160, line2, COL_TEXT, COL_BG, 1);
+    draw_centered_body(fb, 132, line1, COL_TEXT, COL_BG, layout->title_w, 1);
+    if (line2[0]) draw_centered_body(fb, 160, line2, COL_TEXT, COL_BG, layout->title_w, 1);
     draw_pet_chip(fb, W / 2, 250, mood);
 }
 
@@ -698,7 +981,7 @@ static void draw_task_banner(uint16_t *fb, const buddy_view_t *v, int active) {
         }
     }
     if (!raw[0]) {
-        draw_centered(fb, layout->header_y, "MaClaw", COL_MUTED, COL_BG, 2);
+        draw_centered_body(fb, layout->header_y, "MaClaw", COL_MUTED, COL_BG, 220, 2);
         return;
     }
     char wide[160];
@@ -710,8 +993,8 @@ static void draw_task_banner(uint16_t *fb, const buddy_view_t *v, int active) {
         return;
     }
     char fit[160];
-    fit_text(fit, sizeof(fit), wide, 1, 220, true);
-    draw_centered(fb, layout->header_y, fit, COL_MUTED, COL_BG, 1);
+    fit_text_body(fit, sizeof(fit), wide, 220, 1, true);
+    draw_centered_body(fb, layout->header_y, fit, COL_MUTED, COL_BG, 220, 1);
 }
 
 /** The attention page replaces standby, so the date the host already sends
@@ -733,9 +1016,10 @@ static void draw_attention_date(uint16_t *fb, const buddy_view_t *v) {
         draw_arc_text_top(fb, fit, 138, -3, COL_TEXT);
         return;
     }
+    // Same rim line as the standby page, so the date keeps one size across pages.
     char fit[128];
-    fit_text(fit, sizeof(fit), line, 1, layout->title_w, true);
-    draw_centered(fb, layout->date_y, fit, COL_TEXT, COL_BG, 1);
+    fit_text_cells(fit, sizeof(fit), line, STANDBY_TITLE_ZOOM, layout->title_w, true);
+    draw_centered_cells(fb, layout->date_y, fit, COL_TEXT, COL_BG, STANDBY_TITLE_ZOOM, layout->title_w);
 }
 
 static void draw_standby_page(uint16_t *fb, const buddy_view_t *v, int64_t now_ms, int mood, bool muted,
@@ -768,10 +1052,12 @@ static void draw_standby_page(uint16_t *fb, const buddy_view_t *v, int64_t now_m
         }
     } else if (date_line[0]) {
         char date_fit[128];
-        fit_text(date_fit, sizeof(date_fit), date_line, 1, layout->title_w, true);
-        draw_centered(fb, layout->date_y, date_fit, COL_TEXT, COL_BG, 1);
+        fit_text_cells(date_fit, sizeof(date_fit), date_line, STANDBY_TITLE_ZOOM, layout->title_w, true);
+        draw_centered_cells(fb, layout->date_y, date_fit, COL_TEXT, COL_BG, STANDBY_TITLE_ZOOM,
+                            layout->title_w);
     } else {
-        draw_centered(fb, layout->date_y, "MaClaw Buddy", COL_TEXT, COL_BG, 1);
+        draw_centered_cells(fb, layout->date_y, "MaClaw Buddy", COL_TEXT, COL_BG,
+                            STANDBY_TITLE_ZOOM, layout->title_w);
     }
     }
 
@@ -795,18 +1081,21 @@ static void draw_standby_page(uint16_t *fb, const buddy_view_t *v, int64_t now_m
         draw_pet(fb, W / 2, 170, now_ms, mood);
     }
 
-    // The 176px asset reaches y=82, which covers the bottom of a 24px line
-    // drawn at y=61. Paint the status after the pet so it stays readable.
+    // The 176px asset reaches y=82, which covers the bottom of the status band.
+    // Paint the status after the pet so it stays readable. The round glass draws
+    // the canvas 1:1 and keeps its 24px line at the old origin; only the sampled
+    // 240 panel uses the enlarged 16px-table label.
+    const int status_y = layout->arc_standby ? STANDBY_STATUS_Y_ROUND : STANDBY_STATUS_Y;
     if (!v->online) {
-        draw_centered(fb, 61, muted ? "未连接 · 静音" : "未连接", COL_MUTED, COL_BG, 1);
+        draw_status_line(fb, status_y, muted ? "未连接 · 静音" : "未连接", COL_MUTED, layout->title_w);
     } else if (v->counts.pending > 0) {
         char raw[40];
         char buf[64];
         snprintf(raw, sizeof(raw), muted ? "待确认 %d · 静音" : "待确认 %d", v->counts.pending);
         widen_ascii_digits(buf, sizeof(buf), raw);
-        draw_centered(fb, 61, buf, COL_WARN, COL_BG, 1);
+        draw_status_line(fb, status_y, buf, COL_WARN, layout->title_w);
     } else if (muted) {
-        draw_centered(fb, 61, "静音", COL_WARN, COL_BG, 1);
+        draw_status_line(fb, status_y, "静音", COL_WARN, layout->title_w);
     }
 
     if (pet_only) return;
@@ -829,18 +1118,22 @@ static void draw_standby_page(uint16_t *fb, const buddy_view_t *v, int64_t now_m
                 draw_arc_text_bottom(fb, loc, 97, COL_MUTED, 1.0f);
             }
         } else {
-            fit_text(wx_fit, sizeof(wx_fit), wx, 1, layout->title_w, true);
-            draw_centered(fb, layout->weather_y, wx_fit, COL_ACCENT, COL_BG, 1);
+            fit_text_small(wx_fit, sizeof(wx_fit), wx, STANDBY_LABEL_ZOOM, layout->title_w, true);
+            draw_centered_small(fb, layout->weather_y, wx_fit, COL_ACCENT, COL_BG, STANDBY_LABEL_ZOOM,
+                                layout->title_w);
             if (v->weather_location[0]) {
                 char loc[64];
-                fit_text(loc, sizeof(loc), v->weather_location, 1, layout->title_w, true);
-                draw_centered(fb, layout->location_y, loc, COL_MUTED, COL_BG, 1);
+                fit_text_small(loc, sizeof(loc), v->weather_location, STANDBY_LABEL_ZOOM,
+                               layout->title_w, true);
+                draw_centered_small(fb, layout->location_y, loc, COL_MUTED, COL_BG,
+                                    STANDBY_LABEL_ZOOM, layout->title_w);
             }
         }
     } else if (layout->arc_standby) {
         draw_arc_text_bottom(fb, "正在获取天气", 133, COL_MUTED, WEATHER_TEXT_ZOOM);
     } else {
-        draw_centered(fb, layout->weather_y, "正在获取天气", COL_MUTED, COL_BG, 1);
+        draw_centered_small(fb, layout->weather_y, "正在获取天气", COL_MUTED, COL_BG,
+                            STANDBY_LABEL_ZOOM, layout->title_w);
     }
 }
 
@@ -1048,34 +1341,35 @@ static void draw_celebrate_page(uint16_t *fb, const buddy_view_t *v, int64_t now
 
     // The message is visible for the first 2.2s, then only fireworks remain.
     if (elapsed < 2200) {
-        draw_centered(fb, 92, "✓ 任务完成", COL_ACCENT, COL_BG, 1);
+        draw_centered_body(fb, 92, "✓ 任务完成", COL_ACCENT, COL_BG, 300, 1);
         char line1[BUDDY_TITLE_BYTES + 8];
         char line2[BUDDY_TITLE_BYTES + 8];
         line2[0] = '\0';
         const int title_w = ui_layout()->title_w;
-        const size_t used = fit_text(line1, sizeof(line1), v->celebrate_title, 1, title_w, false);
+        const size_t used =
+            fit_text_body(line1, sizeof(line1), v->celebrate_title, title_w, 1, false);
         if (used < strlen(v->celebrate_title)) {
-            fit_text(line2, sizeof(line2), v->celebrate_title + used, 1, title_w, true);
+            fit_text_body(line2, sizeof(line2), v->celebrate_title + used, title_w, 1, true);
         }
-        draw_centered(fb, 128, line1, COL_TEXT, COL_BG, 1);
-        if (line2[0]) draw_centered(fb, 156, line2, COL_TEXT, COL_BG, 1);
+        draw_centered_body(fb, 128, line1, COL_TEXT, COL_BG, title_w, 1);
+        if (line2[0]) draw_centered_body(fb, 156, line2, COL_TEXT, COL_BG, title_w, 1);
     }
 }
 
 static void draw_prompt_page(uint16_t *fb, const buddy_view_t *v) {
     fill_rect(fb, 0, 0, W, H, COL_BG);
-    draw_centered(fb, 140, "MaClaw Buddy", COL_ACCENT, COL_BG, 2);
+    draw_centered_body(fb, 140, "MaClaw Buddy", COL_ACCENT, COL_BG, 300, 2);
     char line1[80];
     char line2[80];
     // title_w keeps the second line (y=228, 24px tall) inside the round
     // aperture. W-60 reached past r=150 at that height.
     const int prompt_w = ui_layout()->title_w;
     const char *prompt = v->prompt[0] ? v->prompt : "等待主机连接";
-    const size_t used = fit_text(line1, sizeof(line1), prompt, 1, prompt_w, false);
+    const size_t used = fit_text_body(line1, sizeof(line1), prompt, prompt_w, 1, false);
     line2[0] = '\0';
-    if (prompt[used]) fit_text(line2, sizeof(line2), prompt + used, 1, prompt_w, true);
-    draw_centered(fb, 200, line1, COL_TEXT, COL_BG, 1);
-    if (line2[0]) draw_centered(fb, 228, line2, COL_TEXT, COL_BG, 1);
+    if (prompt[used]) fit_text_body(line2, sizeof(line2), prompt + used, prompt_w, 1, true);
+    draw_centered_body(fb, 200, line1, COL_TEXT, COL_BG, prompt_w, 1);
+    if (line2[0]) draw_centered_body(fb, 228, line2, COL_TEXT, COL_BG, prompt_w, 1);
 }
 
 void buddy_ui_render(const buddy_view_t *v, int64_t now_ms) {

@@ -35,7 +35,12 @@ void buddy_layout_metrics(bool round_glass, buddy_layout_t *out) {
     out->bar_x = 20;
     out->bar_w = 320;
     out->arc_standby = false;
-    out->date_y = 16;
-    out->weather_y = 292;
-    out->location_y = 320;
+    /* Standby rows are drawn on the 24px cell grid with a zoom (see
+     * STANDBY_TITLE_ZOOM / STANDBY_LABEL_ZOOM in buddy_ui.c), so these tops are
+     * band origins, not baselines: the title band is 36px tall, the weather band
+     * 30px and the location band 24px. date_y 8..44, status 50..80 (clears the
+     * 176px pet asset at y=82), weather 290..320, location 322..346. */
+    out->date_y = 8;
+    out->weather_y = 290;
+    out->location_y = 322;
 }

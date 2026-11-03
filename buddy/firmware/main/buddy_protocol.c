@@ -12,6 +12,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
+#include "sdkconfig.h"
 
 #include "buddy_bpt1.h"
 #include "buddy_display.h"
@@ -24,7 +25,15 @@
 #include "buddy_protocol_generated.h"
 
 #define FW_VERSION "buddy-0.1.0"
+/* The hello frame's board id is a profile fact, not a firmware constant: the
+ * NV3023 profile runs on the single-key 240x240 module, whose panel, audio
+ * pins and input set all differ from the round EchoEar build. Reporting the
+ * round board's id made the host describe this glass as 360x360 round. */
+#if CONFIG_BUDDY_PANEL_NV3023_240
+#define BOARD_NAME "fangtang-4g"
+#else
 #define BOARD_NAME "echoear-2st"
+#endif
 
 static SemaphoreHandle_t s_tx_lock;
 static SemaphoreHandle_t s_seq_lock;
@@ -599,7 +608,13 @@ esp_err_t buddy_protocol_start(void) {
     buddy_state_clear_prompt();
     buddy_protocol_send_hello();
 
-    if (xTaskCreate(rx_task, "buddy_rx", 4096, NULL, 6, NULL) != pdPASS) {
+    // The rx task runs the whole receive path in one stack frame: 128B of read
+    // chunk, a 1052B raw pet-frame buffer, and handle_line -> handle_state,
+    // which holds a 5-entry buddy_task_t array (~820B) plus cJSON's recursive
+    // parser. 4096 bytes overflowed as soon as a state frame was applied, and
+    // the resulting panic reset the glass mid-frame. 8192 leaves ~4KB of slack
+    // for the deepest frame (a 5-task state carrying a pet chunk).
+    if (xTaskCreate(rx_task, "buddy_rx", 8192, NULL, 6, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     if (xTaskCreate(heartbeat_task, "buddy_hb", 3072, NULL, 4, NULL) != pdPASS) {

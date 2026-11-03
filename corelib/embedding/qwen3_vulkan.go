@@ -103,20 +103,23 @@ type vkSiluParams struct{ M, F, Ld int32 }
 
 // initVulkan tries to bring up the Vulkan backend. Any failure returns an
 // error and the CPU path stays in charge.
-func (q *Qwen3Embedder) initVulkan() {
+// initVulkan brings the Vulkan backend up on Windows/Linux. It reports whether
+// the backend was adopted, so the device chain (device_select.go) knows to stop
+// here and does not fall through to CPU.
+func (q *Qwen3Embedder) initVulkan() bool {
 	if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
 		// macOS has Metal; other platforms are not shipped.
-		return
+		return false
 	}
 	if os.Getenv("MACLAW_QWEN3_VULKAN") == "0" {
 		q.setGPUReason("disabled by MACLAW_QWEN3_VULKAN=0")
-		return
+		return false
 	}
 	if !HWAccelPreferred() {
 		// The user turned hardware acceleration off: never pay the ~450 MB
 		// upload and probe cost just to release the device afterwards.
 		q.setGPUReason("hardware acceleration off")
-		return
+		return false
 	}
 	// The weight blob lives in host-visible device-local memory, which on an
 	// integrated GPU is ordinary system RAM. On a low-memory machine that
@@ -125,14 +128,14 @@ func (q *Qwen3Embedder) initVulkan() {
 		if need := qwen3VKWeightBytes(q) + 256<<20; need > 0 {
 			if avail, ok := availableMemoryFn(); ok && avail < need {
 				q.setGPUReason(fmt.Sprintf("low memory: need ~%d MB, available %d MB", need>>20, avail>>20))
-				return
+				return false
 			}
 		}
 	}
 	g, err := newQwen3VKGPU(q)
 	if err != nil {
 		q.setGPUReason(err.Error())
-		return
+		return false
 	}
 	// One probe covers both gates: the same timed rounds produce the vectors
 	// for the numeric self-check and the CPU/GPU speed ratio, so the backend
@@ -145,7 +148,7 @@ func (q *Qwen3Embedder) initVulkan() {
 	if err != nil {
 		g.release()
 		q.setGPUReason("probe: " + err.Error())
-		return
+		return false
 	}
 	// Correctness before speed: a fast backend that computes the wrong vector
 	// is worthless, so the numeric gate runs first and is absolute.
@@ -157,7 +160,7 @@ func (q *Qwen3Embedder) initVulkan() {
 		q.setGPUReason(fmt.Sprintf("numeric check: worst cos %.6f < %.4f (probe text %d)",
 			minCos, qwen3VKSelfCheckMinCos, worst))
 		log.Printf("qwen3: Vulkan disabled — %s", q.GPUReason())
-		return
+		return false
 	}
 	if ratio < qwen3VKMinSpeedRatio() {
 		g.release()
@@ -167,7 +170,7 @@ func (q *Qwen3Embedder) initVulkan() {
 		q.setGPUReason(fmt.Sprintf("gpu too slow: %.2fx of CPU (need %.2fx); cpu %.1fms, vulkan %.1fms",
 			ratio, qwen3VKMinSpeedRatio(), ms(cpuDur), ms(gpuDur)))
 		log.Printf("qwen3: Vulkan disabled — %s", q.GPUReason())
-		return
+		return false
 	}
 	q.setGPUReason("")
 	q.setGPUGate(GPUGate{
@@ -183,6 +186,7 @@ func (q *Qwen3Embedder) initVulkan() {
 	q.vkGPU.Store(g)
 	log.Printf("qwen3: Vulkan backend active (%s, %d MB weights, %.2fx CPU speed: cpu %.1fms vs vulkan %.1fms)",
 		g.dev.Info.Name, g.WeightBytes>>20, ratio, ms(cpuDur), ms(gpuDur))
+	return true
 }
 
 // qwen3VKBatchRows caps how many rows one Vulkan forward packs.

@@ -22,6 +22,8 @@ const uint8_t _binary_cjk24_cjk_bin_start[1] = {0};
 const uint8_t _binary_cjk24_cjk_bin_end[1] = {0};
 const uint8_t _binary_cjk24_ext_bin_start[1] = {0};
 const uint8_t _binary_cjk24_ext_bin_end[1] = {0};
+const uint8_t _binary_cjk16_bin_start[1] = {0};
+const uint8_t _binary_cjk16_bin_end[1] = {0};
 
 #define FB_W 64
 #define FB_H 16

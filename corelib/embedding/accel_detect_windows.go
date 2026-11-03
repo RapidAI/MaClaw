@@ -37,12 +37,12 @@ func scanEnumKey(k registry.Key, depth int) (bool, string) {
 	}
 	if name, _, err := k.GetStringValue("FriendlyName"); err == nil {
 		if isNPUName(name) {
-			return true, name
+			return true, expandInfString(name)
 		}
 	}
 	if name, _, err := k.GetStringValue("DeviceDesc"); err == nil {
 		if isNPUName(name) {
-			return true, name
+			return true, expandInfString(name)
 		}
 	}
 	names, _ := k.ReadSubKeyNames(512)

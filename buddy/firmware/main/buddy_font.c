@@ -1,21 +1,26 @@
 #include "buddy_font.h"
 
+#include <math.h>
 #include <stdatomic.h>
 #include <string.h>
 
 #include "buddy_font_ext_index.h"
+#include "buddy_font16_index.h"
 
 // Packed font binaries embedded by target_add_binary_data().
 extern const uint8_t _binary_cjk24_cjk_bin_start[];
 extern const uint8_t _binary_cjk24_cjk_bin_end[];
 extern const uint8_t _binary_cjk24_ext_bin_start[];
 extern const uint8_t _binary_cjk24_ext_bin_end[];
+extern const uint8_t _binary_cjk16_bin_start[];
+extern const uint8_t _binary_cjk16_bin_end[];
 
 #define GLYPH_BYTES 72  // 24 rows * 3 bytes, MSB first
+#define GLYPH16_BYTES 32  // 16 rows * 2 bytes, MSB first
 
 static atomic_int s_missing;
 
-const char *buddy_font_rev(void) { return "cjk24-ext1"; }
+const char *buddy_font_rev(void) { return "cjk24-ext1+u16"; }
 
 // Forward declarations: the curved-text helpers below are defined before the
 // static glyph lookup helpers further down.
@@ -23,6 +28,8 @@ static int utf8_decode(const char *s, uint32_t *out);
 static const uint8_t *glyph5x7(char c);
 static const uint8_t *glyph24(uint32_t cp);
 static bool glyph24_pixel(const uint8_t *bitmap, uint32_t cp, int row, int col);
+static void put_px(uint16_t *fb, int fw, int fh, int x, int y, uint16_t color);
+static void fill_rect(uint16_t *fb, int fw, int fh, int x, int y, int w, int h, uint16_t color);
 
 int buddy_font_missing_total(bool reset) {
     if (reset) {
@@ -90,6 +97,186 @@ bool buddy_font_cell(uint32_t codepoint, uint8_t cell[24 * 24]) {
         }
     }
     return true;
+}
+
+int buddy_font_cells_width(const char *text, float zoom, int max_px) {
+    if (!text) return 0;
+    if (!(zoom > 0.0f)) zoom = 1.0f;
+    int pen = 0;
+    const char *p = text;
+    while (*p) {
+        uint32_t cp = 0;
+        const int len = utf8_decode(p, &cp);
+        if (len <= 0) break;
+        const int adv = (int)lroundf((float)buddy_font_arc_advance(cp) * zoom);
+        if (max_px > 0 && pen + adv > max_px) break;
+        pen += adv;
+        p += len;
+    }
+    return pen;
+}
+
+void buddy_font_draw_cells(uint16_t *fb, int fw, int fh, int x, int y, const char *text,
+                           uint16_t fg, uint16_t bg, float zoom, int max_px) {
+    if (!fb || !text) return;
+    if (!(zoom > 0.0f)) zoom = 1.0f;
+    const int cell_px = (int)lroundf(24.0f * zoom);
+    if (cell_px <= 0) return;
+    // One background pass for the whole line. Clearing per glyph would let a
+    // narrow ASCII advance (18 < 24) erase the right edge of the previous one.
+    const int line_w = buddy_font_cells_width(text, zoom, max_px);
+    if (line_w > 0) fill_rect(fb, fw, fh, x, y, line_w, cell_px, bg);
+
+    int pen = 0;
+    const char *p = text;
+    while (*p) {
+        uint32_t cp = 0;
+        const int len = utf8_decode(p, &cp);
+        if (len <= 0) break;
+        p += len;
+        if (cp == '\r' || cp == '\n') continue;
+        if (cp < 0x20 || cp == 0x7F) continue;  // control characters
+        const int adv = (int)lroundf((float)buddy_font_arc_advance(cp) * zoom);
+        if (max_px > 0 && pen + adv > max_px) break;
+        uint8_t cell[24 * 24];
+        if (!buddy_font_cell(cp, cell)) {
+            // Same hollow box the 1-bit path uses, on the same grid.
+            memset(cell, 0, sizeof(cell));
+            for (int i = 2; i < 22; ++i) {
+                cell[2 * 24 + i] = 1;
+                cell[21 * 24 + i] = 1;
+                cell[i * 24 + 2] = 1;
+                cell[i * 24 + 21] = 1;
+            }
+            atomic_fetch_add(&s_missing, 1);
+        }
+        for (int dy = 0; dy < cell_px; ++dy) {
+            const int sy = (int)((float)dy / zoom);
+            if (sy < 0 || sy >= 24) continue;
+            const uint8_t *row = cell + sy * 24;
+            for (int dx = 0; dx < cell_px; ++dx) {
+                const int sx = (int)((float)dx / zoom);
+                if (sx < 0 || sx >= 24) continue;
+                if (row[sx]) put_px(fb, fw, fh, x + pen + dx, y + dy, fg);
+            }
+        }
+        pen += adv;
+    }
+}
+
+/** Resolves a codepoint to its glyph index in the 16px table, or -1. */
+static int index16(uint32_t cp) {
+    if (cp >= BUDDY16_ASCII_FIRST && cp <= BUDDY16_ASCII_LAST) {
+        return (int)(cp - BUDDY16_ASCII_FIRST);
+    }
+    for (int i = 0; i < BUDDY16_EXTRA_COUNT; ++i) {
+        if (s_buddy16_extras[i] == cp) return BUDDY16_EXTRA_BASE + i;
+    }
+    for (int i = 0; i < BUDDY16_RANGE_COUNT; ++i) {
+        const uint32_t lo = s_buddy16_ranges[i][0];
+        const uint32_t hi = s_buddy16_ranges[i][1];
+        if (cp >= lo && cp <= hi) return (int)(s_buddy16_ranges[i][2] + (cp - lo));
+    }
+    return -1;
+}
+
+bool buddy_font_cell16(uint32_t codepoint, uint8_t cell[16 * 16]) {
+    if (!cell) return false;
+    memset(cell, 0, 16 * 16);
+    if (codepoint < 0x20 || codepoint == 0x7F) return true;
+    const int index = index16(codepoint);
+    if (index < 0) return false;
+    const size_t offset = (size_t)index * GLYPH16_BYTES;
+    const size_t available = (size_t)(_binary_cjk16_bin_end - _binary_cjk16_bin_start);
+    if (offset + GLYPH16_BYTES > available) return false;
+    const uint8_t *bitmap = _binary_cjk16_bin_start + offset;
+    for (int row = 0; row < 16; ++row) {
+        const uint16_t bits = (uint16_t)((bitmap[row * 2] << 8) | bitmap[row * 2 + 1]);
+        if (!bits) continue;
+        for (int col = 0; col < 16; ++col) {
+            if (bits & (1u << (15 - col))) cell[row * 16 + col] = 1;
+        }
+    }
+    return true;
+}
+
+/** Advance of one 16px-table cell in canvas px at `zoom`, snapped to a multiple
+ * of 3.
+ *
+ * The snap is load bearing, not cosmetic. buddy_display point-samples the 360
+ * canvas onto the 240 glass, so canvas columns with c % 3 == 1 are never
+ * sampled. An un-snapped ASCII advance at zoom 1.875 is 12 * 1.875 = 22.5 -> 23,
+ * which shifts every following glyph one column off that grid and silently
+ * drops its last source column; "未连接 · 静音" lost the right edge of 静 and 音
+ * this way. Keeping advances on multiples of 3 preserves the phase of the line
+ * origin, so one band_x() origin makes the whole line exact. */
+static int advance16(uint32_t cp, float zoom) {
+    const float raw = (float)(cp < 0x80 ? 12 : 16) * zoom;
+    return 3 * (int)lroundf(raw / 3.0f);
+}
+
+int buddy_font_small_width(const char *text, float zoom, int max_px) {
+    if (!text) return 0;
+    if (!(zoom > 0.0f)) zoom = 1.0f;
+    int pen = 0;
+    const char *p = text;
+    while (*p) {
+        uint32_t cp = 0;
+        const int len = utf8_decode(p, &cp);
+        if (len <= 0) break;
+        const int adv = advance16(cp, zoom);
+        if (max_px > 0 && pen + adv > max_px) break;
+        pen += adv;
+        p += len;
+    }
+    return pen;
+}
+
+void buddy_font_draw_small(uint16_t *fb, int fw, int fh, int x, int y, const char *text,
+                           uint16_t fg, uint16_t bg, float zoom, int max_px) {
+    if (!fb || !text) return;
+    if (!(zoom > 0.0f)) zoom = 1.0f;
+    const int cell_px = (int)lroundf(16.0f * zoom);
+    if (cell_px <= 0) return;
+    // Same single background pass as the 24px path: a narrow ASCII advance
+    // (12 < 16) must not erase the right edge of the previous glyph.
+    const int line_w = buddy_font_small_width(text, zoom, max_px);
+    if (line_w > 0) fill_rect(fb, fw, fh, x, y, line_w, cell_px, bg);
+
+    int pen = 0;
+    const char *p = text;
+    while (*p) {
+        uint32_t cp = 0;
+        const int len = utf8_decode(p, &cp);
+        if (len <= 0) break;
+        p += len;
+        if (cp == '\r' || cp == '\n') continue;
+        if (cp < 0x20 || cp == 0x7F) continue;  // control characters
+        const int adv = advance16(cp, zoom);
+        if (max_px > 0 && pen + adv > max_px) break;
+        uint8_t cell[16 * 16];
+        if (!buddy_font_cell16(cp, cell)) {
+            memset(cell, 0, sizeof(cell));
+            for (int i = 1; i < 15; ++i) {
+                cell[1 * 16 + i] = 1;
+                cell[14 * 16 + i] = 1;
+                cell[i * 16 + 1] = 1;
+                cell[i * 16 + 14] = 1;
+            }
+            atomic_fetch_add(&s_missing, 1);
+        }
+        for (int dy = 0; dy < cell_px; ++dy) {
+            const int sy = (int)((float)dy / zoom);
+            if (sy < 0 || sy >= 16) continue;
+            const uint8_t *row = cell + sy * 16;
+            for (int dx = 0; dx < cell_px; ++dx) {
+                const int sx = (int)((float)dx / zoom);
+                if (sx < 0 || sx >= 16) continue;
+                if (row[sx]) put_px(fb, fw, fh, x + pen + dx, y + dy, fg);
+            }
+        }
+        pen += adv;
+    }
 }
 
 static int utf8_decode(const char *s, uint32_t *out) {
