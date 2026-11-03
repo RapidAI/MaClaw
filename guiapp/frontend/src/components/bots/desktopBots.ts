@@ -1584,6 +1584,15 @@ export function desktopBotServerRunText(kind: 'wake' | 'delegate', runId: string
 // desktopAckWorthSaying decides whether a direct job gets a first line at all.
 // "I'll go check that now" is filler: the status row already shows the work.
 // A line is worth it only when it tells the person something they can act on.
+// desktopAckOwedOnDispatch: every new message gets a short first-person
+// reply. A plain job whose reading carried no sentence and nothing worth an
+// early line still owes one once it is known to be a new job (not folded
+// into a running one, not queued, not "continue"), else the person sees
+// only the wait bubble and thinks the bot ignored them.
+export function desktopAckOwedOnDispatch(r: { sentence: string; verbatim: boolean; phase: string; earlyAckPosted: boolean }): boolean {
+    return !r.sentence.trim() && !r.verbatim && r.phase === 'execute' && !r.earlyAckPosted;
+}
+
 export function desktopAckWorthSaying(r: { unclear?: string; assumption?: string; options?: number; files?: number; fallback?: boolean }): boolean {
     return !!((r.unclear || '').trim() || (r.assumption || '').trim() || (r.options || 0) >= 2 || (r.files || 0) > 0 || r.fallback);
 }

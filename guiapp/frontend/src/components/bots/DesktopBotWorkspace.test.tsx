@@ -5422,7 +5422,7 @@ describe('DesktopBotWorkspace', () => {
         expect(sup?.content).toBe('补充已生效。');
     });
 
-    it('starts the work at once and adds no filler line when a direct reading has no sentence', async () => {
+    it('starts the work at once and still says one short line when a direct reading has no sentence', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 1', description: '共用桌面', instance_id: 'inst_1' }]);
         const ask = '打开示例网站\n再把标题记下来';
         understandTask.mockImplementation(async () => ({ told: '', instruction: '打开示例网站并记下标题', pace: 'direct' as const }));
@@ -5432,7 +5432,8 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: ask } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
         await waitFor(() => expect(sendTask).toHaveBeenCalled());
-        expect(screen.queryByText('好，这就去办。')).toBeNull();
+        // Every new message gets a short first-person reply (2026-11-03).
+        await waitFor(() => expect(screen.getByText('好，这就去办。')).toBeTruthy());
         expect(screen.queryByText('打开示例网站')).toBeNull();
         expect(document.querySelector('[data-message-role="user"]')?.textContent).toContain('再把标题记下来');
         await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '打开示例网站并记下标题', 'execute'));

@@ -104,6 +104,7 @@ import {
     desktopBotCrossTargetText,
     desktopBotDestructive,
     desktopAckWorthSaying,
+    desktopAckOwedOnDispatch,
     desktopBotHubStartedText,
     desktopBotReportFeedText,
     desktopBotServerRunText,
@@ -4856,7 +4857,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 options: options.length, files: ackFiles.length, fallback: !!str(u.fallback, u.Fallback),
             });
             const sentence = told.trim();
-            if (!sentence && !verbatim && sendPhase === 'execute' && worthSaying) {
+            const earlyAckPosted = !sentence && !verbatim && sendPhase === 'execute' && worthSaying;
+            const acceptAckCtx: DesktopBotAckContext = {
+                kind: 'accept', message: content, lang, persona: personaForBot(ownerId, botId),
+                goal: str(u.goal, u.Goal), instruction,
+            };
+            if (earlyAckPosted) {
                 postLaterAck(botId, assistantMessage.id, {
                     kind: 'accept',
                     message: content,
@@ -5028,6 +5034,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 queued.push({ text: instruction, phase: sendPhase, verbatim: true, literal, userText: content.trim() });
                 queueRef.current.set(botId, queued);
                 return;
+            }
+            if (desktopAckOwedOnDispatch({ sentence, verbatim, phase: sendPhase, earlyAckPosted })) {
+                // A new job that had no line yet: say a short one now, above
+                // the wait bubble (2026-11-03 21:05: a second task mid-run got
+                // only "正在一点点推进" and no reply).
+                postLaterAck(botId, assistantMessage.id, acceptAckCtx);
             }
             {
                 // From here the order is MaClawSrv's. A restart before this

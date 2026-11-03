@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
-import { addDesktopBot, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, clearedBotMessages, isDesktopBotClearCommand, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
+import { addDesktopBot, desktopAckOwedOnDispatch, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, clearedBotMessages, isDesktopBotClearCommand, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
 import type { DesktopBotMessage } from './desktopBots';
 
 beforeEach(() => {
@@ -734,5 +734,16 @@ describe('/clear', () => {
             { id: 'd', role: 'user', content: 'next', queued: true },
         ] as DesktopBotMessage[]);
         expect(kept.map(item => item.id)).toEqual(['c', 'd']);
+    });
+});
+
+describe('desktopAckOwedOnDispatch', () => {
+    it('owes a reply for a plain new job with no line yet', () => {
+        expect(desktopAckOwedOnDispatch({ sentence: '', verbatim: false, phase: 'execute', earlyAckPosted: false })).toBe(true);
+    });
+    it('does not double up when a line was already said or posted', () => {
+        expect(desktopAckOwedOnDispatch({ sentence: '好的', verbatim: false, phase: 'execute', earlyAckPosted: false })).toBe(false);
+        expect(desktopAckOwedOnDispatch({ sentence: '', verbatim: false, phase: 'execute', earlyAckPosted: true })).toBe(false);
+        expect(desktopAckOwedOnDispatch({ sentence: '', verbatim: true, phase: 'execute', earlyAckPosted: false })).toBe(false);
     });
 });
