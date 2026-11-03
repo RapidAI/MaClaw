@@ -238,6 +238,8 @@ type Service struct {
 	patrolOnce  sync.Once
 	patrolMu    sync.Mutex
 	patrolSight map[string]*patrolSight
+	routerOnce  sync.Once
+	router      *routerInbox
 }
 
 // asyncPreferKey marks one MaClawSrv call as Prefer: respond-async.

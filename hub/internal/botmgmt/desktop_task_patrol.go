@@ -1,15 +1,15 @@
 package botmgmt
 
 import (
-	"context"
 	"strings"
 	"time"
 )
 
 // Independent task watcher (alongside srv desktop_watchdog / ensureReceipt):
-// Hub patrols live admits and pins, and tells the person in one short
-// first-person Chinese line when a run is stuck, needs them, or finished
-// with nothing to show. One notice per run and reason; never spam.
+// the watcher role patrols each bot's worker runs and reports a finding
+// (stuck, needs the person, finished with nothing to show, failed) to that
+// bot's router (bot_roles.go). It never speaks to the person itself. One
+// finding per run and reason; never spam.
 
 const (
 	patrolEvery      = time.Minute
@@ -100,51 +100,28 @@ func (s *Service) patrolDesktopTasksOnce() {
 		if it.started.IsZero() || now.Sub(it.started) < patrolQuietAge {
 			continue
 		}
-		reason, text := "", ""
+		reason := ""
 		switch {
 		case !it.done && now.Sub(sight.changed) >= patrolStallAfter:
-			reason, text = "stalled", "这件我停住了：很久没有进展，我先收手，页面保持原样。你说一声我接着做。"
+			reason = "stalled"
 		case it.done && !it.delivered && strings.TrimSpace(it.text) == "" && it.err == "" && !it.handoff && it.attention == "":
-			reason, text = "no_receipt", "这件做完了，桌面上就是结果，你看一眼。"
+			reason = "no_receipt"
 		case it.done && (it.handoff || it.attention != ""):
-			reason, text = "attention", firstNonEmptyString(it.attention, "这件需要你看一眼，我在桌面等你。")
+			reason = "attention"
 		case it.done && it.err != "" && strings.TrimSpace(it.text) == "":
-			reason, text = "failed", "这件我没做成，中途出了问题，我停在当前页面，没有重复提交任何东西。你说一声我再试一次。"
+			reason = "failed"
 		}
 		if reason == "" || sight.notified[reason] {
 			continue
 		}
 		sight.notified[reason] = true
-		tenant, user, bot, text := it.tenant, it.user, it.bot, text
-		key := "patrol-" + reason + "-" + it.run
-		go s.patrolNotifyPerson(tenant, user, bot, text, key)
+		// Watcher -> this bot's router; the router alone talks to the person.
+		go s.watcherReport(watchFinding{TenantID: it.tenant, UserID: it.user, BotID: it.bot, RunID: it.run, Reason: reason, Detail: it.attention})
 	}
 	for id := range s.patrolSight {
 		if !live[id] {
 			delete(s.patrolSight, id)
 		}
-	}
-}
-
-func (s *Service) patrolNotifyPerson(tenantID, userID, botID, text, key string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	if _, err := s.Say(ctx, tenantID, userID, botID, "", text, key); err != nil {
-		// Fallback: mailbox report to primary so the feed still shows a line.
-		primary := s.primaryBotOf(tenantID, userID)
-		if primary == "" {
-			primary = botID
-		}
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		rec, err := s.loadForUser(ctx, tenantID, userID)
-		if err != nil {
-			return
-		}
-		_, _, _ = s.reportLocked(&rec, userID, botID, BotCrossNote{
-			Target: primary, Topic: "question", Text: text, Key: key,
-		})
-		_ = s.save(ctx, tenantID, rec)
 	}
 }
 
