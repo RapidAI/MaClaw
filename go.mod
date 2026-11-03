@@ -171,4 +171,4 @@ replace github.com/braheezy/shine-mp3 => ./third_party/shine-mp3
 replace github.com/wailsapp/wails/v2 => ./third_party/wails
 
 // TEMP validation harness - remove after upstream fix lands
-replace github.com/VantageDataChat/GoPDF2 => ./tmp/gopdf2_fix
+replace github.com/VantageDataChat/GoPDF2 => ./third_party/gopdf2
