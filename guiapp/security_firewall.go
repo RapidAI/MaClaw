@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"strings"
 	"sync"
@@ -69,6 +70,13 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 	action := security.PolicyAllow
 	if f.policy != nil {
 		action = f.policy.Evaluate(toolName, args, risk.Level)
+	}
+	// Mongolian turn whose intent the MN guard head accepted locally as a
+	// side-effect intent: every non-read-only tool call asks the user, even
+	// with a session grant or 完全控制. Hard denies are unchanged.
+	if ctx != nil && !securityActionIsHardDeny(action, mode) && mnLocalSideEffectNeedsConfirm(toolName, ctx.UserMessage) {
+		f.recordAudit(toolName, args, risk, security.PolicyAsk, "mn_local_side_effect_confirm", sessionID, userID)
+		return f.confirmMN(toolName, risk)
 	}
 	if sessionID != "" && f.isSessionApproved(sessionID, toolName) && !securityActionIsHardDeny(action, mode) {
 		f.recordAudit(toolName, args, risk, security.PolicyAudit, "session_approved", sessionID, userID)
@@ -288,4 +296,40 @@ func (f *SecurityFirewall) LoadProjectPolicy(projectPath string) error {
 	}
 	policyPath := projectPath + "/.maclaw/security-policy.json"
 	return f.policy.LoadRules(policyPath)
+}
+
+// mnReadOnlyToolHints mark tool names that only read; they never need the
+// Mongolian side-effect confirmation.
+var mnReadOnlyToolHints = []string{"read", "list", "get", "search", "query", "view", "show", "status", "inspect", "fetch", "lookup", "recall"}
+
+// mnLocalSideEffectNeedsConfirm: Mongolian message, intent accepted locally by
+// the MN guard as a side-effect intent, and the tool is not read-only.
+func mnLocalSideEffectNeedsConfirm(toolName, userMessage string) bool {
+	if !intent.MNRequiresConfirmation(userMessage) {
+		return false
+	}
+	n := strings.ToLower(toolName)
+	for _, h := range mnReadOnlyToolHints {
+		if strings.Contains(n, h) {
+			return false
+		}
+	}
+	return true
+}
+
+// confirmMN asks the user without any session-grant shortcut; with no
+// confirmation channel the call is denied (fail closed).
+func (f *SecurityFirewall) confirmMN(toolName string, risk security.RiskAssessment) (bool, string) {
+	if f.onAsk == nil {
+		return f.denyWithLedger(toolName, "confirmation required (Mongolian side-effect action decided locally) but no confirmation channel")
+	}
+	approved, err := f.onAsk(toolName, risk)
+	if err != nil {
+		return false, fmt.Sprintf("user confirmation failed: %v", err)
+	}
+	if !approved {
+		return false, fmt.Sprintf("user denied execution: %s", toolName)
+	}
+	security.ProcessDenialLedger().RecordAllow()
+	return true, ""
 }

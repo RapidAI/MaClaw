@@ -46,6 +46,11 @@ type state struct {
 	emb  embedding.Embedder
 	head *intent.LocalHead
 	fn   intent.LLMClassifyContextFunc
+	// mnHead / mnFn: optional Mongolian confidence + sensitive guard
+	// (intent.MNGuardHeadName next to the intent heads). nil → Cyrillic
+	// input always goes to the remote L3.
+	mnHead *intent.LocalHead
+	mnFn   intent.LLMClassifyContextFunc
 }
 
 // Runtime owns the active (embedder, head) pair. Safe for concurrent use;
@@ -103,7 +108,9 @@ func (r *Runtime) Attach(emb embedding.Embedder) (*intent.LocalHead, error) {
 		return nil, err
 	}
 	intent.ApplyProductTauS(h)
-	r.st.Store(&state{emb: emb, head: h, fn: intent.LocalTreeFunc(emb, h, nil)})
+	st := &state{emb: emb, head: h, fn: intent.LocalTreeFunc(emb, h, nil)}
+	r.attachMNGuard(st, fam)
+	r.st.Store(st)
 	r.lastErr = nil
 	return h, nil
 }
@@ -167,6 +174,17 @@ func (r *Runtime) ContextFunc(remote intent.LLMClassifyContextFunc) intent.LLMCl
 			// Cyrillic (Mongolian): local heads fail their gates; use the
 			// remote tree LLM. Without a remote (strict / nil) abstain with
 			// a label-less uncertain error so L2 hint / unknown applies.
+			if s := r.st.Load(); s != nil && s.mnFn != nil {
+				out, err := s.mnFn(ctx, parent, sys, user)
+				if err == nil {
+					r.logf("[intent] L3 decided by MN guard head (%s)", s.mnHead.ID)
+					return out, nil
+				}
+				if !intent.IsLocalHeadUncertain(err) && (strict || remote == nil) {
+					return "", err
+				}
+				r.logf("[intent] MN guard abstained (%v); Cyrillic input → remote tree LLM", err)
+			}
 			if strict || remote == nil {
 				return "", intent.NewLocalHeadUncertainError("", 0, 0)
 			}
@@ -238,4 +256,31 @@ func (r *Runtime) Describe() string {
 		return fmt.Sprintf("local L3 %s: not attached (%v)", r.mode, r.lastErr)
 	}
 	return fmt.Sprintf("local L3 %s: waiting for embedder", r.mode)
+}
+
+// attachMNGuard loads the MN guard head from the head directory when present
+// and compatible with emb (Qwen3 family, same input dim). Failures only log:
+// Cyrillic input then keeps going to the remote L3.
+func (r *Runtime) attachMNGuard(st *state, fam string) {
+	dirs := []string{r.headDir}
+	for _, c := range intent.LocalHeadCandidates(fam, r.headDir) {
+		dirs = append(dirs, filepath.Dir(c))
+	}
+	for _, d := range dirs {
+		if d == "" || !intent.MNGuardHeadAvailable(d) {
+			continue
+		}
+		h, err := intent.LoadMNGuardHead(d)
+		if err != nil {
+			r.logf("[intent] MN guard head not attached: %v", err)
+			return
+		}
+		if fam != embedding.FamilyQwen3 {
+			r.logf("[intent] MN guard head %s skipped (embedder family %q)", h.ID, fam)
+			return
+		}
+		st.mnHead, st.mnFn = h, intent.MNGuardTreeFunc(st.emb, h)
+		r.logf("[intent] MN guard head attached (%s, tau=%.3f)", h.ID, h.Tau)
+		return
+	}
 }
