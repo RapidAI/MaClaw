@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AIAssistantAttachmentPreviewDataURL, ConversationViewArchiveCount, LoadAIAssistantUIArchive, LoadProjectTabConversationArchive } from "../../../wailsjs/go/main/App";
 import { lightTheme, type Theme } from "./aiAssistantPanelTheme";
 import type { ChatMessage } from "./useAIAssistant";
-import { CONVERSATION_ARCHIVE_RENDER_PAGE, reuseArchiveRows, useConversationViewArchive } from "./useConversationViewArchive";
+import { archiveMessageView, CONVERSATION_ARCHIVE_RENDER_PAGE, reuseArchiveRows, useConversationViewArchive } from "./useConversationViewArchive";
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
     AIAssistantAttachmentPreviewDataURL: vi.fn().mockResolvedValue("data:image/png;base64,abc"),
@@ -416,5 +416,17 @@ describe("useConversationViewArchive", () => {
         fireEvent.click(await screen.findByTestId("conversation-archive-banner"));
         expect(await screen.findByText("tab archive")).toBeTruthy();
         expect(LoadProjectTabConversationArchive).toHaveBeenCalledWith("proj-1");
+    });
+
+    it("hides a goal continuation header in an archived assistant reply", () => {
+        const header = "[系统续接][execute] 按步骤执行目标：开发 c++ 贪吃蛇游戏";
+        const view = archiveMessageView({
+            id: "archived-goal",
+            role: "assistant",
+            content: `${header}\n\n本轮只能提交步骤 4：实现绘制与界面。`,
+            timestamp: 1,
+        });
+        expect(view.body).toBe("本轮只能提交步骤 4：实现绘制与界面。");
+        expect(view.body).not.toContain("[系统续接]");
     });
 });

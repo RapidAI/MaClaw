@@ -3,7 +3,7 @@ import { localizeText } from "../../i18n";
 import type { ChatMessage } from "./useAIAssistant";
 import { CodingAgentProcessChevron, CodingAgentProcessCopyIcon, CodingAgentProcessIcon, type CodingAgentProcessKind } from "./CodingAgentProcessIcon";
 
-import { sanitizeVisibleChatText } from "./visibleChatText";
+import { omitGoalContinuationHeader, sanitizeVisibleChatText } from "./visibleChatText";
 import { tailText } from "../../i18n/mnTail"
 
 interface CodingAgentProgressTheme {
@@ -1494,7 +1494,7 @@ function renderCodingAgentAssistantNote(
 ): React.ReactNode {
     const raw = (progress.detail || progress.summary || "").trim();
     if (!raw || codingAssistantNoteLooksInternal(raw)) return null;
-    const text = sanitizeVisibleChatText(raw).trim();
+    const text = omitGoalContinuationHeader(sanitizeVisibleChatText(raw).trim());
     if (!text) return null;
     // The process list has no note icon. The sentence starts on the verb column.
     if (timeline) {

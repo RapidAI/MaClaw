@@ -1,5 +1,4 @@
 import { isTerminalClassCode, sanitizeAIAssistantStreamText, type ChatMessage } from "./useAIAssistant";
-import { omitGoalContinuationHeader } from "./visibleChatText";
 import { changedPreviewFilePath, cloneCodePreviewState, type CodeFile, type CodePreviewUIState } from "./useCodePreviewState";
 import type { WorkflowUIState } from "./useWorkflowState";
 import type { AITab } from "./AITabTypes";
@@ -345,7 +344,7 @@ function firstRestoredHistoryString(...values: unknown[]): string {
 }
 
 export function normalizeRestoredProjectHistoryContent(value: unknown): string {
-    if (typeof value === "string") return omitGoalContinuationHeader(sanitizeAIAssistantStreamText(value).replace(/^\x01/, '').trim());
+    if (typeof value === "string") return sanitizeAIAssistantStreamText(value).replace(/^\x01/, '').trim();
     if (value == null) return "";
     try {
         const serialized = JSON.stringify(value);

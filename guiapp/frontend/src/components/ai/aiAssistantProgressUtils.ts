@@ -1,4 +1,5 @@
 import type { ChatMessage } from "./useAIAssistant";
+import { omitGoalContinuationHeader } from "./visibleChatText";
 import { legacyMarkVisual } from "../remote/remoteStreamMarks";
 import { displayMathAfterLine, markdownFenceAfterLine } from "./aiAssistantMarkdownNormalize";
 import { isChineseLang, localizeText } from "../../i18n";
@@ -245,11 +246,14 @@ function mayContainPictograph(text: string): boolean {
  * for SVG glyphs. Display-only — does not mutate storage.
  */
 export function prepareChatBodyForDisplay(text: string): string {
-    if (!text || !mayContainPictograph(text)) return text;
-    const lines = text.split("\n");
+    // Display only. Stored text keeps the phase line so a reopened task can
+    // still hand the model the continuation contract.
+    const source = text && text.includes("[系统续接]") ? omitGoalContinuationHeader(text) : text;
+    if (!source || !mayContainPictograph(source)) return source;
+    const lines = source.split("\n");
     const prepared = prepareChatBodyLines(lines);
     // No decorative pictographs removed → keep original text identity.
-    if (prepared === lines) return text;
+    if (prepared === lines) return source;
     return prepared.join("\n");
 }
 

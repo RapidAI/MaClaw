@@ -6177,8 +6177,8 @@ func (a *App) LoadProjectConversationHistory(projectPath string) []ProjectConver
 		default:
 			continue
 		}
-		content := omitGoalContinuationHeader(stringifyProjectConversationContent(entry.Content))
-		reasoning := omitGoalContinuationHeader(strings.TrimSpace(entry.ReasoningContent))
+		content := stringifyProjectConversationContent(entry.Content)
+		reasoning := strings.TrimSpace(entry.ReasoningContent)
 		if content == "" && reasoning == "" {
 			continue
 		}
@@ -6302,10 +6302,10 @@ func projectConversationHistoryFromTabSession(conversation []interface{}) []Proj
 		default:
 			continue
 		}
-		content := omitGoalContinuationHeader(stringifyProjectConversationContent(entry.Content))
-		reasoning := omitGoalContinuationHeader(stringifyProjectConversationContent(entry.ReasoningContent))
+		content := stringifyProjectConversationContent(entry.Content)
+		reasoning := stringifyProjectConversationContent(entry.ReasoningContent)
 		if reasoning == "" {
-			reasoning = omitGoalContinuationHeader(stringifyProjectConversationContent(entry.Reasoning))
+			reasoning = stringifyProjectConversationContent(entry.Reasoning)
 		}
 		if content == "" && reasoning == "" {
 			continue

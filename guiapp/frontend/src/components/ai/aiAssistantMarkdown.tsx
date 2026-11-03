@@ -16,6 +16,7 @@ import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } from "./ChatBubbleFrame";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { userTurnDisplayView } from "./userTurnDisplay";
+import { omitGoalContinuationHeader } from "./visibleChatText";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { isBrowserEchoFieldLabel, stripRolePrefixForDisplay } from "./rolePrefixDisplay";
 import { stripCodingAgentAuditSections } from "./codingAgentUserFinish";
@@ -1509,9 +1510,10 @@ export function assistantMessageHasVisibleBody(msg: ChatMessage): boolean {
     // Do not leave an empty assistant bubble at the original placeholder.
     const reasoningVisibleHere = !msg.codingTimeline?.length
         && reasoningCleanedForMessage(msg.id, msg.reasoning || "").trim();
+    const visibleContent = omitGoalContinuationHeader((msg.content || "").trim());
     const hasRenderableScreenshot = hasRenderableAssistantScreenshot(msg, visibleFields.length > 0);
     return !!(
-        contentAuditForMessage(msg.id, (msg.content || "").trim())
+        contentAuditForMessage(msg.id, visibleContent)
         || reasoningVisibleHere
         || visibleFields.length
         || hasRenderableScreenshot
@@ -1657,7 +1659,7 @@ export function renderMessage(
             if (collapseReasoningByDefault && !assistantMessageHasVisibleBody(msg)) {
                 return null;
             }
-            const codingAnswerStarted = collapseReasoningByDefault && (msg.reasoningLive === false || (msg.reasoningLive !== true && !!String(msg.content || "").trim()));
+            const codingAnswerStarted = collapseReasoningByDefault && (msg.reasoningLive === false || (msg.reasoningLive !== true && !!omitGoalContinuationHeader(msg.content || "").trim()));
             // Streaming marks the round host only. The panel does not pass
             // it for any other assistant message, so this cannot draw a
             // second live title beside the standalone bar.
@@ -1944,7 +1946,7 @@ export function renderMessage(
                     <div key={msg.id} role="status" data-testid={`assistant-task-context-${msg.id}`} className="aamd-msg-row">
                         <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "9px 12px", borderRadius: "8px", background: `color-mix(in srgb, ${t.sendBtnBg} 8%, ${t.fieldBg})`, border: `1px solid color-mix(in srgb, ${t.sendBtnBorder} 44%, ${t.fieldBorder})`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "break-word" }}>
                             <div style={{ marginBottom: 3, color: t.textMuted, fontSize: 11, fontWeight: 700 }}>{isTraditionalLang(lang) ? "目前任務資訊" : (localizeText(lang, "CURRENT TASK", "当前任务信息"))}</div>
-                            {renderContentWithCodeBlocks(msg.content, t, undefined, lang)}
+                            {renderContentWithCodeBlocks(omitGoalContinuationHeader(msg.content || ""), t, undefined, lang)}
                         </div>
                     </div>
                 );
@@ -1954,7 +1956,7 @@ export function renderMessage(
                 <div key={msg.id} role="status" data-testid={`assistant-chat-system-${msg.id}`} className="aamd-msg-row">
                     <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "8px 12px", borderRadius: "8px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "break-word" }}>
                         {traceFields.length > 0 && renderFields(traceFields, t)}
-                        {renderContentWithCodeBlocks(msg.content, t, undefined, lang)}
+                        {renderContentWithCodeBlocks(omitGoalContinuationHeader(msg.content || ""), t, undefined, lang)}
                     </div>
                 </div>
             );

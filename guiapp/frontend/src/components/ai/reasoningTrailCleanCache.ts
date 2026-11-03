@@ -17,7 +17,7 @@ import {
     type ReasoningRepairCursor,
 } from "./reasoningLineBreaks";
 import { findRolePrefixForDisplay, rolePrefixLineOpen, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
-import { sanitizeVisibleChatText } from "./visibleChatText";
+import { omitGoalContinuationHeader, sanitizeVisibleChatText } from "./visibleChatText";
 
 type RoleCursor = {
     input: string;
@@ -67,21 +67,21 @@ export function createReasoningTrailCleanCache(): ReasoningTrailCleanCache {
 /** Id keeps one thought's cursor off the next row when a component instance is reused. */
 export function rememberReasoningTrailClean(cache: ReasoningTrailCleanCache, id: string, raw: string): string {
     const text = raw || "";
-    if (cache.id === id && cache.raw === text) return cache.cleaned;
+    if (cache.id === id && cache.raw === text) return omitGoalContinuationHeader(cache.cleaned);
     if (cache.id !== id || (cache.raw && !text.startsWith(cache.raw))) resetReasoningTrailClean(cache);
     cache.id = id;
     const sanitized = appendSanitized(cache, text);
     const roleOut = appendRole(cache.role, sanitized);
     if (roleOut === cache.roleOut && cache.raw !== "") {
         cache.raw = text;
-        return cache.cleaned;
+        return omitGoalContinuationHeader(cache.cleaned);
     }
     cache.roleOut = roleOut;
     const statusOut = appendStatus(cache.status, roleOut);
     const auditOut = appendCodingAuditStrip(cache.audit, statusOut);
     cache.cleaned = appendReasoningRepair(cache.repair, auditOut);
     cache.raw = text;
-    return cache.cleaned;
+    return omitGoalContinuationHeader(cache.cleaned);
 }
 
 function resetReasoningTrailClean(cache: ReasoningTrailCleanCache): void {

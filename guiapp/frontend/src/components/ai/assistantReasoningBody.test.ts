@@ -610,6 +610,17 @@ describe("reply render cache", () => {
         }
     });
 
+    it("cleans a goal continuation header the same way on a growing thought and a full pass", () => {
+        const id = "goal-header-trail";
+        const header = "[系统续接][execute] 按步骤执行目标：开发 c++ 贪吃蛇游戏\n";
+        let raw = "";
+        for (const piece of [header, "先画窗口。"]) {
+            raw += piece;
+            expect(reasoningCleanedForMessage(id, raw)).toBe(cleanReasoningTrailForBody(raw));
+            expect(reasoningCleanedForMessage(id, raw)).not.toContain("[系统续接]");
+        }
+    });
+
     it("hides the goal continuation header from the answer and the thinking trail", () => {
         const header = "[系统续接][execute] 按步骤执行目标：开发 c++ 贪吃蛇游戏";
         const body = "本轮只能提交步骤 4：实现绘制与界面。";

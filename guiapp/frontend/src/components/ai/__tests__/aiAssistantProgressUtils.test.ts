@@ -117,4 +117,10 @@ describe('aiAssistantProgressUtils', () => {
         expect(formatToolProgressStatus(zwjSkill, 'zh-Hans')).toBe('\u6b63\u5728\u6267\u884c Team');
         expect(formatToolProgressStatus(zwjSkill, 'zh-Hans')).not.toMatch(/\u200D/);
     });
+
+    it('hides a goal continuation header without rewriting the stored sentence', () => {
+        const header = '[系统续接][execute] 按步骤执行目标：开发 c++ 贪吃蛇游戏';
+        expect(prepareChatBodyForDisplay(`${header}\n\n本轮只能提交步骤 4。`)).toBe('本轮只能提交步骤 4。');
+        expect(prepareChatBodyForDisplay('普通回复')).toBe('普通回复');
+    });
 });

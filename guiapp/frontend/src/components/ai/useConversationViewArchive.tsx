@@ -13,6 +13,7 @@ import { completedAssistantSummary, stripAssistantToolCallMarkers } from "./assi
 import { stripCodingAgentAuditSections } from "./codingAgentUserFinish";
 import { isBrowserEchoFieldLabel } from "./rolePrefixDisplay";
 import { isImageAttachmentPath, userTurnDisplayView, type UserTurnDisplayAttachment } from "./userTurnDisplay";
+import { omitGoalContinuationHeader } from "./visibleChatText";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { UserAttachmentChip } from "./UserAttachmentChip";
 
@@ -203,11 +204,12 @@ export function archiveMessageView(message: ChatMessage): { body: string; reason
         };
     }
     if (message.role !== "assistant") {
-        const content = messageText(message.content).trim();
-        return { body: content || messageText(message.reasoning).trim(), reasoning: "", attachments: [] };
+        const content = omitGoalContinuationHeader(messageText(message.content).trim());
+        const reasoning = omitGoalContinuationHeader(messageText(message.reasoning).trim());
+        return { body: content || reasoning, reasoning: "", attachments: [] };
     }
-    const rawContent = messageText(message.content);
-    const rawReasoning = messageText(message.reasoning).trim();
+    const rawContent = omitGoalContinuationHeader(messageText(message.content));
+    const rawReasoning = omitGoalContinuationHeader(messageText(message.reasoning).trim());
     const cleanedReasoning = rawReasoning ? cleanReasoningTrailForBody(capReasoningForDisplay(rawReasoning)) : "";
     const coding = !!message.codingTimeline?.length;
     const toolCalls = !!message.toolCalls?.length;
