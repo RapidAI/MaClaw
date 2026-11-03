@@ -2903,7 +2903,7 @@
     white-space: nowrap;
 }
 
-/* Per-folder unread count. */
+/* Per-folder size. The tooltip carries the unread part. */
 .mailbox-manage__badge {
     min-width: 18px;
     padding: 1px 6px;

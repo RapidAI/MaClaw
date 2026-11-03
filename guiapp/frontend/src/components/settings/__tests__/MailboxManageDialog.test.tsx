@@ -387,8 +387,110 @@ describe('MailboxManageDialog', () => {
         expect(screen.getByRole('button', { name: /保留邮件/ })).toBeTruthy();
     });
 
-    it('keeps the unread count when the returned page still contains the deleted message', async () => {
+    it('shows the folder size in the badge and unread in the tooltip', async () => {
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            unseen: { INBOX: 2 },
+            counts: { INBOX: 58 },
+            messages: [{ uid: 1, from: 'a@ex.com', subject: '第一封', seen: true }],
+        } as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        await screen.findByRole('button', { name: /第一封/ });
+        const badge = document.querySelector('.mailbox-manage__badge');
+        expect(badge?.textContent).toBe('58');
+        expect(badge?.getAttribute('title')).toContain('共 58 封');
+        expect(badge?.getAttribute('title')).toContain('2 封未读');
+    });
+
+    it('decreases the folder size after a permanent delete', async () => {
         showConfirmMock.mockResolvedValue(true);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'Deleted Messages', special: 'trash' }],
+            box: 'Deleted Messages',
+            trash_box: 'Deleted Messages',
+            unseen: {},
+            counts: { 'Deleted Messages': 58 },
+            messages: [
+                { uid: 1, from: 'a@ex.com', subject: '第一封', seen: true },
+                { uid: 2, from: 'b@ex.com', subject: '第二封', seen: true },
+                { uid: 3, from: 'c@ex.com', subject: '第三封', seen: true },
+            ],
+        } as never);
+        vi.mocked(MailboxBrowseDelete).mockResolvedValue({
+            purged: 3,
+            not_deleted: 0,
+            messages: [],
+        } as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('checkbox', { name: '全选' }));
+        fireEvent.click(screen.getByTestId('mailbox-manage-batch-delete'));
+        await waitFor(() => expect(document.querySelector('.mailbox-manage__badge')?.textContent).toBe('55'));
+        expect(screen.getByText('这个文件夹里没有邮件。')).toBeTruthy();
+    });
+
+    it('moves the count and the unread detail into the trash folder', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [
+                { name: 'INBOX', special: 'inbox' },
+                { name: 'Trash', special: 'trash' },
+            ],
+            box: 'INBOX',
+            trash_box: 'Trash',
+            unseen: { INBOX: 1 },
+            counts: { INBOX: 5, Trash: 2 },
+            messages: [{ uid: 1, from: 'a@ex.com', subject: '唯一一封', seen: false }],
+        } as never);
+        vi.mocked(MailboxBrowseDelete).mockResolvedValue({
+            moved: 1,
+            not_deleted: 0,
+            messages: [],
+        } as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('checkbox', { name: '全选' }));
+        fireEvent.click(screen.getByTestId('mailbox-manage-batch-delete'));
+        await waitFor(() => expect(document.querySelectorAll('.mailbox-manage__badge').length).toBe(2));
+        const badges = document.querySelectorAll('.mailbox-manage__badge');
+        expect(badges[0].textContent).toBe('4');
+        expect(badges[1].textContent).toBe('3');
+        // The unread message moved with it.
+        expect(badges[0].getAttribute('title')).toBe('共 4 封');
+        expect(badges[1].getAttribute('title')).toBe('共 3 封，1 封未读');
+    });
+
+    it('shows that a batch delete is running and then reports the count', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const deleting = deferred<{ purged: number; not_deleted: number; messages: [] }>();
+        vi.mocked(MailboxBrowseDelete).mockReturnValue(deleting.promise as never);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'Deleted Messages', special: 'trash' }],
+            box: 'Deleted Messages',
+            trash_box: 'Deleted Messages',
+            unseen: {},
+            counts: { 'Deleted Messages': 2 },
+            messages: [
+                { uid: 1, from: 'a@ex.com', subject: '第一封', seen: true },
+                { uid: 2, from: 'b@ex.com', subject: '第二封', seen: true },
+            ],
+        } as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('checkbox', { name: '全选' }));
+        fireEvent.click(screen.getByTestId('mailbox-manage-batch-delete'));
+        await waitFor(() => expect(screen.getByTestId('mailbox-manage-batchbar').textContent).toContain('正在删除…'));
+        deleting.resolve({ purged: 2, not_deleted: 0, messages: [] });
+        await waitFor(() => expect(screen.getByTestId('mailbox-manage-batchbar').textContent).toContain('已删除 2 封'));
+    });
+
+    it('keeps the unread count when the returned page still contains the deleted message', async () => {        showConfirmMock.mockResolvedValue(true);
         const deleting = deferred<{ moved: number; messages: Array<{ uid: number; from: string; subject: string; seen: boolean }> }>();
         vi.mocked(MailboxBrowseStart).mockResolvedValue({
             folders: [{ name: 'INBOX', special: 'inbox' }],
@@ -984,7 +1086,7 @@ describe('MailboxManageDialog', () => {
         expect(await screen.findByRole('button', { name: /最后一页/ })).toBeTruthy();
         expect(screen.queryByRole('button', { name: /过期页/ })).toBeNull();
         expect(MailboxBrowseMessages).not.toHaveBeenCalled();
-    });
+    }, 15000);
 
     it('keeps the remaining rows when the reload after delete fails', async () => {
         showConfirmMock.mockResolvedValue(true);

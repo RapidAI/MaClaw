@@ -25,6 +25,9 @@ type BrowsePage struct {
 	Box      string
 	Messages []MessageSummary
 	Unseen   map[string]uint64
+	// Counts maps a folder name to its total message count. The dialog shows
+	// this as the folder size; Unseen is only the unread part.
+	Counts map[string]uint64
 	// TrashBox is the folder a delete moves into. Empty means the account has
 	// no trash, so a delete expunges. TrashKnown is false when this page did
 	// not resolve trash, including POP3.
@@ -80,10 +83,12 @@ func (d *NetDialer) Browse(ctx context.Context, account Account, secret, box str
 	}
 	folders := classifyFolders(infos)
 	box = preferredFolder(folders, box)
+	counts, unseen := folderStatus(c, folders)
 	page := BrowsePage{
 		Folders:    folders,
 		Box:        box,
-		Unseen:     folderUnseen(c, folders),
+		Unseen:     unseen,
+		Counts:     counts,
 		TrashBox:   resolveTrashBox(folders),
 		TrashKnown: true,
 	}
@@ -136,19 +141,24 @@ func preferredFolder(folders []Folder, want string) string {
 	return ""
 }
 
-// folderUnseen asks STATUS UNSEEN per folder. One command each, and a folder
-// that refuses the STATUS (some servers only allow it on selectable mailboxes)
-// simply gets no badge.
-func folderUnseen(c *imapclient.Client, folders []Folder) map[string]uint64 {
-	out := make(map[string]uint64, len(folders))
+// folderStatus asks STATUS MESSAGES UNSEEN per folder in one command each.
+// A folder that refuses the STATUS (some servers only allow it on selectable
+// mailboxes) is simply left out. An unread count of zero is left out too, so
+// it never adds a badge of its own.
+func folderStatus(c *imapclient.Client, folders []Folder) (map[string]uint64, map[string]uint64) {
+	counts := make(map[string]uint64, len(folders))
+	unseen := make(map[string]uint64, len(folders))
 	for _, folder := range folders {
-		status, err := c.Status(folder.Name, []imap.StatusItem{imap.StatusUnseen})
-		if err != nil || status == nil || status.Unseen == 0 {
+		status, err := c.Status(folder.Name, []imap.StatusItem{imap.StatusMessages, imap.StatusUnseen})
+		if err != nil || status == nil {
 			continue
 		}
-		out[folder.Name] = uint64(status.Unseen)
+		counts[folder.Name] = uint64(status.Messages)
+		if status.Unseen > 0 {
+			unseen[folder.Name] = uint64(status.Unseen)
+		}
 	}
-	return out
+	return counts, unseen
 }
 
 func listMailboxes(c *imapclient.Client) ([]*imap.MailboxInfo, error) {

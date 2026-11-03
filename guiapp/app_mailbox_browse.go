@@ -97,6 +97,7 @@ func (a *App) MailboxBrowseStart(accountID string) (map[string]interface{}, erro
 		"box":      page.Box,
 		"messages": messageRows(page.Messages),
 		"unseen":   page.Unseen,
+		"counts":   page.Counts,
 		"error":    browseNote(err),
 	}
 	// Absent means the page did not resolve trash. An empty string means there

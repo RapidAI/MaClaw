@@ -90,6 +90,9 @@ type StartPage = {
     box?: string;
     messages?: MessageRow[];
     unseen?: Record<string, number>;
+    // Total message count per folder. This is the folder size the dialog
+    // shows; `unseen` is only the unread part of it.
+    counts?: Record<string, number>;
     error?: string;
     // Present once browse has resolved trash. Empty means there is no trash
     // folder, so every delete in this account is permanent.
@@ -314,6 +317,9 @@ export function MailboxManageDialog({
     const [folders, setFolders] = useState<FolderRow[]>([]);
     const [box, setBox] = useState('');
     const [unseen, setUnseen] = useState<Record<string, number>>({});
+    // Total messages per folder, from STATUS MESSAGES. The badge next to a
+    // folder is its size; unread is only the tooltip detail.
+    const [counts, setCounts] = useState<Record<string, number>>({});
     const [messages, setMessages] = useState<MessageRow[]>([]);
     const [reading, setReading] = useState<MessageView | null>(null);
     const [selectedUid, setSelectedUid] = useState<number | null>(null);
@@ -322,6 +328,10 @@ export function MailboxManageDialog({
     const [startNonce, setStartNonce] = useState(0);
     const [actionUid, setActionUid] = useState<number | null>(null);
     const [batchBusy, setBatchBusy] = useState(false);
+    // What the running batch is doing. Marking mail is quick; deleting a
+    // batch needs one command per message on some servers, so the bar must
+    // say it is working instead of just disabling the buttons.
+    const [batchAction, setBatchAction] = useState<'' | 'delete'>('');
     // Selected message uids of the current folder. Cleared when the folder or
     // the account changes; intersected with the fresh list on refresh.
     const [selection, setSelection] = useState<Set<number>>(new Set());
@@ -367,6 +377,7 @@ export function MailboxManageDialog({
         setFolders([]);
         setMessages([]);
         setUnseen({});
+        setCounts({});
         setSelection(new Set());
         setLastDeleteCount(0);
         pageFullRef.current = false;
@@ -384,6 +395,7 @@ export function MailboxManageDialog({
             pageFullRef.current = listed.length >= MESSAGE_PAGE;
             setTrashBox(typeof start.trash_box === 'string' ? start.trash_box : null);
             setUnseen(start.unseen && typeof start.unseen === 'object' ? start.unseen : {});
+            setCounts(start.counts && typeof start.counts === 'object' ? start.counts : {});
             setError(start.error || '');
             setLoading('');
         }).catch((err: unknown) => {
@@ -396,9 +408,24 @@ export function MailboxManageDialog({
         };
     }, [account.id, startNonce]);
 
+    // Unread is only a detail of the folder-size badge now (its tooltip), and
+    // a folder the server reported as fully read has no entry yet. A move can
+    // add unread mail to the trash, so a positive delta may create the entry.
     const adjustUnseen = useCallback((folder: string, delta: number) => {
-        if (!folder) return;
+        if (!folder || delta === 0) return;
         setUnseen(prev => {
+            const current = prev[folder];
+            const next = Math.max(0, (current ?? 0) + delta);
+            if (next === current || (current === undefined && next === 0)) return prev;
+            return { ...prev, [folder]: next };
+        });
+    }, []);
+
+    // Keep the folder-size badge honest after a delete. A move takes the same
+    // messages out of this folder and puts them in the trash.
+    const adjustCount = useCallback((folder: string, delta: number) => {
+        if (!folder || delta === 0) return;
+        setCounts(prev => {
             const current = prev[folder];
             if (current === undefined) return prev;
             const next = Math.max(0, current + delta);
@@ -671,6 +698,9 @@ export function MailboxManageDialog({
         const stillListed = (uid: number) => kept.has(uid) || (!verifiedGone && (pageUids?.has(uid) ?? false));
         let delta = 0;
         let remain = 0;
+        // Unread messages that really left this folder. A move carries them
+        // into the trash; its unread detail has to follow.
+        let unreadLeft = 0;
         for (const row of listedNow) {
             if (!gone.has(row.uid)) {
                 remain += 1;
@@ -686,7 +716,10 @@ export function MailboxManageDialog({
                 if (localSeen !== shownSeen) delta += shownSeen ? -1 : 1;
                 continue;
             }
-            if (!localSeen) delta -= 1;
+            if (!localSeen) {
+                delta -= 1;
+                unreadLeft += 1;
+            }
         }
         for (const uid of removed) {
             if (stillListed(uid)) continue;
@@ -695,6 +728,19 @@ export function MailboxManageDialog({
             seenFlipRef.current.delete(key);
         }
         if (delta !== 0) adjustUnseen(folder, delta);
+        // Folder size: the messages that really left this folder. A delete
+        // outside the trash moves them into the trash, which grows by the same
+        // count. `unremoved` is absent only for an older backend that never
+        // verified, and then the whole request counts as removed.
+        const left = unremoved === undefined ? removed.length : Math.max(0, removed.length - unremoved);
+        if (left > 0) {
+            adjustCount(folder, -left);
+            const permanent = trashBox !== null && (trashBox === '' || trashBox === folder);
+            if (!permanent && trashBox) {
+                adjustCount(trashBox, left);
+                if (unreadLeft > 0) adjustUnseen(trashBox, unreadLeft);
+            }
+        }
         const vanished = (uid: number) => gone.has(uid) && !stillListed(uid);
         setMessages(prev => prev.filter(row => !vanished(row.uid)));
         setSelection(prev => {
@@ -794,6 +840,7 @@ export function MailboxManageDialog({
         if (!confirmed) return;
         busyRef.current = true;
         setBatchBusy(true);
+        setBatchAction('delete');
         setError('');
         try {
             const done: number[] = [];
@@ -848,6 +895,7 @@ export function MailboxManageDialog({
         } finally {
             busyRef.current = false;
             setBatchBusy(false);
+            setBatchAction('');
         }
     };
 
@@ -936,6 +984,7 @@ export function MailboxManageDialog({
             if (Array.isArray(start.folders)) setFolders(start.folders);
             setTrashBox(typeof start.trash_box === 'string' ? start.trash_box : null);
             if (start.unseen && typeof start.unseen === 'object') setUnseen(start.unseen);
+            if (start.counts && typeof start.counts === 'object') setCounts(start.counts);
             const target = start.box && start.box !== box ? box : start.box || box;
             if (!target) {
                 const listed = Array.isArray(start.messages) ? start.messages : [];
@@ -1033,7 +1082,22 @@ export function MailboxManageDialog({
                 <div className="modal-body mailbox-manage__body">
                     <ul className="mailbox-manage__folders" aria-label={t('Folders', '文件夹', '資料夾')}>
                         {folders.map(folder => {
-                            const count = unseen[folder.name] || 0;
+                            // The badge is the folder size, which is what a
+                            // delete changes. Unread is the tooltip detail; an
+                            // older backend without counts falls back to it so
+                            // the number seen then stays valid.
+                            const unread = unseen[folder.name] || 0;
+                            const known = counts[folder.name] !== undefined;
+                            const total = counts[folder.name] ?? unread;
+                            const badgeLabel = !known
+                                // An older backend sends only unread; keep the
+                                // old wording so the meaning does not change.
+                                ? t('{{count}} unread', `${unread} 封未读`, `${unread} 封未讀`).replace('{{count}}', String(unread))
+                                : unread > 0
+                                    ? t('{{total}} messages, {{unread}} unread', `共 ${total} 封，${unread} 封未读`, `共 ${total} 封，${unread} 封未讀`)
+                                        .replace('{{total}}', String(total))
+                                        .replace('{{unread}}', String(unread))
+                                    : t('{{total}} messages', `共 ${total} 封`, `共 ${total} 封`).replace('{{total}}', String(total));
                             return (
                                 <li key={folder.name}>
                                     <button
@@ -1046,7 +1110,7 @@ export function MailboxManageDialog({
                                     >
                                         <FolderGlyph special={folder.special} />
                                         <span className="mailbox-manage__folder-name">{folderLabel(lang, t, folder)}</span>
-                                        {count > 0 && <span className="mailbox-manage__badge" aria-label={t('{{count}} unread', `${count} 封未读`, `${count} 封未讀`).replace('{{count}}', String(count))}>{count > 99 ? '99+' : count}</span>}
+                                        {total > 0 && <span className="mailbox-manage__badge" title={badgeLabel} aria-label={badgeLabel}>{total > 999 ? '999+' : total}</span>}
                                     </button>
                                 </li>
                             );
@@ -1073,8 +1137,10 @@ export function MailboxManageDialog({
                                 disabled={listBusy}
                                 onClick={toggleSelectAll}
                             >{allSelected && <IconCheck size={11} />}</button>
-                            <span className="mailbox-manage__batchbar__label">
-                                {selection.size > 0
+                            <span className="mailbox-manage__batchbar__label" aria-live="polite">
+                                {batchAction === 'delete'
+                                    ? t('Deleting…', '正在删除…', '正在刪除…')
+                                    : selection.size > 0
                                     ? t('{{count}} selected', `已选 ${selection.size} 封`, `已選 ${selection.size} 封`).replace('{{count}}', String(selection.size))
                                     : lastDeleteCount > 0
                                         ? t('{{count}} deleted', `已删除 ${lastDeleteCount} 封`, `已刪除 ${lastDeleteCount} 封`).replace('{{count}}', String(lastDeleteCount))
