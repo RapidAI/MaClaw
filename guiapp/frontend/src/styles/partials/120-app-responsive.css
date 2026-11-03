@@ -2073,12 +2073,17 @@
 #App .mc-task-result-card__upload--idle:hover:not(:disabled) { background: color-mix(in srgb, var(--mc-accent) 10%, var(--mc-surface)) !important; color: var(--mc-accent) !important; }
 #App .mc-task-result-card__upload--done { color: var(--theme-success) !important; }
 #App .mc-task-result-card__upload--error { color: var(--theme-danger) !important; }
-#App .mc-task-result-card__actions button {
+/* The per-file artifact action strip (deliverable cards) is excluded here:
+   .mc-task-artifact-item__actions brings its own palette, hover states and a
+   filled primary button, so the generic repaint below would fight them.
+   Ghost buttons there reuse the same token values (--mc-* alias the
+   theme-* tokens), keeping the chrome uniform. */
+#App .mc-task-result-card__actions:not(.mc-task-artifact-item__actions) button {
   border-color: var(--mc-line) !important;
   background: var(--mc-surface) !important;
   color: var(--mc-copy) !important;
 }
-#App .mc-task-result-card__actions button:hover:not(:disabled) {
+#App .mc-task-result-card__actions:not(.mc-task-artifact-item__actions) button:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--mc-accent) 42%, var(--mc-line)) !important;
   background: color-mix(in srgb, var(--mc-accent) 7%, var(--mc-surface)) !important;
   color: var(--mc-accent-strong) !important;

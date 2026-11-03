@@ -1,6 +1,7 @@
 import { useState, type MouseEvent } from "react";
 import { ExportTaskResultFile, OpenFileOrShowInFolder } from "../../../wailsjs/go/main/App";
 import { companionSay } from "../../i18n/mnCompanion";
+import { ArtifactFileIcon } from "../ai/assistantTaskArtifacts";
 
 export type CompanionFile = { label: string; path: string; size?: number };
 
@@ -48,6 +49,7 @@ export function CompanionFileCard({ files, messageId, lang = "en" }: { files: Co
                     <div key={file.path}>
                         <div className="mc-task-artifacts__row">
                             <a className="mc-task-artifact" href="#" title={file.path} onClick={(event) => open(event, file.path)}>
+                                <ArtifactFileIcon path={file.path} />
                                 <span className="mc-task-artifact__name">{name}</span>
                             </a>
                         </div>

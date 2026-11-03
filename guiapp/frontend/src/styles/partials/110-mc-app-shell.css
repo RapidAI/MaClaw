@@ -2237,34 +2237,100 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-task-result-card__upload--error { color: var(--theme-danger); }
 .mc-task-summary-status { margin: 0 0 6px; color: var(--theme-text-muted); font-size: 12px; }
 .mc-task-summary-status[data-status='incomplete'] { color: var(--theme-danger, #a33b32); }
-.mc-task-artifacts { margin-top: 10px; }
-.mc-task-artifacts__label { margin-bottom: 8px; color: var(--theme-text-muted); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+/* Task artifacts: a quiet "deliverable" section holding one card per file.
+   The card carries the file chip and its action strip, so the deliverable
+   reads as one object instead of a chip floating over loose buttons. */
+.mc-task-artifacts {
+  margin-top: 12px; padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 9%, var(--theme-border));
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--theme-primary) 5%, var(--theme-surface)), var(--theme-surface) 68%);
+}
+.mc-task-artifacts__head { display: flex; align-items: center; gap: 7px; margin-bottom: 10px; }
+.mc-task-artifacts__glyph {
+  display: inline-grid; place-items: center; width: 18px; height: 18px; flex: none;
+  border-radius: 6px; background: var(--theme-primary-soft); color: var(--mc-accent, #2e75cb); font-size: 10px;
+}
+.mc-task-artifacts__label { color: var(--theme-text-secondary); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.mc-task-artifacts__count {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 6px;
+  border-radius: var(--radius-pill); background: var(--theme-primary-soft); color: var(--mc-accent, #2e75cb);
+  font-size: 10.5px; font-weight: 700;
+}
+/* filecompanion and similar legacy surfaces render the label bare, without
+   the head row; keep its spacing here. */
+.mc-task-artifacts > .mc-task-artifacts__label { margin-bottom: 10px; }
 .mc-task-artifacts__row { display: flex; flex-wrap: wrap; gap: 12px; }
-.mc-task-artifact-item { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 6px; max-width: 100%; min-width: 0; }
-.mc-task-artifact-item__head { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; }
-/* Compound selectors out-rank the shared .mc-task-result-card__actions rules
-   below regardless of file order — colors still come from the shared + dark
-   rules, only sizing/spacing are per-file here. */
-.mc-task-artifact-item__actions.mc-task-result-card__actions { margin-top: 0; gap: 6px; }
-.mc-task-artifact-item__actions.mc-task-result-card__actions button { min-height: 26px; padding: 0 10px; border-radius: 8px; font-size: 11.5px; transition: border-color 120ms ease, color 120ms ease, background 120ms ease; }
+.mc-task-artifact-item {
+  position: relative; display: flex; flex-direction: column; align-items: stretch;
+  min-width: min(340px, 100%); max-width: 100%;
+  border: 1px solid var(--theme-border); border-radius: var(--radius-lg);
+  background: var(--theme-surface); overflow: hidden; box-shadow: var(--shadow-sm);
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+.mc-task-artifact-item:hover {
+  border-color: color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border));
+  box-shadow: var(--shadow-md); transform: translateY(-1px);
+}
+.mc-task-artifact-item__head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 10px 12px 9px; }
+.mc-task-artifact-item__head .mc-task-artifact { flex: 0 1 auto; }
+/* The cloud-upload affordance rides the card's right edge. */
+.mc-task-artifact-item__head .mc-task-result-card__upload { margin-left: auto; }
+/* 120-app-responsive excludes .mc-task-artifact-item__actions from the generic
+   #App repaint, so this strip owns its own palette and hover states outright. */
+.mc-task-artifact-item__actions.mc-task-result-card__actions {
+  margin-top: 0; gap: 8px; padding: 9px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--theme-border) 66%, transparent);
+  background: color-mix(in srgb, var(--theme-surface-muted) 44%, var(--theme-surface));
+}
+.mc-task-artifact-item__actions.mc-task-result-card__actions button { min-height: 30px; padding: 0 12px; border-radius: 9px; font-size: 12px; transition: border-color 140ms ease, color 140ms ease, background 140ms ease, box-shadow 140ms ease; }
+/* Filled primary (预览) leads the strip. The class says "fill", not
+   "primary": a global office-repaint repaints button[class*='primary']
+   with --office-accent and would fight this theme-token fill here. */
+.mc-task-artifact-item__actions .mc-artifact-btn--fill {
+  border: 1px solid transparent; border-radius: 9px;
+  background: linear-gradient(180deg, var(--theme-primary), var(--theme-primary-strong));
+  color: var(--theme-on-primary); font-weight: 600;
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--theme-primary) 32%, transparent);
+}
+.mc-task-artifact-item__actions .mc-artifact-btn--fill:hover:not(:disabled) {
+  background: linear-gradient(180deg, var(--theme-primary-strong), var(--mc-accent-strong, var(--theme-primary-strong)));
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-primary) 38%, transparent);
+}
 .mc-task-artifact-item__actions button:focus-visible { outline: 2px solid color-mix(in srgb, var(--mc-accent, #2e75cb) 45%, transparent); outline-offset: 1px; }
 .mc-task-artifact {
-  display: inline-flex; align-items: center; gap: 8px; max-width: 260px; min-width: 0;
-  padding: 8px 12px; border: 1px solid var(--theme-border); border-radius: var(--radius-lg);
+  display: inline-flex; align-items: center; gap: 9px; flex: 0 1 auto; max-width: 340px; min-width: 0;
+  padding: 7px 10px; border: 1px solid var(--theme-border); border-radius: var(--radius-lg);
   background: var(--theme-surface); color: var(--theme-text-primary); text-decoration: none;
+  transition: border-color 140ms ease, background 140ms ease;
 }
+/* Inside the item card the chip drops its own chrome — the card carries it. */
+.mc-task-artifact-item__head .mc-task-artifact { padding: 0; border-color: transparent; background: transparent; }
 .mc-task-artifact:hover { border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); }
+.mc-task-artifact-item__head .mc-task-artifact:hover { border-color: transparent; }
 .mc-task-artifact__icon {
-  display: inline-grid; place-items: center; width: 28px; height: 28px; flex: none;
-  border-radius: var(--radius-md); background: var(--theme-primary-soft); color: var(--mc-accent, #2e75cb); font-size: 14px;
+  display: inline-grid; place-items: center; width: 32px; height: 32px; flex: none;
+  border-radius: 10px;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--theme-primary) 17%, var(--theme-surface)), color-mix(in srgb, var(--theme-primary) 8%, var(--theme-surface)));
+  color: var(--mc-accent, #2e75cb); font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 16%, transparent);
 }
-.mc-task-artifact__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
-.mc-task-artifact__open { flex: none; color: var(--theme-text-muted); font-size: 12px; }
+.mc-task-artifact__icon--glyph { font-size: 15px; font-weight: 500; }
+/* The OS association icon arrives with its own colors (PDF red, Word blue).
+   The tinted tile would fight it, so the shell disappears; the img keeps a
+   little air inside the tile's footprint. */
+.mc-task-artifact__icon--os { background: transparent; box-shadow: none; }
+.mc-task-artifact__img { display: block; width: 24px; height: 24px; object-fit: contain; }
+.mc-task-artifact__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; color: var(--theme-text-primary); }
+.mc-task-artifact__open { flex: none; color: var(--theme-text-muted); font-size: 13px; margin-left: 2px; transition: transform 140ms ease, color 140ms ease; }
+.mc-task-artifact:hover .mc-task-artifact__open { transform: translate(2px, -2px); color: var(--mc-accent, #2e75cb); }
 .mc-task-artifacts__more {
-  margin-top: 8px; padding: 0; border: none; background: transparent; color: var(--theme-text-secondary);
-  font-size: 12px; cursor: pointer;
+  margin-top: 10px; padding: 0 10px; min-height: 26px;
+  border: 1px dashed color-mix(in srgb, var(--theme-border) 90%, transparent); border-radius: var(--radius-pill);
+  background: transparent; color: var(--theme-text-secondary); font-size: 12px; cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease;
 }
-.mc-task-artifacts__more:hover { color: var(--mc-accent, #2e75cb); }
+.mc-task-artifacts__more:hover { color: var(--mc-accent, #2e75cb); border-color: color-mix(in srgb, var(--theme-primary) 40%, transparent); }
 .mc-task-result-card__actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .mc-task-result-card__actions button { min-height: 28px; padding: 0 10px; border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: var(--theme-surface); color: var(--theme-text-secondary); font-size: 11px; cursor: pointer; }
 .mc-task-result-card__actions button:hover { border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); color: var(--mc-accent, #2e75cb); background: var(--theme-primary-soft); }
@@ -2279,6 +2345,35 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 #App[data-ai-theme='dark'] .mc-task-result-card__upload { color: var(--theme-text-secondary); }
 #App[data-ai-theme='dark'] .mc-task-result-card__upload--idle:hover:not(:disabled) { background: var(--theme-surface-muted); color: var(--theme-primary-strong); }
 #App[data-ai-theme='dark'] .mc-task-result-card__actions button { border-color: var(--theme-border); background: var(--theme-surface-muted); color: var(--theme-text-secondary); }
+#App[data-ai-theme='dark'] .mc-task-artifacts {
+  border-color: color-mix(in srgb, var(--theme-primary) 14%, var(--theme-border));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--theme-primary) 6%, var(--theme-surface)), var(--theme-surface) 68%);
+}
+#App[data-ai-theme='dark'] .mc-task-artifacts__glyph,
+#App[data-ai-theme='dark'] .mc-task-artifacts__count { background: color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface)); color: var(--theme-primary-strong); }
+#App[data-ai-theme='dark'] .mc-task-artifacts__label { color: var(--theme-text-secondary); }
+#App[data-ai-theme='dark'] .mc-task-artifact-item { border-color: var(--theme-border); background: var(--theme-surface); }
+#App[data-ai-theme='dark'] .mc-task-artifact-item:hover { border-color: color-mix(in srgb, var(--theme-primary) 36%, var(--theme-border)); }
+#App[data-ai-theme='dark'] .mc-task-artifact-item__actions.mc-task-result-card__actions {
+  border-top-color: color-mix(in srgb, var(--theme-border) 70%, transparent);
+  background: color-mix(in srgb, var(--theme-surface-muted) 55%, var(--theme-surface));
+}
+/* Scoped so they out-rank the generic dark action rule above. */
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions button { border-color: var(--theme-border); background: transparent; color: var(--theme-text-secondary); }
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--theme-primary) 42%, var(--theme-border)); background: var(--theme-primary-soft); color: var(--theme-primary-strong); }
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-artifact-btn--fill,
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-artifact-btn--fill:hover:not(:disabled) {
+  border-color: transparent;
+  background: linear-gradient(180deg, var(--theme-primary), var(--theme-primary-strong));
+  color: var(--theme-on-primary);
+}
+#App[data-ai-theme='dark'] .mc-task-artifact__icon {
+  background: linear-gradient(160deg, color-mix(in srgb, var(--theme-primary) 22%, var(--theme-surface)), color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface)));
+  color: var(--theme-primary-strong);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 22%, transparent);
+}
+#App[data-ai-theme='dark'] .mc-task-artifact__icon--os { background: transparent; box-shadow: none; }
+#App[data-ai-theme='dark'] .mc-task-artifacts__more { border-color: var(--theme-border); color: var(--theme-text-secondary); }
 #App[data-ai-theme='dark'] .mc-execution-step:not(:last-child)::after { background: var(--theme-border) !important; }
 #App[data-ai-theme='dark'] .mc-execution-step > span:first-child { background: var(--theme-primary-soft) !important; color: var(--theme-primary-strong) !important; }
 #App[data-ai-theme='dark'] .mc-execution-step[data-status='passed'] > span:first-child { background: color-mix(in srgb, var(--mc-done) 16%, var(--theme-surface)) !important; color: var(--mc-done) !important; }

@@ -1,6 +1,7 @@
 import { useState, type MouseEvent } from "react";
 import { ExportTaskResultFile, OpenFileOrShowInFolder } from "../../../wailsjs/go/main/App";
 import { companionSay } from "../../i18n/mnCompanion";
+import { ArtifactFileIcon } from "../ai/assistantTaskArtifacts";
 
 /** Companion paper PDF. Open and save only; preview stays hidden. */
 export function PaperResultCard({ filePath, messageId, lang = "en" }: { filePath: string; messageId: string; lang?: string }) {
@@ -35,6 +36,7 @@ export function PaperResultCard({ filePath, messageId, lang = "en" }: { filePath
             <div className="mc-task-artifacts__label">{companionSay(lang, "产出物")}</div>
             <div className="mc-task-artifacts__row">
                 <a className="mc-task-artifact" href="#" title={filePath} onClick={open}>
+                    <ArtifactFileIcon path={filePath} />
                     <span className="mc-task-artifact__name">{name}</span>
                 </a>
             </div>

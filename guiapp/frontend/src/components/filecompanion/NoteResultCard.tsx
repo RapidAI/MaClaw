@@ -2,6 +2,7 @@ import { useState, type MouseEvent } from "react";
 import { ExportTaskResultFile, FileCompanionImportKnowledge, FileCompanionUploadCloud, OpenFileOrShowInFolder } from "../../../wailsjs/go/main/App";
 import { useToast } from "../Toast";
 import { companionSay } from "../../i18n/mnCompanion";
+import { ArtifactFileIcon } from "../ai/assistantTaskArtifacts";
 
 function noteMarkdownPath(pdfPath: string): string {
     return pdfPath.toLowerCase().endsWith(".pdf") ? `${pdfPath.slice(0, -4)}.md` : pdfPath;
@@ -68,6 +69,7 @@ export function NoteResultCard({ filePath, messageId, lang = "en" }: { filePath:
             <div className="mc-task-artifacts__label">{companionSay(lang, "产出物")}</div>
             <div className="mc-task-artifacts__row">
                 <a className="mc-task-artifact" href="#" title={filePath} onClick={open}>
+                    <ArtifactFileIcon path={filePath} />
                     <span className="mc-task-artifact__name">{name}</span>
                 </a>
             </div>

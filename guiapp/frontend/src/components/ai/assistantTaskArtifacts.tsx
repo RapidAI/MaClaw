@@ -1,10 +1,15 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ExportLatexSourceBundle, ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { TaskResultUploadButton, taskResultUploadSupported } from "./TaskResultUploadButton";
 import { TaskResultExportButton } from "./TaskResultExportButton";
 import { dispatchPreviewTaskResult, localizeTaskResultExportError, taskResultPreviewKindFromPath } from "./taskResultPreview";
 import { cloudSafePathLabel } from "./codingTaskMode";
 import { chromeText } from "../../i18n/chromeText";
+import {
+    forgetCloudDriveSystemIcon,
+    loadCloudDriveSystemIcon,
+    peekCloudDriveSystemIcon,
+} from "../layout/cloudDriveSystemIcons";
 
 
 const LATEX_SOURCE_EXT = new Set(["tex", "ltx", "latex", "bib", "cls", "sty", "bst"]);
@@ -34,6 +39,55 @@ const VISIBLE_ARTIFACTS = 2;
 
 function artifactIdentity(path: string): string {
     return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+/** Short badge for the icon tile: the extension when it fits, else "" (glyph). */
+function artifactBadge(path: string): string {
+    const ext = artifactExt(path);
+    if (!ext || ext.length > 4) return "";
+    return ext.toUpperCase();
+}
+
+/**
+ * The icon tile for one file. The desktop shell answers with the icon the
+ * operating system associates with the suffix (the same association explorer
+ * uses), so a PDF shows the PDF icon instead of a badge we draw. The lookup
+ * only needs the suffix and answers "" for types no application claims.
+ * Badge/glyph is the fallback while unresolved, after a definitive "absent",
+ * and whenever the returned image cannot be decoded.
+ */
+export function ArtifactFileIcon({ path }: { path: string }) {
+    const ext = artifactExt(path);
+    const suffix = ext ? `.${ext}` : "";
+    const badge = artifactBadge(path);
+    const [iconURL, setIconURL] = useState<string | null>(() => peekCloudDriveSystemIcon(suffix));
+    useEffect(() => {
+        let active = true;
+        const known = peekCloudDriveSystemIcon(suffix);
+        setIconURL(known);
+        if (!known) {
+            void loadCloudDriveSystemIcon(suffix).then((result) => {
+                if (active) setIconURL(result.state === "icon" ? result.url : null);
+            });
+        }
+        return () => { active = false; };
+    }, [suffix]);
+    if (iconURL) {
+        return (
+            <span className="mc-task-artifact__icon mc-task-artifact__icon--os" aria-hidden="true">
+                <img
+                    className="mc-task-artifact__img"
+                    src={iconURL}
+                    alt=""
+                    draggable={false}
+                    onError={() => { forgetCloudDriveSystemIcon(suffix); setIconURL(null); }}
+                />
+            </span>
+        );
+    }
+    return (
+        <span className={`mc-task-artifact__icon${badge ? "" : " mc-task-artifact__icon--glyph"}`} aria-hidden="true">{badge || "▤"}</span>
+    );
 }
 
 function artifactLabel(path: string, lang: string): { title: string; name: string } {
@@ -75,7 +129,13 @@ export function TaskResultArtifacts({
     const visible = showAll ? listed : listed.slice(0, VISIBLE_ARTIFACTS);
     return (
         <div className="mc-task-artifacts" data-testid={`task-result-card-${messageId}`}>
-            <div className="mc-task-artifacts__label">{chromeText(lang, "Artifacts", "产出物", "產出物")}</div>
+            <div className="mc-task-artifacts__head">
+                <span className="mc-task-artifacts__glyph" aria-hidden="true">◈</span>
+                <span className="mc-task-artifacts__label">{chromeText(lang, "Artifacts", "产出物", "產出物")}</span>
+                {/* Keep the badge consistent with the "view all (N)" row: source-only
+                    bundles have no chips, so fall back to the total then. */}
+                <span className="mc-task-artifacts__count">{listed.length || files.length}</span>
+            </div>
             <div className="mc-task-artifacts__row">
                 {visible.map((filePath, index) => {
                     const file = artifactLabel(filePath, lang);
@@ -91,14 +151,17 @@ export function TaskResultArtifacts({
                                     title={file.title}
                                     onClick={(event) => onOpen(event, filePath)}
                                 >
-                                    <span className="mc-task-artifact__icon" aria-hidden="true">▤</span>
+                                    <ArtifactFileIcon path={filePath} />
                                     <span className="mc-task-artifact__name">{file.name}</span>
                                     <span className="mc-task-artifact__open" aria-hidden="true">↗</span>
                                 </a>
                                 {taskResultUploadSupported(filePath) && <TaskResultUploadButton filePath={filePath} lang={lang} />}
                             </div>
                             <div className="mc-task-result-card__actions mc-task-artifact-item__actions">
-                                <button type="button" data-testid={`task-result-preview-btn${suffix}`} onClick={(event) => { event.stopPropagation(); dispatchPreviewTaskResult(filePath, messageId); }}>{chromeText(lang, "Preview", "预览", "預覽")}</button>
+                                {/* "fill" on purpose: a global office-repaint repaints every
+                                    button[class*='primary'] with --office-accent, which would
+                                    fight this card's theme-token fill. */}
+                                <button type="button" className="mc-artifact-btn--fill" data-testid={`task-result-preview-btn${suffix}`} onClick={(event) => { event.stopPropagation(); dispatchPreviewTaskResult(filePath, messageId); }}>{chromeText(lang, "Preview", "预览", "預覽")}</button>
                                 <button type="button" data-testid={`task-result-view-btn${suffix}`} onClick={(event) => onOpen(event, filePath)}>{chromeText(lang, "View document", "查看文档", "查看文件")}</button>
                                 <TaskResultExportButton filePath={filePath} lang={lang} testIdSuffix={suffix} />
                                 <button type="button" data-testid={`task-result-reveal-btn${suffix}`} onClick={(event) => { event.stopPropagation(); void ShowItemInFolder(filePath).catch(() => {}); }}>{chromeText(lang, "Reveal", "定位", "定位")}</button>
