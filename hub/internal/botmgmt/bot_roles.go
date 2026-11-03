@@ -75,6 +75,11 @@ func (s *Service) routerReceiveFinding(f watchFinding) {
 		return // nothing worth the person's attention
 	}
 	key := "router-" + f.Reason + "-" + f.RunID
+	// The in-memory map is lost on a Hub restart; the person's feed is not.
+	// A keyed note from this router for this run+reason means it was told.
+	if s.routerAlreadyTold(f, key) {
+		return
+	}
 	if err := routerTell(s, f.TenantID, f.UserID, f.BotID, text, key); err != nil {
 		s.routerFallbackFeed(f, text, key)
 	}
@@ -112,4 +117,18 @@ func (s *Service) routerFallbackFeed(f watchFinding, text, key string) {
 	}
 	_, _, _ = s.reportLocked(&rec, f.UserID, f.BotID, BotCrossNote{Target: primary, Topic: "question", Text: text, Key: key})
 	_ = s.save(ctx, f.TenantID, rec)
+}
+
+// routerAlreadyTold reads the persisted cross notes (Say and the fallback
+// both store the key), so a restart never re-notifies the same run+reason.
+func (s *Service) routerAlreadyTold(f watchFinding, key string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.loadForUser(ctx, f.TenantID, f.UserID)
+	if err != nil {
+		return false
+	}
+	return keyedNote(rec.CrossNotes, f.UserID, f.BotID, key) != nil
 }

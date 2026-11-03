@@ -2,6 +2,7 @@ package botmgmt
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -66,7 +67,7 @@ func TestHubRunsCrossBotTaskWithoutGUI(t *testing.T) {
 		t.Fatalf("idempotent delegate: %+v %v", again, err)
 	}
 	waitFor(t, func() bool { return len(f.list()) == 1 })
-	if got := f.list()[0]; got != "bot_pub|xdel-"+d.ID+"|导出本月订单" {
+	if got := f.list()[0]; !strings.HasPrefix(got, "bot_pub|xdel-"+d.ID+"|导出本月订单\n") || !strings.Contains(got, "reply_to="+d.ID) {
 		t.Fatalf("admit = %q", got)
 	}
 	// The GUI may not start it a second time.
@@ -177,7 +178,7 @@ func TestHubBootScanResumesPendingDelegate(t *testing.T) {
 		t.Fatalf("resumed %d users", n)
 	}
 	waitFor(t, func() bool { return len(f.list()) == 1 })
-	if got := f.list()[0]; got != "bot_pub|xdel-"+d.ID+"|整理文件" {
+	if got := f.list()[0]; !strings.HasPrefix(got, "bot_pub|xdel-"+d.ID+"|整理文件\n") || !strings.Contains(got, "reply_to="+d.ID) {
 		t.Fatalf("admit = %q", got)
 	}
 }

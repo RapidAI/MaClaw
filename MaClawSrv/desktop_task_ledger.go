@@ -27,15 +27,16 @@ import (
 // refilled a post the person had already published and asked to publish
 // again). Every publish path reads this ledger first.
 type desktopLedgerEntry struct {
-	Kind    string    `json:"kind"` // posted | publish_takeover | handback | checked | run_end | page_state | draft | login_state
-	Host    string    `json:"host,omitempty"`
-	Title   string    `json:"title,omitempty"`
-	URL     string    `json:"url,omitempty"`
-	Run     string    `json:"run,omitempty"`
-	Detail  string    `json:"detail,omitempty"`
-	Body    string    `json:"body,omitempty"` // draft / form text kept outside the container
-	Found   bool      `json:"found,omitempty"`
-	At      time.Time `json:"at"`
+	Kind   string    `json:"kind"` // posted | publish_takeover | handback | checked | run_end | page_state | draft | login_state
+	Host   string    `json:"host,omitempty"`
+	Title  string    `json:"title,omitempty"`
+	URL    string    `json:"url,omitempty"`
+	Run    string    `json:"run,omitempty"`
+	Detail string    `json:"detail,omitempty"`
+	Body   string    `json:"body,omitempty"`  // draft / form text kept outside the container
+	Field  string    `json:"field,omitempty"` // stable locator of the form field a draft was typed into
+	Found  bool      `json:"found,omitempty"`
+	At     time.Time `json:"at"`
 }
 
 type desktopLedgerFile struct {
@@ -43,17 +44,16 @@ type desktopLedgerFile struct {
 }
 
 const (
-	desktopLedgerKeep    = 7 * 24 * time.Hour
-	desktopLedgerMax     = 300
-	desktopRepostWindow  = 24 * time.Hour
-	desktopPendingWindow = 6 * time.Hour
+	desktopLedgerKeep      = 7 * 24 * time.Hour
+	desktopLedgerMax       = 300
+	desktopRepostWindow    = 24 * time.Hour
+	desktopPendingWindow   = 6 * time.Hour
 	desktopPageStateWindow = 6 * time.Hour
 	desktopDraftBodyMax    = 2000
 )
 
 // desktopLedgerNow is overridable in tests.
 var desktopLedgerNow = time.Now
-
 
 var desktopLedgerMu sync.Mutex
 
@@ -280,7 +280,7 @@ func desktopLedgerProgressPrompt(entries []desktopLedgerEntry, now time.Time) st
 		parts = append(parts, l)
 	}
 	if haveLogin && login.Detail != "" && login.Detail != "ok" {
-		parts = append(parts, "LOGIN STATE (kept outside the desktop): " + login.Detail + " on " + login.Host + ". Do not fill until signed in.")
+		parts = append(parts, "LOGIN STATE (kept outside the desktop): "+login.Detail+" on "+login.Host+". Do not fill until signed in.")
 	}
 	if len(parts) == 0 {
 		return ""

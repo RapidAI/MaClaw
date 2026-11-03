@@ -102,3 +102,28 @@ func TestDesktopSpeculateForbiddenNeverRuns(t *testing.T) {
 		t.Fatalf("expected irreversible refuse, got %v", err)
 	}
 }
+
+func TestDesktopRestorePlanSamePageLatestPerField(t *testing.T) {
+	now := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
+	old := desktopLedgerNow
+	desktopLedgerNow = func() time.Time { return now }
+	defer func() { desktopLedgerNow = old }()
+	f1 := `{"tag":"input","name":"title","idx":0}`
+	es := []desktopLedgerEntry{
+		{Kind: "draft", URL: "https://x.com/edit#a", Field: f1, Body: "旧标题", At: now.Add(-time.Hour)},
+		{Kind: "draft", URL: "https://x.com/edit/", Field: f1, Body: "新标题", At: now.Add(-time.Minute)},
+		{Kind: "draft", URL: "https://x.com/other", Field: f1, Body: "别页", At: now},
+		{Kind: "draft", URL: "https://x.com/edit", Body: "无定位", At: now},
+		{Kind: "draft", URL: "https://x.com/edit", Field: `{"tag":"textarea","idx":0}`, Body: "过期", At: now.Add(-7 * time.Hour)},
+	}
+	got := desktopRestorePlan(es, "https://x.com/edit")
+	if len(got) != 1 || got[0].Body != "新标题" {
+		t.Fatalf("%+v", got)
+	}
+	js := desktopRestoreFieldJS(f1, "新标题")
+	for _, bad := range []string{"submit", "click()", "location", "reload", "requestSubmit"} {
+		if strings.Contains(js, bad) {
+			t.Fatalf("restore script must not %s", bad)
+		}
+	}
+}

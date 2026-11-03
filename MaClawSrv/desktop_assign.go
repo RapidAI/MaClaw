@@ -116,7 +116,7 @@ func desktopSayHint() string {
 	if !desktopSayOn() {
 		return ""
 	}
-	return " action=say with message (and room for a group room) speaks to the person directly, in your own voice as yourself (first person, like a colleague talking, not a relay or a system notice); say only what is new to them (Hub refuses a repeat of what another bot already said). One say per run: put the result in that one message. A later say in the same run is refused unless it carries update=true for information the person has not had yet."
+	return " action=say with message (and room for a group room) speaks to the person directly, in your own voice as yourself (first person, like a colleague talking, not a relay or a system notice); say only what is new to them (Hub refuses a repeat of what another bot already said). Only a router speaks: when you are working an assignment another bot gave you, never say; report to that bot instead. One say per run: put the result in that one message. A later say in the same run is refused unless it carries update=true for information the person has not had yet."
 }
 
 func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[string]any) (string, error) {
@@ -163,6 +163,12 @@ func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[
 		err = client.post(cctx, "/api/v1/desktop-services/say", body, &out)
 	} else {
 		err = fmt.Errorf("Hub is not configured on this server")
+	}
+	if err != nil && strings.Contains(err.Error(), "WORKER_SAY") {
+		// This run works an assignment for a router bot; only the router
+		// speaks to the person.
+		desktopSayRuns.undo(runKey+"|"+room, time.Now())
+		return "NOT SENT worker_say: you are working an assignment, so you do not speak to the person. Put this in action=report (state=completed, blocked or waiting_human, reply_to=<assignment id>); the bot that gave you the work tells the person. " + err.Error(), nil
 	}
 	if err != nil {
 		if !strings.Contains(err.Error(), "ALREADY_SAID") && !strings.Contains(err.Error(), "409") {

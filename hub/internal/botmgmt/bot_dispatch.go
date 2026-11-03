@@ -400,6 +400,7 @@ func (s *Service) pickDispatchJob(tenantID, userID string, skip map[string]bool)
 		}
 		n.StartedAt, n.StartedBy = stamp, "hub"
 		changed = true
+		body = workerBrief(body, n.ID)
 		return dispatchJob{kind: "delegate", botID: n.Target, noteIDs: []string{n.ID}, content: body, key: "xdel-" + n.ID}, true
 	}
 	// Wakes: one per bot with unread, not yet woken mail.

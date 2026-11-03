@@ -246,6 +246,9 @@ func desktopSpeculateAutoOnce(scope agentruntime.Scope, session *browser.Browser
 			parts = append(parts, s)
 		}
 	}
+	if s := desktopRestoreFormFields(scope, session); s != "" {
+		parts = append(parts, s)
+	}
 	if u := session.CurrentURL(); u != "" {
 		if s, err := desktopSpeculateQuiet(scope, session, desktopSpeculateSnapshotPage, nil); err == nil && s != "" {
 			parts = append(parts, s)
@@ -301,7 +304,15 @@ func desktopNoteAppliedProgress(scope agentruntime.Scope, session *browser.Brows
 	if session != nil && desktopSessionConnected(session) {
 		url = session.CurrentURL()
 	}
-	desktopLedgerRememberProgress(scope, url, "", written, "draft")
+	field := ""
+	if url != "" {
+		field = desktopFocusedFieldLocator(session)
+	}
+	if field != "" {
+		desktopLedgerRememberField(scope, url, written, field)
+	} else {
+		desktopLedgerRememberProgress(scope, url, "", written, "draft")
+	}
 	if url != "" {
 		desktopLedgerRememberProgress(scope, url, "", "", "page_state")
 	}
