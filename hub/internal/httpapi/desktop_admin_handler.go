@@ -1061,7 +1061,10 @@ func PostDesktopSayHandler(bots *botmgmt.Service) http.HandlerFunc {
 		}
 		note, err := bots.SayFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, in.Room, in.Text, in.Key)
 		var said *botmgmt.AlreadySaidError
+		var worker *botmgmt.WorkerSayError
 		switch {
+		case errors.As(err, &worker):
+			writeJSON(w, http.StatusForbidden, map[string]any{"code": "WORKER_SAY", "message": worker.Error(), "assignment_id": worker.AssignmentID, "router": worker.Router})
 		case errors.As(err, &said):
 			writeJSON(w, http.StatusConflict, map[string]any{"code": "ALREADY_SAID", "message": "ALREADY_SAID by " + said.By, "by": said.By, "id": said.NoteID})
 		case errors.Is(err, botmgmt.ErrRateLimited):

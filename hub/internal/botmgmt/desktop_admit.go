@@ -168,6 +168,7 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 	if s == nil {
 		return noop, ErrSettingsUnavailable
 	}
+	s.ensureTaskPatrol()
 	clientMessageID = strings.TrimSpace(clientMessageID)
 	botID = strings.TrimSpace(botID)
 	userID = strings.TrimSpace(userID)
@@ -176,6 +177,10 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 	// taking s.mu; load does not lock.
 	desktopOf := s.botDesktopUsers(tenantID, userID)
 	mine := desktopOf(botID)
+	// Router/Worker: the account primary must stay free to answer and route
+	// while a teammate holds a long desktop run. Worker admits still exclude
+	// each other on a shared desktop.
+	primaryID := s.primaryBotOf(tenantID, userID)
 	s.mu.Lock()
 	s.ensureDesktopHydrated(tenantID)
 	if s.desktopAdmits == nil {
@@ -212,6 +217,10 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 		}
 		if !sameBot && desktopOf(desktopAdmitBot(key, userPrefix)) != mine {
 			continue // another bot's own desktop
+		}
+		otherBot := desktopAdmitBot(key, userPrefix)
+		if primaryID != "" && botID == primaryID && otherBot != primaryID {
+			continue // workers must not block the router
 		}
 		otherLive = true
 	}
@@ -1096,6 +1105,18 @@ func desktopAdmitBot(key, userPrefix string) string {
 		return rest[:i]
 	}
 	return rest
+}
+
+// primaryBotOf is this user's main/router bot id (empty when none).
+func (s *Service) primaryBotOf(tenantID, userID string) string {
+	if s == nil {
+		return ""
+	}
+	rec, err := s.load(context.Background(), tenantID)
+	if err != nil {
+		return ""
+	}
+	return primaryBotID(rec, userID)
 }
 
 // botDesktopUsers maps a bot id to the desktop user its commands drive:

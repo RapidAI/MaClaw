@@ -42,3 +42,31 @@ func TestIsolatedBotsDoNotBlockEachOther(t *testing.T) {
 		t.Fatalf("shared desktop not busy: %v", err)
 	}
 }
+
+// TestPrimaryNotBlockedByWorker: a live worker admit on the shared desktop
+// must not refuse the account primary (router). Two non-primary bots on the
+// same desktop still exclude each other.
+func TestPrimaryNotBlockedByWorker(t *testing.T) {
+	settings := &memSettings{}
+	raw, _ := json.Marshal(record{Bots: []Bot{
+		{ID: "bot_main", OwnerUserID: "alice"},
+		{ID: "bot_w1", OwnerUserID: "alice"},
+		{ID: "bot_w2", OwnerUserID: "alice"},
+	}})
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	svc.mu.Lock()
+	if svc.desktopAdmits == nil {
+		svc.desktopAdmits = map[string]*desktopAdmitState{}
+	}
+	svc.desktopAdmits[desktopAdmitKey("tenant-a", "alice", "bot_w1", "run_w1")] = &desktopAdmitState{runID: "run_w1", botID: "bot_w1", userID: "alice"}
+	svc.mu.Unlock()
+	if _, err := svc.claimDesktopTurn("tenant-a", "alice", "bot_main", "k-main", "新任务", ""); err != nil {
+		t.Fatalf("primary refused by worker: %v", err)
+	}
+	if _, err := svc.claimDesktopTurn("tenant-a", "alice", "bot_w2", "k-w2", "t", "execute"); !errors.Is(err, ErrDesktopBusy) {
+		t.Fatalf("worker sibling not busy: %v", err)
+	}
+}

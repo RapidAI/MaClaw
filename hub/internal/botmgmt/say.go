@@ -101,6 +101,11 @@ func (s *Service) Say(ctx context.Context, tenantID, userID, from, room, text, k
 		return BotCrossNote{}, ErrNotFound
 	}
 	target := "human"
+	if room == "" {
+		if a := openWorkerAssignment(rec.CrossNotes, userID, from, s.now()); a != nil {
+			return BotCrossNote{}, &WorkerSayError{AssignmentID: a.ID, Router: a.From}
+		}
+	}
 	if room != "" {
 		r := roomOf(rec, userID, room)
 		if r == nil {
