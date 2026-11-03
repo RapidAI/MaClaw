@@ -81,8 +81,15 @@ func TestSharedWorkRootStaysWithTheEarlierLiveSession(t *testing.T) {
 		t.Fatalf("earlier session effective dir = %q, want live tree %q", got, repoKey)
 	}
 
+	nested := h.resolveToolWorkDirForOwner(filepath.Join(repo, "missing", "child"), npuOwner)
+	if pathInsideWorkRoot(repo, nested) {
+		t.Fatalf("nested missing path joined the live tree: %q", nested)
+	}
 	got := h.projectTabWorkDirForOwner(npuOwner)
 	assertPrivateCheckout(t, repo, got)
+	if normalizeProjectSessionPath(nested) != normalizeProjectSessionPath(filepath.Join(got, "missing", "child")) {
+		t.Fatalf("nested missing path = %q, want it under checkout %q", nested, got)
+	}
 	if again := h.projectTabWorkDirForOwner(npuOwner); again != got {
 		t.Fatalf("second resolve = %q, want cached %q", again, got)
 	}
@@ -141,6 +148,13 @@ func TestSharedWorkRootStaysWithTheEarlierLiveSession(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	beginForegroundAgentOwner(npuOwner)
 	releaseNPU = true
+	// The previous checkout path must not answer this run. The holder has
+	// entered again, so the snapshot is the HEAD committed above.
+	refreshed := h.resolveToolWorkDirForOwner(got, npuOwner)
+	secondBody, err := os.ReadFile(filepath.Join(refreshed, "SECOND"))
+	if err != nil || !strings.Contains(string(secondBody), "second-head") {
+		t.Fatalf("old checkout path = %q body %q err=%v, want the HEAD of the new occupation", refreshed, secondBody, err)
+	}
 	fresh := h.projectTabWorkDirForOwner(npuOwner)
 	assertPrivateCheckout(t, repo, fresh)
 	body, err = os.ReadFile(filepath.Join(fresh, "SECOND"))
