@@ -33,7 +33,7 @@ func TestDesktopBotPublishCases(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mounts, err := desktop.PrivateMounts("tenant", "alice")
+		mounts, err := desktop.UserMounts("tenant", "alice")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -79,7 +79,15 @@ func TestDesktopBotPublishCases(t *testing.T) {
 						return "", errString("Error: No such object")
 					}
 					return inspectLine, nil
+				case "volume":
+					return "vol", nil
 				case "run":
+					if strings.Contains(strings.Join(args, " "), "/seed") {
+						if strings.Contains(strings.Join(args, " "), "EMPTY") {
+							return "EMPTY", nil
+						}
+						return "", nil
+					}
 					exists = true
 					return "container", nil
 				case "update":
@@ -119,7 +127,10 @@ func TestDesktopBotPublishCases(t *testing.T) {
 		}
 		runs, rms := 0, 0
 		for _, call := range calls {
-			if strings.HasPrefix(call, "run ") {
+			if strings.HasPrefix(call, "run ") && !strings.Contains(call, "/seed") {
+				if strings.Contains(call, "/seed") {
+					continue
+				}
 				runs++
 				if !strings.Contains(call, "--publish 127.0.0.1::19020/tcp") || !strings.Contains(call, "--publish 127.0.0.1::6080/tcp") {
 					t.Fatalf("publish %s", call)
@@ -147,7 +158,10 @@ func TestDesktopBotPublishCases(t *testing.T) {
 		runs = 0
 		rms = 0
 		for _, call := range calls {
-			if strings.HasPrefix(call, "run ") {
+			if strings.HasPrefix(call, "run ") && !strings.Contains(call, "/seed") {
+				if strings.Contains(call, "/seed") {
+					continue
+				}
 				runs++
 			}
 			if strings.HasPrefix(call, "rm ") {
@@ -220,6 +234,13 @@ func TestDesktopBotPublishCases(t *testing.T) {
 				return "sha256:img", nil
 			case "inspect":
 				return "", errString("Error: No such object")
+			case "volume":
+				return "vol", nil
+			case "run":
+				if strings.Contains(line, "/seed") {
+					return "EMPTY", nil
+				}
+				return "container", nil
 			default:
 				return "", errString("unexpected " + args[0])
 			}
@@ -228,7 +249,7 @@ func TestDesktopBotPublishCases(t *testing.T) {
 			t.Fatal("0.0.0.0 bind opened a session")
 		}
 		for _, call := range badCalls {
-			if strings.HasPrefix(call, "run ") {
+			if strings.HasPrefix(call, "run ") && !strings.Contains(call, "/seed") {
 				t.Fatalf("0.0.0.0 published: %s", call)
 			}
 		}
@@ -236,11 +257,18 @@ func TestDesktopBotPublishCases(t *testing.T) {
 		var privateRun string
 		private := &Service{AdvertiseHost: "docker.example", PublishBind: "10.1.2.3", Run: func(_ context.Context, args ...string) (string, error) {
 			line := strings.Join(args, " ")
-			if args[0] == "run" {
+			switch args[0] {
+			case "volume":
+				return "vol", nil
+			case "run":
+				if strings.Contains(line, "/seed") {
+					if strings.Contains(line, "EMPTY") {
+						return "EMPTY", nil
+					}
+					return "", nil
+				}
 				privateRun = line
 				return "container", nil
-			}
-			switch args[0] {
 			case "image":
 				if strings.Contains(line, ":state") {
 					return "", errString("Error: No such image")

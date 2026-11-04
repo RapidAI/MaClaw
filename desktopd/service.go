@@ -318,6 +318,9 @@ func (s *Service) recreateReason(c containerState, spec Spec) string {
 	if !privateMountsReady(c.Mounts, spec) {
 		return "private volumes are not mounted"
 	}
+	if !packageMountsReady(c.Mounts, spec) {
+		return "package volumes are not mounted"
+	}
 	if c.Shm != "" && !strings.EqualFold(c.Shm, spec.ShmSize) {
 		return "shm size changed"
 	}
@@ -588,12 +591,15 @@ func (s *Service) Install(ctx context.Context, tenantID, userID string, packages
 	// than this context, so the budget sentence can be written and read.
 	ctx, cancel := desktop.BoundInstall(ctx)
 	defer cancel()
-	container := containerName(spec.TenantID, spec.UserID)
 	var output string
 	release := s.holdWork(spec.TenantID, spec.UserID)
 	defer release()
 	err = s.withUserInstall(spec.TenantID, spec.UserID, func() error {
 		return s.withUserRead(spec.TenantID, spec.UserID, func() error {
+			container, _, cErr := s.toolContainer(ctx, spec)
+			if cErr != nil {
+				return cErr
+			}
 			// ensure() starts apt-mirror in the background and returns before
 			// that process takes the lock. The wait either blocks until the
 			// probe has written the sources, or holds the lock and writes
@@ -1003,7 +1009,7 @@ func (s *Service) keepUserLayer(ctx context.Context, name string, spec Spec, fro
 // image and is recorded in the maclaw.image label; image may be this user's
 // state image built on top of it.
 func (s *Service) runContainer(ctx context.Context, name string, spec Spec, image string) error {
-	mounts, err := desktop.PrivateMounts(spec.TenantID, spec.UserID)
+	mounts, err := desktop.UserMounts(spec.TenantID, spec.UserID)
 	if err != nil {
 		return err
 	}
@@ -1016,6 +1022,9 @@ func (s *Service) runContainer(ctx context.Context, name string, spec Spec, imag
 	}
 	bind, err := s.publishBind()
 	if err != nil {
+		return err
+	}
+	if err := s.seedPackageVolumes(ctx, spec, image); err != nil {
 		return err
 	}
 	// The previous random host port belongs to the container we are replacing.
@@ -1050,9 +1059,7 @@ func (s *Service) runContainer(ctx context.Context, name string, spec Spec, imag
 		"--publish", publishSpec(bind, desktop.ProxyPort),
 		"--publish", publishSpec(bind, desktop.VNCPort),
 	}
-	for _, mount := range mounts {
-		args = append(args, "--volume", mount.Volume+":"+mount.Target)
-	}
+	args = appendUserMountArgs(args, mounts)
 	// The image command is not the desktop. This process only stays up so
 	// desktopd can exec the supervisor. On docker stop it flushes Chromium
 	// before exiting, which keeps the website login in the same profile.

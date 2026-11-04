@@ -32,7 +32,7 @@ func TestDesktopBotMetaCases(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mounts, err := desktop.PrivateMounts("tenant", "alice")
+		mounts, err := desktop.UserMounts("tenant", "alice")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -64,7 +64,15 @@ func TestDesktopBotMetaCases(t *testing.T) {
 						return "", errors.New("Error: No such object")
 					}
 					return inspectLine, nil
+				case "volume":
+					return "vol", nil
 				case "run":
+					if strings.Contains(strings.Join(args, " "), "/seed") {
+						if strings.Contains(strings.Join(args, " "), "EMPTY") {
+							return "EMPTY", nil
+						}
+						return "", nil
+					}
 					exists = true
 					if strings.Contains(joined, "computers:") || strings.Contains(joined, root) {
 						t.Fatalf("docker run gained a meta mount: %s", joined)
@@ -104,6 +112,9 @@ func TestDesktopBotMetaCases(t *testing.T) {
 		runs, rms := 0, 0
 		for _, call := range calls {
 			if strings.HasPrefix(call, "run ") {
+				if strings.Contains(call, "/seed") {
+					continue
+				}
 				runs++
 				if !strings.Contains(call, "--publish 127.0.0.1::19020/tcp") || !strings.Contains(call, "--publish 127.0.0.1::6080/tcp") {
 					t.Fatalf("publish changed: %s", call)

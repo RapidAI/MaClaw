@@ -143,7 +143,7 @@ func TestDesktopBotRuntimeCases(t *testing.T) {
 			t.Fatalf("bot stop = %+v %v", botOut, err)
 		}
 
-		mounts, err := desktop.PrivateMounts("tenant", "alice")
+		mounts, err := desktop.UserMounts("tenant", "alice")
 		if err != nil {
 			t.Fatal(err)
 		}

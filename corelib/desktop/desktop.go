@@ -327,6 +327,7 @@ type Mount struct {
 // PrivateMounts are the volumes that hold one user's desktop and nobody else's.
 // Browser logins live on /desktops. App logins live in the home directory.
 // Software installed under /opt or /usr/local stays on those volumes.
+// Stage-2 sleep sync covers exactly these four; package mounts are separate.
 func PrivateMounts(tenantID, userID string) ([]Mount, error) {
 	key, err := UserKey(tenantID, userID)
 	if err != nil {
@@ -338,6 +339,38 @@ func PrivateMounts(tenantID, userID string) ([]Mount, error) {
 		{Volume: "maclaw-opt-" + key, Target: "/opt"},
 		{Volume: "maclaw-local-" + key, Target: "/usr/local"},
 	}, nil
+}
+
+// PackageMounts are the apt/dpkg roots shared by the desktop and the headless
+// workspace. An apt install in either writes here, so the other sees the
+// package without a rebuild. /usr/local stays on PrivateMounts and is mounted
+// after /usr so user-local installs keep their own volume.
+func PackageMounts(tenantID, userID string) ([]Mount, error) {
+	key, err := UserKey(tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	return []Mount{
+		{Volume: "maclaw-usr-" + key, Target: "/usr"},
+		{Volume: "maclaw-etc-" + key, Target: "/etc"},
+		{Volume: "maclaw-dpkg-" + key, Target: "/var/lib/dpkg"},
+		{Volume: "maclaw-apt-" + key, Target: "/var/lib/apt"},
+	}, nil
+}
+
+// UserMounts is every volume both the desktop and the workspace must mount:
+// package roots first, then the private four (so /usr/local covers the
+// package /usr volume).
+func UserMounts(tenantID, userID string) ([]Mount, error) {
+	pkg, err := PackageMounts(tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	priv, err := PrivateMounts(tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	return append(pkg, priv...), nil
 }
 
 // StateImage is the private image that keeps packages installed into this

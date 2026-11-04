@@ -19,7 +19,7 @@ import (
 
 func readyMounts(t *testing.T, tenantID, userID string) string {
 	t.Helper()
-	mounts, err := desktop.PrivateMounts(tenantID, userID)
+	mounts, err := desktop.UserMounts(tenantID, userID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestV1DesktopMovesToV2AndKeepsPrivateVolumes(t *testing.T) {
 		if !strings.Contains(line, "--label maclaw.image=maclaw-gui:2") {
 			t.Fatalf("new desktop is not labelled with its image: %s", line)
 		}
-		mounts, _ := desktop.PrivateMounts("tenant", "alice")
+		mounts, _ := desktop.UserMounts("tenant", "alice")
 		for _, mount := range mounts {
 			if !strings.Contains(line, mount.Volume+":"+mount.Target) {
 				t.Fatalf("new desktop lost %s: %s", mount.Target, line)

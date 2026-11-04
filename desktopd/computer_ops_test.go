@@ -24,7 +24,7 @@ type fakeComputer struct {
 }
 
 func newFakeComputer(t *testing.T) *fakeComputer {
-	mounts, err := desktop.PrivateMounts("tenant", "alice")
+	mounts, err := desktop.UserMounts("tenant", "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestResetBacksUpLayerDropsStateAndRecreatesWithVolumes(t *testing.T) {
 			t.Fatalf("volume %s missing from %s", v, runLine)
 		}
 	}
-	mounts, _ := desktop.PrivateMounts("tenant", "alice")
+	mounts, _ := desktop.UserMounts("tenant", "alice")
 	for _, m := range mounts {
 		backup := m.Volume + ResetBackupSuffix
 		copyAt, removeAt := f.has("run --rm --network none --entrypoint sh --volume "+m.Volume+":/from:ro --volume "+backup+":/to"), f.has("volume rm "+m.Volume)

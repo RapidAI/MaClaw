@@ -23,7 +23,7 @@ func fakeBotDocker(calls *[]string) func(context.Context, ...string) (string, er
 		case "image":
 			return "sha256:img", nil
 		case "inspect":
-			mounts, _ := desktop.PrivateMounts("tenant", "alice")
+			mounts, _ := desktop.UserMounts("tenant", "alice")
 			parts := []string{}
 			for _, m := range mounts {
 				parts = append(parts, m.Volume+"="+m.Target)

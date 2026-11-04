@@ -14,10 +14,11 @@ import (
 // writes files or runs commands never boots Xvfb or Chromium.
 //
 // It runs the same image as the user's desktop (the private state image
-// when there is one), mounts the same four private volumes, and runs as the
-// same unprivileged container: no published ports, no extra capabilities,
-// the same memory and cpu limits. ~/, /opt, /usr/local and /desktops are
-// therefore the same files the browser uploads from and downloads into.
+// when there is one), mounts the same private and package volumes, and runs
+// as the same unprivileged container: no published ports, no extra
+// capabilities, the same memory and cpu limits. ~/, /opt, /usr/local,
+// /desktops, and the apt/dpkg roots (/usr, /etc, /var/lib/dpkg, /var/lib/apt)
+// are therefore the same files the desktop sees.
 // While the desktop is running, bash and file calls go to the desktop
 // itself, as before, so a GUI program and a shell see one process space.
 //
@@ -82,17 +83,22 @@ func (s *Service) ensureWorkspace(ctx context.Context, spec Spec) (string, error
 	if err != nil {
 		return "", err
 	}
-	out, inspectErr := s.docker(ctx, "inspect", "--format", `{{.State.Running}}|{{index .Config.Labels "`+workspaceImageLbl+`"}}`, name)
+	out, inspectErr := s.docker(ctx, "inspect", "--format", `{{.State.Running}}|{{index .Config.Labels "`+workspaceImageLbl+`"}}|{{range .Mounts}}{{.Name}}={{.Destination}} {{end}}`, name)
 	exists := inspectErr == nil
 	if inspectErr != nil && !missingObject(inspectErr) {
 		return "", inspectErr
 	}
 	if exists {
-		parts := strings.SplitN(strings.TrimSpace(out), "|", 2)
-		if len(parts) == 2 && parts[1] != image {
-			// The desktop moved to a new image or state layer; the workspace
-			// holds nothing outside the shared volumes, so it is recreated.
-			log.Printf("desktopd: recreating workspace %s for image %s", name, image)
+		parts := strings.SplitN(strings.TrimSpace(out), "|", 3)
+		needRecreate := false
+		reason := ""
+		if len(parts) >= 2 && parts[1] != image {
+			needRecreate, reason = true, "image "+image
+		} else if len(parts) < 3 || !packageMountsReady(parts[2], spec) {
+			needRecreate, reason = true, "package volumes"
+		}
+		if needRecreate {
+			log.Printf("desktopd: recreating workspace %s (%s)", name, reason)
 			if _, err := s.docker(ctx, "rm", "-f", name); err != nil {
 				return "", err
 			}
@@ -109,8 +115,11 @@ func (s *Service) ensureWorkspace(ctx context.Context, spec Spec) (string, error
 		s.noteWorkspaceUse(name)
 		return name, nil
 	}
-	mounts, err := desktop.PrivateMounts(spec.TenantID, spec.UserID)
+	mounts, err := desktop.UserMounts(spec.TenantID, spec.UserID)
 	if err != nil {
+		return "", err
+	}
+	if err := s.seedPackageVolumes(ctx, spec, image); err != nil {
 		return "", err
 	}
 	args := []string{
@@ -131,9 +140,7 @@ func (s *Service) ensureWorkspace(ctx context.Context, spec Spec) (string, error
 		"--env", "NO_PROXY=" + desktopProxyNoProxy,
 		"--env", "no_proxy=" + desktopProxyNoProxy,
 	}
-	for _, mount := range mounts {
-		args = append(args, "--volume", mount.Volume+":"+mount.Target)
-	}
+	args = appendUserMountArgs(args, mounts)
 	args = append(args, image, "-c", workspaceHold)
 	if _, err := s.docker(ctx, args...); err != nil {
 		// Two calls raced to create it; the other one won.

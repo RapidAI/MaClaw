@@ -239,7 +239,15 @@ func TestSessionUsesAdvertisedHostNotContainerIP(t *testing.T) {
 			return "sha256:img", nil
 		case "inspect":
 			return "", errString("Error: No such object: maclaw-desktop")
+		case "volume":
+			return "vol", nil
 		case "run":
+			if strings.Contains(strings.Join(args, " "), "/seed") {
+				if strings.Contains(strings.Join(args, " "), "EMPTY") {
+					return "EMPTY", nil
+				}
+				return "", nil
+			}
 			return "container", nil
 		case "exec":
 			return `{"display":":20","cdp_port":19020}`, nil
@@ -273,7 +281,7 @@ func TestSessionUsesAdvertisedHostNotContainerIP(t *testing.T) {
 		t.Fatal("cdp url used a container or published address")
 	}
 	joined := strings.Join(runArgs, "\n")
-	mounts, err := desktop.PrivateMounts("tenant", "alice")
+	mounts, err := desktop.UserMounts("tenant", "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +295,7 @@ func TestSessionUsesAdvertisedHostNotContainerIP(t *testing.T) {
 			t.Fatalf("docker run missing private mount %s:%s\n%s", mount.Volume, mount.Target, joined)
 		}
 	}
-	bob, err := desktop.PrivateMounts("tenant", "bob")
+	bob, err := desktop.UserMounts("tenant", "bob")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +305,7 @@ func TestSessionUsesAdvertisedHostNotContainerIP(t *testing.T) {
 }
 
 func TestSameDesktopStaysUpWhenShmCaseDiffers(t *testing.T) {
-	mounts, err := desktop.PrivateMounts("tenant", "alice")
+	mounts, err := desktop.UserMounts("tenant", "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,6 +440,9 @@ func TestExistingDesktopWithoutPrivateDataIsRecreated(t *testing.T) {
 		case "inspect":
 			return "true|1g|", nil
 		case "volume", "commit", "rm", "run", "cp", "stop":
+			if args[0] == "run" && strings.Contains(strings.Join(args, " "), "EMPTY") {
+				return "EMPTY", nil
+			}
 			return "ok", nil
 		case "exec":
 			return `{"display":":20","cdp_port":19020}`, nil
@@ -489,6 +500,9 @@ func TestSharedVolumeIsReplacedWithTheUsersVolume(t *testing.T) {
 		case "inspect":
 			return "true|1g|maclaw-desktops-shared=/desktops maclaw-home-shared=/home/desktop maclaw-opt-shared=/opt maclaw-local-shared=/usr/local", nil
 		case "volume", "commit", "rm", "run", "cp", "stop":
+			if args[0] == "run" && strings.Contains(strings.Join(args, " "), "EMPTY") {
+				return "EMPTY", nil
+			}
 			return "ok", nil
 		case "exec":
 			return `{"display":":20","cdp_port":19020}`, nil
@@ -567,7 +581,7 @@ func TestStopWritesTheLoginAfterTheCallerDisconnects(t *testing.T) {
 }
 
 func TestSessionWaitsUntilTheLoginStopFinishes(t *testing.T) {
-	mounts, err := desktop.PrivateMounts("tenant", "alice")
+	mounts, err := desktop.UserMounts("tenant", "alice")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 // fakeHost models docker for the workspace: the desktop and the workspace
@@ -19,6 +21,15 @@ type fakeHost struct {
 	execs     []string
 }
 
+func (h *fakeHost) packageMountText() string {
+	mounts, _ := desktop.UserMounts("tenant", "alice")
+	var b strings.Builder
+	for _, m := range mounts {
+		b.WriteString(m.Volume + "=" + m.Target + " ")
+	}
+	return b.String()
+}
+
 func (h *fakeHost) run(_ context.Context, a ...string) (string, error) {
 	line := strings.Join(a, " ")
 	h.calls = append(h.calls, line)
@@ -26,6 +37,14 @@ func (h *fakeHost) run(_ context.Context, a ...string) (string, error) {
 	work := workspaceName("tenant", "alice")
 	missing := errors.New("Error: No such object")
 	switch {
+	case a[0] == "volume" && a[1] == "create":
+		return a[2], nil
+	case a[0] == "run" && strings.Contains(line, "/seed") && !strings.Contains(line, "--name "+work):
+		// seed emptiness probe or copy
+		if strings.Contains(line, "echo EMPTY") {
+			return "EMPTY", nil
+		}
+		return "", nil
 	case a[0] == "inspect" && a[len(a)-1] == desk:
 		if h.desktop == "" {
 			return "", missing
@@ -39,7 +58,8 @@ func (h *fakeHost) run(_ context.Context, a ...string) (string, error) {
 			return "", missing
 		}
 		if strings.Contains(line, "maclaw.work.image") {
-			return map[bool]string{true: "true", false: "false"}[h.work == "running"] + "|" + h.workImage, nil
+			running := map[bool]string{true: "true", false: "false"}[h.work == "running"]
+			return running + "|" + h.workImage + "|" + h.packageMountText(), nil
 		}
 		return map[bool]string{true: "true", false: "false"}[h.work == "running"], nil
 	case a[0] == "run" && strings.Contains(line, "--name "+work):
@@ -97,6 +117,7 @@ func TestBashWhileTheDesktopSleepsRunsInTheWorkspace(t *testing.T) {
 	for _, want := range []string{
 		"--name " + work, "--restart no", "--entrypoint sh",
 		"--volume maclaw-home-", ":/home/desktop", ":/desktops", ":/opt", ":/usr/local",
+		"--volume maclaw-usr-", ":/usr", "maclaw-dpkg-", "maclaw-etc-", "maclaw-apt-",
 		"--label maclaw.work.user=alice", "sha256:state1 -c " + workspaceHold,
 	} {
 		if !strings.Contains(run, want) {
@@ -219,5 +240,31 @@ func TestToolWorkspaceOffKeepsTheDesktopWake(t *testing.T) {
 	}
 	if h.work != "" || !strings.HasPrefix(h.execs[0], "exec "+containerName("tenant", "alice")+" ") {
 		t.Fatalf("execs = %v", h.execs)
+	}
+}
+
+func TestPackageVolumesAreSharedAcrossDesktopAndWorkspace(t *testing.T) {
+	pkg, err := desktop.PackageMounts("tenant", "alice")
+	if err != nil || len(pkg) != 4 {
+		t.Fatalf("pkg=%v err=%v", pkg, err)
+	}
+	all, err := desktop.UserMounts("tenant", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Package roots come first so /usr/local can cover /usr.
+	if all[0].Target != "/usr" || all[len(all)-1].Target != "/usr/local" {
+		t.Fatalf("order = %v", all)
+	}
+	spec := Spec{TenantID: "tenant", UserID: "alice", Image: "maclaw-gui:2", Memory: "1g", CPUs: "1", ShmSize: "64m"}
+	if packageMountsReady("", spec) {
+		t.Fatal("empty mounts ready")
+	}
+	text := ""
+	for _, m := range pkg {
+		text += m.Volume + "=" + m.Target + " "
+	}
+	if !packageMountsReady(text, spec) {
+		t.Fatal("package mounts not ready")
 	}
 }
