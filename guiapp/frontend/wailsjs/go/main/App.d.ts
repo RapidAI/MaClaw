@@ -759,7 +759,7 @@ export function UpdateFileCompanionGroup(arg1:string,arg2:string,arg3:string):Pr
 
 export function DeleteFileCompanionGroup(arg1:string):Promise<void>;
 
-export function DeleteFileCompanionProject(arg1:string):Promise<Record<string, any>>;
+export function DeleteFileCompanionProject(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function DeleteFileCompanionShare(arg1:string):Promise<void>;
 

@@ -1017,6 +1017,9 @@ func (h *IMMessageHandler) SetCapabilityGapDetector(detector *CapabilityGapDetec
 	if detector != nil {
 		detector.SetConfirmCallbackWithContext(func(ctx context.Context, skillName, riskDetails string) bool {
 			platform, userID := capabilityGapRuntimeFromContext(ctx)
+			if codingTaskFullControlGranted(h, userID) {
+				return true
+			}
 			// Extract factors from riskDetails for the shared confirmation function.
 			// The riskDetails string is pre-formatted by the detector; pass it as a
 			// single-element factors slice so buildCriticalRiskPrompt includes it.

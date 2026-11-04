@@ -197,23 +197,15 @@ func TestExecutionEngineAbortSkipsUnfinishedSteps(t *testing.T) {
 	}
 }
 
-func TestExecutionEngineDoesNotSilentlySkipUnsupportedSteps(t *testing.T) {
+func TestExecutionEngineRejectsCallWithoutCallee(t *testing.T) {
 	engine := NewExecutionEngine(nil)
-	ctx := context.Background()
-	_, err := engine.Init(ctx, `# Spec: 未支持步骤
+	_, err := engine.Init(context.Background(), `# Spec: 非法调用
 Goal: 响亮失败
 ## Steps
-1. [call] 暂不支持调用
+1. [call] 缺少调用目标
 `, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	next, err := engine.Next(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if next.Status != NextFailed || next.Failure == nil || !strings.Contains(next.Failure.Reason, "UNSUPPORTED_STEP_TYPE") {
-		t.Fatalf("next = %+v", next)
+	if err == nil || !strings.Contains(err.Error(), "CALL_TARGET_REQUIRED") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

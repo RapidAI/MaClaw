@@ -1215,7 +1215,7 @@ func TestUpdateFileCompanionShareDoesNotRestoreADeletedRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The reader deletes the project while the edit is on its way to the hub.
-	if _, err := app.DeleteFileCompanionProject(token); err != nil {
+	if _, err := app.DeleteFileCompanionProject(token, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.UpdateFileCompanionShare(token, "private", "secret", "", 0); err != nil {
@@ -1800,7 +1800,7 @@ func TestDeleteFileCompanionProjectKeepsSourceFile(t *testing.T) {
 	if err != nil || len(list.Items) != 1 {
 		t.Fatalf("list: %v %#v", err, list.Items)
 	}
-	deleted, err := app.DeleteFileCompanionProject(list.Items[0].ID)
+	deleted, err := app.DeleteFileCompanionProject(list.Items[0].ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1827,8 +1827,8 @@ func TestDeleteFileCompanionProjectKeepsSourceFile(t *testing.T) {
 	if err != nil || len(list.Items) != 0 {
 		t.Fatalf("after = %v %#v", err, list.Items)
 	}
-	if _, err := app.DeleteFileCompanionProject(deleted.ID); err == nil {
-		t.Fatal("second delete succeeded")
+	if _, err := app.DeleteFileCompanionProject(deleted.ID, ""); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := app.FileCompanionOpen(source); err != nil {
 		t.Fatal(err)
@@ -1840,6 +1840,254 @@ func TestDeleteFileCompanionProjectKeepsSourceFile(t *testing.T) {
 	got, err = os.ReadFile(source)
 	if err != nil || string(got) != string(body) {
 		t.Fatalf("source after reopen = %q err %v", got, err)
+	}
+}
+
+func TestSharedDocumentBecomesCloudProject(t *testing.T) {
+	home := t.TempDir()
+	app := &App{testHomeDir: home}
+	source := filepath.Join(home, "paper.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-own"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := app.FileCompanionOpen(source)
+	if err != nil || opened.Error != "" {
+		t.Fatalf("open: %v %s", err, opened.Error)
+	}
+	list, err := app.ListFileCompanionLibrary()
+	if err != nil || len(list.Items) != 1 || list.Items[0].Source == "cloud" {
+		t.Fatalf("local before share: %v %#v", err, list.Items)
+	}
+	localID := list.Items[0].ID
+	const token = "cd_0123456789abcdef0123456789abcdef"
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "paper.pdf", Path: source, Source: "cloud",
+		OpenedAt: "2026-10-25T00:00:00Z", Mine: true, Visibility: "group", Size: 8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.FileCompanionOpen(source); err != nil {
+		t.Fatal(err)
+	}
+	list, err = app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawCloud, sawLocal bool
+	for _, item := range list.Items {
+		if item.Source == "cloud" && item.Token == token {
+			sawCloud = true
+		}
+		if item.Source != "cloud" && fileCompanionSameLibraryPath(item.Path, source) {
+			sawLocal = true
+		}
+	}
+	if !sawCloud || sawLocal {
+		t.Fatalf("shared paper should be only a cloud project: %#v", list.Items)
+	}
+	deleted, err := app.DeleteFileCompanionProject(localID, source)
+	if err != nil || deleted.Cleared {
+		t.Fatalf("delete of retired local row = %#v %v", deleted, err)
+	}
+	list, err = app.ListFileCompanionLibrary()
+	if err != nil || len(list.Items) != 1 || list.Items[0].Token != token {
+		t.Fatalf("cloud project after local delete: %v %#v", err, list.Items)
+	}
+	app.retireFileCompanionShare(token)
+	list, err = app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawCloud, sawLocal = false, false
+	for _, item := range list.Items {
+		if item.Token == token {
+			sawCloud = true
+		}
+		if item.Source != "cloud" && fileCompanionSameLibraryPath(item.Path, source) {
+			sawLocal = true
+		}
+	}
+	if sawCloud || !sawLocal {
+		t.Fatalf("owner file after unshare = %#v", list.Items)
+	}
+	if body, err := os.ReadFile(source); err != nil || string(body) != "%PDF-own" {
+		t.Fatalf("source = %q %v", body, err)
+	}
+}
+
+func TestRemovingOwnShareReturnsTheLocalProject(t *testing.T) {
+	home := t.TempDir()
+	app := &App{testHomeDir: home}
+	source := filepath.Join(home, "paper.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-own"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.FileCompanionOpen(source); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := fileCompanionCanonicalPath(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	side := filepath.Join(app.GetDataDir(), "file-companion", "sessions", fileCompanionSessionID(identity)+".json")
+	if err := os.MkdirAll(filepath.Dir(side), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(side, []byte(`{"messages":["keep"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const first = "cd_0123456789abcdef0123456789abcdef"
+	const second = "cd_abcdef0123456789abcdef0123456789"
+	for _, token := range []string{first, second} {
+		if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+			ID: token, Token: token, Name: "paper.pdf", Path: source, Source: "cloud",
+			OpenedAt: "2026-10-25T00:00:00Z", Mine: true, Visibility: "public", Size: 8,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removed, err := app.DeleteFileCompanionProject(first, "")
+	if err != nil || removed.Restored || removed.Cleared {
+		t.Fatalf("one remaining share = %#v %v", removed, err)
+	}
+	if _, err := os.Stat(side); err != nil {
+		t.Fatalf("reading data cleared while a share remains: %v", err)
+	}
+	list, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 1 || list.Items[0].Token != second {
+		t.Fatalf("after first unshare = %#v", list.Items)
+	}
+	removed, err = app.DeleteFileCompanionProject(second, "")
+	if err != nil || !removed.Restored || removed.Cleared {
+		t.Fatalf("last unshare = %#v %v", removed, err)
+	}
+	if _, err := os.Stat(side); err != nil {
+		t.Fatalf("reading data cleared with the share: %v", err)
+	}
+	list, err = app.ListFileCompanionLibrary()
+	if err != nil || len(list.Items) != 1 || list.Items[0].Source == "cloud" {
+		t.Fatalf("local after unshare = %v %#v", err, list.Items)
+	}
+	again, err := app.DeleteFileCompanionProject(second, source)
+	if err != nil || !again.Restored || again.Cleared {
+		t.Fatalf("stale share delete = %#v %v", again, err)
+	}
+	if _, err := os.Stat(side); err != nil {
+		t.Fatalf("stale share delete cleared reading data: %v", err)
+	}
+	list, err = app.ListFileCompanionLibrary()
+	if err != nil || len(list.Items) != 1 || list.Items[0].Source == "cloud" {
+		t.Fatalf("local after stale share delete = %v %#v", err, list.Items)
+	}
+	deleted, err := app.DeleteFileCompanionProject(list.Items[0].ID, source)
+	if err != nil || !deleted.Cleared || deleted.Restored {
+		t.Fatalf("local delete = %#v %v", deleted, err)
+	}
+	if _, err := os.Stat(side); !os.IsNotExist(err) {
+		t.Fatalf("local delete left reading data: %v", err)
+	}
+	list, err = app.ListFileCompanionLibrary()
+	if err != nil || len(list.Items) != 0 {
+		t.Fatalf("after local delete = %v %#v", err, list.Items)
+	}
+}
+
+func TestRetiringOneShareOfAFileLeavesTheOtherCloudProject(t *testing.T) {
+	home := t.TempDir()
+	app := &App{testHomeDir: home}
+	source := filepath.Join(home, "paper.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-own"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const first = "cd_0123456789abcdef0123456789abcdef"
+	const second = "cd_abcdef0123456789abcdef0123456789"
+	for _, token := range []string{first, second} {
+		if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+			ID: token, Token: token, Name: "paper.pdf", Path: source, Source: "cloud",
+			OpenedAt: "2026-10-25T00:00:00Z", Mine: true, Visibility: "public",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	app.retireFileCompanionShare(first)
+	list, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawSecond, sawLocal bool
+	for _, item := range list.Items {
+		if item.Token == first {
+			t.Fatalf("retired share returned: %#v", item)
+		}
+		if item.Token == second {
+			sawSecond = true
+		}
+		if item.Source != "cloud" && fileCompanionSameLibraryPath(item.Path, source) {
+			sawLocal = true
+		}
+	}
+	if !sawSecond || sawLocal {
+		t.Fatalf("the other share should remain the only project: %#v", list.Items)
+	}
+	stored := filepath.Join(app.GetDataDir(), "file-companion", "library.json")
+	before, err := os.ReadFile(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.FileCompanionOpen(source); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("opening a cloud project rewrote the library")
+	}
+}
+
+func TestListCollapsesLocalRowsOfTheSameFile(t *testing.T) {
+	home := t.TempDir()
+	app := &App{testHomeDir: home}
+	source := filepath.Join(home, "paper.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-own"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(home, "other.pdf")
+	if err := os.WriteFile(other, []byte("%PDF-other"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileCompanionLibraryMu.Lock()
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{
+		{ID: "local:old", Name: "paper.pdf", Path: source, Source: "local", OpenedAt: "2026-10-25T00:00:00Z", Size: 8},
+		{ID: "local:new", Name: "paper.pdf", Path: filepath.Clean(source), Source: "local", OpenedAt: "2026-10-26T00:00:00Z", Size: 8},
+		{ID: "local:other", Name: "other.pdf", Path: other, Source: "local", OpenedAt: "2026-10-24T00:00:00Z", Size: 10},
+	})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paper, others int
+	for _, item := range list.Items {
+		if item.Source != "cloud" && fileCompanionSameLibraryPath(item.Path, source) {
+			paper++
+			if item.ID != "local:old" {
+				t.Fatalf("kept the later duplicate: %#v", item)
+			}
+		}
+		if fileCompanionSameLibraryPath(item.Path, other) {
+			others++
+		}
+	}
+	if paper != 1 || others != 1 {
+		t.Fatalf("collapsed = %#v", list.Items)
 	}
 }
 
@@ -1880,7 +2128,7 @@ func TestDeleteFileCompanionProjectLeavesSharedPathData(t *testing.T) {
 	if err := os.WriteFile(side, []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	deleted, err := app.DeleteFileCompanionProject(localID)
+	deleted, err := app.DeleteFileCompanionProject(localID, "")
 	if err != nil || deleted.Cleared {
 		t.Fatalf("cleared shared path: %#v %v", deleted, err)
 	}
@@ -1947,7 +2195,7 @@ func TestDeleteFileCompanionCloudProjectHidesShareAndKeepsFile(t *testing.T) {
 	if _, err := app.FileCompanionOpen(other); err != nil {
 		t.Fatal(err)
 	}
-	deleted, err := app.DeleteFileCompanionProject(token)
+	deleted, err := app.DeleteFileCompanionProject(token, "")
 	if err != nil || !deleted.Cleared {
 		t.Fatalf("delete = %#v %v", deleted, err)
 	}
@@ -2008,7 +2256,7 @@ func fileCompanionProjectZip(t *testing.T, dir string) []byte {
 		t.Fatal(err)
 	}
 	zipPath := filepath.Join(dir, "project.zip")
-	if err := writeFileCompanionProject(zipPath, doc, json.RawMessage("[]"), nil, nil, nil, nil, []FileCompanionMessage{{Role: "assistant", Text: "restored chat"}}, paper, 1); err != nil {
+	if err := writeFileCompanionProject(zipPath, doc, json.RawMessage("[]"), nil, nil, nil, nil, []FileCompanionMessage{{Role: "assistant", Text: "restored chat"}}, paper, 1, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(zipPath)
@@ -2025,7 +2273,7 @@ func fileCompanionPullDuringDeleteServer(t *testing.T, app *App, token string, b
 		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/documents/shares":
 			_, _ = io.WriteString(w, `{"mine":[],"received":[{"token":"`+token+`","name":"shared.pdf","visibility":"public","permanent":true,"revision":2,"url":"https://hub.example/hub/documents/shares/`+token+`","created_at":"2026-10-25T00:00:00Z","owner":"other@example.com","size":12}]}`)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/import"):
-			if _, err := app.DeleteFileCompanionProject(token); err != nil {
+			if _, err := app.DeleteFileCompanionProject(token, ""); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -2544,7 +2792,7 @@ func TestDeletePurgesBeforeAConcurrentImportPublishes(t *testing.T) {
 	}
 	delCh := make(chan deleteResult, 1)
 	go func() {
-		out, callErr := app.DeleteFileCompanionProject(token)
+		out, callErr := app.DeleteFileCompanionProject(token, "")
 		delCh <- deleteResult{out: out, err: callErr}
 	}()
 	<-entered
@@ -2702,7 +2950,7 @@ func TestDeleteDuringSharePublishClearsTheInstalledTranscript(t *testing.T) {
 	var deleted FileCompanionProjectDelete
 	var deleteErr error
 	fileCompanionShareCommitHook = func() {
-		deleted, deleteErr = app.DeleteFileCompanionProject(token)
+		deleted, deleteErr = app.DeleteFileCompanionProject(token, "")
 	}
 	defer func() { fileCompanionShareCommitHook = nil }()
 
@@ -2745,6 +2993,33 @@ func TestDeleteDuringSharePublishClearsTheInstalledTranscript(t *testing.T) {
 		t.Fatalf("local transcript = %q %v", got, err)
 	}
 	assertNoFileCompanionPullStage(t, app)
+}
+
+func TestLibraryItemsFromSharesKeepsForeignHubOrigin(t *testing.T) {
+	const token = "cd_0123456789abcdef0123456789abcdef"
+	items := libraryItemsFromShares([]fileCompanionShareView{{
+		Token:       token,
+		Name:        "群组.pdf",
+		Visibility:  "group",
+		URL:         "http://home.example/hub/documents/shares/" + token,
+		HubOrigin:   "https://origin.example/hub",
+		ReaderGrant: "cgr_" + strings.Repeat("ab", 16),
+	}}, false, "https://home.example")
+	if len(items) != 1 {
+		t.Fatalf("items: %+v", items)
+	}
+	if items[0].HubOrigin != "https://origin.example" {
+		t.Fatalf("hub origin %q", items[0].HubOrigin)
+	}
+	if items[0].ShareURL != "https://origin.example/hub/documents/shares/"+token {
+		t.Fatalf("share url %q", items[0].ShareURL)
+	}
+	fresh := items[0]
+	fresh.HubOrigin = ""
+	merged := mergeFileCompanionSharesWithRevoked([]FileCompanionLibraryItem{items[0]}, []FileCompanionLibraryItem{fresh}, "https://home.example", nil, nil, nil)
+	if len(merged) != 1 || merged[0].HubOrigin != "https://origin.example" {
+		t.Fatalf("merge dropped the foreign hub: %+v", merged)
+	}
 }
 
 func TestFileCompanionShareOrigin(t *testing.T) {
@@ -2988,6 +3263,115 @@ func TestFetchFileCompanionShareMarksReadsTheBlob(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Marks != marksBody || got.Revision != 9 {
+		t.Fatalf("marks = %q revision = %d", got.Marks, got.Revision)
+	}
+}
+
+func TestFetchFileCompanionShareMarksBeforeTheFileIsOpen(t *testing.T) {
+	const token = "cd_0123456789abcdef0123456789abcdef"
+	marksBody := `{"highlights":[{"id":"m1","page":1}],"chatMarks":[],"annotations":[],"drawings":[],"bookmarks":[]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/mobile/documents/shares/"+token+"/marks" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer viewer-token" {
+			http.Error(w, `{"message":"请先登录"}`, http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("X-Companion-Marks-Revision", "4")
+		_, _ = io.WriteString(w, marksBody)
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	source := filepath.Join(t.TempDir(), "论文.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := fileCompanionCanonicalPath(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "论文.pdf", Path: canonical,
+		Source: "cloud", Visibility: "group", Mine: true, Host: true, HostKnown: true, Revision: 2, MarksRevision: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := app.FetchFileCompanionShareMarks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Marks != marksBody || got.Revision != 4 {
+		t.Fatalf("marks = %q revision = %d", got.Marks, got.Revision)
+	}
+}
+
+func TestFetchFileCompanionShareMarksUsesTheOriginHub(t *testing.T) {
+	const token = "cd_abcdef0123456789abcdef0123456789"
+	const grant = "cgr_0123456789abcdef0123456789abcdef"
+	marksBody := `{"highlights":[{"id":"m9","page":3}],"chatMarks":[],"annotations":[],"drawings":[],"bookmarks":[]}`
+	var homeHit string
+	home := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		homeHit = r.Method + " " + r.URL.Path
+		http.NotFound(w, r)
+	}))
+	defer home.Close()
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/mobile/documents/shares/"+token+"/marks" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("origin received the home session %q", got)
+		}
+		if r.Header.Get("X-Companion-Reader-Grant") != grant {
+			t.Errorf("grant = %q", r.Header.Get("X-Companion-Reader-Grant"))
+		}
+		w.Header().Set("X-Companion-Marks-Revision", "6")
+		_, _ = io.WriteString(w, marksBody)
+	}))
+	defer foreign.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      home.URL,
+			RemoteViewerToken: "home-secret",
+		},
+	}
+	source := filepath.Join(t.TempDir(), "跨hub.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := fileCompanionCanonicalPath(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "跨hub.pdf", Path: canonical,
+		Source: "cloud", Visibility: "group", Mine: false, HubOrigin: foreign.URL, Revision: 1, MarksRevision: 6,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.saveFileCompanionShareGrant(token, grant); err != nil {
+		t.Fatal(err)
+	}
+	got, err := app.FetchFileCompanionShareMarks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if homeHit != "" {
+		t.Fatalf("home hub was asked for the marks: %s", homeHit)
+	}
+	if got.Marks != marksBody || got.Revision != 6 {
 		t.Fatalf("marks = %q revision = %d", got.Marks, got.Revision)
 	}
 }

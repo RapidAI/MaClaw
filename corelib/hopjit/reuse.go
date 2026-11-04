@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 type ReuseCaller interface {
@@ -24,6 +25,7 @@ func DriveReuse(ctx context.Context, engine *ExecutionEngine, caller ReuseCaller
 	if engine == nil || caller == nil {
 		return ReuseResult{}, errors.New("hopjit reuse driver requires engine and caller")
 	}
+	engine.caller = caller
 	for iteration := 0; iteration < 10000; iteration++ {
 		if err := ctx.Err(); err != nil {
 			return ReuseResult{}, err
@@ -35,6 +37,10 @@ func DriveReuse(ctx context.Context, engine *ExecutionEngine, caller ReuseCaller
 		switch next.Status {
 		case NextStepReady, NextRunning:
 			if next.Step == nil {
+				if next.Status == NextRunning && len(next.Snapshot.Inflight) > 0 {
+					time.Sleep(10 * time.Millisecond)
+					continue
+				}
 				return ReuseResult{}, errors.New("hopjit step_ready missing step")
 			}
 			outputs, callErr := caller.ExecuteStep(ctx, *next.Step)

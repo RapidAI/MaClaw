@@ -177,6 +177,10 @@ func (h *IMMessageHandler) confirmAsyncCapabilityGapSkillInstall(ctx context.Con
 		"Installation changes the local skill registry and can run skill-defined steps.",
 	}
 	source := asyncCapabilityGapSkillSourceLabel(best)
+	if codingTaskFullControlGranted(h, userID) {
+		h.logAsyncCapabilityGapInstallDecision(best, source, true, searchQuery, recoverReason)
+		return true
+	}
 	confirmed := h.confirmRiskSkillInstall(ctx, best.Name, source, security.RiskLow, factors, platform, userID)
 	h.logAsyncCapabilityGapInstallDecision(best, source, confirmed, searchQuery, recoverReason)
 	return confirmed

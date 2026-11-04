@@ -39,8 +39,10 @@ import (
 //     required on the first call. The host keeps the skill identity.
 //  3. An agent-guided match injects its instructions and the host tools those
 //     instructions need. It is not a manage_skill run.
-//  4. When nothing qualifies, the request lists search_and_install_skill.
-//     That call searches, installs, and runs the installed skill.
+//  4. When nothing qualifies, a document or office turn stays on generate_pdf
+//     or office. search_and_install_skill is listed only when the user asked
+//     to find or install a skill. Remote mode closes the native tool until
+//     that call runs, so a miss must not become a market install.
 //
 // Listing the tool is not use. The call authorizer accepts the admitted
 // name, refuses the generic tools that would finish the task instead, and
@@ -149,11 +151,11 @@ func (h *IMMessageHandler) skillAdmissionForTurn(ctx *LoopContext, userText stri
 	}
 }
 
-// skillMarketDecision installs from the market only when this turn has no
-// native tool that can do the job, or the user asked for a skill. Shell,
-// coding, and file write already have bash and write_file. Remote mode blocks
-// those tools until search_and_install_skill runs, so a miss must not become
-// a market install.
+// skillMarketDecision installs from the market only when the user asked for a
+// skill. Document generation and office already have generate_pdf and office;
+// shell, coding, and file write already have bash and write_file. Remote mode
+// blocks those tools until search_and_install_skill runs, so a local miss
+// must stay on the native tool.
 func skillMarketDecision(ctx *LoopContext, text string) skillAdmissionDecision {
 	if skillMarketFallback(ctx, text) {
 		log.Printf("[skill-admission] mode=remote task=%q", truncateLogText(text, 60))
@@ -163,19 +165,12 @@ func skillMarketDecision(ctx *LoopContext, text string) skillAdmissionDecision {
 	return skillAdmissionDecision{}
 }
 
-func skillMarketFallback(ctx *LoopContext, text string) bool {
-	if isExplicitSkillCapabilitySearchRequest(text) {
-		return true
-	}
-	if ctx == nil || ctx.Runtime.SemanticIntent == nil {
-		return false
-	}
-	switch ctx.Runtime.SemanticIntent.Primary {
-	case intent.LabelDocumentGenerate, intent.LabelOffice:
-		return true
-	default:
-		return false
-	}
+// skillMarketFallback is an explicit request to find or install a skill.
+// A document_generate or office label is not that request: generate_pdf and
+// office are the tools for those labels. Opening the market here used to
+// hide generate_pdf until an unrelated skill was installed.
+func skillMarketFallback(_ *LoopContext, text string) bool {
+	return isExplicitSkillCapabilitySearchRequest(text)
 }
 
 func complexSkillTask(ctx *LoopContext, userText string) bool {
@@ -219,9 +214,10 @@ func skillAdmissionTaskText(userText string) string {
 	return strings.TrimSpace(agent.CompactQueryForEmbedding(semanticUserIntentText(userText)))
 }
 
-// skillTaskLabel is a local-skill bind, not a market install. Document
-// generation and office also fall back to the market when nothing local
-// matches. Shell, coding, bug fix, and file write keep their own tools.
+// skillTaskLabel is a local-skill bind, not a market install. A miss on
+// document generation, office, shell, coding, bug fix, or file write keeps
+// that label's own tool. Market install happens only when the user asks
+// for a skill.
 func skillTaskLabel(primary intent.IntentLabel) bool {
 	switch primary {
 	case intent.LabelDocumentGenerate, intent.LabelOffice, intent.LabelFileWrite, intent.LabelShellCommand,

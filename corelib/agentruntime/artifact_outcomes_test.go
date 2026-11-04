@@ -29,7 +29,7 @@ func TestHostOwnedGeneratePDFSucceeded(t *testing.T) {
 	if strings.Contains(HostPublishedCurrentChannelFileNote, "send_file") || strings.Contains(HostPublishedCurrentChannelFileNote, "deliver it through") {
 		t.Fatalf("publish note asks the model to send: %q", HostPublishedCurrentChannelFileNote)
 	}
-	if !strings.Contains(HostPublishedCurrentChannelFileNote, "This is not a send.") {
+	if !strings.Contains(HostPublishedCurrentChannelFileNote, "This is not a send.") || !strings.Contains(HostPublishedCurrentChannelFileNote, "already has a PDF") || !strings.Contains(HostPublishedCurrentChannelFileNote, "only the content of this call") {
 		t.Fatalf("publish note = %q", HostPublishedCurrentChannelFileNote)
 	}
 	if !HostOwnedGeneratePDFSucceeded(HostPublishedCurrentChannelFileNote) {

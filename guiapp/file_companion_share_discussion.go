@@ -202,7 +202,7 @@ func (a *App) pollFileCompanionShareDiscussionsQuiet() int {
 		st.hadLogin = true
 		st.mu.Unlock()
 		if hadLogin {
-			seq, err := a.fetchFileCompanionShareChanges(hub, viewer)
+			seq, _, err := a.fetchFileCompanionShareChanges(hub, viewer)
 			if err == nil {
 				st.mu.Lock()
 				quiet := st.fullDone && seq == st.seq

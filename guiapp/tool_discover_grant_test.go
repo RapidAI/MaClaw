@@ -484,3 +484,183 @@ func TestDiscoverToolBudgetStopsNoProgressSpiral(t *testing.T) {
 		t.Fatalf("repeated discovery of an already-listed name must exhaust, got %q", last)
 	}
 }
+
+func TestRoutingMissKeepsExplicitDiscoverGrant(t *testing.T) {
+	ctx := leftoverRoutingContext()
+	ctx.rememberDiscoveredConditionalTool("generate_pdf")
+	routed := []map[string]interface{}{
+		toolDef("bash", "run local shell", nil, nil),
+		toolDef("generate_pdf", "render a pdf", nil, nil),
+		toolDef("download_file", "download", nil, nil),
+	}
+	got := applyRoutingMissLeftoverTools(routed, routed, nil, ctx)
+	if !toolListContainsName(got, "generate_pdf") {
+		t.Fatalf("an explicit discover grant must survive the routing-miss privilege strip, got %v", agentLoopToolNamesForLog(got))
+	}
+	if toolListContainsName(got, "download_file") {
+		t.Fatal("a routing miss must still strip an ungranted privilege tool")
+	}
+}
+
+func TestBaselinePinEvictsGrantedTailUntilRestore(t *testing.T) {
+	// The execution baseline adds craft_tool and manage_skill by evicting the
+	// tail. A discover grant injected immediately before that pin is the tail.
+	fillers := []string{
+		"office", "ssh", "web_search", "web_fetch", "Glob", "ripgrep", "list_directory",
+		"memory", "knowledge_search", "open", "send_file", "screenshot", "ask_user",
+		"database", "database_query", "mailbox_query", "compress_context", "list_sessions",
+		"get_session_output", "async_wait", "discover_tool", "list_mcp_tools", "project_manage",
+	}
+	head := []string{"bash", "read_file", "write_file", "edit_file"}
+	routedNames := append(append([]string{}, head...), fillers...)
+	routedNames = append(routedNames, "generate_pdf")
+	if len(routedNames) != maxToolBudget {
+		t.Fatalf("fixture must fill the tool budget, got %d want %d", len(routedNames), maxToolBudget)
+	}
+	catalogNames := append(append([]string{}, routedNames...), "craft_tool", "manage_skill")
+	defs := make([]map[string]interface{}, 0, len(catalogNames))
+	for _, name := range catalogNames {
+		defs = append(defs, toolDef(name, name+" tool", nil, nil))
+	}
+	routed := make([]map[string]interface{}, 0, len(routedNames))
+	for _, name := range routedNames {
+		routed = append(routed, toolDef(name, name+" tool", nil, nil))
+	}
+	h := &IMMessageHandler{}
+	loop := leftoverRoutingContext()
+	loop.Runtime.Execution = fullExecutionProfile("message too long for light profile")
+	pinned := h.pinExecutionBaseline("desktop-user", loop, routed, defs)
+	if toolListContainsName(pinned, "generate_pdf") {
+		t.Fatal("baseline pin must evict the just-granted tail; otherwise this regression no longer matches the loop")
+	}
+	if !toolListContainsName(pinned, "bash") || !toolListContainsName(pinned, "manage_skill") {
+		t.Fatalf("baseline pin must keep the execution floor, got %v", agentLoopToolNamesForLog(pinned))
+	}
+	loop.rememberDiscoveredConditionalTool("generate_pdf")
+	restored, _, ranked := restoreDiscoveredSurfaceGrants(pinned, pinned, defs, []string{"generate_pdf", "office"}, []string{"generate_pdf"})
+	if !toolListContainsName(restored, "generate_pdf") || !toolListContainsName(restored, "bash") || !toolListContainsName(restored, "manage_skill") {
+		t.Fatalf("restore must put the grant back without trading away the floor, got %v", agentLoopToolNamesForLog(restored))
+	}
+	for _, name := range ranked {
+		if name == "generate_pdf" {
+			t.Fatal("a restored grant must leave the ranked retrieval tail so the closed plan keeps it")
+		}
+	}
+}
+
+func TestRestoreGrantDoesNotReopenRemovedFloor(t *testing.T) {
+	// A direct-mode seal removes bash before anyone may put a grant back.
+	// Restoring the grant must not treat the whole execution floor as missing
+	// and required, or the next request grows a shell the seal just closed.
+	fillers := []string{
+		"office", "ssh", "web_search", "web_fetch", "Glob", "ripgrep", "list_directory",
+		"memory", "knowledge_search", "open", "send_file", "screenshot", "ask_user",
+		"database", "database_query", "mailbox_query", "compress_context", "list_sessions",
+		"get_session_output", "async_wait", "discover_tool", "list_mcp_tools", "project_manage",
+		"read_file", "list_templates", "delegate_task", "parallel_execute", "im_message",
+	}
+	if len(fillers) != maxToolBudget {
+		t.Fatalf("fixture must fill the tool budget, got %d want %d", len(fillers), maxToolBudget)
+	}
+	catalogNames := append(append([]string{}, fillers...), "generate_pdf", "bash", "write_file", "edit_file", "craft_tool", "manage_skill")
+	defs := make([]map[string]interface{}, 0, len(catalogNames))
+	routed := make([]map[string]interface{}, 0, len(fillers))
+	for _, name := range catalogNames {
+		defs = append(defs, toolDef(name, name+" tool", nil, nil))
+	}
+	for _, name := range fillers {
+		routed = append(routed, toolDef(name, name+" tool", nil, nil))
+	}
+	restored, _, _ := restoreDiscoveredSurfaceGrants(routed, routed, defs, nil, []string{"generate_pdf"})
+	if !toolListContainsName(restored, "generate_pdf") {
+		t.Fatal("restore must add the grant")
+	}
+	if toolListContainsName(restored, "bash") || toolListContainsName(restored, "write_file") || toolListContainsName(restored, "craft_tool") {
+		t.Fatalf("restore must not reopen a floor the seal removed, got %v", agentLoopToolNamesForLog(restored))
+	}
+	if !toolListContainsName(restored, "read_file") {
+		t.Fatal("restore must keep a floor tool that is already on the slice")
+	}
+}
+
+func TestLightTimeoutLookupDoesNotRegainGrantOrFloor(t *testing.T) {
+	defs := []map[string]interface{}{
+		toolDef("bash", "run shell", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("write_file", "write a file", nil, nil),
+		toolDef("edit_file", "edit a file", nil, nil),
+		toolDef("craft_tool", "run a script", nil, nil),
+		toolDef("manage_skill", "run an installed skill", nil, nil),
+		toolDef("generate_pdf", "render a pdf", nil, nil),
+		toolDef("web_search", "search the public web", nil, nil),
+		toolDef("web_fetch", "fetch a web page", nil, nil),
+	}
+	h := &IMMessageHandler{toolDefGen: NewToolDefinitionGenerator(nil, defs)}
+	ctx := &LoopContext{Runtime: RuntimeContext{
+		ClassifierTimeoutLookup: true,
+		RoutingMissFallback:     true,
+		Execution: ExecutionProfile{
+			Layer:         string(executionLayerLight),
+			PromptProfile: "light",
+			Reason:        "short lookup",
+		},
+		SemanticIntent: &intent.ClassificationResult{
+			Primary: intent.LabelUnknown, Confidence: 0.30, Degraded: true,
+			Reason: "routing miss fallback",
+		},
+	}}
+	if !ctx.rememberDiscoveredConditionalTool("generate_pdf") {
+		t.Fatal("grant must stick on the loop")
+	}
+	got := h.prepareAgentLoopTools("desktop-user", "现在几点", ctx, agentLoopPhase{})
+	names := agentLoopToolNamesForLog(got.Tools)
+	for _, name := range []string{"bash", "write_file", "generate_pdf", "craft_tool"} {
+		if toolListContainsName(got.Tools, name) {
+			t.Fatalf("light lookup must stay web-only with a pending grant, found %s in %v", name, names)
+		}
+	}
+	if !toolListContainsName(got.Tools, "web_search") || !toolListContainsName(got.Tools, "web_fetch") {
+		t.Fatalf("light lookup must keep web tools, got %v", names)
+	}
+}
+
+func TestDiscoverGrantSurvivesBaselineTailEviction(t *testing.T) {
+	// A full leftover surface strips generate_pdf, discover grants it, and
+	// the execution-baseline pin used to evict that just-appended tail.
+	// The next request then still reported "granted for the next request".
+	names := []string{
+		"bash", "read_file", "write_file", "edit_file", "craft_tool", "manage_skill",
+		"discover_tool", "generate_pdf", "office", "ssh", "web_search", "web_fetch",
+		"Glob", "ripgrep", "list_directory", "memory", "knowledge_search", "open",
+		"send_file", "screenshot", "ask_user", "database", "database_query",
+		"mailbox_query", "compress_context", "list_sessions", "get_session_output",
+		"task", "async_wait", "im_message", "send_to_im", "project_manage",
+		"parallel_execute", "list_mcp_tools", "delegate_task", "list_templates",
+	}
+	defs := make([]map[string]interface{}, 0, len(names))
+	registry := NewToolRegistry()
+	for _, name := range names {
+		defs = append(defs, toolDef(name, name+" tool", nil, nil))
+		if err := registry.Register(RegisteredTool{Name: name, Description: name + " tool", Category: ToolCategoryBuiltin, Status: RegToolAvailable}); err != nil {
+			t.Fatalf("Register %s: %v", name, err)
+		}
+	}
+	h := &IMMessageHandler{
+		registry:   registry,
+		toolDefGen: NewToolDefinitionGenerator(nil, defs),
+		toolRouter: NewToolRouter(NewToolDefinitionGenerator(nil, defs)),
+	}
+	loop := leftoverRoutingContext()
+	loop.Runtime.Execution = fullExecutionProfile("message too long for light profile")
+	if !loop.rememberDiscoveredConditionalTool("generate_pdf") {
+		t.Fatal("grant must stick on the loop")
+	}
+	set := h.prepareAgentLoopTools("desktop-user", "今天天气怎么样", loop, agentLoopPhase{})
+	if !toolListContainsName(set.Tools, "generate_pdf") {
+		t.Fatalf("granted generate_pdf must survive the baseline pin, got %v", agentLoopToolNamesForLog(set.Tools))
+	}
+	exposed := loop.exposedToolNameSet()
+	if exposed == nil || !exposed["generate_pdf"] {
+		t.Fatalf("next discover must see generate_pdf on the exposed surface, got %v", exposed)
+	}
+}

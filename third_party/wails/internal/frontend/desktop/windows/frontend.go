@@ -300,13 +300,20 @@ func (f *Frontend) WindowSetTitle(title string) {
 	f.mainWindow.SetText(title)
 }
 
+// framelessResizeSuspendJS runs after the fullscreen size change. The runtime
+// function clears a sizing cursor and stops edge tracking until unfullscreen.
+const framelessResizeSuspendJS = `window.wails.suspendResizeCursor&&window.wails.suspendResizeCursor()`
+
 func (f *Frontend) WindowFullscreen() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	if f.frontendOptions.Frameless && f.frontendOptions.DisableResize == false {
-		f.ExecJS("window.wails.flags.enableResize = false;")
-	}
 	f.mainWindow.Fullscreen()
+	// After the size change, including when this call is already on the UI
+	// thread and ExecJS runs inline. Queuing it first lets the resize handler
+	// paint a sizing cursor over the new frame and then freeze that cursor.
+	if f.frontendOptions.Frameless && f.frontendOptions.DisableResize == false {
+		f.ExecJS(framelessResizeSuspendJS)
+	}
 }
 
 func (f *Frontend) WindowReloadApp() {
@@ -316,10 +323,10 @@ func (f *Frontend) WindowReloadApp() {
 func (f *Frontend) WindowUnfullscreen() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	f.mainWindow.UnFullscreen()
 	if f.frontendOptions.Frameless && f.frontendOptions.DisableResize == false {
 		f.ExecJS("window.wails.flags.enableResize = true;")
 	}
-	f.mainWindow.UnFullscreen()
 }
 
 func (f *Frontend) WindowShow() {

@@ -3,6 +3,8 @@ package hopjit
 import (
 	"fmt"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/hopspec"
@@ -25,9 +27,14 @@ type advanceResult struct {
 }
 
 func (e *ExecutionEngine) advanceLocked() advanceResult {
-	for {
+	for round := 0; ; round++ {
+		if round > 1000 {
+			e.failStepLocked(hopspec.Step{}, Failure{Kind: FailureDeterministic, Reason: "EXECUTION_NO_PROGRESS"})
+			return advanceResult{}
+		}
 		result := e.advanceStepsLocked(e.snapshot.Spec.Steps)
 		if result.kind == advanceRestart && e.snapshot.TerminalState == "" {
+			e.recordLocked("advance_restart", result.step.ID, "")
 			continue
 		}
 		if result.kind != advanceNone || e.snapshot.TerminalState != "" {
@@ -35,6 +42,8 @@ func (e *ExecutionEngine) advanceLocked() advanceResult {
 		}
 		if e.stepsFinished(e.snapshot.Spec.Steps) {
 			e.finishLocked()
+		} else if len(e.snapshot.Inflight) > 0 {
+			return advanceResult{}
 		} else {
 			e.failStepLocked(hopspec.Step{}, Failure{Kind: FailureDeterministic, Reason: "EXECUTION_STALLED: no runnable step remains"})
 		}
@@ -43,6 +52,10 @@ func (e *ExecutionEngine) advanceLocked() advanceResult {
 }
 
 func (e *ExecutionEngine) advanceStepsLocked(steps []*hopspec.Step) advanceResult {
+	if err := e.startParallelCallsLocked(e.ctx, steps); err != nil {
+		e.failStepLocked(hopspec.Step{}, Failure{Kind: FailureError, Reason: err.Error()})
+		return advanceResult{}
+	}
 	for _, step := range steps {
 		switch e.snapshot.StepStates[step.ID] {
 		case StepDone, StepSkipped:
@@ -58,14 +71,23 @@ func (e *ExecutionEngine) advanceStepsLocked(steps []*hopspec.Step) advanceResul
 			e.propagateFailureLocked(*step)
 			return advanceResult{}
 		case StepRunning:
+			if e.hasInflightStep(step.ID) {
+				return advanceResult{}
+			}
 			if e.isWorkStep(step.Type) {
 				return advanceResult{}
+			}
+			if step.Type == hopspec.StepCall {
+				if e.hasInflightStep(step.ID) {
+					return advanceResult{}
+				}
+				return e.executeCallLocked(e.ctx, step)
 			}
 			result := e.advanceRunningContainerLocked(step)
 			if result.kind != advanceNone || e.snapshot.TerminalState != "" {
 				return result
 			}
-			if e.snapshot.StepStates[step.ID] == StepRunning && e.stepsFinished(step.Children) {
+			if e.snapshot.StepStates[step.ID] == StepRunning && e.stepsFinished(step.Children) && len(e.inflightForLoop(step.ID)) == 0 {
 				e.markContainerDoneLocked(step)
 			}
 			if e.snapshot.StepStates[step.ID] == StepRunning {
@@ -89,6 +111,11 @@ func (e *ExecutionEngine) advanceStepsLocked(steps []*hopspec.Step) advanceResul
 				e.snapshot.StepStates[step.ID] = StepRunning
 				e.recordLocked("step_ready", step.ID, string(step.Type))
 				return advanceResult{kind: advanceReady, step: *step}
+			case hopspec.StepCall:
+				if step.Parallel {
+					return advanceResult{}
+				}
+				return e.executeCallLocked(e.ctx, step)
 			case hopspec.StepConfirm, hopspec.StepAsk:
 				e.snapshot.StepStates[step.ID] = StepRunning
 				question := strings.TrimSpace(step.Instruction)
@@ -140,7 +167,7 @@ func (e *ExecutionEngine) advanceStepsLocked(steps []*hopspec.Step) advanceResul
 				if result.kind != advanceNone || e.snapshot.TerminalState != "" {
 					return result
 				}
-				if e.snapshot.StepStates[step.ID] == StepRunning && e.stepsFinished(step.Children) {
+				if e.snapshot.StepStates[step.ID] == StepRunning && e.stepsFinished(step.Children) && len(e.inflightForLoop(step.ID)) == 0 {
 					e.markContainerDoneLocked(step)
 				}
 				if e.snapshot.StepStates[step.ID] == StepRunning {
@@ -239,35 +266,52 @@ func (e *ExecutionEngine) startLoopLocked(loop *hopspec.Step) {
 }
 
 func (e *ExecutionEngine) advanceLoopLocked(loop *hopspec.Step) advanceResult {
-	for {
-		result := e.advanceStepsLocked(loop.Children)
-		if result.kind == advanceReady || e.snapshot.TerminalState != "" {
-			return result
+	if loop.ForEach != nil && e.snapshot.LoopCounters[loop.ID] >= len(e.snapshot.LoopItems[loop.ID]) && len(e.inflightForLoop(loop.ID)) == 0 && e.loopDispatchComplete(loop) {
+		e.flushLoopResultsLocked(loop)
+		e.snapshot.StepStates[loop.ID] = StepDone
+		e.recordLocked("container_done", loop.ID, "parallel barrier")
+		return advanceResult{}
+	}
+	if loop.ForEach != nil && e.snapshot.LoopCounters[loop.ID] >= len(e.snapshot.LoopItems[loop.ID]) && len(e.inflightForLoop(loop.ID)) > 0 && e.loopDispatchComplete(loop) {
+		return advanceResult{}
+	}
+	result := e.advanceStepsLocked(loop.Children)
+	if result.kind == advanceReady || e.snapshot.TerminalState != "" {
+		return result
+	}
+	if result.kind == advanceBreak {
+		e.collectLoopItemLocked(loop, false)
+		e.snapshot.StepStates[loop.ID] = StepDone
+		e.recordLocked("container_done", loop.ID, "break")
+		return advanceResult{}
+	}
+	if result.kind == advanceContinue {
+		e.nextLoopIterationLocked(loop)
+		if e.snapshot.StepStates[loop.ID] == StepRunning {
+			return advanceResult{kind: advanceRestart}
 		}
-		if result.kind == advanceBreak {
-			e.collectLoopItemLocked(loop, false)
-			e.snapshot.StepStates[loop.ID] = StepDone
-			e.recordLocked("container_done", loop.ID, "break")
-			return advanceResult{}
-		}
-		if result.kind == advanceContinue {
+		return advanceResult{}
+	}
+	if result.kind != advanceNone {
+		return result
+	}
+	if !e.stepsFinished(loop.Children) {
+		if e.loopDispatchComplete(loop) {
 			e.nextLoopIterationLocked(loop)
 			if e.snapshot.StepStates[loop.ID] == StepRunning {
-				continue
+				return advanceResult{kind: advanceRestart}
 			}
-			return advanceResult{}
 		}
-		if result.kind != advanceNone || !e.stepsFinished(loop.Children) {
-			return result
-		}
-		if !e.collectLoopItemLocked(loop, true) {
-			return advanceResult{}
-		}
-		e.nextLoopIterationLocked(loop)
-		if e.snapshot.StepStates[loop.ID] != StepRunning {
-			return advanceResult{}
-		}
+		return result
 	}
+	if !e.collectLoopItemLocked(loop, true) {
+		return advanceResult{}
+	}
+	e.nextLoopIterationLocked(loop)
+	if e.snapshot.StepStates[loop.ID] == StepRunning {
+		return advanceResult{kind: advanceRestart}
+	}
+	return advanceResult{}
 }
 
 func (e *ExecutionEngine) nextLoopIterationLocked(loop *hopspec.Step) {
@@ -279,6 +323,11 @@ func (e *ExecutionEngine) nextLoopIterationLocked(loop *hopspec.Step) {
 		finished = current >= loop.MaxIterations
 	}
 	if finished {
+		if len(e.inflightForLoop(loop.ID)) > 0 {
+			e.recordLocked("loop_barrier_waiting", loop.ID, fmt.Sprintf("iterations=%d", current))
+			return
+		}
+		e.flushLoopResultsLocked(loop)
 		e.snapshot.StepStates[loop.ID] = StepDone
 		e.recordLocked("container_done", loop.ID, fmt.Sprintf("iterations=%d", current))
 		return
@@ -290,7 +339,54 @@ func (e *ExecutionEngine) nextLoopIterationLocked(loop *hopspec.Step) {
 	if loop.ForEach != nil {
 		e.setLoopItemLocked(loop)
 	}
+	if err := e.startParallelCallsLocked(e.ctx, loop.Children); err != nil {
+		e.failStepLocked(*loop, Failure{Kind: FailureError, Reason: err.Error()})
+		return
+	}
 	e.recordLocked("loop_iteration", loop.ID, fmt.Sprintf("%d", current+1))
+}
+
+func (e *ExecutionEngine) loopDispatchComplete(loop *hopspec.Step) bool {
+	for _, step := range loop.Children {
+		state := e.snapshot.StepStates[step.ID]
+		if state == StepDone || state == StepSkipped || e.hasInflightStep(step.ID) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (e *ExecutionEngine) inflightForLoop(loopID string) []InflightCall {
+	var out []InflightCall
+	for _, inflight := range e.snapshot.Inflight {
+		if isStepAncestor(loopID, inflight.StepID) {
+			out = append(out, inflight)
+		}
+	}
+	return out
+}
+
+func (e *ExecutionEngine) flushLoopResultsLocked(loop *hopspec.Step) {
+	results := e.snapshot.LoopResults[loop.ID]
+	if len(results) == 0 || loop.ForEach == nil || loop.ForEach.CollectInto == "" {
+		return
+	}
+	keys := make([]int, 0, len(results))
+	for key := range results {
+		iteration, err := strconv.Atoi(key)
+		if err == nil {
+			keys = append(keys, iteration)
+		}
+	}
+	sort.Ints(keys)
+	collected := e.snapshot.Variables[loop.ForEach.CollectInto]
+	items, _ := valueSlice(collected.Value)
+	for _, key := range keys {
+		items = append(items, results[strconv.Itoa(key)])
+	}
+	e.snapshot.Variables[loop.ForEach.CollectInto] = VariableValue{Value: items, Assigned: true}
+	delete(e.snapshot.LoopResults, loop.ID)
 }
 
 func (e *ExecutionEngine) setLoopItemLocked(loop *hopspec.Step) {
@@ -305,6 +401,11 @@ func (e *ExecutionEngine) setLoopItemLocked(loop *hopspec.Step) {
 func (e *ExecutionEngine) collectLoopItemLocked(loop *hopspec.Step, required bool) bool {
 	if loop.ForEach == nil || loop.ForEach.CollectItem == "" {
 		return true
+	}
+	for _, step := range loop.Children {
+		if step.Parallel {
+			return true
+		}
 	}
 	item, ok := e.snapshot.Variables[loop.ForEach.CollectItem]
 	if !ok || !item.Assigned || item.Value == nil {

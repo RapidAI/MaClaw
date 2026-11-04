@@ -27,6 +27,7 @@ const (
 	companionReaderPDFDrawingsKind     = "pdf_drawings"
 	companionReaderPDFBookmarksKind    = "pdf_bookmarks"
 	companionReaderChatMarksKind       = "chat_marks"
+	companionReaderDiscussionNotesKind = "discussion_notes"
 	companionReaderInputHistoryKind    = "input_history"
 	// One document can hold many long translations (200 × 12k characters), so
 	// the 1MB bound the old localStorage era used is too small for Chinese text.
@@ -447,16 +448,104 @@ func (a *App) writeCompanionReaderState(kind, key, value string) error {
 	return nil
 }
 
-func (a *App) deleteCompanionReaderState(kind, key string) error {
+func (a *App) readCompanionReaderValue(kind, key string) (string, bool, error) {
+	if a == nil || strings.TrimSpace(kind) == "" || strings.TrimSpace(key) == "" {
+		return "", false, nil
+	}
 	companionReaderStateMu.Lock()
 	defer companionReaderStateMu.Unlock()
 	db, err := openCompanionReaderStateDB(a.companionReaderStateDBPath())
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	defer db.Close()
-	if _, err := db.Exec(`DELETE FROM reader_state WHERE kind = ? AND key = ?`, kind, key); err != nil {
-		return fmt.Errorf("clear companion reader state: %w", err)
+	var value string
+	err = db.QueryRow(`SELECT value FROM reader_state WHERE kind = ? AND key = ?`, kind, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read companion reader state: %w", err)
+	}
+	return value, true, nil
+}
+
+func (a *App) deleteCompanionReaderState(kind, key string) error {
+	err := func() error {
+		companionReaderStateMu.Lock()
+		defer companionReaderStateMu.Unlock()
+		db, err := openCompanionReaderStateDB(a.companionReaderStateDBPath())
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		if _, err := db.Exec(`DELETE FROM reader_state WHERE kind = ? AND key = ?`, kind, key); err != nil {
+			return fmt.Errorf("clear companion reader state: %w", err)
+		}
+		return nil
+	}()
+	if err != nil {
+		return err
+	}
+	// Drop the cached snapshot after the database lock is gone. Purge calls
+	// this directly, so the open path cannot keep serving the deleted thread.
+	if kind == companionReaderDiscussionNotesKind {
+		a.rememberFileCompanionDiscussionNotes(key, nil)
 	}
 	return nil
+}
+
+type fileCompanionDiscussionNoteCacheHit struct {
+	notes json.RawMessage
+}
+
+var (
+	fileCompanionDiscussionNoteCacheMu sync.Mutex
+	fileCompanionDiscussionNoteCache   sync.Map
+)
+
+func (a *App) fileCompanionDiscussionNoteCacheKey(docKey string) string {
+	dbPath := ""
+	if a != nil {
+		dbPath = a.companionReaderStateDBPath()
+	}
+	return dbPath + "\x00" + docKey
+}
+
+func (a *App) rememberFileCompanionDiscussionNotes(docKey string, notes json.RawMessage) {
+	if a == nil || docKey == "" {
+		return
+	}
+	fileCompanionDiscussionNoteCacheMu.Lock()
+	fileCompanionDiscussionNoteCache.Store(a.fileCompanionDiscussionNoteCacheKey(docKey), fileCompanionDiscussionNoteCacheHit{notes: notes})
+	fileCompanionDiscussionNoteCacheMu.Unlock()
+}
+
+func (a *App) cachedFileCompanionDiscussionNotes(docKey string) (json.RawMessage, bool) {
+	if a == nil || docKey == "" {
+		return nil, false
+	}
+	fileCompanionDiscussionNoteCacheMu.Lock()
+	defer fileCompanionDiscussionNoteCacheMu.Unlock()
+	hit, ok := fileCompanionDiscussionNoteCache.Load(a.fileCompanionDiscussionNoteCacheKey(docKey))
+	if !ok {
+		return nil, false
+	}
+	return hit.(fileCompanionDiscussionNoteCacheHit).notes, true
+}
+
+// storeFileCompanionDiscussionNotesIfAbsent keeps a save or delete that landed
+// while this read was querying. The newer value wins.
+func (a *App) storeFileCompanionDiscussionNotesIfAbsent(docKey string, notes json.RawMessage) (json.RawMessage, bool) {
+	if a == nil || docKey == "" {
+		return notes, false
+	}
+	fileCompanionDiscussionNoteCacheMu.Lock()
+	defer fileCompanionDiscussionNoteCacheMu.Unlock()
+	key := a.fileCompanionDiscussionNoteCacheKey(docKey)
+	if hit, ok := fileCompanionDiscussionNoteCache.Load(key); ok {
+		return hit.(fileCompanionDiscussionNoteCacheHit).notes, true
+	}
+	fileCompanionDiscussionNoteCache.Store(key, fileCompanionDiscussionNoteCacheHit{notes: notes})
+	return notes, false
 }

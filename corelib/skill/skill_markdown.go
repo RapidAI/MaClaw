@@ -960,11 +960,9 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 			// Check if this block references a local script in scripts/.
 			// If so, use the script-based command (with proper quoting etc.)
 			var localScriptPath string
-			for _, line := range strings.Split(resolved, "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || strings.HasPrefix(line, "#") {
-					continue
-				}
+			// Use the same command lines as the sample filter. A raw split
+			// treats the body of a continued comment as a script invocation.
+			for _, line := range markdownFilterCommandLines(resolved) {
 				for _, field := range splitMarkdownCommandFields(line) {
 					field = strings.Trim(field, "\"'`")
 					base := filepath.Base(field)
@@ -999,17 +997,23 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 			if localScriptPath != "" {
 				// Use the current bash block, not the first matching line in the
 				// whole document, so alternative invocations keep their own args.
-				command = normalizedLocalCommand
+				// Drop illustrated companions in the same fence. The script line
+				// itself stays, even when its sample arguments use example.com.
+				command = omitMarkdownIllustratedCommandsExcept(normalizedLocalCommand, filepath.Base(localScriptPath))
 				if strings.TrimSpace(command) == "" {
 					continue
 				}
 				command = AppendRunParamPlaceholders(command, scriptParams)
 				inferredParams = mergeUniqueSkillParams(inferredParams, scriptParams)
 				log.Printf("[skill-parser] %s: step from script ref: %s", parsed.name, filepath.Base(localScriptPath))
-			} else if parameterized, ok := parameterizeMarkdownUsageCommand(resolved, blockContexts[currentBlockIdx]); ok {
+			} else if filtered := omitMarkdownIllustratedCommands(resolved); strings.TrimSpace(filtered) == "" {
+				log.Printf("[skill-parser] %s: skipping illustrated command block", parsed.name)
+				continue
+			} else if parameterized, ok := parameterizeMarkdownUsageCommand(filtered, blockContexts[currentBlockIdx]); ok {
 				command = parameterized
 				log.Printf("[skill-parser] %s: step from parameterized usage example: %s", parsed.name, command)
 			} else {
+				resolved = filtered
 				// Direct bash command blocks may still document a canonical
 				// --input/--output invocation. Normalize those sample arguments
 				// before preserving the block so legacy Office examples do not
@@ -1579,6 +1583,372 @@ func looksLikeMarkdownSampleOutputName(raw string) bool {
 	default:
 		return false
 	}
+}
+
+// omitMarkdownIllustratedCommands removes command lines that document a CLI.
+// A later line in the same fence is still executed with the first line, so
+// looking at only the first line would keep "npx skills add" behind a real command.
+func omitMarkdownIllustratedCommands(block string) string {
+	return omitMarkdownIllustratedCommandsExcept(block, "")
+}
+
+// omitMarkdownIllustratedCommandsExcept keeps a line that names keepBasename.
+// A bundled script invocation can carry a sample recipient and still be the procedure.
+func omitMarkdownIllustratedCommandsExcept(block, keepBasename string) string {
+	keepBasename = strings.ToLower(strings.TrimSpace(keepBasename))
+	var kept []string
+	removed := false
+	for _, line := range markdownFilterCommandLines(block) {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		rewritten, changed := omitIllustratedShellSegments(line, keepBasename)
+		if changed {
+			removed = true
+			if strings.TrimSpace(rewritten) != "" {
+				kept = append(kept, rewritten)
+			}
+			continue
+		}
+		kept = append(kept, line)
+	}
+	// A block with no sample command stays byte-for-byte. Joining continuation
+	// lines rewrites comments and quoting for every skill step otherwise.
+	if !removed {
+		return block
+	}
+	return strings.Join(kept, "\n")
+}
+
+func markdownIllustratedLineDisposition(line, keepBasename string) (drop, keepScript bool) {
+	cleaned := strings.ToLower(stripInlineShellComment(strings.TrimSpace(line)))
+	if cleaned == "" {
+		return false, false
+	}
+	// Quote-aware fields. strings.Fields would treat "npx skills add" inside a
+	// message, and the argument of npx --package, as the installer itself.
+	fields := markdownShellFields(line)
+	if markdownFieldsInstallRemoteSkill(fields) || markdownFieldsAreAuth(fields) {
+		return true, false
+	}
+	if !markdownFieldsHaveSamplePlaceholder(fields) {
+		return false, false
+	}
+	if keepBasename != "" && markdownLineInvokesScript(line, keepBasename) {
+		return true, true
+	}
+	return true, false
+}
+
+func markdownShellFields(line string) []string {
+	raw := splitMarkdownCommandFields(stripInlineShellComment(line))
+	fields := make([]string, 0, len(raw))
+	for _, field := range raw {
+		field = strings.ToLower(strings.TrimSpace(field))
+		if field == "" {
+			continue
+		}
+		fields = append(fields, field)
+	}
+	return fields
+}
+
+func markdownFieldsHaveSamplePlaceholder(fields []string) bool {
+	for _, field := range fields {
+		if markdownFieldIsSamplePlaceholder(field) {
+			return true
+		}
+	}
+	return false
+}
+
+// markdownFieldIsSamplePlaceholder reports a sample recipient or id used as
+// an argument. The same words inside a quoted sentence are one field with a
+// space, and that sentence is not an address the command will send to.
+func markdownFieldIsSamplePlaceholder(field string) bool {
+	field = strings.Trim(strings.TrimSpace(field), "\"'`")
+	if field == "" || strings.ContainsAny(field, " \t") {
+		return false
+	}
+	// --id=msg_xxx is an assignment. A URL query also contains "="; cutting
+	// there drops the host, so https://user@example.com?x=1 would stay.
+	if eq := strings.IndexByte(field, '='); eq > 0 && !strings.ContainsAny(field[:eq], "@/?") {
+		return markdownFieldIsSamplePlaceholder(field[eq+1:])
+	}
+	if field == "msg_xxx" {
+		return true
+	}
+	at := strings.LastIndex(field, "@")
+	if at <= 0 {
+		return false
+	}
+	host := field[at+1:]
+	if i := strings.IndexAny(host, "/:?#"); i >= 0 {
+		host = host[:i]
+	}
+	host = strings.TrimRight(host, ".,);]")
+	return host == "example.com" || host == "example.org"
+}
+
+// markdownFilterCommandLines is the command list the sample filter classifies.
+// A trailing backslash is a continued command, so "npx skills \" plus "add"
+// is still one installer. A trailing backtick is not: joinMarkdownShellContinuationLines
+// treats it as PowerShell continuation and would glue the next sample onto the
+// real command, which then deletes both.
+func markdownFilterCommandLines(block string) []string {
+	var commands []string
+	var current strings.Builder
+	skippingComment := false
+	for _, rawLine := range strings.Split(strings.ReplaceAll(block, "\r\n", "\n"), "\n") {
+		// Trailing whitespace means the backslash is not a continuation.
+		// TrimSpace would hide that and glue the next command on.
+		continued := markdownLineContinues(rawLine)
+		line := strings.TrimSpace(rawLine)
+		if skippingComment {
+			if !continued {
+				skippingComment = false
+			}
+			continue
+		}
+		if current.Len() == 0 && (line == "" || strings.HasPrefix(line, "#")) {
+			// "#" ends at the newline, but a trailing backslash already
+			// removed that newline. The following physical lines stay in
+			// the comment; executing them is how a documented command
+			// becomes a step.
+			if strings.HasPrefix(line, "#") && continued {
+				skippingComment = true
+			}
+			continue
+		}
+		if continued {
+			line = strings.TrimSpace(strings.TrimSuffix(line, `\`))
+		}
+		if current.Len() > 0 {
+			current.WriteByte(' ')
+		}
+		current.WriteString(line)
+		if continued {
+			continue
+		}
+		if strings.TrimSpace(current.String()) != "" {
+			commands = append(commands, strings.TrimSpace(current.String()))
+		}
+		current.Reset()
+	}
+	if strings.TrimSpace(current.String()) != "" {
+		commands = append(commands, strings.TrimSpace(current.String()))
+	}
+	return commands
+}
+
+// markdownLineContinues reports a backslash-newline continuation. An even
+// number of trailing backslashes is an escaped literal, as in echo foo\\.
+// A backslash followed by trailing whitespace does not continue either.
+func markdownLineContinues(line string) bool {
+	n := 0
+	for n < len(line) && line[len(line)-1-n] == '\\' {
+		n++
+	}
+	return n%2 == 1
+}
+
+// omitIllustratedShellSegments drops sample commands from one physical line.
+// A later flag on another command must not keep "auth login", and removing
+// that sample must not discard the real command chained after it.
+func omitIllustratedShellSegments(line, keepBasename string) (string, bool) {
+	segments, seps := splitMarkdownShellSegments(line)
+	var b strings.Builder
+	removed := false
+	wrote := false
+	for i, segment := range segments {
+		segment = strings.TrimSpace(segment)
+		if segment == "" {
+			continue
+		}
+		drop, keepScript := markdownIllustratedLineDisposition(segment, keepBasename)
+		if drop && !keepScript {
+			removed = true
+			continue
+		}
+		if wrote {
+			sep := "&&"
+			if i > 0 && i-1 < len(seps) {
+				sep = seps[i-1]
+			}
+			b.WriteByte(' ')
+			b.WriteString(sep)
+			b.WriteByte(' ')
+		}
+		wrote = true
+		b.WriteString(segment)
+	}
+	if !removed {
+		return line, false
+	}
+	return b.String(), true
+}
+
+func splitMarkdownShellSegments(line string) (segments, seps []string) {
+	var b strings.Builder
+	var quote rune
+	flush := func(sep string) {
+		segments = append(segments, b.String())
+		if sep != "" {
+			seps = append(seps, sep)
+		}
+		b.Reset()
+	}
+	runes := []rune(line)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			b.WriteRune(r)
+			continue
+		}
+		switch r {
+		case '\'', '"', '`':
+			quote = r
+			b.WriteRune(r)
+		case '&':
+			if i+1 < len(runes) && runes[i+1] == '&' {
+				flush("&&")
+				i++
+				continue
+			}
+			b.WriteRune(r)
+		case '|':
+			if i+1 < len(runes) && runes[i+1] == '|' {
+				flush("||")
+				i++
+				continue
+			}
+			b.WriteRune(r)
+		case ';':
+			flush(";")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	flush("")
+	return segments, seps
+}
+
+// markdownFieldsAreAuth reports a bare interactive login. A credential flag
+// keeps the step. Any other flag, such as --hostname, still opens a browser.
+func markdownFieldsAreAuth(fields []string) bool {
+	found := false
+	for i := 0; i+1 < len(fields); i++ {
+		if fields[i] == "auth" && (fields[i+1] == "login" || fields[i+1] == "logout") {
+			found = true
+			break
+		}
+	}
+	if !found || markdownAuthSegmentHasCredential(fields) {
+		return false
+	}
+	return true
+}
+
+func markdownAuthSegmentHasCredential(fields []string) bool {
+	for i, field := range fields {
+		if strings.HasPrefix(field, "-") && field != "-" {
+			name := field
+			if eq := strings.IndexByte(name, '='); eq >= 0 {
+				name = name[:eq]
+			}
+			switch strings.TrimLeft(name, "-") {
+			case "with-token", "token", "password", "password-stdin":
+				return true
+			}
+		}
+		if markdownAuthRedirectSuppliesCredential(fields, i, field) {
+			return true
+		}
+	}
+	return false
+}
+
+// markdownAuthRedirectSuppliesCredential is true when stdin is a token file.
+// "< /dev/null" and a heredoc do not log in; they still open a browser.
+func markdownAuthRedirectSuppliesCredential(fields []string, index int, field string) bool {
+	if strings.HasPrefix(field, "<<") {
+		return false
+	}
+	target := ""
+	switch {
+	case field == "<" && index+1 < len(fields):
+		target = fields[index+1]
+	case strings.HasPrefix(field, "<"):
+		target = strings.TrimPrefix(field, "<")
+	default:
+		return false
+	}
+	target = strings.Trim(strings.TrimSpace(target), "\"'`")
+	return target != "" && !isNullDevice(target)
+}
+
+func isNullDevice(path string) bool {
+	path = strings.ToLower(strings.ReplaceAll(path, `\`, `/`))
+	return path == "/dev/null" || path == "nul" || path == "/dev/nul"
+}
+
+func markdownLineInvokesScript(line, base string) bool {
+	for _, field := range splitMarkdownCommandFields(stripInlineShellComment(line)) {
+		if strings.EqualFold(markdownCommandFieldBase(field), base) {
+			return true
+		}
+	}
+	return false
+}
+
+func markdownCommandFieldBase(token string) string {
+	token = strings.Trim(strings.TrimSpace(token), "\"'`")
+	token = strings.ReplaceAll(token, `\`, `/`)
+	if i := strings.LastIndex(token, "/"); i >= 0 {
+		token = token[i+1:]
+	}
+	return token
+}
+
+func markdownFieldsInstallRemoteSkill(fields []string) bool {
+	for i := 0; i < len(fields); i++ {
+		if fields[i] != "npx" && fields[i] != "bunx" {
+			continue
+		}
+		rest := fields[i+1:]
+		j := 0
+		for j < len(rest) {
+			flag := rest[j]
+			if !strings.HasPrefix(flag, "-") || flag == "-" {
+				break
+			}
+			j++
+			if strings.Contains(flag, "=") {
+				continue
+			}
+			switch strings.TrimLeft(flag, "-") {
+			case "package", "p", "prefix", "call", "c", "registry", "userconfig", "cache":
+				if j < len(rest) {
+					j++
+				}
+			}
+		}
+		name := ""
+		if j < len(rest) {
+			name = rest[j]
+			if at := strings.IndexByte(name, '@'); at > 0 {
+				name = name[:at]
+			}
+		}
+		if j+1 < len(rest) && name == "skills" && (rest[j+1] == "add" || rest[j+1] == "install") {
+			return true
+		}
+	}
+	return false
 }
 
 func isMarkdownDependencyInstallBlock(block string, context markdownBashBlockContext) bool {

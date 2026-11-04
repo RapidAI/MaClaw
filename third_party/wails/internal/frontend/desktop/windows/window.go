@@ -6,6 +6,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/wailsapp/go-webview2/pkg/edge"
@@ -40,6 +41,11 @@ type Window struct {
 	OnResume  func()
 
 	chromium *edge.Chromium
+
+	// cursorRestoreArmed is set while a delayed cursor restore is waiting.
+	// Maximise and fullscreen can post several size messages; one follow-up
+	// is enough to catch a hide that lands after the first restore.
+	cursorRestoreArmed atomic.Bool
 
 	// isMinimizing indicates whether the window is currently being minimized
 	// 标识窗口是否处于最小化状态,用于解决最小化/恢复时的闪屏问题
@@ -77,6 +83,14 @@ const (
 	scMinimize = 0xF020
 	scRestore  = 0xF120
 )
+
+// wmKeepCursorVisible is posted after a maximise or fullscreen size change.
+// WebView2 can call ShowCursor(FALSE) while handling that change and skip the
+// matching ShowCursor(TRUE). The display count then stays negative, and the
+// pointer is invisible over this window until a later focus message raises it.
+// The posted handler runs after the size change returns, on the UI thread that
+// owns the count.
+const wmKeepCursorVisible = w32.WM_APP + 73
 
 type obscureUpdate int
 
@@ -171,6 +185,38 @@ func restoreCursorDisplayCount() {
 	if original := restoreCursorDisplayCountWith(w32.ShowCursor); original < 0 {
 		log.Printf("[cursor] display count was %d; raised toward zero", original)
 	}
+}
+
+// cursorRestoreOnSize reports a size change that can leave the pointer hidden:
+// OS maximise, or fullscreen (which sizes the popup without WS_MAXIMIZE).
+// Minimise is excluded so a hidden window does not touch the cursor count.
+func cursorRestoreOnSize(msg uint32, wparam uintptr, fullscreen bool) bool {
+	if msg != w32.WM_SIZE || wparam == uintptr(w32.SIZE_MINIMIZED) {
+		return false
+	}
+	return wparam == uintptr(w32.SIZE_MAXIMIZED) || fullscreen
+}
+
+// postCursorRestore queues restoreCursorDisplayCount on the UI thread, after
+// the size change that may have hidden the pointer. Invoke would run inline
+// on that thread and lose the race to WebView2's hide.
+func (w *Window) postCursorRestore() {
+	if w == nil || w.Handle() == 0 {
+		return
+	}
+	hwnd := w.Handle()
+	w32.PostMessage(hwnd, wmKeepCursorVisible, 0, 0)
+	// WebView2 sometimes hides the pointer again on a message posted after
+	// the size change. One later restore covers that. A further call while
+	// this wait is in flight does not start another, and ShowCursor on an
+	// already-visible count is undone.
+	if !w.cursorRestoreArmed.CompareAndSwap(false, true) {
+		return
+	}
+	time.AfterFunc(200*time.Millisecond, func() {
+		w.cursorRestoreArmed.Store(false)
+		w32.PostMessage(hwnd, wmKeepCursorVisible, 0, 0)
+	})
 }
 
 // restoreCursorDisplayCountWith is restoreCursorDisplayCount with the Win32
@@ -312,6 +358,7 @@ func (w *Window) Fullscreen() {
 	w.Form.SetMaxSize(0, 0)
 	w.Form.SetMinSize(0, 0)
 	w.Form.Fullscreen()
+	w.postCursorRestore()
 }
 
 func (w *Window) UnFullscreen() {
@@ -324,6 +371,7 @@ func (w *Window) UnFullscreen() {
 	w.Form.UnFullscreen()
 	w.SetMinSize(w.minWidth, w.minHeight)
 	w.SetMaxSize(w.maxWidth, w.maxHeight)
+	w.postCursorRestore()
 }
 
 func (w *Window) Restore() {
@@ -351,6 +399,13 @@ func (w *Window) IsVisible() bool {
 }
 
 func (w *Window) WndProc(msg uint32, wparam, lparam uintptr) uintptr {
+	// After this call returns, including DefWindowProc. A maximise or
+	// fullscreen size change can hide the pointer inside that call.
+	defer func() {
+		if cursorRestoreOnSize(msg, wparam, w.Form.IsFullScreen()) {
+			w.postCursorRestore()
+		}
+	}()
 	// Before DefWindowProc. ShowWindow and SC_MINIMIZE nest the player's
 	// fullscreen exit inside this call, ahead of the page visibility event.
 	w.noteContentObscured(msg, wparam)
@@ -365,6 +420,9 @@ func (w *Window) WndProc(msg uint32, wparam, lparam uintptr) uintptr {
 	}()
 
 	switch msg {
+	case wmKeepCursorVisible:
+		restoreCursorDisplayCount()
+		return 0
 	case win32.WM_POWERBROADCAST:
 		switch wparam {
 		case win32.PBT_APMSUSPEND:

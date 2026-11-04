@@ -13,6 +13,11 @@ import (
 type ThreatPattern struct {
 	Pattern string // regex string or substring to match
 	IsRegex bool   // true = compile as regex; false = case-insensitive substring match
+	// SkipContinuedFence drops a backtick hit that continues a markdown fence.
+	// ```bash is a documentation sample. The match starts on the last opening
+	// backtick, so the character before it is another backtick. A real
+	// `bash -c ...` command is not preceded by one.
+	SkipContinuedFence bool
 	// Guard is an optional regex pattern. When non-empty and the guard matches
 	// the same text, this threat pattern hit is considered a false positive and
 	// is suppressed. This provides context-aware filtering at the pattern level
@@ -57,7 +62,7 @@ var threatPatternCategories = []ThreatCategory{
 			// Command substitution: guard allows safe builtins like $(date), $(pwd), $(basename ...)
 			{Pattern: `\$\(.*\)`, IsRegex: true,
 				Guard: `\$\((date|pwd|hostname|basename|dirname|echo|printf|cat\s+[^/]|wc\s|head\s|tail\s|tr\s|cut\s|sort|uniq|grep\s|awk\s|sed\s)\b`},
-			{Pattern: "`[^`]*\\b(rm|wget|curl|bash|sh|python|perl|nc|cat|echo|eval|exec|whoami|id|uname)\\b[^`]*`", IsRegex: true}, // backtick command substitution (word-boundary match, not Markdown inline code)
+			{Pattern: "`[^`]*\\b(rm|wget|curl|bash|sh|python|perl|nc|cat|echo|eval|exec|whoami|id|uname)\\b[^`]*`", IsRegex: true, SkipContinuedFence: true}, // backtick command substitution; ```bash fences are samples
 			{Pattern: `>\s*/dev/tcp/`, IsRegex: true},                               // bash TCP redirect
 			// eval/exec injection: guard allows common safe patterns like executor.execute(), exec.Command
 			{Pattern: `eval\s*\(`, IsRegex: true,
@@ -313,7 +318,20 @@ func init() {
 func matchPattern(cp *compiledPattern, text string) bool {
 	matched := false
 	if cp.Regex != nil {
-		matched = cp.Regex.MatchString(text)
+		if cp.Original.SkipContinuedFence {
+			for _, loc := range cp.Regex.FindAllStringIndex(text, -1) {
+				if len(loc) < 2 {
+					continue
+				}
+				if loc[0] > 0 && text[loc[0]-1] == '`' {
+					continue
+				}
+				matched = true
+				break
+			}
+		} else {
+			matched = cp.Regex.MatchString(text)
+		}
 	} else {
 		matched = containsIgnoreCase(text, cp.Original.Pattern)
 	}

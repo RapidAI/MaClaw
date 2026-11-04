@@ -178,6 +178,23 @@ describe("companion pdf reader", () => {
         expect(await screen.findByRole("button", { name: "译文" })).toBeTruthy();
     });
 
+    it("paints highlights saved while the reader is open", async () => {
+        pdfWithPages(1);
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        expect(await screen.findByText("Hello world")).toBeTruthy();
+        expect(document.querySelector("[data-color='green']")).toBeNull();
+        act(() => {
+            savePdfMarks("C:/docs/Paper.PDF", [{
+                id: "arrived",
+                page: 1,
+                color: "green",
+                rects: [{ x: 0.05, y: 0.05, w: 0.2, h: 0.03 }],
+                text: "Hello",
+            }]);
+        });
+        await waitFor(() => expect(document.querySelector("[data-mark-id='arrived']")).toBeTruthy());
+    });
+
     it("clears a highlight from the right-click menu", async () => {
         pdfWithPages(1);
         savePdfMarks("C:/docs/a.pdf", [{

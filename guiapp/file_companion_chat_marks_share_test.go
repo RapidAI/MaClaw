@@ -14,7 +14,7 @@ func TestFileCompanionSplitSharePayloadReadsHighlightsAndChatMarks(t *testing.T)
 	chatMarks := `[{"message":2,"color":"green","start":3,"end":5,"text":"回答"}]`
 	annotations := `[{"id":"a1","kind":"annotation","text":"原文","translation":"批注","parts":[{"page":1,"rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.04}]}]}]`
 	drawings := `[{"id":"d1","page":1,"color":"yellow","tool":"line","points":[{"x":0.1,"y":0.2},{"x":0.3,"y":0.4}]}]`
-	gotHighlights, gotChat, gotAnnotations, gotDrawings, gotBookmarks, err := fileCompanionSplitSharePayload(`{"highlights":` + highlights + `,"chatMarks":` + chatMarks + `,"annotations":` + annotations + `,"drawings":` + drawings + `}`)
+	gotHighlights, gotChat, gotAnnotations, gotDrawings, gotBookmarks, _, _, err := fileCompanionSplitSharePayload(`{"highlights":` + highlights + `,"chatMarks":` + chatMarks + `,"annotations":` + annotations + `,"drawings":` + drawings + `}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestFileCompanionSplitSharePayloadReadsHighlightsAndChatMarks(t *testing.T)
 	}
 
 	// A legacy caller sends the highlights array alone.
-	gotHighlights, gotChat, gotAnnotations, gotDrawings, gotBookmarks, err = fileCompanionSplitSharePayload(highlights)
+	gotHighlights, gotChat, gotAnnotations, gotDrawings, gotBookmarks, _, _, err = fileCompanionSplitSharePayload(highlights)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestWriteFileCompanionProjectKeepsChatMarks(t *testing.T) {
 	}
 	dest := filepath.Join(dir, "project.zip")
 	chatMarks := json.RawMessage(`[{"message":0,"color":"blue","start":0,"end":2,"text":"答"}]`)
-	if err := writeFileCompanionProject(dest, source, json.RawMessage("[]"), chatMarks, nil, json.RawMessage(`[{"id":"d1","page":1,"color":"yellow","tool":"line","points":[{"x":0.1,"y":0.2},{"x":0.3,"y":0.4}]}]`), nil, []FileCompanionMessage{{Role: "assistant", Text: "答"}}, "", 0); err != nil {
+	if err := writeFileCompanionProject(dest, source, json.RawMessage("[]"), chatMarks, nil, json.RawMessage(`[{"id":"d1","page":1,"color":"yellow","tool":"line","points":[{"x":0.1,"y":0.2},{"x":0.3,"y":0.4}]}]`), nil, []FileCompanionMessage{{Role: "assistant", Text: "答"}}, "", 0, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(dest)
@@ -85,7 +85,7 @@ func TestWriteFileCompanionProjectKeepsChatMarks(t *testing.T) {
 	// A project written without chat marks stays a legacy project: the field is
 	// absent, so a reader keeps its own answer highlights.
 	legacy := filepath.Join(dir, "legacy.zip")
-	if err := writeFileCompanionProject(legacy, source, json.RawMessage("[]"), nil, nil, nil, nil, nil, "", 0); err != nil {
+	if err := writeFileCompanionProject(legacy, source, json.RawMessage("[]"), nil, nil, nil, nil, nil, "", 0, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	raw, err = os.ReadFile(legacy)

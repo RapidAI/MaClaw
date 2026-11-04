@@ -264,7 +264,7 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 		}
 
 		if h.app != nil {
-			action, recordedWithoutChannel := h.app.skillInstallActionWithChannel(scanReport, source, strings.TrimSpace(platform) != "")
+			action, recordedWithoutChannel := h.skillInstallDecidedAction(scanReport, source, platform, ownerID)
 			switch action {
 			case security.PolicyDeny:
 				cskill.CleanupStaging(stagingDir)
@@ -410,6 +410,37 @@ func installedSkillIsRunnable(entry *corelib.NLSkillEntry) bool {
 	return entry != nil && normalizeSkillEntryStatus(entry.Status) == skillEntryStatusActive
 }
 
+// skillInitialExecutionFailureNote is the tool result after a just-installed
+// skill fails its first run. A truncated model body is a transport failure.
+// Telling the model to retry manage_skill turns that into another install loop
+// instead of letting the task continue with the tools already on the surface.
+func skillInitialExecutionFailureNote(name string, execErr error) string {
+	if skillExecutionFailedOnTruncatedModelResponse(execErr) {
+		return fmt.Sprintf("Skill %s was installed but its first run stopped because the model response was truncated (marked as needs_setup). It will not run automatically. Continue the original task with the tools already available. Do not install or run this skill again for this failure.", name)
+	}
+	return fmt.Sprintf("Skill %s was installed but initial execution failed (marked as needs_setup): %v\nRun manage_skill(action=\"run\", name=\"%s\") to retry.", name, execErr, name)
+}
+
+func skillInitialExecutionUnpersistedNote(name string, execErr, statusErr error) string {
+	if skillExecutionFailedOnTruncatedModelResponse(execErr) {
+		return fmt.Sprintf("Skill %s was installed but its first run stopped because the model response was truncated. Its needs_setup status could not be persisted (%v). Continue the original task with the tools already available. Do not install or run this skill again for this failure.", name, statusErr)
+	}
+	return fmt.Sprintf("Skill %s was installed but initial execution failed: %v\nIts needs_setup status could not be persisted (%v); stop automatic use and review it manually before retrying.", name, execErr, statusErr)
+}
+
+func skillExecutionFailedOnTruncatedModelResponse(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// A command that prints "unexpected EOF" is that command's failure.
+	// Only the model-body parser uses the "parse response" wrapper.
+	if !strings.Contains(msg, "parse response:") {
+		return false
+	}
+	return strings.Contains(msg, "unexpected end of json input") || strings.Contains(msg, "unexpected eof")
+}
+
 // executeInstalledSkill runs an already-installed entry. It is deliberately
 // separate from registration so an idempotent install can reuse the existing
 // authoritative entry without re-registering or rewriting it.
@@ -432,13 +463,13 @@ func (h *IMMessageHandler) executeInstalledSkill(ctx context.Context, skill *cor
 		if h.app == nil || h.app.skillExecutor != h.getSkillExecutor() {
 			statusErr := fmt.Errorf("durable App status transaction unavailable")
 			log.Printf("[skill-auto] failed to mark skill %s as needs_setup: %v", skill.Name, statusErr)
-			return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s was installed but initial execution failed: %v\nIts needs_setup status could not be persisted (%v); stop automatic use and review it manually before retrying.", skill.Name, execErr, statusErr)}
+			return skillInstallExecutionResult{Text: skillInitialExecutionUnpersistedNote(skill.Name, execErr, statusErr)}
 		}
 		if updateErr := h.app.SetNLSkillStatus(skill.Name, "needs_setup"); updateErr != nil {
 			log.Printf("[skill-auto] failed to mark skill %s as needs_setup: %v", skill.Name, updateErr)
-			return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s was installed but initial execution failed: %v\nIts needs_setup status could not be persisted (%v); stop automatic use and review it manually before retrying.", skill.Name, execErr, updateErr)}
+			return skillInstallExecutionResult{Text: skillInitialExecutionUnpersistedNote(skill.Name, execErr, updateErr)}
 		}
-		return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s was installed but initial execution failed (marked as needs_setup): %v\nRun manage_skill(action=\"run\", name=\"%s\") to retry.", skill.Name, execErr, skill.Name)}
+		return skillInstallExecutionResult{Text: skillInitialExecutionFailureNote(skill.Name, execErr)}
 	}
 	return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s was installed and executed.\n%s", skill.Name, execResult), Success: true}
 }

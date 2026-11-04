@@ -685,6 +685,73 @@ func (r *userRepo) GetByTenantEmail(ctx context.Context, tenantID, email string)
 	return r.getByEmail(ctx, normalizeTenantID(tenantID), normalizeEmailLikeAccount(email))
 }
 
+// ListUsersByContact returns every account that owns this email or phone.
+// Ownership is the account email, or a verified identity. The caller treats
+// more than one account as ambiguous. Deleted accounts are skipped.
+func (r *userRepo) ListUsersByContact(ctx context.Context, contact string) ([]*store.User, error) {
+	contact = strings.TrimSpace(strings.ToLower(contact))
+	if r == nil || contact == "" {
+		return nil, nil
+	}
+	db := r.readDB
+	if db == nil {
+		db = r.db
+	}
+	if db == nil {
+		return nil, errors.New("user store is closed")
+	}
+	const cols = `id, tenant_id, email, sn, status, enrollment_status, smart_route, email_verified, email_verified_at, billing_timezone, billing_timezone_updated_at, created_at, updated_at`
+	seen := map[string]*store.User{}
+	add := func(query string, args ...any) error {
+		rows, err := db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			user, err := scanUser(rows)
+			if err != nil {
+				return err
+			}
+			if user == nil || strings.TrimSpace(user.ID) == "" || strings.EqualFold(strings.TrimSpace(user.Status), "deleted") {
+				continue
+			}
+			if _, ok := seen[user.ID]; ok {
+				continue
+			}
+			seen[user.ID] = user
+			if len(seen) > 8 {
+				return nil
+			}
+		}
+		return rows.Err()
+	}
+	joined := `SELECT u.` + strings.ReplaceAll(cols, ", ", ", u.") + ` FROM user_identities ui JOIN users u ON u.id = ui.user_id AND u.tenant_id = ui.tenant_id WHERE ui.verified != 0 AND lower(ui.type) = ? AND lower(ui.value) = lower(?) LIMIT 8`
+	if strings.Contains(contact, "@") {
+		if err := add(`SELECT `+cols+` FROM users WHERE lower(email) = lower(?) LIMIT 8`, contact); err != nil {
+			return nil, err
+		}
+		if err := add(joined, "email", contact); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := add(`SELECT `+cols+` FROM users WHERE lower(email) = lower(?) LIMIT 8`, "phone:"+contact); err != nil {
+			return nil, err
+		}
+		if err := add(joined, "phone", contact); err != nil {
+			return nil, err
+		}
+	}
+	if len(seen) == 0 {
+		return nil, nil
+	}
+	out := make([]*store.User, 0, len(seen))
+	for _, user := range seen {
+		out = append(out, user)
+	}
+	return out, nil
+}
+
 func (r *userRepo) GetByTenantIdentity(ctx context.Context, tenantID, identityType, value string) (*store.User, error) {
 	identityType, value = normalizeUserIdentity(identityType, value)
 	if identityType == "" || value == "" {

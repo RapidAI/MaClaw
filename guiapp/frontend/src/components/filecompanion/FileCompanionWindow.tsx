@@ -59,7 +59,7 @@ import {
 import { WindowFullscreen, WindowGetPosition, WindowGetSize, WindowHide, WindowSetSize, WindowUnfullscreen } from "../../../wailsjs/runtime";
 import { createWindowMaximizeRestoreSession } from "../../utils/windowRestoreGeometry";
 import { useToast } from "../Toast";
-import { companionHostShares, companionLibrarySnapshotKey, companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionWithdrawnNotice, sameCompanionMineShare, takeCompanionLibraryList, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
+import { companionHostShares, companionLibrarySnapshotKey, companionLibrarySync, companionMineShares, companionNotePost, companionNotesFrom, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionShareMarksBehind, companionShareDocumentCatchUp, companionWithdrawnNotice, sameCompanionMineShare, takeCompanionLibraryList, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
@@ -83,7 +83,7 @@ import { NoteResultCard } from "./NoteResultCard";
 import { FILE_COMPANION_OPEN_HINT, companionVideoNotePhrase, looksLikeArxivReference, looksLikeCompanionShare, noteStampAtLineStart, type NoteStampLine } from "./companionNoteSeek";
 import { windowDragHandleProps } from "../../utils/windowDrag";
 import { CompanionAppearanceProvider, useCompanionAppearance } from "./useCompanionAppearance";
-import { companionProjectMarksJSON, loadPdfBookmarks, PDF_BOOKMARKS_CHANGED_EVENT, savePdfBookmarks } from "./pdfBookmarks";
+import { companionProjectExportJSON, companionProjectMarksJSON, loadPdfBookmarks, PDF_BOOKMARKS_CHANGED_EVENT, savePdfBookmarks } from "./pdfBookmarks";
 import { loadPdfMarks, PDF_MARKS_CHANGED_EVENT, savePdfMarks } from "./pdfMarks";
 import { loadPdfTranslations, PDF_ANNOTATIONS_CHANGED_EVENT, savePdfTranslations } from "./pdfTranslations";
 import { loadPdfDrawings, PDF_DRAWINGS_CHANGED_EVENT, savePdfDrawings } from "./pdfDrawings";
@@ -273,6 +273,10 @@ type CompanionDoc = {
     Drawings?: unknown;
     bookmarks?: unknown;
     Bookmarks?: unknown;
+    notes?: unknown;
+    Notes?: unknown;
+    translations?: unknown;
+    Translations?: unknown;
     imported?: boolean;
     Imported?: boolean;
 };
@@ -651,6 +655,13 @@ function officePayloadJSON(text: string, name: string): string {
     }
 }
 
+function notesFromDoc(doc: CompanionDoc): CompanionShareNote[] | undefined {
+    const has = Object.prototype.hasOwnProperty.call(doc, "notes") || Object.prototype.hasOwnProperty.call(doc, "Notes");
+    if (!has) return undefined;
+    const value = (doc as Record<string, unknown>).notes ?? (doc as Record<string, unknown>).Notes;
+    return companionNotesFrom(value);
+}
+
 function tabFromDoc(doc: CompanionDoc, fallbackPath: string): CompanionTab {
     const path = field(doc, "path", "Path", fallbackPath);
     const name = field(doc, "name", "Name", path.split(/[/\\]/).pop() || path);
@@ -678,6 +689,7 @@ function tabFromDoc(doc: CompanionDoc, fallbackPath: string): CompanionTab {
         previewEpoch: 0,
         saveError: "",
         htmlPreview: false,
+        notes: notesFromDoc(doc),
     };
 }
 
@@ -2434,6 +2446,16 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const sharePushTimerRef = useRef(new Map<string, number>());
     const sharePushInFlightRef = useRef(new Set<string>());
     const sharePushPendingRef = useRef(new Set<string>());
+    // A chat line on the downloaded host copy, held until the marks fetch
+    // lands. The key is the path identity; the value is the path to upload.
+    const sharePushWaitMarksRef = useRef(new Map<string, string>());
+    // Document revision advertised for a downloaded host copy, and the
+    // revision whose zip is already on disk. A syncing list can advertise a
+    // newer zip before the download finishes; uploading then would replace
+    // questions that zip still carries.
+    const shareDocListedRef = useRef(new Map<string, number>());
+    const shareDocAppliedRef = useRef(new Map<string, number>());
+    const shareDocKnownRef = useRef(new Set<string>());
     // Reader marks (highlights, annotations, drawings, bookmarks, answer
     // marks) travel separately from the transcript: kilobytes instead of the
     // whole project zip with the paper. A marks push that the Hub cannot take
@@ -2445,8 +2467,13 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const shareMarksPendingRef = useRef(new Set<string>());
     // Participant side: the marks revision already applied per path, and the
     // paths currently fetching, so one library list does not stack requests.
+    // wanted keeps a newer revision that arrived while a fetch was in flight.
     const appliedShareMarksRef = useRef(new Map<string, number>());
+    const wantedShareMarksRef = useRef(new Map<string, number>());
     const pullingShareMarksRef = useRef(new Set<string>());
+    // The latest marks revision per path, so opening the file fetches at once
+    // instead of waiting for the next library poll.
+    const shareMarksRevisionRef = useRef(new Map<string, number>());
     const pullShareMarksRef = useRef<(path: string, revision: number) => void>(() => undefined);
     // A document whose automatic upload failed is reported once, not on every
     // turn while the network is down.
@@ -2530,6 +2557,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             return same ? current : nextHosts;
         });
         const rows = companionShareNotes(listed);
+        const listedRecord = listed && typeof listed === "object" ? listed as Record<string, unknown> : null;
+        const syncing = listedRecord?.syncing === true || listedRecord?.Syncing === true;
+        const catalog = listedRecord?.catalog === true || listedRecord?.Catalog === true;
         if (rows.length === 0) {
             // No share rows. Notes for a share the hub no longer has should
             // leave the page. A line sent before any list returns stays queued.
@@ -2539,13 +2569,37 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             }
             return;
         }
-        // Reader marks move on their own revision. A received share whose
-        // marks revision is newer than what this machine applied fetches the
-        // small marks blob; the project zip only downloads when the revision
-        // itself moves (new transcript).
+        // Reader marks move on their own revision. A received share, and the
+        // host's downloaded copy on another machine, fetch that blob when its
+        // revision is newer. The machine that still has the authoring paper
+        // does not: a pull there would cover the highlights being painted.
+        // The project zip only downloads when the document revision moves.
+        const revisions = shareMarksRevisionRef.current;
+        const liveMarks = new Set<string>();
         for (const row of rows) {
-            if (row.mine || !row.marksRevision) continue;
+            const key = companionSharePathKey(row.path);
+            if (key) {
+                liveMarks.add(key);
+                if (row.marksRevision > (revisions.get(key) ?? 0)) revisions.set(key, row.marksRevision);
+                shareDocKnownRef.current.add(key);
+                const caught = companionShareDocumentCatchUp(
+                    { listed: shareDocListedRef.current.get(key) ?? 0, applied: shareDocAppliedRef.current.get(key) ?? 0 },
+                    row.documentRevision,
+                    syncing,
+                    catalog,
+                );
+                shareDocListedRef.current.set(key, caught.listed);
+                shareDocAppliedRef.current.set(key, caught.applied);
+            }
+            if (!companionShouldPullShareMarks(row)) continue;
             pullShareMarksRef.current(row.path, row.marksRevision);
+        }
+        for (const key of [...revisions.keys()]) {
+            if (liveMarks.has(key)) continue;
+            revisions.delete(key);
+            shareDocListedRef.current.delete(key);
+            shareDocAppliedRef.current.delete(key);
+            shareDocKnownRef.current.delete(key);
         }
         const grouped = new Map<string, typeof rows>();
         for (const row of rows) {
@@ -2599,10 +2653,24 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             });
         }
         flushPendingShareNotesRef.current();
+        for (const waiting of sharePushWaitMarksRef.current.values()) flushSharePushWaiting(waiting);
     };
     const applyShareUpdateRef = useRef<(update: CompanionShareUpdate) => void>(() => undefined);
     applyShareUpdateRef.current = (update) => {
         if (!update.path || !update.project) return;
+        // A newer marks blob is already on the page. The zip still carries
+        // the transcript, and that is applied below.
+        if (update.keepReaderMarks) {
+            if (!update.replaceMessages) return;
+            const keptKey = companionSharePathKey(update.path);
+            const keptSession = tabsRef.current.find((tab) => companionSharePathKey(tab.path) === keptKey)?.sessionId ?? "";
+            if (keptSession) {
+                chatEpochRef.current.set(keptSession, (chatEpochRef.current.get(keptSession) ?? 0) + 1);
+            }
+            const keptMessages = messagesFromDoc({ messages: update.messages } as CompanionDoc);
+            setTabs((current) => current.map((tab) => companionSharePathKey(tab.path) === keptKey ? { ...tab, messages: keptMessages, status: "", previewEpoch: tab.previewEpoch + 1 } : tab));
+            return;
+        }
         try {
             savePdfMarks(update.path, update.highlights ? JSON.parse(update.highlights) : []);
         } catch {
@@ -2622,24 +2690,42 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 setChatMarksState({ path: update.path, marks: saved });
             }
         }
-        // The host's placed notes travel with the project. Local translations
-        // stay; a legacy project without the field leaves local notes alone.
-        if (update.annotationsKnown) {
+        // Placed notes and translation cards share one store. A share update
+        // replaces the host's notes and leaves translations. A project import
+        // also replaces translation cards when the zip carried them.
+        if (update.annotationsKnown || update.translationsKnown) {
             let incoming: Record<string, unknown>[] = [];
-            try {
-                const raw = update.annotations ? JSON.parse(update.annotations) : [];
-                incoming = Array.isArray(raw)
-                    ? raw
-                        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && (item as { kind?: unknown }).kind === "annotation")
-                        .map((item) => ({ ...item, shared: true }))
-                    : [];
-            } catch {
-                incoming = [];
+            if (update.annotationsKnown) {
+                try {
+                    const raw = update.annotations ? JSON.parse(update.annotations) : [];
+                    incoming = Array.isArray(raw)
+                        ? raw
+                            .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && (item as { kind?: unknown }).kind === "annotation")
+                            .map((item) => ({ ...item, shared: true }))
+                        : [];
+                } catch {
+                    incoming = [];
+                }
             }
-            // Replace the host's notes only. A note this reader wrote stays
-            // local, and the host's next project does not wipe it.
-            const kept = loadPdfTranslations(update.path).filter((item) => item.kind !== "annotation" || item.shared !== true);
-            savePdfTranslations(update.path, [...kept, ...incoming]);
+            let incomingTranslations: Record<string, unknown>[] = [];
+            if (update.translationsKnown) {
+                try {
+                    const raw = update.translations ? JSON.parse(update.translations) : [];
+                    incomingTranslations = Array.isArray(raw)
+                        ? raw.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && (item as { kind?: unknown }).kind !== "annotation")
+                        : [];
+                } catch {
+                    incomingTranslations = [];
+                }
+            }
+            const current = loadPdfTranslations(update.path);
+            const annotations = update.annotationsKnown
+                ? [...current.filter((item) => item.kind === "annotation" && item.shared !== true), ...incoming]
+                : current.filter((item) => item.kind === "annotation");
+            const translations = update.translationsKnown
+                ? incomingTranslations
+                : current.filter((item) => item.kind !== "annotation");
+            savePdfTranslations(update.path, [...translations, ...annotations]);
         }
         // The host's freehand strokes travel too. As with notes, only the
         // host's previous drawings are replaced; this reader's own stay.
@@ -2768,7 +2854,22 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             const key = companionSharePathKey(path);
             if (key) pendingShareNotesRef.current.delete(key);
         }
-        for (const update of synced.updates) applyShareUpdateRef.current(update);
+        const marksByPath = new Map<string, number>();
+        for (const row of companionShareNotes(listed)) {
+            const key = companionSharePathKey(row.path);
+            if (!key || row.marksRevision <= (marksByPath.get(key) ?? 0)) continue;
+            marksByPath.set(key, row.marksRevision);
+        }
+        for (const update of synced.updates) {
+            const key = companionSharePathKey(update.path);
+            const listedRevision = key ? (marksByPath.get(key) ?? 0) : 0;
+            const applied = key ? (appliedShareMarksRef.current.get(key) ?? 0) : 0;
+            if (companionZipKeepsAppliedMarks(applied, listedRevision, shareMarksBusy(update.path))) {
+                applyShareUpdateRef.current({ ...update, keepReaderMarks: true });
+                continue;
+            }
+            applyShareUpdateRef.current(update);
+        }
         applyShareNotesRef.current(listed);
         releaseHeldShareNotesRef.current();
         if (synced.removed.length === 0) return true;
@@ -2809,7 +2910,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 shareMarksTimerRef.current.delete(path);
             }
             shareMarksPendingRef.current.delete(path);
-            appliedShareMarksRef.current.delete(companionSharePathKey(path));
+            const withdrawnKey = companionSharePathKey(path);
+            sharePushWaitMarksRef.current.delete(withdrawnKey);
+            shareDocListedRef.current.delete(withdrawnKey);
+            shareDocAppliedRef.current.delete(withdrawnKey);
+            shareDocKnownRef.current.delete(withdrawnKey);
+            appliedShareMarksRef.current.delete(withdrawnKey);
+            wantedShareMarksRef.current.delete(withdrawnKey);
+            shareMarksRevisionRef.current.delete(withdrawnKey);
             forgetIntro(path);
         }
         return true;
@@ -2840,6 +2948,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 if (sharePushPendingRef.current.delete(path)) runSharePush(path);
             });
     };
+    const shareCatchUp = (path: string) => {
+        const key = companionSharePathKey(path);
+        return companionShareMarksBehind(path, key ? (shareMarksRevisionRef.current.get(key) ?? 0) : 0, key ? (appliedShareMarksRef.current.get(key) ?? 0) : 0, {
+            listed: key ? (shareDocListedRef.current.get(key) ?? 0) : 0,
+            applied: key ? (shareDocAppliedRef.current.get(key) ?? 0) : 0,
+            known: Boolean(key && shareDocKnownRef.current.has(key)),
+        });
+    };
     const pushShareTranscript = (path: string) => {
         if (!path || !hostSharesByPathRef.current.has(companionSharePathKey(path))) return;
         const timers = sharePushTimerRef.current;
@@ -2847,6 +2963,13 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         if (held !== undefined) window.clearTimeout(held);
         timers.set(path, window.setTimeout(() => {
             timers.delete(path);
+            const key = companionSharePathKey(path);
+            const listed = shareMarksRevisionRef.current.get(key) ?? 0;
+            if (shareCatchUp(path)) {
+                sharePushWaitMarksRef.current.set(key, path);
+                if (listed > 0) pullShareMarksRef.current(path, listed);
+                return;
+            }
             runSharePush(path);
         }, 1200));
     };
@@ -2880,17 +3003,38 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         }, 1200));
     };
     pushShareMarksRef.current = pushShareMarks;
-    // A participant whose copy of a hosted document is open picks the host's
-    // reader marks up without downloading the project zip again. The revision
-    // check runs on every library list; the fetch is small and per-path
-    // deduplicated.
+    // A highlight painted on this host seat is about to upload. Applying a
+    // fetch on top of it would replace that paint and then upload the
+    // replacement. The timer and the in-flight set are only filled for a host
+    // push, so a participant's own paint does not block the host's marks.
+    const shareMarksBusy = (path: string) => {
+        const key = companionSharePathKey(path);
+        if (!key) return false;
+        const hit = (candidate: string) => companionSharePathKey(candidate) === key;
+        for (const candidate of shareMarksTimerRef.current.keys()) if (hit(candidate)) return true;
+        for (const candidate of shareMarksInFlightRef.current) if (hit(candidate)) return true;
+        for (const candidate of shareMarksPendingRef.current) if (hit(candidate)) return true;
+        return false;
+    };
     const pullShareMarks = (path: string, revision: number) => {
         const key = companionSharePathKey(path);
-        if (!key || pullingShareMarksRef.current.has(key)) return;
-        if ((appliedShareMarksRef.current.get(key) ?? 0) >= revision) return;
+        if (!key || revision <= 0) return;
+        const wanted = wantedShareMarksRef.current;
+        if (revision > (wanted.get(key) ?? 0)) wanted.set(key, revision);
+        if (pullingShareMarksRef.current.has(key)) return;
+        const target = wanted.get(key) ?? revision;
+        if ((appliedShareMarksRef.current.get(key) ?? 0) >= target) {
+            flushSharePushWaiting(path);
+            return;
+        }
+        if (shareMarksBusy(path)) return;
         pullingShareMarksRef.current.add(key);
         void FetchFileCompanionShareMarks(path)
             .then((raw) => {
+                // The paint won the race. Leave the applied revision behind
+                // the list so the next refresh, after the upload, fetches
+                // again instead of treating this skipped blob as current.
+                if (shareMarksBusy(path)) return;
                 const record = (raw ?? {}) as { marks?: string; Marks?: string; revision?: number; Revision?: number };
                 const body = typeof record.marks === "string" ? record.marks : typeof record.Marks === "string" ? record.Marks : "";
                 if (!body) return;
@@ -2917,8 +3061,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     project: true,
                     replaceMessages: false,
                 });
-                const applied = typeof record.revision === "number" ? record.revision : typeof record.Revision === "number" ? record.Revision : revision;
-                appliedShareMarksRef.current.set(key, Math.max(revision, applied));
+                const reported = typeof record.revision === "number" ? record.revision : typeof record.Revision === "number" ? record.Revision : 0;
+                // A blob older than the list must not count as caught up, or
+                // the next refresh would skip it. A missing header keeps the
+                // revision the list asked for.
+                appliedShareMarksRef.current.set(key, reported > 0 ? reported : target);
             })
             .catch(() => {
                 // SHARE_MARKS_NOT_FOUND means the host has not pushed marks
@@ -2927,7 +3074,22 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             })
             .finally(() => {
                 pullingShareMarksRef.current.delete(key);
+                const want = wantedShareMarksRef.current.get(key) ?? 0;
+                const have = appliedShareMarksRef.current.get(key) ?? 0;
+                // The list moved while this fetch was out. One more pass.
+                // A failed fetch stays at the revision it asked for, so this
+                // does not spin; the next library list retries that one.
+                if (want > Math.max(have, target) && !shareMarksBusy(path)) pullShareMarksRef.current(path, want);
+                else flushSharePushWaiting(path);
             });
+    };
+    const flushSharePushWaiting = (path: string) => {
+        const key = companionSharePathKey(path);
+        const waiting = sharePushWaitMarksRef.current.get(key);
+        if (!waiting) return;
+        if (shareCatchUp(waiting)) return;
+        sharePushWaitMarksRef.current.delete(key);
+        runSharePush(waiting);
     };
     pullShareMarksRef.current = pullShareMarks;
     useEffect(() => () => {
@@ -3210,7 +3372,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 const hasDrawings = hasField("drawings", "Drawings");
                 const hasBookmarks = hasField("bookmarks", "Bookmarks");
                 const hasHighlights = hasField("highlights", "Highlights");
-                if (hasHighlights || hasChatMarks || hasAnnotations || hasDrawings || hasBookmarks) {
+                const hasTranslations = hasField("translations", "Translations");
+                if (hasHighlights || hasChatMarks || hasAnnotations || hasDrawings || hasBookmarks || hasTranslations) {
                     applyShareUpdateRef.current({
                         path: next.path,
                         // A project without the highlights field must not erase
@@ -3224,6 +3387,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         drawingsKnown: hasDrawings,
                         bookmarks: hasBookmarks ? docFieldJSON(doc, "bookmarks", "Bookmarks") : JSON.stringify(loadPdfBookmarks(next.path)),
                         bookmarksKnown: hasBookmarks,
+                        translations: hasTranslations ? docFieldJSON(doc, "translations", "Translations") : "",
+                        translationsKnown: hasTranslations,
                         messages: [],
                         project: true,
                         replaceMessages: false,
@@ -3232,6 +3397,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             }
             const resolved = next.path || trimmed;
             if (refuseWithdrawnShareRef.current(resolved)) return;
+            // The library list may have fetched these marks before the file
+            // was openable. Opening fetches again when that copy is still
+            // behind, so the page does not wait for the next poll.
+            const marksKey = companionSharePathKey(resolved);
+            const marksRevision = marksKey ? (shareMarksRevisionRef.current.get(marksKey) ?? 0) : 0;
+            if (companionShouldPullShareMarks({ mine: Boolean(next.shareMine), path: resolved, marksRevision })) {
+                pullShareMarksRef.current(resolved, marksRevision);
+            }
             if (refresh < 1 && (saveEpoch.current.get(resolved) ?? 0) !== (epochsAtStart.get(resolved) ?? 0)) {
                 void openPath(resolved, fromDrop, keepDirty, 1, focus);
                 return;
@@ -3915,7 +4088,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             return next;
         });
     };
-    const annotationsOpen = Boolean(activeTab?.shareToken && (!activeTab.shareMine || (activeTab.notes && activeTab.notes.length > 0)));
+    const annotationsOpen = Boolean(
+        activeTab && (
+            (activeTab.notes && activeTab.notes.length > 0) ||
+            (activeTab.shareToken && !activeTab.shareMine)
+        ),
+    );
     const rememberAnnotationScroll = (scrollTop: number) => {
         const body = annotationBodyRef.current;
         // Hiding the list clamps the offset and emits scroll. So does swapping
@@ -3940,7 +4118,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // notes; show the ones that answer a reader note in the chat itself, where
     // the reader asked. The host's own window keeps them in 批注 only.
     const discussionReplies = useMemo<ChatMessage[]>(() => {
-        if (!activeTab?.shareToken || activeTab.shareMine || !activeTab.notes) return NO_COMPANION_MESSAGES;
+        if (!activeTab?.notes || activeTab.notes.length === 0 || activeTab.shareMine) return NO_COMPANION_MESSAGES;
+        if (!activeTab.shareToken && !activeTab.notes.some((note) => note.host && note.replyTo)) return NO_COMPANION_MESSAGES;
         const byID = new Map(activeTab.notes.map((note) => [note.id, note]));
         return activeTab.notes
             .filter((note) => note.host && note.replyTo)
@@ -3961,7 +4140,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const hostReviewer = Boolean(activeTab?.shareMine) || Boolean(readHost?.mine);
     // The list flag can be missing. A decision already stored on the note is
     // the same fact: this share waits for the host before the agent runs.
-    const reviewOn = notesReview || (activeTab?.notes ?? []).some((note) => (note.decision ?? "") !== "");
+    // An imported snapshot has no share token, so a stored decision stays a
+    // record and does not look like a review still in progress.
+    const reviewOn = Boolean(activeTab?.shareToken) && (notesReview || (activeTab?.notes ?? []).some((note) => (note.decision ?? "") !== ""));
     const pendingReviewCount = hostReviewer && reviewOn ? companionPendingReviewCount(activeTab?.notes) : 0;
     // Marks only apply to the document they were painted on.
     const chatMarks = chatMarksState.path === active ? chatMarksState.marks : NO_CHAT_MARKS;
@@ -4621,8 +4802,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         if (dest) showToast(cs("已导出 LaTeX"), "success", 6000);
     });
 
-    // The zip holds the open file, the highlights stored for that path, and the
-    // chat the host already has. An empty dialog result is a cancel.
+    // The zip holds the open file and the reading around it: highlights, notes
+    // on the paper, the discussion, and the chat. An empty dialog result is a cancel.
     const exportProject = async () => {
         if (!activeTab || activeTab.kind === "web" || projectExportBusy) return;
         const path = activeTab.path;
@@ -4631,7 +4812,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         exportFlight.current.add(flight);
         setProjectExportBusyPath(path);
         try {
-            const dest = await FileCompanionExportProject(path, companionProjectMarksJSON(path));
+            const dest = await FileCompanionExportProject(path, companionProjectExportJSON(path, activeTab.notes));
             if (dest) {
                 showToast(cs("已导出项目"), "success", 6000);
                 void ShowItemInFolder(dest).catch(() => undefined);
@@ -6200,7 +6381,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             disabled={!activeTab.canExport || projectExportBusy}
                             aria-busy={projectExportBusy}
                             aria-label={cs("导出项目")}
-                            title={projectExportBusy ? cs("正在导出…") : cs("导出项目 — 文档、高亮和聊天记录打包成项目")}
+                            title={projectExportBusy ? cs("正在导出…") : cs("导出项目 — 文档、高亮、批注和讨论打包成项目")}
                             onClick={() => { void exportProject(); }}
                         >
                             <CompanionActionIcon name="project" />
@@ -6478,7 +6659,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                             {!note.host && decision === "ignored" ? (
                                                 <span className="file-companion-annotation-status" data-tone="ignored" data-testid={`file-companion-annotation-ignored-${note.id}`}>{cs("主持人已忽略这条批注")}</span>
                                             ) : null}
-                                            {!note.host && decision === "approved" && !answered ? (
+                                            {!note.host && decision === "approved" && !answered && reviewOn ? (
                                                 <span className="file-companion-annotation-status" data-tone="approved" data-testid={`file-companion-annotation-approved-${note.id}`}>{cs("已通过，等待主持人 Agent 回复")}</span>
                                             ) : null}
                                             {!note.host && waitingForReview && !hostReviewer && reviewOn ? (

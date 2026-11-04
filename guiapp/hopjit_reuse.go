@@ -16,25 +16,18 @@ import (
 type hopJITLLMInvoke func(context.Context, []interface{}, bool) (string, error)
 
 type guiHopJITCaller struct {
-	app    *App
-	invoke hopJITLLMInvoke
+	app     *App
+	handler *IMMessageHandler
+	invoke  hopJITLLMInvoke
 }
 
 func (c *guiHopJITCaller) ExecuteStep(ctx context.Context, step hopjit.StepReady) (map[string]any, error) {
 	if step.StepType == hopspec.StepAct {
-		return nil, errors.New("act free requires a tool-enabled HopJIT caller")
-	}
-	inputs, err := json.Marshal(step.Inputs)
-	if err != nil {
-		return nil, err
-	}
-	outputs, err := json.Marshal(step.OutputSchema)
-	if err != nil {
-		return nil, err
+		return c.executeActFree(ctx, step)
 	}
 	messages := []interface{}{
 		map[string]interface{}{"role": "system", "content": "你在 HopJIT 中执行一个原子步骤。只返回 JSON 对象，键必须严格匹配输出声明，不要输出 Markdown 围栏或解释。"},
-		map[string]interface{}{"role": "user", "content": fmt.Sprintf("目标: %s\n约束: %s\n步骤类型: %s\n步骤: %s\n执行说明:\n%s\n输入:\n%s\n输出声明:\n%s", step.Goal, strings.Join(step.Constraints, "；"), step.StepType, step.Summary, step.Instruction, inputs, outputs)},
+		map[string]interface{}{"role": "user", "content": fmt.Sprintf("步骤类型: %s\n当前步骤: %s\n%s", step.StepType, step.Summary, step.Context.Render())},
 	}
 	text, err := c.call(ctx, messages, true)
 	if err != nil {
@@ -83,7 +76,7 @@ func (a *App) RunHopSpec(spec string, inputs map[string]any) (hopjit.ReuseResult
 		return hopjit.ReuseResult{}, err
 	}
 	defer store.Close()
-	return runHopSpecWithPersistence(context.Background(), store, spec, inputs, &guiHopJITCaller{app: a})
+	return runHopSpecWithPersistence(context.Background(), store, spec, inputs, a.newHopJITCaller())
 }
 
 func (a *App) ResumeHopSpec(runID string, answers map[string]any) (hopjit.ReuseResult, error) {
@@ -92,7 +85,7 @@ func (a *App) ResumeHopSpec(runID string, answers map[string]any) (hopjit.ReuseR
 		return hopjit.ReuseResult{}, err
 	}
 	defer store.Close()
-	return resumeHopSpecWithPersistence(context.Background(), store, runID, answers, &guiHopJITCaller{app: a})
+	return resumeHopSpecWithPersistence(context.Background(), store, runID, answers, a.newHopJITCaller())
 }
 
 func (a *App) AbortHopSpec(runID, reason string) error {
@@ -113,6 +106,14 @@ func (a *App) openHopJITPersistence() (*hopjit.SQLitePersistence, error) {
 		return nil, errors.New("HopJIT app is unavailable")
 	}
 	return hopjit.NewSQLitePersistence(filepath.Join(a.GetDataDir(), "hopjit", "hopjit.db"))
+}
+
+func (a *App) newHopJITCaller() *guiHopJITCaller {
+	caller := &guiHopJITCaller{app: a}
+	if handler := a.ensureLocalIMHandler(); handler != nil {
+		caller.handler = handler
+	}
+	return caller
 }
 
 func runHopSpecWithPersistence(ctx context.Context, store hopjit.PersistenceProvider, spec string, inputs map[string]any, caller hopjit.ReuseCaller) (hopjit.ReuseResult, error) {

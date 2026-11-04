@@ -152,6 +152,22 @@ Goal: 解析结构参数
 	}
 }
 
+func TestParseStepToolWhitelist(t *testing.T) {
+	spec, errs := Parse(`# Spec: 工具声明
+Goal: 限制工具面
+## Steps
+1. [act free] 自由执行
+  - 工具: web_search, web_fetch
+`)
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	tools := spec.Steps[0].Tools
+	if len(tools) != 2 || tools[0] != "web_search" || tools[1] != "web_fetch" {
+		t.Fatalf("tools=%v", tools)
+	}
+}
+
 func diagnosticsContain(errs []error, code string) bool {
 	for _, err := range errs {
 		if strings.Contains(err.Error(), code) {

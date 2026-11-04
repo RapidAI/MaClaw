@@ -43,6 +43,12 @@ type companionDocGroupMember struct {
 	// Muted means the invitee chose to ignore the invitation. The row stays
 	// pending for the admin, but it no longer notifies the invitee.
 	Muted bool `json:"muted,omitempty"`
+	// HomeHubURL is the invitee's hub when that hub is not this one. Empty
+	// means the account lives here, including in another tenant.
+	HomeHubURL string `json:"home_hub_url,omitempty"`
+	// InviteSecret lets the invitee's hub accept the invitation and lets their
+	// reader open this group's documents. It is never returned to clients.
+	InviteSecret string `json:"invite_secret,omitempty"`
 }
 
 type companionDocGroup struct {
@@ -126,6 +132,8 @@ func resetCompanionDocGroups() {
 	companionDocGroups.loaded = false
 	companionDocGroups.items = map[string]companionDocGroup{}
 	companionDocGroups.Unlock()
+	resetCompanionRemoteInvites()
+	companionFederationClear()
 }
 
 func newCompanionGroupID() (string, error) {
@@ -507,6 +515,7 @@ func writeCompanionGroupList(w http.ResponseWriter, ownerID string, contacts map
 		}
 	}
 	companionDocGroups.Unlock()
+	groups = append(groups, companionRemoteGroupViews(ownerID, contacts)...)
 	// Map iteration order changes every reload. Keep the cards still.
 	sort.Slice(groups, func(i, j int) bool {
 		leftCreated, _ := groups[i]["created_at"].(string)
@@ -616,6 +625,9 @@ func CompanionDocumentGroupMembersHandler(identity *auth.IdentityService) http.H
 }
 
 func addCompanionGroupMember(ctx context.Context, identity *auth.IdentityService, w http.ResponseWriter, groupID, ownerID, contact string) {
+	// Resolve the other hub before taking the group lock. The lookup talks to
+	// center and must not sit inside the lock the list endpoints share.
+	home, remote := companionDiscoverHomeHub(ctx, contact)
 	loadCompanionDocGroups()
 	companionDocGroups.Lock()
 	group, ok := companionDocGroups.items[groupID]
@@ -641,6 +653,13 @@ func addCompanionGroupMember(ctx context.Context, identity *auth.IdentityService
 			rearmIndex = i
 			break
 		}
+		// A pending row that never resolved to a local account, or one that
+		// was relayed to another hub, can be invited again. That retries a
+		// delivery that failed, and reaches someone who registered later.
+		if member.Status == "pending" && !member.Muted && (member.UserID == "" || member.HomeHubURL != "") {
+			rearmIndex = i
+			break
+		}
 		companionDocGroups.Unlock()
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "这位用户已经在群组里")
 		return
@@ -656,17 +675,40 @@ func addCompanionGroupMember(ctx context.Context, identity *auth.IdentityService
 	// invitation: the invited address may be any verified identity of the
 	// account, and it may not be the account email at all.
 	inviteeUserID := companionContactUserID(ctx, identity, group.TenantID, contact)
+	homeURL := ""
+	if remote {
+		homeURL = home.BaseURL
+	}
+	secret := ""
+	if rearmIndex >= 0 {
+		secret = group.Members[rearmIndex].InviteSecret
+		if homeURL == "" {
+			homeURL = group.Members[rearmIndex].HomeHubURL
+		}
+	}
+	if homeURL != "" && !companionReaderGrantPattern.MatchString(secret) {
+		var grantErr error
+		secret, grantErr = newCompanionReaderGrant()
+		if grantErr != nil {
+			secret = ""
+			homeURL = ""
+		}
+	}
 	if rearmIndex >= 0 {
 		group.Members[rearmIndex].Muted = false
 		group.Members[rearmIndex].NotificationID = ""
 		group.Members[rearmIndex].InvitedAt = time.Now().UTC()
 		group.Members[rearmIndex].UserID = inviteeUserID
+		group.Members[rearmIndex].HomeHubURL = homeURL
+		group.Members[rearmIndex].InviteSecret = secret
 	} else {
 		group.Members = append(group.Members, companionDocGroupMember{
-			Contact:   contact,
-			Status:    "pending",
-			UserID:    inviteeUserID,
-			InvitedAt: time.Now().UTC(),
+			Contact:      contact,
+			Status:       "pending",
+			UserID:       inviteeUserID,
+			InvitedAt:    time.Now().UTC(),
+			HomeHubURL:   homeURL,
+			InviteSecret: secret,
 		})
 	}
 	companionDocGroups.items[groupID] = group
@@ -693,6 +735,9 @@ func addCompanionGroupMember(ctx context.Context, identity *auth.IdentityService
 				notifier.revokeInvites(ctx, noticeID)
 			}
 		}
+	}
+	if secret != "" && homeURL != "" {
+		companionRelayGroupInvite(ctx, group, contact, secret, homeURL)
 	}
 	writeJSON(w, http.StatusOK, companionGroupView(group, ownerID))
 }
@@ -743,11 +788,15 @@ func removeCompanionGroupMember(ctx context.Context, identity *auth.IdentityServ
 	next := make([]companionDocGroupMember, 0, len(group.Members))
 	found := false
 	noticeIDs := make([]string, 0, 1)
+	var relayed []companionDocGroupMember
 	for _, member := range group.Members {
 		if member.Contact == contact {
 			found = true
 			if member.NotificationID != "" && !companionGroupNotificationStillPending(group.Members, member.NotificationID, contact) {
 				noticeIDs = append(noticeIDs, member.NotificationID)
+			}
+			if member.HomeHubURL != "" && member.InviteSecret != "" {
+				relayed = append(relayed, member)
 			}
 			continue
 		}
@@ -772,6 +821,7 @@ func removeCompanionGroupMember(ctx context.Context, identity *auth.IdentityServ
 	// A withdrawn invitation must leave the bell, not stay as a notice whose
 	// buttons the hub would reject.
 	companionGroupInviteNotifierFor().revokeInvites(ctx, noticeIDs...)
+	companionRelayMembers(ctx, relayed, groupID)
 	// If this person was the host (or was nominated), that seat must not stay
 	// with someone who can no longer open the document.
 	reconcileGroupHostSeats(ctx, identity, groupID)
@@ -867,6 +917,7 @@ func deleteCompanionGroup(ctx context.Context, identity *auth.IdentityService, w
 		return
 	}
 	noticeIDs := companionGroupMemberNotificationIDs(group.Members)
+	relayed := append([]companionDocGroupMember(nil), group.Members...)
 	previous := cloneCompanionGroup(group)
 	delete(companionDocGroups.items, groupID)
 	if err := persistCompanionDocGroupsLocked(); err != nil {
@@ -878,6 +929,7 @@ func deleteCompanionGroup(ctx context.Context, identity *auth.IdentityService, w
 	companionDocGroups.Unlock()
 	// Every pending invitation in a dissolved group is dead; its notice must go.
 	companionGroupInviteNotifierFor().revokeInvites(ctx, noticeIDs...)
+	companionRelayMembers(ctx, relayed, groupID)
 	// Every member lost access; a host seat held by a member must revert.
 	reconcileGroupHostSeats(ctx, identity, groupID)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -911,6 +963,9 @@ func CompanionDocumentGroupLeaveHandler(identity *auth.IdentityService) http.Han
 		group, found := companionDocGroups.items[groupID]
 		if !found {
 			companionDocGroups.Unlock()
+			if companionLeaveRemoteInvite(r.Context(), w, ownerID, contacts, groupID) {
+				return
+			}
 			writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "群组不存在")
 			return
 		}
@@ -930,6 +985,9 @@ func CompanionDocumentGroupLeaveHandler(identity *auth.IdentityService) http.Han
 		}
 		if !removed {
 			companionDocGroups.Unlock()
+			if companionLeaveRemoteInvite(r.Context(), w, ownerID, contacts, groupID) {
+				return
+			}
 			writeError(w, http.StatusForbidden, "GROUP_FORBIDDEN", "你不在这个群组")
 			return
 		}
@@ -978,6 +1036,7 @@ func CompanionDocumentGroupInvitesHandler(identity *auth.IdentityService) http.H
 			invites = append(invites, companionGroupInviteView(group, member.Contact))
 		}
 		companionDocGroups.Unlock()
+		invites = append(invites, companionRemoteInviteViews(ownerID, contacts)...)
 		writeJSON(w, http.StatusOK, map[string]any{"invites": invites})
 	}
 }
@@ -1060,6 +1119,11 @@ func decideCompanionGroupInvite(ctx context.Context, w http.ResponseWriter, r *h
 	group, ok := companionDocGroups.items[groupID]
 	if !ok {
 		companionDocGroups.Unlock()
+		// The invitation can live on this hub as a relay from the hub that
+		// owns the group. That row is what the invitee's client accepts.
+		if companionDecideRemoteInvite(ctx, w, ownerID, contacts, groupID, action) {
+			return
+		}
 		writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "没有找到入群邀请")
 		return
 	}
@@ -1103,6 +1167,9 @@ func decideCompanionGroupInvite(ctx context.Context, w http.ResponseWriter, r *h
 	}
 	if !found {
 		companionDocGroups.Unlock()
+		if companionDecideRemoteInvite(ctx, w, ownerID, contacts, groupID, action) {
+			return
+		}
 		writeError(w, http.StatusNotFound, "GROUP_NOT_FOUND", "没有找到入群邀请")
 		return
 	}

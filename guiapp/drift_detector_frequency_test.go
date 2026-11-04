@@ -72,6 +72,25 @@ func TestFrequencyAnomaly_BashDifferentCommands_NotDetected(t *testing.T) {
 	}
 }
 
+func TestRepeatedDiscoverIsNotASuccessfulPoll(t *testing.T) {
+	d := NewDriftDetector(8, 0.8)
+	start := time.Now()
+	for i := 0; i < 3; i++ {
+		d.Record(ToolCallRecord{
+			ToolName: "discover_tool", ArgsHash: "need-generate-pdf", ResultHash: "granted",
+			ResultHint: "granted for the next request", Succeeded: true,
+			Timestamp: start.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	result := d.DetectDrift()
+	if !result.Drifted || result.Pattern != "loop" || result.DriftedTool != "discover_tool" {
+		t.Fatalf("same discover_tool need must stop even when each call succeeds, got %+v", result)
+	}
+	if result.NeedHumanHelp {
+		t.Fatal("first discovery streak replans; it does not end the turn yet")
+	}
+}
+
 func TestQuietSuccessfulPollIsNotADeadLoop(t *testing.T) {
 	d := NewDriftDetector(8, 0.8)
 	for i := 0; i < 6; i++ {

@@ -194,6 +194,18 @@ type entryResolveResponse struct {
 	DefaultHubID string `json:"default_hub_id"`
 }
 
+// EntryHubView is one hub center says an account can sign in to.
+type EntryHubView struct {
+	HubID    string `json:"hub_id"`
+	BaseURL  string `json:"base_url"`
+	TenantID string `json:"tenant_id"`
+}
+
+type entryHubsResponse struct {
+	DefaultHubID string         `json:"default_hub_id"`
+	Hubs         []EntryHubView `json:"hubs"`
+}
+
 type UserCounter interface {
 	ListUsers(ctx context.Context) ([]*store.User, error)
 }
@@ -2279,6 +2291,155 @@ func (s *Service) AllowsUserRoute(ctx context.Context, email string, tenantIDOpt
 		return false, targetHubID, nil
 	}
 	return false, "", lastErr
+}
+
+// ResolveEntryHubs asks center which hubs this email or phone belongs to.
+// An unregistered hub returns an empty list. The caller treats that as "this
+// person is not known to live somewhere else."
+func (s *Service) ResolveEntryHubs(ctx context.Context, contact string) (string, []EntryHubView, error) {
+	if s == nil {
+		return "", nil, nil
+	}
+	contact = strings.TrimSpace(contact)
+	if contact == "" {
+		return "", nil, nil
+	}
+	record, err := s.loadRegistration(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
+		return "", nil, nil
+	}
+	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(baseURLs) == 0 {
+		return "", nil, fmt.Errorf("hub center base url is required")
+	}
+	body := map[string]string{}
+	if isPhoneRouteIdentity(contact) || !strings.Contains(contact, "@") {
+		phone := strings.TrimPrefix(strings.ToLower(contact), "phone:")
+		body["phone_number"] = strings.TrimSpace(phone)
+	} else {
+		body["email"] = normalizeEmail(contact)
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return "", nil, err
+	}
+	client := s.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	var lastErr error
+	for _, baseURL := range baseURLs {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/entry/resolve", bytes.NewReader(payload))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		raw, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("hub center entry resolve failed with status %d", resp.StatusCode)
+			continue
+		}
+		var resolved entryHubsResponse
+		if err := json.Unmarshal(raw, &resolved); err != nil {
+			lastErr = err
+			continue
+		}
+		if record.LastBaseURL != baseURL {
+			record.LastBaseURL = baseURL
+			_ = s.saveRegistration(context.Background(), record)
+		}
+		return strings.TrimSpace(resolved.DefaultHubID), resolved.Hubs, nil
+	}
+	return "", nil, lastErr
+}
+
+// OriginTrusted reports whether center knows origin as a live hub. An
+// unregistered hub trusts the invite proof alone. A registered hub fails
+// closed when center cannot be asked.
+func (s *Service) OriginTrusted(ctx context.Context, origin string) (bool, error) {
+	if s == nil {
+		return true, nil
+	}
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return false, nil
+	}
+	record, err := s.loadRegistration(ctx)
+	if err != nil {
+		return false, err
+	}
+	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
+		return true, nil
+	}
+	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
+	if err != nil {
+		return false, err
+	}
+	if len(baseURLs) == 0 {
+		return false, fmt.Errorf("hub center base url is required")
+	}
+	payload, err := json.Marshal(map[string]string{
+		"hub_id":     record.HubID,
+		"hub_secret": record.HubSecret,
+		"origin":     origin,
+	})
+	if err != nil {
+		return false, err
+	}
+	client := s.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	var lastErr error
+	for _, baseURL := range baseURLs {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/hubs/origin-trusted", bytes.NewReader(payload))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		raw, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("hub center origin trust failed with status %d", resp.StatusCode)
+			continue
+		}
+		var answer struct {
+			Trusted bool `json:"trusted"`
+		}
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			lastErr = err
+			continue
+		}
+		return answer.Trusted, nil
+	}
+	return false, lastErr
 }
 
 func (s *Service) DeleteUserRoute(ctx context.Context, email string, tenantIDOpt ...string) error {

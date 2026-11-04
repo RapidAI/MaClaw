@@ -27,6 +27,7 @@ import {
     pdfMarkFill,
     pdfMarkPathKey,
     savePdfMarks,
+    subscribePdfMarks,
     type PdfMark,
     type PdfMarkColor,
     type PdfMarkRect,
@@ -3212,6 +3213,11 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         if (key !== pdfMarkPathKey(pathRef.current)) return;
         applyStoredTranslations(pathRef.current);
     }), [applyStoredTranslations]);
+
+    useEffect(() => subscribePdfMarks((key) => {
+        if (key !== pdfMarkPathKey(pathRef.current)) return;
+        setMarks(loadPdfMarks(pathRef.current));
+    }), []);
 
     useEffect(() => subscribePdfDrawings((key) => {
         if (key !== pdfMarkPathKey(pathRef.current)) return;

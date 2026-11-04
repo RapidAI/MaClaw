@@ -1956,6 +1956,23 @@ func ScanSkillDirAll(root string) []corelib.NLSkillEntry {
 	return scanSkillDirInternal(root, false)
 }
 
+func skillDirIsEmptyInstallLeftover(skillDir string, err error) bool {
+	if err == nil || !strings.Contains(err.Error(), "skill markdown documentation not found") {
+		return false
+	}
+	entries, readErr := os.ReadDir(skillDir)
+	if readErr != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func scanSkillDirInternal(root string, filterPlatform bool) []corelib.NLSkillEntry {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -1982,7 +1999,12 @@ func scanSkillDirInternal(root string, filterPlatform bool) []corelib.NLSkillEnt
 		skillDir := filepath.Join(root, entry.Name())
 		parsed, defPath, err := loadSkillFromDir(skillDir, entry.Name())
 		if err != nil {
-			log.Printf("[skill-scanner] skip %s: load failed: %v", skillDir, err)
+			// A failed install leaves a directory that holds only the scan
+			// status database. Reporting it on every config save looks like a
+			// new load failure and does not recover the skill.
+			if !skillDirIsEmptyInstallLeftover(skillDir, err) {
+				log.Printf("[skill-scanner] skip %s: load failed: %v", skillDir, err)
+			}
 			continue
 		}
 

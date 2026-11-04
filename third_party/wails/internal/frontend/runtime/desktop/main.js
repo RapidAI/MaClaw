@@ -27,6 +27,7 @@ import * as Browser from "./browser";
 import * as Clipboard from "./clipboard";
 import * as DragAndDrop from "./draganddrop";
 import * as ContextMenu from "./contextmenu";
+import { isResizeCursor, resizeCursorForPointer } from "./resize_cursor";
 
 export function Quit() {
     window.WailsInvoke('Q');
@@ -162,10 +163,33 @@ window.addEventListener('mouseup', () => {
     window.wails.flags.shouldDrag = false;
 });
 
+function restoredCursor() {
+    const fallback = window.wails.flags.defaultCursor;
+    return fallback && !isResizeCursor(fallback) ? fallback : "";
+}
+
 function setResize(cursor) {
-    document.documentElement.style.cursor = cursor || window.wails.flags.defaultCursor;
+    if (window.wails.flags.resizeEdge === cursor) return;
+    document.documentElement.style.cursor = cursor || restoredCursor();
     window.wails.flags.resizeEdge = cursor;
 }
+
+// clearResizeCursor drops a sizing cursor left on the root element. Maximise
+// and fullscreen do not draw that cursor, so leaving it there hides the pointer.
+function clearResizeCursor() {
+    const current = document.documentElement.style.cursor || "";
+    if (!window.wails.flags.resizeEdge && !isResizeCursor(current)) return;
+    document.documentElement.style.cursor = restoredCursor();
+    window.wails.flags.resizeEdge = undefined;
+}
+
+// Called after the fullscreen size change. Edge tracking stays off until
+// unfullscreen turns it back on, and a sizing cursor painted during the
+// resize is removed here instead of waiting for the next mousemove.
+window.wails.suspendResizeCursor = function() {
+    window.wails.flags.enableResize = false;
+    clearResizeCursor();
+};
 
 window.addEventListener('mousemove', function(e) {
     if (window.wails.flags.shouldDrag) {
@@ -177,31 +201,29 @@ window.addEventListener('mousemove', function(e) {
         }
     }
     if (!window.wails.flags.enableResize) {
+        // Fullscreen leaves edge tracking off. Only a cursor already latched
+        // on the root needs clearing; reading style on every move does not.
+        if (window.wails.flags.resizeEdge !== undefined) clearResizeCursor();
         return;
     }
     if (window.wails.flags.defaultCursor == null) {
-        window.wails.flags.defaultCursor = document.documentElement.style.cursor;
+        const current = document.documentElement.style.cursor || "";
+        window.wails.flags.defaultCursor = isResizeCursor(current) ? "" : current;
     }
-    if (window.outerWidth - e.clientX < window.wails.flags.borderThickness && window.outerHeight - e.clientY < window.wails.flags.borderThickness) {
-        document.documentElement.style.cursor = "se-resize";
+    const cursor = resizeCursorForPointer(
+        window.outerWidth,
+        window.outerHeight,
+        window.innerWidth,
+        window.innerHeight,
+        e.clientX,
+        e.clientY,
+        window.wails.flags.borderThickness,
+    );
+    if (!cursor) {
+        if (window.wails.flags.resizeEdge !== undefined) clearResizeCursor();
+        return;
     }
-    let rightBorder = window.outerWidth - e.clientX < window.wails.flags.borderThickness;
-    let leftBorder = e.clientX < window.wails.flags.borderThickness;
-    let topBorder = e.clientY < window.wails.flags.borderThickness;
-    let bottomBorder = window.outerHeight - e.clientY < window.wails.flags.borderThickness;
-
-    // If we aren't on an edge, but were, reset the cursor to default
-    if (!leftBorder && !rightBorder && !topBorder && !bottomBorder && window.wails.flags.resizeEdge !== undefined) {
-        setResize();
-    } else if (rightBorder && bottomBorder) setResize("se-resize");
-    else if (leftBorder && bottomBorder) setResize("sw-resize");
-    else if (leftBorder && topBorder) setResize("nw-resize");
-    else if (topBorder && rightBorder) setResize("ne-resize");
-    else if (leftBorder) setResize("w-resize");
-    else if (topBorder) setResize("n-resize");
-    else if (bottomBorder) setResize("s-resize");
-    else if (rightBorder) setResize("e-resize");
-
+    setResize(cursor);
 });
 
 // Setup context menu hook

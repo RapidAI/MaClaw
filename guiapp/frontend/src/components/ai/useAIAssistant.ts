@@ -7421,7 +7421,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
     // Listen for critical-risk skill installation confirmation events from the backend.
     useEffect(() => {
-        const handler = (payload: unknown) => {
+        const handler = async (payload: unknown) => {
             if (!payload || typeof payload !== 'object') return;
             const data = payload as Record<string, unknown>;
             const confirmID = typeof data.confirm_id === 'string' ? data.confirm_id : '';
@@ -7437,27 +7437,24 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const confirmLabel = typeof actionPayload[0]?.label === 'string' ? actionPayload[0].label : fallbackConfirmLabel;
             const rejectLabel = typeof actionPayload[1]?.label === 'string' ? actionPayload[1].label : fallbackRejectLabel;
             if (!confirmID) return;
-            // A confirmation request just surfaced: brief pet alert (same
-            // treatment as ai:confirmation-request above).
+            // A confirmation request just surfaced: brief pet alert, then a
+            // dialog. A chat card on desktop-user never appears on the task
+            // tab, so the only outcome used to be a timeout and a rejected
+            // install.
             emitPetStateForAssistant('alert', 'ai:critical-risk-confirm', 1500);
-            const msg: ChatMessage = {
-                id: nextId(),
-                role: 'assistant',
-                content: summary,
-                actions: [
-                    { label: confirmLabel, command: `__resolve_critical_confirm__ ${confirmID} confirm ${eventLang || fallbackEventLang}`, style: 'default' as const },
-                    { label: rejectLabel, command: `__resolve_critical_confirm__ ${confirmID} reject ${eventLang || fallbackEventLang}`, style: 'danger' as const },
-                ],
-                sessionKey: 'desktop-user',
-                timestamp: Date.now(),
-            };
-            setMessages(prev => [...prev, msg]);
+            const title = eventIsHant ? '安全風險' : eventIsHans ? '安全风险' : 'Security risk';
+            const confirmed = await showConfirm(summary || title, title, { confirmText: confirmLabel, cancelText: rejectLabel });
+            try {
+                await ResolveCriticalConfirm(confirmID, confirmed);
+            } catch {
+                // The prompt timed out or was already answered.
+            }
         };
         const offCriticalConfirm = subscribeEvent('critical-risk-confirm', handler);
         return () => {
             offCriticalConfirm();
         };
-    }, [emitPetStateForAssistant]);
+    }, [emitPetStateForAssistant, showConfirm]);
 
     // Listen for skill installation result events (success/failure feedback after
     // the user confirms or the async install completes).

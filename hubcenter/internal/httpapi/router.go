@@ -557,6 +557,36 @@ func ConfirmHubRegistrationHandler(service *hubs.Service) http.HandlerFunc {
 	}
 }
 
+// HubOriginTrustedHandler tells a registered hub whether an origin base URL
+// belongs to another live hub. The caller authenticates with its own secret.
+func HubOriginTrustedHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if service == nil {
+			writeError(w, http.StatusUnauthorized, "HUB_UNAUTHORIZED", "Hub is not authorized")
+			return
+		}
+		var req struct {
+			HubID     string `json:"hub_id"`
+			HubSecret string `json:"hub_secret"`
+			Origin    string `json:"origin"`
+		}
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		if err := service.VerifyHubSecret(r.Context(), strings.TrimSpace(req.HubID), req.HubSecret); err != nil {
+			writeError(w, http.StatusUnauthorized, "HUB_UNAUTHORIZED", "Hub is not authorized")
+			return
+		}
+		trusted, err := service.OriginIsRegisteredHub(r.Context(), req.Origin)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ORIGIN_TRUST_FAILED", "Could not check the origin hub")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"trusted": trusted})
+	}
+}
+
 func EntryResolveHandler(service *entry.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req EntryResolveRequest
@@ -901,6 +931,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("DELETE /api/admin/blocked-ips/{ip}", RequireAdmin(adminService, RemoveBlockedIPHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/mail/test", RequireAdmin(adminService, AdminSendTestMailHandler(mailer)))
 	mux.HandleFunc("POST /api/hubs/register", RegisterHubHandler(hubService))
+	mux.HandleFunc("POST /api/hubs/origin-trusted", HubOriginTrustedHandler(hubService))
 	mux.HandleFunc("GET /api/hubs/{id}/device-credentials", HubDeviceCredentialBackupHandler(hubService))
 	mux.HandleFunc("PUT /api/hubs/{id}/device-credentials", HubDeviceCredentialBackupHandler(hubService))
 	mux.HandleFunc("POST /api/hubs/{id}/heartbeat", HubHeartbeatHandler(hubService, haSvc))

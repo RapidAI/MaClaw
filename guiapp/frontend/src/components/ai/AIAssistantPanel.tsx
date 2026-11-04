@@ -339,6 +339,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Newest step stamp already applied. A late snapshot with an older stamp
     // must not put the start / skip / reject buttons back.
     const codingStepsClockRef = useRef({ seq: 0, unix: 0, started: false });
+    // Which coding task the checklist clock and 需求理解 belong to.
+    // Null until the first render so the first task does not look like a switch.
+    const codingChecklistOwnerRef = useRef<string | null>(null);
     // False when this snapshot is older than the steps already shown.
     // A clear keeps the clock, so a late copy of the pending plan cannot
     // come back after the list was retired. Project and turn switches zero it.
@@ -843,6 +846,31 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { requested: workbenchHomeRequested, dismiss: dismissWorkbenchHome } = useWorkbenchLandingMode(startOnWorkbenchHome, activeTab.id, activeTab.type);
     cloudTreeRefreshTabIdRef.current = activeTab.id;
     visibleCodingProjectRef.current = visibleCodingProject(activeTab);
+    // The step clock is one counter for the whole panel. Switching tasks has
+    // to zero it, or a task whose steps_revision is lower never replaces the
+    // previous task's 需求理解.
+    {
+        const checklistOwner = visibleCodingProjectRef.current
+            ? normalizeProjectSessionPath(visibleCodingProjectRef.current)
+            : "";
+        if (codingChecklistOwnerRef.current !== checklistOwner) {
+            codingChecklistOwnerRef.current = checklistOwner;
+            codingStepsClockRef.current = { seq: 0, unix: 0, started: false };
+            // In-flight status polls captured the previous generation. Bumping
+            // it makes their results lose to this task instead of painting
+            // the previous 需求理解 after the switch.
+            codingWorkbenchStepsGenRef.current += 1;
+            if (codingRequirementRestatement || codingExecutionPlan || codingSessionPlan || codingPendingApproval || codingStepStatuses.length > 0) {
+                setCodingRequirementRestatement("");
+                setCodingExecutionPlan("");
+                setCodingSessionPlan("");
+                setCodingStepStatuses([]);
+                setCodingPendingApproval(false);
+                setCodingPendingPlanEditing(false);
+                setCodingPendingPlanDraft("");
+            }
+        }
+    }
     permissionModeProjectRef.current = permissionModeProject;
     const projectTabRenameRequestRef = useRef<Map<string, number>>(new Map());
     const [projectTabSessionReadyRevisions, setProjectTabSessionReadyRevisions] = useState<Record<string, number>>({});
@@ -1326,9 +1354,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         };
         const off = EventsOn("coding-workbench-steps", (payload: any) => {
             if (!pureCodingTabRef.current || isCodingWorkbenchHydrationSuppressed(projectPath)) return;
+            // Render points the checklist at the new task before this listener
+            // is replaced. A snapshot for the task we just left must not land.
+            if (normalizeProjectSessionPath(projectPath) !== (codingChecklistOwnerRef.current || "")) return;
             const epoch = codingWorkbenchTurnEpochRef.current;
             const pp = normPath(String(payload?.project_path || payload?.projectPath || ""));
+            const eventUser = normalizeAssistantSessionKey(String(payload?.user_id || payload?.userId || ""));
+            const activeSession = normalizeAssistantSessionKey(pureCodingSessionKeyRef.current);
+            // Path wins when both are present: a task-suffixed user id can
+            // differ from the project session key while still naming this project.
             if (pp && expected && pp !== expected) return;
+            if (!pp && eventUser && activeSession && eventUser !== activeSession) return;
+            const hasStepList = Array.isArray(payload?.step_statuses) || Array.isArray(payload?.stepStatuses);
+            // A snapshot with no task identity used to paint whichever tab was open.
+            if (hasStepList && !pp && !(eventUser && activeSession)) return;
             if (Array.isArray(payload?.step_statuses) || Array.isArray(payload?.stepStatuses)) {
                 if (isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
                 if (!applySteps(payload?.step_statuses ?? payload?.stepStatuses, payload?.steps_revision ?? payload?.stepsRevision)) return;
@@ -1352,8 +1391,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             // Fallback: re-poll status if payload shape unexpected.
             const stepsGen = codingWorkbenchStepsGenRef.current;
+            const checklistOwnerAtPoll = codingChecklistOwnerRef.current;
             void GetCodingWorkbenchStatus(projectPath).then((st) => {
                 if (!st || isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
+                if (checklistOwnerAtPoll !== codingChecklistOwnerRef.current) return;
                 if (stepsGen !== codingWorkbenchStepsGenRef.current) return;
                 if (!applySteps(st.step_statuses, st.steps_revision)) return;
                 codingWorkbenchStepsGenRef.current += 1;
@@ -1376,8 +1417,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (sk && expectedSession && sk !== normalizeAssistantSessionKey(expectedSession)) return;
             const epoch = codingWorkbenchTurnEpochRef.current;
             const stepsGen = codingWorkbenchStepsGenRef.current;
+            const checklistOwnerAtPoll = codingChecklistOwnerRef.current;
             void GetCodingWorkbenchStatus(projectPath).then((st) => {
                 if (!st || isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
+                if (checklistOwnerAtPoll !== codingChecklistOwnerRef.current) return;
                 setCodingSessionPlan(String(st.session_plan || "").trim());
                 const mode = String(st.plan_mode || "auto").toLowerCase();
                 setCodingPlanMode(mode === "approve" || mode === "off" ? mode : "auto");
@@ -1742,8 +1785,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // the pre-confirm copy.
             const epoch = codingWorkbenchTurnEpochRef.current;
             const stepsGen = codingWorkbenchStepsGenRef.current;
+            const checklistOwnerAtPoll = codingChecklistOwnerRef.current;
             const st = await GetCodingWorkbenchStatus(projectPath);
             if (isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
+            if (checklistOwnerAtPoll !== codingChecklistOwnerRef.current) return;
             if (stepsGen !== codingWorkbenchStepsGenRef.current) return;
             const incomingSteps = codingWorkbenchStepsFromPayload(st?.step_statuses);
             if (!rememberCodingSteps(incomingSteps, st?.steps_revision)) return;
@@ -2084,8 +2129,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         try {
             const epoch = codingWorkbenchTurnEpochRef.current;
             const stepsGen = codingWorkbenchStepsGenRef.current;
+            const checklistOwnerAtPoll = codingChecklistOwnerRef.current;
             const st = await GetCodingWorkbenchStatus(projectPath);
             if (!st || isCodingWorkbenchHydrationSuppressed(projectPath) || epoch !== codingWorkbenchTurnEpochRef.current) return;
+            if (checklistOwnerAtPoll !== codingChecklistOwnerRef.current) return;
             const incomingSteps = codingWorkbenchStepsFromPayload(st.step_statuses);
             const liveSteps = stepsGen === codingWorkbenchStepsGenRef.current && rememberCodingSteps(incomingSteps, st.steps_revision);
             setCodingSessionPlan(String(st.session_plan || "").trim());

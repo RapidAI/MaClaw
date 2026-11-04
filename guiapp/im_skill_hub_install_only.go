@@ -152,7 +152,7 @@ func (h *IMMessageHandler) registerSkillWithoutExecution(ctx context.Context, sk
 		scanner := NewSkillSecurityScanner(h.app, nil)
 		scanReport := scanner.ScanInstallStaged(ctx, skill, skill.SkillDir, sendStatus)
 		installScanReport = scanReport
-		action, recordedWithoutChannel := h.app.skillInstallActionWithChannel(scanReport, source, strings.TrimSpace(platform) != "")
+		action, recordedWithoutChannel := h.skillInstallDecidedAction(scanReport, source, platform, policyOwnerID)
 		switch action {
 		case security.PolicyDeny:
 			cskill.CleanupStaging(stagingDir)

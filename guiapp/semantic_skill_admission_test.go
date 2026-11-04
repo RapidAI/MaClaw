@@ -634,8 +634,8 @@ func TestSkillAdmissionDoesNotBindAParaphrasedLearnedRecipe(t *testing.T) {
 	app, _ := newSkillExecutorWithEntries(t, weatherPDFTestSkill())
 	h := &IMMessageHandler{app: app}
 	decision := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "帮我做一份东莞天气的格式化pdf报告")
-	if decision.Mode != skillAdmissionRemote {
-		t.Fatalf("paraphrase mode=%v, want remote", decision.Mode)
+	if decision.Mode != skillAdmissionNone {
+		t.Fatalf("paraphrase mode=%v, want none", decision.Mode)
 	}
 	_, identity, identityScore := preferredLocalSkillScore(admissionSkillView(weatherPDFTestSkill()), strings.ToLower("帮我做一份东莞天气的格式化pdf报告"))
 	if identity || identityScore != 0 {
@@ -740,8 +740,8 @@ func TestSkillAdmissionIgnoresAWeakDocumentOverlap(t *testing.T) {
 	app, _ := newSkillExecutorWithEntries(t, weatherPDFTestSkill())
 	h := &IMMessageHandler{app: app}
 	decision := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "生成一份项目报告 pdf")
-	if decision.Mode != skillAdmissionRemote {
-		t.Fatalf("weak overlap mode=%v, want remote", decision.Mode)
+	if decision.Mode != skillAdmissionNone {
+		t.Fatalf("weak overlap mode=%v, want none", decision.Mode)
 	}
 }
 
@@ -758,11 +758,11 @@ func TestSkillAdmissionSkipsOpenDocumentWave(t *testing.T) {
 	if decision := h.skillAdmissionForTurn(office, "改一下标题"); decision.Mode != skillAdmissionNone {
 		t.Fatalf("open office wave mode=%v, want none", decision.Mode)
 	}
-	// The same reason on a longer edit is still a document task. The surface
-	// gate is the short open-file wave, not the reason string by itself.
+	// A longer edit is still a document task, and generate_pdf is its tool.
+	// Length does not open the skill market.
 	longEdit := "把前面已经写好的整份技术架构分析重新整理并生成一份新的 pdf"
-	if decision := h.skillAdmissionForTurn(wave, longEdit); decision.Mode != skillAdmissionRemote {
-		t.Fatalf("long document edit mode=%v, want remote", decision.Mode)
+	if decision := h.skillAdmissionForTurn(wave, longEdit); decision.Mode != skillAdmissionNone {
+		t.Fatalf("long document edit mode=%v, want none", decision.Mode)
 	}
 	namedApp, _ := newSkillExecutorWithEntries(t, bookPDFTestSkill())
 	namedHandler := &IMMessageHandler{app: namedApp}
@@ -840,7 +840,7 @@ func TestSkillAdmissionPublishesTheBoundFunctionAndRunsThatIdentity(t *testing.T
 	}
 }
 
-func TestSkillAdmissionOffersRemoteSearchWhenNothingLocalMatches(t *testing.T) {
+func TestSkillAdmissionKeepsNativeToolsWhenNothingLocalMatches(t *testing.T) {
 	app, _ := newSkillExecutorWithEntries(t)
 	h := &IMMessageHandler{app: app}
 	cb := &sharedAgentLoopCallbacks{
@@ -849,11 +849,11 @@ func TestSkillAdmissionOffersRemoteSearchWhenNothingLocalMatches(t *testing.T) {
 		semanticSurface: &semanticCallSurface{},
 	}
 	cb.publishAdmittedSkillTools("把这份表格做成带目录的手册")
-	if !cb.skillRemoteSearchOffered || !cb.IsToolAllowed("search_and_install_skill") {
-		t.Fatal("complex task without a local skill did not offer search and install")
+	if cb.skillRemoteSearchOffered || cb.IsToolAllowed("search_and_install_skill") {
+		t.Fatal("office task without a local skill opened the skill market")
 	}
 	if toolNames(cb.tools)["manage_skill"] {
-		t.Fatal("remote admission reopened manage_skill")
+		t.Fatal("native admission reopened manage_skill")
 	}
 }
 
@@ -900,32 +900,31 @@ func TestSkillAdmissionAuthorizerRunsTheBoundSkillBeforeSubstitutes(t *testing.T
 	}
 }
 
-func TestSkillAdmissionAuthorizerRequiresMarketSearchBeforeImprovising(t *testing.T) {
+func TestSkillAdmissionAuthorizerDoesNotBlockNativeToolsForAMarketMiss(t *testing.T) {
 	app, _ := newSkillExecutorWithEntries(t)
 	h := &IMMessageHandler{app: app}
 	cb := &sharedAgentLoopCallbacks{
 		handler: h,
-		loopCtx: fullDocumentLoop(intent.LabelOffice),
+		loopCtx: fullDocumentLoop(intent.LabelDocumentGenerate),
 		semanticSurface: &semanticCallSurface{
-			grants: map[string]tool.InvocationGrant{"bash": {}},
+			grants: map[string]tool.InvocationGrant{
+				"bash":         {},
+				"generate_pdf": {},
+			},
 		},
 	}
-	cb.publishAdmittedSkillTools("把这份表格做成带目录的手册")
-	if ok, reason := cb.IsToolCallAllowed("search_and_install_skill", `{"query":"手册"}`); !ok {
-		t.Fatalf("remote search rejected: %s", reason)
+	cb.publishAdmittedSkillTools("生成pdf")
+	if cb.skillRemoteSearchOffered {
+		t.Fatal("generate_pdf request opened the skill market")
 	}
-	if ok, reason := cb.IsToolCallAllowed("bash", `{"command":"echo"}`); ok || !strings.Contains(reason, "search_and_install_skill") {
-		t.Fatalf("bash allowed=%v reason=%q", ok, reason)
+	if ok, reason := cb.IsToolCallAllowed("generate_pdf", `{"content":"# t"}`); !ok {
+		t.Fatalf("generate_pdf blocked on a market miss: %s", reason)
 	}
-	if !strings.Contains(cb.SkillObligationPrompt(), "search_and_install_skill") {
-		t.Fatalf("prompt=%q", cb.SkillObligationPrompt())
-	}
-	cb.admittedSkillSettled = true
 	if ok, reason := cb.IsToolCallAllowed("bash", `{"command":"echo"}`); !ok {
-		t.Fatalf("bash stayed blocked after search: %s", reason)
+		t.Fatalf("bash blocked on a market miss: %s", reason)
 	}
-	if cb.SkillObligationPrompt() != "" {
-		t.Fatal("reminder repeated after search")
+	if prompt := cb.SkillObligationPrompt(); prompt != "" {
+		t.Fatalf("native document turn demanded a skill: %q", prompt)
 	}
 }
 
@@ -980,8 +979,8 @@ func TestSkillAdmissionKeepsAnInfraChangeTask(t *testing.T) {
 	app, _ := newSkillExecutorWithEntries(t, paperTranslatorTestSkill())
 	h := &IMMessageHandler{app: app}
 	decision := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "加固 php.ini 并重启服务")
-	if decision.Mode != skillAdmissionRemote {
-		t.Fatalf("infra change mode=%v, want remote", decision.Mode)
+	if decision.Mode != skillAdmissionNone {
+		t.Fatalf("infra change mode=%v, want none", decision.Mode)
 	}
 	if !skillSearchQueryAllowed("加固 php.ini 并重启服务", true) {
 		t.Fatal("host-admitted infra change was treated as a lookup")

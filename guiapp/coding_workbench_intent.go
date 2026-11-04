@@ -156,13 +156,6 @@ func codingSessionContextLooksGeneric(s string) bool {
 	return false
 }
 
-func usableCodingSessionContext(s string) string {
-	if codingSessionContextLooksGeneric(s) {
-		return ""
-	}
-	return firstCodingContextSnippet(s, 72)
-}
-
 func codingHasASCIIWord(lower, word string) bool {
 	if lower == "" || word == "" {
 		return false
@@ -391,14 +384,225 @@ func codingWorkspaceIdentityHint(projectPath string) string {
 }
 
 func codingRequestPriorContext(mem stickyCodingWorkbenchMemory) string {
-	prior := usableCodingSessionContext(mem.SessionPlan)
-	if prior == "" {
-		prior = usableCodingSessionContext(mem.LastSummary)
+	// A session plan that is a requirement paragraph is not a work name.
+	// Stuffing a truncated copy into 「…」 or （…） splits lists and parentheses.
+	if name := codingShortWorkName(mem.SessionPlan); name != "" {
+		return name
 	}
-	if prior == "" {
-		prior = usableCodingSessionContext(codingWorkspaceIdentityHint(mem.ProjectPath))
+	if name := codingShortWorkName(mem.LastSummary); name != "" {
+		return name
 	}
-	return prior
+	if name := codingShortWorkName(codingWorkspaceIdentityHint(mem.ProjectPath)); name != "" {
+		return name
+	}
+	return ""
+}
+
+// codingShortWorkName is a title that can sit inside parentheses.
+// A requirement sentence, a colon clause, or a numbered list is not a title.
+func codingShortWorkName(s string) string {
+	raw := strings.TrimSpace(s)
+	if raw == "" || codingSessionContextLooksGeneric(raw) {
+		return ""
+	}
+	if strings.Contains(raw, "\n") || strings.Contains(raw, "（") || strings.Contains(raw, "(") ||
+		strings.Contains(raw, "）") || strings.Contains(raw, ")") ||
+		strings.Contains(raw, "：") || strings.Contains(raw, ":") ||
+		strings.Contains(raw, "——") || strings.Contains(raw, "、") {
+		return ""
+	}
+	name := raw
+	// "控制台贪吃蛇, ANSI" is a title plus a short note. A comma that starts
+	// the rest of a sentence is not a title boundary.
+	if i := strings.IndexAny(raw, "，,"); i > 0 {
+		head := strings.TrimSpace(raw[:i])
+		rest := strings.TrimSpace(strings.TrimLeft(raw[i:], "，,"))
+		if head == "" || rest == "" || utf8.RuneCountInString(rest) > 12 || strings.ContainsAny(rest, "，,。；;") {
+			return ""
+		}
+		name = head
+	}
+	name = strings.Trim(name, " 。；;")
+	if name == "" || codingSessionContextLooksGeneric(name) {
+		return ""
+	}
+	n := utf8.RuneCountInString(name)
+	if n < 2 || n > 24 {
+		return ""
+	}
+	return name
+}
+
+// codingRequirementGoalCut is the byte index where a numbered breakdown
+// starts. A fullwidth colon is not a cut: "完成度：六条线都要有证据" is one
+// requirement, and stopping at the colon drops the constraint. An ASCII
+// colon stays in the text so a label like "10:30" is left intact.
+func codingRequirementGoalCut(s string) int {
+	cut := -1
+	for _, marker := range []string{"（1）", "(1)"} {
+		i := codingListMarkerIndex(s, marker)
+		if i > 0 && (cut < 0 || i < cut) {
+			cut = i
+		}
+	}
+	return cut
+}
+
+// codingListMarkerIndex finds a breakdown marker that starts a list.
+// "foo(1)" is a call, not item 1, so the marker needs a boundary before it.
+func codingListMarkerIndex(s, marker string) int {
+	start := 0
+	for start < len(s) {
+		rel := strings.Index(s[start:], marker)
+		if rel < 0 {
+			return -1
+		}
+		i := start + rel
+		if i == 0 || codingListMarkerBoundary(s, i) {
+			return i
+		}
+		start = i + len(marker)
+	}
+	return -1
+}
+
+func codingListMarkerBoundary(s string, i int) bool {
+	r, size := utf8.DecodeLastRuneInString(s[:i])
+	if r == utf8.RuneError && size <= 1 {
+		return false
+	}
+	switch r {
+	case ' ', '\t', '\n', '，', ',', '、', '。', '；', ';', '：', ':', '—', '-', '（', '(':
+		return true
+	default:
+		return false
+	}
+}
+
+// codingRequirementGoalClause is the goal before a breakdown. The list that
+// follows does not belong in the one-line understanding.
+func codingRequirementGoalClause(s string) string {
+	i := codingRequirementGoalCut(s)
+	if i <= 0 {
+		return ""
+	}
+	head := strings.TrimSpace(s[:i])
+	head = strings.TrimRight(head, " ，,、—-：: \t")
+	// A long preamble still ends at the list. Falling through to the rune
+	// window would take the first list item back in.
+	if utf8.RuneCountInString(head) > 80 {
+		runes := []rune(head)
+		runes = trimCodingSnippetToBoundary(runes[:80])
+		head = strings.TrimSpace(string(trimUnbalancedCodingParens(runes)))
+		head = strings.TrimRight(head, " ，,、—-：: \t")
+	}
+	if strings.Count(head, "（") != strings.Count(head, "）") || strings.Count(head, "(") != strings.Count(head, ")") {
+		// Dropping the whole head would fall through into the numbered list.
+		head = strings.TrimSpace(string(trimUnbalancedCodingParens([]rune(head))))
+		head = strings.TrimRight(head, " ，,、—-：: \t")
+	}
+	n := utf8.RuneCountInString(head)
+	if n < 4 || n > 80 {
+		return ""
+	}
+	return head
+}
+
+// codingClosedRequirementSnippet is the session requirement with any cut
+// kept on a clause boundary and with parentheses still balanced.
+func codingClosedRequirementSnippet(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || codingSessionContextLooksGeneric(s) || codingShortWorkName(s) != "" {
+		return ""
+	}
+	if head := codingRequirementGoalClause(s); head != "" {
+		return head
+	}
+	const maxRunes = 100
+	runes := []rune(s)
+	limit := len(runes)
+	trimmed := false
+	if limit > maxRunes {
+		limit = maxRunes
+		trimmed = true
+	}
+	window := runes[:limit]
+	if !trimmed {
+		if balanced, ok := takeBalancedCodingParens(window); ok {
+			return strings.TrimSpace(string(balanced))
+		}
+	}
+	cutAtSentence := false
+	for i, r := range window {
+		if i > 8 && (r == '。' || r == '！' || r == '？' || r == '\n') {
+			window = window[:i]
+			trimmed = true
+			cutAtSentence = true
+			break
+		}
+	}
+	// A hard rune cap must back up to a clause boundary. A sentence cut is
+	// already on a boundary; backing up again would drop the clause before
+	// the first comma.
+	if trimmed && !cutAtSentence {
+		window = trimCodingSnippetToBoundary(window)
+	}
+	window = trimUnbalancedCodingParens(window)
+	out := strings.Trim(string(window), " \t\n，,、：:；;。—")
+	if utf8.RuneCountInString(out) < 8 {
+		return ""
+	}
+	if trimmed {
+		out += "…"
+	}
+	return out
+}
+
+func takeBalancedCodingParens(runes []rune) ([]rune, bool) {
+	open := 0
+	for _, r := range runes {
+		switch r {
+		case '（', '(':
+			open++
+		case '）', ')':
+			if open == 0 {
+				return nil, false
+			}
+			open--
+		}
+	}
+	if open != 0 {
+		return nil, false
+	}
+	return runes, true
+}
+
+func trimCodingSnippetToBoundary(runes []rune) []rune {
+	for i := len(runes) - 1; i > 8; i-- {
+		switch runes[i] {
+		case '、', '，', ',', '。', '；', ';', '\n', ' ':
+			return runes[:i]
+		}
+	}
+	return runes
+}
+
+func trimUnbalancedCodingParens(runes []rune) []rune {
+	var openAt []int
+	for i, r := range runes {
+		switch r {
+		case '（', '(':
+			openAt = append(openAt, i)
+		case '）', ')':
+			if len(openAt) > 0 {
+				openAt = openAt[:len(openAt)-1]
+			}
+		}
+	}
+	if len(openAt) == 0 {
+		return runes
+	}
+	return runes[:openAt[0]]
 }
 
 func attachCodingWorkRoot(mem *stickyCodingWorkbenchMemory, workRoot string) {
@@ -489,8 +693,35 @@ func fallbackCodingRequestRestatement(userText string, mem stickyCodingWorkbench
 	if codingRequestLooksLikeQuestion(userText) && !codingSessionHasImplementationTrajectory(mem) {
 		return "先只读查看相关代码，回答你这次想弄清的问题，不改文件。"
 	}
-	if prior != "" && utf8.RuneCountInString(userText) <= 48 {
-		return "在已有工作（" + prior + "）上继续你这次提出的改动，先对齐现有实现再动手，不扩大到未提到的功能。"
+	if codingRequestLooksLikeQuestion(userText) {
+		// This session already wrote files, so the answer must not claim the
+		// tree is read-only. The question itself still has to stay in the
+		// sentence; "按你这次说的做：…？。" is neither an answer nor a change.
+		q := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(userText), "？?"))
+		if q == "" {
+			q = strings.TrimSpace(userText)
+		}
+		return "先对照现有实现回答你这次的问题：" + q + "。需要改代码时再改，不扩大到这句没提到的范围。"
+	}
+	if utf8.RuneCountInString(userText) <= 48 {
+		// The parenthetical is a title. A requirement paragraph stays outside
+		// it. Only a bare continue repeats the stored goal; a new short ask
+		// stays in the sentence, or the title hides it behind "再动手".
+		ask := strings.TrimRight(strings.TrimSpace(userText), "。！？!?")
+		ask = strings.TrimSpace(ask)
+		if codingWorkbenchContinueCue(userText) {
+			if echo := codingClosedRequirementSnippet(mem.SessionPlan); echo != "" {
+				echo = strings.TrimRight(echo, "。")
+				return "继续这项需求：" + echo + "。"
+			}
+			if prior != "" {
+				return "在已有工作（" + prior + "）上继续你这次提出的改动，先对齐现有实现再动手，不扩大到未提到的功能。"
+			}
+		} else if ask != "" && codingClosedRequirementSnippet(mem.SessionPlan) != "" {
+			return "按你这次说的做：" + ask + "。不扩大到这句没提到的范围。"
+		} else if prior != "" && ask != "" {
+			return "在已有工作（" + prior + "）上按你这次说的做：" + ask + "。不扩大到这句没提到的范围。"
+		}
 	}
 	return "按你的这次要求改当前项目：先看清现有实现和约束，再做对应修改并验证结果，不把范围扩到没提到的功能。"
 }
@@ -551,10 +782,18 @@ func codingRequestUnderstandingKeepsHostFallback(userText string, mem stickyCodi
 	// describe a rejected inquiry as a read-only environment, and would
 	// replace that host text.
 	text := strings.TrimSpace(userText)
-	return codingSessionHasImplementationTrajectory(mem) &&
-		codingRequestPriorContext(mem) != "" &&
-		utf8.RuneCountInString(text) <= 48 &&
-		!codingRequestLooksLikeQuestion(text)
+	if utf8.RuneCountInString(text) > 48 || codingRequestLooksLikeQuestion(text) {
+		return false
+	}
+	if codingSessionHasImplementationTrajectory(mem) && codingRequestPriorContext(mem) != "" {
+		return true
+	}
+	// A bare continue may still be refined when the only context is a title.
+	// A new short ask is already quoted; replacing it drops that sentence.
+	if codingWorkbenchContinueCue(text) {
+		return codingClosedRequirementSnippet(mem.SessionPlan) != ""
+	}
+	return codingClosedRequirementSnippet(mem.SessionPlan) != "" || codingRequestPriorContext(mem) != ""
 }
 
 func (h *IMMessageHandler) llmCodingRequestRestatement(userText string, mem stickyCodingWorkbenchMemory) string {

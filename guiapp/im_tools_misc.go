@@ -412,7 +412,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 				platform = runtimePlatformFromLoopContext(loopCtx)
 			}
 		}
-		action, recordedWithoutChannel := h.app.skillInstallActionWithChannel(scanReport, effectiveSource, strings.TrimSpace(platform) != "")
+		action, recordedWithoutChannel := h.skillInstallDecidedAction(scanReport, effectiveSource, platform, installPolicyOwnerID)
 		switch action {
 		case security.PolicyDeny:
 			cskill.CleanupStaging(stagingDir)

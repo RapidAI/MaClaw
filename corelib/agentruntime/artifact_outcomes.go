@@ -23,7 +23,7 @@ func ResponseHasPDF(fileName, localPath, mimeType string) bool {
 // the artifact broker. The host attaches that file to this chat when the
 // model stops. The sentence must not name send_file: that name is also an
 // external send, and a model call pauses the turn before the host attach.
-const HostPublishedCurrentChannelFileNote = "PDF artifact published. The host attaches it to this chat. This is not a send."
+const HostPublishedCurrentChannelFileNote = "PDF artifact published. The host attaches it to this chat. This is not a send. This file contains only the content of this call. When this chat already has a PDF, this file replaces that attachment, and earlier sections remain only if this content includes them."
 
 // HostPublishedMailboxAttachmentNote is that same chat note plus the
 // workspace path mailbox_send can attach. The chat card is still not the

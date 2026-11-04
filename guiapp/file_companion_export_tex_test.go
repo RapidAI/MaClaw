@@ -74,16 +74,19 @@ func TestFileCompanionExportKeepsPDFAndWritesTeXFragment(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(fragment)
-	if strings.Contains(text, `\documentclass`) || strings.Contains(text, `\begin{document}`) {
-		t.Fatalf("fragment has a document wrapper:\n%s", text)
+	if !strings.Contains(text, `\documentclass{ctexart}`) || !strings.Contains(text, `\begin{document}`) || !strings.Contains(text, `\end{document}`) {
+		t.Fatalf("not a latex document:\n%s", text)
+	}
+	if strings.Contains(text, "![") || strings.Contains(text, "##") {
+		t.Fatalf("markdown left in tex:\n%s", text)
 	}
 	if !strings.Contains(text, `\(x^2\)`) || !strings.Contains(text, `\[a\]`) {
 		t.Fatalf("math = %s", text)
 	}
-	if !strings.Contains(text, "识别不确定：E=mc^2") || strings.Contains(text, `\(E=mc^2\)`) {
+	if !strings.Contains(text, `识别不确定：E=mc\textasciicircum{}2`) || strings.Contains(text, `\(E=mc^2\)`) {
 		t.Fatalf("ocr line was reconstructed:\n%s", text)
 	}
-	if !strings.Contains(text, "![板书 12:05](C:\\frames\\725.jpg)") {
+	if !strings.Contains(text, `\includegraphics`) || !strings.Contains(text, "C:/frames/725.jpg") || !strings.Contains(text, "板书 12:05") {
 		t.Fatalf("picture line changed:\n%s", text)
 	}
 
@@ -98,8 +101,11 @@ func TestFileCompanionExportKeepsPDFAndWritesTeXFragment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(chatBody), `\documentclass`) || !strings.Contains(string(chatBody), `\(y\)`) {
-		t.Fatalf("chat fragment = %s", chatBody)
+	if !strings.Contains(string(chatBody), `\documentclass{ctexart}`) || !strings.Contains(string(chatBody), `\(y\)`) || strings.Contains(string(chatBody), "##") {
+		t.Fatalf("chat document = %s", chatBody)
+	}
+	if !strings.Contains(string(chatBody), `\subsection*{第 1 个回答}`) {
+		t.Fatalf("chat heading = %s", chatBody)
 	}
 
 	fileCompanionSaveTeXDialog = func(*App, string) (string, error) { return path, nil }
@@ -129,17 +135,50 @@ func TestFileCompanionTeXKeepsADisplayFormulaBlock(t *testing.T) {
 	if !strings.Contains(out, "\\begin{aligned}\na &= b\n\\end{aligned}") {
 		t.Fatalf("aligned = %s", out)
 	}
-	if !strings.Contains(out, "识别不确定：$E=mc^2$") || strings.Contains(out, "\\(E=mc^2\\)") {
+	if !strings.Contains(out, `识别不确定：\$E=mc\textasciicircum{}2\$`) || strings.Contains(out, "\\(E=mc^2\\)") {
 		t.Fatalf("ocr = %s", out)
 	}
-	if !strings.Contains(out, "![板书 12:05](C:\\frames\\725.jpg)") {
+	if !strings.Contains(out, `\includegraphics`) || !strings.Contains(out, "C:/frames/725.jpg") || strings.Contains(out, "![") {
 		t.Fatalf("picture = %s", out)
 	}
-	if strings.Contains(out, "\\[\\]") || strings.Contains(out, "\\documentclass") || strings.Contains(out, "\\begin{document}") {
+	if strings.Contains(out, "\\[\\]") || !strings.Contains(out, `\documentclass{ctexart}`) || !strings.Contains(out, `\begin{document}`) || !strings.Contains(out, `\end{document}`) {
 		t.Fatalf("wrapper = %s", out)
 	}
-	if !strings.Contains(out, "## 要点\n结论") {
+	if !strings.Contains(out, `\subsection*{要点}`) || !strings.Contains(out, "结论") || strings.Contains(out, "## ") {
 		t.Fatalf("heading swallowed = %s", out)
+	}
+}
+
+func TestFileCompanionTeXConvertsMarkdownStructure(t *testing.T) {
+	out := fileCompanionMarkdownToTeX("# 标题\n\n这是 **重点** 与 *斜体*，以及 `code`。\n\n- 一项\n- 第二项 $z$\n\n1. 有序\n\n见 [文档](https://example.com/a_b)\n\n> 引用\n\n---\n\n| 列 | 值 |\n| --- | --- |\n| 甲 | 100% |\n\n```\nfunc a() {}\n```\n")
+	for _, want := range []string{
+		`\section*{标题}`,
+		`\textbf{重点}`,
+		`\emph{斜体}`,
+		`\texttt{code}`,
+		`\begin{itemize}`,
+		`\item 一项`,
+		`\item 第二项 \(z\)`,
+		`\begin{enumerate}`,
+		`\item 有序`,
+		`\href{https://example.com/a\_b}{文档}`,
+		`\begin{quote}`,
+		"引用",
+		`\rule{\linewidth}{0.4pt}`,
+		`\begin{tabular}{ll}`,
+		`100\%`,
+		`\begin{verbatim}`,
+		"func a() {}",
+		`\end{document}`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %s\n%s", want, out)
+		}
+	}
+	for _, gone := range []string{"# 标题", "**重点**", "*斜体*", "`code`", "- 一项", "[文档](https://example.com/a_b)", "| 列 | 值 |"} {
+		if strings.Contains(out, gone) {
+			t.Fatalf("markdown %q left in\n%s", gone, out)
+		}
 	}
 }
 

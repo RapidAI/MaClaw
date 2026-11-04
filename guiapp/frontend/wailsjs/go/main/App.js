@@ -1517,8 +1517,8 @@ export function DeleteFileCompanionGroup(arg1) {
   return window['go']['main']['App']['DeleteFileCompanionGroup'](arg1);
 }
 
-export function DeleteFileCompanionProject(arg1) {
-  return window['go']['main']['App']['DeleteFileCompanionProject'](arg1);
+export function DeleteFileCompanionProject(arg1, arg2) {
+  return window['go']['main']['App']['DeleteFileCompanionProject'](arg1, arg2);
 }
 
 export function DeleteFileCompanionShare(arg1) {

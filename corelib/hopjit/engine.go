@@ -15,19 +15,26 @@ import (
 )
 
 type ExecutionEngine struct {
-	mu       sync.Mutex
-	store    PersistenceProvider
-	snapshot *EngineSnapshot
-	now      func() time.Time
-	tools    ToolProvider
-	ctx      context.Context
+	mu             sync.Mutex
+	store          PersistenceProvider
+	snapshot       *EngineSnapshot
+	now            func() time.Time
+	tools          ToolProvider
+	specs          SpecProvider
+	caller         ReuseCaller
+	ctx            context.Context
+	inflightResult map[string]chan ReuseResult
+	inflightCancel map[string]context.CancelFunc
 }
 
 func NewExecutionEngine(store PersistenceProvider, options ...EngineOption) *ExecutionEngine {
 	if store == nil {
 		store = NewMemoryPersistence()
 	}
-	engine := &ExecutionEngine{store: store, now: time.Now}
+	engine := &ExecutionEngine{
+		store: store, now: time.Now,
+		inflightResult: map[string]chan ReuseResult{}, inflightCancel: map[string]context.CancelFunc{},
+	}
 	for _, option := range options {
 		if option != nil {
 			option(engine)
@@ -41,6 +48,10 @@ func (e *ExecutionEngine) Init(ctx context.Context, markdown string, inputs map[
 	if len(parseErrs) > 0 {
 		return InitResult{}, errors.Join(parseErrs...)
 	}
+	return e.InitAST(ctx, spec, inputs)
+}
+
+func (e *ExecutionEngine) InitAST(ctx context.Context, spec hopspec.SpecAST, inputs map[string]any) (InitResult, error) {
 	if validationErrs := hopspec.Validate(spec); len(validationErrs) > 0 {
 		return InitResult{}, errors.Join(validationErrs...)
 	}
@@ -68,6 +79,9 @@ func (e *ExecutionEngine) Init(ctx context.Context, markdown string, inputs map[
 		Variables:      map[string]VariableValue{},
 		LoopCounters:   map[string]int{},
 		LoopItems:      map[string][]any{},
+		LoopResults:    map[string]map[string]any{},
+		Calls:          map[string]CallState{},
+		Inflight:       map[string]InflightCall{},
 		RetryCounters:  map[string]int{},
 		RetryHistory:   map[string][]RetryRecord{},
 		ReplanCounters: map[string]int{},
@@ -133,6 +147,7 @@ func (e *ExecutionEngine) Next(ctx context.Context) (NextResult, error) {
 	}
 	var advance advanceResult
 	if err := e.mutateLocked(ctx, func() error {
+		e.reapInflightLocked(ctx)
 		advance = e.advanceLocked()
 		return nil
 	}); err != nil {
@@ -147,6 +162,12 @@ func (e *ExecutionEngine) Next(ctx context.Context) (NextResult, error) {
 		result.Step = e.stepReadyLocked(advance.step)
 		return result, nil
 	}
+	if e.snapshot.Pause != nil {
+		return e.resultLocked(NextPaused), nil
+	}
+	if e.snapshot.TerminalState == "" && len(e.snapshot.Inflight) > 0 {
+		return e.resultLocked(NextRunning), nil
+	}
 	return e.terminalResultLocked(), nil
 }
 
@@ -155,6 +176,9 @@ func (e *ExecutionEngine) Complete(ctx context.Context, stepID string, outputs m
 	defer e.mu.Unlock()
 	if e.snapshot == nil {
 		return ErrRunNotInitialized
+	}
+	if e.snapshot.Pause != nil && e.snapshot.Pause.ChildRunID != "" {
+		return e.completeChildPause(ctx, outputs)
 	}
 	step, ok := e.stepByID(stepID)
 	if !ok {
@@ -282,6 +306,8 @@ func (e *ExecutionEngine) Abort(ctx context.Context, reason string) error {
 				e.snapshot.StepStates[id] = StepSkipped
 			}
 		}
+		e.cancelInflightLocked()
+		e.snapshot.Inflight = map[string]InflightCall{}
 		e.snapshot.Pause = nil
 		e.snapshot.AbortReason = strings.TrimSpace(reason)
 		e.snapshot.TerminalState = TerminalAborted
@@ -368,11 +394,13 @@ func (e *ExecutionEngine) stepReadyLocked(step hopspec.Step) *StepReady {
 			inputs[name] = value.Value
 		}
 	}
-	return &StepReady{
+	ready := &StepReady{
 		RunID: e.snapshot.RunID, Goal: e.snapshot.Spec.Goal, Constraints: append([]string(nil), e.snapshot.Spec.Constraints...),
 		StepID: step.ID, StepType: step.Type, Summary: step.Summary,
-		Inputs: inputs, Instruction: step.Instruction, OutputSchema: append([]hopspec.VariableDecl(nil), step.Outputs...),
+		Inputs: inputs, Instruction: step.Instruction, Tools: append([]string(nil), step.Tools...), OutputSchema: append([]hopspec.VariableDecl(nil), step.Outputs...),
 	}
+	ready.Context = AssemblePromptContext(*e.snapshot, *ready)
+	return ready
 }
 
 func (e *ExecutionEngine) resultLocked(status NextStatus) NextResult {

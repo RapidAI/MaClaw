@@ -20,6 +20,7 @@ import { normalizeInlineListMarkers } from "../ai/aiAssistantMarkdownNormalize";
 import { finishCompanionReply, splitCompanionStreamDelta } from "./companionReasoning";
 import { ToastProvider } from "../Toast";
 import { DialogProvider } from "../CustomDialog";
+import { resetCompanionLibraryList } from "./FileCompanionLibrary";
 import { loadPdfMarks, savePdfMarks, hydratePdfMarks } from "./pdfMarks";
 import { hydrateChatMarks, loadChatMarks, saveChatMarks } from "./chatMarks";
 import { hydratePdfTranslations, loadPdfTranslations, notifyPdfAnnotationsChanged, savePdfTranslations } from "./pdfTranslations";
@@ -85,13 +86,14 @@ const playerHide = vi.fn(async (..._args: any[]): Promise<any> => undefined);
 const discardWeb = vi.fn();
 const getBrandInfo = vi.fn();
 const clipboardWrite = vi.fn();
-type ListLibraryResult = { items: Array<Record<string, unknown>>; notice: string; updates?: Array<Record<string, unknown>>; removed?: string[]; removedHosts?: Record<string, string>; notesReply?: boolean; notesReview?: boolean };
+type ListLibraryResult = { items: Array<Record<string, unknown>>; notice: string; updates?: Array<Record<string, unknown>>; removed?: string[]; removedHosts?: Record<string, string>; notesReply?: boolean; notesReview?: boolean; syncing?: boolean; catalog?: boolean; syncGen?: number };
 const listLibrary = vi.fn<(args: unknown[]) => Promise<ListLibraryResult>>(async () => ({ items: [], notice: "" }));
 const shareDocument = vi.fn(async () => ({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "a.md", visibility: "public", permanent: true }));
 const importShare = vi.fn(async (..._args: any[]): Promise<{ id: string; name: string; path: string; source: string; highlights?: string; chatMarks?: string; annotations?: string; drawings?: string }> => ({ id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", path: "C:/library/shared.pdf", source: "cloud" }));
 const listGroups = vi.fn(async () => [] as Array<Record<string, unknown>>);
 const syncShare = vi.fn(async () => ({ revision: 2 }));
 const syncShareMarks = vi.fn(async () => ({ marksRevision: 3 }));
+const fetchShareMarks = vi.fn(async () => ({ marks: "", revision: 0 }));
 const updateShare = vi.fn(async (..._args: unknown[]) => ({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "论文.pdf", visibility: "private", permanent: false, expiresAt: "2026-11-24T00:00:00Z" }));
 // AddFileCompanionShareNote returns the legacy notes array or the newer
 // { notes, notesRevision } object; companionNotePost accepts both.
@@ -160,7 +162,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     ListFileCompanionGroups: (...args: Parameters<typeof listGroups>) => listGroups(...args),
     SyncFileCompanionShare: (...args: Parameters<typeof syncShare>) => syncShare(...args),
     SyncFileCompanionShareMarks: (...args: Parameters<typeof syncShareMarks>) => syncShareMarks(...args),
-    FetchFileCompanionShareMarks: vi.fn(async () => ({ marks: "", revision: 0 })),
+    FetchFileCompanionShareMarks: (...args: Parameters<typeof fetchShareMarks>) => fetchShareMarks(...args),
     AddFileCompanionShareNote: (...args: Parameters<typeof addShareNote>) => addShareNote(...args),
     ReviewFileCompanionShareNote: (...args: Parameters<typeof reviewShareNote>) => reviewShareNote(...args),
     CreateFileCompanionGroup: (...args: Parameters<typeof createGroup>) => createGroup(...args),
@@ -286,6 +288,7 @@ function doc(path: string, extra: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+    resetCompanionLibraryList();
     localStorage.removeItem("ai_assistant_theme_mode");
     localStorage.removeItem("maclaw.ai.themeMode");
     localStorage.removeItem("maclaw.ai.darkScheme");
@@ -355,6 +358,8 @@ beforeEach(() => {
     syncShare.mockResolvedValue({ revision: 2 });
     syncShareMarks.mockReset();
     syncShareMarks.mockResolvedValue({ marksRevision: 3 });
+    fetchShareMarks.mockReset();
+    fetchShareMarks.mockResolvedValue({ marks: "", revision: 0 });
     updateShare.mockReset();
     updateShare.mockResolvedValue({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "论文.pdf", visibility: "private", permanent: false, expiresAt: "2026-11-24T00:00:00Z" });
     addShareNote.mockReset();
@@ -2825,7 +2830,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-library-delete-local:a"));
         const again = await screen.findByRole("dialog", { name: "删除伴读数据" });
         fireEvent.click(within(again).getByRole("button", { name: "删除" }));
-        await waitFor(() => expect(deleteProject).toHaveBeenCalledWith("local:a"));
+        await waitFor(() => expect(deleteProject).toHaveBeenCalledWith("local:a", "C:/notes/a.md"));
         await waitFor(() => expect(screen.queryByTestId("file-companion-tab-a.md")).toBeNull());
         await waitFor(() => expect(screen.queryByTestId("file-companion-library-card-local:a")).toBeNull());
         expect(loadPdfMarks("C:/notes/a.md")).toEqual([]);
@@ -2874,7 +2879,7 @@ describe("FileCompanionWindow", () => {
         const dialog = await screen.findByRole("dialog", { name: "删除伴读数据" });
         phase = "after";
         fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
-        await waitFor(() => expect(deleteProject).toHaveBeenCalledWith("local:a"));
+        await waitFor(() => expect(deleteProject).toHaveBeenCalledWith("local:a", "C:/notes/a.md"));
         await waitFor(() => expect(loadPdfMarks("C:/notes/a.md")).toEqual([]));
         await waitFor(() => expect(screen.queryByTestId("file-companion-library-card-local:a")).toBeNull());
         await act(async () => {
@@ -4369,6 +4374,98 @@ describe("FileCompanionWindow", () => {
         expect((await screen.findByTestId("file-companion-annotation-ignored-cn_line")).textContent).toContain("主持人已忽略");
     });
 
+    it("pulls marks onto the host's downloaded copy and leaves the authoring paper alone", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const cache = `C:/Users/me/.maclaw/data/file-companion/library-files/${token}/shared.pdf`;
+        const mark = { id: "m1", page: 1, color: "yellow" as const, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "Hello" };
+        fetchShareMarks.mockResolvedValue({
+            marks: JSON.stringify({ highlights: [mark], chatMarks: [], annotations: [], drawings: [], bookmarks: [] }),
+            revision: 4,
+        });
+        listLibrary.mockResolvedValue({
+            items: [{ path: cache, source: "cloud", token, mine: true, marksRevision: 4, notes: [] }],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(loadPdfMarks(cache)).toEqual([mark]));
+        expect(fetchShareMarks).toHaveBeenCalledWith(cache);
+
+        fetchShareMarks.mockClear();
+        const listed = listLibrary.mock.calls.length;
+        listLibrary.mockResolvedValue({
+            items: [{ path: "C:/Users/me/Desktop/paper.pdf", source: "cloud", token, mine: true, marksRevision: 4, notes: [] }],
+            notice: "",
+        });
+        await act(async () => { window.dispatchEvent(new Event("focus")); });
+        await waitFor(() => expect(listLibrary.mock.calls.length).toBeGreaterThan(listed));
+        expect(fetchShareMarks).not.toHaveBeenCalled();
+        expect(loadPdfMarks("C:/Users/me/Desktop/paper.pdf")).toEqual([]);
+    });
+
+    it("holds a question on the host's downloaded copy until the marks arrive", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const cache = `C:/Users/me/.maclaw/data/file-companion/library-files/${token}/shared.pdf`;
+        const mark = { id: "m1", page: 1, color: "yellow" as const, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "Hello" };
+        let releaseMarks: (value: { marks: string; revision: number }) => void = () => undefined;
+        fetchShareMarks.mockReturnValue(new Promise((resolve) => { releaseMarks = resolve; }));
+        listLibrary.mockResolvedValue({
+            items: [{ path: cache, source: "cloud", token, mine: true, marksRevision: 4, notes: [] }],
+            notice: "",
+        });
+        boot.mockResolvedValue({ paths: [cache] });
+        open.mockImplementation(async (opened: string) => doc(opened));
+        installRuntime();
+        renderWindow();
+        const input = await screen.findByTestId("file-companion-input") as HTMLTextAreaElement;
+        await waitFor(() => expect(screen.getByTestId("file-companion-share-open").getAttribute("aria-label")).toBe("修改分享"));
+        fireEvent.change(input, { target: { value: "这个方法的效果如何" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        expect(syncShare).not.toHaveBeenCalled();
+        await act(async () => {
+            releaseMarks({
+                marks: JSON.stringify({ highlights: [mark], chatMarks: [], annotations: [], drawings: [], bookmarks: [] }),
+                revision: 4,
+            });
+        });
+        await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
+        const args = syncShare.mock.calls[0] as unknown as [string, string];
+        expect(args[0]).toBe(cache);
+        expect(JSON.parse(args[1]).highlights).toEqual([mark]);
+    });
+
+    it("holds a question on the downloaded copy until the newer project is stored", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const cache = `C:/Users/me/.maclaw/data/file-companion/library-files/${token}/shared.pdf`;
+        const mark = { id: "m1", page: 1, color: "yellow" as const, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "Hello" };
+        fetchShareMarks.mockResolvedValue({
+            marks: JSON.stringify({ highlights: [mark], chatMarks: [], annotations: [], drawings: [], bookmarks: [] }),
+            revision: 4,
+        });
+        const row = { path: cache, source: "cloud", token, mine: true, revision: 5, marksRevision: 4, notes: [] };
+        listLibrary.mockResolvedValue({ items: [row], notice: "", syncing: true, catalog: true, syncGen: 1 });
+        boot.mockResolvedValue({ paths: [cache] });
+        open.mockImplementation(async (opened: string) => doc(opened));
+        installRuntime();
+        renderWindow();
+        const input = await screen.findByTestId("file-companion-input") as HTMLTextAreaElement;
+        await waitFor(() => expect(loadPdfMarks(cache)).toEqual([mark]));
+        await waitFor(() => expect(screen.getByTestId("file-companion-share-open").getAttribute("aria-label")).toBe("修改分享"));
+        fireEvent.change(input, { target: { value: "这个方法的效果如何" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        expect(syncShare).not.toHaveBeenCalled();
+        listLibrary.mockResolvedValue({ items: [row], notice: "", syncing: false, syncGen: 2 });
+        await act(async () => { window.dispatchEvent(new Event("focus")); });
+        await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
+        const args = syncShare.mock.calls[0] as unknown as [string, string];
+        expect(args[0]).toBe(cache);
+        expect(JSON.parse(args[1]).highlights).toEqual([mark]);
+    });
+
     it("polls an open host share quickly so a new reader note is not stuck on the slow timer", () => {
         expect(companionLibraryPollFast([{ shareToken: "cd_abc", shareMine: true }])).toBe(true);
         expect(companionLibraryPollFast([{ shareToken: "cd_abc", shareMine: false }])).toBe(true);
@@ -5642,14 +5739,17 @@ describe("FileCompanionWindow", () => {
             "c:/paper.pdf": [{ id: "m1", page: 1, color: "yellow", rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "方法" }],
         });
         const annotation = { id: "a1", kind: "annotation" as const, text: "方法", translation: "这一段要重点复核", parts: [{ page: 1, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }] }] };
-        hydratePdfTranslations({ "c:/paper.pdf": [annotation] });
+        const translation = { id: "t1", text: "原文", translation: "译文", parts: [{ page: 1, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }] }] };
+        hydratePdfTranslations({ "c:/paper.pdf": [annotation, translation] });
         const drawing = { id: "d1", page: 1, color: "yellow" as const, tool: "line" as const, points: [{ x: 0.1, y: 0.2 }, { x: 0.3, y: 0.4 }] };
         hydratePdfDrawings({ "c:/paper.pdf": [drawing] });
         const bookmark = { id: "b1", page: 2, x: 0.2, y: 0.4, color: "orange" as const, name: "先加" };
         hydratePdfBookmarks({ "c:/paper.pdf": [bookmark] });
         boot.mockResolvedValue({ paths: ["C:/paper.pdf"] });
+        const discussion = { id: "cn_1", author: "reader@example.com", text: "讨论区批注" };
         open.mockResolvedValue(doc("C:/paper.pdf", {
             messages: [{ role: "user", text: "这段讲什么" }, { role: "assistant", text: "讲方法", reasoning: "先看摘要" }],
+            notes: [discussion],
         }));
         const runtime = installRuntime();
         renderWindow();
@@ -5660,6 +5760,8 @@ describe("FileCompanionWindow", () => {
         expect(packed.highlights).toHaveLength(1);
         expect(packed.chatMarks).toEqual([]);
         expect(packed.annotations).toEqual([annotation]);
+        expect(packed.translations).toEqual([translation]);
+        expect(packed.notes).toEqual([{ ...discussion, createdAt: "", host: false, replyTo: "", decision: "" }]);
         expect(packed.drawings).toEqual([drawing]);
         expect(packed.bookmarks).toEqual([bookmark]);
         expect(screen.getByText("这段讲什么")).toBeTruthy();
@@ -5671,6 +5773,12 @@ describe("FileCompanionWindow", () => {
             highlights: [{ id: "m9", page: 1, color: "pink", rects: [{ x: 0.2, y: 0.3, w: 0.2, h: 0.05 }], text: "方法" }],
             chatMarks: [importedChatMark],
             annotations: [annotation],
+            translations: [translation],
+            notes: [
+                { id: "cn_q", author: "reader@example.com", text: "原来的问题" },
+                { id: "cn_9", author: "host@example.com", text: "导入的讨论", host: true, replyTo: "cn_q" },
+                { id: "cn_ok", author: "reader@example.com", text: "已通过的问题", decision: "approved" },
+            ],
             drawings: [drawing],
             bookmarks: [{ id: "b9", page: 7, x: 0.1, y: 0.8, color: "teal", name: "后加" }],
             imported: true,
@@ -5682,7 +5790,14 @@ describe("FileCompanionWindow", () => {
         expect(restored).toHaveLength(1);
         expect(restored[0].color).toBe("pink");
         expect(loadChatMarks("C:/restored/paper.pdf")).toEqual([importedChatMark]);
-        expect(loadPdfTranslations("C:/restored/paper.pdf")[0]).toMatchObject({ id: "a1", kind: "annotation", shared: true });
+        expect(loadPdfTranslations("C:/restored/paper.pdf")).toEqual([
+            translation,
+            expect.objectContaining({ id: "a1", kind: "annotation", shared: true }),
+        ]);
+        expect(screen.getAllByText("导入的讨论").length).toBeGreaterThan(0);
+        expect(screen.getAllByText("原来的问题").length).toBeGreaterThan(0);
+        expect(screen.getByText("已通过的问题")).toBeTruthy();
+        expect(screen.queryByText("已通过，等待主持人 Agent 回复")).toBeNull();
         expect(loadPdfDrawings("C:/restored/paper.pdf")[0]).toMatchObject({ id: "d1", shared: true });
         expect(loadPdfBookmarks("C:/restored/paper.pdf")).toEqual([{ id: "b9", page: 7, x: 0.1, y: 0.8, color: "teal", name: "后加" }]);
     });

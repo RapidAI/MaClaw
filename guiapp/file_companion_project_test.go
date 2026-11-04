@@ -150,6 +150,102 @@ func TestFileCompanionCleanAnnotationsKeepsANameWithinBudget(t *testing.T) {
 	}
 }
 
+func TestFileCompanionProjectRestoresDiscussionAndTranslations(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.imHandler != nil && app.imHandler.memory != nil {
+			app.imHandler.memory.Stop()
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	app.ctx = ctx
+	app.seedFileCompanionPaths(nil)
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "论文.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-1.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := app.FileCompanionOpen(source)
+	if err != nil || opened.Error != "" {
+		t.Fatalf("open: %v %s", err, opened.Error)
+	}
+	storedTranslation := `[{"id":"t1","text":"原文","translation":"文档里的译文","parts":[{"page":1,"rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.05}]}]},{"id":"a-local","kind":"annotation","text":"方法","translation":"只在批注里","parts":[{"page":1,"rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.05}]}]}]`
+	if err := app.SaveCompanionPdfTranslations(source, storedTranslation); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.saveFileCompanionDiscussionNotes(source, json.RawMessage(`[{"id":"cn_saved","author":"reader@example.com","text":"导入时留下的讨论","createdAt":"2026-10-20T00:00:00Z"}]`)); err != nil {
+		t.Fatal(err)
+	}
+	library := struct {
+		Items []FileCompanionLibraryItem `json:"items"`
+	}{
+		Items: []FileCompanionLibraryItem{{
+			ID:     "cloud-1",
+			Name:   "论文.pdf",
+			Path:   source,
+			Source: "cloud",
+			Notes: []FileCompanionShareNote{
+				{ID: "cn_old", Author: "reader@example.com", Text: "旧讨论", CreatedAt: "2026-10-25T00:00:00Z", Decision: "pending"},
+				{ID: "cn_host", Author: "host@example.com", Text: "主持人的回复", Host: true, ReplyTo: "cn_old"},
+			},
+			NotesRevision: 3,
+		}},
+	}
+	rawLibrary, err := json.Marshal(library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(app.fileCompanionLibraryPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(app.fileCompanionLibraryPath(), rawLibrary, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	previous := fileCompanionSaveProjectDialog
+	defer func() { fileCompanionSaveProjectDialog = previous }()
+	dest := filepath.Join(dir, "out.zip")
+	fileCompanionSaveProjectDialog = func(_ *App, _ string) (string, error) { return dest, nil }
+	payload := `{"highlights":[],"chatMarks":[],"annotations":[{"id":"a1","kind":"annotation","text":"方法","translation":"文档批注","parts":[{"page":1,"rects":[{"x":0.2,"y":0.3,"w":0.2,"h":0.04}]}]}],"drawings":[],"bookmarks":[],"notes":[{"id":"cn_old","author":"reader@example.com","text":"屏幕上的讨论","decision":"approved"},{"id":"cn_new","author":"reader@example.com","text":"新的批注"}]}`
+	if _, err := app.FileCompanionExportProject(source, payload); err != nil {
+		t.Fatal(err)
+	}
+
+	imported, err := app.FileCompanionOpen(dest)
+	if err != nil || imported.Error != "" || !imported.Imported {
+		t.Fatalf("import: %v %+v", err, imported)
+	}
+	var notes []FileCompanionShareNote
+	if err := json.Unmarshal(imported.Notes, &notes); err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 4 || notes[0].Text != "导入时留下的讨论" || notes[0].CreatedAt != "2026-10-20T00:00:00Z" || notes[1].Text != "屏幕上的讨论" || notes[1].Decision != "approved" || notes[1].CreatedAt != "2026-10-25T00:00:00Z" || notes[2].Text != "主持人的回复" || !notes[2].Host || notes[2].ReplyTo != "cn_old" || notes[3].Text != "新的批注" {
+		t.Fatalf("notes: %+v", notes)
+	}
+	var translations []fileCompanionTranslationCard
+	if err := json.Unmarshal(imported.Translations, &translations); err != nil {
+		t.Fatal(err)
+	}
+	if len(translations) != 1 || translations[0].Text != "原文" || translations[0].Translation != "文档里的译文" || translations[0].Kind == "annotation" {
+		t.Fatalf("translations: %+v", translations)
+	}
+	var annotations []fileCompanionAnnotation
+	if err := json.Unmarshal(imported.Annotations, &annotations); err != nil || len(annotations) != 1 || annotations[0].Translation != "文档批注" {
+		t.Fatalf("annotations: %s %v", imported.Annotations, err)
+	}
+
+	again, err := app.FileCompanionOpen(imported.Path)
+	if err != nil || again.Error != "" {
+		t.Fatalf("reopen: %v %+v", err, again)
+	}
+	var kept []FileCompanionShareNote
+	if err := json.Unmarshal(again.Notes, &kept); err != nil || len(kept) != 4 || kept[0].Text != "导入时留下的讨论" || kept[3].Text != "新的批注" {
+		t.Fatalf("reopened notes: %s %v", again.Notes, err)
+	}
+}
+
 func TestFileCompanionProjectPaperCardComesBack(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(func() {

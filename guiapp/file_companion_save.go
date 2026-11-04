@@ -50,6 +50,11 @@ type FileCompanionDocument struct {
 	Annotations json.RawMessage `json:"annotations,omitempty"`
 	Drawings    json.RawMessage `json:"drawings,omitempty"`
 	Bookmarks   json.RawMessage `json:"bookmarks,omitempty"`
+	// Notes is the discussion restored with a project, or the discussion
+	// already stored for this document. Absent means this open did not carry one.
+	Notes json.RawMessage `json:"notes,omitempty"`
+	// Translations are the non-note cards restored with a project.
+	Translations json.RawMessage `json:"translations,omitempty"`
 	// Imported is set when Path is the document taken out of a project zip.
 	Imported bool `json:"imported,omitempty"`
 }
@@ -177,6 +182,7 @@ func (a *App) fileCompanionOpen(path string, acceptProject bool) (FileCompanionD
 		sid := doc.SessionID
 		unlockFile()
 		doc.Messages = a.fileCompanionHistory(sid)
+		a.attachFileCompanionDiscussionNotes(&doc)
 		a.rememberFileCompanionDocument(doc)
 		return doc, nil
 	}
@@ -232,8 +238,20 @@ func (a *App) fileCompanionOpen(path string, acceptProject bool) (FileCompanionD
 	sid := doc.SessionID
 	unlockFile()
 	doc.Messages = a.fileCompanionHistory(sid)
+	a.attachFileCompanionDiscussionNotes(&doc)
 	a.rememberFileCompanionDocument(doc)
 	return doc, nil
+}
+
+func (a *App) attachFileCompanionDiscussionNotes(doc *FileCompanionDocument) {
+	if a == nil || doc == nil || strings.TrimSpace(doc.Path) == "" {
+		return
+	}
+	notes := a.fileCompanionDiscussionNotesStored(doc.Path)
+	if len(notes) == 0 {
+		return
+	}
+	doc.Notes = notes
 }
 
 // fileCompanionTrimPartialRune drops an incomplete sequence left at the end of

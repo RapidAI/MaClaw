@@ -2,7 +2,11 @@
 
 package windows
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/wailsapp/wails/v2/internal/frontend/desktop/windows/winc/w32"
+)
 
 // TestRestoreCursorDisplayCount checks the probe-and-undo sequence. Win32 has
 // no cursor-count read, so a hidden count must end at zero with one show per
@@ -46,6 +50,34 @@ func TestRestoreCursorDisplayCount(t *testing.T) {
 				if calls[i] != tc.wantCalls[i] {
 					t.Fatalf("calls = %v, want %v", calls, tc.wantCalls)
 				}
+			}
+		})
+	}
+}
+
+func TestCursorRestoreOnSize(t *testing.T) {
+	const (
+		sizeRestored  = 0
+		sizeMinimized = 1
+		sizeMaximized = 2
+	)
+	cases := []struct {
+		name       string
+		msg        uint32
+		wparam     uintptr
+		fullscreen bool
+		want       bool
+	}{
+		{name: "maximize", msg: w32.WM_SIZE, wparam: sizeMaximized, want: true},
+		{name: "fullscreen restore size", msg: w32.WM_SIZE, wparam: sizeRestored, fullscreen: true, want: true},
+		{name: "ordinary resize", msg: w32.WM_SIZE, wparam: sizeRestored, want: false},
+		{name: "minimize while fullscreen flag remains", msg: w32.WM_SIZE, wparam: sizeMinimized, fullscreen: true, want: false},
+		{name: "other message", msg: w32.WM_MOVE, wparam: sizeMaximized, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cursorRestoreOnSize(tc.msg, tc.wparam, tc.fullscreen); got != tc.want {
+				t.Fatalf("cursorRestoreOnSize() = %v, want %v", got, tc.want)
 			}
 		})
 	}

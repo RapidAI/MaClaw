@@ -190,9 +190,19 @@ func applyRoutingMissLeftoverTools(tools, allTools, floorCatalog []map[string]in
 	}
 	filtered := make([]map[string]interface{}, 0, len(tools))
 	seen := make(map[string]bool, len(tools))
+	// An explicit discover_tool grant is not "the ranker happened to retrieve
+	// it". Stripping generate_pdf here, then appending the grant at the tail,
+	// is what the next budget pin deletes. The model then discovers the same
+	// name again on every iteration.
+	granted := map[string]bool{}
+	if ctx != nil {
+		for _, name := range ctx.discoveredConditionalToolNames() {
+			granted[name] = true
+		}
+	}
 	for _, def := range tools {
 		name := extractToolName(def)
-		if routingMissPrivilegeTools[name] {
+		if routingMissPrivilegeTools[name] && !granted[name] {
 			continue
 		}
 		filtered = append(filtered, def)

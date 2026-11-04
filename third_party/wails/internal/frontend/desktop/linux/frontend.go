@@ -302,18 +302,21 @@ func (f *Frontend) WindowSetTitle(title string) {
 	f.mainWindow.SetTitle(title)
 }
 
+// framelessResizeSuspendJS runs after the fullscreen size change. See the Windows copy.
+const framelessResizeSuspendJS = `window.wails.suspendResizeCursor&&window.wails.suspendResizeCursor()`
+
 func (f *Frontend) WindowFullscreen() {
-	if f.frontendOptions.Frameless && f.frontendOptions.DisableResize == false {
-		f.ExecJS("window.wails.flags.enableResize = false;")
-	}
 	f.mainWindow.Fullscreen()
+	if f.frontendOptions.Frameless && f.frontendOptions.DisableResize == false {
+		f.ExecJS(framelessResizeSuspendJS)
+	}
 }
 
 func (f *Frontend) WindowUnfullscreen() {
+	f.mainWindow.UnFullscreen()
 	if f.frontendOptions.Frameless && f.frontendOptions.DisableResize == false {
 		f.ExecJS("window.wails.flags.enableResize = true;")
 	}
-	f.mainWindow.UnFullscreen()
 }
 
 func (f *Frontend) WindowReloadApp() {

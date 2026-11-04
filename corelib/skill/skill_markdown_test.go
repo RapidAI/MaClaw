@@ -376,6 +376,171 @@ func TestImportMarkdownSkillDir_UsesScriptsAsBashSteps(t *testing.T) {
 	}
 }
 
+func TestOmitMarkdownIllustratedCommandsPreservesUnrelatedBlock(t *testing.T) {
+	block := "# note\npython run.py --input report.pdf\n"
+	if got := omitMarkdownIllustratedCommands(block); got != block {
+		t.Fatalf("rewrote a block with no sample command: %q", got)
+	}
+	mixed := "bash send.sh --to alice@example.com\nnpx skills add https://agent.qq.com/send.sh\n"
+	got := omitMarkdownIllustratedCommandsExcept(mixed, "send.sh")
+	if strings.Contains(got, "npx") || !strings.Contains(got, "bash send.sh") {
+		t.Fatalf("script sample = %q", got)
+	}
+	quoted := "python process.py --note \"npx skills add https://agent.qq.com\"\n"
+	if got := omitMarkdownIllustratedCommands(quoted); got != quoted {
+		t.Fatalf("quoted installer text was removed: %q", got)
+	}
+	packageRun := "npx --package skills add report.pdf\n"
+	if got := omitMarkdownIllustratedCommands(packageRun); got != packageRun {
+		t.Fatalf("npx --package command was treated as a skill install: %q", got)
+	}
+	note := "python process.py --note \"contact user@example.com before msg_xxx\"\n"
+	if got := omitMarkdownIllustratedCommands(note); got != note {
+		t.Fatalf("quoted sample text was removed: %q", got)
+	}
+	sampleID := "agently-cli message +read --id=msg_xxx\n"
+	if got := omitMarkdownIllustratedCommands(sampleID); strings.TrimSpace(got) != "" {
+		t.Fatalf("sample id was kept: %q", got)
+	}
+	interactive := "agently-cli auth login\n"
+	if got := omitMarkdownIllustratedCommands(interactive); strings.TrimSpace(got) != "" {
+		t.Fatalf("interactive login was kept: %q", got)
+	}
+	credentialed := "gh auth login --with-token\n"
+	if got := omitMarkdownIllustratedCommands(credentialed); got != credentialed {
+		t.Fatalf("credentialed login was removed: %q", got)
+	}
+	hosted := "agently-cli auth login --hostname github.com\n"
+	if got := omitMarkdownIllustratedCommands(hosted); strings.TrimSpace(got) != "" {
+		t.Fatalf("interactive login with a host flag was kept: %q", got)
+	}
+	chained := "agently-cli auth login && python process.py --input report.pdf\n"
+	got = omitMarkdownIllustratedCommands(chained)
+	if strings.Contains(got, "auth login") || !strings.Contains(got, "python process.py --input report.pdf") {
+		t.Fatalf("chained login was not split from the procedure: %q", got)
+	}
+	sampleURL := "curl https://user@example.com?x=1\n"
+	if got := omitMarkdownIllustratedCommands(sampleURL); strings.TrimSpace(got) != "" {
+		t.Fatalf("sample URL was kept: %q", got)
+	}
+	discard := "agently-cli auth login < /dev/null\n"
+	if got := omitMarkdownIllustratedCommands(discard); strings.TrimSpace(got) != "" {
+		t.Fatalf("login from /dev/null was kept: %q", got)
+	}
+	backtick := "python run.py `\nauth login\n"
+	got = omitMarkdownIllustratedCommands(backtick)
+	if strings.Contains(got, "auth login") || !strings.Contains(got, "python run.py `") {
+		t.Fatalf("backtick line was merged with the login: %q", got)
+	}
+	continued := "npx skills \\\nadd https://agent.qq.com\n"
+	if got := omitMarkdownIllustratedCommands(continued); strings.TrimSpace(got) != "" {
+		t.Fatalf("continued installer was kept: %q", got)
+	}
+	escaped := "echo foo\\\\\nauth login\n"
+	got = omitMarkdownIllustratedCommands(escaped)
+	if strings.Contains(got, "auth login") || !strings.Contains(got, "echo foo\\\\") {
+		t.Fatalf("escaped backslash was treated as a continuation: %q", got)
+	}
+	hostToken := "agently-cli auth login --hostname token\n"
+	if got := omitMarkdownIllustratedCommands(hostToken); strings.TrimSpace(got) != "" {
+		t.Fatalf("hostname value token kept the interactive login: %q", got)
+	}
+	spaced := "echo kept \\ \nauth login\n"
+	got = omitMarkdownIllustratedCommands(spaced)
+	if strings.Contains(got, "auth login") || !strings.Contains(got, "echo kept \\") {
+		t.Fatalf("trailing space after a backslash was treated as a continuation: %q", got)
+	}
+	untouched := "echo kept \\ \necho more\n"
+	if got := omitMarkdownIllustratedCommands(untouched); got != untouched {
+		t.Fatalf("rewrote a block whose backslash does not continue: %q", got)
+	}
+	commented := "# hidden \\\necho hidden\necho kept\nauth login\n"
+	got = omitMarkdownIllustratedCommands(commented)
+	if strings.Contains(got, "echo hidden") || strings.Contains(got, "auth login") || !strings.Contains(got, "echo kept") {
+		t.Fatalf("continued comment became a command: %q", got)
+	}
+	plainComment := "# note\necho kept\nauth login\n"
+	got = omitMarkdownIllustratedCommands(plainComment)
+	if strings.Contains(got, "auth login") || !strings.Contains(got, "echo kept") {
+		t.Fatalf("a comment swallowed the next command: %q", got)
+	}
+}
+
+func TestImportMarkdownSkillDir_SkipsIllustratedCLISamples(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "agently-mail")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "send.sh"), []byte("echo send\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile(send.sh) error = %v", err)
+	}
+	body := "# agently-mail\n\n## 安装\n\n```bash\nnpx --yes skills add https://agent.qq.com --skill -g -y\n```\n\n## 用法\n\n```bash\nagently-cli auth login\n```\n\n```bash\nagently-cli message +send --to alice@example.com --subject hi\n```\n\n```bash\nagently-cli message +read --id msg_xxx\n```\n\n```bash\nagently-cli message +watch\n```\n\n```bash\nbash send.sh --to alice@example.com\nnpx skills add https://agent.qq.com --skill -g -y\n```\n\n## 步骤\n\n```bash\npython process.py --input report.pdf\nnpx skills add https://agent.qq.com --skill -g -y\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "agent_skill", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 3 {
+		t.Fatalf("Steps len = %d, want the script, the generic command, and the procedure: %#v", len(entry.Steps), entry.Steps)
+	}
+	sawScript := false
+	sawWatch := false
+	sawProcedure := false
+	for _, step := range entry.Steps {
+		command, _ := step.Params["command"].(string)
+		if strings.Contains(command, "send.sh") {
+			sawScript = true
+			if strings.Contains(command, "npx skills") {
+				t.Fatalf("script step kept the installer: %q", command)
+			}
+			continue
+		}
+		if strings.Contains(command, "+watch") {
+			sawWatch = true
+		}
+		if strings.Contains(command, "process.py") {
+			sawProcedure = true
+		}
+		for _, banned := range []string{"npx skills", "auth login", "example.com", "msg_xxx"} {
+			if strings.Contains(command, banned) {
+				t.Fatalf("step still contains %q: %q", banned, command)
+			}
+		}
+	}
+	if !sawScript || !sawWatch || !sawProcedure {
+		t.Fatalf("steps = %#v", entry.Steps)
+	}
+}
+
+func TestImportMarkdownSkillDir_ContinuedCommentDoesNotRunScript(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "agently-mail")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "send.sh"), []byte("echo send\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile(send.sh) error = %v", err)
+	}
+	body := "# agently-mail\n\n```bash\n# bash \\\nsend.sh --input report.pdf\necho kept\nnpx skills add https://agent.qq.com\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "agent_skill", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want the uncommented command: %#v", len(entry.Steps), entry.Steps)
+	}
+	command, _ := entry.Steps[0].Params["command"].(string)
+	if strings.Contains(command, "send.sh") || strings.Contains(command, "npx") || !strings.Contains(command, "echo kept") {
+		t.Fatalf("continued comment was imported as a step: %q", command)
+	}
+}
+
 func TestExtractBashBlocksFromMarkdown_SkipsChinesePlaceholders(t *testing.T) {
 	content := `# Test Skill
 
@@ -449,6 +614,37 @@ func TestScanSkillDir_RecognizesMarkdownSkillDirectory(t *testing.T) {
 		t.Fatalf("unexpected steps: %+v", skills[0].Steps)
 	}
 }
+
+func TestScanSkillDir_IgnoresEmptyInstallLeftover(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "Interview")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, ".maclaw_scan_status.db"), []byte("status"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if skills := ScanSkillDir(root); len(skills) != 0 {
+		t.Fatalf("empty leftover was loaded: %#v", skills)
+	}
+	missing := textError("cannot read skill markdown: skill markdown documentation not found")
+	if skillDirIsEmptyInstallLeftover(skillDir, os.ErrNotExist) {
+		t.Fatal("unrelated errors must not count as an empty leftover")
+	}
+	if !skillDirIsEmptyInstallLeftover(skillDir, missing) {
+		t.Fatal("scan-status-only directory was not an empty leftover")
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "notes.txt"), []byte("kept"), 0o644); err != nil {
+		t.Fatalf("WriteFile(notes) error = %v", err)
+	}
+	if skillDirIsEmptyInstallLeftover(skillDir, missing) {
+		t.Fatal("a directory with other files was treated as an empty leftover")
+	}
+}
+
+type textError string
+
+func (e textError) Error() string { return string(e) }
 
 func TestScanSkillDir_RecognizesUppercaseMarkdownSkillDirectory(t *testing.T) {
 	root := t.TempDir()

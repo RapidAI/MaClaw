@@ -13,6 +13,15 @@ func normalizeSnapshotMaps(snapshot *EngineSnapshot) {
 	if snapshot.LoopItems == nil {
 		snapshot.LoopItems = map[string][]any{}
 	}
+	if snapshot.LoopResults == nil {
+		snapshot.LoopResults = map[string]map[string]any{}
+	}
+	if snapshot.Calls == nil {
+		snapshot.Calls = map[string]CallState{}
+	}
+	if snapshot.Inflight == nil {
+		snapshot.Inflight = map[string]InflightCall{}
+	}
 	if snapshot.RetryCounters == nil {
 		snapshot.RetryCounters = map[string]int{}
 	}

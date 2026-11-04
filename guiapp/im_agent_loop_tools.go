@@ -274,6 +274,18 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	} else if fullSurface {
 		tools = h.pinExecutionBaseline(userID, ctx, tools, lookupCatalog)
 		baseTools = h.pinExecutionBaseline(userID, ctx, baseTools, lookupCatalog)
+		// The baseline pin evicts the tail to make room for bash/craft_tool.
+		// A discover grant injected earlier is that tail, so the closed plan
+		// never saw generate_pdf and the next request still said "granted for
+		// the next request". Put it back here, before the seal. The seal is
+		// the fence: direct mode, skill search, workflow, expert, and group
+		// still remove a grant they do not allow. A light lookup never reaches
+		// this branch, so a grant cannot reopen bash there.
+		if ctx != nil && !phase.ForceSkillPreference {
+			if grants := ctx.discoveredConditionalToolNames(); len(grants) > 0 {
+				tools, baseTools, routerRankedNames = restoreDiscoveredSurfaceGrants(tools, baseTools, lookupCatalog, routerRankedNames, grants)
+			}
+		}
 		directMode := h.mainLoopInDirectMode(userID, ctx)
 		tools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, tools, phase, directMode, nil)
 		baseTools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, baseTools, phase, directMode, nil)
@@ -298,8 +310,16 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	}
 	rankedForPlan := routerRankedNames
 	if goalContinuationTurn(userText, platform) {
-		tools = ensureNamedToolsPresent(tools, lookupCatalog, []string{goalContinuationLifecycleTool})
-		baseTools = ensureNamedToolsPresent(baseTools, lookupCatalog, []string{goalContinuationLifecycleTool})
+		// Adding goal evicts the tail. A grant just restored onto a full
+		// surface is that tail unless it is protected. Only names still on
+		// this slice are protected, so a plan-phase narrow that already
+		// dropped the grant is not undone.
+		var grants []string
+		if ctx != nil && !phase.ForceSkillPreference {
+			grants = ctx.discoveredConditionalToolNames()
+		}
+		tools = ensureNamedToolsPresent(tools, lookupCatalog, protectBudgetNames([]string{goalContinuationLifecycleTool}, tools, grants))
+		baseTools = ensureNamedToolsPresent(baseTools, lookupCatalog, protectBudgetNames([]string{goalContinuationLifecycleTool}, baseTools, grants))
 		rankedForPlan = rankedNamesWithout(routerRankedNames, goalContinuationLifecycleTool)
 	}
 
@@ -378,6 +398,59 @@ func narrowGoalPlanPhaseSurface(tools []map[string]interface{}) []map[string]int
 		return ensureNamedToolsPresent(kept, tools, []string{goalContinuationLifecycleTool})
 	}
 	return kept
+}
+
+// restoreDiscoveredSurfaceGrants puts loop-scoped discover grants back after
+// the execution-baseline pin and before the seal. Floor tools already on the
+// slice stay, so the grant does not trade places with bash. Missing floor
+// tools are not added: a later seal, or a surface that never pinned them,
+// must not regain bash from this path. The grant is left off the ranked
+// retrieval tail so the closed plan's count guard keeps it.
+func restoreDiscoveredSurfaceGrants(tools, baseTools, catalog []map[string]interface{}, ranked, grants []string) ([]map[string]interface{}, []map[string]interface{}, []string) {
+	if len(grants) == 0 {
+		return tools, baseTools, ranked
+	}
+	tools = ensureNamedToolsPresent(tools, catalog, protectBudgetNames(grants, tools, nil))
+	baseTools = ensureNamedToolsPresent(baseTools, catalog, protectBudgetNames(grants, baseTools, nil))
+	for _, name := range grants {
+		if toolListContainsName(tools, name) {
+			ranked = rankedNamesWithout(ranked, name)
+		}
+	}
+	return tools, baseTools, ranked
+}
+
+// protectBudgetNames is the keep-set for one budget ensure. required names
+// are added even when missing. Floor tools and keep names are included only
+// when this slice already has them.
+func protectBudgetNames(required []string, tools []map[string]interface{}, keep []string) []string {
+	want := make([]string, 0, len(legacyRoutingMissFloorToolOrder)+len(keep))
+	want = append(want, legacyRoutingMissFloorToolOrder...)
+	want = append(want, keep...)
+	present := namedToolPresence(tools, want)
+	out := make([]string, 0, len(required)+len(want))
+	seen := make(map[string]bool, len(required)+len(want))
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, name := range required {
+		add(name)
+	}
+	for _, name := range legacyRoutingMissFloorToolOrder {
+		if present[name] {
+			add(name)
+		}
+	}
+	for _, name := range keep {
+		if present[name] {
+			add(name)
+		}
+	}
+	return out
 }
 
 // rankedNamesWithout drops one name from the router's order. A tool that

@@ -40,12 +40,19 @@ type ForEachSpec struct {
 	CollectInto string `json:"collect_into,omitempty"`
 }
 
+type CallSpec struct {
+	Callee  string            `json:"callee"`
+	Inputs  map[string]string `json:"inputs,omitempty"`
+	Outputs map[string]string `json:"outputs,omitempty"`
+}
+
 type Step struct {
 	ID            string            `json:"step_id"`
 	Type          StepType          `json:"step_type"`
 	Summary       string            `json:"summary"`
 	Attributes    map[string]string `json:"attributes,omitempty"`
 	Inputs        []string          `json:"inputs,omitempty"`
+	Tools         []string          `json:"tools,omitempty"`
 	Outputs       []VariableDecl    `json:"outputs,omitempty"`
 	Instruction   string            `json:"instruction,omitempty"`
 	Body          string            `json:"body,omitempty"`
@@ -56,6 +63,7 @@ type Step struct {
 	Parallel      bool              `json:"parallel,omitempty"`
 	MaxIterations int               `json:"max_iterations,omitempty"`
 	ForEach       *ForEachSpec      `json:"for_each,omitempty"`
+	Call          *CallSpec         `json:"call,omitempty"`
 	Condition     string            `json:"condition,omitempty"`
 }
 

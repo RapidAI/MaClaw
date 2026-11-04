@@ -23,7 +23,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     FileCompanionExportProject: vi.fn(),
 }));
 
-import { companionInstalledSharePath, companionLibrarySync, companionWithdrawnNotice } from "./FileCompanionLibrary";
+import { companionInstalledSharePath, companionLibrarySync, companionShareDocumentCatchUp, companionShareMarksBehind, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionWithdrawnNotice } from "./FileCompanionLibrary";
 
 describe("companionInstalledSharePath", () => {
     it("recognizes a received copy by the share folder", () => {
@@ -31,6 +31,58 @@ describe("companionInstalledSharePath", () => {
         expect(companionInstalledSharePath(`C:/Users/me/.maclaw/data/file-companion/library-files/${token}/shared.pdf`)).toBe(true);
         expect(companionInstalledSharePath(`C:\\Users\\me\\.maclaw\\data\\file-companion\\library-files\\${token}\\shared.pdf`)).toBe(true);
         expect(companionInstalledSharePath("C:/Users/me/Desktop/paper.pdf")).toBe(false);
+    });
+});
+
+describe("companionShouldPullShareMarks", () => {
+    const token = "cd_0123456789abcdef0123456789abcdef";
+    const cache = `C:/Users/me/.maclaw/data/file-companion/library-files/${token}/shared.pdf`;
+    it("follows marks onto another sign-in of the host", () => {
+        expect(companionShouldPullShareMarks({ mine: true, path: cache, marksRevision: 3 })).toBe(true);
+        expect(companionShouldPullShareMarks({ mine: false, path: cache, marksRevision: 3 })).toBe(true);
+    });
+    it("leaves the authoring paper to the machine that painted the marks", () => {
+        expect(companionShouldPullShareMarks({ mine: true, path: "C:/Users/me/Desktop/paper.pdf", marksRevision: 3 })).toBe(false);
+        expect(companionShouldPullShareMarks({ mine: true, path: cache, marksRevision: 0 })).toBe(false);
+    });
+});
+
+describe("companionZipKeepsAppliedMarks", () => {
+    it("keeps highlights a newer marks fetch already showed", () => {
+        expect(companionZipKeepsAppliedMarks(6, 5)).toBe(true);
+        expect(companionZipKeepsAppliedMarks(5, 5)).toBe(false);
+        expect(companionZipKeepsAppliedMarks(0, 5)).toBe(false);
+        expect(companionZipKeepsAppliedMarks(4, 0)).toBe(false);
+        expect(companionZipKeepsAppliedMarks(0, 0, true)).toBe(true);
+    });
+});
+
+describe("companionShareMarksBehind", () => {
+    it("holds a question on a downloaded host copy that has not applied marks", () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const cache = `C:/Users/me/.maclaw/data/file-companion/library-files/${token}/shared.pdf`;
+        expect(companionShareMarksBehind(cache, 4, 0)).toBe(true);
+        expect(companionShareMarksBehind(cache, 4, 4)).toBe(false);
+        expect(companionShareMarksBehind(cache, 0, 0)).toBe(false);
+        expect(companionShareMarksBehind("C:/Users/me/Desktop/paper.pdf", 4, 0)).toBe(false);
+        expect(companionShareMarksBehind(cache, 4, 4, { listed: 5, applied: 4, known: true })).toBe(true);
+        expect(companionShareMarksBehind(cache, 4, 4, { listed: 5, applied: 5, known: true })).toBe(false);
+        expect(companionShareMarksBehind(cache, 0, 0, { listed: 0, applied: 0, known: false })).toBe(true);
+        expect(companionShareMarksBehind("C:/Users/me/Desktop/paper.pdf", 0, 0, { listed: 5, applied: 0, known: false })).toBe(false);
+    });
+});
+
+describe("companionShareDocumentCatchUp", () => {
+    it("keeps a quiet stored list and waits for the hub index download", () => {
+        const stored = companionShareDocumentCatchUp({ listed: 0, applied: 0 }, 4, true, false);
+        expect(stored).toEqual({ listed: 4, applied: 4 });
+        const index = companionShareDocumentCatchUp(stored, 5, true, true);
+        expect(index).toEqual({ listed: 5, applied: 4 });
+        const finished = companionShareDocumentCatchUp(index, 5, false, false);
+        expect(finished).toEqual({ listed: 5, applied: 5 });
+        const failed = companionShareDocumentCatchUp(index, 4, false, false);
+        expect(failed.applied).toBe(4);
+        expect(failed.listed).toBe(5);
     });
 });
 

@@ -169,24 +169,36 @@ func (d *DriftDetector) detectArgsHashDrift() DriftResult {
 		return DriftResult{}
 	}
 
-	startIdx := len(window) - consecutiveCount
-	timeSpan := window[lastIdx].Timestamp.Sub(window[startIdx].Timestamp)
-	if timeSpan > slowPollTimeSpan && consecutiveCount < slowPollMinRepeat {
-		return DriftResult{}
-	}
-
-	if resultsAreChanging(window, consecutiveCount) {
-		return DriftResult{}
-	}
-	// An unchanged successful result is a stable observation: a quiet status
-	// poll, not a tool that cannot finish. Ending that streak tells the model
-	// the turn is limited, which it repeats as a used-up quota. A streak that
-	// did not succeed is the dead loop this layer exists for.
-	if consecutiveSuccesses(window, consecutiveCount) {
+	if sameArgsStreakIsExempt(window, consecutiveCount) {
 		return DriftResult{}
 	}
 
 	return d.buildDriftResult(consecutiveCount, lastRec.ToolName, lastRec.ResultHint, "loop")
+}
+
+// sameArgsStreakIsExempt reports a repeated call that is still making
+// progress, or a quiet status poll. discover_tool is not a poll: the same
+// need and the same granted result means the name never became callable.
+// Each call can sit a minute apart while the model rewrites one preface, so
+// the slow-poll window must not apply to it either. Other tools keep both
+// exemptions. Ending a successful status streak tells the model the turn is
+// limited, which it repeats as a used-up quota.
+func sameArgsStreakIsExempt(window []ToolCallRecord, consecutiveCount int) bool {
+	if consecutiveCount <= 0 || consecutiveCount > len(window) {
+		return true
+	}
+	if resultsAreChanging(window, consecutiveCount) {
+		return true
+	}
+	if window[len(window)-1].ToolName == "discover_tool" {
+		return false
+	}
+	startIdx := len(window) - consecutiveCount
+	timeSpan := window[len(window)-1].Timestamp.Sub(window[startIdx].Timestamp)
+	if timeSpan > slowPollTimeSpan && consecutiveCount < slowPollMinRepeat {
+		return true
+	}
+	return consecutiveSuccesses(window, consecutiveCount)
 }
 
 // consecutiveSuccesses reports that every call in the same-args streak
@@ -558,18 +570,12 @@ func (d *DriftDetector) PreviewDrift() DriftResult {
 			break
 		}
 	}
-	if consecutiveCount >= loopPatternMinRepeat {
-		startIdx := len(window) - consecutiveCount
-		timeSpan := window[lastIdx].Timestamp.Sub(window[startIdx].Timestamp)
-		if !(timeSpan > slowPollTimeSpan && consecutiveCount < slowPollMinRepeat) {
-			if !resultsAreChanging(window, consecutiveCount) && !consecutiveSuccesses(window, consecutiveCount) {
-				return DriftResult{
-					Drifted:       true,
-					Pattern:       "loop",
-					NeedHumanHelp: d.replanCount+1 >= 2,
-					DriftedTool:   lastRec.ToolName,
-				}
-			}
+	if consecutiveCount >= loopPatternMinRepeat && !sameArgsStreakIsExempt(window, consecutiveCount) {
+		return DriftResult{
+			Drifted:       true,
+			Pattern:       "loop",
+			NeedHumanHelp: d.replanCount+1 >= 2,
+			DriftedTool:   lastRec.ToolName,
 		}
 	}
 

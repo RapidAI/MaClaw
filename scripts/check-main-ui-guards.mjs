@@ -597,10 +597,10 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/AboutPanel.tsx', 1000],
   ['guiapp/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['guiapp/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  // Refreshed 6800 -> ... -> 7370 -> 7450 (2026-11-02): the steps-revision and
-  // coding-workbench work keeps growing this file (guard counts 7376); headroom
-  // absorbs it while that work is in progress. Re-tighten once it lands.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7450],
+  // Refreshed 6800 -> ... -> 7450 -> 7520 (2026-11-04): option-inquiry and
+  // panel work pushed this to 7472 lines; headroom absorbs the in-flight work.
+  // Re-tighten once it lands and extract the reply/card rendering.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7520],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],

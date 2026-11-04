@@ -66,6 +66,17 @@ func Validate(spec SpecAST) []error {
 			if step.Type == StepOnFail && (parent == nil || parent.Type != StepSubtask && parent.Type != StepCase) {
 				add("ON_FAIL_OUTSIDE_CONTAINER", "on_fail "+step.ID+" must belong to subtask or case", *step)
 			}
+			if step.Type == StepCall {
+				if step.Call == nil || strings.TrimSpace(step.Call.Callee) == "" {
+					add("CALL_TARGET_REQUIRED", "call "+step.ID+" requires a callee", *step)
+				} else {
+					for _, source := range step.Call.Inputs {
+						if _, ok := declared[source]; !ok {
+							add("UNKNOWN_INPUT", "call "+step.ID+" maps undeclared variable "+source, *step)
+						}
+					}
+				}
+			}
 			for _, input := range step.Inputs {
 				if _, ok := declared[input]; !ok {
 					add("UNKNOWN_INPUT", "step "+step.ID+" reads undeclared variable "+input, *step)
@@ -81,7 +92,7 @@ func Validate(spec SpecAST) []error {
 				}
 				produced[output.Name] = true
 				if prior, exists := declared[output.Name]; exists {
-					if output.Type != "" && prior.Type != output.Type {
+					if output.Type != "" && output.Type != "any" && prior.Type != "any" && prior.Type != output.Type {
 						add("VARIABLE_TYPE_CONFLICT", "variable "+output.Name+" changes type from "+prior.Type+" to "+output.Type, *step)
 					}
 				} else {

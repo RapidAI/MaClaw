@@ -613,11 +613,11 @@ func TestSkillInstallReviewNeedsConfirmationByMode(t *testing.T) {
 	if standard.skillInstallReviewNeedsConfirmation(mediumReport) || standard.skillInstallScanShouldBlock(mediumReport) {
 		t.Fatal("standard mode should record medium-risk skill install without confirmation")
 	}
-	if !standard.skillInstallReviewNeedsConfirmation(highReport) || standard.skillInstallScanShouldBlock(highReport) {
-		t.Fatal("standard mode should ask before installing a high-risk skill")
+	if standard.skillInstallReviewNeedsConfirmation(highReport) || standard.skillInstallScanShouldBlock(highReport) {
+		t.Fatal("standard mode should install a high-risk skill without stopping the task")
 	}
-	if !standard.skillInstallReviewNeedsConfirmation(criticalReport) || standard.skillInstallScanShouldBlock(criticalReport) {
-		t.Fatal("standard mode should ask before installing a critical skill")
+	if standard.skillInstallReviewNeedsConfirmation(criticalReport) || standard.skillInstallScanShouldBlock(criticalReport) {
+		t.Fatal("standard mode should install a critical skill without stopping the task")
 	}
 
 	strict := &App{policyEngine: NewPolicyEngineWithMode("strict")}
@@ -632,6 +632,19 @@ func TestSkillInstallReviewNeedsConfirmationByMode(t *testing.T) {
 	}
 	if standard.skillInstallUnattendedShouldBlock(highReport) || standard.skillInstallUnattendedShouldBlock(criticalReport) {
 		t.Fatal("standard mode without a confirmation channel should record high and critical skill risk and continue")
+	}
+	fullControl := &IMMessageHandler{app: &App{policyEngine: NewPolicyEngineWithMode("strict")}}
+	owner := "desktop-user:D:/tasks/full-control"
+	fullControl.stickyCodingWorkbenchMemory.Store(owner, stickyCodingWorkbenchMemory{SessionPermissionMode: "full"})
+	action, recorded := fullControl.skillInstallDecidedAction(criticalReport, "clawhub", "desktop", owner)
+	if action == security.PolicyAsk || action == security.PolicyDeny || recorded {
+		t.Fatalf("full control must install a critical skill without a prompt, action=%s recorded=%v", action, recorded)
+	}
+	held := &IMMessageHandler{app: fullControl.app}
+	requestOwner := "desktop-user:D:/tasks/request"
+	held.stickyCodingWorkbenchMemory.Store(requestOwner, stickyCodingWorkbenchMemory{SessionPermissionMode: "request"})
+	if got, _ := held.skillInstallDecidedAction(criticalReport, "clawhub", "desktop", requestOwner); got != security.PolicyDeny {
+		t.Fatalf("strict critical without full control must still deny, got %s", got)
 	}
 	if !strict.skillInstallUnattendedShouldBlock(mediumReport) || !strict.skillInstallUnattendedShouldBlock(highReport) || !strict.skillInstallUnattendedShouldBlock(criticalReport) {
 		t.Fatal("strict mode without a confirmation channel should block medium, high, and critical skill risk")
@@ -685,17 +698,17 @@ func TestTrustedMarketplaceSkillInstallRecordsRiskWithoutBlocking(t *testing.T) 
 	}
 }
 
-func TestSkillInstallActionWithChannelRecordsStandardAsk(t *testing.T) {
+func TestSkillInstallActionWithChannelRecordsStandardRisk(t *testing.T) {
 	high := &cskill.ScanReport{FinalLevel: security.RiskHigh, Summary: "high", ScannedBy: "pattern"}
 	medium := &cskill.ScanReport{FinalLevel: security.RiskMedium, Summary: "medium", ScannedBy: "pattern"}
 	standard := &App{policyEngine: NewPolicyEngineWithMode("standard")}
 	action, recorded := standard.skillInstallActionWithChannel(high, "", false)
-	if action != security.PolicyAudit || !recorded {
-		t.Fatalf("standard without channel = %s recorded=%v, want audit recorded", action, recorded)
+	if action != security.PolicyAudit || recorded {
+		t.Fatalf("standard without channel = %s recorded=%v, want audit", action, recorded)
 	}
 	action, recorded = standard.skillInstallActionWithChannel(high, "", true)
-	if action != security.PolicyAsk || recorded {
-		t.Fatalf("standard with channel = %s recorded=%v, want ask", action, recorded)
+	if action != security.PolicyAudit || recorded {
+		t.Fatalf("standard with channel = %s recorded=%v, want audit without a prompt", action, recorded)
 	}
 	strict := &App{policyEngine: NewPolicyEngineWithMode("strict")}
 	action, recorded = strict.skillInstallActionWithChannel(high, "", false)

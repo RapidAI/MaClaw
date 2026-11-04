@@ -16,9 +16,12 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// A companion project is a zip the reader can open again. It holds the
-// document bytes, the highlight list, and the chat. The PDF inside is a copy.
-// Highlights are not written into that PDF.
+// A companion project is a zip another reader can open and get the same
+// document back. It holds the document bytes, highlights, answer marks,
+// placed notes, freehand drawings, bookmarks, the chat, discussion notes,
+// and translation cards. The PDF inside is a copy. Marks are not written
+// into that PDF. A cloud share uses the same zip and leaves discussion
+// notes and translations out; those stay with the share and this reader.
 
 const (
 	fileCompanionProjectKind         = "maclaw-file-companion"
@@ -57,6 +60,12 @@ type fileCompanionProjectManifest struct {
 	Messages    []FileCompanionMessage `json:"messages"`
 	PaperResult string                 `json:"paperResult,omitempty"`
 	PaperTurn   int                    `json:"paperTurn,omitempty"`
+	// Notes are the discussion beside the chat: reader lines, host replies,
+	// and review decisions. A legacy project omits the field.
+	Notes json.RawMessage `json:"notes,omitempty"`
+	// Translations are the cards on the paper that are not placed notes.
+	// Placed notes stay in Annotations. A legacy project omits the field.
+	Translations json.RawMessage `json:"translations,omitempty"`
 }
 
 type fileCompanionProjectMark struct {
@@ -94,9 +103,10 @@ var fileCompanionSaveProjectDialog = func(a *App, defaultFilename string) (strin
 	})
 }
 
-// FileCompanionExportProject packs the open document, its highlights, and the
-// chat into a zip. An empty dialog result is a cancel, not an error. The open
-// file is only read.
+// FileCompanionExportProject packs the open document and everything tied to
+// it: highlights, answer marks, placed notes, drawings, bookmarks, chat,
+// discussion notes, and translation cards. An empty dialog result is a
+// cancel, not an error. The open file is only read.
 func (a *App) FileCompanionExportProject(path, highlightsJSON string) (string, error) {
 	if a == nil {
 		return "", errors.New("应用不可用")
@@ -113,12 +123,26 @@ func (a *App) FileCompanionExportProject(path, highlightsJSON string) (string, e
 	if err != nil || info.IsDir() {
 		return "", errors.New("文件无法读取")
 	}
-	highlights, chatMarks, annotations, drawings, bookmarks, err := fileCompanionSplitSharePayload(highlightsJSON)
+	highlights, chatMarks, annotations, drawings, bookmarks, translations, notes, err := fileCompanionSplitSharePayload(highlightsJSON)
 	if err != nil {
 		return "", err
 	}
-	messages := a.fileCompanionHistory(fileCompanionSessionID(source))
-	paperPath, paperTurn := fileCompanionProjectPaper(messages)
+	// Cleaned here, not in the splitter. A share drops this field, so a bad
+	// card must not fail the share.
+	if translations != nil {
+		translations, err = fileCompanionCleanTranslations(translations)
+		if err != nil {
+			return "", err
+		}
+	}
+	// The discussion is checked before the dialog. A bad list should not make
+	// the user pick a destination and then fail.
+	var screenNotes []FileCompanionShareNote
+	if len(notes) > 0 {
+		if err := json.Unmarshal(notes, &screenNotes); err != nil {
+			return "", errors.New("讨论无法保存")
+		}
+	}
 	dest, err := fileCompanionSaveProjectDialog(a, fileCompanionProjectFileName(source))
 	if err != nil {
 		return "", err
@@ -144,7 +168,25 @@ func (a *App) FileCompanionExportProject(path, highlightsJSON string) (string, e
 	if sameFileCompanionExportPath(source, dest) {
 		return "", errors.New("不能覆盖当前文件")
 	}
-	if err := writeFileCompanionProject(dest, source, highlights, chatMarks, annotations, drawings, bookmarks, messages, paperPath, paperTurn); err != nil {
+	if translations == nil {
+		translations, err = a.fileCompanionStoredTranslationCards(source)
+		if err != nil {
+			return "", err
+		}
+	}
+	notes, err = a.fileCompanionProjectNotes(source, screenNotes)
+	if err != nil {
+		return "", err
+	}
+	if len(notes) == 0 {
+		notes = json.RawMessage("[]")
+	}
+	if len(translations) == 0 {
+		translations = json.RawMessage("[]")
+	}
+	messages := a.fileCompanionHistory(fileCompanionSessionID(source))
+	paperPath, paperTurn := fileCompanionProjectPaper(messages)
+	if err := writeFileCompanionProject(dest, source, highlights, chatMarks, annotations, drawings, bookmarks, messages, paperPath, paperTurn, notes, translations); err != nil {
 		return "", err
 	}
 	logFileCompanion("export project")
@@ -309,7 +351,7 @@ const fileCompanionAnnotationNameMax = 40
 
 type fileCompanionAnnotation struct {
 	ID          string                        `json:"id"`
-	Kind        string                        `json:"kind"`
+	Kind        string                        `json:"kind,omitempty"`
 	Name        string                        `json:"name,omitempty"`
 	Text        string                        `json:"text"`
 	Translation string                        `json:"translation"`
@@ -487,50 +529,364 @@ func fileCompanionCleanDrawing(item fileCompanionDrawing) (fileCompanionDrawing,
 // A legacy caller still sends the highlights array alone; that keeps working
 // and leaves the other fields nil, so an old project does not clear a reader's
 // own answer highlights, placed notes, drawings, or bookmarks.
-func fileCompanionSplitSharePayload(raw string) (highlights, chatMarks, annotations, drawings, bookmarks json.RawMessage, err error) {
+// translations and notes are returned raw when the object carries them. A
+// missing field stays nil. The share caller drops both; the export caller
+// cleans translations itself so a bad card cannot fail a share.
+func fileCompanionSplitSharePayload(raw string) (highlights, chatMarks, annotations, drawings, bookmarks, translations, notes json.RawMessage, err error) {
 	trimmed := strings.TrimSpace(raw)
 	if strings.HasPrefix(trimmed, "{") {
 		var payload struct {
-			Highlights  json.RawMessage `json:"highlights"`
-			ChatMarks   json.RawMessage `json:"chatMarks"`
-			Annotations json.RawMessage `json:"annotations"`
-			Drawings    json.RawMessage `json:"drawings"`
-			Bookmarks   json.RawMessage `json:"bookmarks"`
+			Highlights   json.RawMessage `json:"highlights"`
+			ChatMarks    json.RawMessage `json:"chatMarks"`
+			Annotations  json.RawMessage `json:"annotations"`
+			Drawings     json.RawMessage `json:"drawings"`
+			Bookmarks    json.RawMessage `json:"bookmarks"`
+			Translations json.RawMessage `json:"translations"`
+			Notes        json.RawMessage `json:"notes"`
 		}
 		if json.Unmarshal([]byte(trimmed), &payload) == nil && len(payload.Highlights) > 0 {
 			highlights, err = fileCompanionCleanHighlights(string(payload.Highlights))
 			if err != nil {
-				return nil, nil, nil, nil, nil, err
+				return nil, nil, nil, nil, nil, nil, nil, err
 			}
 			if len(payload.ChatMarks) > 0 {
 				chatMarks, err = fileCompanionCleanChatMarks(payload.ChatMarks)
 				if err != nil {
-					return nil, nil, nil, nil, nil, err
+					return nil, nil, nil, nil, nil, nil, nil, err
 				}
 			}
 			if len(payload.Annotations) > 0 {
 				annotations, err = fileCompanionCleanAnnotations(payload.Annotations)
 				if err != nil {
-					return nil, nil, nil, nil, nil, err
+					return nil, nil, nil, nil, nil, nil, nil, err
 				}
 			}
 			if len(payload.Drawings) > 0 {
 				drawings, err = fileCompanionCleanDrawings(payload.Drawings)
 				if err != nil {
-					return nil, nil, nil, nil, nil, err
+					return nil, nil, nil, nil, nil, nil, nil, err
 				}
 			}
 			if len(payload.Bookmarks) > 0 {
 				bookmarks, err = fileCompanionCleanBookmarks(payload.Bookmarks)
 				if err != nil {
-					return nil, nil, nil, nil, nil, err
+					return nil, nil, nil, nil, nil, nil, nil, err
 				}
 			}
-			return highlights, chatMarks, annotations, drawings, bookmarks, nil
+			if len(payload.Translations) > 0 && string(payload.Translations) != "null" {
+				translations = payload.Translations
+			}
+			if len(payload.Notes) > 0 && string(payload.Notes) != "null" {
+				notes = payload.Notes
+			}
+			return highlights, chatMarks, annotations, drawings, bookmarks, translations, notes, nil
 		}
 	}
 	highlights, err = fileCompanionCleanHighlights(raw)
-	return highlights, nil, nil, nil, nil, err
+	return highlights, nil, nil, nil, nil, nil, nil, err
+}
+
+func (a *App) fileCompanionStoredTranslationCards(path string) (json.RawMessage, error) {
+	value, ok, err := a.readCompanionReaderValue(companionReaderPDFTranslationsKind, companionReaderPathKey(path))
+	if err != nil {
+		return nil, errors.New("批注无法保存")
+	}
+	if !ok {
+		return nil, nil
+	}
+	return fileCompanionCleanTranslations(json.RawMessage(value))
+}
+
+// fileCompanionProjectNotes is the discussion that belongs to this document.
+// The imported snapshot is the base. Library rows for the same file overlay
+// it, and notes on the payload are what the open window is showing: the same
+// id keeps its place and takes the screen's text. A library export sends an
+// empty list, so the snapshot still has to travel.
+func (a *App) fileCompanionProjectNotes(path string, extra []FileCompanionShareNote) (json.RawMessage, error) {
+	merged := fileCompanionMergeDiscussionNotes(a.fileCompanionStoredDiscussionNoteList(path), a.fileCompanionLibraryNotes(path))
+	return fileCompanionEncodeNotes(fileCompanionMergeDiscussionNotes(merged, extra))
+}
+
+func (a *App) fileCompanionStoredDiscussionNoteList(path string) []FileCompanionShareNote {
+	raw := a.fileCompanionDiscussionNotesStored(path)
+	if len(raw) == 0 {
+		return nil
+	}
+	var notes []FileCompanionShareNote
+	if err := json.Unmarshal(raw, &notes); err != nil {
+		return nil
+	}
+	return notes
+}
+
+func (a *App) saveFileCompanionDiscussionNotes(path string, raw json.RawMessage) error {
+	key := companionReaderPathKey(path)
+	if key == "" {
+		return errors.New("无法打开项目")
+	}
+	cleaned, err := fileCompanionCleanNotes(raw)
+	if err != nil {
+		return err
+	}
+	if string(cleaned) == "[]" {
+		return a.deleteCompanionReaderState(companionReaderDiscussionNotesKind, key)
+	}
+	if err := a.writeCompanionReaderState(companionReaderDiscussionNotesKind, key, string(cleaned)); err != nil {
+		return err
+	}
+	a.rememberFileCompanionDiscussionNotes(key, cleaned)
+	return nil
+}
+
+func (a *App) fileCompanionDiscussionNotesStored(path string) json.RawMessage {
+	key := companionReaderPathKey(path)
+	if a == nil || key == "" {
+		return nil
+	}
+	if notes, ok := a.cachedFileCompanionDiscussionNotes(key); ok {
+		return notes
+	}
+	value, ok, err := a.readCompanionReaderValue(companionReaderDiscussionNotesKind, key)
+	if err != nil {
+		return nil
+	}
+	var cleaned json.RawMessage
+	if ok && strings.TrimSpace(value) != "" {
+		parsed, cleanErr := fileCompanionCleanNotes(json.RawMessage(value))
+		if cleanErr == nil && string(parsed) != "[]" {
+			cleaned = parsed
+		}
+	}
+	if newer, replaced := a.storeFileCompanionDiscussionNotesIfAbsent(key, cleaned); replaced {
+		return newer
+	}
+	return cleaned
+}
+
+func (a *App) fileCompanionLibraryNotes(path string) []FileCompanionShareNote {
+	if a == nil {
+		return nil
+	}
+	key := fileCompanionDedupeKey(path)
+	if key == "" {
+		return nil
+	}
+	cheap := companionReaderPathKey(path)
+	baseName := strings.ToLower(filepath.Base(key))
+	fileCompanionLibraryMu.Lock()
+	items, ok := a.readFileCompanionLibraryLocked()
+	fileCompanionLibraryMu.Unlock()
+	if !ok {
+		return nil
+	}
+	cheapHit := make([]bool, len(items))
+	anyCheap := false
+	for i, item := range items {
+		itemPath := strings.TrimSpace(item.Path)
+		if itemPath == "" || cheap == "" || companionReaderPathKey(itemPath) != cheap {
+			continue
+		}
+		cheapHit[i] = true
+		anyCheap = true
+	}
+	var live, expired []FileCompanionLibraryItem
+	for i, item := range items {
+		itemPath := strings.TrimSpace(item.Path)
+		if itemPath == "" {
+			continue
+		}
+		if !cheapHit[i] {
+			// Another spelling of the same file still needs a real path compare.
+			// Once the cheap key matched, only the same file name is worth it.
+			if anyCheap && (baseName == "" || strings.ToLower(filepath.Base(itemPath)) != baseName) {
+				continue
+			}
+			if fileCompanionDedupeKey(itemPath) != key {
+				continue
+			}
+		}
+		if item.Expired {
+			expired = append(expired, item)
+			continue
+		}
+		live = append(live, item)
+	}
+	notes := fileCompanionNotesFromItems(nil, live)
+	return fileCompanionNotesFromItems(notes, expired)
+}
+
+func fileCompanionNotesFromItems(base []FileCompanionShareNote, items []FileCompanionLibraryItem) []FileCompanionShareNote {
+	seen := make(map[string]struct{}, len(base))
+	for _, note := range base {
+		if note.ID != "" {
+			seen[note.ID] = struct{}{}
+		}
+	}
+	for _, item := range items {
+		for _, note := range item.Notes {
+			id := strings.TrimSpace(note.ID)
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			base = append(base, note)
+		}
+	}
+	return base
+}
+
+// fileCompanionMergeDiscussionNotes overlays screen notes onto the stored
+// thread. The same id keeps its place and takes the screen's text.
+func fileCompanionMergeDiscussionNotes(base, extra []FileCompanionShareNote) []FileCompanionShareNote {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]int, len(base))
+	for i, note := range base {
+		if note.ID != "" {
+			seen[note.ID] = i
+		}
+	}
+	for _, note := range extra {
+		id := strings.TrimSpace(note.ID)
+		if id == "" {
+			continue
+		}
+		if at, ok := seen[id]; ok {
+			// A screen copy that never carried the timestamp must not wipe the
+			// one already stored for this note.
+			if strings.TrimSpace(note.CreatedAt) == "" {
+				note.CreatedAt = base[at].CreatedAt
+			}
+			base[at] = note
+			continue
+		}
+		seen[id] = len(base)
+		base = append(base, note)
+	}
+	return base
+}
+
+func fileCompanionCleanNotes(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return json.RawMessage("[]"), nil
+	}
+	if len(raw) > fileCompanionProjectMaxMarks {
+		return nil, errors.New("讨论无法保存")
+	}
+	var incoming []FileCompanionShareNote
+	if err := json.Unmarshal(raw, &incoming); err != nil {
+		return nil, errors.New("讨论无法保存")
+	}
+	return fileCompanionEncodeNotes(incoming)
+}
+
+func fileCompanionEncodeNotes(incoming []FileCompanionShareNote) (json.RawMessage, error) {
+	cleaned := make([]FileCompanionShareNote, 0, len(incoming))
+	seen := make(map[string]int, len(incoming))
+	for _, item := range incoming {
+		next, ok := fileCompanionCleanNote(item)
+		if !ok {
+			continue
+		}
+		if at, exists := seen[next.ID]; exists {
+			cleaned[at] = next
+			continue
+		}
+		if len(cleaned) >= 500 {
+			continue
+		}
+		seen[next.ID] = len(cleaned)
+		cleaned = append(cleaned, next)
+	}
+	encoded, err := marshalProjectJSON(cleaned)
+	if err != nil {
+		return nil, errors.New("讨论无法保存")
+	}
+	return encoded, nil
+}
+
+func fileCompanionCleanNote(item FileCompanionShareNote) (FileCompanionShareNote, bool) {
+	id := strings.TrimSpace(item.ID)
+	if id == "" || len(id) > 80 {
+		return FileCompanionShareNote{}, false
+	}
+	text := strings.TrimSpace(item.Text)
+	if text == "" {
+		return FileCompanionShareNote{}, false
+	}
+	if runes := []rune(text); len(runes) > 12000 {
+		text = string(runes[:12000])
+	}
+	author := strings.TrimSpace(item.Author)
+	if runes := []rune(author); len(runes) > 200 {
+		author = string(runes[:200])
+	}
+	created := strings.TrimSpace(item.CreatedAt)
+	if len(created) > 40 {
+		created = ""
+	}
+	replyTo := strings.TrimSpace(item.ReplyTo)
+	if len(replyTo) > 80 {
+		replyTo = ""
+	}
+	decision := strings.TrimSpace(item.Decision)
+	switch decision {
+	case "", "pending", "approved", "ignored":
+	default:
+		decision = ""
+	}
+	return FileCompanionShareNote{
+		ID: id, Author: author, Text: text, CreatedAt: created,
+		Host: item.Host, ReplyTo: replyTo, Decision: decision,
+	}, true
+}
+
+// fileCompanionCleanTranslations keeps translation cards. Placed notes travel
+// in Annotations, so kind "annotation" is dropped here.
+func fileCompanionCleanTranslations(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return json.RawMessage("[]"), nil
+	}
+	if len(raw) > fileCompanionProjectMaxMarks {
+		return nil, errors.New("批注无法保存")
+	}
+	var incoming []fileCompanionTranslationCard
+	if err := json.Unmarshal(raw, &incoming); err != nil {
+		return nil, errors.New("批注无法保存")
+	}
+	cleaned := make([]fileCompanionTranslationCard, 0, len(incoming))
+	for _, item := range incoming {
+		if len(cleaned) >= 200 {
+			break
+		}
+		if item.Kind == "annotation" {
+			continue
+		}
+		probe := item.fileCompanionAnnotation
+		probe.Kind = "annotation"
+		next, ok := fileCompanionCleanAnnotation(probe)
+		if !ok {
+			continue
+		}
+		next.Kind = ""
+		cleaned = append(cleaned, fileCompanionTranslationCard{fileCompanionAnnotation: next, Clipped: item.Clipped})
+	}
+	encoded, err := json.Marshal(cleaned)
+	if err != nil {
+		return nil, errors.New("批注无法保存")
+	}
+	return encoded, nil
+}
+
+type fileCompanionTranslationCard struct {
+	fileCompanionAnnotation
+	Clipped bool `json:"clipped,omitempty"`
 }
 
 type fileCompanionProjectBookmark struct {
@@ -700,7 +1056,7 @@ func fileCompanionProjectSafeName(name string) string {
 	return cleaned
 }
 
-func writeFileCompanionProject(dest, source string, highlights, chatMarks, annotations, drawings, bookmarks json.RawMessage, messages []FileCompanionMessage, paperPath string, paperTurn int) error {
+func writeFileCompanionProject(dest, source string, highlights, chatMarks, annotations, drawings, bookmarks json.RawMessage, messages []FileCompanionMessage, paperPath string, paperTurn int, notes, translations json.RawMessage) error {
 	src, err := os.Open(source)
 	if err != nil {
 		return errors.New("文件无法读取")
@@ -726,24 +1082,48 @@ func writeFileCompanionProject(dest, source string, highlights, chatMarks, annot
 	}()
 	zw := zip.NewWriter(out)
 	manifest := fileCompanionProjectManifest{
-		Kind:        fileCompanionProjectKind,
-		Version:     fileCompanionProjectVersion,
-		Name:        filepath.Base(source),
-		Highlights:  highlights,
-		ChatMarks:   chatMarks,
-		Annotations: annotations,
-		Drawings:    drawings,
-		Bookmarks:   bookmarks,
-		Messages:    messages,
+		Kind:         fileCompanionProjectKind,
+		Version:      fileCompanionProjectVersion,
+		Name:         filepath.Base(source),
+		Highlights:   highlights,
+		ChatMarks:    chatMarks,
+		Annotations:  annotations,
+		Drawings:     drawings,
+		Bookmarks:    bookmarks,
+		Messages:     messages,
+		Notes:        notes,
+		Translations: translations,
 	}
 	if paperPath != "" && paperTurn > 0 {
 		manifest.PaperResult = fileCompanionProjectPaperEntry
 		manifest.PaperTurn = paperTurn
 	}
-	if err := writeProjectJSON(zw, fileCompanionProjectManifestName, manifest); err != nil {
+	preview, previewErr := marshalProjectJSON(manifest)
+	// A trailing newline matches encoding/json's Encoder and is part of the
+	// size the reader measures.
+	if previewErr != nil || len(preview)+1 > fileCompanionProjectMaxMarks {
 		_ = zw.Close()
 		_ = out.Close()
-		return err
+		if previewErr != nil {
+			return errors.New("无法保存项目")
+		}
+		return errors.New("关联信息过多，无法保存")
+	}
+	manifestWriter, err := zw.Create(fileCompanionProjectManifestName)
+	if err != nil {
+		_ = zw.Close()
+		_ = out.Close()
+		return errors.New("无法保存项目")
+	}
+	if _, err := manifestWriter.Write(preview); err != nil {
+		_ = zw.Close()
+		_ = out.Close()
+		return errors.New("无法保存项目")
+	}
+	if _, err := manifestWriter.Write([]byte{'\n'}); err != nil {
+		_ = zw.Close()
+		_ = out.Close()
+		return errors.New("无法保存项目")
 	}
 	header, err := zip.FileInfoHeader(info)
 	if err != nil {
@@ -783,19 +1163,6 @@ func writeFileCompanionProject(dest, source string, highlights, chatMarks, annot
 		return err
 	}
 	failed = false
-	return nil
-}
-
-func writeProjectJSON(zw *zip.Writer, name string, value any) error {
-	w, err := zw.Create(name)
-	if err != nil {
-		return errors.New("无法保存项目")
-	}
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(value); err != nil {
-		return errors.New("无法保存项目")
-	}
 	return nil
 }
 
@@ -861,6 +1228,12 @@ func (a *App) fileCompanionOpenProjectZip(path string) (FileCompanionDocument, e
 	opened.Annotations = imported.annotations
 	opened.Drawings = imported.drawings
 	opened.Bookmarks = imported.bookmarks
+	if imported.notes != nil {
+		opened.Notes = imported.notes
+	}
+	if imported.translations != nil {
+		opened.Translations = imported.translations
+	}
 	opened.Imported = true
 	logFileCompanion("import project")
 	return opened, nil
@@ -869,12 +1242,14 @@ func (a *App) fileCompanionOpenProjectZip(path string) (FileCompanionDocument, e
 // fileCompanionProjectImport is the document extracted from a project zip
 // plus the reader marks the manifest carried.
 type fileCompanionProjectImport struct {
-	document    string
-	highlights  json.RawMessage
-	chatMarks   json.RawMessage
-	annotations json.RawMessage
-	drawings    json.RawMessage
-	bookmarks   json.RawMessage
+	document     string
+	highlights   json.RawMessage
+	chatMarks    json.RawMessage
+	annotations  json.RawMessage
+	drawings     json.RawMessage
+	bookmarks    json.RawMessage
+	notes        json.RawMessage
+	translations json.RawMessage
 }
 
 func (a *App) importFileCompanionProject(path string) (fileCompanionProjectImport, error) {
@@ -967,6 +1342,11 @@ func (a *App) importFileCompanionProject(path string) (fileCompanionProjectImpor
 	if err := a.writeFileCompanionProjectSession(sessionID, manifest.Messages); err != nil {
 		return fileCompanionProjectImport{}, err
 	}
+	if manifest.Notes != nil {
+		if err := a.saveFileCompanionDiscussionNotes(identity, manifest.Notes); err != nil {
+			return fileCompanionProjectImport{}, errors.New("无法打开项目")
+		}
+	}
 	if manifest.PaperResult != "" && paperFile != nil && manifest.PaperTurn > 0 {
 		if err := a.installFileCompanionProjectPaper(sessionID, paperFile, manifest.PaperTurn); err != nil {
 			return fileCompanionProjectImport{}, err
@@ -977,12 +1357,14 @@ func (a *App) importFileCompanionProject(path string) (fileCompanionProjectImpor
 		highlights = json.RawMessage("[]")
 	}
 	return fileCompanionProjectImport{
-		document:    identity,
-		highlights:  highlights,
-		chatMarks:   manifest.ChatMarks,
-		annotations: manifest.Annotations,
-		drawings:    manifest.Drawings,
-		bookmarks:   manifest.Bookmarks,
+		document:     identity,
+		highlights:   highlights,
+		chatMarks:    manifest.ChatMarks,
+		annotations:  manifest.Annotations,
+		drawings:     manifest.Drawings,
+		bookmarks:    manifest.Bookmarks,
+		notes:        manifest.Notes,
+		translations: manifest.Translations,
 	}, nil
 }
 
@@ -1041,6 +1423,20 @@ func readProjectManifest(file *zip.File) (fileCompanionProjectManifest, error) {
 			return manifest, errFileCompanionNotProject
 		}
 		manifest.Bookmarks = bookmarks
+	}
+	if len(manifest.Notes) > 0 {
+		notes, noteErr := fileCompanionCleanNotes(manifest.Notes)
+		if noteErr != nil {
+			return manifest, errFileCompanionNotProject
+		}
+		manifest.Notes = notes
+	}
+	if len(manifest.Translations) > 0 {
+		translations, translationErr := fileCompanionCleanTranslations(manifest.Translations)
+		if translationErr != nil {
+			return manifest, errFileCompanionNotProject
+		}
+		manifest.Translations = translations
 	}
 	return manifest, nil
 }

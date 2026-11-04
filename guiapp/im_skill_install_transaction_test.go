@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,28 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
+
+func TestSkillInitialExecutionFailureNoteSkipsRetryOnTruncatedModel(t *testing.T) {
+	note := skillInitialExecutionFailureNote("Interview", fmt.Errorf("skill execution stopped at step 1: parse response: unexpected end of JSON input"))
+	if !strings.Contains(note, "marked as needs_setup") || !strings.Contains(note, "truncated") {
+		t.Fatalf("note = %q", note)
+	}
+	if strings.Contains(note, "manage_skill") || strings.Contains(note, "search_and_install_skill") {
+		t.Fatalf("truncated model response still names a skill tool: %q", note)
+	}
+	unpersisted := skillInitialExecutionUnpersistedNote("Interview", fmt.Errorf("skill execution stopped at step 1: parse response: unexpected end of JSON input"), fmt.Errorf("durable App status transaction unavailable"))
+	if strings.Contains(unpersisted, "manage_skill") || strings.Contains(unpersisted, "before retrying") || strings.Contains(unpersisted, "marked as needs_setup") {
+		t.Fatalf("unpersisted truncated note = %q", unpersisted)
+	}
+	retry := skillInitialExecutionFailureNote("Interview", fmt.Errorf("exit status 7"))
+	if !strings.Contains(retry, `manage_skill(action="run", name="Interview")`) {
+		t.Fatalf("ordinary failure note = %q", retry)
+	}
+	download := skillInitialExecutionFailureNote("Interview", fmt.Errorf("download skill failed: unexpected EOF"))
+	if !strings.Contains(download, `manage_skill(action="run", name="Interview")`) {
+		t.Fatalf("command EOF was treated as a truncated model body: %q", download)
+	}
+}
 
 func TestIMInstallOnlyConfigDefinitionUsesSharedCommitter(t *testing.T) {
 	home := t.TempDir()

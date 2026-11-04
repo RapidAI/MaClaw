@@ -16,7 +16,7 @@ func (a *App) RunHopTask(task string) (hopjit.ReuseResult, error) {
 		return hopjit.ReuseResult{}, err
 	}
 	defer store.Close()
-	return runHopTaskWithPersistence(context.Background(), store, task, &guiHopJITCaller{app: a})
+	return runHopTaskWithPersistence(context.Background(), store, task, a.newHopJITCaller())
 }
 
 func runHopTaskWithPersistence(ctx context.Context, store hopjit.PersistenceProvider, task string, caller *guiHopJITCaller) (hopjit.ReuseResult, error) {

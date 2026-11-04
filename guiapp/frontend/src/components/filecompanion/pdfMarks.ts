@@ -62,6 +62,38 @@ export function pdfMarksSaveRevision(): number {
 }
 
 const writeSeq = new Map<string, number>();
+const listeners = new Set<(key: string) => void>();
+
+function emitPdfMarks(key: string): void {
+    if (!key) return;
+    for (const listener of [...listeners]) listener(key);
+}
+
+// A received share writes marks without announcing. The open reader subscribes
+// here so those highlights show up without remounting the PDF. Announced
+// paints still use PDF_MARKS_CHANGED_EVENT, which is what uploads them.
+export function subscribePdfMarks(listener: (key: string) => void): () => void {
+    listeners.add(listener);
+    return () => {
+        listeners.delete(listener);
+    };
+}
+
+function samePdfMarks(left: PdfMark[], right: PdfMark[]): boolean {
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) {
+        const a = left[i];
+        const b = right[i];
+        if (a.id !== b.id || a.page !== b.page || a.color !== b.color || a.text !== b.text) return false;
+        if (a.rects.length !== b.rects.length) return false;
+        for (let j = 0; j < a.rects.length; j++) {
+            const ra = a.rects[j];
+            const rb = b.rects[j];
+            if (ra.x !== rb.x || ra.y !== rb.y || ra.w !== rb.w || ra.h !== rb.h) return false;
+        }
+    }
+    return true;
+}
 
 function savePdfMarksToHost(key: string, marks: PdfMark[]): void {
     const app = (window as unknown as { go?: { main?: { App?: Record<string, unknown> } } }).go?.main?.App;
@@ -178,11 +210,17 @@ export function savePdfMarks(path: string, value: unknown, announce = false): Pd
     const key = pdfMarkPathKey(path);
     const marks = normalizePdfMarks(value) ?? [];
     if (!key) return marks;
+    // A library refresh applies the same blob twice (the project zip, then the
+    // marks fetch). Skip the write when nothing changed so an open PDF is not
+    // repainted and a failed host write is still retried.
+    const prev = normalizePdfMarks(store[key]) ?? [];
+    if (!fallback.has(key) && samePdfMarks(prev, marks)) return prev;
     fallback.delete(key);
     if (marks.length === 0) delete store[key];
     else store[key] = marks;
     saveRevision += 1;
     savePdfMarksToHost(key, marks);
+    emitPdfMarks(key);
     if (announce) {
         try {
             window.dispatchEvent(new CustomEvent(PDF_MARKS_CHANGED_EVENT, { detail: { path } }));

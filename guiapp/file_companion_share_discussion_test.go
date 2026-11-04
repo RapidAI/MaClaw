@@ -2107,7 +2107,7 @@ func TestListFileCompanionLibraryShowsTheHubIndexBeforeTheDownload(t *testing.T)
 	}
 	select {
 	case catalog := <-got:
-		if !catalog.Syncing {
+		if !catalog.Syncing || !catalog.Catalog {
 			t.Fatal("the index was published as a finished refresh")
 		}
 		if len(catalog.Items) != 1 || catalog.Items[0].Name != "paper.pdf" || strings.TrimSpace(catalog.Items[0].Path) != "" {

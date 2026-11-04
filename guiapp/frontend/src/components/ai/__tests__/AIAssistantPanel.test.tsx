@@ -8484,6 +8484,204 @@ describe('AIAssistantPanel property tests', () => {
         getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
     });
 
+    it('replaces 需求理解 when the next coding task has an older step clock', async () => {
+        const projectA = 'D:/tasks/buddy-firmware';
+        const projectB = 'D:/tasks/qm-uni-ocr';
+        const buddy = '请针对刚编译并刷入最新版本的 buddy 固件，确认设备是否又一次出现黑屏。';
+        const ocr = '核对 6 条推理优化线的完成度，先对齐现有实现。';
+        const norm = (path: string) => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        getCodingWorkbenchStatusMock.mockImplementation(async (path: string) => {
+            if (norm(path) === norm(projectA)) {
+                return {
+                    kind: 'remote',
+                    armed: true,
+                    needs_reconnect: false,
+                    turn_count: 4,
+                    steps_revision: 40,
+                    requirement_restatement: buddy,
+                    step_statuses: [{ index: 1, title: '排查黑屏', status: 'running', updated_unix: 500 }],
+                };
+            }
+            return {
+                kind: 'remote',
+                armed: true,
+                needs_reconnect: false,
+                turn_count: 2,
+                steps_revision: 2,
+                requirement_restatement: ocr,
+                step_statuses: [{ index: 1, title: '核对 AVX2', status: 'running', updated_unix: 100 }],
+            };
+        });
+        const base = defaultPanelProps();
+        const onOpenedA = vi.fn();
+        const { rerender, getByTestId } = render(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={{
+                    projectPath: projectA,
+                    taskTitle: 'buddy固件',
+                    autoSend: false,
+                    prepareMode: 'new-agent',
+                    agentMode: 'remote_coding_dev',
+                    remoteHost: 'www.driverdevelop.com',
+                }}
+                onPendingProjectTabOpenHandled={onOpenedA}
+                state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        await waitFor(() => expect(onOpenedA).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('buddy 固件'));
+
+        const onOpenedB = vi.fn();
+        rerender(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={{
+                    projectPath: projectB,
+                    taskTitle: 'QmUniOCRV3',
+                    autoSend: false,
+                    prepareMode: 'new-agent',
+                    agentMode: 'remote_coding_dev',
+                    remoteHost: 'www.driverdevelop.com',
+                }}
+                onPendingProjectTabOpenHandled={onOpenedB}
+                state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true }}
+            />,
+        );
+        await waitFor(() => expect(onOpenedB).toHaveBeenCalled());
+        await waitFor(() => {
+            const text = getByTestId('coding-agent-plan-understanding').textContent || '';
+            expect(text).toContain('推理优化线');
+            expect(text).not.toContain('buddy 固件');
+        });
+
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(stepsHandler).toEqual(expect.any(Function));
+        act(() => {
+            stepsHandler?.({
+                project_path: projectB,
+                user_id: `${projectSessionKey(projectB)}:task:9`,
+                requirement_restatement: '只核对当前任务的 AVX-512。',
+                step_statuses: [{ index: 1, title: '核对 AVX-512', status: 'running', updated_unix: 120 }],
+                steps_revision: 3,
+            });
+        });
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('AVX-512');
+        act(() => {
+            stepsHandler?.({
+                user_id: projectSessionKey(projectA),
+                requirement_restatement: buddy,
+                step_statuses: [{ index: 1, title: '排查黑屏', status: 'running', updated_unix: 900 }],
+                steps_revision: 80,
+            });
+        });
+        const understood = getByTestId('coding-agent-plan-understanding').textContent || '';
+        expect(understood).toContain('AVX-512');
+        expect(understood).not.toContain('buddy 固件');
+    });
+
+    it('drops a previous task status poll that resolves after the switch', async () => {
+        const projectA = 'D:/tasks/buddy-firmware-late';
+        const projectB = 'D:/tasks/qm-uni-ocr-late';
+        const buddy = '请针对刚编译并刷入最新版本的 buddy 固件，确认设备是否又一次出现黑屏。';
+        const ocr = '核对 6 条推理优化线的完成度，先对齐现有实现。';
+        const norm = (path: string) => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        let releaseStale: (value: unknown) => void = () => {};
+        let holdNextA = false;
+        getCodingWorkbenchStatusMock.mockImplementation((path: string) => {
+            if (norm(path) === norm(projectA)) {
+                if (holdNextA) {
+                    return new Promise((resolve) => { releaseStale = resolve; });
+                }
+                return Promise.resolve({
+                    kind: 'remote',
+                    armed: true,
+                    needs_reconnect: false,
+                    turn_count: 4,
+                    steps_revision: 40,
+                    requirement_restatement: buddy,
+                    step_statuses: [{ index: 1, title: '排查黑屏', status: 'running', updated_unix: 500 }],
+                });
+            }
+            return Promise.resolve({
+                kind: 'remote',
+                armed: true,
+                needs_reconnect: false,
+                turn_count: 2,
+                steps_revision: 2,
+                requirement_restatement: ocr,
+                step_statuses: [{ index: 1, title: '核对 AVX2', status: 'running', updated_unix: 100 }],
+            });
+        });
+        const base = defaultPanelProps();
+        const onOpenedA = vi.fn();
+        const { rerender, getByTestId } = render(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={{
+                    projectPath: projectA,
+                    taskTitle: 'buddy固件',
+                    autoSend: false,
+                    prepareMode: 'new-agent',
+                    agentMode: 'remote_coding_dev',
+                    remoteHost: 'www.driverdevelop.com',
+                }}
+                onPendingProjectTabOpenHandled={onOpenedA}
+                state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        await waitFor(() => expect(onOpenedA).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('buddy 固件'));
+
+        const responseHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'ai-assistant-response')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(responseHandler).toEqual(expect.any(Function));
+        holdNextA = true;
+        const callsBefore = getCodingWorkbenchStatusMock.mock.calls.length;
+        act(() => { responseHandler?.({}); });
+        expect(getCodingWorkbenchStatusMock.mock.calls.length).toBe(callsBefore + 1);
+
+        const onOpenedB = vi.fn();
+        rerender(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={{
+                    projectPath: projectB,
+                    taskTitle: 'QmUniOCRV3',
+                    autoSend: false,
+                    prepareMode: 'new-agent',
+                    agentMode: 'remote_coding_dev',
+                    remoteHost: 'www.driverdevelop.com',
+                }}
+                onPendingProjectTabOpenHandled={onOpenedB}
+                state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true }}
+            />,
+        );
+        await waitFor(() => expect(onOpenedB).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('推理优化线'));
+
+        await act(async () => {
+            releaseStale({
+                kind: 'remote',
+                armed: true,
+                needs_reconnect: false,
+                turn_count: 5,
+                steps_revision: 41,
+                requirement_restatement: buddy,
+                step_statuses: [{ index: 1, title: '排查黑屏', status: 'running', updated_unix: 800 }],
+            });
+            await Promise.resolve();
+        });
+        const understood = getByTestId('coding-agent-plan-understanding').textContent || '';
+        expect(understood).toContain('推理优化线');
+        expect(understood).not.toContain('buddy 固件');
+    });
+
     it('does not resurrect cleared project tab history after closing and reopening', async () => {
         const projectPath = 'D:/tasks/project-clear-close-reopen';
         const onHandled = vi.fn();

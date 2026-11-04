@@ -68,7 +68,45 @@ func companionGroupInviteSourceID(groupID, userID string) string {
 // synthesized account email such as "phone:1709...", so the address someone was
 // invited under is usually an identity rather than the account email — the id
 // stays the same either way.
+// companionContactDirectory is the user store's cross-tenant contact lookup.
+// The repository interface stays unchanged for callers that do not need it.
+type companionContactDirectory interface {
+	ListUsersByContact(ctx context.Context, contact string) ([]*store.User, error)
+}
+
 func companionContactUserID(ctx context.Context, identity *auth.IdentityService, tenantID, contact string) string {
+	if id := companionContactUserIDInTenant(ctx, identity, tenantID, contact); id != "" {
+		return id
+	}
+	// The group's tenant is not the only place this address can live. One
+	// account on this Hub, in any tenant, is enough to deliver the notice.
+	// Two accounts that share the address are left unresolved: a push must
+	// not choose between them. Either of them can still see the invite,
+	// because the invite list matches the address itself.
+	return companionContactUserIDAcrossTenants(ctx, identity, contact)
+}
+
+func companionContactUserIDAcrossTenants(ctx context.Context, identity *auth.IdentityService, contact string) string {
+	if identity == nil {
+		return ""
+	}
+	contact = strings.TrimSpace(contact)
+	repo := identity.UsersRepo()
+	if contact == "" || repo == nil {
+		return ""
+	}
+	directory, ok := repo.(companionContactDirectory)
+	if !ok {
+		return ""
+	}
+	users, err := directory.ListUsersByContact(ctx, contact)
+	if err != nil || len(users) != 1 || users[0] == nil {
+		return ""
+	}
+	return strings.TrimSpace(users[0].ID)
+}
+
+func companionContactUserIDInTenant(ctx context.Context, identity *auth.IdentityService, tenantID, contact string) string {
 	if identity == nil {
 		return ""
 	}

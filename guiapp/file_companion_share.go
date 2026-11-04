@@ -66,7 +66,7 @@ func normalizeFileCompanionContact(value string) string {
 }
 
 func (a *App) writeFileCompanionShareZip(source, highlightsJSON string) (string, error) {
-	highlights, chatMarks, annotations, drawings, bookmarks, err := fileCompanionSplitSharePayload(highlightsJSON)
+	highlights, chatMarks, annotations, drawings, bookmarks, _, _, err := fileCompanionSplitSharePayload(highlightsJSON)
 	if err != nil {
 		return "", err
 	}
@@ -81,7 +81,7 @@ func (a *App) writeFileCompanionShareZip(source, highlightsJSON string) (string,
 		_ = os.Remove(name)
 		return "", errors.New("无法保存分享")
 	}
-	if err := writeFileCompanionProject(name, source, highlights, chatMarks, annotations, drawings, bookmarks, messages, paperPath, paperTurn); err != nil {
+	if err := writeFileCompanionProject(name, source, highlights, chatMarks, annotations, drawings, bookmarks, messages, paperPath, paperTurn, nil, nil); err != nil {
 		_ = os.Remove(name)
 		return "", err
 	}
@@ -575,7 +575,7 @@ func installFileCompanionSharePaper(a *App, sessionID string, paper []byte, turn
 }
 
 func (a *App) dropRevokedGroupCopies(previous map[string]FileCompanionLibraryItem, remote []FileCompanionLibraryItem, dropped map[string]bool, epochs map[string]uint64) []string {
-	removed, _, _ := a.dropRevokedFileCompanionShares(nil, previous, remote, nil, dropped, epochs)
+	removed, _, _, _ := a.dropRevokedFileCompanionShares(nil, previous, remote, nil, dropped, epochs)
 	return removed
 }
 
@@ -589,7 +589,7 @@ func (a *App) dropRevokedGroupCopies(previous map[string]FileCompanionLibraryIte
 // download directory stays when another row still uses it. The downloaded
 // copy itself is the participant's open document: opening it also writes a
 // local row, and that row must not keep the tab after the host deletes the share.
-func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, previous map[string]FileCompanionLibraryItem, remote []FileCompanionLibraryItem, revoked map[string]bool, dropped map[string]bool, epochs map[string]uint64) (removed []string, purgePaths []string, removedHosts map[string]string) {
+func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, previous map[string]FileCompanionLibraryItem, remote []FileCompanionLibraryItem, revoked map[string]bool, dropped map[string]bool, epochs map[string]uint64) (removed []string, purgePaths []string, removedHosts map[string]string, restored []FileCompanionLibraryItem) {
 	seen := map[string]bool{}
 	for _, item := range remote {
 		if item.Token != "" {
@@ -618,13 +618,64 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 			fileCompanionLibraryMu.Unlock()
 			continue
 		}
-		// A file outside the download directory can be the host's paper or
-		// another document that shares the path. Leave that file and its tab.
-		// The copy under library-files/<token> is this share. The local row
-		// created by opening it is the participant's tab, and it closes with
-		// the share.
+		// The copy under library-files/<token> is this share. Opening it writes
+		// the participant's tab, and that tab closes with the share. A file
+		// outside that directory stays on disk.
 		installed := companionFigureInsideDir(dir, prev.Path)
-		if !installed && fileCompanionLibraryUsesPath(live, prev.Path) {
+		// Someone else's file can share this path. Leave that file and its
+		// tab. The owner's own share is handled below even when a local row
+		// already uses the path: the dead cloud row has to leave in this
+		// write, or the next open folds that local project away again.
+		if !installed && !prev.Mine && fileCompanionLibraryUsesPath(live, prev.Path) {
+			if !groupGone {
+				_, _ = a.dismissFileCompanionShareLocked(token)
+				a.forgetFileCompanionShareGrantLocked(token)
+			}
+			fileCompanionLibraryMu.Unlock()
+			if dropped != nil {
+				dropped[token] = true
+			}
+			continue
+		}
+		// The local row was retired when this paper was shared. The share is
+		// gone, so the owner's file is a local project again. Drop that cloud
+		// row in the same write: leaving it on disk lets the next list fold
+		// the restored local row away before this refresh can finish. A
+		// downloaded copy stays on the installed-share path below.
+		if !installed && prev.Mine {
+			if current, readOK := a.readFileCompanionLibraryLocked(); readOK {
+				ownPath, ownName, ownSize := prev.Path, prev.Name, prev.Size
+				kept := make([]FileCompanionLibraryItem, 0, len(current)+1)
+				removedCloud := false
+				for _, item := range current {
+					if item.Source == "cloud" && item.Token == token {
+						if strings.TrimSpace(item.Path) != "" {
+							ownPath, ownName, ownSize = item.Path, item.Name, item.Size
+						}
+						removedCloud = true
+						continue
+					}
+					kept = append(kept, item)
+				}
+				addedLocal := false
+				var restoredRow FileCompanionLibraryItem
+				if row, ok := fileCompanionOwnLocalRow(a, kept, ownPath, ownName, ownSize, token); ok {
+					kept = append([]FileCompanionLibraryItem{row}, kept...)
+					restoredRow = row
+					addedLocal = true
+				}
+				if removedCloud || addedLocal {
+					// A failed write must not report the local row or drop
+					// the cloud token. The final save would then keep neither.
+					if err := a.writeFileCompanionLibraryLocked(trimFileCompanionLibrary(kept, fileCompanionLibraryCap)); err != nil {
+						fileCompanionLibraryMu.Unlock()
+						continue
+					}
+					if addedLocal {
+						restored = append(restored, restoredRow)
+					}
+				}
+			}
 			if !groupGone {
 				_, _ = a.dismissFileCompanionShareLocked(token)
 				a.forgetFileCompanionShareGrantLocked(token)
@@ -668,7 +719,7 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 			}
 		}
 	}
-	return removed, purgePaths, removedHosts
+	return removed, purgePaths, removedHosts, restored
 }
 
 // finishProbeDismissedInstalledCopies closes a download that an earlier
@@ -1475,40 +1526,36 @@ type FileCompanionShareMarksResult struct {
 
 // FetchFileCompanionShareMarks downloads the host's reader marks for the
 // share bound to this path. It is the participant half of the incremental
-// marks sync: small, and it never touches the project zip.
+// marks sync: small, and it never touches the project zip. The file does not
+// have to be open; the library row is the authority for which share this
+// path is. A share imported from another hub is read there, with its reader
+// grant, and the home login is not sent along.
 func (a *App) FetchFileCompanionShareMarks(path string) (FileCompanionShareMarksResult, error) {
 	if a == nil {
 		return FileCompanionShareMarksResult{}, errors.New("app unavailable")
 	}
-	_, canonical, err := a.fileCompanionGrant(path)
+	canonical, err := fileCompanionCanonicalPath(path)
 	if err != nil {
-		return FileCompanionShareMarksResult{}, err
+		return FileCompanionShareMarksResult{}, errors.New("这份文档还没有导入分享")
+	}
+	item, ok := a.fileCompanionShareByPath(canonical)
+	if !ok {
+		return FileCompanionShareMarksResult{}, errors.New("这份文档还没有导入分享")
 	}
 	hub, viewer, err := a.fileCompanionHubLogin()
 	if err != nil {
 		return FileCompanionShareMarksResult{}, err
 	}
-	token := ""
-	fileCompanionLibraryMu.Lock()
-	items, ok := a.readFileCompanionLibraryLocked()
-	if ok {
-		for _, item := range items {
-			if item.Source == "cloud" && strings.TrimSpace(item.Path) == canonical && fileCompanionShareTokenMatch.MatchString(item.Token) {
-				token = item.Token
-				break
-			}
-		}
+	target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, item)
+	if foreign && grant == "" {
+		return FileCompanionShareMarksResult{}, errors.New("请重新导入分享链接")
 	}
-	fileCompanionLibraryMu.Unlock()
-	if token == "" {
-		return FileCompanionShareMarksResult{}, errors.New("这份文档还没有导入分享")
-	}
-	req, err := http.NewRequest(http.MethodGet, hub+"/api/mobile/documents/shares/"+token+"/marks", nil)
+	req, err := http.NewRequest(http.MethodGet, target+"/api/mobile/documents/shares/"+item.Token+"/marks", nil)
 	if err != nil {
 		return FileCompanionShareMarksResult{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+viewer)
-	client := &http.Client{Timeout: 60 * time.Second}
+	fileCompanionShareAuthorize(req, auth, grant)
+	client := fileCompanionDirectClient(60 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return FileCompanionShareMarksResult{}, errors.New("暂时无法连接云端")

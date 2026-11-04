@@ -74,34 +74,51 @@ type RetryRecord struct {
 
 type PauseState struct {
 	StepID       string                 `json:"step_id"`
+	ChildRunID   string                 `json:"child_run_id,omitempty"`
 	Kind         hopspec.StepType       `json:"kind"`
 	Question     string                 `json:"question"`
 	OutputSchema []hopspec.VariableDecl `json:"output_schema,omitempty"`
 	RequireHuman bool                   `json:"require_human,omitempty"`
 }
 
+type CallState struct {
+	RunID  string `json:"run_id"`
+	Callee string `json:"callee"`
+}
+
+type InflightCall struct {
+	StepID      string `json:"step_id"`
+	ChildRunID  string `json:"child_run_id"`
+	ContainerID string `json:"container_id,omitempty"`
+	Iteration   int    `json:"iteration,omitempty"`
+	Status      string `json:"status"`
+}
+
 type EngineSnapshot struct {
-	FormatVersion   int                      `json:"format_version"`
-	RunID           string                   `json:"run_id"`
-	Spec            hopspec.SpecAST          `json:"spec"`
-	StepStates      map[string]StepStatus    `json:"step_states"`
-	Variables       map[string]VariableValue `json:"variables"`
-	LoopCounters    map[string]int           `json:"loop_counters,omitempty"`
-	LoopItems       map[string][]any         `json:"loop_items,omitempty"`
-	RetryCounters   map[string]int           `json:"retry_counters,omitempty"`
-	RetryHistory    map[string][]RetryRecord `json:"retry_history,omitempty"`
-	ReplanCounters  map[string]int           `json:"replan_counters,omitempty"`
-	ReplanDigests   map[string]string        `json:"replan_digests,omitempty"`
-	CommittedSteps  map[string]bool          `json:"committed_steps,omitempty"`
-	OnFailActive    map[string]bool          `json:"on_fail_active,omitempty"`
-	AdaptiveNeeded  string                   `json:"adaptive_needed_subtask,omitempty"`
-	Pause           *PauseState              `json:"pause,omitempty"`
-	Failures        map[string]Failure       `json:"failures,omitempty"`
-	Events          []ExecutionEvent         `json:"events,omitempty"`
-	TerminalState   TerminalState            `json:"terminal_state,omitempty"`
-	TerminalFailure *Failure                 `json:"terminal_failure,omitempty"`
-	AbortReason     string                   `json:"abort_reason,omitempty"`
-	StateSeq        uint64                   `json:"state_seq"`
+	FormatVersion   int                       `json:"format_version"`
+	RunID           string                    `json:"run_id"`
+	Spec            hopspec.SpecAST           `json:"spec"`
+	StepStates      map[string]StepStatus     `json:"step_states"`
+	Variables       map[string]VariableValue  `json:"variables"`
+	LoopCounters    map[string]int            `json:"loop_counters,omitempty"`
+	LoopItems       map[string][]any          `json:"loop_items,omitempty"`
+	LoopResults     map[string]map[string]any `json:"loop_results,omitempty"`
+	Calls           map[string]CallState      `json:"calls,omitempty"`
+	Inflight        map[string]InflightCall   `json:"inflight,omitempty"`
+	RetryCounters   map[string]int            `json:"retry_counters,omitempty"`
+	RetryHistory    map[string][]RetryRecord  `json:"retry_history,omitempty"`
+	ReplanCounters  map[string]int            `json:"replan_counters,omitempty"`
+	ReplanDigests   map[string]string         `json:"replan_digests,omitempty"`
+	CommittedSteps  map[string]bool           `json:"committed_steps,omitempty"`
+	OnFailActive    map[string]bool           `json:"on_fail_active,omitempty"`
+	AdaptiveNeeded  string                    `json:"adaptive_needed_subtask,omitempty"`
+	Pause           *PauseState               `json:"pause,omitempty"`
+	Failures        map[string]Failure        `json:"failures,omitempty"`
+	Events          []ExecutionEvent          `json:"events,omitempty"`
+	TerminalState   TerminalState             `json:"terminal_state,omitempty"`
+	TerminalFailure *Failure                  `json:"terminal_failure,omitempty"`
+	AbortReason     string                    `json:"abort_reason,omitempty"`
+	StateSeq        uint64                    `json:"state_seq"`
 }
 
 type InitResult struct {
@@ -117,7 +134,9 @@ type StepReady struct {
 	Summary      string                 `json:"summary"`
 	Inputs       map[string]any         `json:"inputs"`
 	Instruction  string                 `json:"instruction,omitempty"`
+	Tools        []string               `json:"tools,omitempty"`
 	OutputSchema []hopspec.VariableDecl `json:"output_schema,omitempty"`
+	Context      AssembledContext       `json:"context"`
 }
 
 type NextResult struct {

@@ -8,7 +8,7 @@ import { loadChatMarks } from "./chatMarks";
 import { enqueueCompanionReaderWrite } from "./companionReaderWriteQueue";
 import { loadPdfDrawings } from "./pdfDrawings";
 import { loadPdfMarks, pdfMarkPathKey } from "./pdfMarks";
-import { loadPdfAnnotations } from "./pdfTranslations";
+import { loadPdfAnnotations, loadPdfTranslations } from "./pdfTranslations";
 
 export const PDF_BOOKMARK_COLORS = [
     { id: "yellow", label: "黄色", fill: "#ffe08a", ink: "#c9930a" },
@@ -296,4 +296,20 @@ export function companionProjectMarksJSON(path: string): string {
         drawings: loadPdfDrawings(path),
         bookmarks: loadPdfBookmarks(path),
     });
+}
+
+// A project export also carries translation cards and the discussion beside
+// the chat. Share sync keeps using companionProjectMarksJSON, which leaves
+// those on this machine.
+export function companionProjectExportJSON(path: string, notes?: unknown): string {
+    const payload: Record<string, unknown> = {
+        highlights: loadPdfMarks(path),
+        chatMarks: loadChatMarks(path),
+        annotations: loadPdfAnnotations(path),
+        translations: loadPdfTranslations(path).filter((item) => item.kind !== "annotation"),
+        drawings: loadPdfDrawings(path),
+        bookmarks: loadPdfBookmarks(path),
+    };
+    if (Array.isArray(notes)) payload.notes = notes;
+    return JSON.stringify(payload);
 }

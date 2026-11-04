@@ -76,9 +76,22 @@ func Parse(markdown string) (SpecAST, []error) {
 				step.Source.LineEnd = lineNo
 				continue
 			}
+			if strings.HasPrefix(trimmed, "- 工具:") || strings.HasPrefix(trimmed, "- Tools:") {
+				_, value, _ := strings.Cut(trimmed, ":")
+				current.Tools = append(current.Tools, parseInputNames(value)...)
+				current.Source.LineEnd = lineNo
+				continue
+			}
 			if strings.HasPrefix(trimmed, "+ →") {
-				decl := parseVariableDecl(strings.TrimSpace(strings.TrimPrefix(trimmed, "+ →")))
+				value := strings.TrimSpace(strings.TrimPrefix(trimmed, "+ →"))
+				decl := parseVariableDecl(value)
 				step := current
+				if step.Type == StepCall && step.Call != nil && !strings.Contains(value, "%") {
+					if caller, callee, ok := strings.Cut(value, ":"); ok {
+						step.Call.Outputs[strings.TrimSpace(caller)] = strings.TrimSpace(callee)
+						decl.Type = "any"
+					}
+				}
 				step.Outputs = append(step.Outputs, decl)
 				step.Source.LineEnd = lineNo
 				continue
@@ -212,6 +225,9 @@ func parseStep(id, descriptor, summary string, line int) (*Step, []error) {
 		}
 	}
 	step.ForEach = parseForEach(descriptor)
+	if step.Type == StepCall {
+		step.Call = parseCallSpec(remainder)
+	}
 	if step.Type == StepCase && step.Condition == "" {
 		if start := strings.LastIndex(step.Summary, "("); start >= 0 && strings.HasSuffix(step.Summary, ")") {
 			step.Condition = strings.TrimSpace(step.Summary[start+1 : len(step.Summary)-1])
@@ -219,6 +235,31 @@ func parseStep(id, descriptor, summary string, line int) (*Step, []error) {
 		}
 	}
 	return step, errs
+}
+
+func parseCallSpec(descriptor string) *CallSpec {
+	descriptor = strings.TrimSpace(descriptor)
+	call := &CallSpec{Inputs: map[string]string{}, Outputs: map[string]string{}}
+	open := strings.Index(descriptor, "(")
+	close := strings.LastIndex(descriptor, ")")
+	if open >= 0 && close > open {
+		call.Callee = strings.TrimSpace(descriptor[:open])
+		mapping := descriptor[open+1 : close]
+		for _, item := range strings.Split(mapping, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			if target, source, ok := strings.Cut(item, ":"); ok {
+				call.Inputs[strings.TrimSpace(target)] = strings.TrimSpace(source)
+			} else {
+				call.Inputs[item] = item
+			}
+		}
+	} else if fields := strings.Fields(descriptor); len(fields) > 0 {
+		call.Callee = strings.TrimSpace(fields[0])
+	}
+	return call
 }
 
 func parseForEach(descriptor string) *ForEachSpec {

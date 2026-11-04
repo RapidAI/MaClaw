@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -438,6 +439,38 @@ func (s *Service) verifyHubSecret(ctx context.Context, hubID, rawSecret string) 
 // VerifyHubSecret validates a Hub machine secret for Hub-facing APIs.
 func (s *Service) VerifyHubSecret(ctx context.Context, hubID, rawSecret string) error {
 	return s.verifyHubSecret(ctx, hubID, rawSecret)
+}
+
+// OriginIsRegisteredHub reports whether origin is the base URL of a hub that
+// center still allows to serve. A disabled hub is not trusted.
+func (s *Service) OriginIsRegisteredHub(ctx context.Context, origin string) (bool, error) {
+	if s == nil || s.hubs == nil {
+		return false, nil
+	}
+	parsed, err := url.Parse(strings.TrimSpace(origin))
+	if err != nil || parsed.Hostname() == "" {
+		return false, nil
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false, nil
+	}
+	host := strings.ToLower(parsed.Hostname())
+	port := 0
+	if raw := parsed.Port(); raw != "" {
+		port, _ = strconv.Atoi(raw)
+	} else if parsed.Scheme == "https" {
+		port = 443
+	} else {
+		port = 80
+	}
+	hub, err := s.hubs.GetByEndpoint(ctx, host, port, strings.TrimRight(parsed.String(), "/"))
+	if err != nil {
+		return false, err
+	}
+	if hub == nil || hub.IsDisabled || hub.Status == "disabled" {
+		return false, nil
+	}
+	return true, nil
 }
 
 // ValidateHubID confirms that a Hub still exists and is enabled without

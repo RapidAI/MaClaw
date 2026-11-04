@@ -21,7 +21,7 @@ import {
     FileCompanionExportProject,
 } from "../../../wailsjs/go/main/App";
 import { useDialog } from "../CustomDialog";
-import { companionProjectMarksJSON, savePdfBookmarks } from "./pdfBookmarks";
+import { companionProjectExportJSON, companionProjectMarksJSON, savePdfBookmarks } from "./pdfBookmarks";
 import { loadPdfMarkCounts, loadPdfMarks, pdfMarkPathKey, savePdfMarks } from "./pdfMarks";
 import { saveChatMarks } from "./chatMarks";
 import { savePdfTranslations } from "./pdfTranslations";
@@ -94,6 +94,10 @@ export type CompanionShareBinding = {
     // marksRevision is the host's reader-marks sequence. A reader whose copy
     // is behind fetches the small marks blob instead of the project zip.
     marksRevision: number;
+    // documentRevision is the project zip sequence. Questions travel in that
+    // zip, so a downloaded host copy must not upload until this revision is
+    // on disk.
+    documentRevision: number;
 };
 
 export type CompanionShareUpdate = {
@@ -114,9 +118,16 @@ export type CompanionShareUpdate = {
     // leaves this reader's bookmarks alone.
     bookmarks: string;
     bookmarksKnown: boolean;
+    // translations are the document cards that are not placed notes. A share
+    // update leaves them off so a reader's own translations stay.
+    translations?: string;
+    translationsKnown?: boolean;
     messages: unknown[];
     project: boolean;
     replaceMessages: boolean;
+    // keepReaderMarks leaves highlights, notes, drawings, and bookmarks as
+    // they are. The transcript in messages still applies.
+    keepReaderMarks?: boolean;
 };
 
 // CompanionShareRow is the share a library row carries: who can see it and how
@@ -465,6 +476,11 @@ export function takeCompanionLibraryList(listed: unknown): boolean {
     return true;
 }
 
+export function resetCompanionLibraryList(): void {
+    companionLibrarySeenGen = -1;
+    companionLibrarySeenSyncing = false;
+}
+
 export function companionLibrarySync(raw: unknown): { updates: CompanionShareUpdate[]; removed: string[]; removedHosts: Record<string, string> } {
     if (!raw || typeof raw !== "object") return { updates: [], removed: [], removedHosts: {} };
     const record = raw as Record<string, unknown>;
@@ -553,6 +569,71 @@ export function companionInstalledSharePath(path: string): boolean {
     return /(?:^|\/)file-companion\/library-files\/cd_[0-9a-f]{32}\//i.test(text);
 }
 
+// companionShouldPullShareMarks reports whether this machine should fetch the
+// host's highlights, annotations, drawings, and bookmarks. A participant always
+// does. The machine that authored the paper already has them. Another sign-in
+// of that same host only has the downloaded copy, and that copy has to follow
+// the marks the other participants already see.
+export function companionShouldPullShareMarks(row: { mine: boolean; path: string; marksRevision: number }): boolean {
+    if (!row.marksRevision) return false;
+    if (!row.mine) return true;
+    return companionInstalledSharePath(row.path);
+}
+
+// companionZipKeepsAppliedMarks reports that a project zip must not replace
+// highlights already shown. The zip is the document revision, and a marks
+// fetch can land first with a newer revision while that download is still
+// running. A highlight this seat is about to upload wins for the same reason:
+// the zip would replace it and the upload would then send the replacement.
+// An older hub omits the marks revision, and then the zip is the only copy
+// unless a local paint is in flight.
+export function companionZipKeepsAppliedMarks(applied: number, listedRevision: number, painting = false): boolean {
+    if (painting) return true;
+    return listedRevision > 0 && applied > listedRevision;
+}
+
+// companionShareDocumentCatchUp moves the document revision this machine
+// believes is on disk. The hub index advertises the revision still
+// downloading and must not count as stored. A list call marked syncing is
+// the file already here; a quiet refresh never publishes a finished list,
+// so that row has to count or a question waits forever. A finished list
+// settles only up to a revision the index did not leave ahead.
+export function companionShareDocumentCatchUp(
+    current: { listed: number; applied: number },
+    doc: number,
+    syncing: boolean,
+    catalog: boolean,
+): { listed: number; applied: number } {
+    let listed = current.listed;
+    let applied = current.applied;
+    if (doc > listed) listed = doc;
+    if (catalog) return { listed, applied };
+    if (doc > applied && (!syncing || doc >= listed)) applied = doc;
+    return { listed, applied };
+}
+
+// companionShareMarksBehind reports that a question on this downloaded host
+// copy must wait. Uploading first would send the local project, which still
+// lacks the highlights or the questions the other machine already published.
+// The authoring paper is never behind; it is the copy being painted.
+// project is omitted when only the marks sequence is known. An unknown
+// project list waits. A listed document revision ahead of the copy on disk
+// waits until a finished list says that zip is stored.
+export function companionShareMarksBehind(
+    path: string,
+    marksListed: number,
+    marksApplied: number,
+    project?: { listed: number; applied: number; known: boolean },
+): boolean {
+    if (!companionInstalledSharePath(path)) return false;
+    if (project) {
+        if (!project.known) return true;
+        if (project.listed > project.applied) return true;
+    }
+    if (!(marksListed > 0)) return false;
+    return marksApplied < marksListed;
+}
+
 // companionNotesRevisionWins reports that incoming should replace the notes
 // already shown. Revision 0 is an old hub, or a response that did not carry
 // one, and it must not cover a list that already has a revision.
@@ -604,6 +685,7 @@ export function companionShareNotes(raw: unknown): CompanionShareBinding[] {
             notes: companionNotesFrom(row.notes ?? row.Notes),
             revision: numberOf(row, "notesRevision", "NotesRevision"),
             marksRevision: numberOf(row, "marksRevision", "MarksRevision"),
+            documentRevision: numberOf(row, "revision", "Revision"),
         });
     }
     return out;
@@ -819,10 +901,18 @@ function dateOf(timestamp: string): string {
     return timestamp ? timestamp.slice(0, 10) : "";
 }
 
+// companionOwnPaper is a file this computer shared from its own disk.
+// A copy downloaded for a share lives under library-files and is not one.
+function companionOwnPaper(path: string): boolean {
+    const norm = path.replace(/\\/g, "/").toLowerCase();
+    return path.trim() !== "" && !norm.includes("/file-companion/library-files/");
+}
+
 // companionRemoveConfirm is what the row's delete button asks. A cloud row can
 // be removed here without touching its link, and only an owned share has 修改
 // to revoke it; say which case this is or a reader takes the wrong path and the
-// duplicate rule still blocks the next share.
+// duplicate rule still blocks the next share. Removing the owner's share puts
+// the file back in 本机项目. Only the local delete clears reading data.
 function companionRemoveConfirm(item: CompanionLibraryItem, name: string): { message: string; title: string } {
     if (item.source !== "cloud") {
         return {
@@ -830,13 +920,19 @@ function companionRemoveConfirm(item: CompanionLibraryItem, name: string): { mes
             message: companionFill(getCompanionUiLang(), "确认删除“${name}”？\n源文件会保留。本机的高亮、讨论和阅读记录会被清除。\n此操作不可撤销。", { name }),
         };
     }
-    if (item.mine && !item.expired) {
-        // Removing an owner's live cloud row is the share control; it must
-        // revoke the link so every participant drops the copy and closes the
-        // tab. An expired link has no reader to notify and is removed locally.
+    if (item.mine && companionOwnPaper(item.path)) {
+        if (!item.expired) {
+            // Removing an owner's live cloud row revokes the link so every
+            // participant drops the copy and closes the tab. The file itself
+            // returns to 本机项目.
+            return {
+                title: cs("取消分享"),
+                message: companionFill(getCompanionUiLang(), "确认取消分享“${name}”？\n所有参与者会从文档管理移除，并在伴读中关闭该文档。\n没有其他分享时，这份文档会回到本机项目，高亮和阅读记录会保留。\n在本机项目里删除才会清除这些数据。", { name }),
+            };
+        }
         return {
-            title: cs("取消分享"),
-            message: companionFill(getCompanionUiLang(), "确认取消分享“${name}”？\n所有参与者会从文档管理移除，并在伴读中关闭该文档。\n本机的文档、高亮、批注和手绘会保留。\n此操作不可撤销。", { name }),
+            title: cs("移除分享"),
+            message: companionFill(getCompanionUiLang(), "确认移除“${name}”的分享？\n分享信息会去掉，这份文档会回到本机项目。\n高亮和阅读记录会保留。在本机项目里删除才会清除这些数据。", { name }),
         };
     }
     if (item.expired) {
@@ -1058,7 +1154,7 @@ export function CompanionLibraryView({
         if (!item.path || rowBusy[item.id]) return;
         beginRow(item.id, "export");
         try {
-            const dest = await FileCompanionExportProject(item.path, marksJSONOf(item.path));
+            const dest = await FileCompanionExportProject(item.path, companionProjectExportJSON(item.path, item.notes));
             if (dest) {
                 showToast(cs("已导出项目"), "success", 6000);
                 void ShowItemInFolder(dest).catch(() => undefined);
@@ -1084,7 +1180,9 @@ export function CompanionLibraryView({
                     confirm.message,
                     confirm.title,
                     {
-                        confirmText: item.source === "cloud" && item.mine && !item.expired ? cs("取消分享") : cs("删除"),
+                        confirmText: item.source === "cloud" && item.mine && companionOwnPaper(item.path)
+                            ? (item.expired ? cs("移除分享") : cs("取消分享"))
+                            : cs("删除"),
                         cancelText: cs("取消"),
                         confirmVariant: "danger",
                     },
@@ -1106,12 +1204,14 @@ export function CompanionLibraryView({
                     if (libraryDeleteGen) libraryDeleteGen.current += 1;
                     showToast(cs("已取消分享，参与者会移除并关闭该文档"), "success", 6000);
                 } else {
-                    const raw = await DeleteFileCompanionProject(item.id) as Record<string, unknown>;
+                    const raw = await DeleteFileCompanionProject(item.id, item.path) as Record<string, unknown>;
                     // Any list that started before this delete finished still has
                     // the project. Drop it. The reload below starts after the bump.
                     if (libraryDeleteGen) libraryDeleteGen.current += 1;
                     const path = textOf(raw, "path", "Path") || item.path;
                     const cleared = boolOf(raw, "cleared", "Cleared");
+                    const promoted = boolOf(raw, "promoted", "Promoted");
+                    const restored = boolOf(raw, "restored", "Restored");
                     if (cleared && path) {
                         savePdfMarks(path, []);
                         savePdfTranslations(path, []);
@@ -1120,7 +1220,15 @@ export function CompanionLibraryView({
                         saveChatMarks(path, []);
                         onProjectDeleted?.(path);
                     }
-                    showToast(cleared ? cs("已删除伴读数据，源文件仍在") : cs("已从文档管理移除，源文件仍在"), "success", 6000);
+                    showToast(
+                        restored
+                            ? cs("已回到本机项目，阅读记录仍在")
+                            : promoted
+                                ? cs("这份文档已经是云端项目")
+                                : cleared ? cs("已删除伴读数据，源文件仍在") : cs("已从文档管理移除，源文件仍在"),
+                        "success",
+                        6000,
+                    );
                 }
             } catch (err) {
                 showToast(libraryError(err), "error", 6000);
@@ -1299,7 +1407,7 @@ export function CompanionLibraryView({
                             className="file-companion-project-action"
                             data-testid={`file-companion-library-export-${item.id}`}
                             disabled={Boolean(busy)}
-                            title={cs("导出项目 — 打包文档、高亮和聊天为 zip")}
+                            title={cs("导出项目 — 打包文档、高亮、批注和讨论为 zip")}
                             onClick={() => { void exportRow(item); }}
                         >
                             {busy === "export" ? cs("导出中…") : cs("导出")}
@@ -1311,9 +1419,13 @@ export function CompanionLibraryView({
                         data-testid={`file-companion-library-delete-${item.id}`}
                         disabled={Boolean(busy)}
                         title={item.source === "cloud"
-                            ? (item.mine && !item.expired
-                                ? cs("取消分享 — 参与者会移除并关闭该文档")
-                                : item.expired ? cs("移除已过期的分享") : cs("从文档管理移除；云端分享仍属于分享者"))
+                            ? (item.mine && companionOwnPaper(item.path)
+                                ? (item.expired
+                                    ? cs("移除分享 — 文档回到本机项目，阅读记录保留")
+                                    : cs("取消分享 — 参与者会移除并关闭该文档，本机文档回到本机项目"))
+                                : item.mine && !item.expired
+                                    ? cs("取消分享 — 参与者会移除并关闭该文档")
+                                    : item.expired ? cs("移除已过期的分享") : cs("从文档管理移除；云端分享仍属于分享者"))
                             : cs("删除伴读数据，不删除源文件")}
                         onClick={() => { void deleteRow(item); }}
                     >
@@ -2076,7 +2188,7 @@ export function CompanionShareDialog({
         if (!token || shareBusy) return;
         const docName = name || share?.name || cs("当前文档");
         const ok = await showConfirm(
-            companionFill(getCompanionUiLang(), "确认删除“${name}”的分享？\n链接会立即失效，其他人将无法再打开。\n源文件仍会保留。", { name: docName }),
+            companionFill(getCompanionUiLang(), "确认删除“${name}”的分享？\n链接会立即失效，其他人将无法再打开。\n没有其他分享时，这份文档会回到本机项目，高亮和阅读记录会保留。\n在本机项目里删除才会清除这些数据。", { name: docName }),
             cs("删除分享"),
             { confirmText: cs("删除"), cancelText: cs("取消"), confirmVariant: "danger" },
         );

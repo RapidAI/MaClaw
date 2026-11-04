@@ -25,8 +25,11 @@ import (
 
 // The companion library is the reading history for 文档管理. It is not the
 // open-set (files this window still has open) and not the mobile draft store.
-// Local rows are recorded when a file actually opens. Cloud rows are shares
-// this person created or imported.
+// A local row is this machine's own project and is never uploaded as a project
+// list. Sharing that document retires the local row: the share is the cloud
+// project, and the file stays where it is. Opening the same path again does
+// not create a second local project. When the share is gone, the owner's own
+// file (not a downloaded copy) becomes a local project again.
 
 const fileCompanionLibraryCap = 200
 
@@ -50,6 +53,11 @@ var (
 // on the Hub moved.
 var fileCompanionShareListSeq atomic.Uint64
 
+// fileCompanionShareRemoteSeq is the per-viewer stamp of documents that live
+// on another hub. It moves when a remote group gains or loses a paper, which
+// the local share sequence does not see.
+var fileCompanionShareRemoteSeq atomic.Uint64
+
 // fileCompanionShareRefreshCheck remembers what the last full library refresh
 // saw, so the 5-second poll can ask the cheap changes endpoint instead of
 // re-downloading the whole share list. Keyed by Hub URL: switching hubs (or
@@ -58,6 +66,7 @@ type fileCompanionShareRefreshState struct {
 	mu          sync.Mutex
 	hub         string
 	seq         uint64
+	remoteSeq   uint64
 	lastFull    time.Time
 	fullDone    bool
 	unsupported bool
@@ -78,6 +87,7 @@ var errFileCompanionShareChangesUnsupported = errors.New("companion share change
 func (st *fileCompanionShareRefreshState) reset(hub string) {
 	st.hub = hub
 	st.seq = 0
+	st.remoteSeq = 0
 	st.lastFull = time.Time{}
 	st.fullDone = false
 	st.unsupported = false
@@ -87,32 +97,33 @@ func (st *fileCompanionShareRefreshState) reset(hub string) {
 // fetchFileCompanionShareChanges asks the Hub for its change sequence. The
 // answer is a small JSON body, unlike the full list that carries every share
 // and note, so a poll round costs almost nothing.
-func (a *App) fetchFileCompanionShareChanges(hub, viewer string) (uint64, error) {
+func (a *App) fetchFileCompanionShareChanges(hub, viewer string) (uint64, uint64, error) {
 	req, err := http.NewRequest(http.MethodGet, hub+"/api/mobile/documents/shares/changes", nil)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+viewer)
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
-		return 0, errFileCompanionShareChangesUnsupported
+		return 0, 0, errFileCompanionShareChangesUnsupported
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
+		return 0, 0, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
 	}
 	var payload struct {
-		Seq uint64 `json:"seq"`
+		Seq       uint64 `json:"seq"`
+		RemoteSeq uint64 `json:"remote_seq"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
-		return 0, errors.New("云端分享状态无法读取")
+		return 0, 0, errors.New("云端分享状态无法读取")
 	}
-	return payload.Seq, nil
+	return payload.Seq, payload.RemoteSeq, nil
 }
 
 // fileCompanionShareRefreshQuiet reports whether the next library refresh can
@@ -146,7 +157,7 @@ func (a *App) fileCompanionShareRefreshQuiet(hub, viewer string, loginOK bool) b
 		return false
 	}
 	st.mu.Unlock()
-	seq, err := a.fetchFileCompanionShareChanges(hub, viewer)
+	seq, remoteSeq, err := a.fetchFileCompanionShareChanges(hub, viewer)
 	if err != nil {
 		if errors.Is(err, errFileCompanionShareChangesUnsupported) {
 			st.mu.Lock()
@@ -159,7 +170,7 @@ func (a *App) fileCompanionShareRefreshQuiet(hub, viewer string, loginOK bool) b
 		return true
 	}
 	st.mu.Lock()
-	quiet := seq == st.seq
+	quiet := seq == st.seq && remoteSeq == st.remoteSeq
 	st.mu.Unlock()
 	return quiet
 }
@@ -174,6 +185,7 @@ func noteFileCompanionShareFullRefresh(hub string) {
 	st.fullDone = true
 	st.lastFull = time.Now()
 	st.seq = fileCompanionShareListSeq.Load()
+	st.remoteSeq = fileCompanionShareRemoteSeq.Load()
 }
 
 // FileCompanionLibraryItem is one row in 文档管理.
@@ -282,6 +294,10 @@ type FileCompanionLibraryList struct {
 	// and a cloud refresh is still copying shares. The panel paints this
 	// immediately; the refresh pushes the finished list when it is done.
 	Syncing bool `json:"syncing,omitempty"`
+	// Catalog is the hub index published before file bodies finish
+	// downloading. Syncing on a list call is only "a refresh started"; the
+	// index is the snapshot whose revision the file on disk may not have yet.
+	Catalog bool `json:"catalog,omitempty"`
 	// SyncGen orders answers on screen. A disk read taken while a refresh is
 	// still copying shares keeps the generation from the start of that refresh.
 	// The hub index and the finished list publish strictly newer ones, so a
@@ -359,6 +375,10 @@ type fileCompanionShareView struct {
 	NotesRevision    *int                     `json:"notes_revision"`
 	// MarksRevision is a pointer so an older Hub (field absent) reads as 0.
 	MarksRevision *int `json:"marks_revision"`
+	// HubOrigin and ReaderGrant are set when the share lives on another hub.
+	// The home hub lists it so the reader can see a group they joined there.
+	HubOrigin   string `json:"hub_origin,omitempty"`
+	ReaderGrant string `json:"reader_grant,omitempty"`
 }
 
 type fileCompanionNoteWire struct {
@@ -417,11 +437,21 @@ func (a *App) rememberFileCompanionDocument(doc FileCompanionDocument) {
 	if !ok {
 		return
 	}
-	items = upsertFileCompanionLocal(items, doc)
+	items, changed := upsertFileCompanionLocal(items, doc)
+	// Opening a file that is already a cloud project must not rewrite the
+	// library. A no-op write would replace notes a refresh just stored.
+	if !changed {
+		return
+	}
 	_ = a.writeFileCompanionLibraryLocked(items)
 }
 
-func upsertFileCompanionLocal(items []FileCompanionLibraryItem, doc FileCompanionDocument) []FileCompanionLibraryItem {
+func upsertFileCompanionLocal(items []FileCompanionLibraryItem, doc FileCompanionDocument) ([]FileCompanionLibraryItem, bool) {
+	// A path a cloud project already names is that cloud project. Opening it
+	// must not write a parallel local row for the sync to upload or delete.
+	if fileCompanionCloudOwnsPath(items, doc.Path) {
+		return items, false
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	next := FileCompanionLibraryItem{
 		ID:       fileCompanionLibraryLocalID(doc.Path),
@@ -436,7 +466,7 @@ func upsertFileCompanionLocal(items []FileCompanionLibraryItem, doc FileCompanio
 	}
 	kept := make([]FileCompanionLibraryItem, 0, len(items)+1)
 	for _, item := range items {
-		if item.Source == "local" && item.Path == doc.Path {
+		if item.Source == "local" && fileCompanionSameLibraryPath(item.Path, doc.Path) {
 			if item.ID != "" {
 				next.ID = item.ID
 			}
@@ -445,7 +475,7 @@ func upsertFileCompanionLocal(items []FileCompanionLibraryItem, doc FileCompanio
 		kept = append(kept, item)
 	}
 	kept = append([]FileCompanionLibraryItem{next}, kept...)
-	return trimFileCompanionLibrary(kept, fileCompanionLibraryCap)
+	return trimFileCompanionLibrary(kept, fileCompanionLibraryCap), true
 }
 
 func fileCompanionLibraryLocalID(identity string) string {
@@ -555,6 +585,7 @@ func (a *App) publishFileCompanionLibraryCatalog(items []FileCompanionLibraryIte
 		Items:       items,
 		Notice:      notice,
 		Syncing:     true,
+		Catalog:     true,
 		SyncGen:     fileCompanionLibrarySyncGen.Add(1),
 		NotesReply:  a.fileCompanionNotesReply.Load(),
 		NotesReview: a.fileCompanionNotesReview.Load(),
@@ -631,6 +662,12 @@ func (a *App) listFileCompanionLibraryStored() FileCompanionLibraryList {
 			_ = a.writeFileCompanionLibraryLocked(items)
 		}
 	}
+	// One card per file on screen. The local row stays on disk until a
+	// refresh has seen the share still live: writing the fold here would
+	// delete it when the Hub cannot be reached.
+	if folded, foldChanged := foldFileCompanionPromotedLocals(items); foldChanged {
+		items = folded
+	}
 	fileCompanionLibraryMu.Unlock()
 	if items == nil {
 		items = []FileCompanionLibraryItem{}
@@ -662,6 +699,11 @@ func (a *App) listFileCompanionLibrary() (FileCompanionLibraryList, error) {
 	}
 	if changed {
 		_ = a.writeFileCompanionLibraryLocked(items)
+	}
+	// Same as the stored list: hide the duplicate for this answer, and
+	// leave the local row on disk until the Hub list below is in hand.
+	if folded, foldChanged := foldFileCompanionPromotedLocals(items); foldChanged {
+		items = folded
 	}
 	fileCompanionLibraryMu.Unlock()
 
@@ -733,7 +775,19 @@ func (a *App) listFileCompanionLibrary() (FileCompanionLibraryList, error) {
 			fileCompanionLibraryMu.Unlock()
 			removedTokens := map[string]bool{}
 			var purgePaths []string
-			removed, purgePaths, removedHosts = a.dropRevokedFileCompanionShares(items, previous, remote, revoked, removedTokens, epochs)
+			var restored []FileCompanionLibraryItem
+			removed, purgePaths, removedHosts, restored = a.dropRevokedFileCompanionShares(items, previous, remote, revoked, removedTokens, epochs)
+			// The restored 本机项目 is already on disk. The catalog published
+			// below is this snapshot, and the downloads can take a while, so
+			// the owner's file has to be in it or 文档管理 hides the paper
+			// until the refresh finishes.
+			if len(restored) > 0 {
+				items = append(restored, items...)
+			}
+			// Drop local rows only after revoke has seen them. A host paper
+			// still listed as local keeps its tab; a live share then retires
+			// that row because the cloud project is the document.
+			items, _ = foldFileCompanionPromotedLocals(items)
 			// A previous refresh may already have dropped the cloud row and
 			// still left the open copy, because the local row shared its path.
 			// Finish that withdrawal once the Hub list confirms the share is gone.
@@ -777,9 +831,6 @@ func (a *App) listFileCompanionLibrary() (FileCompanionLibraryList, error) {
 				}
 				removed = a.withoutSupersededRevokePaths(removed, superseded)
 				items = reconcileFileCompanionLibrary(fresh, items, removedTokens)
-				// The local row of a downloaded copy is the open tab. Drop it
-				// with the paths this refresh is closing. A file this refresh
-				// is not closing keeps its row.
 				items = omitOpenedShareCopies(items, removed)
 				// Keep a tab (and its reader state) when another row still uses
 				// that path. Only a path whose last row is gone is withdrawn.
@@ -794,14 +845,28 @@ func (a *App) listFileCompanionLibrary() (FileCompanionLibraryList, error) {
 				}
 				removedHosts = onlyRemovedFileCompanionHosts(removed, removedHosts)
 				updates = withoutDismissedShareUpdates(updates, dismissedNow)
-			}
-			_ = a.writeFileCompanionLibraryLocked(items)
-			// A revoked received copy also loses its transcript, drawings,
-			// generated notes, and result files. This runs while the library is
-			// locked so a re-import cannot publish into the session being purged.
-			for _, path := range purgePaths {
-				if path != "" && !fileCompanionLibraryUsesPath(items, path) {
-					a.purgeFileCompanionProjectData(path)
+				// Persist a local row until the Hub list itself names that share.
+				// The list returned below still shows one card per file. A failed
+				// re-read must not write the catalog snapshot: that snapshot
+				// already hid the local row, and saving it would delete it.
+				liveShareTokens := map[string]bool{}
+				for _, item := range remote {
+					if token := strings.TrimSpace(item.Token); token != "" {
+						liveShareTokens[token] = true
+					}
+				}
+				stored, _ := foldFileCompanionPromotedLocalsLive(items, liveShareTokens)
+				shown, _ := foldFileCompanionPromotedLocals(stored)
+				if err := a.writeFileCompanionLibraryLocked(stored); err == nil {
+					items = shown
+					// Judge the purge against the rows just saved. The shown
+					// list hides a local row the disk still has; purging from
+					// that list would delete reading data the row still uses.
+					for _, path := range purgePaths {
+						if path != "" && !fileCompanionLibraryUsesPath(stored, path) {
+							a.purgeFileCompanionProjectData(path)
+						}
+					}
 				}
 			}
 			fileCompanionLibraryMu.Unlock()
@@ -910,6 +975,9 @@ func mergeFileCompanionSharesWithRevoked(items, remote []FileCompanionLibraryIte
 			}
 			if item.ShareURL == "" {
 				item.ShareURL = prev.ShareURL
+			}
+			if item.HubOrigin == "" {
+				item.HubOrigin = prev.HubOrigin
 			}
 			// A hub that does not know about notes omits the field. Keep the
 			// notes this machine already stored. A list that left earlier
@@ -1086,10 +1154,201 @@ func reconcileFileCompanionLibrary(fresh, snapshot []FileCompanionLibraryItem, d
 }
 
 func trimFileCompanionLibrary(items []FileCompanionLibraryItem, cap int) []FileCompanionLibraryItem {
-	if cap > 0 && len(items) > cap {
-		return items[:cap]
+	if cap <= 0 || len(items) <= cap {
+		return items
 	}
-	return items
+	// Local projects and cloud projects each keep their own cap. A cloud
+	// refresh must not evict a local project to make room for shares.
+	localN, cloudN := 0, 0
+	out := make([]FileCompanionLibraryItem, 0, len(items))
+	for _, item := range items {
+		if item.Source == "cloud" {
+			if cloudN >= cap {
+				continue
+			}
+			cloudN++
+		} else {
+			if localN >= cap {
+				continue
+			}
+			localN++
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// fileCompanionSameLibraryPath reports that two library paths are the same
+// file. Drive-letter case and slash direction do not make a second project.
+// The symlink check runs only when the cleaned spellings still differ.
+func fileCompanionSameLibraryPath(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return false
+	}
+	if left == right {
+		return true
+	}
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if left == right || strings.EqualFold(left, right) {
+		return true
+	}
+	return fileCompanionDedupeKey(left) == fileCompanionDedupeKey(right)
+}
+
+// fileCompanionCloudOwnsPath reports that a cloud project already names this
+// file. That file is not also a local project.
+func fileCompanionCloudOwnsPath(items []FileCompanionLibraryItem, path string) bool {
+	for _, item := range items {
+		if item.Source == "cloud" && fileCompanionSameLibraryPath(item.Path, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func fileCompanionLocalOwnsPath(items []FileCompanionLibraryItem, path string) bool {
+	for _, item := range items {
+		if item.Source != "cloud" && fileCompanionSameLibraryPath(item.Path, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// fileCompanionInstalledShareCopy reports a file downloaded for a share.
+// The owner's own paper lives outside that directory and stays a local
+// project once the share is gone.
+func fileCompanionInstalledShareCopy(a *App, path string) bool {
+	if a == nil || strings.TrimSpace(path) == "" {
+		return false
+	}
+	root := filepath.Join(a.GetDataDir(), "file-companion", "library-files")
+	return companionFigureInsideDir(root, path)
+}
+
+// fileCompanionLibraryPathKey is the identity fold uses. A path that cannot
+// be resolved still matches another spelling of the same Windows file, so a
+// locked or missing file does not stay listed twice.
+func fileCompanionLibraryPathKey(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if resolved, err := fileCompanionCanonicalPath(path); err == nil && resolved != "" {
+		return resolved
+	}
+	cleaned := filepath.Clean(path)
+	if filepath.VolumeName(cleaned) != "" || strings.HasPrefix(cleaned, `\\`) {
+		return strings.ToLower(cleaned)
+	}
+	return cleaned
+}
+
+// foldFileCompanionPromotedLocals drops a local row whose file a cloud
+// project already names, and collapses local rows that are the same file.
+// Each path is canonicalized once. The cloud row is the project; the file
+// is not moved.
+func foldFileCompanionPromotedLocals(items []FileCompanionLibraryItem) ([]FileCompanionLibraryItem, bool) {
+	return foldFileCompanionPromotedLocalsLive(items, nil)
+}
+
+// foldFileCompanionPromotedLocalsLive is the same fold. liveTokens limits
+// which cloud rows may retire a local row. Nil means every cloud row does.
+// A share the Hub list did not return must not delete the local row: the
+// probe may still say the link is only missing for this refresh.
+func foldFileCompanionPromotedLocalsLive(items []FileCompanionLibraryItem, liveTokens map[string]bool) ([]FileCompanionLibraryItem, bool) {
+	if len(items) == 0 {
+		return items, false
+	}
+	keys := make([]string, len(items))
+	owned := map[string]bool{}
+	for i, item := range items {
+		keys[i] = fileCompanionLibraryPathKey(item.Path)
+		if item.Source != "cloud" || keys[i] == "" {
+			continue
+		}
+		if liveTokens != nil && !liveTokens[item.Token] {
+			continue
+		}
+		owned[keys[i]] = true
+	}
+	seenLocal := map[string]bool{}
+	kept := make([]FileCompanionLibraryItem, 0, len(items))
+	changed := false
+	for i, item := range items {
+		if item.Source != "cloud" {
+			key := keys[i]
+			if key != "" && (owned[key] || seenLocal[key]) {
+				changed = true
+				continue
+			}
+			if key != "" {
+				seenLocal[key] = true
+			}
+		}
+		kept = append(kept, item)
+	}
+	if !changed {
+		return items, false
+	}
+	return kept, true
+}
+
+// fileCompanionOwnLocalRow is the 本机项目 row for a file whose cloud project
+// is going away. exceptToken is the share being retired and does not count as
+// another owner of the file. A downloaded copy, a file another live share
+// still names, or a local row that is already there gets nothing.
+func fileCompanionOwnLocalRow(a *App, items []FileCompanionLibraryItem, path, name string, size int64, exceptToken string) (FileCompanionLibraryItem, bool) {
+	path = strings.TrimSpace(path)
+	if a == nil || path == "" || !fileCompanionLibraryFileExists(path) || fileCompanionInstalledShareCopy(a, path) {
+		return FileCompanionLibraryItem{}, false
+	}
+	// One canonical key for this file. Each row is compared cheaply first so
+	// a library refresh does not resolve every path while holding the lock.
+	cleaned := filepath.Clean(path)
+	key := ""
+	resolved := false
+	same := func(other string) bool {
+		other = strings.TrimSpace(other)
+		if other == "" {
+			return false
+		}
+		if other == path || other == cleaned {
+			return true
+		}
+		otherClean := filepath.Clean(other)
+		if otherClean == cleaned || strings.EqualFold(otherClean, cleaned) {
+			return true
+		}
+		if !resolved {
+			key = fileCompanionDedupeKey(cleaned)
+			resolved = true
+		}
+		return key != "" && fileCompanionDedupeKey(otherClean) == key
+	}
+	for _, item := range items {
+		if item.Source == "cloud" && item.Token == exceptToken {
+			continue
+		}
+		if same(item.Path) {
+			return FileCompanionLibraryItem{}, false
+		}
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = filepath.Base(path)
+	}
+	return FileCompanionLibraryItem{
+		ID:       fileCompanionLibraryLocalID(path),
+		Name:     name,
+		Path:     path,
+		Source:   "local",
+		OpenedAt: time.Now().UTC().Format(time.RFC3339),
+		Size:     size,
+	}, true
 }
 
 func (a *App) fileCompanionHubLogin() (string, string, error) {
@@ -1240,14 +1499,23 @@ func (a *App) fetchFileCompanionShareList(hub, viewer string) ([]FileCompanionLi
 		NotesReply  bool                     `json:"notes_reply"`
 		NotesReview bool                     `json:"notes_review"`
 		ServerTime  string                   `json:"server_time"`
+		RemoteSeq   uint64                   `json:"remote_seq"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
 		return nil, false, false, time.Time{}, errors.New("云端分享记录无法读取")
 	}
+	fileCompanionShareRemoteSeq.Store(payload.RemoteSeq)
 	serverTime, _ := time.Parse(time.RFC3339, strings.TrimSpace(payload.ServerTime))
 	out := make([]FileCompanionLibraryItem, 0, len(payload.Mine)+len(payload.Received))
 	out = append(out, libraryItemsFromShares(payload.Mine, true, hub)...)
 	out = append(out, libraryItemsFromShares(payload.Received, false, hub)...)
+	for _, view := range payload.Received {
+		token := strings.TrimSpace(view.Token)
+		grant := strings.TrimSpace(view.ReaderGrant)
+		if fileCompanionShareTokenMatch.MatchString(token) && fileCompanionReaderGrantMatch.MatchString(grant) {
+			_ = a.saveFileCompanionShareGrant(token, grant)
+		}
+	}
 	return out, payload.NotesReply, payload.NotesReview, serverTime, nil
 }
 
@@ -1305,6 +1573,14 @@ func libraryItemsFromShares(views []fileCompanionShareView, mine bool, hub strin
 		}
 		if item.ShareURL == "" {
 			item.ShareURL = strings.TrimRight(hub, "/") + "/hub/documents/shares/" + token
+		}
+		origin := fileCompanionHubOrigin(view.HubOrigin)
+		home := fileCompanionHubOrigin(hub)
+		if origin != "" && origin != home {
+			item.HubOrigin = origin
+			if fileCompanionHubOrigin(item.ShareURL) != origin {
+				item.ShareURL = origin + "/hub/documents/shares/" + token
+			}
 		}
 		if item.OpenedAt == "" {
 			item.OpenedAt = time.Now().UTC().Format(time.RFC3339)
@@ -2096,6 +2372,9 @@ func (a *App) upsertFileCompanionCloudLocked(item FileCompanionLibraryItem) erro
 		kept = append(kept, current)
 	}
 	kept = append([]FileCompanionLibraryItem{item}, kept...)
+	// The share is the project now. The local row for the same file is retired
+	// with this write, so a cloud refresh cannot treat it as a second project.
+	kept, _ = foldFileCompanionPromotedLocals(kept)
 	return a.writeFileCompanionLibraryLocked(trimFileCompanionLibrary(kept, fileCompanionLibraryCap))
 }
 
@@ -2111,31 +2390,31 @@ func (a *App) retireFileCompanionShare(token string) {
 	defer fileCompanionLibraryMu.Unlock()
 	_, _ = a.dismissFileCompanionShareLocked(token)
 	a.forgetFileCompanionShareGrantLocked(token)
-	a.dropFileCompanionCloudTokenLocked(token)
-}
-
-// dropFileCompanionCloudTokenLocked removes one cloud row. The local file
-// stays: a share that is gone is not the reader's own paper. The caller holds
-// fileCompanionLibraryMu so a delete can retire the share and drop its row in
-// one critical section.
-func (a *App) dropFileCompanionCloudTokenLocked(token string) {
-	if a == nil || token == "" {
-		return
-	}
 	items, ok := a.readFileCompanionLibraryLocked()
 	if !ok {
 		return
 	}
-	kept := make([]FileCompanionLibraryItem, 0, len(items))
-	changed := false
+	// Drop the cloud row and, when this was the last share of the owner's own
+	// file, put that file back in one write. Two writes could lose the file
+	// from the library if the second one failed.
+	var ownPath, ownName string
+	var ownSize int64
+	found := false
+	kept := make([]FileCompanionLibraryItem, 0, len(items)+1)
 	for _, item := range items {
 		if item.Source == "cloud" && item.Token == token {
-			changed = true
+			ownPath, ownName, ownSize = item.Path, item.Name, item.Size
+			found = true
 			continue
 		}
 		kept = append(kept, item)
 	}
-	if changed {
+	if row, ok := fileCompanionOwnLocalRow(a, kept, ownPath, ownName, ownSize, token); ok {
+		kept = append([]FileCompanionLibraryItem{row}, kept...)
+		kept = trimFileCompanionLibrary(kept, fileCompanionLibraryCap)
+		found = true
+	}
+	if found {
 		_ = a.writeFileCompanionLibraryLocked(kept)
 	}
 }
@@ -2143,23 +2422,35 @@ func (a *App) dropFileCompanionCloudTokenLocked(token string) {
 // FileCompanionProjectDelete is what 文档管理 removed. Path is the document
 // that stayed on disk. Cleared is set when this row was the last project
 // using that path, so the window drops highlights and closes the tab.
+// Promoted is set when the local row was already retired because that file
+// is a cloud project; the cloud project stays. Restored is set when removing
+// the share put the owner's own file back in 本机项目. Reading data stays until
+// that local row is deleted.
 type FileCompanionProjectDelete struct {
-	ID      string `json:"id"`
-	Path    string `json:"path,omitempty"`
-	Name    string `json:"name,omitempty"`
-	Cleared bool   `json:"cleared"`
+	ID       string `json:"id"`
+	Path     string `json:"path,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Cleared  bool   `json:"cleared"`
+	Promoted bool   `json:"promoted,omitempty"`
+	Restored bool   `json:"restored,omitempty"`
 }
 
 // DeleteFileCompanionProject removes one 文档管理 row and the companion data
 // that belongs only to it: the reading record, highlights on disk, discussion,
 // and generated notes. The source file is not removed.
-func (a *App) DeleteFileCompanionProject(id string) (FileCompanionProjectDelete, error) {
+//
+// id is the row id or a cloud token. path is the file the screen is showing,
+// which is the local project's identity when the row id was already retired.
+// A local id whose file is now a cloud project does not delete that cloud
+// project. A row that is already gone is the deleted state.
+func (a *App) DeleteFileCompanionProject(id, path string) (FileCompanionProjectDelete, error) {
 	empty := FileCompanionProjectDelete{}
 	if a == nil {
 		return empty, errors.New("app unavailable")
 	}
 	id = strings.TrimSpace(id)
-	if id == "" {
+	path = strings.TrimSpace(path)
+	if id == "" && path == "" {
 		return empty, errors.New("没有找到这个项目")
 	}
 	fileCompanionLibraryMu.Lock()
@@ -2168,20 +2459,62 @@ func (a *App) DeleteFileCompanionProject(id string) (FileCompanionProjectDelete,
 		fileCompanionLibraryMu.Unlock()
 		return empty, errors.New("文档列表无法读取")
 	}
-	var found *FileCompanionLibraryItem
-	kept := make([]FileCompanionLibraryItem, 0, len(items))
+	// One pass. The id wins. The path is only the local project's identity
+	// when that id is already gone, and it is canonicalized once.
+	pathKey := ""
+	shareID := fileCompanionShareTokenMatch.MatchString(id)
+	if path != "" && !shareID {
+		pathKey = fileCompanionDedupeKey(path)
+	}
+	foundIndex := -1
+	pathIndex := -1
 	for i := range items {
-		item := items[i]
-		if found == nil && fileCompanionLibraryItemMatches(item, id) {
-			copy := item
-			found = &copy
+		if foundIndex < 0 && fileCompanionLibraryItemMatches(items[i], id) {
+			foundIndex = i
 			continue
 		}
-		kept = append(kept, item)
+		if pathIndex < 0 && foundIndex < 0 && pathKey != "" && items[i].Source != "cloud" && fileCompanionDedupeKey(items[i].Path) == pathKey {
+			pathIndex = i
+		}
+	}
+	// A share id that is already gone must not delete the local project the
+	// file just returned to. The path is only a fallback for a local id.
+	if foundIndex < 0 {
+		foundIndex = pathIndex
+	}
+	var found *FileCompanionLibraryItem
+	kept := make([]FileCompanionLibraryItem, 0, len(items))
+	if foundIndex >= 0 {
+		copy := items[foundIndex]
+		found = &copy
+		for i := range items {
+			if i == foundIndex {
+				continue
+			}
+			kept = append(kept, items[i])
+		}
 	}
 	if found == nil {
+		// The local project was retired when the file became a cloud project.
+		// Leave the cloud row and its reading data in place.
+		if path != "" && fileCompanionCloudOwnsPath(items, path) {
+			fileCompanionLibraryMu.Unlock()
+			return FileCompanionProjectDelete{ID: id, Path: path, Promoted: true}, nil
+		}
+		// The share was already removed and the file is a local project.
+		// Leave that row and its reading data in place.
+		if path != "" && fileCompanionShareTokenMatch.MatchString(id) && fileCompanionLocalOwnsPath(items, path) {
+			fileCompanionLibraryMu.Unlock()
+			return FileCompanionProjectDelete{ID: id, Path: path, Restored: true}, nil
+		}
+		// The row is already gone. Finish removing companion data when no
+		// project still uses the file, so a stale card can be deleted.
+		cleared := path != "" && !fileCompanionLibraryUsesPath(items, path)
+		if cleared {
+			a.purgeFileCompanionProjectData(path)
+		}
 		fileCompanionLibraryMu.Unlock()
-		return empty, errors.New("没有找到这个项目")
+		return FileCompanionProjectDelete{ID: id, Path: path, Cleared: cleared}, nil
 	}
 	// Hide a cloud share before the row is removed. A failed hide leaves the
 	// row in place: the next list would otherwise download it again.
@@ -2194,6 +2527,25 @@ func (a *App) DeleteFileCompanionProject(id string) (FileCompanionProjectDelete,
 		}
 		hidShare = added
 	}
+	if foundPath := strings.TrimSpace(found.Path); foundPath != "" {
+		path = foundPath
+	}
+	// Removing the share is not deleting the document. The owner's own file
+	// goes back to 本机项目 in the same write, and its highlights stay. A
+	// downloaded copy is not adopted. Another live share of the same file
+	// keeps it a cloud project.
+	restored := false
+	if found.Source == "cloud" && found.Mine {
+		if row, ok := fileCompanionOwnLocalRow(a, kept, path, found.Name, found.Size, found.Token); ok {
+			kept = append([]FileCompanionLibraryItem{row}, kept...)
+			kept = trimFileCompanionLibrary(kept, fileCompanionLibraryCap)
+			restored = true
+		} else if path != "" && fileCompanionLocalOwnsPath(kept, path) && !fileCompanionCloudOwnsPath(kept, path) {
+			// The screen hid this row while the share existed. It is already
+			// the local project once that share is gone.
+			restored = true
+		}
+	}
 	if err := a.writeFileCompanionLibraryLocked(kept); err != nil {
 		if hidShare {
 			_ = a.undismissFileCompanionShareLocked(found.Token)
@@ -2204,13 +2556,13 @@ func (a *App) DeleteFileCompanionProject(id string) (FileCompanionProjectDelete,
 	if found.Source == "cloud" && fileCompanionShareTokenMatch.MatchString(found.Token) {
 		a.forgetFileCompanionSharePathLocked(found.Token)
 	}
-	path := strings.TrimSpace(found.Path)
 	sharedPath := path != "" && fileCompanionLibraryUsesPath(kept, path)
 	result := FileCompanionProjectDelete{
-		ID:      found.ID,
-		Path:    path,
-		Name:    found.Name,
-		Cleared: path != "" && !sharedPath,
+		ID:       found.ID,
+		Path:     path,
+		Name:     found.Name,
+		Cleared:  path != "" && !sharedPath,
+		Restored: restored,
 	}
 	// Remove the transcript before releasing the lock. Import and a share
 	// pull publish that transcript under the same lock. Unlocking first lets
@@ -2223,6 +2575,9 @@ func (a *App) DeleteFileCompanionProject(id string) (FileCompanionProjectDelete,
 }
 
 func fileCompanionLibraryItemMatches(item FileCompanionLibraryItem, id string) bool {
+	if id == "" {
+		return false
+	}
 	if item.ID == id {
 		return true
 	}
@@ -2791,6 +3146,7 @@ func (a *App) recordFileCompanionSharePathLocked(token, path string) error {
 		return nil
 	}
 	items[index].Path = path
+	items, _ = foldFileCompanionPromotedLocals(items)
 	if err := a.writeFileCompanionLibraryLocked(items); err != nil {
 		return err
 	}
@@ -2838,16 +3194,33 @@ func omitOpenedShareCopies(items []FileCompanionLibraryItem, removed []string) [
 }
 
 func fileCompanionLibraryUsesPath(items []FileCompanionLibraryItem, path string) bool {
-	key := fileCompanionDedupeKey(path)
-	if strings.TrimSpace(path) == "" || key == "" {
+	path = strings.TrimSpace(path)
+	if path == "" {
 		return false
 	}
+	// Cleaned spellings match without asking the filesystem. Symlink
+	// resolution runs only for a row that still looks different, and the
+	// query path is resolved once. Callers hold the library lock.
+	cleaned := filepath.Clean(path)
+	var key string
+	resolved := false
 	for _, item := range items {
 		other := strings.TrimSpace(item.Path)
 		if other == "" {
 			continue
 		}
-		if fileCompanionDedupeKey(other) == key {
+		if other == path || other == cleaned {
+			return true
+		}
+		otherClean := filepath.Clean(other)
+		if otherClean == cleaned || strings.EqualFold(otherClean, cleaned) {
+			return true
+		}
+		if !resolved {
+			key = fileCompanionDedupeKey(cleaned)
+			resolved = true
+		}
+		if key != "" && fileCompanionDedupeKey(otherClean) == key {
 			return true
 		}
 	}
@@ -2889,6 +3262,7 @@ func (a *App) purgeFileCompanionProjectData(path string) {
 	a.removeFileCompanionSessionTree("figures", sessionID, path)
 	a.removeFileCompanionSessionTree("results", sessionID, path)
 	a.removeFileCompanionSessionTree("work", sessionID, path)
+	_ = a.deleteCompanionReaderState(companionReaderDiscussionNotesKind, companionReaderPathKey(identity))
 	logFileCompanion("project data cleared session=%s", sessionID)
 }
 

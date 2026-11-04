@@ -173,7 +173,38 @@ func (a *App) skillInstallPolicyActionForSource(report *cskill.ScanReport, sourc
 	if a != nil && a.policyEngine != nil {
 		engine = a.policyEngine
 	}
-	return engine.Evaluate("skill_install", nil, report.FinalLevel)
+	action := engine.Evaluate("skill_install", nil, report.FinalLevel)
+	// Standard is the default guardrail. High and critical still ask for
+	// ordinary tools, but a skill install must not stop the task on that
+	// default. The finding is recorded and the install continues. Strict
+	// still asks or denies, and that ask is a dialog.
+	mode := "standard"
+	if a != nil {
+		mode = a.securityPolicyMode()
+	}
+	if action == security.PolicyAsk && mode == "standard" {
+		return security.PolicyAudit
+	}
+	return action
+}
+
+// skillInstallDecidedAction applies the scan policy, then the task's input-box
+// choice. 完全控制 installs without an authorization prompt, including a
+// strict deny. Any other choice keeps the policy: standard records and
+// continues, strict asks with a dialog or denies.
+func (h *IMMessageHandler) skillInstallDecidedAction(report *cskill.ScanReport, source, platform, ownerID string) (security.PolicyAction, bool) {
+	if h == nil || h.app == nil {
+		return security.PolicyAllow, false
+	}
+	if codingTaskFullControlGranted(h, ownerID) {
+		action := h.app.skillInstallPolicyActionForSource(report, source)
+		if action == security.PolicyAsk || action == security.PolicyDeny {
+			log.Printf("[skill-install] full control allows skill from %s without a prompt (policy=%s)", source, action)
+			return security.PolicyAudit, false
+		}
+		return action, false
+	}
+	return h.app.skillInstallActionWithChannel(report, source, strings.TrimSpace(platform) != "")
 }
 
 func skillInstallRiskLevelKnown(level security.RiskLevel) bool {

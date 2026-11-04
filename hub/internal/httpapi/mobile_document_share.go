@@ -429,7 +429,8 @@ func companionSharePasswordOK(share companionDocShare, password string) bool {
 }
 
 // companionShareAllowsGuest is the audience that can be opened from another
-// tenant or another Hub. Person and group shares name an account on this Hub.
+// tenant or another Hub without a membership credential. A group share names
+// the members; someone on another hub opens it with the invite secret instead.
 func companionShareAllowsGuest(visibility string) bool {
 	switch strings.TrimSpace(visibility) {
 	case "", "public", "private":
@@ -437,6 +438,24 @@ func companionShareAllowsGuest(visibility string) bool {
 	default:
 		return false
 	}
+}
+
+// companionShareForeignReader is a cross-hub reader. A public or private link
+// uses the grant issued at import. A group link uses the invite secret of an
+// accepted member, which is how someone on another hub opens documents that
+// were already in the group.
+func companionShareForeignReader(share companionDocShare, grant string) (string, string, bool) {
+	if label, hash, ok := companionShareGuestByGrant(share, grant); ok && companionShareAllowsGuest(share.Visibility) {
+		return label, hash, true
+	}
+	if strings.TrimSpace(share.Visibility) != "group" {
+		return "", "", false
+	}
+	label, ok := companionGroupMemberGrant(strings.TrimSpace(share.GroupID), grant)
+	if !ok {
+		return "", "", false
+	}
+	return label, hashCompanionReaderGrant(grant), true
 }
 
 func newCompanionReaderGrant() (string, error) {
@@ -766,6 +785,10 @@ func writeCompanionShareList(w http.ResponseWriter, r *http.Request, identity *a
 		}
 	}
 	companionDocShares.Unlock()
+	remoteShares, remoteSeq := companionRemoteShareSnapshot(r.Context(), identity, principal, ownerID)
+	if len(remoteShares) > 0 {
+		received = append(received, remoteShares...)
+	}
 	// NotesReply tells the desktop that this Hub records host replies. An older
 	// Hub omits it, and the owner's machine then does not run a discussion agent:
 	// without reply_to every host line would look unanswered and loop.
@@ -779,6 +802,7 @@ func writeCompanionShareList(w http.ResponseWriter, r *http.Request, identity *a
 		"notes_reply":  true,
 		"notes_review": true,
 		"server_time":  now.UTC().Format(time.RFC3339),
+		"remote_seq":   remoteSeq,
 	})
 }
 
@@ -832,8 +856,10 @@ func CompanionDocumentShareChangesHandler(identity *auth.IdentityService) http.H
 			})
 		}
 		companionDocShares.Unlock()
+		_, remoteSeq := companionRemoteShareSnapshot(r.Context(), identity, principal, ownerID)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"seq":         seq,
+			"remote_seq":  remoteSeq,
 			"server_time": now.UTC().Format(time.RFC3339),
 			"shares":      rows,
 		})
@@ -1044,7 +1070,7 @@ func CompanionDocumentShareHandler(identity *auth.IdentityService) http.HandlerF
 		// Notes stay off the unauthenticated metadata response. A private link
 		// would otherwise leak the discussion to anyone who has the address
 		// but not the password. A grant issued at import is enough.
-		if _, _, guest := companionShareGuestByGrant(share, companionReaderGrantHeaderValue(r)); guest && companionShareAllowsGuest(share.Visibility) {
+		if _, _, guest := companionShareForeignReader(share, companionReaderGrantHeaderValue(r)); guest {
 			companionShareAttachNotes(view, share)
 		}
 		writeJSON(w, http.StatusOK, view)
@@ -1370,6 +1396,8 @@ func CompanionDocumentShareImportHandler(identity *auth.IdentityService) http.Ha
 			} else {
 				share.Importers[ownerID] = time.Now().UTC().Format(time.RFC3339)
 			}
+		} else if _, _, known := companionShareForeignReader(share, grant); known {
+			issuedGrant = grant
 		} else if !companionShareAllowsGuest(share.Visibility) {
 			companionDocShares.Unlock()
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "指定分享和群组分享只能在文档所在的 Hub 打开")
@@ -1691,8 +1719,7 @@ func CompanionDocumentShareMarksHandler(identity *auth.IdentityService) http.Han
 				return
 			}
 		} else {
-			_, _, known := companionShareGuestByGrant(share, grant)
-			if !known || !companionShareAllowsGuest(share.Visibility) {
+			if _, _, known := companionShareForeignReader(share, grant); !known {
 				companionDocShares.Unlock()
 				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请重新导入分享链接")
 				return
@@ -1911,8 +1938,8 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 		guestHash := ""
 		if ownerID == "" {
 			var guestOK bool
-			guestLabel, guestHash, guestOK = companionShareGuestByGrant(share, grant)
-			if !guestOK || !companionShareAllowsGuest(share.Visibility) {
+			guestLabel, guestHash, guestOK = companionShareForeignReader(share, grant)
+			if !guestOK {
 				companionDocShares.Unlock()
 				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请重新导入分享链接")
 				return

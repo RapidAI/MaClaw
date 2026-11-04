@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
-import { hydratePdfMarks, loadPdfMarkCounts, loadPdfMarks, pdfMarkPathKey, savePdfMarks } from "./pdfMarks";
+import { hydratePdfMarks, loadPdfMarkCounts, loadPdfMarks, PDF_MARKS_CHANGED_EVENT, pdfMarkPathKey, savePdfMarks, subscribePdfMarks } from "./pdfMarks";
 
 const mark = {
     id: "m1",
@@ -50,6 +50,29 @@ describe("pdf marks", () => {
         const counts = loadPdfMarkCounts(["/tmp/c.pdf", "/tmp/d.pdf"]);
         expect(counts.get("/tmp/c.pdf")).toBe(loadPdfMarks("/tmp/c.pdf").length);
         expect(counts.get("/tmp/d.pdf")).toBe(loadPdfMarks("/tmp/d.pdf").length);
+    });
+
+    it("tells an open reader about a silent save and skips an identical one", () => {
+        const seen: string[] = [];
+        const stop = subscribePdfMarks((key) => seen.push(key));
+        const announced: string[] = [];
+        const onAnnounce = (event: Event) => {
+            announced.push(String((event as CustomEvent<{ path?: string }>).detail?.path || ""));
+        };
+        window.addEventListener(PDF_MARKS_CHANGED_EVENT, onAnnounce);
+        try {
+            savePdfMarks("C:/docs/Paper.PDF", [mark]);
+            savePdfMarks("c:/docs/paper.pdf", [mark]);
+            expect(seen).toEqual(["c:/docs/paper.pdf"]);
+            expect(announced).toEqual([]);
+            savePdfMarks("C:/docs/Paper.PDF", [mark], true);
+            expect(announced).toEqual([]);
+            savePdfMarks("C:/docs/Paper.PDF", []);
+            expect(seen).toEqual(["c:/docs/paper.pdf", "c:/docs/paper.pdf"]);
+        } finally {
+            stop();
+            window.removeEventListener(PDF_MARKS_CHANGED_EVENT, onAnnounce);
+        }
     });
 
     it("writes to the host in the order the marks were saved", async () => {

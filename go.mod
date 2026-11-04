@@ -7,7 +7,7 @@ require (
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/VantageDataChat/GoExcel v0.0.0-20260626231344-644ce957794e
 	github.com/VantageDataChat/GoPDF2 v0.0.0-20261103011601-0d29802a4481
-	github.com/Vantagics/GoPPT v0.0.0-20260925002107-5e8328b8348b
+	github.com/Vantagics/GoPPT v0.0.0-20261104071503-92fcb0a8832a
 	github.com/alexbrainman/odbc v0.0.0-20250601004241-49e6b2bc0cf0
 	github.com/braheezy/shine-mp3 v0.1.0
 	github.com/charmbracelet/bubbles v1.0.0
