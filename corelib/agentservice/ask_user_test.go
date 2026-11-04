@@ -32,3 +32,16 @@ func TestAskUserAnswerStaysOnTheCurrentTask(t *testing.T) {
 		t.Fatal("an ordinary answer was sent to the desktop browser")
 	}
 }
+
+func TestResolveAskUserAnswerLettersAndMulti(t *testing.T) {
+	options := []string{"继续用 InferX", "换成本地路径", "先观察"}
+	if got := resolveAskUserAnswer("A", options); got != "继续用 InferX" {
+		t.Fatalf("A -> %q", got)
+	}
+	if got := resolveAskUserAnswer("B；C", options); got != "换成本地路径；先观察" {
+		t.Fatalf("B；C -> %q", got)
+	}
+	if got := resolveAskUserAnswer("换成本地路径", options); got != "换成本地路径" {
+		t.Fatalf("label -> %q", got)
+	}
+}

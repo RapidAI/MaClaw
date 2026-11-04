@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { DesktopBotOptionChips } from './DesktopBotOptionChips';
+import { DesktopBotInquiryCard, askUserAllowsMultiple } from './DesktopBotInquiryCard';
 import { DesktopBotMaterialChips, DesktopBotMaterialStrip } from './DesktopBotMaterialStrip';
 import { materialTooLarge, materialUploadId, splitMaterials, uploadMaterial, withMaterials, type MaterialItem } from './desktopBotMaterials';
 import { createPortal } from 'react-dom';
@@ -6602,16 +6603,17 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         />
                                     ) : null}
                                     {/* No confirm button: an arranged plan continues on its own (runArrangedPlan). */}
-                                    {message.askUser?.options && !message.askResolved && !message.userControl ? (
-                                        <div className="desktop-bot-chat__choices">
-                                            {message.askUser.options.map((option, index) => (
-                                                <button type="button" key={option} onClick={() => { markAskResolved(selected.id, message.id); void send(option, message.phase === 'execute' ? 'execute' : 'plan', true, undefined, true); }}>
-                                                    <span className="desktop-bot-chat__choice-key" aria-hidden="true">{String.fromCharCode(65 + (index % 26))}</span>
-                                                    <span>{option}</span>
-                                                    <span className="desktop-bot-chat__choice-mark" aria-hidden="true">✓</span>
-                                                </button>
-                                            ))}
-                                        </div>
+                                    {message.askUser?.options && message.askUser.options.length > 0 && !message.askResolved && !message.userControl ? (
+                                        <DesktopBotInquiryCard
+                                            question={message.askUser.question}
+                                            options={message.askUser.options}
+                                            allowMultiple={askUserAllowsMultiple(message.askUser.inputType)}
+                                            lang={lang}
+                                            onSubmit={reply => {
+                                                markAskResolved(selected.id, message.id);
+                                                void send(reply, message.phase === 'execute' ? 'execute' : 'plan', true, undefined, true);
+                                            }}
+                                        />
                                     ) : null}
                                     {message.noReading ? (
                                         <div className="desktop-bot-chat__choices" data-testid="desktop-bot-no-reading">

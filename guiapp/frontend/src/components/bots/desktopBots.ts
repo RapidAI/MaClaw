@@ -825,6 +825,7 @@ function isProgramTask(text: string): boolean {
 // Ask details copied from the turn. secretName is a placeholder such as
 // SITE_PASSWORD. The secret value is never stored on the message.
 export interface DesktopBotAsk {
+    /** text | choice | multi_choice | confirm | secret | secret_fill */
     inputType?: string;
     secretName?: string;
     question?: string;

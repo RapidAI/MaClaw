@@ -1728,6 +1728,83 @@
     background: transparent;
 }
 
+.desktop-bot-chat__inquiry {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 2px;
+    padding: 12px;
+    border-radius: 16px;
+    background: var(--theme-surface-muted, #eef1f6);
+    color: inherit;
+}
+
+.desktop-bot-chat__inquiry-prompt {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.4;
+    color: var(--theme-text-primary, #101828);
+}
+
+.desktop-bot-chat__inquiry-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.desktop-bot-chat__inquiry-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    border: 1px solid transparent;
+    border-radius: 14px;
+    background: var(--theme-surface, #fff);
+    color: inherit;
+    padding: 10px 12px;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+}
+
+.desktop-bot-chat__inquiry-option:hover {
+    background: color-mix(in srgb, var(--theme-surface, #fff) 88%, var(--theme-text-primary, #101828));
+}
+
+.desktop-bot-chat__inquiry-option.is-selected {
+    border-color: color-mix(in srgb, var(--mc-accent, #2f6fbc) 55%, transparent);
+    background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 10%, var(--theme-surface, #fff));
+}
+
+.desktop-bot-chat__inquiry-option span:nth-child(2) {
+    flex: 1;
+    min-width: 0;
+}
+
+.desktop-bot-chat__inquiry-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.desktop-bot-chat__inquiry-submit {
+    appearance: none;
+    min-height: 34px;
+    padding: 6px 14px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--mc-accent, #2f6fbc);
+    color: var(--theme-on-primary, #fff);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.desktop-bot-chat__inquiry-submit:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
 .desktop-bot-chat__choices {
     display: flex;
     flex-direction: column;

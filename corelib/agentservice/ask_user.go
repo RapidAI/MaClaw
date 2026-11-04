@@ -47,12 +47,66 @@ func resolveAskUserAnswer(raw string, options []string) string {
 	if trimmed == "" || len(options) == 0 {
 		return raw
 	}
+	if mapped := mapAskUserChoiceTokens(trimmed, options); mapped != "" {
+		return mapped
+	}
 	for idx, option := range options {
 		if trimmed == option || trimmed == fmt.Sprintf("%d", idx+1) {
 			return option
 		}
 	}
 	return raw
+}
+
+// mapAskUserChoiceTokens turns "A", "B；C", or "1;2" into the option labels.
+func mapAskUserChoiceTokens(raw string, options []string) string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case '；', ';', '、', ',', '|':
+			return true
+		default:
+			return false
+		}
+	})
+	if len(parts) == 0 {
+		return ""
+	}
+	mapped := make([]string, 0, len(parts))
+	seen := map[string]bool{}
+	for _, part := range parts {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue
+		}
+		label := ""
+		upper := strings.ToUpper(token)
+		if len(upper) == 1 && upper[0] >= 'A' && upper[0] <= 'Z' {
+			idx := int(upper[0] - 'A')
+			if idx < len(options) {
+				label = strings.TrimSpace(options[idx])
+			}
+		}
+		if label == "" {
+			for idx, option := range options {
+				if token == option || token == fmt.Sprintf("%d", idx+1) {
+					label = strings.TrimSpace(option)
+					break
+				}
+			}
+		}
+		if label == "" || seen[label] {
+			continue
+		}
+		seen[label] = true
+		mapped = append(mapped, label)
+	}
+	if len(mapped) == 0 || len(mapped) < len(parts) {
+		// Partial map means free text mixed in — keep the raw reply.
+		if len(mapped) != len(parts) {
+			return ""
+		}
+	}
+	return agent.FormatAskUserSelectedReply(mapped)
 }
 
 func clearPendingAskUserMetadata(metadata map[string]string) map[string]string {

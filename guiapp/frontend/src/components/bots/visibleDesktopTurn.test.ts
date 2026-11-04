@@ -73,8 +73,8 @@ describe('desktop-bot single exit', () => {
             ask_user_options_json: '["继续","停下"]',
         });
         const choices = messagesForBot('alice', 'bot_1').find(item => item.id === 'a');
-        expect(choices?.content).toBe('继续\n停下');
-        expect(choices?.content).not.toContain('无变化');
+        expect(choices?.content).toBe('');
+        expect(choices?.askUser?.question).toBe('无变化');
         expect(choices?.askUser?.options).toEqual(['继续', '停下']);
         expect(choices?.failed).not.toBe(true);
         expect(choices?.pending).toBe(false);
@@ -87,8 +87,7 @@ describe('desktop-bot single exit', () => {
             ask_user_options_json: '["继续","无变化"]',
         });
         const mixed = messagesForBot('alice', 'bot_1').find(item => item.id === 'a');
-        expect(mixed?.content).toBe('继续');
-        expect(mixed?.content).not.toContain('无变化');
+        expect(mixed?.content).toBe('');
         expect(mixed?.askUser?.options).toEqual(['继续']);
 
         pending('desktop-bot-filler-choices-failed');
@@ -176,9 +175,9 @@ describe('desktop-bot single exit', () => {
             ask_user_options_json: '["继续","停下"]',
         });
         const secretChoices = messagesForBot('alice', 'bot_1').find(item => item.id === 'a');
-        expect(secretChoices?.content).toBe('继续\n停下');
-        expect(secretChoices?.content).not.toContain('SITE_PASSWORD');
-        expect(secretChoices?.content).not.toContain('无变化');
+        expect(secretChoices?.content).toBe('');
+        expect(secretChoices?.askUser?.secretName).toBe('SITE_PASSWORD');
+        expect(secretChoices?.askUser?.options).toEqual(['继续', '停下']);
 
         pending('desktop-bot-failed-filler-secret');
         handleDesktopBotResult({
@@ -216,7 +215,7 @@ describe('desktop-bot single exit', () => {
         });
         const deliveredChoices = messagesForBot('alice', 'bot_1').find(item => item.requestId === 'desktop-bot-deliver-choice');
         expect(deliveredChoices?.phase).toBe('execute');
-        expect(deliveredChoices?.content).toBe('继续\n停下');
+        expect(deliveredChoices?.content).toBe('');
         expect(deliveredChoices?.askUser?.options).toEqual(['继续', '停下']);
 
         handleDesktopBotReport({

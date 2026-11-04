@@ -301,6 +301,11 @@ function choiceLine(ask: DesktopBotAsk | undefined): string {
 
 export function sentenceForTurn(result: { content: string; failed?: boolean }, ask: DesktopBotAsk | undefined): string {
     if (result.content && !result.failed) return result.content;
+    // Option-inquiry cards own the prompt + lettered choices; keep the bubble
+    // free so the gray card under the message matches the Grok-style UX.
+    if (!result.failed && ask?.options && ask.options.length > 0) {
+        return '';
+    }
     const question = (ask?.question || '').trim();
     if (question && !isDesktopBotFiller(question)) return question;
     if (!result.failed) {

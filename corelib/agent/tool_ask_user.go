@@ -16,7 +16,8 @@ type AskUserRequest struct {
 	Question   string   `json:"question"`
 	Options    []string `json:"options,omitempty"`
 	Context    string   `json:"context,omitempty"`
-	InputType  string   `json:"input_type,omitempty"` // "choice", "text", "confirm", "secret", "secret_fill"
+	// InputType: text, choice (single), multi_choice (several), confirm, secret, secret_fill.
+	InputType  string   `json:"input_type,omitempty"`
 	SecretName string   `json:"secret_name,omitempty"`
 }
 
@@ -42,6 +43,13 @@ func ToolAskUser(args map[string]interface{}) string {
 	inputType, _ := args["input_type"].(string)
 	if inputType == "" {
 		inputType = "text"
+	}
+	allowMultiple := false
+	switch v := args["allow_multiple"].(type) {
+	case bool:
+		allowMultiple = v
+	case string:
+		allowMultiple = strings.EqualFold(strings.TrimSpace(v), "true") || strings.TrimSpace(v) == "1"
 	}
 
 	var options []string
@@ -79,6 +87,17 @@ func ToolAskUser(args map[string]interface{}) string {
 	// For confirm type, ensure we have yes/no options
 	if inputType == "confirm" && len(options) == 0 {
 		options = []string{"确认", "取消"}
+	}
+	// Options without an explicit type are a choice card. allow_multiple
+	// upgrades choice → multi_choice; confirm/secret stay as-is.
+	if len(options) > 0 && (inputType == "" || inputType == "text") {
+		inputType = "choice"
+	}
+	if allowMultiple && (inputType == "choice" || inputType == "text" || inputType == "") {
+		inputType = "multi_choice"
+	}
+	if inputType == "multi_choice" && len(options) < 2 {
+		return "错误: multi_choice 至少需要 2 个 options"
 	}
 
 	// Build the structured response that the agent loop will detect
@@ -199,19 +218,46 @@ func FormatAskUserForDisplay(req *AskUserRequest) string {
 	if len(req.Options) > 0 {
 		b.WriteString("\n")
 		for i, opt := range req.Options {
-			b.WriteString(fmt.Sprintf("\n  %d. %s", i+1, opt))
+			letter := string(rune('A' + (i % 26)))
+			b.WriteString(fmt.Sprintf("\n  %s. %s", letter, opt))
 		}
 	}
 	switch req.InputType {
 	case "confirm":
 		b.WriteString("\n\n请输入：确认 或 取消")
+	case "multi_choice":
+		if len(req.Options) > 0 {
+			b.WriteString("\n\n可多选；请输入选项字母或内容，多项用中文分号分隔")
+		}
 	case "choice":
 		if len(req.Options) > 0 {
-			b.WriteString("\n\n请输入：选项编号或内容")
+			b.WriteString("\n\n请输入：选项字母或内容")
 		}
 	default:
 		// text type or unspecified — guide the user to reply directly.
 		b.WriteString("\n\n请直接输入您的回复")
 	}
 	return b.String()
+}
+
+
+// FormatAskUserSelectedReply turns one or more chosen option labels into the
+// natural reply the worker sees. Multi-select joins with a Chinese semicolon
+// so letter keys stay out of the transcript.
+func FormatAskUserSelectedReply(options []string) string {
+	kept := make([]string, 0, len(options))
+	for _, opt := range options {
+		if s := strings.TrimSpace(opt); s != "" {
+			kept = append(kept, s)
+		}
+	}
+	return strings.Join(kept, "；")
+}
+
+// AskUserAllowsMultiple reports whether the card waits for several picks.
+func AskUserAllowsMultiple(req *AskUserRequest) bool {
+	if req == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(req.InputType), "multi_choice")
 }
