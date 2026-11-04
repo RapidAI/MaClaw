@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -44,6 +46,11 @@ const taskTitleSystemPrompt = `你为任务列表生成简短标题。根据用�
 
 // taskTitleInFlight deduplicates concurrent summarization runs per task path.
 var taskTitleInFlight sync.Map
+
+// expertTitleSettled remembers tasks whose title already came from an
+// instruction or a user rename. Later messages must not read the expert
+// definition again just to decide that the name can stay.
+var expertTitleSettled sync.Map
 
 // taskTitleQuoteRunes and taskTitleTrailingPunct bound what the sanitizer
 // strips from the model output. Trimming alternates because models like to
@@ -244,6 +251,119 @@ func (a *App) scheduleTaskTitleSummarization(projectPath, instruction string) {
 		}
 		a.applyAutoTaskTitle(projectPath, instruction, title)
 	}()
+}
+
+// expertTaskTitleNeedsInstruction reports that the stored title is still the
+// expert itself (or the empty launcher placeholder), not an instruction.
+// Several tasks of one expert would otherwise share one name.
+func expertTaskTitleNeedsInstruction(display, expertID, projectPath string) bool {
+	display = strings.TrimSpace(display)
+	// Rows created before the instruction was known, including ones whose
+	// extracted title was the old "AI expert task..." sentence.
+	if display == "" ||
+		display == "Created from task management." ||
+		strings.HasPrefix(display, "AI expert task. Reopen this task") ||
+		strings.HasPrefix(display, "source: expert-task") ||
+		extractedWorkingDirectoryTitle(projectPath, display) {
+		return true
+	}
+	expertID = strings.TrimSpace(expertID)
+	if expertID != "" && strings.EqualFold(display, expertID) {
+		return true
+	}
+	if def := loadExpertDefByID(expertID); def != nil {
+		if name := strings.TrimSpace(def.Name); name != "" && display == name {
+			return true
+		}
+	}
+	return false
+}
+
+// extractedWorkingDirectoryTitle reports a name that was pulled out of the
+// "Working directory:" body line. An instruction whose first line happens to
+// start the same way is written as the task heading and must be kept.
+func extractedWorkingDirectoryTitle(projectPath, display string) bool {
+	if !isBareWorkingDirectoryLine(display) {
+		return false
+	}
+	heading, ok := taskMarkdownHeading(projectPath)
+	return ok && heading != display
+}
+
+func isBareWorkingDirectoryLine(display string) bool {
+	display = strings.TrimSpace(display)
+	const prefix = "working directory:"
+	if len(display) < len(prefix) || !strings.EqualFold(display[:len(prefix)], prefix) {
+		return false
+	}
+	rest := strings.TrimSpace(display[len(prefix):])
+	if len(rest) >= 3 && rest[1] == ':' && (rest[2] == '\\' || rest[2] == '/') {
+		return true
+	}
+	return strings.HasPrefix(rest, "/") || strings.HasPrefix(rest, "~/") || strings.HasPrefix(rest, `~\`)
+}
+
+func taskMarkdownHeading(projectPath string) (string, bool) {
+	data, err := os.ReadFile(filepath.Join(projectPath, "task.md"))
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.SplitN(string(data), "\n", 15) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "# ")), true
+		}
+	}
+	return "", true
+}
+
+// adoptExpertTaskInstructionTitle names an expert task from its first
+// instruction, the same way every other task is named: recentTaskDisplayTitle
+// now, then the async summary pass. A title that already came from an
+// instruction is left alone, including a later summary the user has not replaced.
+func (a *App) adoptExpertTaskInstructionTitle(projectPath, expertID, instruction string) {
+	if a == nil {
+		return
+	}
+	projectPath = normalizeProjectSessionPath(strings.TrimSpace(projectPath))
+	instruction = strings.TrimSpace(instruction)
+	expertID = strings.TrimSpace(expertID)
+	if projectPath == "" || instruction == "" || expertID == "" {
+		return
+	}
+	if _, done := expertTitleSettled.Load(projectPath); done {
+		return
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil || pi.Get(projectPath) == nil {
+		return
+	}
+	// A custom name is a user rename or a title pass that already ran.
+	// Later messages must not replace it with the newest command.
+	if strings.TrimSpace(pi.CustomName(projectPath)) != "" {
+		expertTitleSettled.Store(projectPath, struct{}{})
+		return
+	}
+	display := strings.TrimSpace(pi.GetDisplayName(projectPath))
+	if !expertTaskTitleNeedsInstruction(display, expertID, projectPath) {
+		expertTitleSettled.Store(projectPath, struct{}{})
+		return
+	}
+	title := recentTaskDisplayTitle(instruction)
+	if title == "" {
+		return
+	}
+	if display != title {
+		if renamed := strings.TrimSpace(a.RenameTask(projectPath, title)); renamed == "" {
+			return
+		}
+	}
+	expertTitleSettled.Store(projectPath, struct{}{})
+	a.scheduleTaskTitleSummarization(projectPath, instruction)
 }
 
 // applyAutoTaskTitle renames the task to the generated title unless the user

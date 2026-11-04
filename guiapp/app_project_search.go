@@ -1155,8 +1155,9 @@ func (a *App) createTaskWithMode(name, workingDir, mode string, keepExplicit boo
 // an AI expert. Expert tabs are otherwise lightweight conversations, but an
 // explicit record lets the task sidebar reopen the expert after a restart.
 //
-// expertName is passed by the launcher as a display fallback. The id remains
-// the stable routing key, so renaming an expert never breaks an existing task.
+// expertName is the persona label passed by the launcher. It is not stored as
+// the task title. The id remains the stable routing key, so renaming an expert
+// never breaks an existing task.
 func (a *App) CreateExpertTask(expertID, expertName string) ProjectSearchResult {
 	result, _ := a.createExpertTask(expertID, expertName, "")
 	return result
@@ -1229,8 +1230,9 @@ func (a *App) lookupOrCreateExpertTask(expertID, expertName, workingDir string) 
 // and the tab file is cleared so the new task opens empty. The flag only
 // preserves that visible transcript for a scheduled launch.
 //
-// taskName is the wizard's short instruction title. It keeps several tasks of
-// the same expert distinguishable; an empty value keeps the expert name.
+// taskName is the first instruction, named the same way as any other task.
+// An empty value stays unnamed until that instruction arrives; the expert's
+// display name is not a task title.
 func (a *App) createFreshExpertTask(expertID, expertName, workingDir, taskName string, keepExpertSession bool) (ProjectSearchResult, error) {
 	expertID = strings.TrimSpace(expertID)
 	if expertID == "" || !expertIDPattern.MatchString(expertID) {
@@ -1245,7 +1247,7 @@ func (a *App) createFreshExpertTask(expertID, expertName, workingDir, taskName s
 			}
 		}
 	}
-	result := a.insertExpertTaskRecordWithTitle(expertID, expertName, workingDir, taskName)
+	result := a.insertExpertTaskRecordWithTitle(expertID, workingDir, taskName)
 	expertTaskMu.Unlock()
 	if strings.TrimSpace(result.ProjectPath) == "" {
 		return ProjectSearchResult{}, fmt.Errorf("expert task creation failed")
@@ -1874,27 +1876,27 @@ func expertTaskPathSeq(path string) int64 {
 }
 
 func (a *App) insertExpertTaskRecord(expertID, expertName, workingDir string) ProjectSearchResult {
-	return a.insertExpertTaskRecordWithTitle(expertID, expertName, workingDir, "")
+	return a.insertExpertTaskRecordWithTitle(expertID, workingDir, "")
 }
 
-// insertExpertTaskRecordWithTitle is insertExpertTaskRecord with an explicit
-// task title. The wizard passes the first instruction so several tasks of the
-// same expert stay distinguishable in the sidebar; the expert launcher leaves
-// it empty and keeps the expert name.
-func (a *App) insertExpertTaskRecordWithTitle(expertID, expertName, workingDir, taskName string) ProjectSearchResult {
+// insertExpertTaskRecordWithTitle records one task for an expert. taskName is
+// the first instruction and becomes the sidebar title through the same
+// recentTaskDisplayTitle path as every other task. The expert display name is
+// not a title: several tasks of one expert would otherwise be identical.
+// A launcher that has not seen an instruction yet leaves the name empty; the
+// first command fills it in.
+func (a *App) insertExpertTaskRecordWithTitle(expertID, workingDir, taskName string) ProjectSearchResult {
 	title := strings.TrimSpace(taskName)
-	if title == "" {
-		title = strings.TrimSpace(expertName)
+	shown := recentTaskDisplayTitle(title)
+	// The body repeats the title so the sidebar preview matches the name.
+	// Without an instruction the file stays metadata: source/created lines and
+	// the working-directory line are title noise, so they cannot become the
+	// shared name of every such task. The generic task template is not used
+	// here because its sentence would be that shared name.
+	content := fmt.Sprintf("source: expert-task\ncreated: expert %s\n", expertID)
+	if shown != "" {
+		content = "# " + shown + "\n\n" + shown + "\n"
 	}
-	if title == "" {
-		if def := loadExpertDefByID(expertID); def != nil {
-			title = strings.TrimSpace(def.Name)
-		}
-	}
-	if title == "" {
-		title = expertID
-	}
-	content := fmt.Sprintf("# %s\n\nAI expert task. Reopen this task to continue working with expert: %s.", recentTaskDisplayTitle(title), expertID)
 	sourceTag := taskSourceExpertPrefix + expertID
 	return a.createTaskRecordWithWorkingDir(title, content, []string{
 		taskManagementTag,
@@ -8278,15 +8280,13 @@ func (a *App) dirBelongsToOtherExpertTask(expertID, ownerPath, dir string) bool 
 }
 
 // sessionOwnerForProjectPath is the agent session that owns this task.
-// An expert task's tools and transcript live on its task key. A copy keeps
-// the project-path session, because that chat is not the expert's.
+// The key is the task record. The working directory and the expert the task
+// calls are not part of it, so several tasks can share a directory or an
+// expert without sharing a session.
 func (a *App) sessionOwnerForProjectPath(projectPath string) string {
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if projectPath == "" {
 		return ""
-	}
-	if expertID := a.expertIDForTaskPath(projectPath); expertID != "" && !a.explicitTaskCopy(projectPath) {
-		return expertTaskSessionUserID(expertID, projectPath)
 	}
 	return projectSessionOwnerID(projectPath)
 }

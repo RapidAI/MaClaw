@@ -158,8 +158,8 @@ func TestCreateTaskUnifiedExpertBranch(t *testing.T) {
 	if rec.Name != "review my paper" {
 		t.Fatalf("expert task name = %q, want the instruction title", rec.Name)
 	}
-	if got := app.sessionOwnerForProjectPath(path.ProjectPath); got != expertTaskSessionUserID("expert-paper", path.ProjectPath) {
-		t.Fatalf("session owner = %q, want the expert task session", got)
+	if got := app.sessionOwnerForProjectPath(path.ProjectPath); got != projectSessionOwnerID(path.ProjectPath) {
+		t.Fatalf("session owner = %q, want the task record session", got)
 	}
 }
 
@@ -245,18 +245,8 @@ func TestCreateTaskUnifiedExpertStartsAFreshTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load expert transcript: %v", err)
 	}
-	if session == nil || len(session.Conversation) != 0 || session.ConversationClearedAt == 0 {
-		t.Fatalf("expert transcript was not cleared: %+v", session)
-	}
-	if strings.TrimSpace(session.ProjectPath) != "" {
-		t.Fatalf("cleared expert session still claims project %q", session.ProjectPath)
-	}
-	archived, err := persist.LoadLatestSessionForProject(first.ProjectPath)
-	if err != nil {
-		t.Fatalf("load archived task transcript: %v", err)
-	}
-	if archived == nil || !sessionSnapshotHasUserTurn(archived.Conversation) {
-		t.Fatalf("previous expert task lost its transcript: %+v", archived)
+	if session == nil || !sessionSnapshotHasUserTurn(session.Conversation) {
+		t.Fatalf("creating another task of the same expert changed the first transcript: %+v", session)
 	}
 	resumed := app.CreateExpertTask("expert-paper", "Paper reviewer")
 	if resumed.ProjectPath != second.ProjectPath {
@@ -303,18 +293,8 @@ func TestCreateTaskUnifiedLatexExpertStartsAFreshPaper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load expert transcript: %v", err)
 	}
-	if session == nil || len(session.Conversation) != 0 || session.ConversationClearedAt == 0 {
-		t.Fatalf("expert transcript was not cleared: %+v", session)
-	}
-	if strings.TrimSpace(session.ProjectPath) != "" {
-		t.Fatalf("cleared expert session still claims project %q", session.ProjectPath)
-	}
-	archived, err := persist.LoadLatestSessionForProject(first.ProjectPath)
-	if err != nil {
-		t.Fatalf("load archived paper transcript: %v", err)
-	}
-	if archived == nil || !sessionSnapshotHasUserTurn(archived.Conversation) {
-		t.Fatalf("previous paper lost its transcript: %+v", archived)
+	if session == nil || !sessionSnapshotHasUserTurn(session.Conversation) {
+		t.Fatalf("creating another paper changed the first transcript: %+v", session)
 	}
 	resumed := app.CreateExpertTask(builtinLatexExpertID, "LaTeX")
 	if resumed.ProjectPath != second.ProjectPath {

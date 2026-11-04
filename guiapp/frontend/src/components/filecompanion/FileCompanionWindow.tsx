@@ -59,7 +59,7 @@ import {
 import { WindowFullscreen, WindowGetPosition, WindowGetSize, WindowHide, WindowSetSize, WindowUnfullscreen } from "../../../wailsjs/runtime";
 import { createWindowMaximizeRestoreSession } from "../../utils/windowRestoreGeometry";
 import { useToast } from "../Toast";
-import { companionHostShares, companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionWithdrawnNotice, sameCompanionMineShare, takeCompanionLibraryList, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
+import { companionHostShares, companionLibrarySnapshotKey, companionLibrarySync, companionMineShares, companionNotePost, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionWithdrawnNotice, sameCompanionMineShare, takeCompanionLibraryList, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
@@ -1561,7 +1561,7 @@ function noteAnswerBlocks(text: string): NoteAnswerBlock[] {
     return blocks;
 }
 
-function NoteStampAnswer({ text, path, web, previewOpen, messageId, streaming, onBlocked }: {
+const NoteStampAnswer = memo(function NoteStampAnswer({ text, path, web, previewOpen, messageId, streaming, onBlocked }: {
     text: string;
     path: string;
     web: boolean;
@@ -1625,7 +1625,169 @@ function NoteStampAnswer({ text, path, web, previewOpen, messageId, streaming, o
             })}
         </div>
     );
-}
+});
+
+const CompanionChatMessages = memo(function CompanionChatMessages({
+    messages,
+    discussionReplies,
+    path,
+    sessionId,
+    web,
+    shareMine,
+    notes,
+    reviewOn,
+    turnLive,
+    uiLang,
+    theme,
+    previewOpen,
+    onBlocked,
+    paperRequestIds,
+}: {
+    messages: ChatMessage[];
+    discussionReplies: ChatMessage[];
+    path: string;
+    sessionId: string;
+    web: boolean;
+    shareMine: boolean;
+    notes?: CompanionShareNote[];
+    reviewOn: boolean;
+    turnLive: boolean;
+    uiLang: string;
+    theme: AssistantTheme;
+    previewOpen: boolean;
+    onBlocked: (sentence: string) => void;
+    paperRequestIds: { current: Set<string> };
+}) {
+    const messageReviewUsed = new Set<string>();
+    return (
+        <>
+            {messages.map((message, index) => {
+                const mine = message.role === "user";
+                const streaming = !mine && turnLive && index === messages.length - 1;
+                const cleanedReasoning = mine ? "" : cleanReasoningTrailForBody(message.reasoning || "");
+                const visibleReply = mine
+                    ? { content: message.text, reasoning: "" }
+                    : resolveVisibleAssistantReply(message.text, cleanedReasoning, { live: streaming });
+                const displayReasoning = stripAssistantToolCallMarkers(visibleReply.reasoning).trim();
+                const paperPending = !mine && !message.resultPath && paperRequestIds.current.has(paperRequestOf(message.id));
+                const answerText = companionCommandBubble(uiLang, message.resultPath ? cs("已生成论文解读") : paperPending ? cs("正在生成论文解读…") : companionMessageExportText(message, streaming));
+                // Both controls work on finished Markdown. Mid-stream text would copy a
+                // half answer, and the paper reply exports through its own result card.
+                const shareable = !mine && !streaming && !message.resultPath && !paperPending && answerText.trim().length > 0;
+                const messageReview = mine && !shareMine && reviewOn
+                    ? companionMessageReview(message.text, notes, messageReviewUsed)
+                    : null;
+                return (
+                    <div key={message.id} style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start" }}>
+                        <div
+                            data-testid={`file-companion-message-${message.role}`}
+                            data-chat-message={mine ? undefined : index}
+                            style={{
+                                margin: 0,
+                                maxWidth: "86%",
+                                minWidth: 0,
+                                padding: "8px 12px",
+                                borderRadius: mine ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+                                background: mine ? "var(--theme-primary, #2e75cb)" : "var(--theme-surface, #ffffff)",
+                                color: mine ? "var(--theme-on-primary, #ffffff)" : "var(--theme-text-primary, #1e293b)",
+                                border: mine ? "none" : "1px solid var(--theme-border, #e2e8f0)",
+                                fontSize: 14,
+                                lineHeight: 1.55,
+                                overflowWrap: "anywhere",
+                            }}
+                        >
+                            {shareable ? <CompanionMessageActions path={path} markdown={answerText} messageId={message.id} figures={message.figures} webSession={web ? sessionId : undefined} /> : null}
+                            {displayReasoning ? (
+                                <div data-chat-mark-skip>
+                                    <AssistantReasoningPanel
+                                        defaultOpen={streaming}
+                                        label={streaming ? cs("正在思考") : cs("思考过程")}
+                                        lang={uiLang}
+                                        theme={theme}
+                                        contentKey={displayReasoning}
+                                        live={streaming}
+                                    >
+                                        {renderContentWithCodeBlocks(displayReasoning, theme, reasoningTrailMarkdownOptions)}
+                                    </AssistantReasoningPanel>
+                                </div>
+                            ) : null}
+                            <div data-testid={mine ? undefined : "file-companion-answer"}>
+                                {mine || message.resultPath ? (
+                                    <MessageContentRenderer
+                                        content={answerText}
+                                        theme={theme}
+                                        isUser={mine}
+                                        isStreaming={streaming && !message.resultPath}
+                                        messageId={message.id}
+                                    />
+                                ) : (
+                                    <NoteStampAnswer
+                                        text={answerText}
+                                        path={path}
+                                        web={Boolean(message.webNote || web)}
+                                        previewOpen={previewOpen}
+                                        messageId={message.id}
+                                        streaming={streaming}
+                                        onBlocked={onBlocked}
+                                    />
+                                )}
+                                {message.resultPath ? <PaperResultCard filePath={message.resultPath} messageId={message.id} lang={uiLang} /> : null}
+                                {message.noteCardPath ? <NoteResultCard filePath={message.noteCardPath} messageId={message.id} lang={uiLang} /> : null}
+                                {message.files && message.files.length > 0 ? <CompanionFileCard files={message.files} messageId={message.id} lang={uiLang} /> : null}
+                                {!mine && message.figures && message.figures.length > 0 ? (
+                                    <CompanionFigureStrip figures={message.figures} messageId={message.id} lang={uiLang} />
+                                ) : null}
+                                {messageReview ? (
+                                    <p data-testid={`file-companion-message-review-${messageReview.noteId}`} data-tone={messageReview.tone} style={{ margin: "6px 0 0", fontSize: 12, lineHeight: 1.4, opacity: 0.92 }}>{messageReview.label}</p>
+                                ) : null}
+                            </div>
+                        </div>
+                    </div>
+                );
+            })}
+            {discussionReplies.map((message) => (
+                <div
+                    key={message.id}
+                    data-testid={`file-companion-share-reply-${message.id.replace(/^share-note-/, "")}`}
+                    style={{ display: "flex", justifyContent: "flex-start" }}
+                >
+                    <div
+                        style={{
+                            margin: 0,
+                            maxWidth: "86%",
+                            minWidth: 0,
+                            padding: "8px 12px",
+                            borderRadius: "14px 14px 14px 4px",
+                            background: "var(--theme-surface, #ffffff)",
+                            color: "var(--theme-text-primary, #1e293b)",
+                            border: "1px solid var(--theme-border, #e2e8f0)",
+                            fontSize: 14,
+                            lineHeight: 1.55,
+                            overflowWrap: "anywhere",
+                        }}
+                    >
+                        <CompanionMessageActions path={path} markdown={message.text} messageId={message.id} />
+                        <p data-testid="file-companion-share-reply-kicker" style={{ margin: "0 0 4px", fontSize: 12, color: "var(--theme-text-muted, #5b6b80)" }}>
+                            {cs("主持人回复")}
+                        </p>
+                        {message.discussion?.question ? (
+                            <p data-testid="file-companion-share-reply-question" style={{ margin: "0 0 6px", fontSize: 12, color: "var(--theme-text-muted, #5b6b80)", borderLeft: "2px solid var(--theme-border, #cbd5e1)", paddingLeft: 8 }}>
+                                {companionFill(uiLang, "回复 ${name}：${question}", { name: message.discussion.askedBy || cs("读者"), question: message.discussion.question })}
+                            </p>
+                        ) : null}
+                        <MessageContentRenderer
+                            content={message.text}
+                            theme={theme}
+                            isUser={false}
+                            isStreaming={false}
+                            messageId={message.id}
+                        />
+                    </div>
+                </div>
+            ))}
+        </>
+    );
+});
 
 // companionMessageReview labels the chat line a participant just sent, once
 // the shared note comes back. The note may carry the selected passage after
@@ -2234,6 +2396,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // The state snapshot stays empty while the view is closed: writing it on
     // every poll would re-render the window.
     const lastLibraryListRef = useRef<unknown>(null);
+    const lastLibrarySnapshotKeyRef = useRef("");
     useEffect(() => {
         if (view !== "library") setLibraryListSnapshot(null);
     }, [view]);
@@ -2504,9 +2667,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         else if (notesReviewFlag === false) setNotesReview(false);
         // 文档管理 paints this same snapshot. The window poll lands here too,
         // so an expiry or a share made elsewhere reaches an open library list.
-        // A closed library does not need it, and skipping it keeps a poll from
-        // re-rendering the whole window on every tick.
-        if (libraryViewOpenRef.current) setLibraryListSnapshot(listed);
+        // Identical polls keep the previous state: re-rendering the window also
+        // walks the mounted reader, its document preview, and the whole chat.
+        const snapshotKey = companionLibrarySnapshotKey(listed);
+        const snapshotChanged = lastLibrarySnapshotKeyRef.current !== snapshotKey;
+        lastLibrarySnapshotKeyRef.current = snapshotKey;
+        if (libraryViewOpenRef.current && snapshotChanged) setLibraryListSnapshot(listed);
         const synced = companionLibrarySync(listed);
         // A line typed before this list returned was waiting to learn whether
         // the file is shared. The copy is already gone, so answering it locally
@@ -3704,8 +3870,6 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 };
             });
     }, [activeTab?.shareToken, activeTab?.shareMine, activeTab?.notes]);
-    // One note labels one chat line. The set lives for this render only.
-    const messageReviewUsed = new Set<string>();
     const hostReviewer = Boolean(activeTab?.shareMine) || Boolean(readHost?.mine);
     // The list flag can be missing. A decision already stored on the note is
     // the same fact: this share waits for the host before the agent runs.
@@ -4161,6 +4325,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const splitRef = useRef<HTMLDivElement>(null);
     const splitDrag = useRef<{ x: number; width: number } | null>(null);
     const { showToast } = useToast();
+    const showChatError = useCallback((sentence: string) => showToast(sentence, "error", 6000), [showToast]);
     const exportFlight = useRef(new Set<string>());
     const importBusy = Boolean(activeTab && importBusyPath === activeTab.path);
     const uploadBusy = Boolean(activeTab && uploadBusyPath === activeTab.path);
@@ -5507,9 +5672,16 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const arxivPagerLocked = !arxivGoalCurrent || arxivSearchBusy || arxivBusy;
     const arxivPrevDisabled = arxivPagerLocked || arxivSearchPage <= 1;
     const arxivNextDisabled = arxivPagerLocked || arxivSearchPage * arxivSearchPageSize >= arxivSearchTotal;
+    const previewFile = useMemo(() => activeTab ? {
+        fileName: activeTab.name,
+        filePath: activeTab.path,
+        absPath: activeTab.path,
+        content: activeTab.content,
+        updatedAt: activeTab.previewEpoch,
+    } : null, [activeTab?.name, activeTab?.path, activeTab?.content, activeTab?.previewEpoch]);
 
     return (
-        <div data-testid="file-companion-window" className="file-companion-window" data-ai-theme={appearance.themeMode} data-ai-dark-scheme={appearance.themeMode === "dark" ? appearance.darkSchemeId : undefined} data-ai-light-scheme={appearance.themeMode === "light" ? appearance.lightSchemeId : undefined} style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+        <div data-testid="file-companion-window" className="file-companion-window" data-view={view} data-reader-player={playerTab ? "true" : undefined} data-ai-theme={appearance.themeMode} data-ai-dark-scheme={appearance.themeMode === "dark" ? appearance.darkSchemeId : undefined} data-ai-light-scheme={appearance.themeMode === "light" ? appearance.lightSchemeId : undefined} style={{ display: "flex", flexDirection: "column", height: "100%" }}>
             <div className={openMenu || chatExportDestOpen ? "file-companion-titlebar file-companion-titlebar--menu-open" : "file-companion-titlebar"} data-testid="file-companion-titlebar" {...windowDragHandleProps(true, { display: "flex", gap: 8, padding: 8, alignItems: "center", flexWrap: "nowrap" })}>
                 {chatExportDestOpen ? (
                     <div
@@ -6074,7 +6246,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             <div data-testid="file-companion-preview" style={{ flex: 1, minHeight: 160 }}>
                                 <FilePreviewView
                                     key={`${activeTab.path}:${activeTab.previewEpoch}`}
-                                    file={{ fileName: activeTab.name, filePath: activeTab.path, absPath: activeTab.path, content: activeTab.content, updatedAt: activeTab.previewEpoch }}
+                                    file={previewFile}
                                     theme={appearance.previewTheme}
                                     lang={uiLang}
                                     pdfAnnotate={kind === "pdf"}
@@ -6142,131 +6314,22 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             style={{ flex: "1 1 160px", minHeight: 0, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}
                         >
                             {activeTab.messages.length === 0 && discussionReplies.length === 0 ? <p data-testid="file-companion-chat-empty" style={{ margin: 0, color: "var(--theme-text-muted, #94a3b8)", fontSize: 13 }}>{cs("针对当前文件提问")}</p> : null}
-                            {activeTab.messages.map((message, index) => {
-                                const mine = message.role === "user";
-                                const turnLive = Boolean(activeTab.status) || sendingPaths.has(activeTab.path);
-                                const streaming = !mine && turnLive && index === activeTab.messages.length - 1;
-                                const cleanedReasoning = mine ? "" : cleanReasoningTrailForBody(message.reasoning || "");
-                                const visibleReply = mine
-                                    ? { content: message.text, reasoning: "" }
-                                    : resolveVisibleAssistantReply(message.text, cleanedReasoning, { live: streaming });
-                                const displayReasoning = stripAssistantToolCallMarkers(visibleReply.reasoning).trim();
-                                                const paperPending = !mine && !message.resultPath && paperRequestIds.current.has(paperRequestOf(message.id));
-                                                const answerText = companionCommandBubble(uiLang, message.resultPath ? cs("已生成论文解读") : paperPending ? cs("正在生成论文解读…") : companionMessageExportText(message, streaming));
-                                                // Both controls work on finished Markdown. Mid-stream text would copy a
-                                                // half answer, and the paper reply exports through its own result card.
-                                                const shareable = !mine && !streaming && !message.resultPath && !paperPending && answerText.trim().length > 0;
-                                                const messageReview = mine && !activeTab.shareMine && reviewOn
-                                                    ? companionMessageReview(message.text, activeTab.notes, messageReviewUsed)
-                                                    : null;
-                                                return (
-                                                    <div key={message.id} style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start" }}>
-                                        <div
-                                            data-testid={`file-companion-message-${message.role}`}
-                                            data-chat-message={mine ? undefined : index}
-                                            style={{
-                                                margin: 0,
-                                                maxWidth: "86%",
-                                                minWidth: 0,
-                                                padding: "8px 12px",
-                                                borderRadius: mine ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
-                                                background: mine ? "var(--theme-primary, #2e75cb)" : "var(--theme-surface, #ffffff)",
-                                                color: mine ? "var(--theme-on-primary, #ffffff)" : "var(--theme-text-primary, #1e293b)",
-                                                border: mine ? "none" : "1px solid var(--theme-border, #e2e8f0)",
-                                                fontSize: 14,
-                                                lineHeight: 1.55,
-                                                overflowWrap: "anywhere",
-                                            }}
-                                            >
-                                                {shareable ? <CompanionMessageActions path={activeTab.path} markdown={answerText} messageId={message.id} figures={message.figures} webSession={activeTab.kind === "web" ? activeTab.sessionId : undefined} /> : null}
-                                                {displayReasoning ? (
-                                                    <div data-chat-mark-skip>
-                                                    <AssistantReasoningPanel
-                                                        defaultOpen={streaming}
-                                                    label={streaming ? cs("正在思考") : cs("思考过程")}
-                                                    lang={uiLang}
-                                                    theme={appearance.assistantTheme}
-                                                    contentKey={displayReasoning}
-                                                    live={streaming}
-                                                >
-                                                    {renderContentWithCodeBlocks(displayReasoning, appearance.assistantTheme, reasoningTrailMarkdownOptions)}
-                                                </AssistantReasoningPanel>
-                                                    </div>
-                                            ) : null}
-                                            <div data-testid={mine ? undefined : "file-companion-answer"}>
-                                                {mine || message.resultPath ? (
-                                                <MessageContentRenderer
-                                                    content={answerText}
-                                                    theme={appearance.assistantTheme}
-                                                    isUser={mine}
-                                                    isStreaming={streaming && !message.resultPath}
-                                                    messageId={message.id}
-                                                />
-                                                ) : (
-                                                <NoteStampAnswer
-                                                    text={answerText}
-                                                    path={activeTab.path}
-                                                    web={Boolean(message.webNote || activeTab.kind === "web")}
-                                                    previewOpen={showPreview}
-                                                    messageId={message.id}
-                                                    streaming={streaming}
-                                                    onBlocked={(sentence) => showToast(sentence, "error", 6000)}
-                                                />
-                                                )}
-                                                {message.resultPath ? <PaperResultCard filePath={message.resultPath} messageId={message.id} lang={uiLang} /> : null}
-                                                {message.noteCardPath ? <NoteResultCard filePath={message.noteCardPath} messageId={message.id} lang={uiLang} /> : null}
-                                                {message.files && message.files.length > 0 ? <CompanionFileCard files={message.files} messageId={message.id} lang={uiLang} /> : null}
-                                                {!mine && message.figures && message.figures.length > 0 ? (
-                                                    <CompanionFigureStrip figures={message.figures} messageId={message.id} lang={uiLang} />
-                                                ) : null}
-                                                {messageReview ? (
-                                                    <p data-testid={`file-companion-message-review-${messageReview.noteId}`} data-tone={messageReview.tone} style={{ margin: "6px 0 0", fontSize: 12, lineHeight: 1.4, opacity: 0.92 }}>{messageReview.label}</p>
-                                                ) : null}
-                                            </div>
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                            {discussionReplies.map((message) => (
-                                <div
-                                    key={message.id}
-                                    data-testid={`file-companion-share-reply-${message.id.replace(/^share-note-/, "")}`}
-                                    style={{ display: "flex", justifyContent: "flex-start" }}
-                                >
-                                    <div
-                                        style={{
-                                            margin: 0,
-                                            maxWidth: "86%",
-                                            minWidth: 0,
-                                            padding: "8px 12px",
-                                            borderRadius: "14px 14px 14px 4px",
-                                            background: "var(--theme-surface, #ffffff)",
-                                            color: "var(--theme-text-primary, #1e293b)",
-                                            border: "1px solid var(--theme-border, #e2e8f0)",
-                                            fontSize: 14,
-                                            lineHeight: 1.55,
-                                            overflowWrap: "anywhere",
-                                        }}
-                                    >
-                                        <CompanionMessageActions path={activeTab.path} markdown={message.text} messageId={message.id} />
-                                        <p data-testid="file-companion-share-reply-kicker" style={{ margin: "0 0 4px", fontSize: 12, color: "var(--theme-text-muted, #5b6b80)" }}>
-                                            {cs("主持人回复")}
-                                        </p>
-                                        {message.discussion?.question ? (
-                                            <p data-testid="file-companion-share-reply-question" style={{ margin: "0 0 6px", fontSize: 12, color: "var(--theme-text-muted, #5b6b80)", borderLeft: "2px solid var(--theme-border, #cbd5e1)", paddingLeft: 8 }}>
-                                                {companionFill(uiLang, "回复 ${name}：${question}", { name: message.discussion.askedBy || cs("读者"), question: message.discussion.question })}
-                                            </p>
-                                        ) : null}
-                                        <MessageContentRenderer
-                                            content={message.text}
-                                            theme={appearance.assistantTheme}
-                                            isUser={false}
-                                            isStreaming={false}
-                                            messageId={message.id}
-                                        />
-                                    </div>
-                                </div>
-                            ))}
+                            <CompanionChatMessages
+                                messages={activeTab.messages}
+                                discussionReplies={discussionReplies}
+                                path={activeTab.path}
+                                sessionId={activeTab.sessionId}
+                                web={activeTab.kind === "web"}
+                                shareMine={Boolean(activeTab.shareMine)}
+                                notes={activeTab.notes}
+                                reviewOn={reviewOn}
+                                turnLive={Boolean(activeTab.status) || sendingPaths.has(activeTab.path)}
+                                uiLang={uiLang}
+                                theme={appearance.assistantTheme}
+                                previewOpen={showPreview}
+                                onBlocked={showChatError}
+                                paperRequestIds={paperRequestIds}
+                            />
                             <div ref={outputEndRef} />
                         </div>
                         {chatMenu ? (

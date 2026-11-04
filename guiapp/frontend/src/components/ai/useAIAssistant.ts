@@ -206,10 +206,13 @@ function projectPathFromSessionKey(sessionKey?: string): string {
 }
 
 function deriveSendSessionKey(options?: SendMessageOptions): string {
-    const expertKey = expertTaskSessionKey(options?.expert_id, options?.project_path);
-    if (expertKey) return expertKey;
+    // The task record is the session. An expert id only selects the persona,
+    // and the working directory is not an identity: two tasks may share both.
     const sessionKey = projectSessionKey(options?.project_path);
-    return sessionKey || 'desktop-user';
+    if (sessionKey) return sessionKey;
+    const expertKey = expertTaskSessionKey(options?.expert_id, '');
+    if (expertKey) return expertKey;
+    return 'desktop-user';
 }
 
 interface AIAssistantRemoteSessionView {

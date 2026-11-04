@@ -2,7 +2,10 @@ package guiapp
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -141,20 +144,19 @@ func TestScheduleTaskTitleSummarizationSkipsShortCleanTitle(t *testing.T) {
 	}
 }
 
-// TestCreateTaskUnifiedSchedulesTitlePass covers the wrapper hook: the chat
-// branch schedules the pass for a raw first instruction, while the expert
-// branch keeps the launcher naming convention and never reaches the LLM —
-// proven with a long URL name that would otherwise pass the gate.
+// TestCreateTaskUnifiedSchedulesTitlePass covers the wrapper hook: a chat
+// task and an expert task both take their title from the first instruction.
+// The expert's display name is not the title.
 func TestCreateTaskUnifiedSchedulesTitlePass(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	app.ctx = context.Background()
 	instruction := "安装这个skill: https://github.com/alchaincyf/huashu-art-motion"
 	title := "安装 huashu-art-motion 技能"
-	calls := 0
+	var calls atomic.Int32
 	stubTaskTitleLLM(t, func(_ *App, got string) string {
-		calls++
+		calls.Add(1)
 		if got != instruction {
-			t.Fatalf("LLM stub received %q, want the first instruction", got)
+			t.Errorf("LLM stub received %q, want the first instruction", got)
 		}
 		return title
 	})
@@ -171,21 +173,107 @@ func TestCreateTaskUnifiedSchedulesTitlePass(t *testing.T) {
 	if err != nil || expert.ProjectPath == "" {
 		t.Fatalf("CreateTaskUnified expert branch failed: %v %q", err, expert.ProjectPath)
 	}
+	if got := app.memoryStore.ProjectIndex().GetDisplayName(expert.ProjectPath); got == "Paper reviewer" {
+		t.Fatalf("expert task title = %q, want the instruction", got)
+	}
 
 	pi := app.memoryStore.ProjectIndex()
 	deadline := time.Now().Add(2 * time.Second)
-	for pi.CustomName(created.ProjectPath) != title {
+	for pi.CustomName(created.ProjectPath) != title || pi.CustomName(expert.ProjectPath) != title {
 		if time.Now().After(deadline) {
-			t.Fatalf("auto title not applied within deadline; custom name = %q", pi.CustomName(created.ProjectPath))
+			t.Fatalf("auto title not applied within deadline; chat=%q expert=%q", pi.CustomName(created.ProjectPath), pi.CustomName(expert.ProjectPath))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if calls != 1 {
-		t.Fatalf("LLM stub called %d times, want 1 (expert branch must be skipped)", calls)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("LLM stub called %d times, want 2 (chat and expert)", got)
 	}
-	if got := pi.CustomName(expert.ProjectPath); got != "" {
-		t.Fatalf("expert task auto-renamed to %q", got)
+}
+
+func TestAdoptExpertTaskInstructionTitleReplacesExpertLabel(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	created := app.CreateExpertTask("expert-paper", "Paper reviewer")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateExpertTask returned an empty project path")
 	}
+	if got := created.Name; sharedExpertPlaceholderTitle(got) {
+		t.Fatalf("launcher title = %q, want it not to be a shared placeholder", got)
+	}
+	if got := created.Preview; sharedExpertPlaceholderTitle(got) || strings.HasPrefix(got, "C:/maclaw/expert-task/") {
+		t.Fatalf("launcher preview = %q, want it not to be internal metadata", got)
+	}
+	// Same working directory must not become the shared title either.
+	dir := t.TempDir()
+	first := app.insertExpertTaskRecordWithTitle("expert-paper", dir, "")
+	second := app.insertExpertTaskRecordWithTitle("expert-paper", dir, "")
+	for _, row := range []ProjectSearchResult{first, second} {
+		if sharedExpertPlaceholderTitle(row.Name) || strings.HasPrefix(strings.ToLower(row.Name), "working directory:") {
+			t.Fatalf("same-directory launcher title = %q", row.Name)
+		}
+	}
+	app.adoptExpertTaskInstructionTitle(created.ProjectPath, "expert-paper", "写一本量子工程教材")
+	if got := app.memoryStore.ProjectIndex().GetDisplayName(created.ProjectPath); got != "写一本量子工程教材" {
+		t.Fatalf("display name = %q, want the instruction", got)
+	}
+	app.adoptExpertTaskInstructionTitle(created.ProjectPath, "expert-paper", "再写一本蒙文识字书")
+	if got := app.memoryStore.ProjectIndex().GetDisplayName(created.ProjectPath); got != "写一本量子工程教材" {
+		t.Fatalf("later command renamed the task to %q", got)
+	}
+
+	// A title the user already chose stays, even when it is the expert's name.
+	kept := app.CreateTask("Paper reviewer", "")
+	if kept.ProjectPath == "" {
+		t.Fatal("CreateTask returned an empty project path")
+	}
+	if renamed := app.RenameTask(kept.ProjectPath, "Paper reviewer"); renamed != "Paper reviewer" {
+		t.Fatalf("rename = %q", renamed)
+	}
+	app.adoptExpertTaskInstructionTitle(kept.ProjectPath, "expert-paper", "写一本量子工程教材")
+	if got := app.memoryStore.ProjectIndex().GetDisplayName(kept.ProjectPath); got != "Paper reviewer" {
+		t.Fatalf("user title overwritten: %q", got)
+	}
+
+	// An instruction that starts with the working-directory label is still a
+	// title. Only a name extracted from the metadata line is replaced.
+	instruction := `Working directory: D:\books 写一本教材`
+	named := app.insertExpertTaskRecordWithTitle("expert-paper", "", instruction)
+	if named.ProjectPath == "" {
+		t.Fatal("instruction task was not created")
+	}
+	app.adoptExpertTaskInstructionTitle(named.ProjectPath, "expert-paper", "再补一章")
+	if got := app.memoryStore.ProjectIndex().GetDisplayName(named.ProjectPath); got != instruction {
+		t.Fatalf("instruction title replaced: %q", got)
+	}
+
+	// The same words extracted from the body line, with no matching heading,
+	// are the old metadata title and take the next instruction.
+	metaName := `Working directory: D:\work\aicoder`
+	meta := app.insertExpertTaskRecordWithTitle("expert-paper", "", metaName)
+	if meta.ProjectPath == "" {
+		t.Fatal("metadata-shaped task was not created")
+	}
+	if err := os.WriteFile(filepath.Join(meta.ProjectPath, "task.md"), []byte("source: expert-task\nWorking directory: D:\\work\\aicoder\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.adoptExpertTaskInstructionTitle(meta.ProjectPath, "expert-paper", "写一本量子工程教材")
+	if got := app.memoryStore.ProjectIndex().GetDisplayName(meta.ProjectPath); got != "写一本量子工程教材" {
+		t.Fatalf("extracted working-directory title stayed %q", got)
+	}
+}
+
+func sharedExpertPlaceholderTitle(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	lower := strings.ToLower(name)
+	return name == "Paper reviewer" ||
+		name == "expert-paper" ||
+		name == "Created from task management." ||
+		strings.HasPrefix(lower, "source: expert-task") ||
+		strings.HasPrefix(lower, "created: expert") ||
+		strings.HasPrefix(lower, "ai expert task.") ||
+		strings.HasPrefix(name, "C:/maclaw/expert-task/")
 }
 
 func TestApplyAutoTaskTitleRespectsUserRename(t *testing.T) {

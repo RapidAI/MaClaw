@@ -54,6 +54,10 @@ export interface TaskLaunchNavigation {
      * 语义拦截/启动（additive；不带该键的消息行为不变）。
      */
     noWorkflowInterception?: boolean;
+    /** Persona for this task. It does not choose the session. */
+    expertId?: string;
+    /** LaTeX source already written into this task's workspace. */
+    latexRelativePath?: string;
 }
 
 /** 是否需要走 CreateTaskUnified 路径（false = 原路径一行不动）。 */
@@ -251,15 +255,24 @@ export async function runTaskConfigSend(args: {
             expertMessage = prepared.initialMessage || initialMessage;
             latexDocument = { relativePath: prepared.relativePath };
         }
-        // The directory is applied when this message is sent. Binding it
-        // here is cleared by the fresh-task reset, and a scheduled launch
-        // would point the turn that is still running at the new folder.
-        bindings.openExpert({
-            id: opts.expertId,
-            name: opts.expertName || opts.expertId,
-            initialMessage: expertMessage,
+        // The task record is the conversation. The expert is only who answers.
+        // Opening the shared expert tab would put every task of that expert
+        // in one transcript.
+        bindings.openTaskLaunch({
             projectPath,
-            ...(latexDocument ? { latexDocument } : {}),
+            taskTitle: shortTaskLaunchTitle(trimmed) || trimmed.split(/\r?\n/)[0].slice(0, 40),
+            initialMessage: expertMessage,
+            expertId: opts.expertId,
+            ...(opts.mode === "coding_dev" || opts.mode === "remote_coding_dev"
+                ? { agentMode: opts.mode as TaskLaunchNavigation["agentMode"] }
+                : {}),
+            ...(opts.mode === "cloud" && !ownConversation ? { cloudWorkspaceId: opts.cloudWorkspaceId } : {}),
+            ...(opts.mode === "cloud" && ownConversation ? { fileWorkspaceId: opts.cloudWorkspaceId } : {}),
+            ...(opts.remote ? { remoteHost: opts.remote.host } : {}),
+            ...(opts.mode === "remote_coding_dev" && warning ? { remoteNeedsReconnect: true } : {}),
+            ...(warning ? { warning } : {}),
+            ...(draft.workflowTemplateId === null ? { noWorkflowInterception: true } : {}),
+            ...(latexDocument ? { latexRelativePath: latexDocument.relativePath } : {}),
         });
     } else {
         bindings.openTaskLaunch({

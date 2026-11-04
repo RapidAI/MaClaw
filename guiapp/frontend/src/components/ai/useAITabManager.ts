@@ -236,7 +236,7 @@ export interface UseAITabManagerResult {
     /** Resolves after CreateProjectTabSession for this tab (or immediately if none is in flight). */
     waitForProjectTabSession: (tabId: string) => Promise<void>;
     /** Create (or activate) an expert conversation tab. Returns the tab or null if limit reached. */
-    createExpertTab: (expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }, options?: { focus?: boolean }) => AITab | null;
+    createExpertTab: (expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string; title?: string }, options?: { focus?: boolean }) => AITab | null;
     /**
      * Close a tab by ID. An idle switch passes suppressNewTaskGuide because
      * the caller is about to focus another task; the guide would cover it.
@@ -1441,20 +1441,37 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return projectTabSessionReadyByIDRef.current.get(tabId) ?? Promise.resolve();
     }, []);
 
-    const createExpertTab = useCallback((expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }, options?: { focus?: boolean }): AITab | null => {
+    const createExpertTab = useCallback((expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string; title?: string }, options?: { focus?: boolean }): AITab | null => {
         const expertId = String(expert?.id || "").trim();
         if (!expertId) return null;
         const projectPath = String(task?.projectPath || "").trim() || undefined;
         const latexRelativePath = String(task?.relativePath || "").trim() || undefined;
         const prev = tabStateRef.current;
         const tabId = expertTabId(expertId);
-        const title = String(expert?.name || "").trim() || expertId;
+        // The tab title is the task's instruction. The expert name is the
+        // persona, and using it as the title makes every task of that expert
+        // look like the same row.
+        const expertLabel = String(expert?.name || "").trim() || expertId;
+        const instructionTitle = String(task?.title || "").trim();
+        // An instruction title stays on a task-bound tab. A pure expert tab
+        // still follows a rename of the expert itself.
+        const titleFor = (current?: { title?: string; projectPath?: string }) => {
+            if (instructionTitle) return instructionTitle;
+            const currentTitle = String(current?.title || "").trim();
+            const currentPath = String(current?.projectPath || "").trim();
+            const sameTask = !projectPath || !currentPath
+                || normalizeProjectSessionPath(projectPath) === normalizeProjectSessionPath(currentPath);
+            const bound = String(projectPath || currentPath).trim();
+            if (sameTask && bound && currentTitle && currentTitle !== expertId && currentTitle !== expertLabel) return currentTitle;
+            return expertLabel;
+        };
         const icon = String(expert?.icon || "").trim() || undefined;
         const description = String(expert?.description || "").trim() || undefined;
 
         // Deduplicate: an already-open expert tab is refreshed and activated.
         const existing = prev.tabs.find(t => t.id === tabId)
             || prev.tabs.find(t => t.type === "expert" && t.expertId === expertId);
+        const title = titleFor(existing);
         if (existing) {
             const saved = tabStatesRef.current.get(existing.id);
             if (saved) {
@@ -1502,10 +1519,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 || state.tabs.find(t => t.type === "expert" && t.expertId === expertId);
             const boundPath = projectPath || current?.projectPath;
             const boundLatex = latexRelativePath || current?.latexRelativePath;
+            const nextTitle = titleFor(current);
             const nextTab: AITab = current
                 ? {
                     ...current,
-                    title,
+                    title: nextTitle,
                     expertId,
                     expertIcon: icon || current.expertIcon,
                     expertDescription: description || current.expertDescription,
@@ -2007,7 +2025,8 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         updateTabState(prev => {
             let changed = false;
             const tabs = prev.tabs.map(tab => {
-                if (tab.type !== "project" || normalizeProjectSessionPath(tab.projectPath) !== normalizedPath || tab.title === nextTitle) return tab;
+                const bound = (tab.type === "project" || tab.type === "expert") && normalizeProjectSessionPath(tab.projectPath) === normalizedPath;
+                if (!bound || tab.title === nextTitle) return tab;
                 changed = true;
                 return { ...tab, title: nextTitle };
             });

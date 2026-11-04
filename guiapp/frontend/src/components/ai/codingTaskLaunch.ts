@@ -72,6 +72,9 @@ export interface CodingTaskLaunch {
      * cover is up, create the tab and send without taking that surface.
      */
     backgroundLaunch?: boolean;
+    /** Expert persona this task calls. The session stays the task record. */
+    expertId?: string;
+    latexRelativePath?: string;
 }
 
 /** Coerce untrusted Wails/event payloads into the one safe launch contract. */
@@ -123,5 +126,7 @@ export function normalizeCodingTaskLaunch(input: Partial<CodingTaskLaunch> | nul
         noWorkflowInterception: input?.noWorkflowInterception === true,
         deliverInitialMessage: input?.deliverInitialMessage === true,
         ...(input?.backgroundLaunch === true ? { backgroundLaunch: true } : {}),
+        expertId: String(input?.expertId || "").trim() || undefined,
+        latexRelativePath: String(input?.latexRelativePath || "").trim() || undefined,
     };
 }

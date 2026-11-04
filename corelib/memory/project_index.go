@@ -1167,11 +1167,17 @@ func isTitleNoiseLine(line string) bool {
 	for _, prefix := range []string{
 		"---", "```", "<!--", "category:", "tags:", "scope:",
 		"created:", "updated:", "source:", "phase:",
+		"working directory:", "task id:",
 		"[系统", "[system", "[recover", "[执行",
 	} {
 		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
+	}
+	// The empty-task template sentence is not a title. Leaving it extractable
+	// makes every instruction-less row share one name.
+	if lower == "created from task management." {
+		return true
 	}
 	// Markdown metadata lines: "- **key**: value" or "- key: value"
 	trimmed := strings.TrimLeft(line, "- *")
@@ -1198,18 +1204,18 @@ func isTitleNoiseLine(line string) bool {
 	return false
 }
 
-// firstMeaningfulLine returns the first non-empty, non-heading line.
+// firstMeaningfulLine returns the first line a person would read as content.
+// Headings and title-noise (paths, source/created lines, the empty-task
+// template) are not previews: otherwise an unnamed row's list title, which
+// falls back to the preview, becomes that shared metadata.
 func firstMeaningfulLine(content string) string {
 	lines := strings.SplitN(content, "\n", 20)
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" || strings.HasPrefix(line, "#") || isTitleNoiseLine(line) {
 			continue
 		}
 		return line
-	}
-	if len(lines) > 0 {
-		return strings.TrimSpace(lines[0])
 	}
 	return ""
 }

@@ -35369,6 +35369,8 @@ body.companion-pdf-translation-dragging * {
   align-items: center;
   gap: 10px;
   box-sizing: border-box;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
   padding: 9px 10px;
   border: 1px solid var(--theme-border, #d5e0ef);
   border-radius: var(--radius-md);
@@ -37072,6 +37074,14 @@ body.companion-pdf-translation-dragging * {
   display: flex;
   min-height: 0;
   min-width: 0;
+}
+.file-companion-window[data-view='library'] .file-companion-chat,
+.file-companion-window[data-view='groups'] .file-companion-chat {
+  content-visibility: hidden;
+}
+.file-companion-window[data-view='library']:not([data-reader-player]) .file-companion-split-preview,
+.file-companion-window[data-view='groups']:not([data-reader-player]) .file-companion-split-preview {
+  visibility: hidden;
 }
 .file-companion-split-preview {
   flex: 1 1 auto;

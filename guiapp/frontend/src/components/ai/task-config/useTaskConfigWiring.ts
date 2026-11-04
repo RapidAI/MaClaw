@@ -610,6 +610,8 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                             warning: nav.warning,
                             noWorkflowInterception: nav.noWorkflowInterception,
                             deliverInitialMessage: true,
+                            expertId: nav.expertId,
+                            latexRelativePath: nav.latexRelativePath,
                         };
                         window.dispatchEvent(new CustomEvent(EVENT_OPEN_TASK_LAUNCH, { detail }));
                     },

@@ -107,7 +107,7 @@ func TestDuplicateTaskForksConfigAndConversation(t *testing.T) {
 
 func TestDuplicateTaskForksLiveExpertSessionOverStaleProjectMemory(t *testing.T) {
 	app := newProjectSearchTestApp(t)
-	source := app.insertExpertTaskRecordWithTitle("paper-review", "论文评审专家", "", "专家任务")
+	source := app.insertExpertTaskRecordWithTitle("paper-review", "", "专家任务")
 	if source.ProjectPath == "" {
 		t.Fatal("expert task was not created")
 	}

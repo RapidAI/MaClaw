@@ -219,7 +219,7 @@ describe('runTaskConfigSend interception', () => {
         expect(launch.taskTitle).not.toContain("第二行");
     });
 
-    it('expert draft routes to the expert open chain, not the task launch', async () => {
+    it('expert draft opens the task record and only names the expert', async () => {
         const bindings = makeBindings();
         const draft = withExpert(defaultTaskDraft(), 'exp-1', '法务专家');
         const result = await runTaskConfigSend({
@@ -233,13 +233,11 @@ describe('runTaskConfigSend interception', () => {
             expertId: 'exp-1',
             expertName: '法务专家',
         }));
-        expect(bindings.openTaskLaunch).not.toHaveBeenCalled();
-        expect(bindings.openExpert).toHaveBeenCalledWith(expect.objectContaining({
-            id: 'exp-1',
-            name: '法务专家',
-            initialMessage: '审一下这份合同',
-            // Every expert launch is bound to its own task conversation.
+        expect(bindings.openExpert).not.toHaveBeenCalled();
+        expect(bindings.openTaskLaunch).toHaveBeenCalledWith(expect.objectContaining({
             projectPath: 'D:/tasks/unified-task',
+            initialMessage: '审一下这份合同',
+            expertId: 'exp-1',
         }));
     });
 
@@ -265,13 +263,13 @@ describe('runTaskConfigSend interception', () => {
             templateName: 'IEEE',
             userText: '写一篇论文',
         }));
-        expect(bindings.openExpert).toHaveBeenCalledWith(expect.objectContaining({
-            id: LATEX_EXPERT_ID,
-            initialMessage: '模板已就绪\n\n写一篇论文',
+        expect(bindings.openExpert).not.toHaveBeenCalled();
+        expect(bindings.openTaskLaunch).toHaveBeenCalledWith(expect.objectContaining({
             projectPath: 'D:/tasks/unified-task',
-            latexDocument: { relativePath: 'main.tex' },
+            initialMessage: '模板已就绪\n\n写一篇论文',
+            expertId: LATEX_EXPERT_ID,
+            latexRelativePath: 'main.tex',
         }));
-        expect(bindings.openTaskLaunch).not.toHaveBeenCalled();
     });
 
     it('drops the new LaTeX paper when the template cannot be written', async () => {

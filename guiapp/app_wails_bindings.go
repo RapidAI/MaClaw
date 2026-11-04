@@ -2575,24 +2575,15 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		log.Printf("[AI assistant] normalized project path request_id=%s raw=%q normalized=%q", requestID, rawProjectPath, projectPath)
 	}
 	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
-	if expertID := strings.TrimSpace(req.ExpertID); expertID != "" {
-		// A send that omitted the task path would otherwise run in the desktop
-		// default (~/.maclaw/workspace) even when the task record names the
-		// directory the user chose.
-		if projectPath == "" {
-			if resolved := a.liveExpertTaskPath(expertID); resolved != "" {
-				projectPath = resolved
-				req.ProjectPath = resolved
-				log.Printf("[AI assistant] expert recovered task path request_id=%s expert=%s project_path=%q", requestID, expertID, projectPath)
-			} else if resolved := a.resolveLatexExpertProjectPath(expertID); resolved != "" {
-				projectPath = resolved
-				req.ProjectPath = resolved
-				log.Printf("[AI assistant] latex expert recovered task path request_id=%s project_path=%q", requestID, projectPath)
-			}
+	// A named expert is the persona for this turn. It does not replace the
+	// task's session. Two tasks that call the same expert, including two
+	// programming tasks in one directory, keep two sessions.
+	// The task title is the instruction, not the expert's name. A launcher
+	// row that still shows the expert is named here, on the first command.
+	if projectPath != "" {
+		if expertID := a.desktopTurnExpertID(req); expertID != "" {
+			a.adoptExpertTaskInstructionTitle(projectPath, expertID, text)
 		}
-		// Each expert task owns its agent session. A new task must not run on,
-		// or cancel, the session of a task that is still working.
-		userID = expertTaskSessionUserID(expertID, projectPath)
 	}
 	// The same task key can be sent again after its workspace changed. Drop a
 	// binding that still points at a different task before this send restores one.
@@ -2672,9 +2663,6 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		return nil, fmt.Errorf("AI assistant backend is unavailable")
 	}
 	log.Printf("[AI assistant] enqueue request request_id=%s session_key=%q project_path=%q text_len=%d", requestID, userID, projectPath, len(text))
-	if expertID := strings.TrimSpace(req.ExpertID); expertID != "" && projectPath != "" {
-		a.adoptSharedExpertMemory(hubClient.ensureIMHandler(), expertID, projectPath)
-	}
 
 	// All messages run in a background goroutine so the Wails IPC channel is
 	// freed immediately. The final response is pushed via the
@@ -2947,6 +2935,19 @@ func prepareWorkflowTemplatePanelLaunch(handler *IMMessageHandler, workflowType,
 	}, nil
 }
 
+// desktopTurnExpertID is the persona this task calls. The request may name
+// it, and a later message on the same task record still finds it on the
+// source tag. An empty result means an ordinary assistant turn.
+func (a *App) desktopTurnExpertID(req AIAssistantSendRequest) string {
+	if id := strings.TrimSpace(req.ExpertID); id != "" && expertIDPattern.MatchString(id) {
+		return id
+	}
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.expertIDForTaskPath(req.ProjectPath))
+}
+
 func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubClient *RemoteHubClient, requestID string, text string, userID string) {
 	sendStartedAt := time.Now()
 	readyAt, firstChatLogPending := a.beginFirstAIAssistantChatTelemetry()
@@ -3059,6 +3060,12 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		DismissRecoverableSessionID: strings.TrimSpace(req.DismissRecoverableSessionID),
 		UIAction:                    req.UIAction,
 		NoWorkflowInterception:      req.NoWorkflowInterception,
+	}
+	if expertID := a.desktopTurnExpertID(req); expertID != "" {
+		msg.AssistantBinding = &agent.AssistantBinding{
+			Mode:     corelib.LansengerAssistantModeExpert,
+			ExpertID: expertID,
+		}
 	}
 	// This request boundary owns only the semantic "start new task" fence. The
 	// Coding credential itself is minted and swept by the turn that actually

@@ -13,6 +13,7 @@ import { isLocalHumanParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys } from "./participantIdentity";
 import type { CodingTaskLaunch } from "./codingTaskLaunch";
 import { userTurnDisplayOptions } from "./userTurnDisplay";
+import { describeTaskTitle } from "./describeTaskTitle";
 import { getNewTaskCoverHeld, subscribeNewTaskCoverHeld } from "./task-config/newTaskCoverHold";
 import { localizeText } from "../../i18n";
 
@@ -174,7 +175,7 @@ interface PendingAssistantTabOpenOptions {
     createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string, options?: CreateVETabOptions) => AITab | null;
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     createProjectTab: (projectPath: string, taskTitle: string, options?: CreateProjectTabOptions) => AITab | null;
-    createExpertTab?: (expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }, options?: { focus?: boolean }) => AITab | null;
+    createExpertTab?: (expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string; title?: string }, options?: { focus?: boolean }) => AITab | null;
     activateTab?: (tabId: string) => void;
     getTabState?: (tabId: string) => AITabState | undefined;
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
@@ -436,7 +437,7 @@ export function usePendingAssistantTabOpen({
 
         // Capture request data synchronously. The parent clears the one-shot
         // pending state through the receipt callback below.
-        const { launchId, projectPath, taskTitle, initialMessage, autoSend, prepareMode, openIntent, cloudWorkspaceId, fileWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, workflowType, imPlatform, imTargetUID, imIsGroup, newTaskContext, noWorkflowInterception, warning, deliverInitialMessage } = pendingProjectTabOpen;
+        const { launchId, projectPath, taskTitle, initialMessage, autoSend, prepareMode, openIntent, cloudWorkspaceId, fileWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, workflowType, imPlatform, imTargetUID, imIsGroup, newTaskContext, noWorkflowInterception, warning, deliverInitialMessage, expertId } = pendingProjectTabOpen;
         // Check if the tab already exists in the tab list BEFORE creating it.
         // This is a synchronous read of tabStateRef — reliable for tabs that were
         // restored from localStorage (synchronous on mount) or from the backend
@@ -587,6 +588,7 @@ export function usePendingAssistantTabOpen({
                 im_task_title: taskTitle,
                 // Wizard「无工作流」：首条消息跳过工作流语义拦截。
                 ...(noWorkflowInterception ? { no_workflow_interception: true } : {}),
+                ...(expertId ? { expert_id: expertId } : {}),
                 ...userTurnDisplayOptions(msg),
             }).catch(() => {});
         })();
@@ -929,7 +931,10 @@ export function usePendingAssistantTabOpen({
             // the tab still binds the conversation to its own task.
             const projectPath = String(prepared?.projectPath || launch.projectPath || "").trim();
             const relativePath = String(prepared?.relativePath || "").trim();
-            const expertTask = (projectPath || relativePath) ? { projectPath, relativePath } : undefined;
+            const instructionTitle = initialMessage ? describeTaskTitle(initialMessage) : "";
+            const expertTask = (projectPath || relativePath)
+                ? { projectPath, relativePath, ...(instructionTitle ? { title: instructionTitle } : {}) }
+                : undefined;
             // Call with a single argument when no task path exists: callers
             // (and tests) treat create(expert) and create(expert, undefined)
             // as the same invocation, so the arity must stay honest.

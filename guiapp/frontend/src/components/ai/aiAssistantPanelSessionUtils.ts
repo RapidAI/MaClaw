@@ -798,18 +798,11 @@ export function expertTaskSessionKey(expertId?: string | null, projectPath?: str
  * the project-path session.
  */
 export function expertSessionForProjectTask(
-    tasks: ReadonlyArray<{ project_path?: string | null; projectPath?: string | null; tags?: readonly string[] | null }> | null | undefined,
-    projectPath?: string | null,
+    _tasks: ReadonlyArray<{ project_path?: string | null; projectPath?: string | null; tags?: readonly string[] | null }> | null | undefined,
+    _projectPath?: string | null,
 ): string {
-    const path = normalizeProjectSessionPath(projectPath);
-    if (!path || !tasks?.length) return "";
-    for (const task of tasks) {
-        const taskPath = normalizeProjectSessionPath(String(task?.project_path || task?.projectPath || ""));
-        if (taskPath !== path) continue;
-        if (isExplicitTaskCopy(task?.tags)) return "";
-        const expertId = expertIDFromTaskTags(task?.tags);
-        return expertId ? expertTaskSessionKey(expertId, path) : "";
-    }
+    // A task that calls an expert keeps the task-record session. The expert
+    // id is not a second session, including when several tasks share a directory.
     return "";
 }
 

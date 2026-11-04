@@ -391,7 +391,7 @@ describe("aiAssistantPanelSessionUtils", () => {
             { project_path: "d:\\tasks\\book\\", tags: ["source:expert:exp-book"] },
             { project_path: "D:/tasks/copy", tags: ["source:expert:exp-book", "task_copy"] },
         ];
-        expect(expertSessionForProjectTask(tasks, "D:/tasks/book")).toBe(key);
+        expect(expertSessionForProjectTask(tasks, "D:/tasks/book")).toBe("");
         expect(expertSessionForProjectTask(tasks, "D:/tasks/copy")).toBe("");
         expect(projectTabOwnsExpertQueue("project", key)).toBe(true);
         expect(projectTabOwnsExpertQueue("expert", key)).toBe(false);

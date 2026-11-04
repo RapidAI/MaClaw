@@ -245,4 +245,7 @@ export type OpenTaskLaunchDetail = {
     deliverInitialMessage?: boolean;
     /** Scheduled run: do not take the assistant while the new-task cover is up. */
     backgroundLaunch?: boolean;
+    /** Expert persona. The task tab stays a normal task. */
+    expertId?: string;
+    latexRelativePath?: string;
 };

@@ -24,7 +24,7 @@ type TaskCreateOptions struct {
 	CloudWorkspaceID string `json:"cloudWorkspaceId"`
 	// ExpertID selects a named AI expert (empty = generic assistant).
 	ExpertID string `json:"expertId"`
-	// ExpertName is the display fallback for ExpertID.
+	// ExpertName is the persona label. It is not the task title.
 	ExpertName string `json:"expertName"`
 	// WorkflowTemplateID pins a workflow template. Empty never starts a
 	// workflow at the creation layer; the wizard's 「无」 and 「自动判断」 both
@@ -94,10 +94,10 @@ type UnifiedTaskCreateResult struct {
 // GUI can still open the task and surface the degradation.
 func (a *App) CreateTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult, error) {
 	result, err := a.createTaskUnified(opts)
-	// Expert tasks keep the launcher convention (expert display name as the
-	// title); every other branch derives its title from the first instruction,
-	// which the async pass may condense into a short summary.
-	if err == nil && strings.TrimSpace(result.ProjectPath) != "" && strings.TrimSpace(opts.ExpertID) == "" {
+	// Every branch, including an expert persona, takes its title from the
+	// first instruction. The async pass may condense that into a short summary.
+	// The expert's display name is not a title.
+	if err == nil && strings.TrimSpace(result.ProjectPath) != "" {
 		a.scheduleTaskTitleSummarization(result.ProjectPath, taskNameForCreate(opts.Name, true))
 	}
 	return result, err
@@ -151,17 +151,18 @@ func (a *App) createTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult
 	// still uses createExpertTask, which returns the newest expert task without
 	// creating another one.
 	//
-	// Contract with the wizard frontend: after this call returns, open the
-	// expert tab for ExpertID, bind it to this task, and send Name as the first
-	// user message through the existing expert chat channel (same as
-	// ensureExpertTask + setPendingExpertOpen in App.tsx). The backend routes
-	// that message to this task's own session (expert_session_policy.go).
-	// WorkingDir, when set, is stored on the record and becomes the execution
-	// directory. The record title uses Name, so several tasks of the same
-	// expert stay distinguishable; the expert launcher still names the first
-	// entry after the expert.
+	// Contract with the wizard frontend: after this call returns, open this
+	// task's own project tab and send Name as the first user message. Name is
+	// the instruction, not the expert's display name, so several tasks of one
+	// expert stay distinguishable. The expert is only the persona for that
+	// turn. WorkingDir, when set, is stored on the record and becomes the
+	// execution directory.
 	if opts.ExpertID != "" {
-		result, err := a.createFreshExpertTask(opts.ExpertID, opts.ExpertName, opts.WorkingDir, opts.Name, opts.KeepExpertSession)
+		// The expert is the persona this task calls. The task record is its own
+		// session, so another task of the same expert — even one that executes
+		// in the same directory — is not part of this conversation. The shared
+		// expert transcript is left untouched.
+		result, err := a.createFreshExpertTask(opts.ExpertID, opts.ExpertName, opts.WorkingDir, opts.Name, true)
 		if err != nil {
 			return zero, err
 		}

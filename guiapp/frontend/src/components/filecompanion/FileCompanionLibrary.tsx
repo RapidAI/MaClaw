@@ -198,6 +198,10 @@ function companionLibraryPaint(listed: unknown): { items: CompanionLibraryItem[]
     };
 }
 
+export function companionLibrarySnapshotKey(listed: unknown): string {
+    return JSON.stringify(companionLibraryPaint(listed));
+}
+
 function boolOf(record: Record<string, unknown>, camel: string, pascal: string): boolean {
     const value = record[camel] ?? record[pascal];
     return value === true;
@@ -925,7 +929,7 @@ export function CompanionLibraryView({
     dialogOpen?: boolean;
 }) {
     if (lang) setCompanionUiLang(lang);
-    const seeded = companionLibraryPaint(listedSnapshot);
+    const seeded = useMemo(() => companionLibraryPaint(listedSnapshot), [listedSnapshot]);
     const [items, setItems] = useState<CompanionLibraryItem[]>(seeded.items);
     const [notice, setNotice] = useState(seeded.notice);
     const [loading, setLoading] = useState(listedSnapshot == null);
@@ -950,11 +954,15 @@ export function CompanionLibraryView({
     // The last list object this view painted. The window echoes it back as
     // listedSnapshot; comparing identity keeps that echo from painting twice.
     const appliedListRef = useRef<unknown>(listedSnapshot ?? null);
+    const appliedSnapshotKeyRef = useRef(companionLibrarySnapshotKey(listedSnapshot));
     const paintedRef = useRef(listedSnapshot != null);
 
     const applyList = useCallback((listed: unknown, alreadyTaken = false) => {
         if (!alreadyTaken && !takeCompanionLibraryList(listed)) return;
+        const snapshotKey = companionLibrarySnapshotKey(listed);
+        if (paintedRef.current && appliedSnapshotKeyRef.current === snapshotKey) return;
         const paint = companionLibraryPaint(listed);
+        appliedSnapshotKeyRef.current = snapshotKey;
         setItems(paint.items);
         setNotice(paint.notice);
         setSyncing(paint.syncing);
@@ -1127,8 +1135,10 @@ export function CompanionLibraryView({
         }
     };
 
-    const localItems = items.filter((item) => item.source !== "cloud");
-    const cloudItems = items.filter((item) => item.source === "cloud");
+    const { localItems, cloudItems } = useMemo(() => ({
+        localItems: items.filter((item) => item.source !== "cloud"),
+        cloudItems: items.filter((item) => item.source === "cloud"),
+    }), [items]);
     // A local document that was already published has a cloud row beside it.
     // The local card must offer 修改 on that row instead of 分享, or the same
     // paper ends up with two links. An expired link is not live, so it does

@@ -108,6 +108,7 @@ const deleteShare = vi.fn(async (..._args: unknown[]): Promise<void> => undefine
 const transferHost = vi.fn(async (..._args: unknown[]): Promise<void> => undefined);
 const revokeHost = vi.fn(async (..._args: unknown[]): Promise<void> => undefined);
 const leaveGroup = vi.fn(async () => undefined);
+const companionPdfReaderRender = vi.fn();
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
     GetFileCompanionBoot: (...args: unknown[]) => boot(...args),
@@ -241,7 +242,10 @@ vi.mock("../ai/PdfPreviewPanel", () => ({
 }));
 
 vi.mock("../ai/CompanionPdfReader", () => ({
-    CompanionPdfReader: ({ absPath }: { absPath: string }) => <div data-testid="pdf-preview-panel">{absPath}</div>,
+    CompanionPdfReader: ({ absPath }: { absPath: string }) => {
+        companionPdfReaderRender();
+        return <div data-testid="pdf-preview-panel">{absPath}</div>;
+    },
 }));
 
 // Only the drawing is stubbed. jsdom has no canvas, so the real renderer would
@@ -2231,6 +2235,25 @@ describe("FileCompanionWindow", () => {
         const expiredMark = await screen.findByTestId(`file-companion-library-expired-mark-${token}`);
         expect(expiredMark.textContent).toContain("已过期");
         expect(screen.queryByTestId(`file-companion-library-edit-share-${token}`)).toBeNull();
+    });
+
+    it("keeps the mounted reader out of unchanged library poll renders", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const localItem = { id: "local:a", name: "a.pdf", path: "C:/notes/a.pdf", source: "local", openedAt: "2026-10-25T00:00:00Z" };
+        listLibrary.mockImplementation(async () => ({ items: [localItem], notice: "" }));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.pdf");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-card-local:a");
+        companionPdfReaderRender.mockClear();
+
+        const calls = listLibrary.mock.calls.length;
+        await act(async () => { window.dispatchEvent(new Event("focus")); });
+        await waitFor(() => expect(listLibrary.mock.calls.length).toBeGreaterThan(calls));
+        expect(companionPdfReaderRender).not.toHaveBeenCalled();
+        expect(screen.getByTestId("file-companion-library-card-local:a").textContent).toContain("a.pdf");
     });
 
     it("transfers the host seat from 修改分享 and waits for acceptance", async () => {
@@ -8878,6 +8901,14 @@ describe("companion titlebar keeps its controls out of the window drag region", 
         const cardRule = css().match(/(?:^|})\s*\.file-companion-share-password-card\s*\{([^}]*)\}/);
         expect(cardRule?.[1] ?? "").not.toMatch(/padding|gap/);
         expect(css()).toMatch(/\.file-companion-dialog-input::-ms-reveal,[\s\S]*?\{[^}]*display:\s*none/);
+    });
+
+    it("skips covered reader paint and offscreen library row layout", () => {
+        const source = css();
+        expect(source).toContain(".file-companion-window[data-view='library']:not([data-reader-player]) .file-companion-split-preview,");
+        expect(source).toMatch(/\.file-companion-window\[data-view='groups'\]:not\(\[data-reader-player\]\) \.file-companion-split-preview\s*\{[^}]*visibility:\s*hidden/);
+        expect(source).toMatch(/\.file-companion-project\s*\{[^}]*content-visibility:\s*auto/);
+        expect(source).toMatch(/\.file-companion-project\s*\{[^}]*contain-intrinsic-size:\s*auto 60px/);
     });
 
     // jsdom never runs Wails' drop filter. OnFileDrop is registered with

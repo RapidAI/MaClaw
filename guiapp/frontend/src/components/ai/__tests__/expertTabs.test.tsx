@@ -159,6 +159,30 @@ describe("useAITabManager.createExpertTab", () => {
         expect(result.current.tabState.tabs.find(t => t.id === first!.id)?.title).toBe("改名后");
     });
 
+    it("keeps an instruction title on a task-bound expert tab when the expert is refreshed", () => {
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createExpertTab(expertA, { projectPath: "D:/tasks/book", title: "写量子工程教材" });
+        });
+        act(() => {
+            result.current.createExpertTab({ ...expertA, name: "改名后" }, { projectPath: "D:/tasks/book" });
+        });
+        expect(result.current.tabState.tabs.find(t => t.type === "expert")?.title).toBe("写量子工程教材");
+    });
+
+    it("drops the previous instruction title when the expert tab binds a different task", () => {
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createExpertTab(expertA, { projectPath: "D:/tasks/book-a", title: "写量子工程教材" });
+        });
+        act(() => {
+            result.current.createExpertTab(expertA, { projectPath: "D:/tasks/book-b" });
+        });
+        const tab = result.current.tabState.tabs.find(t => t.type === "expert");
+        expect(tab?.projectPath).toBe("D:/tasks/book-b");
+        expect(tab?.title).toBe(expertA.name);
+    });
+
     it("enforces the maxVETabs cap for expert tabs", () => {
         const { result } = renderHook(() => useAITabManager({ maxVETabs: 2 }));
         act(() => {

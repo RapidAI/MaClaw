@@ -231,7 +231,7 @@ import { bindDesktopBotResultStore } from './components/bots/desktopBotResultSto
 import { BotsPageErrorBoundary } from './components/bots/BotsPageErrorBoundary';
 import { desktopBotAccountId } from './components/bots/desktopBots';
 import { meetingRecordCommand, meetingRecordFailMessage, meetingRecordTaskTitle } from './components/pages/utilitiesMeetingRecord';
-import { parseExpertListJSON, type ExpertDefinition } from './components/ai/expertTypes';
+import { type ExpertDefinition } from './components/ai/expertTypes';
 import {
     LATEX_BLANK_TEMPLATE_ID,
     LATEX_EXPERT_ID,
@@ -2997,17 +2997,11 @@ function App() {
     // the live expert tab instead.
     const activateTaskInstance = (projectPath: string, task?: { tags?: string[]; working_dir?: string }) => {
         const copied = isExplicitTaskCopy(task?.tags);
-        const expertID = copied ? '' : expertIDFromTaskTags(task?.tags);
-        const liveExpertTask = !copied && expertTaskIsLive(
-            task ? { project_path: projectPath, tags: task.tags } : { project_path: projectPath, tags: [] },
-            taskItemsRef.current,
-        );
         const cloudWorkspaceId = copied ? '' : cloudWorkspaceIdFromTaskFields({ tags: task?.tags, project_path: projectPath, working_dir: task?.working_dir });
         try {
             EventsEmit(EVENT_PROJECT_TASK_ACTIVATE, {
                 projectPath,
                 cloudWorkspaceId: cloudWorkspaceId || undefined,
-                expertId: liveExpertTask && expertID ? expertID : undefined,
             });
         } catch (error) {
             console.warn('[task_management] activate event emit failed:', error);
@@ -3602,6 +3596,8 @@ function App() {
                 noWorkflowInterception: detail?.noWorkflowInterception === true,
                 deliverInitialMessage: detail?.deliverInitialMessage === true,
                 ...(detail?.backgroundLaunch === true ? { backgroundLaunch: true } : {}),
+                expertId: String(detail?.expertId || '').trim() || undefined,
+                latexRelativePath: String(detail?.latexRelativePath || '').trim() || undefined,
             });
         };
         window.addEventListener(EVENT_OPEN_TASK_LAUNCH, openTaskLaunch);
@@ -3746,34 +3742,10 @@ function App() {
             const currentRow = task && norm(task.project_path || '') === want ? task : undefined;
             const proj = currentRow || taskItemsRef.current.find(p => norm(p.project_path || '') === want);
             console.info("[task_management] open requested", { taskPath: projectPath, foundInList: !!proj });
-            const expertID = expertIDFromTaskTags(proj?.tags);
             // A copy keeps the expert tag for display, but its chat is a new
-            // project session. Opening it must not enter the shared expert transcript.
+            // project session. Every expert task opens on its own record, so
+            // two tasks of one expert never share a tab.
             const copiedTask = isExplicitTaskCopy(proj?.tags);
-            // Only the newest task of an expert owns the shared expert tab. Every
-            // older task keeps its transcript archived on its own project tab,
-            // so opening it must not reopen (and overwrite) the live conversation.
-            const liveExpertTask = !!proj && expertTaskIsLive(proj, taskItemsRef.current);
-            if (!copiedTask && expertID && liveExpertTask) {
-                const app = await getWailsAppModule();
-                const rawExperts = typeof app.ListExperts === 'function' ? await app.ListExperts() : '';
-                const expert = parseExpertListJSON(rawExperts).find(item => item.id === expertID);
-                if (!expert) {
-                    showAlert(localizeText(
-                        'This AI expert is no longer available. Choose another expert from AI Experts or remove this task.',
-                        '该 AI 专家已不可用。请从 AI 专家页面选择其他专家，或移除此任务项。',
-                        '此 AI 專家已不可用。請從 AI 專家頁面選擇其他專家，或移除此任務項。',
-                    ));
-                    return false;
-                }
-                // Bind the tab to the exact row the user clicked. The backend
-                // "newest task" lookup is only the fallback for launches that
-                // do not know their task yet.
-                enqueueExpertOpen({ expert, projectPath: proj?.project_path || projectPath });
-                switchTool('ai');
-                refreshTasks();
-                return true;
-            }
             const cloudWorkspaceId = cloudWorkspaceIdFromTaskFields({
                 tags: proj?.tags,
                 project_path: projectPath,

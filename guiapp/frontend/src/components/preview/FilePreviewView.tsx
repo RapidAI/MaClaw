@@ -520,7 +520,7 @@ export function filePreviewUsesSpecialRenderer(file?: FilePreviewSource | null):
         || kind === 'office' || kind === 'markdown';
 }
 
-export function FilePreviewView({
+export const FilePreviewView = React.memo(function FilePreviewView({
     file,
     theme,
     lang = 'en',
@@ -639,4 +639,4 @@ export function FilePreviewView({
         );
     }
     return <>{children}</>;
-}
+});
