@@ -94,6 +94,8 @@ type Service struct {
 	// activity counts apt and bash still inside this process. Sleep and the
 	// historical reaper both leave that user running.
 	activity sync.Map
+	// workspaceUse: last bash or file call per workspace container (workspace.go).
+	workspaceUse sync.Map
 	// wakes counts Ensure calls that have announced themselves and not yet
 	// finished. The count is taken before the user lock: sleep holds that
 	// lock from flush through stop, so the announcement has to be visible
@@ -117,6 +119,11 @@ type Service struct {
 	// Ensure that arrives after flush abandons the sleep and leaves the
 	// container running.
 	Stage2Sleep bool
+	// ToolWorkspace runs bash and file calls in a headless per-user
+	// workspace while the desktop is stopped (workspace.go). Off keeps the
+	// old path: those calls start the desktop. cmd/desktopd turns it on
+	// unless DESKTOPD_TOOL_WORKSPACE=off.
+	ToolWorkspace bool
 	// VolumeSync copies the four private volumes. Nil means object storage is
 	// not configured, and stage 2 must not docker stop. The bucket, account,
 	// and region are not chosen here. The syncer must not log a token.

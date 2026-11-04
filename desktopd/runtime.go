@@ -109,8 +109,10 @@ func execAllowed(spec Spec, req ExecRequest) error {
 	if name == "" {
 		return fmt.Errorf("%w: user is required", ErrInvalid)
 	}
+	// bash and file calls may run in this user's headless workspace.
+	work := workspaceName(spec.TenantID, spec.UserID)
 	for _, arg := range req.Args {
-		if arg == name {
+		if arg == name || (arg == work && (req.Kind == ExecFile || req.Kind == ExecShell)) {
 			return nil
 		}
 	}

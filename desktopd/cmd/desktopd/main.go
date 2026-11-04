@@ -80,6 +80,7 @@ func main() {
 		log.Fatalf("[desktopd] %v", err)
 	}
 	svc.Stage2Sleep = stage2
+	svc.ToolWorkspace = !strings.EqualFold(strings.TrimSpace(os.Getenv("DESKTOPD_TOOL_WORKSPACE")), "off")
 	if svc.Stage2Sleep {
 		if strings.TrimSpace(os.Getenv("DESKTOPD_MAX_IDLE")) != "" {
 			log.Printf("[desktopd] DESKTOPD_SLEEP is on; DESKTOPD_MAX_IDLE is not used")

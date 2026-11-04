@@ -19,7 +19,12 @@ func TestDesktopBotSleepCases(t *testing.T) {
 		if TurnWakes(WakeProgress, true) {
 			t.Fatal("progress copied on the run record started a desktop")
 		}
-		for _, op := range []string{WakeFile, WakeBash, WakeSession, WakeScreenshot, WakeScreen} {
+		for _, op := range []string{WakeFile, WakeBash} {
+			if TurnWakes(op, true) {
+				t.Fatalf("%s started the desktop GUI; desktopd runs it in the workspace", op)
+			}
+		}
+		for _, op := range []string{WakeSession, WakeScreenshot, WakeScreen} {
 			if !TurnWakes(op, true) {
 				t.Fatalf("%s did not start a desktop", op)
 			}
@@ -56,7 +61,7 @@ func TestDesktopBotSleepCases(t *testing.T) {
 		if _, err := pool.RunBash(context.Background(), "tenant-a", "alice", "echo hi"); err != nil {
 			t.Fatal(err)
 		}
-		if len(paths) != 4 || paths[0] != "/v1/desktops/ensure" || paths[1] != "/v1/desktops/file" || paths[2] != "/v1/desktops/ensure" || paths[3] != "/v1/desktops/bash" {
+		if len(paths) != 2 || paths[0] != "/v1/desktops/file" || paths[1] != "/v1/desktops/bash" {
 			t.Fatalf("paths = %v", paths)
 		}
 

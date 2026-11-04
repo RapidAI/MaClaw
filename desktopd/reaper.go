@@ -51,6 +51,7 @@ func (r *reaper) loop(ctx context.Context, s *Service) {
 			return
 		case <-ticker.C:
 			r.once(ctx, s)
+			s.reapWorkspaces(ctx, r.maxIdle)
 		}
 	}
 }

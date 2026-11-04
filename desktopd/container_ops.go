@@ -73,10 +73,17 @@ func (s *Service) ReadFile(ctx context.Context, tenantID, userID, filePath strin
 	}
 	var output string
 	var exitCode int
+	var container string
+	var onDesktop bool
 	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+		c, desk, cErr := s.toolContainer(ctx, spec)
+		if cErr != nil {
+			return cErr
+		}
+		container, onDesktop = c, desk
 		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
 			Kind: ExecFile,
-			Args: fileServiceArgs(containerName(spec.TenantID, spec.UserID), "read", filePath, desktop.FileReadMax+1),
+			Args: fileServiceArgs(container, "read", filePath, desktop.FileReadMax+1),
 		})
 		output, exitCode = result.Out, result.Exit
 		return runErr
@@ -84,7 +91,7 @@ func (s *Service) ReadFile(ctx context.Context, tenantID, userID, filePath strin
 	if err != nil {
 		return "", err
 	}
-	s.noteComputerActivity(spec.TenantID, spec.UserID)
+	s.noteToolUse(spec, container, onDesktop)
 	if exitCode != 0 {
 		return "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))
 	}
@@ -112,10 +119,17 @@ func (s *Service) ReadBytes(ctx context.Context, tenantID, userID, filePath stri
 	}
 	var output string
 	var exitCode int
+	var container string
+	var onDesktop bool
 	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+		c, desk, cErr := s.toolContainer(ctx, spec)
+		if cErr != nil {
+			return cErr
+		}
+		container, onDesktop = c, desk
 		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
 			Kind: ExecFile,
-			Args: fileServiceArgs(containerName(spec.TenantID, spec.UserID), "bytes", filePath, desktop.FileBytesMax+1),
+			Args: fileServiceArgs(container, "bytes", filePath, desktop.FileBytesMax+1),
 		})
 		output, exitCode = result.Out, result.Exit
 		return runErr
@@ -123,7 +137,7 @@ func (s *Service) ReadBytes(ctx context.Context, tenantID, userID, filePath stri
 	if err != nil {
 		return "", err
 	}
-	s.noteComputerActivity(spec.TenantID, spec.UserID)
+	s.noteToolUse(spec, container, onDesktop)
 	if exitCode != 0 {
 		return "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))
 	}
@@ -149,10 +163,17 @@ func (s *Service) WriteFile(ctx context.Context, tenantID, userID, filePath, con
 	}
 	var exitCode int
 	var output string
+	var container string
+	var onDesktop bool
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+		c, desk, cErr := s.toolContainer(ctx, spec)
+		if cErr != nil {
+			return cErr
+		}
+		container, onDesktop = c, desk
 		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
 			Kind:  ExecFile,
-			Args:  fileServiceArgs(containerName(spec.TenantID, spec.UserID), "write", filePath, 0),
+			Args:  fileServiceArgs(container, "write", filePath, 0),
 			Stdin: strings.NewReader(content),
 		})
 		output, exitCode = result.Out, result.Exit
@@ -161,7 +182,7 @@ func (s *Service) WriteFile(ctx context.Context, tenantID, userID, filePath, con
 	if err != nil {
 		return "", err
 	}
-	s.noteComputerActivity(spec.TenantID, spec.UserID)
+	s.noteToolUse(spec, container, onDesktop)
 	if exitCode != 0 {
 		return "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))
 	}
@@ -181,12 +202,18 @@ func (s *Service) EditFile(ctx context.Context, tenantID, userID, filePath, old,
 	if err != nil {
 		return "", err
 	}
-	container := containerName(spec.TenantID, spec.UserID)
+	var container string
+	var onDesktop bool
 	var output string
 	var exitCode int
 	// Read and write share one user lock. Releasing it between them lets
 	// another command from this user replace the file before the edit lands.
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+		c, desk, cErr := s.toolContainer(ctx, spec)
+		if cErr != nil {
+			return cErr
+		}
+		container, onDesktop = c, desk
 		var runErr error
 		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
 			Kind: ExecFile,
@@ -223,7 +250,7 @@ func (s *Service) EditFile(ctx context.Context, tenantID, userID, filePath, old,
 	if err != nil {
 		return "", err
 	}
-	s.noteComputerActivity(spec.TenantID, spec.UserID)
+	s.noteToolUse(spec, container, onDesktop)
 	return fmt.Sprintf("Updated %s.", filePath), nil
 }
 
@@ -242,10 +269,17 @@ func (s *Service) ListFile(ctx context.Context, tenantID, userID, filePath strin
 	}
 	var output string
 	var exitCode int
+	var container string
+	var onDesktop bool
 	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+		c, desk, cErr := s.toolContainer(ctx, spec)
+		if cErr != nil {
+			return cErr
+		}
+		container, onDesktop = c, desk
 		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
 			Kind: ExecFile,
-			Args: fileServiceArgs(containerName(spec.TenantID, spec.UserID), "list", filePath, 0),
+			Args: fileServiceArgs(container, "list", filePath, 0),
 		})
 		output, exitCode = result.Out, result.Exit
 		return runErr
@@ -253,7 +287,7 @@ func (s *Service) ListFile(ctx context.Context, tenantID, userID, filePath strin
 	if err != nil {
 		return "", err
 	}
-	s.noteComputerActivity(spec.TenantID, spec.UserID)
+	s.noteToolUse(spec, container, onDesktop)
 	if exitCode != 0 {
 		return "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))
 	}
@@ -283,12 +317,12 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 			return "", displayErr
 		}
 	}
-	commandArgs, err := commandServiceArgs(containerName(spec.TenantID, spec.UserID), commandRequest{
+	shell := commandRequest{
 		Op:      "shell",
 		Command: strings.TrimSpace(command),
 		Display: display,
-	})
-	if err != nil {
+	}
+	if _, err := commandServiceArgs(containerName(spec.TenantID, spec.UserID), shell); err != nil {
 		return "", err
 	}
 	if ctx == nil {
@@ -300,19 +334,30 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 	defer release()
 	var output string
 	var exitCode int
+	var container string
+	var onDesktop bool
 	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+		c, desk, cErr := s.toolContainer(ctx, spec)
+		if cErr != nil {
+			return cErr
+		}
+		container, onDesktop = c, desk
+		commandArgs, argsErr := commandServiceArgs(container, shell)
+		if argsErr != nil {
+			return argsErr
+		}
 		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{Kind: ExecShell, Args: commandArgs})
 		output, exitCode = result.Out, result.Exit
 		return runErr
 	})
 	if err != nil {
 		if ctx.Err() != nil {
-			s.noteComputerActivity(spec.TenantID, spec.UserID)
+			s.noteToolUse(spec, container, onDesktop)
 			return desktop.ProgramOutput(output, exitCode, true), nil
 		}
 		return "", err
 	}
-	s.noteComputerActivity(spec.TenantID, spec.UserID)
+	s.noteToolUse(spec, container, onDesktop)
 	return desktop.ProgramOutput(output, exitCode, false), nil
 }
 
@@ -393,8 +438,14 @@ func (s *Service) UploadFile(ctx context.Context, tenantID, userID, filePath str
 		return "", err
 	}
 	counted := &countingReader{r: io.LimitReader(body, desktop.UploadMax+1)}
-	container := containerName(spec.TenantID, spec.UserID)
+	var container string
+	var onDesktop bool
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+		c, desk, cErr := s.toolContainer(ctx, spec)
+		if cErr != nil {
+			return cErr
+		}
+		container, onDesktop = c, desk
 		// A failed write still creates ~/素材 as root. Give those folders
 		// back even when the file itself is discarded.
 		abandon := func(cause error) error {
@@ -453,7 +504,7 @@ func (s *Service) UploadFile(ctx context.Context, tenantID, userID, filePath str
 	if err != nil {
 		return "", err
 	}
-	s.noteComputerActivity(spec.TenantID, spec.UserID)
+	s.noteToolUse(spec, container, onDesktop)
 	return fmt.Sprintf("Wrote %s (%d bytes).", filePath, counted.n), nil
 }
 

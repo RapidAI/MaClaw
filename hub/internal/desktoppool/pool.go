@@ -88,7 +88,12 @@ func TurnWakes(op string, progressCopied bool) bool {
 			return false
 		}
 		return false
-	case WakeSession, WakeFile, WakeBash, WakeScreenshot, WakeScreen:
+	case WakeFile, WakeBash:
+		// desktopd runs bash and file calls in the running desktop, or in
+		// the user's headless workspace while the desktop sleeps, and wakes
+		// a machine runtime itself. Hub must not start the GUI for them.
+		return false
+	case WakeSession, WakeScreenshot, WakeScreen:
 		return true
 	default:
 		return false

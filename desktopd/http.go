@@ -231,7 +231,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			writeOp(w, "", fmt.Errorf("%w: file action is invalid", ErrInvalid))
 			return
 		}
-		if err := svc.Ensure(r.Context(), Spec{TenantID: in.TenantID, UserID: in.UserID}); err != nil {
+		if err := svc.EnsureTools(r.Context(), Spec{TenantID: in.TenantID, UserID: in.UserID}); err != nil {
 			writeServiceErr(w, err)
 			return
 		}
@@ -266,7 +266,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			writeOp(w, "", fmt.Errorf("%w: file size is missing or too large", ErrInvalid))
 			return
 		}
-		if err := svc.Ensure(r.Context(), Spec{TenantID: tenantID, UserID: userID}); err != nil {
+		if err := svc.EnsureTools(r.Context(), Spec{TenantID: tenantID, UserID: userID}); err != nil {
 			writeServiceErr(w, err)
 			return
 		}
@@ -291,7 +291,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		if !decodeLimited(w, r, 64<<10, &in) {
 			return
 		}
-		if err := svc.Ensure(r.Context(), Spec{TenantID: in.TenantID, UserID: in.UserID}); err != nil {
+		if err := svc.EnsureTools(r.Context(), Spec{TenantID: in.TenantID, UserID: in.UserID}); err != nil {
 			writeServiceErr(w, err)
 			return
 		}
