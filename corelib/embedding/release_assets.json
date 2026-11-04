@@ -29,6 +29,13 @@
    "subdir": "interrupt_heads",
    "size": 2662440,
    "sha256": "7d5494785311997d46ea80a65425f7625ad4e86fe6a2fb2745759474e96eb4ed"
+  },
+  {
+   "filename": "head_mlp_qwen3go_mn_guard.json",
+   "kind": "mn_guard_head",
+   "subdir": "intent_heads",
+   "size": 57454638,
+   "sha256": "732eee75488f3c28ccfadf122f7010c0c66c7a882cd717211a7431832ae23d6c"
   }
  ]
 }

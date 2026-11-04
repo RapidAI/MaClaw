@@ -37,6 +37,7 @@ var defaultHubModelFiles = strings.Join([]string{
 	"head_mlp_qwen3go_r13f1.json",
 	"tool_head_ovr_qwen3go_r5.json",
 	"interrupt_relevance_qwen3go.json",
+	"head_mlp_qwen3go_mn_guard.json", // MN guard head (optional; absent → Cyrillic stays on remote L3)
 }, " ")
 
 const defaultHubModelLockTTL = 24 * time.Hour

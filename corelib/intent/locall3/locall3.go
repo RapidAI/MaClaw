@@ -125,6 +125,15 @@ func (r *Runtime) Attach(emb embedding.Embedder) (*intent.LocalHead, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if cur := r.st.Load(); cur != nil && cur.emb == emb {
+		// Same embedder: only pick up an MN guard head that has landed
+		// since (release asset downloaded after the intent head).
+		if cur.mnHead == nil {
+			st := *cur
+			r.attachMNGuard(&st, embedding.EmbedderFamily(emb))
+			if st.mnHead != nil {
+				r.st.Store(&st)
+			}
+		}
 		return cur.head, nil
 	}
 	fam := embedding.EmbedderFamily(emb)

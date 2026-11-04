@@ -145,6 +145,11 @@ func (a *App) startHeadAssetFetch() {
 					switch kind {
 					case "intent_head":
 						a.attachLocalL3(emb)
+					case "mn_guard_head":
+						// Same embedder already attached: Attach only adds the MN guard head.
+						if _, err := a.localL3Runtime().Attach(emb); err != nil {
+							log.Printf("[intent] MN guard head attach: %v", err)
+						}
 					case "tool_head":
 						a.attachToolHead(emb)
 					}

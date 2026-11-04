@@ -190,3 +190,53 @@ func TestMNGuardAbsentKeepsBypass(t *testing.T) {
 		t.Fatalf("err=%v calls=%d", err, calls)
 	}
 }
+
+// Head absent at first attach (still downloading) → Cyrillic goes remote, no
+// log; once the file lands a re-Attach on the same embedder picks it up.
+func TestMNGuardHotAttachAfterDownload(t *testing.T) {
+	t.Setenv(intent.LocalHeadEnv, "")
+	t.Setenv(intent.MNLocalEnv, "on")
+	t.Setenv(MNShadowLogEnv, filepath.Join(t.TempDir(), "mn.jsonl"))
+	dir := t.TempDir()
+	writeHead(t, dir, intent.ShippedLocalHeadName, "qwen3", 1024, nil)
+	rt := NewWithMode(dir, intent.LocalL3On)
+	rt.Logf = func(string, ...any) {}
+	emb := pooledEmb{qwen}
+	if _, err := rt.Attach(emb); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	fn := rt.ContextFunc(remoteSpy(&calls))
+	ctx := context.Background()
+	if _, err := fn(ctx, ctx, "", "Энэ файлд хадгална уу"); err != nil || calls != 1 {
+		t.Fatalf("absent head must fall back to remote: err=%v calls=%d", err, calls)
+	}
+	writeMNGuard(t, dir, 1024)
+	if _, err := rt.Attach(emb); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := fn(ctx, ctx, "", "Энэ файлд хадгална уу"); err != nil || calls != 1 || !strings.Contains(out, "file_write") {
+		t.Fatalf("after download: out=%q err=%v calls=%d", out, err, calls)
+	}
+}
+
+// A corrupt / wrong head file is refused: Cyrillic stays on remote L3.
+func TestMNGuardBadFileFallsBack(t *testing.T) {
+	t.Setenv(intent.LocalHeadEnv, "")
+	t.Setenv(intent.MNLocalEnv, "on")
+	dir := t.TempDir()
+	writeHead(t, dir, intent.ShippedLocalHeadName, "qwen3", 1024, nil)
+	if err := os.WriteFile(filepath.Join(dir, intent.MNGuardHeadName), []byte("{truncated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rt := NewWithMode(dir, intent.LocalL3On)
+	rt.Logf = func(string, ...any) {}
+	if _, err := rt.Attach(pooledEmb{qwen}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	fn := rt.ContextFunc(remoteSpy(&calls))
+	if _, err := fn(context.Background(), context.Background(), "", "Энэ файлд хадгална уу"); err != nil || calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, calls)
+	}
+}
