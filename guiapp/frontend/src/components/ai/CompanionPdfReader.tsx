@@ -78,6 +78,8 @@ import {
 import { subscribeCompanionReaderState } from "../filecompanion/companionReaderState";
 import { normalizeLang } from "../../i18n/langSelect";
 import { tailText } from "../../i18n/mnTail";
+import { DocumentFindBar } from "./DocumentFindBar";
+import { findInFolded, findSlice, foldFindSources, pdfFindSources, scrollMatchIntoScroller, type FindPart, type FoldedText } from "./documentFind";
 
 export interface CompanionPdfReaderProps {
     absPath: string;
@@ -87,7 +89,11 @@ export interface CompanionPdfReaderProps {
     lang: string;
 }
 
-type PdfTextItem = { str?: string; transform?: number[]; width?: number; height?: number };
+type PdfTextItem = { str?: string; transform?: number[]; width?: number; height?: number; hasEOL?: boolean };
+
+type PdfFindHit = { page: number; parts: FindPart[] };
+
+type PdfFindPart = FindPart & { hit: number };
 
 type PdfViewport = { width: number; height: number; scale: number; transform: number[] };
 
@@ -120,6 +126,55 @@ type MenuState = {
 };
 
 type ShownTranslation = PdfTranslation & { pending?: boolean };
+
+const NO_PDF_PAGE_ROWS: never[] = [];
+
+function samePdfPageData(left: unknown, right: unknown): boolean {
+    if (Object.is(left, right)) return true;
+    if (Array.isArray(left) || Array.isArray(right)) {
+        if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+        return left.every((item, index) => samePdfPageData(item, right[index]));
+    }
+    if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+    const leftRecord = left as Record<string, unknown>;
+    const rightRecord = right as Record<string, unknown>;
+    const leftKeys = Object.keys(leftRecord);
+    const rightKeys = Object.keys(rightRecord);
+    return leftKeys.length === rightKeys.length && leftKeys.every((key) => (
+        Object.prototype.hasOwnProperty.call(rightRecord, key) && samePdfPageData(leftRecord[key], rightRecord[key])
+    ));
+}
+
+function samePdfPageRows<T>(left: T[], right: T[]): boolean {
+    return left === right || (left.length === right.length && left.every((row, index) => samePdfPageData(row, right[index])));
+}
+
+function pdfPageOpenNote(pageNumber: number, notes: ShownTranslation[], openNoteId: string): string {
+    return notes.some((note) => note.id === openNoteId && note.parts[0]?.page === pageNumber) ? openNoteId : "";
+}
+
+function groupPdfPageRows<T extends { page: number }>(rows: T[]): Map<number, T[]> {
+    const grouped = new Map<number, T[]>();
+    for (const row of rows) {
+        const pageRows = grouped.get(row.page);
+        if (pageRows) pageRows.push(row);
+        else grouped.set(row.page, [row]);
+    }
+    return grouped;
+}
+
+function groupPdfNotesByPage(rows: ShownTranslation[]): Map<number, ShownTranslation[]> {
+    const grouped = new Map<number, ShownTranslation[]>();
+    for (const row of rows) {
+        const pages = new Set(row.parts.map((part) => part.page));
+        for (const page of pages) {
+            const pageRows = grouped.get(page);
+            if (pageRows) pageRows.push(row);
+            else grouped.set(page, [row]);
+        }
+    }
+    return grouped;
+}
 
 const PDF_TRANSLATE_CHARS = 4000;
 
@@ -282,6 +337,41 @@ function textBox(item: PdfTextItem, viewport: PdfViewport): React.CSSProperties 
         if (width > 0) style.width = width;
     }
     return style;
+}
+
+function findHitStyle(item: PdfTextItem, viewport: PdfViewport, start: number, end: number): React.CSSProperties | null {
+    const text = String(item.str || "");
+    const source = item.transform;
+    if (!text || !source || source.length < 6 || end <= start || start < 0 || end > text.length) return null;
+    const tx = multiplyTransform(viewport.transform, source);
+    const advance = Math.hypot(tx[0], tx[1]);
+    const perpendicular = Math.hypot(tx[2], tx[3]);
+    const fontHeight = perpendicular || advance || 12;
+    const base = Math.hypot(source[0], source[1]) || fontHeight;
+    const runWidth = item.width && base > 0 ? (item.width / base) * (advance || fontHeight) : 0;
+    const { lead, slice } = findSlice(text, start, end);
+    const sliceWidth = Math.max(1, runWidth > 0 ? runWidth * slice : fontHeight * (end - start) * 0.5);
+    const ux = advance > 0 ? tx[0] / advance : 1;
+    const uy = advance > 0 ? tx[1] / advance : 0;
+    const px = perpendicular > 0 ? tx[2] / perpendicular : 0;
+    const py = perpendicular > 0 ? tx[3] / perpendicular : -1;
+    const x1 = tx[4] + ux * (runWidth > 0 ? runWidth * lead : 0);
+    const y1 = tx[5] + uy * (runWidth > 0 ? runWidth * lead : 0);
+    const x2 = x1 + ux * sliceWidth;
+    const y2 = y1 + uy * sliceWidth;
+    const x3 = x1 + px * fontHeight;
+    const y3 = y1 + py * fontHeight;
+    const x4 = x2 + px * fontHeight;
+    const y4 = y2 + py * fontHeight;
+    const left = Math.min(x1, x2, x3, x4);
+    const top = Math.min(y1, y2, y3, y4);
+    return {
+        position: "absolute",
+        left,
+        top,
+        width: Math.max(1, Math.max(x1, x2, x3, x4) - left),
+        height: Math.max(1, Math.max(y1, y2, y3, y4) - top),
+    };
 }
 
 function clampRect(rect: PdfMarkRect): PdfMarkRect | null {
@@ -1697,7 +1787,7 @@ function PdfTranslationCard({
     );
 }
 
-function PdfPageView({
+const PdfPageView = React.memo(function PdfPageView({
     lang,
     pdf,
     pageNumber,
@@ -1718,6 +1808,8 @@ function PdfPageView({
     bookmarks,
     onJumpBookmark,
     active,
+    findParts,
+    findActiveHit = -1,
 }: {
     lang: string;
     pdf: PdfDocument;
@@ -1739,6 +1831,8 @@ function PdfPageView({
     bookmarks: PdfBookmark[];
     onJumpBookmark: (bookmark: PdfBookmark) => void;
     active: boolean;
+    findParts?: readonly PdfFindPart[];
+    findActiveHit?: number;
 }) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const pageRef = useRef<HTMLDivElement>(null);
@@ -1789,7 +1883,7 @@ function PdfPageView({
         return () => { task.cancel(); };
     }, [page, scale]);
 
-    const pageMarks = marks.filter((mark) => mark.page === pageNumber);
+    const pageMarks = marks;
     const noteOpen = notes.some((note) => note.id === openNoteId && note.parts[0]?.page === pageNumber);
     const openHere = notes.find((note) => note.id === openNoteId && note.parts[0]?.page === pageNumber);
 
@@ -2007,7 +2101,7 @@ function PdfPageView({
         dragStopRef.current = stop;
     };
 
-    const pageBookmarks = active ? bookmarks.filter((bookmark) => bookmark.page === pageNumber) : [];
+    const pageBookmarks = active ? bookmarks : NO_PDF_PAGE_ROWS;
     const tickLanes = pdfBookmarkTickLanes(pageBookmarks, viewport.height);
 
     return (
@@ -2042,10 +2136,25 @@ function PdfPageView({
                         if (!text) return null;
                         const style = textBox(item, viewport);
                         if (!style) return null;
-                        return <span key={index} style={style}>{text}</span>;
+                        return <span key={index} data-pdf-item={index} style={style}>{text}</span>;
                     })}
                 </div>
             ) : null}
+            {active ? (findParts ?? []).map((part) => {
+                const item = items[part.run];
+                if (!item) return null;
+                const style = findHitStyle(item, viewport, part.start, part.end);
+                if (!style) return null;
+                return (
+                    <div
+                        key={`${part.hit}-${part.run}-${part.start}-${part.end}`}
+                        className="companion-pdf-find-hit"
+                        data-find-hit="true"
+                        data-find-active={part.hit === findActiveHit ? "true" : "false"}
+                        style={style}
+                    />
+                );
+            }) : null}
             {active ? pageBookmarks.map((bookmark, index) => {
                 const lane = tickLanes[index] ?? 0;
                 return (
@@ -2082,7 +2191,7 @@ function PdfPageView({
             {active ? (
                 <PdfDrawingLayer
                     pageNumber={pageNumber}
-                    drawings={drawings.filter((drawing) => drawing.page === pageNumber)}
+                    drawings={drawings}
                     active={drawActive}
                     color={drawColor}
                     tool={drawTool}
@@ -2176,7 +2285,23 @@ function PdfPageView({
             }) : null}
         </div>
     );
-}
+}, (previous, next) => (
+    previous.lang === next.lang
+    && previous.pdf === next.pdf
+    && previous.pageNumber === next.pageNumber
+    && previous.width === next.width
+    && samePdfPageRows(previous.marks, next.marks)
+    && samePdfPageRows(previous.drawings, next.drawings)
+    && previous.drawActive === next.drawActive
+    && previous.drawColor === next.drawColor
+    && previous.drawTool === next.drawTool
+    && samePdfPageRows(previous.notes, next.notes)
+    && pdfPageOpenNote(previous.pageNumber, previous.notes, previous.openNoteId) === pdfPageOpenNote(next.pageNumber, next.notes, next.openNoteId)
+    && samePdfPageRows(previous.bookmarks, next.bookmarks)
+    && previous.active === next.active
+    && previous.findParts === next.findParts
+    && previous.findActiveHit === next.findActiveHit
+));
 
 /** Digits only. A blank or zero does not jump; a page past the end lands on the last page. */
 function parsePdfGoto(raw: string, total: number): number | null {
@@ -3006,6 +3131,12 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
     const [openNoteId, setOpenNoteId] = useState("");
     const [translateError, setTranslateError] = useState(() => pdfTranslationError(absPath));
     const [menu, setMenu] = useState<MenuState | null>(null);
+    // Find is local to this reader. It is not stored with marks or sent to a share.
+    const [findQuery, setFindQuery] = useState("");
+    const [findHits, setFindHits] = useState<PdfFindHit[]>([]);
+    const [findActive, setFindActive] = useState(-1);
+    const [findBusy, setFindBusy] = useState(false);
+    const findCacheRef = useRef<{ pdf: PdfDocument; pages: FoldedText[] } | null>(null);
     const marksRef = useRef(marks);
     marksRef.current = marks;
     const bookmarksRef = useRef(bookmarks);
@@ -3070,6 +3201,11 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         setOpenNoteId("");
         setMenu(null);
         setSeen({ 1: true });
+        setFindQuery("");
+        setFindHits([]);
+        setFindActive(-1);
+        setFindBusy(false);
+        findCacheRef.current = null;
     }, [absPath, applyStoredTranslations]);
 
     useEffect(() => subscribePdfTranslations((key) => {
@@ -3202,6 +3338,116 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         placeJumpToken.current += 1;
         placeJumpStop.current?.();
     }, []);
+
+    useEffect(() => {
+        if (!pdf) return undefined;
+        const needle = findQuery.trim();
+        if (!needle) {
+            setFindHits((current) => (current.length === 0 ? current : []));
+            setFindActive((current) => (current < 0 ? current : -1));
+            setFindBusy(false);
+            return undefined;
+        }
+        // Drop the previous query's marks immediately. A long scan must not
+        // keep highlighting words the box no longer contains.
+        setFindHits((current) => (current.length === 0 ? current : []));
+        setFindActive(-1);
+        setFindBusy(true);
+        let cancel = false;
+        const timer = window.setTimeout(() => {
+            if (cancel) return;
+            void (async () => {
+                const doc = pdf;
+                if (findCacheRef.current?.pdf !== doc) findCacheRef.current = { pdf: doc, pages: [] };
+                const cache = findCacheRef.current;
+                const next: PdfFindHit[] = [];
+                let seeded = false;
+                const publish = (done: boolean) => {
+                    if (cancel) return;
+                    if (!done && next.length === 0) return;
+                    const snapshot = next.slice();
+                    const first = !seeded;
+                    seeded = true;
+                    setFindHits(snapshot);
+                    setFindActive((current) => {
+                        if (!snapshot.length) return -1;
+                        if (!first && current >= 0 && current < snapshot.length) return current;
+                        return 0;
+                    });
+                };
+                for (let page = 1; page <= doc.numPages; page += 1) {
+                    if (cancel) return;
+                    let folded = cache.pages[page - 1];
+                    if (!folded) {
+                        let failed = false;
+                        try {
+                            const pdfPage = await doc.getPage(page);
+                            const content = await pdfPage.getTextContent();
+                            if (cancel || findCacheRef.current?.pdf !== doc) return;
+                            folded = foldFindSources(pdfFindSources(content.items || []));
+                        } catch {
+                            if (cancel || findCacheRef.current?.pdf !== doc) return;
+                            folded = foldFindSources([]);
+                            failed = true;
+                        }
+                        if (!failed) cache.pages[page - 1] = folded;
+                    }
+                    for (const hit of findInFolded(folded, needle)) next.push({ page, parts: hit.parts });
+                    // A warm cache would otherwise scan every page on the UI thread.
+                    if (page < doc.numPages && page % 8 === 0) {
+                        publish(false);
+                        await new Promise<void>((resolve) => { window.setTimeout(resolve, 0); });
+                        if (cancel) return;
+                    }
+                }
+                if (cancel) return;
+                publish(true);
+                setFindBusy(false);
+            })();
+        }, 120);
+        return () => {
+            cancel = true;
+            window.clearTimeout(timer);
+        };
+    }, [pdf, findQuery]);
+
+    const findHit = findActive >= 0 ? findHits[findActive] : undefined;
+    const findHitKey = findHit
+        ? `${findActive}:${findHit.page}:${findHit.parts[0]?.run ?? ""}:${findHit.parts[0]?.start ?? ""}`
+        : "";
+    const findHitsRef = useRef(findHits);
+    findHitsRef.current = findHits;
+    const findActiveRef = useRef(findActive);
+    findActiveRef.current = findActive;
+    useEffect(() => {
+        const current = findActiveRef.current;
+        const hit = current >= 0 ? findHitsRef.current[current] : undefined;
+        if (!hit) return undefined;
+        revealPage(hit.page);
+        const scroller = scrollerRef.current;
+        if (!scroller) return undefined;
+        let raf = 0;
+        const started = performance.now();
+        const tick = () => {
+            const pageEl = scroller.querySelector<HTMLElement>(`[data-pdf-page="${hit.page}"]`);
+            const run = hit.parts[0]?.run;
+            const span = run == null ? null : pageEl?.querySelector<HTMLElement>(`[data-pdf-item="${run}"]`);
+            const box = span?.getBoundingClientRect();
+            if (span && box && (box.height >= 1 || box.width >= 1)) {
+                scrollMatchIntoScroller(scroller, span);
+                return;
+            }
+            // The page shell exists before its text. Scrolling it now lands on the
+            // top of a blank page and never comes back for the match.
+            if (performance.now() - started < 1200) {
+                raf = requestAnimationFrame(tick);
+                return;
+            }
+            if (pageEl) scrollMatchIntoScroller(scroller, pageEl);
+        };
+        raf = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(raf);
+    }, [findHitKey, revealPage]);
 
     useEffect(() => {
         const scroller = scrollerRef.current;
@@ -3791,6 +4037,25 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
         setMenu({ x: event.clientX, y: event.clientY, hitId, hitMark, hitNoteId, hitNoteKind, hitBookmarkId: "", anchor, parts });
     };
 
+    const findByPage = useMemo(() => {
+        const map = new Map<number, PdfFindPart[]>();
+        findHits.forEach((hit, index) => {
+            const bucket = map.get(hit.page) ?? [];
+            for (const part of hit.parts) bucket.push({ run: part.run, start: part.start, end: part.end, hit: index });
+            map.set(hit.page, bucket);
+        });
+        return map;
+    }, [findHits]);
+    const pendingVisible = pendingNote && !translations.some((item) => item.id === pendingNote.id) ? pendingNote : null;
+    const shownNotes = useMemo<ShownTranslation[]>(
+        () => pendingVisible ? [...translations, pendingVisible] : translations,
+        [translations, pendingVisible],
+    );
+    const marksByPage = useMemo(() => groupPdfPageRows(marks), [marks]);
+    const drawingsByPage = useMemo(() => groupPdfPageRows(drawings), [drawings]);
+    const bookmarksByPage = useMemo(() => groupPdfPageRows(bookmarks), [bookmarks]);
+    const notesByPage = useMemo(() => groupPdfNotesByPage(shownNotes), [shownNotes]);
+
     const fill: React.CSSProperties = { background: theme.bg, color: theme.text };
     if (error) {
         return <div data-testid="companion-pdf-error" className="companion-pdf-status" style={fill}>{error}</div>;
@@ -3801,14 +4066,21 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
 
     const pages = [];
     for (let page = 1; page <= pdf.numPages; page += 1) pages.push(page);
-    const pendingVisible = pendingNote && !translations.some((item) => item.id === pendingNote.id) ? pendingNote : null;
-    const shownNotes: ShownTranslation[] = pendingVisible ? [...translations, pendingVisible] : translations;
     const showRail = bookmarks.length > 0 || annotations.length > 0;
     const menuNote = menu ? translations.find((item) => item.id === menu.hitNoteId && item.kind === "annotation") : undefined;
     const selectionText = menu?.parts[0]?.text.trim() ?? "";
+    const stepFind = (delta: number) => {
+        setFindActive((current) => {
+            const total = findHits.length;
+            if (total <= 0) return -1;
+            if (current < 0) return delta < 0 ? total - 1 : 0;
+            return (current + delta + total) % total;
+        });
+    };
 
     return (
         <div className="companion-pdf-reader" data-testid="companion-pdf-reader" style={fill} onContextMenu={onContextMenu}>
+            <div className="companion-doc-toolbar">
             <PdfPager
                 lang={lang}
                 total={pdf.numPages}
@@ -3816,6 +4088,24 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                 pagesBoxRef={pagesBoxRef}
                 onReveal={revealPage}
             />
+            <DocumentFindBar
+                lang={lang}
+                query={findQuery}
+                onQueryChange={(value) => {
+                    setFindQuery(value);
+                    if (!value.trim()) {
+                        setFindHits([]);
+                        setFindActive(-1);
+                        setFindBusy(false);
+                    }
+                }}
+                count={findHits.length}
+                active={findActive}
+                busy={findBusy}
+                onPrev={() => stepFind(-1)}
+                onNext={() => stepFind(1)}
+            />
+            </div>
             {translateError ? (
                 <p className="companion-pdf-translate-error" role="status" data-testid="pdf-translate-error">{translateError}</p>
             ) : null}
@@ -3945,22 +4235,24 @@ export function CompanionPdfReader({ absPath, dataUrl, previewUrl, theme, lang }
                         pdf={pdf}
                         pageNumber={page}
                         width={width}
-                        marks={marks}
-                        drawings={drawings}
+                        marks={marksByPage.get(page) ?? NO_PDF_PAGE_ROWS}
+                        drawings={drawingsByPage.get(page) ?? NO_PDF_PAGE_ROWS}
                         drawActive={drawMode}
                         drawColor={drawColor}
                         drawTool={drawTool}
                         onAddDrawing={addDrawing}
                         onEraseDrawing={eraseDrawings}
-                        notes={shownNotes}
+                        notes={notesByPage.get(page) ?? NO_PDF_PAGE_ROWS}
                         openNoteId={openNoteId}
                         onToggleNote={toggleNote}
                         onPlaceNote={placeNote}
                         onResizeNote={resizeNote}
                         onUpdateAnnotation={updateAnnotation}
-                        bookmarks={bookmarks}
+                        bookmarks={bookmarksByPage.get(page) ?? NO_PDF_PAGE_ROWS}
                         onJumpBookmark={jumpBookmark}
                         active={page === 1 || seen[page] === true}
+                        findParts={findByPage.get(page)}
+                        findActiveHit={findHits[findActive]?.page === page ? findActive : -1}
                     />
                 ))}
                 </div>

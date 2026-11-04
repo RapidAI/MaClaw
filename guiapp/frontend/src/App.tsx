@@ -3491,17 +3491,20 @@ function App() {
     const ensureExpertTask = useCallback(async (expert: ExpertDefinition, existing?: { relativePath?: string; projectPath?: string }) => {
         try {
             const expectedPath = String(existing?.projectPath || '').trim();
-            const created = await CreateExpertTask(expert.id, expert.name);
-            const createdPath = String(created?.project_path || '').trim();
-            // The wizard already created this task. Prefer its path: a
-            // concurrent launch can make the backend's "newest task" lookup
-            // return a different row, but this tab must keep its own
-            // conversation.
-            const projectPath = expectedPath || createdPath;
+            // A launch that already has a task must not call CreateExpertTask.
+            // That lookup returns the newest task of this expert, and copying
+            // its name onto this path makes two books look like one row.
+            let projectPath = expectedPath;
+            if (!projectPath) {
+                const created = await CreateExpertTask(expert.id, expert.name);
+                projectPath = String(created?.project_path || '').trim();
+                if (projectPath) upsertTaskItem(created);
+            } else {
+                refreshTasks();
+            }
             if (!projectPath) {
                 throw new Error('task record was not created');
             }
-            upsertTaskItem(expectedPath ? { ...created, project_path: expectedPath } : created);
             if (!isLatexExpertId(expert.id)) {
                 return { projectPath };
             }

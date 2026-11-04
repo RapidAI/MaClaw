@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -256,27 +257,32 @@ func (a *App) scheduleTaskTitleSummarization(projectPath, instruction string) {
 // expertTaskTitleNeedsInstruction reports that the stored title is still the
 // expert itself (or the empty launcher placeholder), not an instruction.
 // Several tasks of one expert would otherwise share one name.
-func expertTaskTitleNeedsInstruction(display, expertID, projectPath string) bool {
+func expertTaskTitleNeedsInstruction(display, expertID, expertName, projectPath string) bool {
+	if expertTitleIsPlaceholder(display, expertID, expertName) {
+		return true
+	}
+	// A stored name taken from the working-directory body line is not an
+	// instruction. A chat line that merely starts the same way is, so this
+	// file check stays off the transcript scan.
+	return extractedWorkingDirectoryTitle(projectPath, display)
+}
+
+// expertTitleIsPlaceholder reports a title that is still the expert or an
+// empty-launcher sentence. It does not read the task file.
+func expertTitleIsPlaceholder(display, expertID, expertName string) bool {
 	display = strings.TrimSpace(display)
-	// Rows created before the instruction was known, including ones whose
-	// extracted title was the old "AI expert task..." sentence.
 	if display == "" ||
 		display == "Created from task management." ||
 		strings.HasPrefix(display, "AI expert task. Reopen this task") ||
-		strings.HasPrefix(display, "source: expert-task") ||
-		extractedWorkingDirectoryTitle(projectPath, display) {
+		strings.HasPrefix(display, "source: expert-task") {
 		return true
 	}
 	expertID = strings.TrimSpace(expertID)
 	if expertID != "" && strings.EqualFold(display, expertID) {
 		return true
 	}
-	if def := loadExpertDefByID(expertID); def != nil {
-		if name := strings.TrimSpace(def.Name); name != "" && display == name {
-			return true
-		}
-	}
-	return false
+	expertName = strings.TrimSpace(expertName)
+	return expertName != "" && display == expertName
 }
 
 // extractedWorkingDirectoryTitle reports a name that was pulled out of the
@@ -349,11 +355,20 @@ func (a *App) adoptExpertTaskInstructionTitle(projectPath, expertID, instruction
 		return
 	}
 	display := strings.TrimSpace(pi.GetDisplayName(projectPath))
-	if !expertTaskTitleNeedsInstruction(display, expertID, projectPath) {
+	expertName := ""
+	if def := loadExpertDefByID(expertID); def != nil {
+		expertName = strings.TrimSpace(def.Name)
+	}
+	if !expertTaskTitleNeedsInstruction(display, expertID, expertName, projectPath) {
 		expertTitleSettled.Store(projectPath, struct{}{})
 		return
 	}
-	title := recentTaskDisplayTitle(instruction)
+	// The title is the task's first instruction. A later send such as "继续"
+	// must not become the name of a row that already has that instruction.
+	source := selectNamingInstruction(a.storedTaskUserTexts(projectPath, expertID), instruction, func(title string) bool {
+		return expertTitleIsPlaceholder(title, expertID, expertName)
+	})
+	title := recentTaskDisplayTitle(source)
 	if title == "" {
 		return
 	}
@@ -363,7 +378,92 @@ func (a *App) adoptExpertTaskInstructionTitle(projectPath, expertID, instruction
 		}
 	}
 	expertTitleSettled.Store(projectPath, struct{}{})
-	a.scheduleTaskTitleSummarization(projectPath, instruction)
+	a.scheduleTaskTitleSummarization(projectPath, source)
+}
+
+// selectNamingInstruction picks the earliest user text that is already a real
+// title. Placeholder lines (the expert's name, an empty launcher title) are
+// skipped. current is the message being sent, used when the task has no
+// earlier instruction.
+func selectNamingInstruction(earlier []string, current string, placeholder func(title string) bool) string {
+	if placeholder == nil {
+		placeholder = func(string) bool { return false }
+	}
+	for _, text := range earlier {
+		text = strings.TrimSpace(text)
+		title := recentTaskDisplayTitle(text)
+		if title == "" || placeholder(title) {
+			continue
+		}
+		return text
+	}
+	return current
+}
+
+// storedTaskUserTexts returns this task's own user turns, oldest first.
+// The live session is the task record. An older per-task expert key is used
+// only when that record has no user text yet, then the persisted tab
+// snapshot. The shared expert transcript is not read: other tasks of the
+// same expert must not supply this name.
+func (a *App) storedTaskUserTexts(projectPath, expertID string) []string {
+	if a == nil {
+		return nil
+	}
+	// hubClient only. ensureHubClient would start remote infra from a naming
+	// read, including tests that call adopt directly.
+	if hub := a.hubClient(); hub != nil {
+		if handler := hub.ensureIMHandler(); handler != nil && handler.memory != nil {
+			if texts := userTextsFromEntries(handler.memory.Load(projectSessionOwnerID(projectPath))); len(texts) > 0 {
+				return texts
+			}
+			if id := strings.TrimSpace(expertID); id != "" {
+				if texts := userTextsFromEntries(handler.memory.Load(expertTaskSessionUserID(id, projectPath))); len(texts) > 0 {
+					return texts
+				}
+			}
+		}
+	}
+	// After a restart the live memory is empty until this send restores it.
+	// The first instruction is still on disk. Naming from the message being
+	// sent would lock a follow-up such as "继续" in as the title.
+	return a.persistedTaskUserTexts(projectPath)
+}
+
+func (a *App) persistedTaskUserTexts(projectPath string) []string {
+	if a == nil {
+		return nil
+	}
+	// projectTranscriptSnapshot is the durable transcript: archive prefix,
+	// then the hot tail, and it stays empty after an explicit clear. Reading
+	// the hot tail alone would name a long chat from a later "继续".
+	return userTextsFromTabConversation(a.projectTranscriptSnapshot(projectPath))
+}
+
+func userTextsFromTabConversation(conversation []interface{}) []string {
+	items := projectConversationHistoryFromTabSession(conversation)
+	texts := make([]string, 0, 4)
+	for _, item := range items {
+		if item.Role != "user" {
+			continue
+		}
+		if text := strings.TrimSpace(item.Content); text != "" {
+			texts = append(texts, text)
+		}
+	}
+	return texts
+}
+
+func userTextsFromEntries(entries []agent.ConversationEntry) []string {
+	texts := make([]string, 0, 4)
+	for _, entry := range entries {
+		if strings.TrimSpace(strings.ToLower(entry.Role)) != "user" {
+			continue
+		}
+		if text := stringifyProjectConversationContent(entry.Content); text != "" {
+			texts = append(texts, text)
+		}
+	}
+	return texts
 }
 
 // applyAutoTaskTitle renames the task to the generated title unless the user

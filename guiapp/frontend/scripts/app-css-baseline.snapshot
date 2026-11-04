@@ -22444,7 +22444,7 @@ button.tbk-pill {
     white-space: nowrap;
 }
 
-/* Per-folder unread count. */
+/* Per-folder size. The tooltip carries the unread part. */
 .mailbox-manage__badge {
     min-width: 18px;
     padding: 1px 6px;
@@ -26854,9 +26854,53 @@ button.tbk-pill {
 @keyframes capc-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(0.7); opacity: 0.55; } }
 @keyframes capc-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
-  .capc-pulse-dot, .capc-spin { animation: none; }
-  .capc-fill, .capc-chevron, .capc-body, .capc-head, .capc-step { transition: none; }
+  .capc-pulse-dot, .capc-spin, .gkc-pulse-dot, .gkc-spin { animation: none; }
+  .capc-fill, .capc-chevron, .capc-body, .capc-head, .capc-step, .gkc-count-fill, .gkc-fill, .gkc-step { transition: none; }
 }
+
+/* GoalChecklistCard.tsx (transcript goalChecklist card; shares capc keyframes).
+   The tinted surface + accent border lives here: CodingAgentPlanChecklist gets
+   its card fill from inline style chrome, this card has none. */
+.gkc-card { padding: 10px 12px 10px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--theme-primary, #2e75cb) 18%, var(--theme-border-subtle, #e2e9f3)); background: color-mix(in srgb, var(--theme-primary, #2e75cb) 4%, var(--theme-surface-muted, #f1f6fc)); box-shadow: 0 4px 16px rgba(34, 56, 82, 0.06); font-size: 12px; line-height: 1.5; color: var(--theme-text-primary, #24364e); box-sizing: border-box; max-width: 100%; min-width: 0; }
+.gkc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px; }
+.gkc-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-weight: 600; letter-spacing: .01em; }
+.gkc-title-icon { display: inline-flex; flex-shrink: 0; color: var(--theme-primary, #2e75cb); }
+.gkc-head-end { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap; }
+.gkc-count { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 500; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; }
+.gkc-count-track { width: 46px; height: 4px; border-radius: 999px; background: color-mix(in srgb, currentColor 18%, transparent); overflow: hidden; }
+.gkc-count-fill { display: block; height: 100%; border-radius: 999px; background: currentColor; transition: width 0.25s var(--ease-out, ease); }
+.gkc-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2.5px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: .01em; }
+.gkc-chip--run { color: var(--theme-primary-strong, #1e6bc5); background: var(--theme-primary-soft, rgba(47, 120, 208, 0.1)); }
+.gkc-chip--done { color: var(--theme-success, #11813a); background: var(--theme-success-bg, rgba(22, 163, 74, 0.07)); }
+.gkc-chip--fail { color: var(--theme-danger, #dc1f25); background: var(--theme-danger-bg, rgba(229, 72, 77, 0.06)); }
+.gkc-chip--hold { color: var(--theme-warning, #aa5d05); background: var(--theme-warning-bg, rgba(217, 119, 6, 0.07)); }
+.gkc-pulse-dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; flex-shrink: 0; animation: capc-pulse 1.2s ease-in-out infinite; }
+.gkc-track { position: relative; height: 4px; border-radius: 999px; margin-top: 9px; background: color-mix(in srgb, var(--theme-text-muted, #5b6b80) 16%, transparent); overflow: hidden; }
+.gkc-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--theme-primary, #2e75cb) 70%, transparent), var(--theme-primary, #2e75cb)); transition: width 0.3s var(--ease-out, ease); }
+.gkc-activity { display: flex; align-items: center; gap: 7px; margin-top: 9px; padding: 5px 9px; border-radius: 8px; background: var(--theme-primary-soft, rgba(47, 120, 208, 0.1)); color: var(--theme-primary-strong, #1e6bc5); font-weight: 500; }
+.gkc-activity--solo { padding: 7px 10px; }
+.gkc-activity svg { flex-shrink: 0; }
+.gkc-activity-text { min-width: 0; overflow-wrap: anywhere; }
+.gkc-steps { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.gkc-step { display: flex; align-items: baseline; gap: 8px; padding: 3px 8px; margin: 0 -8px; border-radius: 7px; transition: background-color 0.15s ease; }
+.gkc-step:hover { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 4%, transparent); }
+.gkc-step[data-mark="pending"] { color: var(--theme-text-muted, #5b6b80); }
+.gkc-step[data-mark="progress"] { background: var(--theme-primary-soft, rgba(47, 120, 208, 0.1)); color: var(--theme-primary-strong, #1e6bc5); font-weight: 600; }
+.gkc-step[data-mark="done"] { color: var(--theme-text-secondary, #46586f); }
+.gkc-step[data-mark="done"] .gkc-glyph { color: var(--theme-success, #11813a); }
+.gkc-step[data-mark="failed"] { color: var(--theme-danger, #dc1f25); }
+.gkc-glyph { width: 15px; flex-shrink: 0; display: inline-flex; }
+.gkc-glyph svg { display: block; transform: translateY(2px); }
+.gkc-step-idx { flex-shrink: 0; min-width: 18px; font-variant-numeric: tabular-nums; opacity: 0.75; white-space: nowrap; }
+.gkc-step-title { min-width: 0; overflow-wrap: anywhere; }
+.gkc-reason { margin-top: 8px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.gkc-reason--fail { color: var(--theme-danger, #dc1f25); }
+.gkc-reason--hold { color: var(--theme-warning, #aa5d05); }
+.gkc-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; margin-top: 9px; padding-top: 7px; border-top: 1px solid var(--theme-border-subtle, #e2e9f3); }
+.gkc-meta-chip { font-size: 11px; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; }
+/* Rotates the svg root: view-box keeps the origin at the glyph center (the
+   capc variant spins a <g> sized by its own fill-box). */
+.gkc-spin { transform-box: view-box; transform-origin: center; animation: capc-spin 0.9s linear infinite; }
 
 /* CodingAgentProgressStatus.tsx */
 .caps-file-head { font-weight: 600; flex: 1; min-width: 0; }
@@ -32005,6 +32049,11 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 16%, transparent);
 }
 .mc-task-artifact__icon--glyph { font-size: 15px; font-weight: 500; }
+/* The OS association icon arrives with its own colors (PDF red, Word blue).
+   The tinted tile would fight it, so the shell disappears; the img keeps a
+   little air inside the tile's footprint. */
+.mc-task-artifact__icon--os { background: transparent; box-shadow: none; }
+.mc-task-artifact__img { display: block; width: 24px; height: 24px; object-fit: contain; }
 .mc-task-artifact__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; color: var(--theme-text-primary); }
 .mc-task-artifact__open { flex: none; color: var(--theme-text-muted); font-size: 13px; margin-left: 2px; transition: transform 140ms ease, color 140ms ease; }
 .mc-task-artifact:hover .mc-task-artifact__open { transform: translate(2px, -2px); color: var(--mc-accent, #2e75cb); }
@@ -32056,6 +32105,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   color: var(--theme-primary-strong);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 22%, transparent);
 }
+#App[data-ai-theme='dark'] .mc-task-artifact__icon--os { background: transparent; box-shadow: none; }
 #App[data-ai-theme='dark'] .mc-task-artifacts__more { border-color: var(--theme-border); color: var(--theme-text-secondary); }
 #App[data-ai-theme='dark'] .mc-execution-step:not(:last-child)::after { background: var(--theme-border) !important; }
 #App[data-ai-theme='dark'] .mc-execution-step > span:first-child { background: var(--theme-primary-soft) !important; color: var(--theme-primary-strong) !important; }
@@ -34199,6 +34249,95 @@ input.cwshare-url {
   border-color: var(--theme-primary, #2e75cb);
   outline: none;
 }
+/* Page controls and local find share one bar. Find never leaves this window. */
+.companion-doc-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--theme-border, #d5e0ef);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-secondary, #46586f);
+  font: 12px/1 "Segoe UI", "Microsoft YaHei", sans-serif;
+  min-width: 0;
+  max-width: 100%;
+  z-index: 9;
+  --wails-draggable: no-drag;
+}
+.companion-doc-toolbar > .companion-pdf-pager {
+  border-bottom: 0;
+  background: transparent;
+  padding: 0;
+  min-height: 0;
+  flex: 0 1 auto;
+  overflow: visible;
+}
+.companion-doc-find {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.companion-doc-find-input {
+  box-sizing: border-box;
+  width: 148px;
+  max-width: 40vw;
+  height: 26px;
+  margin: 0;
+  padding: 0 8px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-primary, #1c2834);
+  font: inherit;
+}
+.companion-doc-find-input:focus {
+  border-color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-doc-find-count {
+  flex: 0 0 auto;
+  min-width: 4.5em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-muted, #6b7280);
+}
+.companion-doc-find button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-secondary, #46586f);
+  cursor: pointer;
+}
+.companion-doc-find button svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+.companion-doc-find button:hover:not(:disabled),
+.companion-doc-find button:focus-visible {
+  border-color: var(--theme-primary, #2e75cb);
+  color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-doc-find button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .companion-pdf-stage {
   position: relative;
   flex: 1;
@@ -34269,7 +34408,60 @@ input.cwshare-url {
 .companion-pdf-bookmark-resize:focus-visible {
   outline: none;
 }
-.companion-pdf-bookmarks {
+/* Two lists share the column: bookmarks on top, notes below. Each list has
+   its own scroll box, so a long bookmark list cannot push the notes off the
+   screen. The cap leaves the notes at least half the column. */
+.companion-pdf-rail-section {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 0;
+  --wails-draggable: no-drag;
+}
+.companion-pdf-rail-section--bookmarks {
+  flex: 1 1 auto;
+}
+.companion-pdf-rail-section--bookmarks.companion-pdf-rail-section--capped {
+  flex: 0 1 auto;
+  max-height: 50%;
+}
+.companion-pdf-rail-section--annotations {
+  flex: 1 1 auto;
+  /* The usual minimum keeps the title and a couple of rows. A pane shorter
+     than that gives the section 45% instead, so its scrollbar stays inside
+     the rail instead of being clipped at the bottom. */
+  min-height: min(96px, 45%);
+}
+/* The rule only separates two lists. A notes-only rail starts at the top. */
+.companion-pdf-rail-section--annotations.companion-pdf-rail-section--divided {
+  padding-top: 6px;
+  border-top: 1px solid var(--theme-border, #d5e0ef);
+}
+.companion-pdf-rail-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin: 0 0 4px;
+  padding: 0 2px;
+  color: var(--theme-text-secondary, #46586f);
+  font: 600 11px/1.3 "Segoe UI", "Microsoft YaHei", sans-serif;
+  letter-spacing: 0.02em;
+}
+.companion-pdf-rail-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-text-muted, #6b7c93) 14%, transparent);
+  color: var(--theme-text-secondary, #46586f);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.companion-pdf-bookmarks,
+.companion-pdf-annotations {
   position: relative;
   z-index: 1;
   display: flex;
@@ -34278,9 +34470,30 @@ input.cwshare-url {
   flex: 1 1 auto;
   width: auto;
   min-height: 0;
-  overflow: auto;
-  padding: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0 2px 0 0;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--theme-text-muted, #6b7c93) 55%, transparent) transparent;
   --wails-draggable: no-drag;
+}
+/* A thumb that is easy to see and grab. The global 8px bar stays for the
+   rest of the app; these two lists get a wider one. */
+.companion-pdf-bookmarks::-webkit-scrollbar,
+.companion-pdf-annotations::-webkit-scrollbar {
+  width: 10px;
+}
+.companion-pdf-bookmarks::-webkit-scrollbar-thumb,
+.companion-pdf-annotations::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--theme-text-muted, #6b7c93) 55%, transparent);
+  border-radius: var(--radius-pill);
+}
+.companion-pdf-bookmarks::-webkit-scrollbar-thumb:hover,
+.companion-pdf-annotations::-webkit-scrollbar-thumb:hover,
+.companion-pdf-bookmarks::-webkit-scrollbar-thumb:active,
+.companion-pdf-annotations::-webkit-scrollbar-thumb:active {
+  background: color-mix(in srgb, var(--theme-text-muted, #6b7c93) 72%, transparent);
 }
 .companion-pdf-bookmark {
   display: flex;
@@ -34328,6 +34541,52 @@ input.cwshare-url {
   height: 100%;
 }
 .companion-pdf-bookmark-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* A note row mirrors a bookmark chip: page, a small pen glyph, then the name. */
+.companion-pdf-note-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 26px;
+  margin: 0;
+  padding: 3px 8px 3px 6px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: 999px;
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-primary, #1c2834);
+  font: 12px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+}
+.companion-pdf-note-item:hover,
+.companion-pdf-note-item:focus-visible,
+.companion-pdf-note-item--here {
+  border-color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-pdf-note-item--here {
+  background: var(--theme-primary-soft, rgba(47, 120, 208, 0.12));
+}
+.companion-pdf-note-swatch {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: var(--theme-primary, #2e75cb);
+}
+.companion-pdf-note-swatch svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.companion-pdf-note-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -34444,6 +34703,27 @@ input.cwshare-url {
   opacity: 0.55;
   pointer-events: none;
   mix-blend-mode: multiply;
+}
+.companion-pdf-find-hit {
+  position: absolute;
+  z-index: 3;
+  background: rgba(255, 196, 48, 0.55);
+  pointer-events: none;
+  mix-blend-mode: multiply;
+  border-radius: 1px;
+}
+.companion-pdf-find-hit[data-find-active="true"] {
+  background: rgba(255, 140, 0, 0.78);
+  outline: 1px solid rgba(180, 90, 0, 0.85);
+}
+mark.companion-preview-find {
+  background: rgba(255, 214, 64, 0.65);
+  color: inherit;
+  padding: 0;
+  border-radius: 2px;
+}
+mark.companion-preview-find[data-find-active="true"] {
+  background: rgba(255, 145, 0, 0.9);
 }
 .companion-pdf-text {
   position: absolute;
@@ -35199,6 +35479,8 @@ body.companion-pdf-translation-dragging * {
   align-items: center;
   gap: 10px;
   box-sizing: border-box;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
   padding: 9px 10px;
   border: 1px solid var(--theme-border, #d5e0ef);
   border-radius: var(--radius-md);
@@ -36902,6 +37184,14 @@ body.companion-pdf-translation-dragging * {
   display: flex;
   min-height: 0;
   min-width: 0;
+}
+.file-companion-window[data-view='library'] .file-companion-chat,
+.file-companion-window[data-view='groups'] .file-companion-chat {
+  content-visibility: hidden;
+}
+.file-companion-window[data-view='library']:not([data-reader-player]) .file-companion-split-preview,
+.file-companion-window[data-view='groups']:not([data-reader-player]) .file-companion-split-preview {
+  visibility: hidden;
 }
 .file-companion-split-preview {
   flex: 1 1 auto;

@@ -10,6 +10,54 @@ import (
 	"time"
 )
 
+func TestUserTextsFromTabConversationKeepsTheFirstInstruction(t *testing.T) {
+	texts := userTextsFromTabConversation([]interface{}{
+		map[string]interface{}{"role": "assistant", "content": "书籍撰写专家"},
+		map[string]interface{}{"role": "user", "content": "写一本量子工程教材"},
+		map[string]interface{}{"role": "user", "content": "继续"},
+	})
+	if len(texts) != 2 || texts[0] != "写一本量子工程教材" || texts[1] != "继续" {
+		t.Fatalf("user texts = %#v", texts)
+	}
+	got := selectNamingInstruction(texts, "再补一章", func(title string) bool {
+		return title == "书籍撰写专家"
+	})
+	if got != "写一本量子工程教材" {
+		t.Fatalf("naming instruction = %q", got)
+	}
+}
+
+func TestSelectNamingInstructionPrefersFirstRealCommand(t *testing.T) {
+	placeholder := func(title string) bool {
+		return title == "书籍撰写专家" || title == "Created from task management."
+	}
+	got := selectNamingInstruction([]string{
+		"书籍撰写专家",
+		"写一本量子工程教材",
+		"继续",
+	}, "再补一章", placeholder)
+	if got != "写一本量子工程教材" {
+		t.Fatalf("naming instruction = %q, want the first real command", got)
+	}
+	if got := selectNamingInstruction(nil, "写一本量子工程教材", placeholder); got != "写一本量子工程教材" {
+		t.Fatalf("fallback instruction = %q", got)
+	}
+	if got := selectNamingInstruction([]string{"书籍撰写专家"}, "继续", placeholder); got != "继续" {
+		t.Fatalf("current instruction = %q, want the message being sent", got)
+	}
+	// A working-directory sentence is an instruction, not a stored metadata title.
+	instruction := `Working directory: D:\books 写一本教材`
+	if expertTitleIsPlaceholder(instruction, "expert-paper", "Paper reviewer") {
+		t.Fatal("instruction was treated as a placeholder")
+	}
+	got = selectNamingInstruction([]string{instruction, "继续"}, "再补一章", func(title string) bool {
+		return expertTitleIsPlaceholder(title, "expert-paper", "Paper reviewer")
+	})
+	if got != instruction {
+		t.Fatalf("naming instruction = %q, want the working-directory command", got)
+	}
+}
+
 func TestTaskTitleNeedsSummarization(t *testing.T) {
 	cases := []struct {
 		name string

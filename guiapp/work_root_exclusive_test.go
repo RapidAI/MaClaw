@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestSharedWorkRootStaysWithTheEarlierLiveSession(t *testing.T) {

@@ -2390,4 +2390,54 @@ describe("companion pdf reader", () => {
         expect(screen.getByTestId("pdf-bookmark-a").classList.contains("companion-pdf-bookmark--here")).toBe(true);
         expect(scroller.scrollTop).toBe(348);
     });
+
+    it("finds text in the local preview and does not store it for a share", async () => {
+        const getPage = vi.fn(async (page: number) => ({
+            getViewport: ({ scale }: { scale: number }) => ({
+                width: 200 * scale,
+                height: 400 * scale,
+                scale,
+                transform: [scale, 0, 0, -scale, 0, 400 * scale],
+            }),
+            getTextContent: async () => ({
+                items: page === 1
+                    ? [{ str: "Intro", transform: [12, 0, 0, 12, 40, 300], width: 40, height: 12 }]
+                    : page === 2
+                        ? [
+                            { str: "beta ", transform: [12, 0, 0, 12, 40, 300], width: 40, height: 12 },
+                            { str: "target", transform: [12, 0, 0, 12, 90, 300], width: 48, height: 12 },
+                        ]
+                        : [{ str: "target again", transform: [12, 0, 0, 12, 40, 280], width: 80, height: 12 }],
+            }),
+            render: () => ({ promise: Promise.resolve(), cancel: () => undefined }),
+        }));
+        getDocument.mockImplementation(() => ({
+            promise: Promise.resolve({ numPages: 3, getPage, destroy: () => undefined }),
+            destroy: () => undefined,
+        }));
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        await screen.findByText("Intro");
+        expect(screen.queryByText("target again")).toBeNull();
+
+        const input = screen.getByTestId("companion-doc-find-input");
+        fireEvent.change(input, { target: { value: "target" } });
+        await waitFor(() => expect(screen.getByTestId("companion-doc-find-count").textContent).toBe("1 / 2"));
+        await waitFor(() => expect(screen.getByTestId("companion-pdf-page-2").textContent).toContain("target"));
+        expect(document.querySelectorAll("[data-find-active='true']").length).toBeGreaterThan(0);
+        expect(loadPdfMarks("C:/docs/Paper.PDF")).toEqual([]);
+        expect(loadPdfTranslations("C:/docs/Paper.PDF")).toEqual([]);
+        expect(loadPdfDrawings("C:/docs/Paper.PDF")).toEqual([]);
+        expect(loadPdfBookmarks("C:/docs/Paper.PDF")).toEqual([]);
+
+        fireEvent.click(screen.getByTestId("companion-doc-find-next"));
+        await waitFor(() => expect(screen.getByTestId("companion-doc-find-count").textContent).toBe("2 / 2"));
+        await waitFor(() => expect(screen.getByTestId("companion-pdf-page-3").textContent).toContain("target again"));
+
+        fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+        await waitFor(() => expect(screen.getByTestId("companion-doc-find-count").textContent).toBe("1 / 2"));
+
+        fireEvent.keyDown(window, { key: "f", ctrlKey: true });
+        expect(document.activeElement).toBe(input);
+        expect(loadPdfMarks("C:/docs/Paper.PDF")).toEqual([]);
+    });
 });

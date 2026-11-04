@@ -34249,6 +34249,95 @@ input.cwshare-url {
   border-color: var(--theme-primary, #2e75cb);
   outline: none;
 }
+/* Page controls and local find share one bar. Find never leaves this window. */
+.companion-doc-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--theme-border, #d5e0ef);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-secondary, #46586f);
+  font: 12px/1 "Segoe UI", "Microsoft YaHei", sans-serif;
+  min-width: 0;
+  max-width: 100%;
+  z-index: 9;
+  --wails-draggable: no-drag;
+}
+.companion-doc-toolbar > .companion-pdf-pager {
+  border-bottom: 0;
+  background: transparent;
+  padding: 0;
+  min-height: 0;
+  flex: 0 1 auto;
+  overflow: visible;
+}
+.companion-doc-find {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.companion-doc-find-input {
+  box-sizing: border-box;
+  width: 148px;
+  max-width: 40vw;
+  height: 26px;
+  margin: 0;
+  padding: 0 8px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-primary, #1c2834);
+  font: inherit;
+}
+.companion-doc-find-input:focus {
+  border-color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-doc-find-count {
+  flex: 0 0 auto;
+  min-width: 4.5em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-muted, #6b7280);
+}
+.companion-doc-find button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-secondary, #46586f);
+  cursor: pointer;
+}
+.companion-doc-find button svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+.companion-doc-find button:hover:not(:disabled),
+.companion-doc-find button:focus-visible {
+  border-color: var(--theme-primary, #2e75cb);
+  color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-doc-find button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .companion-pdf-stage {
   position: relative;
   flex: 1;
@@ -34614,6 +34703,27 @@ input.cwshare-url {
   opacity: 0.55;
   pointer-events: none;
   mix-blend-mode: multiply;
+}
+.companion-pdf-find-hit {
+  position: absolute;
+  z-index: 3;
+  background: rgba(255, 196, 48, 0.55);
+  pointer-events: none;
+  mix-blend-mode: multiply;
+  border-radius: 1px;
+}
+.companion-pdf-find-hit[data-find-active="true"] {
+  background: rgba(255, 140, 0, 0.78);
+  outline: 1px solid rgba(180, 90, 0, 0.85);
+}
+mark.companion-preview-find {
+  background: rgba(255, 214, 64, 0.65);
+  color: inherit;
+  padding: 0;
+  border-radius: 2px;
+}
+mark.companion-preview-find[data-find-active="true"] {
+  background: rgba(255, 145, 0, 0.9);
 }
 .companion-pdf-text {
   position: absolute;
