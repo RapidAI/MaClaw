@@ -141,8 +141,8 @@ func TestDesktopStopsWhenTheUsersLastRunFinishes(t *testing.T) {
 		desktopHolds = map[string]int{}
 		desktopRunsMu.Unlock()
 	})
-	releaseFirst := occupyUserDesktop(context.Background(), "tenant", "alice", "")
-	releaseSecond := occupyUserDesktop(context.Background(), "tenant", "alice", "")
+	releaseFirst := occupyUserDesktopWoken(context.Background(), "tenant", "alice", "")
+	releaseSecond := occupyUserDesktopWoken(context.Background(), "tenant", "alice", "")
 	releaseFirst()
 	if stopped != 0 {
 		t.Fatalf("stopped while another run is open: %d", stopped)
@@ -189,7 +189,7 @@ func TestNextTaskWaitsUntilTheLoginIsWritten(t *testing.T) {
 		desktopHolds = map[string]int{}
 		desktopRunsMu.Unlock()
 	})
-	release := occupyUserDesktop(context.Background(), "tenant", "alice", "bot-a")
+	release := occupyUserDesktopWoken(context.Background(), "tenant", "alice", "bot-a")
 	go release()
 	select {
 	case <-stopEntered:
@@ -198,7 +198,7 @@ func TestNextTaskWaitsUntilTheLoginIsWritten(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() {
-		occupyUserDesktop(context.Background(), "tenant", "alice", "bot-a")()
+		occupyUserDesktopWoken(context.Background(), "tenant", "alice", "bot-a")()
 		close(done)
 	}()
 	time.Sleep(80 * time.Millisecond)
@@ -242,7 +242,7 @@ func TestDesktopStaysUpWhileTheUserLogsIn(t *testing.T) {
 		desktopHandoff.Delete(desktopRunKey("tenant", "alice"))
 		desktopPersonInstance.Delete(desktopRunKey("tenant", "alice"))
 	})
-	release := occupyUserDesktop(context.Background(), "tenant", "alice", "")
+	release := occupyUserDesktopWoken(context.Background(), "tenant", "alice", "")
 	noteDesktopHandoff("tenant", "alice", "")
 	if !takeDesktopHandoff("tenant", "alice", "") {
 		t.Fatal("handoff was not reported")
@@ -251,7 +251,7 @@ func TestDesktopStaysUpWhileTheUserLogsIn(t *testing.T) {
 	if stopped != 0 {
 		t.Fatalf("desktop stopped during login: %d", stopped)
 	}
-	occupyUserDesktop(context.Background(), "tenant", "alice", "")()
+	occupyUserDesktopWoken(context.Background(), "tenant", "alice", "")()
 	if stopped != 1 {
 		t.Fatalf("desktop stayed up after the follow-up run: %d", stopped)
 	}
@@ -260,19 +260,19 @@ func TestDesktopStaysUpWhileTheUserLogsIn(t *testing.T) {
 	desktopHolds = map[string]int{}
 	desktopRunsMu.Unlock()
 	desktopPersonInstance.Delete(desktopRunKey("tenant", "alice"))
-	releaseA := occupyUserDesktop(context.Background(), "tenant", "alice", "bot-a")
+	releaseA := occupyUserDesktopWoken(context.Background(), "tenant", "alice", "bot-a")
 	noteDesktopHandoff("tenant", "alice", "bot-a")
 	_, handoffErr := operateDesktop(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice", InstanceID: "bot-b"}, map[string]any{"action": "probe"})
 	if handoffErr == nil || !strings.Contains(handoffErr.Error(), "登录") {
 		t.Fatalf("another bot drove the desktop while it was being handed over: %v", handoffErr)
 	}
 	releaseA()
-	releaseB := occupyUserDesktop(context.Background(), "tenant", "alice", "bot-b")
+	releaseB := occupyUserDesktopWoken(context.Background(), "tenant", "alice", "bot-b")
 	releaseB()
 	if stopped != 0 {
 		t.Fatalf("another bot stopped the desktop during login: %d", stopped)
 	}
-	occupyUserDesktop(context.Background(), "tenant", "alice", "bot-a")()
+	occupyUserDesktopWoken(context.Background(), "tenant", "alice", "bot-a")()
 	if stopped != 1 {
 		t.Fatalf("the bot that handed off did not stop the desktop after continuing: %d", stopped)
 	}
@@ -308,7 +308,7 @@ func TestOtherBotStopsAfterTheLoginIsDecided(t *testing.T) {
 		desktopPersonInstance.Delete(desktopRunKey("tenant", "alice"))
 		desktopHandoff.Delete(desktopHandoffKey("tenant", "alice", "bot-a"))
 	})
-	release := occupyUserDesktop(context.Background(), "tenant", "alice", "bot-a")
+	release := occupyUserDesktopWoken(context.Background(), "tenant", "alice", "bot-a")
 	defer release()
 	errCh := make(chan error, 1)
 	go func() {
@@ -351,7 +351,7 @@ func TestScheduledRunLeavesTheDesktopWhileThePersonLogsIn(t *testing.T) {
 		desktopPersonInstance.Delete(desktopRunKey("tenant", "alice"))
 		desktopUnattendedInstances.Delete("bot-a")
 	})
-	release := occupyUserDesktop(context.Background(), "tenant", "alice", "bot-a")
+	release := occupyUserDesktopWoken(context.Background(), "tenant", "alice", "bot-a")
 	noteDesktopHandoff("tenant", "alice", "bot-a")
 	release()
 	end := markDesktopUnattended("bot-a")
@@ -359,12 +359,12 @@ func TestScheduledRunLeavesTheDesktopWhileThePersonLogsIn(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "登录") {
 		t.Fatalf("scheduled run drove the desktop during login: %v", err)
 	}
-	occupyUserDesktop(context.Background(), "tenant", "alice", "bot-a")()
+	occupyUserDesktopWoken(context.Background(), "tenant", "alice", "bot-a")()
 	end()
 	if stopped != 0 {
 		t.Fatalf("scheduled run stopped the desktop during login: %d", stopped)
 	}
-	occupyUserDesktop(context.Background(), "tenant", "alice", "bot-a")()
+	occupyUserDesktopWoken(context.Background(), "tenant", "alice", "bot-a")()
 	if stopped != 1 {
 		t.Fatalf("the follow-up did not stop the desktop: %d", stopped)
 	}
@@ -397,7 +397,7 @@ func TestCallerDisconnectLeavesTheLoggedInDesktopUp(t *testing.T) {
 		t.Fatal("the logged-in page was not waiting for the continuation")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	release := occupyUserDesktop(ctx, "tenant", "alice", "bot-a")
+	release := occupyUserDesktopWoken(ctx, "tenant", "alice", "bot-a")
 	cancel()
 	release()
 	if stopped != 0 {
@@ -406,14 +406,14 @@ func TestCallerDisconnectLeavesTheLoggedInDesktopUp(t *testing.T) {
 	if !desktopLoginDocumentHeld(scope.TenantID, scope.UserID) {
 		t.Fatal("a disconnected caller left the logged-in page")
 	}
-	occupyUserDesktop(context.Background(), "tenant", "alice", "bot-a")()
+	occupyUserDesktopWoken(context.Background(), "tenant", "alice", "bot-a")()
 	if stopped != 1 {
 		t.Fatalf("the next command left the desktop up: %d", stopped)
 	}
 
 	end := markDesktopUnattended("sched")
 	ctx, cancel = context.WithCancel(context.Background())
-	release = occupyUserDesktop(ctx, "tenant", "alice", "sched")
+	release = occupyUserDesktopWoken(ctx, "tenant", "alice", "sched")
 	cancel()
 	release()
 	end()
@@ -446,12 +446,12 @@ func TestHubKeepsTheLoggedInPageWhenTheDesktopStays(t *testing.T) {
 	if !consumeDesktopResume(scope) || !desktopLoginDocumentHeld(scope.TenantID, scope.UserID) {
 		t.Fatal("the logged-in page was not waiting")
 	}
-	occupyUserDesktop(context.Background(), "tenant", "alice", "bot-a")()
+	occupyUserDesktopWoken(context.Background(), "tenant", "alice", "bot-a")()
 	if !desktopLoginDocumentHeld(scope.TenantID, scope.UserID) {
 		t.Fatal("the page lock dropped while the desktop stayed up")
 	}
 	desktopRemoteStop = func(context.Context, string, string) error { return nil }
-	occupyUserDesktop(context.Background(), "tenant", "alice", "bot-a")()
+	occupyUserDesktopWoken(context.Background(), "tenant", "alice", "bot-a")()
 	if desktopLoginDocumentHeld(scope.TenantID, scope.UserID) {
 		t.Fatal("a finished command kept the old page lock")
 	}
@@ -474,7 +474,7 @@ func TestFailedDesktopStartStopsWhenNothingElseIsRunning(t *testing.T) {
 		desktopHolds = map[string]int{}
 		desktopRunsMu.Unlock()
 	})
-	release := occupyUserDesktop(context.Background(), "tenant", "alice", "")
+	release := occupyUserDesktopWoken(context.Background(), "tenant", "alice", "")
 	if stopped != 0 {
 		t.Fatalf("stopped while the run was still open: %d", stopped)
 	}
@@ -505,8 +505,8 @@ func TestFailedDesktopStartLeavesAnOpenRun(t *testing.T) {
 		desktopHolds = map[string]int{}
 		desktopRunsMu.Unlock()
 	})
-	release := occupyUserDesktop(context.Background(), "tenant", "alice", "")
-	failed := occupyUserDesktop(context.Background(), "tenant", "alice", "")
+	release := occupyUserDesktopWoken(context.Background(), "tenant", "alice", "")
+	failed := occupyUserDesktopWoken(context.Background(), "tenant", "alice", "")
 	failed()
 	if stopped != 0 {
 		t.Fatalf("stopped an open run: %d", stopped)
@@ -623,7 +623,7 @@ func TestReplayOccupyKeepsTheOwningRunsDesktopChoice(t *testing.T) {
 				desktopPersonInstance.Delete(key)
 			})
 
-			ownerRelease, _ := occupyUserDesktopRun(context.Background(), "tenant", "replay-owner", "bot-a")
+			ownerRelease, _ := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-owner", "bot-a")
 			if handoff {
 				noteDesktopHandoff("tenant", "replay-owner", "bot-a")
 			}
@@ -631,7 +631,7 @@ func TestReplayOccupyKeepsTheOwningRunsDesktopChoice(t *testing.T) {
 			var replayRelease func()
 			var replayOwned *bool
 			go func() {
-				replayRelease, replayOwned = occupyUserDesktopRun(context.Background(), "tenant", "replay-owner", "bot-a")
+				replayRelease, replayOwned = occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-owner", "bot-a")
 				close(replayDone)
 			}()
 			select {
@@ -712,7 +712,7 @@ func TestReplayOccupyAfterTheOwnerFinished(t *testing.T) {
 				desktopResumeFocus.Delete(desktopResumeKey(scope))
 			})
 
-			ownerRelease, ownerOwned := occupyUserDesktopRun(context.Background(), "tenant", "replay-late", "bot-a")
+			ownerRelease, ownerOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-late", "bot-a")
 			if ownerOwned != nil {
 				*ownerOwned = true
 			}
@@ -732,7 +732,7 @@ func TestReplayOccupyAfterTheOwnerFinished(t *testing.T) {
 				t.Fatalf("owner stop: %d", stopped)
 			}
 
-			replayRelease, replayOwned := occupyUserDesktopRun(context.Background(), "tenant", "replay-late", "bot-a")
+			replayRelease, replayOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-late", "bot-a")
 			if replayOwned != nil {
 				*replayOwned = false
 			}
@@ -786,13 +786,13 @@ func TestReplayAfterFollowUpClosesTheExtraOpen(t *testing.T) {
 		desktopPersonInstance.Delete(key)
 	})
 
-	ownerRelease, _ := occupyUserDesktopRun(context.Background(), "tenant", "replay-follow", "")
+	ownerRelease, _ := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-follow", "")
 	noteDesktopHandoff("tenant", "replay-follow", "")
 	ownerRelease()
 	if stopped != 0 {
 		t.Fatalf("handoff stop: %d", stopped)
 	}
-	followRelease, followOwned := occupyUserDesktopRun(context.Background(), "tenant", "replay-follow", "")
+	followRelease, followOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-follow", "")
 	if followOwned != nil {
 		*followOwned = true
 	}
@@ -804,7 +804,7 @@ func TestReplayAfterFollowUpClosesTheExtraOpen(t *testing.T) {
 		t.Fatalf("follow-up stopped=%d holds=%d", stopped, holds)
 	}
 
-	replayRelease, replayOwned := occupyUserDesktopRun(context.Background(), "tenant", "replay-follow", "")
+	replayRelease, replayOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-follow", "")
 	if replayOwned != nil {
 		*replayOwned = false
 	}
@@ -847,10 +847,10 @@ func TestKeptStopStillProtectsTheHandoff(t *testing.T) {
 		desktopHandoff.Delete(desktopHandoffKey("tenant", "replay-kept", "bot-a"))
 	})
 
-	ownerRelease, _ := occupyUserDesktopRun(context.Background(), "tenant", "replay-kept", "bot-a")
+	ownerRelease, _ := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-kept", "bot-a")
 	noteDesktopHandoff("tenant", "replay-kept", "bot-a")
 	ownerRelease()
-	followRelease, followOwned := occupyUserDesktopRun(context.Background(), "tenant", "replay-kept", "bot-a")
+	followRelease, followOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-kept", "bot-a")
 	if followOwned != nil {
 		*followOwned = true
 	}
@@ -862,7 +862,7 @@ func TestKeptStopStillProtectsTheHandoff(t *testing.T) {
 	if stops != 1 || holds < 1 || !person {
 		t.Fatalf("stops=%d holds=%d person=%v", stops, holds, person)
 	}
-	replayRelease, replayOwned := occupyUserDesktopRun(context.Background(), "tenant", "replay-kept", "bot-a")
+	replayRelease, replayOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-kept", "bot-a")
 	if replayOwned != nil {
 		*replayOwned = false
 	}
@@ -901,12 +901,12 @@ func TestDisconnectDuringContinuationKeepsTheHandoff(t *testing.T) {
 		desktopHandoff.Delete(desktopHandoffKey("tenant", "replay-disconnect", "bot-a"))
 	})
 
-	ownerRelease, _ := occupyUserDesktopRun(context.Background(), "tenant", "replay-disconnect", "bot-a")
+	ownerRelease, _ := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-disconnect", "bot-a")
 	noteDesktopHandoff("tenant", "replay-disconnect", "bot-a")
 	ownerRelease()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	followRelease, followOwned := occupyUserDesktopRun(ctx, "tenant", "replay-disconnect", "bot-a")
+	followRelease, followOwned := occupyUserDesktopRunWoken(ctx, "tenant", "replay-disconnect", "bot-a")
 	if followOwned != nil {
 		*followOwned = true
 	}
@@ -918,7 +918,7 @@ func TestDisconnectDuringContinuationKeepsTheHandoff(t *testing.T) {
 	if stops != 0 || holds < 1 || !person {
 		t.Fatalf("stops=%d holds=%d person=%v", stops, holds, person)
 	}
-	replayRelease, replayOwned := occupyUserDesktopRun(context.Background(), "tenant", "replay-disconnect", "bot-a")
+	replayRelease, replayOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-disconnect", "bot-a")
 	if replayOwned != nil {
 		*replayOwned = false
 	}
@@ -980,7 +980,7 @@ func TestBusyOpenRetiresTheFinishedLogin(t *testing.T) {
 				desktopHandoff.Delete(desktopHandoffKey("tenant", tc.user, "bot-b"))
 			})
 
-			ownerRelease, _ := occupyUserDesktopRun(context.Background(), "tenant", tc.user, "bot-a")
+			ownerRelease, _ := occupyUserDesktopRunWoken(context.Background(), "tenant", tc.user, "bot-a")
 			noteDesktopHandoff("tenant", tc.user, "bot-a")
 			ownerRelease()
 			if stopped != 0 {
@@ -988,7 +988,7 @@ func TestBusyOpenRetiresTheFinishedLogin(t *testing.T) {
 			}
 			desktopLoginDocument.Store(key, true)
 
-			followRelease, followOwned := occupyUserDesktopRun(context.Background(), "tenant", tc.user, "bot-a")
+			followRelease, followOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", tc.user, "bot-a")
 			if followOwned != nil {
 				*followOwned = true
 			}
@@ -1046,7 +1046,7 @@ func TestBusyOpenRetiresTheFinishedLogin(t *testing.T) {
 			}
 
 			if tc.laterHandoff {
-				laterRelease, laterOwned := occupyUserDesktopRun(context.Background(), "tenant", tc.user, "bot-b")
+				laterRelease, laterOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", tc.user, "bot-b")
 				if laterOwned != nil {
 					*laterOwned = true
 				}
@@ -1063,7 +1063,7 @@ func TestBusyOpenRetiresTheFinishedLogin(t *testing.T) {
 				}
 			}
 
-			replayRelease, replayOwned := occupyUserDesktopRun(context.Background(), "tenant", tc.user, "bot-a")
+			replayRelease, replayOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", tc.user, "bot-a")
 			if replayOwned != nil {
 				*replayOwned = false
 			}
@@ -1128,14 +1128,14 @@ func occupyUntilLoginIsSetAside(t *testing.T, user string) (stops *int, stopErr 
 		desktopHandoff.Delete(desktopHandoffKey("tenant", user, "bot-b"))
 	})
 
-	ownerRelease, _ := occupyUserDesktopRun(context.Background(), "tenant", user, "bot-a")
+	ownerRelease, _ := occupyUserDesktopRunWoken(context.Background(), "tenant", user, "bot-a")
 	noteDesktopHandoff("tenant", user, "bot-a")
 	ownerRelease()
 	if n != 0 {
 		t.Fatalf("owner stop: %d", n)
 	}
 	desktopLoginDocument.Store(key, true)
-	followRelease, followOwned := occupyUserDesktopRun(context.Background(), "tenant", user, "bot-a")
+	followRelease, followOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", user, "bot-a")
 	if followOwned != nil {
 		*followOwned = true
 	}
@@ -1188,7 +1188,7 @@ func TestBusyStopRestoresTheLoginWhenTheStopIsNotAccepted(t *testing.T) {
 	t.Run("hub keeps the desktop", func(t *testing.T) {
 		stops, stopErr := occupyUntilLoginIsSetAside(t, "replay-busy-kept")
 		*stopErr = errDesktopKept
-		release, owned := occupyUserDesktopRun(context.Background(), "tenant", "replay-busy-kept", "bot-b")
+		release, owned := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-busy-kept", "bot-b")
 		if owned != nil {
 			*owned = true
 		}
@@ -1203,7 +1203,7 @@ func TestBusyStopRestoresTheLoginWhenTheStopIsNotAccepted(t *testing.T) {
 		if *stops != 1 || holds != 1 || spent != 0 || personID != "bot-a" || !desktopLoginDocumentHeld("tenant", "replay-busy-kept") {
 			t.Fatalf("stops=%d holds=%d spent=%d person=%q document=%v", *stops, holds, spent, personID, desktopLoginDocumentHeld("tenant", "replay-busy-kept"))
 		}
-		replay, replayOwned := occupyUserDesktopRun(context.Background(), "tenant", "replay-busy-kept", "bot-a")
+		replay, replayOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-busy-kept", "bot-a")
 		if replayOwned != nil {
 			*replayOwned = false
 		}
@@ -1217,7 +1217,7 @@ func TestBusyStopRestoresTheLoginWhenTheStopIsNotAccepted(t *testing.T) {
 		stops, _ := occupyUntilLoginIsSetAside(t, "replay-busy-gone")
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		release, owned := occupyUserDesktopRun(ctx, "tenant", "replay-busy-gone", "bot-b")
+		release, owned := occupyUserDesktopRunWoken(ctx, "tenant", "replay-busy-gone", "bot-b")
 		if owned != nil {
 			*owned = true
 		}
@@ -1232,7 +1232,7 @@ func TestBusyStopRestoresTheLoginWhenTheStopIsNotAccepted(t *testing.T) {
 		if *stops != 0 || holds != 1 || spent != 0 || personID != "bot-a" || !desktopLoginDocumentHeld("tenant", "replay-busy-gone") {
 			t.Fatalf("stops=%d holds=%d spent=%d person=%q document=%v", *stops, holds, spent, personID, desktopLoginDocumentHeld("tenant", "replay-busy-gone"))
 		}
-		replay, replayOwned := occupyUserDesktopRun(context.Background(), "tenant", "replay-busy-gone", "bot-a")
+		replay, replayOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-busy-gone", "bot-a")
 		if replayOwned != nil {
 			*replayOwned = false
 		}
@@ -1244,7 +1244,7 @@ func TestBusyStopRestoresTheLoginWhenTheStopIsNotAccepted(t *testing.T) {
 
 	t.Run("later handoff stays after a kept stop", func(t *testing.T) {
 		stops, stopErr := occupyUntilLoginIsSetAside(t, "replay-busy-handed")
-		release, owned := occupyUserDesktopRun(context.Background(), "tenant", "replay-busy-handed", "bot-b")
+		release, owned := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-busy-handed", "bot-b")
 		if owned != nil {
 			*owned = true
 		}
@@ -1254,7 +1254,7 @@ func TestBusyStopRestoresTheLoginWhenTheStopIsNotAccepted(t *testing.T) {
 			t.Fatalf("handoff stop: %d", *stops)
 		}
 		*stopErr = errDesktopKept
-		follow, followOwned := occupyUserDesktopRun(context.Background(), "tenant", "replay-busy-handed", "bot-b")
+		follow, followOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-busy-handed", "bot-b")
 		if followOwned != nil {
 			*followOwned = true
 		}
@@ -1265,7 +1265,7 @@ func TestBusyStopRestoresTheLoginWhenTheStopIsNotAccepted(t *testing.T) {
 		if *stops != 1 || personID != "bot-b" {
 			t.Fatalf("stops=%d person=%q", *stops, personID)
 		}
-		replay, replayOwned := occupyUserDesktopRun(context.Background(), "tenant", "replay-busy-handed", "bot-a")
+		replay, replayOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", "replay-busy-handed", "bot-a")
 		if replayOwned != nil {
 			*replayOwned = false
 		}
@@ -1290,7 +1290,7 @@ func TestNestedBusyKeepsTheSetAsideLogin(t *testing.T) {
 			gate.Unlock()
 		}
 	})
-	release, owned := occupyUserDesktopRun(context.Background(), "tenant", user, "bot-a")
+	release, owned := occupyUserDesktopRunWoken(context.Background(), "tenant", user, "bot-a")
 	if owned != nil {
 		*owned = true
 	}
@@ -1334,7 +1334,7 @@ func TestNestedBusyKeepsTheSetAsideLogin(t *testing.T) {
 		t.Fatalf("stops=%d holds=%d spent=%d saved=%+v", *stops, holds, spent, saved)
 	}
 	*stopErr = errDesktopKept
-	later, laterOwned := occupyUserDesktopRun(context.Background(), "tenant", user, "bot-b")
+	later, laterOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", user, "bot-b")
 	if laterOwned != nil {
 		*laterOwned = true
 	}
@@ -1348,7 +1348,7 @@ func TestNestedBusyKeepsTheSetAsideLogin(t *testing.T) {
 	if *stops != 1 || holds != 1 || spent != 0 || personID != "bot-a" || !desktopLoginDocumentHeld("tenant", user) {
 		t.Fatalf("stops=%d holds=%d spent=%d person=%q document=%v", *stops, holds, spent, personID, desktopLoginDocumentHeld("tenant", user))
 	}
-	replay, replayOwned := occupyUserDesktopRun(context.Background(), "tenant", user, "bot-a")
+	replay, replayOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", user, "bot-a")
 	if replayOwned != nil {
 		*replayOwned = false
 	}
@@ -1378,7 +1378,7 @@ func TestDeletedBotDropsTheSetAsideLogin(t *testing.T) {
 	}
 
 	*stopErr = errDesktopKept
-	release, owned := occupyUserDesktopRun(context.Background(), "tenant", user, "bot-b")
+	release, owned := occupyUserDesktopRunWoken(context.Background(), "tenant", user, "bot-b")
 	if owned != nil {
 		*owned = true
 	}
@@ -1394,7 +1394,7 @@ func TestDeletedBotDropsTheSetAsideLogin(t *testing.T) {
 		t.Fatalf("stops=%d holds=%d spent=%d retired=%v person=%v id=%q", *stops, holds, spent, retired, personOK, personID)
 	}
 
-	replay, replayOwned := occupyUserDesktopRun(context.Background(), "tenant", user, "bot-a")
+	replay, replayOwned := occupyUserDesktopRunWoken(context.Background(), "tenant", user, "bot-a")
 	if replayOwned != nil {
 		*replayOwned = false
 	}

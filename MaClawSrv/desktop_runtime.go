@@ -2405,7 +2405,7 @@ func ensureDesktopRound(ctx context.Context, scope agentruntime.Scope, userKey s
 		}
 		return desktopEndpoint{}, nil
 	}
-	endpoint, err := desktopSession(ctx, scope, userKey)
+	endpoint, err := desktopWakeForStep(ctx, scope, userKey)
 	if err != nil {
 		return desktopEndpoint{}, err
 	}
@@ -3988,4 +3988,48 @@ func trimDesktopTabs(addr, attachedID string, targets []browser.TargetInfo) []br
 func desktopStylePrompt(request agentruntime.TurnRequest, ids ...promptparts.ID) string {
 	st := promptparts.StyleFromMeta(desktopMessageMeta(request))
 	return st.Character() + promptparts.Render(st.Overrides(), ids...)
+}
+
+// desktopWakeForStep is the one place a step wakes the computer: the row
+// reads 正在唤醒电脑 while it starts, and a failure comes back in words the
+// bot can pass on (the raw cause stays in the log).
+func desktopWakeForStep(ctx context.Context, scope agentruntime.Scope, userKey string) (desktopEndpoint, error) {
+	done := beginDesktopActivity(scope.RunID, "正在唤醒电脑")
+	// Same gate the run admission holds: a wake never races a stop that is
+	// still writing the website login.
+	owner := desktopOwner(scope)
+	gate := desktopUserGate(desktopRunKey(owner.TenantID, owner.UserID))
+	gate.Lock()
+	endpoint, err := desktopSession(ctx, scope, userKey)
+	gate.Unlock()
+	done()
+	if err != nil {
+		log.Printf("[desktop] wake failed run=%s: %v", scope.RunID, err)
+		return desktopEndpoint{}, desktopWakeError{cause: err}
+	}
+	return endpoint, nil
+}
+
+type desktopWakeError struct{ cause error }
+
+func (e desktopWakeError) Error() string {
+	return "DESKTOP_WAKE_FAILED: 电脑没能唤醒，这一步需要用电脑（浏览器）所以没做成。已完成的写作和资料不受影响。告诉对方：电脑暂时没唤醒，稍后再试或让我重新开始这一步；不要说成已完成，也不要转述下面的原因。\ncause: " + e.cause.Error()
+}
+
+func (e desktopWakeError) Unwrap() error { return e.cause }
+
+// desktopRoundAwake returns this round's endpoint only when a step already
+// woke the computer; it never wakes it.
+func desktopRoundAwake(scope agentruntime.Scope) (desktopEndpoint, bool) {
+	value, ok := desktopRoundWakes.Load(strings.TrimSpace(scope.RunID))
+	if !ok {
+		return desktopEndpoint{}, false
+	}
+	wake, _ := value.(*desktopRoundWake)
+	if wake == nil {
+		return desktopEndpoint{}, false
+	}
+	wake.mu.Lock()
+	defer wake.mu.Unlock()
+	return wake.endpoint, wake.have
 }

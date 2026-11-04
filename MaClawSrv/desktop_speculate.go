@@ -277,8 +277,10 @@ func operateDesktopSpeculate(ctx context.Context, scope agentruntime.Scope, args
 	}
 	var session *browser.BrowserAgentSession
 	// prepare_draft needs no browser; others prefer a live session when one exists.
+	// A precheck never wakes the computer: it uses this round's desktop only
+	// when an earlier step already woke it.
 	if check != desktopSpeculatePrepareDraft {
-		if endpoint, err := desktopSession(ctx, scope, ""); err == nil {
+		if endpoint, ok := desktopRoundAwake(scope); ok {
 			userKey, _ := desktopUserKey(desktopOwner(scope))
 			if userKey != "" {
 				binding := desktopBindingFor(userKey)

@@ -158,7 +158,7 @@ func TestNotReadyScheduledTaskDoesNotOpenTheDesktop(t *testing.T) {
 	}
 }
 
-func TestReadyScheduledTaskOpensTheDesktopForTheRun(t *testing.T) {
+func TestReadyScheduledTextTaskLeavesTheDesktopAsleep(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{
 		DataRoot:    t.TempDir(),
 		TokenSecret: "test-token-secret-0123456789012345",
@@ -211,7 +211,9 @@ func TestReadyScheduledTaskOpensTheDesktopForTheRun(t *testing.T) {
 	if err != nil || !strings.Contains(result, "hello") {
 		t.Fatalf("second result=%q err=%v", result, err)
 	}
-	if opened != 2 {
+	// A text-only task never wakes the computer (lazy wake: only a step
+	// that needs the desktop opens it).
+	if opened != 0 {
 		t.Fatalf("desktop opens = %d", opened)
 	}
 	runs, err := svc.ListRuns(context.Background(), principal, inst.ID, agentservice.ListRunsInput{})

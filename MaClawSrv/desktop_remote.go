@@ -669,7 +669,9 @@ func occupyUserDesktopRun(ctx context.Context, tenantID, userID, instanceID stri
 		desktopRuns[key]++
 		holdsAtStart = desktopHolds[key]
 		desktopRunsMu.Unlock()
-		_, _ = desktopSession(ctx, agentruntime.Scope{TenantID: tenantID, UserID: userID}, "")
+		// No open here: the desktop wakes on the first step that needs it
+		// (ensureDesktopRound). Writing, research and API steps run with the
+		// computer asleep.
 	}()
 	return func() {
 		desktopRunsMu.Lock()
