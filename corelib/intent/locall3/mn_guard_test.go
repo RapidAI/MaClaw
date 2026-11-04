@@ -23,8 +23,13 @@ func (p pooledEmb) vec(text string) []float32 {
 		v[0] = 1
 	case strings.Contains(t, "сервер"):
 		v[1] = 1
-	default:
+	case strings.Contains(t, "мэдээлэл"), strings.Contains(t, "хайг"):
+		// Low-confidence MN search fixture (e2). Must not be the default:
+		// main's LocalTreeFunc prefers EmbedPooledWithRole when present, so
+		// zh/en would otherwise land on e2 and abstain on the linear test head.
 		v[2] = 1
+	default:
+		v[0] = 1 // zh/en → file_ops on the main test head
 	}
 	return v
 }
