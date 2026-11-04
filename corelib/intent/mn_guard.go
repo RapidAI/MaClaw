@@ -10,8 +10,8 @@ package intent
 // research repo STATUS_mn_conf_guard 2003fda / REPORT e5783de). With that head
 // attached, a Cyrillic message is decided locally only when the calibrated
 // top-1 probability is ≥ τ AND the label is not sensitive; everything else
-// still goes to the remote L3. Locally accepted side-effect intents are
-// remembered per message text so the security firewall asks for confirmation.
+// still goes to the remote L3. Permissions and confirmations for locally
+// accepted Mongolian requests are exactly those of zh/en (no MN-only prompt).
 
 import (
 	"context"
@@ -19,9 +19,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
-	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
@@ -31,19 +28,6 @@ const MNGuardHeadName = "head_mlp_qwen3go_mn_guard.json"
 
 // MNGuardTau is the pre-registered acceptance threshold (frozen).
 const MNGuardTau = 0.971
-
-// mnSideEffectLabels are non-sensitive intents that change state; when one is
-// accepted locally for a Mongolian message its tool calls need confirmation.
-// (Sensitive intents are never accepted locally.)
-var mnSideEffectLabels = map[string]bool{
-	"app_launch": true, "attachment_delivery": true, "document_generate": true,
-	"file_download": true, "file_write": true, "goal_manage": true,
-	"schedule_manage": true, "session_manage": true, "task_track": true,
-	"template_manage": true, "workflow_task": true, "worklog_update": true,
-}
-
-// MNSideEffectLabel reports whether label is a side-effect intent.
-func MNSideEffectLabel(label string) bool { return mnSideEffectLabels[label] }
 
 // LoadMNGuardHead loads and validates the MN guard head from dir.
 func LoadMNGuardHead(dir string) (*LocalHead, error) {
@@ -101,7 +85,6 @@ func MNGuardTreeFunc(emb embedding.Embedder, h *LocalHead) LLMClassifyContextFun
 		if !ok {
 			return "", NewLocalHeadUncertainError(label, prob, h.Threshold(label))
 		}
-		recordMNLocalAccept(userText, label)
 		top := label
 		if label == string(LabelUnknown) {
 			top = string(LabelAmbiguous) // same as LocalTreeFunc for confident chit-chat
@@ -109,55 +92,4 @@ func MNGuardTreeFunc(emb embedding.Embedder, h *LocalHead) LLMClassifyContextFun
 		b, _ := json.Marshal(map[string]any{"top": []map[string]any{{"skill": top, "score": prob, "workflow_type": ""}}})
 		return string(b), nil
 	}
-}
-
-type mnAccept struct {
-	label string
-	at    time.Time
-}
-
-var (
-	mnAcceptMu sync.Mutex
-	mnAccepts  = map[string]mnAccept{}
-)
-
-const mnAcceptTTL = 15 * time.Minute
-
-func mnKey(text string) string { return strings.TrimSpace(text) }
-
-func recordMNLocalAccept(text, label string) {
-	mnAcceptMu.Lock()
-	defer mnAcceptMu.Unlock()
-	now := time.Now()
-	if len(mnAccepts) > 512 {
-		for k, v := range mnAccepts {
-			if now.Sub(v.at) > mnAcceptTTL {
-				delete(mnAccepts, k)
-			}
-		}
-	}
-	mnAccepts[mnKey(text)] = mnAccept{label, now}
-}
-
-// MNLocalAccepted returns the label the MN guard accepted locally for text
-// (recent turns only); ok=false when the message went to the remote L3.
-func MNLocalAccepted(text string) (label string, ok bool) {
-	if !BypassLocalHeads(text) {
-		return "", false
-	}
-	mnAcceptMu.Lock()
-	defer mnAcceptMu.Unlock()
-	a, found := mnAccepts[mnKey(text)]
-	if !found || time.Since(a.at) > mnAcceptTTL {
-		return "", false
-	}
-	return a.label, true
-}
-
-// MNRequiresConfirmation reports whether a tool call made for userMessage
-// needs explicit user confirmation: a Mongolian message whose intent was
-// accepted locally as a side-effect intent.
-func MNRequiresConfirmation(userMessage string) bool {
-	l, ok := MNLocalAccepted(userMessage)
-	return ok && MNSideEffectLabel(l)
 }

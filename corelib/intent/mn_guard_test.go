@@ -90,15 +90,3 @@ func TestMNGuardDecide(t *testing.T) {
 		}
 	}
 }
-
-func TestMNRequiresConfirmation(t *testing.T) {
-	recordMNLocalAccept("Файлд хадгална уу", "file_write")
-	recordMNLocalAccept("Мэдээлэл хайгаарай", "search")
-	recordMNLocalAccept("save it to a file", "file_write") // not Cyrillic → never MN
-	if !MNRequiresConfirmation("Файлд хадгална уу") {
-		t.Fatal("MN side-effect accept must need confirmation")
-	}
-	if MNRequiresConfirmation("Мэдээлэл хайгаарай") || MNRequiresConfirmation("save it to a file") || MNRequiresConfirmation("Өөр мессеж") {
-		t.Fatal("read-only / non-Cyrillic / remote-decided must not")
-	}
-}

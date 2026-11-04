@@ -71,9 +71,6 @@ func main() {
 			})
 			o, err := fn(context.Background(), context.Background(), "", t)
 			r := fmt.Sprintf("%s err=%v remote=%v", o, err, remote)
-			if intent.BypassLocalHeads(t) {
-				r += fmt.Sprintf(" confirm=%v", intent.MNRequiresConfirmation(t))
-			}
 			out = append(out, r)
 		}
 		return out

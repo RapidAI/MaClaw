@@ -64,21 +64,18 @@ func TestMNGuardRouting(t *testing.T) {
 	calls := 0
 	fn := rt.ContextFunc(remoteSpy(&calls))
 	ctx := context.Background()
-	// Confident non-sensitive MN → local, and marked for confirmation.
+	// Confident non-sensitive MN → local (no MN-only confirmation; permissions as zh/en).
 	q := "Энэ файлд хадгална уу"
 	out, err := fn(ctx, ctx, "", q)
 	if err != nil || calls != 0 || !strings.Contains(out, "file_write") {
 		t.Fatalf("mn confident: out=%q err=%v calls=%d", out, err, calls)
 	}
-	if !intent.MNRequiresConfirmation(q) {
-		t.Fatal("locally accepted MN side effect must require confirmation")
-	}
 	// Confident sensitive MN → remote L3.
 	if out, err := fn(ctx, ctx, "", "Серверт ssh холбогдоорой"); err != nil || calls != 1 || !strings.Contains(out, "web_search") {
 		t.Fatalf("mn sensitive: out=%q err=%v calls=%d", out, err, calls)
 	}
-	// Low-confidence MN → remote L3, not marked.
-	if _, err := fn(ctx, ctx, "", "Мэдээлэл хайгаарай"); err != nil || calls != 2 || intent.MNRequiresConfirmation("Мэдээлэл хайгаарай") {
+	// Low-confidence MN → remote L3.
+	if _, err := fn(ctx, ctx, "", "Мэдээлэл хайгаарай"); err != nil || calls != 2 {
 		t.Fatalf("mn low conf: err=%v calls=%d", err, calls)
 	}
 	// zh / en unchanged: main local head decides, remote untouched.
