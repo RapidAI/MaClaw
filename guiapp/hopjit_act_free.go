@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/hopjit"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -27,7 +27,7 @@ func (c *guiHopJITCaller) executeActFree(ctx context.Context, step hopjit.StepRe
 		return nil, err
 	}
 	callbacks := &hopJITActFreeCallbacks{ctx: ctx, cfg: c.app.GetMaclawLLMConfig(), tools: definitions, provider: provider}
-	result := agent.RunLoop(callbacks, hopJITActFreePrompt(step), nil, nil)
+	result := agentruntime.RunAgentTurn(callbacks, hopJITActFreePrompt(step), nil, nil)
 	if result.AskUser != nil || result.RecordAudio != nil {
 		return nil, errors.New("interactive act free requires a HopJIT pause step")
 	}
