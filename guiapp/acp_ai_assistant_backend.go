@@ -257,6 +257,12 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 		return nil, fmt.Errorf("AI assistant handler not ready")
 	}
 	a.restoreProjectAgentSession(handler, msg.UserID, projectPath)
+	if projectContinuationHistoryMissing(req, handler, msg.UserID, projectPath) {
+		log.Printf("[acp-mode-b] continuation blocked without task history request_id=%s user=%q project=%q", requestID, msg.UserID, projectPath)
+		resp := projectContinuationHistoryMissingResponse(req, msg.UserID)
+		resp.RequestID = requestID
+		return resp, nil
+	}
 	// ACP programming runs in a project-owned session. Apply the same guard as
 	// the desktop binding: its browser/bridge transcript must never replenish a
 	// project session with context captured from a different conversation.

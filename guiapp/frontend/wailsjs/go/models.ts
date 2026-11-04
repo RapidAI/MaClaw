@@ -15899,6 +15899,7 @@ export namespace main {
 	    archived: boolean;
 	    source_urls?: string[];
 	    recent_artifacts?: ProjectSearchArtifact[];
+	    copy_notice?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProjectSearchResult(source);
@@ -15923,6 +15924,7 @@ export namespace main {
 	        this.archived = source["archived"];
 	        this.source_urls = source["source_urls"];
 	        this.recent_artifacts = this.convertValues(source["recent_artifacts"], ProjectSearchArtifact);
+	        this.copy_notice = source["copy_notice"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

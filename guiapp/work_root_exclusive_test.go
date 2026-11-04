@@ -284,6 +284,56 @@ func TestReopenedTaskContinuationRestoresHistoryAndIsolatesSharedWorkRoot(t *tes
 	}
 }
 
+func TestBackgroundTaskGetsPrivateWorkRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	app := newProjectSearchTestApp(t)
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("committed-head\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "-c", "core.autocrlf=false", "add", "README")
+	mustGit(t, repo, "-c", "user.email=test@example.com", "-c", "user.name=test", "-c", "core.autocrlf=false", "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(repo, "font.c"), []byte("buddy-live-uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	buddy := app.createTaskRecordWithWorkingDir("buddy刷机", "", []string{taskManagementTag, taskUserCreatedTag, taskCodingDevTag}, repo, true)
+	npu := app.createTaskRecordWithWorkingDir("检查NPU", "", []string{taskManagementTag, taskUserCreatedTag}, repo, true)
+	buddyOwner := projectSessionOwnerID(buddy.ProjectPath)
+	npuOwner := projectSessionOwnerID(npu.ProjectPath)
+	t.Cleanup(func() {
+		endForegroundAgentOwner(buddyOwner)
+		endWorkRootAgentOwner(npuOwner)
+		_ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", app.exclusiveCheckoutDir(npu.ProjectPath)).Run()
+	})
+	beginForegroundAgentOwner(buddyOwner)
+	foregroundBefore := activeForegroundAgentWork()
+
+	h := &IMMessageHandler{app: app}
+	ctx := NewBackgroundLoopContext("bg-npu", SlotKindChatTask, "NPU continuation", 3, nil, nil)
+	ctx.Runtime.RequestID = "req-bg-npu"
+	cleanup := h.beginAgentLoopRuntime(ctx, npuOwner, "继续", desktopPlatform)
+	npuRoot := h.projectTabWorkDirForOwner(npuOwner)
+	assertPrivateCheckout(t, repo, npuRoot)
+	if got := activeForegroundAgentWork(); got != foregroundBefore {
+		t.Fatalf("background work changed foreground count from %d to %d", foregroundBefore, got)
+	}
+	cleanup()
+	if got := activeForegroundAgentWork(); got != foregroundBefore {
+		t.Fatalf("background cleanup changed foreground count from %d to %d", foregroundBefore, got)
+	}
+	for _, session := range liveWorkRootSessions() {
+		if normalizeProjectSessionPath(session.taskPath) == normalizeProjectSessionPath(npu.ProjectPath) {
+			t.Fatal("background work-root ownership survived loop cleanup")
+		}
+	}
+}
+
 func TestLaterCodingSessionKeepsDetachedCheckout(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")

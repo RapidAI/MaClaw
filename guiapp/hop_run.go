@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/hopjit"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -485,4 +486,61 @@ func hopMissingRequiredEffects(snapshot *HopRunSnapshot) []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+func ProjectHopRun(snapshot hopjit.EngineSnapshot) *HopRunSnapshot {
+	status := "running"
+	switch snapshot.TerminalState {
+	case hopjit.TerminalCompleted:
+		status = "completed"
+	case hopjit.TerminalFailed:
+		status = "failed"
+	case hopjit.TerminalAborted:
+		status = "cancelled"
+	default:
+		if snapshot.Pause != nil || snapshot.AdaptiveNeeded != "" {
+			status = "paused"
+		}
+	}
+	projected := &HopRunSnapshot{
+		SpecVersion: hopRunSpecVersion,
+		RunID:       snapshot.RunID,
+		Goal:        snapshot.Spec.Goal,
+		RootTaskID:  snapshot.Spec.ID,
+		PlanID:      snapshot.Spec.ID,
+		Status:      status,
+		Steps:       []HopRunStep{},
+	}
+	for _, step := range snapshot.Spec.AllSteps() {
+		state := snapshot.StepStates[step.ID]
+		item := HopRunStep{
+			SelectionID: step.ID,
+			NeedID:      step.ID,
+			Capability:  string(step.Type),
+			Required:    true,
+			Status:      HopStepPending,
+		}
+		switch state {
+		case hopjit.StepRunning:
+			item.Status = HopStepRunning
+			item.Evidence.State = tool.PlanExecutionRunning
+		case hopjit.StepDone:
+			item.Status = HopStepCompleted
+			item.Evidence.State = tool.PlanExecutionSucceeded
+		case hopjit.StepFailed:
+			item.Status = HopStepFailed
+			item.Evidence.State = tool.PlanExecutionFailed
+			item.Evidence.ReasonCode = snapshot.Failures[step.ID].Reason
+		case hopjit.StepSkipped:
+			item.Status = HopStepOptional
+			item.Required = false
+		default:
+			item.Status = HopStepPending
+		}
+		if state != hopjit.StepDone && state != hopjit.StepSkipped {
+			projected.Remaining++
+		}
+		projected.Steps = append(projected.Steps, item)
+	}
+	return projected
 }

@@ -153,7 +153,7 @@ import type { HistoryDiscussionSummary } from './components/layout/SidebarHistor
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
 import { readStoredAssistantThemeMode, writeStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
 import { publishUIAppearance } from './components/ai/uiAppearanceSync';
-import { agentModeFromTaskTags, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy, remoteHostFromTaskTags } from './components/ai/codingTaskMode';
+import { agentModeFromTaskTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, isCloudWorkspaceShareReadOnlyMessage, isExplicitTaskCopy, remoteHostFromTaskTags } from './components/ai/codingTaskMode';
 import { normalizeCodingTaskLaunch, type CodingTaskLaunch } from './components/ai/codingTaskLaunch';
 import { saveRemoteSSHPassword } from './components/ai/welcomeTaskMemory';
 import { getAssistantDarkScheme, readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
@@ -3754,16 +3754,50 @@ function App() {
                 project_path: projectPath,
                 working_dir: proj?.working_dir,
             });
-            if (cloudWorkspaceId) {
-                const bound = await ResumeCloudWorkspaceTask(cloudWorkspaceId, projectPath);
-                if (!bound?.project_path) {
-                    throw new Error(localizeText(
-                        'Unable to open the cloud workspace task',
-                        '无法打开云端工作区任务',
-                        '無法開啟雲端工作區任務',
-                    ));
+            const errorText = (error: unknown) => {
+                if (error instanceof Error) return error.message.trim();
+                if (error && typeof error === 'object' && 'message' in error) {
+                    return String((error as { message?: unknown }).message || '').trim();
                 }
-                projectPath = bound.project_path;
+                return String(error || '').trim();
+            };
+            // A reader denial used to stop here and pop a dialog. The task
+            // still opens; the list and assistant show the read-only mark
+            // and the composer stays disabled.
+            let readOnlyShare = cloudWorkspaceSharePermissionFromTags(proj?.tags) === 'read';
+            if (cloudWorkspaceId) {
+                try {
+                    const bound = await ResumeCloudWorkspaceTask(cloudWorkspaceId, projectPath);
+                    if (!bound?.project_path) {
+                        throw new Error(localizeText(
+                            'Unable to open the cloud workspace task',
+                            '无法打开云端工作区任务',
+                            '無法開啟雲端工作區任務',
+                        ));
+                    }
+                    projectPath = bound.project_path;
+                    if (cloudWorkspaceSharePermissionFromTags(bound?.tags) === 'read') readOnlyShare = true;
+                } catch (error) {
+                    if (!isCloudWorkspaceShareReadOnlyMessage(errorText(error))) throw error;
+                    readOnlyShare = true;
+                }
+            }
+            if (readOnlyShare) {
+                const stampPath = norm(projectPath);
+                setTaskItems(prev => {
+                    let changed = false;
+                    const next = prev.map(item => {
+                        if (norm(item.project_path || '') !== stampPath) return item;
+                        const tags = item.tags || [];
+                        if (tags.includes('cloud_workspace_share:read')) return item;
+                        changed = true;
+                        return {
+                            ...item,
+                            tags: [...tags.filter(tag => tag !== 'cloud_workspace_share:write'), 'cloud_workspace_share:read'],
+                        };
+                    });
+                    return changed ? next : prev;
+                });
             }
             await ResumeTask(projectPath);
             const title = proj?.name || projectPath.split(/[\\/]/).pop() || projectPath;
@@ -3823,13 +3857,26 @@ function App() {
             });
         } catch (error) {
             console.error("resumeTask failed:", error);
-            const message = error instanceof Error ? error.message.trim() : String(error || '').trim();
+            const message = error instanceof Error
+                ? error.message.trim()
+                : (error && typeof error === 'object' && 'message' in error
+                    ? String((error as { message?: unknown }).message || '').trim()
+                    : String(error || '').trim());
+            if (isCloudWorkspaceShareReadOnlyMessage(message)) {
+                const title = projectPath.split(/[\\/]/).pop() || projectPath;
+                return openCodingTask({
+                    projectPath,
+                    taskTitle: title,
+                    autoSend: false,
+                    prepareMode: 'restore-context',
+                });
+            }
             if (message && !message.includes('已取消')) {
                 showAlert(message);
             }
             return false;
         }
-    }, [lang, openCodingTask, refreshTasks, showAlert, switchTool]);
+    }, [lang, openCodingTask, refreshTasks, setTaskItems, showAlert, switchTool]);
 
     const continueWorkflowProject = useCallback(async (projectPath: string) => {
         const sourcePath = projectPath.trim();

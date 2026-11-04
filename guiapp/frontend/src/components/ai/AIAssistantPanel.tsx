@@ -113,7 +113,7 @@ import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingSte
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { AssistantPureCodingEmptyState } from "./AssistantPureCodingEmptyState";
 import { NewTaskWizardWelcomePane } from "./NewTaskWizardWelcomePane";
-import { agentModeFromTaskTags, CLOUD_WORKSPACE_FILES_CHANGED_EVENT, cloudWorkingDirForActiveTab, cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTab, cloudWorkspaceRevealMatchesTab, ensureCloudWorkspaceLeaseBeforeSend, FOCUS_CLOUD_WORKSPACE_TREE_EVENT, isActiveCloudWorkspacePreview, isCloudWorkspacePath, nextTabWorkingDir, parseWailsEventObject, remoteHostFromTaskTags, resolveRemoteWorkspaceDisplay, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, type CloudWorkspaceReveal, type TabWorkingDir } from "./codingTaskMode";
+import { agentModeFromTaskTags, CLOUD_WORKSPACE_FILES_CHANGED_EVENT, cloudWorkingDirForActiveTab, cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTab, cloudWorkspaceRevealMatchesTab, cloudWorkspaceSharePermissionFromTags, ensureCloudWorkspaceLeaseBeforeSend, FOCUS_CLOUD_WORKSPACE_TREE_EVENT, isActiveCloudWorkspacePreview, isCloudWorkspacePath, nextTabWorkingDir, parseWailsEventObject, remoteHostFromTaskTags, resolveRemoteWorkspaceDisplay, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, type CloudWorkspaceReveal, type TabWorkingDir } from "./codingTaskMode";
 import { canDispatchCodingIntent, resolveCodingTaskPhase } from "./codingTaskRuntime";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_EXPERT_TASK_DELETED, EVENT_EXPERT_TASK_RETIRED, EVENT_PROJECT_TASK_CLOSED, EVENT_PROJECT_TASK_DELETED, EVENT_PROJECT_TASK_HISTORY_UPDATED } from "../../constants/events";
@@ -4718,6 +4718,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         return { task: activeTask, raw };
     }, [activeTab?.projectPath, codingStepStatuses, taskListProp, workflowAwaitingReview, workflowCurrentPhaseStatus, workflowState.active]);
+    const cloudShareReadOnly = cloudWorkspaceSharePermissionFromTags(activeTaskExecutionSnapshot.task?.tags) === 'read';
+    const cloudShareReadOnlyRef = useRef(cloudShareReadOnly);
+    cloudShareReadOnlyRef.current = cloudShareReadOnly;
     const codingChecklistSteps = useMemo(() => presentCodingAgentChecklist(codingExecutionPlan, codingStepStatuses), [codingExecutionPlan, codingStepStatuses]);
     // Start / Skip / Reject stay up only while every step is still unstarted.
     // The checklist applies the same rule to its own buttons.
@@ -4851,14 +4854,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     );
     // Block paste/drop attachments while mic is live (composer hard-lock alone is not enough).
     const handlePaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>) => {
-        if (recordingActive || blockComposerFilesRef.current) {
+        if (recordingActive || cloudShareReadOnlyRef.current || blockComposerFilesRef.current) {
             event.preventDefault();
             return;
         }
         handlePasteBase(event);
     }, [handlePasteBase, recordingActive]);
     const handleDragOver = useCallback((event: DragEvent<HTMLElement>) => {
-        if (recordingActive || blockComposerFilesRef.current) {
+        if (recordingActive || cloudShareReadOnlyRef.current || blockComposerFilesRef.current) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "none";
             return;
@@ -4866,14 +4869,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         handleDragOverBase(event);
     }, [handleDragOverBase, recordingActive]);
     const handleDrop = useCallback((event: DragEvent<HTMLElement>) => {
-        if (recordingActive || blockComposerFilesRef.current) {
+        if (recordingActive || cloudShareReadOnlyRef.current || blockComposerFilesRef.current) {
             event.preventDefault();
             return;
         }
         handleDropBase(event);
     }, [handleDropBase, recordingActive]);
     const isACPMirrorTabActive = activeTab.type === "project" && isACPAssistantSessionKey(activeTab.sessionKey);
-    const inputLocked = liveWorkActive || cancelPending || !codingTaskReadyForIntents || recordingActive || isACPMirrorTabActive;
+    const inputLocked = liveWorkActive || cancelPending || !codingTaskReadyForIntents || recordingActive || isACPMirrorTabActive || cloudShareReadOnly;
     // Busy agent allows type-ahead queue; live mic does not — keep submitLocked true
     // for lock UI, but send paths hard-return when recordingActive.
     const submitLocked = inputLocked;
@@ -5161,7 +5164,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         ? initLabel
         : isACPMirrorTabActive
             ? ((localizeText(lang, "This ACP session is controlled by its external client", "此 ACP 会话由外部客户端控制")))
-        : recordingActive
+            : cloudShareReadOnly
+            ? localizeText(lang, "This shared task is read-only", "此共享任务为只读", "此共享任務為唯讀")
+            : recordingActive
             ? (lang === "en"
                 ? "Recording in progress — use Pause / Stop on the card above"
                 : "录音进行中 — 请使用上方录音卡片的暂停/停止")
@@ -5189,7 +5194,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         setDraftInputValue?.(nextValue);
     }, [activeTab.id, activeTab.type, saveTabState, setDraftInputValue]);
-    const canSend = ready && !recordingActive && !isACPMirrorTabActive && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
+    const canSend = ready && !recordingActive && !cloudShareReadOnly && !isACPMirrorTabActive && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
     const [welcomeTemplateOffer, setWelcomeTemplateOffer] = useState<WelcomeTemplateSaveOffer | null>(null);
     // Drop the save-offer when switching tabs.
     useEffect(() => {
@@ -5561,7 +5566,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     /** Welcome param dialog "Send now": dispatch without requiring a second click. */
     const handleWelcomePromptSend = useCallback(async (text: string, meta?: WelcomePromptSubmitMeta) => {
         const trimmed = (text || "").trim();
-        if (!trimmed) return;
+        if (!trimmed || cloudShareReadOnlyRef.current) return;
         if (startOnWorkbenchHome) dismissWorkbenchHome();
         setComposeAction(null);
         if (!ready) {
@@ -5659,6 +5664,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         pptStyleChoiceRef.current = choice;
     }, []);
     const handleSend = useCallback(async () => {
+        if (cloudShareReadOnlyRef.current) return;
         if (startOnWorkbenchHome && workbenchHomeRequested) dismissWorkbenchHome();
         // Live mic session: do not send or queue — user must stop via the card.
         if (recordingActive) return;
@@ -7291,7 +7297,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 {!showWelcomeView && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
                 {!showWelcomeView && !isPureCodingEnvironment && !isACPMirrorTabActive && !isExpertTabActive && <ChatTaskTray tasks={chatTasks.filter((task: { sessionKey?: string }) => chatTaskInSession(task.sessionKey, activeSessionKey))} canDispatch={!!inputValue.trim() && !!dispatchChatTask} lang={lang} theme={t} onRunInBackground={handleRunChatTaskInBackground} onCancel={taskID => { void cancelChatTask?.(taskID); }} />}
                 {!showWelcomeView && !wizardScreen && <GoalQuickBar lang={lang} theme={t} sessionKey={activeSessionKey} />}
-                {!showWelcomeView && !wizardScreen && <AssistantInputStack active={panelActive} browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive} inputRef={inputRef} inputValue={inputValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} submittedPromptAttachments={submittedPromptAttachments} onHistoryTextAccepted={acceptHistoryText} theme={t} themeMode={themeMode} toolbarEndContent={<AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} chipTestId="composer-model-chip" />} trailingToolbarContent={(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
+                {!showWelcomeView && !wizardScreen && cloudShareReadOnly ? <div data-testid="ai-cloud-share-readonly" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 12px 6px", color: "var(--theme-text-secondary, #667085)", fontSize: 12, fontWeight: 600 }}><span style={{ display: "inline-flex", padding: "1px 6px", borderRadius: 999, border: "1px solid color-mix(in srgb, currentColor 35%, transparent)", lineHeight: 1.4 }}>{localizeText(lang, "Read-only", "只读", "唯讀")}</span><span style={{ fontWeight: 500 }}>{localizeText(lang, "This shared task is read-only", "此共享任务为只读", "此共享任務為唯讀")}</span><button type="button" data-testid="ai-cloud-share-copy-local" onClick={() => { const source = String(activeTab?.projectPath || "").trim(); if (source) window.dispatchEvent(new CustomEvent("maclaw:copy-read-share-as-local", { detail: { projectPath: source } })); }} style={{ marginLeft: "auto", border: 0, background: "transparent", color: "inherit", font: "inherit", fontWeight: 600, cursor: "pointer", padding: 0 }}>{localizeText(lang, "Copy as local task", "复制为本地任务", "複製為本機任務")}</button></div> : null}
+                {!showWelcomeView && !wizardScreen && <AssistantInputStack active={panelActive} browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={cloudShareReadOnly ? () => undefined : handleVoiceClick} handleVoicePointerDown={cloudShareReadOnly ? () => undefined : handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive || cloudShareReadOnly} inputRef={inputRef} inputValue={inputValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} submittedPromptAttachments={submittedPromptAttachments} onHistoryTextAccepted={acceptHistoryText} theme={t} themeMode={themeMode} toolbarEndContent={<AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} chipTestId="composer-model-chip" />} trailingToolbarContent={(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
                     // Working-directory chip inside the composer toolbar, after the
                     // permission-mode button: the primary entry for viewing/changing
                     // where this session operates.

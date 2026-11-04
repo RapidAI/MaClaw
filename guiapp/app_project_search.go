@@ -245,6 +245,10 @@ type ProjectSearchResult struct {
 	Archived        bool                    `json:"archived"`      // Whether the task is archived
 	SourceURLs      []string                `json:"source_urls,omitempty"`
 	RecentArtifacts []ProjectSearchArtifact `json:"recent_artifacts,omitempty"`
+	// CopyNotice is set when a copy succeeded but part of it did not. Empty
+	// on every other task result. "files_unavailable" means a read-only share
+	// became a local task and the conversation was copied, but the files were not.
+	CopyNotice string `json:"copy_notice,omitempty"`
 }
 
 type ProjectConversationHistoryItem struct {
@@ -1674,6 +1678,36 @@ func (a *App) restoreProjectAgentSession(handler *IMMessageHandler, userID, proj
 	}
 	handler.memory.Save(userID, entries)
 	log.Printf("[AI assistant] restored project session from tab transcript user=%s project=%q turns=%d", userID, projectPath, len(entries))
+}
+
+func projectContinuationHistoryMissing(req AIAssistantSendRequest, handler *IMMessageHandler, userID, projectPath string) bool {
+	if strings.TrimSpace(projectPath) == "" || strings.TrimSpace(userID) == "" || userID == desktopUserID {
+		return false
+	}
+	if req.StartNewTask || req.UIAction || strings.TrimSpace(req.ResumeSlotID) != "" || strings.TrimSpace(req.DismissSlotID) != "" ||
+		strings.TrimSpace(req.ResumeSessionID) != "" || strings.TrimSpace(req.DismissRecoverableSessionID) != "" {
+		return false
+	}
+	wording := continuationTitleText(req.Text)
+	if wording == "" || !continuationCueOnly(wording) {
+		return false
+	}
+	if handler != nil && handler.memory != nil && handler.memory.GetUnfinishedSlot(userID) != nil {
+		return false
+	}
+	return handler == nil || handler.memory == nil || !conversationEntriesHaveTurns(handler.memory.Load(userID))
+}
+
+func projectContinuationHistoryMissingResponse(req AIAssistantSendRequest, userID string) *IMAgentResponse {
+	return &IMAgentResponse{
+		RequestID:      strings.TrimSpace(req.RequestID),
+		SessionKey:     strings.TrimSpace(userID),
+		ResponseSource: "project_continuation_history_missing",
+		Text: pickUI(req.Lang,
+			"I could not find this task's earlier conversation, so I cannot tell what to continue. Please describe the task you want to continue.",
+			"没有找到这个任务之前的对话，无法确定要继续什么。请补充要继续的任务内容。",
+			"沒有找到這個任務之前的對話，無法確定要繼續什麼。請補充要繼續的任務內容。"),
+	}
 }
 
 func (a *App) projectTranscriptSnapshot(projectPath string) []interface{} {
@@ -4251,12 +4285,37 @@ func (a *App) SuggestCurrentTaskName() string {
 // depend on the older project-search terminology.
 func (a *App) ResumeTask(taskPath string) string {
 	if id := a.lookupCloudWorkspaceIDForProject(taskPath); id != "" {
-		if _, err := a.PrepareCloudWorkspace(id); err != nil {
+		if err := a.prepareCloudWorkspaceForResume(taskPath, id); err != nil {
 			log.Printf("[cloud_workspace] ResumeTask prepare failed path=%q id=%s err=%v", taskPath, id, err)
-			return ""
+			// A read-only share still opens. The conversation is local; the
+			// files stay on the reader cache. Failing closed here is what left
+			// the row click on a dialog instead of the task.
+			if !a.taskOpensAsCloudReadShare(taskPath, id) && !cloudWorkspaceErrIsShareReadOnly(err) {
+				return ""
+			}
 		}
 	}
 	return a.ResumeProject(taskPath)
+}
+
+// prepareCloudWorkspaceForResume mounts the workspace for a task-list open.
+// Readers use the read-only cache. A writer lease denied because the share is
+// read-only is recorded on the task and retried as a reader, instead of
+// surfacing the denial as a dialog.
+func (a *App) prepareCloudWorkspaceForResume(taskPath, workspaceID string) error {
+	if a.taskOpensAsCloudReadShare(taskPath, workspaceID) {
+		_, err := a.PrepareCloudWorkspaceReadOnly(workspaceID)
+		return err
+	}
+	if _, err := a.PrepareCloudWorkspace(workspaceID); err != nil {
+		if !cloudWorkspaceErrIsShareReadOnly(err) {
+			return err
+		}
+		a.markCloudWorkspaceTaskReadShareByPath(taskPath, workspaceID)
+		_, roErr := a.PrepareCloudWorkspaceReadOnly(workspaceID)
+		return roErr
+	}
+	return nil
 }
 
 func (a *App) currentTaskManagementWorkingDir() string {

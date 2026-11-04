@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
@@ -67,14 +68,51 @@ type liveWorkRootSession struct {
 	entered  int64
 }
 
+var workRootAgentOwners = struct {
+	sync.Mutex
+	counts    map[string]int
+	enteredNs map[string]int64
+}{
+	counts:    make(map[string]int),
+	enteredNs: make(map[string]int64),
+}
+
+func beginWorkRootAgentOwner(ownerID string) {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		ownerID = "unknown"
+	}
+	workRootAgentOwners.Lock()
+	defer workRootAgentOwners.Unlock()
+	if workRootAgentOwners.counts[ownerID] == 0 {
+		workRootAgentOwners.enteredNs[ownerID] = time.Now().UnixNano()
+	}
+	workRootAgentOwners.counts[ownerID]++
+}
+
+func endWorkRootAgentOwner(ownerID string) {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		ownerID = "unknown"
+	}
+	workRootAgentOwners.Lock()
+	defer workRootAgentOwners.Unlock()
+	if workRootAgentOwners.counts[ownerID] <= 1 {
+		delete(workRootAgentOwners.counts, ownerID)
+		delete(workRootAgentOwners.enteredNs, ownerID)
+		return
+	}
+	workRootAgentOwners.counts[ownerID]--
+}
+
 func liveWorkRootSessions() []liveWorkRootSession {
-	foregroundAgentOwners.mu.Lock()
-	defer foregroundAgentOwners.mu.Unlock()
-	if len(foregroundAgentOwners.counts) == 0 {
+	workRootAgentOwners.Lock()
+	defer workRootAgentOwners.Unlock()
+	if len(workRootAgentOwners.counts) == 0 {
 		return nil
 	}
-	out := make([]liveWorkRootSession, 0, len(foregroundAgentOwners.counts))
-	for owner, count := range foregroundAgentOwners.counts {
+	out := make([]liveWorkRootSession, 0, len(workRootAgentOwners.counts))
+	for owner, count := range workRootAgentOwners.counts {
 		if count <= 0 {
 			continue
 		}
@@ -84,7 +122,7 @@ func liveWorkRootSessions() []liveWorkRootSession {
 		}
 		out = append(out, liveWorkRootSession{
 			taskPath: taskPath,
-			entered:  foregroundAgentOwners.enteredNs[owner],
+			entered:  workRootAgentOwners.enteredNs[owner],
 		})
 	}
 	return out

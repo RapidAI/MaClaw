@@ -695,3 +695,70 @@ func TestRestoreProjectAgentSessionKeepsRequestFoldedOutOfTheHotTail(t *testing.
 		t.Fatalf("cleared session restored %#v", again)
 	}
 }
+
+func TestProjectContinuationWithoutHistoryFailsClosed(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	projectPath := filepath.Join(t.TempDir(), "npu-task")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	handler := &IMMessageHandler{memory: memory}
+	owner := projectSessionOwnerID(projectPath)
+	req := AIAssistantSendRequest{RequestID: "req-continue", Text: "继续", Lang: "zh-Hans"}
+	if !projectContinuationHistoryMissing(req, handler, owner, projectPath) {
+		t.Fatal("bare continuation without recoverable history was allowed to execute")
+	}
+	resp := projectContinuationHistoryMissingResponse(req, owner)
+	if resp.RequestID != req.RequestID || resp.SessionKey != owner || resp.ResponseSource != "project_continuation_history_missing" || !strings.Contains(resp.Text, "补充要继续的任务内容") {
+		t.Fatalf("missing-history response = %#v", resp)
+	}
+
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:       "npu-history",
+		ProjectPath: projectPath,
+		Conversation: []interface{}{
+			map[string]interface{}{"role": "user", "content": "检查本机 NPU"},
+			map[string]interface{}{"role": "assistant", "content": "NPU 空闲"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.restoreProjectAgentSession(handler, owner, projectPath)
+	if projectContinuationHistoryMissing(req, handler, owner, projectPath) {
+		t.Fatal("continuation remained blocked after its own history was restored")
+	}
+
+	memory.Clear(owner)
+	for _, test := range []struct {
+		name    string
+		req     AIAssistantSendRequest
+		owner   string
+		project string
+	}{
+		{name: "explicit new task", req: AIAssistantSendRequest{Text: "继续", StartNewTask: true}, owner: owner, project: projectPath},
+		{name: "recovery action", req: AIAssistantSendRequest{Text: "继续", ResumeSlotID: "slot-1"}, owner: owner, project: projectPath},
+		{name: "new request", req: AIAssistantSendRequest{Text: "检查本机 NPU"}, owner: owner, project: projectPath},
+		{name: "named continuation", req: AIAssistantSendRequest{Text: "继续做 NPU 检查"}, owner: owner, project: projectPath},
+		{name: "local chat", req: AIAssistantSendRequest{Text: "继续"}, owner: desktopUserID},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if projectContinuationHistoryMissing(test.req, handler, test.owner, test.project) {
+				t.Fatal("non-continuation or explicitly scoped request was blocked")
+			}
+		})
+	}
+
+	memory.UpsertUnfinishedSlot(owner, &agent.UnfinishedTaskSlot{
+		SlotID:   "npu-recovery",
+		UserID:   owner,
+		Status:   agent.UnfinishedTaskSlotStatusInterrupted,
+		LastTask: "检查本机 NPU",
+		Source:   agent.UnfinishedTaskSlotSourceInFlightRecovery,
+	})
+	if projectContinuationHistoryMissing(req, handler, owner, projectPath) {
+		t.Fatal("durable recovery state should allow continuation without a text transcript")
+	}
+}

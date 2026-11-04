@@ -1885,6 +1885,7 @@ function buildTaskContextMenuItems(opts: {
             },
         }, removeItem];
     }
+    const receivedReadShare = cloudWorkspaceSharePermissionFromTags(menu.tags) === 'read';
     const items: TaskContextMenuItem[] = [
         {
             label: textForLang(lang, 'Rename', '重命名', '重命名'),
@@ -1906,10 +1907,14 @@ function buildTaskContextMenuItems(opts: {
             },
         },
         {
-            label: textForLang(lang, 'Copy', '复制', '複製'),
+            label: receivedReadShare
+                ? textForLang(lang, 'Copy as local task', '复制为本地任务', '複製為本機任務')
+                : textForLang(lang, 'Copy', '复制', '複製'),
             icon: 'copy',
             testId: 'task-context-copy',
-            title: textForLang(lang, 'Fork this task: same settings and the full chat history', '复制并分叉该任务：配置与会话历史一并复制', '複製並分叉該任務：設定與會話歷史一併複製'),
+            title: receivedReadShare
+                ? textForLang(lang, 'Copy the conversation and files into a local task you can continue. The shared task stays read-only.', '复制会话与产物为本机任务，可在副本上继续。共享任务仍只读。', '複製會話與產物為本機任務，可在副本上繼續。共享任務仍唯讀。')
+                : textForLang(lang, 'Fork this task: same settings and the full chat history', '复制并分叉该任务：配置与会话历史一并复制', '複製並分叉該任務：設定與會話歷史一併複製'),
             action: () => {
                 setTaskContextMenu(null);
                 void onDuplicateTask?.(menu);
@@ -2683,6 +2688,7 @@ export const SidebarTaskManagement = ({
     const [createError, setCreateError] = useState('');
     const [taskListNotice, setTaskListNotice] = useState('');
     const duplicatingTaskRef = useRef(false);
+    const duplicateTaskRef = useRef<(menu: NonNullable<TaskContextMenu>) => Promise<void>>(async () => {});
     /** Last Hub entitlement for this process session. Null means still loading. */
     const [cloudEntitlement, setCloudEntitlement] = useState<CloudEntitlementState | null>(null);
     const [workspaceKind, setWorkspaceKind] = useState<'local' | 'cloud'>('local');
@@ -5228,11 +5234,15 @@ export const SidebarTaskManagement = ({
         try {
             const created = await DuplicateTask(menu.projectPath);
             refreshTasks();
-            setTaskListNotice('');
             const projectPath = String(created?.project_path || '').trim();
             if (!projectPath) {
                 setTaskListNotice(textForLang(lang, 'Could not copy the task', '复制任务失败', '複製任務失敗'));
                 return;
+            }
+            if (created?.copy_notice === 'files_unavailable') {
+                setTaskListNotice(textForLang(lang, 'The conversation was copied, but the files could not be copied', '会话已复制，文件未能复制', '會話已複製，檔案未能複製'));
+            } else {
+                setTaskListNotice('');
             }
             if (!assistantReady) {
                 onTaskSwitchBlocked?.();
@@ -5250,6 +5260,17 @@ export const SidebarTaskManagement = ({
             duplicatingTaskRef.current = false;
         }
     };
+
+    duplicateTaskRef.current = duplicateTask;
+    useEffect(() => {
+        const handler = (event: Event) => {
+            const projectPath = String((event as CustomEvent<{ projectPath?: string }>).detail?.projectPath || '').trim();
+            if (!projectPath) return;
+            void duplicateTaskRef.current({ x: 0, y: 0, projectPath, name: '', pinned: false });
+        };
+        window.addEventListener('maclaw:copy-read-share-as-local', handler);
+        return () => window.removeEventListener('maclaw:copy-read-share-as-local', handler);
+    }, []);
 
     /** Opens the move dialog for a task row. */
     const openTaskTransfer = (menu: NonNullable<TaskContextMenu>, direction: TaskTransferDirection) => {
@@ -5785,9 +5806,10 @@ export const SidebarTaskManagement = ({
             const shareFromLabel = shareFrom
                 ? (sharePermission === 'write'
                     ? textForLang(lang, `From ${shareFrom} · editable`, `来自 ${shareFrom} · 可读写`, `來自 ${shareFrom} · 可讀寫`)
-                    : sharePermission === 'read'
-                        ? textForLang(lang, `From ${shareFrom} · read-only`, `来自 ${shareFrom} · 只读`, `來自 ${shareFrom} · 唯讀`)
-                        : textForLang(lang, `From ${shareFrom}`, `来自 ${shareFrom}`, `來自 ${shareFrom}`))
+                    : textForLang(lang, `From ${shareFrom}`, `来自 ${shareFrom}`, `來自 ${shareFrom}`))
+                : '';
+            const shareReadOnlyLabel = sharePermission === 'read'
+                ? textForLang(lang, 'Read-only', '只读', '唯讀')
                 : '';
             const cloudFallback = cloudWorkspace ? cloudWorkspaceFallbackLabel(lang) : '';
             const taskSecondaryLabel = taskSecondaryLabelFor(proj, cloudWorkspaceNames);
@@ -5881,8 +5903,25 @@ export const SidebarTaskManagement = ({
                     <TaskStatusMark kind={statusKind} label={statusMarkLabel} />
                     <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>
                     <span className="stsm-row-body">
-                        {(workflowStatus || codingBadge || proj.pinned || shareFromLabel) && (
+                        {(workflowStatus || codingBadge || proj.pinned || shareFromLabel || shareReadOnlyLabel) && (
                             <span className="stsm-badge-row">
+                                {shareReadOnlyLabel ? (
+                                    <span
+                                        data-testid="task-cloud-share-readonly"
+                                        style={{
+                                            display: 'inline-flex',
+                                            flex: '0 0 auto',
+                                            padding: '1px 5px',
+                                            borderRadius: '999px',
+                                            border: '1px solid color-mix(in srgb, var(--theme-text-muted) 45%, transparent)',
+                                            color: 'var(--theme-text-secondary)',
+                                            background: 'color-mix(in srgb, var(--theme-text-muted) 12%, transparent)',
+                                            fontSize: '0.58rem',
+                                            fontWeight: 700,
+                                            lineHeight: 1.35,
+                                        }}
+                                    >{shareReadOnlyLabel}</span>
+                                ) : null}
                                 {shareFromLabel ? (
                                     <span
                                         data-testid="task-cloud-shared-from"

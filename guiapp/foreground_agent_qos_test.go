@@ -34,9 +34,14 @@ func setOwnerQuietPeriodForTest(ownerID string, t time.Time) {
 
 func resetForegroundAgentOwnersForTest() {
 	foregroundAgentOwners.mu.Lock()
-	defer foregroundAgentOwners.mu.Unlock()
 	foregroundAgentOwners.counts = make(map[string]int)
+	foregroundAgentOwners.enteredNs = make(map[string]int64)
 	foregroundAgentOwners.lastDoneNs = make(map[string]int64)
+	foregroundAgentOwners.mu.Unlock()
+	workRootAgentOwners.Lock()
+	workRootAgentOwners.counts = make(map[string]int)
+	workRootAgentOwners.enteredNs = make(map[string]int64)
+	workRootAgentOwners.Unlock()
 	foregroundAgentWork.Store(0)
 }
 

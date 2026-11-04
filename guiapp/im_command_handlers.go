@@ -22,6 +22,12 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 // more authority than the tool menu it bypasses.
 func (h *IMMessageHandler) handleImmediateIMCommandWithLoop(msg IMUserMessage, trimmed string, providedLoopCtx *LoopContext, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, bool) {
 	trimmed = normalizeImmediateCommandText(trimmed)
+	if _, _, ok := parseHopJITCommand(trimmed); ok {
+		if providedLoopCtx != nil && providedLoopCtx.LansengerGroupPermissions != nil {
+			return &IMAgentResponse{Text: localizedLansengerGroupCommandRestrictedMessage(h.imCommandResponseLang(msg.Lang))}, true
+		}
+		return h.handleHopJITCommand(msg, trimmed, onProgress)
+	}
 	commandKind := classifyImmediateIMCommand(trimmed)
 	responseLang := h.imCommandResponseLang(msg.Lang)
 	if providedLoopCtx != nil && providedLoopCtx.LansengerGroupPermissions != nil && commandKind != imCommandUnknown {

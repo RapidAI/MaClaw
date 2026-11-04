@@ -31,6 +31,7 @@ type fakeCloudWorkspaceHub struct {
 	conflictUntilForce   bool
 	forceCount           int
 	leaseAcquires        int
+	denyShareWrite       bool
 	heartbeats           int
 	heartbeatStatus      int
 	heartbeatSession     string
@@ -471,6 +472,14 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 		}
 		_ = json.NewEncoder(w).Encode(ent)
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/leases"):
+		if h.denyShareWrite {
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code":    "CLOUD_WORKSPACE_SHARE_READ_ONLY",
+				"message": "cloud workspace share is read-only",
+			})
+			return
+		}
 		var req struct {
 			Force bool `json:"force"`
 		}
@@ -1737,6 +1746,100 @@ func TestPrepareSendsHeartbeatDuringSync(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("prepare must heartbeat before Pull/Push finishes")
+}
+
+func TestResumeReadShareOpensWithoutWriterLease(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspaceReadOnly("cws_ro_open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := app.createTaskRecordWithWorkingDir("分享材料", "", []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		cloudWorkspaceTag("cws_ro_open"),
+		cloudWorkspaceShareReadTagPrefix,
+		cloudWorkspaceSharedFromPrefix + "owner@example.com",
+	}, prepared.LocalPath, true)
+	if strings.TrimSpace(created.ProjectPath) == "" {
+		t.Fatal("read-share task was not created")
+	}
+	hub.mu.Lock()
+	before := hub.leaseAcquires
+	hub.mu.Unlock()
+
+	resumed, err := app.ResumeCloudWorkspaceTask("cws_ro_open", created.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.ProjectPath != created.ProjectPath {
+		t.Fatalf("resume path = %q, want %q", resumed.ProjectPath, created.ProjectPath)
+	}
+	if got := app.ResumeTask(created.ProjectPath); got == "" {
+		t.Fatal("ResumeTask should open a read-only share")
+	}
+	hub.mu.Lock()
+	after := hub.leaseAcquires
+	hub.mu.Unlock()
+	if after != before {
+		t.Fatalf("read-share open requested a writer lease, before=%d after=%d", before, after)
+	}
+	mount := lookupHeldCloudWorkspace("cws_ro_open")
+	if mount == nil {
+		t.Fatal("read-share mount missing")
+	}
+	mount.mu.Lock()
+	readOnly := mount.ReadOnly
+	mount.mu.Unlock()
+	if !readOnly {
+		t.Fatal("read-share open upgraded the mount to a writer")
+	}
+}
+
+func TestResumeUntaggedShareReadOnlyFallsBackToReader(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "", "cws_denied_write")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.releaseCloudWorkspace(ctx, "cws_denied_write", false); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	hub.mu.Lock()
+	hub.denyShareWrite = true
+	before := hub.leaseAcquires
+	hub.mu.Unlock()
+
+	resumed, err := app.ResumeCloudWorkspaceTask("cws_denied_write", created.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.ProjectPath == "" {
+		t.Fatal("read-only denial should still return the task")
+	}
+	if !cloudWorkspaceTaskIsReadShare(resumed) {
+		t.Fatalf("tags = %#v, want read share", resumed.Tags)
+	}
+	if got := app.ResumeTask(resumed.ProjectPath); got == "" {
+		t.Fatal("ResumeTask should open after the read-only fallback")
+	}
+	hub.mu.Lock()
+	after := hub.leaseAcquires
+	hub.mu.Unlock()
+	if after != before {
+		t.Fatalf("fallback open acquired a writer lease, before=%d after=%d", before, after)
+	}
+	mount := lookupHeldCloudWorkspace("cws_denied_write")
+	if mount == nil {
+		t.Fatal("reader mount missing after fallback")
+	}
+	mount.mu.Lock()
+	readOnly := mount.ReadOnly
+	mount.mu.Unlock()
+	if !readOnly {
+		t.Fatal("fallback left a writer mount")
+	}
 }
 
 func TestResumeTaskPreparesCloudWorkspace(t *testing.T) {

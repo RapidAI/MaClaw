@@ -227,6 +227,8 @@ func cloudWorkspaceAPIError(status int, data []byte) error {
 		return wrapCloudWorkspaceShareError(errCloudWorkspaceShareExpired)
 	case "CLOUD_WORKSPACE_SHARE_SELF":
 		return wrapCloudWorkspaceShareError(errCloudWorkspaceShareSelf)
+	case "CLOUD_WORKSPACE_SHARE_READ_ONLY":
+		return errCloudWorkspaceShareReadOnly
 	case "CLOUD_WORKSPACE_REVISION_CONFLICT":
 		return fmt.Errorf("云端工作区版本冲突，请重试")
 	case "FENCED":
@@ -1136,14 +1138,23 @@ func (a *App) ResumeCloudWorkspaceTask(workspaceID, projectPath string) (Project
 	if path, ok := heldWritableCloudWorkspacePath(workspaceID); ok && strings.TrimSpace(path) != "" {
 		alreadyHeld = true
 	}
+	// A reader must not take the writer lease. Hub answers that request with
+	// "cloud workspace share is read-only"; opening still has to land on this
+	// task, mounted from the read-only cache.
+	readShare := cloudWorkspaceTaskIsReadShare(existing) || a.cloudWorkspaceShareAccessPermission(workspaceID) == "read"
 	var prepared PreparedCloudWorkspace
 	err := keepCloudWorkspacePendingSidecars(workspaceID, projectResultIsTaskCopy(existing), func() error {
 		var prepareErr error
-		if cloudWorkspaceTaskIsReadShare(existing) {
+		if readShare {
 			prepared, prepareErr = a.PrepareCloudWorkspaceReadOnly(workspaceID)
-		} else {
-			prepared, prepareErr = a.PrepareCloudWorkspace(workspaceID)
+			return prepareErr
 		}
+		prepared, prepareErr = a.PrepareCloudWorkspace(workspaceID)
+		if !cloudWorkspaceErrIsShareReadOnly(prepareErr) {
+			return prepareErr
+		}
+		readShare = true
+		prepared, prepareErr = a.PrepareCloudWorkspaceReadOnly(workspaceID)
 		return prepareErr
 	})
 	if err != nil {
@@ -1152,6 +1163,9 @@ func (a *App) ResumeCloudWorkspaceTask(workspaceID, projectPath string) (Project
 	}
 	if strings.TrimSpace(prepared.LocalPath) == "" {
 		return ProjectSearchResult{}, fmt.Errorf("cloud workspace cache path is empty")
+	}
+	if readShare {
+		existing = a.markCloudWorkspaceTaskReadShare(existing, workspaceID)
 	}
 	bound := a.bindPreparedCloudWorkspaceTask(workspaceID, existing, prepared.LocalPath)
 	a.hideOtherLocalCloudWorkspaceTasks(workspaceID, bound.ProjectPath)

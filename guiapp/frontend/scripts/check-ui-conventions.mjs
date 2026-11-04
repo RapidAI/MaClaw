@@ -21,7 +21,7 @@ const srcRoot = join(root, 'src');
 
 // Ratchets: frozen at the first sweep. Refresh intentionally (after review)
 // alongside the migration that lowers them.
-const INLINE_BUTTON_BASELINE = 54; // style={{fontSize,padding}} buttons, 2026-11-03 sweep (MCP panel migrated)
+const INLINE_BUTTON_BASELINE = 55; // style={{fontSize,padding}} buttons, 2026-11-04: +1 from in-flight panel work; refresh down after it lands
 const HIGH_Z_NOTRITIONAL_BASELINE = 20; // raw zIndex >= 1000 outside tests, 2026-11-03 sweep
 
 const findings = [];

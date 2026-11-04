@@ -36,6 +36,7 @@ import {
     parseWailsEventObject,
     REVEAL_CLOUD_WORKSPACE_FILES_EVENT,
     scrubCloudWorkspaceError,
+    isCloudWorkspaceShareReadOnlyMessage,
     isCodingWorkflowSourceTags,
     isPureCodingTaskTags,
     isRemoteMaintenanceTaskTags,
@@ -377,6 +378,12 @@ describe("codingTaskMode", () => {
             projectPath: taskPath,
             pendingReveal: { projectPath: taskPath, workingDir: cache },
         })).toBe(false);
+    });
+
+    it("recognizes a read-only cloud share denial", () => {
+        expect(isCloudWorkspaceShareReadOnlyMessage("cloud workspace share is read-only")).toBe(true);
+        expect(isCloudWorkspaceShareReadOnlyMessage("CLOUD_WORKSPACE_SHARE_READ_ONLY")).toBe(true);
+        expect(isCloudWorkspaceShareReadOnlyMessage("无法打开云端工作区任务")).toBe(false);
     });
 
     it("scrubs local cache paths from cloud workspace errors", () => {

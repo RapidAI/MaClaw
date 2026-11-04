@@ -3136,6 +3136,11 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	ensureIMHandlerElapsed = time.Since(imHandlerStartedAt)
 	status(i18n.MsgStatusEnvReady)
 	a.restoreProjectAgentSession(handler, msg.UserID, projectPath)
+	if projectContinuationHistoryMissing(req, handler, msg.UserID, projectPath) {
+		log.Printf("[AI assistant] continuation blocked without task history request_id=%s session_key=%q project=%q", requestID, msg.UserID, projectPath)
+		emitFinalResponse(projectContinuationHistoryMissingResponse(req, msg.UserID))
+		return
+	}
 	if shouldReconcileAIAssistantClientHistory(req, msg.UserID) {
 		status(i18n.MsgStatusSyncContext)
 		a.reconcileAIAssistantClientHistory(handler, msg.UserID, req.RecentMessages)

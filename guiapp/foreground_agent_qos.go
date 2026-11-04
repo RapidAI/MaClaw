@@ -87,6 +87,7 @@ func beginForegroundAgentOwner(ownerID string) (int64, bool) {
 	if ownerID == "" {
 		ownerID = "unknown"
 	}
+	beginWorkRootAgentOwner(ownerID)
 	foregroundAgentOwners.mu.Lock()
 	defer foregroundAgentOwners.mu.Unlock()
 	count := foregroundAgentOwners.counts[ownerID]
@@ -105,6 +106,7 @@ func endForegroundAgentOwner(ownerID string) (int64, bool) {
 	if ownerID == "" {
 		ownerID = "unknown"
 	}
+	endWorkRootAgentOwner(ownerID)
 	foregroundAgentOwners.mu.Lock()
 	defer foregroundAgentOwners.mu.Unlock()
 	count := foregroundAgentOwners.counts[ownerID]

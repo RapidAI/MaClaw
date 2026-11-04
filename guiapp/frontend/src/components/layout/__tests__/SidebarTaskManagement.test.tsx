@@ -4187,8 +4187,58 @@ describe('SidebarTaskManagement', () => {
             }],
         });
 
-        expect(screen.getByTestId('task-cloud-shared-from').textContent).toBe('来自 u1@x.com · 只读');
+        expect(screen.getByTestId('task-cloud-share-readonly').textContent).toBe('只读');
+        expect(screen.getByTestId('task-cloud-shared-from').textContent).toBe('来自 u1@x.com');
         expect(screen.queryByTestId('task-cloud-share')).toBeNull();
+    });
+
+    it('copies a read-only shared cloud task as a local task', async () => {
+        const resumeTask = vi.fn().mockResolvedValue(true);
+        duplicateTaskMock.mockResolvedValue({
+            project_path: 'D:/work/tasks/local-copy',
+            name: '（副本）跨设备任务',
+            tags: ['task_management', 'task_copy'],
+        });
+        renderTaskManagement({
+            lang: 'zh',
+            resumeTask,
+            taskContextMenu: {
+                x: 10,
+                y: 20,
+                projectPath: baseProject.project_path,
+                name: '跨设备任务',
+                pinned: false,
+                tags: ['task_management', 'cloud_workspace:cws_a', 'cloud_workspace_share:read', 'cloud_workspace_shared_from:u1@x.com'],
+            },
+        });
+
+        const item = screen.getByTestId('task-context-copy');
+        expect(item.textContent || '').toContain('复制为本地任务');
+        fireEvent.click(item);
+        await waitFor(() => expect(duplicateTaskMock).toHaveBeenCalledWith(baseProject.project_path));
+        await waitFor(() => expect(resumeTask).toHaveBeenCalledWith('D:/work/tasks/local-copy', expect.objectContaining({
+            project_path: 'D:/work/tasks/local-copy',
+            tags: ['task_management', 'task_copy'],
+        })));
+    });
+
+    it('copies a read-only share as a local task from the assistant action', async () => {
+        const resumeTask = vi.fn().mockResolvedValue(true);
+        duplicateTaskMock.mockResolvedValue({
+            project_path: 'D:/work/tasks/local-copy',
+            name: '（副本）跨设备任务',
+            tags: ['task_management', 'task_copy'],
+        });
+        renderTaskManagement({ lang: 'zh', resumeTask });
+
+        window.dispatchEvent(new CustomEvent('maclaw:copy-read-share-as-local', {
+            detail: { projectPath: baseProject.project_path },
+        }));
+
+        await waitFor(() => expect(duplicateTaskMock).toHaveBeenCalledWith(baseProject.project_path));
+        await waitFor(() => expect(resumeTask).toHaveBeenCalledWith('D:/work/tasks/local-copy', expect.objectContaining({
+            project_path: 'D:/work/tasks/local-copy',
+        })));
     });
 
     it('omits the hub quota from the overview summary when it is unknown', async () => {

@@ -22,6 +22,7 @@ var (
 	errCloudWorkspaceShareExpired          = errors.New("share expired")
 	errCloudWorkspaceShareSelf             = errors.New("share self")
 	errCloudWorkspaceShareRevoked          = errors.New("share revoked")
+	errCloudWorkspaceShareReadOnly         = errors.New("cloud workspace share is read-only")
 )
 
 type localizedCloudWorkspaceShareError struct {
@@ -145,6 +146,87 @@ func cloudWorkspaceTaskIsReadShare(result ProjectSearchResult) bool {
 		}
 	}
 	return false
+}
+
+func cloudWorkspaceErrIsShareReadOnly(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errCloudWorkspaceShareReadOnly) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "share is read-only") || strings.Contains(msg, "cloud_workspace_share_read_only")
+}
+
+func (a *App) cloudWorkspaceShareAccessPermission(workspaceID string) string {
+	sess, ok := a.lookupShareAccessSession(workspaceID)
+	if !ok {
+		return ""
+	}
+	switch strings.TrimSpace(sess.Permission) {
+	case "read", "write":
+		return strings.TrimSpace(sess.Permission)
+	default:
+		return ""
+	}
+}
+
+// taskOpensAsCloudReadShare is true when this machine joined workspaceID as a
+// reader. Opening it must hydrate the read-only cache and must not ask Hub
+// for a writer lease.
+func (a *App) taskOpensAsCloudReadShare(taskPath, workspaceID string) bool {
+	if a.cloudWorkspaceShareAccessPermission(workspaceID) == "read" {
+		return true
+	}
+	taskPath = normalizeProjectSessionPath(taskPath)
+	if a == nil || taskPath == "" {
+		return false
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil || a.memoryStore.ProjectIndex() == nil {
+		return false
+	}
+	rec := a.memoryStore.ProjectIndex().Get(taskPath)
+	if rec == nil {
+		return false
+	}
+	for _, tag := range rec.Tags {
+		if strings.TrimSpace(tag) == cloudWorkspaceShareReadTagPrefix {
+			return true
+		}
+	}
+	return false
+}
+
+// markCloudWorkspaceTaskReadShare records the reader tag so the task list and
+// assistant can show a read-only mark without another lease attempt.
+func (a *App) markCloudWorkspaceTaskReadShare(result ProjectSearchResult, workspaceID string) ProjectSearchResult {
+	if cloudWorkspaceTaskIsReadShare(result) {
+		return result
+	}
+	owner := ""
+	if sess, ok := a.lookupShareAccessSession(workspaceID); ok {
+		owner = strings.TrimSpace(sess.OwnerEmail)
+	}
+	return a.tagSharedCloudWorkspaceTask(result, workspaceID, "read", owner)
+}
+
+func (a *App) markCloudWorkspaceTaskReadShareByPath(taskPath, workspaceID string) {
+	taskPath = normalizeProjectSessionPath(taskPath)
+	if a == nil || taskPath == "" {
+		return
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil || a.memoryStore.ProjectIndex() == nil {
+		return
+	}
+	pi := a.memoryStore.ProjectIndex()
+	rec := pi.Get(taskPath)
+	if rec == nil {
+		return
+	}
+	a.markCloudWorkspaceTaskReadShare(a.projectRecordToSearchResult(pi, *rec), workspaceID)
 }
 
 func cloudWorkspaceShareTag(permission string) string {

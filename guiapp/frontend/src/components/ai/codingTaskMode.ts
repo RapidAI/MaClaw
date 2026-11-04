@@ -145,6 +145,13 @@ export function isCloudWorkspacePath(path?: string | null): boolean {
 }
 
 /** Task list / resume: tagged or mounted on a cloud-workspace cache. */
+/** Hub denial when a reader tries to take the writer lease. Opening must not treat this as a dialog. */
+export function isCloudWorkspaceShareReadOnlyMessage(message: string): boolean {
+    const text = String(message || '').trim().toLowerCase();
+    if (!text) return false;
+    return text.includes('share is read-only') || text.includes('cloud_workspace_share_read_only');
+}
+
 export function cloudWorkspaceSharePermissionFromTags(tags?: string[] | null): 'read' | 'write' | '' {
     if (!tags?.length) return '';
     for (const raw of tags) {

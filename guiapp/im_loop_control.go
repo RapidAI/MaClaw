@@ -1320,9 +1320,12 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 		loopID = ctx.ID
 	}
 	cleanupForegroundQoS := func() {}
+	cleanupWorkRootOwnership := func() {}
 	if h != nil && h.app != nil && isForegroundAgentLoopRuntime(ctx) {
 		cleanupForegroundQoS = h.app.beginForegroundAgentLoop(userID, requestID, loopID)
 	} else if ctx != nil && ctx.Kind == LoopKindBackground {
+		beginWorkRootAgentOwner(userID)
+		cleanupWorkRootOwnership = func() { endWorkRootAgentOwner(userID) }
 		log.Printf("[agent-qos] foreground_skip_background owner=%q request_id=%q loop=%q slot=%s", userID, requestID, loopID, ctx.SlotKind.String())
 	}
 	// Tag the loop before it is visible. A pause that lands in this window
@@ -1362,6 +1365,7 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 		h.appendTraceEvent(ctx, "loop.started", "info", "Agent loop started", h.runtimeTraceSummary(ctx, userText), "", "")
 	}
 	return func() {
+		cleanupWorkRootOwnership()
 		cleanupForegroundQoS()
 		// Clear per-session state only if this is still the active loop. A
 		// cancellation may time out and deliberately unblock a replacement

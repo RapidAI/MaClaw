@@ -789,12 +789,28 @@ func TestShouldCopyTaskConfigTagDropsChatLineage(t *testing.T) {
 	}
 }
 
-func TestDuplicateTaskKeepsReadOnlyCloudShare(t *testing.T) {
+func TestDuplicateReadOnlyCloudShareBecomesLocalTask(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	workingDir := filepath.Join(t.TempDir(), "cloud-read")
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(workingDir, "brief.md"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(workingDir, ".maclaw-cloud"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workingDir, ".maclaw-cloud", "state.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(workingDir, "src", ".maclaw-cloud"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workingDir, "src", ".maclaw-cloud", "state.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "notes.txt")
 	source := app.createTaskRecordWithWorkingDir("分享材料", "", []string{
 		taskManagementTag,
 		taskUserCreatedTag,
@@ -802,15 +818,272 @@ func TestDuplicateTaskKeepsReadOnlyCloudShare(t *testing.T) {
 		cloudWorkspaceShareReadTagPrefix,
 		cloudWorkspaceSharedFromPrefix + "owner@example.com",
 	}, workingDir, true)
+	sticky, err := json.Marshal(stickyCodingWorkbenchMemory{
+		Kind:          "local",
+		ProjectPath:   workingDir,
+		LastUserText:  "continue this",
+		ApprovedDirs:  []string{workingDir},
+		FilesModified: []string{filepath.Join(workingDir, "brief.md"), outside},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source.ProjectPath, stickyCodingMemoryFileName), sticky, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	copied, err := app.DuplicateTask(source.ProjectPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cloudWorkspaceTaskIsReadShare(copied) {
-		t.Fatalf("copy tags = %#v, want read-only share", copied.Tags)
+	if cloudWorkspaceTaskIsReadShare(copied) || cloudWorkspaceIDFromTags(copied.Tags) != "" {
+		t.Fatalf("copy tags = %#v, want a local task", copied.Tags)
 	}
-	if !projectRecordHasTagLike(copied.Tags, cloudWorkspaceSharedFromPrefix+"owner@example.com") {
-		t.Fatalf("copy tags = %#v, want share owner", copied.Tags)
+	if projectRecordHasTagLike(copied.Tags, cloudWorkspaceSharedFromPrefix+"owner@example.com") {
+		t.Fatalf("copy tags = %#v, still names the share owner", copied.Tags)
+	}
+	if !projectRecordHasTagLike(copied.Tags, taskCopyTag) {
+		t.Fatalf("copy tags = %#v, want task_copy", copied.Tags)
+	}
+	data, err := os.ReadFile(filepath.Join(copied.ProjectPath, "workspace", "brief.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("copied artifact = %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(copied.ProjectPath, "workspace", ".maclaw-cloud", "state.json")); !os.IsNotExist(err) {
+		t.Fatalf("cloud sync state was copied into the local task: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(copied.ProjectPath, "workspace", "src", ".maclaw-cloud", "state.json")); !os.IsNotExist(err) {
+		t.Fatalf("nested cloud sync state was copied into the local task: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(copied.ProjectPath, "workspace", "README.md")); !os.IsNotExist(err) {
+		t.Fatal("empty-sandbox readme should not sit beside the copied files")
+	}
+	copiedSticky, err := os.ReadFile(filepath.Join(copied.ProjectPath, stickyCodingMemoryFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mem stickyCodingWorkbenchMemory
+	if err := json.Unmarshal(copiedSticky, &mem); err != nil {
+		t.Fatal(err)
+	}
+	localWorkspace := filepath.Join(copied.ProjectPath, "workspace")
+	if normalizeProjectSessionPath(mem.ProjectPath) != normalizeProjectSessionPath(localWorkspace) {
+		t.Fatalf("coding project path = %q, want %q", mem.ProjectPath, localWorkspace)
+	}
+	if len(mem.ApprovedDirs) != 1 || normalizeProjectSessionPath(mem.ApprovedDirs[0]) != normalizeProjectSessionPath(localWorkspace) {
+		t.Fatalf("approved dirs = %#v, want the local workspace", mem.ApprovedDirs)
+	}
+	wantFile := filepath.Join(localWorkspace, "brief.md")
+	if len(mem.FilesModified) != 2 || normalizeProjectSessionPath(mem.FilesModified[0]) != normalizeProjectSessionPath(wantFile) {
+		t.Fatalf("files modified = %#v, want %q first", mem.FilesModified, wantFile)
+	}
+	if normalizeProjectSessionPath(mem.FilesModified[1]) != normalizeProjectSessionPath(outside) {
+		t.Fatalf("outside file was rewritten: %#v", mem.FilesModified)
+	}
+	if copied.CopyNotice != "" {
+		t.Fatalf("copy notice = %q", copied.CopyNotice)
+	}
+	if normalizeProjectSessionPath(copied.WorkingDir) == normalizeProjectSessionPath(workingDir) {
+		t.Fatal("local copy still executes in the shared cache")
+	}
+	kept := app.memoryStore.ProjectIndex().Get(source.ProjectPath)
+	if kept == nil || !projectRecordHasTag(*kept, cloudWorkspaceShareReadTagPrefix) || !projectRecordHasTag(*kept, cloudWorkspaceTag("cws_share01")) {
+		t.Fatalf("shared task should stay a read-only view, tags = %+v", kept)
+	}
+}
+
+func TestDuplicateReadShareMissingCacheReportsFilesUnavailable(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	missing := filepath.Join(t.TempDir(), "gone")
+	source := app.createTaskRecordWithWorkingDir("分享材料", "", []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		cloudWorkspaceTag("cws_missing"),
+		cloudWorkspaceShareReadTagPrefix,
+		cloudWorkspaceSharedFromPrefix + "owner@example.com",
+	}, missing, true)
+	payload, err := json.Marshal(stickyCodingWorkbenchMemory{
+		Kind:         "local",
+		ProjectPath:  missing,
+		LastUserText: "continue this",
+		ApprovedDirs: []string{missing},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source.ProjectPath, stickyCodingMemoryFileName), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	copied, err := app.DuplicateTask(source.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copied.CopyNotice != taskCopyFilesUnavailable {
+		t.Fatalf("copy notice = %q, want %q", copied.CopyNotice, taskCopyFilesUnavailable)
+	}
+	if cloudWorkspaceIDFromTags(copied.Tags) != "" || cloudWorkspaceTaskIsReadShare(copied) {
+		t.Fatalf("copy tags = %#v, want a local task", copied.Tags)
+	}
+	data, err := os.ReadFile(filepath.Join(copied.ProjectPath, stickyCodingMemoryFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mem stickyCodingWorkbenchMemory
+	if err := json.Unmarshal(data, &mem); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(copied.ProjectPath, "workspace")
+	if normalizeProjectSessionPath(mem.ProjectPath) != normalizeProjectSessionPath(workspace) {
+		t.Fatalf("project path = %q, want %q", mem.ProjectPath, workspace)
+	}
+	if len(mem.ApprovedDirs) != 1 || normalizeProjectSessionPath(mem.ApprovedDirs[0]) != normalizeProjectSessionPath(workspace) {
+		t.Fatalf("approved dirs = %#v, want the local workspace", mem.ApprovedDirs)
+	}
+}
+func TestCopyTaskCodingConfigRelocatesEveryCacheRoot(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "task")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	newer := filepath.Join(root, "cache-new")
+	older := filepath.Join(root, "cache-old")
+	dest := filepath.Join(root, "copy")
+	workspace := filepath.Join(dest, "workspace")
+	payload, err := json.Marshal(stickyCodingWorkbenchMemory{
+		Kind:          "local",
+		ProjectPath:   newer,
+		LastUserText:  "continue this",
+		ApprovedDirs:  []string{older},
+		FilesModified: []string{filepath.Join(older, "brief.md")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, stickyCodingMemoryFileName), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyTaskCodingConfig(source, dest, workspace, newer, older); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, stickyCodingMemoryFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mem stickyCodingWorkbenchMemory
+	if err := json.Unmarshal(data, &mem); err != nil {
+		t.Fatal(err)
+	}
+	if normalizeProjectSessionPath(mem.ProjectPath) != normalizeProjectSessionPath(workspace) {
+		t.Fatalf("project path = %q, want %q", mem.ProjectPath, workspace)
+	}
+	if len(mem.ApprovedDirs) != 1 || normalizeProjectSessionPath(mem.ApprovedDirs[0]) != normalizeProjectSessionPath(workspace) {
+		t.Fatalf("approved dirs = %#v", mem.ApprovedDirs)
+	}
+	want := filepath.Join(workspace, "brief.md")
+	if len(mem.FilesModified) != 1 || normalizeProjectSessionPath(mem.FilesModified[0]) != normalizeProjectSessionPath(want) {
+		t.Fatalf("files modified = %#v, want %q", mem.FilesModified, want)
+	}
+}
+
+func TestRelocateCopiedPathIgnoresLetterCase(t *testing.T) {
+	base := t.TempDir()
+	from := filepath.Join(base, "CloudCache")
+	flipped := flipASCIICase(from)
+	workspace := filepath.Join(base, "workspace")
+	file := filepath.Join(flipped, "src", "brief.md")
+	got := relocateCopiedPath(file, from, workspace)
+	want := filepath.Join(workspace, "src", "brief.md")
+	if normalizeProjectSessionPath(got) != normalizeProjectSessionPath(want) {
+		t.Fatalf("relocated = %q, want %q", got, want)
+	}
+	outside := filepath.Join(base, "other", "notes.txt")
+	if got := relocateCopiedPath(outside, from, workspace); normalizeProjectSessionPath(got) != normalizeProjectSessionPath(outside) {
+		t.Fatalf("outside path was rewritten: %q", got)
+	}
+	dotted := filepath.Join(from, "..notes", "a.txt")
+	got = relocateCopiedPath(dotted, from, workspace)
+	want = filepath.Join(workspace, "..notes", "a.txt")
+	if normalizeProjectSessionPath(got) != normalizeProjectSessionPath(want) {
+		t.Fatalf("dotted name = %q, want %q", got, want)
+	}
+}
+
+func flipASCIICase(path string) string {
+	b := []byte(path)
+	for i, c := range b {
+		switch {
+		case c >= 'a' && c <= 'z':
+			b[i] = c - 'a' + 'A'
+		case c >= 'A' && c <= 'Z':
+			b[i] = c - 'A' + 'a'
+		}
+	}
+	return string(b)
+}
+
+func TestReadShareCopyNoticeWhenPullLeavesNoArtifacts(t *testing.T) {
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dest, "README.md"), []byte("sandbox"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dest, ".maclaw-cloud"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, ".maclaw-cloud", "state.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readShareCopyNotice(dest, true, dest); got != taskCopyFilesUnavailable {
+		t.Fatalf("notice = %q, want files unavailable when the pull failed and only sync state remains", got)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "brief.md"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readShareCopyNotice(dest, true, dest); got != "" {
+		t.Fatalf("notice = %q, want none when the fallback directory has the shared file", got)
+	}
+	if got := readShareCopyNotice("", false, dest); got != taskCopyFilesUnavailable {
+		t.Fatalf("notice = %q, want files unavailable when there is no source directory", got)
+	}
+	if got := readShareCopyNotice(dest, false, dest); got != "" {
+		t.Fatalf("notice = %q, want none when the files were read locally", got)
+	}
+}
+
+func TestReadShareRelocateRootsSkipsParentOfDestination(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	dest := filepath.Join(root, "tasks", "copy", "workspace")
+	got := readShareRelocateRoots(cache, root, dest)
+	if len(got) != 1 || normalizeProjectSessionPath(got[0]) != normalizeProjectSessionPath(cache) {
+		t.Fatalf("roots = %#v, want only the cache", got)
+	}
+	got = readShareRelocateRoots(cache, cache, dest)
+	if len(got) != 1 || normalizeProjectSessionPath(got[0]) != normalizeProjectSessionPath(cache) {
+		t.Fatalf("roots = %#v, want the cache once", got)
+	}
+	got = readShareRelocateRoots("", "", dest)
+	if len(got) != 1 || normalizeProjectSessionPath(got[0]) != normalizeProjectSessionPath(dest) {
+		t.Fatalf("roots = %#v, want the new sandbox", got)
+	}
+}
+
+func TestRetargetCopiedCodingProjectPathKeepsExternalDir(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	target := filepath.Join(root, "copy")
+	working := filepath.Join(source, "workspace")
+	external := filepath.Join(root, "repo")
+	got := retargetCopiedCodingProjectPath(source, target, working, external)
+	if normalizeProjectSessionPath(got) != normalizeProjectSessionPath(external) {
+		t.Fatalf("external project path = %q, want %q", got, external)
+	}
+	inside := filepath.Join(source, "notes")
+	got = retargetCopiedCodingProjectPath(source, target, working, inside)
+	if normalizeProjectSessionPath(got) != normalizeProjectSessionPath(working) {
+		t.Fatalf("path inside the source task = %q, want %q", got, working)
 	}
 }
 
