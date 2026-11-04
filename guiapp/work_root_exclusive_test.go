@@ -185,6 +185,105 @@ func TestSharedWorkRootStaysWithTheEarlierLiveSession(t *testing.T) {
 	}
 }
 
+func TestReopenedTaskContinuationRestoresHistoryAndIsolatesSharedWorkRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	app := newProjectSearchTestApp(t)
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init")
+	readme := filepath.Join(repo, "README")
+	if err := os.WriteFile(readme, []byte("committed-head\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "-c", "core.autocrlf=false", "add", "README")
+	mustGit(t, repo, "-c", "user.email=test@example.com", "-c", "user.name=test", "-c", "core.autocrlf=false", "commit", "-m", "init")
+	buddyFile := filepath.Join(repo, "font.c")
+	if err := os.WriteFile(buddyFile, []byte("buddy-live-uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buddy := app.createTaskRecordWithWorkingDir("buddy刷机", "", []string{taskManagementTag, taskUserCreatedTag, taskCodingDevTag}, repo, true)
+	npu := app.createTaskRecordWithWorkingDir("检查NPU", "", []string{taskManagementTag, taskUserCreatedTag}, repo, true)
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        "npu-old",
+		ProjectPath:  npu.ProjectPath,
+		LastActiveAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+		Conversation: []interface{}{
+			map[string]interface{}{"role": "user", "content": "检查本机 NPU"},
+			map[string]interface{}{"role": "assistant", "content": "NPU 空闲"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if msg := app.CreateProjectTabSession("npu-reopened", npu.ProjectPath); strings.TrimSpace(msg) == "" {
+		t.Fatal("reopen project tab returned empty")
+	}
+
+	buddyOwner := projectSessionOwnerID(buddy.ProjectPath)
+	npuOwner := projectSessionOwnerID(npu.ProjectPath)
+	t.Cleanup(func() {
+		endForegroundAgentOwner(buddyOwner)
+		endForegroundAgentOwner(npuOwner)
+		_ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", app.exclusiveCheckoutDir(npu.ProjectPath)).Run()
+	})
+	beginForegroundAgentOwner(buddyOwner)
+	time.Sleep(20 * time.Millisecond)
+	beginForegroundAgentOwner(npuOwner)
+
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	memory.Save(buddyOwner, []agent.ConversationEntry{
+		{Role: "user", Content: "修复 buddy 字体并刷机"},
+		{Role: "assistant", Content: "正在处理 buddy 字库"},
+	})
+	h := &IMMessageHandler{app: app, memory: memory}
+	app.restoreProjectAgentSession(h, npuOwner, npu.ProjectPath)
+	memory.Append(npuOwner, agent.ConversationEntry{Role: "user", Content: "继续"})
+	continued := memory.Load(npuOwner)
+	if len(continued) != 3 || continued[0].Content != "检查本机 NPU" || continued[1].Content != "NPU 空闲" || continued[2].Content != "继续" {
+		t.Fatalf("continued NPU history = %#v, want only the restored NPU turns and the continuation", continued)
+	}
+
+	if got := normalizeProjectSessionPath(h.projectTabWorkDirForOwner(buddyOwner)); got != normalizeProjectSessionPath(repo) {
+		t.Fatalf("buddy exec = %q, want its live tree %q", got, repo)
+	}
+	npuRoot := h.projectTabWorkDirForOwner(npuOwner)
+	assertPrivateCheckout(t, repo, npuRoot)
+	readBuddy, err := h.resolveFileToolPathForOwner(buddyFile, npuOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadFile(readBuddy); !os.IsNotExist(err) {
+		t.Fatalf("NPU read buddy's uncommitted file through %q, err=%v", readBuddy, err)
+	}
+
+	npuOutput, err := h.resolveFileToolPathForOwner(filepath.Join(repo, "build", "npu_probe.py"), npuOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pathInsideWorkRoot(npuRoot, npuOutput) || pathInsideWorkRoot(repo, npuOutput) {
+		t.Fatalf("NPU output path = %q, want private checkout %q", npuOutput, npuRoot)
+	}
+	if err := os.MkdirAll(filepath.Dir(npuOutput), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(npuOutput, []byte("npu-only\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "build", "npu_probe.py")); !os.IsNotExist(err) {
+		t.Fatalf("NPU output leaked into buddy's live tree, stat err=%v", err)
+	}
+	body, err := os.ReadFile(buddyFile)
+	if err != nil || string(body) != "buddy-live-uncommitted\n" {
+		t.Fatalf("buddy live file = %q err=%v, want its uncommitted content preserved", body, err)
+	}
+}
+
 func TestLaterCodingSessionKeepsDetachedCheckout(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
