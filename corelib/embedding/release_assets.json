@@ -78,6 +78,13 @@
    "subdir": "table",
    "size": 8335007,
    "sha256": "0ea48d3a17e35ef5c2e498a5e799566073234d39b1079ca21d9f4fafe73c6d20"
+  },
+  {
+   "filename": "head_mlp_qwen3go_mn_guard.json",
+   "kind": "mn_guard_head",
+   "subdir": "intent_heads",
+   "size": 57454638,
+   "sha256": "732eee75488f3c28ccfadf122f7010c0c66c7a882cd717211a7431832ae23d6c"
   }
  ]
 }

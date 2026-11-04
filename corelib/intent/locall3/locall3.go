@@ -46,6 +46,11 @@ type state struct {
 	emb  embedding.Embedder
 	head *intent.LocalHead
 	fn   intent.LLMClassifyContextFunc
+	// mnHead / mnFn: optional Mongolian confidence + sensitive guard
+	// (intent.MNGuardHeadName next to the intent heads). nil → Cyrillic
+	// input always goes to the remote L3.
+	mnHead *intent.LocalHead
+	mnFn   intent.LLMClassifyContextFunc
 }
 
 // Runtime owns the active (embedder, head) pair. Safe for concurrent use;
@@ -59,6 +64,29 @@ type Runtime struct {
 	lastErr error
 	// Logf receives per-turn L3 path lines; nil → log.Printf.
 	Logf func(string, ...any)
+	// mnMode: intent.MNLocalShadow (default) / MNLocalOn / MNLocalOff.
+	mnMode atomic.Value
+	mnLog  *mnShadowLog
+	// mnWG tracks background shadow verdicts (tests wait on it).
+	mnWG sync.WaitGroup
+}
+
+// MNMode is the live MN guard mode (intent.MNLocalShadow / On / Off).
+func (r *Runtime) MNMode() string {
+	if v, ok := r.mnMode.Load().(string); ok && v != "" {
+		return v
+	}
+	return intent.MNLocalShadow
+}
+
+// SetMNMode switches the MN guard mode (e.g. from app config); unknown → shadow.
+func (r *Runtime) SetMNMode(mode string) {
+	switch mode {
+	case intent.MNLocalOn, intent.MNLocalOff:
+	default:
+		mode = intent.MNLocalShadow
+	}
+	r.mnMode.Store(mode)
 }
 
 func (r *Runtime) logf(format string, args ...any) {
@@ -71,12 +99,16 @@ func (r *Runtime) logf(format string, args ...any) {
 
 // New reads intent.LocalL3Env once.
 func New(headDir string) *Runtime {
-	return &Runtime{mode: intent.LocalL3Mode(), headDir: headDir}
+	r := &Runtime{mode: intent.LocalL3Mode(), headDir: headDir, mnLog: newMNShadowLog()}
+	r.SetMNMode(intent.MNLocalMode())
+	return r
 }
 
 // NewWithMode is New with an explicit mode (tests).
 func NewWithMode(headDir, mode string) *Runtime {
-	return &Runtime{mode: mode, headDir: headDir}
+	r := &Runtime{mode: mode, headDir: headDir, mnLog: newMNShadowLog()}
+	r.SetMNMode(intent.MNLocalMode())
+	return r
 }
 
 // Mode is intent.LocalL3On / LocalL3Off / LocalL3Strict.
@@ -93,6 +125,15 @@ func (r *Runtime) Attach(emb embedding.Embedder) (*intent.LocalHead, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if cur := r.st.Load(); cur != nil && intent.SameEmbedder(cur.emb, emb) {
+		// Same embedder: only pick up an MN guard head that has landed
+		// since (release asset downloaded after the intent head).
+		if cur.mnHead == nil {
+			st := *cur
+			r.attachMNGuard(&st, embedding.EmbedderFamily(emb))
+			if st.mnHead != nil {
+				r.st.Store(&st)
+			}
+		}
 		return cur.head, nil
 	}
 	fam := embedding.EmbedderFamily(emb)
@@ -103,7 +144,9 @@ func (r *Runtime) Attach(emb embedding.Embedder) (*intent.LocalHead, error) {
 		return nil, err
 	}
 	intent.ApplyProductTauS(h)
-	r.st.Store(&state{emb: emb, head: h, fn: intent.LocalTreeFunc(emb, h, nil)})
+	st := &state{emb: emb, head: h, fn: intent.LocalTreeFunc(emb, h, nil)}
+	r.attachMNGuard(st, fam)
+	r.st.Store(st)
 	r.lastErr = nil
 	return h, nil
 }
@@ -135,6 +178,9 @@ func (r *Runtime) ProbeFunc() intent.LocalHeadProbeFunc {
 		return nil
 	}
 	return func(ctx context.Context, text string) (string, float64, float64, bool) {
+		if intent.BypassLocalHeads(text) {
+			return "", 0, 0, false
+		}
 		s := r.st.Load()
 		if s == nil || s.head == nil {
 			return "", 0, 0, false
@@ -160,6 +206,21 @@ func (r *Runtime) ContextFunc(remote intent.LLMClassifyContextFunc) intent.LLMCl
 	}
 	strict := r.mode == intent.LocalL3Strict
 	return func(ctx, parent context.Context, sys, user string) (string, error) {
+		if intent.BypassLocalHeads(user) {
+			// Cyrillic (Mongolian): local heads fail their gates; use the
+			// remote tree LLM. Without a remote (strict / nil) abstain with
+			// a label-less uncertain error so L2 hint / unknown applies.
+			s := r.st.Load()
+			mnMode := r.MNMode()
+			if s != nil && s.mnHead != nil && mnMode != intent.MNLocalOff {
+				return r.mnContext(ctx, parent, sys, user, s, mnMode, strict, remote)
+			}
+			if strict || remote == nil {
+				return "", intent.NewLocalHeadUncertainError("", 0, 0)
+			}
+			r.logf("[intent] L3 routed to remote tree LLM (Cyrillic input bypasses local head)")
+			return remote(ctx, parent, sys, user)
+		}
 		if s := r.st.Load(); s != nil {
 			out, err := s.fn(ctx, parent, sys, user)
 			if err == nil {
@@ -225,4 +286,89 @@ func (r *Runtime) Describe() string {
 		return fmt.Sprintf("local L3 %s: not attached (%v)", r.mode, r.lastErr)
 	}
 	return fmt.Sprintf("local L3 %s: waiting for embedder", r.mode)
+}
+
+// attachMNGuard loads the MN guard head from the head directory when present
+// and compatible with emb (Qwen3 family, same input dim). Failures only log:
+// Cyrillic input then keeps going to the remote L3.
+func (r *Runtime) attachMNGuard(st *state, fam string) {
+	if r.MNMode() == intent.MNLocalOff {
+		return
+	}
+	dirs := []string{r.headDir}
+	for _, c := range intent.LocalHeadCandidates(fam, r.headDir) {
+		dirs = append(dirs, filepath.Dir(c))
+	}
+	for _, d := range dirs {
+		if d == "" || !intent.MNGuardHeadAvailable(d) {
+			continue
+		}
+		h, err := intent.LoadMNGuardHead(d)
+		if err != nil {
+			r.logf("[intent] MN guard head not attached: %v", err)
+			return
+		}
+		if fam != embedding.FamilyQwen3 {
+			r.logf("[intent] MN guard head %s skipped (embedder family %q)", h.ID, fam)
+			return
+		}
+		st.mnHead, st.mnFn = h, intent.MNGuardTreeFunc(st.emb, h)
+		r.logf("[intent] MN guard head attached (%s, tau=%.3f)", h.ID, h.Tau)
+		return
+	}
+}
+
+// mnContext handles a Cyrillic turn with the MN guard head attached.
+// on: guard accept → local answer; otherwise remote. shadow: remote decides,
+// the guard verdict is computed concurrently and only logged.
+func (r *Runtime) mnContext(ctx, parent context.Context, sys, user string, s *state, mode string, strict bool, remote intent.LLMClassifyContextFunc) (string, error) {
+	noRemote := strict || remote == nil
+	if mode == intent.MNLocalOn {
+		label, prob, ok, verr := intent.MNGuardVerdict(ctx, s.emb, s.mnHead, user)
+		v := mnVerdict{label, prob, ok, verr}
+		if verr == nil && ok {
+			out, err := s.mnFn(ctx, parent, sys, user)
+			if err == nil {
+				r.logf("[intent] L3 decided by MN guard head (%s)", s.mnHead.ID)
+				r.logMN(s, mode, user, v, "local", "", nil)
+				return out, nil
+			}
+		}
+		if noRemote {
+			r.logMN(s, mode, user, v, "none", "", nil)
+			return "", intent.NewLocalHeadUncertainError("", 0, 0)
+		}
+		r.logf("[intent] MN guard abstained; Cyrillic input → remote tree LLM")
+		out, err := remote(ctx, parent, sys, user)
+		r.logMN(s, mode, user, v, "remote", out, err)
+		return out, err
+	}
+	// shadow
+	ch := make(chan mnVerdict, 1)
+	bg := context.WithoutCancel(ctx)
+	r.mnWG.Add(1)
+	go func() {
+		label, prob, ok, verr := intent.MNGuardVerdict(bg, s.emb, s.mnHead, user)
+		ch <- mnVerdict{label, prob, ok, verr}
+	}()
+	var out string
+	var err error
+	decided := "none"
+	if noRemote {
+		err = intent.NewLocalHeadUncertainError("", 0, 0)
+	} else {
+		r.logf("[intent] L3 routed to remote tree LLM (Cyrillic input; MN guard in shadow mode)")
+		out, err = remote(ctx, parent, sys, user)
+		decided = "remote"
+	}
+	go func() {
+		defer r.mnWG.Done()
+		r.logMN(s, mode, user, <-ch, decided, out, func() error {
+			if decided == "none" {
+				return nil
+			}
+			return err
+		}())
+	}()
+	return out, err
 }

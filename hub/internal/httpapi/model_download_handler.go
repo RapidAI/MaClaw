@@ -52,6 +52,7 @@ var defaultHubModelFiles = strings.Join([]string{
 	"PP-DocLayoutV3.onnx",
 	"PP-DocLayoutV3.onnx.data",
 	"unet.onnx",
+	"head_mlp_qwen3go_mn_guard.json", // MN guard head (optional; absent → Cyrillic stays on remote L3)
 }, " ")
 
 const defaultHubModelLockTTL = 24 * time.Hour

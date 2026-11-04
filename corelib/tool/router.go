@@ -766,6 +766,11 @@ func (r *Router) HybridActive() bool {
 	return r.hybrid != nil
 }
 
+// toolHeadAllowedFor reports whether the first-party tool head may inject
+// tools for userMessage: Cyrillic (Mongolian) input bypasses the local heads
+// (intent.BypassLocalHeads); retrieval / UIC conditional tools still apply.
+func toolHeadAllowedFor(userMessage string) bool { return !intent.BypassLocalHeads(userMessage) }
+
 // SetToolHead installs a first-party OvR tool head for candidate injection
 // (intent scope ∪ head top-k ∪ Track A). The head must match the live
 // embedder (CheckEmbedderOf); a mismatch is refused and leaves the previous
@@ -1645,7 +1650,10 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		// same RoleClassification query vector intent L2/L3 already computed.
 		// No extra embed; fail-closed on dim mismatch. The live PreResolved
 		// vector is used when the cached label copy has dropped QueryVec.
-		r.applyToolHeadCondKeep(condKeep, routeToolHeadVector(uicResult, opts))
+		// Cyrillic (Mongolian) input skips the head (intent.BypassLocalHeads).
+		if toolHeadAllowedFor(userMessage) {
+			r.applyToolHeadCondKeep(condKeep, routeToolHeadVector(uicResult, opts))
+		}
 		uicKnowledgeWrite := !opts.SkipUnifiedClassifier && uicResult.Primary == intent.LabelKnowledgeWrite
 		for _, toolName := range classificationConditionalToolNames(uicResult) {
 			if !uicToolNameActivatable(toolName) {
@@ -1694,7 +1702,10 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		// UIC abstained, but the turn may still carry the L2 vector. The head
 		// is a candidate source beside UIC, not a second vote that waits for
 		// UIC to activate. condKeep wins over condFilterOut below.
-		r.applyToolHeadCondKeep(condKeep, routeToolHeadVector(uicResult, opts))
+		// Cyrillic (Mongolian) input skips the head (intent.BypassLocalHeads).
+		if toolHeadAllowedFor(userMessage) {
+			r.applyToolHeadCondKeep(condKeep, routeToolHeadVector(uicResult, opts))
+		}
 
 		if !opts.SkipUnifiedClassifier && r.intentClassifier != nil {
 			result := r.intentClassifier.Classify(userMessage)

@@ -32,6 +32,10 @@ func TestReleaseAssetsTable(t *testing.T) {
 	}
 	for _, a := range as {
 		// guiapp/interrupt_relevance.go loads <models>/interrupt_heads/interrupt_relevance_qwen3go.json.
+		// corelib/intent.MNGuardHeadName, next to the intent head.
+		if a.Kind == "mn_guard_head" && (a.Subdir != "intent_heads" || a.Filename != "head_mlp_qwen3go_mn_guard.json") {
+			t.Fatalf("mn guard head install path %s/%s", a.Subdir, a.Filename)
+		}
 		if a.Kind == "interrupt_head" && (a.Subdir != "interrupt_heads" || a.Filename != "interrupt_relevance_qwen3go.json") {
 			t.Fatalf("interrupt head install path %s/%s", a.Subdir, a.Filename)
 		}
