@@ -264,10 +264,7 @@ func TestDesktopBotSleepCases(t *testing.T) {
 				calls = append(calls, joined)
 				switch {
 				case strings.HasPrefix(joined, "inspect "):
-					if running {
-						return "true", nil
-					}
-					return "false", nil
+					return ensureInspectLine(running), nil
 				case strings.HasPrefix(joined, "start "):
 					running = true
 					return "", nil
@@ -350,10 +347,82 @@ func TestDesktopBotSleepCases(t *testing.T) {
 	})
 }
 
+func TestEnsureRecreatesWhenPackageMountsMissing(t *testing.T) {
+	var calls []string
+	exists := true
+	svc := &Service{
+		Run: func(_ context.Context, args ...string) (string, error) {
+			joined := strings.Join(args, " ")
+			calls = append(calls, joined)
+			switch {
+			case strings.HasPrefix(joined, "inspect "):
+				if !exists {
+					return "", errors.New("Error: No such object")
+				}
+				// Private mounts only — triggers package-volume recreate.
+				priv, err := desktop.PrivateMounts("tenant", "alice")
+				if err != nil {
+					t.Fatal(err)
+				}
+				parts := make([]string, 0, len(priv))
+				for _, m := range priv {
+					parts = append(parts, m.Volume+"="+m.Target)
+				}
+				return "false|1g|" + strings.Join(parts, " ") + "|maclaw-gui:2|maclaw-gui:2|", nil
+			case strings.HasPrefix(joined, "pull "), strings.HasPrefix(joined, "image inspect"):
+				return "", nil
+			case strings.Contains(joined, "commit"):
+				return "sha256:layer", nil
+			case strings.HasPrefix(joined, "rm "):
+				exists = false
+				return "", nil
+			case strings.HasPrefix(joined, "stop "):
+				return "", nil
+			case strings.HasPrefix(joined, "volume "):
+				if strings.Contains(joined, "inspect") {
+					return "true", nil // non-empty seed skip
+				}
+				return "", nil
+			case strings.HasPrefix(joined, "run "):
+				exists = true
+				return "cid", nil
+			case strings.HasPrefix(joined, "start "):
+				t.Fatal("Ensure must recreate, not start, when package mounts are missing")
+				return "", nil
+			default:
+				return "", nil
+			}
+		},
+	}
+	if err := svc.Ensure(context.Background(), Spec{TenantID: "tenant", UserID: "alice", Image: "maclaw-gui:2", Memory: "3g", CPUs: "1.5", ShmSize: "1g"}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(calls, "\n")
+	if !strings.Contains(joined, "rm ") || !strings.Contains(joined, "run ") {
+		t.Fatalf("expected recreate, calls:\n%s", joined)
+	}
+}
+
 func readySync() func(context.Context, SleepMeta, []desktop.Mount) (VolumeSyncResult, error) {
 	return func(context.Context, SleepMeta, []desktop.Mount) (VolumeSyncResult, error) {
 		return VolumeSyncResult{Generation: "g1", Volumes: []string{"desktops", "home", "opt", "usr-local"}}, nil
 	}
+}
+
+func ensureInspectLine(running bool) string {
+	state := "false"
+	if running {
+		state = "true"
+	}
+	mounts, err := desktop.UserMounts("tenant", "alice")
+	if err != nil {
+		panic(err)
+	}
+	parts := make([]string, 0, len(mounts))
+	for _, m := range mounts {
+		parts = append(parts, m.Volume+"="+m.Target)
+	}
+	return state + "|1g|" + strings.Join(parts, " ") + "|maclaw-gui:2|maclaw-gui:2|"
 }
 
 func stoppedDesktop() *Service {
@@ -362,10 +431,7 @@ func stoppedDesktop() *Service {
 		joined := strings.Join(args, " ")
 		switch {
 		case strings.HasPrefix(joined, "inspect "):
-			if running {
-				return "true", nil
-			}
-			return "false", nil
+			return ensureInspectLine(running), nil
 		case strings.HasPrefix(joined, "start "):
 			running = true
 			return "", nil

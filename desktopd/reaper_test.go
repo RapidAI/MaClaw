@@ -63,10 +63,31 @@ func (d *reaperDocker) run(_ context.Context, args ...string) (string, error) {
 		return `{"busy":["` + d.busy + `"]}`, nil
 	case strings.HasPrefix(joined, "inspect "):
 		name := args[len(args)-1]
+		running := "false"
 		if d.running[name] {
-			return "true", nil
+			running = "true"
 		}
-		return "false", nil
+		// Ensure uses the full inspectFormat and recreateReason; keep package
+		// mounts ready so a concurrent Ensure during sleep does not recreate.
+		if strings.Contains(joined, "maclaw.shm") || strings.Contains(joined, ".Mounts") {
+			mounts := ""
+			for _, pair := range [][2]string{{"tenant-a", "k1"}, {"tenant-a", "k2"}, {"tenant", "alice"}} {
+				if containerName(pair[0], pair[1]) == name {
+					um, err := desktop.UserMounts(pair[0], pair[1])
+					if err != nil {
+						return "", err
+					}
+					parts := make([]string, 0, len(um))
+					for _, m := range um {
+						parts = append(parts, m.Volume+"="+m.Target)
+					}
+					mounts = strings.Join(parts, " ")
+					break
+				}
+			}
+			return running + "|1g|" + mounts + "|maclaw-gui:2|maclaw-gui:2|", nil
+		}
+		return running, nil
 	case strings.HasPrefix(joined, "stop "):
 		if d.stopErr != nil {
 			return "", d.stopErr

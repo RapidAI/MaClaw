@@ -26,8 +26,9 @@ func TestDesktopBotRuntimeCases(t *testing.T) {
 
 		running := &Service{Run: func(_ context.Context, args ...string) (string, error) {
 			joined := strings.Join(args, " ")
-			if strings.HasPrefix(joined, "inspect ") && strings.Contains(joined, "{{.State.Running}}") {
-				return "true", nil
+			if strings.HasPrefix(joined, "inspect ") {
+				mounts := readyMounts(t, "tenant", "alice")
+				return "true|1g|" + mounts + "|maclaw-gui:2|maclaw-gui:2|", nil
 			}
 			t.Fatalf("ensure of a running desktop called %s", joined)
 			return "", nil

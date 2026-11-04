@@ -166,14 +166,23 @@ func (s *Service) Ensure(ctx context.Context, spec Spec) error {
 func (s *Service) ensureUnlocked(ctx context.Context, spec Spec) error {
 	started := s.now()
 	name := containerName(spec.TenantID, spec.UserID)
-	out, err := s.docker(ctx, "inspect", "--format", "{{.State.Running}}", name)
+	current, err := s.inspect(ctx, name)
 	if err != nil {
-		if missingObject(err) || missingObject(errors.New(out)) {
-			return s.warmBudget(started)
-		}
 		return err
 	}
-	if strings.TrimSpace(out) != "true" {
+	if !current.Exists {
+		// Missing stays missing so a file or bash call does not create a desktop.
+		return s.warmBudget(started)
+	}
+	// Package mounts (and other recreateReason checks) must apply on Ensure too:
+	// a plain docker start would keep an old container without shared apt roots.
+	if reason := s.recreateReason(current, spec); reason != "" {
+		if _, err := s.createUnlocked(ctx, spec); err != nil {
+			return err
+		}
+		return s.warmBudget(started)
+	}
+	if !current.Running {
 		if _, startErr := s.docker(ctx, "start", name); startErr != nil {
 			return startErr
 		}
