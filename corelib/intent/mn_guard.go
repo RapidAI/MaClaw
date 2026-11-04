@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
@@ -66,22 +67,32 @@ func MNGuardDecide(h *LocalHead, probs []float64) (label string, prob float64, a
 	return label, prob, accept
 }
 
+// MNGuardVerdict runs the guard head on text: top-1 label, its calibrated
+// probability, and whether the guard would accept it locally.
+func MNGuardVerdict(ctx context.Context, emb embedding.Embedder, h *LocalHead, text string) (label string, prob float64, accept bool, err error) {
+	if h == nil || emb == nil {
+		return "", 0, false, errLocalUncertain{msg: "mn guard head not loaded"}
+	}
+	v, scores, err := HeadQueryInput(ctx, emb, h, text)
+	if err != nil {
+		return "", 0, false, errLocalUncertain{msg: "embed: " + err.Error()}
+	}
+	probs, err := h.PredictWithAnchors(v, scores)
+	if err != nil {
+		return "", 0, false, errLocalUncertain{msg: "predict: " + err.Error()}
+	}
+	label, prob, accept = MNGuardDecide(h, probs)
+	return label, prob, accept, nil
+}
+
 // MNGuardTreeFunc is the L3 callback for Cyrillic input: local tree output on
 // a guard accept, otherwise a local-head-uncertain error (caller → remote L3).
 func MNGuardTreeFunc(emb embedding.Embedder, h *LocalHead) LLMClassifyContextFunc {
 	return func(ctx, _ context.Context, _ string, userText string) (string, error) {
-		if h == nil || emb == nil {
-			return "", errLocalUncertain{msg: "mn guard head not loaded"}
-		}
-		v, scores, err := HeadQueryInput(ctx, emb, h, userText)
+		label, prob, ok, err := MNGuardVerdict(ctx, emb, h, userText)
 		if err != nil {
-			return "", errLocalUncertain{msg: "embed: " + err.Error()}
+			return "", err
 		}
-		probs, err := h.PredictWithAnchors(v, scores)
-		if err != nil {
-			return "", errLocalUncertain{msg: "predict: " + err.Error()}
-		}
-		label, prob, ok := MNGuardDecide(h, probs)
 		if !ok {
 			return "", NewLocalHeadUncertainError(label, prob, h.Threshold(label))
 		}
@@ -91,5 +102,30 @@ func MNGuardTreeFunc(emb embedding.Embedder, h *LocalHead) LLMClassifyContextFun
 		}
 		b, _ := json.Marshal(map[string]any{"top": []map[string]any{{"skill": top, "score": prob, "workflow_type": ""}}})
 		return string(b), nil
+	}
+}
+
+// MNLocalEnv selects what the MN guard head does for Cyrillic input:
+//
+//	shadow (default) — remote L3 decides; the guard verdict is only logged
+//	on               — guard accepts locally (p ≥ τ, non-sensitive), else remote
+//	off              — guard not run at all
+const MNLocalEnv = "MACLAW_INTENT_MN_LOCAL"
+
+const (
+	MNLocalShadow = "shadow"
+	MNLocalOn     = "on"
+	MNLocalOff    = "off"
+)
+
+// MNLocalMode reads MNLocalEnv (default shadow).
+func MNLocalMode() string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(MNLocalEnv))) {
+	case "on", "1", "true", "yes", "local":
+		return MNLocalOn
+	case "off", "0", "false", "no":
+		return MNLocalOff
+	default:
+		return MNLocalShadow
 	}
 }

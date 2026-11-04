@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -21,7 +22,15 @@ import (
 func main() {
 	models := flag.String("models", "", "models dir")
 	mainHead := flag.String("main-head", "", "shipped intent head file (default <heads>/"+intent.ShippedLocalHeadName+")")
+	mnMode := flag.String("mn-mode", intent.MNLocalOn, "MN guard mode: on | shadow | off")
+	shadowLog := flag.String("mn-shadow-log", "", "MN shadow log (default: temp file, printed)")
 	flag.Parse()
+	if *shadowLog == "" {
+		f, _ := os.CreateTemp("", "mn_shadow_*.jsonl")
+		f.Close()
+		*shadowLog = f.Name()
+	}
+	os.Setenv(locall3.MNShadowLogEnv, *shadowLog)
 	bundled := locall3.DefaultHeadDir(*models)
 	if *mainHead == "" {
 		*mainHead = filepath.Join(bundled, intent.ShippedLocalHeadName)
@@ -56,6 +65,7 @@ func main() {
 	run := func(dir string) []string {
 		rt := locall3.NewWithMode(dir, intent.LocalL3On)
 		rt.Logf = func(string, ...any) {}
+		rt.SetMNMode(*mnMode)
 		h, err := rt.Attach(emb)
 		if err != nil {
 			fmt.Println("attach:", err)
@@ -84,7 +94,11 @@ func main() {
 			bad++
 		}
 	}
-	fmt.Printf("zh/en changed: %d\n", bad)
+	time.Sleep(500 * time.Millisecond) // let background shadow records land
+	if b, err := os.ReadFile(*shadowLog); err == nil {
+		fmt.Printf("[mn-shadow] %s (%d bytes):\n%s", *shadowLog, len(b), b)
+	}
+	fmt.Printf("mn-mode=%s zh/en changed: %d\n", *mnMode, bad)
 	if bad > 0 {
 		os.Exit(2)
 	}
