@@ -179,6 +179,7 @@ type App struct {
 	semanticRouteStateStore      *tool.SQLiteRouteStateStore
 	semanticHostCallJournal      *tool.SQLiteHostCallJournal
 	semanticArtifactStore        *tool.SQLiteArtifactStore
+	hopJITPersistence            hopJITPersistenceState
 	semanticDynamicContracts     agentservice.DynamicCapabilityContractRegistry
 	semanticDynamicPublisher     *agentservice.DynamicCapabilityContractPublisher
 	// codingCaps is the single owner of every desktop Coding capability:
@@ -3486,6 +3487,7 @@ func (a *App) shutdown(ctx context.Context) {
 		a.projectTabSessionPersist = nil
 	}
 	a.stopSemanticEffectReceiptWorker()
+	a.closeHopJITPersistence()
 	a.closeSemanticInvocationStore()
 	if a.qqBotGateway != nil {
 		a.qqBotGateway.Stop()

@@ -38,7 +38,7 @@ const { openFileOrShowInFolderMock, showItemInFolderMock, knowledgeOpenImageAsse
             { index: 2, text: "正文", width: 595, height: 842 },
         ],
     })),
-    importMobileDocumentFromPathMock: vi.fn(async (_path: string) => ({ id: "draft-1" })),
+    importMobileDocumentFromPathMock: vi.fn(async (_path: string): Promise<{ id: string; duplicate?: boolean }> => ({ id: "draft-1" })),
     exportTaskResultFileMock: vi.fn(async () => "D:\\export\\copy.docx"),
     exportLatexSourceBundleMock: vi.fn(async () => "D:\\export\\paper-source.zip"),
 }));
@@ -1403,7 +1403,7 @@ describe("renderContentWithCodeBlocks", () => {
         }
     });
 
-    it("uploads a saved task-result file to the mobile library from the card icon", async () => {
+    it("uploads a saved task-result file to the mobile library from the action row", async () => {
         importMobileDocumentFromPathMock.mockClear();
         const path = "C:\\Users\\me\\report.pptx";
         render(<div>{renderMessage({
@@ -1414,14 +1414,22 @@ describe("renderContentWithCodeBlocks", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
 
-        const uploadBtn = screen.getByLabelText("上传到云盘");
+        const uploadBtn = screen.getByRole("button", { name: "上传云盘" });
+        const revealBtn = screen.getByTestId("task-result-reveal-btn");
+        expect(uploadBtn.textContent).toBe("上传云盘");
+        expect(uploadBtn.parentElement).toBe(revealBtn.parentElement);
+        expect(revealBtn.nextElementSibling).toBe(uploadBtn);
+        expect(uploadBtn.closest(".mc-task-artifact-item__head")).toBeNull();
         fireEvent.click(uploadBtn);
         await waitFor(() => {
             expect(importMobileDocumentFromPathMock).toHaveBeenCalledWith(path);
         });
         await waitFor(() => {
-            expect(uploadBtn.textContent).toBe("✓");
+            expect(uploadBtn.textContent).toBe("已上传");
         });
+        expect(uploadBtn.getAttribute("aria-disabled")).toBe("true");
+        fireEvent.click(uploadBtn);
+        expect(importMobileDocumentFromPathMock).toHaveBeenCalledTimes(1);
     });
 
     it("shows an error state when the mobile library upload fails", async () => {
@@ -1436,15 +1444,53 @@ describe("renderContentWithCodeBlocks", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
 
-        const uploadBtn = screen.getByLabelText("上传到云盘");
+        const uploadBtn = screen.getByRole("button", { name: "上传云盘" });
         fireEvent.click(uploadBtn);
         await waitFor(() => {
-            expect(uploadBtn.textContent).toBe("✗");
+            expect(uploadBtn.textContent).toBe("上传失败");
         });
         expect(uploadBtn.title).toContain("hub unreachable");
     });
 
-    it("does not render the mobile library upload icon for cloud workspace files", () => {
+    it("says the file is already in the cloud drive when the upload is a duplicate", async () => {
+        importMobileDocumentFromPathMock.mockClear();
+        importMobileDocumentFromPathMock.mockResolvedValueOnce({ id: "draft-dup", duplicate: true });
+        render(<div>{renderMessage({
+            id: "saved-local-dup",
+            role: "assistant",
+            content: "文档已生成",
+            localFilePath: "C:\\Users\\me\\same.docx",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+        const uploadBtn = screen.getByRole("button", { name: "上传云盘" });
+        fireEvent.click(uploadBtn);
+        await waitFor(() => {
+            expect(uploadBtn.textContent).toBe("已在云盘");
+        });
+        expect(uploadBtn.title).toContain("未再次上传");
+    });
+
+    it("explains a signed-out cloud upload in Chinese", async () => {
+        importMobileDocumentFromPathMock.mockClear();
+        importMobileDocumentFromPathMock.mockRejectedValueOnce(new Error("MaClaw Hub login is required to share documents to Mobile"));
+        render(<div>{renderMessage({
+            id: "saved-local-signed-out",
+            role: "assistant",
+            content: "文档已生成",
+            localFilePath: "C:\\Users\\me\\need-login.docx",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+        const uploadBtn = screen.getByRole("button", { name: "上传云盘" });
+        fireEvent.click(uploadBtn);
+        await waitFor(() => {
+            expect(uploadBtn.textContent).toBe("上传失败");
+        });
+        expect(uploadBtn.title).toBe("需要先在主窗口登录，才能上传到云盘");
+    });
+
+    it("does not render the mobile library upload button for cloud workspace files", () => {
         const path = "C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc\\book.pdf";
         render(<div>{renderMessage({
             id: "saved-cloud-no-upload",
@@ -1454,7 +1500,7 @@ describe("renderContentWithCodeBlocks", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
 
-        expect(screen.queryByLabelText("上传到云盘")).toBeNull();
+        expect(screen.queryByRole("button", { name: "上传云盘" })).toBeNull();
     });
 
     it("retries the mobile library upload after a failure", async () => {
@@ -1469,10 +1515,10 @@ describe("renderContentWithCodeBlocks", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
 
-        const uploadBtn = screen.getByLabelText("上传到云盘");
+        const uploadBtn = screen.getByRole("button", { name: "上传云盘" });
         fireEvent.click(uploadBtn);
         await waitFor(() => {
-            expect(uploadBtn.textContent).toBe("✗");
+            expect(uploadBtn.textContent).toBe("上传失败");
         });
 
         fireEvent.click(uploadBtn);
@@ -1480,7 +1526,7 @@ describe("renderContentWithCodeBlocks", () => {
             expect(importMobileDocumentFromPathMock).toHaveBeenCalledTimes(2);
         });
         await waitFor(() => {
-            expect(uploadBtn.textContent).toBe("✓");
+            expect(uploadBtn.textContent).toBe("已上传");
         });
     });
 
@@ -1497,7 +1543,7 @@ describe("renderContentWithCodeBlocks", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
 
-        const uploadBtn = screen.getByLabelText("上传到云盘") as HTMLButtonElement;
+        const uploadBtn = screen.getByRole("button", { name: "上传云盘" }) as HTMLButtonElement;
         fireEvent.click(uploadBtn);
         fireEvent.click(uploadBtn);
         fireEvent.click(uploadBtn);
@@ -1506,7 +1552,7 @@ describe("renderContentWithCodeBlocks", () => {
 
         resolveUpload?.({ id: "draft-2" });
         await waitFor(() => {
-            expect(uploadBtn.textContent).toBe("✓");
+            expect(uploadBtn.textContent).toBe("已上传");
         });
     });
 

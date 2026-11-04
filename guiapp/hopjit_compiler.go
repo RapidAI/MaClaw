@@ -10,13 +10,24 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/hopspec"
 )
 
+func (a *App) CompileHopSpec(task string) (string, error) {
+	return a.compileHopSpecWithIdentity(hopJITExecutionIdentity{}, task)
+}
+
+func (a *App) compileHopSpecWithIdentity(identity hopJITExecutionIdentity, task string) (string, error) {
+	return compileHopSpec(context.Background(), task, a.newHopJITCallerWithIdentity(identity))
+}
+
 func (a *App) RunHopTask(task string) (hopjit.ReuseResult, error) {
+	return a.runHopTaskWithIdentity(hopJITExecutionIdentity{}, task)
+}
+
+func (a *App) runHopTaskWithIdentity(identity hopJITExecutionIdentity, task string) (hopjit.ReuseResult, error) {
 	store, err := a.openHopJITPersistence()
 	if err != nil {
 		return hopjit.ReuseResult{}, err
 	}
-	defer store.Close()
-	return runHopTaskWithPersistence(context.Background(), store, task, a.newHopJITCaller())
+	return runHopTaskWithPersistence(context.Background(), store, task, a.newHopJITCallerWithIdentity(identity))
 }
 
 func runHopTaskWithPersistence(ctx context.Context, store hopjit.PersistenceProvider, task string, caller *guiHopJITCaller) (hopjit.ReuseResult, error) {

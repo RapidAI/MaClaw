@@ -234,6 +234,61 @@ func TestSQLitePersistenceRejectsStaleSnapshot(t *testing.T) {
 	}
 }
 
+func TestFailedMutationRollbackKeepsMapsWritable(t *testing.T) {
+	engine := NewExecutionEngine(nil)
+	ctx := context.Background()
+	_, err := engine.Init(ctx, `# Spec: 回滚恢复
+Goal: 持久化失败后允许记录失败
+Outputs:
+- result % text
+## Steps
+1. [reason] 生成
+  + → result % text
+`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustNextStep(t, engine, "1")
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := engine.Complete(canceled, "1", map[string]any{"result": "未完成"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("complete err=%v", err)
+	}
+	if err := engine.Fail(ctx, "1", Failure{Kind: FailureError, Reason: "持久化失败"}); err != nil {
+		t.Fatal(err)
+	}
+	next, err := engine.Next(ctx)
+	if err != nil || next.Status != NextFailed {
+		t.Fatalf("next=%+v err=%v", next, err)
+	}
+}
+
+func TestRunOwnerIsolation(t *testing.T) {
+	store := NewMemoryPersistence()
+	ctx := context.Background()
+	owned := NewExecutionEngine(store, WithRunOwner("user-a"))
+	init, err := owned.Init(ctx, `# Spec: 所有者隔离
+Goal: 仅所有者可恢复
+## Steps
+1. [reason] 等待执行
+`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := owned.Snapshot()
+	if err != nil || snapshot.OwnerID != "user-a" {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+	if err := NewExecutionEngine(store, WithRunOwner("user-a")).Resume(ctx, init.RunID); err != nil {
+		t.Fatal(err)
+	}
+	for _, owner := range []string{"user-b", ""} {
+		if err := NewExecutionEngine(store, WithRunOwner(owner)).Resume(ctx, init.RunID); !errors.Is(err, ErrRunAccessDenied) {
+			t.Fatalf("owner=%q err=%v", owner, err)
+		}
+	}
+}
+
 func mustNextStep(t *testing.T, engine *ExecutionEngine, stepID string) NextResult {
 	t.Helper()
 	next, err := engine.Next(context.Background())

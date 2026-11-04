@@ -2069,10 +2069,6 @@
   color: var(--mc-accent) !important;
 }
 #App .mc-task-result-card__file a:hover { color: var(--mc-accent-strong) !important; }
-#App .mc-task-result-card__upload { color: var(--mc-muted) !important; }
-#App .mc-task-result-card__upload--idle:hover:not(:disabled) { background: color-mix(in srgb, var(--mc-accent) 10%, var(--mc-surface)) !important; color: var(--mc-accent) !important; }
-#App .mc-task-result-card__upload--done { color: var(--theme-success) !important; }
-#App .mc-task-result-card__upload--error { color: var(--theme-danger) !important; }
 /* The per-file artifact action strip (deliverable cards) is excluded here:
    .mc-task-artifact-item__actions brings its own palette, hover states and a
    filled primary button, so the generic repaint below would fight them.

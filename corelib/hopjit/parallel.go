@@ -12,8 +12,15 @@ import (
 
 func (e *ExecutionEngine) startParallelCallsLocked(ctx context.Context, steps []*hopspec.Step) error {
 	for _, step := range steps {
-		if !step.Parallel || e.snapshot.StepStates[step.ID] != StepPending {
+		switch e.snapshot.StepStates[step.ID] {
+		case StepDone, StepSkipped:
 			continue
+		case StepPending:
+			if !step.Parallel {
+				return nil
+			}
+		default:
+			return nil
 		}
 		var err error
 		switch step.Type {
@@ -22,7 +29,7 @@ func (e *ExecutionEngine) startParallelCallsLocked(ctx context.Context, steps []
 		case hopspec.StepSubtask, hopspec.StepCase:
 			err = e.startParallelSubtaskLocked(ctx, step)
 		default:
-			continue
+			return nil
 		}
 		if err != nil {
 			return err
@@ -77,7 +84,7 @@ func (e *ExecutionEngine) startParallelSubtaskLocked(ctx context.Context, step *
 		Title: step.Summary, ID: step.ID, Goal: e.snapshot.Spec.Goal,
 		Inputs: declarations, Outputs: outputs, Steps: children,
 	}
-	child := NewExecutionEngine(e.store, WithToolProvider(e.tools), WithSpecProvider(e.specs))
+	child := e.newChildEngine()
 	child.caller = e.caller
 	init, err := child.InitAST(ctx, spec, inputs)
 	if err != nil {
@@ -88,20 +95,45 @@ func (e *ExecutionEngine) startParallelSubtaskLocked(ctx context.Context, step *
 }
 
 func (e *ExecutionEngine) startParallelDriverLocked(ctx context.Context, step *hopspec.Step, child *ExecutionEngine, runID string) {
-	childCtx, cancel := context.WithCancel(ctx)
-	resultCh := make(chan ReuseResult, 1)
-	e.inflightResult[step.ID] = resultCh
-	e.inflightCancel[step.ID] = cancel
 	e.snapshot.Inflight[step.ID] = InflightCall{StepID: step.ID, ChildRunID: runID, Status: "inflight"}
 	e.snapshot.StepStates[step.ID] = StepRunning
 	e.recordLocked("parallel_dispatched", step.ID, runID)
+	e.launchInflightDriverLocked(ctx, step.ID, child, runID)
+}
+
+func (e *ExecutionEngine) launchInflightDriverLocked(ctx context.Context, id string, child *ExecutionEngine, runID string) {
+	if cancel := e.inflightCancel[id]; cancel != nil {
+		cancel()
+	}
+	childCtx, cancel := context.WithCancel(ctx)
+	resultCh := make(chan ReuseResult, 1)
+	e.inflightResult[id] = resultCh
+	e.inflightCancel[id] = cancel
+	child.caller = e.caller
 	go func() {
 		result, err := DriveReuse(childCtx, child, child.caller)
 		if err != nil {
 			result = ReuseResult{RunID: runID, Status: NextFailed, Failure: &Failure{Kind: FailureError, Reason: err.Error()}}
 		}
 		resultCh <- result
+		e.notifyInflight()
 	}()
+}
+
+func (e *ExecutionEngine) notifyInflight() {
+	select {
+	case e.inflightNotify <- struct{}{}:
+	default:
+	}
+}
+
+func (e *ExecutionEngine) waitForInflight(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.inflightNotify:
+		return nil
+	}
 }
 
 func cloneHopSteps(steps []*hopspec.Step) ([]*hopspec.Step, error) {
@@ -157,27 +189,20 @@ func (e *ExecutionEngine) startParallelCallLocked(ctx context.Context, step *hop
 			inputs[target] = value.Value
 		}
 	}
-	child := NewExecutionEngine(e.store, WithToolProvider(e.tools), WithSpecProvider(e.specs))
+	child, err := e.newCallEngine()
+	if err != nil {
+		return err
+	}
 	child.caller = e.caller
 	init, err := child.Init(ctx, markdown, inputs)
 	if err != nil {
 		return err
 	}
-	childCtx, cancel := context.WithCancel(ctx)
-	resultCh := make(chan ReuseResult, 1)
-	e.inflightResult[step.ID] = resultCh
-	e.inflightCancel[step.ID] = cancel
 	e.snapshot.Calls[step.ID] = CallState{RunID: init.RunID, Callee: step.Call.Callee}
 	e.snapshot.Inflight[step.ID] = InflightCall{StepID: step.ID, ChildRunID: init.RunID, Status: "inflight"}
 	e.snapshot.StepStates[step.ID] = StepRunning
 	e.recordLocked("parallel_dispatched", step.ID, init.RunID)
-	go func() {
-		result, err := DriveReuse(childCtx, child, child.caller)
-		if err != nil {
-			result = ReuseResult{RunID: init.RunID, Status: NextFailed, Failure: &Failure{Kind: FailureError, Reason: err.Error()}}
-		}
-		resultCh <- result
-	}()
+	e.launchInflightDriverLocked(ctx, step.ID, child, init.RunID)
 	return nil
 }
 
@@ -190,45 +215,61 @@ func (e *ExecutionEngine) reapInflightLocked(ctx context.Context) {
 	for _, id := range ids {
 		inflight := e.snapshot.Inflight[id]
 		if inflight.Status == "paused" {
-			continue
-		}
-		result, ok := e.readInflightResult(ctx, id, inflight)
-		if !ok {
-			continue
+			if e.snapshot.Pause != nil && e.snapshot.Pause.ChildRunID == inflight.ChildRunID {
+				continue
+			}
+			inflight.Status = "inflight"
+			e.snapshot.Inflight[id] = inflight
 		}
 		step := e.stepPointerByID(inflight.StepID)
 		if step == nil {
+			e.failStepLocked(hopspec.Step{}, Failure{Kind: FailureError, Reason: "INFLIGHT_STEP_MISSING: " + inflight.StepID})
+			return
+		}
+		result, ok, err := e.readInflightResult(ctx, id, inflight)
+		if err != nil {
+			e.failCallLocked(step, Failure{Kind: FailureError, Reason: err.Error()})
+			return
+		}
+		if !ok {
 			continue
 		}
 		switch result.Status {
 		case NextPaused:
+			if result.Pause == nil {
+				e.failCallLocked(step, Failure{Kind: FailureError, Reason: "PARALLEL_PAUSE_MISSING: " + id})
+				return
+			}
 			inflight.Status = "paused"
 			e.snapshot.Inflight[id] = inflight
-			if result.Pause != nil {
-				pause := *result.Pause
-				pause.ChildRunID = inflight.ChildRunID
-				e.snapshot.Pause = &pause
-			}
+			e.clearInflightChannel(id)
+			pause := *result.Pause
+			pause.ChildRunID = inflight.ChildRunID
+			e.snapshot.Pause = &pause
+			return
 		case NextCompleted:
 			if err := e.collectParallelOutputLocked(step, inflight, result); err != nil {
-				e.cancelInflightLocked()
 				e.failCallLocked(step, Failure{Kind: FailureError, Reason: err.Error()})
 				return
 			}
-			e.markParallelSubtreeDone(step)
-			e.snapshot.StepStates[step.ID] = StepDone
 			delete(e.snapshot.Inflight, id)
 			e.clearInflightChannel(id)
+			if !e.hasInflightStep(step.ID) {
+				e.markParallelSubtreeDone(step)
+				e.snapshot.StepStates[step.ID] = StepDone
+			}
 			e.recordLocked("parallel_reaped", id, inflight.ChildRunID)
 		case NextFailed, NextAborted:
 			delete(e.snapshot.Inflight, id)
 			e.clearInflightChannel(id)
-			e.cancelInflightLocked()
 			reason := "parallel child failed"
-			if result.Failure != nil {
+			if result.Failure != nil && strings.TrimSpace(result.Failure.Reason) != "" {
 				reason = result.Failure.Reason
 			}
 			e.failCallLocked(step, Failure{Kind: FailureError, Reason: reason})
+			return
+		default:
+			e.failCallLocked(step, Failure{Kind: FailureError, Reason: "INFLIGHT_INVALID_CHILD_STATUS: " + string(result.Status)})
 			return
 		}
 	}
@@ -240,8 +281,12 @@ func (e *ExecutionEngine) collectParallelOutputLocked(step *hopspec.Step, inflig
 	if loop != nil && loop.ForEach != nil {
 		collectName = loop.ForEach.CollectItem
 	}
+	var collected any
+	hasCollected := false
 	write := func(name string, value any) {
 		if name == collectName {
+			collected = value
+			hasCollected = true
 			return
 		}
 		e.snapshot.Variables[name] = VariableValue{Value: value, Assigned: true}
@@ -263,55 +308,43 @@ func (e *ExecutionEngine) collectParallelOutputLocked(step *hopspec.Step, inflig
 			write(output.Name, value)
 		}
 	}
-	if collectName != "" {
-		value, exists := result.Outputs[collectName]
-		if !exists {
-			return fmt.Errorf("COLLECT_OUTPUT_MISSING: %s", collectName)
-		}
+	if collectName != "" && hasCollected {
 		if e.snapshot.LoopResults[loop.ID] == nil {
 			e.snapshot.LoopResults[loop.ID] = map[string]any{}
 		}
-		e.snapshot.LoopResults[loop.ID][fmt.Sprint(inflight.Iteration)] = value
+		e.snapshot.LoopResults[loop.ID][fmt.Sprint(inflight.Iteration)] = collected
 	}
 	return nil
 }
 
-func (e *ExecutionEngine) readInflightResult(ctx context.Context, id string, inflight InflightCall) (ReuseResult, bool) {
+func (e *ExecutionEngine) readInflightResult(ctx context.Context, id string, inflight InflightCall) (ReuseResult, bool, error) {
 	if ch := e.inflightResult[id]; ch != nil {
 		select {
-		case result := <-ch:
-			return result, true
+		case result, open := <-ch:
+			if !open {
+				return ReuseResult{}, false, fmt.Errorf("INFLIGHT_CHANNEL_CLOSED: %s", id)
+			}
+			return result, true, nil
 		default:
-			return ReuseResult{}, false
+			return ReuseResult{}, false, nil
 		}
 	}
-	child := NewExecutionEngine(e.store, WithToolProvider(e.tools), WithSpecProvider(e.specs))
+	child := e.newChildEngine()
 	snapshot, err := child.store.LoadSnapshot(ctx, inflight.ChildRunID)
 	if err != nil {
-		return ReuseResult{}, false
+		return ReuseResult{}, false, fmt.Errorf("INFLIGHT_LOAD_FAILED: %s: %w", inflight.ChildRunID, err)
 	}
 	if snapshot.TerminalState != "" {
-		return reuseResultFromSnapshot(snapshot), true
+		return reuseResultFromSnapshot(snapshot), true, nil
 	}
 	if snapshot.Pause != nil {
-		return ReuseResult{RunID: snapshot.RunID, Status: NextPaused, Pause: snapshot.Pause, Snapshot: snapshot}, true
+		return ReuseResult{RunID: snapshot.RunID, Status: NextPaused, Pause: snapshot.Pause, Snapshot: snapshot}, true, nil
 	}
 	if err := child.Resume(ctx, inflight.ChildRunID); err != nil {
-		return ReuseResult{}, false
+		return ReuseResult{}, false, fmt.Errorf("INFLIGHT_RESUME_FAILED: %s: %w", inflight.ChildRunID, err)
 	}
-	child.caller = e.caller
-	childCtx, cancel := context.WithCancel(ctx)
-	ch := make(chan ReuseResult, 1)
-	e.inflightResult[id] = ch
-	e.inflightCancel[id] = cancel
-	go func() {
-		result, err := DriveReuse(childCtx, child, child.caller)
-		if err != nil {
-			result = ReuseResult{RunID: inflight.ChildRunID, Status: NextFailed, Failure: &Failure{Kind: FailureError, Reason: err.Error()}}
-		}
-		ch <- result
-	}()
-	return ReuseResult{}, false
+	e.launchInflightDriverLocked(ctx, id, child, inflight.ChildRunID)
+	return ReuseResult{}, false, nil
 }
 
 func reuseResultFromSnapshot(snapshot EngineSnapshot) ReuseResult {
@@ -341,6 +374,9 @@ func (e *ExecutionEngine) markParallelSubtreeDone(step *hopspec.Step) {
 }
 
 func (e *ExecutionEngine) clearInflightChannel(id string) {
+	if cancel := e.inflightCancel[id]; cancel != nil {
+		cancel()
+	}
 	delete(e.inflightResult, id)
 	delete(e.inflightCancel, id)
 }
@@ -354,10 +390,51 @@ func (e *ExecutionEngine) hasInflightStep(stepID string) bool {
 	return false
 }
 
-func (e *ExecutionEngine) cancelInflightLocked() {
+func (e *ExecutionEngine) cancelInflightLocked(ctx context.Context, reason string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runIDs := map[string]bool{}
+	for _, inflight := range e.snapshot.Inflight {
+		if inflight.ChildRunID != "" {
+			runIDs[inflight.ChildRunID] = true
+		}
+	}
+	for stepID, call := range e.snapshot.Calls {
+		if call.RunID != "" && e.snapshot.StepStates[stepID] == StepRunning {
+			runIDs[call.RunID] = true
+		}
+	}
+	if e.snapshot.Pause != nil && e.snapshot.Pause.ChildRunID != "" {
+		runIDs[e.snapshot.Pause.ChildRunID] = true
+	}
 	for id, cancel := range e.inflightCancel {
 		cancel()
 		delete(e.inflightCancel, id)
 		delete(e.inflightResult, id)
+	}
+	e.snapshot.Inflight = map[string]InflightCall{}
+	ids := make([]string, 0, len(runIDs))
+	for id := range runIDs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, runID := range ids {
+		child := e.newChildEngine()
+		if err := child.Resume(context.WithoutCancel(ctx), runID); err != nil {
+			e.recordLocked("child_abort_failed", "", runID+": "+err.Error())
+			continue
+		}
+		snapshot, err := child.Snapshot()
+		if err != nil {
+			e.recordLocked("child_abort_failed", "", runID+": "+err.Error())
+			continue
+		}
+		if snapshot.TerminalState != "" {
+			continue
+		}
+		if err := child.Abort(context.WithoutCancel(ctx), reason); err != nil {
+			e.recordLocked("child_abort_failed", "", runID+": "+err.Error())
+		}
 	}
 }

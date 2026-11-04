@@ -563,7 +563,7 @@ function exportErrorText(err: unknown): string {
     // "The directory name is invalid", or a path that contains "director",
     // is a failed PDF write.
     if (raw === "path is a directory") return cs("不支持上传文件夹");
-    if (raw.includes("创建目录失败") || raw.includes("写入 PDF 失败")) return exportSaveError(raw);
+    if (raw.includes("创建目录失败") || raw.includes("写入 PDF 失败") || raw.includes("写入 LaTeX 失败")) return exportSaveError(raw);
     if (raw === "file too large to compress safely") return cs("文件太大，无法上传到云盘");
     return (raw && cs(raw)) || cs("操作失败");
 }
@@ -1392,6 +1392,12 @@ function companionExportNotice(missingFigures: number, missingDiagrams: number):
     return companionFill(getCompanionUiLang(), "已导出 PDF，但 ${missing}未能读取，未包含在内", { missing });
 }
 
+function companionTeXNotice(missingFigures: number, missingDiagrams: number): string {
+    const missing = companionMissingBits(missingFigures, missingDiagrams);
+    if (!missing) return cs("已导出 LaTeX");
+    return companionFill(getCompanionUiLang(), "已导出 LaTeX，但 ${missing}未能读取，未包含在内", { missing });
+}
+
 function companionExportNoticeKind(missingFigures: number, missingDiagrams: number): "success" | "warning" {
     return missingFigures > 0 || missingDiagrams > 0 ? "warning" : "success";
 }
@@ -1451,10 +1457,18 @@ function CompanionMessageActions({ path, markdown, messageId, figures, webSessio
     const runTeX = async () => {
         settleTex("busy");
         try {
+            const withDiagrams = await inlineCompanionDiagrams(markdown, lightTheme);
+            const withFigures = await appendCompanionFigures(withDiagrams.text, figures);
             const dest = webSession
-                ? await FileCompanionExportWebTeX(webSession, markdown)
-                : await FileCompanionExportTeX(path, markdown);
-            if (dest) showToast(cs("已导出 LaTeX"), "success", 6000);
+                ? await FileCompanionExportWebTeX(webSession, withFigures.text)
+                : await FileCompanionExportTeX(path, withFigures.text);
+            if (dest) {
+                showToast(
+                    companionTeXNotice(withFigures.missing, withDiagrams.missing),
+                    companionExportNoticeKind(withFigures.missing, withDiagrams.missing),
+                    6000,
+                );
+            }
             settleTex(dest ? "ok" : "idle");
         } catch (err) {
             showToast(exportErrorText(err), "error", 6000);
@@ -4799,7 +4813,13 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         const dest = tab.kind === "web"
             ? await FileCompanionExportWebChatTeX(tab.sessionId, prepared.turns)
             : await FileCompanionExportChatTeX(tab.path, prepared.turns);
-        if (dest) showToast(cs("已导出 LaTeX"), "success", 6000);
+        if (dest) {
+            showToast(
+                companionTeXNotice(prepared.missingFigures, prepared.missingDiagrams),
+                companionExportNoticeKind(prepared.missingFigures, prepared.missingDiagrams),
+                6000,
+            );
+        }
     });
 
     // The zip holds the open file and the reading around it: highlights, notes

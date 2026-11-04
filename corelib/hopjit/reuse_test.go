@@ -7,11 +7,15 @@ import (
 )
 
 type reuseTestCaller struct {
-	execute func(StepReady) (map[string]any, error)
-	replan  func(EngineSnapshot) (string, error)
+	execute        func(StepReady) (map[string]any, error)
+	executeContext func(context.Context, StepReady) (map[string]any, error)
+	replan         func(EngineSnapshot) (string, error)
 }
 
-func (c *reuseTestCaller) ExecuteStep(_ context.Context, step StepReady) (map[string]any, error) {
+func (c *reuseTestCaller) ExecuteStep(ctx context.Context, step StepReady) (map[string]any, error) {
+	if c.executeContext != nil {
+		return c.executeContext(ctx, step)
+	}
 	return c.execute(step)
 }
 

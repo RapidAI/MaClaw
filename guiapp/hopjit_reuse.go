@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/hopjit"
@@ -15,10 +16,18 @@ import (
 
 type hopJITLLMInvoke func(context.Context, []interface{}, bool) (string, error)
 
+type hopJITExecutionIdentity struct {
+	PrincipalID   string
+	PolicyOwnerID string
+	SessionID     string
+	Platform      string
+}
+
 type guiHopJITCaller struct {
-	app     *App
-	handler *IMMessageHandler
-	invoke  hopJITLLMInvoke
+	app      *App
+	handler  *IMMessageHandler
+	invoke   hopJITLLMInvoke
+	identity hopJITExecutionIdentity
 }
 
 func (c *guiHopJITCaller) ExecuteStep(ctx context.Context, step hopjit.StepReady) (map[string]any, error) {
@@ -71,53 +80,129 @@ func (c *guiHopJITCaller) call(ctx context.Context, messages []interface{}, json
 }
 
 func (a *App) RunHopSpec(spec string, inputs map[string]any) (hopjit.ReuseResult, error) {
+	return a.runHopSpecWithIdentity(hopJITExecutionIdentity{}, spec, inputs)
+}
+
+func (a *App) runHopSpecWithIdentity(identity hopJITExecutionIdentity, spec string, inputs map[string]any) (hopjit.ReuseResult, error) {
 	store, err := a.openHopJITPersistence()
 	if err != nil {
 		return hopjit.ReuseResult{}, err
 	}
-	defer store.Close()
-	return runHopSpecWithPersistence(context.Background(), store, spec, inputs, a.newHopJITCaller())
+	return runHopSpecWithPersistence(context.Background(), store, spec, inputs, a.newHopJITCallerWithIdentity(identity))
 }
 
 func (a *App) ResumeHopSpec(runID string, answers map[string]any) (hopjit.ReuseResult, error) {
+	return a.resumeHopSpecWithIdentity(hopJITExecutionIdentity{}, runID, answers)
+}
+
+func (a *App) resumeHopSpecWithIdentity(identity hopJITExecutionIdentity, runID string, answers map[string]any) (hopjit.ReuseResult, error) {
 	store, err := a.openHopJITPersistence()
 	if err != nil {
 		return hopjit.ReuseResult{}, err
 	}
-	defer store.Close()
-	return resumeHopSpecWithPersistence(context.Background(), store, runID, answers, a.newHopJITCaller())
+	return resumeHopSpecWithPersistence(context.Background(), store, runID, answers, a.newHopJITCallerWithIdentity(identity))
 }
 
 func (a *App) AbortHopSpec(runID, reason string) error {
+	return a.abortHopSpecWithIdentity(hopJITExecutionIdentity{}, runID, reason)
+}
+
+func (a *App) abortHopSpecWithIdentity(identity hopJITExecutionIdentity, runID, reason string) error {
 	store, err := a.openHopJITPersistence()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-	engine := hopjit.NewExecutionEngine(store)
+	engine := hopjit.NewExecutionEngine(store, hopjit.WithRunOwner(identity.PrincipalID))
 	if err := engine.Resume(context.Background(), runID); err != nil {
 		return err
 	}
 	return engine.Abort(context.Background(), reason)
 }
 
+func authorizeHopJITSnapshot(snapshot hopjit.EngineSnapshot, identity hopJITExecutionIdentity) error {
+	if snapshot.OwnerID != strings.TrimSpace(identity.PrincipalID) {
+		return hopjit.ErrRunAccessDenied
+	}
+	return nil
+}
+
+type hopJITPersistenceState struct {
+	mu    sync.Mutex
+	store *hopjit.SQLitePersistence
+	path  string
+}
+
+func (s *hopJITPersistenceState) open(path string) (*hopjit.SQLitePersistence, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store != nil && s.path == path {
+		return s.store, nil
+	}
+	if s.store != nil {
+		_ = s.store.Close()
+		s.store = nil
+	}
+	store, err := hopjit.NewSQLitePersistence(path)
+	if err != nil {
+		return nil, err
+	}
+	s.store = store
+	s.path = path
+	return store, nil
+}
+
+func (s *hopJITPersistenceState) close() {
+	s.mu.Lock()
+	store := s.store
+	s.store = nil
+	s.path = ""
+	s.mu.Unlock()
+	if store != nil {
+		_ = store.Close()
+	}
+}
+
 func (a *App) openHopJITPersistence() (*hopjit.SQLitePersistence, error) {
 	if a == nil {
 		return nil, errors.New("HopJIT app is unavailable")
 	}
-	return hopjit.NewSQLitePersistence(filepath.Join(a.GetDataDir(), "hopjit", "hopjit.db"))
+	return a.hopJITPersistence.open(filepath.Join(a.GetDataDir(), "hopjit", "hopjit.db"))
+}
+
+func (a *App) closeHopJITPersistence() {
+	if a != nil {
+		a.hopJITPersistence.close()
+	}
 }
 
 func (a *App) newHopJITCaller() *guiHopJITCaller {
-	caller := &guiHopJITCaller{app: a}
+	return a.newHopJITCallerWithIdentity(hopJITExecutionIdentity{})
+}
+
+func (a *App) newHopJITCallerWithIdentity(identity hopJITExecutionIdentity) *guiHopJITCaller {
+	caller := &guiHopJITCaller{app: a, identity: identity}
 	if handler := a.ensureLocalIMHandler(); handler != nil {
 		caller.handler = handler
 	}
 	return caller
 }
 
+func (c *guiHopJITCaller) HopJITOwnerID() string {
+	if c == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.identity.PrincipalID)
+}
+
+func hopJITRunOwnerID(caller hopjit.ReuseCaller) string {
+	if owner, ok := caller.(interface{ HopJITOwnerID() string }); ok {
+		return owner.HopJITOwnerID()
+	}
+	return ""
+}
+
 func runHopSpecWithPersistence(ctx context.Context, store hopjit.PersistenceProvider, spec string, inputs map[string]any, caller hopjit.ReuseCaller) (hopjit.ReuseResult, error) {
-	engine := hopjit.NewExecutionEngine(store)
+	engine := hopjit.NewExecutionEngine(store, hopjit.WithRunOwner(hopJITRunOwnerID(caller)))
 	if _, err := engine.Init(ctx, spec, inputs); err != nil {
 		return hopjit.ReuseResult{}, err
 	}
@@ -125,7 +210,7 @@ func runHopSpecWithPersistence(ctx context.Context, store hopjit.PersistenceProv
 }
 
 func resumeHopSpecWithPersistence(ctx context.Context, store hopjit.PersistenceProvider, runID string, answers map[string]any, caller hopjit.ReuseCaller) (hopjit.ReuseResult, error) {
-	engine := hopjit.NewExecutionEngine(store)
+	engine := hopjit.NewExecutionEngine(store, hopjit.WithRunOwner(hopJITRunOwnerID(caller)))
 	if err := engine.Resume(ctx, runID); err != nil {
 		return hopjit.ReuseResult{}, err
 	}

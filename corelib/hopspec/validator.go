@@ -31,6 +31,9 @@ func Validate(spec SpecAST) []error {
 	var walk func([]*Step, *Step, int)
 	walk = func(steps []*Step, parent *Step, loopDepth int) {
 		for _, step := range steps {
+			if step.Parallel && step.Type != StepCall && step.Type != StepSubtask && step.Type != StepCase {
+				add("PARALLEL_STEP_TYPE", "parallel "+step.ID+" must be a call, subtask, or case", *step)
+			}
 			if step.Type == StepLoop {
 				if step.ForEach == nil && step.MaxIterations == 0 {
 					add("LOOP_BOUND_REQUIRED", "loop "+step.ID+" requires max or for-each", *step)

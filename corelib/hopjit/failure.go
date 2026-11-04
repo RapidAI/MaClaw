@@ -7,6 +7,7 @@ import (
 )
 
 func (e *ExecutionEngine) handleFailureLocked(stepID string, failure Failure) {
+	e.cancelInflightLocked(e.ctx, "step failed: "+stepID)
 	e.snapshot.Failures[stepID] = failure
 	containers := e.failureContainers(stepID)
 	for _, container := range containers {

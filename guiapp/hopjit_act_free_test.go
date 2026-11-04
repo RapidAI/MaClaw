@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 
@@ -17,7 +18,7 @@ import (
 func TestHopJITActFreeToolProviderUsesOnlyDeclaredTool(t *testing.T) {
 	handler := newHopJITActFreeTestHandler(t)
 	step := hopjit.StepReady{StepID: "1", Summary: "读取文件", Tools: []string{"read_file"}}
-	provider, definitions, err := handler.hopJITActFreeToolProvider(step)
+	provider, definitions, err := handler.hopJITActFreeToolProvider(step, hopJITExecutionIdentity{PrincipalID: "user-a", PolicyOwnerID: "owner-a", SessionID: "session-a", Platform: "desktop"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +37,7 @@ func TestHopJITActFreeToolProviderUsesOnlyDeclaredTool(t *testing.T) {
 func TestHopJITActFreeRunLoopExecutesToolAndReturnsJSON(t *testing.T) {
 	handler := newHopJITActFreeTestHandler(t)
 	step := hopjit.StepReady{StepID: "1", Summary: "读取文件", Tools: []string{"read_file"}}
-	provider, definitions, err := handler.hopJITActFreeToolProvider(step)
+	provider, definitions, err := handler.hopJITActFreeToolProvider(step, hopJITExecutionIdentity{PrincipalID: "user-a", PolicyOwnerID: "owner-a", SessionID: "session-a", Platform: "desktop"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +64,128 @@ func TestHopJITActFreeRunLoopExecutesToolAndReturnsJSON(t *testing.T) {
 	}
 	if requests.Load() != 2 {
 		t.Fatalf("requests=%d", requests.Load())
+	}
+}
+
+func TestHopJITActFreeRejectsMalformedToolArguments(t *testing.T) {
+	handler := newHopJITActFreeTestHandler(t)
+	step := hopjit.StepReady{StepID: "1", Summary: "读取文件", Tools: []string{"read_file"}}
+	provider, definitions, err := handler.hopJITActFreeToolProvider(step, hopJITExecutionIdentity{PrincipalID: "user-a", PolicyOwnerID: "owner-a", SessionID: "session-a", Platform: "desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callbacks := &hopJITActFreeCallbacks{ctx: context.Background(), tools: definitions, provider: provider}
+	if got := callbacks.ExecuteTool("read_file", "{"); got == "file-content" {
+		t.Fatal("malformed tool arguments were replaced with an empty object")
+	}
+}
+
+func TestHopJITActFreeProviderExecutesDeclaredTool(t *testing.T) {
+	handler := newHopJITActFreeTestHandler(t)
+	step := hopjit.StepReady{StepID: "1", Summary: "读取文件", Tools: []string{"read_file"}}
+	for range 2 {
+		provider, _, err := handler.hopJITActFreeToolProvider(step, hopJITExecutionIdentity{PrincipalID: "user-a", PolicyOwnerID: "owner-a", SessionID: "session-a", Platform: "desktop"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.Execute(context.Background(), "read_file", map[string]any{"path": "input.md"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestHopJITActFreeAppUsesDurableExecutionRecords(t *testing.T) {
+	coordinator, err := tool.NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	handler := newHopJITActFreeTestHandler(t)
+	handler.app = &App{
+		semanticExecutionCoordinator: coordinator,
+		semanticPlanExecutionStore:   coordinator.Executions,
+		semanticInvocationStore:      coordinator.Grants,
+		semanticInvocationKey:        []byte("0123456789abcdef0123456789abcdef"),
+	}
+	var calls atomic.Int32
+	handler.registry.mu.Lock()
+	handler.registry.tools["read_file"].Handler = func(map[string]interface{}) string {
+		calls.Add(1)
+		return "file-content"
+	}
+	handler.registry.mu.Unlock()
+	step := hopjit.StepReady{StepID: "1", Tools: []string{"read_file"}}
+	identity := hopJITExecutionIdentity{PrincipalID: "user-a", PolicyOwnerID: "owner-a", SessionID: "session-a", Platform: "desktop"}
+	provider, _, err := handler.hopJITActFreeToolProvider(step, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Execute(context.Background(), "read_file", map[string]any{"path": "input.md"}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := coordinator.Executions.Execution(provider.Scope, provider.Plan.Selections[0].ID)
+	if err != nil || record.State != tool.PlanExecutionSucceeded {
+		t.Fatalf("record=%+v err=%v", record, err)
+	}
+	restarted, _, err := handler.hopJITActFreeToolProvider(step, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Execute(context.Background(), "read_file", map[string]any{"path": "input.md"}); err == nil {
+		t.Fatal("completed execution was invoked again")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls=%d", calls.Load())
+	}
+}
+
+func TestHopJITActFreeDoesNotProjectApprovalWaitAsSuccess(t *testing.T) {
+	handler := newHopJITActFreeTestHandler(t)
+	handler.registry.mu.Lock()
+	handler.registry.tools["read_file"].Handler = func(map[string]interface{}) string {
+		return databaseMutationApprovalWaitText
+	}
+	handler.registry.mu.Unlock()
+	provider, _, err := handler.hopJITActFreeToolProvider(hopjit.StepReady{StepID: "1", Tools: []string{"read_file"}}, hopJITExecutionIdentity{
+		PrincipalID: "user-a", PolicyOwnerID: "owner-a", SessionID: "session-a", Platform: "desktop",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := provider.Execute(context.Background(), "read_file", map[string]any{"path": "input.md"})
+	if err == nil || value != nil {
+		t.Fatalf("approval wait became a tool value: value=%v err=%v", value, err)
+	}
+}
+
+func TestHopJITActFreeBindsToolIdentityPerCaller(t *testing.T) {
+	handler := newHopJITActFreeTestHandler(t)
+	owners := []string{}
+	handler.registry.mu.Lock()
+	handler.registry.tools["read_file"].Handler = func(args map[string]interface{}) string {
+		owner, _ := args[registeredToolPolicyOwnerIDField].(string)
+		owners = append(owners, owner)
+		return "file-content"
+	}
+	handler.registry.mu.Unlock()
+	step := hopjit.StepReady{StepID: "1", Summary: "读取文件", Tools: []string{"read_file"}}
+	for _, identity := range []hopJITExecutionIdentity{
+		{PrincipalID: "user-a", PolicyOwnerID: "owner-a", SessionID: "session-a", Platform: "desktop"},
+		{PrincipalID: "user-b", PolicyOwnerID: "owner-b", SessionID: "session-b", Platform: "desktop"},
+	} {
+		provider, _, err := handler.hopJITActFreeToolProvider(step, identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if provider.Scope.PrincipalID != identity.PrincipalID || provider.Scope.SessionID != identity.SessionID {
+			t.Fatalf("scope=%+v identity=%+v", provider.Scope, identity)
+		}
+		if _, err := provider.Execute(context.Background(), "read_file", map[string]any{"path": "input.md"}); err != nil {
+			t.Fatal(err)
+		}
+		if len(owners) == 0 || owners[len(owners)-1] != identity.PolicyOwnerID {
+			t.Fatalf("tool owners=%v identity=%+v", owners, identity)
+		}
 	}
 }
 

@@ -101,6 +101,14 @@ Outputs:
 	}
 }
 
+func TestHopPythonHonorsCancellationWithoutToolCall(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := executeHopPython(ctx, "value = 1", map[string]VariableValue{}, nil); err != context.Canceled {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestCommitPreventsAncestorRetry(t *testing.T) {
 	calls := 0
 	provider := ToolProviderFunc(func(_ context.Context, name string, args map[string]any) (any, error) {
@@ -184,5 +192,29 @@ Goal: 崩溃后不得重放
 	next, err := restarted.Next(ctx)
 	if err != nil || next.Status != NextFailed || next.Failure == nil || !strings.Contains(next.Failure.Reason, "COMMIT_OUTCOME_UNKNOWN") {
 		t.Fatalf("next = %+v err=%v", next, err)
+	}
+}
+
+func TestHopPythonBooleanOperatorsShortCircuitTools(t *testing.T) {
+	calls := 0
+	provider := ToolProviderFunc(func(context.Context, string, map[string]any) (any, error) {
+		calls++
+		return true, nil
+	})
+	for _, test := range []struct {
+		expression string
+		want       bool
+	}{
+		{expression: "false and record()", want: false},
+		{expression: "true or record()", want: true},
+		{expression: "false and (1 / 0)", want: false},
+	} {
+		value, err := evalExpression(context.Background(), test.expression, nil, provider)
+		if err != nil || value != test.want {
+			t.Fatalf("expression=%q value=%v err=%v", test.expression, value, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("short-circuited tools executed %d times", calls)
 	}
 }

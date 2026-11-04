@@ -362,6 +362,7 @@ const ROWS: readonly Row[] = [
     ["${n} 张配图", "${n} figures", "${n} зураг"],
     ["${n} 张流程图", "${n} diagrams", "${n} диаграмм"],
     ["已导出 PDF，但 ${missing}未能读取，未包含在内", "Exported PDF, but ${missing} could not be read and were left out", "PDF экспортлов, гэхдээ ${missing} уншигдаагүй тул ороогүй"],
+    ["已导出 LaTeX，但 ${missing}未能读取，未包含在内", "Exported LaTeX, but ${missing} could not be read and were left out", "LaTeX экспортлов, гэхдээ ${missing} уншигдаагүй тул ороогүй"],
     ["${base}，但 ${missing}未能读取，未包含在内", "${base}, but ${missing} could not be read and were left out", "${base}, гэхдээ ${missing} уншигдаагүй тул ороогүй"],
     ["云盘中已有相同内容${held}，未再次上传", "The cloud drive already has the same content${held}, so it was not uploaded again", "Үүлэн диск дээр ижил агуулга ${held} аль хэдийн бий тул дахин байршуулсангүй"],
     ["（${held}）", " (${held})", " (${held})"],

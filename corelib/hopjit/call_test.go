@@ -2,6 +2,8 @@ package hopjit
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -28,7 +30,8 @@ Outputs:
   + → result % text
 2. [exit]
 `}
-	engine := NewExecutionEngine(nil, WithSpecProvider(provider))
+	store := NewMemoryPersistence()
+	engine := NewExecutionEngine(store, WithSpecProvider(provider), WithRunOwner("user-a"))
 	_, err := engine.Init(context.Background(), `# Spec: 父规约
 Goal: 调用子规约
 Inputs:
@@ -49,6 +52,10 @@ Outputs:
 	}
 	if len(result.Snapshot.Calls) != 1 || result.Snapshot.Calls["1"].RunID == "" {
 		t.Fatalf("calls=%+v", result.Snapshot.Calls)
+	}
+	child, err := store.LoadSnapshot(context.Background(), result.Snapshot.Calls["1"].RunID)
+	if err != nil || child.OwnerID != "user-a" {
+		t.Fatalf("child owner=%q err=%v", child.OwnerID, err)
 	}
 }
 
@@ -90,6 +97,193 @@ Outputs:
 	result, err = DriveReuse(context.Background(), restarted, callTestCaller{})
 	if err != nil || result.Status != NextCompleted || result.Outputs["report"] != "回答" {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestAbortPausedCallFinalizesChild(t *testing.T) {
+	provider := MapSpecProvider{"child": `# Spec: 子暂停
+Goal: 等待回答
+Outputs:
+- result % text
+## Steps
+1. [ask] 输入答案
+  + → result % text
+`}
+	store := NewMemoryPersistence()
+	engine := NewExecutionEngine(store, WithSpecProvider(provider))
+	ctx := context.Background()
+	_, err := engine.Init(ctx, `# Spec: 中止父调用
+Goal: 中止时结束子运行
+## Steps
+1. [call child] 调用子暂停
+`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := DriveReuse(ctx, engine, callTestCaller{})
+	if err != nil || result.Status != NextPaused || result.Pause == nil {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	childRunID := result.Pause.ChildRunID
+	if err := engine.Abort(ctx, "用户取消"); err != nil {
+		t.Fatal(err)
+	}
+	child, err := store.LoadSnapshot(ctx, childRunID)
+	if err != nil || child.TerminalState != TerminalAborted {
+		t.Fatalf("child=%+v err=%v", child, err)
+	}
+}
+
+func TestCallInsideLoopUsesFreshChildPerIteration(t *testing.T) {
+	provider := MapSpecProvider{"child": `# Spec: 循环子调用
+Goal: 处理单项
+Inputs:
+- document % text
+Outputs:
+- result % text
+## Steps
+1. [reason] 处理
+  - ← document
+  + → result % text
+`}
+	engine := NewExecutionEngine(nil, WithSpecProvider(provider))
+	_, err := engine.Init(context.Background(), `# Spec: 循环调用
+Goal: 每项都由独立子运行处理
+Inputs:
+- items % [text]
+Outputs:
+- reports % [text]
+## Steps
+1. [loop for-each item in items, collect report into reports]
+  + → reports % [text]
+  1.1. [call child(document: item)] 处理单项
+    + → report: result
+2. [exit]
+`, map[string]any{"items": []string{"A", "B"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := DriveReuse(context.Background(), engine, callTestCaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, ok := valueSlice(result.Outputs["reports"])
+	if result.Status != NextCompleted || !ok || len(items) != 2 || items[0] != "处理A" || items[1] != "处理B" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestCallFailureRetryStartsFreshChild(t *testing.T) {
+	provider := MapSpecProvider{"child": childSpecForParallelTest("retry-child")}
+	engine := NewExecutionEngine(nil, WithSpecProvider(provider))
+	_, err := engine.Init(context.Background(), `# Spec: 调用重试
+Goal: 容器重试必须重新调用
+Outputs:
+- result % text
+## Steps
+1. [subtask retry=1]
+  + → result % text
+  1.1. [call child] 调用
+    + → result: result
+2. [exit]
+`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	caller := &reuseTestCaller{execute: func(StepReady) (map[string]any, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("临时失败")
+		}
+		return map[string]any{"result": "成功"}, nil
+	}}
+	result, err := DriveReuse(context.Background(), engine, caller)
+	if err != nil || result.Status != NextCompleted || result.Outputs["result"] != "成功" || calls != 2 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestCallFailureCanTriggerAdaptiveReplan(t *testing.T) {
+	provider := MapSpecProvider{"child": childSpecForParallelTest("adaptive-child")}
+	engine := NewExecutionEngine(nil, WithSpecProvider(provider))
+	_, err := engine.Init(context.Background(), `# Spec: 调用自适应
+Goal: 子调用失败后重规划
+Outputs:
+- result % text
+## Steps
+1. [subtask adaptive]
+  + → result % text
+  1.1. [call child] 调用
+    + → result: result
+2. [exit]
+`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	caller := &reuseTestCaller{
+		execute: func(StepReady) (map[string]any, error) {
+			calls++
+			if calls == 1 {
+				return nil, errors.New("需要替代路径")
+			}
+			return map[string]any{"result": "重规划成功"}, nil
+		},
+		replan: func(EngineSnapshot) (string, error) {
+			return "1. [reason] 替代路径\n  + → result % text", nil
+		},
+	}
+	result, err := DriveReuse(context.Background(), engine, caller)
+	if err != nil || result.Status != NextCompleted || result.Outputs["result"] != "重规划成功" || calls != 2 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestRecursiveCallFailsAtDepthLimit(t *testing.T) {
+	const recursive = `# Spec: 自引用
+Goal: 不得无限递归
+## Steps
+1. [call recursive] 调用自身
+`
+	engine := NewExecutionEngine(nil, WithSpecProvider(MapSpecProvider{"recursive": recursive}))
+	if _, err := engine.Init(context.Background(), recursive, nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := DriveReuse(context.Background(), engine, callTestCaller{})
+	if err != nil || result.Status != NextFailed || result.Failure == nil || !strings.Contains(result.Failure.Reason, "CALL_DEPTH_LIMIT_EXCEEDED") {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestResumePreservesCallDepthLimit(t *testing.T) {
+	store := NewMemoryPersistence()
+	ctx := context.Background()
+	engine := NewExecutionEngine(store, WithSpecProvider(MapSpecProvider{"child": childSpecForParallelTest("child")}))
+	init, err := engine.Init(ctx, `# Spec: 深层恢复
+Goal: 恢复不得重置调用深度
+## Steps
+1. [call child] 继续调用
+`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.LoadSnapshot(ctx, init.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.CallDepth = maxCallDepth
+	snapshot.StateSeq++
+	if err := store.SaveSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewExecutionEngine(store, WithSpecProvider(MapSpecProvider{"child": childSpecForParallelTest("child")}))
+	if err := restarted.Resume(ctx, init.RunID); err != nil {
+		t.Fatal(err)
+	}
+	next, err := restarted.Next(ctx)
+	if err != nil || next.Status != NextFailed || next.Failure == nil || !strings.Contains(next.Failure.Reason, "CALL_DEPTH_LIMIT_EXCEEDED") {
+		t.Fatalf("next=%+v err=%v", next, err)
 	}
 }
 

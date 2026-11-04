@@ -97,6 +97,8 @@ type InflightCall struct {
 type EngineSnapshot struct {
 	FormatVersion   int                       `json:"format_version"`
 	RunID           string                    `json:"run_id"`
+	OwnerID         string                    `json:"owner_id,omitempty"`
+	CallDepth       int                       `json:"call_depth,omitempty"`
 	Spec            hopspec.SpecAST           `json:"spec"`
 	StepStates      map[string]StepStatus     `json:"step_states"`
 	Variables       map[string]VariableValue  `json:"variables"`
@@ -154,4 +156,5 @@ var (
 	ErrStaleSnapshot     = errors.New("hopjit stale snapshot")
 	ErrStepNotRunning    = errors.New("hopjit step is not running")
 	ErrRunNotInitialized = errors.New("hopjit run is not initialized")
+	ErrRunAccessDenied   = errors.New("hopjit run access denied")
 )

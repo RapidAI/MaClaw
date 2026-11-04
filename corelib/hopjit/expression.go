@@ -145,6 +145,7 @@ type expressionParser struct {
 	index     int
 	variables map[string]VariableValue
 	tools     ToolProvider
+	skip      int
 }
 
 func (p *expressionParser) peek() expressionToken {
@@ -164,11 +165,18 @@ func (p *expressionParser) parseOr() (any, error) {
 	}
 	for p.peek().kind == "identifier" && p.peek().text == "or" {
 		p.take()
-		right, err := p.parseAnd()
+		if truthy(left) {
+			p.skip++
+			_, err = p.parseAnd()
+			p.skip--
+		} else {
+			var right any
+			right, err = p.parseAnd()
+			left = truthy(right)
+		}
 		if err != nil {
 			return nil, err
 		}
-		left = truthy(left) || truthy(right)
 	}
 	return left, nil
 }
@@ -180,11 +188,18 @@ func (p *expressionParser) parseAnd() (any, error) {
 	}
 	for p.peek().kind == "identifier" && p.peek().text == "and" {
 		p.take()
-		right, err := p.parseNot()
+		if !truthy(left) {
+			p.skip++
+			_, err = p.parseNot()
+			p.skip--
+		} else {
+			var right any
+			right, err = p.parseNot()
+			left = truthy(right)
+		}
 		if err != nil {
 			return nil, err
 		}
-		left = truthy(left) && truthy(right)
 	}
 	return left, nil
 }
@@ -193,7 +208,10 @@ func (p *expressionParser) parseNot() (any, error) {
 	if p.peek().kind == "identifier" && p.peek().text == "not" {
 		p.take()
 		value, err := p.parseNot()
-		return !truthy(value), err
+		if err != nil || p.skip > 0 {
+			return nil, err
+		}
+		return !truthy(value), nil
 	}
 	return p.parseComparison()
 }
@@ -221,6 +239,9 @@ func (p *expressionParser) parseComparison() (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if p.skip > 0 {
+		return nil, nil
+	}
 	switch operator {
 	case "==", "is":
 		return valuesEqual(left, right), nil
@@ -244,6 +265,10 @@ func (p *expressionParser) parseAdditive() (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if p.skip > 0 {
+			left = nil
+			continue
+		}
 		left, err = arithmeticValue(left, right, operator)
 		if err != nil {
 			return nil, err
@@ -263,6 +288,10 @@ func (p *expressionParser) parseMultiplicative() (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if p.skip > 0 {
+			left = nil
+			continue
+		}
 		left, err = arithmeticValue(left, right, operator)
 		if err != nil {
 			return nil, err
@@ -275,7 +304,7 @@ func (p *expressionParser) parseUnary() (any, error) {
 	if p.peek().kind == "operator" && p.peek().text == "-" {
 		p.take()
 		value, err := p.parseUnary()
-		if err != nil {
+		if err != nil || p.skip > 0 {
 			return nil, err
 		}
 		number, ok := numericValue(value)
@@ -300,6 +329,10 @@ func (p *expressionParser) parsePrimary() (any, error) {
 			if field.kind != "identifier" {
 				return nil, errors.New("field name is required after dot")
 			}
+			if p.skip > 0 {
+				value = nil
+				continue
+			}
 			value, err = fieldValue(value, field.text)
 			if err != nil {
 				return nil, err
@@ -314,6 +347,10 @@ func (p *expressionParser) parsePrimary() (any, error) {
 				return nil, errors.New("missing closing bracket")
 			}
 			p.take()
+			if p.skip > 0 {
+				value = nil
+				continue
+			}
 			value, err = indexValue(value, index)
 			if err != nil {
 				return nil, err

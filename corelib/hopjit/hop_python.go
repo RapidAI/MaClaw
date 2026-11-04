@@ -109,6 +109,9 @@ func parseHopBlock(flat []*hopStatement, index *int, indent int) ([]*hopStatemen
 
 func executeHopStatements(ctx context.Context, statements []*hopStatement, variables map[string]VariableValue, tools ToolProvider) error {
 	for index := 0; index < len(statements); index++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		statement := statements[index]
 		switch statement.kind {
 		case "assign":

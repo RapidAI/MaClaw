@@ -72,16 +72,67 @@ func TestParseHopJITCommand(t *testing.T) {
 	if err != nil || runID != "run-1" || answers != `{"answer":"继续"}` {
 		t.Fatalf("runID=%s answers=%s err=%v", runID, answers, err)
 	}
+	for _, command := range []string{"/hop help", "/hop usage", "/hop --help", "/hop -h"} {
+		action, _, ok := parseHopJITCommand(command)
+		if !ok || action != "usage" {
+			t.Fatalf("command=%q action=%s ok=%v", command, action, ok)
+		}
+	}
+	action, payload, ok = parseHopJITCommand("/hop compile 生成摘要")
+	if !ok || action != "compile" || payload != "生成摘要" {
+		t.Fatalf("action=%s payload=%q ok=%v", action, payload, ok)
+	}
 	if _, _, ok := parseHopJITCommand("/hope test"); ok {
 		t.Fatal("non-hop command was intercepted")
 	}
 }
 
+func TestParseHopJITRunPayloadWithInputs(t *testing.T) {
+	spec, inputs, err := parseHopJITRunPayload(`--inputs {"document":"包含 -- 分隔符的文本","count":2} -- # Spec: 输入测试
+Goal: 验证输入
+## Steps
+1. [reason] 处理`)
+	if err != nil || !strings.HasPrefix(spec, "# Spec:") || inputs["document"] != "包含 -- 分隔符的文本" || inputs["count"] != float64(2) {
+		t.Fatalf("spec=%q inputs=%v err=%v", spec, inputs, err)
+	}
+	payload, inputs, err := parseHopJITRunPayload("生成摘要")
+	if err != nil || payload != "生成摘要" || inputs != nil {
+		t.Fatalf("payload=%q inputs=%v err=%v", payload, inputs, err)
+	}
+	for _, invalid := range []string{
+		`--inputs {`,
+		`--inputs null -- # Spec: x`,
+		`--inputs {} # Spec: x`,
+		`--inputs {} -- 普通任务`,
+	} {
+		if _, _, err := parseHopJITRunPayload(invalid); err == nil {
+			t.Fatalf("invalid payload %q was accepted", invalid)
+		}
+	}
+}
+
 func TestHopCommandUsesExistingImmediateDispatcher(t *testing.T) {
 	handler := &IMMessageHandler{}
-	resp, handled := handler.handleImmediateIMCommand(IMUserMessage{Text: "/hop"}, "/hop", nil, nil)
-	if !handled || resp == nil || !strings.Contains(resp.Text, "/hop resume") {
-		t.Fatalf("resp=%+v handled=%v", resp, handled)
+	for _, command := range []string{"/hop", "/hop help"} {
+		resp, handled := handler.handleImmediateIMCommand(IMUserMessage{Text: command}, command, nil, nil)
+		if !handled || resp == nil || !strings.Contains(resp.Text, "/hop resume") || !strings.Contains(resp.Text, "/hop compile") {
+			t.Fatalf("command=%q resp=%+v handled=%v", command, resp, handled)
+		}
+	}
+}
+
+func TestHopJITRunOwnerAuthorization(t *testing.T) {
+	snapshot := hopjit.EngineSnapshot{OwnerID: "user-a"}
+	if err := authorizeHopJITSnapshot(snapshot, hopJITExecutionIdentity{PrincipalID: "user-a"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, identity := range []hopJITExecutionIdentity{{PrincipalID: "user-b"}, {}} {
+		if err := authorizeHopJITSnapshot(snapshot, identity); err != hopjit.ErrRunAccessDenied {
+			t.Fatalf("identity=%+v err=%v", identity, err)
+		}
+	}
+	if err := authorizeHopJITSnapshot(hopjit.EngineSnapshot{}, hopJITExecutionIdentity{PrincipalID: "user-a"}); err != hopjit.ErrRunAccessDenied {
+		t.Fatalf("legacy snapshot was visible to an authenticated command: %v", err)
 	}
 }
 

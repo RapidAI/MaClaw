@@ -10,6 +10,9 @@ import (
 )
 
 func (p *expressionParser) callValue(name string, positional []any, named map[string]any) (any, error) {
+	if p.skip > 0 {
+		return nil, nil
+	}
 	if len(named) > 0 && isPureFunction(name) {
 		return nil, fmt.Errorf("pure function %s requires positional arguments", name)
 	}

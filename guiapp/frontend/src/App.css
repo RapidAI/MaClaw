@@ -31963,11 +31963,6 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-task-result-card__file { display: flex; align-items: center; gap: 6px; color: var(--theme-text-secondary); font-size: 12px; }
 .mc-task-result-card__file a { flex: 1 1 auto; min-width: 0; color: var(--theme-text-secondary); text-decoration: none; word-break: break-all; }
 .mc-task-result-card__file a:hover { color: var(--mc-accent, #2e75cb); text-decoration: underline; }
-.mc-task-result-card__upload { flex: none; width: 22px; height: 22px; display: inline-grid; place-items: center; padding: 0; border: none; border-radius: var(--radius-sm); background: transparent; color: var(--theme-text-muted); font-size: 13px; line-height: 1; cursor: pointer; }
-.mc-task-result-card__upload--idle:hover:not(:disabled) { background: var(--theme-primary-soft); color: var(--mc-accent, #2e75cb); }
-.mc-task-result-card__upload--uploading { opacity: .5; cursor: default; }
-.mc-task-result-card__upload--done { color: var(--theme-success); cursor: default; }
-.mc-task-result-card__upload--error { color: var(--theme-danger); }
 .mc-task-summary-status { margin: 0 0 6px; color: var(--theme-text-muted); font-size: 12px; }
 .mc-task-summary-status[data-status='incomplete'] { color: var(--theme-danger, #a33b32); }
 /* Task artifacts: a quiet "deliverable" section holding one card per file.
@@ -32006,9 +32001,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   box-shadow: var(--shadow-md); transform: translateY(-1px);
 }
 .mc-task-artifact-item__head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 10px 12px 9px; }
-.mc-task-artifact-item__head .mc-task-artifact { flex: 0 1 auto; }
-/* The cloud-upload affordance rides the card's right edge. */
-.mc-task-artifact-item__head .mc-task-result-card__upload { margin-left: auto; }
+/* Grow into the title row, but keep .mc-task-artifact's 340px cap so a long name ellipsizes. */
+.mc-task-artifact-item__head .mc-task-artifact { flex: 1 1 auto; min-width: 0; }
 /* 120-app-responsive excludes .mc-task-artifact-item__actions from the generic
    #App repaint, so this strip owns its own palette and hover states outright. */
 .mc-task-artifact-item__actions.mc-task-result-card__actions {
@@ -32017,6 +32011,17 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   background: color-mix(in srgb, var(--theme-surface-muted) 44%, var(--theme-surface));
 }
 .mc-task-artifact-item__actions.mc-task-result-card__actions button { min-height: 30px; padding: 0 12px; border-radius: 9px; font-size: 12px; transition: border-color 140ms ease, color 140ms ease, background 140ms ease, box-shadow 140ms ease; }
+/* Status tint has to beat .mc-task-result-card__actions button's color.
+   The label already says 上传中…, so skip the global aria-busy spinner that would widen this pill. */
+.mc-task-artifact-item__actions .mc-task-upload { white-space: nowrap; }
+.mc-task-artifact-item__actions .mc-task-upload[aria-busy='true']::after { content: none; }
+.mc-task-artifact-item__actions.mc-task-result-card__actions .mc-task-upload--done,
+.mc-task-artifact-item__actions.mc-task-result-card__actions .mc-task-upload--done:hover:not(:disabled) {
+  color: var(--theme-success); cursor: default;
+  background: var(--theme-surface); border-color: var(--theme-border);
+}
+.mc-task-artifact-item__actions.mc-task-result-card__actions .mc-task-upload--error,
+.mc-task-artifact-item__actions.mc-task-result-card__actions .mc-task-upload--error:hover:not(:disabled) { color: var(--theme-danger); }
 /* Filled primary (预览) leads the strip. The class says "fill", not
    "primary": a global office-repaint repaints button[class*='primary']
    with --office-accent and would fight this theme-token fill here. */
@@ -32075,8 +32080,6 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 #App[data-ai-theme='dark'] .mc-task-result-card__heading,
 #App[data-ai-theme='dark'] .mc-task-result-card__file { color: var(--theme-text-primary); }
 #App[data-ai-theme='dark'] .mc-task-result-card__file a { color: var(--theme-text-secondary); }
-#App[data-ai-theme='dark'] .mc-task-result-card__upload { color: var(--theme-text-secondary); }
-#App[data-ai-theme='dark'] .mc-task-result-card__upload--idle:hover:not(:disabled) { background: var(--theme-surface-muted); color: var(--theme-primary-strong); }
 #App[data-ai-theme='dark'] .mc-task-result-card__actions button { border-color: var(--theme-border); background: var(--theme-surface-muted); color: var(--theme-text-secondary); }
 #App[data-ai-theme='dark'] .mc-task-artifacts {
   border-color: color-mix(in srgb, var(--theme-primary) 14%, var(--theme-border));
@@ -32094,6 +32097,12 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 /* Scoped so they out-rank the generic dark action rule above. */
 #App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions button { border-color: var(--theme-border); background: transparent; color: var(--theme-text-secondary); }
 #App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--theme-primary) 42%, var(--theme-border)); background: var(--theme-primary-soft); color: var(--theme-primary-strong); }
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-task-upload--done,
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-task-upload--done:hover:not(:disabled) {
+  color: var(--theme-success); background: transparent; border-color: var(--theme-border);
+}
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-task-upload--error,
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-task-upload--error:hover:not(:disabled) { color: var(--theme-danger); }
 #App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-artifact-btn--fill,
 #App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-artifact-btn--fill:hover:not(:disabled) {
   border-color: transparent;
@@ -39970,10 +39979,6 @@ body.companion-pdf-translation-dragging * {
   color: var(--mc-accent) !important;
 }
 #App .mc-task-result-card__file a:hover { color: var(--mc-accent-strong) !important; }
-#App .mc-task-result-card__upload { color: var(--mc-muted) !important; }
-#App .mc-task-result-card__upload--idle:hover:not(:disabled) { background: color-mix(in srgb, var(--mc-accent) 10%, var(--mc-surface)) !important; color: var(--mc-accent) !important; }
-#App .mc-task-result-card__upload--done { color: var(--theme-success) !important; }
-#App .mc-task-result-card__upload--error { color: var(--theme-danger) !important; }
 /* The per-file artifact action strip (deliverable cards) is excluded here:
    .mc-task-artifact-item__actions brings its own palette, hover states and a
    filled primary button, so the generic repaint below would fight them.

@@ -155,7 +155,6 @@ export function TaskResultArtifacts({
                                     <span className="mc-task-artifact__name">{file.name}</span>
                                     <span className="mc-task-artifact__open" aria-hidden="true">↗</span>
                                 </a>
-                                {taskResultUploadSupported(filePath) && <TaskResultUploadButton filePath={filePath} lang={lang} />}
                             </div>
                             <div className="mc-task-result-card__actions mc-task-artifact-item__actions">
                                 {/* "fill" on purpose: a global office-repaint repaints every
@@ -165,6 +164,7 @@ export function TaskResultArtifacts({
                                 <button type="button" data-testid={`task-result-view-btn${suffix}`} onClick={(event) => onOpen(event, filePath)}>{chromeText(lang, "View document", "查看文档", "查看文件")}</button>
                                 <TaskResultExportButton filePath={filePath} lang={lang} testIdSuffix={suffix} />
                                 <button type="button" data-testid={`task-result-reveal-btn${suffix}`} onClick={(event) => { event.stopPropagation(); void ShowItemInFolder(filePath).catch(() => {}); }}>{chromeText(lang, "Reveal", "定位", "定位")}</button>
+                                {taskResultUploadSupported(filePath) && <TaskResultUploadButton filePath={filePath} lang={lang} />}
                             </div>
                         </div>
                     );

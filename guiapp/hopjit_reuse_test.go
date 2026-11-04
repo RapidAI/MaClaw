@@ -107,6 +107,52 @@ Outputs:
 	}
 }
 
+func TestGUIHopJITResumeRejectsDifferentRunOwner(t *testing.T) {
+	store := hopjit.NewMemoryPersistence()
+	callerA := &guiHopJITCaller{identity: hopJITExecutionIdentity{PrincipalID: "user-a"}}
+	result, err := runHopSpecWithPersistence(context.Background(), store, `# Spec: 所有者暂停
+Goal: 仅所有者可回答
+Outputs:
+- answer % text
+## Steps
+1. [ask] 输入答案
+  + → answer % text
+`, nil, callerA)
+	if err != nil || result.Status != hopjit.NextPaused || result.Snapshot.OwnerID != "user-a" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	callerB := &guiHopJITCaller{identity: hopJITExecutionIdentity{PrincipalID: "user-b"}}
+	if _, err := resumeHopSpecWithPersistence(context.Background(), store, result.RunID, map[string]any{"answer": "越权"}, callerB); !errors.Is(err, hopjit.ErrRunAccessDenied) {
+		t.Fatalf("cross-owner resume err=%v", err)
+	}
+	result, err = resumeHopSpecWithPersistence(context.Background(), store, result.RunID, map[string]any{"answer": "合法"}, callerA)
+	if err != nil || result.Status != hopjit.NextCompleted || result.Outputs["answer"] != "合法" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestHopJITPersistenceSharedUntilAppClose(t *testing.T) {
+	var state hopJITPersistenceState
+	path := filepath.Join(t.TempDir(), "hopjit.db")
+	first, err := state.open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := state.open(path)
+	if err != nil || first != second {
+		t.Fatalf("store was not reused: first=%p second=%p err=%v", first, second, err)
+	}
+	state.close()
+	if _, err := first.Exists(context.Background(), "run"); err == nil {
+		t.Fatal("closed store remained usable")
+	}
+	reopened, err := state.open(path)
+	if err != nil || reopened == first {
+		t.Fatalf("reopened=%p first=%p err=%v", reopened, first, err)
+	}
+	state.close()
+}
+
 func TestStripHopJITCodeFence(t *testing.T) {
 	if got := stripHopJITCodeFence("```json\n{\"a\":1}\n```"); !strings.Contains(got, `"a":1`) {
 		t.Fatalf("got=%q", got)

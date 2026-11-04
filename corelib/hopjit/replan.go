@@ -48,6 +48,7 @@ func (e *ExecutionEngine) Replan(ctx context.Context, subtaskID, stepsMarkdown s
 		return err
 	}
 	return e.mutateLocked(ctx, func() error {
+		e.cancelInflightLocked(ctx, "replan "+subtaskID)
 		for _, child := range container.Children {
 			e.removeStepStateLocked(child)
 		}

@@ -444,7 +444,7 @@ func TestFallbackKeepsHowToGUIAsInquiry(t *testing.T) {
 
 func TestFallbackShortFollowUpKeepsWorkName(t *testing.T) {
 	got := fallbackCodingRequestRestatement("再收紧阈值", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
-	if !strings.Contains(got, "系统信息查看") || !strings.Contains(got, "再收紧阈值") {
+	if !strings.Contains(got, "「系统信息查看」") || !strings.Contains(got, "这次再收紧阈值") {
 		t.Fatalf("short work name and the new ask should both stay: %q", got)
 	}
 	if strings.Contains(got, "上继续你这次提出的改动") || strings.Contains(got, "再动手") {
@@ -457,8 +457,11 @@ func TestFallbackShortFollowUpKeepsWorkName(t *testing.T) {
 
 func TestFallbackBareContinueKeepsShortWorkName(t *testing.T) {
 	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
-	if !strings.Contains(got, "在已有工作（系统信息查看）上继续你这次提出的改动") {
-		t.Fatalf("bare continue should keep the work-name template: %q", got)
+	if !strings.Contains(got, "继续做「系统信息查看」") || !strings.Contains(got, "从上次停下的地方接着做") {
+		t.Fatalf("bare continue should name the work: %q", got)
+	}
+	if strings.Contains(got, "上继续你这次提出的改动") || strings.Contains(got, "再动手") || strings.Contains(got, "只改这次提到的部分") {
+		t.Fatalf("bare continue invented a change: %q", got)
 	}
 }
 
@@ -466,8 +469,11 @@ func TestFallbackLongRequirementEchoStaysReadable(t *testing.T) {
 	plan := "你要的不是再写优化代码，而是一份可信的完成度核查：对6条推理优化线——（1）x86 AVX2、（2）x86 AVX-512、（3）ARM NEON，并核对现有实现。"
 	plan += strings.Repeat("补充约束与回归范围。", 8)
 	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: plan})
-	if strings.Contains(got, "上继续你这次提出的改动") {
-		t.Fatalf("requirement paragraph was stuffed into the continue template: %q", got)
+	if strings.Contains(got, "上继续你这次提出的改动") || strings.Contains(got, "继续这项需求") || strings.Contains(got, "你要的不是") {
+		t.Fatalf("requirement paragraph was wrapped instead of described: %q", got)
+	}
+	if !strings.Contains(got, "做一份可信的完成度核查") || !strings.Contains(got, "而不是再写优化代码") {
+		t.Fatalf("echo should describe the check: %q", got)
 	}
 	if strings.Count(got, "（") != strings.Count(got, "）") {
 		t.Fatalf("unbalanced parens: %q", got)
@@ -475,22 +481,22 @@ func TestFallbackLongRequirementEchoStaysReadable(t *testing.T) {
 	if !strings.Contains(got, "完成度核查") || !strings.Contains(got, "推理优化线") {
 		t.Fatalf("echo dropped the requirement: %q", got)
 	}
-	if strings.Contains(got, "（3）上") {
-		t.Fatalf("list item absorbed the template: %q", got)
+	if strings.Contains(got, "（1）") || strings.Contains(got, "（3）上") {
+		t.Fatalf("list marker leaked into the echo: %q", got)
 	}
-	if strings.Contains(got, "再动手") {
-		t.Fatalf("requirement echo must not add an edit the requirement did not ask for: %q", got)
-	}
-	if strings.Contains(got, "（1）") || strings.Contains(got, "AVX") {
-		t.Fatalf("echo should stop before the breakdown list: %q", got)
+	if !strings.Contains(got, "x86 AVX2") || !strings.Contains(got, "x86 AVX-512") || !strings.Contains(got, "ARM NEON") {
+		t.Fatalf("echo dropped the optimization lines: %q", got)
 	}
 }
 
 func TestFallbackRequirementEchoCutsLongPreambleAtList(t *testing.T) {
 	plan := strings.Repeat("先核对现有实现与约束。", 12) + "（1）x86 AVX2、（2）x86 AVX-512"
 	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: plan})
-	if strings.Contains(got, "（1）") || strings.Contains(got, "AVX") {
-		t.Fatalf("long preamble fell through into the list: %q", got)
+	if strings.Contains(got, "（1）") {
+		t.Fatalf("long preamble fell through into a list marker: %q", got)
+	}
+	if !strings.Contains(got, "x86 AVX2") || !strings.Contains(got, "x86 AVX-512") {
+		t.Fatalf("echo dropped the list titles: %q", got)
 	}
 	if !strings.Contains(got, "核对现有实现") {
 		t.Fatalf("echo dropped the preamble: %q", got)
@@ -514,8 +520,11 @@ func TestFallbackContinueKeepsClauseAfterColon(t *testing.T) {
 func TestFallbackRequirementEchoDropsUnbalancedList(t *testing.T) {
 	plan := "核对完成度（范围先写到这里——（1）x86 AVX2、（2）x86 AVX-512"
 	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: plan})
-	if strings.Contains(got, "（1）") || strings.Contains(got, "AVX") {
-		t.Fatalf("unbalanced head fell through into the list: %q", got)
+	if strings.Contains(got, "（1）") {
+		t.Fatalf("unbalanced head fell through into a list marker: %q", got)
+	}
+	if !strings.Contains(got, "x86 AVX2") {
+		t.Fatalf("echo dropped the list titles: %q", got)
 	}
 	if !strings.Contains(got, "核对完成度") {
 		t.Fatalf("echo dropped the goal: %q", got)
@@ -528,8 +537,11 @@ func TestFallbackRequirementEchoDropsUnbalancedList(t *testing.T) {
 func TestFallbackRequirementEchoStopsBeforeBareList(t *testing.T) {
 	plan := "核对六条推理优化线的完成度——（1）x86 AVX2、（2）x86 AVX-512、（3）ARM NEON"
 	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: plan})
-	if strings.Contains(got, "（1）") || strings.Contains(got, "AVX") {
-		t.Fatalf("echo should stop before the bare list: %q", got)
+	if strings.Contains(got, "（1）") {
+		t.Fatalf("echo should not keep the list marker: %q", got)
+	}
+	if !strings.Contains(got, "x86 AVX2") || !strings.Contains(got, "ARM NEON") {
+		t.Fatalf("echo dropped the optimization lines: %q", got)
 	}
 	if !strings.Contains(got, "完成度") {
 		t.Fatalf("echo dropped the goal: %q", got)
@@ -545,8 +557,83 @@ func TestFallbackShortNewAskIsNotReplacedByOldRequirement(t *testing.T) {
 	if strings.Contains(got, "完成度核查") || strings.Contains(got, "（1）") || strings.Contains(got, "在已有工作（") {
 		t.Fatalf("new ask was replaced by the old requirement: %q", got)
 	}
-	if !strings.Contains(got, "只查 AVX-512") {
+	if !strings.Contains(got, "这次只查 AVX-512") {
 		t.Fatalf("new ask missing from the echo: %q", got)
+	}
+}
+
+func TestFallbackColonAfterVerbStaysInOrder(t *testing.T) {
+	plan := "请核对：对6条推理优化线给出证据，不要改代码。"
+	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: plan})
+	if strings.Contains(got, "做请核对") {
+		t.Fatalf("verb was placed after 做: %q", got)
+	}
+	if !strings.Contains(got, "请核对") || !strings.Contains(got, "对6条推理优化线") {
+		t.Fatalf("clause dropped: %q", got)
+	}
+}
+
+func TestFallbackPoliteAskIsNotPrefixed(t *testing.T) {
+	got := fallbackCodingRequestRestatement("请核对一下", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
+	if strings.Contains(got, "这次请") {
+		t.Fatalf("请 was glued to 这次: %q", got)
+	}
+	if !strings.Contains(got, "请核对一下") || !strings.Contains(got, "系统信息查看") {
+		t.Fatalf("ask dropped: %q", got)
+	}
+}
+
+func TestFallbackListAtStartDoesNotEchoMarker(t *testing.T) {
+	plan := "（1）x86 AVX2、（2）x86 AVX-512"
+	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: plan})
+	if strings.Contains(got, "（1）") || strings.Contains(got, "（2）") {
+		t.Fatalf("leading list marker leaked: %q", got)
+	}
+	if !strings.Contains(got, "x86 AVX2") || !strings.Contains(got, "x86 AVX-512") {
+		t.Fatalf("leading list dropped the titles: %q", got)
+	}
+}
+
+func TestFallbackShortPreambleDoesNotEchoListMarker(t *testing.T) {
+	plan := "注：（1）x86 AVX2、（2）ARM NEON"
+	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: plan})
+	if strings.Contains(got, "（1）") {
+		t.Fatalf("short preamble fell through into the marker: %q", got)
+	}
+	if !strings.Contains(got, "x86 AVX2") || !strings.Contains(got, "ARM NEON") {
+		t.Fatalf("short preamble dropped the titles: %q", got)
+	}
+}
+
+func TestFallbackColonNounRewriteStaysANoun(t *testing.T) {
+	plan := "结果如下：对6条推理优化线给出证据。"
+	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: plan})
+	if strings.Contains(got, "做结果如下") {
+		t.Fatalf("a clause was used as a noun: %q", got)
+	}
+	if !strings.Contains(got, "结果如下") || !strings.Contains(got, "对6条推理优化线") {
+		t.Fatalf("clause dropped: %q", got)
+	}
+}
+
+func TestFallbackListedItemAlreadyNamedIsNotDropped(t *testing.T) {
+	plan := "核对 x86 AVX2 是否落地——（1）x86 AVX2、（2）ARM NEON"
+	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: plan})
+	if strings.Contains(got, "（1）") {
+		t.Fatalf("marker leaked: %q", got)
+	}
+	if !strings.Contains(got, "ARM NEON") {
+		t.Fatalf("later list title was dropped because the first title was already named: %q", got)
+	}
+}
+
+func TestFallbackWholeScopeAskDoesNotSayLeaveTheRest(t *testing.T) {
+	got := fallbackCodingRequestRestatement("核对全部优化线", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
+	if strings.Contains(got, "其它先不动") {
+		t.Fatalf("a whole-scope ask was told to leave the rest: %q", got)
+	}
+	if !strings.Contains(got, "核对全部优化线") || !strings.Contains(got, "系统信息查看") {
+		t.Fatalf("ask dropped: %q", got)
 	}
 }
 

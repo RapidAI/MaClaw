@@ -22,9 +22,12 @@ type ExecutionEngine struct {
 	tools          ToolProvider
 	specs          SpecProvider
 	caller         ReuseCaller
+	runOwner       string
+	callDepth      int
 	ctx            context.Context
 	inflightResult map[string]chan ReuseResult
 	inflightCancel map[string]context.CancelFunc
+	inflightNotify chan struct{}
 }
 
 func NewExecutionEngine(store PersistenceProvider, options ...EngineOption) *ExecutionEngine {
@@ -34,6 +37,7 @@ func NewExecutionEngine(store PersistenceProvider, options ...EngineOption) *Exe
 	engine := &ExecutionEngine{
 		store: store, now: time.Now,
 		inflightResult: map[string]chan ReuseResult{}, inflightCancel: map[string]context.CancelFunc{},
+		inflightNotify: make(chan struct{}, 1),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -74,6 +78,8 @@ func (e *ExecutionEngine) InitAST(ctx context.Context, spec hopspec.SpecAST, inp
 	snapshot := &EngineSnapshot{
 		FormatVersion:  SnapshotFormatVersion,
 		RunID:          runID,
+		OwnerID:        strings.TrimSpace(e.runOwner),
+		CallDepth:      e.callDepth,
 		Spec:           spec,
 		StepStates:     map[string]StepStatus{},
 		Variables:      map[string]VariableValue{},
@@ -165,6 +171,9 @@ func (e *ExecutionEngine) Next(ctx context.Context) (NextResult, error) {
 	if e.snapshot.Pause != nil {
 		return e.resultLocked(NextPaused), nil
 	}
+	if e.snapshot.AdaptiveNeeded != "" {
+		return e.resultLocked(NextAdaptiveNeeded), nil
+	}
 	if e.snapshot.TerminalState == "" && len(e.snapshot.Inflight) > 0 {
 		return e.resultLocked(NextRunning), nil
 	}
@@ -210,6 +219,7 @@ func (e *ExecutionEngine) Complete(ctx context.Context, stepID string, outputs m
 		if step.Type == hopspec.StepConfirm {
 			if approved, ok := checkVerdict(step, outputs); ok && !approved {
 				failure := Failure{Kind: FailureError, Reason: "CONFIRM_REJECTED: " + stepID}
+				e.cancelInflightLocked(ctx, failure.Reason)
 				e.snapshot.TerminalFailure = &failure
 				e.snapshot.TerminalState = TerminalFailed
 				for _, remaining := range e.snapshot.Spec.AllSteps() {
@@ -259,9 +269,16 @@ func (e *ExecutionEngine) Resume(ctx context.Context, runID string) error {
 	if snapshot.FormatVersion != SnapshotFormatVersion {
 		return fmt.Errorf("unsupported snapshot format %d", snapshot.FormatVersion)
 	}
+	if snapshot.OwnerID != strings.TrimSpace(e.runOwner) {
+		return ErrRunAccessDenied
+	}
+	if snapshot.CallDepth < 0 || snapshot.CallDepth > maxCallDepth {
+		return fmt.Errorf("invalid call depth %d", snapshot.CallDepth)
+	}
 	normalizeSnapshotMaps(&snapshot)
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.callDepth = snapshot.CallDepth
 	e.snapshot = &snapshot
 	if snapshot.TerminalState != "" {
 		return nil
@@ -301,12 +318,12 @@ func (e *ExecutionEngine) Abort(ctx context.Context, reason string) error {
 		return errors.New("terminal run cannot be aborted")
 	}
 	return e.mutateLocked(ctx, func() error {
+		e.cancelInflightLocked(ctx, reason)
 		for id, state := range e.snapshot.StepStates {
 			if state == StepPending || state == StepRunning {
 				e.snapshot.StepStates[id] = StepSkipped
 			}
 		}
-		e.cancelInflightLocked()
 		e.snapshot.Inflight = map[string]InflightCall{}
 		e.snapshot.Pause = nil
 		e.snapshot.AbortReason = strings.TrimSpace(reason)
@@ -330,6 +347,7 @@ func (e *ExecutionEngine) mutateLocked(ctx context.Context, mutate func() error)
 	if err != nil {
 		return err
 	}
+	normalizeSnapshotMaps(&before)
 	if err := mutate(); err != nil {
 		return err
 	}

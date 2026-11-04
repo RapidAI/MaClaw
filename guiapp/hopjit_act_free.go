@@ -22,7 +22,7 @@ func (c *guiHopJITCaller) executeActFree(ctx context.Context, step hopjit.StepRe
 	if len(step.Tools) == 0 {
 		return nil, errors.New("act free requires an explicit tool whitelist")
 	}
-	provider, definitions, err := c.handler.hopJITActFreeToolProvider(step)
+	provider, definitions, err := c.handler.hopJITActFreeToolProvider(step, c.identity)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +55,11 @@ func (c *hopJITActFreeCallbacks) BuildSystemPrompt(string, bool) string {
 }
 func (c *hopJITActFreeCallbacks) BuildTools(string) []map[string]interface{} { return c.tools }
 func (c *hopJITActFreeCallbacks) ExecuteTool(name, argsJSON string) string {
-	value, err := c.provider.Execute(c.ctx, name, mustHopJITToolArgs(argsJSON))
+	args, err := agentruntime.ParseToolArgumentsObject(argsJSON)
+	if err != nil {
+		return "Error: hopjit_tool_arguments_invalid: " + err.Error()
+	}
+	value, err := c.provider.Execute(c.ctx, name, args)
 	if err != nil {
 		return "Error: " + err.Error()
 	}
@@ -67,9 +71,25 @@ func (c *hopJITActFreeCallbacks) OnToolCall(string)   {}
 func (c *hopJITActFreeCallbacks) OnToolResult(string) {}
 func (c *hopJITActFreeCallbacks) ShouldStop() bool    { return c.ctx.Err() != nil }
 
-func (h *IMMessageHandler) hopJITActFreeToolProvider(step hopjit.StepReady) (*tool.HopJITPlanToolProvider, []map[string]interface{}, error) {
+func (h *IMMessageHandler) hopJITActFreeToolProvider(step hopjit.StepReady, identity hopJITExecutionIdentity) (*tool.HopJITPlanToolProvider, []map[string]interface{}, error) {
 	if h == nil || h.registry == nil {
 		return nil, nil, errors.New("HopJIT tool registry is unavailable")
+	}
+	identity.PrincipalID = strings.TrimSpace(identity.PrincipalID)
+	identity.PolicyOwnerID = strings.TrimSpace(identity.PolicyOwnerID)
+	identity.SessionID = strings.TrimSpace(identity.SessionID)
+	if identity.PrincipalID == "" || identity.PolicyOwnerID == "" {
+		return nil, nil, errors.New("HopJIT act free requires an authenticated execution owner")
+	}
+	if identity.SessionID == "" {
+		identity.SessionID = strings.TrimSpace(step.RunID)
+	}
+	if identity.SessionID == "" {
+		return nil, nil, errors.New("HopJIT act free requires a session identity")
+	}
+	rootTaskID := strings.TrimSpace(step.RunID)
+	if rootTaskID == "" {
+		rootTaskID = identity.SessionID
 	}
 	capabilityRegistry := newIMSemanticCapabilityRegistry()
 	catalog := tool.NewToolCatalog(capabilityRegistry)
@@ -113,21 +133,28 @@ func (h *IMMessageHandler) hopJITActFreeToolProvider(step hopjit.StepReady) (*to
 		return nil, nil, err
 	}
 	plan, err := tool.NewToolPlanner(capabilityRegistry).Plan(tool.RouteRequest{
-		RootTaskID: "hopjit-act-free", Snapshot: snapshot, Needs: needs, Pins: pins, Now: time.Now().UTC(),
+		RootTaskID: rootTaskID, Snapshot: snapshot, Needs: needs, Pins: pins, Now: time.Now().UTC(),
 	})
 	if err != nil || len(plan.Unmet) > 0 {
 		return nil, nil, fmt.Errorf("HopJIT act free plan failed: %v %+v", err, plan.Unmet)
 	}
-	issuer, err := tool.NewInvocationIssuerWithStore([]byte(strings.Repeat("h", 32)), tool.NewMemoryInvocationGrantStore())
+	issuer, err := h.semanticInvocationIssuer()
 	if err != nil {
 		return nil, nil, err
 	}
-	executions := tool.NewMemoryPlanExecutionStore()
+	var executions tool.PlanExecutionStore = tool.NewMemoryPlanExecutionStore()
+	if h.app != nil {
+		coordinator, err := h.app.semanticExecutionCoordinatorForApp()
+		if err != nil {
+			return nil, nil, err
+		}
+		executions = coordinator.Executions
+	}
 	executor, err := tool.NewPlanExecutor(issuer, executions)
 	if err != nil {
 		return nil, nil, err
 	}
-	scope := tool.InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: "hopjit", TurnID: step.StepID, PrincipalID: "hopjit"}
+	scope := tool.InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: identity.SessionID, TurnID: step.StepID, PrincipalID: identity.PrincipalID}
 	grants, err := issuer.IssueReady(plan, scope, time.Minute, nil)
 	if err != nil {
 		return nil, nil, err
@@ -139,22 +166,22 @@ func (h *IMMessageHandler) hopJITActFreeToolProvider(step hopjit.StepReady) (*to
 	provider := &tool.HopJITPlanToolProvider{
 		Executor: executor, Scope: scope, Plan: plan, Grants: grantByName, Schemas: schemas,
 		Invoke: func(ctx context.Context, selection tool.PlannedSelection, request tool.CanonicalRequest) tool.SelectionExecutionResult {
-			result := h.executeToolDetailedWithRuntimeContext(ctx, "hopjit", true, "desktop", selection.AdapterName, string(request.CanonicalJSON), step.Summary, nil)
-			if result.IsFailure() {
+			ctx = withTrustedAuditPrincipal(ctx, identity.PrincipalID)
+			result := h.executeToolDetailedWithRuntimeContext(ctx, identity.PolicyOwnerID, true, identity.Platform, selection.AdapterName, string(request.CanonicalJSON), step.Summary, nil)
+			switch result.Outcome {
+			case toolOutcomeSucceeded:
+				return tool.SelectionExecutionResult{Result: result.Text, Succeeded: true}
+			case toolOutcomeUncertain:
+				if result.FailureKind == toolFailureApprovalRequired || isRegisteredToolApprovalWaitText(result.Text) {
+					return tool.SelectionExecutionResult{Result: result.Text, Paused: true, ReasonCode: "hopjit_tool_approval_required"}
+				}
+				return tool.SelectionExecutionResult{Result: result.Text, Unknown: true, ReasonCode: "hopjit_tool_outcome_unknown"}
+			default:
 				return tool.SelectionExecutionResult{Result: result.Text, ReasonCode: "hopjit_tool_failed"}
 			}
-			return tool.SelectionExecutionResult{Result: result.Text, Succeeded: true}
 		},
 	}
 	return provider, definitions, nil
-}
-
-func mustHopJITToolArgs(argsJSON string) map[string]any {
-	var args map[string]any
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return map[string]any{}
-	}
-	return args
 }
 
 func hopJITActFreePrompt(step hopjit.StepReady) string {

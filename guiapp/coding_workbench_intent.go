@@ -441,7 +441,7 @@ func codingRequirementGoalCut(s string) int {
 	cut := -1
 	for _, marker := range []string{"（1）", "(1)"} {
 		i := codingListMarkerIndex(s, marker)
-		if i > 0 && (cut < 0 || i < cut) {
+		if i >= 0 && (cut < 0 || i < cut) {
 			cut = i
 		}
 	}
@@ -502,7 +502,9 @@ func codingRequirementGoalClause(s string) string {
 		head = strings.TrimRight(head, " ，,、—-：: \t")
 	}
 	n := utf8.RuneCountInString(head)
-	if n < 4 || n > 80 {
+	// Two characters is enough when a list was cut off. A shorter head is
+	// not a sentence, and copying the list body would bring "（1）" back.
+	if n < 2 || n > 80 {
 		return ""
 	}
 	return head
@@ -515,8 +517,8 @@ func codingClosedRequirementSnippet(s string) string {
 	if s == "" || codingSessionContextLooksGeneric(s) || codingShortWorkName(s) != "" {
 		return ""
 	}
-	if head := codingRequirementGoalClause(s); head != "" {
-		return head
+	if codingRequirementGoalCut(s) >= 0 {
+		return codingRequirementGoalClause(s)
 	}
 	const maxRunes = 100
 	runes := []rune(s)
@@ -691,39 +693,230 @@ func fallbackCodingRequestRestatement(userText string, mem stickyCodingWorkbench
 	// A session that already wrote project files keeps a writable contract.
 	// Do not announce a read-only turn from the wording of this message.
 	if codingRequestLooksLikeQuestion(userText) && !codingSessionHasImplementationTrajectory(mem) {
-		return "先只读查看相关代码，回答你这次想弄清的问题，不改文件。"
+		return "先只读相关代码，回答你这次的问题，不改文件。"
 	}
 	if codingRequestLooksLikeQuestion(userText) {
 		// This session already wrote files, so the answer must not claim the
-		// tree is read-only. The question itself still has to stay in the
-		// sentence; "按你这次说的做：…？。" is neither an answer nor a change.
+		// tree is read-only. State the question, then the limit on edits.
 		q := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(userText), "？?"))
 		if q == "" {
 			q = strings.TrimSpace(userText)
 		}
-		return "先对照现有实现回答你这次的问题：" + q + "。需要改代码时再改，不扩大到这句没提到的范围。"
+		return "对照现有实现，回答「" + q + "」。"
 	}
 	if utf8.RuneCountInString(userText) <= 48 {
-		// The parenthetical is a title. A requirement paragraph stays outside
-		// it. Only a bare continue repeats the stored goal; a new short ask
-		// stays in the sentence, or the title hides it behind "再动手".
-		ask := strings.TrimRight(strings.TrimSpace(userText), "。！？!?")
-		ask = strings.TrimSpace(ask)
+		// A title stays a title. A stored requirement is restated as the
+		// work itself. A new short ask is that ask, not a continue template.
+		ask := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(userText), "。！？!?"))
 		if codingWorkbenchContinueCue(userText) {
-			if echo := codingClosedRequirementSnippet(mem.SessionPlan); echo != "" {
-				echo = strings.TrimRight(echo, "。")
-				return "继续这项需求：" + echo + "。"
+			echo := codingClosedRequirementSnippet(mem.SessionPlan)
+			if echo != "" || codingRequirementGoalCut(mem.SessionPlan) >= 0 {
+				if sentence := codingDescribeStoredGoal(echo, mem.SessionPlan); sentence != "" {
+					return sentence
+				}
 			}
 			if prior != "" {
-				return "在已有工作（" + prior + "）上继续你这次提出的改动，先对齐现有实现再动手，不扩大到未提到的功能。"
+				return "继续做" + codingQuoteWorkName(prior) + "，从上次停下的地方接着做。"
 			}
 		} else if ask != "" && codingClosedRequirementSnippet(mem.SessionPlan) != "" {
-			return "按你这次说的做：" + ask + "。不扩大到这句没提到的范围。"
+			return codingDescribeNewAsk("", ask)
 		} else if prior != "" && ask != "" {
-			return "在已有工作（" + prior + "）上按你这次说的做：" + ask + "。不扩大到这句没提到的范围。"
+			return codingDescribeNewAsk(prior, ask)
 		}
 	}
-	return "按你的这次要求改当前项目：先看清现有实现和约束，再做对应修改并验证结果，不把范围扩到没提到的功能。"
+	return "先看清当前项目里相关的实现和约束，再按你这次的要求修改并验证。"
+}
+
+// codingDescribeStoredGoal turns a stored requirement into one sentence
+// about the work. "你要的不是再写代码，而是核查：对6条线" becomes
+// "对6条线，做核查，而不是再写代码。" Complete list titles are named;
+// the "（1）" markers are not.
+func codingDescribeStoredGoal(echo, source string) string {
+	echo = strings.TrimSpace(strings.TrimRight(strings.TrimSpace(echo), "。"))
+	if echo == "" {
+		return codingAppendListItems("", source)
+	}
+	var sentence string
+	if neg, pos, ok := codingSplitNotBut(echo); ok {
+		pos = codingSoftenGoalColon(pos)
+		neg = strings.TrimSpace(strings.TrimRight(neg, "。"))
+		if pos != "" && neg != "" {
+			sentence = pos + "，而不是" + neg + "。"
+		}
+	}
+	if sentence == "" {
+		softened := codingSoftenGoalColon(echo)
+		if softened == "" {
+			return ""
+		}
+		sentence = softened + "。"
+	}
+	return codingAppendListItems(sentence, source)
+}
+
+func codingSplitNotBut(s string) (neg, pos string, ok bool) {
+	i := strings.Index(s, "不是")
+	if i < 0 {
+		return "", "", false
+	}
+	rest := s[i+len("不是"):]
+	j := strings.Index(rest, "而是")
+	if j < 0 {
+		return "", "", false
+	}
+	neg = strings.Trim(rest[:j], "，, \t")
+	pos = strings.TrimSpace(rest[j+len("而是"):])
+	if neg == "" || pos == "" || utf8.RuneCountInString(neg) > 24 || utf8.RuneCountInString(pos) < 4 {
+		return "", "", false
+	}
+	return neg, pos, true
+}
+
+// codingSoftenGoalColon turns "一份核查：对6条线" into "对6条线，做一份核查".
+// A verb on the left, such as "请核对：对6条线", stays in front. Putting
+// 做 before 请核对 does not read as a sentence. Any other colon becomes
+// a comma so the constraint after it remains.
+func codingSoftenGoalColon(s string) string {
+	s = strings.TrimSpace(strings.TrimRight(strings.TrimSpace(s), "。"))
+	i := strings.Index(s, "：")
+	if i <= 0 {
+		return s
+	}
+	left := strings.TrimSpace(s[:i])
+	right := strings.TrimSpace(strings.TrimRight(s[i+len("："):], "。"))
+	if left == "" || right == "" {
+		return s
+	}
+	if strings.HasPrefix(right, "对") && codingLeftIsNounPhrase(left) {
+		return right + "，做" + left
+	}
+	return left + "，" + right
+}
+
+func codingLeftIsNounPhrase(left string) bool {
+	for _, p := range []string{"一份", "一个", "一项", "一套"} {
+		if strings.HasPrefix(left, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func codingAppendListItems(sentence, source string) string {
+	items := codingNumberedListItems(source)
+	var missing []string
+	for _, item := range items {
+		if sentence != "" && strings.Contains(sentence, item) {
+			continue
+		}
+		missing = append(missing, item)
+	}
+	if len(missing) == 0 {
+		return sentence
+	}
+	joined := strings.Join(missing, "、")
+	if strings.TrimSpace(sentence) == "" {
+		return "这几项：" + joined + "。"
+	}
+	if strings.Contains(sentence, "，而不是") {
+		return strings.Replace(sentence, "，而不是", "，包括 "+joined+"，而不是", 1)
+	}
+	sentence = strings.TrimRight(sentence, "。")
+	return sentence + "，包括" + joined + "。"
+}
+
+type codingListSpan struct {
+	marker  int
+	content int
+}
+
+func codingNumberedListItems(s string) []string {
+	spans := codingNumberedMarkerSpans(s)
+	var items []string
+	for i, span := range spans {
+		end := len(s)
+		if i+1 < len(spans) {
+			end = spans[i+1].marker
+		}
+		chunk := s[span.content:end]
+		if j := strings.IndexAny(chunk, "、，,。；;\n"); j >= 0 {
+			chunk = chunk[:j]
+		}
+		chunk = strings.Trim(chunk, " \t—-：:、，")
+		n := utf8.RuneCountInString(chunk)
+		if n < 2 || n > 16 || strings.ContainsAny(chunk, "（()）") {
+			continue
+		}
+		items = append(items, chunk)
+		if len(items) == 6 {
+			break
+		}
+	}
+	return items
+}
+
+func codingNumberedMarkerSpans(s string) []codingListSpan {
+	var out []codingListSpan
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if (r != '（' && r != '(') || (i > 0 && !codingListMarkerBoundary(s, i)) {
+			i += size
+			continue
+		}
+		rest := s[i+size:]
+		digits := 0
+		for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+			digits++
+		}
+		if digits == 0 || digits > 2 {
+			i += size
+			continue
+		}
+		close, csize := utf8.DecodeRuneInString(rest[digits:])
+		if (r == '（' && close != '）') || (r == '(' && close != ')') {
+			i += size
+			continue
+		}
+		content := i + size + digits + csize
+		out = append(out, codingListSpan{marker: i, content: content})
+		i = content
+	}
+	return out
+}
+
+func codingQuoteWorkName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.Contains(name, "「") || strings.Contains(name, "」") {
+		return name
+	}
+	return "「" + name + "」"
+}
+
+func codingDescribeNewAsk(name, ask string) string {
+	ask = strings.TrimSpace(ask)
+	if ask == "" {
+		return ""
+	}
+	if !strings.HasPrefix(ask, "这次") && !strings.HasPrefix(ask, "继续") && !strings.HasPrefix(ask, "请") && !strings.HasPrefix(ask, "先") && !strings.HasPrefix(ask, "把") {
+		ask = "这次" + ask
+	}
+	tail := "，其它先不动。"
+	if codingAskAlreadyCoversTheRest(ask) {
+		tail = "。"
+	}
+	if name = strings.TrimSpace(name); name != "" {
+		return "在" + codingQuoteWorkName(name) + "里，" + ask + tail
+	}
+	return ask + tail
+}
+
+func codingAskAlreadyCoversTheRest(ask string) bool {
+	for _, marker := range []string{"全部", "所有", "都做", "都查", "都改", "剩下的都"} {
+		if strings.Contains(ask, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildCodingUnderstandingUserPrompt(userText string, mem stickyCodingWorkbenchMemory) string {

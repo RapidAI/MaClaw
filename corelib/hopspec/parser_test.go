@@ -168,6 +168,20 @@ Goal: 限制工具面
 	}
 }
 
+func TestValidationRejectsUnsupportedParallelStep(t *testing.T) {
+	spec, parseErrs := Parse(`# Spec: 非法并行
+Goal: 不得静默串行
+## Steps
+1. [act parallel] 不支持并行的原子步骤
+`)
+	if len(parseErrs) != 0 {
+		t.Fatal(parseErrs)
+	}
+	if errs := Validate(spec); !diagnosticsContain(errs, "PARALLEL_STEP_TYPE") {
+		t.Fatalf("errors=%v", errs)
+	}
+}
+
 func diagnosticsContain(errs []error, code string) bool {
 	for _, err := range errs {
 		if strings.Contains(err.Error(), code) {

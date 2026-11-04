@@ -22,16 +22,32 @@ func (h *IMMessageHandler) handleHopJITCommand(msg IMUserMessage, trimmed string
 	if h == nil || h.app == nil {
 		return &IMAgentResponse{Error: "HopJIT app is unavailable"}, true
 	}
+	identity := hopJITExecutionIdentity{
+		PrincipalID: msg.UserID, PolicyOwnerID: h.workflowPolicyUserID(msg.UserID),
+		SessionID: msg.UserID, Platform: msg.Platform,
+	}
 	switch action {
 	case "usage":
 		return &IMAgentResponse{Text: hopJITUsage()}, true
+	case "compile":
+		if strings.TrimSpace(payload) == "" {
+			return &IMAgentResponse{Text: "任务不能为空\n" + hopJITUsage()}, true
+		}
+		spec, err := h.app.compileHopSpecWithIdentity(identity, payload)
+		if err != nil {
+			return &IMAgentResponse{Error: err.Error()}, true
+		}
+		return &IMAgentResponse{Text: spec, ResponseSource: "hopjit"}, true
 	case "run":
+		runPayload, inputs, err := parseHopJITRunPayload(payload)
+		if err != nil {
+			return &IMAgentResponse{Error: err.Error()}, true
+		}
 		var result hopjit.ReuseResult
-		var err error
-		if strings.HasPrefix(strings.TrimSpace(payload), "# Spec:") {
-			result, err = h.app.RunHopSpec(payload, nil)
+		if strings.HasPrefix(strings.TrimSpace(runPayload), "# Spec:") {
+			result, err = h.app.runHopSpecWithIdentity(identity, runPayload, inputs)
 		} else {
-			result, err = h.app.RunHopTask(payload)
+			result, err = h.app.runHopTaskWithIdentity(identity, runPayload)
 		}
 		if err != nil {
 			return &IMAgentResponse{Error: err.Error()}, true
@@ -46,7 +62,7 @@ func (h *IMMessageHandler) handleHopJITCommand(msg IMUserMessage, trimmed string
 		if err := json.Unmarshal([]byte(rawAnswers), &answers); err != nil {
 			return &IMAgentResponse{Text: "回答必须是 JSON 对象，例如 {\"answer\":\"继续\"}"}, true
 		}
-		result, err := h.app.ResumeHopSpec(runID, answers)
+		result, err := h.app.resumeHopSpecWithIdentity(identity, runID, answers)
 		if err != nil {
 			return &IMAgentResponse{Error: err.Error()}, true
 		}
@@ -56,7 +72,7 @@ func (h *IMMessageHandler) handleHopJITCommand(msg IMUserMessage, trimmed string
 		if runID == "" {
 			return &IMAgentResponse{Text: hopJITUsage()}, true
 		}
-		if err := h.app.AbortHopSpec(runID, reason); err != nil {
+		if err := h.app.abortHopSpecWithIdentity(identity, runID, reason); err != nil {
 			return &IMAgentResponse{Error: err.Error()}, true
 		}
 		return &IMAgentResponse{Text: "HopJIT 已中止。\nrunId: " + runID}, true
@@ -69,9 +85,11 @@ func (h *IMMessageHandler) handleHopJITCommand(msg IMUserMessage, trimmed string
 		if err != nil {
 			return &IMAgentResponse{Error: err.Error()}, true
 		}
-		defer store.Close()
 		snapshot, err := store.LoadSnapshot(context.Background(), runID)
 		if err != nil {
+			return &IMAgentResponse{Error: err.Error()}, true
+		}
+		if err := authorizeHopJITSnapshot(snapshot, identity); err != nil {
 			return &IMAgentResponse{Error: err.Error()}, true
 		}
 		return hopJITSnapshotResponse(snapshot), true
@@ -102,11 +120,42 @@ func parseHopJITCommand(text string) (string, string, bool) {
 		action = strings.ToLower(action)
 	}
 	switch action {
-	case "run", "resume", "status", "abort":
+	case "help", "usage", "--help", "-h":
+		return "usage", "", true
+	case "run", "compile", "resume", "status", "abort":
 		return action, payload, true
 	default:
 		return "run", rest, true
 	}
+}
+
+func parseHopJITRunPayload(payload string) (string, map[string]any, error) {
+	payload = strings.TrimSpace(payload)
+	const flag = "--inputs"
+	if !strings.HasPrefix(payload, flag) {
+		return payload, nil, nil
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(payload, flag))
+	if rest == "" {
+		return "", nil, errors.New("--inputs 后需要 JSON 对象")
+	}
+	decoder := json.NewDecoder(strings.NewReader(rest))
+	var inputs map[string]any
+	if err := decoder.Decode(&inputs); err != nil {
+		return "", nil, errors.New("HopJIT Inputs 必须是完整 JSON 对象: " + err.Error())
+	}
+	if inputs == nil {
+		return "", nil, errors.New("HopJIT Inputs 必须是 JSON 对象")
+	}
+	remainder := strings.TrimSpace(rest[decoder.InputOffset():])
+	if !strings.HasPrefix(remainder, "--") {
+		return "", nil, errors.New("HopJIT Inputs 后需要 -- 分隔符")
+	}
+	spec := strings.TrimSpace(remainder[2:])
+	if !strings.HasPrefix(spec, "# Spec:") {
+		return "", nil, errors.New("--inputs 仅用于直接运行 # Spec HopSpec")
+	}
+	return spec, inputs, nil
 }
 
 func parseHopJITResume(payload string) (string, string, error) {
@@ -189,7 +238,10 @@ func hopJITSnapshotResponse(snapshot hopjit.EngineSnapshot) *IMAgentResponse {
 
 func hopJITUsage() string {
 	return "HopJIT 用法:\n" +
-		"/hop run <HopSpec Markdown>\n" +
+		"/hop help\n" +
+		"/hop run <任务或 HopSpec Markdown>\n" +
+		"/hop run --inputs <JSON对象> -- <HopSpec Markdown>\n" +
+		"/hop compile <任务>（只生成 HopSpec，不执行）\n" +
 		"/hop status <runId>\n" +
 		"/hop resume <runId> <JSON 回答>\n" +
 		"/hop abort <runId> [原因]"
