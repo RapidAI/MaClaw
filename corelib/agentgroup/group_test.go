@@ -89,3 +89,32 @@ func TestOrchestratorPlanOnlyWithoutWorker(t *testing.T) {
 		t.Fatalf("assigned=%+v", run.SubTasks[0])
 	}
 }
+
+func TestPersistAndPlannerFallback(t *testing.T) {
+	dir := t.TempDir()
+	var saved int
+	orch := NewOrchestrator(func(ctx context.Context, bot Bot, task SubTask) (string, error) {
+		return "ok", nil
+	})
+	orch.SetPersist(func(runs []Run) error {
+		saved++
+		return FilePersist(dir)(runs)
+	})
+	orch.SetPlanner(PlannerWithFallback(func(string, []Bot) []SubTask { return nil }, DefaultPlan))
+	run, err := orch.Start(context.Background(), "搜索；写摘要", "", []Bot{{ID: "w", Name: "W", Role: RoleWorker}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved == 0 {
+		t.Fatal("expected persist")
+	}
+	loaded, err := LoadRunsFile(dir)
+	if err != nil || len(loaded) == 0 || loaded[0].ID != run.ID {
+		t.Fatalf("loaded=%v err=%v", loaded, err)
+	}
+	orch.SetPageID(run.ID, "sp-1")
+	got, ok := orch.Get(run.ID)
+	if !ok || got.PageID != "sp-1" {
+		t.Fatalf("page=%#v", got)
+	}
+}

@@ -47,6 +47,7 @@ type Run struct {
 	ID          string    `json:"id"`
 	Goal        string    `json:"goal"`
 	RouterBotID string    `json:"router_bot_id,omitempty"`
+	PageID      string    `json:"page_id,omitempty"`
 	Status      string    `json:"status"`
 	SubTasks    []SubTask `json:"sub_tasks"`
 	Summary     string    `json:"summary,omitempty"`
@@ -61,12 +62,16 @@ type WorkerFunc func(ctx context.Context, bot Bot, task SubTask) (string, error)
 // Planner turns a goal into sub-tasks. The default heuristic planner needs no LLM.
 type Planner func(goal string, bots []Bot) []SubTask
 
+// PersistFunc writes the current run set (newest-first) after mutations.
+type PersistFunc func(runs []Run) error
+
 // Orchestrator plans, assigns, runs, and aggregates.
 type Orchestrator struct {
 	mu      sync.Mutex
 	runs    map[string]*Run
 	planner Planner
 	worker  WorkerFunc
+	persist PersistFunc
 	now     func() time.Time
 	newID   func() string
 }
@@ -90,6 +95,54 @@ func (o *Orchestrator) SetPlanner(p Planner) {
 		return
 	}
 	o.planner = p
+}
+
+// SetWorker replaces the worker used for sub-task execution.
+func (o *Orchestrator) SetWorker(w WorkerFunc) {
+	if o == nil {
+		return
+	}
+	o.worker = w
+}
+
+// SetPersist installs a durable sink called after each run mutation.
+func (o *Orchestrator) SetPersist(p PersistFunc) {
+	if o == nil {
+		return
+	}
+	o.persist = p
+}
+
+// LoadRuns seeds in-memory history from durable storage (id collisions keep existing).
+func (o *Orchestrator) LoadRuns(runs []Run) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for i := range runs {
+		r := runs[i]
+		if strings.TrimSpace(r.ID) == "" {
+			continue
+		}
+		if _, ok := o.runs[r.ID]; ok {
+			continue
+		}
+		cp := r
+		o.runs[r.ID] = &cp
+	}
+}
+
+func (o *Orchestrator) persistLocked() {
+	if o == nil || o.persist == nil {
+		return
+	}
+	out := make([]Run, 0, len(o.runs))
+	for _, r := range o.runs {
+		out = append(out, *cloneRun(r))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	_ = o.persist(out)
 }
 
 // DefaultPlan splits a goal on numbered lines / semicolons / "然后|并且|and then".
@@ -253,6 +306,7 @@ func (o *Orchestrator) Start(ctx context.Context, goal string, routerBotID strin
 	run.Status = "running"
 	o.mu.Lock()
 	o.runs[run.ID] = run
+	o.persistLocked()
 	o.mu.Unlock()
 
 	if o.worker == nil {
@@ -346,7 +400,24 @@ func (o *Orchestrator) finalize(run *Run, botByID map[string]Bot) {
 	run.UpdatedAt = o.now()
 	o.mu.Lock()
 	o.runs[run.ID] = run
+	o.persistLocked()
 	o.mu.Unlock()
+}
+
+// SetPageID attaches a shared page id to a run (agentgroup ↔ sharedpage link).
+func (o *Orchestrator) SetPageID(runID, pageID string) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	r, ok := o.runs[strings.TrimSpace(runID)]
+	if !ok || r == nil {
+		return
+	}
+	r.PageID = strings.TrimSpace(pageID)
+	r.UpdatedAt = o.now()
+	o.persistLocked()
 }
 
 func collapseOneLine(s string) string {
