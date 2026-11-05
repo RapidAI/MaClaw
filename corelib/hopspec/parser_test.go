@@ -182,6 +182,26 @@ Goal: 不得静默串行
 	}
 }
 
+func TestValidationRejectsIgnoredStepStructureAndAttributes(t *testing.T) {
+	spec, parseErrs := Parse(`# Spec: 无效结构
+Goal: 不得静默忽略配置
+Inputs:
+- items % [text]
+## Steps
+1. [reason retry=1 adaptive max=2 for-each item in items] 原子步骤
+  1.1. [reason] 不会执行的子步骤
+`)
+	if len(parseErrs) != 0 {
+		t.Fatal(parseErrs)
+	}
+	errs := Validate(spec)
+	for _, code := range []string{"NON_CONTAINER_CHILDREN", "RETRY_NOT_ALLOWED", "ADAPTIVE_NOT_ALLOWED", "LOOP_ATTRIBUTE_NOT_ALLOWED"} {
+		if !diagnosticsContain(errs, code) {
+			t.Fatalf("missing %s in %v", code, errs)
+		}
+	}
+}
+
 func diagnosticsContain(errs []error, code string) bool {
 	for _, err := range errs {
 		if strings.Contains(err.Error(), code) {

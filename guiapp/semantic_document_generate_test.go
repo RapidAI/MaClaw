@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 
@@ -213,21 +212,19 @@ func TestIMSemanticDocumentGenerateIsManagedAndNotDelivery(t *testing.T) {
 	if err != nil || !resolved || len(needs) == 0 {
 		t.Fatalf("needs=%#v managed=%v err=%v", needs, resolved, err)
 	}
-	foundGenerate, foundDeliver, foundRead := false, false, false
+	foundGenerate, foundDeliver := false, false
 	for _, need := range needs {
 		switch need.Capability {
 		case "document.generate.file":
 			foundGenerate = need.Qualifiers["format"] == "pdf" && need.Required
 		case "artifact.deliver.current_channel":
 			foundDeliver = need.Qualifiers["format"] == "file" && need.Required
-		case tool.CapabilityFSReadLocal:
-			foundRead = !need.Required
-		case "information.search.web", tool.CapabilityInformationFetchWeb:
+		case tool.CapabilityFSReadLocal, "information.search.web", tool.CapabilityInformationFetchWeb:
 			t.Fatalf("cold document turn materialized latent %s", need.Capability)
 		}
 	}
-	if !foundGenerate || !foundDeliver || !foundRead {
-		t.Fatalf("needs=%#v, want generate.file(pdf), deliver.file and an optional read leg", needs)
+	if !foundGenerate || !foundDeliver {
+		t.Fatalf("needs=%#v, want generate.file(pdf) and deliver.file", needs)
 	}
 }
 
@@ -387,11 +384,11 @@ func TestIMSemanticWeatherPDFDoesNotRewriteCoding(t *testing.T) {
 	if !handled || err != nil || prepared == nil {
 		t.Fatalf("coding+pdf must plan, prepared=%#v handled=%v err=%v", prepared, handled, err)
 	}
-	if planHasCapabilities(prepared.plan, "information.search.web") {
-		t.Fatalf("weather wording rewrote a coding turn into a search plan: %#v", prepared.plan.Selections)
+	if planHasCapabilities(prepared.plan, "information.search.web") || planHasCapabilities(prepared.plan, "document.generate.file") {
+		t.Fatalf("coding primary must not mint the pdf neighbor: %#v", prepared.plan.Selections)
 	}
-	if !planHasCapabilities(prepared.plan, "document.generate.file", "fs.write.local") {
-		t.Fatalf("coding+document_generate selections=%#v", prepared.plan.Selections)
+	if !planHasCapabilities(prepared.plan, "fs.write.local") {
+		t.Fatalf("coding primary lost its own write: %#v", prepared.plan.Selections)
 	}
 }
 
@@ -411,10 +408,9 @@ func TestIMSemanticLiveDataGeneratePlansLookupThenGenerate(t *testing.T) {
 	if err != nil || !handled || prepared == nil {
 		t.Fatalf("handled=%v err=%v", handled, err)
 	}
-	if !planHasCapabilities(prepared.plan, "information.search.web", "document.generate.file", "artifact.deliver.current_channel") {
-		t.Fatalf("selections=%#v", prepared.plan.Selections)
+	if !planHasCapabilities(prepared.plan, "information.search.web") || planHasCapabilities(prepared.plan, "document.generate.file") {
+		t.Fatalf("lookup primary plans search; generate stays a petition: %#v", prepared.plan.Selections)
 	}
-	assertGenerateRequiresOnlyBaseSearch(t, prepared.plan)
 }
 
 func assertGenerateRequiresOnlyBaseSearch(t *testing.T, plan tool.ToolPlan) {
@@ -478,10 +474,9 @@ func TestIMSemanticWeatherPDFClassifierPlansGovernedChain(t *testing.T) {
 	if err != nil || !handled || prepared == nil {
 		t.Fatalf("handled=%v err=%v prepared=%#v", handled, err, prepared)
 	}
-	if !planHasCapabilities(prepared.plan, "information.search.web", "document.generate.file", "artifact.deliver.current_channel") {
-		t.Fatalf("selections=%#v", prepared.plan.Selections)
+	if !planHasCapabilities(prepared.plan, "information.search.web") || planHasCapabilities(prepared.plan, "document.generate.file") {
+		t.Fatalf("classifier lookup primary plans search; generate stays a petition: %#v", prepared.plan.Selections)
 	}
-	assertGenerateRequiresOnlyBaseSearch(t, prepared.plan)
 }
 
 func TestIMSemanticWeatherPDFNormalizesReversedSemanticComposite(t *testing.T) {
@@ -499,8 +494,8 @@ func TestIMSemanticWeatherPDFNormalizesReversedSemanticComposite(t *testing.T) {
 	if err != nil || !handled || prepared == nil {
 		t.Fatalf("handled=%v err=%v prepared=%#v", handled, err, prepared)
 	}
-	if !planHasCapabilities(prepared.plan, "information.search.web", "document.generate.file", "artifact.deliver.current_channel") {
-		t.Fatalf("selections=%#v", prepared.plan.Selections)
+	if !planHasCapabilities(prepared.plan, "information.search.web") || planHasCapabilities(prepared.plan, "document.generate.file") {
+		t.Fatalf("reversed composite keeps the lookup as the only first wave: %#v", prepared.plan.Selections)
 	}
 }
 
@@ -512,26 +507,8 @@ func TestIMSemanticDocumentGeneratePrimaryWithLiveDataSecondaryPlansLookupThenGe
 	if err != nil || !handled || prepared == nil {
 		t.Fatalf("handled=%v err=%v prepared=%#v", handled, err, prepared)
 	}
-	if !planHasCapabilities(prepared.plan, "information.search.web", "document.generate.file", "artifact.deliver.current_channel") {
-		t.Fatalf("selections=%#v", prepared.plan.Selections)
-	}
-	var generate tool.PlannedSelection
-	for _, selection := range prepared.plan.Selections {
-		if selection.FitProof.MatchedCapability == "document.generate.file" {
-			generate = selection
-			break
-		}
-	}
-	// The need ID is intentionally opaque; this structural check verifies a
-	// lookup predecessor without depending on tool names or user text.
-	hasLookupPredecessor := false
-	for _, selection := range prepared.plan.Selections {
-		if selection.FitProof.MatchedCapability == "information.search.web" && slices.Contains(generate.Requires, selection.ID) {
-			hasLookupPredecessor = true
-		}
-	}
-	if generate.ID == "" || !hasLookupPredecessor {
-		t.Fatalf("generate requires=%#v selections=%#v, want lookup predecessor", generate.Requires, prepared.plan.Selections)
+	if !planHasCapabilities(prepared.plan, "information.search.web") || planHasCapabilities(prepared.plan, "document.generate.file") {
+		t.Fatalf("declared composite rewrites to the lookup; generate is not first-wave: %#v", prepared.plan.Selections)
 	}
 }
 
@@ -547,7 +524,7 @@ func TestSemanticNeedsFromClassificationContextNormalizesOnlyLocalPureComposite(
 	for _, need := range needs {
 		seen[need.Capability] = true
 	}
-	if err != nil || !managed || !seen["information.search.web"] || !seen["document.generate.file"] || !seen["artifact.deliver.current_channel"] {
+	if err != nil || !managed || !seen["information.search.web"] || seen["document.generate.file"] || seen["artifact.deliver.current_channel"] {
 		t.Fatalf("needs=%#v managed=%v err=%v", needs, managed, err)
 	}
 	if classification.Primary != intent.LabelDocumentGenerate {
@@ -742,8 +719,8 @@ func TestIMSemanticDefaultPlanningBudgetKeepsGenerateChain(t *testing.T) {
 	if err != nil || !handled || prepared == nil {
 		t.Fatalf("default budget must fully materialize, handled=%v err=%v", handled, err)
 	}
-	if !planHasCapabilities(prepared.plan, "information.search.web", "document.generate.file", "artifact.deliver.current_channel") {
-		t.Fatalf("default budget truncated generate chain: %#v", prepared.plan.Selections)
+	if !planHasCapabilities(prepared.plan, "information.search.web") || planHasCapabilities(prepared.plan, "document.generate.file") {
+		t.Fatalf("default budget must keep the lookup and leave generate unminted: %#v", prepared.plan.Selections)
 	}
 	if len(prepared.plan.Unmet) != 0 {
 		t.Fatalf("default budget must not report unmet: %#v", prepared.plan.Unmet)
@@ -880,8 +857,8 @@ func TestIMSemanticWeatherPDFAdvancesToDeliverAfterSearchAndGenerate(t *testing.
 	if surface.coordinator == nil {
 		t.Fatal("desktop weather+pdf must use the coordinated execution owner")
 	}
-	if !planHasCapabilities(surface.plan, "information.search.web", "document.generate.file", "artifact.deliver.current_channel") {
-		t.Fatalf("selections=%#v", surface.plan.Selections)
+	if !planHasCapabilities(surface.plan, "information.search.web") || planHasCapabilities(surface.plan, "document.generate.file") {
+		t.Fatalf("live_data primary plans search without generate: %#v", surface.plan.Selections)
 	}
 	searchName := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)
 	if searchName == "" {
@@ -894,18 +871,14 @@ func TestIMSemanticWeatherPDFAdvancesToDeliverAfterSearchAndGenerate(t *testing.
 			DeliveryTarget: &agent.DeliveryTarget{ChannelScope: "desktop", DestinationID: "user:user-1"},
 		},
 	}
+	scheduleGenerateBehindLookup(t, cb)
 	search := cb.ExecuteToolCall(searchName, `{"query":"南京天气"}`, "call-search").Result
 	if strings.Contains(search, "[system rejected]") {
 		t.Fatalf("search result=%q", search)
 	}
-	var generateName string
-	for name, grant := range surface.grants {
-		if grant.AdapterName == "generate_pdf" {
-			generateName = name
-		}
-	}
+	generateName, _ := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "generate_pdf")
 	if generateName == "" {
-		t.Fatalf("generate grant missing after search: tools=%#v grants=%#v", cb.tools, surface.grants)
+		t.Fatalf("generate grant missing after search: tools=%#v grants=%#v", cb.tools, cb.semanticSurface.grants)
 	}
 	got := cb.ExecuteToolCall(generateName, `{"content":"# 南京天气\n18C","title":"南京天气"}`, "call-generate").Result
 	if strings.Contains(got, "semantic_plan_advance_failed") {
@@ -914,14 +887,9 @@ func TestIMSemanticWeatherPDFAdvancesToDeliverAfterSearchAndGenerate(t *testing.
 	if !strings.Contains(got, "PDF artifact published") || strings.Contains(got, "send_file") || strings.Contains(got, "deliver it through") {
 		t.Fatalf("generate result must not ask for a send: %q", got)
 	}
-	var deliveryName string
-	for name, grant := range surface.grants {
-		if grant.AdapterName == "semantic_deliver_current_file" {
-			deliveryName = name
-		}
-	}
+	deliveryName, _ := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "semantic_deliver_current_file")
 	if deliveryName == "" {
-		t.Fatalf("deliver grant missing after generate: tools=%#v grants=%#v result=%q", cb.tools, surface.grants, got)
+		t.Fatalf("deliver grant missing after generate: tools=%#v grants=%#v result=%q", cb.tools, cb.semanticSurface.grants, got)
 	}
 }
 
@@ -1379,6 +1347,7 @@ func TestHostAutoGeneratePDFSurvivesModelSchemaRejectAfterSearch(t *testing.T) {
 
 func TestHostAutoGeneratePDFWithoutThisTurnSearchUsesAssistantReport(t *testing.T) {
 	cb, _ := weatherPDFDesktopBeforeSearch(t)
+	scheduleGenerateBehindLookup(t, cb)
 	if name, _ := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "generate_pdf"); name != "" {
 		t.Fatal("generate must stay hidden before search")
 	}
@@ -1416,6 +1385,7 @@ func TestHostAutoGeneratePDFWithoutSearchOrReportLeavesGrantUnissued(t *testing.
 
 func TestHostAutoGeneratePDFDoesNotUnlockDuringParallelSearchBatch(t *testing.T) {
 	cb, searchName := weatherPDFDesktopBeforeSearch(t)
+	scheduleGenerateBehindLookup(t, cb)
 	delta := []agent.ConversationEntry{{
 		Role: "assistant", ToolCalls: []map[string]string{{"id": "call-search", "name": "web_search"}},
 	}}
@@ -1458,6 +1428,9 @@ func TestHostAutoGeneratePDFDoesNotUnlockDuringParallelSearchBatch(t *testing.T)
 // successful web_search. One committed search must issue generate_pdf.
 func TestSearchDocumentGenerateUnlocksPDFAfterOneCommittedSearch(t *testing.T) {
 	cb, searchName := searchPDFDesktopBeforeSearch(t)
+	if granted, message := cb.PetitionToolCall("generate_pdf"); granted || !successorNotYetListedDenial(message, "generate_pdf") {
+		t.Fatalf("generate must be scheduled behind search: granted=%v message=%q", granted, message)
+	}
 	assertGenerateRequiresOnlyBaseSearch(t, cb.semanticSurface.plan)
 	delta := []agent.ConversationEntry{{
 		Role: "assistant", ToolCalls: []map[string]string{{"id": "call-search", "name": "web_search"}},
@@ -1484,8 +1457,8 @@ func TestSearchDocumentGenerateUnlocksPDFAfterOneCommittedSearch(t *testing.T) {
 func TestSearchPDFEarlySendFileNamesLookupThenGenerate(t *testing.T) {
 	cb, _ := searchPDFDesktopBeforeSearch(t)
 	granted, message := cb.PetitionToolCall("send_file")
-	if granted || !strings.Contains(message, `Call "web_search" now`) || !strings.Contains(message, `"generate_pdf" appears on the next request`) || !strings.Contains(message, `Call "send_file" only after "send_file" is listed`) || strings.Contains(message, `"send_file" appears`) {
-		t.Fatalf("real-plan send_file denial granted=%v message=%q", granted, message)
+	if granted || !strings.Contains(message, "能力目录") {
+		t.Fatalf("send_file is not in the lookup directory: granted=%v message=%q", granted, message)
 	}
 }
 
@@ -1542,8 +1515,8 @@ func TestSearchDocumentGeneratePetitionBeforeLookupDoesNotSpendBudget(t *testing
 	if granted || !successorNotYetListedDenial(message, "generate_pdf") || !strings.Contains(message, `"web_search"`) {
 		t.Fatalf("generate must stay gated until lookup and name web_search: granted=%v message=%q", granted, message)
 	}
-	if cb.semanticEffectfulPetitionConsumed {
-		t.Fatal("already-planned generate must not spend the effectful petition budget")
+	if !cb.semanticEffectfulPetitionConsumed {
+		t.Fatal("scheduling generate spends the one effectful petition")
 	}
 }
 
@@ -1564,17 +1537,17 @@ func TestSearchDocumentGeneratePetitionExposesAlreadyPlannedPDF(t *testing.T) {
 	if granted, message := cb.PetitionToolCall("generate_pdf"); granted || !successorHeldForNextRequest(message, "generate_pdf") {
 		t.Fatalf("hold after search must keep generate unissued until the next request: granted=%v message=%q", granted, message)
 	}
-	if cb.semanticEffectfulPetitionConsumed {
-		t.Fatal("held already-planned generate must not spend the effectful petition budget")
+	if !cb.semanticEffectfulPetitionConsumed {
+		t.Fatal("scheduling generate during the open batch spends the one effectful petition")
 	}
 	cb.hasPendingToolBatch = false
 	cb.semanticHoldDependantIssue = false
 	granted, message := cb.PetitionToolCall("generate_pdf")
 	if !granted || !strings.Contains(message, "generate_pdf") {
-		t.Fatalf("already-planned generate must be exposed: granted=%v message=%q grants=%#v", granted, message, cb.semanticSurface.grants)
+		t.Fatalf("scheduled generate must be exposed once the hold lifts: granted=%v message=%q grants=%#v", granted, message, cb.semanticSurface.grants)
 	}
-	if cb.semanticEffectfulPetitionConsumed {
-		t.Fatal("exposing an already-planned generate must not spend the effectful petition budget")
+	if !cb.semanticEffectfulPetitionConsumed {
+		t.Fatal("exposing the scheduled generate must keep the spent petition")
 	}
 	if name, grant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "generate_pdf"); name == "" || grant.Token == "" {
 		t.Fatalf("petition must issue generate: grants=%#v", cb.semanticSurface.grants)
@@ -1583,6 +1556,7 @@ func TestSearchDocumentGeneratePetitionExposesAlreadyPlannedPDF(t *testing.T) {
 
 func TestHostAutoGeneratePDFDoesNotProjectPendingBatch(t *testing.T) {
 	cb, searchName := weatherPDFDesktopBeforeSearch(t)
+	scheduleGenerateBehindLookup(t, cb)
 	cb.semanticHoldDependantIssue = true
 	cb.hasPendingToolBatch = true
 	if search := cb.ExecuteToolCall(searchName, `{"query":"南京天气"}`, "call-search").Result; strings.Contains(search, "[system rejected]") {
@@ -1634,6 +1608,7 @@ func TestHostAutoGeneratePDFDoesNotProjectAfterDurabilityFailure(t *testing.T) {
 // prevents a callback-local surface from masking a stale RunLoop tool slice.
 func TestIMSemanticWeatherPDFRunLoopPublishesDependentGrantAfterCommittedBatch(t *testing.T) {
 	cb, searchName := weatherPDFDesktopBeforeSearch(t)
+	scheduleGenerateBehindLookup(t, cb)
 	if err := cb.syncSemanticToolSurface(); err != nil {
 		t.Fatalf("sync initial semantic surface: %v", err)
 	}
@@ -1737,6 +1712,7 @@ func semanticLoopToolCallResponse(id, name, arguments string) map[string]interfa
 
 func TestHostAutoGeneratePDFRetriesDependantIssueAfterFailedRefresh(t *testing.T) {
 	cb, searchName := weatherPDFDesktopBeforeSearch(t)
+	scheduleGenerateBehindLookup(t, cb)
 	cb.semanticHoldDependantIssue = true
 	if search := cb.ExecuteToolCall(searchName, `{"query":"南京天气"}`, "call-search").Result; strings.Contains(search, "[system rejected]") {
 		t.Fatalf("search result=%q", search)
@@ -1986,7 +1962,9 @@ func liveDataDesktopBeforePDFPetition(t *testing.T) (*sharedAgentLoopCallbacks, 
 		return "兰州：多云，24°C / 11°C", nil
 	}
 	const userText = "继续完成 兰州天气"
-	classification := &intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: .85, Layer: 3}
+	classification := &intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Secondary: []intent.IntentLabel{intent.LabelDocumentGenerate}, Confidence: .85, Layer: 3,
+	}
 	loopCtx := h.prepareIMLoopContext(nil, IMUserMessage{
 		UserID: "user-1", Platform: "desktop", Text: userText,
 	}, nil, false, false)
@@ -2040,7 +2018,7 @@ func documentGenerateDesktopBeforeSearch(t *testing.T, userText string, classifi
 	if err != nil || !handled || surface == nil || len(defs) == 0 {
 		t.Fatalf("defs=%#v handled=%v err=%v", defs, handled, err)
 	}
-	if !planHasCapabilities(surface.plan, "information.search.web", "document.generate.file", "artifact.deliver.current_channel") {
+	if !planHasCapabilities(surface.plan, "information.search.web") || planHasCapabilities(surface.plan, "document.generate.file") {
 		t.Fatalf("selections=%#v", surface.plan.Selections)
 	}
 	for _, selection := range surface.plan.Selections {
@@ -2068,9 +2046,21 @@ func documentGenerateDesktopBeforeSearch(t *testing.T, userText string, classifi
 	return cb, searchName
 }
 
+func scheduleGenerateBehindLookup(t *testing.T, cb *sharedAgentLoopCallbacks) {
+	t.Helper()
+	granted, message := cb.PetitionToolCall("generate_pdf")
+	if granted || !successorNotYetListedDenial(message, "generate_pdf") {
+		t.Fatalf("generate must be scheduled behind the lookup: granted=%v message=%q", granted, message)
+	}
+	if !planHasCapabilities(cb.semanticSurface.plan, "information.search.web", "document.generate.file") {
+		t.Fatalf("petition must keep search and add generate: %#v", cb.semanticSurface.plan.Selections)
+	}
+}
+
 func weatherPDFDesktopReadyAfterSearch(t *testing.T) *sharedAgentLoopCallbacks {
 	t.Helper()
 	cb, searchName := weatherPDFDesktopBeforeSearch(t)
+	scheduleGenerateBehindLookup(t, cb)
 	if search := cb.ExecuteToolCall(searchName, `{"query":"南京天气"}`, "call-search").Result; strings.Contains(search, "[system rejected]") {
 		t.Fatalf("search result=%q", search)
 	}

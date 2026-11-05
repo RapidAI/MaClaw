@@ -238,6 +238,7 @@ describe('runTaskConfigSend interception', () => {
             projectPath: 'D:/tasks/unified-task',
             initialMessage: '审一下这份合同',
             expertId: 'exp-1',
+            expertName: '法务专家',
         }));
     });
 

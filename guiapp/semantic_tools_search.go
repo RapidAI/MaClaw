@@ -64,6 +64,7 @@ var semanticToolsSearchInventory = []semanticToolsSearchEntry{
 	{"delegate_task", "Delegate one self-contained subtask to the coding agent.", tool.CapabilityAgentDelegateSubtask},
 	{"send_file", "Deliver the produced file to the current channel.", "artifact.deliver.current_channel"},
 	{"read_file", "Read a local file.", tool.CapabilityFSReadLocal},
+	{"read_attachment", "Read the approved document attachment. No path.", "document.read.local"},
 	{"write_file", "Create or modify a local file.", tool.CapabilityFSWriteLocal},
 	{"delete_file", "Remove one file inside the bound workspace.", tool.CapabilityFSDeleteLocal},
 	{"edit_file", "Edit a local file.", tool.CapabilityFSWriteLocal},
@@ -72,6 +73,7 @@ var semanticToolsSearchInventory = []semanticToolsSearchEntry{
 	{"download_file", "Download a remote resource into a local artifact.", tool.CapabilityArtifactAcquireRemote},
 	{"open", "Open a file, application, or URL with the system handler.", "system.open"},
 	{"screenshot", "Capture the desktop screenshot and deliver it.", "visual.capture.desktop"},
+	{semanticTrustedLiveDataVisualAdapter, "Render the current trusted lookup as an image.", "visual.render.live_data"},
 	{"current_datetime", "Read the current date and time.", "information.current_time"},
 	{"git_status", "Inspect repository status and diffs.", "coding.repository.inspect"},
 	{"git_commit", "Commit and push repository changes.", "coding.repository.mutate"},
@@ -84,9 +86,12 @@ var semanticToolsSearchInventory = []semanticToolsSearchEntry{
 	{"knowledge_save_text", "Save text into the knowledge base.", tool.CapabilityKnowledgeIngestLocal},
 	{"knowledge_maintain", "Administer knowledge-base sources and maintenance.", "knowledge.maintain"},
 	{"manage_schedule", "Administer local schedules and reminders.", "schedule.manage"},
+	{"schedule_dispatch", "Register a due-time delivery for the current trusted destination. Does not send now.", tool.CapabilityScheduleDispatchChannel},
 	{"task", "Track local tasks.", "task.manage"},
 	{"goal", "Manage long-running goals.", "goal.manage"},
 	{"record_audio", "Record microphone audio.", "audio.record"},
+	{"tts_render", "Render text as a speech artifact. Does not play or send.", tool.CapabilityAudioRenderSpeech},
+	{"tts_local", "Play text as speech on this machine. Does not send.", tool.CapabilityAudioSynthesizeLocal},
 	{"asr", "Transcribe speech audio.", "audio.transcribe"},
 	{"session_search", "Search session history and audit records.", "session.search"},
 	{"manage_template", "Manage session templates.", "template.manage"},
@@ -419,7 +424,7 @@ func semanticToolsSearchAssemblePage(header string, rows []string, entries []sem
 		out.WriteString(line)
 		out.WriteByte('\n')
 	} else {
-		out.WriteString("只有标记「可请愿」的未列出名字才可以直接调用一次请愿（每轮每类限一次）。「此名请愿未通过」只拒绝这一个名字，不关掉同类其它可请愿名字。bash、read_file、write_file 是保底工具，已列出即可反复调用。用户已声明的能力（如 ssh）会扩进当前范围；查询文字本身不会挑选工具。")
+		out.WriteString("只有本回合能力目录里标记「可请愿」的名字才可以直接调用一次请愿（每轮每类限一次）。bash 和 write_file 不在普通回合里。ssh、mailbox_send、computer_use 只有主标签就是该能力时才出现。")
 	}
 	if len(waiting) > 0 {
 		fmt.Fprintf(&out, "\n等待用户确认：%s。不要再次调用，也不要用其它工具完成该动作。\n", strings.Join(waiting, "、"))
@@ -1096,11 +1101,11 @@ func searchPageStartForScope(raw interface{}, scopeID, catalogDigest string, nee
 // before a display inventory refresh.
 // semanticToolsSearchCatalog returns a deterministic directory. Static rows
 // remain visible as honest unavailable/petitionable metadata. Live rows use
-// the exact model-visible name bound by the current surface: stable adapters
-// resolve through SemanticModelFunctionName, while dynamic adapters are added
-// only from their materialized opaque grant token. An internal dynamic
-// AdapterName without a rendered grant is never advertised as if it were
-// callable, which keeps discovery and the actual surface identical.
+// the exact model-visible name bound by the current surface. Stable adapters
+// and installed MCP tools (server__tool) resolve before a grant. Other dynamic
+// adapters are added only from their materialized opaque grant token. An
+// internal dynamic AdapterName without a rendered grant is never advertised
+// as if it were callable, which keeps discovery and the actual surface identical.
 func semanticToolsSearchCatalog(cb *sharedAgentLoopCallbacks) []semanticToolsSearchEntry {
 	byName := make(map[string]semanticToolsSearchEntry, len(semanticToolsSearchInventory))
 	for _, entry := range semanticToolsSearchInventory {
@@ -1121,11 +1126,10 @@ func semanticToolsSearchCatalog(cb *sharedAgentLoopCallbacks) []semanticToolsSea
 		selectionByID := make(map[string]tool.PlannedSelection, len(surface.plan.Selections))
 		for _, selection := range surface.plan.Selections {
 			selectionByID[selection.ID] = selection
-			// Stable host adapters have a deterministic model name even before
-			// their first grant. Installed MCP uses server__tool once its
-			// grant is in the table below; other dynamic adapters stay on
-			// the grant token.
-			if name := strings.TrimSpace(tool.SemanticModelFunctionName(selection.AdapterName)); name != "" {
+			// Stable host adapters and installed MCP tools have a model name
+			// before the first grant. Other dynamic adapters stay on the
+			// grant token and are added from the grant table below.
+			if name := semanticStableRenderedName(selection.AdapterName); name != "" {
 				semanticToolsSearchUpsertSelection(byName, surface, name, selection)
 			}
 		}
@@ -1147,10 +1151,20 @@ func semanticToolsSearchCatalog(cb *sharedAgentLoopCallbacks) []semanticToolsSea
 			semanticToolsSearchUpsertSelection(byName, surface, strings.TrimSpace(name), selection)
 		}
 		// Schemas are keyed by trusted AdapterName, not necessarily by the
-		// model-visible name. They enrich stable inventory rows only; a dynamic
-		// schema without a corresponding grant is intentionally omitted.
+		// model-visible name. They enrich a row the plan or a grant already
+		// added. A dynamic schema alone must not advertise a tool.
 		for adapter, definition := range surface.schemas {
 			adapter = strings.TrimSpace(adapter)
+			if strings.HasPrefix(adapter, "installed-mcp:") {
+				if rendered := semanticStableRenderedName(adapter); rendered != "" {
+					if entry, ok := byName[rendered]; ok {
+						if description := strings.TrimSpace(tool.ExtractToolDescription(definition)); description != "" {
+							entry.summary = description
+							byName[rendered] = entry
+						}
+					}
+				}
+			}
 			name := strings.TrimSpace(tool.SemanticModelFunctionName(adapter))
 			if name == "" {
 				// Dynamic catalog definitions intentionally carry the fixed
@@ -1182,6 +1196,9 @@ func semanticToolsSearchCatalog(cb *sharedAgentLoopCallbacks) []semanticToolsSea
 		entries = append(entries, entry)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
+	if result, ok := semanticCallbackClassification(cb); ok {
+		return semanticToolsSearchApplyDirectory(entries, result)
+	}
 	return entries
 }
 
@@ -1310,9 +1327,15 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 		// Timing lives in the surface decision. One sentence cannot say
 		// "appears automatically" for both generate_pdf (next request after
 		// web_search) and send_file (only after generate_pdf is itself listed).
+		if note := semanticPlannedWaitNote(cb, name, semanticPetitionableCapabilities[name]); note != "" {
+			return "[" + note + "]"
+		}
 		return "[已列入本轮计划：不要直接调用，也不要请愿]"
 	}
 	if _, ok := semanticPetitionableCapabilities[name]; ok {
+		if _, has := semanticCallbackClassification(cb); has && !cb.semanticTurnAdmits(name) {
+			return "[本轮不可用：不要调用，用已列出的工具完成]"
+		}
 		if _, denied := cb.semanticPetitionDenied[name]; denied {
 			return "[此名请愿未通过，不要重试；同类其它「可请愿」名字仍可调用]"
 		}
@@ -1345,7 +1368,7 @@ func semanticSurfacePlansTool(surface *semanticCallSurface, name string) bool {
 		// still wrong: list_directory and read_file share a capability, and
 		// only the selected adapter is planned. The host adapter id
 		// host_document_generate_file is the same plan row as generate_pdf.
-		if adapter == name || tool.SemanticModelFunctionName(adapter) == name {
+		if adapter == name || semanticStableRenderedName(adapter) == name {
 			return true
 		}
 	}

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -80,10 +79,9 @@ func TestSemanticArchetypeBundleExpansionIsDeterministic(t *testing.T) {
 	}
 }
 
-// A cold office turn keeps the workspace read leg and leaves search and
-// fetch latent. Download is offered so a later photo batch can finish in
-// this turn, and every download sibling stays optional: the deck must be
-// allowed to complete when the user did not ask for a file.
+// A cold office turn grants the office rule only. Read, download, search,
+// and fetch stay out of the first wave and are petitionable from the
+// directory when the classification actually names them.
 func TestSemanticArchetypeBundleOfficeOffersDocumentLegs(t *testing.T) {
 	registry := newIMSemanticCapabilityRegistry()
 	needs, managed, err := semanticIntentNeedsFromClassification(registry, intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
@@ -102,8 +100,8 @@ func TestSemanticArchetypeBundleOfficeOffersDocumentLegs(t *testing.T) {
 			}
 		}
 	}
-	if got[tool.CapabilityFSReadLocal] != 1 || got[tool.CapabilityArtifactAcquireRemote] != agentservice.DownloadRepeatBudget {
-		t.Fatalf("office companions=%v, want read 1 and download %d; needs=%#v", got, agentservice.DownloadRepeatBudget, needs)
+	if got[tool.CapabilityFSReadLocal] != 0 || got[tool.CapabilityArtifactAcquireRemote] != 0 {
+		t.Fatalf("office companions=%v, want no read or download grant; needs=%#v", got, needs)
 	}
 	for _, latent := range []tool.CapabilityID{"information.search.web", tool.CapabilityInformationFetchWeb} {
 		if got[latent] != 0 {
@@ -319,8 +317,8 @@ func TestSemanticArchetypeBundleSearchOffersWebFetch(t *testing.T) {
 	}
 }
 
-// A shell turn offers the local file legs its craft-and-run loop iterates
-// over, both optional.
+// A shell turn grants the shell rule only. File read and write stay out of
+// the first wave.
 func TestSemanticArchetypeBundleShellOffersFileLegs(t *testing.T) {
 	registry := newIMSemanticCapabilityRegistry()
 	needs, managed, err := semanticIntentNeedsFromClassification(registry, intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: .98})
@@ -336,8 +334,8 @@ func TestSemanticArchetypeBundleShellOffersFileLegs(t *testing.T) {
 			foundWrite = !need.Required
 		}
 	}
-	if !foundRead || !foundWrite {
-		t.Fatalf("shell turn must offer optional read/write legs: needs=%#v", needs)
+	if foundRead || foundWrite {
+		t.Fatalf("shell turn granted file legs: needs=%#v", needs)
 	}
 }
 
@@ -366,8 +364,8 @@ func TestSemanticArchetypeBundleDedupsDeclaredCapability(t *testing.T) {
 			}
 		}
 	}
-	if searchNeeds != 5 || requiredSearch != 1 {
-		t.Fatalf("declared search siblings=%d required=%d, want 5/1; needs=%#v", searchNeeds, requiredSearch, needs)
+	if searchNeeds != 0 || requiredSearch != 0 {
+		t.Fatalf("declared search siblings=%d required=%d, want 0/0 (secondary stays in the directory); needs=%#v", searchNeeds, requiredSearch, needs)
 	}
 }
 
@@ -395,29 +393,8 @@ func TestSemanticArchetypeBundleUpgradesLowerBudgetDeclaredFamily(t *testing.T) 
 			searchNeeds = append(searchNeeds, need)
 		}
 	}
-	if len(searchNeeds) != 5 {
-		t.Fatalf("search siblings=%d, want the archetype budget 5 (max of declared 1 and bundle 5); needs=%#v", len(searchNeeds), needs)
-	}
-	// The upgrade must grow the EXISTING family, not spawn a second one: two
-	// families bound to the same stable function name (web_search) would
-	// collide on the rendered surface. The declared leg's qualifier
-	// (freshness=current) and its required first invocation are retained —
-	// only the ceiling moves, and the added siblings stay optional bundle
-	// offers so a tight planning budget sheds them first.
-	family := tool.RepeatFamilyID(searchNeeds[0].ID)
-	for index, need := range searchNeeds {
-		if tool.RepeatFamilyID(need.ID) != family {
-			t.Fatalf("search upgrade spawned a second family: %#v", searchNeeds)
-		}
-		if need.Qualifiers["freshness"] != "current" {
-			t.Fatalf("upgraded family lost the declared qualifier: %#v", need)
-		}
-		if index == 0 && !need.Required {
-			t.Fatalf("the declared search invocation must stay required: %#v", need)
-		}
-		if index > 0 && (need.Required || len(need.EvidenceIDs) != 1 || need.EvidenceIDs[0] != "intent:archetype_bundle") {
-			t.Fatalf("the raised ceiling must stay an optional bundle offer: %#v", need)
-		}
+	if len(searchNeeds) != 0 {
+		t.Fatalf("search siblings=%d, want 0 (live_data secondary is directory-only); needs=%#v", len(searchNeeds), needs)
 	}
 }
 
@@ -456,8 +433,8 @@ func TestSemanticArchetypeBundleLiveDataSearchBudgetIsSingleFamilyArchetypeMax(t
 			t.Fatalf("live_data page fetch must stay optional: %#v", need)
 		}
 	}
-	if fetchNeeds != 5 {
-		t.Fatalf("live_data fetch siblings=%d, want 5; needs=%#v", fetchNeeds, needs)
+	if fetchNeeds != 0 {
+		t.Fatalf("live_data fetch siblings=%d, want 0 (fetch stays in the directory); needs=%#v", fetchNeeds, needs)
 	}
 	family := tool.RepeatFamilyID(searchNeeds[0].ID)
 	for index, need := range searchNeeds {
@@ -568,8 +545,8 @@ func TestSemanticArchetypeBundleNeverShrinksDeclaredBudget(t *testing.T) {
 			}
 		}
 	}
-	if searchNeeds != 5 {
-		t.Fatalf("declared search siblings=%d, want the rule budget 5; needs=%#v", searchNeeds, needs)
+	if searchNeeds != 0 {
+		t.Fatalf("declared search siblings=%d, want 0 (secondary search is not a first-wave grant); needs=%#v", searchNeeds, needs)
 	}
 }
 
@@ -604,8 +581,8 @@ func TestSemanticArchetypeBundleDocumentCompositeCarriesDocumentLegs(t *testing.
 				bundled[need.Capability]++
 			}
 		}
-		if bundled[tool.CapabilityArtifactAcquireRemote] != agentservice.DownloadRepeatBudget || bundled[tool.CapabilityFSReadLocal] != 1 {
-			t.Fatalf("document composite keeps download and read, not the lookup flood: bundled=%v needs=%#v", bundled, needs)
+		if bundled[tool.CapabilityArtifactAcquireRemote] != 0 || bundled[tool.CapabilityFSReadLocal] != 0 {
+			t.Fatalf("document composite must not grant download or read: bundled=%v needs=%#v", bundled, needs)
 		}
 	}
 }

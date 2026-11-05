@@ -283,8 +283,8 @@ func TestIntentCapabilityNeedResolverGenericPrimaryDoesNotBlockSecondaryNeed(t *
 		},
 	}
 	resolution, err := resolver.ResolveDynamicCapabilityNeeds(context.Background(), DynamicCapabilityNeedRequest{UserText: "search"})
-	if err != nil || !resolution.Managed || len(resolution.Needs) != 1 || resolution.Needs[0].Capability != "test.dynamic.execute" {
-		t.Fatalf("generic primary must not block governed secondary, resolution=%+v err=%v", resolution, err)
+	if err != nil || !resolution.Managed || len(resolution.Needs) != 0 {
+		t.Fatalf("secondary must not enter the first grant wave, resolution=%+v err=%v", resolution, err)
 	}
 }
 

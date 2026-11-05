@@ -3226,14 +3226,24 @@ function resolveFinalRoundReasoning(message: ChatMessage, response: any): string
     return (streamedReasoning || finalReasoning || '').trim() || undefined;
 }
 
-function mergeReasoningText(streamedReasoning: string, finalReasoning: string): string {
+export function mergeReasoningText(streamedReasoning: string, finalReasoning: string): string {
     const streamed = streamedReasoning.trim();
     const final = finalReasoning.trim();
     if (!streamed) return final;
     if (!final) return streamed;
     if (streamed === final) return streamed;
+    // Each tool round streams its own thought. The completed turn then sends
+    // the same thoughts joined with blank lines. A raw prefix check misses
+    // that join, so compare the documents with whitespace removed. If either
+    // document already contains the other, keep that one copy.
+    const compactStreamed = streamed.replace(/\s+/g, '');
+    const compactFinal = final.replace(/\s+/g, '');
+    if (compactStreamed.length >= MIN_REASONING_DEDUP_OVERLAP && compactFinal.length >= MIN_REASONING_DEDUP_OVERLAP) {
+        if (compactStreamed === compactFinal || compactFinal.includes(compactStreamed)) return final;
+        if (compactStreamed.includes(compactFinal)) return streamed;
+    }
     if (streamed.length >= MIN_REASONING_DEDUP_OVERLAP && final.startsWith(streamed)) return final;
-    if (final.length >= MIN_REASONING_DEDUP_OVERLAP && streamed.endsWith(final)) return streamed;
+    if (final.length >= MIN_REASONING_DEDUP_OVERLAP && (streamed.startsWith(final) || streamed.endsWith(final))) return streamed;
     const maxOverlap = Math.min(streamed.length, final.length);
     if (maxOverlap < MIN_REASONING_DEDUP_OVERLAP) {
         return `${streamed}${streamed.endsWith('\n') || final.startsWith('\n') ? '' : '\n'}${final}`.trim();

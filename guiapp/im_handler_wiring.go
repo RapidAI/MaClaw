@@ -32,8 +32,9 @@ import (
 )
 
 type IMMessageHandler struct {
-	app     *App
-	manager *RemoteSessionManager
+	app           *App
+	manager       *RemoteSessionManager
+	hopJITResults tool.HopJITResultStore
 	// sharedRuntime is the transport-neutral Runtime seam. During migration it
 	// delegates to the existing GUI-hosted turn implementation; subsequent
 	// phases can replace that implementation with corelib/agentruntime without

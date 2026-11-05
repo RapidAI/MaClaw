@@ -190,6 +190,24 @@ func TestHopRunRequiredUnmetAndOptionalNeeds(t *testing.T) {
 	if hopSelectionRequired(baseline, nil, false, false) {
 		t.Fatal("baseline workspace offer became a required effect")
 	}
+	lookupOffer := tool.PlannedSelection{
+		ID:          "search-offer",
+		NeedID:      "need:information.search.web:offered",
+		EvidenceIDs: []string{tool.OfferedCompanionEvidencePrefix + "live_data"},
+		FitProof:    tool.FitProof{MatchedCapability: "information.search.web"},
+	}
+	if hopSelectionRequired(lookupOffer, nil, false, true) {
+		t.Fatal("unconfirmed lookup offer became required when the optional bit was lost")
+	}
+	confirmedLookup := tool.PlannedSelection{
+		ID:          "search-required",
+		NeedID:      "need:information.search.web:required",
+		EvidenceIDs: []string{"intent:live_data"},
+		FitProof:    tool.FitProof{MatchedCapability: "information.search.web"},
+	}
+	if !hopSelectionRequired(confirmedLookup, nil, false, true) {
+		t.Fatal("confirmed lookup was released with the offer")
+	}
 	offered := tool.PlannedSelection{
 		ID:       "selection:need:tool-head:shell.execute.local:63d070da4fef",
 		NeedID:   "need:tool-head:shell.execute.local:63d070da4fef",
@@ -771,6 +789,35 @@ func TestHopRunOptionalSearchRepeatDoesNotSplitTheLookup(t *testing.T) {
 	}
 	if got.Steps[1].Required || got.Steps[1].Superseded {
 		t.Fatalf("the repeat slot is not a second fact: %#v", got.Steps[1])
+	}
+}
+
+func TestHopRunOfferedSearchDoesNotBlockFetchRecovery(t *testing.T) {
+	plan := tool.ToolPlan{
+		RootTaskID:          "root-offer-fetch",
+		ID:                  "plan-offer-fetch",
+		ObligationsRecorded: true,
+		Selections: []tool.PlannedSelection{
+			{ID: "search", NeedID: "need:information.search.web:weather", EvidenceIDs: []string{"intent:live_data"}, FitProof: tool.FitProof{MatchedCapability: hopInformationSearchWeb}},
+			{ID: "offer", NeedID: "need:information.search.web:offer", EvidenceIDs: []string{tool.OfferedCompanionEvidencePrefix + "live_data"}, FitProof: tool.FitProof{MatchedCapability: hopInformationSearchWeb}},
+			{ID: "offer-2", NeedID: tool.RepeatSiblingNeedID("need:information.search.web:offer", 1), EvidenceIDs: []string{"intent:archetype_bundle"}, FitProof: tool.FitProof{MatchedCapability: hopInformationSearchWeb}},
+			{ID: "fetch", NeedID: "need:information.fetch.web:weather", FitProof: tool.FitProof{MatchedCapability: hopInformationFetchWeb}},
+		},
+	}
+	surface := &semanticCallSurface{
+		plan:      plan,
+		completed: map[string]bool{"fetch": true},
+	}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	got := cb.hopRunSnapshot()
+	if !got.Steps[0].Superseded || !got.Steps[0].Required {
+		t.Fatalf("the confirmed search must still be the one fact a fetch can close: %#v", got.Steps[0])
+	}
+	if got.Steps[1].Required || got.Steps[2].Required {
+		t.Fatalf("the offer family counted as more required searches: %#v %#v", got.Steps[1], got.Steps[2])
+	}
+	if got.Remaining != 0 || cb.RequiredEffectUnsettled() {
+		t.Fatalf("offer family blocked fetch recovery: remaining=%d unsettled=%v steps=%#v", got.Remaining, cb.RequiredEffectUnsettled(), got.Steps)
 	}
 }
 

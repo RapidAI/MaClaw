@@ -268,6 +268,64 @@ func IntentRuleCoverageFromClassification(result intent.ClassificationResult, ru
 	return coverage
 }
 
+// intentNeedFamily records one capability family already expanded, so a
+// later search template raises that ceiling instead of opening a second
+// family the planner would then drop.
+type intentNeedFamily struct {
+	start    int
+	count    int
+	polarity coretool.NeedPolarity
+}
+
+// absorbIntentLabelNeeds expands one label's templates onto the turn.
+// forceOptional admits an unconfirmed companion: an unknown capability is
+// skipped instead of failing the turn, and no sibling is required. A search
+// family already recorded only grows its ceiling. The same identity is
+// expanded once.
+func absorbIntentLabelNeeds(registry *coretool.CapabilityRegistry, needs []coretool.CapabilityNeed, seen map[string]bool, families map[coretool.CapabilityID]intentNeedFamily, templates []IntentCapabilityNeedTemplate, label intent.IntentLabel, confidence float64, evidence string, forceOptional bool) ([]coretool.CapabilityNeed, error) {
+	for _, template := range templates {
+		if _, exists := registry.Lookup(template.Capability); !exists {
+			if forceOptional {
+				continue
+			}
+			return needs, fmt.Errorf("intent capability rule %q references unknown capability %q", label, template.Capability)
+		}
+		key := NeedTemplateIdentityKey(template)
+		if seen[key] {
+			continue
+		}
+		if template.Capability == CapabilityInformationSearchWeb {
+			if entry, exists := families[template.Capability]; exists && entry.polarity == needTemplatePolarity(template) {
+				budget := coretool.RepeatSiblingBudget(template.MaxInvocations)
+				if budget > entry.count {
+					needs = append(needs, coretool.ExtendRepeatFamily(needs[entry.start], entry.count, budget, confidence, []string{evidence})...)
+					entry.count = budget
+					families[template.Capability] = entry
+				}
+				seen[key] = true
+				continue
+			}
+		}
+		seen[key] = true
+		siblings := ExpandNeedTemplateSiblings(template, ExpandNeedTemplateOptions{
+			IDPrefix:      "need:",
+			Confidence:    confidence,
+			EvidenceIDs:   []string{evidence},
+			ForceOptional: forceOptional,
+		})
+		if len(siblings) == 0 {
+			continue
+		}
+		families[template.Capability] = intentNeedFamily{
+			start:    len(needs),
+			count:    len(siblings),
+			polarity: siblings[0].Polarity,
+		}
+		needs = append(needs, siblings...)
+	}
+	return needs, nil
+}
+
 func needTemplatePolarity(template IntentCapabilityNeedTemplate) coretool.NeedPolarity {
 	if template.Polarity == "" {
 		return coretool.NeedRequire
@@ -448,58 +506,23 @@ func resolveIntentLabelCapabilityNeeds(registry *coretool.CapabilityRegistry, ru
 	}
 	seen := make(map[string]bool)
 	needs := make([]coretool.CapabilityNeed, 0)
+	// Only the primary label mints the first grant wave. A secondary or
+	// offered neighbor (office beside search, search beside a resume)
+	// stays in the turn directory as petitionable. Absorbing every label
+	// is how a 0.51 office cosine became a required write, and how a
+	// word-resume turn grew web_search.
+	//
 	// live_data (freshness=current) and search (freshness=reference) both
 	// require information.search.web. A second required family makes the
 	// first planning wave larger than a light lookup's selection cap, so
 	// the planner drops every selection. Keep the earlier qualifier and
 	// only raise that family's ceiling.
-	offered := make(map[coretool.CapabilityID]struct {
-		start    int
-		count    int
-		polarity coretool.NeedPolarity
-	})
-	for _, label := range classification.Labels() {
-		templates := rules[label]
-		if len(templates) == 0 {
-			continue
-		}
-		for _, template := range templates {
-			if _, exists := registry.Lookup(template.Capability); !exists {
-				return DynamicCapabilityNeedResolution{}, fmt.Errorf("intent capability rule %q references unknown capability %q", label, template.Capability)
-			}
-			key := NeedTemplateIdentityKey(template)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			// freshness=current and freshness=reference are one web_search.
-			// Image, file, and voice delivery share a capability id but are
-			// different contracts, so they stay separate families.
-			if template.Capability == CapabilityInformationSearchWeb {
-				if entry, exists := offered[template.Capability]; exists && entry.polarity == needTemplatePolarity(template) {
-					budget := coretool.RepeatSiblingBudget(template.MaxInvocations)
-					if budget > entry.count {
-						needs = append(needs, coretool.ExtendRepeatFamily(needs[entry.start], entry.count, budget, classification.Confidence, []string{"intent:" + string(label)})...)
-						entry.count = budget
-						offered[template.Capability] = entry
-					}
-					continue
-				}
-			}
-			siblings := ExpandNeedTemplateSiblings(template, ExpandNeedTemplateOptions{
-				IDPrefix:    "need:",
-				Confidence:  classification.Confidence,
-				EvidenceIDs: []string{"intent:" + string(label)},
-			})
-			if len(siblings) == 0 {
-				continue
-			}
-			offered[template.Capability] = struct {
-				start    int
-				count    int
-				polarity coretool.NeedPolarity
-			}{start: len(needs), count: len(siblings), polarity: siblings[0].Polarity}
-			needs = append(needs, siblings...)
+	families := make(map[coretool.CapabilityID]intentNeedFamily)
+	if classification.Primary != "" {
+		var err error
+		needs, err = absorbIntentLabelNeeds(registry, needs, seen, families, rules[classification.Primary], classification.Primary, classification.Confidence, "intent:"+string(classification.Primary), false)
+		if err != nil {
+			return DynamicCapabilityNeedResolution{}, err
 		}
 	}
 	sort.Slice(needs, func(i, j int) bool { return needs[i].ID < needs[j].ID })

@@ -169,6 +169,12 @@ type EntitlementWorkspace struct {
 	Lease             *EntitlementLease `json:"lease,omitempty"`
 	LeaseInUse        bool              `json:"lease_in_use,omitempty"`
 	LeaseHolder       string            `json:"lease_holder,omitempty"`
+	// Task run fields are the writer's delayed status projection. They ride
+	// along on the entitlement list so other machines do not fetch a sidecar
+	// per workspace to learn whether a task is running.
+	TaskRunStatus        string `json:"task_run_status,omitempty"`
+	TaskRunPhase         string `json:"task_run_phase,omitempty"`
+	TaskRunPendingReview bool   `json:"task_run_pending_review,omitempty"`
 }
 
 // EntitlementDeletedWorkspace is one soft-deleted row in the entitlement payload.
@@ -297,11 +303,8 @@ func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrin
 				SyncProtocol:      "v1-sequential",
 				ServerRevision:    ws.ManifestRevision,
 			}
-			if task := s.taskSidecarFor(ctx, tenantID, userID, ws.ID); task.Name != "" || task.Mode != "" {
-				item.TaskName = task.Name
-				item.TaskMode = task.Mode
-				item.CloudTaskID = task.CloudTaskID
-				item.BindingVersion = task.BindingVersion
+			if task := s.taskSidecarFor(ctx, tenantID, userID, ws.ID); taskHasListIdentity(task) {
+				applyTaskListIdentity(&item, task)
 			}
 			if op, opErr := s.Workspaces.GetLatestWorkspaceTaskProvision(ctx, tenantID, userID, ws.ID); opErr == nil && op != nil && op.State != ProvisionStateActive {
 				item.ProvisionState = op.State
@@ -352,11 +355,8 @@ func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrin
 			if ownerTenantID == "" {
 				ownerTenantID = tenantID
 			}
-			if task := s.taskSidecarFor(ctx, ownerTenantID, item.OwnerUserID, item.ID); task.Name != "" || task.Mode != "" {
-				item.TaskName = task.Name
-				item.TaskMode = task.Mode
-				item.CloudTaskID = task.CloudTaskID
-				item.BindingVersion = task.BindingVersion
+			if task := s.taskSidecarFor(ctx, ownerTenantID, item.OwnerUserID, item.ID); taskHasListIdentity(task) {
+				applyTaskListIdentity(&item.EntitlementWorkspace, task)
 			}
 		}
 		if lease := leases[item.ID]; lease != nil {
@@ -373,6 +373,23 @@ func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrin
 		out.Shared = append(out.Shared, item)
 	}
 	return out, nil
+}
+
+func taskHasListIdentity(task TaskSidecar) bool {
+	return task.Name != "" || task.Mode != "" || task.RunStatus != "" || task.RunPhase != "" || task.RunPendingReview
+}
+
+func applyTaskListIdentity(item *EntitlementWorkspace, task TaskSidecar) {
+	if item == nil {
+		return
+	}
+	item.TaskName = task.Name
+	item.TaskMode = task.Mode
+	item.CloudTaskID = task.CloudTaskID
+	item.BindingVersion = task.BindingVersion
+	item.TaskRunStatus = task.RunStatus
+	item.TaskRunPhase = task.RunPhase
+	item.TaskRunPendingReview = task.RunPendingReview
 }
 
 // projectEntitlementLease fills the GUI-facing occupied fields. Nested

@@ -4,9 +4,10 @@ import { createPortal } from "react-dom";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { GetTabWorkingDir, SetTabWorkingDir, OpenProjectDirectory, SelectWorkingDir } from "../../../wailsjs/go/main/App";
 import { chromeText } from "../../i18n/chromeText";
-import { cloudWorkspaceIdFromPath, isCloudWorkspacePath, lookupCloudWorkspaceDisplayName, remoteWorkspaceLocationLabel, subscribeCloudWorkspaceDisplayNames } from "./codingTaskMode";
+import { cloudWorkspaceIdFromPath, isCloudWorkspacePath, isExplicitTaskCopy, lookupCloudWorkspaceDisplayName, remoteWorkspaceLocationLabel, subscribeCloudWorkspaceDisplayNames } from "./codingTaskMode";
+import { expertIDFromTaskTags, normalizeProjectSessionPath } from "./aiAssistantPanelSessionUtils";
 import { IconFolder, IconFolderOpen } from "./WorkbenchIcons";
-import { DEFAULT_EXPERT_ICON } from "./expertTypes";
+import { builtinExpertIcon, DEFAULT_EXPERT_ICON } from "./expertTypes";
 
 
 export interface SessionWorkingDirChipProps {
@@ -118,15 +119,83 @@ export function useCloudWorkspaceDisplayName(workspaceId: string): string {
  * Click the chip to open a menu: open the directory, switch it, or copy that location.
  * Cloud and remote workspaces hide directory switching.
  * A non-general expert sits to the right of that folder: its icon and name.
+ * A task started from an expert is a project tab. Its title is the
+ * instruction, so the badge reads the persona (expertName or the catalog),
+ * never that instruction.
  */
-export function composerExpertFromTab(tab: { type?: string; expertId?: string; title?: string; expertIcon?: string } | null | undefined): { name: string; icon?: string } | null {
-    if (!tab || tab.type !== "expert") return null;
+export function composerExpertFromTab(
+    tab: { type?: string; expertId?: string; title?: string; expertName?: string; expertIcon?: string } | null | undefined,
+    catalog?: ReadonlyArray<{ id?: string; name?: string; icon?: string }> | null,
+): { name: string; icon?: string } | null {
+    if (!tab || (tab.type !== "expert" && tab.type !== "project")) return null;
     const id = String(tab.expertId || "").trim();
     if (!id) return null;
-    const name = String(tab.title || "").trim() || id;
-    const icon = String(tab.expertIcon || "").trim();
+    const known = (catalog || []).find(item => String(item?.id || "").trim() === id);
+    // A stamp equal to the id is a catalog miss, not a label. The catalog
+    // name fills that hole. A real stamp still wins over a stale catalog row.
+    const stampedName = String(tab.expertName || "").trim();
+    const catalogName = String(known?.name || "").trim();
+    const persona = (stampedName && stampedName !== id ? stampedName : "")
+        || (catalogName && catalogName !== id ? catalogName : "");
+    const title = String(tab.title || "").trim();
+    // Expert tabs still fall back to the title, then the id. A project tab's
+    // title is the instruction, so an unresolved persona stays hidden.
+    const name = persona || (tab.type === "expert" ? (title && title !== id ? title : id) : "");
+    if (!name) return null;
+    const icon = String(tab.expertIcon || "").trim() || String(known?.icon || "").trim() || builtinExpertIcon(id);
     return icon ? { name, icon } : { name };
 }
+
+/** Expert id worn by this tab, including a task row that has not been stamped yet. */
+export function composerExpertIdForTab(
+    tab: { type?: string; expertId?: string; projectPath?: string } | null | undefined,
+    tasks?: ReadonlyArray<{ project_path?: string; tags?: readonly string[] | null; active_workflow?: { project_path?: string } }> | null,
+): string {
+    const stamped = String(tab?.expertId || "").trim();
+    if (stamped) return tab?.type === "expert" || tab?.type === "project" ? stamped : "";
+    if (tab?.type !== "project") return "";
+    const target = normalizeProjectSessionPath(tab.projectPath || "").toLowerCase();
+    if (!target) return "";
+    const samePath = (path?: string) => {
+        const normalized = normalizeProjectSessionPath(path || "").toLowerCase();
+        return !!normalized && normalized === target;
+    };
+    const rows = tasks || [];
+    const owns = (item: { tags?: readonly string[] | null }) => !isExplicitTaskCopy(item.tags);
+    // The task's own path wins. A workflow path can be shared with another row.
+    const row = rows.find(item => owns(item) && samePath(item?.project_path))
+        || rows.find(item => owns(item) && samePath(item?.active_workflow?.project_path));
+    if (!row) return "";
+    return expertIDFromTaskTags(row.tags);
+}
+
+/** Composer badge for the open tab. Task tags fill an expert the tab has not stored. */
+export function composerExpertForOpenTab(
+    tab: { type?: string; expertId?: string; title?: string; expertName?: string; expertIcon?: string; projectPath?: string } | null | undefined,
+    tasks?: ReadonlyArray<{ project_path?: string; tags?: readonly string[] | null }> | null,
+    catalog?: ReadonlyArray<{ id?: string; name?: string; icon?: string }> | null,
+): { name: string; icon?: string } | null {
+    const expertId = composerExpertIdForTab(tab, tasks);
+    if (!tab || !expertId) return null;
+    return composerExpertFromTab(expertId === tab.expertId ? tab : { ...tab, expertId }, catalog);
+}
+
+/** Later turns on a task started from an expert keep that persona. */
+export function projectSendExpertId(
+    existing: unknown,
+    resolvedTab: { type?: string; expertId?: string; title?: string; projectPath?: string } | null | undefined,
+    liveTab: { type?: string; expertId?: string; title?: string; projectPath?: string } | null | undefined,
+    tasks?: ReadonlyArray<{ project_path?: string; tags?: readonly string[] | null }> | null,
+): string {
+    const stamped = typeof existing === "string" ? existing.trim() : "";
+    if (stamped) return stamped;
+    // A send already aimed at a project tab must not borrow the visible tab's
+    // expert when that tab is a different task.
+    if (resolvedTab?.type === "project") return composerExpertIdForTab(resolvedTab, tasks);
+    if (liveTab?.type === "project") return composerExpertIdForTab(liveTab, tasks);
+    return "";
+}
+
 function composerExpertBadge(
     expert: { name?: string; icon?: string } | null | undefined,
     lang: string | undefined,
@@ -134,15 +203,21 @@ function composerExpertBadge(
     const name = String(expert?.name || "").trim();
     if (!name) return null;
     const icon = String(expert?.icon || "").trim() || DEFAULT_EXPERT_ICON;
+    const key = chromeText(lang, "Expert", "专家", "專家");
+    const label = chromeText(lang, `Expert: ${name}`, `专家：${name}`, `專家：${name}`);
+    // Same chip language as the new-task bar: a muted key, then the value.
+    // There the workflow value is 自动判断; here the value is the persona icon and name.
     return (
         <span
             data-testid="composer-expert-badge"
             className="swdc-expert"
+            role="group"
             title={name}
-            aria-label={chromeText(lang, `Expert: ${name}`, `专家：${name}`, `專家：${name}`)}
+            aria-label={label}
         >
+            <span className="swdc-expert-key" aria-hidden="true">{key}</span>
             <span className="swdc-expert-icon" aria-hidden="true">{icon}</span>
-            <span className="swdc-expert-name">{name}</span>
+            <span className="swdc-expert-name" aria-hidden="true">{name}</span>
         </span>
     );
 }

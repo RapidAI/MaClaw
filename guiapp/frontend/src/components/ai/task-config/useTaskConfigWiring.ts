@@ -59,6 +59,14 @@ import type { CloudWorkspaceOption } from "./WorkspacePickerPopover";
 import type { ExpertOption, WorkflowOption } from "./TaskConfigBar";
 import { tailText } from "../../../i18n/mnTail"
 
+/** Emoji for a launched expert. Catalog first, then the built-in set. */
+function expertIconForLaunch(expertId: string | undefined, experts: ReadonlyArray<{ id?: string; icon?: string }>): string | undefined {
+    const id = String(expertId || "").trim();
+    if (!id) return undefined;
+    const known = experts.find(item => item.id === id);
+    return String(known?.icon || "").trim() || builtinExpertIcon(id) || undefined;
+}
+
 /** Human-readable size for the cloud workspace row subtitle. */
 function formatCloudWorkspaceSize(bytes: number): string {
     const value = Number.isFinite(bytes) ? Math.max(0, bytes) : 0;
@@ -611,6 +619,8 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                             noWorkflowInterception: nav.noWorkflowInterception,
                             deliverInitialMessage: true,
                             expertId: nav.expertId,
+                            expertName: nav.expertName,
+                            expertIcon: expertIconForLaunch(nav.expertId, taskConfigExpertsRef.current),
                             latexRelativePath: nav.latexRelativePath,
                         };
                         window.dispatchEvent(new CustomEvent(EVENT_OPEN_TASK_LAUNCH, { detail }));

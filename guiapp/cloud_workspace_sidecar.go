@@ -1,10 +1,12 @@
 package guiapp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -30,12 +32,15 @@ var cloudWorkspaceSidecarNames = []string{
 }
 
 type cloudWorkspaceTaskSidecar struct {
-	WorkspaceID    string `json:"workspace_id,omitempty"`
-	CloudTaskID    string `json:"cloud_task_id,omitempty"`
-	BindingVersion int64  `json:"binding_version,omitempty"`
-	Name           string `json:"name"`
-	Mode           string `json:"mode"`
-	Tag            string `json:"tag"`
+	WorkspaceID      string `json:"workspace_id,omitempty"`
+	CloudTaskID      string `json:"cloud_task_id,omitempty"`
+	BindingVersion   int64  `json:"binding_version,omitempty"`
+	Name             string `json:"name"`
+	Mode             string `json:"mode"`
+	Tag              string `json:"tag"`
+	RunStatus        string `json:"task_run_status,omitempty"`
+	RunPhase         string `json:"task_run_phase,omitempty"`
+	RunPendingReview bool   `json:"task_run_pending_review,omitempty"`
 }
 
 // cloudWorkspaceSessionSidecar is the Hub session.json payload: conversation
@@ -330,13 +335,32 @@ func (a *App) putCloudWorkspaceSidecar(ctx context.Context, workspaceID, name st
 	if a == nil || len(data) == 0 {
 		return nil
 	}
+	// This lease already stored these bytes. Skip the read as well as the write.
+	if cloudWorkspaceSentSidecarMatches(workspaceID, name, data) {
+		return nil
+	}
 	// Sidecars use content-hash revisions for CAS. Fetching the current value
 	// immediately before PUT keeps this helper compatible with older callers;
 	// a concurrent writer receives a deterministic revision conflict instead of
-	// silently overwriting task context.
+	// silently overwriting task context. Capture the generation before the
+	// read so a lease loss during the request cannot refill the cache.
+	gen := cloudWorkspacePublishGeneration(workspaceID)
 	current, getErr := a.getCloudWorkspaceSidecar(ctx, workspaceID, name)
 	if getErr != nil {
 		return getErr
+	}
+	return a.putFetchedCloudWorkspaceSidecar(ctx, workspaceID, name, data, current, gen)
+}
+
+func (a *App) putFetchedCloudWorkspaceSidecar(ctx context.Context, workspaceID, name string, data, current []byte, gen uint64) error {
+	if a == nil || len(data) == 0 {
+		return nil
+	}
+	// File sync flushes sidecars on every push. Skip the write when the
+	// payload is already stored so a poll does not bump the binding.
+	if bytes.Equal(current, data) {
+		rememberCloudWorkspaceSentSidecar(workspaceID, name, data, gen)
+		return nil
 	}
 	ifMatch := ""
 	if len(current) > 0 {
@@ -357,6 +381,7 @@ func (a *App) putCloudWorkspaceSidecar(ctx context.Context, workspaceID, name st
 	if status >= 300 {
 		return cloudWorkspaceAPIError(status, resp)
 	}
+	rememberCloudWorkspaceSentSidecar(workspaceID, name, data, gen)
 	return nil
 }
 
@@ -636,18 +661,80 @@ func (a *App) cloudWorkspaceTaskSidecarPayload(workspaceID string) cloudWorkspac
 	return payload
 }
 
+// errCloudWorkspaceTaskRunSkipped means the explicit status was not stored,
+// so the caller must not treat it as published.
+var errCloudWorkspaceTaskRunSkipped = errors.New("cloud workspace task run skipped")
+
 func (a *App) flushCloudWorkspaceTaskSidecar(ctx context.Context, workspaceID string) error {
+	return a.flushCloudWorkspaceTaskRun(ctx, workspaceID, nil)
+}
+
+// flushCloudWorkspaceTaskRun writes task.json. A nil run keeps a non-empty
+// local snapshot, or the status already stored, so a name flush does not
+// clear a finished task. A non-nil run is an explicit publish, including a
+// deliberate clear.
+func (a *App) flushCloudWorkspaceTaskRun(ctx context.Context, workspaceID string, run *cloudWorkspaceRunSnapshot) error {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
 		return nil
 	}
 	task := a.cloudWorkspaceTaskSidecarPayload(workspaceID)
-	if task.Name == "" && task.Mode == "" {
+	switch {
+	case run != nil:
+		task.RunStatus = clipCloudWorkspaceRunField(run.Status)
+		task.RunPhase = clipCloudWorkspaceRunField(run.Phase)
+		task.RunPendingReview = run.PendingReview
+	default:
+		// A non-empty snapshot is included. An empty one must not clear a
+		// stored status here; release publishes that clear on its own.
+		// The body this lease already stored is reused so a file push does
+		// not read task.json again just to copy the same status.
+		if snap, ok := lookupCloudWorkspaceLocalRun(workspaceID); ok && !snap.empty() {
+			task.RunStatus = clipCloudWorkspaceRunField(snap.Status)
+			task.RunPhase = clipCloudWorkspaceRunField(snap.Phase)
+			task.RunPendingReview = snap.PendingReview
+			break
+		}
+		if prev, ok := cloudWorkspaceSentTaskSidecar(workspaceID); ok {
+			task.RunStatus = clipCloudWorkspaceRunField(prev.RunStatus)
+			task.RunPhase = clipCloudWorkspaceRunField(prev.RunPhase)
+			task.RunPendingReview = prev.RunPendingReview
+			break
+		}
+		gen := cloudWorkspacePublishGeneration(workspaceID)
+		current, err := a.getCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarTask)
+		if err != nil {
+			return err
+		}
+		if len(current) > 0 {
+			var prev cloudWorkspaceTaskSidecar
+			if json.Unmarshal(current, &prev) == nil {
+				task.RunStatus = clipCloudWorkspaceRunField(prev.RunStatus)
+				task.RunPhase = clipCloudWorkspaceRunField(prev.RunPhase)
+				task.RunPendingReview = prev.RunPendingReview
+			}
+		}
+		if task.Name == "" && task.Mode == "" && task.RunStatus == "" && task.RunPhase == "" && !task.RunPendingReview {
+			return nil
+		}
+		raw, err := json.Marshal(task)
+		if err != nil {
+			return err
+		}
+		return a.putFetchedCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarTask, raw, current, gen)
+	}
+	if task.Name == "" && task.Mode == "" && task.RunStatus == "" && task.RunPhase == "" && !task.RunPendingReview {
+		if run != nil {
+			return errCloudWorkspaceTaskRunSkipped
+		}
 		return nil
 	}
 	raw, err := json.Marshal(task)
 	if err != nil {
 		return err
+	}
+	if cloudWorkspaceSentSidecarMatches(workspaceID, cloudWorkspaceSidecarTask, raw) {
+		return nil
 	}
 	return a.putCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarTask, raw)
 }
@@ -655,6 +742,17 @@ func (a *App) flushCloudWorkspaceTaskSidecar(ctx context.Context, workspaceID st
 func (a *App) flushCloudWorkspaceTaskSidecarBestEffort(workspaceID string) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if a == nil || workspaceID == "" {
+		return
+	}
+	// Rename and create run outside the file-sync callback. Hold the same
+	// lock as a push so the two cannot write task.json at the same time.
+	mount := lookupHeldCloudWorkspace(workspaceID)
+	if mount == nil {
+		return
+	}
+	mount.syncMu.Lock()
+	defer mount.syncMu.Unlock()
+	if !cloudWorkspaceWriterHeld(workspaceID) {
 		return
 	}
 	ctx, cancel := a.cloudWorkspaceRequestContext()
@@ -708,6 +806,10 @@ func (a *App) flushCloudWorkspaceSession(ctx context.Context, workspaceID, proje
 	}
 	unlock := lockCloudWorkspaceSessionFlush(workspaceID)
 	defer unlock()
+	if raw := marshalCloudWorkspaceSessionSidecar(session); cloudWorkspaceSentSidecarMatches(workspaceID, cloudWorkspaceSidecarSession, raw) {
+		return nil
+	}
+	gen := cloudWorkspacePublishGeneration(workspaceID)
 	remoteSession := (*TabSessionData)(nil)
 	remoteRaw, err := a.getCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarSession)
 	if err != nil {
@@ -730,7 +832,12 @@ func (a *App) flushCloudWorkspaceSession(ctx context.Context, workspaceID, proje
 	if len(raw) == 0 || cloudWorkspaceSessionHistoryEqual(session, remoteSession) {
 		return nil
 	}
-	return a.putCloudWorkspaceSidecarLimited(ctx, workspaceID, cloudWorkspaceSidecarSession, raw)
+	if int64(len(raw)) > cloudWorkspaceSidecarMaxBytes {
+		log.Printf("[cloud_workspace] skip oversized sidecar workspace=%s name=%s size=%d", workspaceID, cloudWorkspaceSidecarSession, len(raw))
+		return nil
+	}
+	// remoteRaw is the body just read, so the write does not fetch it again.
+	return a.putFetchedCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarSession, raw, remoteRaw, gen)
 }
 
 // refreshCloudWorkspaceSidecars fetches the cloud snapshot even when the

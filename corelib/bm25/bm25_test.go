@@ -71,3 +71,19 @@ func TestScoreSubsetMatchesScoreForAllowedIDs(t *testing.T) {
 		t.Fatalf("subset should not score disallowed id b: %#v", subset)
 	}
 }
+
+func TestScoreDistinctiveOverlapsIgnoresGenericVerb(t *testing.T) {
+	idx := New()
+	idx.Add(Doc{ID: "asr", Text: "asr 本地语音识别。生成会议纪要时传 for_minutes。"})
+	idx.Add(Doc{ID: "skill", Text: "manage_skill 生成只读维护计划。action list info run。"})
+	idx.Add(Doc{ID: "pdf", Text: "generate_pdf 生成 PDF 文档。"})
+	idx.Add(Doc{ID: "draw", Text: "image_generate 生成图片 文生图 image generation。"})
+
+	scores := idx.ScoreDistinctiveOverlaps("生成图片、画图、image generation、文生图")
+	if scores["asr"] > 0 || scores["skill"] > 0 || scores["pdf"] > 0 {
+		t.Fatalf("generic 生成 must not admit unrelated tools: %v", scores)
+	}
+	if scores["draw"] <= 0 {
+		t.Fatalf("the tool that actually generates images must match: %v", scores)
+	}
+}

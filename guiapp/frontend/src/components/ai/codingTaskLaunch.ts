@@ -74,6 +74,10 @@ export interface CodingTaskLaunch {
     backgroundLaunch?: boolean;
     /** Expert persona this task calls. The session stays the task record. */
     expertId?: string;
+    /** Persona label shown in the composer. Not the task title. */
+    expertName?: string;
+    /** Persona emoji shown next to that label. */
+    expertIcon?: string;
     latexRelativePath?: string;
 }
 
@@ -127,6 +131,8 @@ export function normalizeCodingTaskLaunch(input: Partial<CodingTaskLaunch> | nul
         deliverInitialMessage: input?.deliverInitialMessage === true,
         ...(input?.backgroundLaunch === true ? { backgroundLaunch: true } : {}),
         expertId: String(input?.expertId || "").trim() || undefined,
+        expertName: String(input?.expertName || "").trim() || undefined,
+        expertIcon: String(input?.expertIcon || "").trim() || undefined,
         latexRelativePath: String(input?.latexRelativePath || "").trim() || undefined,
     };
 }

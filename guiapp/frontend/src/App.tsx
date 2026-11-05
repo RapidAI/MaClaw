@@ -3599,7 +3599,7 @@ function App() {
                 noWorkflowInterception: detail?.noWorkflowInterception === true,
                 deliverInitialMessage: detail?.deliverInitialMessage === true,
                 ...(detail?.backgroundLaunch === true ? { backgroundLaunch: true } : {}),
-                expertId: String(detail?.expertId || '').trim() || undefined,
+                expertId: String(detail?.expertId || '').trim() || undefined, expertName: String(detail?.expertName || '').trim() || undefined, expertIcon: String(detail?.expertIcon || '').trim() || undefined,
                 latexRelativePath: String(detail?.latexRelativePath || '').trim() || undefined,
             });
         };
@@ -3854,6 +3854,7 @@ function App() {
                 // identity so this reopen does not focus the original chat.
                 ...(copiedTask && cloudWorkspaceId ? { fileWorkspaceId: cloudWorkspaceId } : {}),
                 ...(!copiedTask && cloudWorkspaceId ? { cloudWorkspaceId } : {}),
+                ...(!copiedTask ? { expertId: expertIDFromTaskTags(proj?.tags) || undefined } : {}),
             });
         } catch (error) {
             console.error("resumeTask failed:", error);

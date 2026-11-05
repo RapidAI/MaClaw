@@ -27,15 +27,19 @@ func (a *App) runHopTaskWithIdentity(identity hopJITExecutionIdentity, task stri
 	if err != nil {
 		return hopjit.ReuseResult{}, err
 	}
-	return runHopTaskWithPersistence(context.Background(), store, task, a.newHopJITCallerWithIdentity(identity))
+	return runHopTaskWithPersistenceManaged(context.Background(), store, task, a.newHopJITCallerWithIdentity(identity), &a.hopJITRuns)
 }
 
 func runHopTaskWithPersistence(ctx context.Context, store hopjit.PersistenceProvider, task string, caller *guiHopJITCaller) (hopjit.ReuseResult, error) {
+	return runHopTaskWithPersistenceManaged(ctx, store, task, caller, nil)
+}
+
+func runHopTaskWithPersistenceManaged(ctx context.Context, store hopjit.PersistenceProvider, task string, caller *guiHopJITCaller, runs *hopJITRunState) (hopjit.ReuseResult, error) {
 	spec, err := compileHopSpec(ctx, task, caller)
 	if err != nil {
 		return hopjit.ReuseResult{}, err
 	}
-	return runHopSpecWithPersistence(ctx, store, spec, nil, caller)
+	return runHopSpecWithPersistenceManaged(ctx, store, spec, nil, caller, runs)
 }
 
 func compileHopSpec(ctx context.Context, task string, caller *guiHopJITCaller) (string, error) {

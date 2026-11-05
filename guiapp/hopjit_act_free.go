@@ -19,6 +19,9 @@ func (c *guiHopJITCaller) executeActFree(ctx context.Context, step hopjit.StepRe
 	if c.handler == nil {
 		return nil, errors.New("act free requires the local GUI tool host")
 	}
+	if c.app == nil {
+		return nil, errors.New("HopJIT LLM app is unavailable")
+	}
 	if len(step.Tools) == 0 {
 		return nil, errors.New("act free requires an explicit tool whitelist")
 	}
@@ -154,7 +157,11 @@ func (h *IMMessageHandler) hopJITActFreeToolProvider(step hopjit.StepReady, iden
 	if err != nil {
 		return nil, nil, err
 	}
-	scope := tool.InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: identity.SessionID, TurnID: step.StepID, PrincipalID: identity.PrincipalID}
+	turnID := step.StepID
+	if step.IterationID != "" {
+		turnID += "@" + step.IterationID
+	}
+	scope := tool.InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: identity.SessionID, TurnID: turnID, PrincipalID: identity.PrincipalID}
 	grants, err := issuer.IssueReady(plan, scope, time.Minute, nil)
 	if err != nil {
 		return nil, nil, err
@@ -163,8 +170,13 @@ func (h *IMMessageHandler) hopJITActFreeToolProvider(step hopjit.StepReady, iden
 	for _, grant := range grants {
 		grantByName[grant.AdapterName] = grant
 	}
+	var resultStore tool.HopJITResultStore = h.hopJITResults
+	if resultStore == nil && h.app != nil {
+		resultStore = newFileHopJITResultStore(hopJITResultRoot(h.app.GetDataDir(), identity))
+	}
 	provider := &tool.HopJITPlanToolProvider{
 		Executor: executor, Scope: scope, Plan: plan, Grants: grantByName, Schemas: schemas,
+		ResultStore: resultStore, AllowResultRecovery: step.Recovered,
 		Invoke: func(ctx context.Context, selection tool.PlannedSelection, request tool.CanonicalRequest) tool.SelectionExecutionResult {
 			ctx = withTrustedAuditPrincipal(ctx, identity.PrincipalID)
 			result := h.executeToolDetailedWithRuntimeContext(ctx, identity.PolicyOwnerID, true, identity.Platform, selection.AdapterName, string(request.CanonicalJSON), step.Summary, nil)

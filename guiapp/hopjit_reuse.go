@@ -28,6 +28,7 @@ type guiHopJITCaller struct {
 	handler  *IMMessageHandler
 	invoke   hopJITLLMInvoke
 	identity hopJITExecutionIdentity
+	specs    hopjit.SpecProvider
 }
 
 func (c *guiHopJITCaller) ExecuteStep(ctx context.Context, step hopjit.StepReady) (map[string]any, error) {
@@ -88,7 +89,7 @@ func (a *App) runHopSpecWithIdentity(identity hopJITExecutionIdentity, spec stri
 	if err != nil {
 		return hopjit.ReuseResult{}, err
 	}
-	return runHopSpecWithPersistence(context.Background(), store, spec, inputs, a.newHopJITCallerWithIdentity(identity))
+	return runHopSpecWithPersistenceManaged(context.Background(), store, spec, inputs, a.newHopJITCallerWithIdentity(identity), &a.hopJITRuns)
 }
 
 func (a *App) ResumeHopSpec(runID string, answers map[string]any) (hopjit.ReuseResult, error) {
@@ -100,7 +101,7 @@ func (a *App) resumeHopSpecWithIdentity(identity hopJITExecutionIdentity, runID 
 	if err != nil {
 		return hopjit.ReuseResult{}, err
 	}
-	return resumeHopSpecWithPersistence(context.Background(), store, runID, answers, a.newHopJITCallerWithIdentity(identity))
+	return resumeHopSpecWithPersistenceManaged(context.Background(), store, runID, answers, a.newHopJITCallerWithIdentity(identity), &a.hopJITRuns)
 }
 
 func (a *App) AbortHopSpec(runID, reason string) error {
@@ -116,6 +117,7 @@ func (a *App) abortHopSpecWithIdentity(identity hopJITExecutionIdentity, runID, 
 	if err := engine.Resume(context.Background(), runID); err != nil {
 		return err
 	}
+	a.hopJITRuns.cancel(runID)
 	return engine.Abort(context.Background(), reason)
 }
 
@@ -126,10 +128,26 @@ func authorizeHopJITSnapshot(snapshot hopjit.EngineSnapshot, identity hopJITExec
 	return nil
 }
 
+func (a *App) readHopJITSnapshot(identity hopJITExecutionIdentity, runID string) (hopjit.EngineSnapshot, error) {
+	store, err := a.openHopJITPersistence()
+	if err != nil {
+		return hopjit.EngineSnapshot{}, err
+	}
+	snapshot, err := store.LoadSnapshot(context.Background(), strings.TrimSpace(runID))
+	if err != nil {
+		return hopjit.EngineSnapshot{}, err
+	}
+	if err := authorizeHopJITSnapshot(snapshot, identity); err != nil {
+		return hopjit.EngineSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
 type hopJITPersistenceState struct {
-	mu    sync.Mutex
-	store *hopjit.SQLitePersistence
-	path  string
+	mu      sync.Mutex
+	store   *hopjit.SQLitePersistence
+	path    string
+	retired []*hopjit.SQLitePersistence
 }
 
 func (s *hopJITPersistenceState) open(path string) (*hopjit.SQLitePersistence, error) {
@@ -138,13 +156,12 @@ func (s *hopJITPersistenceState) open(path string) (*hopjit.SQLitePersistence, e
 	if s.store != nil && s.path == path {
 		return s.store, nil
 	}
-	if s.store != nil {
-		_ = s.store.Close()
-		s.store = nil
-	}
 	store, err := hopjit.NewSQLitePersistence(path)
 	if err != nil {
 		return nil, err
+	}
+	if s.store != nil {
+		s.retired = append(s.retired, s.store)
 	}
 	s.store = store
 	s.path = path
@@ -153,11 +170,15 @@ func (s *hopJITPersistenceState) open(path string) (*hopjit.SQLitePersistence, e
 
 func (s *hopJITPersistenceState) close() {
 	s.mu.Lock()
-	store := s.store
+	stores := append([]*hopjit.SQLitePersistence(nil), s.retired...)
+	if s.store != nil {
+		stores = append(stores, s.store)
+	}
 	s.store = nil
 	s.path = ""
+	s.retired = nil
 	s.mu.Unlock()
-	if store != nil {
+	for _, store := range stores {
 		_ = store.Close()
 	}
 }
@@ -171,8 +192,77 @@ func (a *App) openHopJITPersistence() (*hopjit.SQLitePersistence, error) {
 
 func (a *App) closeHopJITPersistence() {
 	if a != nil {
+		a.hopJITRuns.shutdown()
 		a.hopJITPersistence.close()
 	}
+}
+
+type hopJITActiveRun struct {
+	cancel context.CancelFunc
+}
+
+type hopJITRunState struct {
+	mu      sync.Mutex
+	active  map[string]*hopJITActiveRun
+	wg      sync.WaitGroup
+	closing bool
+}
+
+func (s *hopJITRunState) register(runID string, cancel context.CancelFunc) (func(), error) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" || cancel == nil {
+		return nil, errors.New("HopJIT active run requires id and cancel")
+	}
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return nil, errors.New("HOP_RUN_STATE_CLOSING")
+	}
+	if s.active == nil {
+		s.active = map[string]*hopJITActiveRun{}
+	}
+	if s.active[runID] != nil {
+		s.mu.Unlock()
+		return nil, errors.New("HOP_RUN_ALREADY_ACTIVE: " + runID)
+	}
+	entry := &hopJITActiveRun{cancel: cancel}
+	s.active[runID] = entry
+	s.wg.Add(1)
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		if s.active[runID] == entry {
+			delete(s.active, runID)
+		}
+		s.mu.Unlock()
+		s.wg.Done()
+	}, nil
+}
+
+func (s *hopJITRunState) cancel(runID string) bool {
+	s.mu.Lock()
+	entry := s.active[strings.TrimSpace(runID)]
+	s.mu.Unlock()
+	if entry == nil {
+		return false
+	}
+	entry.cancel()
+	return true
+}
+
+func (s *hopJITRunState) shutdown() {
+	s.mu.Lock()
+	s.closing = true
+	entries := make([]*hopJITActiveRun, 0, len(s.active))
+	for _, entry := range s.active {
+		entries = append(entries, entry)
+	}
+	s.active = nil
+	s.mu.Unlock()
+	for _, entry := range entries {
+		entry.cancel()
+	}
+	s.wg.Wait()
 }
 
 func (a *App) newHopJITCaller() *guiHopJITCaller {
@@ -202,15 +292,37 @@ func hopJITRunOwnerID(caller hopjit.ReuseCaller) string {
 }
 
 func runHopSpecWithPersistence(ctx context.Context, store hopjit.PersistenceProvider, spec string, inputs map[string]any, caller hopjit.ReuseCaller) (hopjit.ReuseResult, error) {
-	engine := hopjit.NewExecutionEngine(store, hopjit.WithRunOwner(hopJITRunOwnerID(caller)))
-	if _, err := engine.Init(ctx, spec, inputs); err != nil {
+	return runHopSpecWithPersistenceManaged(ctx, store, spec, inputs, caller, nil)
+}
+
+func runHopSpecWithPersistenceManaged(ctx context.Context, store hopjit.PersistenceProvider, spec string, inputs map[string]any, caller hopjit.ReuseCaller, runs *hopJITRunState) (hopjit.ReuseResult, error) {
+	engine := newHopJITEngine(store, caller)
+	init, err := engine.Init(ctx, spec, inputs)
+	if err != nil {
 		return hopjit.ReuseResult{}, err
 	}
-	return hopjit.DriveReuse(ctx, engine, caller)
+	return driveHopJITManaged(ctx, init.RunID, engine, caller, runs)
 }
 
 func resumeHopSpecWithPersistence(ctx context.Context, store hopjit.PersistenceProvider, runID string, answers map[string]any, caller hopjit.ReuseCaller) (hopjit.ReuseResult, error) {
-	engine := hopjit.NewExecutionEngine(store, hopjit.WithRunOwner(hopJITRunOwnerID(caller)))
+	return resumeHopSpecWithPersistenceManaged(ctx, store, runID, answers, caller, nil)
+}
+
+func resumeHopSpecWithPersistenceManaged(ctx context.Context, store hopjit.PersistenceProvider, runID string, answers map[string]any, caller hopjit.ReuseCaller, runs *hopJITRunState) (hopjit.ReuseResult, error) {
+	if runs != nil {
+		runCtx, cancel := context.WithCancel(ctx)
+		unregister, err := runs.register(runID, cancel)
+		if err != nil {
+			cancel()
+			return hopjit.ReuseResult{}, err
+		}
+		defer func() {
+			unregister()
+			cancel()
+		}()
+		return resumeHopSpecWithPersistence(runCtx, store, runID, answers, caller)
+	}
+	engine := newHopJITEngine(store, caller)
 	if err := engine.Resume(ctx, runID); err != nil {
 		return hopjit.ReuseResult{}, err
 	}
@@ -229,6 +341,23 @@ func resumeHopSpecWithPersistence(ctx context.Context, store hopjit.PersistenceP
 		return hopjit.ReuseResult{}, errors.New("HopJIT run is not waiting for answers")
 	}
 	return hopjit.DriveReuse(ctx, engine, caller)
+}
+
+func driveHopJITManaged(ctx context.Context, runID string, engine *hopjit.ExecutionEngine, caller hopjit.ReuseCaller, runs *hopJITRunState) (hopjit.ReuseResult, error) {
+	if runs == nil {
+		return hopjit.DriveReuse(ctx, engine, caller)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	unregister, err := runs.register(runID, cancel)
+	if err != nil {
+		cancel()
+		return hopjit.ReuseResult{}, err
+	}
+	defer func() {
+		unregister()
+		cancel()
+	}()
+	return hopjit.DriveReuse(runCtx, engine, caller)
 }
 
 func stripHopJITCodeFence(text string) string {

@@ -176,10 +176,10 @@ func (e *ExecutionEngine) loopForStep(id string) *hopspec.Step {
 }
 
 func (e *ExecutionEngine) startParallelCallLocked(ctx context.Context, step *hopspec.Step) error {
-	if step.Call == nil || step.Call.Callee == "" || e.specs == nil {
-		return fmt.Errorf("parallel call %s has no governed spec provider", step.ID)
+	if step.Call == nil || step.Call.Callee == "" {
+		return fmt.Errorf("parallel call %s has no callee", step.ID)
 	}
-	markdown, err := e.specs.LoadSpec(ctx, step.Call.Callee)
+	markdown, err := e.loadCallSpecLocked(ctx, step.Call.Callee)
 	if err != nil {
 		return err
 	}

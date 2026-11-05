@@ -106,6 +106,7 @@ type EngineSnapshot struct {
 	LoopItems       map[string][]any          `json:"loop_items,omitempty"`
 	LoopResults     map[string]map[string]any `json:"loop_results,omitempty"`
 	Calls           map[string]CallState      `json:"calls,omitempty"`
+	ResolvedSpecs   map[string]string         `json:"resolved_specs,omitempty"`
 	Inflight        map[string]InflightCall   `json:"inflight,omitempty"`
 	RetryCounters   map[string]int            `json:"retry_counters,omitempty"`
 	RetryHistory    map[string][]RetryRecord  `json:"retry_history,omitempty"`
@@ -138,6 +139,8 @@ type StepReady struct {
 	Instruction  string                 `json:"instruction,omitempty"`
 	Tools        []string               `json:"tools,omitempty"`
 	OutputSchema []hopspec.VariableDecl `json:"output_schema,omitempty"`
+	Recovered    bool                   `json:"recovered,omitempty"`
+	IterationID  string                 `json:"iteration_id,omitempty"`
 	Context      AssembledContext       `json:"context"`
 }
 

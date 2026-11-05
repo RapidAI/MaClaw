@@ -88,6 +88,60 @@ func TestHopJITPlanToolProviderDoesNotProjectUnsettledResultAsValue(t *testing.T
 	}
 }
 
+type hopJITResultStoreStub struct {
+	values map[string]string
+}
+
+func (s *hopJITResultStoreStub) key(scope InvocationScope, selectionID, requestDigest string) string {
+	return scope.RootTaskID + "\x00" + scope.PlanID + "\x00" + scope.SessionID + "\x00" + scope.TurnID + "\x00" + scope.PrincipalID + "\x00" + selectionID + "\x00" + requestDigest
+}
+
+func (s *hopJITResultStoreStub) LoadHopJITResult(scope InvocationScope, selectionID, requestDigest string) (string, bool, error) {
+	value, ok := s.values[s.key(scope, selectionID, requestDigest)]
+	return value, ok, nil
+}
+
+func (s *hopJITResultStoreStub) SaveHopJITResult(scope InvocationScope, selectionID, requestDigest, value string) error {
+	if s.values == nil {
+		s.values = map[string]string{}
+	}
+	s.values[s.key(scope, selectionID, requestDigest)] = value
+	return nil
+}
+
+func TestHopJITPlanToolProviderRecoversPersistedResultWithoutReplay(t *testing.T) {
+	fixture := newHopJITProviderFixture(t)
+	results := &hopJITResultStoreStub{}
+	fixture.provider.ResultStore = results
+	calls := 0
+	fixture.provider.Invoke = func(context.Context, PlannedSelection, CanonicalRequest) SelectionExecutionResult {
+		calls++
+		return SelectionExecutionResult{Result: "已持久化", Succeeded: true}
+	}
+	if _, err := fixture.provider.Execute(context.Background(), "read", map[string]any{"path": "input.md"}); err != nil {
+		t.Fatal(err)
+	}
+	recovered := *fixture.provider
+	recovered.AllowResultRecovery = true
+	recovered.Invoke = func(context.Context, PlannedSelection, CanonicalRequest) SelectionExecutionResult {
+		t.Fatal("recovery invoked external tool")
+		return SelectionExecutionResult{}
+	}
+	value, err := recovered.Execute(context.Background(), "read", map[string]any{"path": "input.md"})
+	if err != nil || value != "已持久化" || calls != 1 {
+		t.Fatalf("value=%v calls=%d err=%v", value, calls, err)
+	}
+	if _, err := recovered.Execute(context.Background(), "read", map[string]any{"path": "other.md"}); err == nil || !strings.Contains(err.Error(), "result_missing") {
+		t.Fatalf("different request recovered stale result: %v", err)
+	}
+	for key := range results.values {
+		results.values[key] = "篡改"
+	}
+	if _, err := recovered.Execute(context.Background(), "read", map[string]any{"path": "input.md"}); err == nil || !strings.Contains(err.Error(), "digest_mismatch") {
+		t.Fatalf("digest mismatch err=%v", err)
+	}
+}
+
 type hopJITProviderFixture struct {
 	provider   *HopJITPlanToolProvider
 	scope      InvocationScope

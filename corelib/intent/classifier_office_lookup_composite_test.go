@@ -16,6 +16,13 @@ import (
 // phrasings (search 0.652), so no local floor may settle the pair: a confident
 // office leader with a material lookup companion must escalate with the half
 // attached as evidence, and the tree merge must keep office as primary.
+//
+// The tree confirming the deck and not the lookup does not make that half
+// an obligation. Promoting it into Secondary required a web search, and a
+// delivered deck then hard-exited required_effect_unsettled (2026-11-05,
+// "做个演示ppt", office 0.999 + unconfirmed live_data 0.600). The half is
+// an offer: the tool stays admissible, and skipping it does not fail the
+// artifact. A lookup the tree itself names stays a required secondary.
 func TestClassifyEscalatesConfidentOfficeWithLookupCompanion(t *testing.T) {
 	emb := &staticEmbedder{vec: []float32{1, 0}}
 	llmCalls := 0
@@ -23,8 +30,8 @@ func TestClassifyEscalatesConfidentOfficeWithLookupCompanion(t *testing.T) {
 		Embedder: emb,
 		LLMFunc: func(_, _ string) (string, error) {
 			llmCalls++
-			// The tree confirms the deck only; the lookup half arrives as L2
-			// escalation evidence and must be synthesized, not dropped.
+			// The tree confirms the deck only. The L2 lookup half stays an
+			// offer, not a required secondary.
 			return `{"top":[{"skill":"office","score":0.92}]}`, nil
 		},
 	})
@@ -50,11 +57,11 @@ func TestClassifyEscalatesConfidentOfficeWithLookupCompanion(t *testing.T) {
 	if llmCalls != 1 {
 		t.Fatalf("llmCalls=%d, want exactly one tree escalation", llmCalls)
 	}
-	if result.Primary != LabelOffice || len(result.Secondary) != 1 || result.Secondary[0] != LabelSearch {
-		t.Fatalf("result=%+v, want office primary with the search half preserved", result)
+	if result.Primary != LabelOffice || len(result.Secondary) != 0 || len(result.Offered) != 1 || result.Offered[0] != LabelSearch {
+		t.Fatalf("result=%+v, want office primary with the unconfirmed search half offered, not required", result)
 	}
-	if !strings.Contains(result.Reason, "synthesized composite") {
-		t.Fatalf("reason=%q, want synthesized composite evidence", result.Reason)
+	if !strings.Contains(result.Reason, "offered companion") {
+		t.Fatalf("reason=%q, want offered companion evidence", result.Reason)
 	}
 	if result.Degraded || result.ControlPlaneFailure {
 		t.Fatalf("synthesized office composite must stay executable: %+v", result)
@@ -84,8 +91,8 @@ func TestClassifyTreeSynthesisKeepsNonDocumentArtifactHalf(t *testing.T) {
 	uic.mu.Unlock()
 
 	result := uic.Classify(MessageContext{Text: "search current numbers and render the live chart"})
-	if result.Primary != LabelLiveDataVisual || len(result.Secondary) != 1 || result.Secondary[0] != LabelSearch {
-		t.Fatalf("result=%+v, want live_data_visual primary with search half, never a document_generate mislabel", result)
+	if result.Primary != LabelLiveDataVisual || len(result.Secondary) != 0 || len(result.Offered) != 1 || result.Offered[0] != LabelSearch {
+		t.Fatalf("result=%+v, want live_data_visual primary with the unconfirmed search half offered, never a document_generate mislabel", result)
 	}
 	for _, label := range result.Labels() {
 		if label == LabelDocumentGenerate {

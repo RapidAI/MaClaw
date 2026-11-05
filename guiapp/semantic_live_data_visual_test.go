@@ -193,6 +193,43 @@ func TestLiveDataVisualHostClosesModelStopGap(t *testing.T) {
 	}
 }
 
+func TestLiveDataVisualPetitionSchedulesRendererBehindSearch(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(app.closeSemanticInvocationStore)
+	h := &IMMessageHandler{registry: NewToolRegistry(), app: app}
+	h.semanticTrustedWebSearch = func(_, _ string) (string, error) { return "Beijing weather: clear, 28C", nil }
+	registerBuiltinTools(h.registry, h)
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassificationAndAttachments(
+		"user-1", "生成一张北京天气实况图", "desktop", "root-visual-petition", "turn-visual-petition", liveDataVisualClassification(), nil,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v surface=%#v err=%v", handled, surface, err)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter) == "" {
+		t.Fatalf("search grant missing: %#v", surface.grants)
+	}
+	if name := semanticGrantNameForAdapter(surface, semanticTrustedLiveDataVisualAdapter); name != "" || planHasCapabilities(surface.plan, "visual.render.live_data") {
+		t.Fatalf("renderer must stay a directory petition, not a first-wave grant: name=%q selections=%#v", name, surface.plan.Selections)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler: h, semanticSurface: surface, platform: "desktop", userText: "生成一张北京天气实况图",
+		loopCtx: &LoopContext{DeliveryTarget: &agent.DeliveryTarget{ChannelScope: "desktop", DestinationID: "user:user-1"}},
+	}
+	granted, message := cb.PetitionToolCall(semanticTrustedLiveDataVisualAdapter)
+	if granted || !successorNotYetListedDenial(message, semanticTrustedLiveDataVisualAdapter) || !strings.Contains(message, `"web_search"`) {
+		t.Fatalf("renderer must wait on search: granted=%v message=%q", granted, message)
+	}
+	if !cb.semanticEffectfulPetitionConsumed {
+		t.Fatal("scheduling the renderer spends the one effectful petition")
+	}
+	if !planHasCapabilities(cb.semanticSurface.plan, "information.search.web", "visual.render.live_data") {
+		t.Fatalf("petition must keep search and add the renderer: %#v", cb.semanticSurface.plan.Selections)
+	}
+	if name := semanticGrantNameForAdapter(cb.semanticSurface, semanticTrustedLiveDataVisualAdapter); name != "" {
+		t.Fatalf("renderer grant issued before search: %q", name)
+	}
+}
+
 func TestLiveDataVisualHostIssuesRendererAfterSearchEvidence(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
 	h.semanticTrustedWebSearch = func(_, _ string) (string, error) { return "Beijing weather: clear, 28C", nil }

@@ -30,6 +30,48 @@ func TestSemanticModelFunctionNameIsStableAndIgnoresGrantTokens(t *testing.T) {
 	if got := SemanticModelFunctionName("semantic_delete_trusted_mailbox"); got != "mailbox_delete" {
 		t.Fatalf("delete model name=%q", got)
 	}
+	if got := SemanticModelFunctionName("semantic_read_trusted_document"); got != "read_attachment" {
+		t.Fatalf("document=%q", got)
+	}
+	if got := SemanticModelFunctionName("host_document_read_local"); got != "read_attachment" {
+		t.Fatalf("host document=%q", got)
+	}
+	if got := RenderedSemanticFunctionName("semantic_read_trusted_document", "invoke_turn_a"); got != "read_attachment" {
+		t.Fatalf("document render=%q", got)
+	}
+	if got := SemanticModelFunctionName("tts_render"); got != "tts_render" {
+		t.Fatalf("speech render=%q", got)
+	}
+	if got := SemanticModelFunctionName("host_audio_render_speech"); got != "tts_render" {
+		t.Fatalf("host speech render=%q", got)
+	}
+	if got := RenderedSemanticFunctionName("tts_render", "invoke_turn_a"); got != "tts_render" {
+		t.Fatalf("speech token render=%q", got)
+	}
+	if got := SemanticModelFunctionName("tts_local"); got != "tts_local" {
+		t.Fatalf("local speech=%q", got)
+	}
+	if got := SemanticModelFunctionName("host_audio_synthesize_local"); got != "tts_local" {
+		t.Fatalf("host local speech=%q", got)
+	}
+	if got := RenderedSemanticFunctionName("tts_local", "invoke_turn_a"); got != "tts_local" {
+		t.Fatalf("local speech token render=%q", got)
+	}
+	if got := SemanticModelFunctionName("semantic_render_trusted_live_data"); got != "semantic_render_trusted_live_data" {
+		t.Fatalf("live chart=%q", got)
+	}
+	if got := RenderedSemanticFunctionName("semantic_render_trusted_live_data", "invoke_turn_a"); got != "semantic_render_trusted_live_data" {
+		t.Fatalf("live chart token render=%q", got)
+	}
+	if got := SemanticModelFunctionName("semantic_schedule_dispatch"); got != "schedule_dispatch" {
+		t.Fatalf("dispatch=%q", got)
+	}
+	if got := SemanticModelFunctionName("host_schedule_dispatch_channel"); got != "schedule_dispatch" {
+		t.Fatalf("host dispatch=%q", got)
+	}
+	if got := RenderedSemanticFunctionName("semantic_schedule_dispatch", "invoke_turn_a"); got != "schedule_dispatch" {
+		t.Fatalf("dispatch token render=%q", got)
+	}
 	sendA := RenderedSemanticFunctionName("semantic_send_trusted_mailbox", "invoke_turn_a")
 	sendB := RenderedSemanticFunctionName("semantic_send_trusted_mailbox", "invoke_turn_b")
 	if sendA != "mailbox_send" || sendB != "mailbox_send" {

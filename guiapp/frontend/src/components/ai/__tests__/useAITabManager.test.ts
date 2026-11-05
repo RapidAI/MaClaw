@@ -1026,3 +1026,56 @@ describe("useAITabManager - orphan project tab reconcile", () => {
         expect(projectTabPaths(result)).toContain("C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a");
     });
 });
+
+describe("useAITabManager - expert persona on a task tab", () => {
+    beforeEach(() => {
+        localStorage.clear();
+        vi.clearAllMocks();
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([]);
+        vi.mocked(CreateProjectTabSession).mockResolvedValue("已打开项目" as any);
+    });
+
+    it("keeps the expert name and icon on a project tab whose title is the instruction", () => {
+        const { result, unmount } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createProjectTab("D:/tasks/lover", "你是我的爱人", {
+                expertId: "exp-lover",
+                expertName: "恋爱顾问",
+                expertIcon: "💌",
+            });
+        });
+        const tab = result.current.tabState.tabs.find(item => item.type === "project");
+        expect(tab).toMatchObject({
+            title: "你是我的爱人",
+            expertId: "exp-lover",
+            expertName: "恋爱顾问",
+            expertIcon: "💌",
+        });
+        const stored = JSON.parse(localStorage.getItem("ai_assistant_project_tabs") || "[]");
+        expect(stored[0]).toMatchObject({ expertId: "exp-lover", expertName: "恋爱顾问", expertIcon: "💌" });
+        unmount();
+        const restored = renderHook(() => useAITabManager());
+        const again = restored.result.current.tabState.tabs.find(item => item.type === "project");
+        expect(again).toMatchObject({ expertName: "恋爱顾问", expertIcon: "💌", title: "你是我的爱人" });
+        restored.unmount();
+    });
+
+    it("drops the previous persona when the same task tab binds a different expert", () => {
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createProjectTab("D:/tasks/lover", "你是我的爱人", {
+                expertId: "exp-lover",
+                expertName: "恋爱顾问",
+                expertIcon: "💌",
+            });
+        });
+        act(() => {
+            result.current.createProjectTab("D:/tasks/lover", "你是我的爱人", { expertId: "exp-editor" });
+        });
+        const tab = result.current.tabState.tabs.find(item => item.type === "project");
+        expect(tab?.expertId).toBe("exp-editor");
+        expect(tab?.expertName).toBeUndefined();
+        expect(tab?.expertIcon).toBeUndefined();
+        expect(tab?.title).toBe("你是我的爱人");
+    });
+});

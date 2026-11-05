@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import { FileCompanionFigureDataURL } from "../../../wailsjs/go/main/App";
 import { companionSay } from "../../i18n/mnCompanion";
+import { ImageZoomOverlay } from "../ai/markdownMedia";
 
 /** One drawing from the open file, placed under the answer that talks about it. */
 export type CompanionFigure = {
@@ -54,6 +55,7 @@ export function CompanionFigureStrip({ figures, messageId, lang = "en" }: { figu
     const [loaded, setLoaded] = useState<Record<string, string>>({});
     const [failed, setFailed] = useState<Record<string, boolean>>({});
     const [zoomed, setZoomed] = useState<string>("");
+    const closeZoom = useCallback(() => setZoomed(""), []);
     const requested = useRef<Set<string>>(new Set());
 
     useEffect(() => {
@@ -72,15 +74,6 @@ export function CompanionFigureStrip({ figures, messageId, lang = "en" }: { figu
         });
         return () => { live = false; };
     }, [figures]);
-
-    useEffect(() => {
-        if (!zoomed) return;
-        const close = (event: KeyboardEvent) => {
-            if (event.key === "Escape") setZoomed("");
-        };
-        window.addEventListener("keydown", close);
-        return () => window.removeEventListener("keydown", close);
-    }, [zoomed]);
 
     if (figures.length === 0) return null;
     const noteFrames = figures.every((figure) => figure.label.startsWith("板书") || figure.label.startsWith("关键帧"));
@@ -129,20 +122,19 @@ export function CompanionFigureStrip({ figures, messageId, lang = "en" }: { figu
                 })}
             </div>
             {zoomed ? (
-                <div
-                    role="dialog"
-                    aria-modal="true"
-                    aria-label={zoomLabel}
-                    data-testid="file-companion-figure-zoom"
-                    onClick={() => setZoomed("")}
-                    style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.72)", display: "grid", placeItems: "center", zIndex: 40, padding: 24 }}
+                <ImageZoomOverlay
+                    testId="file-companion-figure-zoom"
+                    closeTestId="file-companion-figure-zoom-close"
+                    closeLabel={companionSay(lang, "关闭")}
+                    label={zoomLabel}
+                    onClose={closeZoom}
                 >
                     <img
                         src={loaded[zoomed] || figureDataURLs.get(zoomed) || ""}
                         alt={zoomLabel}
-                        style={{ maxWidth: "90vw", maxHeight: "86vh", background: "#ffffff", borderRadius: 6 }}
+                        style={{ display: "block", maxWidth: "90vw", maxHeight: "86vh", background: "#ffffff", borderRadius: 6 }}
                     />
-                </div>
+                </ImageZoomOverlay>
             ) : null}
         </div>
     );

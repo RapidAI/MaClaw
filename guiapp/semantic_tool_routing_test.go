@@ -436,9 +436,9 @@ func TestIMSemanticDocumentReadNeedRequiresTrustedInput(t *testing.T) {
 	needs, managed, err := semanticIntentNeedsFromClassification(registry, intent.ClassificationResult{
 		Primary: intent.LabelDocumentRead, Confidence: .98, ToolNames: []string{"office", "read_file", "send_file"},
 	})
-	// The declared document read plus the local-file bundle's optional
-	// fs.read/fs.write offers.
-	if err != nil || !managed || len(needs) != 3 || needs[0].Capability != "document.read.local" {
+	// Only the declared document read. The file-bundle companions are not
+	// a first-wave grant.
+	if err != nil || !managed || len(needs) != 1 || needs[0].Capability != "document.read.local" {
 		t.Fatalf("needs=%#v managed=%v err=%v", needs, managed, err)
 	}
 	if _, err := semanticNeedsForTrustedDocumentInputs(needs, nil); err == nil || !strings.Contains(err.Error(), "trusted_document_input_missing") {

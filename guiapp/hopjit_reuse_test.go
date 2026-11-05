@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/hopjit"
 )
@@ -131,6 +132,167 @@ Outputs:
 	}
 }
 
+func TestHopJITActiveRunCancellationStopsCaller(t *testing.T) {
+	var runs hopJITRunState
+	started := make(chan struct{}, 1)
+	caller := &guiHopJITCaller{invoke: func(ctx context.Context, _ []interface{}, _ bool) (string, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return "", ctx.Err()
+	}}
+	type outcome struct {
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		_, err := runHopSpecWithPersistenceManaged(context.Background(), hopjit.NewMemoryPersistence(), `# Spec: 活动中止
+Goal: 取消等待中的调用
+Outputs:
+- report % text
+## Steps
+1. [reason] 等待模型
+  + → report % text
+`, nil, caller, &runs)
+		done <- outcome{err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("caller did not start")
+	}
+	runs.mu.Lock()
+	var runID string
+	for id := range runs.active {
+		runID = id
+	}
+	runs.mu.Unlock()
+	if runID == "" || !runs.cancel(runID) {
+		t.Fatalf("active run %q was not cancellable", runID)
+	}
+	select {
+	case result := <-done:
+		if !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("err=%v", result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancellation did not stop caller")
+	}
+	if runs.cancel(runID) {
+		t.Fatal("finished run remained active")
+	}
+}
+
+func TestHopJITActiveRunRejectsDuplicateDriver(t *testing.T) {
+	var runs hopJITRunState
+	cancel := func() {}
+	unregister, err := runs.register("run-1", cancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runs.register("run-1", cancel); err == nil {
+		t.Fatal("duplicate active run was accepted")
+	}
+	unregister()
+	unregisterAgain, err := runs.register("run-1", cancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unregisterAgain()
+}
+
+func TestHopJITDuplicateResumeDoesNotMutateSnapshot(t *testing.T) {
+	store := hopjit.NewMemoryPersistence()
+	caller := &guiHopJITCaller{invoke: func(ctx context.Context, _ []interface{}, _ bool) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}}
+	paused, err := runHopSpecWithPersistence(context.Background(), store, `# Spec: 重复恢复
+Goal: 重复恢复不得干扰活动快照
+Outputs:
+- report % text
+## Steps
+1. [ask] 回答
+  + → answer % text
+2. [reason] 等待模型
+  + → report % text
+`, nil, &guiHopJITCaller{})
+	if err != nil || paused.Status != hopjit.NextPaused {
+		t.Fatalf("paused=%+v err=%v", paused, err)
+	}
+	var runs hopJITRunState
+	started := make(chan struct{}, 1)
+	caller.invoke = func(ctx context.Context, _ []interface{}, _ bool) (string, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := resumeHopSpecWithPersistenceManaged(context.Background(), store, paused.RunID, map[string]any{"answer": "继续"}, caller, &runs)
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first resume did not start caller")
+	}
+	before, err := store.LoadSnapshot(context.Background(), paused.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = resumeHopSpecWithPersistenceManaged(context.Background(), store, paused.RunID, nil, &guiHopJITCaller{}, &runs)
+	if err == nil || !strings.Contains(err.Error(), "HOP_RUN_ALREADY_ACTIVE") {
+		t.Fatalf("duplicate resume err=%v", err)
+	}
+	after, err := store.LoadSnapshot(context.Background(), paused.RunID)
+	if err != nil || after.StateSeq != before.StateSeq {
+		t.Fatalf("duplicate resume changed state seq: before=%d after=%d err=%v", before.StateSeq, after.StateSeq, err)
+	}
+	runs.cancel(paused.RunID)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("first resume err=%v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first resume did not stop")
+	}
+}
+
+func TestHopJITRunShutdownWaitsAndRejectsNewDrivers(t *testing.T) {
+	var runs hopJITRunState
+	cancelled := make(chan struct{})
+	unregister, err := runs.register("run-1", func() { close(cancelled) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		runs.shutdown()
+		close(done)
+	}()
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not cancel active run")
+	}
+	unregister()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not finish after unregister")
+	}
+	if _, err := runs.register("run-2", func() {}); err == nil {
+		t.Fatal("closing run state accepted a new driver")
+	}
+}
+
 func TestHopJITPersistenceSharedUntilAppClose(t *testing.T) {
 	var state hopJITPersistenceState
 	path := filepath.Join(t.TempDir(), "hopjit.db")
@@ -142,9 +304,19 @@ func TestHopJITPersistenceSharedUntilAppClose(t *testing.T) {
 	if err != nil || first != second {
 		t.Fatalf("store was not reused: first=%p second=%p err=%v", first, second, err)
 	}
+	switched, err := state.open(filepath.Join(t.TempDir(), "hopjit.db"))
+	if err != nil || switched == first {
+		t.Fatalf("switched=%p first=%p err=%v", switched, first, err)
+	}
+	if _, err := first.Exists(context.Background(), "run"); err != nil {
+		t.Fatalf("path switch closed the old store: %v", err)
+	}
 	state.close()
 	if _, err := first.Exists(context.Background(), "run"); err == nil {
 		t.Fatal("closed store remained usable")
+	}
+	if _, err := switched.Exists(context.Background(), "run"); err == nil {
+		t.Fatal("closed switched store remained usable")
 	}
 	reopened, err := state.open(path)
 	if err != nil || reopened == first {

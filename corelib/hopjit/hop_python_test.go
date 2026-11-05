@@ -195,6 +195,12 @@ Goal: 崩溃后不得重放
 	}
 }
 
+func TestHopPythonRejectsFractionalModulo(t *testing.T) {
+	if _, err := evalExpression(context.Background(), "1 % 0.5", nil, nil); err == nil {
+		t.Fatal("fractional modulo was accepted")
+	}
+}
+
 func TestHopPythonBooleanOperatorsShortCircuitTools(t *testing.T) {
 	calls := 0
 	provider := ToolProviderFunc(func(context.Context, string, map[string]any) (any, error) {

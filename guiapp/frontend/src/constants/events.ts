@@ -247,5 +247,8 @@ export type OpenTaskLaunchDetail = {
     backgroundLaunch?: boolean;
     /** Expert persona. The task tab stays a normal task. */
     expertId?: string;
+    /** Persona label for the composer. The task title stays the instruction. */
+    expertName?: string;
+    expertIcon?: string;
     latexRelativePath?: string;
 };

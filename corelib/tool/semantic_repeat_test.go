@@ -434,6 +434,40 @@ func TestAppendRepeatSiblingContinuesPastPublishedWave(t *testing.T) {
 	if note := RepeatFamilySpentBudgetNote(baselinePlan, baselinePlan.Selections[1].ID, baselineMaterialized, nil); note != "" {
 		t.Fatalf("baseline shell note promised another call: %q", note)
 	}
+	offerBase := "need:information.search.web:offered"
+	offerPlan := ToolPlan{Selections: []PlannedSelection{
+		{ID: "selection:" + offerBase, NeedID: offerBase, EvidenceIDs: []string{OfferedCompanionEvidencePrefix + "live_data"}, FitProof: FitProof{MatchedCapability: "information.search.web"}},
+		{ID: "selection:" + RepeatSiblingNeedID(offerBase, 1), NeedID: RepeatSiblingNeedID(offerBase, 1), EvidenceIDs: []string{"intent:archetype_bundle"}, FitProof: FitProof{MatchedCapability: "information.search.web"}},
+	}}
+	if _, _, openedOffer := AppendRepeatSibling(offerPlan, offerPlan.Selections[0].ID); openedOffer {
+		t.Fatal("an unconfirmed search offer opened another call")
+	}
+	offerMaterialized := map[string]bool{}
+	for _, selection := range offerPlan.Selections {
+		offerMaterialized[selection.ID] = true
+	}
+	if note := RepeatFamilySpentBudgetNote(offerPlan, offerPlan.Selections[1].ID, offerMaterialized, nil); note != "" {
+		t.Fatalf("offered search note promised another call: %q", note)
+	}
+	requiredSearch := "need:information.search.web:required"
+	requiredPlan := ToolPlan{Selections: []PlannedSelection{
+		{ID: "selection:" + requiredSearch, NeedID: requiredSearch, EvidenceIDs: []string{"intent:live_data"}, FitProof: FitProof{MatchedCapability: "information.search.web"}},
+		{ID: "selection:" + RepeatSiblingNeedID(requiredSearch, 1), NeedID: RepeatSiblingNeedID(requiredSearch, 1), EvidenceIDs: []string{OfferedCompanionEvidencePrefix + "search"}, FitProof: FitProof{MatchedCapability: "information.search.web"}},
+	}}
+	openedPlan, openedID, openedRequired := AppendRepeatSibling(requiredPlan, requiredPlan.Selections[0].ID)
+	if !openedRequired {
+		t.Fatal("a confirmed search was closed because a ceiling sibling was an offer")
+	}
+	var appended PlannedSelection
+	for _, selection := range openedPlan.Selections {
+		if selection.ID == openedID {
+			appended = selection
+			break
+		}
+	}
+	if appended.ID == "" || !appended.Optional || !IsRepeatCeilingID(appended.NeedID) {
+		t.Fatalf("appended search must be an optional ceiling, got %#v", appended)
+	}
 	owned := "need:shell.execute.local:abc123def456"
 	mixed := ToolPlan{Selections: []PlannedSelection{
 		{ID: "selection:" + owned, NeedID: owned, EvidenceIDs: []string{"intent:shell_command"}, FitProof: FitProof{MatchedCapability: CapabilityShellExecuteLocal}},

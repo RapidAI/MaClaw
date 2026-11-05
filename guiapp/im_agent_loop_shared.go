@@ -529,23 +529,25 @@ func (h *IMMessageHandler) executeSharedTurn(
 		checkpointProject: projectPath,
 		hasLocalFileWork:  len(attachments) > 0 || hasCurrentLocalFileWork(userText),
 		platform:          platform, // pin turn platform for tool rewrites (not only loopCtx)
-		systemPrompt:      startState.SystemPrompt,
-		taskAnchor:        startState.TaskAnchor,
-		tools:             startState.Tools,
-		semanticSurface:   startState.SemanticSurface,
-		legacySurface:     newLegacyToolSurfaceWithClientTools(startState.Tools, startState.ClientToolNames),
-		llmCfg:            cfg,
-		roleBase:          startState.RoleBase,
-		route:             startState.RouteDecision,
-		phase:             startState.Phase,
-		onProgress:        progressOut,
-		onToken:           nil,
-		onNewRound:        nil,
-		events:            runtimeSink,
-		eventScope:        runtimeScope,
-		maxIter:           startState.EffectiveMax,
-		httpClient:        startState.HTTPClient,
-		eventSequence:     &eventSequence,
+		// The conversation system message includes the task anchor. Keep the same
+		// text here: a later directory rewrite replaces this string wholesale.
+		systemPrompt:    appendTaskIdentityAnchorPrompt(startState.SystemPrompt, startState.TaskAnchor),
+		taskAnchor:      startState.TaskAnchor,
+		tools:           startState.Tools,
+		semanticSurface: startState.SemanticSurface,
+		legacySurface:   newLegacyToolSurfaceWithClientTools(startState.Tools, startState.ClientToolNames),
+		llmCfg:          cfg,
+		roleBase:        startState.RoleBase,
+		route:           startState.RouteDecision,
+		phase:           startState.Phase,
+		onProgress:      progressOut,
+		onToken:         nil,
+		onNewRound:      nil,
+		events:          runtimeSink,
+		eventScope:      runtimeScope,
+		maxIter:         startState.EffectiveMax,
+		httpClient:      startState.HTTPClient,
+		eventSequence:   &eventSequence,
 	}
 	cb.leaseStop = leaseStop
 	if startupEventErr != nil {
@@ -2032,6 +2034,11 @@ type sharedAgentLoopCallbacks struct {
 	// held batch and dependants still need IssueReady. Kept true across a
 	// failed refresh so host flush can retry.
 	semanticNeedDependantIssue bool
+	// directoryAdmit caches one turn directory. The key is the classification,
+	// not only the surface pointer: a nil surface can change intent without
+	// replacing an object. tools_search asks once per inventory row.
+	directoryAdmitKey string
+	directoryAdmit    map[string]bool
 	// Revision last incorporated by TransformConversation. Keeping this at the
 	// conversation boundary (rather than the later HTTP-start boundary) closes
 	// the race where steering arrives between transform and request creation.
@@ -3354,6 +3361,18 @@ func (c *sharedAgentLoopCallbacks) ExtendIterationBudget(used, toolCalls int) in
 	return extra
 }
 
+// SyncDirectoryToRenderedTools rewrites the turn directory from the tool
+// slice the loop will send. c.tools stays the host snapshot.
+func (c *sharedAgentLoopCallbacks) SyncDirectoryToRenderedTools(tools []map[string]interface{}) {
+	if c == nil {
+		return
+	}
+	previous := c.tools
+	c.tools = tools
+	defer func() { c.tools = previous }()
+	c.projectSemanticDirectoryPrompt()
+}
+
 func (c *sharedAgentLoopCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
 	_ = userText
 	_ = isFirstTurn
@@ -3450,6 +3469,9 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 			c.publishReadyInstalledMCPTools()
 		}
 		c.publishAdmittedSkillTools(userText)
+		// The loop filters this list, then SyncDirectoryToRenderedTools
+		// rewrites the directory from the slice that will be sent.
+		c.projectSemanticDirectoryPrompt()
 		return c.tools
 	}
 	if c.handler == nil {
@@ -3510,6 +3532,11 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return false, ""
+	}
+	if _, ok := semanticCallbackClassification(c); ok && !c.semanticTurnAdmits(name) {
+		if c.semanticSurface == nil || !semanticSurfaceHasGrant(c.semanticSurface, name) {
+			return false, semanticDirectoryPetitionDenied
+		}
 	}
 	// Dispatch stays a host tool so a same-batch retry reaches the chat
 	// executor, but it must not be granted back onto the next request.
@@ -3652,9 +3679,16 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	}
 	requestCtx, cancel := semanticRoutingContext(c.loopCtx)
 	defer cancel()
+	// Search can already be complete while its batch is still open. The
+	// child publish would otherwise issue generate_pdf into this same
+	// assistant message. Skip it here; the batch commit refreshes it.
+	if c.semanticHoldDependantIssue {
+		requestCtx = withSemanticPublishSkip(requestCtx, hostOwnedGenerateSelection)
+	}
 	child, definitions, err := c.handler.petitionExpandSemanticCallSurface(requestCtx, surface, label)
 	if err != nil {
 		if granted, message := c.grantLegacySQLDatabasePetition(name); granted {
+			c.projectSemanticDirectoryPrompt()
 			return true, message
 		}
 		if !semanticPetitionFailureConsumesBudget(err) {
@@ -3663,15 +3697,20 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 			c.notePetitionAuthorityMiss(name, effectful)
 		}
 		log.Printf("[semantic-routing] tool petition %q (%s) expansion failed: %v", name, label, err)
+		c.projectSemanticDirectoryPrompt()
 		return false, ""
 	}
 	c.semanticSurface = child
 	c.setVisibleToolDefinitions(definitions)
+	if c.semanticHoldDependantIssue && semanticHasUnissuedReadyGenerate(c.semanticSurface) {
+		c.semanticNeedDependantIssue = true
+	}
 	// The child is installed even when the new selection is not yet issuable.
 	// A light authorizer would otherwise keep stripping an added mutating
 	// step after the lookup commits. Selections the parent already signed
 	// (a weather card's renderer) do not count: this petition did not add them.
 	c.leaveLightProfileForUnsafePetition(surface.plan)
+	c.projectSemanticDirectoryPrompt()
 	if legacySQLDatabaseToolName(name) && !c.semanticGrantNamed(name) {
 		if granted, message := c.grantLegacySQLDatabasePetition(name); granted {
 			return true, message
@@ -6522,6 +6561,9 @@ func (c *sharedAgentLoopCallbacks) syncSemanticToolSurface() error {
 		return err
 	}
 	c.setVisibleToolDefinitions(definitions)
+	// The next request reads this prompt. A successor that just became listed
+	// must not keep the "do not call" line written while it was held.
+	c.projectSemanticDirectoryPrompt()
 	return nil
 }
 
@@ -9824,6 +9866,7 @@ func (c *sharedAgentLoopCallbacks) RefreshAfterToolExecution(name string) bool {
 		if pending && c.handler != nil && !c.semanticLightLookup() {
 			intentText := semanticUserIntentText(c.userText)
 			c.systemPrompt = ensureSemanticGrantPromptFence(c.systemPromptWithTaskAnchor(c.refreshedSystemPrompt(agent.CompactQueryForEmbedding(intentText))))
+			c.projectSemanticDirectoryPrompt()
 		}
 		return true
 	}

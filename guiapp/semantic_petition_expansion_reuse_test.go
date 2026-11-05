@@ -40,47 +40,23 @@ func TestSemanticPetitionWebSearchOnReuseDroppedComposite(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) == 0 {
 		t.Fatalf("composite surface handled=%v err=%v", handled, err)
 	}
-	if planHasCapabilities(surface.plan, "information.search.web") {
-		t.Fatalf("fixture must start with the lookup leg dropped by conversation reuse: %#v", surface.plan.Selections)
+	if !planHasCapabilities(surface.plan, "information.search.web") {
+		t.Fatalf("primary lookup stays on the first wave: %#v", surface.plan.Selections)
 	}
-	if !surface.replan.ConversationLookupReused {
-		t.Fatal("parent replan input must record the conversation-reuse drop")
+	if planHasCapabilities(surface.plan, "document.generate.file") {
+		t.Fatalf("secondary generate is not a first-wave grant: %#v", surface.plan.Selections)
 	}
-
+	loopCtx.Runtime.SemanticIntent = classification
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "desktop", loopCtx: loopCtx}
-	granted, message := cb.PetitionToolCall("web_search")
-	if !granted || !strings.Contains(message, "web_search") {
-		t.Fatalf("web_search petition on a reuse-dropped composite must be granted: granted=%v message=%q", granted, message)
+	granted, message := cb.PetitionToolCall("generate_pdf")
+	if granted {
+		t.Fatalf("a petition must not replace the signed lookup: message=%q", message)
 	}
-	child := cb.semanticSurface
-	if child == surface {
-		t.Fatal("petition must publish a child revision")
+	if cb.semanticSurface != surface {
+		t.Fatal("rejected expansion must keep the parent surface")
 	}
-	if !planHasCapabilities(child.plan, "document.generate.file", "artifact.deliver.current_channel", "information.search.web") {
-		t.Fatalf("child plan=%#v", child.plan.Selections)
-	}
-	// The non-petitioned lookup leg (live_data's freshness=current search) must
-	// stay dropped exactly as the parent had it: the expansion adds only the
-	// petitioned label's template needs.
-	for _, selection := range child.plan.Selections {
-		if selection.FitProof.MatchedCapability == "information.search.web" &&
-			!sameSemanticQualifiers(selection.FitProof.QualifierBindings, map[string]string{"freshness": "reference"}) {
-			t.Fatalf("child revived a non-petitioned lookup leg: %#v", selection)
-		}
-	}
-	if name := semanticGrantNameForAdapter(child, semanticTrustedWebSearchAdapter); name != "web_search" {
-		t.Fatalf("child search grant name=%q, want web_search", name)
-	}
-	if !classificationHasLabel(child.replan.Classification, intent.LabelSearch) {
-		t.Fatalf("child replan classification=%+v", child.replan.Classification)
-	}
-	// The child's lookup legs are published parent authority now; the reuse
-	// record must not follow, or a later expansion could drop them again.
-	if child.replan.ConversationLookupReused {
-		t.Fatal("petitioned child must not inherit the reuse-drop record")
-	}
-	if child.replan.Attempts != surface.replan.Attempts {
-		t.Fatalf("child attempts=%d, parent=%d", child.replan.Attempts, surface.replan.Attempts)
+	if !planHasCapabilities(surface.plan, "information.search.web") {
+		t.Fatalf("parent lookup was dropped: %#v", surface.plan.Selections)
 	}
 }
 
@@ -191,14 +167,14 @@ func TestSemanticPetitionMailboxSendOnLookupDocumentTask(t *testing.T) {
 	if planHasCapabilities(surface.plan, "message.send.mailbox") {
 		t.Fatalf("fixture must start without the mail leg: %#v", surface.plan.Selections)
 	}
+	loopCtx.Runtime.SemanticIntent = classification
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "desktop", loopCtx: loopCtx}
-	_, message := cb.PetitionToolCall("mailbox_send")
-	if strings.Contains(message, "outside the petitioned label") || strings.Contains(message, "expansion failed") {
-		t.Fatalf("mailbox_send expansion failed: %q", message)
+	granted, message := cb.PetitionToolCall("mailbox_send")
+	if granted || !strings.Contains(message, "能力目录") {
+		t.Fatalf("mailbox_send stays closed unless it is the primary: granted=%v message=%q", granted, message)
 	}
-	child := cb.semanticSurface
-	if child == surface || !planHasCapabilities(child.plan, "message.send.mailbox") {
-		t.Fatalf("child plan=%#v message=%q", child.plan.Selections, message)
+	if cb.semanticSurface != surface {
+		t.Fatal("a closed high-risk petition must not publish a child revision")
 	}
 }
 

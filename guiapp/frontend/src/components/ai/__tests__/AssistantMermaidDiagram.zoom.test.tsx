@@ -21,13 +21,21 @@ import {
     DEFAULT_MERMAID_ZOOM,
     MAX_MERMAID_ZOOM,
     MIN_MERMAID_ZOOM,
+    clampMermaidPreviewPan,
     clampMermaidZoom,
+    consumeMermaidWheel,
+    fitMermaidPreviewSvg,
     getMermaidTheme,
+    MERMAID_PREVIEW_PAN_STEP,
     mermaidHairlineStroke,
     mermaidMenuOpensUpward,
+    mermaidPreviewInkSize,
     mermaidSvgSize,
+    namespaceSvgIds,
+    panForMermaidZoom,
     reinforceMermaidSvg,
     scaleMermaidSvg,
+    shiftMermaidPreviewPan,
     stepMermaidZoom,
 } from "../AssistantMermaidDiagram";
 
@@ -138,6 +146,343 @@ describe("inline Mermaid zoom controls", () => {
         expect(screen.getByTestId("assistant-mermaid-zoom-in").getAttribute("aria-label")).toBe("放大图表");
         expect(screen.getByTestId("assistant-mermaid-zoom-out").getAttribute("aria-label")).toBe("缩小图表");
         expect(screen.getByTestId("assistant-mermaid-zoom-reset").getAttribute("aria-label")).toBe("重置图表大小");
+    });
+});
+
+function previewCanvas(): HTMLElement {
+    return screen.getByTestId("assistant-mermaid-preview-canvas");
+}
+
+describe("full-screen Mermaid preview", () => {
+    it("puts View first in the diagram toolbar", async () => {
+        await renderDiagram();
+
+        const view = screen.getByTestId("assistant-mermaid-view");
+        expect(view.textContent).toBe("查看");
+        expect(view.getAttribute("aria-label")).toBe("查看图表");
+        const actions = view.parentElement;
+        const labels = Array.from(actions?.querySelectorAll("button") || []).map((button) => button.textContent);
+        expect(labels[0]).toBe("查看");
+        expect(labels[1]).toBe("添加到对话");
+    });
+
+    it("opens the preview from the View button and closes it from the preview close button", async () => {
+        await renderDiagram();
+
+        fireEvent.click(screen.getByTestId("assistant-mermaid-view"));
+        const preview = screen.getByTestId("assistant-mermaid-preview");
+        expect(preview.getAttribute("aria-label")).toBe("图表预览");
+        expect(preview.querySelector("svg")?.getAttribute("preserveAspectRatio")).toBe("xMidYMid meet");
+        // The chat drawing keeps its id. The preview copy must not reuse it,
+        // or marker paints resolve against the diagram underneath.
+        const inlineId = screen.getByTestId("assistant-mermaid-diagram").querySelector("svg")?.getAttribute("id");
+        const previewId = preview.querySelector("svg")?.getAttribute("id");
+        expect(inlineId).toBe("mermaid-1");
+        expect(previewId?.startsWith("mermaid-1-")).toBe(true);
+        expect(previewId).not.toBe(inlineId);
+        expect(screen.getByTestId("assistant-mermaid-preview-close").getAttribute("aria-label")).toBe("关闭");
+
+        fireEvent.click(screen.getByTestId("assistant-mermaid-preview-close"));
+        expect(screen.queryByTestId("assistant-mermaid-preview")).toBeNull();
+        expect(screen.getByTestId("assistant-mermaid-figure").className).not.toContain("is-previewing");
+    });
+
+    it("treats a short wheel flick as one zoom step, not one step per event", async () => {
+        await renderDiagram();
+        fireEvent.click(screen.getByTestId("assistant-mermaid-view"));
+        expect(screen.getByTestId("assistant-mermaid-figure").className).toContain("is-previewing");
+        const preview = screen.getByTestId("assistant-mermaid-preview");
+
+        fireEvent.wheel(preview, { deltaY: -40 });
+        expect(previewCanvas().style.transform).toBe("translate(0px, 0px) scale(1)");
+
+        fireEvent.wheel(preview, { deltaY: -70 });
+        expect(previewCanvas().style.transform).toContain("scale(1.25)");
+    });
+
+    it("does not let a sideways swipe scroll the page or zoom the drawing", async () => {
+        await renderDiagram();
+        fireEvent.click(screen.getByTestId("assistant-mermaid-view"));
+        const preview = screen.getByTestId("assistant-mermaid-preview");
+        const event = new WheelEvent("wheel", { deltaX: 80, deltaY: 0, cancelable: true, bubbles: true });
+
+        preview.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(true);
+        expect(previewCanvas().style.transform).toBe("translate(0px, 0px) scale(1)");
+    });
+
+    it("opens the same preview when the diagram is double-clicked", async () => {
+        const diagram = await renderDiagram();
+
+        fireEvent.doubleClick(diagram);
+        expect(screen.getByTestId("assistant-mermaid-preview")).toBeTruthy();
+        expect(diagram.getAttribute("title")).toBe("双击放大");
+    });
+
+    it("zooms, drags, and nudges the drawing inside the preview", async () => {
+        await renderDiagram();
+        fireEvent.click(screen.getByTestId("assistant-mermaid-view"));
+
+        fireEvent.click(screen.getByTestId("assistant-mermaid-preview-zoom-in"));
+        expect(previewCanvas().style.transform).toContain("scale(1.25)");
+
+        const stage = screen.getByTestId("assistant-mermaid-preview-stage");
+        fireEvent.pointerDown(stage, { clientX: 10, clientY: 20, button: 0, pointerId: 1 });
+        fireEvent.pointerMove(stage, { clientX: 50, clientY: 28, pointerId: 1 });
+        expect(previewCanvas().style.transform).toContain("translate(40px, 8px)");
+        expect(previewCanvas().style.transform).toContain("scale(1.25)");
+
+        fireEvent.keyDown(screen.getByTestId("assistant-mermaid-preview"), { key: "ArrowLeft" });
+        expect(previewCanvas().style.transform).toContain(`translate(${40 + MERMAID_PREVIEW_PAN_STEP}px, 8px)`);
+        // The finger is still down on the same point. The nudge has to survive
+        // that twitch; rebuilding from the pointer-down origin would erase it.
+        fireEvent.pointerMove(stage, { clientX: 50, clientY: 28, pointerId: 1 });
+        expect(previewCanvas().style.transform).toContain(`translate(${40 + MERMAID_PREVIEW_PAN_STEP}px, 8px)`);
+
+        fireEvent.keyDown(screen.getByTestId("assistant-mermaid-preview"), { key: "ArrowRight" });
+        expect(previewCanvas().style.transform).toContain("translate(40px, 8px)");
+
+        fireEvent.click(screen.getByTestId("assistant-mermaid-preview-zoom-reset"));
+        expect(previewCanvas().style.transform).toContain("translate(0px, 0px)");
+        expect(previewCanvas().style.transform).toContain("scale(1)");
+    });
+
+    it("keeps the dragged point centered when zoom changes, and stops after the pointer is released", async () => {
+        await renderDiagram();
+        fireEvent.click(screen.getByTestId("assistant-mermaid-view"));
+        const stage = screen.getByTestId("assistant-mermaid-preview-stage");
+
+        fireEvent.pointerDown(stage, { clientX: 0, clientY: 0, button: 0, pointerId: 1 });
+        fireEvent.pointerMove(stage, { clientX: 40, clientY: 8, pointerId: 1 });
+        expect(previewCanvas().style.transform).toContain("translate(40px, 8px)");
+
+        fireEvent.click(screen.getByTestId("assistant-mermaid-preview-zoom-in"));
+        expect(previewCanvas().style.transform).toContain("translate(50px, 10px)");
+        expect(previewCanvas().style.transform).toContain("scale(1.25)");
+
+        // The finger never came up, so the drag continues from the zoomed pan
+        // rather than from the pointer-down origin (which would land on 112, 10).
+        fireEvent.pointerMove(stage, { clientX: 50, clientY: 8, pointerId: 1 });
+        expect(previewCanvas().style.transform).toContain("translate(60px, 10px)");
+
+        fireEvent.pointerUp(window, { pointerId: 1 });
+        fireEvent.pointerMove(stage, { clientX: 90, clientY: 8, pointerId: 1 });
+        expect(previewCanvas().style.transform).toContain("translate(60px, 10px)");
+    });
+
+    it("does not let a second pointer steal or end the drag", async () => {
+        await renderDiagram();
+        fireEvent.click(screen.getByTestId("assistant-mermaid-view"));
+        const stage = screen.getByTestId("assistant-mermaid-preview-stage");
+
+        fireEvent.pointerDown(stage, { clientX: 0, clientY: 0, button: 0, pointerId: 1 });
+        fireEvent.pointerMove(stage, { clientX: 30, clientY: 0, pointerId: 1 });
+        fireEvent.pointerUp(window, { pointerId: 2 });
+        fireEvent.pointerMove(stage, { clientX: 70, clientY: 0, pointerId: 1 });
+        expect(previewCanvas().style.transform).toContain("translate(70px, 0px)");
+
+        fireEvent.pointerUp(window, { pointerId: 1 });
+        fireEvent.pointerMove(stage, { clientX: 90, clientY: 0, pointerId: 1 });
+        expect(previewCanvas().style.transform).toContain("translate(70px, 0px)");
+    });
+
+    it("ignores a cancelled second pointer and stops when the dragging pointer is cancelled", async () => {
+        await renderDiagram();
+        fireEvent.click(screen.getByTestId("assistant-mermaid-view"));
+        const stage = screen.getByTestId("assistant-mermaid-preview-stage");
+
+        fireEvent.pointerDown(stage, { clientX: 0, clientY: 0, button: 0, pointerId: 1 });
+        fireEvent.pointerMove(stage, { clientX: 30, clientY: 0, pointerId: 1 });
+        fireEvent.pointerCancel(stage, { pointerId: 2 });
+        fireEvent.pointerMove(stage, { clientX: 70, clientY: 0, pointerId: 1 });
+        expect(previewCanvas().style.transform).toContain("translate(70px, 0px)");
+
+        fireEvent.pointerCancel(stage, { pointerId: 1 });
+        fireEvent.pointerMove(stage, { clientX: 90, clientY: 0, pointerId: 1 });
+        expect(previewCanvas().style.transform).toContain("translate(70px, 0px)");
+    });
+
+    it("zooms the preview toward the cursor", async () => {
+        const original = HTMLElement.prototype.getBoundingClientRect;
+        HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+            if (this.dataset.testid === "assistant-mermaid-preview-stage") return new DOMRect(0, 0, 400, 200);
+            return original.call(this);
+        };
+        try {
+            await renderDiagram();
+            fireEvent.click(screen.getByTestId("assistant-mermaid-view"));
+            // Cursor sits on the right edge of a 400px stage, 200px right of center.
+            // One zoom step (1 → 1.25) holds that point: pan = 200 * (1 - 1.25).
+            fireEvent.wheel(screen.getByTestId("assistant-mermaid-preview"), { deltaY: -100, clientX: 400, clientY: 100 });
+            expect(previewCanvas().style.transform).toBe("translate(-50px, 0px) scale(1.25)");
+        } finally {
+            HTMLElement.prototype.getBoundingClientRect = original;
+        }
+    });
+
+    it("zooms around the center when the cursor is over the title bar", async () => {
+        const original = HTMLElement.prototype.getBoundingClientRect;
+        HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+            if (this.dataset.testid === "assistant-mermaid-preview-stage") return new DOMRect(0, 48, 400, 200);
+            return original.call(this);
+        };
+        try {
+            await renderDiagram();
+            fireEvent.click(screen.getByTestId("assistant-mermaid-view"));
+            fireEvent.wheel(screen.getByTestId("assistant-mermaid-preview"), { deltaY: -100, clientX: 200, clientY: 10 });
+            expect(previewCanvas().style.transform).toBe("translate(0px, 0px) scale(1.25)");
+        } finally {
+            HTMLElement.prototype.getBoundingClientRect = original;
+        }
+    });
+
+    it("closes the preview on Escape", async () => {
+        await renderDiagram();
+        fireEvent.click(screen.getByTestId("assistant-mermaid-view"));
+
+        fireEvent.keyDown(screen.getByTestId("assistant-mermaid-preview"), { key: "Escape" });
+        expect(screen.queryByTestId("assistant-mermaid-preview")).toBeNull();
+    });
+
+    it("releases pointer capture when the size is reset mid-drag", async () => {
+        await renderDiagram();
+        fireEvent.click(screen.getByTestId("assistant-mermaid-view"));
+        const stage = screen.getByTestId("assistant-mermaid-preview-stage");
+        const release = vi.fn();
+        stage.setPointerCapture = vi.fn();
+        stage.hasPointerCapture = (id: number) => id === 1;
+        stage.releasePointerCapture = release;
+
+        fireEvent.pointerDown(stage, { clientX: 0, clientY: 0, button: 0, pointerId: 1 });
+        fireEvent.click(screen.getByTestId("assistant-mermaid-preview-zoom-reset"));
+        expect(release).toHaveBeenCalledWith(1);
+        expect(previewCanvas().style.transform).toBe("translate(0px, 0px) scale(1)");
+    });
+
+    it("keeps the chart underneath still, and the page locked, until the top preview closes", async () => {
+        render(
+            <>
+                <AssistantMermaidDiagram code={"flowchart TD\n  A --> B"} theme={lightTheme} />
+                <AssistantMermaidDiagram code={"flowchart TD\n  C --> D"} theme={lightTheme} />
+            </>,
+        );
+        await waitFor(() => expect(screen.getAllByTestId("assistant-mermaid-view")).toHaveLength(2));
+        const views = screen.getAllByTestId("assistant-mermaid-view");
+        fireEvent.click(views[0]);
+        fireEvent.click(views[1]);
+        const [below, above] = screen.getAllByTestId("assistant-mermaid-preview");
+        const canvasOf = (root: HTMLElement) => root.querySelector("[data-testid='assistant-mermaid-preview-canvas']") as HTMLElement;
+
+        try {
+            fireEvent.keyDown(above, { key: "ArrowLeft" });
+            expect(canvasOf(above).style.transform).toContain(`translate(${MERMAID_PREVIEW_PAN_STEP}px, 0px)`);
+            expect(canvasOf(below).style.transform).toContain("translate(0px, 0px)");
+
+            expect(document.body.style.overflow).toBe("hidden");
+            fireEvent.keyDown(above, { key: "Escape" });
+            expect(screen.getAllByTestId("assistant-mermaid-preview")).toHaveLength(1);
+            expect(document.body.style.overflow).toBe("hidden");
+
+            fireEvent.keyDown(screen.getByTestId("assistant-mermaid-preview"), { key: "Escape" });
+            expect(screen.queryByTestId("assistant-mermaid-preview")).toBeNull();
+            expect(document.body.style.overflow).toBe("");
+        } finally {
+            document.body.style.overflow = "";
+            document.documentElement.style.overflow = "";
+        }
+    });
+
+    it("labels the preview controls in the UI language", async () => {
+        render(<AssistantMermaidDiagram code={"flowchart TD\n  A --> B"} theme={lightTheme} lang="en" />);
+        const view = await screen.findByTestId("assistant-mermaid-view");
+        expect(view.textContent).toBe("View");
+        expect(view.getAttribute("aria-label")).toBe("View diagram");
+
+        fireEvent.click(view);
+        expect(screen.getByTestId("assistant-mermaid-preview").getAttribute("aria-label")).toBe("Diagram preview");
+        expect(screen.getByTestId("assistant-mermaid-preview-close").getAttribute("aria-label")).toBe("Close");
+        expect(screen.getByTestId("assistant-mermaid-diagram").getAttribute("title")).toBe("Double-click to enlarge");
+    });
+});
+
+describe("fitMermaidPreviewSvg", () => {
+    it("fits the drawing to the stage and drops Mermaid's max-width cap", () => {
+        const svg = '<svg id="m" width="100%" style="max-width: 200px; font-family: sans-serif;" viewBox="0 0 200 100"><g /></svg>';
+        const fitted = fitMermaidPreviewSvg(svg);
+        expect(fitted).toContain('preserveAspectRatio="xMidYMid meet"');
+        expect(fitted).toContain('width="100%"');
+        expect(fitted).toContain('height="100%"');
+        expect(fitted).toContain('viewBox="0 0 200 100"');
+        expect(fitted).not.toContain("max-width");
+        expect(fitted).toContain("font-family: sans-serif");
+    });
+
+    it("letterboxes a diagram that was set to stretch", () => {
+        const fitted = fitMermaidPreviewSvg('<svg preserveAspectRatio="none" width="10" height="10"></svg>');
+        expect(fitted).toContain('preserveAspectRatio="xMidYMid meet"');
+        expect(fitted).not.toContain('preserveAspectRatio="none"');
+    });
+});
+
+describe("shiftMermaidPreviewPan", () => {
+    it("adds the pointer delta to the current offset", () => {
+        expect(shiftMermaidPreviewPan({ x: 10, y: -4 }, 6, 2)).toEqual({ x: 16, y: -2 });
+    });
+});
+
+describe("panForMermaidZoom", () => {
+    it("scales the pan around the stage center", () => {
+        expect(panForMermaidZoom({ x: 40, y: 8 }, 1, 1.25)).toEqual({ x: 50, y: 10 });
+        expect(panForMermaidZoom({ x: 40, y: 8 }, 1.25, 1)).toEqual({ x: 32, y: 6.4 });
+    });
+
+    it("holds the point under the cursor", () => {
+        // Cursor 100px right of center, zoom doubling: the drawing shifts left
+        // by the same amount the point would otherwise move.
+        expect(panForMermaidZoom({ x: 0, y: 0 }, 1, 2, { x: 100, y: 0 })).toEqual({ x: -100, y: 0 });
+        expect(panForMermaidZoom({ x: 10, y: 0 }, 2, 2, { x: 100, y: 0 })).toEqual({ x: 10, y: 0 });
+    });
+});
+
+describe("clampMermaidPreviewPan", () => {
+    it("leaves a margin of the drawing inside the stage", () => {
+        expect(clampMermaidPreviewPan({ x: 500, y: 500 }, 1, 200, 100)).toEqual({ x: 136, y: 36 });
+        expect(clampMermaidPreviewPan({ x: -1000, y: 10 }, 2, 200, 100)).toEqual({ x: -236, y: 10 });
+    });
+
+    it("does not invent a box when the stage has not been laid out", () => {
+        expect(clampMermaidPreviewPan({ x: 40, y: 8 }, 1, 0, 0)).toEqual({ x: 40, y: 8 });
+    });
+
+    it("keeps a narrow drawing on screen instead of the empty letterbox", () => {
+        // Stage 1000×800, ink 200×800. Filling the stage would allow a pan of
+        // 936px, which slides the 200px chart completely off to the side.
+        expect(mermaidPreviewInkSize(1000, 800, 200, 800)).toEqual({ width: 200, height: 800 });
+        expect(clampMermaidPreviewPan({ x: 900, y: 0 }, 1, 1000, 800, 200, 800)).toEqual({ x: 536, y: 0 });
+    });
+});
+
+describe("consumeMermaidWheel", () => {
+    it("holds trackpad ticks until they add up to a mouse notch", () => {
+        const first = consumeMermaidWheel(0, -40);
+        expect(first).toEqual({ accumulated: -40, steps: 0 });
+        expect(consumeMermaidWheel(first.accumulated, -70)).toEqual({ accumulated: -10, steps: 1 });
+        expect(consumeMermaidWheel(0, 250)).toEqual({ accumulated: 50, steps: -2 });
+        expect(consumeMermaidWheel(0, 0)).toEqual({ accumulated: 0, steps: 0 });
+    });
+});
+
+describe("namespaceSvgIds", () => {
+    it("renames ids and references without eating a longer id or a color", () => {
+        const svg = '<svg id="mermaid-1"><style>#mermaid-1 .a{fill:#fff}#mermaid-1-marker{stroke:#abc}</style><marker id="mermaid-1-marker"></marker><path marker-end="url(#mermaid-1-marker)"/></svg>';
+        const next = namespaceSvgIds(svg, "pv");
+        expect(next).toContain('id="mermaid-1-pv"');
+        expect(next).toContain('id="mermaid-1-marker-pv"');
+        expect(next).toContain("#mermaid-1-pv .a");
+        expect(next).toContain("url(#mermaid-1-marker-pv)");
+        expect(next).not.toContain("#mermaid-1-pv-marker");
+        expect(next).toContain("fill:#fff");
+        expect(next).toContain("stroke:#abc");
     });
 });
 

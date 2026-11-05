@@ -137,11 +137,10 @@ func unassignedFileDeliverableNames(plan tool.ToolPlan, completed, optionalByNee
 		if completed[selection.ID] {
 			continue
 		}
-		if selection.Optional || optionalByNeed[selection.NeedID] {
-			continue
-		}
-		needID := strings.TrimSpace(selection.NeedID)
-		if needID != "" && tool.RepeatFamilyID(needID) != needID {
+		// Same skips as the hop: optional bit, companion offer, repeat ceiling.
+		// A lost Optional bit on an offer must not tell the model the file is
+		// still missing after the turn has already settled.
+		if tool.SelectionCallIsSkippable(selection) || optionalByNeed[selection.NeedID] {
 			continue
 		}
 		name := strings.TrimSpace(string(capability))

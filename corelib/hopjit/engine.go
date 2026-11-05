@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,10 +21,12 @@ type ExecutionEngine struct {
 	snapshot       *EngineSnapshot
 	now            func() time.Time
 	tools          ToolProvider
+	stepTools      StepToolProviderFactory
 	specs          SpecProvider
 	caller         ReuseCaller
 	runOwner       string
 	callDepth      int
+	recovered      bool
 	ctx            context.Context
 	inflightResult map[string]chan ReuseResult
 	inflightCancel map[string]context.CancelFunc
@@ -87,6 +90,7 @@ func (e *ExecutionEngine) InitAST(ctx context.Context, spec hopspec.SpecAST, inp
 		LoopItems:      map[string][]any{},
 		LoopResults:    map[string]map[string]any{},
 		Calls:          map[string]CallState{},
+		ResolvedSpecs:  map[string]string{},
 		Inflight:       map[string]InflightCall{},
 		RetryCounters:  map[string]int{},
 		RetryHistory:   map[string][]RetryRecord{},
@@ -186,6 +190,9 @@ func (e *ExecutionEngine) Complete(ctx context.Context, stepID string, outputs m
 	if e.snapshot == nil {
 		return ErrRunNotInitialized
 	}
+	if e.snapshot.Pause != nil && e.snapshot.Pause.StepID != stepID {
+		return fmt.Errorf("INVALID_STEP_ID: %s", stepID)
+	}
 	if e.snapshot.Pause != nil && e.snapshot.Pause.ChildRunID != "" {
 		return e.completeChildPause(ctx, outputs)
 	}
@@ -279,6 +286,7 @@ func (e *ExecutionEngine) Resume(ctx context.Context, runID string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.callDepth = snapshot.CallDepth
+	e.recovered = true
 	e.snapshot = &snapshot
 	if snapshot.TerminalState != "" {
 		return nil
@@ -372,6 +380,15 @@ func (e *ExecutionEngine) finishLocked() {
 		e.recordLocked("run_failed", "", failure.Reason)
 		return
 	}
+	for _, output := range e.snapshot.Spec.Outputs {
+		if err := validateValueType(output.Type, e.snapshot.Variables[output.Name].Value); err != nil {
+			failure := Failure{Kind: FailureDeterministic, Reason: fmt.Sprintf("OUTPUT_TYPE_MISMATCH: %s: %v", output.Name, err)}
+			e.snapshot.TerminalFailure = &failure
+			e.snapshot.TerminalState = TerminalFailed
+			e.recordLocked("run_failed", "", failure.Reason)
+			return
+		}
+	}
 	e.snapshot.TerminalState = TerminalCompleted
 	e.recordLocked("run_completed", "", "")
 }
@@ -416,9 +433,21 @@ func (e *ExecutionEngine) stepReadyLocked(step hopspec.Step) *StepReady {
 		RunID: e.snapshot.RunID, Goal: e.snapshot.Spec.Goal, Constraints: append([]string(nil), e.snapshot.Spec.Constraints...),
 		StepID: step.ID, StepType: step.Type, Summary: step.Summary,
 		Inputs: inputs, Instruction: step.Instruction, Tools: append([]string(nil), step.Tools...), OutputSchema: append([]hopspec.VariableDecl(nil), step.Outputs...),
+		Recovered: e.recovered, IterationID: hopIterationID(*e.snapshot, step.ID),
 	}
 	ready.Context = AssemblePromptContext(*e.snapshot, *ready)
 	return ready
+}
+
+func hopIterationID(snapshot EngineSnapshot, stepID string) string {
+	var parts []string
+	for loopID, iteration := range snapshot.LoopCounters {
+		if isStepAncestor(loopID, stepID) {
+			parts = append(parts, fmt.Sprintf("%s=%d", loopID, iteration))
+		}
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
 }
 
 func (e *ExecutionEngine) resultLocked(status NextStatus) NextResult {
@@ -489,8 +518,16 @@ func validateValueType(declared string, value any) error {
 		return nil
 	}
 	if strings.HasPrefix(declared, "[") && strings.HasSuffix(declared, "]") {
-		if reflect.TypeOf(value).Kind() != reflect.Slice {
+		kind := reflect.TypeOf(value).Kind()
+		if kind != reflect.Slice && kind != reflect.Array {
 			return fmt.Errorf("expected %s", declared)
+		}
+		elementType := declared[1 : len(declared)-1]
+		items := reflect.ValueOf(value)
+		for index := 0; index < items.Len(); index++ {
+			if err := validateValueType(elementType, items.Index(index).Interface()); err != nil {
+				return fmt.Errorf("element %d: %w", index, err)
+			}
 		}
 		return nil
 	}

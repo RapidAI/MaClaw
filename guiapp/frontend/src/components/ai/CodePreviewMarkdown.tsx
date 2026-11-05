@@ -3,6 +3,7 @@
  * Supports find/go-to-line via data-line-start / data-line-end on blocks.
  */
 import React, { useMemo } from 'react';
+import { documentMarkdownImageSrc, inlineHasNestedMarkup, MarkdownExternalLink, MarkdownImagePreview, MarkdownLinkedImage, parseMarkdownImageAt, readMarkdownImageAt, readMarkdownLinkAt, readWrappedMarkdownImage, safeHttpURL, visibleMarkdownLinkLabel } from './markdownMedia';
 import type { CodePreviewTheme } from './FileTabBar';
 import { markdownPreviewInkFromBg, type MarkdownPreviewInk } from './markdownPreviewInk';
 
@@ -345,17 +346,31 @@ function parseMarkdownBlocks(content: string, ink: MarkdownPreviewInk): MdParsed
             continue;
         }
 
-        // Image on its own line: ![alt](url)
-        const imgMatch = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-        if (imgMatch) {
-            pushBlock(i, i, (
-                <div className="cpm-img-wrap">
-                    <img src={imgMatch[2]} alt={imgMatch[1]} style={{ maxWidth: '100%', borderRadius: 4, border: `1px solid ${ink.rule}` }} />
-                    {imgMatch[1] && <div style={{ fontSize: 12, color: ink.muted, marginTop: 4 }}>{imgMatch[1]}</div>}
-                </div>
-            ));
-            i++;
-            continue;
+        // Image on its own line. A linked image keeps the picture and the page apart.
+        const trimmedLine = line.trim();
+        if (trimmedLine.startsWith("[![")) {
+            const wrappedImage = readWrappedMarkdownImage(trimmedLine, 0);
+            if (wrappedImage && wrappedImage.end === trimmedLine.length) {
+                pushBlock(i, i, (
+                    <div className="cpm-img-wrap">
+                        <MarkdownLinkedImage alt={wrappedImage.alt} src={wrappedImage.url} pageURL={wrappedImage.pageURL} block document linkColor={ink.link} />
+                    </div>
+                ));
+                i++;
+                continue;
+            }
+        }
+        if (trimmedLine.startsWith("![")) {
+            const blockImage = parseMarkdownImageAt(trimmedLine, 0, documentMarkdownImageSrc);
+            if (blockImage && blockImage.end === trimmedLine.length) {
+                pushBlock(i, i, (
+                    <div className="cpm-img-wrap">
+                        <MarkdownImagePreview src={blockImage.src} alt={blockImage.alt} block document />
+                    </div>
+                ));
+                i++;
+                continue;
+            }
         }
 
         // Definition list: term followed by : definition
@@ -426,7 +441,10 @@ export const MarkdownPreview = React.memo(function MarkdownPreview({
     );
 });
 
-function renderMdInline(text: string, ink: MarkdownPreviewInk): React.ReactNode {
+// One compiled pattern. Recursion saves and restores lastIndex.
+const mdInlinePattern = /(`[^`]+`|\*\*\*(?!\s)(?:[^*]|\*(?!\*\*))+\*\*\*|\*\*(?!\*)(?:[^*]|\*(?!\*))+\*\*|~~[^~]+~~|==[^=]+==|!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)|\*(?!\s|\*)[^*]+(?<!\s)\*)/g;
+
+function renderMdInline(text: string, ink: MarkdownPreviewInk, insideLink = false): React.ReactNode {
     const parts: React.ReactNode[] = [];
     // Order matters: longer/more specific patterns first.
     // Patterns: inline code, bold+italic (***), bold (**), strikethrough (~~),
@@ -434,10 +452,14 @@ function renderMdInline(text: string, ink: MarkdownPreviewInk): React.ReactNode 
     // NOTE: italic(*) requires non-space after opening * and before closing * to avoid
     //       matching multiplication like "2 * 3 * 4".
     //       Underscore italic (_) is NOT supported to avoid false positives in identifiers.
-    const re = /(`[^`]+`|\*\*\*(?!\s)(?:[^*]|\*(?!\*\*))+\*\*\*|\*\*(?!\*)(?:[^*]|\*(?!\*))+\*\*|~~[^~]+~~|==[^=]+==|!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)|\*(?!\s|\*)[^*]+(?<!\s)\*)/g;
+    // The scan stops at the first ")". A balanced re-read below keeps a ")" that belongs to the URL.
+    const re = mdInlinePattern;
+    const savedLastIndex = re.lastIndex;
+    re.lastIndex = 0;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let key = 0;
+    try {
     while ((match = re.exec(text)) !== null) {
         if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
         const m = match[0];
@@ -445,35 +467,60 @@ function renderMdInline(text: string, ink: MarkdownPreviewInk): React.ReactNode 
             // Inline code
             parts.push(<code key={key++} style={{ background: ink.wash, padding: '1px 4px', borderRadius: 3, fontSize: '0.9em', color: ink.body }}>{m.slice(1, -1)}</code>);
         } else if (m.startsWith('***') && m.endsWith('***')) {
-            // Bold + italic — recurse into inner content for nested formatting
-            parts.push(<strong key={key++} style={{ color: ink.emphasis }}><em>{renderMdInline(m.slice(3, -3), ink)}</em></strong>);
+            const inner = m.slice(3, -3);
+            parts.push(<strong key={key++} style={{ color: ink.emphasis }}><em>{inlineHasNestedMarkup(inner) ? renderMdInline(inner, ink, insideLink) : inner}</em></strong>);
         } else if (m.startsWith('**')) {
-            // Bold — recurse into inner content for nested formatting
-            parts.push(<strong key={key++} style={{ color: ink.emphasis }}>{renderMdInline(m.slice(2, -2), ink)}</strong>);
+            const inner = m.slice(2, -2);
+            parts.push(<strong key={key++} style={{ color: ink.emphasis }}>{inlineHasNestedMarkup(inner) ? renderMdInline(inner, ink, insideLink) : inner}</strong>);
         } else if (m.startsWith('~~')) {
-            // Strikethrough — recurse into inner content
-            parts.push(<del key={key++} className="cpm-del">{renderMdInline(m.slice(2, -2), ink)}</del>);
+            const inner = m.slice(2, -2);
+            parts.push(<del key={key++} className="cpm-del">{inlineHasNestedMarkup(inner) ? renderMdInline(inner, ink, insideLink) : inner}</del>);
         } else if (m.startsWith('==')) {
-            // Highlight — recurse into inner content
-            parts.push(<mark key={key++} style={{ background: ink.wash, color: ink.emphasis, padding: '0 2px', borderRadius: 2 }}>{renderMdInline(m.slice(2, -2), ink)}</mark>);
+            const inner = m.slice(2, -2);
+            parts.push(<mark key={key++} style={{ background: ink.wash, color: ink.emphasis, padding: '0 2px', borderRadius: 2 }}>{inlineHasNestedMarkup(inner) ? renderMdInline(inner, ink, insideLink) : inner}</mark>);
         } else if (m.startsWith('![')) {
-            // Inline image
-            const imgM = m.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-            if (imgM) parts.push(<img key={key++} className="cpm-inline-img" src={imgM[2]} alt={imgM[1]} />);
-            else parts.push(m);
+            const raw = readMarkdownImageAt(text, match.index);
+            if (!raw) {
+                parts.push(m);
+            } else {
+                if (raw.end > re.lastIndex) re.lastIndex = raw.end;
+                const src = insideLink ? "" : documentMarkdownImageSrc(raw.url);
+                if (src) parts.push(<MarkdownImagePreview key={key++} className="cpm-inline-img" src={src} alt={raw.alt} document />);
+                else if (raw.alt) parts.push(raw.alt);
+            }
         } else if (m.startsWith('[')) {
-            // Link
-            const linkMatch = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-            if (linkMatch) parts.push(<span key={key++} style={{ color: ink.link, textDecoration: 'underline', cursor: 'pointer' }}>{linkMatch[1]}</span>);
-            else parts.push(m);
+            const wrapped = insideLink ? null : readWrappedMarkdownImage(text, match.index);
+            if (wrapped) {
+                if (wrapped.end > re.lastIndex) re.lastIndex = wrapped.end;
+                parts.push(<MarkdownLinkedImage key={key++} alt={wrapped.alt} src={wrapped.url} pageURL={wrapped.pageURL} className="cpm-inline-img" linkColor={ink.link} document />);
+            } else {
+            const read = readMarkdownLinkAt(text, match.index);
+            if (read) {
+                if (read.end > re.lastIndex) re.lastIndex = read.end;
+                const href = safeHttpURL(read.url);
+                const shown = visibleMarkdownLinkLabel(read.label, href || read.url);
+                if (insideLink) {
+                    parts.push(shown);
+                } else {
+                const label = href && shown !== href && inlineHasNestedMarkup(shown) ? renderMdInline(shown, ink, true) : shown;
+                if (href) parts.push(<MarkdownExternalLink key={key++} href={href} color={ink.link}>{label}</MarkdownExternalLink>);
+                else parts.push(<span key={key++} style={{ color: ink.link, textDecoration: 'underline' }}>{label}</span>);
+                }
+            } else {
+                parts.push(m);
+            }
+            }
         } else if (m.startsWith('*') && m.endsWith('*')) {
             // Italic
             parts.push(<em key={key++} style={{ color: ink.body }}>{m.slice(1, -1)}</em>);
         } else {
             parts.push(m);
         }
-        lastIndex = match.index + m.length;
+        lastIndex = re.lastIndex;
     }
     if (lastIndex < text.length) parts.push(text.slice(lastIndex));
     return <>{parts}</>;
+    } finally {
+        re.lastIndex = savedLastIndex;
+    }
 }

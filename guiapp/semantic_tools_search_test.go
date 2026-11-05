@@ -51,8 +51,10 @@ func TestSemanticToolsSearchFindsExactNames(t *testing.T) {
 		t.Fatalf("listed office must carry the listed status: %s", got)
 	}
 	got = semanticToolsSearchRun(cb, `{"query":"运行脚本生成带图片的幻灯片"}`)
-	if !strings.Contains(got, "bash") || !strings.Contains(got, "[已在当前工具面]") {
-		t.Fatalf("bash must be discoverable as a listed baseline tool: %s", got)
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(line, "- bash — ") && strings.Contains(line, "[已在当前工具面]") {
+			t.Fatalf("office discovery must not list bash as a granted baseline: %s", line)
+		}
 	}
 	// Discovery is not authorization: a query must not mint extra grants.
 	before := len(cb.semanticSurface.grants)
@@ -90,7 +92,7 @@ func TestSemanticToolsSearchExecutesThroughBothEntries(t *testing.T) {
 // across both execution entries and never touches grants.
 func TestSemanticToolsSearchTurnBudgetEndsSpiral(t *testing.T) {
 	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
-	needs := []string{"web_fetch", "bash", "office", "download_file"}
+	needs := []string{"web_search", "office", "generate_pdf", "download_file"}
 	if len(needs) != semanticToolsSearchMaxPerTurn {
 		t.Fatalf("fixture must cover the budget, got %d cap %d", len(needs), semanticToolsSearchMaxPerTurn)
 	}
@@ -123,7 +125,9 @@ func TestSemanticToolsSearchTurnBudgetEndsSpiral(t *testing.T) {
 // Waiting for the numeric cap let the 2026-09-27 save turn spend five model
 // rounds re-reading the same petitionable line.
 func TestSemanticToolsSearchRepeatedDirectoryCloses(t *testing.T) {
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{
+		Primary: intent.LabelOffice, Secondary: []intent.IntentLabel{intent.LabelWebFetch}, Confidence: .98,
+	})
 	cb.semanticSurface.grants["knowledge_save_text"] = tool.InvocationGrant{AdapterName: "knowledge_save_text"}
 	first := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"save the endpoint","needs":["web_fetch","http_request","knowledge_save_text"]}`)
 	if !strings.Contains(first, "- knowledge_save_text — ") || !strings.Contains(first, "[已在当前工具面]") {
@@ -262,10 +266,12 @@ func TestSemanticToolsSearchMatchesEveryEntryByItsOwnName(t *testing.T) {
 // is spent must say so instead of inviting the call, and a legacy alias the
 // managed catalog never renders (list_directory) stays plainly unavailable.
 func TestSemanticToolsSearchStatusesAreHonestAboutThisTurn(t *testing.T) {
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: .98})
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{
+		Primary: intent.LabelSearch, Secondary: []intent.IntentLabel{intent.LabelOffice}, Confidence: .98,
+	})
 	got := semanticToolsSearchRun(cb, `{"query":"生成ppt幻灯片"}`)
 	if !strings.Contains(got, "office") || !strings.Contains(got, "[可请愿：直接调用一次]") {
-		t.Fatalf("unrouted petitionable office must be marked petitionable: %s", got)
+		t.Fatalf("directory office must be marked petitionable: %s", got)
 	}
 	if strings.Contains(got, "按计划路由提供") {
 		t.Fatalf("ambiguous planned-status must be gone: %s", got)
@@ -324,6 +330,69 @@ func TestSemanticToolsSearchUsesRenderedNameForDynamicGrant(t *testing.T) {
 		t.Fatalf("search leaked unrendered dynamic adapter name: %s", got)
 	}
 }
+
+func TestSemanticToolsSearchNamesInstalledMCPBeforeItsGrant(t *testing.T) {
+	cb := semanticToolsSearchRegressionCallbacks(0)
+	adapter := "installed-mcp:tengyun__post_work_log_add:dynamic_mcp_abc"
+	cb.semanticSurface.plan.Selections = []tool.PlannedSelection{{
+		ID: "worklog", AdapterName: adapter,
+		FitProof: tool.FitProof{MatchedCapability: "record.update.worklog"},
+	}}
+	if !semanticSurfacePlansTool(cb.semanticSurface, "tengyun__post_work_log_add") {
+		t.Fatal("planned installed MCP tool must match its server__tool name before a grant")
+	}
+	planNames := semanticSurfacePlanNames(cb.semanticSurface)
+	if !planNames["tengyun__post_work_log_add"] {
+		t.Fatal("plan names omitted the installed MCP spelling")
+	}
+	if planNames[adapter] {
+		t.Fatal("plan names kept the internal installed-mcp adapter")
+	}
+	if semanticSurfacePlansTool(cb.semanticSurface, "dynamic_mcp_abc") {
+		t.Fatal("opaque dynamic adapter must stay unmatched")
+	}
+	catalog := semanticToolsSearchCatalog(cb)
+	found := false
+	for _, entry := range catalog {
+		if entry.name == "tengyun__post_work_log_add" {
+			found = true
+		}
+		if strings.Contains(entry.name, "dynamic_mcp") {
+			t.Fatalf("catalog leaked an opaque adapter: %+v", entry)
+		}
+	}
+	if !found {
+		t.Fatal("catalog omitted the installed MCP name before its grant")
+	}
+	if status := semanticToolsSearchStatus(cb, "tengyun__post_work_log_add"); !strings.Contains(status, "已列入本轮计划") || strings.Contains(status, "可请愿") {
+		t.Fatalf("status=%s", status)
+	}
+	cb.semanticSurface.schemas = map[string]map[string]interface{}{
+		adapter: {"type": "function", "function": map[string]interface{}{
+			"name": "dynamic_provider", "description": "Write one approved work-log row.",
+		}},
+		"installed-mcp:other__tool:dynamic_mcp_zzz": {"type": "function", "function": map[string]interface{}{
+			"name": "dynamic_provider", "description": "Unplanned installed tool.",
+		}},
+	}
+	catalog = semanticToolsSearchCatalog(cb)
+	found = false
+	for _, entry := range catalog {
+		if entry.name == "tengyun__post_work_log_add" {
+			found = true
+			if entry.summary != "Write one approved work-log row." {
+				t.Fatalf("summary=%q", entry.summary)
+			}
+		}
+		if entry.name == "other__tool" || strings.HasPrefix(entry.name, "installed-mcp:") {
+			t.Fatalf("schema advertised a tool the plan did not select: %+v", entry)
+		}
+	}
+	if !found {
+		t.Fatal("description enrich dropped the planned installed tool")
+	}
+}
+
 func TestSemanticToolsSearchRetiredGrantIsNotPetitionable(t *testing.T) {
 	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
 	name := "office"
@@ -422,8 +491,8 @@ func TestSemanticToolsSearchNeedsNameDoesNotBlankTheDirectory(t *testing.T) {
 	// name and report that the call is reachable by petition, not that it
 	// matched nothing or is permanently unavailable.
 	got = semanticToolsSearchRun(cb, `{"query":"删除邮件 mailbox delete","needs":["mailbox_delete"]}`)
-	if !strings.Contains(got, "- mailbox_delete — ") || !strings.Contains(got, "[可请愿：直接调用一次]") {
-		t.Fatalf("mailbox_delete needs lookup did not resolve: %s", got)
+	if !strings.Contains(got, "- mailbox_delete — ") || !strings.Contains(got, "[本轮不可用") {
+		t.Fatalf("mailbox_delete stays closed unless it is the primary: %s", got)
 	}
 }
 
@@ -717,7 +786,8 @@ func TestSemanticToolsSearchListedSurfaceDoesNotOrderEveryGrant(t *testing.T) {
 }
 
 // The hand-built chain above matches the denial contract. This one uses the
-// desktop planner's weather-PDF surface, including delivery behind generate.
+// desktop planner's weather-PDF surface: lookup is the grant, generate_pdf
+// stays a directory petition until the model names it.
 func TestSemanticToolsSearchRealWeatherPDFNamesLookupNotDelivery(t *testing.T) {
 	cb, searchName := weatherPDFDesktopBeforeSearch(t)
 	// The loop adopts the request list before the model can call tools_search.
@@ -738,52 +808,31 @@ func TestSemanticToolsSearchRealWeatherPDFNamesLookupNotDelivery(t *testing.T) {
 	} else {
 		t.Fatalf("real weather plan produced no decision: %s", got)
 	}
-	now := ""
-	if at := strings.Index(decisionLine, "现在调用 "); at >= 0 {
-		now = decisionLine[at:]
-		if end := strings.Index(now, "。"); end >= 0 {
-			now = now[:end]
-		}
+	if searchName == "" || !strings.Contains(decisionLine, "已在当前工具面") || !strings.Contains(decisionLine, searchName) {
+		t.Fatalf("listed lookup missing: %s", decisionLine)
 	}
-	if searchName == "" || !strings.Contains(now, searchName) {
-		t.Fatalf("call-now=%q want %s in %s", now, searchName, decisionLine)
+	if strings.Contains(decisionLine, "现在调用") || strings.Contains(decisionLine, "generate_pdf（") || strings.Contains(decisionLine, "send_file（") {
+		t.Fatalf("unpetitioned generate must not be a planned successor: %s", decisionLine)
 	}
 	for _, baseline := range []string{"bash", "read_file", "write_file"} {
-		if strings.Contains(now, baseline) {
-			t.Fatalf("baseline %s is not the weather predecessor: %s", baseline, now)
+		if strings.Contains(decisionLine, baseline) {
+			t.Fatalf("baseline %s is not the weather grant: %s", baseline, decisionLine)
 		}
 	}
-	if !strings.Contains(decisionLine, "generate_pdf（先调用 "+searchName) {
-		t.Fatalf("generate clause missing: %s", decisionLine)
-	}
-	sendAt := strings.Index(decisionLine, "send_file（")
-	if sendAt < 0 {
-		t.Fatalf("delivery clause missing: %s", decisionLine)
-	}
-	sendClause := decisionLine[sendAt:]
-	if end := strings.Index(sendClause, "）"); end >= 0 {
-		sendClause = sendClause[:end]
-	}
-	if strings.Contains(sendClause, "它出现在下一请求") || !strings.Contains(sendClause, "generate_pdf 出现在下一请求") {
-		t.Fatalf("real plan promised delivery on the next request: %s", sendClause)
-	}
+	var generateRow string
 	for _, line := range strings.Split(got, "\n") {
-		if strings.HasPrefix(line, "- send_file — ") && strings.Contains(line, "自动出现") {
-			t.Fatalf("delivery row promised automatic appearance: %s", line)
+		if strings.HasPrefix(line, "- generate_pdf — ") {
+			generateRow = line
+		}
+		if strings.HasPrefix(line, "- send_file — ") && (strings.Contains(line, "自动出现") || strings.Contains(line, "[已在当前工具面]")) {
+			t.Fatalf("delivery is not a first-wave grant: %s", line)
+		}
+		if strings.HasPrefix(line, "- bash — ") && strings.Contains(line, "[已在当前工具面]") {
+			t.Fatalf("bash is not a weather grant: %s", line)
 		}
 	}
-	if strings.Contains(got, "仍可直接调用一次") || strings.Contains(got, "直接调用一次") {
-		t.Fatalf("petition invitation must not follow the weather decision: %s", got)
-	}
-	nowSentence := ""
-	if at := strings.Index(decisionLine, "现在调用 "); at >= 0 {
-		nowSentence = decisionLine[at:]
-		if end := strings.Index(nowSentence, "。"); end >= 0 {
-			nowSentence = nowSentence[:end+len("。")]
-		}
-	}
-	if nowSentence == "" || semanticToolsSearchLastLine(got) != nowSentence {
-		t.Fatalf("closing line = %q, want %q", semanticToolsSearchLastLine(got), nowSentence)
+	if generateRow == "" || !strings.Contains(generateRow, "可请愿") {
+		t.Fatalf("generate_pdf must stay petitionable: %s", generateRow)
 	}
 }
 

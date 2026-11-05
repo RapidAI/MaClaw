@@ -278,6 +278,14 @@ type ClassificationResult struct {
 	Primary          IntentLabel   // exactly one primary intent
 	Confidence       float64       // [0, 1]
 	Secondary        []IntentLabel // zero or more secondary intents
+	// Offered admits a capability onto the tool surface without making it
+	// a required effect. Finishing the confirmed work without calling it
+	// does not leave the turn unsettled. This is an L2 lookup companion
+	// that rode under an artifact leader and that the tree did not repeat:
+	// cosine cannot separate that companion from a real lookup, and the
+	// tree's artifact-only verdict is the rejection. A lookup Layer 2
+	// already led with stays a required secondary instead.
+	Offered []IntentLabel `json:"offered,omitempty"`
 	ToolNames        []string      // tool names to activate (from Tool Affinity)
 	Layer            int           // 1, 2, or 3 (23 = fusion of L2+L3)
 	Reason           string        // human-readable explanation

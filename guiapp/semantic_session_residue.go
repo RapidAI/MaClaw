@@ -1354,15 +1354,14 @@ func semanticTurnRequestsDelivery(planned intent.ClassificationResult) bool {
 }
 
 func semanticPlanCompanionNeed(need tool.CapabilityNeed) bool {
+	// Same marks as RepeatSelectionIsCompanion. An unconfirmed lookup offer
+	// stays on the surface so the model may search, and reconstructing it
+	// as live_data makes the next "继续" require a web search the deck
+	// already finished without.
 	if strings.Contains(need.ID, "zz-baseline:") {
 		return true
 	}
-	for _, evidence := range need.EvidenceIDs {
-		if evidence == "intent:baseline_workspace" || evidence == "intent:archetype_bundle" {
-			return true
-		}
-	}
-	return false
+	return tool.EvidenceMarksCompanion(need.EvidenceIDs)
 }
 
 // semanticResidueRemainingForOpenTurn is the ceiling for a continue or

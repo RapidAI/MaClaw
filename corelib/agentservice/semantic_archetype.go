@@ -42,17 +42,11 @@ func WithArchetypeBundleKeyOverride(ctx context.Context, key intent.IntentLabel)
 	return context.WithValue(ctx, archetypeBundleKeyOverrideKey{}, key)
 }
 
-// ArchetypeBundleKey picks the archetype whose bundle the turn expands with.
+// ArchetypeBundleKey is the primary label. A neighboring office or
+// document_generate label used to promote a lookup into that bundle and
+// pull search, download, and read onto a resume turn. Companions stay in
+// the turn directory; they do not change the bundle key.
 func ArchetypeBundleKey(result intent.ClassificationResult) intent.IntentLabel {
-	switch result.Primary {
-	case intent.LabelSearch, intent.LabelLiveData, intent.LabelWebFetch:
-		if classificationHasIntentLabel(result, intent.LabelOffice) {
-			return intent.LabelOffice
-		}
-		if classificationHasIntentLabel(result, intent.LabelDocumentGenerate) {
-			return intent.LabelDocumentGenerate
-		}
-	}
 	return result.Primary
 }
 
@@ -180,6 +174,9 @@ func RaiseExistingLocalFileWriteFloor(needs []coretool.CapabilityNeed, confidenc
 }
 
 func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, result intent.ClassificationResult, managed bool, needs []coretool.CapabilityNeed, companions []intent.IntentLabel, evidence string, bundleKey intent.IntentLabel) []coretool.CapabilityNeed {
+	// bundleKey stays on the signature so a later directory projection can
+	// name the same archetype. New companion families are not granted here.
+	_ = bundleKey
 	if !managed || len(companions) == 0 {
 		return needs
 	}
@@ -202,7 +199,6 @@ func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[
 		offered[need.Capability] = entry
 	}
 	out := needs
-	addedArchetypeFamilies := 0
 	for _, label := range companions {
 		for _, template := range rules[label] {
 			if strings.HasPrefix(string(template.Capability), "artifact.deliver.") {
@@ -229,13 +225,11 @@ func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[
 			if _, exists := registry.Lookup(template.Capability); !exists {
 				continue
 			}
-			// Search, fetch, download, and screenshot stay off the first
-			// surface unless the turn already declared that capability. A
-			// budget upgrade of a declared family still happens above.
-			if evidence == archetypeBundleEvidence && LatentArchetypeCapability(template.Capability, bundleKey) {
-				continue
-			}
-			if evidence == archetypeBundleEvidence && addedArchetypeFamilies >= maxArchetypeCompanionFamilies {
+			// A companion the turn did not declare stays out of the first
+			// grant wave. The directory lists it as petitionable. A
+			// family the primary already published can still raise its
+			// ceiling above.
+			if evidence == archetypeBundleEvidence {
 				continue
 			}
 			idPrefix := "need:"
@@ -250,15 +244,10 @@ func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[
 			})
 			offered[template.Capability] = familyRange{start: len(out), count: len(siblings)}
 			out = append(out, siblings...)
-			if evidence == archetypeBundleEvidence {
-				addedArchetypeFamilies++
-			}
 		}
 	}
 	return out
 }
-
-const maxArchetypeCompanionFamilies = 2
 
 // LatentArchetypeCapability is a companion the bundle may raise a ceiling for
 // when the turn already declared it, but must not add to a cold surface.

@@ -588,10 +588,12 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 				// rest of the window.
 				u.clearTreeEndpointFailure()
 				top := candidates[0]
+				secondary, offered := splitTreeCompanionLabels(candidates)
 				bestResult := ClassificationResult{
 					Primary:      top.Label,
 					Confidence:   top.Score,
-					Secondary:    secondaryTreeLabels(candidates),
+					Secondary:    secondary,
+					Offered:      offered,
 					Layer:        3,
 					Reason:       fmt.Sprintf("tree-after-embedding: %s (%.3f)", top.Label, top.Score),
 					WorkflowType: top.WorkflowType,
@@ -740,8 +742,31 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 							Layer:      3,
 							Reason:     fmt.Sprintf("tree-after-embedding+synthesized composite: %s(%.3f)+%s(%.3f)", bestResult.Primary, bestResult.Confidence, half.label, half.score),
 						}
+						// The tree was asked because a local floor cannot
+						// separate "做个演示ppt" from "网上找照片做成PPT".
+						// A lookup the tree named, or that Layer 2 already
+						// led with, stays the required half: "画个天气图"
+						// is live_data locally and a chart from the tree,
+						// and dropping the lookup would ship the chart
+						// with no facts. A lookup that was only a companion
+						// under an artifact leader, and that the tree did
+						// not repeat, is not an obligation. Putting it back
+						// into Secondary made information.search.web
+						// required, so a delivered deck still hard-exited
+						// required_effect_unsettled (2026-11-05, office
+						// 0.999 beside unconfirmed live_data 0.600). That
+						// half stays on the surface as an offer.
+						lookupLedLocally := isLookupIntentLabel(l2Result.Primary) && l2Result.Primary == lookupHalf
+						offerLookup := !treeVerdictNamesLookup(bestResult) && !lookupLedLocally
+						offeredReason := fmt.Sprintf("tree-after-embedding+offered companion: %s(%.3f)+%s(%.3f)", bestResult.Primary, bestResult.Confidence, half.label, half.score)
 						switch artifactHalf {
 						case LabelDocumentGenerate:
+							if offerLookup {
+								synth.Primary = artifactHalf
+								synth.Offered = []IntentLabel{lookupHalf}
+								synth.Reason = offeredReason
+								break
+							}
 							// Build a synthetic composite and let canonical direction
 							// (lookup Primary) be enforced by NormalizeDeclaredComposite.
 							synth.Primary = LabelDocumentGenerate
@@ -751,11 +776,15 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 								synth = ClassificationResult{}
 							}
 						case LabelOffice, LabelLiveDataVisual:
-							// Office/visual artifact gates key on the artifact label
-							// (execution profile, plan rules), so the artifact stays
-							// Primary and the read-only lookup prerequisite rides in
-							// Secondary for needs derivation.
+							// The artifact stays Primary. A tree-confirmed or
+							// locally led lookup is a required secondary. An
+							// unconfirmed companion is only an offer.
 							synth.Primary = artifactHalf
+							if offerLookup {
+								synth.Offered = []IntentLabel{lookupHalf}
+								synth.Reason = offeredReason
+								break
+							}
 							synth.Secondary = []IntentLabel{lookupHalf}
 						default:
 							synth = ClassificationResult{}
@@ -1116,22 +1145,32 @@ func lookupHintOrUnknownFromL2(l2 ClassificationResult, skipTree bool) Classific
 	if !keepHint {
 		return finish(collapse())
 	}
-	// A PDF half must stay unconfirmed when the tree cannot rule: shipping
-	// the lookup alone makes the loop report the generate tool as
-	// unavailable. A chart half is only escalation evidence. Dropping it
-	// keeps the weather answer and does not deliver the card.
-	for _, sec := range l2.Secondary {
-		if sec == LabelDocumentGenerate {
-			return finish(collapse())
-		}
-	}
+	// The lookup or office half stays the plan. An unconfirmed generate,
+	// office, or chart neighbor used to collapse the whole turn to unknown,
+	// so web_search disappeared with the PDF. The neighbor is offered for
+	// the directory and is not a secondary, so a degraded turn still does
+	// not mint that write.
 	return finish(ClassificationResult{
 		Primary:    l2.Primary,
 		Confidence: l2.Confidence,
 		Layer:      2,
 		Reason:     reason,
 		Degraded:   true,
+		Offered:    unconfirmedArtifactLabels(l2.Secondary),
 	})
+}
+
+// unconfirmedArtifactLabels is the generate, office, or chart half that rode
+// along with a lookup or office leader. It is directory evidence, not a grant.
+func unconfirmedArtifactLabels(secondary []IntentLabel) []IntentLabel {
+	var offered []IntentLabel
+	for _, label := range secondary {
+		switch label {
+		case LabelDocumentGenerate, LabelOffice, LabelLiveDataVisual:
+			offered = append(offered, label)
+		}
+	}
+	return offered
 }
 
 func classifyByTreeWithTimeout(parent context.Context, llmContextFn LLMClassifyContextFunc, llmFn LLMClassifyFunc, treeText, text string, timeout time.Duration) ([]TreeCandidate, error) {
@@ -1220,38 +1259,41 @@ func dropChartEscalationEvidence(result *ClassificationResult) {
 }
 
 func secondaryTreeLabels(candidates []TreeCandidate) []IntentLabel {
+	secondary, _ := splitTreeCompanionLabels(candidates)
+	return secondary
+}
+
+// splitTreeCompanionLabels keeps a companion that clears 0.70 and the 0.20
+// gap as a secondary label. A declared composite that only cleared the old
+// 0.50 exemption is offered, not required: that exemption is how office at
+// 0.51 became a write grant beside a search leader.
+func splitTreeCompanionLabels(candidates []TreeCandidate) (secondary, offered []IntentLabel) {
 	if len(candidates) < 2 {
-		return nil
+		return nil, nil
 	}
 	topScore := candidates[0].Score
 	seen := map[IntentLabel]bool{candidates[0].Label: true}
-	var secondary []IntentLabel
 	for _, candidate := range candidates[1:] {
 		if candidate.Label == LabelUnknown || candidate.Label == LabelAmbiguous || seen[candidate.Label] {
 			continue
 		}
 		isComposite := declaredCompositeIntentPair(candidates[0].Label, candidate.Label)
-		threshold := 0.70
-		if isComposite {
-			threshold = 0.50
-		}
-		// Lookup+PDF keeps the 0.50 composite floor. A chart half does not:
-		// the tree's uncertain band is 0.40–0.64, and a 0.50 visual beside
-		// live_data still planned a weather card. Match the reviewed 0.73
-		// companion floor. The lookup half of a chart verdict stays at 0.50.
+		strict := 0.70
 		if candidate.Label == LabelLiveDataVisual {
-			threshold = EmbeddingCompositeSecondaryMinScore
+			strict = EmbeddingCompositeSecondaryMinScore
 		}
-		if candidate.Score < threshold {
+		gapOK := topScore-candidate.Score <= 0.20
+		if candidate.Score >= strict && gapOK {
+			seen[candidate.Label] = true
+			secondary = append(secondary, candidate.Label)
 			continue
 		}
-		if topScore-candidate.Score > 0.20 && !isComposite {
-			continue
+		if isComposite && candidate.Score >= 0.50 {
+			seen[candidate.Label] = true
+			offered = append(offered, candidate.Label)
 		}
-		seen[candidate.Label] = true
-		secondary = append(secondary, candidate.Label)
 	}
-	return secondary
+	return secondary, offered
 }
 
 // InvalidateCache clears the per-message cache. Called once per message
@@ -1754,10 +1796,12 @@ func (u *UnifiedIntentClassifier) scheduleLateTreeVerdictWith(turnCtx context.Co
 			return
 		}
 		top := candidates[0]
+		secondary, offered := splitTreeCompanionLabels(candidates)
 		result := ClassificationResult{
 			Primary:      top.Label,
 			Confidence:   top.Score,
-			Secondary:    secondaryTreeLabels(candidates),
+			Secondary:    secondary,
+			Offered:      offered,
 			Layer:        3,
 			Reason:       fmt.Sprintf("late tree verdict after fusion timeout: %s (%.3f)", top.Label, top.Score),
 			WorkflowType: top.WorkflowType,

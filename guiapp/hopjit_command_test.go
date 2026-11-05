@@ -82,8 +82,41 @@ func TestParseHopJITCommand(t *testing.T) {
 	if !ok || action != "compile" || payload != "生成摘要" {
 		t.Fatalf("action=%s payload=%q ok=%v", action, payload, ok)
 	}
+	action, _, ok = parseHopJITCommand("/hop list")
+	if !ok || action != "list" {
+		t.Fatalf("list action=%s ok=%v", action, ok)
+	}
+	action, payload, ok = parseHopJITCommand("/hop spec run-1")
+	if !ok || action != "spec" || payload != "run-1" {
+		t.Fatalf("spec action=%s payload=%q ok=%v", action, payload, ok)
+	}
+	action, payload, ok = parseHopJITCommand("/hop events run-1")
+	if !ok || action != "events" || payload != "run-1" {
+		t.Fatalf("events action=%s payload=%q ok=%v", action, payload, ok)
+	}
 	if _, _, ok := parseHopJITCommand("/hope test"); ok {
 		t.Fatal("non-hop command was intercepted")
+	}
+}
+
+func TestParseHopJITSpecRegistrationCommands(t *testing.T) {
+	action, _, ok := parseHopJITCommand("/hop specs")
+	if !ok || action != "specs" {
+		t.Fatalf("action=%s ok=%v", action, ok)
+	}
+	action, payload, ok := parseHopJITCommand("/hop delete child")
+	if !ok || action != "delete" || payload != "child" {
+		t.Fatalf("delete action=%s payload=%q ok=%v", action, payload, ok)
+	}
+	_, payload, _ = parseHopJITCommand("/hop define child # Spec: 子规约")
+	id, markdown, err := parseHopJITDefine(payload)
+	if err != nil || id != "child" || markdown != "# Spec: 子规约" {
+		t.Fatalf("id=%q markdown=%q err=%v", id, markdown, err)
+	}
+	for _, invalid := range []string{"", "child", "../bad # Spec: x"} {
+		if _, _, err := parseHopJITDefine(invalid); err == nil {
+			t.Fatalf("invalid define %q was accepted", invalid)
+		}
 	}
 }
 
@@ -133,6 +166,36 @@ func TestHopJITRunOwnerAuthorization(t *testing.T) {
 	}
 	if err := authorizeHopJITSnapshot(hopjit.EngineSnapshot{}, hopJITExecutionIdentity{PrincipalID: "user-a"}); err != hopjit.ErrRunAccessDenied {
 		t.Fatalf("legacy snapshot was visible to an authenticated command: %v", err)
+	}
+}
+
+func TestHopJITRunListFiltersOwner(t *testing.T) {
+	snapshots := []hopjit.EngineSnapshot{
+		{RunID: "run-a", OwnerID: "user-a", Spec: hopspec.SpecAST{Goal: "用户 A"}},
+		{RunID: "run-b", OwnerID: "user-b", Spec: hopspec.SpecAST{Goal: "用户 B"}},
+	}
+	response := hopJITRunListResponse(snapshots, hopJITExecutionIdentity{PrincipalID: "user-a"})
+	if response == nil || !strings.Contains(response.Text, "run-a") || strings.Contains(response.Text, "run-b") || strings.Contains(response.Text, "用户 B") {
+		t.Fatalf("response=%+v", response)
+	}
+	empty := hopJITRunListResponse(snapshots, hopJITExecutionIdentity{PrincipalID: "user-c"})
+	if empty == nil || !strings.Contains(empty.Text, "暂无") {
+		t.Fatalf("empty=%+v", empty)
+	}
+}
+
+func TestHopJITEventsResponseLimitsAndFormatsHistory(t *testing.T) {
+	snapshot := hopjit.EngineSnapshot{}
+	for index := 0; index < 60; index++ {
+		snapshot.Events = append(snapshot.Events, hopjit.ExecutionEvent{Sequence: uint64(index + 1), StepID: "1", Event: "step_done"})
+	}
+	response := hopJITEventsResponse(snapshot)
+	if response == nil || !strings.Contains(response.Text, "显示最近 50 条") || !strings.Contains(response.Text, "#60") || strings.Contains(response.Text, "\n#1 ") {
+		t.Fatalf("response=%+v", response)
+	}
+	empty := hopJITEventsResponse(hopjit.EngineSnapshot{})
+	if empty == nil || !strings.Contains(empty.Text, "暂无") {
+		t.Fatalf("empty=%+v", empty)
 	}
 }
 

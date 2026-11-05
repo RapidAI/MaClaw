@@ -9,6 +9,8 @@ type ToolProvider interface {
 	Execute(context.Context, string, map[string]any) (any, error)
 }
 
+type StepToolProviderFactory func(StepReady) (ToolProvider, error)
+
 type ToolProviderFunc func(context.Context, string, map[string]any) (any, error)
 
 func (f ToolProviderFunc) Execute(ctx context.Context, name string, args map[string]any) (any, error) {
@@ -23,6 +25,12 @@ func WithToolProvider(provider ToolProvider) EngineOption {
 	}
 }
 
+func WithStepToolProviderFactory(factory StepToolProviderFactory) EngineOption {
+	return func(engine *ExecutionEngine) {
+		engine.stepTools = factory
+	}
+}
+
 func WithRunOwner(ownerID string) EngineOption {
 	return func(engine *ExecutionEngine) {
 		engine.runOwner = ownerID
@@ -32,7 +40,7 @@ func WithRunOwner(ownerID string) EngineOption {
 const maxCallDepth = 32
 
 func (e *ExecutionEngine) newChildEngine() *ExecutionEngine {
-	child := NewExecutionEngine(e.store, WithToolProvider(e.tools), WithSpecProvider(e.specs), WithRunOwner(e.runOwner))
+	child := NewExecutionEngine(e.store, WithToolProvider(e.tools), WithStepToolProviderFactory(e.stepTools), WithSpecProvider(e.specs), WithRunOwner(e.runOwner))
 	child.callDepth = e.callDepth
 	return child
 }

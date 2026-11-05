@@ -180,10 +180,14 @@ func arithmeticValue(left, right any, operator string) (any, error) {
 		}
 		return a / b, nil
 	case "%":
-		if b == 0 {
+		leftInteger, rightInteger := int64(a), int64(b)
+		if float64(leftInteger) != a || float64(rightInteger) != b {
+			return nil, errors.New("modulo requires integers")
+		}
+		if rightInteger == 0 {
 			return nil, errors.New("modulo by zero")
 		}
-		return float64(int64(a) % int64(b)), nil
+		return float64(leftInteger % rightInteger), nil
 	default:
 		return nil, errors.New("unknown arithmetic operator")
 	}

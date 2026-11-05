@@ -147,6 +147,32 @@ func TestArchetypeSearchDoesNotMakeTheOfficeALookup(t *testing.T) {
 	}
 }
 
+// An office deck that admitted an unconfirmed live_data companion must not
+// hand that search back as a required label. The 2026-11-05 turn delivered
+// the file without searching; a later 继续 would otherwise settle
+// required_effect_unsettled again.
+func TestOfferedLookupDoesNotMakeTheOfficeALookup(t *testing.T) {
+	residue := openOfficeResidue()
+	offered := tool.CapabilityNeed{
+		ID:          "need:search:offered",
+		Capability:  "information.search.web",
+		Required:    false,
+		Qualifiers:  map[string]string{"freshness": "current"},
+		EvidenceIDs: []string{tool.OfferedCompanionEvidencePrefix + "live_data"},
+	}
+	if !semanticPlanCompanionNeed(offered) {
+		t.Fatal("an unconfirmed lookup offer was treated as the task")
+	}
+	residue.Needs = append(residue.Needs, offered)
+	rewritten, ok := semanticClassificationWithOpenResidue(intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.9}, residue.Needs, semanticResidueContinue)
+	if !ok || rewritten.Primary != intent.LabelOffice {
+		t.Fatalf("office rewrite=%#v ok=%v", rewritten, ok)
+	}
+	if rewritten.HasLabel(intent.LabelLiveData) || rewritten.HasLabel(intent.LabelSearch) {
+		t.Fatalf("offered lookup joined the office task: %#v", rewritten)
+	}
+}
+
 func TestLookupCompanionDoesNotReopenAcquire(t *testing.T) {
 	residue := semanticSessionResidue{
 		Status:        semanticResidueOpen,

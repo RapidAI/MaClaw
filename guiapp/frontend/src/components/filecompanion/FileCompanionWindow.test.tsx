@@ -5460,7 +5460,7 @@ describe("FileCompanionWindow", () => {
         expect(zoom.getAttribute("role")).toBe("dialog");
         expect(zoom.getAttribute("aria-modal")).toBe("true");
         expect(zoom.getAttribute("aria-label")).toBe("图1 · 整体架构");
-        fireEvent.click(screen.getByTestId("file-companion-figure-zoom"));
+        fireEvent.click(screen.getByTestId("file-companion-figure-zoom-close"));
         expect(screen.queryByTestId("file-companion-figure-zoom")).toBeNull();
     });
 

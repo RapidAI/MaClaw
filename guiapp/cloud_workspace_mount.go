@@ -1049,6 +1049,7 @@ func applyCloudWorkspaceStolenWithWait(mount *cloudWorkspaceHeldMount, waitForSy
 	if mount == nil {
 		return
 	}
+	forgetCloudWorkspaceRunPublish(mount.WorkspaceID)
 	mount.mu.Lock()
 	mount.ReadOnly = true
 	mount.stopped = true
@@ -1670,6 +1671,9 @@ func (a *App) releaseCloudWorkspace(ctx context.Context, workspaceID string, del
 	mount.mu.Lock()
 	mount.releasing = true
 	mount.mu.Unlock()
+	// The signature belongs to this hold. Drop it before the lease DELETE so
+	// a later hold in this process publishes again.
+	forgetCloudWorkspaceRunPublish(workspaceID)
 	// Keep the mount discoverable while flushing so cloudWorkspaceHubDo can
 	// attach the lease/session/fencing headers to every PUT. The workspace
 	// sync lock serializes a second release/prepare attempt; removing the map
@@ -1699,6 +1703,9 @@ func (a *App) releaseCloudWorkspace(ctx context.Context, workspaceID string, del
 				lastRevision = man.Revision
 			}
 			mount.mu.Unlock()
+			if err := a.publishCloudWorkspaceRunForRelease(ctx, workspaceID); err != nil {
+				log.Printf("[cloud_workspace] release status publish failed workspace=%s err=%v", workspaceID, err)
+			}
 			if err := a.flushCloudWorkspaceSidecars(ctx, workspaceID); err != nil {
 				log.Printf("[cloud_workspace] release sidecar flush failed workspace=%s err=%v", workspaceID, err)
 				if !deleteLeaseOnPushFail {

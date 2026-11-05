@@ -12,6 +12,8 @@ import {
     renderMessage,
 } from "./aiAssistantMarkdown";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
+import { MarkdownImagePreviewProvider } from "./markdownMedia";
+import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import { darkTheme, lightTheme } from "./aiAssistantPanelTheme";
 
 function cssRgb(hex: string): string {
@@ -1076,7 +1078,11 @@ describe("renderContentWithCodeBlocks", () => {
     it("does not split compact heading markers inside URLs", () => {
         render(<div>{renderContentWithCodeBlocks("See https://example.com/a###anchor now", lightTheme)}</div>);
 
-        expect(screen.getByText("See https://example.com/a###anchor now")).toBeTruthy();
+        const link = screen.getByTestId("markdown-external-link");
+        expect(link.textContent).toBe("https://example.com/a###anchor");
+        expect(link.getAttribute("href")).toBe("https://example.com/a###anchor");
+        expect(screen.getByText(/See/).textContent).toContain("now");
+        expect(screen.queryByRole("heading")).toBeNull();
     });
 
     it("does not split compact heading markers inside markdown links", () => {
@@ -1089,8 +1095,125 @@ describe("renderContentWithCodeBlocks", () => {
     it("does not split compact heading markers inside markdown image syntax", () => {
         const { container } = render(<div>{renderContentWithCodeBlocks("Preview ![foo###bar](https://example.com/a###anchor.png) now", lightTheme)}</div>);
 
-        expect(screen.getByText(/Preview/).textContent).toContain("foo###bar");
-        expect(container.querySelectorAll("div")).toHaveLength(2);
+        const image = container.querySelector("img") as HTMLImageElement;
+        expect(image).toBeTruthy();
+        expect(image.alt).toBe("foo###bar");
+        expect(image.getAttribute("src")).toContain("a###anchor.png");
+        expect(screen.getByText(/Preview/).textContent).toContain("Preview");
+        expect(screen.queryByRole("heading")).toBeNull();
+    });
+
+    it("opens a cited image in the assistant preview when a host handles it, otherwise zooms", () => {
+        const src = "https://upload.wikimedia.org/wikipedia/commons/a/ab/Foo_(bar).png";
+        const onPreviewImage = vi.fn(() => true);
+        const hosted = render(
+            <MarkdownImagePreviewProvider onPreviewImage={onPreviewImage}>
+                <div>{renderContentWithCodeBlocks(`![roofline](${src})`, lightTheme)}</div>
+            </MarkdownImagePreviewProvider>,
+        );
+        fireEvent.click(hosted.getByTestId("markdown-image-preview"));
+        expect(onPreviewImage).toHaveBeenCalledWith(src, "roofline");
+        expect(hosted.queryByTestId("markdown-image-zoom")).toBeNull();
+        hosted.unmount();
+
+        const zoomed = render(<div>{renderContentWithCodeBlocks(`![roofline](${src})`, lightTheme)}</div>);
+        fireEvent.click(zoomed.getByTestId("markdown-image-preview"));
+        expect(zoomed.getByTestId("markdown-image-zoom")).toBeTruthy();
+        expect(zoomed.getByTestId("markdown-image-zoom-close")).toBeTruthy();
+        const bubble = vi.fn();
+        window.addEventListener("keydown", bubble);
+        fireEvent.keyDown(window, { key: "Escape" });
+        expect(bubble).not.toHaveBeenCalled();
+        expect(zoomed.queryByTestId("markdown-image-zoom")).toBeNull();
+        window.removeEventListener("keydown", bubble);
+    });
+
+    it("does not load a model-authored image from a script or file URL", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("![x](javascript:alert(1))\n![y](file:///tmp/Foo_(bar).png) next", lightTheme)}</div>,
+        );
+        expect(container.querySelector("img")).toBeNull();
+        expect(container.textContent).not.toContain("javascript:");
+        expect(container.textContent).not.toContain("file:///");
+        expect(container.textContent).not.toContain(".png)");
+        expect(container.textContent).toContain("next");
+    });
+
+    it("shows a markdown link and opens it in the external browser", () => {
+        vi.mocked(BrowserOpenURL).mockClear();
+        render(<div>{renderContentWithCodeBlocks("链接：[**](https://en.wikipedia.org/wiki/Roofline_model)", lightTheme)}</div>);
+        const link = screen.getByTestId("markdown-external-link");
+        expect(link.textContent).toBe("https://en.wikipedia.org/wiki/Roofline_model");
+        fireEvent.click(link);
+        fireEvent(link, new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 }));
+        expect(BrowserOpenURL).toHaveBeenCalledTimes(2);
+        expect(BrowserOpenURL).toHaveBeenCalledWith("https://en.wikipedia.org/wiki/Roofline_model");
+    });
+
+    it("keeps parentheses inside a file-path link", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("Open [notes](C:\\docs\\file (1).txt) next", lightTheme)}</div>);
+        const link = container.querySelector("a");
+        expect(link?.getAttribute("title")).toContain("file (1).txt");
+        expect(container.textContent).not.toContain(".txt)");
+    });
+
+    it("renders emphasis inside a link label", () => {
+        render(<div>{renderContentWithCodeBlocks("Read [see **this**](https://example.com) now", lightTheme)}</div>);
+        expect(screen.getByText("this").tagName).toBe("STRONG");
+    });
+
+    it("does not swallow a fullwidth closing parenthesis after a URL", () => {
+        render(<div>{renderContentWithCodeBlocks("见（https://example.com/foo）。", lightTheme)}</div>);
+        const link = screen.getByTestId("markdown-external-link");
+        expect(link.textContent).toBe("https://example.com/foo");
+        expect(link.getAttribute("href")).toBe("https://example.com/foo");
+    });
+
+    it("shows a linked image on its own line as a block", () => {
+        const src = "https://upload.wikimedia.org/wikipedia/commons/a/ab/Foo_(bar).png";
+        const page = "https://en.wikipedia.org/wiki/Roofline_model";
+        render(<div>{renderContentWithCodeBlocks(`[![roofline](${src})](${page})`, lightTheme)}</div>);
+        expect(screen.getByTestId("markdown-image-caption").textContent).toBe("roofline");
+        expect(screen.getByTestId("markdown-external-link").getAttribute("href")).toBe(page);
+    });
+
+    it("keeps a linked image as a picture and a separate page link", () => {
+        const src = "https://upload.wikimedia.org/wikipedia/commons/a/ab/Foo_(bar).png";
+        const page = "https://en.wikipedia.org/wiki/Roofline_model";
+        const { container } = render(<div>{renderContentWithCodeBlocks(`[![roofline](${src})](${page})`, lightTheme)}</div>);
+        const image = container.querySelector("img") as HTMLImageElement;
+        const link = screen.getByTestId("markdown-external-link");
+        expect(image.getAttribute("src")).toContain("Foo_(bar).png");
+        expect(link.getAttribute("href")).toBe(page);
+        expect(link.querySelector("img")).toBeNull();
+        expect(container.textContent).not.toContain("](");
+    });
+
+    it("does not nest a second link inside a link label", () => {
+        const { container } = render(<div>{renderContentWithCodeBlocks("[see https://example.com/inner](https://example.com/outer)", lightTheme)}</div>);
+        expect(container.querySelectorAll("a")).toHaveLength(1);
+        expect(container.querySelector("a")?.textContent).toContain("https://example.com/inner");
+        expect(container.querySelector("a")?.getAttribute("href")).toBe("https://example.com/outer");
+    });
+
+    it("keeps parentheses inside a markdown link URL", () => {
+        vi.mocked(BrowserOpenURL).mockClear();
+        const href = "https://upload.wikimedia.org/wikipedia/commons/a/ab/Foo_(bar).png";
+        render(<div>{renderContentWithCodeBlocks(`[figure](${href})`, lightTheme)}</div>);
+        const link = screen.getByTestId("markdown-external-link");
+        expect(link.getAttribute("href")).toContain("Foo_(bar).png");
+        fireEvent.click(link);
+        expect(vi.mocked(BrowserOpenURL).mock.calls[0][0]).toContain("Foo_(bar).png");
+    });
+
+    it("autolinks a bare or bold URL without splitting a hash inside it", () => {
+        vi.mocked(BrowserOpenURL).mockClear();
+        render(<div>{renderContentWithCodeBlocks("See https://example.com/a###anchor now\n**https://example.com/roofline**", lightTheme)}</div>);
+        const links = screen.getAllByTestId("markdown-external-link");
+        expect(links[0].textContent).toContain("https://example.com/a###anchor");
+        expect(screen.queryByRole("heading")).toBeNull();
+        fireEvent.click(links[1]);
+        expect(BrowserOpenURL).toHaveBeenCalledWith("https://example.com/roofline");
     });
 
     it("does not split compact heading markers inside inline emphasis", () => {

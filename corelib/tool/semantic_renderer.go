@@ -133,7 +133,7 @@ func (r *CatalogRenderer) renderDefinition(selection PlannedSelection, functionN
 		description = "Attaches the artifact already bound to this chat. This is not an external send and does not wait for approval."
 	}
 	description += semanticRemoteHostSchemaCue(capability.ID, params)
-	description += semanticRenderedReuseCue(capability.ID)
+	description += semanticRenderedReuseCue(capability.ID, selection)
 	if semanticSchemaAdmitsNoArguments(params) {
 		if channelAttach {
 			description += " It takes no arguments: the artifact is already bound. Call it with an empty arguments object. A path or any other field cannot select a different artifact."
@@ -240,7 +240,7 @@ func schemaRequiresProperty(params map[string]interface{}, name string) bool {
 // Optional URL tools must not: production 2026-08-29 burned download_file on
 // https://example.invalid/skip because a force-call cue taught the model to
 // probe a skip token.
-func semanticRenderedReuseCue(id CapabilityID) string {
+func semanticRenderedReuseCue(id CapabilityID, selection PlannedSelection) string {
 	// An installed MCP tool is one of several the user authorized. Its function
 	// name stays server__tool across calls. Forcing every listed tool to be
 	// called would invoke sibling tools, including writes, on a request that
@@ -252,7 +252,14 @@ func semanticRenderedReuseCue(id CapabilityID) string {
 	case CapabilityArtifactAcquireRemote, CapabilityInformationFetchWeb:
 		return " This step is optional when listed with other tools. Call only with a real HTTP(S) URL; never placeholder or reserved hosts such as example.invalid. Skipping it does not block the other listed tools."
 	case CapabilityID("information.search.web"):
-		return " This step is optional when listed with other tools. Call only with a real search query. Skipping it does not block the other listed tools."
+		// SelectionCallIsSkippable is the hop's skip. A confirmed family base
+		// stays the task. Describing that base as optional is how a weather
+		// turn stops with required_effect_unsettled after the model was told
+		// it could skip.
+		if SelectionCallIsSkippable(selection) {
+			return " This step is optional when listed with other tools. Call only with a real search query. Skipping it does not block the other listed tools."
+		}
+		return semanticListedCallCue + " Call only with a real search query."
 	case CapabilityFSDeleteLocal:
 		return semanticListedCallCue + " Pass the workspace path of the one file to remove. Do not rewrite it with write_file and do not look for bash or shell."
 	case CapabilityFSWriteLocal:

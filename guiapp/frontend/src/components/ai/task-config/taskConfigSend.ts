@@ -56,6 +56,9 @@ export interface TaskLaunchNavigation {
     noWorkflowInterception?: boolean;
     /** Persona for this task. It does not choose the session. */
     expertId?: string;
+    /** Persona label. The task title is the instruction, not this name. */
+    expertName?: string;
+    expertIcon?: string;
     /** LaTeX source already written into this task's workspace. */
     latexRelativePath?: string;
 }
@@ -263,6 +266,7 @@ export async function runTaskConfigSend(args: {
             taskTitle: shortTaskLaunchTitle(trimmed) || trimmed.split(/\r?\n/)[0].slice(0, 40),
             initialMessage: expertMessage,
             expertId: opts.expertId,
+            expertName: opts.expertName || undefined,
             ...(opts.mode === "coding_dev" || opts.mode === "remote_coding_dev"
                 ? { agentMode: opts.mode as TaskLaunchNavigation["agentMode"] }
                 : {}),

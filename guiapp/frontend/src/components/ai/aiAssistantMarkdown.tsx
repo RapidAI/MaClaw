@@ -2,7 +2,6 @@ import React from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
-import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot } from "./useAIAssistant";
 import { isHostGoalChecklistText, rewriteHostGoalChecklistBody } from "./aiAssistantPanelSessionUtils";
 import { GoalChecklistCard, goalChecklistBodyFromText } from "./GoalChecklistCard";
@@ -15,6 +14,19 @@ import { cloudSafePathLabel, cloudWorkspaceRootFromPath, isCloudWorkspaceFilePat
 import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } from "./ChatBubbleFrame";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
+import {
+    findMarkdownImage,
+    inlineHasNestedMarkup,
+    MarkdownExternalLink,
+    MarkdownImagePreview,
+    MarkdownLinkedImage,
+    parseMarkdownImageAt,
+    readMarkdownLinkAt,
+    readWrappedMarkdownImage,
+    safeHttpURL,
+    trimAutolink,
+    visibleMarkdownLinkLabel,
+} from "./markdownMedia";
 import { userTurnDisplayView } from "./userTurnDisplay";
 import { omitGoalContinuationHeader } from "./visibleChatText";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
@@ -249,6 +261,8 @@ function textHasMarkdownTrigger(text: string, includeInlineMarkup: boolean): boo
     for (let i = 0; i < text.length; i++) {
         const c = text.charCodeAt(i);
         if (c === 0x5c || (includeInlineMarkup && (c === 0x60 || c === 0x2a || c === 0x5b))) return true;
+        // Bare http(s) URLs become links. `://` is enough; the matcher still requires http(s).
+        if (includeInlineMarkup && c === 0x3a && text.startsWith("://", i)) return true;
         if (c === 0x7e) {
             const next = text.charCodeAt(i + 1);
             if (next === 0x2f || next === 0x5c) return true;
@@ -288,7 +302,18 @@ function renderCodeBlockText(text: string, t: Theme): React.ReactNode[] {
     if (lastIndex < text.length) parts.push(text.slice(lastIndex));
     return parts;
 }
-function renderInlineMarkdownRestored(text: string, t: Theme, quietCode = false): React.ReactNode[] {
+// One compiled pattern for every chat line. Recursion saves and restores lastIndex.
+const inlineMarkdownRestoredPattern = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^`]+`)|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|([A-Za-z]:\\[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\\])(?=[\s,;:!?\u3000-\u303f\u4e00-\u9fff\uff00-\uffef`'"\u2018\u2019\u201c\u201d()\[\]]|$)|((~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|((~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-\\]+)|(https?:\/\/[^\s<>\[\]"'，。；：！？、）】》」』]+)/g;
+
+function renderLinkLabel(label: string, href: string, t: Theme, quietCode: boolean, keyRef: { n: number }): React.ReactNode {
+    const shown = visibleMarkdownLinkLabel(label, href);
+    if (shown === href || safeHttpURL(shown) === href || !inlineHasNestedMarkup(shown)) {
+        return expandPlainTextWithIcons(shown, `a-${keyRef.n++}`);
+    }
+    return renderInlineMarkdownRestored(shown, t, quietCode, true);
+}
+
+function renderInlineMarkdownRestored(text: string, t: Theme, quietCode = false, insideLink = false): React.ReactNode[] {
     if (!text) return ["\u00A0"];
     if (!textHasMarkdownTrigger(text, true)) {
         // Same shape as a regex miss: pictographs still expand, clean prose stays one string.
@@ -313,10 +338,13 @@ function renderInlineMarkdownRestored(text: string, t: Theme, quietCode = false)
     //   Group 9: Windows bare — no \ or .ext anchor (e.g. D:\game2)  — NO spaces, excludes CJK
     //   Group 10-11: Home/Unix file — ends with .ext (e.g. ~/file.txt or ~\file.txt)
     //   Group 12-13: Home/Unix bare — e.g. ~/projects or ~\.maclaw\workspace
-    const re = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^`]+`)|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|([A-Za-z]:\\[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\\])(?=[\s,;:!?\u3000-\u303f\u4e00-\u9fff\uff00-\uffef`'"\u2018\u2019\u201c\u201d()\[\]]|$)|((~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|((~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-\\]+)/g;
+    const re = inlineMarkdownRestoredPattern;
+    const savedLastIndex = re.lastIndex;
+    re.lastIndex = 0;
     let lastIndex = 0;
     let idx = 0;
     const keyRef = { n: 0 };
+    try {
     const removeTrailingQuoteFromPreviousText = () => {
         const last = parts[parts.length - 1];
         if (typeof last !== "string") return;
@@ -324,6 +352,16 @@ function renderInlineMarkdownRestored(text: string, t: Theme, quietCode = false)
     };
     while (true) {
         const match = re.exec(text);
+        const boundary = match ? match.index : text.length;
+        const image = findMarkdownImage(text, lastIndex, boundary);
+        if (image) {
+            if (image.index > lastIndex) pushPlainText(parts, text.slice(lastIndex, image.index), "t", keyRef);
+            if (image.src) parts.push(<MarkdownImagePreview key={idx++} src={image.src} alt={image.alt} />);
+            else if (image.alt) pushPlainText(parts, image.alt, "t", keyRef);
+            lastIndex = image.end;
+            re.lastIndex = image.end;
+            continue;
+        }
         if (!match) break;
         if (match.index > lastIndex) pushPlainText(parts, text.slice(lastIndex, match.index), "t", keyRef);
         const m = match[0];
@@ -356,7 +394,7 @@ function renderInlineMarkdownRestored(text: string, t: Theme, quietCode = false)
             } else {
                 parts.push(
                     <strong key={idx++} style={{ color: t.boldColor, fontWeight: 700, ...inlineWrapStyle }}>
-                        {expandPlainTextWithIcons(inner, `b-${keyRef.n++}`)}
+                        {inlineHasNestedMarkup(inner) ? renderInlineMarkdownRestored(inner, t, quietCode, insideLink) : expandPlainTextWithIcons(inner, `b-${keyRef.n++}`)}
                     </strong>,
                 );
             }
@@ -369,25 +407,46 @@ function renderInlineMarkdownRestored(text: string, t: Theme, quietCode = false)
             } else {
                 parts.push(
                     <em key={idx++} style={{ color: t.italicColor, ...inlineWrapStyle }}>
-                        {expandPlainTextWithIcons(inner, `i-${keyRef.n++}`)}
+                        {inlineHasNestedMarkup(inner) ? renderInlineMarkdownRestored(inner, t, quietCode, insideLink) : expandPlainTextWithIcons(inner, `i-${keyRef.n++}`)}
                     </em>,
                 );
             }
         } else if (match[6]) {
-            const lm = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-            if (lm) {
-                const href = lm[2];
-                const label = expandPlainTextWithIcons(lm[1], `a-${keyRef.n++}`);
-                if (/^https?:\/\//i.test(href)) {
-                    parts.push(<a key={idx++} href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(href); }} style={{ color: t.linkColor, textDecoration: "underline", cursor: "pointer", ...inlineWrapStyle }}>{label}</a>);
-                } else if (looksLikeFilePath(href)) {
-                    const filePath = stripPathWrapping(href);
+            const wrapped = insideLink ? null : readWrappedMarkdownImage(text, match.index);
+            if (wrapped) {
+                if (wrapped.end > re.lastIndex) re.lastIndex = wrapped.end;
+                parts.push(
+                    <MarkdownLinkedImage
+                        key={idx++}
+                        alt={wrapped.alt}
+                        src={wrapped.url}
+                        pageURL={wrapped.pageURL}
+                        linkColor={t.linkColor}
+                        linkStyle={inlineWrapStyle}
+                    />,
+                );
+            } else if (insideLink) {
+                const read = readMarkdownLinkAt(text, match.index);
+                if (read && read.end > re.lastIndex) re.lastIndex = read.end;
+                pushPlainText(parts, read ? visibleMarkdownLinkLabel(read.label, safeHttpURL(read.url) || read.url) : m, "t", keyRef);
+            } else {
+            // The scan stops at the first ")". A balanced re-read keeps a ")" that belongs to the target.
+            const read = readMarkdownLinkAt(text, match.index);
+            if (read) {
+                if (read.end > re.lastIndex) re.lastIndex = read.end;
+                const safeHref = safeHttpURL(read.url);
+                const label = renderLinkLabel(read.label, safeHref || read.url, t, quietCode, keyRef);
+                if (safeHref) {
+                    parts.push(<MarkdownExternalLink key={idx++} href={safeHref} color={t.linkColor} style={inlineWrapStyle}>{label}</MarkdownExternalLink>);
+                } else if (looksLikeFilePath(read.url)) {
+                    const filePath = stripPathWrapping(read.url);
                     parts.push(<a key={idx++} href="#" onClick={(event) => openFileInFolder(event, filePath)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", ...inlineWrapStyle }} title={cloudSafePathLabel(filePath)}>{label}</a>);
                 } else {
                     parts.push(<span key={idx++} style={{ color: t.linkColor, ...inlineWrapStyle }}>{label}</span>);
                 }
             } else {
                 pushPlainText(parts, m, "t", keyRef);
+            }
             }
         } else if (match[7] || match[8] || match[9] || match[10] || match[12]) {
             const nextChar = text[re.lastIndex] || "";
@@ -398,11 +457,24 @@ function renderInlineMarkdownRestored(text: string, t: Theme, quietCode = false)
             const filePath = stripPathWrapping(m);
             if (filePath.length !== m.length) re.lastIndex -= (m.length - filePath.length);
             parts.push(renderPathLink(filePath, idx++, t));
+        } else if (/^https?:\/\//i.test(m)) {
+            const raw = m;
+            const href = trimAutolink(raw);
+            if (href.length !== raw.length) re.lastIndex -= raw.length - href.length;
+            const safeHref = safeHttpURL(href);
+            if (safeHref && !insideLink) {
+                parts.push(<MarkdownExternalLink key={idx++} href={safeHref} color={t.linkColor} style={inlineWrapStyle}>{href}</MarkdownExternalLink>);
+            } else {
+                pushPlainText(parts, href || raw, "t", keyRef);
+            }
         }
         lastIndex = re.lastIndex;
     }
     if (lastIndex < text.length) pushPlainText(parts, text.slice(lastIndex), "t", keyRef);
     return parts.length > 0 ? parts : ["\u00A0"];
+    } finally {
+        re.lastIndex = savedLastIndex;
+    }
 }
 
 type InlineMathSegment =
@@ -626,6 +698,24 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme, quietC
     // revive the deprecated third path field even if it is ignored locally:
     // model output must never normalize a legacy path-carrying marker into a
     // renderable image.
+    const wrappedImage = trimmed.startsWith("[![") ? readWrappedMarkdownImage(trimmed, 0) : null;
+    if (wrappedImage && wrappedImage.end === trimmed.length) {
+        return (
+            <div key={key} style={{ margin: "6px 0", ...blockWrapStyle }}>
+                <MarkdownLinkedImage alt={wrappedImage.alt} src={wrappedImage.url} pageURL={wrappedImage.pageURL} block linkColor={t.linkColor} />
+            </div>
+        );
+    }
+
+    const standaloneImage = parseMarkdownImageAt(trimmed, 0);
+    if (standaloneImage && standaloneImage.end === trimmed.length) {
+        return (
+            <div key={key} style={{ margin: "6px 0", ...blockWrapStyle }}>
+                <MarkdownImagePreview src={standaloneImage.src} alt={standaloneImage.alt} block />
+            </div>
+        );
+    }
+
     if (lead === 0x5b && trimmed.startsWith("[KB_IMAGE:")) {
         const kbImageMatch = trimmed.match(KB_IMAGE_MARKER_RE);
         if (kbImageMatch && isSafeKBImageDataURL(kbImageMatch[2])) {

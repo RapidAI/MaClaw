@@ -460,6 +460,9 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 	// PostSSHRules: inject GUI-specific SSH guidance + skills + MCP + device status etc.
 	deps.PostSSHRules = func(b *strings.Builder) {
 		h.appendGUIPostSSHRules(b, isProMode, currentNickname, cfg, promptUserID, loopContextIsSemanticManaged(loopCtx))
+		if loopCtx != nil && loopCtx.Runtime.SemanticIntent != nil {
+			appendSemanticTurnDirectoryRules(b, *loopCtx.Runtime.SemanticIntent)
+		}
 	}
 
 	// PostCodingWorkflow: inject GUI full coding workflow (pro mode 9-step).

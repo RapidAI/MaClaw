@@ -322,6 +322,13 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 			systemPrompt += extra
 		}
 	}
+	if semanticSurface != nil && semanticSurface.replan != nil && semanticSurface.replan.Classification.Primary != "" {
+		// The entry prompt was built before late-tree adoption. Project the
+		// directory from the classification this surface was planned with.
+		exposure := semanticSurfaceExposure(semanticSurface)
+		exposure.Wait = semanticDirectoryWaitNotes(&sharedAgentLoopCallbacks{semanticSurface: semanticSurface})
+		systemPrompt = semanticPromptWithTurnDirectory(systemPrompt, semanticSurface.replan.Classification, exposure)
+	}
 	if semanticSurface != nil {
 		systemPrompt = ensureSemanticGrantPromptFence(systemPrompt)
 	}

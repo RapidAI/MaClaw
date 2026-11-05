@@ -174,6 +174,68 @@ func (m *callIDCallbacks) ExecuteToolCall(name, args, callID string) ToolExecuti
 	return ToolExecutionResult{Result: m.ExecuteTool(name, args), Outcome: ToolExecutionOutcomeOK}
 }
 
+func TestBuildToolsForModelRequestSyncsTheFilteredSlice(t *testing.T) {
+	cb := &syncDirectoryCallbacks{mockCallbacks: mockCallbacks{
+		tools: []map[string]interface{}{
+			{"type": "function", "function": map[string]interface{}{"name": "keep"}},
+			{"type": "function", "function": map[string]interface{}{"name": "hidden"}},
+		},
+		allowed: map[string]bool{"keep": true},
+	}}
+	got := buildToolsForModelRequest(cb, "hi", 0)
+	if len(got) != 1 || cb.seen != 1 {
+		t.Fatalf("sent=%d synced=%d", len(got), cb.seen)
+	}
+}
+
+type syncDirectoryCallbacks struct {
+	mockCallbacks
+	seen int
+}
+
+func (s *syncDirectoryCallbacks) SyncDirectoryToRenderedTools(tools []map[string]interface{}) {
+	s.seen = len(tools)
+}
+
+func TestRefreshOutboundSystemPromptKeepsOneContractReminder(t *testing.T) {
+	cb := &contractPromptCallbacks{mockCallbacks: mockCallbacks{sysPrompt: "after directory"}}
+	outbound := []interface{}{map[string]string{"role": "system", "content": "before\n\n[本轮契约]\n目标：goal\n尚未赋值：x"}}
+	host := []interface{}{map[string]string{"role": "system", "content": "before"}}
+	refreshOutboundSystemPrompt(cb, host, outbound, "hi", true)
+	got := conversationSystemPrompt(outbound)
+	if !strings.Contains(got, "after directory") || strings.Contains(got, "before") {
+		t.Fatalf("outbound=%q", got)
+	}
+	if strings.Count(got, "[本轮契约]") != 1 {
+		t.Fatalf("reminder count=%d in %q", strings.Count(got, "[本轮契约]"), got)
+	}
+	if conversationSystemPrompt(host) != "after directory" {
+		t.Fatalf("host=%q", conversationSystemPrompt(host))
+	}
+}
+
+type contractPromptCallbacks struct {
+	mockCallbacks
+}
+
+func (c *contractPromptCallbacks) IterationContract() (string, []string, []string) {
+	return "goal", []string{"x"}, nil
+}
+
+func TestAdoptRenderedSystemPromptReplacesOnlyAChangedHostPrompt(t *testing.T) {
+	conversation := []interface{}{map[string]string{"role": "system", "content": "before"}}
+	same := &mockCallbacks{sysPrompt: "before"}
+	adoptRenderedSystemPrompt(same, conversation, "hi", true)
+	if got := conversationSystemPrompt(conversation); got != "before" {
+		t.Fatalf("unchanged prompt was rewritten: %q", got)
+	}
+	changed := &mockCallbacks{sysPrompt: "after publish"}
+	adoptRenderedSystemPrompt(changed, conversation, "hi", true)
+	if got := conversationSystemPrompt(conversation); got != "after publish" {
+		t.Fatalf("changed prompt was not adopted: %q", got)
+	}
+}
+
 func TestExecuteAuthorizedLoopToolCallPreservesHostCallID(t *testing.T) {
 	callbacks := &callIDCallbacks{mockCallbacks: mockCallbacks{toolResult: "ok"}}
 	got := executeAuthorizedLoopToolCall(callbacks, "opaque_adapter", `{}`, "call-opaque-1")

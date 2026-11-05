@@ -104,6 +104,30 @@ func (s *SQLitePersistence) Exists(ctx context.Context, runID string) (bool, err
 	return err == nil, err
 }
 
+func (s *SQLitePersistence) ListSnapshots(ctx context.Context) ([]EngineSnapshot, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("hopjit sqlite persistence is unavailable")
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT snapshot_json FROM hopjit_snapshots ORDER BY updated_at_ns DESC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var snapshots []EngineSnapshot
+	for rows.Next() {
+		var encoded string
+		if err := rows.Scan(&encoded); err != nil {
+			return nil, err
+		}
+		snapshot, err := jsonUnmarshalSnapshot([]byte(encoded))
+		if err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	return snapshots, rows.Err()
+}
+
 func (s *SQLitePersistence) Close() error {
 	if s == nil || s.db == nil {
 		return nil

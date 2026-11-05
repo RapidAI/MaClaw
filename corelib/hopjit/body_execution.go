@@ -16,7 +16,14 @@ func (e *ExecutionEngine) executeBodyStepLocked(ctx context.Context, step *hopsp
 			localVariables[name] = value
 		}
 	}
-	err := executeHopPython(ctx, step.Body, localVariables, e.tools)
+	tools := e.tools
+	var err error
+	if e.stepTools != nil {
+		tools, err = e.stepTools(*e.stepReadyLocked(*step))
+	}
+	if err == nil {
+		err = executeHopPython(ctx, step.Body, localVariables, tools)
+	}
 	if err == nil {
 		outputs := map[string]any{}
 		for _, decl := range step.Outputs {

@@ -267,6 +267,11 @@ func TestTrustedMailboxSendFreezesADraftAndDoesNotDial(t *testing.T) {
 	if got := semanticToolsSearchStatus(cb, name); got != "[等待用户确认：不要再次调用]" {
 		t.Fatalf("confirmation discovery=%s", got)
 	}
+	cb.systemPrompt = "Governed tools: fence\n"
+	cb.projectSemanticDirectoryPrompt()
+	if !strings.Contains(cb.systemPrompt, "mailbox_send") || !strings.Contains(cb.systemPrompt, "等待用户确认") || strings.Contains(cb.systemPrompt, "授权已用尽") {
+		t.Fatalf("prompt treats the draft as spent:\n%s", cb.systemPrompt)
+	}
 	directory := semanticToolsSearchRun(cb, `{"query":"email"}`)
 	confirmLine := "等待用户确认：" + name + "。不要再次调用，也不要用其它工具完成该动作。"
 	if !strings.HasSuffix(strings.TrimSpace(directory), confirmLine) {

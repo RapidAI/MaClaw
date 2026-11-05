@@ -2057,6 +2057,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				return finish(LoopResult{Error: err.Error(), Iterations: iteration, ToolCalls: totalToolCalls})
 			}
 		}
+		// BuildTools can publish installed tools and rewrite the turn directory
+		// after the prompt was first copied. Pick that up before the outbound
+		// reminder, while this slice still shares the host's system message.
+		adoptRenderedSystemPrompt(cb, conversation, userText, isFirstTurn)
 		// The contract reminder is outbound only. conversation keeps the prompt the
 		// host built; the next iteration replaces this block instead of stacking it.
 		reqConversation = withIterationContractReminder(cb, reqConversation)
@@ -2258,9 +2262,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				staticAttemptManifest = &lifecycle.manifest
 				tools = lifecycle.definitions
 				// The non-stream fallback is a new request, even though it reuses the
-				// same conversation. Account for the definitions that will actually be
-				// sent on this fallback surface rather than leaving telemetry at the
-				// predecessor stream attempt.
+				// same conversation. The tool rebuild may have rewritten the host
+				// directory; write that into this slice before telemetry and send.
+				refreshOutboundSystemPrompt(cb, conversation, reqConversation, userText, isFirstTurn)
 				observeLoopInputBreakdown(cb, reqConversation, tools)
 				startAttempt()
 				return toolSurfaceFallbackPreparation{
@@ -2537,7 +2541,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				}
 				tools = frozenRetryTools
 				// Each outer retry is a separate model request and can receive a
-				// different request-local surface. Record exactly that surface.
+				// different request-local surface. Record exactly that surface,
+				// including a directory rewritten while its tools were rebuilt.
+				refreshOutboundSystemPrompt(cb, conversation, reqConversation, userText, isFirstTurn)
 				observeLoopInputBreakdown(cb, reqConversation, tools)
 				lifecycle, lifecycleErr := newToolSurfaceReceiptHTTPClientWithLifecycleEvents(httpClient, tools, invocationPolicy, ToolSurfacePlanEvidence{}, toolSurfaceLifecycleReceiptObserverFor(cb), eventObserver)
 				if lifecycleErr != nil {
@@ -5372,6 +5378,63 @@ func tryLightProfileToolRetry(
 	return true
 }
 
+// adoptRenderedSystemPrompt copies a host prompt that changed while the tool
+// list was built. An unchanged prompt leaves the conversation alone.
+// refreshOutboundSystemPrompt updates the system message a request already
+// holds after its tool list was rebuilt. The host copy stays free of the
+// outbound iteration reminder; the request copy gets that reminder once.
+func refreshOutboundSystemPrompt(cb LoopCallbacks, host, outbound []interface{}, userText string, isFirstTurn bool) {
+	if cb == nil {
+		return
+	}
+	adoptRenderedSystemPrompt(cb, host, userText, isFirstTurn)
+	prompt := cb.BuildSystemPrompt(userText, isFirstTurn)
+	if strings.TrimSpace(prompt) == "" || len(outbound) == 0 {
+		return
+	}
+	refreshed := withIterationContractReminder(cb, []interface{}{
+		map[string]string{"role": "system", "content": prompt},
+	})
+	rendered := conversationSystemPrompt(refreshed)
+	if rendered == "" || rendered == conversationSystemPrompt(outbound) {
+		return
+	}
+	replaceConversationSystemPrompt(outbound, rendered)
+}
+
+func adoptRenderedSystemPrompt(cb LoopCallbacks, conversation []interface{}, userText string, isFirstTurn bool) {
+	if cb == nil {
+		return
+	}
+	prompt := cb.BuildSystemPrompt(userText, isFirstTurn)
+	if strings.TrimSpace(prompt) == "" || conversationSystemPrompt(conversation) == prompt {
+		return
+	}
+	replaceConversationSystemPrompt(conversation, prompt)
+}
+
+func conversationSystemPrompt(conversation []interface{}) string {
+	if len(conversation) == 0 {
+		return ""
+	}
+	switch msg := conversation[0].(type) {
+	case map[string]string:
+		if msg["role"] != "system" {
+			return ""
+		}
+		return msg["content"]
+	case map[string]interface{}:
+		role, _ := msg["role"].(string)
+		content, _ := msg["content"].(string)
+		if role != "system" {
+			return ""
+		}
+		return content
+	default:
+		return ""
+	}
+}
+
 // replaceConversationSystemPrompt updates conversation[0] when it is the system turn.
 func replaceConversationSystemPrompt(conversation []interface{}, newPrompt string) {
 	if len(conversation) == 0 || strings.TrimSpace(newPrompt) == "" {
@@ -5442,7 +5505,18 @@ func buildToolsForModelRequest(cb LoopCallbacks, userText string, iteration int)
 	if pinner, ok := cb.(PromptToolPinner); ok {
 		tools = pinner.PinModelTools(tools)
 	}
+	// The host directory is written inside BuildTools, before this filter and
+	// pin. Give it the slice that will actually be sent.
+	if sync, ok := cb.(renderedToolDirectory); ok {
+		sync.SyncDirectoryToRenderedTools(tools)
+	}
 	return tools
+}
+
+// renderedToolDirectory is optional. A host that describes its tool list in
+// the system prompt implements it so that text matches the filtered slice.
+type renderedToolDirectory interface {
+	SyncDirectoryToRenderedTools(tools []map[string]interface{})
 }
 
 // prepareToolsForToolSurfaceReceipt applies the same provider-specific OpenAI

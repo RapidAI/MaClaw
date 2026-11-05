@@ -167,7 +167,9 @@ describe("useAITabManager.createExpertTab", () => {
         act(() => {
             result.current.createExpertTab({ ...expertA, name: "改名后" }, { projectPath: "D:/tasks/book" });
         });
-        expect(result.current.tabState.tabs.find(t => t.type === "expert")?.title).toBe("写量子工程教材");
+        const bound = result.current.tabState.tabs.find(t => t.type === "expert");
+        expect(bound?.title).toBe("写量子工程教材");
+        expect(bound?.expertName).toBe("改名后");
     });
 
     it("drops the previous instruction title when the expert tab binds a different task", () => {
@@ -1084,8 +1086,25 @@ describe("expert tab sync with utilities-page expert changes", () => {
         expect(tab?.title).toBe("润色 Pro");
         expect(tab?.expertIcon).toBe("✨");
         expect(tab?.expertDescription).toBe("新描述");
+        expect(tab?.expertName).toBe("润色 Pro");
         // No foreground switch.
         expect(result.current.tabState.activeTabId).toBe("local");
+    });
+
+    it("keeps an instruction title when the expert is renamed", () => {
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createExpertTab(expertA, { projectPath: "D:/tasks/book", title: "写量子工程教材" });
+        });
+        act(() => {
+            window.dispatchEvent(new CustomEvent("maclaw:expert-updated", {
+                detail: { expert: { ...expertA, name: "润色 Pro", icon: "✨" } },
+            }));
+        });
+        const tab = result.current.tabState.tabs.find(t => t.type === "expert");
+        expect(tab?.title).toBe("写量子工程教材");
+        expect(tab?.expertName).toBe("润色 Pro");
+        expect(tab?.expertIcon).toBe("✨");
     });
 
     it("ignores events for experts without an open tab", () => {

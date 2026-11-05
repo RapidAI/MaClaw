@@ -7,7 +7,7 @@ import (
 )
 
 func TestMailboxSendReuseCuePassesTheNamedWorkspacePath(t *testing.T) {
-	cue := semanticRenderedReuseCue(CapabilityMessageSendMailbox)
+	cue := semanticRenderedReuseCue(CapabilityMessageSendMailbox, PlannedSelection{})
 	if strings.Contains(cue, "new attachment") {
 		t.Fatalf("listed mailbox_send must accept the workspace path: %q", cue)
 	}
@@ -20,12 +20,39 @@ func TestMailboxSendReuseCuePassesTheNamedWorkspacePath(t *testing.T) {
 }
 
 func TestInstalledMCPReuseCueDoesNotForceCall(t *testing.T) {
-	cue := semanticRenderedReuseCue("x:mcp:tengyun:work_log_query")
+	cue := semanticRenderedReuseCue("x:mcp:tengyun:work_log_query", PlannedSelection{})
 	if strings.Contains(cue, "whenever it is listed") {
 		t.Fatalf("installed MCP tools must not be force-called: %q", cue)
 	}
 	if !strings.Contains(cue, "named in this description") || !strings.Contains(cue, "matches the request") {
 		t.Fatalf("cue = %q", cue)
+	}
+}
+
+func TestSearchReuseCueFollowsTheObligation(t *testing.T) {
+	optional := semanticRenderedReuseCue(CapabilityID("information.search.web"), PlannedSelection{Optional: true})
+	if !strings.Contains(optional, "optional") || strings.Contains(optional, "whenever it is listed") {
+		t.Fatalf("offered search must stay skippable: %q", optional)
+	}
+	offered := semanticRenderedReuseCue(CapabilityID("information.search.web"), PlannedSelection{
+		EvidenceIDs: []string{OfferedCompanionEvidencePrefix + "live_data"},
+	})
+	if !strings.Contains(offered, "optional") || strings.Contains(offered, "whenever it is listed") {
+		t.Fatalf("offer evidence must stay skippable when the optional bit is gone: %q", offered)
+	}
+	required := semanticRenderedReuseCue(CapabilityID("information.search.web"), PlannedSelection{
+		NeedID:      "need:information.search.web:base",
+		EvidenceIDs: []string{"intent:live_data"},
+	})
+	if strings.Contains(required, "optional") || !strings.Contains(required, "whenever it is listed") || !strings.Contains(required, "real search query") {
+		t.Fatalf("confirmed search must be the task: %q", required)
+	}
+	ceiling := semanticRenderedReuseCue(CapabilityID("information.search.web"), PlannedSelection{
+		NeedID:      RepeatSiblingNeedID("need:information.search.web:base", 1),
+		EvidenceIDs: []string{"intent:live_data"},
+	})
+	if !strings.Contains(ceiling, "optional") || strings.Contains(ceiling, "whenever it is listed") {
+		t.Fatalf("repeat ceiling must stay skippable: %q", ceiling)
 	}
 }
 
@@ -474,7 +501,7 @@ func TestCatalogRendererDoesNotForceCallOptionalURLTools(t *testing.T) {
 	}
 }
 
-func TestCatalogRendererDoesNotForceCallOptionalSearch(t *testing.T) {
+func TestCatalogRendererSearchCueFollowsTheNeed(t *testing.T) {
 	registry := NewCapabilityRegistry("v1")
 	if err := registry.Register(CapabilityDescriptor{
 		ID: "information.search.web", Version: "v1",
@@ -492,41 +519,50 @@ func TestCatalogRendererDoesNotForceCallOptionalSearch(t *testing.T) {
 	snapshot := semanticSnapshot(t, registry, []ProviderSpec{
 		semanticProviderWithSchema("search_adapter", "information.search.web", nil, schema, EffectReadOnly),
 	})
-	plan, err := NewToolPlanner(registry).Plan(RouteRequest{
-		RootTaskID: "task-1", TurnID: "turn-1", Snapshot: snapshot,
-		Needs: []CapabilityNeed{{ID: "search", Capability: "information.search.web", Required: true}},
-	})
-	if err != nil {
-		t.Fatalf("plan: %v", err)
-	}
-	issuer, err := NewInvocationIssuer([]byte(strings.Repeat("k", 32)))
-	if err != nil {
-		t.Fatalf("issuer: %v", err)
-	}
-	grants, err := issuer.Issue(plan, InvocationScope{RootTaskID: "task-1", PlanID: plan.ID}, time.Minute)
-	if err != nil {
-		t.Fatalf("issue: %v", err)
-	}
-	rendered, err := NewCatalogRenderer(registry).Render(plan, grants, map[string]map[string]interface{}{
-		"search_adapter": {
-			"type": "function",
-			"function": map[string]interface{}{
-				"name": "search_adapter", "parameters": schema,
+	renderSearch := func(t *testing.T, required bool) string {
+		t.Helper()
+		plan, err := NewToolPlanner(registry).Plan(RouteRequest{
+			RootTaskID: "task-1", TurnID: "turn-1", Snapshot: snapshot,
+			Needs: []CapabilityNeed{{ID: "search", Capability: "information.search.web", Required: required}},
+		})
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		issuer, err := NewInvocationIssuer([]byte(strings.Repeat("k", 32)))
+		if err != nil {
+			t.Fatalf("issuer: %v", err)
+		}
+		grants, err := issuer.Issue(plan, InvocationScope{RootTaskID: "task-1", PlanID: plan.ID}, time.Minute)
+		if err != nil {
+			t.Fatalf("issue: %v", err)
+		}
+		rendered, err := NewCatalogRenderer(registry).Render(plan, grants, map[string]map[string]interface{}{
+			"search_adapter": {
+				"type": "function",
+				"function": map[string]interface{}{
+					"name": "search_adapter", "parameters": schema,
+				},
 			},
-		},
-	})
-	if err != nil || len(rendered) != 1 {
-		t.Fatalf("render=%#v err=%v", rendered, err)
+		})
+		if err != nil || len(rendered) != 1 {
+			t.Fatalf("render=%#v err=%v", rendered, err)
+		}
+		description, _ := rendered[0].Definition["function"].(map[string]interface{})["description"].(string)
+		if strings.Contains(description, "HTTP(S) URL") || strings.Contains(description, "example.invalid") {
+			t.Fatalf("search description must not reuse the download URL cue: %q", description)
+		}
+		if !strings.Contains(description, "search query") {
+			t.Fatalf("search description must require a real query: %q", description)
+		}
+		return description
 	}
-	description, _ := rendered[0].Definition["function"].(map[string]interface{})["description"].(string)
-	if strings.Contains(description, "whenever it is listed") {
-		t.Fatalf("optional search must not be force-called: %q", description)
+	optional := renderSearch(t, false)
+	if strings.Contains(optional, "whenever it is listed") || !strings.Contains(optional, "optional") {
+		t.Fatalf("optional search must stay skippable: %q", optional)
 	}
-	if strings.Contains(description, "HTTP(S) URL") || strings.Contains(description, "example.invalid") {
-		t.Fatalf("search description must not reuse the download URL cue: %q", description)
-	}
-	if !strings.Contains(description, "search query") || !strings.Contains(description, "optional") {
-		t.Fatalf("search description must teach skip-if-unneeded: %q", description)
+	required := renderSearch(t, true)
+	if strings.Contains(required, "optional") || !strings.Contains(required, "whenever it is listed") {
+		t.Fatalf("required search must be the task: %q", required)
 	}
 }
 

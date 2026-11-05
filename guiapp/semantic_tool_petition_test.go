@@ -31,7 +31,9 @@ func petitionTestOfficeCallbacks(t *testing.T, classification *intent.Classifica
 // publishes a child revision that carries the grant. current_datetime is the
 // remaining lookup leg an office face does not already render.
 func TestSemanticToolCallPetitionGrantsDeclaredLookupLeg(t *testing.T) {
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{
+		Primary: intent.LabelOffice, Secondary: []intent.IntentLabel{intent.LabelCurrentTime}, Confidence: .98,
+	})
 	parent := cb.semanticSurface
 	if semanticGrantNameForAdapter(parent, semanticTrustedClockAdapter) != "" {
 		t.Fatal("fixture must start without a clock grant")
@@ -80,7 +82,9 @@ func TestSemanticToolCallPetitionGrantsDeclaredLookupLeg(t *testing.T) {
 // flag is spent, and any further lookup name is denied — an already-rendered
 // one by the grant recheck, anything else by the budget.
 func TestSemanticToolCallPetitionBudgetIsOnePerTurn(t *testing.T) {
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{
+		Primary: intent.LabelOffice, Secondary: []intent.IntentLabel{intent.LabelCurrentTime, intent.LabelSearch}, Confidence: .98,
+	})
 	granted, _ := cb.PetitionToolCall("current_datetime")
 	if !granted {
 		t.Fatal("first petition must be granted")
@@ -93,10 +97,9 @@ func TestSemanticToolCallPetitionBudgetIsOnePerTurn(t *testing.T) {
 	}
 }
 
-// Read-only legs are petitionable on any primary: the agent decides what the
-// turn needs, and the harness no longer judges the pairing. A shell turn may
-// therefore gain web_search through one read-only petition. Unknown names are
-// still denied, and a denied petition never consumes the turn's budget.
+// A read-only name is petitionable when this turn's directory offers it.
+// A shell turn whose classifier also named search can gain web_search.
+// Unknown names are still denied, and a denied petition never consumes the budget.
 func TestSemanticToolCallPetitionAdmitsReadOnlyLegOnAnyPrimary(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelShellCommand)}
 	h.semanticTrustedShell = func(string, string, time.Duration) (string, error) { return "ok", nil }
@@ -104,7 +107,9 @@ func TestSemanticToolCallPetitionAdmitsReadOnlyLegOnAnyPrimary(t *testing.T) {
 	registerBuiltinTools(h.registry, h)
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
 		"user-1", "清空当前目录", "desktop", "root-petition-shell", "turn-petition-shell",
-		&intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: .98},
+		&intent.ClassificationResult{
+			Primary: intent.LabelShellCommand, Secondary: []intent.IntentLabel{intent.LabelSearch}, Confidence: .98,
+		},
 	)
 	if err != nil || !handled || surface == nil || len(defs) == 0 {
 		t.Fatalf("shell surface handled=%v err=%v", handled, err)
@@ -128,7 +133,7 @@ func TestSemanticToolCallPetitionAdmitsReadOnlyLegOnAnyPrimary(t *testing.T) {
 	}
 
 	office := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
-	if granted, message := office.PetitionToolCall("nonexistent_tool"); granted || message != "" {
+	if granted, message := office.PetitionToolCall("nonexistent_tool"); granted || !strings.Contains(message, "能力目录") {
 		t.Fatalf("unknown name must be denied: granted=%v message=%q", granted, message)
 	}
 	if office.semanticPetitionConsumed || office.semanticEffectfulPetitionConsumed {
@@ -140,38 +145,31 @@ func TestSemanticToolCallPetitionAdmitsReadOnlyLegOnAnyPrimary(t *testing.T) {
 	}
 }
 
-// Bash is a baseline workspace tool: an office turn already lists it so the
-// agent can fall back to a command runner without spending the effectful
-// petition. The shell family still carries an iterative invocation budget.
+// Bash is not a first-wave tool on an office turn. The directory keeps it
+// closed unless the primary is shell_command, so a resume cannot petition it.
+// A clock the classifier offered is still one read-only petition.
 func TestSemanticToolCallPetitionGrantsEffectfulShellLeg(t *testing.T) {
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{
+		Primary: intent.LabelOffice, Secondary: []intent.IntentLabel{intent.LabelCurrentTime}, Confidence: .98,
+	})
 	parent := cb.semanticSurface
-	if name := semanticGrantNameForAdapter(parent, semanticTrustedShellAdapter); name != "bash" {
-		t.Fatalf("baseline shell grant name=%q, want bash", name)
+	if name := semanticGrantNameForAdapter(parent, semanticTrustedShellAdapter); name != "" {
+		t.Fatalf("office must not grant bash, got %q", name)
 	}
-	if !planHasCapabilities(parent.plan, tool.CapabilityDocumentWriteOffice, tool.CapabilityShellExecuteLocal) {
+	if !planHasCapabilities(parent.plan, tool.CapabilityDocumentWriteOffice) || planHasCapabilities(parent.plan, tool.CapabilityShellExecuteLocal) {
 		t.Fatalf("office plan=%#v", parent.plan.Selections)
 	}
-	shellSiblings := 0
-	for _, selection := range parent.plan.Selections {
-		if selection.FitProof.MatchedCapability == tool.CapabilityShellExecuteLocal {
-			shellSiblings++
-		}
-	}
-	if shellSiblings < 2 {
-		t.Fatalf("baseline shell family must carry an invocation budget, got %d selection(s)", shellSiblings)
-	}
-	if granted, message := cb.PetitionToolCall("bash"); granted || message != "" {
-		t.Fatalf("already-listed bash is not a petition: granted=%v message=%q", granted, message)
+	if granted, message := cb.PetitionToolCall("bash"); granted || !strings.Contains(message, "能力目录") {
+		t.Fatalf("bash stays out of an office directory: granted=%v message=%q", granted, message)
 	}
 	if cb.semanticEffectfulPetitionConsumed {
-		t.Fatal("calling listed bash must not consume the effectful petition budget")
+		t.Fatal("a directory denial must not consume the effectful petition budget")
 	}
 	if name := semanticGrantNameForAdapter(parent, semanticTrustedOfficeWriteAdapter); name != "office" {
 		t.Fatalf("office grant name=%q, want office", name)
 	}
 	if granted, message := cb.PetitionToolCall("current_datetime"); !granted || !strings.Contains(message, "current_datetime") {
-		t.Fatalf("lookup petition must remain available: granted=%v message=%q", granted, message)
+		t.Fatalf("offered clock must petition: granted=%v message=%q", granted, message)
 	}
 }
 
@@ -187,7 +185,9 @@ func TestSemanticToolCallPetitionGrantsEffectfulDelegateLeg(t *testing.T) {
 	registerBuiltinTools(h.registry, h)
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
 		desktopUserID, "做个生日PPT", "desktop", "root-petition-delegate", "turn-petition-delegate",
-		&intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98},
+		&intent.ClassificationResult{
+			Primary: intent.LabelOffice, Secondary: []intent.IntentLabel{intent.LabelDelegateTask}, Confidence: .98,
+		},
 	)
 	if err != nil || !handled || surface == nil || len(defs) == 0 {
 		t.Fatalf("office surface handled=%v err=%v", handled, err)
@@ -210,10 +210,12 @@ func TestSemanticToolCallPetitionGrantsEffectfulDelegateLeg(t *testing.T) {
 // the petition must fail there too instead of surfacing a tool that can only
 // be rejected. The denial does not consume the effectful budget.
 func TestSemanticToolCallPetitionDeniesEffectfulUnderGroupPolicy(t *testing.T) {
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{
+		Primary: intent.LabelOffice, Secondary: []intent.IntentLabel{intent.LabelCurrentTime}, Confidence: .98,
+	})
 	cb.loopCtx = &LoopContext{LansengerGroupPermissions: &lansengerGroupPermissionPolicy{}}
-	if granted, message := cb.PetitionToolCall("bash"); granted || message != "" {
-		t.Fatalf("group policy must deny a shell petition: granted=%v message=%q", granted, message)
+	if granted, message := cb.PetitionToolCall("bash"); granted || !strings.Contains(message, "能力目录") {
+		t.Fatalf("bash is not in an office directory: granted=%v message=%q", granted, message)
 	}
 	if cb.semanticEffectfulPetitionConsumed {
 		t.Fatal("a policy-denied petition must not consume the effectful budget")
@@ -242,6 +244,7 @@ func TestSemanticPetitionLabelResolutionIsDeterministic(t *testing.T) {
 		{tool.CapabilityInformationFetchWeb, intent.LabelWebFetch},             //
 		{"information.current_time", intent.LabelCurrentTime},                  //
 		{tool.CapabilityFSReadLocal, intent.LabelFileRead},                     // sole required beats the coding rule
+		{"document.read.local", intent.LabelDocumentRead},                      // attachment read, not a workspace path
 		{tool.CapabilityFSWriteLocal, intent.LabelFileWrite},                   //
 		{tool.CapabilityFSDeleteLocal, intent.LabelFileDelete},                 // sole required template
 		{tool.CapabilityRepoInspectVCS, intent.LabelGitInspect},                //
@@ -259,6 +262,8 @@ func TestSemanticPetitionLabelResolutionIsDeterministic(t *testing.T) {
 		{tool.CapabilityBrowserControlWeb, intent.LabelBrowser},                //
 		{tool.CapabilityComputerControlDesktop, intent.LabelComputerUse},       //
 		{tool.CapabilityAudioTranscribeSpeech, intent.LabelAudioTranscribe},    //
+		{tool.CapabilityAudioRenderSpeech, intent.LabelAudioDeliver},           // voice deliver stays on the same label
+		{tool.CapabilityAudioSynthesizeLocal, intent.LabelAudioSynthesize},     // playback, not a send
 		{tool.CapabilityAudioCaptureMicrophone, intent.LabelAudioRecord},       //
 		{tool.CapabilitySecurityAuditRead, intent.LabelAuditRead},              //
 		{tool.CapabilityKnowledgeReadLocal, intent.LabelKnowledgeRead},         //
@@ -270,6 +275,7 @@ func TestSemanticPetitionLabelResolutionIsDeterministic(t *testing.T) {
 		{tool.CapabilityTemplateManageSession, intent.LabelTemplateManage},     //
 		{tool.CapabilitySessionManageCoding, intent.LabelSessionManage},        //
 		{tool.CapabilityScheduleAdministerLocal, intent.LabelScheduleManage},   // dispatch rule is multi-need
+		{tool.CapabilityScheduleDispatchChannel, intent.LabelScheduleDispatch}, //
 		{tool.CapabilityConfigManageSelf, intent.LabelConfigManage},            //
 		{tool.CapabilityBusinessDataMIS, intent.LabelBusinessData},             // read leg stays optional
 		{tool.CapabilityMessageReadMailbox, intent.LabelMailboxRead},           // sole required template
@@ -389,7 +395,9 @@ func petitionTestShellCallbacks(t *testing.T) *sharedAgentLoopCallbacks {
 	registerBuiltinTools(h.registry, h)
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
 		"user-1", "清空当前目录", "desktop", "root-petition-shell", "turn-petition-shell",
-		&intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: .98},
+		&intent.ClassificationResult{
+			Primary: intent.LabelShellCommand, Secondary: []intent.IntentLabel{intent.LabelFileDownload}, Confidence: .98,
+		},
 	)
 	if err != nil || !handled || surface == nil || len(defs) == 0 {
 		t.Fatalf("shell surface handled=%v err=%v", handled, err)
@@ -492,7 +500,7 @@ func TestSemanticPetitionableCapabilitiesResolveRuleBackedLabels(t *testing.T) {
 // inspection legs are read-only; every other petitionable name is effectful
 // and denied outright in group-restricted contexts.
 func TestSemanticPetitionReadOnlyClassification(t *testing.T) {
-	readOnly := []string{"web_search", "web_fetch", "current_datetime", "read_file", "git_status", "knowledge_search", "session_search", "asr", "mailbox_query"}
+	readOnly := []string{"web_search", "web_fetch", "current_datetime", "read_file", "read_attachment", "git_status", "knowledge_search", "session_search", "asr", "mailbox_query"}
 	for _, name := range readOnly {
 		if _, ok := semanticPetitionableCapabilities[name]; !ok {
 			t.Errorf("read-only pin %q is not petitionable", name)
@@ -582,7 +590,9 @@ func TestBuildToolsForModelRequestOverlaysSQLDatabaseOnCatalogFollowUp(t *testin
 }
 
 func TestSemanticToolCallPetitionGrantsLiveSQLDatabaseWhenMISExpansionFails(t *testing.T) {
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: .98})
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{
+		Primary: intent.LabelSearch, Secondary: []intent.IntentLabel{intent.LabelBusinessData}, Confidence: .98,
+	})
 	cb.userText = "查看 rapidbi库"
 	granted, message := cb.PetitionToolCall("database")
 	if !granted || !strings.Contains(message, "database") {
@@ -604,7 +614,9 @@ func TestSemanticToolCallPetitionGrantsLiveSQLDatabaseWhenMISExpansionFails(t *t
 }
 
 func TestSemanticToolCallPetitionDoesNotGrantSQLDatabaseForUnsupportedEngine(t *testing.T) {
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: .98})
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{
+		Primary: intent.LabelSearch, Secondary: []intent.IntentLabel{intent.LabelBusinessData}, Confidence: .98,
+	})
 	cb.userText = "查看 oracle 数据库"
 	granted, message := cb.PetitionToolCall("database")
 	if granted || message != "" {
@@ -616,7 +628,9 @@ func TestSemanticToolCallPetitionDoesNotGrantSQLDatabaseForUnsupportedEngine(t *
 }
 
 func TestSemanticToolCallPetitionGrantsOfficeLegOnSearchTurn(t *testing.T) {
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: .98})
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{
+		Primary: intent.LabelSearch, Secondary: []intent.IntentLabel{intent.LabelOffice, intent.LabelCurrentTime}, Confidence: .98,
+	})
 	parent := cb.semanticSurface
 	if semanticGrantNameForAdapter(parent, semanticTrustedOfficeWriteAdapter) != "" {
 		t.Fatal("fixture must start without an office grant")
@@ -645,8 +659,8 @@ func TestSemanticToolCallPetitionGrantsOfficeLegOnSearchTurn(t *testing.T) {
 	if name := semanticGrantNameForAdapter(cb.semanticSurface, semanticTrustedShellAdapter); name != "" {
 		t.Fatalf("office petition must not add baseline bash, got %q", name)
 	}
-	if granted, message := cb.PetitionToolCall("bash"); granted || message != "" {
-		t.Fatalf("effectful petition budget is already spent: granted=%v message=%q", granted, message)
+	if granted, message := cb.PetitionToolCall("bash"); granted || !strings.Contains(message, "能力目录") {
+		t.Fatalf("bash stays out of a search directory: granted=%v message=%q", granted, message)
 	}
 	if granted, message := cb.PetitionToolCall("current_datetime"); !granted || !strings.Contains(message, "current_datetime") {
 		t.Fatalf("read-only petition must remain available after an effectful one: granted=%v message=%q", granted, message)
@@ -706,12 +720,19 @@ func TestSemanticLookupGenerateCompositePlansBelowTreeFloor(t *testing.T) {
 	if err != nil || !handled || surface == nil {
 		t.Fatalf("declared composite below the tree floor must still plan: handled=%v err=%v", handled, err)
 	}
-	if !planHasCapabilities(surface.plan, "document.generate.file", "artifact.deliver.current_channel", tool.CapabilityInformationFetchWeb) {
+	if !planHasCapabilities(surface.plan, tool.CapabilityInformationFetchWeb) {
 		t.Fatalf("plan=%#v", surface.plan.Selections)
 	}
-	assertGenerateRequiresOnlyLookupFamilyBases(t, surface.plan)
+	if planHasCapabilities(surface.plan, "document.generate.file") {
+		t.Fatalf("secondary generate must stay petitionable: %#v", surface.plan.Selections)
+	}
 	if len(defs) == 0 {
 		t.Fatal("surface must render the lookup legs")
+	}
+	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "desktop"}
+	granted, message := cb.PetitionToolCall("generate_pdf")
+	if !(granted && strings.Contains(message, "generate_pdf")) && !successorNotYetListedDenial(message, "generate_pdf") {
+		t.Fatalf("offered generate must petition: granted=%v message=%q", granted, message)
 	}
 }
 

@@ -77,6 +77,12 @@ type TaskSidecar struct {
 	Name           string `json:"name"`
 	Mode           string `json:"mode"`
 	Tag            string `json:"tag"`
+	// RunStatus, RunPhase, and RunPendingReview are a compact projection of the
+	// writer machine's task-list status. Readers poll them with entitlement
+	// instead of tailing the conversation sidecar.
+	RunStatus        string `json:"task_run_status,omitempty"`
+	RunPhase         string `json:"task_run_phase,omitempty"`
+	RunPendingReview bool   `json:"task_run_pending_review,omitempty"`
 }
 
 // Sidecar is a named task-continuity blob together with its CAS revision.
@@ -98,7 +104,24 @@ func ParseTaskSidecar(data []byte) TaskSidecar {
 	task.Tag = strings.TrimSpace(task.Tag)
 	task.WorkspaceID = strings.TrimSpace(task.WorkspaceID)
 	task.CloudTaskID = strings.TrimSpace(task.CloudTaskID)
+	task.RunStatus = clipTaskRunField(task.RunStatus)
+	task.RunPhase = clipTaskRunField(task.RunPhase)
 	return task
+}
+
+func clipTaskRunField(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 64 {
+		return value
+	}
+	cut := value[:64]
+	for len(cut) > 0 && (cut[len(cut)-1]&0xC0) == 0x80 {
+		cut = cut[:len(cut)-1]
+	}
+	if len(cut) > 0 && cut[len(cut)-1] >= 0xC0 {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
 }
 
 func (s *Service) taskSidecarFor(ctx context.Context, tenantID, userID, workspaceID string) TaskSidecar {

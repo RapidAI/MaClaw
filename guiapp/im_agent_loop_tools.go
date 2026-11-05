@@ -37,6 +37,10 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		}
 		return agentLoopToolSet{PreparationTime: time.Since(startedAt)}
 	}
+	if ctx != nil && ctx.Runtime.SemanticIntent != nil && semanticOrdinaryQA(*ctx.Runtime.SemanticIntent) && !ctx.Runtime.RoutingMissFallback {
+		ctx.setExposedToolNames(nil)
+		return agentLoopToolSet{PreparationTime: time.Since(startedAt)}
+	}
 	if loopContextBlocksLegacyToolRouter(ctx) {
 		requestID := ""
 		if ctx != nil {

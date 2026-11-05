@@ -180,6 +180,7 @@ type App struct {
 	semanticHostCallJournal      *tool.SQLiteHostCallJournal
 	semanticArtifactStore        *tool.SQLiteArtifactStore
 	hopJITPersistence            hopJITPersistenceState
+	hopJITRuns                   hopJITRunState
 	semanticDynamicContracts     agentservice.DynamicCapabilityContractRegistry
 	semanticDynamicPublisher     *agentservice.DynamicCapabilityContractPublisher
 	// codingCaps is the single owner of every desktop Coding capability:
@@ -3147,6 +3148,7 @@ func (a *App) markFrontendHTMLReady() {
 	a.startBackgroundUpdateChecks()
 	a.scheduleClampMaximizedWindowToWorkArea(120 * time.Millisecond)
 	a.watchEnvCheckPromote()
+	a.startCloudWorkspaceTaskSync(a.ctx)
 }
 
 func (a *App) markFrontendReactReady() {

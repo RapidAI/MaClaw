@@ -272,6 +272,24 @@ describe('FilePreviewView', () => {
         ).toBeTruthy());
     });
 
+    it('paints a cited remote image without reading a local file', () => {
+        const { getByTestId } = render(
+            <FilePreviewView
+                file={{
+                    fileName: 'image.png',
+                    filePath: 'chat-image-abc.png',
+                    language: 'image',
+                    content: '',
+                    remoteImageURL: 'https://upload.wikimedia.org/wikipedia/commons/thumb/roofline.png',
+                }}
+                theme={lightCodePreviewTheme}
+                lang="zh"
+            />,
+        );
+        const panel = getByTestId('image-preview-panel');
+        expect(panel.querySelector('img')?.getAttribute('src')).toBe('https://upload.wikimedia.org/wikipedia/commons/thumb/roofline.png');
+    });
+
     it('lets a parent source view replace an SVG image', () => {
         const { getByText, queryByTestId } = render(
             <FilePreviewView

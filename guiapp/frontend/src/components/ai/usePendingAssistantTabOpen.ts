@@ -437,7 +437,7 @@ export function usePendingAssistantTabOpen({
 
         // Capture request data synchronously. The parent clears the one-shot
         // pending state through the receipt callback below.
-        const { launchId, projectPath, taskTitle, initialMessage, autoSend, prepareMode, openIntent, cloudWorkspaceId, fileWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, workflowType, imPlatform, imTargetUID, imIsGroup, newTaskContext, noWorkflowInterception, warning, deliverInitialMessage, expertId } = pendingProjectTabOpen;
+        const { launchId, projectPath, taskTitle, initialMessage, autoSend, prepareMode, openIntent, cloudWorkspaceId, fileWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, workflowType, imPlatform, imTargetUID, imIsGroup, newTaskContext, noWorkflowInterception, warning, deliverInitialMessage, expertId, expertName, expertIcon } = pendingProjectTabOpen;
         // Check if the tab already exists in the tab list BEFORE creating it.
         // This is a synchronous read of tabStateRef — reliable for tabs that were
         // restored from localStorage (synchronous on mount) or from the backend
@@ -450,7 +450,7 @@ export function usePendingAssistantTabOpen({
         const keepCover = pendingProjectTabOpen.backgroundLaunch === true && newTaskCoverHeldRef.current?.() === true;
         if (!keepCover) beforeUserProjectOpenRef.current?.(projectPath, cloudWorkspaceId);
 
-        const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode, openIntent, cloudWorkspaceId, fileWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, ...(keepCover ? { focus: false } : {}) });
+        const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode, openIntent, cloudWorkspaceId, fileWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, expertId, expertName, expertIcon, ...(keepCover ? { focus: false } : {}) });
         if (!tab) {
             onProjectTabHandledRef.current?.({ outcome: "rejected", launchId });
             return;

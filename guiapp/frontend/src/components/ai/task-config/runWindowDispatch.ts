@@ -134,6 +134,9 @@ export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-
                     noWorkflowInterception: nav.noWorkflowInterception,
                     deliverInitialMessage: true,
                     backgroundLaunch: true,
+                    expertId: nav.expertId,
+                    expertName: nav.expertName,
+                    expertIcon: nav.expertIcon || builtinExpertIcon(nav.expertId || "") || undefined,
                 };
                 window.dispatchEvent(new CustomEvent(EVENT_OPEN_TASK_LAUNCH, { detail }));
             },

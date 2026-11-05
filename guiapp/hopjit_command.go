@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/hopjit"
+	"github.com/RapidAI/CodeClaw/corelib/hopspec"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -38,6 +39,46 @@ func (h *IMMessageHandler) handleHopJITCommand(msg IMUserMessage, trimmed string
 			return &IMAgentResponse{Error: err.Error()}, true
 		}
 		return &IMAgentResponse{Text: spec, ResponseSource: "hopjit"}, true
+	case "define":
+		id, markdown, err := parseHopJITDefine(payload)
+		if err != nil {
+			return &IMAgentResponse{Error: err.Error()}, true
+		}
+		provider, err := h.app.hopJITSpecProvider(identity)
+		if err != nil {
+			return &IMAgentResponse{Error: err.Error()}, true
+		}
+		if err := provider.SaveSpec(id, markdown); err != nil {
+			return &IMAgentResponse{Error: err.Error()}, true
+		}
+		return &IMAgentResponse{Text: "HopSpec 已注册\nspecId: " + id, ResponseSource: "hopjit"}, true
+	case "specs":
+		provider, err := h.app.hopJITSpecProvider(identity)
+		if err != nil {
+			return &IMAgentResponse{Error: err.Error()}, true
+		}
+		ids, err := provider.ListSpecs()
+		if err != nil {
+			return &IMAgentResponse{Error: err.Error()}, true
+		}
+		text := "暂无已注册 HopSpec"
+		if len(ids) > 0 {
+			text = "已注册 HopSpec:\n" + strings.Join(ids, "\n")
+		}
+		return &IMAgentResponse{Text: text, ResponseSource: "hopjit"}, true
+	case "delete":
+		id := strings.TrimSpace(payload)
+		if err := validateHopSpecID(id); err != nil {
+			return &IMAgentResponse{Error: err.Error()}, true
+		}
+		provider, err := h.app.hopJITSpecProvider(identity)
+		if err != nil {
+			return &IMAgentResponse{Error: err.Error()}, true
+		}
+		if err := provider.DeleteSpec(id); err != nil {
+			return &IMAgentResponse{Error: err.Error()}, true
+		}
+		return &IMAgentResponse{Text: "HopSpec 已删除\nspecId: " + id, ResponseSource: "hopjit"}, true
 	case "run":
 		runPayload, inputs, err := parseHopJITRunPayload(payload)
 		if err != nil {
@@ -76,23 +117,33 @@ func (h *IMMessageHandler) handleHopJITCommand(msg IMUserMessage, trimmed string
 			return &IMAgentResponse{Error: err.Error()}, true
 		}
 		return &IMAgentResponse{Text: "HopJIT 已中止。\nrunId: " + runID}, true
-	case "status":
-		runID := strings.TrimSpace(payload)
-		if runID == "" {
-			return &IMAgentResponse{Text: hopJITUsage()}, true
-		}
+	case "list":
 		store, err := h.app.openHopJITPersistence()
 		if err != nil {
 			return &IMAgentResponse{Error: err.Error()}, true
 		}
-		snapshot, err := store.LoadSnapshot(context.Background(), runID)
+		snapshots, err := store.ListSnapshots(context.Background())
 		if err != nil {
 			return &IMAgentResponse{Error: err.Error()}, true
 		}
-		if err := authorizeHopJITSnapshot(snapshot, identity); err != nil {
+		return hopJITRunListResponse(snapshots, identity), true
+	case "spec", "status", "events":
+		runID := strings.TrimSpace(payload)
+		if runID == "" {
+			return &IMAgentResponse{Text: hopJITUsage()}, true
+		}
+		snapshot, err := h.app.readHopJITSnapshot(identity, runID)
+		if err != nil {
 			return &IMAgentResponse{Error: err.Error()}, true
 		}
-		return hopJITSnapshotResponse(snapshot), true
+		switch action {
+		case "spec":
+			return &IMAgentResponse{Text: hopspec.Format(snapshot.Spec), ResponseSource: "hopjit"}, true
+		case "events":
+			return hopJITEventsResponse(snapshot), true
+		default:
+			return hopJITSnapshotResponse(snapshot), true
+		}
 	default:
 		return &IMAgentResponse{Text: hopJITUsage()}, true
 	}
@@ -122,11 +173,28 @@ func parseHopJITCommand(text string) (string, string, bool) {
 	switch action {
 	case "help", "usage", "--help", "-h":
 		return "usage", "", true
-	case "run", "compile", "resume", "status", "abort":
+	case "run", "compile", "resume", "status", "abort", "list", "spec", "define", "specs", "delete", "events":
 		return action, payload, true
 	default:
 		return "run", rest, true
 	}
+}
+
+func parseHopJITDefine(payload string) (string, string, error) {
+	payload = strings.TrimSpace(payload)
+	index := strings.IndexAny(payload, " \t\r\n")
+	if index <= 0 {
+		return "", "", errors.New("用法: /hop define <specId> <HopSpec Markdown>")
+	}
+	id := strings.TrimSpace(payload[:index])
+	markdown := strings.TrimSpace(payload[index+1:])
+	if err := validateHopSpecID(id); err != nil {
+		return "", "", err
+	}
+	if markdown == "" {
+		return "", "", errors.New("HopSpec Markdown 不能为空")
+	}
+	return id, markdown, nil
 }
 
 func parseHopJITRunPayload(payload string) (string, map[string]any, error) {
@@ -178,6 +246,37 @@ func hopJITRunIDAndReason(payload string) (string, string) {
 		return strings.TrimSpace(payload[:index]), strings.TrimSpace(payload[index+1:])
 	}
 	return payload, "用户中止"
+}
+
+func hopJITEventsResponse(snapshot hopjit.EngineSnapshot) *IMAgentResponse {
+	events := snapshot.Events
+	total := len(events)
+	if total > 50 {
+		events = events[total-50:]
+	}
+	response := &IMAgentResponse{ResponseSource: "hopjit"}
+	if total == 0 {
+		response.Text = "暂无 HopJIT 执行事件"
+		return response
+	}
+	var text strings.Builder
+	fmt.Fprintf(&text, "HopJIT 执行事件: %d", total)
+	if total > len(events) {
+		fmt.Fprintf(&text, "（显示最近 %d 条）", len(events))
+	}
+	for _, event := range events {
+		fmt.Fprintf(&text, "\n#%d", event.Sequence)
+		if event.StepID != "" {
+			fmt.Fprintf(&text, " [%s]", event.StepID)
+		}
+		fmt.Fprintf(&text, " %s", event.Event)
+		if event.Detail != "" {
+			fmt.Fprintf(&text, " — %s", event.Detail)
+		}
+	}
+	response.Text = text.String()
+	response.Fields = []IMResponseField{{Label: "事件数", Value: fmt.Sprint(total)}}
+	return response
 }
 
 func hopJITReuseResponse(result hopjit.ReuseResult) *IMAgentResponse {
@@ -236,13 +335,52 @@ func hopJITSnapshotResponse(snapshot hopjit.EngineSnapshot) *IMAgentResponse {
 	return response
 }
 
+func hopJITRunListResponse(snapshots []hopjit.EngineSnapshot, identity hopJITExecutionIdentity) *IMAgentResponse {
+	visible := make([]hopjit.EngineSnapshot, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		if authorizeHopJITSnapshot(snapshot, identity) == nil {
+			visible = append(visible, snapshot)
+		}
+	}
+	total := len(visible)
+	if total > 20 {
+		visible = visible[:20]
+	}
+	response := &IMAgentResponse{ResponseSource: "hopjit"}
+	if total == 0 {
+		response.Text = "暂无 HopJIT 运行记录"
+		return response
+	}
+	var text strings.Builder
+	fmt.Fprintf(&text, "HopJIT 运行记录: %d", total)
+	if total > len(visible) {
+		fmt.Fprintf(&text, "（显示最近 %d 条）", len(visible))
+	}
+	for _, snapshot := range visible {
+		goal := strings.TrimSpace(snapshot.Spec.Goal)
+		if goal == "" {
+			goal = "未命名任务"
+		}
+		fmt.Fprintf(&text, "\n%s [%s] %s", snapshot.RunID, ProjectHopRun(snapshot).Status, goal)
+	}
+	response.Text = text.String()
+	response.Fields = []IMResponseField{{Label: "记录数", Value: fmt.Sprint(total)}}
+	return response
+}
+
 func hopJITUsage() string {
 	return "HopJIT 用法:\n" +
 		"/hop help\n" +
 		"/hop run <任务或 HopSpec Markdown>\n" +
 		"/hop run --inputs <JSON对象> -- <HopSpec Markdown>\n" +
 		"/hop compile <任务>（只生成 HopSpec，不执行）\n" +
+		"/hop define <specId> <HopSpec Markdown>\n" +
+		"/hop specs（列出已注册子规约）\n" +
+		"/hop delete <specId>\n" +
+		"/hop list\n" +
+		"/hop spec <runId>（导出 HopSpec）\n" +
 		"/hop status <runId>\n" +
+		"/hop events <runId>（查看执行事件）\n" +
 		"/hop resume <runId> <JSON 回答>\n" +
 		"/hop abort <runId> [原因]"
 }

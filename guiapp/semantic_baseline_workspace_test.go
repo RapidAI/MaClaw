@@ -230,7 +230,9 @@ func TestResidueShortDocumentEditOmitsOfficeBundle(t *testing.T) {
 }
 
 func TestSemanticBaselineBashSurvivesSpentEffectfulPetition(t *testing.T) {
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: .98})
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{
+		Primary: intent.LabelShellCommand, Secondary: []intent.IntentLabel{intent.LabelOffice}, Confidence: .98,
+	})
 	cb.userText = "查看驱网服务器状态"
 	if granted, message := cb.PetitionToolCall("office"); !granted {
 		t.Fatalf("office petition should consume the effectful budget: granted=%v message=%q", granted, message)
@@ -267,8 +269,8 @@ func TestSemanticToolsSearchExpandsSSHWhenUserDeclaredIt(t *testing.T) {
 	if strings.Contains(got, "tools_search_scope") && strings.Contains(got, "rejected") {
 		t.Fatalf("discovery must run: %s", got)
 	}
-	if !planHasCapabilities(cb.semanticSurface.plan, tool.CapabilityShellExecuteRemoteHost) && semanticGrantNameForAdapter(cb.semanticSurface, semanticTrustedSSHAdapter) == "" {
-		t.Fatalf("user-declared ssh must expand the live plan: plan=%#v grants=%#v result=%s", cb.semanticSurface.plan.Selections, cb.semanticSurface.grants, got)
+	if planHasCapabilities(cb.semanticSurface.plan, tool.CapabilityShellExecuteRemoteHost) || semanticGrantNameForAdapter(cb.semanticSurface, semanticTrustedSSHAdapter) != "" {
+		t.Fatalf("ssh stays closed unless it is the primary: plan=%#v grants=%#v result=%s", cb.semanticSurface.plan.Selections, cb.semanticSurface.grants, got)
 	}
 }
 
@@ -280,11 +282,8 @@ func TestSemanticToolsSearchPetitionsUnboundSSHForConnect(t *testing.T) {
 	// the effectful petition and expand the plan with the connect leg
 	// (production 2026-09-18 08:26: without this the "密码是 …" turn had no
 	// connect path at all).
-	if !cb.semanticEffectfulPetitionConsumed {
-		t.Fatal("unbound ssh discovery must spend the effectful petition on the connect surface")
-	}
-	if !planHasCapabilities(cb.semanticSurface.plan, tool.CapabilityShellExecuteRemoteHost) {
-		t.Fatal("unbound ssh must enter the managed plan as a connect selection")
+	if cb.semanticEffectfulPetitionConsumed || planHasCapabilities(cb.semanticSurface.plan, tool.CapabilityShellExecuteRemoteHost) {
+		t.Fatal("ssh discovery must not spend a petition unless ssh is the primary")
 	}
 }
 

@@ -239,6 +239,7 @@ func (c *sharedAgentLoopCallbacks) admitLiveSteerIntoPlan(steerText string) {
 			bindLoopSemanticIntent(c.loopCtx, &expanded)
 		}
 		c.leaveLightProfileForUnsafePetition(parent.plan)
+		c.projectSemanticDirectoryPrompt()
 		if semanticLabelRequiresFullProfile(label) {
 			c.semanticEffectfulPetitionConsumed = true
 		} else {

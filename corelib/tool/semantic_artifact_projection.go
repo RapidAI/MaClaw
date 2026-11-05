@@ -316,9 +316,10 @@ func ScheduleChannelDispatchSelection(selection PlannedSelection) bool {
 // TurnRequiredDeliveryComplete reports that every required planned selection
 // completed and at least one completed selection delivered the artifact,
 // either on the current channel or to the specified IM target. A selection
-// the planner marked Optional, and a need the host proved optional, never
-// gate the stop. A later repeat sibling is an exposure ceiling: only the
-// family base can be an obligation.
+// the planner marked Optional, a need the host proved optional, and a
+// companion offer whose Optional bit was lost never gate the stop. A later
+// repeat sibling is an exposure ceiling: only the family base can be an
+// obligation.
 func TurnRequiredDeliveryComplete(plan ToolPlan, completed, optionalByNeed map[string]bool) bool {
 	if len(plan.Selections) == 0 {
 		return false
@@ -331,21 +332,10 @@ func TurnRequiredDeliveryComplete(plan ToolPlan, completed, optionalByNeed map[s
 			}
 			continue
 		}
-		if selection.Optional || optionalByNeed[selection.NeedID] || repeatSiblingCeiling(selection.NeedID) {
+		if SelectionCallIsSkippable(selection) || optionalByNeed[selection.NeedID] {
 			continue
 		}
 		return false
 	}
 	return delivered
-}
-
-// repeatSiblingCeiling reports a repeat node that is not the family base.
-// RepeatSiblingRequired makes only index 0 an obligation; ExtendRepeatFamily
-// and an appended sibling are ceilings. A baseline raise mints those IDs
-// after the archetype pass, and a delivery check that rebuilds needs from
-// the bundle key alone does not see them. Treating the unknown suffix as
-// required holds the turn open after the file has already left.
-func repeatSiblingCeiling(needID string) bool {
-	needID = strings.TrimSpace(needID)
-	return needID != "" && RepeatFamilyID(needID) != needID
 }

@@ -72,6 +72,10 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 		if strings.TrimSpace(desc) == "" {
 			desc = name
 		}
+		// The corpus is the definition the model is allowed to call. The
+		// registry copy of manage_skill still lists search/install, and the
+		// executor rejects those actions.
+		desc = discoveryPublishedDescription(name, desc)
 		text := name + " " + desc
 		for _, tag := range tags {
 			text += " " + tag
@@ -127,9 +131,10 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 	// Score() applies the short-entity strict conjunction to a pure-CJK
 	// phrase (e.g. "把本地目录导入知识库外脑" anchors 本地/目录/导入/知识库/外脑
 	// and demands every anchor hit), which blanks the whole result set when a
-	// function word like 本地 appears in no tool doc. ScoreOverlaps keeps the
-	// ordinary loose scoring a discover query needs.
-	scores := idx.ScoreOverlaps(need)
+	// function word like 本地 appears in no tool doc. Distinctive overlap
+	// still recalls a rare capability term, and it does not treat a generic
+	// verb shared by unrelated tools as a hit.
+	scores := idx.ScoreDistinctiveOverlaps(need)
 
 	var ranked []discoveredToolScore
 	for name, score := range scores {
@@ -152,7 +157,7 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 
 	if len(ranked) == 0 {
 		tool.RecordDiscoverToolCall(false)
-		return fmt.Sprintf("No matching tools found for: %q. Try rephrasing your need or use craft_tool to create a custom script.", need)
+		return discoveryCapabilityAbsent(need)
 	}
 	tool.RecordDiscoverToolCall(true)
 
@@ -239,7 +244,7 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 		}
 		anyLegacy = true
 		t := toolMap[item.name]
-		desc := t.Description
+		desc := discoveryPublishedDescription(item.name, t.Description)
 		if runes := []rune(desc); len(runes) > 120 {
 			desc = string(runes[:120]) + "..."
 		}
@@ -551,6 +556,21 @@ func surfaceRecoveryAddedNames(before map[string]bool, tools []map[string]interf
 	}
 	sort.Strings(added)
 	return added
+}
+
+func discoveryCapabilityAbsent(need string) string {
+	return fmt.Sprintf("No catalog tool matches %q.", need)
+}
+
+// discoveryPublishedDescription is the contract the model is allowed to call.
+// The registry still lists search/install/governance on manage_skill; this
+// surface rejects those actions, and advertising them makes the model call
+// search after a failed discovery.
+func discoveryPublishedDescription(name, desc string) string {
+	if strings.TrimSpace(name) == "manage_skill" {
+		return legacyManageSkillSurfaceDescription
+	}
+	return desc
 }
 
 func discoverToolStatusLine(index int, name, desc string, onSurface, activated, blocked bool) string {

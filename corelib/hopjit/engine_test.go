@@ -166,7 +166,10 @@ func TestExecutionEngineResumeResetsRunningStep(t *testing.T) {
 			if snapshot.StepStates["1"] != StepPending {
 				t.Fatalf("running step after restart = %s", snapshot.StepStates["1"])
 			}
-			mustNextStep(t, restarted, "1")
+			next := mustNextStep(t, restarted, "1")
+			if next.Step == nil || !next.Step.Recovered {
+				t.Fatal("resumed step was not marked as recovered")
+			}
 			if err := restarted.Complete(ctx, "1", map[string]any{"summary": "摘要"}); err != nil {
 				t.Fatal(err)
 			}
@@ -231,6 +234,33 @@ func TestSQLitePersistenceRejectsStaleSnapshot(t *testing.T) {
 	}
 	if loaded.StateSeq != 2 {
 		t.Fatalf("state seq = %d", loaded.StateSeq)
+	}
+	snapshots, err := store.ListSnapshots(ctx)
+	if err != nil || len(snapshots) != 1 || snapshots[0].RunID != "run" {
+		t.Fatalf("snapshots=%+v err=%v", snapshots, err)
+	}
+}
+
+func TestMemoryPersistenceListsSnapshotsDeterministically(t *testing.T) {
+	store := NewMemoryPersistence()
+	ctx := context.Background()
+	for _, id := range []string{"run-b", "run-a"} {
+		if err := store.SaveSnapshot(ctx, EngineSnapshot{RunID: id, StateSeq: 1, FormatVersion: SnapshotFormatVersion}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshots, err := store.ListSnapshots(ctx)
+	if err != nil || len(snapshots) != 2 || snapshots[0].RunID != "run-a" || snapshots[1].RunID != "run-b" {
+		t.Fatalf("snapshots=%+v err=%v", snapshots, err)
+	}
+}
+
+func TestListOutputTypeChecksElements(t *testing.T) {
+	if err := validateValueType("[text]", []string{"有效", "元素"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateValueType("[text]", []any{"有效", float64(1)}); err == nil || !strings.Contains(err.Error(), "element 1") {
+		t.Fatalf("err=%v", err)
 	}
 }
 

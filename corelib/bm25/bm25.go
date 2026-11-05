@@ -292,6 +292,51 @@ func (idx *Index) ScoreOverlaps(query string) map[string]float64 {
 	return idx.scoreTermsLocked(uniqueTerms(Tokenize(query)), false, nil)
 }
 
+// ScoreDistinctiveOverlaps scores a capability lookup. A hit must contain a
+// query term that is uncommon in this index. A term that appears in more than
+// a quarter of the documents is generic; generic overlap alone is not a match.
+// When every in-index overlap is generic, the result is empty: the rest of
+// the query is a capability this catalog does not have.
+func (idx *Index) ScoreDistinctiveOverlaps(query string) map[string]float64 {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	if len(idx.docs) == 0 {
+		return nil
+	}
+	// Segment, not Tokenize. Overlapping character n-grams are recall hints for
+	// ordinary search. They are not evidence that a tool implements a capability:
+	// 文生图 and 正文 share no word, but a 2-gram can still overlap.
+	raw := uniqueTerms(Segment(query))
+	terms := make([]string, 0, len(raw))
+	for _, term := range raw {
+		if len([]rune(term)) < 2 {
+			continue
+		}
+		terms = append(terms, term)
+	}
+	if len(terms) == 0 {
+		return nil
+	}
+	n := len(idx.docs)
+	distinctive := make([]string, 0, len(terms))
+	for _, term := range terms {
+		df := idx.df[term]
+		if df == 0 {
+			continue
+		}
+		// A word that occurs in one document, or in at most a quarter of the
+		// catalog, identifies a capability. A word shared by most documents
+		// does not, even when the catalog itself is small.
+		if df == 1 || df*4 <= n {
+			distinctive = append(distinctive, term)
+		}
+	}
+	if len(distinctive) == 0 {
+		return map[string]float64{}
+	}
+	return idx.scoreTermsLocked(distinctive, false, nil)
+}
+
 func (idx *Index) scoreTermsLocked(terms []string, requireAll bool, allowed map[string]struct{}) map[string]float64 {
 	if len(terms) == 0 {
 		return nil

@@ -5246,6 +5246,10 @@ func (a *App) applyTaskListWorkflow(result *ProjectSearchResult, workflowPath st
 	// signal and the row fell back to the old status while the work kept
 	// running.
 	result.ActiveWorkflow = liveRunningTaskWorkflow(result.ProjectPath, result.ActiveWorkflow, liveOwners)
+	if id := cloudWorkspaceIDFromSearchResult(result); id != "" {
+		rememberCloudWorkspaceLocalRun(id, result.ActiveWorkflow)
+		result.ActiveWorkflow = overlayRemoteCloudWorkspaceRunStatus(id, result.ActiveWorkflow)
+	}
 }
 
 // liveRunningTaskWorkflow reports a task that is executing right now as

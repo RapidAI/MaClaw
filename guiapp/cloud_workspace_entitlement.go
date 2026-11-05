@@ -31,6 +31,11 @@ type CloudWorkspaceEntitlementWorkspace struct {
 	LeaseInUse         bool   `json:"lease_in_use,omitempty"`
 	LeaseHolder        string `json:"lease_holder,omitempty"`
 	HandoffRequestedAt string `json:"handoff_requested_at,omitempty"`
+	// Task run fields are the other machine's delayed status. ListTasks overlays
+	// them when this machine is not itself running the task.
+	TaskRunStatus        string `json:"task_run_status,omitempty"`
+	TaskRunPhase         string `json:"task_run_phase,omitempty"`
+	TaskRunPendingReview bool   `json:"task_run_pending_review,omitempty"`
 	// ReconcileRequired is local writer-cache state, overlaid by the GUI on
 	// top of Hub entitlement.  It is intentionally omitted when false so older
 	// Hub/frontend payloads remain wire-compatible.
@@ -166,6 +171,7 @@ func resetCloudWorkspaceEntitlementCache() {
 	defer cloudWorkspaceEntitlementMu.Unlock()
 	cloudWorkspaceEntitlementCache = CloudWorkspaceEntitlement{}
 	cloudWorkspaceEntitlementHasCache = false
+	resetCloudWorkspaceRunPublishState()
 }
 
 func loadCloudWorkspaceEntitlementCache() (CloudWorkspaceEntitlement, bool) {
@@ -185,6 +191,7 @@ func storeCloudWorkspaceEntitlementCache(ent CloudWorkspaceEntitlement) {
 	stored.Banner = ""
 	cloudWorkspaceEntitlementCache = stored
 	cloudWorkspaceEntitlementHasCache = true
+	rememberRemoteCloudWorkspaceRunStatuses(stored)
 }
 
 func cloneCloudWorkspaceEntitlement(src CloudWorkspaceEntitlement) CloudWorkspaceEntitlement {

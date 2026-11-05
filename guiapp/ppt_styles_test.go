@@ -124,14 +124,14 @@ func TestMergeGeneratedStyleDropsBrokenSibling(t *testing.T) {
 	broken.ID = "broken"
 	broken.Colors.Paper = "nope"
 	fresh := good
-	fresh.ID = "aurora"
+	fresh.ID = "polaris"
 	fresh.Label = "极光"
 	fresh.Keywords = []string{"极光"}
 	merged, saved, err := mergeGeneratedStyle([]pptx.CustomStyle{broken, good}, fresh)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.ID != "aurora" || len(merged) != 2 || merged[0].ID != "nebula" || merged[1].ID != "aurora" {
+	if saved.ID != "polaris" || len(merged) != 2 || merged[0].ID != "nebula" || merged[1].ID != "polaris" {
 		t.Fatalf("merged = %+v saved = %+v", merged, saved)
 	}
 }

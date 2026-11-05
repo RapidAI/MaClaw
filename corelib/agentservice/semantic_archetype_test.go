@@ -175,7 +175,133 @@ func TestLiveDataBundlePlansPageFetch(t *testing.T) {
 			fetch++
 		}
 	}
-	if fetch != 5 {
-		t.Fatalf("live_data fetch siblings=%d, want 5; needs=%#v", fetch, got)
+	if fetch != 0 {
+		t.Fatalf("live_data fetch siblings=%d, want 0 (companions stay in the directory); needs=%#v", fetch, got)
+	}
+}
+
+// An office verdict with an unconfirmed live_data companion must admit web
+// search without making it an obligation. The 2026-11-05 "做个演示ppt" turn
+// delivered the deck and still hard-exited required_effect_unsettled because
+// the synthesized lookup was required. The office write stays required. The
+// archetype ceiling may raise the search family; every sibling stays optional.
+func TestOfferedLookupOnOfficeAdmitsOptionalSearch(t *testing.T) {
+	registry := coretool.NewCapabilityRegistry("office-offered-lookup")
+	for _, id := range []coretool.CapabilityID{
+		coretool.CapabilityDocumentWriteOffice,
+		CapabilityArtifactDeliverCurrent,
+		CapabilityInformationSearchWeb,
+		coretool.CapabilityInformationFetchWeb,
+		coretool.CapabilityArtifactAcquireRemote,
+		coretool.CapabilityFSReadLocal,
+	} {
+		if err := registry.Register(coretool.CapabilityDescriptor{
+			ID: id, Version: "v1", Effects: []coretool.EffectClass{coretool.EffectReadOnly}, Owner: "test",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := intent.ClassificationResult{
+		Primary:    intent.LabelOffice,
+		Offered:    []intent.IntentLabel{intent.LabelLiveData},
+		Confidence: 0.999,
+	}
+	rules := IMSemanticIntentCapabilityNeedRules()
+	resolved, err := resolveIntentLabelCapabilityNeeds(registry, rules, ReviewedIntentMinimumConfidence, result)
+	if err != nil || !resolved.Managed {
+		t.Fatalf("resolved managed=%v err=%v needs=%#v", resolved.Managed, err, resolved.Needs)
+	}
+	got := ExpandArchetypeBundleNeeds(registry, rules, result, true, resolved.Needs, intent.LabelOffice)
+	writeRequired, search, searchRequired, offerBase := 0, 0, 0, 0
+	for _, need := range got {
+		switch need.Capability {
+		case coretool.CapabilityDocumentWriteOffice:
+			if need.Required {
+				writeRequired++
+			}
+		case CapabilityInformationSearchWeb:
+			search++
+			if need.Required {
+				searchRequired++
+			}
+			// The family base is what a lost Optional bit would treat as the
+			// task. The archetype ceiling may replace evidence on later
+			// siblings; the base has to keep the offer mark.
+			if coretool.RepeatFamilyID(need.ID) == need.ID && coretool.EvidenceMarksCompanion(need.EvidenceIDs) {
+				offerBase++
+			}
+		}
+	}
+	if writeRequired != 1 {
+		t.Fatalf("office write required=%d, want 1; needs=%#v", writeRequired, got)
+	}
+	if search != 0 || searchRequired != 0 || offerBase != 0 {
+		t.Fatalf("search siblings=%d required=%d offer base=%d, want no first-wave search grant; needs=%#v", search, searchRequired, offerBase, got)
+	}
+}
+
+// A lookup the tree or the local leader confirmed stays an obligation.
+// Offering it would let a weather chart finish with no facts.
+func TestSecondaryLookupOnOfficeStaysRequired(t *testing.T) {
+	registry := coretool.NewCapabilityRegistry("office-required-lookup")
+	for _, id := range []coretool.CapabilityID{
+		coretool.CapabilityDocumentWriteOffice,
+		CapabilityArtifactDeliverCurrent,
+		CapabilityInformationSearchWeb,
+	} {
+		if err := registry.Register(coretool.CapabilityDescriptor{
+			ID: id, Version: "v1", Effects: []coretool.EffectClass{coretool.EffectReadOnly}, Owner: "test",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := intent.ClassificationResult{
+		Primary:    intent.LabelOffice,
+		Secondary:  []intent.IntentLabel{intent.LabelLiveData},
+		Confidence: 0.999,
+	}
+	resolved, err := resolveIntentLabelCapabilityNeeds(registry, IMSemanticIntentCapabilityNeedRules(), ReviewedIntentMinimumConfidence, result)
+	if err != nil || !resolved.Managed {
+		t.Fatalf("resolved managed=%v err=%v needs=%#v", resolved.Managed, err, resolved.Needs)
+	}
+	searchRequired := 0
+	for _, need := range resolved.Needs {
+		if need.Capability == CapabilityInformationSearchWeb && need.Required {
+			searchRequired++
+		}
+	}
+	if searchRequired != 0 {
+		t.Fatalf("secondary lookup minted a search grant; needs=%#v", resolved.Needs)
+	}
+}
+
+// Offered belongs to the artifact primary synthesis attached it to. A
+// rewrite that moves the primary to file delete must not keep the search,
+// even when that capability is registered.
+func TestOfferedLookupDoesNotFollowRewrittenPrimary(t *testing.T) {
+	registry := coretool.NewCapabilityRegistry("rewritten-primary-drops-offer")
+	for _, id := range []coretool.CapabilityID{
+		coretool.CapabilityFSDeleteLocal,
+		CapabilityInformationSearchWeb,
+	} {
+		if err := registry.Register(coretool.CapabilityDescriptor{
+			ID: id, Version: "v1", Effects: []coretool.EffectClass{coretool.EffectReadOnly}, Owner: "test",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := intent.ClassificationResult{
+		Primary:    intent.LabelFileDelete,
+		Offered:    []intent.IntentLabel{intent.LabelLiveData},
+		Confidence: 0.999,
+	}
+	resolved, err := resolveIntentLabelCapabilityNeeds(registry, IMSemanticIntentCapabilityNeedRules(), ReviewedIntentMinimumConfidence, result)
+	if err != nil || !resolved.Managed {
+		t.Fatalf("resolved managed=%v err=%v needs=%#v", resolved.Managed, err, resolved.Needs)
+	}
+	for _, need := range resolved.Needs {
+		if need.Capability == CapabilityInformationSearchWeb {
+			t.Fatalf("rewritten primary kept offered search; needs=%#v", resolved.Needs)
+		}
 	}
 }

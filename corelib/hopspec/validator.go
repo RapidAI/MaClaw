@@ -31,6 +31,22 @@ func Validate(spec SpecAST) []error {
 	var walk func([]*Step, *Step, int)
 	walk = func(steps []*Step, parent *Step, loopDepth int) {
 		for _, step := range steps {
+			if len(step.Children) > 0 {
+				switch step.Type {
+				case StepSubtask, StepCase, StepBranch, StepLoop, StepOnFail:
+				default:
+					add("NON_CONTAINER_CHILDREN", "step "+step.ID+" cannot contain child steps", *step)
+				}
+			}
+			if step.Retry != nil && step.Type != StepSubtask && step.Type != StepCase {
+				add("RETRY_NOT_ALLOWED", "retry "+step.ID+" must be on subtask or case", *step)
+			}
+			if step.Adaptive && step.Type != StepSubtask && step.Type != StepCase {
+				add("ADAPTIVE_NOT_ALLOWED", "adaptive "+step.ID+" must be on subtask or case", *step)
+			}
+			if step.Type != StepLoop && (step.MaxIterations != 0 || step.ForEach != nil) {
+				add("LOOP_ATTRIBUTE_NOT_ALLOWED", "step "+step.ID+" cannot use max or for-each", *step)
+			}
 			if step.Parallel && step.Type != StepCall && step.Type != StepSubtask && step.Type != StepCase {
 				add("PARALLEL_STEP_TYPE", "parallel "+step.ID+" must be a call, subtask, or case", *step)
 			}

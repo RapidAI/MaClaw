@@ -79,7 +79,7 @@ import { getAITabDisplayTitle } from "./AITabItem";
 import { useAITabManager } from "./useAITabManager";
 import { closeAssistantProjectTab } from "./assistantProjectTabClose";
 import { releaseIdleTaskTabs, type IdleTaskSwitchContext } from "./idleTaskTabClose";
-import { composerExpertFromTab, SessionWorkingDirChip } from "./SessionWorkingDirChip";
+import { composerExpertForOpenTab, projectSendExpertId, SessionWorkingDirChip } from "./SessionWorkingDirChip";
 import { TaskExecutionHeading } from "./TaskExecutionHeading";
 import { assistantTaskTitle } from "./taskListTitle";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
@@ -140,6 +140,7 @@ export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { agentViewHiddenFieldValue, canShowAssistantCodingPreviewForTab, codePreviewEventsEnabled, codePreviewHasTaskResult, codePreviewModeFromState, commitRestoredCodePreview, expertTaskPreviewKey, hasRestorableProjectConversation, isWorkflowPhaseRunningStatus, isWorkflowPhaseTerminalStatus, loadRestoredProjectConversationHistory, normalizeRestoredProjectHistoryContent, normalizeWorkflowPhaseStatus, readStoredAssistantPreviewState, shouldApplyRestoredAssistantPreview, shouldReopenTaskResultPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, suppressWorkflowReviewActions, withCodePreviewVisibleIfContent, writeStoredAssistantPreviewState, type ConversationBranchPointLike, type StoredAssistantPreviewState } from "./assistantPreviewState";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
 import { useAssistantPreviewOpenEvents } from "./useAssistantPreviewOpenEvents";
+import { chatImagePreviewIdentity, MarkdownImagePreviewProvider, safeRemoteImageURL } from "./markdownMedia";
 import { useCloudWorkspaceSearchFileOpen } from "./useCloudWorkspaceSearchFileOpen";
 import { useLatexPaperPreviewOpen } from "./useLatexPaperPreviewOpen";
 import { dispatchOpenLatexDocument, latexRelativePathForProject } from "./latexDocumentOpen";
@@ -3722,6 +3723,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 || (projectTabOwnsThisExpertQueue ? queueSessionKey : "");
             const archivedExpertId = expertIdFromSessionKey(archivedExpertKey);
             if (archivedExpertId) mergedOptions.expert_id = archivedExpertId;
+            const personaExpertId = projectSendExpertId(mergedOptions.expert_id, resolvedTab, liveActiveTab, taskListProp);
+            if (personaExpertId) mergedOptions.expert_id = personaExpertId;
 			// ACP turns are already executing through the external host. Never route
 			// a queued UI action into the path-owned desktop project conversation.
 			if (queueSessionKey.startsWith("desktop-user:acp:")) {
@@ -5898,6 +5901,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         activateTab, setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
         showAlert, showConfirm,
     });
+    const composerExpert = composerExpertForOpenTab(activeTab, taskListProp, taskConfigWiring.taskConfig.experts);
     dismissCoveredNewTaskRef.current = taskConfigWiring.wizardOverlay ? taskConfigWiring.dismissWizardOverlay : null;
     wizardScrollSuspendRef.current = taskConfigWiring.wizardOverlay;
     const showWelcomeView = showWelcomeViewBase;
@@ -6641,6 +6645,29 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             updateInputValue: guideDraft.updateGuideDraft,
         } : {}),
     };
+    const tabCanPreviewChatImage = canShowAssistantCodingPreviewForTab(activeTab);
+    const previewChatImage = useCallback((src: string, alt: string): boolean => {
+        if (!tabCanPreviewChatImage) return false;
+        const remote = safeRemoteImageURL(src);
+        if (!remote) return false;
+        const identity = chatImagePreviewIdentity(remote, alt);
+        setPreviewPaneEverOpened(true);
+        setTaskResultPreviewOpen(true);
+        adoptPreviewFile({
+            filePath: identity.filePath,
+            fileName: identity.fileName,
+            content: "",
+            original: "",
+            opType: "modify",
+            language: "image",
+            updatedAt: Date.now(),
+            remoteImageURL: identity.remoteImageURL,
+        });
+        const next = Math.max(treeFocusNonceRef.current, fileFocusNonceRef.current) + 1;
+        fileFocusNonceRef.current = next;
+        setFileFocusNonce(next);
+        return true;
+    }, [adoptPreviewFile, tabCanPreviewChatImage]);
     const newTaskWelcome = newTaskHome ? (
         <NewTaskWizardWelcomePane
             active={panelActive}
@@ -6657,6 +6684,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         />
     ) : null;
     return (
+        <MarkdownImagePreviewProvider onPreviewImage={previewChatImage}>
         <div data-testid="ai-panel-root" data-ai-view={newTaskHome ? "welcome" : "execution"} style={containerStyle}>
             <style>{`.branch-hover-container:hover .branch-btn { opacity: 0.7 !important; } .branch-hover-container .branch-btn:hover { opacity: 1 !important; background: ${t.fieldBg} !important; }`}</style>
             {inline && newTaskHome && <AssistantDragHandle />}
@@ -7362,7 +7390,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         remoteHost={remoteWorkspace.host}
                         remoteWorkDir={remoteWorkspace.workDir}
                         remotePort={remoteWorkspace.port}
-                        expert={composerExpertFromTab(activeTab)}
+                        expert={composerExpert}
                         onOpenCloudFiles={() => {
                             reopenCodePreview();
                             window.dispatchEvent(new CustomEvent(FOCUS_CLOUD_WORKSPACE_TREE_EVENT));
@@ -7485,5 +7513,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             <AssistantQuickSettingsBar active={panelActive} hidden={projectSearch.open} lang={lang} theme={t} themeMode={themeMode} onToggleTheme={handleQuickThemeToggle} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} onToggleTts={handleQuickTtsToggle} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} onLanguageChange={onLanguageChange} statusSlot={statusSlot} hideModelChip={showChatUI && !showWelcomeView} />
             </div>
         </div>
+        </MarkdownImagePreviewProvider>
     );
 }

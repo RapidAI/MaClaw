@@ -78,6 +78,40 @@ export interface CreateProjectTabOptions {
     sessionKey?: string;
     /** False leaves the current tab selected. Scheduled work uses this under the new-task cover. */
     focus?: boolean;
+    /** Persona this task calls. The tab title stays the instruction. */
+    expertId?: string;
+    expertName?: string;
+    expertIcon?: string;
+}
+
+function projectExpertStamp(options?: CreateProjectTabOptions): { expertId?: string; expertName?: string; expertIcon?: string } {
+    const expertId = String(options?.expertId || "").trim();
+    if (!expertId) return {};
+    const expertName = String(options?.expertName || "").trim();
+    const expertIcon = String(options?.expertIcon || "").trim();
+    return {
+        expertId,
+        ...(expertName ? { expertName } : {}),
+        ...(expertIcon ? { expertIcon } : {}),
+    };
+}
+
+function mergeProjectExpert(existing: AITab, options?: CreateProjectTabOptions): { expertId?: string; expertName?: string; expertIcon?: string } {
+    const incoming = projectExpertStamp(options);
+    const expertId = incoming.expertId || String(existing.expertId || "").trim();
+    if (!expertId) return {};
+    // Reopening the same persona keeps a name the new open did not repeat.
+    // A different expert must not keep the previous label.
+    const samePersona = !incoming.expertId || incoming.expertId === String(existing.expertId || "").trim();
+    const expertName = incoming.expertName || (samePersona ? String(existing.expertName || "").trim() : "");
+    const expertIcon = incoming.expertIcon || (samePersona ? String(existing.expertIcon || "").trim() : "");
+    // Explicit undefined clears a previous label. Omitting the key would
+    // leave it in place when this object is spread over the old tab.
+    return {
+        expertId,
+        expertName: expertName || undefined,
+        expertIcon: expertIcon || undefined,
+    };
 }
 
 function focusedTabId(currentId: string, nextId: string, focus?: boolean): string {
@@ -426,6 +460,7 @@ function persistProjectTabs(tabs: AITab[]) {
                 type: "expert" as const,
                 title: t.title,
                 expertId: t.expertId,
+                expertName: t.expertName,
                 expertIcon: t.expertIcon,
                 expertDescription: t.expertDescription,
                 executionProfile: t.executionProfile,
@@ -444,6 +479,9 @@ function persistProjectTabs(tabs: AITab[]) {
                 remoteHost: t.remoteHost,
                 remoteSafety: t.remoteSafety,
                 executionProfile: t.executionProfile,
+                expertId: t.expertId,
+                expertName: t.expertName,
+                expertIcon: t.expertIcon,
             });
         if (serialized.length === 0) {
             localStorage.removeItem(PROJECT_TABS_STORAGE_KEY);
@@ -464,7 +502,7 @@ function loadPersistedProjectTabs(): AITab[] {
     try {
         const raw = localStorage.getItem(PROJECT_TABS_STORAGE_KEY);
         if (!raw) return [];
-        const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; latexRelativePath?: string; sessionFloorMs?: number; cloudWorkspaceId?: string; fileWorkspaceId?: string; agentMode?: string; remoteHost?: string; remoteSafety?: string; expertId?: string; expertIcon?: string; expertDescription?: string; executionProfile?: string }>;
+        const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; latexRelativePath?: string; sessionFloorMs?: number; cloudWorkspaceId?: string; fileWorkspaceId?: string; agentMode?: string; remoteHost?: string; remoteSafety?: string; expertId?: string; expertName?: string; expertIcon?: string; expertDescription?: string; executionProfile?: string }>;
         if (!Array.isArray(parsed)) return [];
         const tabs = parsed
             .filter(t => t.id && !String(t.id).startsWith("acp-") && (t.projectPath || (t.type === "expert" && t.expertId)))
@@ -476,6 +514,7 @@ function loadPersistedProjectTabs(): AITab[] {
                         type: "expert" as AITabType,
                         title: String(t.title || "").trim() || expertId,
                         expertId,
+                        expertName: String(t.expertName || "").trim() || undefined,
                         expertIcon: String(t.expertIcon || "").trim() || undefined,
                         expertDescription: String(t.expertDescription || "").trim() || undefined,
                         projectPath: normalizeProjectSessionPath(t.projectPath) || undefined,
@@ -504,6 +543,9 @@ function loadPersistedProjectTabs(): AITab[] {
                     remoteHost,
                     remoteSafety,
                     executionProfile: executionProfileForProjectMode(agentMode),
+                    expertId: String(t.expertId || "").trim() || undefined,
+                    expertName: String(t.expertName || "").trim() || undefined,
+                    expertIcon: String(t.expertIcon || "").trim() || undefined,
                     closable: true,
                 };
             })
@@ -1341,8 +1383,12 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             const pathChanged = existing.projectPath !== effectiveProjectPath;
             const incomingTitle = String(taskTitle || "").trim() ? sanitizeProjectTabTitle(taskTitle, effectiveProjectPath) : "";
             const titleChanged = shouldReplaceCollapsedProjectTabTitle(existing.title, incomingTitle, effectiveProjectPath);
-            if (modeChanged || hostChanged || safetyChanged || reconnectChanged || cloudIdentityChanged || fileWorkspaceChanged || pathChanged || titleChanged) {
-                const patched = { ...existing, projectPath: effectiveProjectPath, title: titleChanged ? incomingTitle : existing.title, cloudWorkspaceId: nextCloudWorkspaceId, fileWorkspaceId: nextFileWorkspaceId || undefined, agentMode: nextAgentMode, remoteHost: nextRemoteHost, remoteSafety: nextRemoteSafety, remoteNeedsReconnect: nextNeedsReconnect, executionProfile: executionProfileForProjectMode(nextAgentMode) };
+            const nextExpert = mergeProjectExpert(existing, options);
+            const expertChanged = nextExpert.expertId !== existing.expertId
+                || nextExpert.expertName !== existing.expertName
+                || nextExpert.expertIcon !== existing.expertIcon;
+            if (modeChanged || hostChanged || safetyChanged || reconnectChanged || cloudIdentityChanged || fileWorkspaceChanged || pathChanged || titleChanged || expertChanged) {
+                const patched = { ...existing, projectPath: effectiveProjectPath, title: titleChanged ? incomingTitle : existing.title, cloudWorkspaceId: nextCloudWorkspaceId, fileWorkspaceId: nextFileWorkspaceId || undefined, agentMode: nextAgentMode, remoteHost: nextRemoteHost, remoteSafety: nextRemoteSafety, remoteNeedsReconnect: nextNeedsReconnect, executionProfile: executionProfileForProjectMode(nextAgentMode), ...nextExpert };
                 const existingState = tabStatesRef.current.get(existing.id);
                 if (existingState) existingState.projectPath = effectiveProjectPath;
                 updateTabState(() => ({
@@ -1380,6 +1426,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             remoteSafety: options?.remoteSafety,
             remoteNeedsReconnect: options?.remoteNeedsReconnect,
             executionProfile: executionProfileForProjectMode(options?.agentMode),
+            ...projectExpertStamp(options),
             closable: true,
         };
         restoredProjectPathsRef.current.delete(projectPath);
@@ -1501,6 +1548,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             type: "expert",
             title,
             expertId,
+            expertName: expertLabel,
             expertIcon: icon,
             expertDescription: description,
             projectPath,
@@ -1525,6 +1573,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                     ...current,
                     title: nextTitle,
                     expertId,
+                    expertName: expertLabel || current.expertName,
                     expertIcon: icon || current.expertIcon,
                     expertDescription: description || current.expertDescription,
                     projectPath: boundPath,
@@ -1853,17 +1902,35 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             const icon = String(expert?.icon || "").trim() || undefined;
             const description = String(expert?.description || "").trim() || undefined;
             updateTabState(prev => {
-                if (!prev.tabs.some(t => t.type === "expert" && t.expertId === expertId)) return prev;
+                if (!prev.tabs.some(t => t.expertId === expertId && (t.type === "expert" || t.type === "project"))) return prev;
                 return {
                     ...prev,
-                    tabs: prev.tabs.map(t => t.type === "expert" && t.expertId === expertId
-                        ? {
-                            ...t,
-                            title: title || t.title,
-                            expertIcon: icon || t.expertIcon,
-                            expertDescription: description || t.expertDescription,
+                    tabs: prev.tabs.map(t => {
+                        if (t.expertId !== expertId) return t;
+                        if (t.type === "expert") {
+                            const persona = String(t.expertName || "").trim();
+                            const currentTitle = String(t.title || "").trim();
+                            // Tabs saved before expertName existed keep the persona in
+                            // the title. A stored persona that differs from the title
+                            // means the title is the task instruction.
+                            const titleIsPersona = !persona || !currentTitle || currentTitle === persona || currentTitle === expertId;
+                            return {
+                                ...t,
+                                title: titleIsPersona ? (title || t.title) : t.title,
+                                expertName: title || t.expertName,
+                                expertIcon: icon || t.expertIcon,
+                                expertDescription: description || t.expertDescription,
+                            };
                         }
-                        : t),
+                        if (t.type === "project") {
+                            return {
+                                ...t,
+                                expertName: title || t.expertName,
+                                expertIcon: icon || t.expertIcon,
+                            };
+                        }
+                        return t;
+                    }),
                 };
             });
         };

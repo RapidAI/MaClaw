@@ -764,19 +764,37 @@ func TestSecondaryTreeLabelsUsesChartFloor(t *testing.T) {
 	if len(kept) != 1 || kept[0] != LabelLiveDataVisual {
 		t.Fatalf("secondary=%v, a reviewed chart half must stay", kept)
 	}
-	lookup := secondaryTreeLabels([]TreeCandidate{
+	lookupSecondary, lookupOffered := splitTreeCompanionLabels([]TreeCandidate{
 		{Label: LabelLiveDataVisual, Score: 0.91},
 		{Label: LabelLiveData, Score: 0.60},
 	})
-	if len(lookup) != 1 || lookup[0] != LabelLiveData {
-		t.Fatalf("secondary=%v, the lookup half of a chart verdict must stay", lookup)
+	if len(lookupSecondary) != 0 || len(lookupOffered) != 1 || lookupOffered[0] != LabelLiveData {
+		t.Fatalf("secondary=%v offered=%v, a 0.60 lookup beside a chart is offered, not required", lookupSecondary, lookupOffered)
 	}
-	pdf := secondaryTreeLabels([]TreeCandidate{
+	lookupKept, lookupNotOffered := splitTreeCompanionLabels([]TreeCandidate{
+		{Label: LabelLiveDataVisual, Score: 0.91},
+		{Label: LabelLiveData, Score: 0.80},
+	})
+	if len(lookupKept) != 1 || lookupKept[0] != LabelLiveData || len(lookupNotOffered) != 0 {
+		t.Fatalf("secondary=%v offered=%v, a lookup that clears 0.70 and the gap stays secondary", lookupKept, lookupNotOffered)
+	}
+	// A 0.50 composite used to become a required secondary, so a resume turn
+	// minted web_search and a photo turn minted office. It is directory
+	// evidence now. Only a companion that clears 0.70 and the 0.20 gap
+	// stays secondary, and even that secondary does not mint the first wave.
+	pdfSecondary, pdfOffered := splitTreeCompanionLabels([]TreeCandidate{
 		{Label: LabelLiveData, Score: 0.95},
 		{Label: LabelDocumentGenerate, Score: 0.55},
 	})
-	if len(pdf) != 1 || pdf[0] != LabelDocumentGenerate {
-		t.Fatalf("secondary=%v, lookup+PDF must keep the 0.50 composite floor", pdf)
+	if len(pdfSecondary) != 0 || len(pdfOffered) != 1 || pdfOffered[0] != LabelDocumentGenerate {
+		t.Fatalf("secondary=%v offered=%v, a 0.55 PDF neighbor is offered, not required", pdfSecondary, pdfOffered)
+	}
+	officeSecondary, officeOffered := splitTreeCompanionLabels([]TreeCandidate{
+		{Label: LabelSearch, Score: 0.73},
+		{Label: LabelOffice, Score: 0.51},
+	})
+	if len(officeSecondary) != 0 || len(officeOffered) != 1 || officeOffered[0] != LabelOffice {
+		t.Fatalf("secondary=%v offered=%v, office at 0.51 must not be a required write", officeSecondary, officeOffered)
 	}
 }
 
@@ -1206,14 +1224,17 @@ func TestClassifyTreeProtocolViolationIsNotAnUnknownUserIntent(t *testing.T) {
 }
 
 func TestLookupHintOrUnknownFromL2KeepsOnlySearchFamilies(t *testing.T) {
-	// A lookup guess with a declared artifact half stays explicitly
-	// unconfirmed: degrading to a bare hint would silently reduce a
-	// composite request to lookup-only.
+	// A lookup guess keeps its half when a PDF neighbor is unconfirmed.
+	// Collapsing the whole turn to unknown dropped web_search together
+	// with the file. The neighbor is offered, not granted.
 	composite := lookupHintOrUnknownFromL2(ClassificationResult{
 		Primary: LabelLiveData, Confidence: 0.61, Secondary: []IntentLabel{LabelDocumentGenerate},
 	}, true)
-	if composite.Primary != LabelUnknown || !composite.Degraded {
-		t.Fatalf("composite-evidence lookup = %+v, want unconfirmed unknown", composite)
+	if composite.Primary != LabelLiveData || !composite.Degraded {
+		t.Fatalf("composite-evidence lookup = %+v, want live_data hint", composite)
+	}
+	if len(composite.Secondary) != 0 || len(composite.Offered) != 1 || composite.Offered[0] != LabelDocumentGenerate {
+		t.Fatalf("generate neighbor = secondary %v offered %v", composite.Secondary, composite.Offered)
 	}
 
 	// A plain lookup guess keeps the degraded hint so routing can chat
@@ -1260,8 +1281,8 @@ func TestLookupHintOrUnknownFromL2KeepsOnlySearchFamilies(t *testing.T) {
 		t.Fatalf("office hint leaked adjuncts: %+v", office)
 	}
 
-	// Sub-floor office guesses and office composites with a declared artifact
-	// half still collapse to unknown.
+	// Sub-floor office guesses still collapse. An office leader at the lookup
+	// floor keeps that half and offers the unconfirmed generate neighbor.
 	weakOffice := lookupHintOrUnknownFromL2(ClassificationResult{Primary: LabelOffice, Confidence: 0.65}, false)
 	if !weakOffice.Degraded || weakOffice.Primary != LabelUnknown {
 		t.Fatalf("sub-floor office = %+v, want unknown", weakOffice)
@@ -1269,8 +1290,11 @@ func TestLookupHintOrUnknownFromL2KeepsOnlySearchFamilies(t *testing.T) {
 	officeComposite := lookupHintOrUnknownFromL2(ClassificationResult{
 		Primary: LabelOffice, Confidence: 0.75, Secondary: []IntentLabel{LabelDocumentGenerate},
 	}, false)
-	if !officeComposite.Degraded || officeComposite.Primary != LabelUnknown {
-		t.Fatalf("office composite = %+v, want unknown", officeComposite)
+	if !officeComposite.Degraded || officeComposite.Primary != LabelOffice {
+		t.Fatalf("office composite = %+v, want office hint", officeComposite)
+	}
+	if len(officeComposite.Offered) != 1 || officeComposite.Offered[0] != LabelDocumentGenerate {
+		t.Fatalf("office composite offered = %v", officeComposite.Offered)
 	}
 }
 

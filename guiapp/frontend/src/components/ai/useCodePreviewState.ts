@@ -28,6 +28,11 @@ export interface CodeFile {
     taskResult?: boolean;
     /** Deck identity. Changes when the file is rewritten, not when a page is checked. */
     previewRevision?: string;
+    /**
+     * Remote image cited in chat. Not a workspace path: the preview pane
+     * paints this URL and does not read it from disk.
+     */
+    remoteImageURL?: string;
 }
 
 /**

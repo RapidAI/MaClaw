@@ -125,3 +125,18 @@ func NormalizeDeclaredComposite(result *ClassificationResult) {
 func isLookupIntentLabel(label IntentLabel) bool {
 	return label == LabelSearch || label == LabelLiveData || label == LabelWebFetch
 }
+
+// treeVerdictNamesLookup reports that the tree's own candidate list named a
+// lookup label. That half stays a required effect. A verdict that names only
+// the artifact does not, unless Layer 2 already led with the lookup.
+func treeVerdictNamesLookup(verdict ClassificationResult) bool {
+	if isLookupIntentLabel(verdict.Primary) {
+		return true
+	}
+	for _, label := range verdict.Secondary {
+		if isLookupIntentLabel(label) {
+			return true
+		}
+	}
+	return false
+}

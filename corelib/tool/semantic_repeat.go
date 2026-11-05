@@ -216,6 +216,11 @@ func appendRepeatSibling(plan ToolPlan, prototypeSelectionID string, allowObserv
 	sibling.ConfirmationID = ""
 	sibling.ArtifactDependencies = nil
 	sibling.Consumes = nil
+	// Only the family base is an obligation. Copying Optional from a required
+	// prototype stored the next search as required, and a continuation then
+	// rebuilt it as live_data. The hop already ignores a ceiling; the bit
+	// has to agree so the persisted need does too.
+	sibling.Optional = true
 	for _, selection := range plan.Selections {
 		if selection.ID == sibling.ID || selection.NeedID == sibling.NeedID {
 			return plan, "", false
@@ -793,21 +798,50 @@ func repeatFamilyHasContinuation(plan ToolPlan, family string) bool {
 	return false
 }
 
-// RepeatSelectionIsCompanion reports a selection the planner added as a
-// workspace floor or an archetype companion. The task's own need does not
-// carry these marks, so a raised family that still contains that need stays
-// repeatable.
-func RepeatSelectionIsCompanion(selection PlannedSelection) bool {
-	if strings.Contains(selection.NeedID, "zz-baseline:") || strings.Contains(selection.ID, "zz-baseline:") {
-		return true
-	}
-	for _, evidence := range selection.EvidenceIDs {
+// OfferedCompanionEvidencePrefix marks a lookup the classifier admitted
+// without making it the task. Residue rebuild and the hop-run obligation
+// check share this prefix. A confirmed lookup uses intent:<label> and must
+// not match.
+const OfferedCompanionEvidencePrefix = "intent:offered:"
+
+// EvidenceMarksCompanion reports planner evidence that admits a tool without
+// making it the task: the workspace floor, an archetype bundle, or an
+// unconfirmed lookup offer.
+func EvidenceMarksCompanion(ids []string) bool {
+	for _, evidence := range ids {
 		switch evidence {
 		case "intent:baseline_workspace", "intent:archetype_bundle":
 			return true
 		}
+		if strings.HasPrefix(evidence, OfferedCompanionEvidencePrefix) {
+			return true
+		}
 	}
 	return false
+}
+
+// SelectionCallIsSkippable reports a call the hop does not settle. The
+// search cue uses the same predicate, so a lost Optional bit cannot make
+// the prompt demand a ceiling or an offer the turn will not wait for.
+func SelectionCallIsSkippable(selection PlannedSelection) bool {
+	if selection.Optional || RepeatSelectionIsCompanion(selection) {
+		return true
+	}
+	return IsRepeatCeilingID(selection.NeedID)
+}
+
+// RepeatSelectionIsCompanion reports a selection the planner added as a
+// workspace floor, an archetype companion, or an unconfirmed lookup offer.
+// The task's own need does not carry these marks, so a raised family that
+// still contains that need stays repeatable. Losing the Optional bit must
+// not turn the offer into required_effect_unsettled. Search is continuable,
+// so an offer family that misses this mark opens another call after its
+// published wave and the turn does not settle.
+func RepeatSelectionIsCompanion(selection PlannedSelection) bool {
+	if strings.Contains(selection.NeedID, "zz-baseline:") || strings.Contains(selection.ID, "zz-baseline:") {
+		return true
+	}
+	return EvidenceMarksCompanion(selection.EvidenceIDs)
 }
 
 // repeatFamilyIsCompanionOnly reports that every node in the family is a

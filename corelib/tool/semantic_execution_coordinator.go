@@ -156,6 +156,12 @@ type SurfacePublishRequest struct {
 	Issuer   *InvocationIssuer
 	GrantTTL time.Duration
 	Now      time.Time
+	// SkipReady keeps a selection that is already ready off this publish's
+	// grant closure. The plan revision still contains it. A later refresh
+	// can issue it, because this publish writes no materialization row.
+	// A search batch that is still open uses it so document generation is
+	// not callable in the same assistant message.
+	SkipReady func(PlannedSelection) bool
 }
 
 // PublishSurface atomically publishes a route revision and its initial closed
@@ -297,7 +303,7 @@ func (c *SQLiteSemanticExecutionCoordinator) PublishSurface(request SurfacePubli
 		ON CONFLICT(lineage_key) DO UPDATE SET current_route_key=excluded.current_route_key, current_revision=excluded.current_revision, current_plan_id=excluded.current_plan_id, current_plan_digest=excluded.current_plan_digest, fencing_token=excluded.fencing_token, updated_at=excluded.updated_at`, lineageKey, request.TenantID, request.Revision.Scope.RootTaskID, request.Revision.Scope.SessionID, request.Revision.Scope.PrincipalID, routeKey, revision, request.Revision.Plan.ID, digest, fencingToken, routeStateTime(now)); err != nil {
 		return RouteState{}, nil, err
 	}
-	grants, err := issueSurfaceReadyGrantsTx(tx, request.Issuer, request.Revision.Plan, request.Revision.Scope, request.GrantTTL, completed)
+	grants, err := issueSurfaceReadyGrantsTx(tx, request.Issuer, planOmittingReady(request.Revision.Plan, completed, request.SkipReady), request.Revision.Scope, request.GrantTTL, completed)
 	if err != nil {
 		return RouteState{}, nil, err
 	}
@@ -581,6 +587,30 @@ func exposedMaterializationGrants(state RouteState) []InvocationGrant {
 		}
 	}
 	return grants
+}
+
+// planOmittingReady copies plan without the ready selections skip rejects.
+// Unready selections stay, so a later refresh can still issue them. A nil
+// skip returns plan unchanged.
+func planOmittingReady(plan ToolPlan, completed map[string]bool, skip func(PlannedSelection) bool) ToolPlan {
+	if skip == nil {
+		return plan
+	}
+	ready := map[string]bool{}
+	for _, selection := range plan.ReadySelections(completed) {
+		if selection.ID != "" {
+			ready[selection.ID] = true
+		}
+	}
+	kept := plan
+	kept.Selections = make([]PlannedSelection, 0, len(plan.Selections))
+	for _, selection := range plan.Selections {
+		if ready[selection.ID] && skip(selection) {
+			continue
+		}
+		kept.Selections = append(kept.Selections, selection)
+	}
+	return kept
 }
 
 func issueSurfaceReadyGrantsTx(tx *sql.Tx, issuer *InvocationIssuer, plan ToolPlan, scope InvocationScope, ttl time.Duration, completed map[string]bool) ([]InvocationGrant, error) {

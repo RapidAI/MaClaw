@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetCloudWorkspaceDisplayNamesForTests, rememberCloudWorkspaceDisplayName } from '../codingTaskMode';
-import { composerExpertFromTab, composerWorkspaceKindLabel, SessionWorkingDirChip, truncatePathMiddle, workingDirDisplayLabel } from '../SessionWorkingDirChip';
+import { composerExpertForOpenTab, composerExpertFromTab, composerWorkspaceKindLabel, projectSendExpertId, SessionWorkingDirChip, truncatePathMiddle, workingDirDisplayLabel } from '../SessionWorkingDirChip';
 
 const getTabWorkingDir = vi.fn();
 const setTabWorkingDir = vi.fn();
@@ -199,6 +199,8 @@ describe('SessionWorkingDirChip', () => {
         const badge = screen.getByTestId('composer-expert-badge');
         expect(badge.textContent).toContain('🌐');
         expect(badge.textContent).toContain('论文翻译专家');
+        expect(badge.querySelector('.swdc-expert-key')?.textContent).toBe('专家');
+        expect(badge.querySelector('.swdc-expert-name')?.textContent).toBe('论文翻译专家');
         expect(badge.getAttribute('aria-label')).toBe('专家：论文翻译专家');
         expect(chip.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(screen.queryByText('通用')).toBeNull();
@@ -207,13 +209,73 @@ describe('SessionWorkingDirChip', () => {
         expect((await screen.findByTestId('composer-expert-badge')).textContent).toContain('🤖');
     });
 
-    it('shows an expert only for an expert tab', () => {
+    it('shows an expert for an expert tab and for a task started from one', () => {
         expect(composerExpertFromTab({ type: 'expert', expertId: 'builtin-paper-translate', title: '论文翻译专家', expertIcon: '🌐' })).toEqual({ name: '论文翻译专家', icon: '🌐' });
-        expect(composerExpertFromTab({ type: 'expert', expertId: 'builtin-paper-polish', title: '  ' })).toEqual({ name: 'builtin-paper-polish' });
+        expect(composerExpertFromTab({ type: 'expert', expertId: 'builtin-paper-polish', title: '  ' })).toEqual({ name: 'builtin-paper-polish', icon: '📝' });
+        expect(composerExpertFromTab({ type: 'expert', expertId: 'builtin-paper-translate', title: '论文翻译专家' })).toEqual({ name: '论文翻译专家', icon: '🌐' });
         expect(composerExpertFromTab({ type: 'expert', expertId: '  ', title: '通用' })).toBeNull();
         expect(composerExpertFromTab({ type: 'local', title: '新建任务' })).toBeNull();
         expect(composerExpertFromTab({ type: 'project', title: '编程任务' })).toBeNull();
         expect(composerExpertFromTab(null)).toBeNull();
+        // The task title is the instruction. The badge keeps the persona.
+        expect(composerExpertFromTab({
+            type: 'project',
+            expertId: 'exp-lover',
+            expertName: '恋爱顾问',
+            expertIcon: '💌',
+            title: '你是我的爱人',
+        })).toEqual({ name: '恋爱顾问', icon: '💌' });
+        expect(composerExpertFromTab(
+            { type: 'project', expertId: 'exp-lover', title: '你是我的爱人' },
+            [{ id: 'exp-lover', name: '恋爱顾问', icon: '💌' }],
+        )).toEqual({ name: '恋爱顾问', icon: '💌' });
+        // An unresolved id is not a name, and the instruction is not either.
+        expect(composerExpertFromTab({ type: 'project', expertId: 'exp-lover', title: '你是我的爱人' })).toBeNull();
+        expect(composerExpertFromTab(
+            { type: 'project', expertId: 'exp-lover', title: '你是我的爱人' },
+            [{ id: 'exp-lover', name: 'exp-lover' }],
+        )).toBeNull();
+        // A stamp that only stored the id must not hide the catalog label.
+        expect(composerExpertFromTab(
+            { type: 'project', expertId: 'exp-lover', expertName: 'exp-lover', title: '你是我的爱人' },
+            [{ id: 'exp-lover', name: '恋爱顾问', icon: '💌' }],
+        )).toEqual({ name: '恋爱顾问', icon: '💌' });
+        // A rename already stored on the tab wins over a stale catalog row.
+        expect(composerExpertFromTab(
+            { type: 'project', expertId: 'exp-lover', expertName: '新名字', expertIcon: '✨', title: '你是我的爱人' },
+            [{ id: 'exp-lover', name: '旧名字', icon: '💌' }],
+        )).toEqual({ name: '新名字', icon: '✨' });
+        const tasks = [
+            { project_path: 'D:/tasks/other', tags: ['source:expert:exp-other'], active_workflow: { project_path: 'D:/tasks/lover' } },
+            { project_path: 'D:/tasks/lover', tags: ['source:expert:exp-lover'] },
+        ];
+        expect(composerExpertForOpenTab(
+            { type: 'project', projectPath: 'D:/tasks/lover', title: '你是我的爱人' },
+            tasks,
+            [{ id: 'exp-lover', name: '恋爱顾问', icon: '💌' }, { id: 'exp-other', name: '别人', icon: '📎' }],
+        )).toEqual({ name: '恋爱顾问', icon: '💌' });
+        expect(projectSendExpertId(
+            '',
+            { type: 'project', projectPath: 'D:/tasks/plain', title: '普通任务' },
+            { type: 'project', projectPath: 'D:/tasks/lover', expertId: 'exp-lover' },
+            tasks,
+        )).toBe('');
+        expect(projectSendExpertId(
+            '',
+            undefined,
+            { type: 'project', projectPath: 'D:/tasks/lover', expertId: 'exp-lover' },
+            tasks,
+        )).toBe('exp-lover');
+        expect(composerExpertForOpenTab(
+            { type: 'project', projectPath: 'D:/tasks/lover', title: '你是我的爱人' },
+            [{ project_path: 'd:\\tasks\\lover\\', tags: ['task_management', 'source:expert:exp-lover'] }],
+            [{ id: 'exp-lover', name: '恋爱顾问', icon: '💌' }],
+        )).toEqual({ name: '恋爱顾问', icon: '💌' });
+        expect(composerExpertForOpenTab(
+            { type: 'project', projectPath: 'D:/tasks/copy', title: '你是我的爱人' },
+            [{ project_path: 'D:/tasks/copy', tags: ['source:expert:exp-lover', 'task_copy'] }],
+            [{ id: 'exp-lover', name: '恋爱顾问', icon: '💌' }],
+        )).toBeNull();
     });
 
     it('leaves the folder alone when no expert is assigned', async () => {
@@ -230,7 +292,9 @@ describe('SessionWorkingDirChip', () => {
         // The utility lock must not stretch this text chip, and the chip, the
         // expert mark and the icon buttons must all share one control height.
         expect(css).toMatch(/button\.mc-working-dir-chip,\s*#App \.mc-input-stack button\.mc-working-dir-chip\s*\{[^}]*min-height:\s*var\(--mc-composer-control-height/);
-        expect(css).toMatch(/\.swdc-expert\s*\{[^}]*height:\s*var\(--mc-composer-control-height[^}]*border-radius:\s*var\(--radius-md\)[^}]*var\(--mc-muted-surface,\s*var\(--theme-surface\)\)/);
+        expect(css).toMatch(/\.swdc-expert\s*\{[^}]*height:\s*var\(--mc-composer-control-height[^}]*border-radius:\s*var\(--radius-md\)[^}]*color-mix\(in srgb,\s*var\(--mc-accent\)\s*8%/);
+        expect(css).toMatch(/\.swdc-expert-key\s*\{[^}]*var\(--mc-muted/);
+        expect(css).toMatch(/\.swdc-expert-name\s*\{[^}]*min-width:\s*0/);
         expect(css).toMatch(/--mc-composer-control-height:\s*28px/);
         expect(css).toMatch(/\.swdc-bar\s*\{[^}]*flex:\s*0 0 auto/);
     });

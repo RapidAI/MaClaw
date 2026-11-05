@@ -15,6 +15,64 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
+func TestHopPythonBodyUsesGovernedGUIProvider(t *testing.T) {
+	handler := newHopJITActFreeTestHandler(t)
+	caller := &guiHopJITCaller{
+		handler:  handler,
+		identity: hopJITExecutionIdentity{PrincipalID: "user-a", PolicyOwnerID: "owner-a", SessionID: "session-a", Platform: "desktop"},
+		invoke: func(context.Context, []interface{}, bool) (string, error) {
+			t.Fatal("hop_python body unexpectedly called the model")
+			return "", nil
+		},
+	}
+	result, err := runHopSpecWithPersistence(context.Background(), hopjit.NewMemoryPersistence(), `# Spec: 确定性工具调用
+Goal: body 使用受治理工具
+Outputs:
+- content % text
+## Steps
+1. [act] 读取
+  - Tools: read_file
+  + → content % text
+  > `+"```hop_python"+`
+  > content = read_file(path: "input.md")
+  > `+"```"+`
+`, nil, caller)
+	if err != nil || result.Status != hopjit.NextCompleted || result.Outputs["content"] != "file-content" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestHopPythonBodyRejectsUndeclaredGUITool(t *testing.T) {
+	handler := newHopJITActFreeTestHandler(t)
+	caller := &guiHopJITCaller{
+		handler:  handler,
+		identity: hopJITExecutionIdentity{PrincipalID: "user-a", PolicyOwnerID: "owner-a", SessionID: "session-a", Platform: "desktop"},
+	}
+	result, err := runHopSpecWithPersistence(context.Background(), hopjit.NewMemoryPersistence(), `# Spec: 越权工具调用
+Goal: 未声明工具必须失败
+Outputs:
+- content % text
+## Steps
+1. [act] 读取
+  - Tools: read_file
+  + → content % text
+  > `+"```hop_python"+`
+  > content = write_file(path: "input.md")
+  > `+"```"+`
+`, nil, caller)
+	if err != nil || result.Status != hopjit.NextFailed || result.Failure == nil {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestHopJITActFreeMissingAppReturnsError(t *testing.T) {
+	caller := &guiHopJITCaller{handler: newHopJITActFreeTestHandler(t)}
+	_, err := caller.executeActFree(context.Background(), hopjit.StepReady{StepID: "1", Tools: []string{"read_file"}})
+	if err == nil {
+		t.Fatal("missing app did not return an error")
+	}
+}
+
 func TestHopJITActFreeToolProviderUsesOnlyDeclaredTool(t *testing.T) {
 	handler := newHopJITActFreeTestHandler(t)
 	step := hopjit.StepReady{StepID: "1", Summary: "读取文件", Tools: []string{"read_file"}}
@@ -101,6 +159,7 @@ func TestHopJITActFreeAppUsesDurableExecutionRecords(t *testing.T) {
 	}
 	defer coordinator.Close()
 	handler := newHopJITActFreeTestHandler(t)
+	handler.hopJITResults = newFileHopJITResultStore(t.TempDir())
 	handler.app = &App{
 		semanticExecutionCoordinator: coordinator,
 		semanticPlanExecutionStore:   coordinator.Executions,
@@ -134,8 +193,64 @@ func TestHopJITActFreeAppUsesDurableExecutionRecords(t *testing.T) {
 	if _, err := restarted.Execute(context.Background(), "read_file", map[string]any{"path": "input.md"}); err == nil {
 		t.Fatal("completed execution was invoked again")
 	}
+	step.Recovered = true
+	recovered, _, err := handler.hopJITActFreeToolProvider(step, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := recovered.Execute(context.Background(), "read_file", map[string]any{"path": "input.md"})
+	if err != nil || value != "file-content" {
+		t.Fatalf("recovered value=%v err=%v", value, err)
+	}
 	if calls.Load() != 1 {
 		t.Fatalf("calls=%d", calls.Load())
+	}
+}
+
+func TestHopPythonLoopToolsUseDistinctPersistentIterations(t *testing.T) {
+	coordinator, err := tool.NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	handler := newHopJITActFreeTestHandler(t)
+	handler.hopJITResults = newFileHopJITResultStore(t.TempDir())
+	handler.app = &App{
+		semanticExecutionCoordinator: coordinator,
+		semanticPlanExecutionStore:   coordinator.Executions,
+		semanticInvocationStore:      coordinator.Grants,
+		semanticInvocationKey:        []byte("0123456789abcdef0123456789abcdef"),
+	}
+	var calls atomic.Int32
+	handler.registry.mu.Lock()
+	handler.registry.tools["read_file"].Handler = func(map[string]interface{}) string {
+		calls.Add(1)
+		return "file-content"
+	}
+	handler.registry.mu.Unlock()
+	caller := &guiHopJITCaller{
+		app: handler.app, handler: handler,
+		identity: hopJITExecutionIdentity{PrincipalID: "user-a", PolicyOwnerID: "owner-a", SessionID: "session-a", Platform: "desktop"},
+	}
+	result, err := runHopSpecWithPersistence(context.Background(), hopjit.NewMemoryPersistence(), `# Spec: 循环工具作用域
+Goal: 每轮独立执行
+Inputs:
+- items % [text]
+Outputs:
+- reports % [text]
+## Steps
+1. [loop for-each item in items, collect content into reports]
+  + → reports % [text]
+  1.1. [act] 读取
+    - Tools: read_file
+    + → content % text
+    > `+"```hop_python"+`
+    > content = read_file(path: "input.md")
+    > `+"```"+`
+`, map[string]any{"items": []string{"A", "B"}}, caller)
+	reports, ok := result.Outputs["reports"].([]any)
+	if err != nil || result.Status != hopjit.NextCompleted || calls.Load() != 2 || !ok || len(reports) != 2 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, calls.Load(), err)
 	}
 }
 

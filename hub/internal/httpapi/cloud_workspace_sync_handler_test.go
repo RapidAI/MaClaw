@@ -310,7 +310,7 @@ func TestCloudWorkspaceChunkComplete(t *testing.T) {
 func TestCloudWorkspaceSidecarLeaseGrantAndAllowlist(t *testing.T) {
 	svc, h, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
 	id := createCloudWorkspace(t, h, "m1", "A")
-	body := []byte(`{"name":"标书","mode":"coding_dev","tag":"cloud_workspace:` + id + `"}`)
+	body := []byte(`{"name":"标书","mode":"coding_dev","tag":"cloud_workspace:` + id + `","task_run_status":"running","task_run_phase":"execute"}`)
 	path := "/api/v1/cloud-workspaces/" + id + "/sidecars/" + cloudworkspace.SidecarTask
 	if rec := doCloudWorkspaceBytes(t, h, http.MethodPut, path, "m1", body); rec.Code != http.StatusForbidden || cloudWorkspaceErrCode(t, rec) != "CLOUD_WORKSPACE_LEASE_REQUIRED" {
 		t.Fatalf("put without lease=%d %s", rec.Code, rec.Body.String())
@@ -347,7 +347,7 @@ func TestCloudWorkspaceSidecarLeaseGrantAndAllowlist(t *testing.T) {
 	if err := json.Unmarshal(ent.Body.Bytes(), &grant); err != nil {
 		t.Fatal(err)
 	}
-	if len(grant.Workspaces) != 1 || grant.Workspaces[0].TaskName != "标书" || grant.Workspaces[0].TaskMode != "coding_dev" {
+	if len(grant.Workspaces) != 1 || grant.Workspaces[0].TaskName != "标书" || grant.Workspaces[0].TaskMode != "coding_dev" || grant.Workspaces[0].TaskRunStatus != "running" || grant.Workspaces[0].TaskRunPhase != "execute" {
 		t.Fatalf("entitlement task=%+v", grant.Workspaces)
 	}
 	missing := doCloudWorkspaceBytes(t, h, http.MethodGet, "/api/v1/cloud-workspaces/"+id+"/sidecars/"+cloudworkspace.SidecarSession, "m1", nil)

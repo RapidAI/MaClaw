@@ -23,10 +23,7 @@ func (e *ExecutionEngine) executeCallLocked(ctx context.Context, step *hopspec.S
 			return e.failCallLocked(step, Failure{Kind: FailureError, Reason: err.Error()})
 		}
 	} else {
-		if e.specs == nil {
-			return e.failCallLocked(step, Failure{Kind: FailureDeterministic, Reason: "SPEC_PROVIDER_UNAVAILABLE"})
-		}
-		markdown, err := e.specs.LoadSpec(ctx, step.Call.Callee)
+		markdown, err := e.loadCallSpecLocked(ctx, step.Call.Callee)
 		if err != nil {
 			return e.failCallLocked(step, Failure{Kind: FailureLackOfInfo, Reason: err.Error()})
 		}

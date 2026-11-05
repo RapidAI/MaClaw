@@ -5,7 +5,8 @@
  * - First tab (id="local", type="local") is always present and not closable.
  * - Digital employee tabs have type="ve" and include veId.
  * - Group tabs have type="group" and include participants array.
- * - Expert tabs have type="expert" and include expertId (title holds the expert name).
+ * - Expert tabs have type="expert" and include expertId. The title may be the
+ *   task instruction; expertName holds the persona.
  * - Max 8 digital employee tabs (configurable via maxVETabs).
  */
 /** Tab type discriminator */
@@ -55,8 +56,14 @@ export interface AITab {
     fileWorkspaceId?: string;
     /** Exact external ACP owner. It is unique even when projectPath is shared. */
     sessionKey?: string;
-    /** AI expert ID (required when type="expert"); title carries the expert name. */
+    /**
+     * AI expert persona for this conversation. Required on expert tabs.
+     * A project tab started from an expert keeps it too: the title is the
+     * task instruction, and this id is who answers.
+     */
     expertId?: string;
+    /** Persona label. Independent of the task-instruction title. */
+    expertName?: string;
     /** Workspace-relative LaTeX source owned by this expert tab. */
     latexRelativePath?: string;
     /** Expert emoji badge (only for type="expert"). */

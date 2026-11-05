@@ -116,6 +116,22 @@ func TestTurnRequiredDeliveryCompleteIgnoresOptionalAndRequiresDelivery(t *testi
 	if TurnRequiredDeliveryComplete(ceilingPlan, map[string]bool{"deliver": true}, nil) {
 		t.Fatal("an unproven family base must still gate the turn")
 	}
+	offered := PlannedSelection{
+		ID: "search-offer", NeedID: "need:information.search.web:offered",
+		EvidenceIDs: []string{OfferedCompanionEvidencePrefix + "live_data"},
+		FitProof:    FitProof{MatchedCapability: "information.search.web"},
+	}
+	if !TurnRequiredDeliveryComplete(ToolPlan{Selections: []PlannedSelection{offered, deliver}}, map[string]bool{"deliver": true}, nil) {
+		t.Fatal("an unconfirmed search offer held a delivered turn")
+	}
+	confirmed := PlannedSelection{
+		ID: "search-required", NeedID: "need:information.search.web:required",
+		EvidenceIDs: []string{"intent:live_data"},
+		FitProof:    FitProof{MatchedCapability: "information.search.web"},
+	}
+	if TurnRequiredDeliveryComplete(ToolPlan{Selections: []PlannedSelection{confirmed, deliver}}, map[string]bool{"deliver": true}, nil) {
+		t.Fatal("a confirmed search was released with the offer")
+	}
 }
 
 func TestDocumentGenerateSelectionAndUnissuedReady(t *testing.T) {

@@ -19,6 +19,9 @@ func normalizeSnapshotMaps(snapshot *EngineSnapshot) {
 	if snapshot.Calls == nil {
 		snapshot.Calls = map[string]CallState{}
 	}
+	if snapshot.ResolvedSpecs == nil {
+		snapshot.ResolvedSpecs = map[string]string{}
+	}
 	if snapshot.Inflight == nil {
 		snapshot.Inflight = map[string]InflightCall{}
 	}

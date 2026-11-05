@@ -333,6 +333,10 @@ type semanticReplanInput struct {
 	// from that prefix drops those siblings and the expansion validator
 	// rejects the petition.
 	BaselineWorkspace bool
+	// Petitioned labels were added by earlier petitions. A later petition
+	// re-plans from the primary plus this list, so the previous grant is not
+	// dropped when the new label is the only one the resolver would mint.
+	Petitioned []intent.IntentLabel
 }
 
 type semanticRouteDiagnostic struct {
@@ -1443,19 +1447,11 @@ func semanticNeedsFromClassification(registry *tool.CapabilityRegistry, result i
 }
 
 func semanticBaselineWorkspaceApplies(result intent.ClassificationResult) bool {
-	// "继续查一下天气" keeps the open document as a secondary label. Bash and
-	// write_file belong to an office or shell turn, not to that lookup.
-	switch result.Primary {
-	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch, intent.LabelCurrentTime:
-		return false
-	}
-	for _, label := range result.Labels() {
-		switch label {
-		case intent.LabelOffice, intent.LabelFileRead, intent.LabelFileWrite,
-			intent.LabelShellCommand, intent.LabelDelegateTask, intent.LabelDocumentRead:
-			return true
-		}
-	}
+	// Read, write, and bash used to join every office-shaped managed turn.
+	// A word resume then opened with write_file, and an ordinary question
+	// could see bash in the directory. The first grant wave is the primary
+	// label's own rule. A petition replay still honors the bit it recorded.
+	_ = result
 	return false
 }
 
@@ -1498,6 +1494,58 @@ func semanticNeedsFromClassificationContext(ctx context.Context, registry *tool.
 	resolution, err := resolver.ResolveDynamicCapabilityNeeds(ctx, agentservice.DynamicCapabilityNeedRequest{UserText: "im semantic routing"})
 	if err != nil {
 		return nil, false, err
+	}
+	// A petition names one directory row. That label is not the primary, so
+	// the first-wave resolver leaves it out. The re-plan still has to mint
+	// that label's own rule, and nothing else: ambient retrieval and
+	// companion families would add selections the superset validator rejects.
+	// A petitioned rule may repeat a need the primary already declared.
+	// live_data_visual includes the same current-web search. The planner
+	// rejects that duplicate id; the existing need stays the authority and
+	// the label's new legs (the renderer, the image deliver) still append.
+	seenNeed := make(map[string]bool, len(resolution.Needs))
+	for _, need := range resolution.Needs {
+		if need.ID != "" {
+			seenNeed[need.ID] = true
+		}
+	}
+	for _, label := range semanticPetitionedLabels(ctx) {
+		if label == "" || label == result.Primary {
+			continue
+		}
+		petitioned := result
+		petitioned.Primary = label
+		petitioned.Secondary = nil
+		petitioned.Offered = nil
+		petitioned.Degraded = false
+		if petitioned.Confidence < imSemanticMinimumConfidence {
+			petitioned.Confidence = imSemanticMinimumConfidence
+		}
+		extra := &agentservice.IntentLabelCapabilityNeedResolver{
+			Classifier: imSemanticIntentSource{result: petitioned}, Registry: registry,
+			Rules: imSemanticIntentRuleSet, MinimumConfidence: imSemanticMinimumConfidence,
+		}
+		added, err := extra.ResolveDynamicCapabilityNeeds(ctx, agentservice.DynamicCapabilityNeedRequest{UserText: "im semantic routing"})
+		if err != nil {
+			return nil, false, err
+		}
+		appended := false
+		for _, need := range added.Needs {
+			if need.ID != "" && seenNeed[need.ID] {
+				continue
+			}
+			if need.ID != "" {
+				seenNeed[need.ID] = true
+			}
+			resolution.Needs = append(resolution.Needs, need)
+			appended = true
+		}
+		if appended {
+			resolution.Managed = true
+		}
+	}
+	if len(semanticPetitionedLabels(ctx)) > 0 {
+		sort.Slice(resolution.Needs, func(i, j int) bool { return resolution.Needs[i].ID < resolution.Needs[j].ID })
 	}
 	return resolution.Needs, resolution.Managed, nil
 }
@@ -2099,6 +2147,58 @@ func withSemanticPetitionedLabel(ctx context.Context, label intent.IntentLabel) 
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, semanticPetitionedLabelKey{}, label)
+}
+
+func semanticPetitionedLabel(ctx context.Context) intent.IntentLabel {
+	if ctx == nil {
+		return ""
+	}
+	label, _ := ctx.Value(semanticPetitionedLabelKey{}).(intent.IntentLabel)
+	return label
+}
+
+type semanticPublishSkipKey struct{}
+
+func withSemanticPublishSkip(ctx context.Context, skip func(tool.PlannedSelection) bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, semanticPublishSkipKey{}, skip)
+}
+
+func semanticPublishSkip(ctx context.Context) func(tool.PlannedSelection) bool {
+	if ctx == nil {
+		return nil
+	}
+	skip, _ := ctx.Value(semanticPublishSkipKey{}).(func(tool.PlannedSelection) bool)
+	return skip
+}
+
+type semanticPetitionedLabelsKey struct{}
+
+func withSemanticPetitionedLabels(ctx context.Context, labels []intent.IntentLabel) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(labels) == 0 {
+		return ctx
+	}
+	copied := append([]intent.IntentLabel(nil), labels...)
+	return context.WithValue(ctx, semanticPetitionedLabelsKey{}, copied)
+}
+
+func semanticPetitionedLabels(ctx context.Context) []intent.IntentLabel {
+	if ctx == nil {
+		return nil
+	}
+	labels, _ := ctx.Value(semanticPetitionedLabelsKey{}).([]intent.IntentLabel)
+	if len(labels) > 0 {
+		return labels
+	}
+	if label := semanticPetitionedLabel(ctx); label != "" {
+		return []intent.IntentLabel{label}
+	}
+	return nil
 }
 
 func semanticPetitionedKeep(ctx context.Context) map[tool.CapabilityID]bool {
@@ -5237,7 +5337,9 @@ func (h *IMMessageHandler) publishSemanticChildRevision(requestCtx context.Conte
 	}
 	var state tool.RouteState
 	var initialGrants []tool.InvocationGrant
-	state, initialGrants, err = tool.PublishCurrentSurface(surface.coordinator, surface.routeState, tool.NewSurfacePublishRequest(publishRequest, surface.tenantID, surface.issuer, semanticInvocationGrantTTL, time.Now().UTC()))
+	surfaceRequest := tool.NewSurfacePublishRequest(publishRequest, surface.tenantID, surface.issuer, semanticInvocationGrantTTL, time.Now().UTC())
+	surfaceRequest.SkipReady = semanticPublishSkip(requestCtx)
+	state, initialGrants, err = tool.PublishCurrentSurface(surface.coordinator, surface.routeState, surfaceRequest)
 	if err != nil {
 		return nil, nil, fmt.Errorf("publish semantic replan: %w", err)
 	}
@@ -5277,6 +5379,8 @@ func (h *IMMessageHandler) publishSemanticChildRevision(requestCtx context.Conte
 	var definitions []map[string]interface{}
 	if child.coordinator != nil {
 		definitions, err = visibleSemanticCallSurfaceDefinitions(child)
+	} else if skip := semanticPublishSkip(requestCtx); skip != nil {
+		definitions, err = refreshSemanticCallSurfaceSkipping(child, skip)
 	} else {
 		definitions, err = refreshSemanticCallSurface(child)
 	}
@@ -5306,15 +5410,15 @@ func semanticPetitionTurnID(parentTurnID string, label intent.IntentLabel) strin
 // validator). A name enters this map only when its capability resolves to a
 // rule label whose expansion renders exactly this name — legacy aliases the
 // managed catalog unpublished (list_directory, search_files, edit_file),
-// quarantined capabilities with no rule label (send_im_text), and names with
-// no stable render spelling (trusted document read, tts_local, channel
-// dispatch) stay out and fail closed before any planning work happens.
+// quarantined capabilities with no rule label (send_im_text) stay out and
+// fail closed before any planning work happens.
 var semanticPetitionableCapabilities = map[string]tool.CapabilityID{
 	// Read-only lookup/inspection legs.
 	"web_search":       "information.search.web",
 	"web_fetch":        tool.CapabilityInformationFetchWeb,
 	"current_datetime": "information.current_time",
 	"read_file":        tool.CapabilityFSReadLocal,
+	"read_attachment":  agentservice.CapabilityDocumentRead,
 	"git_status":       tool.CapabilityRepoInspectVCS,
 	"knowledge_search": tool.CapabilityKnowledgeReadLocal,
 	"session_search":   tool.CapabilitySecurityAuditRead,
@@ -5324,35 +5428,40 @@ var semanticPetitionableCapabilities = map[string]tool.CapabilityID{
 	// died because the model could not reach a command runner to craft the
 	// deck itself — may petition one of them once per turn, subject to the
 	// group-policy gate in PetitionToolCall.
-	"bash":                tool.CapabilityShellExecuteLocal,
-	"delegate_task":       tool.CapabilityAgentDelegateSubtask,
-	"download_file":       tool.CapabilityArtifactAcquireRemote,
-	"office":              tool.CapabilityDocumentWriteOffice,
-	"generate_pdf":        "document.generate.file",
-	"send_file":           "artifact.deliver.current_channel",
-	"send_to_im":          "artifact.deliver.specified_target",
-	"screenshot":          "visual.capture.desktop",
-	"open":                tool.CapabilitySystemLaunchLocal,
-	"ssh":                 tool.CapabilityShellExecuteRemoteHost,
-	"browser":             tool.CapabilityBrowserControlWeb,
-	"computer_use":        tool.CapabilityComputerControlDesktop,
-	"write_file":          tool.CapabilityFSWriteLocal,
-	"delete_file":         tool.CapabilityFSDeleteLocal,
-	"git_commit":          tool.CapabilityRepoMutateVCS,
-	"record_audio":        tool.CapabilityAudioCaptureMicrophone,
-	"knowledge_save_text": tool.CapabilityKnowledgeIngestLocal,
-	"knowledge_maintain":  tool.CapabilityKnowledgeAdminMaintenance,
-	"memory":              tool.CapabilityMemoryManageAgent,
-	"task":                tool.CapabilityTaskTrackLocal,
-	"goal":                tool.CapabilityGoalManageLongRunning,
-	"manage_template":     tool.CapabilityTemplateManageSession,
-	"list_sessions":       tool.CapabilitySessionManageCoding,
-	"manage_schedule":     tool.CapabilityScheduleAdministerLocal,
-	"manage_config":       tool.CapabilityConfigManageSelf,
-	"mis_data":            tool.CapabilityBusinessDataMIS,
-	"database":            tool.CapabilityBusinessDataMIS,
-	"database_query":      tool.CapabilityBusinessDataRead,
-	"mailbox_query":       tool.CapabilityMessageReadMailbox,
+	"bash":                               tool.CapabilityShellExecuteLocal,
+	"build_verify":                       tool.CapabilityBuildVerifyLocal,
+	"delegate_task":                      tool.CapabilityAgentDelegateSubtask,
+	"download_file":                      tool.CapabilityArtifactAcquireRemote,
+	"office":                             tool.CapabilityDocumentWriteOffice,
+	"generate_pdf":                       "document.generate.file",
+	"send_file":                          "artifact.deliver.current_channel",
+	"send_to_im":                         "artifact.deliver.specified_target",
+	"screenshot":                         "visual.capture.desktop",
+	semanticTrustedLiveDataVisualAdapter: "visual.render.live_data",
+	"open":                               tool.CapabilitySystemLaunchLocal,
+	"ssh":                                tool.CapabilityShellExecuteRemoteHost,
+	"browser":                            tool.CapabilityBrowserControlWeb,
+	"computer_use":                       tool.CapabilityComputerControlDesktop,
+	"write_file":                         tool.CapabilityFSWriteLocal,
+	"delete_file":                        tool.CapabilityFSDeleteLocal,
+	"git_commit":                         tool.CapabilityRepoMutateVCS,
+	"record_audio":                       tool.CapabilityAudioCaptureMicrophone,
+	"tts_render":                         tool.CapabilityAudioRenderSpeech,
+	"tts_local":                          tool.CapabilityAudioSynthesizeLocal,
+	"knowledge_save_text":                tool.CapabilityKnowledgeIngestLocal,
+	"knowledge_maintain":                 tool.CapabilityKnowledgeAdminMaintenance,
+	"memory":                             tool.CapabilityMemoryManageAgent,
+	"task":                               tool.CapabilityTaskTrackLocal,
+	"goal":                               tool.CapabilityGoalManageLongRunning,
+	"manage_template":                    tool.CapabilityTemplateManageSession,
+	"list_sessions":                      tool.CapabilitySessionManageCoding,
+	"manage_schedule":                    tool.CapabilityScheduleAdministerLocal,
+	"schedule_dispatch":                  tool.CapabilityScheduleDispatchChannel,
+	"manage_config":                      tool.CapabilityConfigManageSelf,
+	"mis_data":                           tool.CapabilityBusinessDataMIS,
+	"database":                           tool.CapabilityBusinessDataMIS,
+	"database_query":                     tool.CapabilityBusinessDataRead,
+	"mailbox_query":                      tool.CapabilityMessageReadMailbox,
 	// Mailbox mutations join the petition inventory because the planner can
 	// render all three from their rule labels and each carries its own
 	// deterministic gate: send and delete freeze a draft that only the user's
@@ -5481,6 +5590,10 @@ func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.
 	if !classificationHasLabel(expanded, label) {
 		expanded.Secondary = append(append([]intent.IntentLabel(nil), expanded.Secondary...), label)
 	}
+	// The directory already admitted this name. A degraded lookup hint must
+	// not fail the re-plan closed: the petition is the explicit mint, and
+	// the resolver still adds only this label's own rule.
+	expanded = semanticLookupClassificationForPlanning(expanded)
 	// The expansion adds exactly the petitioned label's template legs. The
 	// archetype bundle must NOT re-derive from the expanded classification —
 	// a petitioned office/document_generate label would otherwise swap the
@@ -5493,7 +5606,8 @@ func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.
 	// to repeat the expression, so a later edit could record a ceiling the
 	// planner did not apply.
 	keepBaseline := input.BaselineWorkspace || semanticPlanHasBaseline(surface.plan)
-	planCtx := withSemanticPetitionedLabel(withSemanticSlimOffice(withSemanticPetitionBaseline(withSemanticPetitionExpansion(withSemanticArchetypeBundleKeyOverride(requestCtx, bundleKey)), keepBaseline), input.SlimOffice, input.ShortDocumentEdit), label)
+	petitionedLabels := append(append([]intent.IntentLabel(nil), input.Petitioned...), label)
+	planCtx := withSemanticPetitionedLabels(withSemanticPetitionedLabel(withSemanticSlimOffice(withSemanticPetitionBaseline(withSemanticPetitionExpansion(withSemanticArchetypeBundleKeyOverride(requestCtx, bundleKey)), keepBaseline), input.SlimOffice, input.ShortDocumentEdit), label), petitionedLabels)
 	planCtx = withSemanticPetitionParentFamilies(planCtx, surface.plan)
 	// The light execution layer denies document.generate.file so a lookup
 	// cannot grow a PDF by itself. This petition already passed the host
@@ -5533,7 +5647,7 @@ func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.
 		childShortEdit = true
 	}
 	return h.publishSemanticChildRevision(requestCtx, surface, prepared,
-		&semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: expanded, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts, BundleKey: bundleKey, SlimOffice: input.SlimOffice, ShortDocumentEdit: childShortEdit, BaselineWorkspace: keepBaseline},
+		&semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: expanded, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts, BundleKey: bundleKey, SlimOffice: input.SlimOffice, ShortDocumentEdit: childShortEdit, BaselineWorkspace: keepBaseline, Petitioned: petitionedLabels},
 		"petition", "petition_expand:"+strings.TrimSpace(string(label)))
 }
 

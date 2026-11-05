@@ -15,8 +15,8 @@ import (
 )
 
 func TestParseTaskSidecar(t *testing.T) {
-	got := ParseTaskSidecar([]byte(`{"name":"跨设备任务","mode":"coding_dev","tag":"cloud_workspace:cws_1"}`))
-	if got.Name != "跨设备任务" || got.Mode != "coding_dev" || got.Tag != "cloud_workspace:cws_1" {
+	got := ParseTaskSidecar([]byte(`{"name":"跨设备任务","mode":"coding_dev","tag":"cloud_workspace:cws_1","task_run_status":" running ","task_run_phase":"execute","task_run_pending_review":true}`))
+	if got.Name != "跨设备任务" || got.Mode != "coding_dev" || got.Tag != "cloud_workspace:cws_1" || got.RunStatus != "running" || got.RunPhase != "execute" || !got.RunPendingReview {
 		t.Fatalf("got=%+v", got)
 	}
 	if empty := ParseTaskSidecar(nil); empty.Name != "" || empty.Mode != "" {

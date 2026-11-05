@@ -1,5 +1,7 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import { localizeText } from "./aiAssistantI18n";
+import { Z } from "../ui/zIndex";
 import { relativeLuminance, type Theme } from "./aiAssistantPanelTheme";
 import { chatCodeWellStyle, codeFenceInnerStyle, codeFenceScrollUnderLangStyle } from "./assistantCodeFence";
 import { copyTextToClipboard } from "./AssistantReplyCopyButton";
@@ -144,6 +146,203 @@ export function scaleMermaidSvg(svg: string, zoom: number): string {
     }
 
     return svg.slice(0, offset) + next + tail;
+}
+
+/** One arrow-key nudge in the full-screen preview, in CSS pixels. */
+export const MERMAID_PREVIEW_PAN_STEP = 48;
+
+/** Keep at least this much of the scaled drawing inside the stage. */
+export const MERMAID_PREVIEW_PAN_MARGIN = 64;
+
+/** Pixel delta that counts as one zoom step. A mouse notch is about this big; a trackpad tick is much smaller. */
+export const MERMAID_WHEEL_NOTCH = 100;
+
+/** Drop a half-finished wheel gesture after this gap, so the next one does not inherit it. */
+const MERMAID_WHEEL_GAP_MS = 200;
+
+const PREVIEW_KEY_PAN: Record<string, [number, number]> = {
+    ArrowLeft: [MERMAID_PREVIEW_PAN_STEP, 0],
+    ArrowRight: [-MERMAID_PREVIEW_PAN_STEP, 0],
+    ArrowUp: [0, MERMAID_PREVIEW_PAN_STEP],
+    ArrowDown: [0, -MERMAID_PREVIEW_PAN_STEP],
+};
+
+type MermaidPan = { x: number; y: number };
+
+/** Move the full-screen drawing by a pointer or key delta. */
+export function shiftMermaidPreviewPan(pan: MermaidPan, dx: number, dy: number): MermaidPan {
+    return { x: round2(pan.x + dx), y: round2(pan.y + dy) };
+}
+
+/**
+ * Pan that keeps the same content point fixed while zoom changes.
+ *
+ * The transform is `translate(pan) scale(zoom)` around the stage center, so a
+ * button zoom (no anchor) scales the existing pan and the center stays put.
+ * A wheel zoom passes the cursor relative to that center and holds the point
+ * under the cursor.
+ */
+export function panForMermaidZoom(pan: MermaidPan, fromZoom: number, toZoom: number, anchor?: MermaidPan): MermaidPan {
+    if (!(fromZoom > 0) || !(toZoom > 0) || fromZoom === toZoom) return pan;
+    const ratio = toZoom / fromZoom;
+    if (!anchor) return { x: round2(pan.x * ratio), y: round2(pan.y * ratio) };
+    return {
+        x: round2(anchor.x * (1 - ratio) + pan.x * ratio),
+        y: round2(anchor.y * (1 - ratio) + pan.y * ratio),
+    };
+}
+
+/**
+ * How big the drawing is when it meets inside the stage at zoom 1.
+ *
+ * A tall chart letterboxes on the sides. Clamping as if the ink filled the
+ * stage would let a drag slide that chart into the empty margin and off screen.
+ * Missing viewBox falls back to the stage itself.
+ */
+export function mermaidPreviewInkSize(stageWidth: number, stageHeight: number, viewBoxWidth: number, viewBoxHeight: number): { width: number; height: number } {
+    if (!(stageWidth > 0) || !(stageHeight > 0)) return { width: 0, height: 0 };
+    if (!(viewBoxWidth > 0) || !(viewBoxHeight > 0)) return { width: stageWidth, height: stageHeight };
+    const scale = Math.min(stageWidth / viewBoxWidth, stageHeight / viewBoxHeight);
+    return { width: viewBoxWidth * scale, height: viewBoxHeight * scale };
+}
+
+/**
+ * Stop a drag from parking the drawing completely outside the stage.
+ *
+ * `inkWidth` / `inkHeight` are the zoom-1 meet size. They default to the
+ * stage, which is the right answer when the drawing fills the box. A zero
+ * stage (jsdom has no layout) skips the clamp: there is no box to measure,
+ * and inventing one would throw away a real pointer delta.
+ */
+export function clampMermaidPreviewPan(pan: MermaidPan, zoom: number, stageWidth: number, stageHeight: number, inkWidth = 0, inkHeight = 0): MermaidPan {
+    if (!(stageWidth > 0) || !(stageHeight > 0) || !(zoom > 0)) return pan;
+    const inkW = inkWidth > 0 ? inkWidth : stageWidth;
+    const inkH = inkHeight > 0 ? inkHeight : stageHeight;
+    const limit = (ink: number, stage: number) => {
+        const room = (ink * zoom + stage) / 2 - MERMAID_PREVIEW_PAN_MARGIN;
+        return room > 0 ? room : 0;
+    };
+    const limitX = limit(inkW, stageWidth);
+    const limitY = limit(inkH, stageHeight);
+    return {
+        x: round2(Math.min(limitX, Math.max(-limitX, pan.x))),
+        y: round2(Math.min(limitY, Math.max(-limitY, pan.y))),
+    };
+}
+
+/**
+ * Turn a wheel stream into zoom steps.
+ *
+ * One browser event is one step today if we trust its sign. A trackpad sends
+ * dozens of those for a short flick and the drawing slams into the zoom limit.
+ * Steps fall out once the accumulated pixels cross a mouse-notch, and the
+ * leftover stays for the next event in the same gesture. Positive steps zoom in.
+ */
+export function consumeMermaidWheel(accumulated: number, delta: number): { accumulated: number; steps: number } {
+    if (!Number.isFinite(accumulated)) accumulated = 0;
+    if (!Number.isFinite(delta) || delta === 0) return { accumulated, steps: 0 };
+    let next = accumulated + delta;
+    let steps = 0;
+    while (next <= -MERMAID_WHEEL_NOTCH) {
+        steps += 1;
+        next += MERMAID_WHEEL_NOTCH;
+    }
+    while (next >= MERMAID_WHEEL_NOTCH) {
+        steps -= 1;
+        next -= MERMAID_WHEEL_NOTCH;
+    }
+    return { accumulated: next, steps };
+}
+
+function wheelDeltaPixels(delta: number, deltaMode: number, pageSpan: number): number {
+    if (deltaMode === 1) return delta * 16;
+    if (deltaMode === 2) return delta * (pageSpan > 0 ? pageSpan : 800);
+    return delta;
+}
+
+const SVG_ID = /^[A-Za-z_][\w.:-]*$/;
+
+/**
+ * Give a copied diagram its own ids.
+ *
+ * The preview inserts a second copy of the chat SVG. Shared ids make
+ * `url(#marker)` and the `#id` rules inside the drawing resolve against
+ * whichever copy came first, so arrowheads and reinforced ink follow the
+ * wrong diagram. Longest ids go first, and a hyphen is not a boundary, so
+ * renaming `mermaid-1` cannot chew into `mermaid-1-marker`.
+ */
+export function namespaceSvgIds(svg: string, suffix: string): string {
+    if (!suffix || !/^[\w-]+$/.test(suffix)) return svg;
+    const ids = new Set<string>();
+    const idPattern = /\sid="([^"]+)"/g;
+    let found: RegExpExecArray | null;
+    while ((found = idPattern.exec(svg))) {
+        if (SVG_ID.test(found[1])) ids.add(found[1]);
+    }
+    if (ids.size === 0) return svg;
+    // Left-first alternation, so the longer id has to be listed first or
+    // `mermaid-1` matches inside `mermaid-1-marker`.
+    const ordered = [...ids].sort((a, b) => b.length - a.length);
+    const renamed = new Map(ordered.map((id) => [id, `${id}-${suffix}`]));
+    const escapeId = (id: string) => id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    let next = svg.replace(/\sid="([^"]+)"/g, (full, id: string) => {
+        const name = renamed.get(id);
+        if (!name) return full;
+        return `${full.slice(0, full.length - id.length - 1)}${name}"`;
+    });
+    const hashPattern = new RegExp(`#(?:${ordered.map(escapeId).join("|")})(?![A-Za-z0-9_.:-])`, "g");
+    next = next.replace(hashPattern, (hash) => `#${renamed.get(hash.slice(1))}`);
+    return next;
+}
+
+function stageBoxOf(node: HTMLElement | null): { left: number; top: number; width: number; height: number } {
+    const rect = node?.getBoundingClientRect();
+    return {
+        left: rect?.left ?? 0,
+        top: rect?.top ?? 0,
+        width: rect?.width ?? 0,
+        height: rect?.height ?? 0,
+    };
+}
+
+/**
+ * Fit a diagram to the preview stage.
+ *
+ * The chat zoom is a percentage of the reading column. The preview stage is
+ * the whole window, so the drawing meets inside that box (letterboxed) and
+ * later zoom is a transform on top of this fit. Mermaid's max-width cap would
+ * otherwise leave a wide chart as a small island in the middle of the screen.
+ */
+export function fitMermaidPreviewSvg(svg: string): string {
+    const open = svg.match(/<svg\b[^>]*>/);
+    if (!open || open.index === undefined) return svg;
+    let root = open[0];
+    const styleText = root.match(/style="([^"]*)"/)?.[1] ?? "";
+    const keptStyle = styleText
+        .split(";")
+        .map((part) => part.trim())
+        .filter((part) => part && !/^(?:max-)?(?:width|height)\s*:/i.test(part) && !/^aspect-ratio\s*:/i.test(part) && !/^display\s*:/i.test(part));
+    const styleValue = [...keptStyle, "display: block"].join("; ");
+    if (/style="/.test(root)) {
+        root = styleValue
+            ? root.replace(/style="[^"]*"/, `style="${styleValue}"`)
+            : root.replace(/\sstyle="[^"]*"/, "");
+    } else if (styleValue) {
+        root = root.replace(/<svg\b/, `<svg style="${styleValue}"`);
+    }
+    if (/\swidth="/.test(root)) root = root.replace(/\swidth="[^"]*"/, ' width="100%"');
+    else root = root.replace(/<svg\b/, '<svg width="100%"');
+    if (/\sheight="/.test(root)) root = root.replace(/\sheight="[^"]*"/, ' height="100%"');
+    else root = root.replace(/<svg\b/, '<svg height="100%"');
+    // The stage is a box and the drawing meets inside it. An existing `none`
+    // would stretch the chart to that box while the pan limit still assumes
+    // the viewBox fit, so the two would disagree about where the ink is.
+    if (/\spreserveAspectRatio="/.test(root)) {
+        root = root.replace(/\spreserveAspectRatio="[^"]*"/, ' preserveAspectRatio="xMidYMid meet"');
+    } else {
+        root = root.replace(/<svg\b/, '<svg preserveAspectRatio="xMidYMid meet"');
+    }
+    return svg.slice(0, open.index) + root + svg.slice(open.index + open[0].length);
 }
 
 function mermaidZoomBarStyle(t: Theme): React.CSSProperties {
@@ -863,6 +1062,411 @@ function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
     });
 }
 
+type PreviewShellStyle = React.CSSProperties & {
+    WebkitAppRegion?: "no-drag";
+    "--wails-draggable"?: "no-drag";
+};
+
+// Two charts can be open at once. The first one to close must not hand the
+// page its scrollbar back while the other is still covering the screen.
+let previewScrollLocks = 0;
+let previewScrollRestore: { body: string; html: string } | null = null;
+
+function lockPreviewScroll(): () => void {
+    const html = document.documentElement;
+    if (previewScrollLocks === 0) {
+        previewScrollRestore = { body: document.body.style.overflow, html: html.style.overflow };
+        document.body.style.overflow = html.style.overflow = "hidden";
+    }
+    previewScrollLocks += 1;
+    let released = false;
+    return () => {
+        if (released) return;
+        released = true;
+        previewScrollLocks = Math.max(0, previewScrollLocks - 1);
+        if (previewScrollLocks > 0 || !previewScrollRestore) return;
+        document.body.style.overflow = previewScrollRestore.body;
+        html.style.overflow = previewScrollRestore.html;
+        previewScrollRestore = null;
+    };
+}
+
+/**
+ * Full-screen diagram viewer. Zoom stays on the canvas transform so the
+ * drawing can also be dragged and nudged with the arrow keys. The corner
+ * close control is the same dismiss the other preview panels use.
+ */
+function MermaidDiagramPreview({ svg, theme, lang, onClose }: { svg: string; theme: Theme; lang: string; onClose: () => void }) {
+    const [zoom, setZoom] = React.useState(DEFAULT_MERMAID_ZOOM);
+    const [pan, setPan] = React.useState({ x: 0, y: 0 });
+    const [panning, setPanning] = React.useState(false);
+    const dialogRef = React.useRef<HTMLDivElement>(null);
+    const closeRef = React.useRef<HTMLButtonElement>(null);
+    const stageRef = React.useRef<HTMLDivElement>(null);
+    const dragRef = React.useRef<{ pointerId: number; x: number; y: number; panX: number; panY: number; lastX: number; lastY: number } | null>(null);
+    // Handlers read these instead of render state, so a second wheel tick
+    // before paint still zooms from the value the first tick committed.
+    const zoomRef = React.useRef(DEFAULT_MERMAID_ZOOM);
+    const panRef = React.useRef({ x: 0, y: 0 });
+    const viewBoxRef = React.useRef(mermaidViewBoxSize(svg));
+    // Filled by the layout measure. Wheel zoom reads it instead of forcing
+    // layout on every trackpad tick.
+    const stageSizeRef = React.useRef({ left: 0, top: 0, width: 0, height: 0, inkW: 0, inkH: 0 });
+    const wheelRef = React.useRef({ accumulated: 0, at: 0 });
+    const previewSuffix = React.useRef(`p${Math.random().toString(36).slice(2, 8)}`);
+    const fitted = React.useMemo(
+        () => namespaceSvgIds(fitMermaidPreviewSvg(svg), previewSuffix.current),
+        [svg],
+    );
+    const diagramTheme = getMermaidTheme(theme).themeVariables;
+    const previewTitle = localizeText(lang, "Diagram preview", "图表预览", "圖表預覽");
+    const closeLabel = localizeText(lang, "Close", "关闭", "關閉");
+    const zoomGroupLabel = localizeText(lang, "Diagram zoom", "图表缩放", "圖表縮放");
+    const zoomOutLabel = localizeText(lang, "Zoom out", "缩小图表", "縮小圖表");
+    const zoomInLabel = localizeText(lang, "Zoom in", "放大图表", "放大圖表");
+    const zoomResetLabel = localizeText(lang, "Reset diagram size", "重置图表大小", "重設圖表大小");
+    const diagramLabel = localizeText(lang, "Mermaid diagram", "Mermaid 图表", "Mermaid 圖表");
+    const shellStyle = React.useMemo(() => ({
+        zIndex: Z.topmost,
+        "--amd-preview-bg": theme.bg,
+        "--amd-preview-paper": theme.fieldBg,
+        "--amd-preview-text": theme.text,
+        "--amd-preview-muted": theme.textMuted,
+        "--amd-preview-line": theme.divider,
+        "--amd-preview-bar": theme.titleBarBg,
+        WebkitAppRegion: "no-drag",
+        "--wails-draggable": "no-drag",
+    }) as PreviewShellStyle, [theme.bg, theme.divider, theme.fieldBg, theme.text, theme.textMuted, theme.titleBarBg]);
+    const canvasStyle: React.CSSProperties = {
+        transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+    };
+    const diagramStyle = React.useMemo(() => ({
+        color: theme.text,
+        "--amd-ink": diagramTheme.primaryTextColor,
+        "--amd-line": diagramTheme.lineColor,
+        "--amd-paper": theme.fieldBg,
+        "--amd-chip": diagramTheme.secondaryColor,
+    }) as React.CSSProperties, [diagramTheme.lineColor, diagramTheme.primaryTextColor, diagramTheme.secondaryColor, theme.fieldBg, theme.text]);
+
+    const clampPan = React.useCallback((next: MermaidPan, atZoom: number) => {
+        const size = stageSizeRef.current;
+        return clampMermaidPreviewPan(next, atZoom, size.width, size.height, size.inkW, size.inkH);
+    }, []);
+    // A zoom, an arrow nudge, or a clamp changes the pan without a new
+    // pointer-down. The next move has to continue from that pan and from
+    // where the finger is now. Rebuilding from the original pointer-down
+    // would throw the nudge away, and dropping the drag would freeze the
+    // drawing until the finger lifts and presses again.
+    const rebaseDrag = React.useCallback((next: MermaidPan) => {
+        const drag = dragRef.current;
+        if (!drag) return;
+        drag.panX = next.x;
+        drag.panY = next.y;
+        drag.x = drag.lastX;
+        drag.y = drag.lastY;
+    }, []);
+    const applyPan = React.useCallback((next: MermaidPan) => {
+        const clamped = clampPan(next, zoomRef.current);
+        rebaseDrag(clamped);
+        if (clamped.x === panRef.current.x && clamped.y === panRef.current.y) return;
+        panRef.current = clamped;
+        setPan(clamped);
+    }, [clampPan, rebaseDrag]);
+    const applyZoom = React.useCallback((direction: 1 | -1, anchor?: MermaidPan) => {
+        const current = zoomRef.current;
+        const nextZoom = stepMermaidZoom(current, direction);
+        if (nextZoom === current) return;
+        const nextPan = clampPan(panForMermaidZoom(panRef.current, current, nextZoom, anchor), nextZoom);
+        zoomRef.current = nextZoom;
+        panRef.current = nextPan;
+        rebaseDrag(nextPan);
+        setZoom(nextZoom);
+        setPan(nextPan);
+    }, [clampPan, rebaseDrag]);
+    const releaseDragCapture = React.useCallback(() => {
+        const drag = dragRef.current;
+        const stage = stageRef.current;
+        if (!drag || !stage || stage.hasPointerCapture?.(drag.pointerId) !== true) return;
+        try { stage.releasePointerCapture(drag.pointerId); } catch { /* already released */ }
+    }, []);
+    const resetView = React.useCallback(() => {
+        // The pointer may still be down (a second finger tapped the percent).
+        // Dropping the drag without releasing capture leaves the stage grabbing
+        // every later click on the page.
+        releaseDragCapture();
+        dragRef.current = null;
+        setPanning(false);
+        zoomRef.current = DEFAULT_MERMAID_ZOOM;
+        panRef.current = { x: 0, y: 0 };
+        setZoom(DEFAULT_MERMAID_ZOOM);
+        setPan({ x: 0, y: 0 });
+    }, [releaseDragCapture]);
+    const endPan = React.useCallback(() => {
+        dragRef.current = null;
+        setPanning(false);
+    }, []);
+
+    React.useLayoutEffect(() => {
+        viewBoxRef.current = mermaidViewBoxSize(svg);
+        const node = stageRef.current;
+        if (!node) return;
+        // Measured once per resize. Reading the box on every pointer move
+        // forces layout while the drawing is already being transformed.
+        const measure = () => {
+            const box = stageBoxOf(node);
+            const ink = mermaidPreviewInkSize(box.width, box.height, viewBoxRef.current.width, viewBoxRef.current.height);
+            stageSizeRef.current = { left: box.left, top: box.top, width: box.width, height: box.height, inkW: ink.width, inkH: ink.height };
+            const clamped = clampMermaidPreviewPan(panRef.current, zoomRef.current, box.width, box.height, ink.width, ink.height);
+            const drag = dragRef.current;
+            if (drag) {
+                drag.panX = clamped.x;
+                drag.panY = clamped.y;
+                drag.x = drag.lastX;
+                drag.y = drag.lastY;
+            }
+            if (clamped.x === panRef.current.x && clamped.y === panRef.current.y) return;
+            panRef.current = clamped;
+            setPan(clamped);
+        };
+        measure();
+        if (typeof ResizeObserver !== "function") return;
+        try {
+            const observer = new ResizeObserver(measure);
+            observer.observe(node);
+            return () => observer.disconnect();
+        } catch {
+            return;
+        }
+    }, [svg]);
+
+    React.useEffect(() => {
+        const previouslyFocused = document.activeElement as HTMLElement | null;
+        closeRef.current?.focus();
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key !== "Escape" && event.key !== "Tab" && !PREVIEW_KEY_PAN[event.key]) return;
+            // Portaled later means painted on top. The chart underneath must
+            // not steal the nudge or close in the same keypress.
+            const open = document.querySelectorAll("[data-testid='assistant-mermaid-preview']");
+            if (open.length > 0 && open[open.length - 1] !== dialogRef.current) return;
+            if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                onClose();
+                return;
+            }
+            // ArrowLeft moves the drawing right, which brings the left side
+            // into view. The other arrows follow the same "reveal that edge" rule.
+            const step = PREVIEW_KEY_PAN[event.key];
+            if (step) {
+                event.preventDefault();
+                event.stopPropagation();
+                applyPan(shiftMermaidPreviewPan(panRef.current, step[0], step[1]));
+                return;
+            }
+            if (event.key !== "Tab") return;
+            const controls = Array.from(dialogRef.current?.querySelectorAll<HTMLButtonElement>("button:not([disabled])") || []);
+            if (controls.length === 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const current = controls.indexOf(document.activeElement as HTMLButtonElement);
+            const next = event.shiftKey
+                ? controls[(current <= 0 ? controls.length : current) - 1]
+                : controls[(current + 1) % controls.length];
+            next.focus();
+        };
+        document.addEventListener("keydown", onKey, true);
+        const unlockScroll = lockPreviewScroll();
+        return () => {
+            document.removeEventListener("keydown", onKey, true);
+            unlockScroll();
+            if (!previouslyFocused || previouslyFocused === document.body) return;
+            if (previouslyFocused.isConnected) previouslyFocused.focus();
+        };
+    }, [onClose, applyPan]);
+
+    React.useEffect(() => {
+        const node = dialogRef.current;
+        if (!node) return;
+        const onWheel = (event: WheelEvent) => {
+            // A sideways swipe still has a default action (scroll the page,
+            // or step history). Zoom only uses the vertical part.
+            if (event.deltaX === 0 && event.deltaY === 0) return;
+            if (event.cancelable) event.preventDefault();
+            const size = stageSizeRef.current;
+            const delta = wheelDeltaPixels(event.deltaY, event.deltaMode, size.height);
+            if (delta === 0) return;
+            const now = performance.now();
+            if (wheelRef.current.at > 0 && now - wheelRef.current.at > MERMAID_WHEEL_GAP_MS) {
+                wheelRef.current.accumulated = 0;
+            }
+            wheelRef.current.at = now;
+            const consumed = consumeMermaidWheel(wheelRef.current.accumulated, delta);
+            wheelRef.current.accumulated = consumed.accumulated;
+            if (consumed.steps === 0) return;
+            // A wheel over the title bar is still a zoom, but that point is
+            // not on the drawing. Anchoring there shoves the chart away from
+            // the cursor. Outside the stage, zoom around the center.
+            const overStage = size.width > 0 && size.height > 0
+                && event.clientX >= size.left && event.clientX <= size.left + size.width
+                && event.clientY >= size.top && event.clientY <= size.top + size.height;
+            const anchor = overStage
+                ? {
+                    x: event.clientX - (size.left + size.width / 2),
+                    y: event.clientY - (size.top + size.height / 2),
+                }
+                : undefined;
+            const direction: 1 | -1 = consumed.steps > 0 ? 1 : -1;
+            for (let i = 0; i < Math.abs(consumed.steps); i += 1) applyZoom(direction, anchor);
+        };
+        node.addEventListener("wheel", onWheel, { passive: false });
+        return () => node.removeEventListener("wheel", onWheel);
+    }, [applyZoom]);
+
+    React.useEffect(() => {
+        if (!panning) return;
+        const onPointerEnd = (event: PointerEvent) => {
+            const drag = dragRef.current;
+            if (drag && event.pointerId !== drag.pointerId) return;
+            endPan();
+        };
+        window.addEventListener("pointerup", onPointerEnd);
+        window.addEventListener("pointercancel", onPointerEnd);
+        return () => {
+            window.removeEventListener("pointerup", onPointerEnd);
+            window.removeEventListener("pointercancel", onPointerEnd);
+        };
+    }, [panning, endPan]);
+
+    const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (event.button !== 0 || dragRef.current) return;
+        event.preventDefault();
+        dragRef.current = {
+            pointerId: event.pointerId,
+            x: event.clientX,
+            y: event.clientY,
+            panX: panRef.current.x,
+            panY: panRef.current.y,
+            lastX: event.clientX,
+            lastY: event.clientY,
+        };
+        setPanning(true);
+        try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* jsdom has no live pointer */ }
+    };
+    const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+        const drag = dragRef.current;
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        // A trusted move with no button means the mouse was released outside
+        // the stage and capture did not catch it. Touch contact often reports
+        // buttons as 0 while the finger is still down; capture is what keeps
+        // that drag alive. Test events are untrusted, so they still drag.
+        const captured = event.currentTarget.hasPointerCapture?.(event.pointerId) === true;
+        if (event.nativeEvent.isTrusted && event.buttons === 0 && !captured) {
+            endPan();
+            return;
+        }
+        drag.lastX = event.clientX;
+        drag.lastY = event.clientY;
+        applyPan(shiftMermaidPreviewPan(
+            { x: drag.panX, y: drag.panY },
+            event.clientX - drag.x,
+            event.clientY - drag.y,
+        ));
+    };
+    const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+        const drag = dragRef.current;
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+            try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+        }
+        endPan();
+    };
+    const onPointerCancel = (event: React.PointerEvent<HTMLDivElement>) => {
+        const drag = dragRef.current;
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        endPan();
+    };
+
+    const preview = (
+        <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={previewTitle}
+            data-testid="assistant-mermaid-preview"
+            className="amd-preview"
+            style={shellStyle}
+            ref={dialogRef}
+        >
+            <div className="amd-preview-header">
+                <div className="amd-preview-title" data-testid="assistant-mermaid-preview-title">{previewTitle}</div>
+                <div className="amd-preview-controls">
+                    <div role="group" aria-label={zoomGroupLabel} style={mermaidZoomBarStyle(theme)}>
+                        <MermaidZoomButton
+                            testId="assistant-mermaid-preview-zoom-out"
+                            label={zoomOutLabel}
+                            disabled={zoom <= MIN_MERMAID_ZOOM}
+                            onClick={() => applyZoom(-1)}
+                            theme={theme}
+                        >
+                            {"−"}
+                        </MermaidZoomButton>
+                        <MermaidZoomButton
+                            testId="assistant-mermaid-preview-zoom-reset"
+                            label={zoomResetLabel}
+                            onClick={resetView}
+                            theme={theme}
+                        >
+                            {`${Math.round(zoom * 100)}%`}
+                        </MermaidZoomButton>
+                        <MermaidZoomButton
+                            testId="assistant-mermaid-preview-zoom-in"
+                            label={zoomInLabel}
+                            disabled={zoom >= MAX_MERMAID_ZOOM}
+                            onClick={() => applyZoom(1)}
+                            theme={theme}
+                        >
+                            {"+"}
+                        </MermaidZoomButton>
+                    </div>
+                    <button
+                        ref={closeRef}
+                        type="button"
+                        className="amd-preview-close"
+                        data-testid="assistant-mermaid-preview-close"
+                        aria-label={closeLabel}
+                        title={closeLabel}
+                        onClick={onClose}
+                    >
+                        {"×"}
+                    </button>
+                </div>
+            </div>
+            <div
+                ref={stageRef}
+                className={panning ? "amd-preview-stage is-panning" : "amd-preview-stage"}
+                data-testid="assistant-mermaid-preview-stage"
+                onPointerDown={onPointerDown}
+                onPointerMove={onPointerMove}
+                onPointerUp={onPointerUp}
+                onPointerCancel={onPointerCancel}
+                onLostPointerCapture={onPointerCancel}
+            >
+                <div className="amd-preview-canvas" data-testid="assistant-mermaid-preview-canvas" style={canvasStyle}>
+                    <div
+                        className="amd-diagram"
+                        role="img"
+                        aria-label={diagramLabel}
+                        style={diagramStyle}
+                        dangerouslySetInnerHTML={{ __html: fitted }}
+                    />
+                </div>
+            </div>
+        </div>
+    );
+
+    if (typeof document === "undefined") return preview;
+    return createPortal(preview, document.body);
+}
+
 /** Render a Mermaid fenced block while keeping an inspectable source fallback. */
 export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code: string; theme: Theme; lang?: string }) {
     // lang 省略时回落到产品默认表面语言（简体中文）：面板总是显式传 lang，
@@ -871,6 +1475,7 @@ export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code:
     const [svg, setSvg] = React.useState("");
     const [error, setError] = React.useState("");
     const [zoom, setZoom] = React.useState(DEFAULT_MERMAID_ZOOM);
+    const [previewOpen, setPreviewOpen] = React.useState(false);
     const [menuOpen, setMenuOpen] = React.useState(false);
     const [menuUp, setMenuUp] = React.useState(false);
     const [sourceOpen, setSourceOpen] = React.useState(false);
@@ -889,6 +1494,9 @@ export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code:
     const zoomResetLabel = localizeText(lang, "Reset diagram size", "重置图表大小", "重設圖表大小");
     const renderingLabel = localizeText(lang, "Rendering diagram…", "正在渲染图表…", "正在渲染圖表…");
     const diagramLabel = localizeText(lang, "Mermaid diagram", "Mermaid 图表", "Mermaid 圖表");
+    const viewLabel = localizeText(lang, "View", "查看", "查看");
+    const viewDiagramLabel = localizeText(lang, "View diagram", "查看图表", "查看圖表");
+    const enlargeHint = localizeText(lang, "Double-click to enlarge", "双击放大", "雙擊放大");
     const citeLabel = localizeText(lang, "Add to chat", "添加到对话", "新增到對話");
     const downloadLabel = localizeText(lang, "Download", "下载到本地", "下載到本機");
     const moreLabel = localizeText(lang, "More diagram actions", "更多操作", "更多操作");
@@ -900,6 +1508,12 @@ export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code:
     const copiedLabel = localizeText(lang, "Copied", "已复制", "已複製");
     const copyFailedLabel = localizeText(lang, "Copy failed", "复制失败", "複製失敗");
     const saveFailedLabel = localizeText(lang, "Could not save the image", "无法保存图片", "無法儲存圖片");
+    const closePreview = React.useCallback(() => setPreviewOpen(false), []);
+    const openPreview = React.useCallback(() => {
+        setMenuOpen(false);
+        setMenuUp(false);
+        setPreviewOpen(true);
+    }, []);
     const source = sanitizeMermaidCode(code).trim();
     const menuDark = mermaidIsDark(theme);
     const menuStyle = {
@@ -994,6 +1608,7 @@ export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code:
         setMenuUp(false);
         setSourceOpen(false);
         setNote("");
+        setPreviewOpen(false);
         // A new diagram replaces the old one; keep the previous reader's zoom
         // from silently carrying onto a different picture.
         setZoom(DEFAULT_MERMAID_ZOOM);
@@ -1050,9 +1665,12 @@ export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code:
         <div className="amd-figure">
             <div ref={workspaceRef} aria-hidden="true" className="amd-measure-host" />
             {svg ? (
-                <div data-testid="assistant-mermaid-figure" className="amd-figure-body">
+                <div data-testid="assistant-mermaid-figure" className={previewOpen ? "amd-figure-body is-previewing" : "amd-figure-body"}>
                     <div className="amd-toolbar" style={menuStyle}>
                     <div className="amd-actions">
+                        <button type="button" className="amd-action" data-testid="assistant-mermaid-view" aria-label={viewDiagramLabel} title={viewDiagramLabel} onClick={openPreview}>
+                            {viewLabel}
+                        </button>
                         <button type="button" className="amd-action" data-testid="assistant-mermaid-cite" onClick={() => dispatchCiteMermaidDiagram(source)}>
                             {citeLabel}
                         </button>
@@ -1123,7 +1741,12 @@ export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code:
                         data-testid="assistant-mermaid-diagram"
                         role="img"
                         aria-label={diagramLabel}
+                        title={enlargeHint}
                         className="amd-diagram"
+                        onDoubleClick={(event) => {
+                            event.preventDefault();
+                            openPreview();
+                        }}
                         style={Object.assign({ color: theme.text }, {
                             "--amd-ink": diagramTheme.primaryTextColor,
                             "--amd-line": diagramTheme.lineColor,
@@ -1132,6 +1755,9 @@ export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code:
                         })}
                         dangerouslySetInnerHTML={{ __html: zoomedSvg }}
                     />
+                    {previewOpen ? (
+                        <MermaidDiagramPreview svg={svg} theme={theme} lang={lang} onClose={closePreview} />
+                    ) : null}
                     {sourceOpen ? (
                         <pre data-testid="assistant-mermaid-source" className="amd-source" style={codeFenceScrollUnderLangStyle}>
                             <code style={codeFenceInnerStyle}>{source}</code>

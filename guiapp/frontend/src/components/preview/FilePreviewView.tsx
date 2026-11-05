@@ -26,6 +26,7 @@ import {
     previewSourceName,
     type FilePreviewKind,
 } from './filePreviewKind';
+import { safeRemoteImageURL } from '../ai/markdownMedia';
 import { tailText } from '../../i18n/mnTail'
 
 export type FilePreviewSource = {
@@ -41,6 +42,8 @@ export type FilePreviewSource = {
     projectPath?: string;
     previewTruncated?: boolean;
     updatedAt?: number;
+    /** http(s) image cited in chat. Shown directly; not loaded from disk. */
+    remoteImageURL?: string;
     /** Changes when a deck is rewritten so the slide pane loads the new pages. */
     previewRevision?: string;
 };
@@ -190,18 +193,21 @@ function previewSrcFromPayload(
 function ImagePreviewPanel({
     absPath,
     dataUrl,
+    remoteImageURL,
     theme,
     lang,
 }: {
     absPath?: string;
     dataUrl?: string;
+    remoteImageURL?: string;
     theme: CodePreviewTheme;
     lang: string;
 }) {
     const isZh = lang.startsWith('zh');
-    const [src, setSrc] = useState('');
+    const remote = safeRemoteImageURL(remoteImageURL || '');
+    const [src, setSrc] = useState(remote);
     const [error, setError] = useState('');
-    const [loading, setLoading] = useState(true);
+    const [loading, setLoading] = useState(!remote);
 
     useEffect(() => {
         let cancelled = false;
@@ -217,6 +223,13 @@ function ImagePreviewPanel({
             setLoading(false);
             return true;
         };
+        const cited = safeRemoteImageURL(remoteImageURL || '');
+        if (cited) {
+            show(cited);
+            return () => {
+                cancelled = true;
+            };
+        }
         if (dataUrl && isInlineImageSrc(dataUrl)) {
             show(dataUrl);
             return () => {
@@ -248,7 +261,7 @@ function ImagePreviewPanel({
         return () => {
             cancelled = true;
         };
-    }, [absPath, dataUrl, isZh, lang]);
+    }, [absPath, dataUrl, remoteImageURL, isZh, lang]);
 
     if (error) return <PreviewStatus testId="image-preview-error" theme={theme} danger>{error}</PreviewStatus>;
     if (loading) {
@@ -263,6 +276,8 @@ function ImagePreviewPanel({
             <img
                 src={src}
                 alt=""
+                referrerPolicy="no-referrer"
+                draggable={false}
                 style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 8 }}
             />
         </div>
@@ -536,7 +551,7 @@ export const FilePreviewView = React.memo(function FilePreviewView({
     const kind = filePreviewKindOf(file);
     const diskPath = String(file.absPath || '').trim() || String(file.filePath || '').trim();
     const absPath = kind === 'pptx' || kind === 'docx' ? String(file.absPath || '').trim() : diskPath;
-    const fileKey = `${name}:${absPath}:${file.language || ''}`;
+    const fileKey = `${name}:${absPath}:${file.language || ''}:${file.remoteImageURL || ''}`;
     // Assistant source/diff wins for HTML, SVG, Markdown, and Office extracts
     // (including workbooks without a local original). Raster images, PDF,
     // PPTX, and media keep their visual viewers.
@@ -607,7 +622,7 @@ export const FilePreviewView = React.memo(function FilePreviewView({
         );
     }
     if (kind === 'image') {
-        return <ImagePreviewPanel key={fileKey} absPath={absPath} dataUrl={file.dataUrl} theme={theme} lang={lang} />;
+        return <ImagePreviewPanel key={fileKey} absPath={absPath} dataUrl={file.dataUrl} remoteImageURL={file.remoteImageURL} theme={theme} lang={lang} />;
     }
     if (kind === 'video' || kind === 'audio') {
         return <MediaPreviewPanel key={fileKey} kind={kind} absPath={absPath} theme={theme} lang={lang} />;

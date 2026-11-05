@@ -33,6 +33,12 @@ func TestUnassignedFileDeliverableNames(t *testing.T) {
 	if unassignedFileDeliverableNames(tool.ToolPlan{}, nil, nil) != nil {
 		t.Fatal("empty plan invented a deliverable")
 	}
+	offered := tool.ToolPlan{Selections: []tool.PlannedSelection{
+		{ID: "office", NeedID: "need:office", EvidenceIDs: []string{tool.OfferedCompanionEvidencePrefix + "office"}, FitProof: tool.FitProof{MatchedCapability: tool.CapabilityDocumentWriteOffice}},
+	}}
+	if names := unassignedFileDeliverableNames(offered, nil, nil); len(names) != 0 {
+		t.Fatalf("companion offer listed a missing file: %v", names)
+	}
 }
 
 func TestDeliverableGapNamesFailsClosedWhenOptionalityIsUnknown(t *testing.T) {

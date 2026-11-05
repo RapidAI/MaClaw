@@ -418,18 +418,10 @@ func hopSelectionRequired(selection tool.PlannedSelection, optional map[string]b
 	// The plan records the obligation it accepted. A later re-resolve of the
 	// classification does not see needs added after that resolve, and treating
 	// the missing id as required is what held a finished turn open.
-	if selection.Optional {
-		return false
-	}
-	// Archetype and baseline offers are not the task. Their evidence is on
-	// the selection. A failed optionality recompute must not promote them
-	// into obligations: that is how an unused download bundle kept a finished
-	// document turn open.
-	if tool.RepeatSelectionIsCompanion(selection) {
-		return false
-	}
-	needID := strings.TrimSpace(selection.NeedID)
-	if needID != "" && tool.RepeatFamilyID(needID) != needID {
+	// Optional bit, companion offer, or repeat ceiling. A failed optionality
+	// recompute must not promote an offer into an obligation: that is how an
+	// unused download bundle kept a finished document turn open.
+	if tool.SelectionCallIsSkippable(selection) {
 		return false
 	}
 	// Recorded plans do not consult the classification map. That map can
@@ -438,6 +430,7 @@ func hopSelectionRequired(selection tool.PlannedSelection, optional map[string]b
 	if recorded {
 		return true
 	}
+	needID := strings.TrimSpace(selection.NeedID)
 	if optionalKnown && optional[needID] {
 		return false
 	}

@@ -47,6 +47,7 @@ type fakeCloudWorkspaceHub struct {
 	sidecars             map[string][]byte
 	sidecarGets          int
 	sidecarGetsByName    map[string]int
+	sidecarPuts          int
 	manifestGets         int
 	events               []cloudWorkspaceEvent
 	failEvents           bool
@@ -629,6 +630,7 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 		switch r.Method {
 		case http.MethodPut:
 			body, _ := io.ReadAll(r.Body)
+			h.sidecarPuts++
 			h.sidecars[name] = append([]byte(nil), body...)
 			_ = json.NewEncoder(w).Encode(map[string]any{"name": name, "size": len(body)})
 		case http.MethodGet:

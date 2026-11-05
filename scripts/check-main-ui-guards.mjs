@@ -609,7 +609,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/ai/shareAssistantTask.ts', 30],
   // Refreshed 2000 -> 2040 (2026-11-03): the desk/docgen markdown work pushed
   // this to 2003 lines; headroom absorbs it while that work is in progress.
-  ['guiapp/frontend/src/components/ai/aiAssistantMarkdown.tsx', 2040],
+  // Refreshed 2040 -> 2115 (2026-11-05): markdown media previews (video/audio
+  // inline players) pushed this to 2106 lines.
+  ['guiapp/frontend/src/components/ai/aiAssistantMarkdown.tsx', 2115],
   ['guiapp/frontend/src/components/ai/AssistantReplyCopyButton.tsx', 180],
   ['guiapp/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 700],
   ['guiapp/frontend/src/components/ai/aiAssistantI18n.ts', 240],

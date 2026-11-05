@@ -53,7 +53,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     }),
 }));
 
-import { useAIAssistant, applyBufferedStreamParts, applyIncomingStreamDelta, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, sanitizeAIAssistantStreamText, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isImageFilePath, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
+import { useAIAssistant, applyBufferedStreamParts, applyIncomingStreamDelta, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, sanitizeAIAssistantStreamText, mergeReasoningText, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isImageFilePath, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
 import { ClearAIAssistantHistory, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, SendAIAssistantMessage, SendBtwQuery, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, InjectAIAssistantGuideReferenceForSessionWithID, HasAIAssistantGuideReferenceForSessionWithID, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook(options?: Parameters<typeof useAIAssistant>[0]) {
@@ -9107,4 +9107,21 @@ describe('useAIAssistant property tests', () => {
             { numRuns: 100 },
         );
     }, 10000);
+});
+
+describe('mergeReasoningText', () => {
+    it('keeps one copy when the final trail is the streamed rounds joined by blank lines', () => {
+        const round = '我目前没有可用的图像生成工具，无法完成该请求。\n\n我将尝试通过 discover_tool 寻找可用的图像生成工具。';
+        const later = '已确认本轮工具列表确实不含图像生成能力。准备向用户说明当前无法生成图片。';
+        const streamed = `${round}${later}`;
+        const final = `${round}\n\n${later}`;
+        expect(mergeReasoningText(streamed, final)).toBe(final);
+        expect(mergeReasoningText(final, final)).toBe(final);
+    });
+
+    it('keeps streamed text that the final summary does not already contain', () => {
+        const streamed = '先核对文件路径，再决定要不要改配置。这一步还没写进最终摘要，必须留在思考过程里。';
+        const final = '先核对文件路径，再决定要不要改配置。';
+        expect(mergeReasoningText(streamed, final)).toBe(streamed);
+    });
 });
