@@ -634,10 +634,14 @@ func TestCoreAgentExecutorSupportsAskUserFlow(t *testing.T) {
 	defer server.Close()
 
 	executor := &CoreAgentExecutor{HTTPClient: server.Client()}
+	defer func() { _ = executor.Close() }()
 	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// Close is idempotent and stops the per-user memory stores opened under
+	// DataRoot, so the TempDir can be removed on Windows.
+	defer func() { _ = svc.Close() }()
 	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
@@ -709,6 +713,7 @@ func TestCoreAgentExecutorExplicitCodingRuntimeUsesLedgerAndLeavesRegularRequest
 	}))
 	defer server.Close()
 	executor := &CoreAgentExecutor{HTTPClient: server.Client()}
+	defer func() { _ = executor.Close() }()
 	// Keep the workspace path short: the gated writer auto-initializes a Git
 	// baseline, and Git for Windows cannot operate past the MAX_PATH limit of a
 	// deeply nested t.TempDir() workspace.
@@ -933,6 +938,7 @@ func TestRemoteCodingRuntimeRejectsUnpinnedOrUnboundTargetBeforeModelCall(t *tes
 	}))
 	defer server.Close()
 	executor := &CoreAgentExecutor{HTTPClient: server.Client()}
+	defer func() { _ = executor.Close() }()
 	executor.SetCodingRuntimeStore(codingruntime.NewMemoryStore())
 	base := ExecuteRequest{
 		Principal: Principal{TenantID: "tenant", UserID: "user"}, Instance: Instance{ID: "instance", Workspace: t.TempDir()}, Session: Session{ID: "session"},
@@ -1152,6 +1158,7 @@ func TestServiceCodingRuntimeReadOnlyChildAdmissionUsesFreshRestrictedLoop(t *te
 
 	workspace := t.TempDir()
 	parent := &CoreAgentExecutor{HTTPClient: server.Client()}
+	defer func() { _ = parent.Close() }()
 	ledger := codingruntime.NewMemoryStore()
 	req := ExecuteRequest{
 		Principal: Principal{TenantID: "tenant", UserID: "user"},
@@ -1326,6 +1333,7 @@ func TestCoreAgentExecutorRuntimeSpawnStopsParentBeforeChildExecution(t *testing
 	defer server.Close()
 
 	executor := &CoreAgentExecutor{HTTPClient: server.Client()}
+	defer func() { _ = executor.Close() }()
 	ledger := codingruntime.NewMemoryStore()
 	executor.SetCodingRuntimeStore(ledger)
 	workspace := t.TempDir()
@@ -1408,6 +1416,7 @@ func TestCoreAgentExecutorReturnsPromptBundleMetadata(t *testing.T) {
 	defer server.Close()
 
 	executor := &CoreAgentExecutor{HTTPClient: server.Client()}
+	defer func() { _ = executor.Close() }()
 	result, err := executor.Execute(context.Background(), ExecuteRequest{
 		Config: corelib.AppConfig{
 			MaclawLLMUrl:   server.URL,
@@ -1989,6 +1998,9 @@ func TestPostMessagePropagatesToolPolicyMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// Close is idempotent and stops the per-user memory stores opened under
+	// DataRoot, so the TempDir can be removed on Windows.
+	defer func() { _ = svc.Close() }()
 	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
@@ -2031,6 +2043,9 @@ func TestPostMessagePropagatesPlanningToolPolicyMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// Close is idempotent and stops the per-user memory stores opened under
+	// DataRoot, so the TempDir can be removed on Windows.
+	defer func() { _ = svc.Close() }()
 	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
@@ -2089,6 +2104,9 @@ func TestPostMessageUsesUpdatedUserConfigForExistingInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// Close is idempotent and stops the per-user memory stores opened under
+	// DataRoot, so the TempDir can be removed on Windows.
+	defer func() { _ = svc.Close() }()
 	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
@@ -2128,6 +2146,9 @@ func TestPostMessageRefreshesExistingInstanceReadinessAfterConfigFix(t *testing.
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// Close is idempotent and stops the per-user memory stores opened under
+	// DataRoot, so the TempDir can be removed on Windows.
+	defer func() { _ = svc.Close() }()
 	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
@@ -2169,6 +2190,9 @@ func TestUpdateUserConfigRefreshesStoredInstanceReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// Close is idempotent and stops the per-user memory stores opened under
+	// DataRoot, so the TempDir can be removed on Windows.
+	defer func() { _ = svc.Close() }()
 	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
@@ -2209,6 +2233,9 @@ func TestPostMessageFallsBackToSessionToolPolicyMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// Close is idempotent and stops the per-user memory stores opened under
+	// DataRoot, so the TempDir can be removed on Windows.
+	defer func() { _ = svc.Close() }()
 	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
@@ -2248,6 +2275,9 @@ func TestPostMessagePropagatesOpsApprovedCommandsMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// Close is idempotent and stops the per-user memory stores opened under
+	// DataRoot, so the TempDir can be removed on Windows.
+	defer func() { _ = svc.Close() }()
 	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
@@ -2492,6 +2522,9 @@ func TestPostMessageDoesNotPropagateDeniedOpsApprovedCommandsMetadata(t *testing
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// Close is idempotent and stops the per-user memory stores opened under
+	// DataRoot, so the TempDir can be removed on Windows.
+	defer func() { _ = svc.Close() }()
 	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)

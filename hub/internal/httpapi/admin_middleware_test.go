@@ -112,6 +112,11 @@ func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 	t.Cleanup(func() {
 		_ = provider.Close()
 	})
+	// NewRouter derives the runtime data dir from the sqlite DSN, so the mobile
+	// state store opens <TempDir>/mobile/state.db as soon as a handler touches
+	// it. Closing it here runs before t.TempDir's cleanup and keeps Windows from
+	// failing the removal with "file is being used by another process".
+	t.Cleanup(mobileCleanupStateDBForTest)
 
 	st := sqlite.NewStore(provider)
 	admins := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)

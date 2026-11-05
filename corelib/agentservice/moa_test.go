@@ -84,6 +84,7 @@ func TestMoAPresetFromMetadata(t *testing.T) {
 func TestExecute_ExplicitMoAPresetFailClosed(t *testing.T) {
 	t.Setenv("MACLAW_MOA", "on")
 	exec := &CoreAgentExecutor{}
+	defer func() { _ = exec.Close() }()
 	// Config enables MoA but has no usable references → explicit request must error.
 	cfg := corelib.AppConfig{
 		MaclawLLMUrl:   "https://llm.example/v1",

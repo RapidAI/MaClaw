@@ -66,6 +66,9 @@ func TestSrvSharedToolsExecuteThroughShippedExecutor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("memory store: %v", err)
 	}
+	// Stop closes the archive DB (archive.db) and the backend. Windows refuses
+	// to remove a TempDir while those handles are still open.
+	t.Cleanup(mem.Stop)
 
 	skillProvider := &installCaptureSkillProvider{}
 	mcpProvider := listMCPProvider{entries: []MCPToolEntry{{
@@ -198,6 +201,10 @@ func TestDescribeCapabilitiesAdvertisesSharedHostTools(t *testing.T) {
 		IMFileHandler:    func(map[string]interface{}) string { return "ok" },
 		DelegateSubtask:  func(context.Context, Principal, string) (string, error) { return "ok", nil },
 	}
+	// DescribeCapabilities opens the per-user memory store; Close stops it so
+	// Windows can remove the TempDir. A defer runs before t.Cleanup (TempDir
+	// removal) because cleanup callbacks are LIFO.
+	defer func() { _ = executor.Close() }()
 	executor.SetSkillToolProvider(&installCaptureSkillProvider{})
 	executor.SetMCPToolProvider(listMCPProvider{})
 	caps, err := executor.DescribeCapabilities(context.Background(), ExecuteRequest{
@@ -233,6 +240,9 @@ func fullyWiredSharedCatalogCallbacks(t *testing.T) *coreAgentCallbacks {
 	if err != nil {
 		t.Fatalf("memory store: %v", err)
 	}
+	// Stop closes the archive DB (archive.db) and the backend. Windows refuses
+	// to remove a TempDir while those handles are still open.
+	t.Cleanup(mem.Stop)
 	return &coreAgentCallbacks{
 		ctx:                        context.Background(),
 		principal:                  Principal{TenantID: "tenant_a", UserID: "user_a"},
