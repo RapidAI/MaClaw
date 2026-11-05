@@ -2056,8 +2056,9 @@ func TestDiscoverySendFileWithoutTrustedDocumentIsNotACatalogMiss(t *testing.T) 
 // The follow-up's send_file page says the tool appears after the producer
 // succeeds. Classified office and PDF turns already publish the artifact and
 // attach it. This is the discovery petition the page orders: the write has
-// to release send_file, and calling that name with the host-owned desktop
-// target has to attach the document. Listing the name is not the attachment.
+// to release send_file. Calling that name, or stopping once it is listed,
+// has to put the producer's own file on the desktop card and accept the
+// delivery. Listing the name is not the attachment.
 func TestDiscoveryProducerWriteReleasesSendFile(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	defer app.closeSemanticInvocationStore()
@@ -2071,67 +2072,85 @@ func TestDiscoveryProducerWriteReleasesSendFile(t *testing.T) {
 		args   string
 		marker string
 		mime   string
+		file   string
 	}{
-		{name: "office", args: `{"path":"说明.pptx","title":"说明","slides":[{"title":"封面","bullets":["正文"]}]}`, marker: "Office document artifact published", mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
-		{name: "generate_pdf", args: `{"content":"# 说明\n这是一份说明的正文。","title":"说明"}`, marker: "PDF artifact published", mime: "application/pdf"},
+		{name: "office", args: `{"path":"说明.pptx","title":"说明","slides":[{"title":"封面","bullets":["正文"]}]}`, marker: "Office document artifact published", mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation", file: "说明.pptx"},
+		{name: "generate_pdf", args: `{"content":"# 说明\n这是一份说明的正文。","title":"说明"}`, marker: "PDF artifact published", mime: "application/pdf", file: "说明.pdf"},
 	}
 	for _, producer := range producers {
-		h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, discovery.Primary), app: app}
-		registerBuiltinTools(h.registry, h)
-		stored := discovery
-		_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
-			desktopUserID, "写一份说明", "desktop", "root-discovery-"+producer.name+"-send", "turn-discovery-"+producer.name+"-send", &stored,
-		)
-		if err != nil || !handled || surface == nil {
-			t.Fatalf("%s surface handled=%v err=%v", producer.name, handled, err)
-		}
-		target := hostOwnedCurrentChannelDeliveryTarget("desktop", desktopUserID)
-		if target == nil || target.ChannelScope != "desktop" || target.DestinationID != "user:"+desktopUserID {
-			t.Fatalf("desktop delivery target = %+v", target)
-		}
-		cb := &sharedAgentLoopCallbacks{
-			handler: h, semanticSurface: surface, platform: "desktop", userID: desktopUserID, userText: "写一份说明",
-			loopCtx: &LoopContext{Runtime: RuntimeContext{SemanticIntent: &stored}, DeliveryTarget: target},
-		}
-		unbound := semanticToolsSearchRun(cb, `{"query":"写一份说明","needs":["send_file"]}`)
-		producerTail := "再调用 tools_search，needs 里只写 generate_pdf 或 office。加载成功后，再把 send_file 放进 needs。不要调用 search_and_install_skill 或 craft_tool。"
-		if cb.discoveryUnmatchedObligation || !strings.HasSuffix(strings.TrimSpace(unbound), producerTail) {
-			t.Fatalf("%s unbound page=\n%s", producer.name, unbound)
-		}
-		page := semanticToolsSearchRun(cb, `{"query":"写一份说明","needs":["`+producer.name+`"]}`)
-		if cb.discoveryUnmatchedObligation || !turnDirectoryHave(cb.BuildToolsForModelRequest("写一份说明", 2))[producer.name] {
-			t.Fatalf("%s petition:\n%s", producer.name, page)
-		}
-		if turnDirectoryHave(cb.BuildToolsForModelRequest("写一份说明", 3))["send_file"] {
-			t.Fatalf("send_file was issued before %s wrote the document", producer.name)
-		}
-		got := cb.ExecuteToolCall(producer.name, producer.args, "call-"+producer.name).Result
-		if !strings.Contains(got, producer.marker) {
-			t.Fatalf("%s result=%q", producer.name, got)
-		}
-		if !turnDirectoryHave(cb.BuildToolsForModelRequest("写一份说明", 4))["send_file"] {
-			t.Fatalf("send_file missing after %s: %v\n%s", producer.name, turnDirectoryNames(cb.BuildToolsForModelRequest("写一份说明", 5)), got)
-		}
-		deliveryName, deliveryGrant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "semantic_deliver_current_file")
-		if deliveryName != "send_file" || !currentChannelFileDeliveryReady(cb.semanticSurface, deliveryGrant) {
-			t.Fatalf("%s delivery is not ready for the desktop card: name=%q", producer.name, deliveryName)
-		}
-		delivered := cb.ExecuteToolCall("send_file", `{}`, "call-send-"+producer.name).Result
-		if !strings.Contains(delivered, "Delivery committed to the current channel") {
-			t.Fatalf("%s deliver=%q", producer.name, delivered)
-		}
-		if cb.semanticDeliveryFileData == "" || cb.semanticDeliveryFileMIME != producer.mime {
-			t.Fatalf("%s attached mime=%q result=%q", producer.name, cb.semanticDeliveryFileMIME, delivered)
-		}
-		resp := &IMAgentResponse{}
-		attachSharedLoopArtifacts(resp, cb)
-		rel, relErr := filepath.Rel(workspace, resp.LocalFilePath)
-		info, statErr := os.Stat(resp.LocalFilePath)
-		if resp.FileData != "" || resp.FileMimeType != producer.mime || relErr != nil || strings.HasPrefix(rel, "..") || statErr != nil || info.Size() == 0 {
-			t.Fatalf("%s desktop card path=%q mime=%q data=%t rel=%q stat=%v", producer.name, resp.LocalFilePath, resp.FileMimeType, resp.FileData != "", rel, statErr)
-		}
-		if producer.name == "office" && filepath.Base(resp.LocalFilePath) != "说明.pptx" {
-			t.Fatalf("office delivery wrote a second file: %s", resp.LocalFilePath)
+		for _, modelStops := range []bool{false, true} {
+			suffix := "call"
+			if modelStops {
+				suffix = "stop"
+			}
+			h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, discovery.Primary), app: app}
+			registerBuiltinTools(h.registry, h)
+			stored := discovery
+			_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+				desktopUserID, "写一份说明", "desktop", "root-discovery-"+producer.name+"-"+suffix, "turn-discovery-"+producer.name+"-"+suffix, &stored,
+			)
+			if err != nil || !handled || surface == nil {
+				t.Fatalf("%s %s surface handled=%v err=%v", producer.name, suffix, handled, err)
+			}
+			target := hostOwnedCurrentChannelDeliveryTarget("desktop", desktopUserID)
+			if target == nil || target.ChannelScope != "desktop" || target.DestinationID != "user:"+desktopUserID {
+				t.Fatalf("desktop delivery target = %+v", target)
+			}
+			cb := &sharedAgentLoopCallbacks{
+				handler: h, semanticSurface: surface, platform: "desktop", userID: desktopUserID, userText: "写一份说明",
+				loopCtx: &LoopContext{Runtime: RuntimeContext{SemanticIntent: &stored}, DeliveryTarget: target},
+			}
+			unbound := semanticToolsSearchRun(cb, `{"query":"写一份说明","needs":["send_file"]}`)
+			producerTail := "再调用 tools_search，needs 里只写 generate_pdf 或 office。加载成功后，再把 send_file 放进 needs。不要调用 search_and_install_skill 或 craft_tool。"
+			if cb.discoveryUnmatchedObligation || !strings.HasSuffix(strings.TrimSpace(unbound), producerTail) {
+				t.Fatalf("%s %s unbound page=\n%s", producer.name, suffix, unbound)
+			}
+			page := semanticToolsSearchRun(cb, `{"query":"写一份说明","needs":["`+producer.name+`"]}`)
+			if cb.discoveryUnmatchedObligation || !turnDirectoryHave(cb.BuildToolsForModelRequest("写一份说明", 2))[producer.name] {
+				t.Fatalf("%s %s petition:\n%s", producer.name, suffix, page)
+			}
+			if turnDirectoryHave(cb.BuildToolsForModelRequest("写一份说明", 3))["send_file"] {
+				t.Fatalf("send_file was issued before %s wrote the document", producer.name)
+			}
+			got := cb.ExecuteToolCall(producer.name, producer.args, "call-"+producer.name+"-"+suffix).Result
+			if !strings.Contains(got, producer.marker) {
+				t.Fatalf("%s %s result=%q", producer.name, suffix, got)
+			}
+			if !turnDirectoryHave(cb.BuildToolsForModelRequest("写一份说明", 4))["send_file"] {
+				t.Fatalf("send_file missing after %s %s: %v\n%s", producer.name, suffix, turnDirectoryNames(cb.BuildToolsForModelRequest("写一份说明", 5)), got)
+			}
+			deliveryName, deliveryGrant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "semantic_deliver_current_file")
+			if deliveryName != "send_file" || !currentChannelFileDeliveryReady(cb.semanticSurface, deliveryGrant) {
+				t.Fatalf("%s %s delivery is not ready for the desktop card: name=%q", producer.name, suffix, deliveryName)
+			}
+			resp := &IMAgentResponse{}
+			if modelStops {
+				attachSharedLoopArtifacts(resp, cb)
+			} else {
+				delivered := cb.ExecuteToolCall("send_file", `{}`, "call-send-"+producer.name).Result
+				if !strings.Contains(delivered, "Delivery committed to the current channel") {
+					t.Fatalf("%s deliver=%q", producer.name, delivered)
+				}
+				if cb.semanticDeliveryFileData == "" || cb.semanticDeliveryFileMIME != producer.mime {
+					t.Fatalf("%s attached mime=%q result=%q", producer.name, cb.semanticDeliveryFileMIME, delivered)
+				}
+				attachSharedLoopArtifacts(resp, cb)
+			}
+			rel, relErr := filepath.Rel(workspace, resp.LocalFilePath)
+			info, statErr := os.Stat(resp.LocalFilePath)
+			if resp.FileData != "" || resp.FileMimeType != producer.mime || filepath.Base(resp.LocalFilePath) != producer.file || relErr != nil || strings.HasPrefix(rel, "..") || statErr != nil || info.Size() == 0 {
+				t.Fatalf("%s %s desktop card path=%q mime=%q data=%t rel=%q stat=%v", producer.name, suffix, resp.LocalFilePath, resp.FileMimeType, resp.FileData != "", rel, statErr)
+			}
+			if cb.semanticDelivery == nil || surface.artifacts == nil || surface.artifacts.store == nil {
+				t.Fatalf("%s %s delivery projection missing", producer.name, suffix)
+			}
+			record, err := surface.artifacts.store.Delivery(cb.semanticDelivery.Scope, cb.semanticDelivery.SelectionID)
+			if err != nil || record.State != tool.DeliveryAccepted {
+				t.Fatalf("%s %s receipt=%+v err=%v", producer.name, suffix, record.State, err)
+			}
+			if name, _ := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "semantic_deliver_current_file"); name != "" {
+				t.Fatalf("%s %s send_file stayed live after the card", producer.name, suffix)
+			}
 		}
 	}
 }
