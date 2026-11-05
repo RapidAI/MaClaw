@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hydrateCompanionReaderState, subscribeCompanionReaderState } from "./companionReaderState";
+import { hydrateChatAnnotations, loadChatAnnotations } from "./chatAnnotations";
 import { chatMarksSaveRevision, hydrateChatMarks, loadChatMarks, saveChatMarks } from "./chatMarks";
 import { fileCompanionInputHistory, FILE_COMPANION_INPUT_HISTORY_KEY, hydrateFileCompanionInputHistory } from "./fileCompanionInputHistory";
 import { hydratePdfDrawings, loadPdfDrawings } from "./pdfDrawings";
@@ -244,6 +245,18 @@ describe("companion reader state migration", () => {
         await hydrateCompanionReaderState();
 
         expect(loadChatMarks("C:/docs/Paper.PDF")).toEqual([{ message: 1, color: "green", start: 3, end: 8, text: "lo wo" }]);
+    });
+
+    it("hydrates the notes written on the agent's answers", async () => {
+        loadState.mockResolvedValue(JSON.stringify({
+            chat_annotations: {
+                "c:/docs/paper.pdf": [{ id: "ca_1", message: 1, start: 0, end: 4, text: "note", body: "看法" }],
+            },
+        }));
+
+        await hydrateCompanionReaderState();
+
+        expect(loadChatAnnotations("C:/docs/Paper.PDF")).toEqual([{ id: "ca_1", message: 1, start: 0, end: 4, text: "note", body: "看法" }]);
     });
 
     it("keeps a chat highlight saved while the startup read was in flight", async () => {

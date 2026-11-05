@@ -1565,6 +1565,10 @@ export function SaveCompanionChatMarks(arg1, arg2) {
   return window['go']['main']['App']['SaveCompanionChatMarks'](arg1, arg2);
 }
 
+export function SaveCompanionChatAnnotations(arg1, arg2) {
+  return window['go']['main']['App']['SaveCompanionChatAnnotations'](arg1, arg2);
+}
+
 export function SaveCompanionInputHistory(arg1) {
   return window['go']['main']['App']['SaveCompanionInputHistory'](arg1);
 }

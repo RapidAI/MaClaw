@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -173,6 +174,493 @@ func discoverySubstituteTool(name string) bool {
 	}
 }
 
+// discoveryPictureCreationUtterance is a request to create a picture. The
+// directory has no image tool. Search, download, and a document renderer are
+// not that tool, and loading one of them used to close the catalog miss.
+// A PDF, a diagram, a screenshot, and a request to find or download an
+// existing picture keep the tools those tasks already use.
+func discoveryPictureCreationUtterance(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || discoveryPictureCreationExcluded(text) || discoveryPictureIsDiagram(text) {
+		return false
+	}
+	// 不画图 / 不要文生图 name the verb and cancel it. A later affirmed
+	// phrase in the same sentence still counts.
+	if discoveryHasAffirmed(text, "文生图") || discoveryHasAffirmed(text, "画图") {
+		return true
+	}
+	for _, phrase := range []string{"画一张", "画一幅", "画一只"} {
+		if discoveryHasAffirmed(text, phrase) {
+			return true
+		}
+	}
+	if discoveryLooseDrawIsPicture(text) {
+		return true
+	}
+	folded := strings.ToLower(text)
+	if discoveryAffirmedFoldedPhrase(folded, "text-to-image") || discoveryAffirmedFoldedPhrase(folded, "text to image") {
+		return true
+	}
+	if discoveryEnglishPictureCreation(folded) {
+		return true
+	}
+	return discoveryGeneratedPictureObject(text)
+}
+
+func discoveryPictureCreationExcluded(text string) bool {
+	folded := strings.ToLower(text)
+	// ASCII format names are whole words. "word" inside "password" and
+	// "excel" inside "excellent" are not a document request.
+	for _, word := range []string{
+		"pdf", "ppt", "pptx", "word", "excel", "powerpoint",
+		"download", "screenshot",
+	} {
+		if discoveryASCIIWord(folded, word) {
+			return true
+		}
+	}
+	for _, word := range []string{
+		"文档", "报告", "幻灯", "表格", "演示文稿",
+		"下载",
+		"截图", "截屏", "截一",
+		"找一张", "找一幅", "找个图", "搜一张", "搜索图片", "寻找", "查找图片", "现成",
+		"find a picture", "find an image", "search for a picture", "search for an image",
+	} {
+		if strings.Contains(folded, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func discoveryPictureIsDiagram(text string) bool {
+	for _, word := range []string{"流程图", "架构图", "示意图", "思维导图", "框图", "时序图", "拓扑图", "结构图", "类图"} {
+		if strings.Contains(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func discoveryEnglishPictureCreation(folded string) bool {
+	if !discoveryEnglishPictureNoun(folded) {
+		return false
+	}
+	from := 0
+	for from < len(folded) {
+		verbAt, verbLen := discoveryNextEnglishPictureVerb(folded[from:])
+		if verbAt < 0 {
+			return false
+		}
+		abs := from + verbAt
+		// A negated verb does not cancel a later affirmed one:
+		// "do not generate a table, generate an image".
+		if !discoveryEnglishVerbNegated(folded[:abs]) {
+			return true
+		}
+		from = abs + verbLen
+	}
+	return false
+}
+
+func discoveryEnglishPictureNoun(folded string) bool {
+	for _, noun := range []string{"image", "picture", "illustration"} {
+		if discoveryASCIIWord(folded, noun) {
+			return true
+		}
+	}
+	return false
+}
+
+func discoveryNextEnglishPictureVerb(s string) (int, int) {
+	best, bestLen := -1, 0
+	if i := strings.Index(s, "generat"); i >= 0 {
+		best, bestLen = i, len("generat")
+	}
+	for _, word := range []string{"draw", "paint"} {
+		if i := discoveryASCIIWordIndex(s, word); i >= 0 && (best < 0 || i < best) {
+			best, bestLen = i, len(word)
+		}
+	}
+	return best, bestLen
+}
+
+func discoveryAffirmedFoldedPhrase(folded, phrase string) bool {
+	from := 0
+	for from < len(folded) {
+		rel := strings.Index(folded[from:], phrase)
+		if rel < 0 {
+			return false
+		}
+		at := from + rel
+		if !discoveryEnglishVerbNegated(folded[:at]) {
+			return true
+		}
+		from = at + len(phrase)
+	}
+	return false
+}
+
+// discoveryEnglishVerbNegated is "do not / don't / not" immediately before
+// the picture verb. "cannot" stays a request; the "not" there is not a word.
+func discoveryEnglishVerbNegated(prefix string) bool {
+	folded := strings.TrimRight(prefix, " \t")
+	for _, neg := range []string{"do not", "don't", "dont", "not"} {
+		if !strings.HasSuffix(folded, neg) {
+			continue
+		}
+		at := len(folded) - len(neg)
+		if at == 0 || !discoveryASCIILetter(folded[at-1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func discoveryASCIIWord(folded, word string) bool {
+	rest := folded
+	for {
+		i := strings.Index(rest, word)
+		if i < 0 {
+			return false
+		}
+		before := i == 0 || !discoveryASCIILetter(rest[i-1])
+		after := i + len(word)
+		if before && (after == len(rest) || !discoveryASCIILetter(rest[after])) {
+			return true
+		}
+		base := len(folded) - len(rest)
+		rest = folded[base+i+1:]
+	}
+}
+
+func discoveryASCIIWordIndex(folded, word string) int {
+	rest := folded
+	for {
+		i := strings.Index(rest, word)
+		if i < 0 {
+			return -1
+		}
+		at := len(folded) - len(rest) + i
+		before := at == 0 || !discoveryASCIILetter(folded[at-1])
+		after := at + len(word)
+		if before && (after == len(folded) || !discoveryASCIILetter(folded[after])) {
+			return at
+		}
+		rest = folded[at+1:]
+	}
+}
+
+func discoveryASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
+// discoveryLooseDrawIsPicture is 画个 / 画一个 when that verb's object is not
+// a plan. 画个猫 and 画个图 stay. 画一个方案 and 画一个方案图 do not. A plan
+// word after a clause break belongs to another clause: 画个猫，方案另说
+// still draws. 画 inside 动画 is not this verb.
+func discoveryLooseDrawIsPicture(text string) bool {
+	for _, phrase := range []string{"画一个", "画个"} {
+		if discoveryDrawObjectIsPicture(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func discoveryDrawObjectIsPicture(text, phrase string) bool {
+	from := 0
+	for from < len(text) {
+		rel := strings.Index(text[from:], phrase)
+		if rel < 0 {
+			return false
+		}
+		at := from + rel
+		objFrom := at + len(phrase)
+		from = objFrom
+		if discoveryVerbNegated(text[:at]) || discoveryAnimatedDraw(text, at) {
+			continue
+		}
+		object := text[objFrom:]
+		if i := discoveryClauseBreakIndex(object); i >= 0 {
+			object = object[:i]
+		}
+		if !discoveryDrawPlanWord(object) {
+			return true
+		}
+	}
+	return false
+}
+
+func discoveryDrawPlanWord(object string) bool {
+	for _, word := range []string{"方案", "计划", "清单", "名单", "步骤", "大纲", "原型", "流程"} {
+		if strings.Contains(object, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func discoveryAnimatedDraw(text string, at int) bool {
+	prev, size := utf8.DecodeLastRuneInString(text[:at])
+	return size > 0 && prev == '动'
+}
+
+func discoveryClauseBreakIndex(s string) int {
+	return strings.IndexAny(s, "，,。！？!?:：；;\n")
+}
+
+// discoveryGeneratedPictureObject is a picture object of 生成.
+// After the verb, the nearest created 图 within 16 runes counts, so a later
+// 图 does not hide 生成老鼠戏猫图, and a 图 that only shows up after a long
+// gap is not a picture. 一张 and 一幅 alone are not enough: 生成一张清单
+// still searches. 图片 or 图像 with nothing between counts. A 图 that only
+// points at an existing figure (如图, 见图, 图中) does not.
+// Before the verb, only the head of the 把/将 phrase that actually introduces
+// it counts, and only when 生成 does not already take some other object
+// (把图片生成出来, not 参考图片生成说明).
+func discoveryGeneratedPictureObject(text string) bool {
+	const window = 16
+	rest := text
+	for len(rest) > 0 {
+		i := strings.Index(rest, "生成")
+		if i < 0 {
+			return false
+		}
+		at := len(text) - len(rest) + i
+		if discoveryVerbNegated(text[:at]) {
+			rest = rest[i+len("生成"):]
+			continue
+		}
+		suffix := text[at+len("生成"):]
+		if discoveryPictureNounAfter(suffix, window) || discoveryPictureNounBefore(text[:at], suffix, window) {
+			return true
+		}
+		rest = rest[i+len("生成"):]
+	}
+	return false
+}
+
+func discoveryPictureNounAfter(suffix string, window int) bool {
+	offset := 0
+	for offset < len(suffix) {
+		rel := strings.Index(suffix[offset:], "图")
+		if rel < 0 {
+			return false
+		}
+		at := offset + rel
+		n := utf8.RuneCountInString(suffix[:at])
+		if n > window {
+			return false
+		}
+		// 图片的说明 is a modifier. 生成图片交给我 is the object.
+		if !discoveryPictureModifies(suffix, at) {
+			if n == 0 && (strings.HasPrefix(suffix, "图片") || strings.HasPrefix(suffix, "图像")) {
+				return true
+			}
+			if n > 0 && !discoveryReferencePicture(suffix, at) {
+				return true
+			}
+		}
+		offset = at + len("图")
+	}
+	return false
+}
+
+// discoveryPictureModifies is 图/图片/图像 followed by 的. The noun
+// modifies whatever comes next, so it is not the object being created.
+func discoveryPictureModifies(text string, at int) bool {
+	rest := text[at+len("图"):]
+	return strings.HasPrefix(rest, "的") || strings.HasPrefix(rest, "片的") || strings.HasPrefix(rest, "像的")
+}
+
+// discoveryReferencePicture is a 图 that points at an existing figure.
+// 如图 and 见图 are references even at the end of the clause. 图中, 图里,
+// 图示, and 图所 are modifiers. 上图 and 下图 are references too: 生成下图
+// stays a search. 一下图 is not that 下图: 一下 is the softener.
+func discoveryReferencePicture(text string, at int) bool {
+	prev, prevSize := utf8.DecodeLastRuneInString(text[:at])
+	// 一下图 is the softener plus 图. 下图 without that 一 is the figure below.
+	if prev == '下' && prevSize > 0 {
+		earlier, _ := utf8.DecodeLastRuneInString(text[:at-prevSize])
+		if earlier != '一' {
+			return true
+		}
+	} else {
+		switch prev {
+		case '如', '见', '上', '左', '右', '附':
+			return true
+		}
+	}
+	next, size := utf8.DecodeRuneInString(text[at+len("图"):])
+	if size == 0 {
+		return false
+	}
+	switch next {
+	case '中', '里', '示', '所':
+		return true
+	}
+	return false
+}
+
+// discoveryPictureNounBefore is the preverbal object of 生成.
+// The picture noun has to be the head of the 把/将 phrase against the verb
+// (把图片生成出来, 将一幅图生成出来, 把这张图生成出来). An earlier 把 in
+// another clause does not count, and neither does 将 inside 将来 or 即将.
+// The phrase counts only when what follows 生成 is empty or a complement
+// such as 出来发给我. 参考图片生成说明 keeps its postverbal object.
+func discoveryPictureNounBefore(prefix, suffix string, window int) bool {
+	if window < utf8.RuneCountInString("图片") || !discoveryPictureSuffixContinues(suffix) {
+		return false
+	}
+	trimmed := strings.TrimRight(prefix, " \t\r\n，,。！？!?:：；;、")
+	nounAt, ok := discoveryPreverbalPictureHead(trimmed)
+	if !ok {
+		return false
+	}
+	beforeHead := trimmed[:nounAt]
+	marker := discoveryDisposalMarker(beforeHead)
+	if marker < 0 {
+		return false
+	}
+	object := beforeHead[marker+len("把"):]
+	return !discoveryClauseBreak(object)
+}
+
+func discoveryDisposalMarker(beforeHead string) int {
+	best := -1
+	for _, marker := range []string{"把", "将"} {
+		from := 0
+		for from < len(beforeHead) {
+			rel := strings.Index(beforeHead[from:], marker)
+			if rel < 0 {
+				break
+			}
+			at := from + rel
+			if marker == "把" || !discoveryLexicalizedJiang(beforeHead, at) {
+				if at > best {
+					best = at
+				}
+			}
+			from = at + len(marker)
+		}
+	}
+	return best
+}
+
+// discoveryLexicalizedJiang is 将 that does not take the following noun:
+// 将来, 将要, 将近, and 即将.
+func discoveryLexicalizedJiang(text string, at int) bool {
+	prev, _ := utf8.DecodeLastRuneInString(text[:at])
+	if prev == '即' {
+		return true
+	}
+	next, _ := utf8.DecodeRuneInString(text[at+len("将"):])
+	switch next {
+	case '来', '要', '近':
+		return true
+	default:
+		return false
+	}
+}
+
+func discoveryClauseBreak(object string) bool {
+	return strings.ContainsAny(object, "，,。！？!?:：；;\n")
+}
+
+// discoveryPictureSuffixContinues reports that 生成 has no separate
+// postverbal object. A complement (出来, 一下) and a delivery tail
+// (出来发给我) still leave the preverbal noun as the object. 了一个说明
+// and 说明 do not.
+func discoveryPictureSuffixContinues(suffix string) bool {
+	s := strings.TrimLeft(suffix, " \t\r\n，,。！？!?:：；;、")
+	if s == "" {
+		return true
+	}
+	for _, comp := range []string{"出来", "起来", "一下"} {
+		if strings.HasPrefix(s, comp) {
+			s = strings.TrimLeft(s[len(comp):], " \t\r\n，,。！？!?:：；;、")
+			break
+		}
+	}
+	if s == "" {
+		return true
+	}
+	switch s {
+	case "好", "好了", "好吧", "完", "完了", "吧", "了", "啊", "呀", "呢", "吗":
+		return true
+	}
+	for _, tail := range []string{"发给我", "发给", "发我", "给我", "保存"} {
+		if strings.HasPrefix(s, tail) {
+			// 给我一段说明 is a new object. 出来发给我 is only the tail.
+			rest := strings.TrimLeft(s[len(tail):], " \t\r\n，,。！？!?:：；;、")
+			return discoveryPictureTailOnly(rest)
+		}
+	}
+	return false
+}
+
+func discoveryPictureTailOnly(s string) bool {
+	switch s {
+	case "", "好", "好了", "好吧", "完", "完了", "吧", "了", "啊", "呀", "呢", "吗", "一下":
+		return true
+	}
+	return false
+}
+
+// discoveryHasAffirmed reports phrase occurs and is not cancelled by 不/别/勿
+// or by 不要/不用/不必/不是/别再/不再 immediately in front of it.
+// 画 inside 动画 is not the verb.
+func discoveryHasAffirmed(text, phrase string) bool {
+	from := 0
+	for from < len(text) {
+		rel := strings.Index(text[from:], phrase)
+		if rel < 0 {
+			return false
+		}
+		at := from + rel
+		// 动画图 contains 画图, but that 画 is not the verb.
+		if strings.HasPrefix(phrase, "画") && discoveryAnimatedDraw(text, at) {
+			from = at + len(phrase)
+			continue
+		}
+		if !discoveryVerbNegated(text[:at]) {
+			return true
+		}
+		from = at + len(phrase)
+	}
+	return false
+}
+
+func discoveryVerbNegated(prefix string) bool {
+	runes := []rune(strings.TrimRight(prefix, " \t\r\n"))
+	if len(runes) == 0 {
+		return false
+	}
+	switch runes[len(runes)-1] {
+	case '不', '别', '勿', '非':
+		return true
+	}
+	if len(runes) >= 2 {
+		switch string(runes[len(runes)-2:]) {
+		case "不要", "不用", "不必", "不是", "别再", "不再":
+			return true
+		}
+	}
+	return false
+}
+
+// discoveryPreverbalPictureHead reports the byte offset of a picture-object
+// head at the end of phrase: 图片, 图像, 张图, or 幅图.
+func discoveryPreverbalPictureHead(phrase string) (int, bool) {
+	for _, head := range []string{"图片", "图像", "张图", "幅图"} {
+		if strings.HasSuffix(phrase, head) {
+			return len(phrase) - len(head), true
+		}
+	}
+	return 0, false
+}
+
 func (c *sharedAgentLoopCallbacks) discoveryExtensionSettled() bool {
 	return c != nil && (c.discoveryCraftRan || c.discoverySkillInstalled)
 }
@@ -210,6 +698,46 @@ func (c *sharedAgentLoopCallbacks) discoverySubstitutionBlocks(names map[string]
 		}
 	}
 	return true
+}
+
+// notePetitionInputUnbound records a discovery expansion that failed
+// because the capability's trusted-input contract is unmet, and that
+// failure is not a missing built-in. An unsupported selected file still
+// extends, so this returns false and the caller keeps the catalog miss.
+// The stored note is what a later search of the same name repeats.
+func (c *sharedAgentLoopCallbacks) notePetitionInputUnbound(name string, err error) bool {
+	if c == nil || !tool.IsTrustedInputMissingOrAmbiguous(err) || c.discoveryTrustedInputExtends(err) {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if c.petitionInputUnbound == nil {
+		c.petitionInputUnbound = map[string]string{}
+	}
+	code := petitionInputUnboundMissing
+	if strings.Contains(err.Error(), tool.TrustedInputAmbiguous) {
+		code = petitionInputUnboundAmbiguous
+	}
+	c.petitionInputUnbound[name] = code
+	return true
+}
+
+// discoveryTrustedInputExtends reports that this trusted-input failure is
+// the planner's missing-built-in case: the turn selected files the native
+// reader does not accept. An empty selection, and an image, are not that
+// case. semanticCapabilityExtension is the one classification.
+func (c *sharedAgentLoopCallbacks) discoveryTrustedInputExtends(err error) bool {
+	if c == nil || !tool.IsTrustedInputMissingOrAmbiguous(err) {
+		return false
+	}
+	var attachments []MessageAttachment
+	if c.semanticSurface != nil && c.semanticSurface.replan != nil {
+		attachments = c.semanticSurface.replan.Attachments
+	}
+	_, _, ok := semanticCapabilityExtension(err, c.userText, attachments)
+	return ok
 }
 
 func (c *sharedAgentLoopCallbacks) noteDiscoveryCatalogMiss() {

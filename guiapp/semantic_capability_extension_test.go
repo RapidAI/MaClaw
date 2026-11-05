@@ -14,6 +14,32 @@ func capabilityExtensionPicker(paths ...string) string {
 	return agent.FilePathPromptPrefix + "\n" + strings.Join(paths, "\n") + "\n"
 }
 
+func TestDiscoveryPictureCreationUtterance(t *testing.T) {
+	longTail := "生成老鼠戏猫图" + strings.Repeat("补充说明", 8) + "图"
+	farPicture := "生成" + strings.Repeat("补充说明", 8) + "图片"
+	for _, text := range []string{
+		"生成老鼠戏猫图", "生成一张图片", "生成一张图", "生成图片", "生成图像", "把图片生成出来", "把图片生成出来发给我", "把图像生成出来", "把这张图生成出来", "将一幅图生成出来",
+		"生成一张如图所示的猫图", "生成图中的猫图", "生成一下图", "请生成一张图", "生成图片交给我", "生成一张猫图的高清图",
+		"画个猫，方案另说", "画一个方案，再画个猫", "不画图，请画图", "do not generate a table, generate an image",
+		longTail, "画图", "画个猫", "画个图", "文生图", "draw a picture", "generate an image", "generate an image of a password", "generate an excellent image", "text-to-image",
+	} {
+		if !discoveryPictureCreationUtterance(text) {
+			t.Fatalf("%q should be picture creation", text)
+		}
+	}
+	for _, text := range []string{
+		"", "核对期刊", "北京天气，生成pdf", "生成pdf", "下载一张猫的图片", "截一张图", "找一张猫的图片", "生成流程图", "画一个流程图", "寻找现成图片", "imagine a cat",
+		"生成一张清单", "生成一张表", "画一个方案", "画个方案", "画一个方案图", farPicture,
+		"如图所示，请生成一段说明", "如上图，生成一段说明", "根据图片生成说明", "参考这张图片，请生成一段说明", "把图片里的字生成出来", "generate a word image",
+		"把方案确定后，参考图片生成说明", "根据将来的图片生成说明", "生成一段如图所示的说明", "生成说明见图", "生成上图的说明", "生成下图", "生成图中的文字",
+		"不画图", "不要画图", "别画一张猫", "不要生成一张图", "不是画图", "不是生成一张图", "这不是动画图", "把这张图生成给我一段说明", "生成图片的说明", "生成一张图片的说明", "do not generate an image", "do not text-to-image",
+	} {
+		if discoveryPictureCreationUtterance(text) {
+			t.Fatalf("%q should not be picture creation", text)
+		}
+	}
+}
+
 func TestSemanticCapabilityExtensionOpensUnsupportedFilesAndUnmappedNeeds(t *testing.T) {
 	reason, paths, ok := semanticCapabilityExtension(tool.UniqueTrustedInputCount(0), capabilityExtensionPicker(`C:\books\note.fb2`), nil)
 	if !ok || reason == "" || len(paths) != 1 || !strings.HasSuffix(paths[0], `note.fb2`) {

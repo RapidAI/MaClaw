@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -423,6 +425,34 @@ func skillInitialExecutionFailureNote(name string, execErr error) string {
 	return fmt.Sprintf("Skill %s was installed but initial execution failed (marked as needs_setup): %v\nRun manage_skill(action=\"run\", name=\"%s\") to retry.", name, execErr, name)
 }
 
+// installedSkillCredentialRefusal is an installed program the runner would
+// also reject for an unset env var. It is not an empty package: craft_tool
+// is not the next step, and naming it sends the model off to write a
+// replacement that needs the same variable.
+const installedSkillCredentialRefusal = "required credentials are empty"
+
+// skillInitialExecutionUnrunnableNote is the tool result when a just-installed
+// skill must not be executed. The first line is the shared tool-failure
+// marker, so a text-only handler classifies it the same way the Success bit
+// does: the catalog miss stays open. An empty package says to call craft_tool.
+// A missing credential does not. manage_skill is not on the discovery surface,
+// and naming it starts another install. A real step that ran and failed still
+// uses skillInitialExecutionFailureNote.
+func skillInitialExecutionUnrunnableNote(name, reason string) string {
+	return fmt.Sprintf("failed: Skill %s was installed but it cannot run (%s) (marked as needs_setup). It will not run automatically. %s", name, reason, skillInitialExecutionUnrunnableFollow(reason))
+}
+
+func skillInitialExecutionUnpersistedUnrunnableNote(name, reason string, statusErr error) string {
+	return fmt.Sprintf("failed: Skill %s was installed but it cannot run (%s). Its needs_setup status could not be persisted (%v). It will not run automatically. %s", name, reason, statusErr, skillInitialExecutionUnrunnableFollow(reason))
+}
+
+func skillInitialExecutionUnrunnableFollow(reason string) string {
+	if reason == installedSkillCredentialRefusal {
+		return "Do not install or run this skill again for this failure."
+	}
+	return "Call craft_tool for the original task. Do not install or run this skill again for this failure."
+}
+
 func skillInitialExecutionUnpersistedNote(name string, execErr, statusErr error) string {
 	if skillExecutionFailedOnTruncatedModelResponse(execErr) {
 		return fmt.Sprintf("Skill %s was installed but its first run stopped because the model response was truncated. Its needs_setup status could not be persisted (%v). Continue the original task with the tools already available. Do not install or run this skill again for this failure.", name, statusErr)
@@ -453,6 +483,15 @@ func (h *IMMessageHandler) executeInstalledSkill(ctx context.Context, skill *cor
 	if err := ctx.Err(); err != nil {
 		return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s execution cancelled: %v", displayName, err), SilentFailure: true}
 	}
+	// An empty marketplace package, or one whose required credentials are
+	// unset, used to enter the runner anyway. The 2026-11-06 picture skill
+	// was a craft_tool step over an empty directory: the runner started the
+	// OpenAI proxy and spent minutes in simple_llm, then told the model to
+	// call manage_skill, which discovery does not expose.
+	if reason := installedSkillAutoRunRefusal(skill); reason != "" {
+		log.Printf("[skill-auto] skip execute skill %s: %s", skill.Name, reason)
+		return h.finishInstalledSkillUnrunnable(skill, reason)
+	}
 	if sendStatus != nil {
 		sendStatus(fmt.Sprintf("正在执行 Skill: %s ...", skill.Name))
 	}
@@ -474,4 +513,121 @@ func (h *IMMessageHandler) executeInstalledSkill(ctx context.Context, skill *cor
 		return skillInstallExecutionResult{Text: skillInitialExecutionFailureNote(skill.Name, execErr)}
 	}
 	return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s was installed and executed.\n%s", skill.Name, execResult), Success: true}
+}
+
+func (h *IMMessageHandler) finishInstalledSkillUnrunnable(skill *corelib.NLSkillEntry, reason string) skillInstallExecutionResult {
+	name := ""
+	if skill != nil {
+		name = skill.Name
+	}
+	if h == nil || h.app == nil || skill == nil || h.app.skillExecutor != h.getSkillExecutor() {
+		statusErr := fmt.Errorf("durable App status transaction unavailable")
+		log.Printf("[skill-auto] failed to mark skill %s as needs_setup: %v", name, statusErr)
+		return skillInstallExecutionResult{Text: skillInitialExecutionUnpersistedUnrunnableNote(name, reason, statusErr)}
+	}
+	if updateErr := h.app.SetNLSkillStatus(skill.Name, "needs_setup"); updateErr != nil {
+		log.Printf("[skill-auto] failed to mark skill %s as needs_setup: %v", skill.Name, updateErr)
+		return skillInstallExecutionResult{Text: skillInitialExecutionUnpersistedUnrunnableNote(skill.Name, reason, updateErr)}
+	}
+	return skillInstallExecutionResult{Text: skillInitialExecutionUnrunnableNote(skill.Name, reason)}
+}
+
+// installedSkillAutoRunRefusal reports why the just-installed skill must not
+// be executed. A real step still runs, including one that then exits non-zero.
+// Empty means run it.
+func installedSkillAutoRunRefusal(entry *corelib.NLSkillEntry) string {
+	if entry == nil {
+		return ""
+	}
+	if installedSkillMissingCredentials(entry) {
+		return installedSkillCredentialRefusal
+	}
+	if cskill.IsKnowledgeSkillType(entry.Type) || cskill.IsInstructionOnlySkillType(entry.Type) {
+		return "no runnable steps"
+	}
+	report := cskill.AssessRunnerCompatibility(entry, cskill.RunnerBackendGUI)
+	if !report.Runnable || report.StepCount == 0 || report.SupportedSteps == 0 {
+		return "no runnable steps"
+	}
+	// Marketplace markdown is stored as one craft_tool step. With no program
+	// in the skill directory, executing it asks the model to invent the
+	// program. That is the host craft_tool's job, not an automatic first run.
+	if report.CraftToolOnly && !installedSkillDirHasProgram(entry.SkillDir) {
+		return "package has no runnable program"
+	}
+	return ""
+}
+
+// installedSkillMissingCredentials reports an env requirement the GUI runner
+// would also reject. BuildRunCheckContextForRunner marks OPENAI_API_KEY,
+// OPENAI_BASE_URL, and OPENAI_MODEL provided when the local proxy would
+// inject them, and ExtractRequirements turns a command-shaped name such as
+// python into a command requirement. Reading os.Getenv alone skipped those
+// skills and marked them needs_setup before the runner could start.
+func installedSkillMissingCredentials(entry *corelib.NLSkillEntry) bool {
+	if entry == nil || !installedSkillDeclaresCredentialEnv(entry) {
+		return false
+	}
+	ctx := cskill.BuildRunCheckContextForRunner(entry, nil, cskill.RunnerBackendGUI)
+	for _, req := range cskill.ExtractRequirements(entry, ctx) {
+		if req.Type != "env" || req.Provided {
+			continue
+		}
+		if strings.TrimSpace(os.Getenv(req.Name)) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func installedSkillDeclaresCredentialEnv(entry *corelib.NLSkillEntry) bool {
+	if entry == nil {
+		return false
+	}
+	for _, name := range entry.RequiredEnv {
+		if strings.TrimSpace(name) != "" {
+			return true
+		}
+	}
+	for _, step := range entry.Steps {
+		if step.Params == nil {
+			continue
+		}
+		for _, key := range []string{"required_env", "requires_env", "required_environment"} {
+			if _, ok := step.Params[key]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func installedSkillDirHasProgram(dir string) bool {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return false
+	}
+	found := false
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil
+		}
+		name := d.Name()
+		if name != "." && name != ".." && strings.HasPrefix(name, ".") {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(name)) {
+		case ".py", ".pyw", ".js", ".mjs", ".ts", ".sh", ".ps1", ".bat", ".cmd", ".exe", ".go", ".rb":
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
 }

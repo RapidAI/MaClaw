@@ -27,6 +27,7 @@ const (
 	companionReaderPDFDrawingsKind     = "pdf_drawings"
 	companionReaderPDFBookmarksKind    = "pdf_bookmarks"
 	companionReaderChatMarksKind       = "chat_marks"
+	companionReaderChatAnnotationsKind = "chat_annotations"
 	companionReaderDiscussionNotesKind = "discussion_notes"
 	companionReaderInputHistoryKind    = "input_history"
 	// One document can hold many long translations (200 × 12k characters), so
@@ -107,7 +108,8 @@ func companionReaderNormalizeHistory(entries []string) []string {
 // LoadCompanionReaderState returns every stored value for the companion reader
 // as JSON: {"pdf_marks": {path: [...mark...]}, "pdf_translations": {path: [...]},
 // "pdf_drawings": {path: [...]}, "pdf_bookmarks": {path: [...]},
-// "chat_marks": {path: [...mark...]}, "input_history": ["..."]}.
+// "chat_marks": {path: [...mark...]}, "chat_annotations": {path: [...note...]},
+// "input_history": ["..."]}.
 // legacyPDFMarksJSON and legacyInputHistoryJSON are the old WebView documents
 // (maclaw.fileCompanionPdfMarks.v1 and maclaw.fileCompanionInputHistory.v1).
 // A non-empty document inserts rows that are not stored yet, so a leftover
@@ -141,6 +143,7 @@ type companionReaderStatePayload struct {
 	PDFDrawings     map[string]json.RawMessage `json:"pdf_drawings"`
 	PDFBookmarks    map[string]json.RawMessage `json:"pdf_bookmarks"`
 	ChatMarks       map[string]json.RawMessage `json:"chat_marks"`
+	ChatAnnotations map[string]json.RawMessage `json:"chat_annotations"`
 	InputHistory    []string                   `json:"input_history"`
 }
 
@@ -151,6 +154,7 @@ func readCompanionReaderState(db *sql.DB) (companionReaderStatePayload, error) {
 		PDFDrawings:     map[string]json.RawMessage{},
 		PDFBookmarks:    map[string]json.RawMessage{},
 		ChatMarks:       map[string]json.RawMessage{},
+		ChatAnnotations: map[string]json.RawMessage{},
 		InputHistory:    []string{},
 	}
 	rows, err := db.Query(`SELECT kind, key, value FROM reader_state`)
@@ -183,6 +187,10 @@ func readCompanionReaderState(db *sql.DB) (companionReaderStatePayload, error) {
 		case companionReaderChatMarksKind:
 			if json.Valid([]byte(value)) {
 				payload.ChatMarks[key] = json.RawMessage(value)
+			}
+		case companionReaderChatAnnotationsKind:
+			if json.Valid([]byte(value)) {
+				payload.ChatAnnotations[key] = json.RawMessage(value)
 			}
 		case companionReaderInputHistoryKind:
 			var rawEntries []json.RawMessage
@@ -405,6 +413,28 @@ func (a *App) SaveCompanionChatMarks(path, marksJSON string) error {
 		return a.deleteCompanionReaderState(companionReaderChatMarksKind, key)
 	}
 	return a.writeCompanionReaderState(companionReaderChatMarksKind, key, marksJSON)
+}
+
+// SaveCompanionChatAnnotations stores the notes a reader placed on the agent's
+// answers for one document. An empty list removes the row. The answer text
+// itself is not touched.
+func (a *App) SaveCompanionChatAnnotations(path, notesJSON string) error {
+	key := companionReaderPathKey(path)
+	if key == "" || len(key) > companionReaderKeyMaxBytes {
+		return fmt.Errorf("invalid companion document path")
+	}
+	notesJSON = strings.TrimSpace(notesJSON)
+	if len(notesJSON) > companionReaderValueMaxBytes {
+		return fmt.Errorf("companion chat annotations exceed %d bytes", companionReaderValueMaxBytes)
+	}
+	var notes []json.RawMessage
+	if err := json.Unmarshal([]byte(notesJSON), &notes); err != nil {
+		return fmt.Errorf("companion chat annotations must be a JSON array")
+	}
+	if len(notes) == 0 {
+		return a.deleteCompanionReaderState(companionReaderChatAnnotationsKind, key)
+	}
+	return a.writeCompanionReaderState(companionReaderChatAnnotationsKind, key, notesJSON)
 }
 
 // SaveCompanionInputHistory stores the composer's typed-question history. The

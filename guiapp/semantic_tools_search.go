@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -174,6 +175,13 @@ const semanticToolsSearchDeferredCloser = "已计划的名字不要直接调用�
 // (production 2026-08-27: "按计划路由提供" read as "call it", eight wasted
 // iterations on office while the turn rode the coding surface).
 func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) string {
+	// Bind failures belong to the plan this search expands. A later search
+	// starts clean, so a document producer added since the last failure can
+	// publish the name instead of repeating a closed refusal.
+	if cb != nil {
+		cb.petitionInputUnbound = nil
+		cb.discoveryAdmitUnbound = nil
+	}
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil || args == nil {
 		return "[system rejected] tools_search_arguments_invalid"
@@ -488,6 +496,17 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 		decision.nextAppear = nil
 		decision.text = note + "\n"
 		decision.closing = note
+		loadedNotes = ""
+	} else if note, only := discoveryAdmitUnboundAction(cb, loadedNotes); only && !unloadedPetition && !admitted && !held && exclusiveAlone == "" {
+		// The names are in the directory. Their templates did not bind a
+		// trusted document. Each name's fact stays in the head. The last
+		// line is one follow-up for the whole list: a per-name sentence
+		// let whichever note sorted last hide the delivery name's producer
+		// step, or order that step for a read the producer does not unlock.
+		decision.callNow = nil
+		decision.nextAppear = nil
+		decision.text = note + "\n"
+		decision.closing = cb.discoveryUnboundFollowUp(note)
 		loadedNotes = ""
 	} else if loadedNotes != "" {
 		if decision.text != "" && !strings.HasSuffix(decision.text, "\n") {
@@ -931,6 +950,163 @@ func soleDiscoveryDesktopDoorNote(notes string) (string, bool) {
 		return "", false
 	}
 	return notes, true
+}
+
+const (
+	// petitionInputUnboundMissing is a delivery template with no trusted
+	// document and no in-turn producer.
+	petitionInputUnboundMissing = "missing"
+	// petitionInputUnboundAmbiguous is a delivery template with more than
+	// one document that could bind.
+	petitionInputUnboundAmbiguous = "ambiguous"
+)
+
+// discoveryTrustedInputUnboundNote is the page fact for one unbound name.
+// code is petitionInputUnboundMissing or petitionInputUnboundAmbiguous.
+// It does not order the next needs entry. discoveryUnboundFollowUp is the
+// one last line for every unbound name in this search, so a second fact
+// cannot hide the delivery step or aim that step at a read.
+func (c *sharedAgentLoopCallbacks) discoveryTrustedInputUnboundNote(name, code string) string {
+	name = strings.TrimSpace(name)
+	if code == petitionInputUnboundAmbiguous {
+		return name + " 在目录里。当前计划有多份可绑定的文档，不能选定，这一步不会加载。"
+	}
+	return name + " 在目录里。当前计划没有可绑定的受信任文档，这一步不会加载。"
+}
+
+// discoveryUnboundFollowUp is the last line when every load note is an
+// unbound fact. A current-channel file delivery names the producers this
+// admission layer would load, then that delivery name. A read keeps its
+// fact in the head: a producer does not satisfy document.read.local.
+// With no such delivery name, the facts themselves are the line and the
+// page does not send the model to install a skill.
+func (c *sharedAgentLoopCallbacks) discoveryUnboundFollowUp(facts string) string {
+	facts = strings.TrimSpace(facts)
+	unlocked := c.discoveryUnboundUnlockedNames()
+	producers := c.discoveryAdmissibleDocumentProducers()
+	if c == nil || len(unlocked) == 0 || len(producers) == 0 {
+		if facts == "" {
+			return ""
+		}
+		return facts + "不要调用 search_and_install_skill 或 craft_tool。"
+	}
+	return "再调用 tools_search，needs 里只写 " + discoveryJoinOr(producers) + "。加载成功后，再把 " + discoveryJoinOr(unlocked) + " 放进 needs。不要调用 search_and_install_skill 或 craft_tool。"
+}
+
+func (c *sharedAgentLoopCallbacks) discoveryUnboundUnlockedNames() []string {
+	if c == nil || len(c.petitionInputUnbound) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(c.petitionInputUnbound))
+	for name, code := range c.petitionInputUnbound {
+		name = strings.TrimSpace(name)
+		if name == "" || code != petitionInputUnboundMissing || !discoveryInTurnProducerUnlocks(name) {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// discoveryInTurnProducerUnlocks reports that a producer already in the
+// plan satisfies this name. semanticNeedsForTrustedDocumentInputs skips
+// the lookup only for current-channel delivery whose format is file.
+// The petition label's template carries that format. document.read.local
+// stays on the lookup, so a producer is not a follow-up for it.
+func discoveryInTurnProducerUnlocks(name string) bool {
+	capability, ok := semanticToolsSearchNameCapability(name)
+	if !ok || capability != agentservice.CapabilityArtifactDeliverCurrent {
+		return false
+	}
+	label, ok := semanticPetitionLabelForCapability(capability)
+	if !ok {
+		return false
+	}
+	for _, tmpl := range imSemanticIntentRuleSet[label] {
+		if tmpl.Capability != capability {
+			continue
+		}
+		need := tool.CapabilityNeed{Capability: tmpl.Capability, Qualifiers: tmpl.Qualifiers}
+		if tool.CurrentChannelDeliverAccepts(need, agentservice.ArtifactFormatFile) {
+			return true
+		}
+	}
+	return false
+}
+
+// discoveryAdmissibleDocumentProducers is the directory names that satisfy
+// the delivery template's in-turn producer check and that
+// admitDiscoverySearchNeeds would load. The page's last line is the order
+// the model follows, so a name this layer would count as a failed load
+// stays off that line.
+func (c *sharedAgentLoopCallbacks) discoveryAdmissibleDocumentProducers() []string {
+	if c == nil {
+		return nil
+	}
+	var names []string
+	seen := map[string]bool{}
+	for _, entry := range semanticToolsSearchInventory {
+		name := strings.TrimSpace(entry.name)
+		if name == "" || seen[name] || !discoveryDocumentProducerCapability(entry.capability) {
+			continue
+		}
+		if !c.discoveryDocumentProducerPetitionLoads(name) {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// discoveryDocumentProducerCapability is a capability that makes
+// current-channel file delivery skip the trusted-document lookup. It is
+// the same pair the GUI bind passes to InTurnArtifactProducerPresent:
+// document generate always counts, and office write is the host extra.
+func discoveryDocumentProducerCapability(id tool.CapabilityID) bool {
+	return tool.IsDocumentGenerateFile(id) || id == tool.CapabilityDocumentWriteOffice
+}
+
+// discoveryDocumentProducerPetitionLoads reports that a later tools_search
+// whose only needs entry is this name would reach PetitionToolCall. These
+// are the gates admitDiscoverySearchNeeds applies before that call. A
+// producer already on the surface is already in the plan; this bind
+// failure is not waiting on another petition of that name.
+func (c *sharedAgentLoopCallbacks) discoveryDocumentProducerPetitionLoads(name string) bool {
+	if c == nil || !c.discoverySearchNeedLoadable(name) || c.discoverySearchNeedCallable(name) {
+		return false
+	}
+	if discoveryPictureCreationUtterance(c.userText) && discoverySubstituteTool(name) {
+		return false
+	}
+	return true
+}
+
+func discoveryJoinOr(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return names[0]
+	default:
+		return strings.Join(names[:len(names)-1], "、") + " 或 " + names[len(names)-1]
+	}
+}
+
+// discoveryAdmitUnboundAction reports that this search's only load notes are
+// the bind results recorded on the callback. The page uses that block as its
+// action. A grant or another sentence beside it stays in the header.
+func discoveryAdmitUnboundAction(c *sharedAgentLoopCallbacks, loadedNotes string) (string, bool) {
+	if c == nil || len(c.discoveryAdmitUnbound) == 0 {
+		return "", false
+	}
+	block := strings.Join(c.discoveryAdmitUnbound, "\n")
+	if strings.TrimSpace(loadedNotes) != block {
+		return "", false
+	}
+	return block, true
 }
 
 // discoveryNeedsAreLoadableNames reports that every needs token is a name
@@ -1637,6 +1813,12 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 		}
 		if _, denied := cb.semanticPetitionDenied[name]; denied {
 			return "[此名请愿未通过，不要重试；同类其它「可请愿」名字仍可调用]"
+		}
+		switch cb.petitionInputUnbound[name] {
+		case petitionInputUnboundAmbiguous:
+			return "[已在目录：当前计划有多份可绑定的文档]"
+		case petitionInputUnboundMissing:
+			return "[已在目录：当前计划没有可绑定的受信任文档]"
 		}
 		consumed := cb.semanticPetitionConsumed
 		if semanticPetitionIsEffectful(name) {

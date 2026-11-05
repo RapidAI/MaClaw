@@ -5,11 +5,12 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { companionFill, companionSay, getCompanionUiLang } from "../../i18n/mnCompanion";
+import { capPdfAnnotationDraft } from "./chatAnnotations";
 import { CHAT_MARK_COLORS, type ChatMarkColor } from "./chatMarks";
 
 export type ChatMenuState = { x: number; y: number };
 
-type ChatMenuGlyphKind = "copy" | "highlight" | "erase";
+type ChatMenuGlyphKind = "copy" | "highlight" | "erase" | "note";
 
 function ChatMenuGlyph({ kind }: { kind: ChatMenuGlyphKind }) {
     if (kind === "highlight") {
@@ -21,6 +22,15 @@ function ChatMenuGlyph({ kind }: { kind: ChatMenuGlyphKind }) {
         );
     }
     if (kind === "erase") {
+        return (
+            <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="m14 5 5 5-8.5 8.5a2 2 0 0 1-2.8 0l-2.2-2.2a2 2 0 0 1 0-2.8z" />
+                <path d="m8.5 10.5 5 5" />
+                <path d="M5 20h14" />
+            </svg>
+        );
+    }
+    if (kind === "note") {
         return (
             <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="m14 5 5 5-8.5 8.5a2 2 0 0 1-2.8 0l-2.2-2.2a2 2 0 0 1 0-2.8z" />
@@ -51,9 +61,16 @@ export function CompanionChatMarkMenu({
     hasSelection,
     canPaint,
     canClear,
+    canAnnotate,
+    canRenameAnnotation,
+    canDeleteAnnotation,
+    annotationName,
     onCopy,
     onPaint,
     onClear,
+    onAnnotate,
+    onRenameAnnotation,
+    onDeleteAnnotation,
     onClose,
     lang,
 }: {
@@ -62,9 +79,16 @@ export function CompanionChatMarkMenu({
     hasSelection: boolean;
     canPaint: boolean;
     canClear: boolean;
+    canAnnotate: boolean;
+    canRenameAnnotation: boolean;
+    canDeleteAnnotation: boolean;
+    annotationName: string;
     onCopy: () => void;
     onPaint: (color: ChatMarkColor) => void;
     onClear: () => void;
+    onAnnotate: (body: string) => void;
+    onRenameAnnotation: (name: string) => void;
+    onDeleteAnnotation: () => void;
     onClose: () => void;
     lang?: string;
 }) {
@@ -72,6 +96,11 @@ export function CompanionChatMarkMenu({
     const say = (zh: string) => companionSay(shownLang, zh);
     const rootRef = useRef<HTMLDivElement>(null);
     const [place, setPlace] = useState({ left: state.x, top: state.y });
+    const [annotationOpen, setAnnotationOpen] = useState(false);
+    const [annotationText, setAnnotationText] = useState("");
+    const [noteEditor, setNoteEditor] = useState(false);
+    const [noteDraft, setNoteDraft] = useState("");
+    const editorOpen = annotationOpen || noteEditor;
 
     useLayoutEffect(() => {
         const root = rootRef.current;
@@ -89,7 +118,7 @@ export function CompanionChatMarkMenu({
         measure();
         window.addEventListener("resize", measure);
         return () => window.removeEventListener("resize", measure);
-    }, [state.x, state.y, quote, canPaint, canClear]);
+    }, [state.x, state.y, quote, canPaint, canClear, canAnnotate, canRenameAnnotation, canDeleteAnnotation, editorOpen]);
 
     useEffect(() => {
         rootRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true });
@@ -109,14 +138,14 @@ export function CompanionChatMarkMenu({
 
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
-            if (event.key !== "Escape") return;
+            if (event.key !== "Escape" || editorOpen) return;
             event.preventDefault();
             event.stopPropagation();
             onClose();
         };
         window.addEventListener("keydown", onKey, true);
         return () => window.removeEventListener("keydown", onKey, true);
-    }, [onClose]);
+    }, [onClose, editorOpen]);
 
     // A press anywhere else dismisses the menu, like a native one. The menu's
     // own press handler stops propagation, so this never eats its action.
@@ -155,6 +184,8 @@ export function CompanionChatMarkMenu({
     const onKeyDown = (event: React.KeyboardEvent) => {
         const root = rootRef.current;
         if (!root) return;
+        const keyTarget = event.target as HTMLElement | null;
+        if (keyTarget?.closest?.("input, textarea")) return;
         if (event.key === "Tab") {
             onClose();
             return;
@@ -182,6 +213,19 @@ export function CompanionChatMarkMenu({
 
     const shownQuote = quote ? menuQuote(quote) : "";
     const quoteTitle = quote.replace(/\s+/g, " ").trim();
+    const imeKey = (event: React.KeyboardEvent) => event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
+    const submitAnnotation = () => {
+        const text = annotationText.trim();
+        if (!text) return;
+        onAnnotate(text);
+        setAnnotationOpen(false);
+        setAnnotationText("");
+    };
+    const submitRename = () => {
+        const name = noteDraft.trim();
+        if (!name) return;
+        onRenameAnnotation(name);
+    };
 
     return (
         <div
@@ -193,6 +237,13 @@ export function CompanionChatMarkMenu({
             style={{ left: place.left, top: place.top }}
             onMouseDown={(event) => event.stopPropagation()}
             onContextMenu={(event) => {
+                // The writing field is where a reader pastes. Taking its
+                // right-click would leave the browser paste menu closed.
+                const target = event.target as HTMLElement | null;
+                if (target?.closest?.("textarea, input")) {
+                    event.stopPropagation();
+                    return;
+                }
                 event.preventDefault();
                 event.stopPropagation();
             }}
@@ -213,6 +264,55 @@ export function CompanionChatMarkMenu({
                         <ChatMenuGlyph kind="copy" />
                         <span className="companion-pdf-menu-item-label">{say("复制")}</span>
                     </button>
+                </div>
+            ) : null}
+            {canAnnotate ? (
+                <div className="companion-pdf-menu-group">
+                    {annotationOpen ? (
+                        <div data-testid="chat-annotation-editor" style={{ display: "grid", gap: 6, padding: 8, minWidth: 220 }}>
+                            <textarea
+                                data-testid="chat-annotation-input"
+                                value={annotationText}
+                                autoFocus
+                                rows={3}
+                                placeholder={say("写批注…")}
+                                aria-label={say("写批注…")}
+                                style={{ resize: "vertical", minHeight: 64, font: "inherit", padding: "6px 8px" }}
+                                onChange={(event) => {
+                                    const next = capPdfAnnotationDraft(event.target.value);
+                                    if (next !== event.target.value) event.target.value = next;
+                                    setAnnotationText(next);
+                                }}
+                                onKeyDown={(event) => {
+                                    if (event.key === "Escape") {
+                                        if (imeKey(event)) {
+                                            event.stopPropagation();
+                                            return;
+                                        }
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        setAnnotationOpen(false);
+                                        setAnnotationText("");
+                                        return;
+                                    }
+                                    if (event.key === "Enter" && !event.shiftKey) {
+                                        if (imeKey(event)) return;
+                                        event.preventDefault();
+                                        submitAnnotation();
+                                    }
+                                }}
+                            />
+                            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                                <button type="button" data-testid="chat-annotation-cancel" onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => { setAnnotationOpen(false); setAnnotationText(""); }}>{say("取消")}</button>
+                                <button type="button" data-testid="chat-annotation-save" disabled={!annotationText.trim()} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={submitAnnotation}>{say("保存批注")}</button>
+                            </div>
+                        </div>
+                    ) : (
+                        <button type="button" role="menuitem" data-testid="chat-menu-annotate" className="companion-pdf-menu-item" {...activate(() => setAnnotationOpen(true))}>
+                            <ChatMenuGlyph kind="note" />
+                            <span className="companion-pdf-menu-item-label">{say("批注")}</span>
+                        </button>
+                    )}
                 </div>
             ) : null}
             {canPaint ? (
@@ -252,6 +352,68 @@ export function CompanionChatMarkMenu({
                         <ChatMenuGlyph kind="erase" />
                         <span className="companion-pdf-menu-item-label">{say("取消高亮")}</span>
                     </button>
+                </div>
+            ) : null}
+            {canRenameAnnotation || canDeleteAnnotation ? (
+                <div className="companion-pdf-menu-group">
+                    {noteEditor ? (
+                        <div data-testid="chat-annotation-name-editor" className="companion-pdf-bookmark-editor">
+                            <input
+                                data-testid="chat-annotation-name"
+                                value={noteDraft}
+                                autoFocus
+                                maxLength={40}
+                                placeholder={say("批注名")}
+                                aria-label={say("批注名")}
+                                onChange={(event) => setNoteDraft(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key === "Escape") {
+                                        if (imeKey(event)) {
+                                            event.stopPropagation();
+                                            return;
+                                        }
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        setNoteEditor(false);
+                                        return;
+                                    }
+                                    if (event.key === "Enter") {
+                                        if (imeKey(event)) return;
+                                        event.preventDefault();
+                                        submitRename();
+                                    }
+                                }}
+                            />
+                            <div className="companion-pdf-bookmark-editor-actions">
+                                <button type="button" data-testid="chat-annotation-name-cancel" onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => setNoteEditor(false)}>{say("取消")}</button>
+                                <button type="button" data-testid="chat-annotation-name-save" disabled={!noteDraft.trim()} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={submitRename}>{say("确定")}</button>
+                            </div>
+                        </div>
+                    ) : (
+                        <>
+                            {canRenameAnnotation ? (
+                                <button
+                                    type="button"
+                                    role="menuitem"
+                                    data-testid="chat-annotation-rename"
+                                    className="companion-pdf-menu-item"
+                                    {...activate(() => {
+                                        setNoteDraft(annotationName);
+                                        setNoteEditor(true);
+                                    })}
+                                >
+                                    <ChatMenuGlyph kind="note" />
+                                    <span className="companion-pdf-menu-item-label">{say("批注改名")}</span>
+                                </button>
+                            ) : null}
+                            {canDeleteAnnotation ? (
+                                <button type="button" role="menuitem" data-testid="chat-annotation-delete" className="companion-pdf-menu-item companion-pdf-menu-item--danger" {...activate(onDeleteAnnotation)}>
+                                    <ChatMenuGlyph kind="erase" />
+                                    <span className="companion-pdf-menu-item-label">{say("删除批注")}</span>
+                                </button>
+                            ) : null}
+                        </>
+                    )}
                 </div>
             ) : null}
         </div>

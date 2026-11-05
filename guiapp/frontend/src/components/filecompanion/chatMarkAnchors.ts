@@ -171,7 +171,9 @@ export function chatSelectionSlices(root: HTMLElement, range: Range): ChatSelect
 /** The offsets to paint for a stored mark. Offsets are trusted while they
  *  still read the same text; a moved answer re-anchors on the quote, choosing
  *  the occurrence closest to where the mark used to be. */
-function offsetsInText(text: string, mark: ChatMark): { start: number; end: number } | null {
+type ChatTextAnchor = { message: number; start: number; end: number; text: string };
+
+function offsetsInText(text: string, mark: ChatTextAnchor): { start: number; end: number } | null {
     if (text.length === 0 || !mark.text) return null;
     if (mark.start >= 0 && mark.end <= text.length && mark.end > mark.start && text.slice(mark.start, mark.end) === mark.text) {
         return { start: mark.start, end: mark.end };
@@ -196,7 +198,7 @@ export function chatMarkOffsets(spans: ChatTextSpan[], mark: ChatMark): { start:
     return offsetsInText(chatMessageText(spans), mark);
 }
 
-function rangeFromText(spans: ChatTextSpan[], text: string, mark: ChatMark): Range | null {
+function rangeFromText(spans: ChatTextSpan[], text: string, mark: ChatTextAnchor): Range | null {
     const offsets = offsetsInText(text, mark);
     if (!offsets) return null;
     const start = pointForOffset(spans, offsets.start, "start");
@@ -208,7 +210,7 @@ function rangeFromText(spans: ChatTextSpan[], text: string, mark: ChatMark): Ran
     return range;
 }
 
-export function chatRangeForMark(root: HTMLElement, mark: ChatMark): Range | null {
+export function chatRangeForMark(root: HTMLElement, mark: ChatTextAnchor): Range | null {
     const element = messageElement(root, mark.message);
     if (!element) return null;
     const spans = chatTextSpans(element);

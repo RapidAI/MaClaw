@@ -249,6 +249,9 @@ type FileCompanionLibraryItem struct {
 	// ChatMarks is the same import-only value for answer highlights. It is
 	// absent from a legacy project, which leaves a reader's own marks alone.
 	ChatMarks string `json:"chatMarks,omitempty"`
+	// ChatAnnotations is the same import-only value for notes on the answers.
+	// A legacy project omits it and leaves a reader's own notes alone.
+	ChatAnnotations string `json:"chatAnnotations,omitempty"`
 	// Annotations is the same import-only value for the host's placed notes.
 	Annotations string `json:"annotations,omitempty"`
 	// Drawings is the same import-only value for the host's freehand marks.
@@ -334,20 +337,22 @@ type FileCompanionShareResult struct {
 
 // FileCompanionShareUpdate is a newer project the reader should show.
 // Highlights and messages replace what that path had on screen. ChatMarks,
-// Annotations, Drawings, and Bookmarks are present only when the project
-// carries them; a legacy project omits them and the reader's own marks stay.
+// ChatAnnotations, Annotations, Drawings, and Bookmarks are present only when
+// the project carries them; a legacy project omits them and the reader's own
+// marks stay.
 type FileCompanionShareUpdate struct {
-	Path        string                 `json:"path"`
-	Token       string                 `json:"token"`
-	Name        string                 `json:"name"`
-	Revision    int                    `json:"revision"`
-	Highlights  string                 `json:"highlights,omitempty"`
-	ChatMarks   *string                `json:"chatMarks,omitempty"`
-	Annotations *string                `json:"annotations,omitempty"`
-	Drawings    *string                `json:"drawings,omitempty"`
-	Bookmarks   *string                `json:"bookmarks,omitempty"`
-	Messages    []FileCompanionMessage `json:"messages"`
-	Project     bool                   `json:"project"`
+	Path            string                 `json:"path"`
+	Token           string                 `json:"token"`
+	Name            string                 `json:"name"`
+	Revision        int                    `json:"revision"`
+	Highlights      string                 `json:"highlights,omitempty"`
+	ChatMarks       *string                `json:"chatMarks,omitempty"`
+	ChatAnnotations *string                `json:"chatAnnotations,omitempty"`
+	Annotations     *string                `json:"annotations,omitempty"`
+	Drawings        *string                `json:"drawings,omitempty"`
+	Bookmarks       *string                `json:"bookmarks,omitempty"`
+	Messages        []FileCompanionMessage `json:"messages"`
+	Project         bool                   `json:"project"`
 }
 
 type fileCompanionShareView struct {

@@ -464,6 +464,56 @@ func TestDiscoveryExtensionExecutesWithoutGrant(t *testing.T) {
 	}
 }
 
+// TestDiscoveryExtensionSameResponseSurvivesSiblingSearch is the picture
+// turn's first batch: tools_search and search_and_install_skill in one
+// response. The search publishes a child surface and retires the epoch.
+// The skill search holds no grant, so same-family continuation cannot carry
+// it, and it used to return stale_surface. The epoch BeginToolSurfaceEpoch
+// recorded still belongs to this response. The next request does not.
+func TestDiscoveryExtensionSameResponseSurvivesSiblingSearch(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "生成老鼠戏猫图", discovery)
+	if err := cb.handler.registry.Register(RegisteredTool{
+		Name: "craft_tool", Status: RegToolAvailable,
+		Handler: func(map[string]interface{}) string { return "ran:craft_tool" },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	epoch := cb.BeginToolSurfaceEpoch(0)
+	if epoch == "" || epoch != cb.requestSurfaceEpoch {
+		t.Fatalf("request epoch = %q recorded %q", epoch, cb.requestSurfaceEpoch)
+	}
+	searched := cb.ExecuteToolCallWithContext(semanticToolsSearchName, `{"query":"核对期刊","needs":["web_search"]}`, "call-search", agent.ToolCallExecutionContext{SurfaceEpoch: epoch})
+	if strings.Contains(searched.Result, "stale_surface") || !strings.Contains(searched.Result, "web_search") {
+		t.Fatalf("sibling search = %s", searched.Result)
+	}
+	if cb.semanticSurface.epochIsCurrent(epoch) {
+		t.Fatal("sibling search left the request epoch current")
+	}
+	want := map[string]string{
+		"craft_tool":               "ran:craft_tool",
+		"search_and_install_skill": "Skill search failed: app is not initialized.",
+	}
+	for _, name := range []string{"craft_tool", "search_and_install_skill"} {
+		got := cb.ExecuteToolCallWithContext(name, `{"task":"生成老鼠戏猫图","query":"生成老鼠戏猫图"}`, "call-"+name, agent.ToolCallExecutionContext{SurfaceEpoch: epoch})
+		if got.Result != want[name] || strings.Contains(got.Result, "stale_surface") || strings.Contains(got.Result, "selection_not_authorized") {
+			t.Fatalf("%s same response = %s", name, got.Result)
+		}
+	}
+	next := cb.BeginToolSurfaceEpoch(1)
+	if next == "" || next == epoch {
+		t.Fatalf("successor epoch = %q previous %q", next, epoch)
+	}
+	late := cb.ExecuteToolCallWithContext("craft_tool", `{"task":"生成老鼠戏猫图"}`, "late-craft", agent.ToolCallExecutionContext{SurfaceEpoch: epoch})
+	if !strings.Contains(late.Result, "stale_surface") {
+		t.Fatalf("successor craft = %s", late.Result)
+	}
+	skill := cb.ExecuteToolCallWithContext("search_and_install_skill", `{"query":"生成老鼠戏猫图"}`, "late-skill", agent.ToolCallExecutionContext{SurfaceEpoch: epoch})
+	if !strings.Contains(skill.Result, "stale_surface") {
+		t.Fatalf("successor skill = %s", skill.Result)
+	}
+}
+
 func TestDiscoveryPetitionedSkillDoesNotClosePlannedTools(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(app.closeSemanticInvocationStore)
@@ -729,6 +779,86 @@ func TestDiscoveryFailedPetitionIsACatalogMiss(t *testing.T) {
 	matched.loopCtx.OfferChatTaskDispatch = true
 	if allowed, reason := matched.IsToolCallAllowed(chatTaskToolDispatch, `{"request":"keep reading"}`); !allowed || reason != "" {
 		t.Fatalf("matched dispatch allowed=%v reason=%q", allowed, reason)
+	}
+}
+
+// TestDiscoveryUnrunnableSkillDoesNotSettleTheMiss is an installed package
+// the runner must not enter. Success stays false, so the catalog miss stays
+// open and web_search is still the substitute the page refused.
+func TestDiscoveryUnrunnableSkillDoesNotSettleTheMiss(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "生成老鼠戏猫图", discovery)
+	cb.userText = "生成老鼠戏猫图"
+	got := cb.runSemanticToolsSearch(`{"query":"生成老鼠戏猫图","needs":["web_search"]}`)
+	if !cb.discoveryUnmatchedObligation || !cb.loopCtx.discoveryCatalogMiss() {
+		t.Fatalf("picture search did not miss:\n%s", got)
+	}
+	note := skillInitialExecutionUnrunnableNote("火山引擎图片生成", "package has no runnable program")
+	cb.handler.skillSearchInstallHandler = func(map[string]interface{}, tool.ProgressCallback) searchAndInstallSkillResult {
+		return searchAndInstallSkillResult{Text: note, Success: false}
+	}
+	if skill := cb.ExecuteTool("search_and_install_skill", `{"query":"生成老鼠戏猫图"}`); skill != note {
+		t.Fatalf("skill = %s", skill)
+	}
+	if !cb.discoverySkillSearchRan || cb.discoverySkillInstalled || cb.discoveryExtensionSettled() {
+		t.Fatalf("unrunnable install settled the miss: ran=%v installed=%v settled=%v", cb.discoverySkillSearchRan, cb.discoverySkillInstalled, cb.discoveryExtensionSettled())
+	}
+	if granted, message := cb.PetitionToolCall("web_search"); granted || message != discoveryUnmatchedExtensionMessage {
+		t.Fatalf("web_search after unrunnable skill granted=%v message=%q", granted, message)
+	}
+}
+
+// TestDiscoveryPictureSubstituteNeedsAreACatalogMiss is the 2026-11-06
+// picture turn. needs named web_search, a real directory row, so the host
+// loaded it and never opened the catalog miss. A picture request has no
+// image tool. That substitute stays unloaded. A journal lookup still loads
+// web_search. A PDF, a download, a screenshot, a search for an existing
+// picture, and a diagram do not take the picture path.
+func TestDiscoveryPictureSubstituteNeedsAreACatalogMiss(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	for _, text := range []string{"生成老鼠戏猫图", "生成一张图片", "画图", "文生图"} {
+		_, _, cb := turnDirectoryPlannedSurface(t, text, discovery)
+		cb.userText = text
+		got := cb.runSemanticToolsSearch(`{"query":"` + text + `","needs":["web_search"]}`)
+		if !cb.discoveryUnmatchedObligation || !cb.loopCtx.discoveryCatalogMiss() {
+			t.Fatalf("%q did not close substitution:\n%s", text, got)
+		}
+		for _, want := range []string{"没有加载", "search_and_install_skill", "craft_tool"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("%q missing %q:\n%s", text, want, got)
+			}
+		}
+		for _, banned := range []string{"做不到", "不要改用已经列出的其它工具", "needs filter matched nothing", "selection_not_authorized", "立即调用已在当前工具面的名字："} {
+			if strings.Contains(got, banned) {
+				t.Fatalf("%q still says %q:\n%s", text, banned, got)
+			}
+		}
+		have := turnDirectoryHave(cb.BuildToolsForModelRequest(text, 2))
+		if have["web_search"] || have["web_fetch"] || have["download_file"] || have["generate_pdf"] || have["current_datetime"] {
+			t.Fatalf("%q loaded substitutes: %v", text, turnDirectoryNames(cb.BuildToolsForModelRequest(text, 2)))
+		}
+	}
+
+	_, _, journal := turnDirectoryPlannedSurface(t, "核对期刊", discovery)
+	journal.userText = "核对期刊"
+	loaded := journal.runSemanticToolsSearch(`{"query":"核对期刊","needs":["web_search"]}`)
+	if journal.discoveryUnmatchedObligation || journal.loopCtx.discoveryCatalogMiss() {
+		t.Fatalf("journal search became a miss:\n%s", loaded)
+	}
+	if !turnDirectoryHave(journal.BuildToolsForModelRequest("核对期刊", 2))["web_search"] {
+		t.Fatalf("journal did not load web_search:\n%s", loaded)
+	}
+
+	for _, text := range []string{"北京天气，生成pdf", "下载一张猫的图片", "截一张图", "找一张猫的图片", "生成流程图", "生成一张清单", "生成一张表", "画一个方案", "画一个方案图", "如图所示，请生成一段说明", "根据图片生成说明", "生成一段如图所示的说明", "把方案确定后，参考图片生成说明", "不要生成一张图", "不是生成一张图", "生成图片的说明"} {
+		_, _, other := turnDirectoryPlannedSurface(t, text, discovery)
+		other.userText = text
+		page := other.runSemanticToolsSearch(`{"query":"` + text + `","needs":["web_search"]}`)
+		if other.discoveryUnmatchedObligation || other.loopCtx.discoveryCatalogMiss() {
+			t.Fatalf("%q became a picture miss:\n%s", text, page)
+		}
+		if !turnDirectoryHave(other.BuildToolsForModelRequest(text, 2))["web_search"] {
+			t.Fatalf("%q did not load web_search:\n%s", text, page)
+		}
 	}
 }
 
@@ -1757,6 +1887,252 @@ func TestDiscoveryMainLoopDeniesComputerUsePetition(t *testing.T) {
 	}
 	if granted, message := cb.PetitionToolCall("computer_use"); granted || message != "" {
 		t.Fatalf("closed helper gate granted computer_use: granted=%v message=%q", granted, message)
+	}
+}
+
+func TestDiscoverySendFileWithoutTrustedDocumentIsNotACatalogMiss(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "生成老鼠戏猫图", discovery)
+	cb.userText = "生成老鼠戏猫图"
+	got := semanticToolsSearchRun(cb, `{"query":"生成老鼠戏猫图","needs":["send_file"]}`)
+	if cb.discoveryUnmatchedObligation || (cb.loopCtx != nil && cb.loopCtx.discoveryCatalogMiss()) {
+		t.Fatalf("trusted-input bind opened a catalog miss:\n%s", got)
+	}
+	if strings.Contains(got, semanticToolsSearchDiscoveryNextStep) || strings.Contains(got, semanticToolsSearchDiscoveryUnloaded) || strings.Contains(got, discoveryUnmatchedExtensionMessage) {
+		t.Fatalf("page sent the model to install a skill:\n%s", got)
+	}
+	// A picture turn refuses generate_pdf and office. The last line used to
+	// say to add a document producer anyway, and the next needs list opened
+	// the catalog miss. The action names a producer only when this admission
+	// layer would load it.
+	pictureTail := "send_file 在目录里。当前计划没有可绑定的受信任文档，这一步不会加载。不要调用 search_and_install_skill 或 craft_tool。"
+	producerTail := "再调用 tools_search，needs 里只写 generate_pdf 或 office。加载成功后，再把 send_file 放进 needs。不要调用 search_and_install_skill 或 craft_tool。"
+	if !strings.HasSuffix(strings.TrimSpace(got), pictureTail) || strings.Contains(pictureTail, "generate_pdf") || strings.Contains(pictureTail, "文档生产者") {
+		t.Fatalf("page=\n%s", got)
+	}
+	if status := semanticToolsSearchStatus(cb, "send_file"); status != "[已在目录：当前计划没有可绑定的受信任文档]" {
+		t.Fatalf("status=%s", status)
+	}
+	if turnDirectoryHave(cb.BuildToolsForModelRequest("生成老鼠戏猫图", 2))["send_file"] {
+		t.Fatal("unbound send_file was published")
+	}
+	again := semanticToolsSearchRun(cb, `{"query":"生成老鼠戏猫图","needs":["send_file"]}`)
+	if cb.discoveryUnmatchedObligation || !strings.HasSuffix(strings.TrimSpace(again), pictureTail) {
+		t.Fatalf("repeat opened a miss:\n%s", again)
+	}
+	viaRun := cb.runSemanticToolsSearch(`{"query":"生成老鼠戏猫图","needs":["send_file"]}`)
+	if cb.discoveryUnmatchedObligation || !strings.HasSuffix(strings.TrimSpace(viaRun), pictureTail) {
+		t.Fatalf("production search:\n%s", viaRun)
+	}
+	closed := cb.runSemanticToolsSearch(`{"query":"生成老鼠戏猫图","needs":["send_file"]}`)
+	if cb.discoveryUnmatchedObligation || closed != semanticToolsSearchDiscoveryRepeatExhausted || strings.Contains(closed, semanticToolsSearchDiscoveryNextStep) {
+		t.Fatalf("repeat closer=\n%s", closed)
+	}
+
+	_, _, workspace := turnDirectoryPlannedSurface(t, "把结果发出去", discovery)
+	workspace.userText = "把结果发出去"
+	unbound := semanticToolsSearchRun(workspace, `{"query":"把结果发出去","needs":["send_file"]}`)
+	if workspace.discoveryUnmatchedObligation || !strings.HasSuffix(strings.TrimSpace(unbound), producerTail) || !strings.Contains(unbound, "send_file 在目录里。当前计划没有可绑定的受信任文档") {
+		t.Fatalf("unbound page=\n%s", unbound)
+	}
+	loaded := semanticToolsSearchRun(workspace, `{"query":"把结果发出去","needs":["web_search"]}`)
+	if workspace.discoveryUnmatchedObligation || !turnDirectoryHave(workspace.BuildToolsForModelRequest("把结果发出去", 3))["web_search"] {
+		t.Fatalf("web_search after unbound send_file:\n%s", loaded)
+	}
+	_, _, mixed := turnDirectoryPlannedSurface(t, "把结果发出去", discovery)
+	mixed.userText = "把结果发出去"
+	mixedPage := semanticToolsSearchRun(mixed, `{"query":"把结果发出去","needs":["send_file","web_search"]}`)
+	if mixed.discoveryUnmatchedObligation || !turnDirectoryHave(mixed.BuildToolsForModelRequest("把结果发出去", 2))["web_search"] || turnDirectoryHave(mixed.BuildToolsForModelRequest("把结果发出去", 3))["send_file"] {
+		t.Fatalf("mixed needs:\n%s", mixedPage)
+	}
+	if strings.HasSuffix(strings.TrimSpace(mixedPage), producerTail) || !strings.Contains(mixedPage, "没有可绑定的受信任文档") {
+		t.Fatalf("mixed page hid the workspace action or the bind result:\n%s", mixedPage)
+	}
+	_, _, produced := turnDirectoryPlannedSurface(t, "写一份说明", discovery)
+	produced.userText = "写一份说明"
+	before := semanticToolsSearchRun(produced, `{"query":"写一份说明","needs":["send_file"]}`)
+	if produced.discoveryUnmatchedObligation || !strings.HasSuffix(strings.TrimSpace(before), producerTail) || !strings.Contains(before, "send_file 在目录里。当前计划没有可绑定的受信任文档") {
+		t.Fatalf("send_file before a producer:\n%s", before)
+	}
+	withPDF := semanticToolsSearchRun(produced, `{"query":"写一份说明","needs":["generate_pdf"]}`)
+	if produced.discoveryUnmatchedObligation || !turnDirectoryHave(produced.BuildToolsForModelRequest("写一份说明", 4))["generate_pdf"] || !strings.HasSuffix(strings.TrimSpace(withPDF), semanticToolsSearchListedDirectivePrefix+"generate_pdf。不要再查询这些名字。") {
+		t.Fatalf("generate_pdf after an unbound send_file:\n%s", withPDF)
+	}
+	after := semanticToolsSearchRun(produced, `{"query":"写一份说明","needs":["send_file"]}`)
+	// The producer petition already plans send_file. That search must not
+	// issue it: the file does not exist until generate_pdf runs, and the
+	// last line is that call.
+	if produced.discoveryUnmatchedObligation || !strings.HasSuffix(strings.TrimSpace(after), "现在调用 generate_pdf。") || turnDirectoryHave(produced.BuildToolsForModelRequest("写一份说明", 5))["send_file"] {
+		t.Fatalf("send_file stayed unbound after generate_pdf:\n%s", after)
+	}
+	if !strings.Contains(semanticToolsSearchStatus(produced, "send_file"), "已列入本轮计划") || !strings.Contains(semanticToolsSearchStatus(produced, "send_file"), "先调用 generate_pdf") {
+		t.Fatalf("send_file status after generate_pdf=%s\n%s", semanticToolsSearchStatus(produced, "send_file"), after)
+	}
+	miss := semanticToolsSearchRun(cb, `{"query":"生成老鼠戏猫图","needs":["not_a_catalog_tool"]}`)
+	if !cb.discoveryUnmatchedObligation || !strings.Contains(miss, semanticToolsSearchDiscoveryNextStep) {
+		t.Fatalf("unknown name must still miss:\n%s", miss)
+	}
+	_, _, followed := turnDirectoryPlannedSurface(t, "生成老鼠戏猫图", discovery)
+	followed.userText = "生成老鼠戏猫图"
+	if page := semanticToolsSearchRun(followed, `{"query":"生成老鼠戏猫图","needs":["send_file"]}`); followed.discoveryUnmatchedObligation || !strings.HasSuffix(strings.TrimSpace(page), pictureTail) {
+		t.Fatalf("bind before a producer petition:\n%s", page)
+	}
+	producer := semanticToolsSearchRun(followed, `{"query":"生成老鼠戏猫图","needs":["generate_pdf"]}`)
+	if !followed.discoveryUnmatchedObligation || !strings.Contains(producer, semanticToolsSearchDiscoveryNextStep) || turnDirectoryHave(followed.BuildToolsForModelRequest("生成老鼠戏猫图", 2))["generate_pdf"] {
+		t.Fatalf("picture producer petition must still miss:\n%s", producer)
+	}
+	_, _, reader := turnDirectoryPlannedSurface(t, "读一下附件", discovery)
+	reader.userText = "读一下附件"
+	readPage := semanticToolsSearchRun(reader, `{"query":"读一下附件","needs":["read_attachment"]}`)
+	readTail := "read_attachment 在目录里。当前计划没有可绑定的受信任文档，这一步不会加载。不要调用 search_and_install_skill 或 craft_tool。"
+	if reader.discoveryUnmatchedObligation || !strings.HasSuffix(strings.TrimSpace(readPage), readTail) || strings.Contains(readTail, "generate_pdf") || turnDirectoryHave(reader.BuildToolsForModelRequest("读一下附件", 2))["read_attachment"] {
+		t.Fatalf("read without a document:\n%s", readPage)
+	}
+	for _, needs := range []string{`["read_attachment","send_file"]`, `["send_file","read_attachment"]`} {
+		_, _, both := turnDirectoryPlannedSurface(t, "写一份说明", discovery)
+		both.userText = "写一份说明"
+		page := semanticToolsSearchRun(both, `{"query":"写一份说明","needs":`+needs+`}`)
+		have := turnDirectoryHave(both.BuildToolsForModelRequest("写一份说明", 2))
+		if both.discoveryUnmatchedObligation || !strings.HasSuffix(strings.TrimSpace(page), producerTail) || !strings.Contains(page, "read_attachment 在目录里") || have["send_file"] || have["read_attachment"] {
+			t.Fatalf("needs %s:\n%s", needs, page)
+		}
+	}
+	_, _, officeTurn := turnDirectoryPlannedSurface(t, "写一份说明", discovery)
+	officeTurn.userText = "写一份说明"
+	officePage := semanticToolsSearchRun(officeTurn, `{"query":"写一份说明","needs":["office"]}`)
+	if officeTurn.discoveryUnmatchedObligation || !turnDirectoryHave(officeTurn.BuildToolsForModelRequest("写一份说明", 2))["office"] || !strings.HasSuffix(strings.TrimSpace(officePage), semanticToolsSearchListedDirectivePrefix+"office。不要再查询这些名字。") {
+		t.Fatalf("office petition:\n%s", officePage)
+	}
+	officeSend := semanticToolsSearchRun(officeTurn, `{"query":"写一份说明","needs":["send_file"]}`)
+	if officeTurn.discoveryUnmatchedObligation || !strings.HasSuffix(strings.TrimSpace(officeSend), "现在调用 office。") || turnDirectoryHave(officeTurn.BuildToolsForModelRequest("写一份说明", 3))["send_file"] {
+		t.Fatalf("send_file stayed unbound after office:\n%s", officeSend)
+	}
+	if !strings.Contains(semanticToolsSearchStatus(officeTurn, "send_file"), "已列入本轮计划") || !strings.Contains(semanticToolsSearchStatus(officeTurn, "send_file"), "先调用 office") {
+		t.Fatalf("send_file status after office=%s\n%s", semanticToolsSearchStatus(officeTurn, "send_file"), officeSend)
+	}
+
+	// The follow-up's last line orders generate_pdf or office after send_file
+	// failed to bind. A lookup already in the parent plan must not make that
+	// ordered petition alter parent authority and open a catalog miss.
+	for _, producer := range []string{"generate_pdf", "office"} {
+		_, _, afterLookup := turnDirectoryPlannedSurface(t, "写一份说明", discovery)
+		afterLookup.userText = "写一份说明"
+		searched := semanticToolsSearchRun(afterLookup, `{"query":"写一份说明","needs":["web_search"]}`)
+		if afterLookup.discoveryUnmatchedObligation || !turnDirectoryHave(afterLookup.BuildToolsForModelRequest("写一份说明", 2))["web_search"] {
+			t.Fatalf("web_search before %s:\n%s", producer, searched)
+		}
+		// A spent lookup wave appends a continuation the producer template
+		// does not mint. The follow-up still orders that producer.
+		beforeWave := len(afterLookup.semanticSurface.plan.Selections)
+		for i := 0; i < 5; i++ {
+			if got := afterLookup.ExecuteTool("web_search", fmt.Sprintf(`{"query":"说明 %d"}`, i)); !strings.Contains(got, "found:") {
+				t.Fatalf("web_search %d before %s: %s", i, producer, got)
+			}
+		}
+		if len(afterLookup.semanticSurface.plan.Selections) <= beforeWave {
+			t.Fatalf("spent wave did not append a continuation before %s: before=%d after=%d", producer, beforeWave, len(afterLookup.semanticSurface.plan.Selections))
+		}
+		stillUnbound := semanticToolsSearchRun(afterLookup, `{"query":"写一份说明","needs":["send_file"]}`)
+		if afterLookup.discoveryUnmatchedObligation || !strings.HasSuffix(strings.TrimSpace(stillUnbound), producerTail) {
+			t.Fatalf("send_file after web_search:\n%s", stillUnbound)
+		}
+		loadedProducer := semanticToolsSearchRun(afterLookup, `{"query":"写一份说明","needs":["`+producer+`"]}`)
+		loadedHave := turnDirectoryHave(afterLookup.BuildToolsForModelRequest("写一份说明", 4))
+		// The continuation lookup stays granted. The last line names the
+		// producer, so the model does not spend the next call on that lookup.
+		if afterLookup.discoveryUnmatchedObligation || strings.Contains(loadedProducer, semanticToolsSearchDiscoveryNextStep) || !loadedHave[producer] || !loadedHave["web_search"] || !strings.HasSuffix(strings.TrimSpace(loadedProducer), semanticToolsSearchListedDirectivePrefix+producer+"。不要再查询这些名字。") {
+			t.Fatalf("%s after web_search tools=%v\n%s", producer, loadedHave, loadedProducer)
+		}
+		delivered := semanticToolsSearchRun(afterLookup, `{"query":"写一份说明","needs":["send_file"]}`)
+		if afterLookup.discoveryUnmatchedObligation || strings.Contains(delivered, semanticToolsSearchDiscoveryNextStep) || !strings.HasSuffix(strings.TrimSpace(delivered), "现在调用 "+producer+"。") || turnDirectoryHave(afterLookup.BuildToolsForModelRequest("写一份说明", 5))["send_file"] {
+			t.Fatalf("send_file after web_search and %s:\n%s", producer, delivered)
+		}
+		if !strings.Contains(semanticToolsSearchStatus(afterLookup, "send_file"), "已列入本轮计划") || !strings.Contains(semanticToolsSearchStatus(afterLookup, "send_file"), "先调用 "+producer) {
+			t.Fatalf("send_file status after web_search and %s=%s\n%s", producer, semanticToolsSearchStatus(afterLookup, "send_file"), delivered)
+		}
+	}
+}
+
+// The follow-up's send_file page says the tool appears after the producer
+// succeeds. Classified office and PDF turns already publish the artifact and
+// attach it. This is the discovery petition the page orders: the write has
+// to release send_file, and calling that name with the host-owned desktop
+// target has to attach the document. Listing the name is not the attachment.
+func TestDiscoveryProducerWriteReleasesSendFile(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	defer app.closeSemanticInvocationStore()
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := app.SetTabWorkingDir("", workspace); err != nil {
+		t.Fatalf("SetTabWorkingDir: %v", err)
+	}
+	discovery := intent.ModelDiscoveryClassification()
+	producers := []struct {
+		name   string
+		args   string
+		marker string
+		mime   string
+	}{
+		{name: "office", args: `{"path":"说明.pptx","title":"说明","slides":[{"title":"封面","bullets":["正文"]}]}`, marker: "Office document artifact published", mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+		{name: "generate_pdf", args: `{"content":"# 说明\n这是一份说明的正文。","title":"说明"}`, marker: "PDF artifact published", mime: "application/pdf"},
+	}
+	for _, producer := range producers {
+		h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, discovery.Primary), app: app}
+		registerBuiltinTools(h.registry, h)
+		stored := discovery
+		_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+			desktopUserID, "写一份说明", "desktop", "root-discovery-"+producer.name+"-send", "turn-discovery-"+producer.name+"-send", &stored,
+		)
+		if err != nil || !handled || surface == nil {
+			t.Fatalf("%s surface handled=%v err=%v", producer.name, handled, err)
+		}
+		target := hostOwnedCurrentChannelDeliveryTarget("desktop", desktopUserID)
+		if target == nil || target.ChannelScope != "desktop" || target.DestinationID != "user:"+desktopUserID {
+			t.Fatalf("desktop delivery target = %+v", target)
+		}
+		cb := &sharedAgentLoopCallbacks{
+			handler: h, semanticSurface: surface, platform: "desktop", userID: desktopUserID, userText: "写一份说明",
+			loopCtx: &LoopContext{Runtime: RuntimeContext{SemanticIntent: &stored}, DeliveryTarget: target},
+		}
+		unbound := semanticToolsSearchRun(cb, `{"query":"写一份说明","needs":["send_file"]}`)
+		producerTail := "再调用 tools_search，needs 里只写 generate_pdf 或 office。加载成功后，再把 send_file 放进 needs。不要调用 search_and_install_skill 或 craft_tool。"
+		if cb.discoveryUnmatchedObligation || !strings.HasSuffix(strings.TrimSpace(unbound), producerTail) {
+			t.Fatalf("%s unbound page=\n%s", producer.name, unbound)
+		}
+		page := semanticToolsSearchRun(cb, `{"query":"写一份说明","needs":["`+producer.name+`"]}`)
+		if cb.discoveryUnmatchedObligation || !turnDirectoryHave(cb.BuildToolsForModelRequest("写一份说明", 2))[producer.name] {
+			t.Fatalf("%s petition:\n%s", producer.name, page)
+		}
+		if turnDirectoryHave(cb.BuildToolsForModelRequest("写一份说明", 3))["send_file"] {
+			t.Fatalf("send_file was issued before %s wrote the document", producer.name)
+		}
+		got := cb.ExecuteToolCall(producer.name, producer.args, "call-"+producer.name).Result
+		if !strings.Contains(got, producer.marker) {
+			t.Fatalf("%s result=%q", producer.name, got)
+		}
+		if !turnDirectoryHave(cb.BuildToolsForModelRequest("写一份说明", 4))["send_file"] {
+			t.Fatalf("send_file missing after %s: %v\n%s", producer.name, turnDirectoryNames(cb.BuildToolsForModelRequest("写一份说明", 5)), got)
+		}
+		deliveryName, deliveryGrant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "semantic_deliver_current_file")
+		if deliveryName != "send_file" || !currentChannelFileDeliveryReady(cb.semanticSurface, deliveryGrant) {
+			t.Fatalf("%s delivery is not ready for the desktop card: name=%q", producer.name, deliveryName)
+		}
+		delivered := cb.ExecuteToolCall("send_file", `{}`, "call-send-"+producer.name).Result
+		if !strings.Contains(delivered, "Delivery committed to the current channel") {
+			t.Fatalf("%s deliver=%q", producer.name, delivered)
+		}
+		if cb.semanticDeliveryFileData == "" || cb.semanticDeliveryFileMIME != producer.mime {
+			t.Fatalf("%s attached mime=%q result=%q", producer.name, cb.semanticDeliveryFileMIME, delivered)
+		}
+		resp := &IMAgentResponse{}
+		attachSharedLoopArtifacts(resp, cb)
+		rel, relErr := filepath.Rel(workspace, resp.LocalFilePath)
+		info, statErr := os.Stat(resp.LocalFilePath)
+		if resp.FileData != "" || resp.FileMimeType != producer.mime || relErr != nil || strings.HasPrefix(rel, "..") || statErr != nil || info.Size() == 0 {
+			t.Fatalf("%s desktop card path=%q mime=%q data=%t rel=%q stat=%v", producer.name, resp.LocalFilePath, resp.FileMimeType, resp.FileData != "", rel, statErr)
+		}
+		if producer.name == "office" && filepath.Base(resp.LocalFilePath) != "说明.pptx" {
+			t.Fatalf("office delivery wrote a second file: %s", resp.LocalFilePath)
+		}
 	}
 }
 

@@ -87,7 +87,9 @@ import { companionProjectExportJSON, companionProjectMarksJSON, loadPdfBookmarks
 import { loadPdfMarks, PDF_MARKS_CHANGED_EVENT, savePdfMarks } from "./pdfMarks";
 import { loadPdfTranslations, PDF_ANNOTATIONS_CHANGED_EVENT, savePdfTranslations } from "./pdfTranslations";
 import { loadPdfDrawings, PDF_DRAWINGS_CHANGED_EVENT, savePdfDrawings } from "./pdfDrawings";
+import { CHAT_ANNOTATIONS_CHANGED_EVENT, clipPdfAnnotationBody, clipPdfAnnotationName, loadChatAnnotations, mergeSharedChatAnnotations, newChatAnnotationId, saveChatAnnotations, type ChatAnnotation, type ChatAnnotationPlace, type ChatAnnotationSize } from "./chatAnnotations";
 import { CHAT_MARKS_CHANGED_EVENT, CHAT_MARK_TEXT_MAX, loadChatMarks, saveChatMarks, type ChatMark, type ChatMarkColor } from "./chatMarks";
+import { CompanionChatAnnotationLayer } from "./CompanionChatAnnotations";
 import { applyChatHighlights, chatHighlightsSupported, chatMarkAtOffset, chatMessageIndexAt, chatMessageRoot, chatOffsetForPoint, chatSelectionSlices, chatTextSpans, clearChatHighlights, type ChatSelectionSlice } from "./chatMarkAnchors";
 import { CompanionChatMarkMenu } from "./CompanionChatMarkMenu";
 import { subscribeCompanionReaderState } from "./companionReaderState";
@@ -267,6 +269,8 @@ type CompanionDoc = {
     // freehand drawings. Older projects omit the latter fields.
     chatMarks?: unknown;
     ChatMarks?: unknown;
+    chatAnnotations?: unknown;
+    ChatAnnotations?: unknown;
     annotations?: unknown;
     Annotations?: unknown;
     drawings?: unknown;
@@ -304,6 +308,7 @@ type ChatMessage = { id: string; role: "user" | "assistant"; text: string; reaso
 // render while no file is open.
 const NO_COMPANION_MESSAGES: ChatMessage[] = [];
 const NO_CHAT_MARKS: ChatMark[] = [];
+const NO_CHAT_ANNOTATIONS: ChatAnnotation[] = [];
 // One stable empty result for an idle window, so an export that has nothing to
 // build does not hand a new object to every effect that depends on it.
 const EMPTY_CHAT_EXPORT: CompanionChatExport = { turns: [], missingFigures: 0, missingDiagrams: 0 };
@@ -1476,7 +1481,9 @@ function CompanionMessageActions({ path, markdown, messageId, figures, webSessio
         }
     };
     return (
-        <div className="file-companion-bubble-actions" data-testid={`file-companion-actions-${messageId}`}>
+        // Above a note chip (z-index 3) and under an open note card (z-index 5).
+        // The chip hangs over this row when the quote starts on the first line.
+        <div className="file-companion-bubble-actions" data-testid={`file-companion-actions-${messageId}`} style={{ position: "relative", zIndex: 4 }}>
             <CompanionBubbleAction
                 name="markdown"
                 label={cs("复制为 Markdown")}
@@ -1666,6 +1673,7 @@ const CompanionChatMessageRow = memo(function CompanionChatMessageRow({
     previewOpen,
     onBlocked,
     paperRequestIds,
+    raised,
 }: {
     message: ChatMessage;
     index: number;
@@ -1679,6 +1687,7 @@ const CompanionChatMessageRow = memo(function CompanionChatMessageRow({
     previewOpen: boolean;
     onBlocked: (sentence: string) => void;
     paperRequestIds: { current: Set<string> };
+    raised: boolean;
 }) {
     const mine = message.role === "user";
     const cleanedReasoning = mine ? "" : cleanReasoningTrailForBody(message.reasoning || "");
@@ -1691,8 +1700,12 @@ const CompanionChatMessageRow = memo(function CompanionChatMessageRow({
     // Both controls work on finished Markdown. Mid-stream text would copy a
     // half answer, and the paper reply exports through its own result card.
     const shareable = !mine && !streaming && !message.resultPath && !paperPending && answerText.trim().length > 0;
+    // The card hangs into the next answer. The same z-index lets that later
+    // row paint over it, so an earlier answer sits higher. 70 stays under the
+    // text menu, which is 80.
+    const raisedZ = raised ? Math.max(2, 70 - index) : undefined;
     return (
-        <div style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start" }}>
+        <div style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start", position: raised ? "relative" : undefined, zIndex: raisedZ }}>
             <div
                 data-testid={`file-companion-message-${message.role}`}
                 data-chat-message={mine ? undefined : index}
@@ -1700,6 +1713,7 @@ const CompanionChatMessageRow = memo(function CompanionChatMessageRow({
                     margin: 0,
                     maxWidth: "86%",
                     minWidth: 0,
+                    position: "relative",
                     padding: "8px 12px",
                     borderRadius: mine ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
                     background: mine ? "var(--theme-primary, #2e75cb)" : "var(--theme-surface, #ffffff)",
@@ -1822,6 +1836,7 @@ const CompanionChatMessages = memo(function CompanionChatMessages({
     previewOpen,
     onBlocked,
     paperRequestIds,
+    annotatedMessages,
 }: {
     messages: ChatMessage[];
     discussionReplies: ChatMessage[];
@@ -1837,6 +1852,7 @@ const CompanionChatMessages = memo(function CompanionChatMessages({
     previewOpen: boolean;
     onBlocked: (sentence: string) => void;
     paperRequestIds: { current: Set<string> };
+    annotatedMessages: ReadonlySet<number>;
 }) {
     const reviewCacheRef = useRef<{
         userMessages: ChatMessage[];
@@ -1886,6 +1902,7 @@ const CompanionChatMessages = memo(function CompanionChatMessages({
                         previewOpen={previewOpen}
                         onBlocked={onBlocked}
                         paperRequestIds={paperRequestIds}
+                        raised={annotatedMessages.has(index)}
                     />
                 );
             })}
@@ -1915,7 +1932,7 @@ export function companionMessageReview(messageText: string, notes: CompanionShar
         used.add(note.id);
         const answered = notes.some((other) => other.host && other.replyTo === note.id);
         const decision = note.decision || "";
-        if (decision === "ignored") return { noteId: note.id, tone: "ignored", label: cs("主持人已忽略这条批注") };
+        if (decision === "ignored") return { noteId: note.id, tone: "ignored", label: cs("主持人已忽略这条讨论") };
         if (decision === "approved" && !answered) return { noteId: note.id, tone: "approved", label: cs("已通过，等待主持人 Agent 回复") };
         if (answered) return null;
         return { noteId: note.id, tone: "pending", label: cs("等待主持人审核") };
@@ -2267,10 +2284,15 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // keying the state by path means a tab switch never paints the previous
     // file's marks on the new transcript.
     const [chatMarksState, setChatMarksState] = useState<{ path: string; marks: ChatMark[] }>({ path: "", marks: NO_CHAT_MARKS });
+    const [chatAnnotationsState, setChatAnnotationsState] = useState<{ path: string; notes: ChatAnnotation[] }>({ path: "", notes: NO_CHAT_ANNOTATIONS });
+    // Closed cards stay chips until this window is reloaded. A fresh open
+    // shows every card so a shared reader sees the opinion.
+    const [closedChatAnnotationIds, setClosedChatAnnotationIds] = useState<ReadonlySet<string>>(() => new Set());
     // Right-click menu over a selection in the answer. slices is what 高亮
     // paints; hit indexes the stored mark 取消高亮 removes, or -1. selected is
     // the browser's own selection text, which keeps block breaks for 复制.
-    const [chatMenu, setChatMenu] = useState<{ x: number; y: number; slices: ChatSelectionSlice[]; hit: number; selected: string } | null>(null);
+    // annotationId is set when the click landed on the reader's own note card.
+    const [chatMenu, setChatMenu] = useState<{ x: number; y: number; slices: ChatSelectionSlice[]; hit: number; selected: string; annotationId: string } | null>(null);
     const [tabEnds, setTabEnds] = useState<CompanionTabEnds>({ overflow: false, canLeft: false, canRight: false });
     const [dropMessage, setDropMessage] = useState("");
     // The 打开 menu: one button, two ways in. A local file goes straight to the
@@ -2701,7 +2723,25 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 saved = saveChatMarks(update.path, []);
             }
             if (companionSharePathKey(activeRef.current) === companionSharePathKey(update.path)) {
-                setChatMarksState({ path: update.path, marks: saved });
+                // The library row can keep the on-disk spelling. The panel
+                // shows these marks only when the state path is the open tab.
+                setChatMarksState({ path: activeRef.current, marks: saved });
+            }
+        }
+        // A legacy project omits answer notes. An empty array clears the host's
+        // notes and leaves the notes this reader wrote on this machine.
+        if (update.chatAnnotationsKnown) {
+            let incoming: unknown = [];
+            if (update.chatAnnotations) {
+                try {
+                    incoming = JSON.parse(update.chatAnnotations);
+                } catch {
+                    incoming = [];
+                }
+            }
+            const savedNotes = saveChatAnnotations(update.path, mergeSharedChatAnnotations(loadChatAnnotations(update.path), incoming));
+            if (companionSharePathKey(activeRef.current) === companionSharePathKey(update.path)) {
+                setChatAnnotationsState({ path: activeRef.current, notes: savedNotes });
             }
         }
         // Placed notes and translation cards share one store. A share update
@@ -2907,6 +2947,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 savePdfDrawings(path, []);
                 savePdfBookmarks(path, []);
                 saveChatMarks(path, []);
+                saveChatAnnotations(path, []);
             } catch {
                 // Nothing else can be done without storage; keep withdrawing.
             }
@@ -3060,11 +3101,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     return;
                 }
                 const stringField = (value: unknown): string => (typeof value === "string" ? value : JSON.stringify(value ?? []));
+                const chatAnnotationsKnown = Object.prototype.hasOwnProperty.call(parsed, "chatAnnotations");
                 applyShareUpdateRef.current({
                     path,
                     highlights: stringField(parsed.highlights),
                     chatMarks: stringField(parsed.chatMarks),
                     chatMarksKnown: true,
+                    chatAnnotations: chatAnnotationsKnown ? stringField(parsed.chatAnnotations) : "",
+                    chatAnnotationsKnown,
                     annotations: stringField(parsed.annotations),
                     annotationsKnown: true,
                     drawings: stringField(parsed.drawings),
@@ -3132,12 +3176,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         };
         window.addEventListener(PDF_MARKS_CHANGED_EVENT, onMarksChanged);
         window.addEventListener(CHAT_MARKS_CHANGED_EVENT, onMarksChanged);
+        window.addEventListener(CHAT_ANNOTATIONS_CHANGED_EVENT, onMarksChanged);
         window.addEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, onMarksChanged);
         window.addEventListener(PDF_DRAWINGS_CHANGED_EVENT, onMarksChanged);
         window.addEventListener(PDF_BOOKMARKS_CHANGED_EVENT, onMarksChanged);
         return () => {
             window.removeEventListener(PDF_MARKS_CHANGED_EVENT, onMarksChanged);
             window.removeEventListener(CHAT_MARKS_CHANGED_EVENT, onMarksChanged);
+            window.removeEventListener(CHAT_ANNOTATIONS_CHANGED_EVENT, onMarksChanged);
             window.removeEventListener(PDF_ANNOTATIONS_CHANGED_EVENT, onMarksChanged);
             window.removeEventListener(PDF_DRAWINGS_CHANGED_EVENT, onMarksChanged);
             window.removeEventListener(PDF_BOOKMARKS_CHANGED_EVENT, onMarksChanged);
@@ -3382,12 +3428,13 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 const hasField = (lower: string, upper: string) =>
                     Object.prototype.hasOwnProperty.call(doc, lower) || Object.prototype.hasOwnProperty.call(doc, upper);
                 const hasChatMarks = hasField("chatMarks", "ChatMarks");
+                const hasChatAnnotations = hasField("chatAnnotations", "ChatAnnotations");
                 const hasAnnotations = hasField("annotations", "Annotations");
                 const hasDrawings = hasField("drawings", "Drawings");
                 const hasBookmarks = hasField("bookmarks", "Bookmarks");
                 const hasHighlights = hasField("highlights", "Highlights");
                 const hasTranslations = hasField("translations", "Translations");
-                if (hasHighlights || hasChatMarks || hasAnnotations || hasDrawings || hasBookmarks || hasTranslations) {
+                if (hasHighlights || hasChatMarks || hasChatAnnotations || hasAnnotations || hasDrawings || hasBookmarks || hasTranslations) {
                     applyShareUpdateRef.current({
                         path: next.path,
                         // A project without the highlights field must not erase
@@ -3395,6 +3442,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         highlights: hasHighlights ? docFieldJSON(doc, "highlights", "Highlights") : JSON.stringify(loadPdfMarks(next.path)),
                         chatMarks: docFieldJSON(doc, "chatMarks", "ChatMarks"),
                         chatMarksKnown: hasChatMarks,
+                        chatAnnotations: docFieldJSON(doc, "chatAnnotations", "ChatAnnotations"),
+                        chatAnnotationsKnown: hasChatAnnotations,
                         annotations: docFieldJSON(doc, "annotations", "Annotations"),
                         annotationsKnown: hasAnnotations,
                         drawings: docFieldJSON(doc, "drawings", "Drawings"),
@@ -4130,7 +4179,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const readHost = active ? shareHosts.get(companionSharePathKey(active)) ?? null : null;
     // A received share is a discussion. The host agent's answers arrive as
     // notes; show the ones that answer a reader note in the chat itself, where
-    // the reader asked. The host's own window keeps them in 批注 only.
+    // the reader asked. The host's own window keeps them in 讨论 only.
     const discussionReplies = useMemo<ChatMessage[]>(() => {
         if (!activeTab?.notes || activeTab.notes.length === 0 || activeTab.shareMine) return NO_COMPANION_MESSAGES;
         if (!activeTab.shareToken && !activeTab.notes.some((note) => note.host && note.replyTo)) return NO_COMPANION_MESSAGES;
@@ -4162,6 +4211,17 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const chatMarks = chatMarksState.path === active ? chatMarksState.marks : NO_CHAT_MARKS;
     const chatMarksRef = useRef(chatMarks);
     chatMarksRef.current = chatMarks;
+    const chatAnnotations = chatAnnotationsState.path === active ? chatAnnotationsState.notes : NO_CHAT_ANNOTATIONS;
+    const chatAnnotationsRef = useRef(chatAnnotations);
+    chatAnnotationsRef.current = chatAnnotations;
+    // A chip and an open card both leave the bubble. The row has to paint above
+    // a plain neighbor; two noted rows stack by message order so the upper card
+    // stays clickable where it overlaps the next answer.
+    const annotatedMessages = useMemo(() => {
+        const indexes = new Set<number>();
+        for (const note of chatAnnotations) indexes.add(note.message);
+        return indexes;
+    }, [chatAnnotations]);
     const chatMenuRef = useRef(chatMenu);
     chatMenuRef.current = chatMenu;
     const activePathRef = useRef(active);
@@ -4172,12 +4232,16 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         setChatMarksState((current) => current.path === active
             ? current
             : { path: active, marks: active ? loadChatMarks(active) : NO_CHAT_MARKS });
+        setChatAnnotationsState((current) => current.path === active
+            ? current
+            : { path: active, notes: active ? loadChatAnnotations(active) : NO_CHAT_ANNOTATIONS });
         setChatMenu(null);
     }, [active]);
     // A host read slower than startup can land after this panel mounted.
     useEffect(() => subscribeCompanionReaderState(() => {
         const path = activePathRef.current;
         setChatMarksState({ path, marks: path ? loadChatMarks(path) : NO_CHAT_MARKS });
+        setChatAnnotationsState({ path, notes: path ? loadChatAnnotations(path) : NO_CHAT_ANNOTATIONS });
     }), []);
     useEffect(() => () => clearChatHighlights(), []);
     // Repaint when the DOM a mark anchors to changes. Only messages that carry
@@ -4193,6 +4257,13 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // A share update replaces the transcript in place under the same restored
     // ids, so the length key cannot see it; previewEpoch is that event.
     const chatPreviewKey = activeTab?.previewEpoch ?? 0;
+    const annotatedMessageIndexes = new Set(chatAnnotations.map((note) => note.message));
+    const chatAnnotationAnchorKey = [
+        chatAnnotations.map((note) => `${note.id}:${note.message}:${note.start}:${note.end}`).join("|"),
+        (activeTab?.messages ?? []).map((message, index) => (annotatedMessageIndexes.has(index) ? `${index}:${message.id}:${message.text.length}` : "")).join("|"),
+        String(chatPreviewKey),
+        active,
+    ].join("||");
     useEffect(() => {
         const root = outputContainerRef.current;
         if (!root) {
@@ -4210,6 +4281,117 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         // this document is hosted; the window uploads it after a debounce.
         setChatMarksState({ path: active, marks: saveChatMarks(active, next, true) });
         setChatMenu(null);
+    };
+
+    const writeChatAnnotations = (next: ChatAnnotation[], announce: boolean) => {
+        if (!active) return next;
+        const saved = saveChatAnnotations(active, next, announce);
+        setChatAnnotationsState({ path: active, notes: saved });
+        return saved;
+    };
+
+    const createChatAnnotations = (body: string) => {
+        const menu = chatMenuRef.current;
+        const clipped = clipPdfAnnotationBody(body);
+        if (!menu || menu.slices.length === 0 || !clipped) return;
+        const created = menu.slices.map((slice) => {
+            const text = slice.text.slice(0, CHAT_MARK_TEXT_MAX);
+            const name = clipPdfAnnotationName(text);
+            return {
+                id: newChatAnnotationId(),
+                message: slice.message,
+                start: slice.start,
+                end: slice.start + text.length,
+                text,
+                body: clipped,
+                ...(name ? { name } : {}),
+            };
+        });
+        writeChatAnnotations([...chatAnnotationsRef.current, ...created], true);
+        setClosedChatAnnotationIds((current) => {
+            if (created.every((note) => !current.has(note.id))) return current;
+            const next = new Set(current);
+            for (const note of created) next.delete(note.id);
+            return next;
+        });
+        setChatMenu(null);
+        window.getSelection()?.removeAllRanges();
+    };
+
+    const editChatAnnotationBody = (id: string, body: string) => {
+        const note = chatAnnotationsRef.current.find((item) => item.id === id);
+        const clipped = clipPdfAnnotationBody(body);
+        if (!note || note.shared || !clipped || clipped === note.body) return;
+        writeChatAnnotations(chatAnnotationsRef.current.map((item) => item.id === id ? { ...item, body: clipped } : item), true);
+    };
+
+    const renameChatAnnotation = (name: string) => {
+        const id = chatMenuRef.current?.annotationId || "";
+        const note = chatAnnotationsRef.current.find((item) => item.id === id);
+        const clipped = clipPdfAnnotationName(name);
+        if (!note || note.shared || !clipped || clipped === note.name) {
+            setChatMenu(null);
+            return;
+        }
+        writeChatAnnotations(chatAnnotationsRef.current.map((item) => item.id === id ? { ...item, name: clipped } : item), true);
+        setChatMenu(null);
+    };
+
+    const deleteChatAnnotation = () => {
+        const id = chatMenuRef.current?.annotationId || "";
+        const note = chatAnnotationsRef.current.find((item) => item.id === id);
+        if (!note || note.shared) {
+            setChatMenu(null);
+            return;
+        }
+        writeChatAnnotations(chatAnnotationsRef.current.filter((item) => item.id !== id), true);
+        setChatMenu(null);
+    };
+
+    const placeChatAnnotation = (id: string, place: ChatAnnotationPlace | null) => {
+        const note = chatAnnotationsRef.current.find((item) => item.id === id);
+        if (!note) return;
+        writeChatAnnotations(chatAnnotationsRef.current.map((item) => {
+            if (item.id !== id) return item;
+            if (!place) {
+                const { place: _place, ...rest } = item;
+                return rest;
+            }
+            return { ...item, place };
+        }), note.shared !== true);
+    };
+
+    const sizeChatAnnotation = (id: string, size: ChatAnnotationSize | null) => {
+        const note = chatAnnotationsRef.current.find((item) => item.id === id);
+        if (!note) return;
+        writeChatAnnotations(chatAnnotationsRef.current.map((item) => {
+            if (item.id !== id) return item;
+            if (!size) {
+                const { size: _size, ...rest } = item;
+                return rest;
+            }
+            return { ...item, size };
+        }), note.shared !== true);
+    };
+
+    const toggleChatAnnotation = (id: string) => {
+        setClosedChatAnnotationIds((current) => {
+            const next = new Set(current);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    };
+
+    const openChatAnnotationMenu = (event: React.MouseEvent, id: string) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const note = chatAnnotationsRef.current.find((item) => item.id === id);
+        if (!note || note.shared) {
+            setChatMenu(null);
+            return;
+        }
+        setChatMenu({ x: event.clientX, y: event.clientY, slices: [], hit: -1, selected: note.text, annotationId: id });
     };
 
     const paintChatMarks = (color: ChatMarkColor) => {
@@ -4248,6 +4430,22 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const onChatContextMenu = (event: React.MouseEvent) => {
         const root = outputContainerRef.current;
         if (!root) return;
+        const card = (event.target as HTMLElement | null)?.closest?.("[data-chat-annotation-id]");
+        if (card && root.contains(card)) {
+            // A right-click in the open editor belongs to the browser, so a
+            // reader can paste. The card menu stays on the rest of the card.
+            const target = event.target as HTMLElement | null;
+            if (target?.closest?.("textarea")) return;
+            event.preventDefault();
+            const id = card.getAttribute("data-chat-annotation-id") || "";
+            const note = chatAnnotationsRef.current.find((item) => item.id === id);
+            if (!note || note.shared) {
+                setChatMenu(null);
+                return;
+            }
+            setChatMenu({ x: event.clientX, y: event.clientY, slices: [], hit: -1, selected: note.text, annotationId: id });
+            return;
+        }
         let slices: ChatSelectionSlice[] = [];
         let selected = "";
         const selection = window.getSelection();
@@ -4274,7 +4472,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             return;
         }
         event.preventDefault();
-        setChatMenu({ x: event.clientX, y: event.clientY, slices, hit, selected });
+        setChatMenu({ x: event.clientX, y: event.clientY, slices, hit, selected, annotationId: "" });
     };
     const seenEditor = useRef(activeTab?.content ?? "");
     const editorValueChanged = seenEditor.current !== (activeTab?.content ?? "");
@@ -4858,7 +5056,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         // Keeping them would let one reappear over a future answer that happens
         // to repeat the same wording.
         const clearedMarks = saveChatMarks(tab.path, []);
-        if (activeRef.current === tab.path) setChatMarksState({ path: tab.path, marks: clearedMarks });
+        const clearedNotes = saveChatAnnotations(tab.path, []);
+        if (activeRef.current === tab.path) {
+            setChatMarksState({ path: tab.path, marks: clearedMarks });
+            setChatAnnotationsState({ path: tab.path, notes: clearedNotes });
+        }
         setTabs((current) => current.map((item) => {
             if (item.path !== tab.path) return item;
             const draft = item.draft.trim() === text ? "" : item.draft;
@@ -4892,7 +5094,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             setTabs((current) => current.map((tab) => companionSharePathKey(tab.path) === key ? { ...tab, shareToken: token, shareMine: stored.mine, notes: stored.notes } : tab));
             return true;
         }).catch((err) => {
-            showToast(shownHostError(err, "批注没有同步出去"), "error", 6000);
+            showToast(shownHostError(err, "讨论没有同步出去"), "error", 6000);
             return false;
         });
     };
@@ -4915,7 +5117,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             shareByPathRef.current.set(key, stored);
             const token = shareBindToken(stored);
             setTabs((tabsNow) => tabsNow.map((tab) => companionSharePathKey(tab.path) === key ? { ...tab, shareToken: token, shareMine: stored.mine, notes: stored.notes } : tab));
-            showToast(decision === "approve" ? cs("已通过，主持人 Agent 会处理这条批注") : cs("已忽略这条批注，参与者会看到忽略标记"), "success", 5000);
+            showToast(decision === "approve" ? cs("已通过，主持人 Agent 会处理这条讨论") : cs("已忽略这条讨论，参与者会看到忽略标记"), "success", 5000);
         } catch (err) {
             showToast(shownHostError(err, "审核没有保存"), "error", 6000);
         } finally {
@@ -5056,7 +5258,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             // pass it, which is the fact the toast should use.
                             const saved = shareByPathRef.current.get(key)?.notes ?? [];
                             const waitsForReview = saved.some((note) => !note.host && (note.decision ?? "") !== "");
-                            showToast(waitsForReview || notesReview ? cs("已发给主持人审核，通过后由主持人 Agent 回复") : cs("已发给主持人 Agent，回复会作为批注同步给参与者"), "success", 6000);
+                            showToast(waitsForReview || notesReview ? cs("已发给主持人审核，通过后由主持人 Agent 回复") : cs("已发给主持人 Agent，回复会作为讨论同步给参与者"), "success", 6000);
                         });
                     }
                 }
@@ -5556,6 +5758,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             const path = String(raw?.path || raw?.Path || "").trim();
             const highlights = String(raw?.highlights || raw?.Highlights || "");
             const chatMarks = String(raw?.chatMarks || raw?.ChatMarks || "");
+            const chatAnnotationsRaw = raw?.chatAnnotations ?? raw?.ChatAnnotations;
+            const chatAnnotations = typeof chatAnnotationsRaw === "string" ? chatAnnotationsRaw : "";
             const annotations = String(raw?.annotations || raw?.Annotations || "");
             const drawings = String(raw?.drawings || raw?.Drawings || "");
             const bookmarks = String(raw?.bookmarks || raw?.Bookmarks || "");
@@ -5566,12 +5770,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 else setArxivMessage(failure);
                 return;
             }
-            if (highlights || has("chatMarks") || has("annotations") || has("drawings") || has("bookmarks")) {
+            if (highlights || has("chatMarks") || has("chatAnnotations") || has("annotations") || has("drawings") || has("bookmarks")) {
                 applyShareUpdateRef.current({
                     path,
                     highlights,
                     chatMarks,
                     chatMarksKnown: has("chatMarks"),
+                    chatAnnotations,
+                    chatAnnotationsKnown: has("chatAnnotations"),
                     annotations,
                     annotationsKnown: has("annotations"),
                     drawings,
@@ -6618,6 +6824,19 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 previewOpen={showPreview}
                                 onBlocked={showChatError}
                                 paperRequestIds={paperRequestIds}
+                                annotatedMessages={annotatedMessages}
+                            />
+                            <CompanionChatAnnotationLayer
+                                logRef={outputContainerRef}
+                                notes={chatAnnotations}
+                                lang={uiLang}
+                                anchorKey={chatAnnotationAnchorKey}
+                                closed={closedChatAnnotationIds}
+                                onToggle={toggleChatAnnotation}
+                                onBody={editChatAnnotationBody}
+                                onPlace={placeChatAnnotation}
+                                onSize={sizeChatAnnotation}
+                                onContextMenu={openChatAnnotationMenu}
                             />
                             <div ref={outputEndRef} />
                         </div>
@@ -6629,24 +6848,31 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 hasSelection={chatMenu.slices.length > 0}
                                 canPaint={chatHighlightsReady && chatMenu.slices.length > 0}
                                 canClear={chatMenu.hit >= 0}
+                                canAnnotate={chatMenu.slices.length > 0}
+                                canRenameAnnotation={chatAnnotations.some((note) => note.id === chatMenu.annotationId && note.shared !== true)}
+                                canDeleteAnnotation={chatAnnotations.some((note) => note.id === chatMenu.annotationId && note.shared !== true)}
+                                annotationName={chatAnnotations.find((note) => note.id === chatMenu.annotationId)?.name || ""}
                                 onCopy={copyChatSelection}
                                 onPaint={paintChatMarks}
                                 onClear={clearChatMarkHit}
+                                onAnnotate={createChatAnnotations}
+                                onRenameAnnotation={renameChatAnnotation}
+                                onDeleteAnnotation={deleteChatAnnotation}
                                 onClose={() => setChatMenu(null)}
                             />
                         ) : null}
                         {annotationsOpen ? (
                             <div className="file-companion-annotations" data-testid="file-companion-annotations" data-collapsed={annotationsCollapsed ? "true" : "false"}>
                                 <div className="file-companion-annotations-head" onClick={toggleAnnotationsCollapsed}>
-                                    <p className="file-companion-annotations-kicker">{pendingReviewCount > 0 ? companionFill(uiLang, "批注 · 待审核 ${count}", { count: pendingReviewCount }) : cs("批注")}</p>
+                                    <p className="file-companion-annotations-kicker">{pendingReviewCount > 0 ? companionFill(uiLang, "讨论 · 待审核 ${count}", { count: pendingReviewCount }) : cs("讨论")}</p>
                                     <button
                                         type="button"
                                         className="file-companion-annotations-toggle"
                                         data-testid="file-companion-annotations-toggle"
                                         aria-expanded={!annotationsCollapsed}
                                         aria-controls="file-companion-annotations-body"
-                                        aria-label={annotationsCollapsed ? cs("展开批注") : cs("折叠批注")}
-                                        title={annotationsCollapsed ? cs("展开批注") : cs("折叠批注")}
+                                        aria-label={annotationsCollapsed ? cs("展开讨论") : cs("折叠讨论")}
+                                        title={annotationsCollapsed ? cs("展开讨论") : cs("折叠讨论")}
                                         onClick={(event) => {
                                             event.stopPropagation();
                                             toggleAnnotationsCollapsed();
@@ -6677,7 +6903,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                             </p>
                                             <CompanionAnnotationBody noteId={note.id} text={note.text} theme={appearance.assistantTheme} />
                                             {!note.host && decision === "ignored" ? (
-                                                <span className="file-companion-annotation-status" data-tone="ignored" data-testid={`file-companion-annotation-ignored-${note.id}`}>{cs("主持人已忽略这条批注")}</span>
+                                                <span className="file-companion-annotation-status" data-tone="ignored" data-testid={`file-companion-annotation-ignored-${note.id}`}>{cs("主持人已忽略这条讨论")}</span>
                                             ) : null}
                                             {!note.host && decision === "approved" && !answered && reviewOn ? (
                                                 <span className="file-companion-annotation-status" data-tone="approved" data-testid={`file-companion-annotation-approved-${note.id}`}>{cs("已通过，等待主持人 Agent 回复")}</span>
@@ -6733,7 +6959,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                         </div>
                                     );
                                 }) : (
-                                    <p className="file-companion-annotations-empty">{cs("你的讨论会成为批注，同步给能看到这份分享的人。")}</p>
+                                    <p className="file-companion-annotations-empty">{cs("你的发言会进入讨论，同步给能看到这份分享的人。")}</p>
                                 )}
                                 </div>
                             </div>

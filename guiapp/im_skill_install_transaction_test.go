@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -120,6 +121,133 @@ func TestIMInitialExecutionFailureUsesDurableStatusCommitter(t *testing.T) {
 		t.Fatalf("ListEvolutionCompensationSummaries() error = %v", err)
 	} else if len(summaries) != 0 {
 		t.Fatalf("successful status transaction left compensation records: %#v", summaries)
+	}
+}
+
+func TestExecuteInstalledSkillSkipsUnrunnablePackage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("VOLC_IMAGE_KEY", "")
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(t.TempDir())
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	app := &App{testHomeDir: home}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+	h := &IMMessageHandler{app: app}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".maclaw_scan_status.db"), []byte("scan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	empty := corelib.NLSkillEntry{
+		Name: "empty-picture", Source: "auto_clawhub", Status: "active", SkillDir: dir,
+		Steps: []corelib.NLSkillStep{{Action: "craft_tool", Params: map[string]interface{}{"instructions": "draw a cat"}}},
+	}
+	if err := app.skillExecutor.Register(empty); err != nil {
+		t.Fatal(err)
+	}
+	skipped := h.executeInstalledSkill(context.Background(), &empty, empty.Name, "desktop", "user", "user", func(string) {
+		t.Fatal("empty package announced execution")
+	})
+	if skipped.Success || strings.Contains(skipped.Text, "manage_skill") || strings.Contains(skipped.Text, "search_and_install_skill") || !strings.Contains(skipped.Text, "package has no runnable program") || !strings.Contains(skipped.Text, "needs_setup") || !strings.Contains(skipped.Text, "craft_tool") || !strings.HasPrefix(skipped.Text, "failed:") {
+		t.Fatalf("empty package = %+v", skipped)
+	}
+	if agentruntime.RegisteredToolTextOutcome(skipped.Text) != agentruntime.RegisteredToolOutcomeFailed {
+		t.Fatalf("unrunnable note is not a tool failure: %q", skipped.Text)
+	}
+	unpersisted := skillInitialExecutionUnpersistedUnrunnableNote(empty.Name, "package has no runnable program", fmt.Errorf("durable App status transaction unavailable"))
+	if !strings.HasPrefix(unpersisted, "failed:") || !strings.Contains(unpersisted, "craft_tool") || strings.Contains(unpersisted, "manage_skill") || strings.Contains(unpersisted, "search_and_install_skill") {
+		t.Fatalf("unpersisted note = %q", unpersisted)
+	}
+
+	missing := corelib.NLSkillEntry{
+		Name: "missing-key", Source: "manual", Status: "active",
+		RequiredEnv: []string{"VOLC_IMAGE_KEY"},
+		Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "cmd /c exit 7"}}},
+	}
+	if err := app.skillExecutor.Register(missing); err != nil {
+		t.Fatal(err)
+	}
+	refused := h.executeInstalledSkill(context.Background(), &missing, missing.Name, "desktop", "user", "user", nil)
+	if refused.Success || strings.Contains(refused.Text, "manage_skill") || strings.Contains(refused.Text, "search_and_install_skill") || strings.Contains(refused.Text, "craft_tool") || strings.Contains(refused.Text, "exit status") || !strings.Contains(refused.Text, "required credentials are empty") || !strings.HasPrefix(refused.Text, "failed:") {
+		t.Fatalf("missing credential = %+v", refused)
+	}
+	entries := app.skillExecutor.loadSkills()
+	status := map[string]string{}
+	for _, entry := range entries {
+		status[entry.Name] = entry.Status
+	}
+	if status["empty-picture"] != "needs_setup" || status["missing-key"] != "needs_setup" {
+		t.Fatalf("status = %#v", entries)
+	}
+}
+
+func TestInstalledSkillAutoRunRefusal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".maclaw_scan_status.db"), []byte("scan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	empty := &corelib.NLSkillEntry{
+		Name: "pic", Source: "auto_clawhub", Status: "active", SkillDir: dir,
+		Steps: []corelib.NLSkillStep{{Action: "craft_tool", Params: map[string]interface{}{"instructions": "draw"}}},
+	}
+	if got := installedSkillAutoRunRefusal(empty); got != "package has no runnable program" {
+		t.Fatalf("empty package = %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "draw.py"), []byte("print(1)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := installedSkillAutoRunRefusal(empty); got != "" {
+		t.Fatalf("scripted package = %q", got)
+	}
+	t.Setenv("VOLC_IMAGE_KEY", "")
+	cred := &corelib.NLSkillEntry{
+		Name: "cred", Status: "active", RequiredEnv: []string{"VOLC_IMAGE_KEY"},
+		Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo hi"}}},
+	}
+	if got := installedSkillAutoRunRefusal(cred); got != "required credentials are empty" {
+		t.Fatalf("missing credential = %q", got)
+	}
+	t.Setenv("VOLC_IMAGE_KEY", "present")
+	if got := installedSkillAutoRunRefusal(cred); got != "" {
+		t.Fatalf("present credential = %q", got)
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+	proxy := &corelib.NLSkillEntry{
+		Name: "proxy", Status: "active", RequiredEnv: []string{"OPENAI_API_KEY"},
+		Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo hi"}}},
+	}
+	if got := installedSkillAutoRunRefusal(proxy); got != "" {
+		t.Fatalf("proxy-provided OpenAI key = %q", got)
+	}
+	proxy.NoLLMAPI = true
+	if got := installedSkillAutoRunRefusal(proxy); got != "required credentials are empty" {
+		t.Fatalf("no_llm_api OpenAI key = %q", got)
+	}
+	command := &corelib.NLSkillEntry{
+		Name: "py", Status: "active", RequiredEnv: []string{"python"},
+		Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo hi"}}},
+	}
+	if got := installedSkillAutoRunRefusal(command); got != "" {
+		t.Fatalf("command-shaped required env = %q", got)
+	}
+	t.Setenv("VOLC_IMAGE_KEY", "")
+	stepEnv := &corelib.NLSkillEntry{
+		Name: "step-env", Status: "active",
+		Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{
+			"command":      "echo hi",
+			"required_env": []string{"VOLC_IMAGE_KEY"},
+		}}},
+	}
+	if got := installedSkillAutoRunRefusal(stepEnv); got != "required credentials are empty" {
+		t.Fatalf("step required env = %q", got)
+	}
+	if got := installedSkillAutoRunRefusal(&corelib.NLSkillEntry{Name: "none", Status: "active"}); got != "no runnable steps" {
+		t.Fatalf("no steps = %q", got)
 	}
 }
 

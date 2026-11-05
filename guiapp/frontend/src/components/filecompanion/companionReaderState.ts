@@ -1,3 +1,4 @@
+import { chatAnnotationsSaveRevision, hydrateChatAnnotations } from "./chatAnnotations";
 import { chatMarksSaveRevision, hydrateChatMarks } from "./chatMarks";
 import { FILE_COMPANION_INPUT_HISTORY_KEY, fileCompanionInputHistorySaveRevision, hydrateFileCompanionInputHistory } from "./fileCompanionInputHistory";
 import { hydratePdfBookmarks, pdfBookmarksSaveRevision } from "./pdfBookmarks";
@@ -86,6 +87,7 @@ export async function hydrateCompanionReaderState(): Promise<void> {
     const drawingsRevision = pdfDrawingsSaveRevision();
     const bookmarksRevision = pdfBookmarksSaveRevision();
     const chatMarksRevision = chatMarksSaveRevision();
+    const chatAnnotationsRevision = chatAnnotationsSaveRevision();
     const historyRevision = fileCompanionInputHistorySaveRevision();
     const raw = await load(
         legacyDocument(legacyMarks),
@@ -104,6 +106,7 @@ export async function hydrateCompanionReaderState(): Promise<void> {
     if (pdfDrawingsSaveRevision() === drawingsRevision) hydratePdfDrawings(record.pdf_drawings);
     if (pdfBookmarksSaveRevision() === bookmarksRevision) hydratePdfBookmarks(record.pdf_bookmarks);
     if (chatMarksSaveRevision() === chatMarksRevision) hydrateChatMarks(record.chat_marks);
+    if (chatAnnotationsSaveRevision() === chatAnnotationsRevision) hydrateChatAnnotations(record.chat_annotations);
     if (fileCompanionInputHistorySaveRevision() === historyRevision) hydrateFileCompanionInputHistory(record.input_history);
     // Only now is the browser copy redundant.
     dropLegacy(PDF_MARK_STORAGE_KEY, legacyMarks);

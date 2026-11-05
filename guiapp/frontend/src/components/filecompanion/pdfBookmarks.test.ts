@@ -154,6 +154,7 @@ describe("pdf bookmarks", () => {
         expect(JSON.parse(companionProjectMarksJSON("C:/docs/paper.pdf"))).toEqual({
             highlights: [],
             chatMarks: [],
+            chatAnnotations: [],
             annotations: [],
             drawings: [],
             bookmarks: [place],

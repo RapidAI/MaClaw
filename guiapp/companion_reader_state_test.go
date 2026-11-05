@@ -120,6 +120,31 @@ func TestCompanionReaderStatePersistsChatMarks(t *testing.T) {
 	}
 }
 
+func TestCompanionReaderStatePersistsChatAnnotations(t *testing.T) {
+	app := newCompanionReaderTestApp(t)
+	notes := `[{"id":"ca_1","message":1,"start":0,"end":4,"text":"note","body":"看法"}]`
+	if err := app.SaveCompanionChatAnnotations(`C:\Docs\Paper.PDF`, notes); err != nil {
+		t.Fatalf("SaveCompanionChatAnnotations: %v", err)
+	}
+	payload := loadCompanionReaderTestState(t, app, "", "")
+	got, ok := payload.ChatAnnotations["c:/docs/paper.pdf"]
+	if !ok || !strings.Contains(string(got), "看法") {
+		t.Fatalf("chat annotations = %v", payload.ChatAnnotations)
+	}
+	if _, ok := payload.ChatMarks["c:/docs/paper.pdf"]; ok {
+		t.Fatalf("chat annotations leaked into chat marks: %v", payload.ChatMarks)
+	}
+	if err := app.SaveCompanionChatAnnotations(`C:\Docs\Paper.PDF`, "[]"); err != nil {
+		t.Fatalf("clear chat annotations: %v", err)
+	}
+	if payload := loadCompanionReaderTestState(t, app, "", ""); len(payload.ChatAnnotations) != 0 {
+		t.Fatalf("chat annotations after clear = %v", payload.ChatAnnotations)
+	}
+	if err := app.SaveCompanionChatAnnotations("/tmp/a.md", `{"not":"an array"}`); err == nil {
+		t.Fatal("non-array chat annotations must be refused")
+	}
+}
+
 func TestCompanionReaderStatePersistsPdfTranslations(t *testing.T) {
 	app := newCompanionReaderTestApp(t)
 	translations := `[{"id":"t1","text":"方法","translation":"method","parts":[{"page":1,"rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.04}]}]}]`

@@ -14,7 +14,7 @@ func TestFileCompanionSplitSharePayloadReadsHighlightsAndChatMarks(t *testing.T)
 	chatMarks := `[{"message":2,"color":"green","start":3,"end":5,"text":"回答"}]`
 	annotations := `[{"id":"a1","kind":"annotation","text":"原文","translation":"批注","parts":[{"page":1,"rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.04}]}]}]`
 	drawings := `[{"id":"d1","page":1,"color":"yellow","tool":"line","points":[{"x":0.1,"y":0.2},{"x":0.3,"y":0.4}]}]`
-	gotHighlights, gotChat, gotAnnotations, gotDrawings, gotBookmarks, _, _, err := fileCompanionSplitSharePayload(`{"highlights":` + highlights + `,"chatMarks":` + chatMarks + `,"annotations":` + annotations + `,"drawings":` + drawings + `}`)
+	gotHighlights, gotChat, gotChatNotes, gotAnnotations, gotDrawings, gotBookmarks, _, _, err := fileCompanionSplitSharePayload(`{"highlights":` + highlights + `,"chatMarks":` + chatMarks + `,"annotations":` + annotations + `,"drawings":` + drawings + `}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,17 +37,20 @@ func TestFileCompanionSplitSharePayloadReadsHighlightsAndChatMarks(t *testing.T)
 	if gotBookmarks != nil {
 		t.Fatalf("omitted bookmarks = %s", gotBookmarks)
 	}
+	if gotChatNotes != nil {
+		t.Fatalf("omitted chat annotations = %s", gotChatNotes)
+	}
 
 	// A legacy caller sends the highlights array alone.
-	gotHighlights, gotChat, gotAnnotations, gotDrawings, gotBookmarks, _, _, err = fileCompanionSplitSharePayload(highlights)
+	gotHighlights, gotChat, gotChatNotes, gotAnnotations, gotDrawings, gotBookmarks, _, _, err = fileCompanionSplitSharePayload(highlights)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gotBookmarks != nil {
 		t.Fatalf("payload without bookmarks grew bookmarks: %s", gotBookmarks)
 	}
-	if gotChat != nil || gotAnnotations != nil || gotDrawings != nil || gotBookmarks != nil {
-		t.Fatalf("legacy payload grew chat marks, annotations, drawings, or bookmarks: %s %s %s %s", gotChat, gotAnnotations, gotDrawings, gotBookmarks)
+	if gotChat != nil || gotChatNotes != nil || gotAnnotations != nil || gotDrawings != nil || gotBookmarks != nil {
+		t.Fatalf("legacy payload grew chat marks, chat annotations, annotations, drawings, or bookmarks: %s %s %s %s %s", gotChat, gotChatNotes, gotAnnotations, gotDrawings, gotBookmarks)
 	}
 	if err := json.Unmarshal(gotHighlights, &pageMarks); err != nil || len(pageMarks) != 1 {
 		t.Fatalf("legacy highlights = %s (%v)", gotHighlights, err)
@@ -62,7 +65,7 @@ func TestWriteFileCompanionProjectKeepsChatMarks(t *testing.T) {
 	}
 	dest := filepath.Join(dir, "project.zip")
 	chatMarks := json.RawMessage(`[{"message":0,"color":"blue","start":0,"end":2,"text":"答"}]`)
-	if err := writeFileCompanionProject(dest, source, json.RawMessage("[]"), chatMarks, nil, json.RawMessage(`[{"id":"d1","page":1,"color":"yellow","tool":"line","points":[{"x":0.1,"y":0.2},{"x":0.3,"y":0.4}]}]`), nil, []FileCompanionMessage{{Role: "assistant", Text: "答"}}, "", 0, nil, nil); err != nil {
+	if err := writeFileCompanionProject(dest, source, json.RawMessage("[]"), chatMarks, nil, nil, json.RawMessage(`[{"id":"d1","page":1,"color":"yellow","tool":"line","points":[{"x":0.1,"y":0.2},{"x":0.3,"y":0.4}]}]`), nil, []FileCompanionMessage{{Role: "assistant", Text: "答"}}, "", 0, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(dest)
@@ -85,7 +88,7 @@ func TestWriteFileCompanionProjectKeepsChatMarks(t *testing.T) {
 	// A project written without chat marks stays a legacy project: the field is
 	// absent, so a reader keeps its own answer highlights.
 	legacy := filepath.Join(dir, "legacy.zip")
-	if err := writeFileCompanionProject(legacy, source, json.RawMessage("[]"), nil, nil, nil, nil, nil, "", 0, nil, nil); err != nil {
+	if err := writeFileCompanionProject(legacy, source, json.RawMessage("[]"), nil, nil, nil, nil, nil, nil, "", 0, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	raw, err = os.ReadFile(legacy)
@@ -93,8 +96,62 @@ func TestWriteFileCompanionProjectKeepsChatMarks(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest, _, _, _ = readFileCompanionShareProject(raw)
-	if len(manifest.ChatMarks) != 0 || len(manifest.Drawings) != 0 {
-		t.Fatalf("legacy manifest carries chat marks or drawings: %s %s", manifest.ChatMarks, manifest.Drawings)
+	if len(manifest.ChatMarks) != 0 || len(manifest.ChatAnnotations) != 0 || len(manifest.Drawings) != 0 {
+		t.Fatalf("legacy manifest carries chat marks, chat annotations, or drawings: %s %s %s", manifest.ChatMarks, manifest.ChatAnnotations, manifest.Drawings)
+	}
+}
+
+func TestFileCompanionCleanChatAnnotations(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"id":"ca_1","message":1,"start":0,"end":2,"text":"回答","body":"看法","name":"名字","place":{"x":0.2,"y":-0.4,"above":true},"size":{"w":0.4,"h":0.3},"shared":true},
+		{"id":"","message":1,"start":0,"end":2,"text":"回答","body":"空编号"},
+		{"id":"ca_blank","message":1,"start":0,"end":2,"text":"回答","body":"  "},
+		{"id":"ca_place","message":2,"start":0,"end":1,"text":"甲","body":"保留","place":{"x":"NaN","y":1},"size":{"w":"no","h":1}}
+	]`)
+	got, err := fileCompanionCleanChatAnnotations(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notes []map[string]any
+	if err := json.Unmarshal(got, &notes); err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 2 {
+		t.Fatalf("kept %d notes: %s", len(notes), got)
+	}
+	if notes[0]["id"] != "ca_1" || notes[0]["body"] != "看法" {
+		t.Fatalf("first note = %v", notes[0])
+	}
+	place, _ := notes[0]["place"].(map[string]any)
+	if place["above"] != true {
+		t.Fatalf("place above was dropped: %v", notes[0]["place"])
+	}
+	parked, err := fileCompanionCleanChatAnnotations(json.RawMessage(`[{"id":"ca_above","message":1,"start":0,"end":1,"text":"甲","body":"上","place":{"x":0,"y":0,"above":true}}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(parked), `"above":true`) {
+		t.Fatalf("a card above the quote was dropped: %s", parked)
+	}
+	if _, ok := notes[0]["shared"]; ok {
+		t.Fatalf("shared flag survived: %s", got)
+	}
+	if notes[1]["id"] != "ca_place" || notes[1]["place"] != nil || notes[1]["size"] != nil {
+		t.Fatalf("bad place or size was kept: %v", notes[1])
+	}
+	_, _, chatNotes, _, _, _, _, _, err := fileCompanionSplitSharePayload(`{"highlights":[{"id":"m1","page":1,"color":"yellow","rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.04}]}],"chatMarks":[]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chatNotes != nil {
+		t.Fatalf("missing chat annotations = %s", chatNotes)
+	}
+	_, _, cleared, _, _, _, _, _, err := fileCompanionSplitSharePayload(`{"highlights":[{"id":"m1","page":1,"color":"yellow","rects":[{"x":0.1,"y":0.2,"w":0.3,"h":0.04}]}],"chatAnnotations":[]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cleared) != "[]" {
+		t.Fatalf("empty chat annotations = %s", cleared)
 	}
 }
 

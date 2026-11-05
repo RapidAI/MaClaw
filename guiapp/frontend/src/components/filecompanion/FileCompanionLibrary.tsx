@@ -23,6 +23,7 @@ import {
 import { useDialog } from "../CustomDialog";
 import { companionProjectExportJSON, companionProjectMarksJSON, savePdfBookmarks } from "./pdfBookmarks";
 import { loadPdfMarkCounts, loadPdfMarks, pdfMarkPathKey, savePdfMarks } from "./pdfMarks";
+import { saveChatAnnotations } from "./chatAnnotations";
 import { saveChatMarks } from "./chatMarks";
 import { savePdfTranslations } from "./pdfTranslations";
 import { savePdfDrawings } from "./pdfDrawings";
@@ -58,6 +59,7 @@ export type CompanionLibraryItem = {
     // carrying answer highlights or placed notes. They are not stored on the
     // library row.
     chatMarks?: string;
+    chatAnnotations?: string;
     annotations?: string;
     // drawings is the same import-only value for freehand marks.
     drawings?: string;
@@ -107,6 +109,10 @@ export type CompanionShareUpdate = {
     // highlights. A legacy project omits it and leaves local marks alone.
     chatMarks: string;
     chatMarksKnown: boolean;
+    // chatAnnotations is the host's notes on the answers. A legacy project
+    // omits the field and leaves this reader's own notes alone.
+    chatAnnotations: string;
+    chatAnnotationsKnown: boolean;
     // annotations is the host's placed notes, also optional for legacy
     // projects so local notes survive.
     annotations: string;
@@ -272,6 +278,7 @@ function readItem(raw: unknown): CompanionLibraryItem | null {
         expired: boolOf(record, "expired", "Expired"),
         highlights: textOf(record, "highlights", "Highlights"),
         chatMarks: textOf(record, "chatMarks", "ChatMarks"),
+        chatAnnotations: textOf(record, "chatAnnotations", "ChatAnnotations"),
         annotations: textOf(record, "annotations", "Annotations"),
         drawings: textOf(record, "drawings", "Drawings"),
         bookmarks: textOf(record, "bookmarks", "Bookmarks"),
@@ -428,6 +435,8 @@ function readUpdates(raw: unknown): CompanionShareUpdate[] {
         const messages = record.messages ?? record.Messages;
         const hasChatMarks = Object.prototype.hasOwnProperty.call(record, "chatMarks") || Object.prototype.hasOwnProperty.call(record, "ChatMarks");
         const chatMarks = record.chatMarks ?? record.ChatMarks;
+        const hasChatAnnotations = Object.prototype.hasOwnProperty.call(record, "chatAnnotations") || Object.prototype.hasOwnProperty.call(record, "ChatAnnotations");
+        const chatAnnotations = record.chatAnnotations ?? record.ChatAnnotations;
         const hasAnnotations = Object.prototype.hasOwnProperty.call(record, "annotations") || Object.prototype.hasOwnProperty.call(record, "Annotations");
         const annotations = record.annotations ?? record.Annotations;
         const hasDrawings = Object.prototype.hasOwnProperty.call(record, "drawings") || Object.prototype.hasOwnProperty.call(record, "Drawings");
@@ -439,6 +448,8 @@ function readUpdates(raw: unknown): CompanionShareUpdate[] {
             highlights: textOf(record, "highlights", "Highlights"),
             chatMarks: typeof chatMarks === "string" ? chatMarks : "",
             chatMarksKnown: hasChatMarks,
+            chatAnnotations: typeof chatAnnotations === "string" ? chatAnnotations : "",
+            chatAnnotationsKnown: hasChatAnnotations,
             annotations: typeof annotations === "string" ? annotations : "",
             annotationsKnown: hasAnnotations,
             drawings: typeof drawings === "string" ? drawings : "",
@@ -1218,6 +1229,7 @@ export function CompanionLibraryView({
                         savePdfDrawings(path, []);
                         savePdfBookmarks(path, []);
                         saveChatMarks(path, []);
+                        saveChatAnnotations(path, []);
                         onProjectDeleted?.(path);
                     }
                     showToast(
@@ -2518,6 +2530,8 @@ export function CompanionImportDialog({
                     highlights: imported.highlights,
                     chatMarks: imported.chatMarks ?? "",
                     chatMarksKnown: Boolean(imported.chatMarks),
+                    chatAnnotations: imported.chatAnnotations ?? "",
+                    chatAnnotationsKnown: Boolean(imported.chatAnnotations),
                     annotations: imported.annotations ?? "",
                     annotationsKnown: Boolean(imported.annotations),
                     drawings: imported.drawings ?? "",

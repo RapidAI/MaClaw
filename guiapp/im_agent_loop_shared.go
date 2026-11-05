@@ -1990,9 +1990,20 @@ type sharedAgentLoopCallbacks struct {
 	// does not count: selection_not_authorized is what sent the picture turn
 	// to dispatch.
 	discoveryUnmatchedObligation bool
-	discoveryCraftRan            bool
-	discoverySkillSearchRan      bool
-	discoverySkillInstalled      bool
+	// petitionInputUnbound is a directory name this tools_search could not
+	// bind. The value is petitionInputUnboundMissing or
+	// petitionInputUnboundAmbiguous. semanticToolsSearchRun clears it, and
+	// the next search expands against the plan as it is now. A document
+	// producer added in between publishes the name. Keeping the first
+	// failure skipped that expansion after generate_pdf was already planned.
+	petitionInputUnbound map[string]string
+	// discoveryAdmitUnbound is the bind notes of the tools_search running
+	// now. The page uses this list as its action when the search loaded
+	// nothing else. It is not recovered by parsing the note text.
+	discoveryAdmitUnbound   []string
+	discoveryCraftRan       bool
+	discoverySkillSearchRan bool
+	discoverySkillInstalled bool
 	// extensionHostSeen is the executor's outcome for the extension call
 	// in progress. Install success is that outcome. A failure sentence such
 	// as "GitHub skill import failed" is a finished call that installed nothing.
@@ -3805,6 +3816,16 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 			// Authority mismatch closes this name only. The class budget stays
 			// open so send_file can still be petitioned after download_file.
 			c.notePetitionAuthorityMiss(name, effectful)
+		}
+		// A known directory capability whose template requires one trusted
+		// document, and this turn has none, is an input-contract failure.
+		// The empty denial used to look like a name the catalog does not
+		// have. An unsupported selected file still extends: that is the
+		// same classification the planner uses before it grows a skill.
+		if semanticSurfaceIsModelDiscovery(surface) && c.notePetitionInputUnbound(name, err) {
+			log.Printf("[semantic-routing] tool petition %q (%s) input unbound: %v", name, label, err)
+			c.projectSemanticDirectoryPrompt()
+			return false, c.discoveryTrustedInputUnboundNote(name, c.petitionInputUnbound[name])
 		}
 		log.Printf("[semantic-routing] tool petition %q (%s) expansion failed: %v", name, label, err)
 		c.projectSemanticDirectoryPrompt()
@@ -5860,19 +5881,25 @@ func cancelSemanticCallSurface(surface *semanticCallSurface) {
 // construction: the discovery meta-tool holds no grant and consumes no
 // authority (its budget is a callback counter), so a stale epoch is
 // meaningless for it — rejecting it (production 2026-08-28 PPT turn batched
-// send_file + tools_search) is pure churn. An installed MCP sidecar call is
-// not exempt. It shares this request's epoch, and a late response binds the
-// stable server__tool name only when that sidecar epoch is still current or
-// the call is the same family's batch continuation. A name the managed
-// surface retired in this request, and did not reissue, is rejected before
-// that epoch check so the sidecar grant cannot run a second tools/call.
+// send_file + tools_search) is pure churn. search_and_install_skill and
+// craft_tool are the same kind of grant-less host tool, but only for the
+// response whose epoch BeginToolSurfaceEpoch recorded. A sibling tools_search
+// in that response publishes a child surface and retires the epoch; the
+// skill search used to come back stale_surface (2026-11-06 picture turn).
+// The next request replaces requestSurfaceEpoch, so a straggler still fails.
+// An installed MCP sidecar call is not exempt. It shares this request's
+// epoch, and a late response binds the stable server__tool name only when
+// that sidecar epoch is still current or the call is the same family's batch
+// continuation. A name the managed surface retired in this request, and did
+// not reissue, is rejected before that epoch check so the sidecar grant
+// cannot run a second tools/call.
 func (c *sharedAgentLoopCallbacks) ExecuteToolCallWithContext(name, argsJSON, callID string, execution agent.ToolCallExecutionContext) agent.ToolExecutionResult {
 	if c != nil {
 		if spent, ok := c.rejectManagedInstalledMCPSpent(name); ok {
 			return spent
 		}
 		if c.semanticSurface != nil && !c.semanticSurface.epochIsCurrent(execution.SurfaceEpoch) {
-			if name != semanticToolsSearchName && !c.chatTaskHostTool(name) && !chatTaskControlName(name) && !c.legacyPetitionAllows(name) && !c.semanticSurface.staleEpochSameFamilyContinuation(execution.SurfaceEpoch, name) && !c.installedMCPSidecarEpochAdmits(execution.SurfaceEpoch, name) {
+			if name != semanticToolsSearchName && !c.chatTaskHostTool(name) && !chatTaskControlName(name) && !c.legacyPetitionAllows(name) && !c.semanticSurface.staleEpochSameFamilyContinuation(execution.SurfaceEpoch, name) && !c.installedMCPSidecarEpochAdmits(execution.SurfaceEpoch, name) && !c.discoveryExtensionSameResponse(execution.SurfaceEpoch, name) {
 				return semanticAgentToolExecutionResult(semanticGrantRejectMessage("stale_surface"))
 			}
 		}
@@ -5884,6 +5911,21 @@ func (c *sharedAgentLoopCallbacks) ExecuteToolCallWithContext(name, argsJSON, ca
 		}
 	}
 	return c.executeToolCallWithExecutionContext(name, argsJSON, callID, execution)
+}
+
+// discoveryExtensionSameResponse admits search_and_install_skill and
+// craft_tool from the model response that minted requestSurfaceEpoch.
+// Those names hold no grant, so same-family continuation cannot carry them
+// after a sibling tools_search replaces the surface. A call whose epoch was
+// minted by surface.beginEpoch alone leaves requestSurfaceEpoch empty and
+// stays rejected. The next BeginToolSurfaceEpoch replaces the recorded epoch.
+func (c *sharedAgentLoopCallbacks) discoveryExtensionSameResponse(epoch, name string) bool {
+	if c == nil || !modelDiscoveryExtensionName(name) || !semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+		return false
+	}
+	epoch = strings.TrimSpace(epoch)
+	recorded := strings.TrimSpace(c.requestSurfaceEpoch)
+	return epoch != "" && recorded != "" && epoch == recorded
 }
 
 func semanticAgentToolExecutionResult(text string) agent.ToolExecutionResult {
@@ -6258,6 +6300,16 @@ func (c *sharedAgentLoopCallbacks) admitDiscoverySearchNeeds(names []string) (st
 			admitted = true
 			continue
 		}
+		// A picture request has no image tool. web_search and the other
+		// substitutes are real directory names, so loading one used to count
+		// as a match and the catalog miss never opened (2026-11-06 生成老鼠戏猫图).
+		// Leave them unloaded. A local name in the same list, such as bash,
+		// still petitions. A list that loads nothing is the miss.
+		if discoveryPictureCreationUtterance(c.userText) && discoverySubstituteTool(name) {
+			failed++
+			log.Printf("[semantic-routing] discovery tools_search did not load %q: picture request does not use a substitute", name)
+			continue
+		}
 		granted, message := c.PetitionToolCall(name)
 		if c.discoverySearchNeedCallable(name) || granted {
 			admitted = true
@@ -6270,6 +6322,18 @@ func (c *sharedAgentLoopCallbacks) admitDiscoverySearchNeeds(names []string) (st
 					c.discoverySearchBodies[name] = struct{}{}
 				}
 			}
+			continue
+		}
+		if code, ok := c.petitionInputUnbound[name]; ok && strings.TrimSpace(message) == c.discoveryTrustedInputUnboundNote(name, code) {
+			// The name is in the directory. This plan's delivery template
+			// did not bind. Leaving it in failed opened the catalog miss
+			// and the page's last line became search_and_install_skill.
+			// A different message, such as a miss that is already open,
+			// still counts. The note stays on this search so the page can
+			// use it as the action without parsing the sentence.
+			note := c.discoveryTrustedInputUnboundNote(name, code)
+			notes = append(notes, note)
+			c.discoveryAdmitUnbound = append(c.discoveryAdmitUnbound, note)
 			continue
 		}
 		if discoveryRetiredAwaitingConfirmation(c, name) {

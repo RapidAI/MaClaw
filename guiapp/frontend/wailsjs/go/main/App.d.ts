@@ -785,6 +785,8 @@ export function SaveCompanionPdfTranslations(arg1:string,arg2:string):Promise<vo
 
 export function SaveCompanionChatMarks(arg1:string,arg2:string):Promise<void>;
 
+export function SaveCompanionChatAnnotations(arg1:string,arg2:string):Promise<void>;
+
 export function SaveCompanionInputHistory(arg1:string):Promise<void>;
 
 export function FileCompanionExportChatPDF(arg1:string,arg2:Array<main.CompanionChatTurn>):Promise<string>;

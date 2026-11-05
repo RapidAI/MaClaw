@@ -4,6 +4,7 @@
 // mirror so the reader can render without awaiting a binding; hydratePdfBookmarks
 // fills it once at startup. Array order is the order the reader added them.
 
+import { chatAnnotationsForShare } from "./chatAnnotations";
 import { loadChatMarks } from "./chatMarks";
 import { enqueueCompanionReaderWrite } from "./companionReaderWriteQueue";
 import { loadPdfDrawings } from "./pdfDrawings";
@@ -292,6 +293,7 @@ export function companionProjectMarksJSON(path: string): string {
     return JSON.stringify({
         highlights: loadPdfMarks(path),
         chatMarks: loadChatMarks(path),
+        chatAnnotations: chatAnnotationsForShare(path),
         annotations: loadPdfAnnotations(path),
         drawings: loadPdfDrawings(path),
         bookmarks: loadPdfBookmarks(path),
@@ -305,6 +307,7 @@ export function companionProjectExportJSON(path: string, notes?: unknown): strin
     const payload: Record<string, unknown> = {
         highlights: loadPdfMarks(path),
         chatMarks: loadChatMarks(path),
+        chatAnnotations: chatAnnotationsForShare(path),
         annotations: loadPdfAnnotations(path),
         translations: loadPdfTranslations(path).filter((item) => item.kind !== "annotation"),
         drawings: loadPdfDrawings(path),

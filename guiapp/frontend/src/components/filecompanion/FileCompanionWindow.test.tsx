@@ -22,6 +22,7 @@ import { ToastProvider } from "../Toast";
 import { DialogProvider } from "../CustomDialog";
 import { resetCompanionLibraryList } from "./FileCompanionLibrary";
 import { loadPdfMarks, savePdfMarks, hydratePdfMarks } from "./pdfMarks";
+import { hydrateChatAnnotations, loadChatAnnotations, saveChatAnnotations } from "./chatAnnotations";
 import { hydrateChatMarks, loadChatMarks, saveChatMarks } from "./chatMarks";
 import { hydratePdfTranslations, loadPdfTranslations, notifyPdfAnnotationsChanged, savePdfTranslations } from "./pdfTranslations";
 import { hydratePdfDrawings, loadPdfDrawings, notifyPdfDrawingsChanged, savePdfDrawings } from "./pdfDrawings";
@@ -425,6 +426,7 @@ beforeEach(() => {
     hydrateFileCompanionInputHistory([]);
     hydratePdfMarks({});
     hydrateChatMarks({});
+    hydrateChatAnnotations({});
     hydratePdfTranslations({});
     hydratePdfDrawings({});
     hydratePdfBookmarks({});
@@ -2001,7 +2003,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-share-months"));
         fireEvent.change(screen.getByTestId("file-companion-share-amount"), { target: { value: "2" } });
         fireEvent.click(screen.getByTestId("file-companion-library-share"));
-        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "private", "secret", "", JSON.stringify({ highlights: [], chatMarks: [], annotations: [], drawings: [], bookmarks: [] }), 60));
+        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "private", "secret", "", JSON.stringify({ highlights: [], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] }), 60));
         expect(screen.getByTestId("file-companion-library-link").textContent).toContain("/hub/documents/shares/");
         fireEvent.click(screen.getByTestId("file-companion-share-dialog-close"));
         await waitFor(() => expect(screen.queryByTestId("file-companion-share-dialog")).toBeNull());
@@ -2533,7 +2535,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
         const args = syncShare.mock.calls[0] as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
-        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], annotations: [], drawings: [], bookmarks: [] });
+        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] });
     });
 
     it("pushes the host's own highlight change to the share", async () => {
@@ -2552,7 +2554,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(syncShareMarks).toHaveBeenCalled(), { timeout: 4000 });
         const args = syncShareMarks.mock.calls.at(-1) as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
-        expect(JSON.parse(args[1])).toEqual({ highlights: [mark], chatMarks: [], annotations: [], drawings: [], bookmarks: [] });
+        expect(JSON.parse(args[1])).toEqual({ highlights: [mark], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] });
     });
 
     it("pushes the host's answer highlight to the share", async () => {
@@ -2571,7 +2573,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(syncShareMarks).toHaveBeenCalled(), { timeout: 4000 });
         const args = syncShareMarks.mock.calls.at(-1) as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
-        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [chatMark], annotations: [], drawings: [], bookmarks: [] });
+        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [chatMark], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] });
     });
 
     it("pushes the host's placed annotation to the share", async () => {
@@ -2600,7 +2602,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(syncShareMarks).toHaveBeenCalled(), { timeout: 4000 });
         const args = syncShareMarks.mock.calls.at(-1) as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
-        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], annotations: [annotation], drawings: [], bookmarks: [] });
+        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], chatAnnotations: [], annotations: [annotation], drawings: [], bookmarks: [] });
     });
 
     it("pushes the host's freehand drawing to the share", async () => {
@@ -2628,7 +2630,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(syncShareMarks).toHaveBeenCalled(), { timeout: 4000 });
         const args = syncShareMarks.mock.calls.at(-1) as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
-        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], annotations: [], drawings: [drawing], bookmarks: [] });
+        expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [drawing], bookmarks: [] });
     });
 
     it("pushes a highlight painted before the library list names the host", async () => {
@@ -2651,7 +2653,7 @@ describe("FileCompanionWindow", () => {
         });
         await waitFor(() => expect(syncShareMarks).toHaveBeenCalled(), { timeout: 4000 });
         const args = syncShareMarks.mock.calls.at(-1) as unknown as [string, string];
-        expect(JSON.parse(args[1])).toEqual({ highlights: [mark], chatMarks: [], annotations: [], drawings: [], bookmarks: [] });
+        expect(JSON.parse(args[1])).toEqual({ highlights: [mark], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] });
     });
 
     it("warns once when the automatic share push fails", async () => {
@@ -2753,16 +2755,66 @@ describe("FileCompanionWindow", () => {
             messages: [{ role: "user", text: "这段讲什么" }, { role: "assistant", text: "讲方法" }],
         }));
         saveChatMarks("C:/notes/a.pdf", [{ message: 1, color: "yellow", start: 0, end: 2, text: "讲方" }]);
+        saveChatAnnotations("C:/notes/a.pdf", [{ id: "ca_1", message: 1, start: 0, end: 2, text: "讲方", body: "看法" }]);
         installRuntime();
         renderWindow();
         const input = await screen.findByTestId("file-companion-input") as HTMLTextAreaElement;
         // The mark is on screen before the reset; /clear removes the answers it
         // was painted on, so it must not outlive them in the store.
         await waitFor(() => expect(loadChatMarks("C:/notes/a.pdf")).toHaveLength(1));
+        await waitFor(() => expect(loadChatAnnotations("C:/notes/a.pdf")).toHaveLength(1));
         fireEvent.change(input, { target: { value: "/clear" } });
         fireEvent.keyDown(input, { key: "Enter" });
         await waitFor(() => expect(loadChatMarks("C:/notes/a.pdf")).toEqual([]));
+        await waitFor(() => expect(loadChatAnnotations("C:/notes/a.pdf")).toEqual([]));
         expect(screen.queryByTestId("file-companion-answer")).toBeNull();
+    });
+
+    it("writes a note on the selected answer", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockResolvedValue(doc("C:/notes/a.pdf", {
+            messages: [{ role: "user", text: "这段讲什么" }, { role: "assistant", text: "讲方法" }],
+        }));
+        installRuntime();
+        renderWindow();
+        const answer = await screen.findByTestId("file-companion-answer");
+        const bubble = answer.closest<HTMLElement>("[data-chat-message]")!;
+        const spans = chatTextSpans(bubble);
+        const range = document.createRange();
+        range.setStart(spans[0].node, 0);
+        range.setEnd(spans[0].node, 2);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        fireEvent.contextMenu(answer, { clientX: 40, clientY: 40 });
+        fireEvent.click(await screen.findByTestId("chat-menu-annotate"));
+        const editor = await screen.findByTestId("chat-annotation-input");
+        const pasteMenu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+        editor.dispatchEvent(pasteMenu);
+        expect(pasteMenu.defaultPrevented).toBe(false);
+        fireEvent.change(editor, { target: { value: "这里要改" } });
+        fireEvent.click(screen.getByTestId("chat-annotation-save"));
+        await waitFor(() => {
+            const notes = loadChatAnnotations("C:/notes/a.pdf");
+            expect(notes).toHaveLength(1);
+            expect(notes[0]).toMatchObject({ message: 1, start: 0, end: 2, text: "讲方", body: "这里要改" });
+        });
+        const notes = loadChatAnnotations("C:/notes/a.pdf");
+        expect(await screen.findByTestId(`chat-annotation-${notes[0].id}`)).toBeTruthy();
+        expect(screen.getByText("这里要改")).toBeTruthy();
+        // The chip hangs over the answer's own controls. The controls stay the
+        // higher target; the open card stays above both.
+        expect(screen.getByTestId(`chat-annotation-icon-${notes[0].id}`).style.zIndex).toBe("3");
+        expect(screen.getByTestId("file-companion-actions-restored:1").style.zIndex).toBe("4");
+        fireEvent.click(screen.getByTestId(`chat-annotation-edit-${notes[0].id}`));
+        const editorInput = await screen.findByTestId(`chat-annotation-edit-input-${notes[0].id}`);
+        const editPasteMenu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+        editorInput.dispatchEvent(editPasteMenu);
+        expect(editPasteMenu.defaultPrevented).toBe(false);
+        expect(screen.queryByTestId("chat-annotation-delete")).toBeNull();
+        fireEvent.contextMenu(screen.getByTestId(`chat-annotation-${notes[0].id}`));
+        expect(await screen.findByTestId("chat-annotation-delete")).toBeTruthy();
+        window.getSelection()?.removeAllRanges();
     });
 
     it("keeps copy available when the WebView cannot paint highlights", async () => {
@@ -2786,6 +2838,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.contextMenu(answer, { clientX: 40, clientY: 40 });
         expect(await screen.findByTestId("chat-menu-copy")).toBeTruthy();
         expect(screen.queryByTestId("chat-highlight-yellow")).toBeNull();
+        expect(screen.getByTestId("chat-menu-annotate")).toBeTruthy();
         fireEvent.click(screen.getByTestId("chat-menu-copy"));
         await waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith("讲方"));
     });
@@ -2979,15 +3032,15 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(screen.getByTestId("file-companion-share-group-pick").querySelectorAll("option").length).toBeGreaterThan(1));
         fireEvent.change(screen.getByTestId("file-companion-share-group-pick"), { target: { value: groupID } });
         fireEvent.click(screen.getByTestId("file-companion-library-share"));
-        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "group", "", groupID, JSON.stringify({ highlights: [], chatMarks: [], annotations: [], drawings: [], bookmarks: [] }), 0));
+        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "group", "", groupID, JSON.stringify({ highlights: [], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] }), 0));
         await waitFor(() => expect(screen.getByTestId("file-companion-library-share").textContent).toBe("分享到云端"));
         fireEvent.click(screen.getByTestId("file-companion-share-person"));
         fireEvent.change(screen.getByTestId("file-companion-share-target"), { target: { value: "reader@example.com" } });
         fireEvent.click(screen.getByTestId("file-companion-library-share"));
-        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "person", "", "reader@example.com", JSON.stringify({ highlights: [], chatMarks: [], annotations: [], drawings: [], bookmarks: [] }), 0));
+        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "person", "", "reader@example.com", JSON.stringify({ highlights: [], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] }), 0));
         await waitFor(() => expect(screen.getByTestId("file-companion-library-share").textContent).toBe("分享到云端"));
         fireEvent.click(screen.getByTestId("file-companion-library-sync"));
-        await waitFor(() => expect(syncShare).toHaveBeenCalledWith("C:/notes/a.md", JSON.stringify({ highlights: [], chatMarks: [], annotations: [], drawings: [], bookmarks: [] })));
+        await waitFor(() => expect(syncShare).toHaveBeenCalledWith("C:/notes/a.md", JSON.stringify({ highlights: [], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] })));
     });
 
     it("selects a newly created group and clears the selection when it is dissolved", async () => {
@@ -4009,7 +4062,7 @@ describe("FileCompanionWindow", () => {
         installRuntime();
         renderWindow();
         await screen.findByText("方法部分值得再看");
-        expect(screen.getByTestId("file-companion-annotations").textContent).toContain("批注");
+        expect(screen.getByTestId("file-companion-annotations").textContent).toContain("讨论");
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "我也这么看" } });
         fireEvent.click(screen.getByTestId("file-companion-send"));
         await waitFor(() => expect(addShareNote).toHaveBeenCalledWith("C:/library/shared.pdf", "我也这么看"));
@@ -4146,7 +4199,7 @@ describe("FileCompanionWindow", () => {
         const body = screen.getByTestId("file-companion-annotations-body");
         expect(panel.getAttribute("data-collapsed")).toBe("false");
         expect(body.hidden).toBe(false);
-        const toggle = screen.getByRole("button", { name: "折叠批注" });
+        const toggle = screen.getByRole("button", { name: "折叠讨论" });
         expect(toggle.getAttribute("aria-expanded")).toBe("true");
         expect(toggle.getAttribute("aria-controls")).toBe(body.id);
         expect(panel.querySelector(".file-companion-annotations-head")?.lastElementChild).toBe(toggle);
@@ -4155,13 +4208,13 @@ describe("FileCompanionWindow", () => {
         expect(panel.getAttribute("data-collapsed")).toBe("true");
         expect(body.hidden).toBe(true);
         expect(screen.getByText("折叠后这条不该占高度").closest("[hidden]")).toBe(body);
-        expect(panel.querySelector(".file-companion-annotations-kicker")?.textContent).toBe("批注");
+        expect(panel.querySelector(".file-companion-annotations-kicker")?.textContent).toBe("讨论");
         fireEvent.click(panel.querySelector(".file-companion-annotations-kicker") as HTMLElement);
         expect(panel.getAttribute("data-collapsed")).toBe("false");
         expect(body.hidden).toBe(false);
-        fireEvent.click(screen.getByRole("button", { name: "折叠批注" }));
+        fireEvent.click(screen.getByRole("button", { name: "折叠讨论" }));
         expect(body.hidden).toBe(true);
-        const expand = screen.getByRole("button", { name: "展开批注" });
+        const expand = screen.getByRole("button", { name: "展开讨论" });
         expect(expand.getAttribute("aria-expanded")).toBe("false");
         expect(panel.querySelector(".file-companion-annotations-head")?.lastElementChild).toBe(expand);
         expect(expand.querySelector("svg")?.getAttribute("data-icon")).toBe("expand");
@@ -4169,7 +4222,7 @@ describe("FileCompanionWindow", () => {
         expect(panel.getAttribute("data-collapsed")).toBe("false");
         expect(body.hidden).toBe(false);
         expect(screen.getByText("折叠后这条不该占高度")).toBeTruthy();
-        expect(screen.getByRole("button", { name: "折叠批注" }).getAttribute("aria-expanded")).toBe("true");
+        expect(screen.getByRole("button", { name: "折叠讨论" }).getAttribute("aria-expanded")).toBe("true");
     });
 
     it("folds annotations for the open document only", async () => {
@@ -4211,14 +4264,14 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-tab-a.pdf"));
         await screen.findByText("甲文档的批注");
         expect(screen.getByTestId("file-companion-annotations-body").scrollTop).toBe(80);
-        fireEvent.click(screen.getByRole("button", { name: "折叠批注" }));
+        fireEvent.click(screen.getByRole("button", { name: "折叠讨论" }));
         expect(screen.getByTestId("file-companion-annotations-body").hidden).toBe(true);
         fireEvent.click(screen.getByTestId("file-companion-tab-b.pdf"));
         await screen.findByText("乙文档的批注");
         expect(screen.getByTestId("file-companion-annotations").getAttribute("data-collapsed")).toBe("false");
         fireEvent.click(screen.getByTestId("file-companion-tab-a.pdf"));
         expect(screen.getByTestId("file-companion-annotations").getAttribute("data-collapsed")).toBe("true");
-        fireEvent.click(screen.getByRole("button", { name: "展开批注" }));
+        fireEvent.click(screen.getByRole("button", { name: "展开讨论" }));
         expect(screen.getByTestId("file-companion-annotations-body").scrollTop).toBe(80);
     });
 
@@ -4379,7 +4432,7 @@ describe("FileCompanionWindow", () => {
         const cache = `C:/Users/me/.maclaw/data/file-companion/library-files/${token}/shared.pdf`;
         const mark = { id: "m1", page: 1, color: "yellow" as const, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "Hello" };
         fetchShareMarks.mockResolvedValue({
-            marks: JSON.stringify({ highlights: [mark], chatMarks: [], annotations: [], drawings: [], bookmarks: [] }),
+            marks: JSON.stringify({ highlights: [mark], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] }),
             revision: 4,
         });
         listLibrary.mockResolvedValue({
@@ -4426,7 +4479,7 @@ describe("FileCompanionWindow", () => {
         expect(syncShare).not.toHaveBeenCalled();
         await act(async () => {
             releaseMarks({
-                marks: JSON.stringify({ highlights: [mark], chatMarks: [], annotations: [], drawings: [], bookmarks: [] }),
+                marks: JSON.stringify({ highlights: [mark], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] }),
                 revision: 4,
             });
         });
@@ -4441,7 +4494,7 @@ describe("FileCompanionWindow", () => {
         const cache = `C:/Users/me/.maclaw/data/file-companion/library-files/${token}/shared.pdf`;
         const mark = { id: "m1", page: 1, color: "yellow" as const, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "Hello" };
         fetchShareMarks.mockResolvedValue({
-            marks: JSON.stringify({ highlights: [mark], chatMarks: [], annotations: [], drawings: [], bookmarks: [] }),
+            marks: JSON.stringify({ highlights: [mark], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] }),
             revision: 4,
         });
         const row = { path: cache, source: "cloud", token, mine: true, revision: 5, marksRevision: 4, notes: [] };
@@ -5759,6 +5812,7 @@ describe("FileCompanionWindow", () => {
         const packed = JSON.parse(exportProject.mock.calls[0][1] as string);
         expect(packed.highlights).toHaveLength(1);
         expect(packed.chatMarks).toEqual([]);
+        expect(packed.chatAnnotations).toEqual([]);
         expect(packed.annotations).toEqual([annotation]);
         expect(packed.translations).toEqual([translation]);
         expect(packed.notes).toEqual([{ ...discussion, createdAt: "", host: false, replyTo: "", decision: "" }]);
@@ -5768,10 +5822,12 @@ describe("FileCompanionWindow", () => {
 
         hydratePdfMarks({});
         const importedChatMark = { message: 0, color: "green" as const, start: 0, end: 2, text: "答" };
+        const importedChatNote = { id: "ca_imp", message: 1, start: 0, end: 2, text: "打包", body: "导入的看法" };
         open.mockResolvedValue(doc("C:/restored/paper.pdf", {
             messages: [{ role: "user", text: "打包里的问题" }, { role: "assistant", text: "打包里的回答" }],
             highlights: [{ id: "m9", page: 1, color: "pink", rects: [{ x: 0.2, y: 0.3, w: 0.2, h: 0.05 }], text: "方法" }],
             chatMarks: [importedChatMark],
+            chatAnnotations: [importedChatNote],
             annotations: [annotation],
             translations: [translation],
             notes: [
@@ -5790,6 +5846,7 @@ describe("FileCompanionWindow", () => {
         expect(restored).toHaveLength(1);
         expect(restored[0].color).toBe("pink");
         expect(loadChatMarks("C:/restored/paper.pdf")).toEqual([importedChatMark]);
+        expect(loadChatAnnotations("C:/restored/paper.pdf")).toEqual([{ ...importedChatNote, shared: true }]);
         expect(loadPdfTranslations("C:/restored/paper.pdf")).toEqual([
             translation,
             expect.objectContaining({ id: "a1", kind: "annotation", shared: true }),

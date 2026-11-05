@@ -66,7 +66,7 @@ func normalizeFileCompanionContact(value string) string {
 }
 
 func (a *App) writeFileCompanionShareZip(source, highlightsJSON string) (string, error) {
-	highlights, chatMarks, annotations, drawings, bookmarks, _, _, err := fileCompanionSplitSharePayload(highlightsJSON)
+	highlights, chatMarks, chatAnnotations, annotations, drawings, bookmarks, _, _, err := fileCompanionSplitSharePayload(highlightsJSON)
 	if err != nil {
 		return "", err
 	}
@@ -81,7 +81,7 @@ func (a *App) writeFileCompanionShareZip(source, highlightsJSON string) (string,
 		_ = os.Remove(name)
 		return "", errors.New("无法保存分享")
 	}
-	if err := writeFileCompanionProject(name, source, highlights, chatMarks, annotations, drawings, bookmarks, messages, paperPath, paperTurn, nil, nil); err != nil {
+	if err := writeFileCompanionProject(name, source, highlights, chatMarks, chatAnnotations, annotations, drawings, bookmarks, messages, paperPath, paperTurn, nil, nil); err != nil {
 		_ = os.Remove(name)
 		return "", err
 	}
@@ -103,31 +103,33 @@ func fileCompanionShareDocumentName(fallback string, manifest fileCompanionProje
 // until commit. If the transcript cannot be installed, the previous document
 // is put back.
 type fileCompanionShareStage struct {
-	dir         string
-	token       string
-	name        string
-	document    string
-	highlights  json.RawMessage
-	chatMarks   json.RawMessage
-	annotations json.RawMessage
-	drawings    json.RawMessage
-	bookmarks   json.RawMessage
-	messages    []FileCompanionMessage
-	paper       []byte
-	paperPath   string
-	paperTurn   int
-	project     bool
+	dir             string
+	token           string
+	name            string
+	document        string
+	highlights      json.RawMessage
+	chatMarks       json.RawMessage
+	chatAnnotations json.RawMessage
+	annotations     json.RawMessage
+	drawings        json.RawMessage
+	bookmarks       json.RawMessage
+	messages        []FileCompanionMessage
+	paper           []byte
+	paperPath       string
+	paperTurn       int
+	project         bool
 }
 
 type fileCompanionShareInstall struct {
-	path        string
-	highlights  json.RawMessage
-	chatMarks   json.RawMessage
-	annotations json.RawMessage
-	drawings    json.RawMessage
-	bookmarks   json.RawMessage
-	messages    []FileCompanionMessage
-	project     bool
+	path            string
+	highlights      json.RawMessage
+	chatMarks       json.RawMessage
+	chatAnnotations json.RawMessage
+	annotations     json.RawMessage
+	drawings        json.RawMessage
+	bookmarks       json.RawMessage
+	messages        []FileCompanionMessage
+	project         bool
 }
 
 func (a *App) fileCompanionPullStageRoot() string {
@@ -208,6 +210,7 @@ func (a *App) stageFileCompanionShare(token, fallbackName string, raw []byte) (*
 	if project {
 		stage.highlights = manifest.Highlights
 		stage.chatMarks = manifest.ChatMarks
+		stage.chatAnnotations = manifest.ChatAnnotations
 		stage.annotations = manifest.Annotations
 		stage.drawings = manifest.Drawings
 		stage.bookmarks = manifest.Bookmarks
@@ -309,14 +312,15 @@ func (a *App) publishStagedFileCompanionShareLocked(stage *fileCompanionShareSta
 		highlights = json.RawMessage("[]")
 	}
 	return fileCompanionShareInstall{
-		path:        identity,
-		highlights:  highlights,
-		chatMarks:   stage.chatMarks,
-		annotations: stage.annotations,
-		drawings:    stage.drawings,
-		bookmarks:   stage.bookmarks,
-		messages:    stage.messages,
-		project:     stage.project,
+		path:            identity,
+		highlights:      highlights,
+		chatMarks:       stage.chatMarks,
+		chatAnnotations: stage.chatAnnotations,
+		annotations:     stage.annotations,
+		drawings:        stage.drawings,
+		bookmarks:       stage.bookmarks,
+		messages:        stage.messages,
+		project:         stage.project,
 	}, nil
 }
 
@@ -374,6 +378,11 @@ func (a *App) commitLockedFileCompanionShare(stage *fileCompanionShareStage, epo
 		} else {
 			store.ChatMarks = ""
 		}
+		if installed.chatAnnotations != nil {
+			store.ChatAnnotations = string(installed.chatAnnotations)
+		} else {
+			store.ChatAnnotations = ""
+		}
 		if installed.annotations != nil {
 			store.Annotations = string(installed.annotations)
 		} else {
@@ -393,6 +402,7 @@ func (a *App) commitLockedFileCompanionShare(stage *fileCompanionShareStage, epo
 	saved := *store
 	saved.Highlights = ""
 	saved.ChatMarks = ""
+	saved.ChatAnnotations = ""
 	saved.Annotations = ""
 	saved.Drawings = ""
 	if err := a.upsertFileCompanionCloudLocked(saved); err != nil {
@@ -1251,6 +1261,10 @@ func (a *App) pullFileCompanionShare(hub, viewer string, item FileCompanionLibra
 			marks := string(installed.chatMarks)
 			update.ChatMarks = &marks
 		}
+		if installed.chatAnnotations != nil {
+			answerNotes := string(installed.chatAnnotations)
+			update.ChatAnnotations = &answerNotes
+		}
 		if installed.annotations != nil {
 			notes := string(installed.annotations)
 			update.Annotations = &notes
@@ -1458,7 +1472,7 @@ func (a *App) syncFileCompanionShareMarks(path, marks string) (FileCompanionShar
 	}
 	marks = strings.TrimSpace(marks)
 	if marks == "" {
-		marks = `{"highlights":[],"chatMarks":[],"annotations":[],"drawings":[],"bookmarks":[]}`
+		marks = `{"highlights":[],"chatMarks":[],"chatAnnotations":[],"annotations":[],"drawings":[],"bookmarks":[]}`
 	}
 	var last FileCompanionLibraryItem
 	var synced bool

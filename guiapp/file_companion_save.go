@@ -45,11 +45,12 @@ type FileCompanionDocument struct {
 	Messages       []FileCompanionMessage `json:"messages,omitempty"`
 	// The mark fields are set when this open unpacked a companion project. A
 	// normal open leaves them empty so the reader keeps what it already stored.
-	Highlights  json.RawMessage `json:"highlights,omitempty"`
-	ChatMarks   json.RawMessage `json:"chatMarks,omitempty"`
-	Annotations json.RawMessage `json:"annotations,omitempty"`
-	Drawings    json.RawMessage `json:"drawings,omitempty"`
-	Bookmarks   json.RawMessage `json:"bookmarks,omitempty"`
+	Highlights      json.RawMessage `json:"highlights,omitempty"`
+	ChatMarks       json.RawMessage `json:"chatMarks,omitempty"`
+	ChatAnnotations json.RawMessage `json:"chatAnnotations,omitempty"`
+	Annotations     json.RawMessage `json:"annotations,omitempty"`
+	Drawings        json.RawMessage `json:"drawings,omitempty"`
+	Bookmarks       json.RawMessage `json:"bookmarks,omitempty"`
 	// Notes is the discussion restored with a project, or the discussion
 	// already stored for this document. Absent means this open did not carry one.
 	Notes json.RawMessage `json:"notes,omitempty"`

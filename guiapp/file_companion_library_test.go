@@ -2256,7 +2256,7 @@ func fileCompanionProjectZip(t *testing.T, dir string) []byte {
 		t.Fatal(err)
 	}
 	zipPath := filepath.Join(dir, "project.zip")
-	if err := writeFileCompanionProject(zipPath, doc, json.RawMessage("[]"), nil, nil, nil, nil, []FileCompanionMessage{{Role: "assistant", Text: "restored chat"}}, paper, 1, nil, nil); err != nil {
+	if err := writeFileCompanionProject(zipPath, doc, json.RawMessage("[]"), nil, nil, nil, nil, nil, []FileCompanionMessage{{Role: "assistant", Text: "restored chat"}}, paper, 1, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(zipPath)
