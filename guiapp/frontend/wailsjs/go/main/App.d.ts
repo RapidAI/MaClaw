@@ -3179,3 +3179,12 @@ export function GetAgentGroupRun(arg1:string):Promise<{id:string,goal:string,rou
 export function ListAgentGroupRuns():Promise<Array<{id:string,goal:string,router_bot_id?:string,status:string,sub_tasks:Array<any>,summary?:string,progress?:Array<string>,created_at:string,updated_at:string}>>;
 
 export function ListDesktopLocalBots():Promise<Array<{id:string,name:string,device?:string,capabilities?:Array<string>,seen_at?:string}>>;
+
+export function CreateSharedPage(arg1:string,arg2:string,arg3:string):Promise<any>;
+export function GetSharedPage(arg1:string):Promise<any>;
+export function ListSharedPages(arg1:string):Promise<Array<any>>;
+export function AppendSharedPageSection(arg1:string,arg2:string,arg3:string,arg4:string):Promise<any>;
+export function EditSharedPageSection(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<any>;
+export function DeleteSharedPage(arg1:string):Promise<void>;
+export function ListSharedPageTools():Promise<Array<Record<string,any>>>;
+export function CallSharedPageTool(arg1:string,arg2:Record<string,any>):Promise<any>;

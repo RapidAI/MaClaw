@@ -6426,3 +6426,28 @@ export function ListAgentGroupRuns() {
 export function ListDesktopLocalBots() {
   return window['go']['main']['App']['ListDesktopLocalBots']();
 }
+
+export function CreateSharedPage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateSharedPage'](arg1, arg2, arg3);
+}
+export function GetSharedPage(arg1) {
+  return window['go']['main']['App']['GetSharedPage'](arg1);
+}
+export function ListSharedPages(arg1) {
+  return window['go']['main']['App']['ListSharedPages'](arg1);
+}
+export function AppendSharedPageSection(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['AppendSharedPageSection'](arg1, arg2, arg3, arg4);
+}
+export function EditSharedPageSection(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['EditSharedPageSection'](arg1, arg2, arg3, arg4, arg5);
+}
+export function DeleteSharedPage(arg1) {
+  return window['go']['main']['App']['DeleteSharedPage'](arg1);
+}
+export function ListSharedPageTools() {
+  return window['go']['main']['App']['ListSharedPageTools']();
+}
+export function CallSharedPageTool(arg1, arg2) {
+  return window['go']['main']['App']['CallSharedPageTool'](arg1, arg2);
+}

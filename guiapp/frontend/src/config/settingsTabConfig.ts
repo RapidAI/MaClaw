@@ -31,6 +31,7 @@ export const SETTINGS_TABS_SELF_LOADING = [
     'memory',
     'botCatalog',
     'agentGroup',
+    'sharedPages',
     'knowledge',
     'misData',
     'embedding',

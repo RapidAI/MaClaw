@@ -24,6 +24,7 @@ import {
     MemoryManagementPanel,
     BotCatalogPanel,
     AgentGroupPanel,
+    SharedPagesPanel,
     MigrationSettingsPanel,
     MISDataSettingsPanel,
     OCRConfigPanel,
@@ -466,6 +467,11 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         case 'agentGroup':
             body = wrapPanel('settings-content settings-panel', (
                 <AgentGroupPanel lang={lang} />
+            ));
+            break;
+        case 'sharedPages':
+            body = wrapPanel('settings-content settings-panel', (
+                <SharedPagesPanel lang={lang} />
             ));
             break;
         case 'knowledge':
