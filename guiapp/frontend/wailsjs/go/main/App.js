@@ -3736,6 +3736,19 @@ export function ListMaclawAppRunHistory(arg1, arg2) {
 export function ListMemories(arg1, arg2) {
   return window['go']['main']['App']['ListMemories'](arg1, arg2);
 }
+export function ListBotMemories(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ListBotMemories'](arg1, arg2, arg3);
+}
+export function SaveBotMemory(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SaveBotMemory'](arg1, arg2, arg3, arg4);
+}
+export function UpdateBotMemory(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UpdateBotMemory'](arg1, arg2, arg3, arg4, arg5);
+}
+export function DeleteBotMemory(arg1, arg2) {
+  return window['go']['main']['App']['DeleteBotMemory'](arg1, arg2);
+}
+
 
 export function ListMemoryBackups() {
   return window['go']['main']['App']['ListMemoryBackups']();

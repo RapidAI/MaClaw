@@ -1865,6 +1865,11 @@ export function ListMaclawAppPackageSubmissions(arg1:number):Promise<Array<main.
 export function ListMaclawAppRunHistory(arg1:string,arg2:number):Promise<Array<main.maclawAppRunHistoryEntry>>;
 
 export function ListMemories(arg1:string,arg2:string):Promise<Array<memory.Entry>>;
+export function ListBotMemories(arg1:string,arg2:string,arg3:string):Promise<Array<{id:string,bot_id:string,content:string,category:string,tags:Array<string>,created_at:string,updated_at:string,access_count:number}>>;
+export function SaveBotMemory(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<{id:string,bot_id:string,content:string,category:string,tags:Array<string>,created_at:string,updated_at:string,access_count:number}>;
+export function UpdateBotMemory(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>):Promise<void>;
+export function DeleteBotMemory(arg1:string,arg2:string):Promise<void>;
+
 
 export function ListMemoryBackups():Promise<Array<memory.BackupInfo>>;
 

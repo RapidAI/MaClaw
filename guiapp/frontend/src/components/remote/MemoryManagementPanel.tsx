@@ -6,6 +6,11 @@ import {
     UpdateMemory,
     DeleteMemory,
     DeleteMemories,
+    ListBotMemories,
+    SaveBotMemory,
+    UpdateBotMemory,
+    DeleteBotMemory,
+    ListDesktopBots,
     CompressMemories,
     ListMemoryBackups,
     RestoreMemoryBackup,
@@ -569,6 +574,8 @@ function memoryStatusLabel(status: string | undefined, t: (en: string, zhHans: s
 function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabProps) {
     const [entries, setEntries] = useState<MemoryEntry[]>([]);
     const [loading, setLoading] = useState(false);
+    const [filterBot, setFilterBot] = useState("");
+    const [bots, setBots] = useState<Array<{ id: string; title: string }>>([]);
     const [filterCat, setFilterCat] = useState("");
     const [keyword, setKeyword] = useState("");
     const [debouncedKeyword, setDebouncedKeyword] = useState("");
@@ -593,18 +600,48 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
         return () => clearTimeout(debounceRef.current);
     }, [keyword]);
 
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const list = await ListDesktopBots();
+                if (!cancelled) {
+                    setBots((Array.isArray(list) ? list : []).map((b: any) => ({ id: String(b.id || ""), title: String(b.title || b.id || "") })).filter((b) => b.id));
+                }
+            } catch {
+                if (!cancelled) setBots([]);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, []);
+
     const loadEntries = useCallback(async () => {
         const requestID = ++listRequestRef.current;
         setLoading(true); setError("");
         try {
-            const list = await ListMemories(filterCat, debouncedKeyword);
+            let list: MemoryEntry[] = [];
+            if (filterBot) {
+                const botList = await ListBotMemories(filterBot, filterCat, debouncedKeyword);
+                list = (Array.isArray(botList) ? botList : []).map((item: any) => ({
+                    id: String(item.id || ""),
+                    content: String(item.content || ""),
+                    category: String(item.category || ""),
+                    tags: Array.isArray(item.tags) ? item.tags : [],
+                    owner_id: `desktop-user:bot:${filterBot}`,
+                    created_at: String(item.created_at || ""),
+                    updated_at: String(item.updated_at || ""),
+                    access_count: Number(item.access_count || 0),
+                }));
+            } else {
+                list = await ListMemories(filterCat, debouncedKeyword);
+            }
             if (requestID === listRequestRef.current) setEntries(Array.isArray(list) ? list : []);
         } catch (e) {
             if (requestID === listRequestRef.current) setError(String(e));
         } finally {
             if (requestID === listRequestRef.current) setLoading(false);
         }
-    }, [filterCat, debouncedKeyword]);
+    }, [filterBot, filterCat, debouncedKeyword]);
 
     // Re-fetch when filters change OR when external revision bumps.
     useEffect(() => { loadEntries(); }, [loadEntries, revision]);
@@ -637,8 +674,13 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
         setSaving(true); setError("");
         try {
             const tags = formTags.split(",").map(s => s.trim()).filter(Boolean);
-            if (editEntry) { await UpdateMemory(editEntry.id, formContent.trim(), formCategory, tags); }
-            else { await SaveMemory(formContent.trim(), formCategory, tags); }
+            if (filterBot) {
+                if (editEntry) { await UpdateBotMemory(filterBot, editEntry.id, formContent.trim(), formCategory, tags); }
+                else { await SaveBotMemory(filterBot, formContent.trim(), formCategory, tags); }
+            } else {
+                if (editEntry) { await UpdateMemory(editEntry.id, formContent.trim(), formCategory, tags); }
+                else { await SaveMemory(formContent.trim(), formCategory, tags); }
+            }
             setDlgOpen(false); await loadEntries();
         } catch (e) { setError(String(e)); }
         setSaving(false);
@@ -652,7 +694,11 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
         setDeleting(true); setError("");
         setEntries((current) => current.filter((entry) => entry.id !== id));
         setDeleteTarget(null);
-        try { await DeleteMemory(id); await loadEntries(); }
+        try {
+            if (filterBot) { await DeleteBotMemory(filterBot, id); }
+            else { await DeleteMemory(id); }
+            await loadEntries();
+        }
         catch (e) {
             // Reconcile from storage on failure too. Restoring a captured row
             // could otherwise overwrite a concurrent change or lose ordering.
@@ -718,6 +764,10 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
             {/* Filters */}
             <fieldset disabled={deleting} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                <select value={filterBot} onChange={e => { setFilterBot(e.target.value); setSelectedIDs(new Set()); }} aria-label={t("Filter by bot", "按机器人筛选")} data-testid="memory-bot-filter" style={{ ...inputStyle, width: "auto", minWidth: 140, padding: "4px 8px", fontSize: "0.76rem" }}>
+                    <option value="">{t("All bots (shared)", "全部（共享）")}</option>
+                    {bots.map(b => (<option key={b.id} value={b.id}>{b.title || b.id}</option>))}
+                </select>
                 <select value={filterCat} onChange={e => { setFilterCat(e.target.value); setSelectedIDs(new Set()); }} aria-label={t("Filter by category", "分类筛选")} style={{ ...inputStyle, width: "auto", padding: "4px 8px", fontSize: "0.76rem" }}>
                     {CATEGORIES.map(c => (<option key={c.value} value={c.value}>{catLabel(c.value, lang)}</option>))}
                 </select>
@@ -738,9 +788,10 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
                 </label>
                 <button
                     type="button"
-                    disabled={selectedIDs.size === 0 || deleting}
+                    disabled={selectedIDs.size === 0 || deleting || !!filterBot}
                     onClick={() => setBatchDeleteConfirmOpen(true)}
-                    style={{ ...dangerBtnStyle, opacity: selectedIDs.size === 0 || deleting ? 0.55 : 1, cursor: selectedIDs.size === 0 || deleting ? "not-allowed" : "pointer" }}
+                    title={filterBot ? t("Batch delete is unavailable in bot scope", "机器人作用域暂不支持批量删除") : undefined}
+                    style={{ ...dangerBtnStyle, opacity: selectedIDs.size === 0 || deleting || !!filterBot ? 0.55 : 1, cursor: selectedIDs.size === 0 || deleting || !!filterBot ? "not-allowed" : "pointer" }}
                 >
                     {deleting && <span style={{ ...buttonSpinnerStyle, marginRight: 6 }} />}
                     {t(`Delete selected (${selectedIDs.size})`, `批量删除 (${selectedIDs.size})`)}
