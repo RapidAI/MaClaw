@@ -513,31 +513,37 @@ func (h *IMMessageHandler) allowCodingWorkflowDelegate(request string, opts agen
 		text = strings.TrimSpace(request)
 	}
 	if text == "" {
-		return false, "empty request cannot be classified."
+		return false, "empty request cannot be admitted."
 	}
-	result, ok := h.classifyCodingWorkflowDelegateIntent(text, opts.UserID)
-	if !ok {
-		return false, "semantic intent classifier is unavailable."
-	}
-	if !isSemanticCodingWorkflowDelegateResult(result) {
-		gateIntent, confidence, _, layer, reason := result.ToGateIntent()
-		if strings.TrimSpace(reason) != "" {
-			return false, fmt.Sprintf("classified as %s (confidence %.2f, layer %d): %s", gateIntent, confidence, layer, reason)
-		}
-		return false, fmt.Sprintf("classified as %s (confidence %.2f, layer %d).", gateIntent, confidence, layer)
-	}
-	gateIntent, _, _, _, _ := result.ToGateIntent()
-	interactionContinuation := opts.Context != nil && opts.Context.IsAskUserResponse && gateIntent == "bug_fix"
+	// The model already named delegate_task. Project path and code evidence
+	// stay. The intent classifier does not get another vote.
+	needsCode := codingDelegateNeedsExistingCode(text)
+	interactionContinuation := opts.Context != nil && opts.Context.IsAskUserResponse && needsCode
 	if reason := h.codingSubAgentAdmissionBlockReason(codingSubAgentAdmissionInput{
 		Text:                        text,
 		OwnerID:                     opts.UserID,
 		ProjectPath:                 projectPath,
 		InteractionContinuation:     interactionContinuation,
-		RequireExistingCodeEvidence: gateIntent == "bug_fix",
+		RequireExistingCodeEvidence: needsCode,
 	}); reason != "" {
 		return false, reason + "."
 	}
 	return true, ""
+}
+
+// codingDelegateNeedsExistingCode is a fix or a bug report. A new project
+// does not have code yet, so that request is not held to the evidence check.
+func codingDelegateNeedsExistingCode(text string) bool {
+	msg := strings.ToLower(strings.TrimSpace(text))
+	if msg == "" {
+		return false
+	}
+	for _, marker := range []string{"bug", "fix", "repair", "修复", "修一下", "报错", "缺陷"} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *IMMessageHandler) classifyCodingWorkflowDelegateIntent(text, userID string) (intent.ClassificationResult, bool) {

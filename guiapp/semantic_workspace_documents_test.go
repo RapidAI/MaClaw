@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
 func TestOversizedPDFStillCountsAsChanged(t *testing.T) {
@@ -292,6 +294,112 @@ func TestRewrittenPDFStillAttaches(t *testing.T) {
 	cb.attachProducedWorkspaceDocuments()
 	if len(cb.deliveredPaths) != 1 || filepath.Base(cb.deliveredPaths[0]) != "album.pdf" {
 		t.Fatalf("rewritten pdf = %v", cb.deliveredPaths)
+	}
+}
+
+func TestCatalogMissDropsDownloadedPDFKeepsLocalDocument(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".maclaw", "data", "tasks", "job", "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		workspaceDocRoot:             root,
+		workspaceDocBaseline:         snapshotWorkspaceDocuments(root),
+		discoveryUnmatchedObligation: true,
+	}
+	book := filepath.Join(root, "source-book.pdf")
+	drawn := filepath.Join(root, "drawn.pdf")
+	if err := os.WriteFile(book, []byte("%PDF-fetched"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(drawn, []byte("%PDF-local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb.finishSharedToolExecution("", "", "download_file", "", "saved_path: "+book+"\n"+hostDownloadSavedTrailer, true, nil)
+	cb.attachProducedWorkspaceDocuments()
+	if got := baseNames(cb.deliveredPaths); len(got) != 1 || got[0] != "drawn.pdf" {
+		t.Fatalf("delivered = %v, want drawn.pdf", got)
+	}
+}
+
+func TestCatalogMissKeepsAFetchSavedBeforeTheMiss(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".maclaw", "data", "tasks", "job", "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "核对期刊", discovery)
+	cb.workspaceDocRoot = root
+	cb.workspaceDocBaseline = snapshotWorkspaceDocuments(root)
+	earlier := filepath.Join(root, "paper.pdf")
+	later := filepath.Join(root, "source-book.pdf")
+	local := filepath.Join(root, "drawn.pdf")
+	for _, path := range []string{earlier, later, local} {
+		if err := os.WriteFile(path, []byte("%PDF"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cb.noteRemoteAcquisition(earlier)
+	cb.noteDiscoveryCatalogMiss()
+	cb.noteRemoteAcquisition(later)
+	cb.attachProducedWorkspaceDocuments()
+	got := map[string]bool{}
+	for _, name := range baseNames(cb.deliveredPaths) {
+		got[name] = true
+	}
+	if !got["paper.pdf"] || !got["drawn.pdf"] || got["source-book.pdf"] {
+		t.Fatalf("delivered = %v", baseNames(cb.deliveredPaths))
+	}
+}
+
+func TestMatchedTurnStillPublishesDownloadedPDF(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".maclaw", "data", "tasks", "job", "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		workspaceDocRoot:     root,
+		workspaceDocBaseline: snapshotWorkspaceDocuments(root),
+	}
+	book := filepath.Join(root, "source-book.pdf")
+	drawn := filepath.Join(root, "drawn.pdf")
+	if err := os.WriteFile(book, []byte("%PDF-fetched"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(drawn, []byte("%PDF-local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb.finishSharedToolExecution("", "", "download_file", "", "saved_path: "+book+"\n"+hostDownloadSavedTrailer, true, nil)
+	cb.attachProducedWorkspaceDocuments()
+	got := map[string]bool{}
+	for _, name := range baseNames(cb.deliveredPaths) {
+		got[name] = true
+	}
+	if len(got) != 2 || !got["source-book.pdf"] || !got["drawn.pdf"] {
+		t.Fatalf("delivered = %v, want both documents", baseNames(cb.deliveredPaths))
+	}
+}
+
+func TestHostDownloadSavedPathsNeedTheTrailer(t *testing.T) {
+	path := filepath.Join("workspace", "source-book.pdf")
+	if got := hostDownloadSavedPaths("saved_path: " + path); got != nil {
+		t.Fatalf("bare line = %v", got)
+	}
+	if got := hostDownloadSavedPaths("saved_path: " + path + "\nsee the download log"); got != nil {
+		t.Fatalf("prose = %v", got)
+	}
+	got := hostDownloadSavedPaths("saved_path: " + path + "\n" + hostDownloadSavedTrailer)
+	if len(got) != 1 || got[0] != path {
+		t.Fatalf("saved = %v", got)
+	}
+}
+
+func TestHostDownloadReceiptKeepsThePathWhenProseAlreadyNamesIt(t *testing.T) {
+	path := filepath.Join("workspace", "source-book.pdf")
+	receipt := formatHostDownloadSaved("文件已保存到 "+path+" (12 字节)", path, 12, "https://example.test/book.pdf", "https://example.test/book.pdf")
+	got := hostDownloadSavedPaths(receipt)
+	if len(got) != 1 || got[0] != path {
+		t.Fatalf("saved = %v\nreceipt:\n%s", got, receipt)
 	}
 }
 

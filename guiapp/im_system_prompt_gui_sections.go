@@ -91,6 +91,26 @@ func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isPro
 // Names are the ordinary host spellings (web_search, generate_pdf). A model
 // still has to be told that the list is exhaustive, why a tool disappears
 // mid-turn, and what to do when the next step has not unlocked yet.
+// appendDiscoveryManagedSurfaceRules is the managed-surface block for a turn
+// that did not let the classifier pick tools. The once-per-class budget and
+// the "do not call craft_tool from memory" line describe a classified turn.
+// Discovery already lists craft_tool, and a petition of bash, write_file,
+// office, or generate_pdf is how those names join the next request.
+func appendDiscoveryManagedSurfaceRules(b *strings.Builder) {
+	if b == nil {
+		return
+	}
+	b.WriteString(`
+## 本回合的工具面
+- 这一轮不预选工具。一开始的函数是 tools_search、search_and_install_skill、craft_tool，以及主机的对话控制。bash、write_file、office、generate_pdf 不在第一波里。
+- 目录里标了「可请愿」的名字是真实工具。它就是用户要的那种能力时，直接调用那个名字来请愿，包括 bash、write_file、office、generate_pdf。一次回复可以调用多个工具。获批后该名字出现在下一请求的函数列表里，再按那个 schema 调用。
+- 目录里已经有对得上的名字时，不要改用别的工具。没有对得上的名字时，先调用 search_and_install_skill，再用 craft_tool。craft_tool 已经在函数列表里，直接调用。
+- 不要凭记忆调用 manage_skill、call_mcp_tool、discover_tool、previous_turn_tool，也不要复用历史里的 invoke_* 名称。
+- 标了等待用户确认的名字不要调用，也不要改用别的工具完成。标记「已列入本轮计划/已用尽/不可用/此名请愿未通过」的名字不要重试。此名请愿未通过只关掉这一个名字。
+- 工具结果里点名建议的工具按目录里的那个名字请愿。那是主机指的路，不是缺工具。
+`)
+}
+
 func appendManagedSemanticSurfaceRules(b *strings.Builder) {
 	b.WriteString(`
 ## 本回合的工具面
@@ -145,9 +165,13 @@ func appendFileDeliveryChannelRules(b *strings.Builder, platform string) {
 // state facts (device, working directory, background tasks, slash commands)
 // still apply and are kept; sections that say "call X" for a gateway are
 // replaced by one block describing the surface the model actually has.
-func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode bool, currentNickname string, cfg corelib.AppConfig, ownerID string, managedSemantic bool) {
+func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode bool, currentNickname string, cfg corelib.AppConfig, ownerID string, managedSemantic, discovery bool) {
 	if managedSemantic {
-		appendManagedSemanticSurfaceRules(b)
+		if discovery {
+			appendDiscoveryManagedSurfaceRules(b)
+		} else {
+			appendManagedSemanticSurfaceRules(b)
+		}
 	}
 	// Skills with usage stats
 	if !managedSemantic && h.getSkillExecutor() != nil {

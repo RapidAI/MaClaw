@@ -1731,12 +1731,13 @@ func TestSemanticDiagnosticDoesNotMaterializeGrant(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register screenshot: %v", err)
 	}
-	ctx := &LoopContext{ID: "stable-loop", Runtime: RuntimeContext{RequestID: "request-7"}}
+	shot := intent.ClassificationResult{Primary: intent.LabelScreenshot, Confidence: 0.95, Layer: 3, Reason: "fixture screenshot"}
+	ctx := &LoopContext{ID: "stable-loop", Runtime: RuntimeContext{RequestID: "request-7", SemanticIntent: &shot}}
 	diagnostic := h.semanticRouteDiagnosticForTurnWithContext(ctx, "user-1", "capture primary screen", "lansenger", nil)
 	if !diagnostic.Handled || diagnostic.PlanID == "" || diagnostic.Reason != "semantic_route_ready" {
 		t.Fatalf("diagnostic=%+v", diagnostic)
 	}
-	prepared, handled, err := h.semanticPlanForTurn("user-1", "capture primary screen", "lansenger", "loop:stable-loop", "request:request-7")
+	prepared, handled, err := h.semanticPlanForTurnWithClassification("user-1", "capture primary screen", "lansenger", "loop:stable-loop", "request:request-7", &shot)
 	if !handled || err != nil || prepared == nil {
 		t.Fatalf("prepared=%#v handled=%v err=%v", prepared, handled, err)
 	}

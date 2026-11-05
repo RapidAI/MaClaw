@@ -3544,6 +3544,58 @@ const maxWebFetchDownloadBytes = 100 * 1024 * 1024
 // the local host. Remote coding treats this exact trailer as download success.
 const hostDownloadSavedTrailer = "下载过程日志: ~/.maclaw/logs/download.log"
 
+// formatHostDownloadSaved is the receipt for a file this host wrote.
+// The prose often already names the path ("文件已保存到 …"). The machine
+// line is still required: the catalog-miss scan reads saved_path and would
+// otherwise publish that download as the document this turn produced.
+func formatHostDownloadSaved(content, saved string, bytesRead int, finalURL, rawURL string) string {
+	saved = strings.TrimSpace(saved)
+	msg := strings.TrimSpace(content)
+	if msg == "" {
+		msg = fmt.Sprintf("已保存到: %s", saved)
+	}
+	if saved != "" && !hostDownloadReceiptHasPath(msg) {
+		msg = fmt.Sprintf("%s\nsaved_path: %s", msg, saved)
+	}
+	if bytesRead > 0 && !strings.Contains(msg, "字节") && !strings.Contains(strings.ToLower(msg), "bytes") {
+		msg = fmt.Sprintf("%s\nsize_bytes: %d", msg, bytesRead)
+	}
+	if finalURL != "" && finalURL != rawURL {
+		msg = fmt.Sprintf("%s\nfinal_url: %s", msg, finalURL)
+	}
+	return msg + "\n" + hostDownloadSavedTrailer
+}
+
+func hostDownloadReceiptHasPath(msg string) bool {
+	for _, line := range strings.Split(msg, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "saved_path:") {
+			return true
+		}
+	}
+	return false
+}
+
+// hostDownloadSavedPaths reads the absolute paths a successful download wrote.
+// The trailer is what makes the line a host save rather than a page that
+// mentions the words.
+func hostDownloadSavedPaths(result string) []string {
+	if !strings.Contains(result, hostDownloadSavedTrailer) {
+		return nil
+	}
+	var paths []string
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "saved_path:") {
+			continue
+		}
+		path := strings.TrimSpace(strings.TrimPrefix(line, "saved_path:"))
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
 func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 	rawURL := stringVal(args, "url")
 	if rawURL == "" {
@@ -3665,21 +3717,7 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 		if saved == "" {
 			saved = opts.SavePath
 		}
-		msg := strings.TrimSpace(result.Content)
-		if msg == "" {
-			msg = fmt.Sprintf("已保存到: %s", saved)
-		}
-		if saved != "" && !strings.Contains(msg, saved) {
-			msg = fmt.Sprintf("%s\nsaved_path: %s", msg, saved)
-		}
-		if result.BytesRead > 0 && !strings.Contains(msg, "字节") && !strings.Contains(strings.ToLower(msg), "bytes") {
-			msg = fmt.Sprintf("%s\nsize_bytes: %d", msg, result.BytesRead)
-		}
-		if result.URL != "" && result.URL != rawURL {
-			msg = fmt.Sprintf("%s\nfinal_url: %s", msg, result.URL)
-		}
-		msg = fmt.Sprintf("%s\n%s", msg, hostDownloadSavedTrailer)
-		return msg
+		return formatHostDownloadSaved(result.Content, saved, result.BytesRead, result.URL, rawURL)
 	}
 
 	start := offset

@@ -128,6 +128,38 @@ func TestRouter_SkillUploadRequestDoesNotExposeDynamicGateway(t *testing.T) {
 	}
 }
 
+func TestLookupRouteClassificationIgnoresModelDiscoveryStandIn(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	discovery := intent.ModelDiscoveryClassification()
+	got := router.lookupRouteClassification("生成一张图片", RouteOptions{PreResolved: &discovery, SkipUnifiedClassifier: true})
+	if got.Primary != "" || intent.ClassificationIsModelDiscovery(got) {
+		t.Fatalf("discovery stand-in activated tools: %+v", got)
+	}
+	clock := intent.ClassificationResult{Primary: intent.LabelCurrentTime, Confidence: 1, Reason: "clock"}
+	got = router.lookupRouteClassification("现在几点", RouteOptions{PreResolved: &clock, SkipUnifiedClassifier: true})
+	if got.Primary != intent.LabelCurrentTime {
+		t.Fatalf("real clock classification was dropped: %+v", got)
+	}
+	caps, constrained := skillCapabilityConstraintForUIC(got)
+	if !constrained || len(caps) != 1 || caps[0] != "time" {
+		t.Fatalf("clock constraint = %v constrained=%v", caps, constrained)
+	}
+}
+
+func TestLookupRouteClassificationDoesNotClassifyModelDiscovery(t *testing.T) {
+	calls := 0
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	router.SetUnifiedClassifier(intent.New(intent.Config{LLMFunc: func(_, _ string) (string, error) {
+		calls++
+		return `{"top":[{"skill":"image_generate","score":0.99}]}`, nil
+	}}))
+	discovery := intent.ModelDiscoveryClassification()
+	got := router.lookupRouteClassification("生成一张图片", RouteOptions{PreResolved: &discovery})
+	if got.Primary != "" || intent.ClassificationIsModelDiscovery(got) || calls != 0 {
+		t.Fatalf("discovery stand-in classified: %+v calls=%d", got, calls)
+	}
+}
+
 func TestIsSkillUploadRequest(t *testing.T) {
 	for _, msg := range []string{
 		"\u4e0a\u4f20\u5230skillmarket\u963f",

@@ -1524,6 +1524,13 @@ func validateToolPlanArtifactDependencies(plan ToolPlan) error {
 	return nil
 }
 
+// ClonePlannedSelection returns a detached copy of one planned node.
+// Petition expansion uses it to put a live parent selection back onto a
+// child plan without sharing the parent's slices.
+func ClonePlannedSelection(in PlannedSelection) PlannedSelection {
+	return clonePlannedSelection(in)
+}
+
 func clonePlannedSelection(in PlannedSelection) PlannedSelection {
 	out := in
 	out.ConfirmationID = strings.TrimSpace(in.ConfirmationID)

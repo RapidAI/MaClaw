@@ -19,6 +19,8 @@ import (
 // whole child with "adds a need outside the petitioned label". The parent
 // surface now records the drop in its replan input, and the expansion mirrors
 // it for every lookup leg except the petitioned label's own templates.
+// The child is also grafted onto the live parent (PreservePetitionParentAuthority),
+// so the petition adds its own label without replacing the signed lookup.
 func TestSemanticPetitionWebSearchOnReuseDroppedComposite(t *testing.T) {
 	classification := liveDataGenerateClassification()
 	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, classification.Primary)}
@@ -49,14 +51,18 @@ func TestSemanticPetitionWebSearchOnReuseDroppedComposite(t *testing.T) {
 	loopCtx.Runtime.SemanticIntent = classification
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "desktop", loopCtx: loopCtx}
 	granted, message := cb.PetitionToolCall("generate_pdf")
-	if granted {
-		t.Fatalf("a petition must not replace the signed lookup: message=%q", message)
+	if !granted {
+		t.Fatalf("a petition grafts its label onto the signed lookup: message=%q", message)
 	}
-	if cb.semanticSurface != surface {
-		t.Fatal("rejected expansion must keep the parent surface")
+	if cb.semanticSurface == surface {
+		t.Fatal("an admitted expansion must publish a child surface")
 	}
-	if !planHasCapabilities(surface.plan, "information.search.web") {
-		t.Fatalf("parent lookup was dropped: %#v", surface.plan.Selections)
+	child := cb.semanticSurface
+	if !planHasCapabilities(child.plan, "information.search.web") {
+		t.Fatalf("parent lookup was dropped: %#v", child.plan.Selections)
+	}
+	if !planHasCapabilities(child.plan, "document.generate.file") {
+		t.Fatalf("petitioned generate leg missing: %#v", child.plan.Selections)
 	}
 }
 

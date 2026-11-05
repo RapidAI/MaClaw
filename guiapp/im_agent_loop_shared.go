@@ -1842,8 +1842,11 @@ type sharedAgentLoopCallbacks struct {
 	// Running it in this same request would be a second tools/call. The next
 	// BeginToolSurfaceEpoch clears the set, so that later request can call it.
 	managedMCPSpentThisRequest map[string]struct{}
-	// admittedSkillBindings are host-selected local skills for this complex
-	// task. The alias is the only name the model may call. Identity stays here.
+	// admittedSkillBindings names a local skill this turn can call by alias.
+	// On a managed turn the host selected it, and skillSubstituteBlocked
+	// closes the tools that would finish the task without it. On a discovery
+	// turn a petition stored it so the next request lists that function.
+	// That store does not close the other planned tools.
 	admittedSkillBindings map[string]admittedSkillBinding
 	// skillRemoteSearchOffered lists search_and_install_skill because no
 	// complete local skill matched. It is not the manage_skill gateway.
@@ -1953,12 +1956,56 @@ type sharedAgentLoopCallbacks struct {
 	// An authority mismatch refunds the class budget so a different tool can
 	// still petition, but the same name must not re-enter the planner.
 	semanticPetitionDenied map[string]struct{}
+	// discoveryCatalog is the installed skill and MCP petition rows for this
+	// callback. The static directory cache does not include them.
+	// A settled observation stays for the turn. A partial one is kept only
+	// for the filter rewrite of the request that just took it. A failed
+	// inventory is not kept. discoveryCatalogLoads counts observations.
+	discoveryCatalogLoaded bool
+	discoveryCatalogLoads  int
+	discoveryCatalog       []semanticTurnDirectoryEntry
+	// discoverySearchBodies are guided-skill results this tools_search call
+	// already returned. The name is not a function on the next request.
+	// The row must not say the name is unavailable.
+	discoverySearchBodies        map[string]struct{}
+	discoveryCatalogReuse        []semanticTurnDirectoryEntry
+	discoveryCatalogReuseSet     bool
+	discoveryCatalogReuseForSync bool
+	// discoveryCatalogHold keeps one observation for the catalog reads
+	// inside a single petition: admission, the grant, and the directory
+	// rewrite. It is not the turn cache and not the filter rewrite.
+	discoveryCatalogHold    int
+	discoveryCatalogHeld    []semanticTurnDirectoryEntry
+	discoveryCatalogHeldSet bool
 	// semanticToolsSearchCalls counts discovery meta-tool invocations this
 	// turn. Discovery is unbudgeted by design only up to the point where it
 	// demonstrably cannot change the surface: a burned-grant spiral on
 	// 2026-08-26 ran 8+ tools_search calls without recovering, so the turn
 	// budget caps it and the exhaustion text tells the model to move on.
 	semanticToolsSearchCalls int
+	// discoveryUnmatchedObligation is a discovery tools_search whose needs
+	// matched nothing. It stays set for the turn. discoveryCraftRan and
+	// discoverySkillInstalled record that the extension path actually
+	// executed, which is the only thing that opens local tools. A rejection
+	// does not count: selection_not_authorized is what sent the picture turn
+	// to dispatch.
+	discoveryUnmatchedObligation bool
+	discoveryCraftRan            bool
+	discoverySkillSearchRan      bool
+	discoverySkillInstalled      bool
+	// extensionHostSeen is the executor's outcome for the extension call
+	// in progress. Install success is that outcome. A failure sentence such
+	// as "GitHub skill import failed" is a finished call that installed nothing.
+	extensionHostSeen bool
+	extensionHostOK   bool
+	// remoteAcquisitionPaths are files this turn saved from a remote fetch.
+	// Paths saved after a catalog miss are research inputs, not the product
+	// the workspace document scan publishes. Paths saved before that miss
+	// were loaded by a needs list that matched, and they stay.
+	remoteAcquisitionPaths []string
+	// discoveryMissAcquisitionBase is the length of remoteAcquisitionPaths
+	// at the moment the miss was recorded. Earlier fetches stay deliverable.
+	discoveryMissAcquisitionBase int
 	// semanticToolsSearchShown records directory rows already returned this
 	// turn. A later lookup whose rows are all in this set cannot change the
 	// surface, so discovery closes instead of spending another model round.
@@ -1972,7 +2019,11 @@ type sharedAgentLoopCallbacks struct {
 	// discovery. A different listed name is still delivered once, even when
 	// its row was already inside an earlier unmatched-needs dump.
 	semanticToolsSearchDirectives map[string]struct{}
-	toolCalls                     int
+	// semanticToolsSearchTails records the last line of each delivered
+	// page. An unfiltered directory and a later miss share every row.
+	// The miss tail is the skill-search step. Row identity alone drops it.
+	semanticToolsSearchTails map[string]struct{}
+	toolCalls                int
 	// moaPreset is set for the duration of one agent loop after /moa or auto arming.
 	moaPreset *moa.ResolvedPreset
 	moaAuto   bool
@@ -2466,6 +2517,9 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
 	if name == semanticToolsSearchName || c.chatTaskHostTool(name) {
 		return true
 	}
+	if semanticSurfaceIsModelDiscovery(c.semanticSurface) && modelDiscoveryExtensionName(name) {
+		return true
+	}
 	// Admitted skill tools are part of this request, including a file tool
 	// the planner already granted. The light allowlist would otherwise drop
 	// bash after the prompt required that workflow. A lookup that did not
@@ -2688,6 +2742,9 @@ func (c *sharedAgentLoopCallbacks) IsToolCallAllowed(name, argsJSON string) (boo
 	if c != nil && c.foregroundHandoffOnly() && !c.chatTaskHostTool(name) {
 		return false, c.chatTaskHandoffAdmissionMessage()
 	}
+	if rejected := c.discoveryDispatchRejection(name); rejected != "" {
+		return false, strings.TrimPrefix(rejected, "[system rejected] ")
+	}
 	if c != nil && c.chatTaskHostTool(name) {
 		return true, ""
 	}
@@ -2707,6 +2764,13 @@ func (c *sharedAgentLoopCallbacks) IsToolCallAllowed(name, argsJSON string) (boo
 		return true, ""
 	}
 	if resolved == semanticToolsSearchName || c.chatTaskHostTool(resolved) {
+		return true, ""
+	}
+	// Exposure and execution are one predicate. IsToolAllowed already admits
+	// the discovery preset. Stopping here used to list craft_tool and
+	// search_and_install_skill, then refuse the call with an empty policy
+	// reason, so the model never searched or ran the fallback program.
+	if semanticSurfaceIsModelDiscovery(c.semanticSurface) && modelDiscoveryExtensionName(resolved) {
 		return true, ""
 	}
 	// The planner never grants an admitted skill. Leaving the name to the
@@ -3163,7 +3227,10 @@ func (c *sharedAgentLoopCallbacks) ToolDenialMessage(name string) string {
 	}
 	if c.semanticSurface != nil {
 		resolved := c.semanticSurface.resolveFunctionName(name)
-		if retired, retiredFromSurface := c.semanticSurface.retiredGrants[resolved]; retiredFromSurface {
+		// The host may have retired the grant under the adapter id. A
+		// model-name lookup misses it and the generic absence text tells
+		// the model to finish the action with whatever else is listed.
+		if retired, retiredFromSurface := semanticRetiredGrantForName(c.semanticSurface, resolved); retiredFromSurface {
 			if awaiting, reason := semanticRetiredAwaitingReceipt(c.semanticSurface, retired.SelectionID); awaiting {
 				if reason == mailboxDeleteAwaitingConfirmation {
 					return fmt.Sprintf(
@@ -3369,7 +3436,15 @@ func (c *sharedAgentLoopCallbacks) SyncDirectoryToRenderedTools(tools []map[stri
 	}
 	previous := c.tools
 	c.tools = tools
-	defer func() { c.tools = previous }()
+	// The pre-filter projection already observed an unsettled catalog.
+	// This rewrite uses that observation with the filtered names.
+	c.discoveryCatalogReuseForSync = true
+	defer func() {
+		c.tools = previous
+		c.discoveryCatalogReuseForSync = false
+		c.discoveryCatalogReuseSet = false
+		c.discoveryCatalogReuse = nil
+	}()
 	c.projectSemanticDirectoryPrompt()
 }
 
@@ -3445,9 +3520,11 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 		return c.tools
 	}
 	if c.semanticSurface != nil {
-		c.maybeOverlaySQLDatabaseForTurn(userText)
-		c.maybeOverlayDocumentContinuationForTurn(userText)
-		c.maybeOverlayBuiltinPDFOCR(userText)
+		if !semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+			c.maybeOverlaySQLDatabaseForTurn(userText)
+			c.maybeOverlayDocumentContinuationForTurn(userText)
+			c.maybeOverlayBuiltinPDFOCR(userText)
+		}
 		c.maybeOverlaySpilledToolResultReader()
 		definitions, err := visibleSemanticCallSurfaceDefinitions(c.semanticSurface)
 		if err != nil {
@@ -3461,11 +3538,21 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 		// tools_search and the chat-task handoff are not grants. Once the
 		// inline lookup budget is spent, the request lists only the handoff:
 		// admission already refuses every other name.
+		if semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+			definitions = modelDiscoveryVisibleTools(c.handler, definitions)
+		}
 		definitions = c.withRequestControlTools(definitions)
 		c.setVisibleToolDefinitions(definitions)
 		// Installed MCP tools are part of the request, not a discovery
 		// follow-up. A managed plan that did not select one still lists it.
-		if !c.foregroundHandoffOnly() {
+		// A discovery turn lists only the MCP function a petition already
+		// bound. Publishing every ready server here would put the catalog
+		// back on the first wave.
+		if !c.foregroundHandoffOnly() && semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+			if err := c.attachDiscoveredMCPBindings(); err != nil {
+				log.Printf("[semantic-routing] discovery MCP petition was not listed: %v", err)
+			}
+		} else if !c.foregroundHandoffOnly() {
 			c.publishReadyInstalledMCPTools()
 		}
 		c.publishAdmittedSkillTools(userText)
@@ -3526,12 +3613,17 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	if c == nil || c.handler == nil {
 		return false, ""
 	}
+	c.pinDiscoveryCatalog()
+	defer c.unpinDiscoveryCatalog()
 	if c.sessionTurnDeniesTools() {
 		return false, c.sessionToolClosedMessage()
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return false, ""
+	}
+	if blocked, message := c.discoveryPetitionBlocked(name); blocked {
+		return false, message
 	}
 	if _, ok := semanticCallbackClassification(c); ok && !c.semanticTurnAdmits(name) {
 		if c.semanticSurface == nil || !semanticSurfaceHasGrant(c.semanticSurface, name) {
@@ -3560,10 +3652,18 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	if strings.EqualFold(name, "read_tool_result") {
 		return c.grantSpilledToolResultReader()
 	}
-	// A closed gate already decided this turn is not desktop control. Granting
-	// computer_use here would reopen it from a model petition.
-	if computerUseGateClosed(c.loopCtx) && isRefComputerUseToolName(name) {
-		return false, ""
+	// A closed gate already decided this turn is not desktop control. On a
+	// discovery turn the main chat loop is still not the desktop operator,
+	// even when that gate was never settled. Stop, a local file, and group
+	// policy still are.
+	if isRefComputerUseToolName(name) {
+		if semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+			if discoveryComputerUsePetitionBlocked(c) {
+				return false, ""
+			}
+		} else if computerUseGateClosed(c.loopCtx) {
+			return false, ""
+		}
 	}
 	if c.semanticSurface == nil {
 		// Fallback/legacy-router turns carry no managed surface, so the
@@ -3590,11 +3690,13 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	if _, ok := surface.grants[name]; ok {
 		return false, ""
 	}
-	if retired, ok := surface.retiredGrants[name]; ok {
-		// The name has left this request. A frozen mailbox draft is not a
-		// missing tool and not a spent budget: the generic absence text tells
-		// the model to continue with whatever else is listed, which is how a
-		// waiting send gets carried out by another tool.
+	if retired, ok := semanticRetiredGrantForName(surface, name); ok {
+		// The name has left this request. The host may have stored the grant
+		// under the adapter id. A model-name lookup would miss it and the
+		// already-planned path would issue that selection again. A frozen
+		// mailbox draft is not a missing tool and not a spent budget: the
+		// generic absence text tells the model to continue with whatever else
+		// is listed, which is how a waiting send gets carried out by another tool.
 		if awaiting, reason := semanticRetiredAwaitingReceipt(surface, retired.SelectionID); awaiting && mailboxDraftAwaitingConfirmation(reason) {
 			return false, c.ToolDenialMessage(name)
 		}
@@ -3608,6 +3710,9 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	}
 	capability, ok := semanticPetitionableCapabilities[name]
 	if !ok {
+		if semanticSurfaceIsModelDiscovery(surface) {
+			return c.grantDiscoveryCatalogName(name)
+		}
 		return false, ""
 	}
 	label, ok := semanticPetitionLabelForCapability(capability)
@@ -3657,8 +3762,11 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	if _, denied := c.semanticPetitionDenied[name]; denied {
 		return false, ""
 	}
+	// Discovery loads every applicable name. The one-read and one-effectful
+	// ceilings stay on every other surface.
+	discoveryBudget := semanticSurfaceIsModelDiscovery(surface)
 	if effectful {
-		if c.semanticEffectfulPetitionConsumed {
+		if !discoveryBudget && c.semanticEffectfulPetitionConsumed {
 			return false, ""
 		}
 		// A group-restricted context denies local administration at execution
@@ -3667,15 +3775,17 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 		if c.groupPolicy() != nil {
 			return false, ""
 		}
-	} else if c.semanticPetitionConsumed {
+	} else if !discoveryBudget && c.semanticPetitionConsumed {
 		return false, ""
 	}
 	// The budget is consumed once the gate has admitted a true expansion,
 	// even if the re-plan then denies it (e.g. a restrictive policy).
-	if effectful {
-		c.semanticEffectfulPetitionConsumed = true
-	} else {
-		c.semanticPetitionConsumed = true
+	if !discoveryBudget {
+		if effectful {
+			c.semanticEffectfulPetitionConsumed = true
+		} else {
+			c.semanticPetitionConsumed = true
+		}
 	}
 	requestCtx, cancel := semanticRoutingContext(c.loopCtx)
 	defer cancel()
@@ -3816,7 +3926,7 @@ func (c *sharedAgentLoopCallbacks) leaveLightProfileForUnsafePetition(parent too
 		return
 	}
 	intentText := semanticUserIntentText(c.userText)
-	c.systemPrompt = ensureSemanticGrantPromptFence(c.systemPromptWithTaskAnchor(c.refreshedSystemPrompt(agent.CompactQueryForEmbedding(intentText))))
+	c.systemPrompt = ensureTurnGrantPromptFence(c.systemPromptWithTaskAnchor(c.refreshedSystemPrompt(agent.CompactQueryForEmbedding(intentText))), turnGrantClassification(c.semanticSurface))
 	c.petitionPromptReady = true
 	log.Printf("[semantic-routing] petition left the light prompt: plan has a selection the light authorizer would drop")
 }
@@ -4398,6 +4508,20 @@ func (c *sharedAgentLoopCallbacks) setVisibleToolDefinitions(definitions []map[s
 		}
 		rendered[name] = true
 	}
+	c.noteDiscoveryWorkSurface()
+}
+
+// noteDiscoveryWorkSurface remembers work tools a discovery turn actually
+// published. The start-of-turn list is only the directory. A later short
+// reply keeps bash and office from here, and does not keep the presets.
+func (c *sharedAgentLoopCallbacks) noteDiscoveryWorkSurface() {
+	if c == nil || c.handler == nil || strings.TrimSpace(c.userID) == "" || c.foregroundHandoffOnly() {
+		return
+	}
+	if !semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+		return
+	}
+	c.handler.noteParentExecutionUnion(c.userID, c.tools)
 }
 
 // grantLegacySSHPetition rescues a direct ssh call on a turn without a
@@ -5170,6 +5294,414 @@ func (c *sharedAgentLoopCallbacks) appendDiscoveredMCPDefs(defs []map[string]int
 	c.tools = combined
 }
 
+// discoveryComputerUsePetitionBlocked is the closed door for a discovery
+// petition of computer_use. The main chat loop is not the desktop operator,
+// even when its gate was never settled. A computer helper or the GUI
+// executor can petition while its own gate is open. Group policy, a local
+// file, and a stopped session stay closed. An inactive classifier is not
+// one of these doors.
+func discoveryComputerUsePetitionBlocked(c *sharedAgentLoopCallbacks) bool {
+	if c == nil {
+		return true
+	}
+	if c.groupPolicy() != nil {
+		return true
+	}
+	if localFileWorkBlocksComputerUseExecution(c.loopCtx, c.userText, "computer_use") {
+		return true
+	}
+	if sess := cuSession(); sess != nil {
+		if _, stopped := sess.ControlState(); stopped {
+			return true
+		}
+	}
+	if !loopKeepsDrivingTools(c.loopCtx) || computerUseGateClosed(c.loopCtx) {
+		return true
+	}
+	return false
+}
+
+// discoveryComputerUseRefusalNote is the one sentence for a desktop-control
+// name this loop will not load. The main conversation hands the work to the
+// computer helper. A group, a local file, a stop, and a shut helper gate are
+// different doors and do not say the helper will run.
+func discoveryComputerUseRefusalNote(c *sharedAgentLoopCallbacks) string {
+	if c != nil && c.groupPolicy() != nil {
+		return "群聊不能操作桌面。computer_use 不会加载到下一请求。"
+	}
+	if c != nil && localFileWorkBlocksComputerUseExecution(c.loopCtx, c.userText, "computer_use") {
+		return "当前有本地文件要处理。computer_use 不会加载到下一请求。用文件工具处理这个附件。"
+	}
+	if c != nil {
+		if sess := cuSession(); sess != nil {
+			if _, stopped := sess.ControlState(); stopped {
+				return "桌面操作已停止。computer_use 不会加载到下一请求。"
+			}
+		}
+	}
+	if c != nil && loopKeepsDrivingTools(c.loopCtx) && computerUseGateClosed(c.loopCtx) {
+		return "这一轮没有打开桌面操作。computer_use 不会加载到下一请求。"
+	}
+	return discoveryMainLoopComputerUseNote
+}
+
+func (c *sharedAgentLoopCallbacks) discoveryCatalogRows() []semanticTurnDirectoryEntry {
+	if c == nil {
+		return nil
+	}
+	if c.discoveryCatalogLoaded {
+		return c.discoveryCatalog
+	}
+	// The loop writes the directory, filters the tool list, then writes
+	// the directory again. Those two writes are one request. A partial
+	// observation stays for the second write and is dropped after it.
+	if c.discoveryCatalogReuseForSync && c.discoveryCatalogReuseSet {
+		return c.discoveryCatalogReuse
+	}
+	if c.discoveryCatalogHold > 0 && c.discoveryCatalogHeldSet {
+		return c.discoveryCatalogHeld
+	}
+	rows, status := c.loadDiscoveryCatalogRows()
+	if c.discoveryCatalogHold > 0 {
+		c.discoveryCatalogHeld = rows
+		c.discoveryCatalogHeldSet = true
+	}
+	switch status {
+	case discoveryCatalogSettled:
+		c.discoveryCatalog = rows
+		c.discoveryCatalogLoaded = true
+		c.discoveryCatalogReuse = nil
+		c.discoveryCatalogReuseSet = false
+		return c.discoveryCatalog
+	case discoveryCatalogPartial:
+		c.discoveryCatalogReuse = rows
+		c.discoveryCatalogReuseSet = true
+		return rows
+	default:
+		// A failed inventory must not be replayed by the filter rewrite.
+		c.discoveryCatalogReuse = nil
+		c.discoveryCatalogReuseSet = false
+		return rows
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) discoveryCatalogHas(name string) bool {
+	return c.discoveryCatalogKind(name) != ""
+}
+
+func (c *sharedAgentLoopCallbacks) discoveryCatalogKind(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	for _, row := range c.discoveryCatalogRows() {
+		if row.Name == name {
+			return row.CatalogKind
+		}
+	}
+	return ""
+}
+
+func (c *sharedAgentLoopCallbacks) pinDiscoveryCatalog() {
+	if c == nil {
+		return
+	}
+	c.discoveryCatalogHold++
+}
+
+func (c *sharedAgentLoopCallbacks) unpinDiscoveryCatalog() {
+	if c == nil {
+		return
+	}
+	if c.discoveryCatalogHold > 0 {
+		c.discoveryCatalogHold--
+	}
+	if c.discoveryCatalogHold == 0 {
+		c.discoveryCatalogHeld = nil
+		c.discoveryCatalogHeldSet = false
+	}
+}
+
+type discoveryCatalogStatus int
+
+const (
+	discoveryCatalogUnavailable discoveryCatalogStatus = iota
+	discoveryCatalogPartial
+	discoveryCatalogSettled
+)
+
+const (
+	discoveryCatalogKindMCP   = "mcp"
+	discoveryCatalogKindSkill = "skill"
+)
+
+func (c *sharedAgentLoopCallbacks) loadDiscoveryCatalogRows() ([]semanticTurnDirectoryEntry, discoveryCatalogStatus) {
+	if c == nil || c.handler == nil {
+		return nil, discoveryCatalogSettled
+	}
+	c.discoveryCatalogLoads++
+	rows := discoverySkillDirectoryRows(c.handler.getSkillExecutor())
+	ctx, cancel := semanticRoutingContext(c.loopCtx)
+	defer cancel()
+	inventory, err := c.handler.semanticInstalledMCPInventory(ctx)
+	if err != nil {
+		log.Printf("[semantic-routing] discovery MCP catalog was not listed: %v", err)
+		return rows, discoveryCatalogUnavailable
+	}
+	// The aggregate snapshot stays "complete" while the MCP family is still
+	// not_ready. Servers that have not finished tools/list are absent here.
+	// Freeze that absence and the rest of the turn cannot petition them.
+	settled := inventory.coverage.ForProviderKind("mcp").State == tool.CatalogCoverageComplete
+	described := map[string]string{}
+	for _, entry := range inventory.mcpEntries {
+		key := discoveredMCPBindKey(entry.ServerID, entry.ToolName)
+		if summary := strings.TrimSpace(entry.Description); summary != "" && described[key] == "" {
+			described[key] = summary
+		}
+	}
+	for _, bind := range readyInstalledMCPBinds(inventory) {
+		name := tool.InstalledMCPModelFunctionName(bind.ServerID, bind.ToolName)
+		if name == "" {
+			continue
+		}
+		summary := described[discoveredMCPBindKey(bind.ServerID, bind.ToolName)]
+		if summary == "" {
+			summary = "已安装的 MCP 工具。"
+		}
+		rows = append(rows, semanticTurnDirectoryEntry{
+			Name: name, Summary: summary, Role: "petition",
+			CatalogKind: discoveryCatalogKindMCP,
+			ServerID:    bind.ServerID,
+			ToolName:    bind.ToolName,
+		})
+	}
+	if !settled {
+		return rows, discoveryCatalogPartial
+	}
+	return rows, discoveryCatalogSettled
+}
+
+// grantDiscoveryCatalogName loads the one catalog row the model named.
+// MCP and skill are distinguished by that row, not by characters in the name.
+func (c *sharedAgentLoopCallbacks) grantDiscoveryCatalogName(name string) (bool, string) {
+	name = strings.TrimSpace(name)
+	if c == nil || c.handler == nil || name == "" {
+		return false, ""
+	}
+	switch c.discoveryCatalogKind(name) {
+	case discoveryCatalogKindMCP:
+		return c.grantDiscoveryMCPFunction(name)
+	case discoveryCatalogKindSkill:
+		return c.grantDiscoverySkillFunction(name)
+	default:
+		return false, ""
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) grantDiscoveryMCPFunction(name string) (bool, string) {
+	row, ok := c.discoveryCatalogRow(name)
+	if !ok || row.CatalogKind != discoveryCatalogKindMCP || row.ServerID == "" || row.ToolName == "" || c.loopCtx == nil {
+		return false, ""
+	}
+	// The row already has the server and tool names. Publish re-reads
+	// inventory and omits a bind that is no longer ready. Rebuilding for
+	// that bind supersedes the tools already listed, and a nil error only
+	// means some other bind was published. This name is loaded only when
+	// the replacement actually selected it. A bind this call added and
+	// then did not publish is removed, so later requests do not rebuild
+	// around it and drop the tools that are already listed.
+	if reason := c.discoveryMCPBindNotReady(row); reason != "" {
+		log.Printf("[semantic-routing] discovery MCP petition %q was not ready: %s", name, reason)
+		return false, ""
+	}
+	key := discoveredMCPBindKey(row.ServerID, row.ToolName)
+	existed := false
+	for _, bind := range c.loopCtx.discoveredMCPBindList() {
+		if discoveredMCPBindKey(bind.ServerID, bind.ToolName) == key {
+			existed = true
+			break
+		}
+	}
+	if !c.loopCtx.rememberDiscoveredMCPBind(row.ServerID, row.ToolName) {
+		return false, ""
+	}
+	if err := c.attachDiscoveredMCPBindings(); err != nil || !discoveredMCPBindSliceHas(c.discoveredMCPBinds, row.ServerID, row.ToolName) {
+		if !existed {
+			c.loopCtx.forgetDiscoveredMCPBinds(map[string]bool{key: true})
+		}
+		if err != nil {
+			log.Printf("[semantic-routing] discovery MCP petition %q failed: %v", name, err)
+		} else {
+			log.Printf("[semantic-routing] discovery MCP petition %q was not published", name)
+		}
+		return false, ""
+	}
+	c.projectSemanticDirectoryPrompt()
+	return true, "已装载 " + name + "。下一请求可以调用这个名字。"
+}
+
+// discoveryMCPBindNotReady reports why this catalog row cannot be published
+// now. The check uses the row's server and tool. It does not search the
+// inventory for a new identity. An empty string means publish can select it.
+func (c *sharedAgentLoopCallbacks) discoveryMCPBindNotReady(row semanticTurnDirectoryEntry) string {
+	ctx, cancel := semanticRoutingContext(c.loopCtx)
+	defer cancel()
+	inventory, err := c.handler.semanticInstalledMCPInventory(ctx)
+	if err != nil {
+		return err.Error()
+	}
+	return assessDiscoveredMCPBind(inventory, row.ServerID, row.ToolName)
+}
+
+func discoveredMCPBindSliceHas(binds []discoveredMCPBind, serverID, toolName string) bool {
+	key := discoveredMCPBindKey(serverID, toolName)
+	for _, bind := range binds {
+		if discoveredMCPBindKey(bind.ServerID, bind.ToolName) == key {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *sharedAgentLoopCallbacks) discoveryCatalogRow(name string) (semanticTurnDirectoryEntry, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return semanticTurnDirectoryEntry{}, false
+	}
+	for _, row := range c.discoveryCatalogRows() {
+		if row.Name == name {
+			return row, true
+		}
+	}
+	return semanticTurnDirectoryEntry{}, false
+}
+
+func (c *sharedAgentLoopCallbacks) grantDiscoverySkillFunction(name string) (bool, string) {
+	// The catalog row names one skill. discoveryInstalledSkills assigns
+	// aliases from the current scan order, so matching that alias again can
+	// bind a different skill under the name the model petitioned.
+	catalog, ok := c.discoveryCatalogRow(name)
+	if !ok || catalog.CatalogKind != discoveryCatalogKindSkill || catalog.StableID == "" || c.handler == nil {
+		return false, ""
+	}
+	for _, row := range discoveryInstalledSkills(c.handler.getSkillExecutor()) {
+		if row.StableID != catalog.StableID {
+			continue
+		}
+		if row.Guided {
+			view := admissionSkillView(row.Entry)
+			if c.loopCtx != nil {
+				// The latest name is what a later prompt rebuild can quote.
+				// Each petition's tool result already carries its own body,
+				// so a second name does not erase the first result.
+				c.loopCtx.discoveryNamedSkillDoc = &view
+			}
+			c.projectSemanticDirectoryPrompt()
+			return true, discoveryGuidedSkillResult(view)
+		}
+		binding := admittedBindingForEntry(row.Entry)
+		binding.Alias = name
+		if c.admittedSkillBindings == nil {
+			c.admittedSkillBindings = map[string]admittedSkillBinding{}
+		}
+		c.admittedSkillBindings[name] = binding
+		c.appendDiscoveredMCPDefs([]map[string]interface{}{discoveryPetitionSkillToolDefinition(binding)})
+		c.projectSemanticDirectoryPrompt()
+		return true, "已装载 " + name + "。下一请求可以调用这个名字。"
+	}
+	return false, ""
+}
+
+type discoverySkillListing struct {
+	Alias    string
+	Entry    corelib.NLSkillEntry
+	Guided   bool
+	Summary  string
+	StableID string
+}
+
+func discoveryInstalledSkills(exec *SkillExecutor) []discoverySkillListing {
+	if exec == nil {
+		return nil
+	}
+	used := map[string]bool{}
+	var rows []discoverySkillListing
+	for _, entry := range exec.loadSkills() {
+		guided, runnable := skillCompleteForAdmission(entry)
+		if !guided && !runnable {
+			continue
+		}
+		alias := skillAdmissionAlias(entry, used)
+		used[alias] = true
+		summary := strings.TrimSpace(entry.Description)
+		if summary == "" {
+			summary = "已安装的 Skill。"
+		}
+		summary = truncateUTF8Bytes(summary, 80)
+		rows = append(rows, discoverySkillListing{
+			Alias: alias, Entry: entry, Guided: guided, Summary: summary,
+			StableID: discoverySkillStableID(entry),
+		})
+	}
+	return rows
+}
+
+// discoverySkillStableID is the skill a catalog row grants. The directory
+// alias is only the name the model calls. Two skills can slug to that name,
+// and the scan order decides which one keeps it.
+func discoverySkillStableID(entry corelib.NLSkillEntry) string {
+	if dir := strings.TrimSpace(entry.SkillDir); dir != "" {
+		return "dir:" + skillDirIdentityKey(dir)
+	}
+	if id := strings.TrimSpace(entry.SkillID); id != "" {
+		return "id:" + id
+	}
+	if id := strings.TrimSpace(entry.HubSkillID); id != "" {
+		return "hub:" + id
+	}
+	name := strings.ToLower(strings.TrimSpace(entry.Name))
+	if name == "" {
+		return ""
+	}
+	return "name:" + name
+}
+
+// discoveryGuidedSkillResult is the tool result for one guided skill. The
+// body stays in that result, so a later petition does not have to rebuild
+// the system prompt and does not erase the earlier result.
+func discoveryGuidedSkillResult(def NLSkillDefinition) string {
+	name := strings.TrimSpace(def.Name)
+	content, docPath := skillDocFileForInjection(def)
+	if strings.TrimSpace(content) == "" {
+		content = strings.TrimSpace(def.Content)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "已装载 %s 的说明。\n", name)
+	if line := skillProcedureRootLine(docPath); line != "" {
+		b.WriteString(line)
+	}
+	b.WriteString(content)
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func discoverySkillDirectoryRows(exec *SkillExecutor) []semanticTurnDirectoryEntry {
+	listed := discoveryInstalledSkills(exec)
+	if len(listed) == 0 {
+		return nil
+	}
+	rows := make([]semanticTurnDirectoryEntry, 0, len(listed))
+	for _, row := range listed {
+		rows = append(rows, semanticTurnDirectoryEntry{
+			Name: row.Alias, Summary: row.Summary, Role: "petition",
+			CatalogKind: discoveryCatalogKindSkill, StableID: row.StableID,
+		})
+	}
+	return rows
+}
+
 // publishReadyInstalledMCPTools lists every ready installed MCP tool on
 // this request. The model calls server__tool directly. discover_tool is
 // not the path that makes an installed server usable.
@@ -5218,8 +5750,12 @@ func (c *sharedAgentLoopCallbacks) attachDiscoveredMCPBindings() error {
 		c.adoptInstalledMCPRequestEpoch()
 		return nil
 	}
+	// Build the replacement before cancelling the tools already listed.
+	// A failed inventory used to drop that sidecar first, so one bad
+	// petition removed every MCP function the turn had published.
+	generation := c.discoveredMCPGeneration
 	if c.discoveredMCPSurface != nil {
-		c.dropDiscoveredMCPSidecar()
+		generation++
 	}
 	ctx, cancel := semanticRoutingContext(c.loopCtx)
 	defer cancel()
@@ -5231,9 +5767,12 @@ func (c *sharedAgentLoopCallbacks) attachDiscoveredMCPBindings() error {
 	if channel == "" {
 		channel = strings.TrimSpace(c.loopCtx.Platform)
 	}
-	defs, surface, err := c.handler.semanticSurfaceForDiscoveredMCP(ctx, userID, channel, semanticLoopInvocationFor(c.loopCtx), binds, c.discoveredMCPGeneration)
+	defs, surface, err := c.handler.semanticSurfaceForDiscoveredMCP(ctx, userID, channel, semanticLoopInvocationFor(c.loopCtx), binds, generation)
 	if err != nil {
 		return err
+	}
+	if c.discoveredMCPSurface != nil {
+		c.dropDiscoveredMCPSidecar()
 	}
 	c.discoveredMCPSurface = surface
 	// Remember the binds this surface actually published. A sibling that
@@ -5464,6 +6003,10 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 		exec.Outcome = toolOutcomeFailed
 		exec.FailureKind = toolFailureHandlerReported
 	}
+	if modelDiscoveryExtensionName(name) {
+		c.extensionHostSeen = true
+		c.extensionHostOK = !exec.IsFailure()
+	}
 	// A screenshot is an outbound artifact, not model context. Preserve it for
 	// the final gateway response and replace the base64 body with the same small
 	// observation used by the legacy loop. Without this, Lansenger receives only
@@ -5529,11 +6072,13 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 	return c.finishSharedToolExecution(requestID, toolCallID, name, argsJSON, outText, ok, mat.LocalPaths)
 }
 
-// semanticToolsSearchMaxPerTurn bounds discovery invocations in one turn. One
-// or two lookups are legitimate; beyond that the model is spiraling on a
-// surface that discovery cannot change (production 2026-08-26: 8+ calls after
-// a burned send_file grant), so the budget ends the loop deterministically
-// with text that redirects to the tools already listed.
+// semanticToolsSearchMaxPerTurn bounds directory lookups in one turn. One or
+// two lookups are legitimate; beyond that the model is spiraling (production
+// 2026-08-26: 8+ calls after a burned send_file grant). On a discovery turn
+// the search loads the names it was given onto the next request, so this cap
+// only stops another directory read. It must not say the tool surface is
+// frozen: that sentence is what sent the next call to dispatch (production
+// 2026-11-05, journal page).
 const semanticToolsSearchMaxPerTurn = 4
 
 // semanticToolsSearchRepeatExhausted is the redirect for a lookup that adds
@@ -5541,37 +6086,63 @@ const semanticToolsSearchMaxPerTurn = 4
 // already has them, and echoing the catalog invites another search.
 const semanticToolsSearchRepeatExhausted = "[system] tools_search already returned this directory. Call a listed tool now, or call a petitionable name once. Do not repeat this lookup."
 
+// semanticToolsSearchDiscoveryRepeatExhausted is the same close on a
+// discovery turn that has not loaded a function. The names still listed
+// include dispatch_background_task, so "call a listed tool" is a background
+// handoff. Emitting an unlisted name does not load it.
+const semanticToolsSearchDiscoveryRepeatExhausted = "[system] tools_search already returned this directory. Do not repeat this lookup."
+
 // semanticToolsSearchDirectedExhausted is the same close after the result
 // already named a listed tool. Offering a petition again is what sent the
 // save turn back to web_fetch.
 const semanticToolsSearchDirectedExhausted = "[system] tools_search already returned this directory. Call the listed tool named in the previous result. Do not repeat this lookup."
 
 // runSemanticToolsSearch executes the discovery meta-tool under its turn
-// budget. The budget is a callback counter, not a grant: tools_search carries
-// no authority, so overspending it must never consume or alter the surface.
+// budget. The budget is a callback counter, not a grant. Counting a lookup
+// does not spend a capability. On a discovery turn, admitDiscoverySearchNeeds
+// loads the petitionable names from this call onto the next request; the
+// counter still only refuses another directory read.
 // A result whose rows were all returned earlier is refused for that call.
 // The turn stays open for a different name. The 2026-09-27 knowledge-save
 // turn spent five searches re-reading the same "可请愿" line.
 func (c *sharedAgentLoopCallbacks) runSemanticToolsSearch(argsJSON string) string {
+	// This call is one of the batch's catalog probes, whether or not the
+	// page is new. Dispatch later in the same response reads the count.
+	if c != nil && c.loopCtx != nil {
+		c.loopCtx.consumeDiscoveryBatchPendingSearch()
+	}
 	if c.semanticToolsSearchClosed {
-		return semanticToolsSearchBudgetExhausted()
+		return c.semanticToolsSearchBudgetMessage()
 	}
 	c.semanticToolsSearchCalls++
 	if c.semanticToolsSearchCalls > semanticToolsSearchMaxPerTurn {
 		c.semanticToolsSearchClosed = true
-		return semanticToolsSearchBudgetExhausted()
+		return c.semanticToolsSearchBudgetMessage()
 	}
 	result := semanticToolsSearchRun(c, argsJSON)
 	lines := semanticToolsSearchDirectoryLines(result)
 	if len(lines) == 0 {
 		return result
 	}
+	tail := semanticToolsSearchTailKey(result)
+	_, tailSeen := c.semanticToolsSearchTails[tail]
 	directive, hasDirective := semanticToolsSearchDirectiveKey(result)
 	_, directiveSeen := c.semanticToolsSearchDirectives[directive]
 	// Refuse this duplicate only. Closing the rest of the turn here blocked a
 	// later lookup for a different tool after one repeated search.
-	if semanticToolsSearchLinesSeen(c.semanticToolsSearchShown, lines) && (!hasDirective || directiveSeen) {
+	// The same rows with a new tail are not a duplicate only when the page is
+	// a catalog miss: the miss step after an unfiltered directory shares every
+	// row but ends with the skill-search step. Any other new tail (a changed
+	// "现在调用" line) is still the same lookup and closes.
+	missPage := strings.Contains(result, semanticToolsSearchNeedsMissNote)
+	if semanticToolsSearchLinesSeen(c.semanticToolsSearchShown, lines) && (tail == "" || tailSeen || !missPage) && (!hasDirective || directiveSeen) {
 		return c.semanticToolsSearchClosedMessage()
+	}
+	if tail != "" {
+		if c.semanticToolsSearchTails == nil {
+			c.semanticToolsSearchTails = map[string]struct{}{}
+		}
+		c.semanticToolsSearchTails[tail] = struct{}{}
 	}
 	if hasDirective {
 		if c.semanticToolsSearchDirectives == nil {
@@ -5592,11 +6163,250 @@ func semanticToolsSearchBudgetExhausted() string {
 	return fmt.Sprintf("[system] %s reached its limit of %d calls for this turn and is no longer available. Discovery cannot change this turn's tool surface; finish with the tools already listed, and state plainly what remains unfinished.", semanticToolsSearchName, semanticToolsSearchMaxPerTurn)
 }
 
+// semanticToolsSearchBudgetMessage closes the directory. A non-discovery
+// lookup does not change the tool list, and its message says so. A discovery
+// lookup already loaded the names it was given, so the same close as a
+// repeated listed page applies: call that tool. Saying the surface cannot
+// change is false after that load, and it is what made the next call a
+// background dispatch.
+func (c *sharedAgentLoopCallbacks) semanticToolsSearchBudgetMessage() string {
+	if c != nil && semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+		return c.semanticToolsSearchClosedMessage()
+	}
+	return semanticToolsSearchBudgetExhausted()
+}
+
 func (c *sharedAgentLoopCallbacks) semanticToolsSearchClosedMessage() string {
 	if c != nil && len(c.semanticToolsSearchDirectives) > 0 {
 		return semanticToolsSearchDirectedExhausted
 	}
+	if c != nil && semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+		return semanticToolsSearchDiscoveryRepeatExhausted
+	}
 	return semanticToolsSearchRepeatExhausted
+}
+
+// admitDiscoverySearchNeeds loads the tools a discovery tools_search needs
+// list selected. The function list of the request that searched does not
+// contain those names, so the provider keeps emitting tools_search: the
+// 2026-11-05 journal turn wrote web_search in needs and in its reasoning,
+// and every emitted call was tools_search. A capability id selects the
+// same rows as the tool name. An installed skill or MCP name is the same
+// petition PetitionToolCall already grants when the model emits it. The
+// next request lists a loaded function. A guided skill has no function;
+// its instruction body is the tool result, and this call returns that text.
+func (c *sharedAgentLoopCallbacks) admitDiscoverySearchNeeds(names []string) (string, bool, string, bool) {
+	if c == nil || !semanticSurfaceIsModelDiscovery(c.semanticSurface) || len(names) == 0 {
+		return "", false, "", false
+	}
+	cleaned := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			cleaned = append(cleaned, name)
+		}
+	}
+	sole := len(cleaned) == 1
+	var notes []string
+	toldDesktopDoor := false
+	// failed counts a petition that left the name neither callable nor
+	// granted, and whose capability is still absent from the plan. A
+	// desktop-door refusal or an exclusive-family skip is not a petition.
+	// admitted is a name that became callable, or a guided skill whose body
+	// is the result. The 2026-11-05 picture turn named browser, then bash
+	// and download_file: each name is in the directory, parent authority
+	// refused the expansion, and the capability never entered the plan.
+	// Dispatch still started the worker that downloaded the book. That list
+	// is the same miss as a name the directory does not have. A selection
+	// the plan already holds is not that failure. PetitionToolCall returns
+	// granted=false while generate_pdf is held for the next request, or
+	// while a predecessor has not finished. Counting that wait as "loaded
+	// nothing" closed the PDF tool for the rest of the turn. A list that
+	// loads one real tool is a match, even when another name in it does not.
+	failed := 0
+	admitted := false
+	held := false
+	var skippedExclusive []string
+	for _, name := range cleaned {
+		// The main conversation is not the desktop operator. Naming
+		// computer_use here used to look like a catalog miss and close
+		// every other tool. Say so once and keep loading the rest.
+		if isRefComputerUseToolName(name) && discoveryComputerUsePetitionBlocked(c) {
+			if !toldDesktopDoor {
+				notes = append(notes, discoveryComputerUseRefusalNote(c))
+				toldDesktopDoor = true
+			}
+			log.Printf("[semantic-routing] discovery tools_search did not load %q: %s", name, discoveryComputerUseRefusalNote(c))
+			continue
+		}
+		// ssh, browser, delete, microphone, and desktop control each open a
+		// separate family. They load only when the needs list names that one
+		// family. Workspace tools in the same list still load.
+		if discoveryNeedIsExclusive(name) && !sole {
+			// A skip is not a failed petition. Opening the catalog miss
+			// here would refuse the same name when it is later the only
+			// needs entry. The page still has to say so: otherwise the
+			// plan's 「现在调用」 is the last line.
+			skippedExclusive = append(skippedExclusive, name)
+			log.Printf("[semantic-routing] discovery tools_search skipped fail-closed %q because the needs list names more than that family", name)
+			continue
+		}
+		if !c.discoverySearchNeedLoadable(name) {
+			continue
+		}
+		if c.discoverySearchNeedCallable(name) {
+			admitted = true
+			continue
+		}
+		granted, message := c.PetitionToolCall(name)
+		if c.discoverySearchNeedCallable(name) || granted {
+			admitted = true
+			if granted {
+				if text := strings.TrimSpace(message); text != "" {
+					notes = append(notes, text)
+					if c.discoverySearchBodies == nil {
+						c.discoverySearchBodies = map[string]struct{}{}
+					}
+					c.discoverySearchBodies[name] = struct{}{}
+				}
+			}
+			continue
+		}
+		if discoveryRetiredAwaitingConfirmation(c, name) {
+			// A mailbox draft waiting for the user is not a catalog miss
+			// and not the hold that keeps a predecessor call. A plain
+			// spent grant still counts as a failed load below.
+			continue
+		}
+		if discoveryPetitionWaitingInPlan(c, name) {
+			held = true
+			continue
+		}
+		failed++
+		log.Printf("[semantic-routing] discovery tools_search did not load %q: granted=%v message=%q", name, granted, message)
+	}
+	// A requested name that is already a plan selection keeps this turn
+	// open. generate_pdf can be waiting on web_search while download_file
+	// in the same list never enters the plan. The miss would refuse the
+	// PDF and replace that predecessor call with the skill step. A list
+	// whose petitioned names are all absent from the plan still misses.
+	// A selection this list did not name does not keep the turn open.
+	if failed > 0 && !admitted && !held {
+		c.noteDiscoveryCatalogMiss()
+	}
+	return strings.Join(notes, "\n"), admitted, discoveryExclusiveRetryNote(skippedExclusive), held
+}
+
+// discoveryPetitionWaitingInPlan reports that this name is a selection the
+// plan is still holding. The function may be off this request: it is held
+// until the next request, or a predecessor has not finished.
+// PetitionToolCall returns granted=false for that wait. An authority
+// failure never installs the selection, so this stays false and the load
+// counts as missed. A spent grant is not that hold. The host keys it by
+// the adapter (host_document_generate_file) while the model names
+// generate_pdf; the directory already records both spellings. A skill or
+// MCP name has no capability in this map.
+func discoveryPetitionWaitingInPlan(c *sharedAgentLoopCallbacks, name string) bool {
+	if c == nil || c.semanticSurface == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	// Same spellings as the directory. A model-name lookup misses a grant
+	// stored under the host adapter, and the selection that remains then
+	// looks like the live wait.
+	if semanticSurfaceRetiredNames(c.semanticSurface)[name] {
+		return false
+	}
+	// Match the adapter the plan selected. Capability equality treats
+	// list_directory as the read_file row and turns a failed alias into a hold.
+	return semanticSurfacePlansTool(c.semanticSurface, name)
+}
+
+// discoveryRetiredAwaitingConfirmation reports a retired grant whose effect
+// is a mailbox draft waiting for the user. The table key may be the host
+// adapter. That wait is not a failed catalog load.
+func discoveryRetiredAwaitingConfirmation(c *sharedAgentLoopCallbacks, name string) bool {
+	if c == nil || c.semanticSurface == nil {
+		return false
+	}
+	grant, ok := semanticRetiredGrantForName(c.semanticSurface, name)
+	if !ok {
+		return false
+	}
+	awaiting, reason := semanticRetiredAwaitingReceipt(c.semanticSurface, grant.SelectionID)
+	return awaiting && mailboxDraftAwaitingConfirmation(reason)
+}
+
+// discoveryExclusiveRetryNote is the action when a needs list names more
+// than one fail-closed family. Those names load from a later search that
+// names one of them and nothing else. An empty slice means this search
+// did not skip any.
+func discoveryExclusiveRetryNote(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	sorted := append([]string(nil), names...)
+	sort.Strings(sorted)
+	return strings.Join(sorted, "、") + " 只有单独写进 needs 时才会加载。要加载其中一个，再调用 tools_search，needs 里只写那个名字。"
+}
+
+// discoveryNeedIsExclusive is a family that must be the only name in a
+// discovery needs list. A mixed list still loads the workspace names and
+// skips these. Mailbox stays with the workspace names: send and delete
+// already wait for the user before anything leaves the machine.
+func discoveryNeedIsExclusive(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "ssh", "browser", "delete_file", "record_audio":
+		return true
+	default:
+		return isRefComputerUseToolName(name)
+	}
+}
+
+// discoverySearchNeedLoadable is a name this discovery search may load.
+// The clock stand-in and the preset discovery functions are not petitions.
+// A builtin loads only when this turn's directory admits it. An installed
+// skill or MCP row loads under the name the catalog published.
+func (c *sharedAgentLoopCallbacks) discoverySearchNeedLoadable(name string) bool {
+	name = strings.TrimSpace(name)
+	if c == nil || name == "" || modelDiscoveryHidesGrant(name) || name == semanticToolsSearchName || modelDiscoveryExtensionName(name) {
+		return false
+	}
+	if blocked, _ := c.discoveryPetitionBlocked(name); blocked {
+		return false
+	}
+	if _, ok := semanticPetitionableCapabilities[name]; ok {
+		return c.semanticTurnAdmits(name)
+	}
+	return c.discoveryCatalogHas(name)
+}
+
+// discoverySearchNeedCallable is a name the next request can execute.
+// A guided skill is not one of these: its body is the search result.
+func (c *sharedAgentLoopCallbacks) discoverySearchNeedCallable(name string) bool {
+	if c == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if c.semanticGrantNamed(name) || c.liveInstalledMCPSidecarGrant(name) {
+		return true
+	}
+	_, ok := c.admittedSkillBindings[name]
+	return ok
+}
+
+func semanticToolsSearchTailKey(result string) string {
+	result = strings.TrimRight(result, "\n")
+	if result == "" {
+		return ""
+	}
+	if i := strings.LastIndex(result, "\n"); i >= 0 {
+		return strings.TrimSpace(result[i+1:])
+	}
+	return strings.TrimSpace(result)
 }
 
 func semanticToolsSearchDirectiveKey(result string) (string, bool) {
@@ -5631,8 +6441,10 @@ func semanticToolsSearchRowKey(line string) (string, bool) {
 	body := strings.TrimPrefix(line, "- ")
 	name, rest, ok := strings.Cut(body, " — ")
 	name = strings.TrimSpace(name)
+	// A markdown list inside a skill body is not a directory row.
+	// Treating it as one makes a later page look already shown.
 	if !ok || name == "" {
-		return line, true
+		return "", false
 	}
 	status := ""
 	if i := strings.LastIndex(rest, "["); i >= 0 {
@@ -5653,10 +6465,31 @@ func semanticToolsSearchLinesSeen(shown map[string]struct{}, lines []string) boo
 	return true
 }
 
+// executeDiscoveryExtension runs a discovery preset that is listed but is not
+// a semantic grant. search_and_install_skill and craft_tool are host tools,
+// the same as tools_search. The grant map rejects a call this turn already
+// admitted. The stale-epoch fence stays in ExecuteToolCallWithContext.
+func (c *sharedAgentLoopCallbacks) executeDiscoveryExtension(functionName, argsJSON string) (string, bool) {
+	if c == nil || !semanticSurfaceIsModelDiscovery(c.semanticSurface) || !modelDiscoveryExtensionName(functionName) {
+		return "", false
+	}
+	c.extensionHostSeen = false
+	c.extensionHostOK = false
+	result := c.executeToolWithoutSemanticSurface(functionName, argsJSON)
+	if c.extensionHostSeen {
+		c.noteDiscoveryExtensionHost(functionName, result, c.extensionHostOK)
+	}
+	c.extensionHostSeen = false
+	return result, true
+}
+
 // executeSemanticTool resolves the opaque function name only through this
 // turn's signed grant. In particular, it does not accept provider, skill, MCP
 // server, implementation, or selection identity from model arguments.
 func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON string) string {
+	if rejected := c.discoveryDispatchRejection(functionName); rejected != "" {
+		return rejected
+	}
 	if c != nil && c.chatTaskHostTool(functionName) {
 		return c.executeToolWithoutSemanticSurface(functionName, argsJSON)
 	}
@@ -5667,6 +6500,9 @@ func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON st
 	if functionName == semanticToolsSearchName {
 		c.emitUserFacingToolProgress(functionName, argsJSON)
 		return c.runSemanticToolsSearch(argsJSON)
+	}
+	if result, handled := c.executeDiscoveryExtension(functionName, argsJSON); handled {
+		return result
 	}
 	grant, ok := c.semanticSurface.grants[functionName]
 	if !ok {
@@ -5787,6 +6623,9 @@ func hostCallAcquireModelText(result tool.SelectionExecutionResult) string {
 }
 
 func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName, argsJSON, callID, surfaceEpoch string) string {
+	if rejected := c.discoveryDispatchRejection(functionName); rejected != "" {
+		return rejected
+	}
 	if c != nil && c.chatTaskHostTool(functionName) {
 		return c.executeToolWithoutSemanticSurface(functionName, argsJSON)
 	}
@@ -5797,6 +6636,9 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName
 	if functionName == semanticToolsSearchName {
 		c.emitUserFacingToolProgress(functionName, argsJSON)
 		return c.runSemanticToolsSearch(argsJSON)
+	}
+	if result, handled := c.executeDiscoveryExtension(functionName, argsJSON); handled {
+		return result
 	}
 	grant, ok := c.semanticSurface.grants[functionName]
 	if !ok {
@@ -8194,7 +9036,10 @@ func (c *sharedAgentLoopCallbacks) executeTrustedAcquireRemote(_ tool.PlannedSel
 		return semanticUnexecutedRejection(err)
 	}
 	publicNetworkOnly := c.loopCtx != nil && c.loopCtx.LansengerGroupPermissions != nil
-	text, err := c.handler.acquireTrustedRemote(c.semanticPrincipalID(), rawURL, publicNetworkOnly)
+	text, saved, err := c.handler.acquireTrustedRemote(c.semanticPrincipalID(), rawURL, publicNetworkOnly)
+	if saved != "" {
+		c.noteRemoteAcquisition(saved)
+	}
 	if err != nil {
 		return semanticHandlerRejection(err)
 	}
@@ -8736,6 +9581,9 @@ func (c *sharedAgentLoopCallbacks) executeLegacyBoundAdapter(name, argsJSON stri
 // return path. Keeping this centralized prevents artifact shortcuts (notably
 // screenshots) from leaving ACP tool chips permanently in progress.
 func (c *sharedAgentLoopCallbacks) finishSharedToolExecution(requestID, toolCallID, name, argsJSON, result string, ok bool, artifactPaths []string) string {
+	for _, path := range hostDownloadSavedPaths(result) {
+		c.noteRemoteAcquisition(path)
+	}
 	trimmed := strings.TrimSpace(result)
 	lower := strings.ToLower(trimmed)
 	if strings.HasPrefix(trimmed, "[system rejected]") || strings.HasPrefix(lower, "error:") || strings.HasPrefix(lower, "[mcp error]") {
@@ -9538,6 +10386,9 @@ func (c *sharedAgentLoopCallbacks) OnToolBatchStarting(delta []agent.Conversatio
 	if c != nil && len(delta) > 0 {
 		c.semanticHoldDependantIssue = true
 	}
+	if c != nil {
+		c.noteDiscoveryBatchProbe(delta)
+	}
 	if c == nil || c.handler == nil || len(delta) == 0 {
 		return nil
 	}
@@ -9581,6 +10432,52 @@ func (c *sharedAgentLoopCallbacks) OnToolBatchStarting(delta []agent.Conversatio
 // their paired history and marker transition have committed in the host.
 func (c *sharedAgentLoopCallbacks) OnToolBatchAbandoned(meta agent.ToolBatchMetadata) {
 	_ = meta
+	if c != nil && c.loopCtx != nil {
+		c.loopCtx.setDiscoveryBatchPendingSearch(0)
+	}
+}
+
+// noteDiscoveryBatchProbe records tools_search calls this assistant message
+// declared and has not run. A dispatch ordered ahead of them must not start
+// the worker: the handoff fence would drop the search, and the miss would
+// never close that worker.
+func (c *sharedAgentLoopCallbacks) noteDiscoveryBatchProbe(delta []agent.ConversationEntry) {
+	if c == nil || c.loopCtx == nil {
+		return
+	}
+	if !semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+		c.loopCtx.setDiscoveryBatchPendingSearch(0)
+		return
+	}
+	n := 0
+	for _, entry := range delta {
+		n += countToolCallsByName(entry.ToolCalls, semanticToolsSearchName)
+	}
+	c.loopCtx.setDiscoveryBatchPendingSearch(n)
+}
+
+func countToolCallsByName(calls interface{}, name string) int {
+	name = strings.TrimSpace(name)
+	if name == "" || calls == nil {
+		return 0
+	}
+	n := 0
+	switch arr := calls.(type) {
+	case []llm.ToolCall:
+		for _, call := range arr {
+			if strings.TrimSpace(call.Function.Name) == name {
+				n++
+			}
+		}
+	case []interface{}:
+		for _, item := range arr {
+			call, ok := item.(llm.ToolCall)
+			if ok && strings.TrimSpace(call.Function.Name) == name {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // OnToolBatchCommitted implements agent.ToolBatchCommitter. RunLoop invokes it
@@ -9588,6 +10485,9 @@ func (c *sharedAgentLoopCallbacks) OnToolBatchAbandoned(meta agent.ToolBatchMeta
 // been appended to HistoryDelta. A persistence error is returned to RunLoop so
 // it stops before executing a following batch with further side effects.
 func (c *sharedAgentLoopCallbacks) OnToolBatchCommitted(delta []agent.ConversationEntry, meta agent.ToolBatchMetadata) error {
+	if c != nil && c.loopCtx != nil {
+		c.loopCtx.setDiscoveryBatchPendingSearch(0)
+	}
 	if c == nil || c.handler == nil || len(delta) == 0 {
 		// No persisted complete batch exists on this path, so it cannot publish
 		// authority derived from the batch. The optional callback remains a no-op
@@ -9865,7 +10765,7 @@ func (c *sharedAgentLoopCallbacks) RefreshAfterToolExecution(name string) bool {
 		// loop must re-read BuildTools so consumed grants disappear.
 		if pending && c.handler != nil && !c.semanticLightLookup() {
 			intentText := semanticUserIntentText(c.userText)
-			c.systemPrompt = ensureSemanticGrantPromptFence(c.systemPromptWithTaskAnchor(c.refreshedSystemPrompt(agent.CompactQueryForEmbedding(intentText))))
+			c.systemPrompt = ensureTurnGrantPromptFence(c.systemPromptWithTaskAnchor(c.refreshedSystemPrompt(agent.CompactQueryForEmbedding(intentText))), turnGrantClassification(c.semanticSurface))
 			c.projectSemanticDirectoryPrompt()
 		}
 		return true

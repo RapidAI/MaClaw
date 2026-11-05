@@ -94,8 +94,11 @@ func ValidatePetitionExpansion(parent, child coretool.ToolPlan, templates []Inte
 	}
 	for needID, selection := range parentByNeed {
 		replacement, ok := childByNeed[needID]
-		if !ok || !coretool.SelectionAuthorityEqualIgnoringProvider(selection, replacement) {
-			return fmt.Errorf("semantic petition expansion alters parent authority")
+		if !ok {
+			return fmt.Errorf("semantic petition expansion alters parent authority: need %s missing from child", needID)
+		}
+		if !coretool.SelectionAuthorityEqualIgnoringProvider(selection, replacement) {
+			return fmt.Errorf("semantic petition expansion alters parent authority: need %s %s", needID, coretool.SelectionAuthorityDrift(selection, replacement))
 		}
 	}
 	added := 0
@@ -120,4 +123,74 @@ func ValidatePetitionExpansion(parent, child coretool.ToolPlan, templates []Inte
 		return fmt.Errorf("semantic petition expansion added no governed need")
 	}
 	return nil
+}
+
+// PreservePetitionParentAuthority makes a petition child the parent plan plus
+// the petitioned label. The live parent is not a pure function of the rule
+// templates: once a published wave is spent, the host appends a continuation
+// sibling, and that need is already parent authority. Re-deriving the
+// templates drops it, and the expansion validator then rejects every later
+// name. Every parent need is copied from the parent. Authority equality
+// ignores the obligation bit, continuation, requires, evidence, and artifact
+// edges, while the purpose digest that carries completed work includes those
+// edges. Keeping the re-plan's rewrite would drop a finished search or turn
+// an optional sibling into a required obligation. Refreshing the provider of
+// an existing need is a binding-stale replan, not this graft. Unmet notes
+// for parent needs are dropped; unmet notes the child invented stay, so a
+// missing capability still fails the expansion.
+func PreservePetitionParentAuthority(parent, child coretool.ToolPlan, templates []IntentCapabilityNeedTemplate) coretool.ToolPlan {
+	parentByNeed, ok := coretool.SelectionsByNeed(parent.Selections)
+	if !ok || len(parentByNeed) == 0 {
+		return child
+	}
+	if _, ok := coretool.SelectionsByNeed(child.Selections); !ok {
+		return child
+	}
+	kept := make([]coretool.PlannedSelection, 0, len(child.Selections)+len(parent.Selections))
+	keptNeeds := make(map[string]struct{}, len(parent.Selections)+len(child.Selections))
+	for _, selection := range parent.Selections {
+		needID := strings.TrimSpace(selection.NeedID)
+		if _, already := keptNeeds[needID]; already {
+			continue
+		}
+		kept = append(kept, coretool.ClonePlannedSelection(selection))
+		keptNeeds[needID] = struct{}{}
+	}
+	for _, selection := range child.Selections {
+		needID := strings.TrimSpace(selection.NeedID)
+		if _, already := keptNeeds[needID]; already {
+			continue
+		}
+		if petitionSelectionMatchesTemplates(selection, templates) {
+			kept = append(kept, selection)
+			keptNeeds[needID] = struct{}{}
+		}
+	}
+	child.Selections = kept
+	child.Unmet = dropPetitionParentNeedNotes(child.Unmet, parentByNeed)
+	child.Omitted = dropPetitionParentNeedNotes(child.Omitted, parentByNeed)
+	return child
+}
+
+func petitionSelectionMatchesTemplates(selection coretool.PlannedSelection, templates []IntentCapabilityNeedTemplate) bool {
+	for _, template := range templates {
+		if selection.FitProof.MatchedCapability == template.Capability && coretool.QualifiersEqual(selection.FitProof.QualifierBindings, template.Qualifiers) {
+			return true
+		}
+	}
+	return false
+}
+
+func dropPetitionParentNeedNotes(notes []coretool.UnmetNeed, parent map[string]coretool.PlannedSelection) []coretool.UnmetNeed {
+	if len(notes) == 0 {
+		return notes
+	}
+	kept := make([]coretool.UnmetNeed, 0, len(notes))
+	for _, note := range notes {
+		if _, isParent := parent[strings.TrimSpace(note.NeedID)]; isParent {
+			continue
+		}
+		kept = append(kept, note)
+	}
+	return kept
 }

@@ -89,6 +89,66 @@ func TestSemanticCapabilityExtensionKeepsSafetyRefusals(t *testing.T) {
 	}
 }
 
+func TestCatalogGapPlansTheCapabilityExtension(t *testing.T) {
+	h := &IMMessageHandler{}
+	gap := &intent.ClassificationResult{
+		Primary: intent.LabelNonCoding, Confidence: 0.93, Layer: 3,
+		Reason:        "catalog gap: tree non_coding(0.930) refused local leader office(0.869)",
+		RunnerUp:      intent.LabelOffice,
+		RunnerUpScore: 0.87,
+	}
+	_, handled, err := h.semanticPlanForTurnWithClassification("desktop-user", "生成一张图片", "desktop", "root", "turn", gap)
+	if !handled || err == nil || !strings.Contains(err.Error(), "no governed capability needs") {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	reason, _, ok := semanticCapabilityExtension(err, "生成一张图片", nil)
+	if !ok || !strings.Contains(reason, "内置工具没有覆盖") || !strings.Contains(reason, "不要用幻灯片、Word 或 PDF 顶替") {
+		t.Fatalf("extension reason=%q ok=%v", reason, ok)
+	}
+	prompt := capabilityExtensionPrompt(reason, nil, []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "search_and_install_skill"}},
+		{"type": "function", "function": map[string]interface{}{"name": "craft_tool"}},
+	})
+	if !strings.Contains(prompt, "不要改用幻灯片、Word 或 PDF 交差") || !strings.Contains(prompt, "直接回答") || strings.Contains(prompt, "先调用") {
+		t.Fatalf("catalog gap prompt must forbid a document substitute:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "不要生成 pptx、docx 或 pdf") {
+		t.Fatalf("catalog gap prompt must name the substitute files:\n%s", prompt)
+	}
+	continued := intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.90, Reason: "catalog gap: tree continuation(0.900) refused local leader office(0.869)"}
+	if intent.ClassificationHasCatalogGap(continued) {
+		t.Fatal("continuation is not a catalog gap")
+	}
+	plain := &intent.ClassificationResult{Primary: intent.LabelNonCoding, Confidence: 0.90, Layer: 3, Reason: "tree-after-embedding: non_coding (0.900)"}
+	if intent.ClassificationHasCatalogGap(*plain) {
+		t.Fatal("ordinary non_coding is not a catalog gap")
+	}
+}
+
+func TestDiscoveryGrantFenceDoesNotOfferOfficeAsTheFallback(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	prompt := ensureTurnGrantPromptFence("base", discovery)
+	if !strings.Contains(prompt, "【发现模式】") || !strings.Contains(prompt, "不要调用 office、generate_pdf、write_file 或 bash 来顶替") {
+		t.Fatalf("discovery fence missing:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "search_and_install_skill") || !strings.Contains(prompt, "craft_tool") || !strings.Contains(prompt, "文字问题直接回答") {
+		t.Fatalf("discovery fence must keep skill search and a direct answer:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "放进 needs") || strings.Contains(prompt, "直接调用它来请愿") {
+		t.Fatalf("discovery fence must load a directory name through needs:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "may be called once even though unlisted") || strings.Contains(prompt, "An untried petitionable name") {
+		t.Fatalf("discovery fence still tells the model to call an unlisted office name:\n%s", prompt)
+	}
+	if again := ensureTurnGrantPromptFence(prompt, discovery); again != prompt {
+		t.Fatal("discovery fence must be idempotent")
+	}
+	ordinary := ensureTurnGrantPromptFence("base", intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.9})
+	if !strings.Contains(ordinary, "may be called once even though unlisted") || strings.Contains(ordinary, "【发现模式】") {
+		t.Fatal("a classified turn must keep the ordinary grant fence")
+	}
+}
+
 func TestCapabilityExtensionPromptNamesBothTools(t *testing.T) {
 	tools := []map[string]interface{}{
 		{"type": "function", "function": map[string]interface{}{"name": "search_and_install_skill"}},

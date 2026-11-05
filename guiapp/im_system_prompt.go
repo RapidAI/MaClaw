@@ -382,6 +382,7 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 			SuppressCodingGateRules: suppressV2CodingRules,
 			PromptProfile:           promptProfile,
 			ManagedSemantic:         loopContextIsSemanticManaged(loopCtx),
+			ModelDiscovery:          loopCtx != nil && loopCtx.Runtime.SemanticIntent != nil && intent.ClassificationIsModelDiscovery(*loopCtx.Runtime.SemanticIntent),
 			// Only turns whose reply lands in the desktop markdown pipeline
 			// can draw a mermaid fence; see replyRendersDiagrams.
 			DiagramRenderingSupported: replyRendersDiagrams(diagramSurfaceOwnerID(h, loopCtx)),
@@ -459,7 +460,8 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 
 	// PostSSHRules: inject GUI-specific SSH guidance + skills + MCP + device status etc.
 	deps.PostSSHRules = func(b *strings.Builder) {
-		h.appendGUIPostSSHRules(b, isProMode, currentNickname, cfg, promptUserID, loopContextIsSemanticManaged(loopCtx))
+		discoverySurface := loopCtx != nil && loopCtx.Runtime.SemanticIntent != nil && intent.ClassificationIsModelDiscovery(*loopCtx.Runtime.SemanticIntent)
+		h.appendGUIPostSSHRules(b, isProMode, currentNickname, cfg, promptUserID, loopContextIsSemanticManaged(loopCtx), discoverySurface)
 		if loopCtx != nil && loopCtx.Runtime.SemanticIntent != nil {
 			appendSemanticTurnDirectoryRules(b, *loopCtx.Runtime.SemanticIntent)
 		}
@@ -1331,7 +1333,10 @@ func (h *IMMessageHandler) releaseNamedSkillOnLoopIntent(ctx *LoopContext, userI
 }
 
 func (h *IMMessageHandler) releaseNamedSkillIntercept(result *intent.ClassificationResult, userID, userText string) {
-	if result == nil {
+	if result == nil || intent.ClassificationIsModelDiscovery(*result) {
+		// Discovery already refused a workflow intercept. Clearing the
+		// primary here drops the turn onto the name router, which is how a
+		// named skill became bash.
 		return
 	}
 	intentText := semanticUserIntentText(userText)

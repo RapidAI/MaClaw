@@ -915,6 +915,24 @@ func loopContextTurnAnswerOnly(ctx *LoopContext) bool {
 	return ctx != nil && ctx.semanticTurnAnswerOnly
 }
 
+// chatTaskWorkerKeepsLegacySurface is a background chat task whose tool
+// list is still the name router. A computer helper needs that belt.
+// A worker that already carries a managed label other than discovery keeps
+// it too: re-planning a search label used to publish the short lookup.
+// A discovery worker stays on the discovery surface instead.
+func chatTaskWorkerKeepsLegacySurface(ctx *LoopContext) bool {
+	if ctx == nil || strings.TrimSpace(ctx.ChatTaskID) == "" {
+		return false
+	}
+	if ctx.ComputerHelper || ctx.ComputerUseActive {
+		return true
+	}
+	if ctx.Runtime.SemanticIntent != nil && intent.ClassificationIsModelDiscovery(*ctx.Runtime.SemanticIntent) {
+		return false
+	}
+	return true
+}
+
 func loopContextBlocksLegacyToolRouter(ctx *LoopContext) bool {
 	// Same continuation as the shared-turn planner skip. A managed label left
 	// on the loop would make prepareAgentLoopTools return an empty list, so
@@ -922,9 +940,10 @@ func loopContextBlocksLegacyToolRouter(ctx *LoopContext) bool {
 	if discoveredMCPContinuationTurn(ctx) {
 		return false
 	}
-	// The worker already left the semantic lookup surface. A managed label
-	// copied from the host prompt must not leave it with an empty tool list.
-	if ctx != nil && strings.TrimSpace(ctx.ChatTaskID) != "" {
+	// A worker that kept the legacy surface must still reach the name router.
+	// A discovery worker is managed. Opening the router here would rank the
+	// clock stand-in and hide search_and_install_skill.
+	if chatTaskWorkerKeepsLegacySurface(ctx) {
 		return false
 	}
 	if loopContextTurnAnswerOnly(ctx) {
@@ -1326,6 +1345,11 @@ func semanticLocalFileDeletePlanningClassification(result intent.ClassificationR
 // A follow-up that does not itself name the format is left unchanged, so a
 // bare 「真读内容」 cannot strip labels the entry hook already stored.
 func semanticPlanningClassification(classification intent.ClassificationResult, planningQuery string) intent.ClassificationResult {
+	// Discovery already refused a classifier. Keyword rewrites would put
+	// delete, mail, or markdown back in front of the model's own choice.
+	if intent.ClassificationIsModelDiscovery(classification) {
+		return classification
+	}
 	if tool.QueryWantsLocalFileDelete(planningQuery) {
 		return semanticLocalFileDeletePlanningClassification(classification)
 	}
@@ -1529,6 +1553,16 @@ func semanticNeedsFromClassificationContext(ctx context.Context, registry *tool.
 		if err != nil {
 			return nil, false, err
 		}
+		// A discovery petition loads the directory row. It does not adopt the
+		// rule's required bit. LabelSearch is required for a classifier
+		// verdict; copying that bit hard-exits after the producing tool
+		// already finished (2026-11-05: office published a PPT, send_file
+		// committed, web_search still pending). An id this plan already
+		// recorded keeps its own bit: a chart's current-web search stays
+		// required when a later lookup petition names the same need.
+		// Office, write, and file read stay required. A non-discovery
+		// search is not relaxed here.
+		relaxLookup := intent.ClassificationIsModelDiscovery(result) && discoveryPetitionLookupLabel(label)
 		appended := false
 		for _, need := range added.Needs {
 			if need.ID != "" && seenNeed[need.ID] {
@@ -1537,6 +1571,9 @@ func semanticNeedsFromClassificationContext(ctx context.Context, registry *tool.
 			if need.ID != "" {
 				seenNeed[need.ID] = true
 			}
+			if relaxLookup && tool.IsLookupCapability(need.Capability) {
+				need.Required = false
+			}
 			resolution.Needs = append(resolution.Needs, need)
 			appended = true
 		}
@@ -1544,10 +1581,31 @@ func semanticNeedsFromClassificationContext(ctx context.Context, registry *tool.
 			resolution.Managed = true
 		}
 	}
+	// The clock selection only exists so a discovery surface can be published.
+	// It is not the user's request, and a required clock hard-exits the turn
+	// when the model petitions a different tool instead.
+	if intent.ClassificationIsModelDiscovery(result) {
+		for i := range resolution.Needs {
+			if resolution.Needs[i].Capability == agentservice.CapabilityCurrentTime {
+				resolution.Needs[i].Required = false
+			}
+		}
+	}
 	if len(semanticPetitionedLabels(ctx)) > 0 {
 		sort.Slice(resolution.Needs, func(i, j int) bool { return resolution.Needs[i].ID < resolution.Needs[j].ID })
 	}
 	return resolution.Needs, resolution.Managed, nil
+}
+
+// discoveryPetitionLookupLabel is a directory load, not a producing task.
+// live_data_visual stays out: its search is how the chart gets its data.
+func discoveryPetitionLookupLabel(label intent.IntentLabel) bool {
+	switch label {
+	case intent.LabelSearch, intent.LabelLiveData, intent.LabelWebFetch:
+		return true
+	default:
+		return false
+	}
 }
 
 var semanticArchetypeBundles = agentservice.SemanticArchetypeBundles()
@@ -2333,6 +2391,15 @@ func semanticNeedsForTrustedDocumentInputs(needs []tool.CapabilityNeed, inputs [
 // not yet declared, leaving those families on the explicitly temporary legacy
 // path rather than mixing the two resulting tool lists.
 func (h *IMMessageHandler) semanticCallSurfaceForSharedTurn(userID, userText, channel string) ([]map[string]interface{}, *semanticCallSurface, bool, error) {
+	// Test convenience entry: classify the turn before planning. The shared
+	// implementation now treats a nil verdict as model discovery, which is
+	// the production shape for turns whose tool list is not classifier-chosen.
+	// This wrapper keeps the older "classify here" contract the surface tests
+	// were written against; production always supplies the entry verdict.
+	if uic := h.getUnifiedClassifier(); uic != nil {
+		classification := uic.ClassifyContext(context.Background(), intent.MessageContext{Text: semanticUserIntentText(userText), UserID: userID})
+		return h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(userID, userText, channel, "", "", &classification)
+	}
 	return h.semanticCallSurfaceForSharedTurnWithIdentity(userID, userText, channel, "", "")
 }
 
@@ -2359,10 +2426,15 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachm
 		log.Printf("[semantic-routing] session round keeps the current tool surface user=%q channel=%q platform=%q", userID, channel, loopPlatform)
 		return nil, nil, false, nil
 	}
-	// A background chat task is the rest of a turn the foreground loop already
-	// refused to finish inline. Classifying the host prompt again often yields
-	// one lookup family and the same short budget.
-	if ctx != nil && strings.TrimSpace(ctx.ChatTaskID) != "" {
+	if ctx != nil && executionKeepsParentToolSurface(ctx.Runtime.Execution) {
+		log.Printf("[semantic-routing] parent continuation keeps the current tool surface user=%q", userID)
+		return nil, nil, false, nil
+	}
+	// A computer helper, or a worker that already carries a real managed
+	// label, keeps the full registry. A discovery worker is the rest of the
+	// same turn: leaving it here made the name router read the clock
+	// stand-in as a time intent and suppress skill search.
+	if chatTaskWorkerKeepsLegacySurface(ctx) {
 		log.Printf("[semantic-routing] background chat task keeps the full tool surface user=%q", userID)
 		return nil, nil, false, nil
 	}
@@ -2420,7 +2492,11 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachm
 	}
 	planningText := semanticManagedPlanningText(userText, loopHistory(ctx))
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachmentsWithSession(requestCtx, userID, planningText, channel, rootTaskID, turnID, sessionID, semanticIntentFromLoopContext(ctx), attachments)
-	if handled && err == nil && surface != nil && ctx != nil {
+	if handled && err == nil && surface != nil && ctx != nil && ctx.Runtime.SemanticIntent == nil && semanticSurfaceIsModelDiscovery(surface) {
+		copied := surface.replan.Classification
+		bindLoopSemanticIntent(ctx, &copied)
+	}
+	if handled && err == nil && surface != nil && ctx != nil && (surface.replan == nil || !intent.ClassificationIsModelDiscovery(surface.replan.Classification)) {
 		h.noteSemanticSessionResidueCandidate(ctx, userID, channel, userText, surface.plan)
 	}
 	if handled && err == nil && surface != nil && ctx != nil {
@@ -2907,13 +2983,18 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if supplied != nil {
 		classification = *supplied
 	} else {
-		uic := h.getUnifiedClassifier()
-		if uic == nil {
-			return nil, false, nil
-		}
-		classification = uic.ClassifyContext(requestCtx, intent.MessageContext{Text: semanticUserIntentText(userText), UserID: userID})
+		// No supplied verdict is model discovery. The tool list is not
+		// another classifier call.
+		classification = intent.ModelDiscoveryClassification()
 	}
 	normalizeSemanticClassificationForTurn(&classification)
+	// The tree refused every governed family. Planning the local leader
+	// (office for a picture) is the defect. This error is the existing
+	// capability-extension gate: search_and_install_skill, then craft_tool,
+	// and no other tool.
+	if intent.ClassificationHasCatalogGap(classification) {
+		return nil, true, fmt.Errorf("semantic route has no governed capability needs: %s", classification.Reason)
+	}
 	// 2026-09-18 (17:42 production incident): a tree-timeout collapse preserves
 	// a strong L2 ssh signal only as RunnerUp — no declared label — so every
 	// downstream gate (managed check, floor exemption, leftover keep) saw a
@@ -3070,10 +3151,11 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if err != nil {
 		return nil, true, fmt.Errorf("resolve IM semantic capability needs: %w", err)
 	}
-	// The tool head scores the same vector the intent pass already computed.
-	// Managed turns never enter the name router, so this is the injection
-	// point: intent needs ∪ head top-k, still inside the capability plan.
-	needs = h.unionToolHeadNeeds(requestCtx, registry, needs, planning)
+	// The tool head is another classifier: it scores the sentence and adds
+	// the nearest tool. A discovery turn waits for the model to name one.
+	if !intent.ClassificationIsModelDiscovery(planning) {
+		needs = h.unionToolHeadNeeds(requestCtx, registry, needs, planning)
+	}
 	var carriedCaps []string
 	if lookupContinuationFetches(requestCtx) && planning.Primary == intent.LabelSearch {
 		// A cold search leaves web_fetch latent. Raising the selection budget
@@ -5634,6 +5716,11 @@ func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.
 	if !handled || prepared == nil {
 		return nil, nil, fmt.Errorf("semantic petition expansion no governed candidate")
 	}
+	// The re-plan's need set is the rule-template ceiling. The live plan also
+	// carries continuation siblings the host appended after that ceiling, and
+	// any authority the parent already signed. Copy those parent nodes back
+	// whole before the superset check, which otherwise rejects the whole expansion.
+	prepared.plan = agentservice.PreservePetitionParentAuthority(surface.plan, prepared.plan, imSemanticIntentRuleSet[label])
 	if err := validateSemanticPetitionExpansion(surface.plan, prepared.plan, label); err != nil {
 		return nil, nil, err
 	}

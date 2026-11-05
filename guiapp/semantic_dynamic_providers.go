@@ -319,7 +319,13 @@ func localMCPStartStillOwed(app *App, entry corelib.LocalMCPServerEntry, local *
 }
 
 func semanticMCPEntry(ctx context.Context, principal agentservice.Principal, contracts agentservice.DynamicCapabilityContractResolver, serverID, serverName string, capability *corelib.MCPServerCapabilityRef, discovered MCPToolView) agentservice.MCPToolEntry {
-	entry := agentservice.MCPToolEntry{ServerID: strings.TrimSpace(serverID), ServerName: strings.TrimSpace(serverName), ToolName: strings.TrimSpace(discovered.Name), InputSchema: discovered.InputSchema}
+	entry := agentservice.MCPToolEntry{
+		ServerID:    strings.TrimSpace(serverID),
+		ServerName:  strings.TrimSpace(serverName),
+		ToolName:    strings.TrimSpace(discovered.Name),
+		Description: strings.TrimSpace(discovered.Description),
+		InputSchema: discovered.InputSchema,
+	}
 	if capability != nil {
 		entry.CapabilityGlobalKey = strings.TrimSpace(capability.GlobalKey)
 		entry.InstalledCapabilityID = strings.TrimSpace(capability.CapabilityID)

@@ -20,6 +20,11 @@ const semanticL2ActionHintMinScore = 0.78
 // read the previous turn (mailbox_read) and the open residue froze the plan
 // to message.read.mailbox, so the send tool was "not available this turn".
 func semanticBareL2ActionHint(r intent.ClassificationResult) (intent.ClassificationResult, bool) {
+	// The runner-up on a catalog gap is the tool the tree refused. Admitting
+	// it is how a picture request was planned as an office deck.
+	if intent.ClassificationHasCatalogGap(r) {
+		return intent.ClassificationResult{}, false
+	}
 	if !r.Degraded || (r.Primary != "" && r.Primary != intent.LabelUnknown && !r.Primary.IsNonCapabilityLabel()) {
 		return intent.ClassificationResult{}, false
 	}

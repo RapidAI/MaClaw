@@ -3,7 +3,6 @@ package guiapp
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -175,33 +174,11 @@ func TestDegradedTurnRecoveryReclassifiesAndContinues(t *testing.T) {
 	if hooks.continuationCount() != 1 {
 		t.Fatalf("continuations = %d, want 1; notices=%v", hooks.continuationCount(), hooks.notices)
 	}
-	if len(hooks.activated) != 1 || len(hooks.activated[0]) == 0 {
-		t.Fatalf("activated = %v, want the missing write tools", hooks.activated)
+	if len(hooks.activated) != 1 || len(hooks.activated[0]) != 1 || hooks.activated[0][0] != "model_discovery" {
+		t.Fatalf("activated = %v, want model discovery", hooks.activated)
 	}
-	found := false
-	for _, name := range hooks.activated[0] {
-		if strings.HasPrefix(name, "knowledge_save_") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("activated = %v, want a knowledge_save_* tool", hooks.activated[0])
-	}
-	// The fresh verdict must not stay swallowed by the tombstone: a successful
-	// recovery lifts it and stores the result, so a resend/adoption hits the
-	// cache instead of re-paying the L3 call.
-	cached, ok := uic.ClassifyCached(msg)
-	if !ok || cached.Degraded || cached.Primary != intent.LabelKnowledgeWrite {
-		t.Fatalf("recovered scope must be cacheable again, cached=%+v ok=%v", cached, ok)
-	}
-	if source, ok := uic.CachedClassificationProvenance(msg); !ok || source != intent.CacheSourceTree {
-		t.Fatalf("provenance = %q ok=%v, want tree for the recovered verdict", source, ok)
-	}
-	if calls != 1 {
-		t.Fatalf("llm calls = %d, want 1 (single reclassification)", calls)
-	}
-	if again := uic.Classify(msg); again.Primary != intent.LabelKnowledgeWrite || calls != 1 {
-		t.Fatalf("repeat classify = %+v calls=%d, want warm-cache hit without a new LLM call", again, calls)
+	if calls != 0 {
+		t.Fatalf("llm calls = %d, want 0 — recovery must not classify", calls)
 	}
 }
 
@@ -307,7 +284,8 @@ func TestDegradedTurnRecoverySecretPayloadAutoContinues(t *testing.T) {
 	}
 }
 
-// Still-degraded reclassification → explicit unavailable notice.
+// A down classifier used to notice and stop. Recovery now continues on
+// discovery and does not call the classifier.
 func TestDegradedTurnRecoveryStillDegradedNotices(t *testing.T) {
 	uic := intent.New(intent.Config{
 		LLMFunc: func(_, _ string) (string, error) {
@@ -331,16 +309,16 @@ func TestDegradedTurnRecoveryStillDegradedNotices(t *testing.T) {
 	}
 	h.runDegradedTurnRecovery(plan)
 
-	if hooks.continuationCount() != 0 {
-		t.Fatalf("continuations = %d, want 0 while the endpoint stays down", hooks.continuationCount())
+	if hooks.continuationCount() != 1 {
+		t.Fatalf("continuations = %d, want 1 on model discovery", hooks.continuationCount())
 	}
-	if hooks.noticeCount() != 1 || hooks.notices[0] != degradedRecoveryNoticeUnavailable {
-		t.Fatalf("notices = %v, want the unavailable notice", hooks.notices)
+	if hooks.noticeCount() != 0 {
+		t.Fatalf("notices = %v, want none", hooks.notices)
 	}
 }
 
-// The non-degraded verdict that does not activate the missing write tools
-// (e.g. the endpoint recovered but still mislabels) must not continue.
+// A verdict that is not a write used to stop recovery. The continuation
+// is discovery either way, and the classifier is not called.
 func TestDegradedTurnRecoveryNonWriteVerdictDoesNotContinue(t *testing.T) {
 	uic := intent.New(intent.Config{
 		LLMFunc: func(_, _ string) (string, error) {
@@ -364,11 +342,11 @@ func TestDegradedTurnRecoveryNonWriteVerdictDoesNotContinue(t *testing.T) {
 	}
 	h.runDegradedTurnRecovery(plan)
 
-	if hooks.continuationCount() != 0 {
-		t.Fatalf("continuations = %d, want 0 for a non-write verdict", hooks.continuationCount())
+	if hooks.continuationCount() != 1 {
+		t.Fatalf("continuations = %d, want 1 on model discovery", hooks.continuationCount())
 	}
-	if hooks.noticeCount() != 1 || hooks.notices[0] != degradedRecoveryNoticeUnavailable {
-		t.Fatalf("notices = %v, want the unavailable notice", hooks.notices)
+	if hooks.noticeCount() != 0 {
+		t.Fatalf("notices = %v, want none", hooks.notices)
 	}
 }
 

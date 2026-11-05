@@ -1,7 +1,6 @@
 package guiapp
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -281,55 +280,15 @@ var (
 	}
 )
 
-// runDegradedTurnRecovery re-classifies the degraded turn's exact message
-// scope and, on success, initiates the continuation run.
+// runDegradedTurnRecovery continues the turn on the discovery surface.
+// The chat model names the tool. Recovery does not classify the sentence
+// to choose one.
 func (h *IMMessageHandler) runDegradedTurnRecovery(plan degradedRecoveryPlan) {
-	uic := h.getUnifiedClassifier()
-	if uic == nil {
-		emitDegradedRecoveryNoticeFn(h, plan.userID, plan.requestID, degradedRecoveryNoticeUnavailable)
+	if h == nil {
 		return
 	}
-	// An authoritative tree verdict that landed before the tombstone (e.g. a
-	// late tree verdict that beat this goroutine) is adopted directly —
-	// tree-provenance cache entries are trusted without a new LLM call.
-	if cached, ok := uic.ClassifyCached(plan.message); ok && !cached.Degraded {
-		if source, _ := uic.CachedClassificationProvenance(plan.message); source == intent.CacheSourceTree {
-			if activated := degradedRecoveryActivatesMissingWriteTools(cached, plan.turnTools); len(activated) > 0 {
-				log.Printf("[degraded-recovery] adopted pre-landed tree verdict owner=%q origin_request_id=%q primary=%s activated=%v",
-					plan.userID, plan.requestID, cached.Primary, activated)
-				h.finishDegradedRecovery(plan, activated)
-				return
-			}
-		}
-	}
-	// Per-key invalidation BEFORE reclassification: suppresses cache stores
-	// for exactly this scope (degraded hint, racing late verdicts) so the
-	// reclassification cannot be swallowed by a stale entry. Keep the returned
-	// token: a concurrent recovery for the same text re-arms this scope, and
-	// only this token may disarm our own tombstone later.
-	tombstoneToken := uic.AddCacheTombstone(plan.message)
-	ctx, cancel := context.WithTimeout(context.Background(), degradedReclassificationTimeout)
-	result := uic.ClassifyContext(ctx, plan.message)
-	cancel()
-	activated := degradedRecoveryActivatesMissingWriteTools(result, plan.turnTools)
-	if len(activated) == 0 {
-		log.Printf("[degraded-recovery] reclassification did not recover a write capability owner=%q origin_request_id=%q layer=%d primary=%s degraded=%v",
-			plan.userID, plan.requestID, result.Layer, result.Primary, result.Degraded)
-		emitDegradedRecoveryNoticeFn(h, plan.userID, plan.requestID, degradedRecoveryNoticeUnavailable)
-		return
-	}
-	// Lift the tombstone and store the fresh verdict. The reclassification's
-	// own store was suppressed while the tombstone was armed; without this
-	// the scope could not be cached (resends/adoptions would re-pay the L3
-	// call) until the TTL expired. Remove BEFORE the store so the fresh
-	// verdict is not swallowed by our own tombstone. The token makes the
-	// remove conditional: if another recovery re-armed the scope meanwhile,
-	// their guard stays up and our store below is suppressed instead.
-	uic.RemoveCacheTombstone(plan.message, tombstoneToken)
-	uic.StoreRecoveredClassification(plan.message, result)
-	log.Printf("[degraded-recovery] reclassification recovered write capability owner=%q origin_request_id=%q primary=%s activated=%v",
-		plan.userID, plan.requestID, result.Primary, activated)
-	h.finishDegradedRecovery(plan, activated)
+	log.Printf("[degraded-recovery] continuing on model discovery owner=%q origin_request_id=%q", plan.userID, plan.requestID)
+	h.finishDegradedRecovery(plan, []string{"model_discovery"})
 }
 
 // finishDegradedRecovery applies the end-of-recovery policy: a newer user

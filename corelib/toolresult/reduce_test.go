@@ -254,6 +254,28 @@ func TestStructuredPreview_ToolsSearchKeepsDecisionWhenOverLimit(t *testing.T) {
 	}
 }
 
+func TestStructuredPreview_ToolsSearchKeepsCallUnderALongSkillBody(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("tools_search results for \"skill\":\n")
+	b.WriteString("技能步骤从这里开始。\n")
+	b.WriteString("- 先做这个\n")
+	b.WriteString("- 再做那个\n")
+	b.WriteString(strings.Repeat("技能步骤。", 400))
+	b.WriteString("\n- web_search — Search the public web. [已在当前工具面]\n")
+	const call = "立即调用已在当前工具面的名字：web_search。不要再查询这些名字。"
+	b.WriteString(call + "\n")
+	preview := StructuredPreview("tools_search", b.String(), 900)
+	if !strings.Contains(preview, "技能步骤从这里开始") || !strings.Contains(preview, "- 先做这个") {
+		t.Fatalf("skill body was cut at the first bullet: %s", preview)
+	}
+	if !strings.Contains(preview, call) {
+		t.Fatalf("call was dropped: %s", preview)
+	}
+	if len(preview) > 900 {
+		t.Fatalf("preview is %d bytes", len(preview))
+	}
+}
+
 func TestStructuredPreview_ComputerObserveKeepsRefsWhenOverLimit(t *testing.T) {
 	raw := "mode=text_primary screen=100x100 scale=1.00 screen_index=0\nwindows:\n  - Word\nelements (80):\n"
 	for i := 0; i < 80; i++ {

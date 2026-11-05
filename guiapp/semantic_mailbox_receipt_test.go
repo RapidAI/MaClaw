@@ -274,11 +274,11 @@ func TestTrustedMailboxSendFreezesADraftAndDoesNotDial(t *testing.T) {
 	}
 	directory := semanticToolsSearchRun(cb, `{"query":"email"}`)
 	confirmLine := "等待用户确认：" + name + "。不要再次调用，也不要用其它工具完成该动作。"
-	if !strings.HasSuffix(strings.TrimSpace(directory), confirmLine) {
+	if strings.Count(directory, confirmLine) != 1 || semanticToolsSearchTailKey(directory) == "" || semanticToolsSearchTailKey(directory) == confirmLine {
 		t.Fatalf("confirmation directory tail=%q", directory)
 	}
 	filtered := semanticToolsSearchRun(cb, `{"query":"run a command","needs":["bash"]}`)
-	if strings.Contains(filtered, "- "+name+" —") || !strings.HasSuffix(strings.TrimSpace(filtered), confirmLine) {
+	if strings.Contains(filtered, "- "+name+" —") || strings.Count(filtered, confirmLine) != 1 || semanticToolsSearchTailKey(filtered) == "" || semanticToolsSearchTailKey(filtered) == confirmLine {
 		t.Fatalf("bash filter dropped the waiting send:\n%s", filtered)
 	}
 	replay := cb.ExecuteToolCall(name, `{"action":"send","to":["a@ex.com"],"subject":"状态","text":"在线"}`, "call-mail-send").Result

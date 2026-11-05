@@ -185,6 +185,12 @@ func TestSemanticToolsSearchUnmatchedNeedsDoesNotSwallowListedDirective(t *testi
 	if !strings.Contains(first, "needs filter matched nothing") {
 		t.Fatalf("unknown need must fall back to the directory: %s", first)
 	}
+	if strings.Contains(first, "不要告诉用户工具缺失") || strings.Contains(first, "现在调用") {
+		t.Fatalf("unmatched need must not order the planned tool: %s", first)
+	}
+	if !strings.Contains(first, "所查的名字不在本回合目录里") {
+		t.Fatalf("unmatched need must say the name is absent: %s", first)
+	}
 	second := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"save it","needs":["knowledge_save_text"]}`)
 	if !strings.Contains(second, semanticToolsSearchListedDirectivePrefix+"knowledge_save_text") {
 		t.Fatalf("exact lookup after a fallback dump must still direct the listed tool: %s", second)
@@ -782,6 +788,21 @@ func TestSemanticToolsSearchListedSurfaceDoesNotOrderEveryGrant(t *testing.T) {
 	}
 	if last := semanticToolsSearchLastLine(got); last != semanticToolsSearchListedCloser {
 		t.Fatalf("closing line = %q, want %s", last, semanticToolsSearchListedCloser)
+	}
+}
+
+// A classified page with no listed directive and no plan still ends on that
+// turn's petition rule. Discovery omits the same sentence because it has no
+// once-per-class budget.
+func TestSemanticToolsSearchClassifiedPageKeepsPetitionFooter(t *testing.T) {
+	cb := semanticToolsSearchRegressionCallbacks(0)
+	got := cb.runSemanticToolsSearch(`{"query":"目录"}`)
+	if !strings.Contains(got, "每轮每类限一次") || !strings.Contains(got, "不在普通回合里") {
+		t.Fatalf("classified page lost its petition rule:\n%s", got)
+	}
+	again := cb.runSemanticToolsSearch(`{"query":"目录"}`)
+	if again != semanticToolsSearchRepeatExhausted {
+		t.Fatalf("classified repeat = %s", again)
 	}
 }
 

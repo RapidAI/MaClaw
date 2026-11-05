@@ -195,6 +195,14 @@ func TestSteerLabelAlreadyPlannedRequiresEveryRequiredLeg(t *testing.T) {
 
 func TestLiveSteerAdmitsPDFOntoLookupPlan(t *testing.T) {
 	cb, _ := liveDataDesktopBeforePDFPetition(t)
+	// The shared fixture declares document_generate so generate_pdf stays
+	// withheld until search commits. A steer only admits a label the turn
+	// has not already named, so this case starts from the search plan alone.
+	if cb.semanticSurface != nil && cb.semanticSurface.replan != nil {
+		class := cb.semanticSurface.replan.Classification
+		class.Secondary = nil
+		cb.semanticSurface.replan.Classification = class
+	}
 	var classified string
 	cb.handler.unifiedClassifier = intent.New(intent.Config{LLMFunc: func(_, message string) (string, error) {
 		classified = message

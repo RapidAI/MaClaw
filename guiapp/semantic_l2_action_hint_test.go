@@ -58,6 +58,8 @@ func TestBareL2HintIgnoresWeakOrReadOnlyOrConfidentTurns(t *testing.T) {
 		{Primary: intent.LabelUnknown, Degraded: true, RunnerUp: intent.LabelMailboxSend, RunnerUpScore: 0.70},     // weak
 		{Primary: intent.LabelUnknown, Degraded: true, RunnerUp: intent.LabelMailboxRead, RunnerUpScore: 0.90},     // read-only
 		{Primary: intent.LabelMailboxRead, Confidence: 0.9, RunnerUp: intent.LabelMailboxSend, RunnerUpScore: 0.9}, // decided
+		{Primary: intent.LabelNonCoding, Confidence: 0.93, Degraded: true, RunnerUp: intent.LabelOffice, RunnerUpScore: 0.87,
+			Reason: "catalog gap: tree non_coding(0.930) refused local leader office(0.869)"},
 	}
 	for i, c := range cases {
 		if _, ok := semanticBareL2ActionHint(c); ok {

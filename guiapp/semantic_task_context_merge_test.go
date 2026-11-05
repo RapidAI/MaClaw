@@ -35,6 +35,13 @@ func TestPendingAnswerDoesNotMergePureDocumentDelivery(t *testing.T) {
 	if !pendingAnswerPrefersTaskMerge(mixed, true) {
 		t.Fatal("delivery plus a lookup must still merge")
 	}
+	gap := &intent.ClassificationResult{
+		Primary: intent.LabelNonCoding, Confidence: 0.70, Layer: 3,
+		Reason: "catalog gap: tree non_coding(0.700) refused local leader office(0.869)",
+	}
+	if pendingAnswerPrefersTaskMerge(gap, true) {
+		t.Fatal("a catalog gap answer was merged into the open task")
+	}
 }
 
 func TestSemanticClassificationNeedsTaskContext(t *testing.T) {
@@ -50,6 +57,8 @@ func TestSemanticClassificationNeedsTaskContext(t *testing.T) {
 		{"empty primary", &intent.ClassificationResult{Confidence: .5}, true},
 		{"managed office", &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .9}, false},
 		{"managed search", &intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: .9}, false},
+		{"plain non_coding", &intent.ClassificationResult{Primary: intent.LabelNonCoding, Confidence: .9, Reason: "tree-after-embedding: non_coding (0.900)"}, true},
+		{"catalog gap", &intent.ClassificationResult{Primary: intent.LabelNonCoding, Confidence: .93, Reason: "catalog gap: tree non_coding(0.930) refused local leader office(0.869)"}, false},
 	}
 	for _, tc := range cases {
 		if got := semanticClassificationNeedsTaskContext(tc.result); got != tc.want {

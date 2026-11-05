@@ -211,27 +211,28 @@ func semanticPlaceholderRemoteURLIntakeReason(name, argsJSON string) string {
 	return name + semanticPlaceholderRemoteURLReason
 }
 
-func (h *IMMessageHandler) acquireTrustedRemote(principalID, rawURL string, publicNetworkOnly bool) (string, error) {
+func (h *IMMessageHandler) acquireTrustedRemote(principalID, rawURL string, publicNetworkOnly bool) (string, string, error) {
 	if h == nil {
-		return "", effectNotStarted(fmt.Errorf("trusted_artifact_acquire_unavailable"))
+		return "", "", effectNotStarted(fmt.Errorf("trusted_artifact_acquire_unavailable"))
 	}
 	principalID = strings.TrimSpace(principalID)
 	if principalID == "" {
-		return "", effectNotStarted(fmt.Errorf("trusted_artifact_acquire_principal_required"))
+		return "", "", effectNotStarted(fmt.Errorf("trusted_artifact_acquire_principal_required"))
 	}
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
-		return "", effectNotStarted(fmt.Errorf("trusted_artifact_acquire_url_required"))
+		return "", "", effectNotStarted(fmt.Errorf("trusted_artifact_acquire_url_required"))
 	}
 	if h.semanticTrustedArtifactAcquire != nil {
-		return h.semanticTrustedArtifactAcquire(principalID, rawURL)
+		text, err := h.semanticTrustedArtifactAcquire(principalID, rawURL)
+		return text, "", err
 	}
 	// read_file opens this principal's workspace. The global policy owner is
 	// another session's loop under concurrency, and an empty one falls through
 	// to the desktop default, so the receipt's relative name would miss.
 	base := strings.TrimSpace(h.toolDownloadBaseDirForOwner(principalID))
 	if base == "" {
-		return "", effectNotStarted(fmt.Errorf("trusted_artifact_acquire_workspace_unavailable"))
+		return "", "", effectNotStarted(fmt.Errorf("trusted_artifact_acquire_workspace_unavailable"))
 	}
 	name := downloadFileNameFromURL(rawURL)
 	opts := &websearch.FetchOptions{
@@ -244,17 +245,17 @@ func (h *IMMessageHandler) acquireTrustedRemote(principalID, rawURL string, publ
 	}
 	if !publicNetworkOnly {
 		if err := websearch.ApplyHubDownload(opts, h.getWebSearchStrategy()); err != nil {
-			return "", effectNotStarted(err)
+			return "", "", effectNotStarted(err)
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(opts.TimeoutS)*time.Second)
 	defer cancel()
 	result, err := websearch.FetchCtx(ctx, rawURL, opts)
 	if err != nil {
-		return "", semanticTrustedAcquireRemoteError(err)
+		return "", "", semanticTrustedAcquireRemoteError(err)
 	}
 	name = semanticAcquireNormalizeExtension(base, name, result)
-	return semanticTrustedAcquireRemoteProjection(result, name), nil
+	return semanticTrustedAcquireRemoteProjection(result, name), filepath.Join(base, name), nil
 }
 
 // semanticAcquireNormalizeExtension renames a freshly acquired artifact so it

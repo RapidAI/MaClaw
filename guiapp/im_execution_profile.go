@@ -105,47 +105,40 @@ func (h *IMMessageHandler) classifyIMExecutionProfileAndSemanticContext(ctx cont
 	}
 	structuralProfile, structurallyForced := hardStructuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse)
 	if h.getUnifiedClassifier() == nil && structurallyForced {
-		return structuralProfile, nil
+		// The profile stays structural. The tool list is still discovery:
+		// an empty semantic result used to fall through to name routing.
+		discovery := intent.ModelDiscoveryClassification()
+		return structuralProfile, &discovery
 	}
-	// Classification must still happen for a structurally-full turn.  The
-	// execution profile controls budgets, while the semantic result controls
-	// capability selection; returning early for attachments/background/workflow
-	// shapes used to leave a governed request without SemanticIntent and let it
-	// re-enter the legacy router.
+	// The execution profile controls budgets. Tool choice is the chat
+	// model's. A structurally full turn still gets a discovery semantic
+	// result so the name router cannot fill the gap.
 	var semantic *intent.ClassificationResult
-	// Nil semantic is required. Returning the embedding result would enter
-	// classifyWithTaskContextMerge, which calls ClassifyContext again for a
-	// generic continuation and waits out a second tree. Parent tools are
-	// restored by continuationKeepsParentExecution, which still runs when
-	// semantic is nil.
+	// A short follow-up of a full parent keeps that tool list. Nil semantic
+	// is required: a continuation label is unmanaged and the miss fallback
+	// would rank a new list. A named skill is not that follow-up.
 	if profile, ok := h.fastPathBeforeIntentTree(msg, structurallyForced, recentHistory); ok {
-		return profile, nil
+		if strings.TrimSpace(profile.Reason) == "social greeting" {
+			return profile, nil
+		}
+		if !explicitSkillInvocationForProfile(msg.Text) {
+			return profile, nil
+		}
 	}
-	if uic := h.getUnifiedClassifier(); uic != nil {
-		result := uic.ClassifyContext(ctx, classificationMessageFromHistory(msg.UserID, msg.Text, recentHistory))
-		semantic = &result
-	}
-	normalizeSemanticClassificationForTurn(semantic)
+	// Tool choice belongs to the chat model. The intent classifier is not
+	// consulted. The clock label only opens a surface the model can petition.
+	discovery := intent.ModelDiscoveryClassification()
+	semantic = &discovery
 	if structurallyForced {
 		if isAskUserResponse && askUserResponseKeepsSemanticBudget(msg, workflowAgentLoop, semantic) {
 			return askUserSemanticExecutionProfile(semantic, h.executionContractForRegisteredToolName), semantic
 		}
 		return structuralProfile, semantic
 	}
-	if semantic != nil && imSemanticIntentIsManaged(*semantic) {
-		return classifyIMExecutionProfileWithSemanticAndContracts(msg, workflowAgentLoop, isAskUserResponse, semantic, h.executionContractForRegisteredToolName), semantic
-	}
 	if profile, forced := lengthFullExecutionProfile(msg); forced {
 		return profile, semantic
 	}
-	// ACP Mode B short turns: force light without embedding/UIC. Avoids
-	// multi-second tool-routing fusion and oversized full prompts for chatty
-	// editor messages while real coding asks (paths/URLs/fences/long text)
-	// still hit full via structural/length gates above.
 	if acpPreferLightProfile(msg) {
-		// Keep the light profile, not the UIC result: a short ACP turn must
-		// not become a closed managed grant. Loop start leftover then treats
-		// the unset SemanticIntent as a chat leftover, not CoreToolNames+UIC.
 		return ExecutionProfile{
 			Layer:                string(executionLayerLight),
 			TaskType:             "general",
@@ -155,10 +148,9 @@ func (h *IMMessageHandler) classifyIMExecutionProfileAndSemanticContext(ctx cont
 			RequiredCapabilities: []string{"current_data", "time", "web", "fetch", "status", "files"},
 			ToolBudget:           8,
 			IterationBudget:      3,
-		}, nil
+		}, semantic
 	}
-	profile := classifyIMExecutionProfileWithSemanticAndContracts(msg, workflowAgentLoop, isAskUserResponse, semantic, h.executionContractForRegisteredToolName)
-	return profile, semantic
+	return fullExecutionProfile("model discovery"), semantic
 }
 
 func classifyIMExecutionProfileWithSemantic(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool, semantic *intent.ClassificationResult) ExecutionProfile {
@@ -400,10 +392,21 @@ func confidentNewReadOnlyTask(semantic *intent.ClassificationResult) bool {
 	}
 }
 
-// fastPathBeforeIntentTree skips the synchronous intent tree for two turns
-// whose tree result does not change the tool surface:
-// a pure social utterance, and a short generic continuation of a full parent.
-// Capability-shaped text still falls through to ClassifyContext.
+// executionKeepsParentToolSurface is a follow-up that already decided to
+// keep the previous tool list. Discovery and the name router must not
+// replace that list.
+func executionKeepsParentToolSurface(profile ExecutionProfile) bool {
+	switch strings.TrimSpace(profile.Reason) {
+	case shortContinuationReason, lookupContinuationReason:
+		return true
+	default:
+		return false
+	}
+}
+
+// fastPathBeforeIntentTree skips tool selection for two turns whose wording
+// does not choose a new list: a pure social utterance, and a short
+// continuation of a full parent. Anything else is model discovery.
 func (h *IMMessageHandler) fastPathBeforeIntentTree(msg IMUserMessage, structurallyForced bool, recentHistory []string) (ExecutionProfile, bool) {
 	if h == nil || structurallyForced {
 		return ExecutionProfile{}, false
@@ -419,16 +422,10 @@ func (h *IMMessageHandler) fastPathBeforeIntentTree(msg IMUserMessage, structura
 	if !shortContinuationText(text) || !h.parentExecutionIsFull(msg.UserID) {
 		return ExecutionProfile{}, false
 	}
-	uic := h.getUnifiedClassifier()
-	if uic == nil {
-		return ExecutionProfile{}, false
-	}
-	emb := uic.ClassifyEmbeddingOnly(classificationMessageFromHistory(msg.UserID, text, recentHistory))
-	if !deferIntentTreeForParentContinuation(emb) {
-		return ExecutionProfile{}, false
-	}
-	log.Printf("[exec-router] short parent continuation skips intent tree text_len=%d l2=%s conf=%.2f", utf8.RuneCountInString(text), emb.Primary, emb.Confidence)
-	return deferredParentContinuationProfile(emb.Confidence), true
+	// A short follow-up keeps the parent tools. That decision is the open
+	// task, not a new reading from the intent model.
+	log.Printf("[exec-router] short parent continuation skips intent tree text_len=%d", utf8.RuneCountInString(text))
+	return deferredParentContinuationProfile(1), true
 }
 
 func socialGreetingExecutionProfile() ExecutionProfile {
@@ -698,13 +695,40 @@ func nonLightToolNames(tools []map[string]interface{}) []string {
 // companion instead of the open obligation. Artifact-bound names stay eligible
 // here: a turn whose obligation is speech-to-text still has to keep asr.
 // A catalog that merely rendered asr is dropped later, when no obligation
-// names that capability.
+// names that capability. Discovery presets and chat-task controls are how a
+// discovery turn starts. Recording them made the next short reply look like
+// a full parent and sent it back through the name router.
 func parentExecutionSurfaceName(name string) bool {
 	name = strings.TrimSpace(name)
 	if name == "" || agent.IsLightTurnToolAllowed(name) || ambientRetrievalSurfaceName(name) {
 		return false
 	}
+	if discoveryPresetSurfaceName(name) || chatTaskControlSurfaceName(name) {
+		return false
+	}
 	return true
+}
+
+// discoveryPresetSurfaceName is a function every discovery turn already lists.
+// It is the directory, not work the next reply has to keep.
+func discoveryPresetSurfaceName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case semanticToolsSearchName, "search_and_install_skill", "craft_tool":
+		return true
+	default:
+		return false
+	}
+}
+
+// chatTaskControlSurfaceName is a host control for background work. It is
+// not an execution tool a short reply should republish by itself.
+func chatTaskControlSurfaceName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case chatTaskToolDispatch, chatTaskToolSteer, chatTaskToolStop, chatTaskToolRequestInput:
+		return true
+	default:
+		return false
+	}
 }
 
 // omitArtifactBoundRouteNames drops speech-to-text and file delivery that

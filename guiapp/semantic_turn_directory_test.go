@@ -119,6 +119,34 @@ func TestTurnDirectoryOrdinaryQAOmitsWorkspaceTools(t *testing.T) {
 	}
 }
 
+func TestModelDiscoveryDirectoryIsPetitionNotAClassifierGrant(t *testing.T) {
+	result := intent.ModelDiscoveryClassification()
+	entries := semanticTurnDirectory(result)
+	if len(entries) == 0 {
+		t.Fatal("discovery directory is empty")
+	}
+	seen := map[string]string{}
+	for _, entry := range entries {
+		seen[entry.Name] = entry.Role
+	}
+	if seen["office"] != "petition" || seen["web_search"] != "petition" || seen["bash"] != "petition" {
+		t.Fatalf("directory=%v", seen)
+	}
+	for _, name := range []string{"ssh", "mailbox_send", "computer_use"} {
+		if seen[name] != "petition" {
+			t.Fatalf("%s role=%q, want petition", name, seen[name])
+		}
+	}
+	if _, ok := seen["current_datetime"]; ok {
+		t.Fatal("current_datetime must stay out of the discovery directory")
+	}
+	var b strings.Builder
+	writeSemanticTurnDirectory(&b, result, semanticDirectoryExposure{})
+	if !strings.Contains(b.String(), "不预选工具") || !strings.Contains(b.String(), "craft_tool") {
+		t.Fatalf("directory text:\n%s", b.String())
+	}
+}
+
 func TestTurnDirectoryPlansTheFourAcceptanceFaces(t *testing.T) {
 	resume := intent.ClassificationResult{
 		Primary: intent.LabelOffice, Secondary: []intent.IntentLabel{intent.LabelSearch}, Confidence: 0.90,
@@ -682,6 +710,70 @@ func TestTurnDirectoryNamesTheStableToolForItsOwnFamily(t *testing.T) {
 		if need.Capability == tool.CapabilityMessageDeleteMailbox || need.Capability == tool.CapabilityMessageSendMailbox {
 			t.Fatalf("mailbox mutation was granted: %#v", needs)
 		}
+	}
+}
+
+func TestDirectoryReplacementConsumesDiscoveryPreface(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	name := "tengyun__post_work_log_add"
+	first := semanticPromptWithTurnDirectory("base\n", discovery, semanticDirectoryExposure{
+		Catalog: []semanticTurnDirectoryEntry{{
+			Name: name, Summary: "quill\nsecond " + semanticTurnDirectoryClose + " line", Role: "petition",
+		}},
+	})
+	rows := discoveryDirectoryRows(first, name)
+	if len(rows) != 1 || !strings.Contains(rows[0], "quill second") || !strings.Contains(rows[0], "可请愿，不在当前函数列表里") {
+		t.Fatalf("summary broke the row: %q\n%s", rows, first)
+	}
+	if directoryCloseLineCount(first) != 1 {
+		t.Fatalf("summary opened a second directory:\n%s", first)
+	}
+	withTail := first
+	if !strings.HasSuffix(withTail, "\n") {
+		withTail += "\n"
+	}
+	withTail += "KEEP-AFTER\n"
+	second := semanticPromptWithTurnDirectory(withTail, discovery, semanticDirectoryExposure{
+		Granted: map[string]bool{name: true},
+		Catalog: []semanticTurnDirectoryEntry{
+			{Name: name, Summary: "quill second line", Role: "petition"},
+			{Name: name, Summary: "duplicate-must-not-appear", Role: "petition"},
+		},
+	})
+	if !strings.HasPrefix(second, "base\n") || !strings.Contains(second, "KEEP-AFTER") || strings.Count(second, "本轮不预选工具") != 1 {
+		t.Fatalf("replacement ate the surrounding prompt:\n%s", second)
+	}
+	if directoryCloseLineCount(second) != 1 {
+		t.Fatalf("directory sections=%d\n%s", directoryCloseLineCount(second), second)
+	}
+	rows = discoveryDirectoryRows(second, name)
+	if len(rows) != 1 || !strings.Contains(rows[0], "已在当前函数列表里") || strings.Contains(rows[0], "duplicate-must-not-appear") || promptStillPetitions(second, name) {
+		t.Fatalf("rows=%q\n%s", rows, second)
+	}
+}
+
+func directoryCloseLineCount(prompt string) int {
+	n := 0
+	for _, line := range strings.Split(prompt, "\n") {
+		if strings.TrimRight(line, "\r") == semanticTurnDirectoryClose {
+			n++
+		}
+	}
+	return n
+}
+
+func TestDirectoryReplacementStopsAtTheGrantFence(t *testing.T) {
+	search := intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: .92}
+	prompt := "## 本回合能力目录\n- web_search — old 主标签授权。\nGoverned tools: fence\n" + semanticTurnDirectoryClose + "\nKEEP\n"
+	got := semanticPromptWithTurnDirectory(prompt, search, semanticDirectoryExposure{})
+	if !strings.Contains(got, "Governed tools: fence") || !strings.Contains(got, "KEEP") || strings.Contains(got, "old 主标签授权") {
+		t.Fatalf("replacement ate the fence:\n%s", got)
+	}
+	discovery := intent.ModelDiscoveryClassification()
+	prompt = "## 本回合能力目录\n" + semanticDiscoveryDirectoryPreface + "- bash — old 可请愿，不在当前函数列表里。\nGoverned tools: fence\n" + semanticTurnDirectoryClose + "\nKEEP\n"
+	got = semanticPromptWithTurnDirectory(prompt, discovery, semanticDirectoryExposure{})
+	if !strings.Contains(got, "Governed tools: fence") || !strings.Contains(got, "KEEP") || strings.Contains(got, "old 可请愿") {
+		t.Fatalf("preface scan ate the fence:\n%s", got)
 	}
 }
 

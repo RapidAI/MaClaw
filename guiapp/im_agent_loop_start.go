@@ -217,7 +217,11 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 					return lookupContinuationCarriedGrant(profile, carried, name)
 				}
 			}
-			tools = closedManagedSemanticDefinitionsKeeping(semanticTools, surface, lightPrompt, keepCarried)
+			if semanticSurfaceIsModelDiscovery(surface) {
+				tools = modelDiscoveryVisibleTools(h, nil)
+			} else {
+				tools = closedManagedSemanticDefinitionsKeeping(semanticTools, surface, lightPrompt, keepCarried)
+			}
 			if len(tools) == 0 {
 				log.Printf("[semantic-routing] managed surface unavailable user=%q reason=closed surface empty", opts.UserID)
 				hostReject = semanticHostRejectResponseForManagedSurfaceFailure(nil)
@@ -243,6 +247,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	// classification for that turn on its own.
 	hostGoalContinuation := goalContinuationTurn(opts.UserText, opts.Platform) || goalContinuationTurn(userText, "")
 	hostSessionRound := sessionRoundTurn(opts.UserText, opts.Platform) || sessionRoundTurn(userText, "")
+	parentCarry := ctx != nil && executionKeepsParentToolSurface(ctx.Runtime.Execution)
 	if ctx != nil {
 		hostGoalContinuation = hostGoalContinuation || goalContinuationTurn(opts.UserText, ctx.Platform)
 		hostSessionRound = hostSessionRound || sessionRoundTurn(opts.UserText, ctx.Platform)
@@ -252,8 +257,9 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		// that as a routing miss chat-projects the inherited label and strips
 		// the tools the foreground turn was using. A session wave is the same
 		// kind of host turn: the miss fallback would replace the tools the
-		// previous round was using.
-		if !hostGoalContinuation && !hostSessionRound && !chatTaskWorkerLoop(ctx) {
+		// previous round was using. A parent carry restores that list below
+		// and must not be ranked again.
+		if !hostGoalContinuation && !hostSessionRound && !chatTaskWorkerLoop(ctx) && !parentCarry {
 			markClassifierTimeoutLookup(ctx)
 			applySemanticChatProjection(ctx)
 			applySemanticRoutingMissFallback(ctx)
@@ -284,7 +290,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		tools = toolSet.Tools
 		baseTools = toolSet.BaseTools
 	}
-	if !semanticHandled && !hostGoalContinuation && !hostSessionRound {
+	if !semanticHandled && !hostGoalContinuation && !hostSessionRound && !parentCarry {
 		if diagnostic := h.semanticRouteDiagnosticForTurnWithContext(ctx, opts.UserID, toolRoutingText, opts.Platform, attachments); diagnostic.Handled {
 			log.Printf("[semantic-routing] shadow plan=%q user=%q outcome=%s", diagnostic.PlanID, opts.UserID, diagnostic.Reason)
 		}
@@ -330,7 +336,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		systemPrompt = semanticPromptWithTurnDirectory(systemPrompt, semanticSurface.replan.Classification, exposure)
 	}
 	if semanticSurface != nil {
-		systemPrompt = ensureSemanticGrantPromptFence(systemPrompt)
+		systemPrompt = ensureTurnGrantPromptFence(systemPrompt, turnGrantClassification(semanticSurface))
 	}
 	if ctx != nil && ctx.semanticSessionCeilingSpent && !fileCompanionShareDiscussionUserID(opts.UserID) {
 		systemPrompt += "\n\n" + sessionCeilingTurnPrompt()

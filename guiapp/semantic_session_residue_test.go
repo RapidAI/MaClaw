@@ -30,6 +30,19 @@ func openOfficeResidue() semanticSessionResidue {
 	}
 }
 
+func TestCatalogGapDoesNotInheritOpenOffice(t *testing.T) {
+	gap := intent.ClassificationResult{
+		Primary: intent.LabelNonCoding, Confidence: 0.93, Layer: 3,
+		Reason: "catalog gap: tree non_coding(0.930) refused local leader office(0.869)",
+	}
+	if got := decideSemanticResidueRelation(gap, "生成一张图片", openOfficeResidue()); got != semanticResidueNone {
+		t.Fatalf("relation=%s", got)
+	}
+	if rewritten, ok := semanticClassificationWithAuthorizedResidue(gap, officeResidueNeeds(), semanticResidueUnclear, intent.LabelOffice); ok || rewritten.Primary == intent.LabelOffice {
+		t.Fatalf("catalog gap inherited office: ok=%v primary=%s", ok, rewritten.Primary)
+	}
+}
+
 func TestSemanticSessionResidueFollowUpKeepsOffice(t *testing.T) {
 	h := &IMMessageHandler{app: &App{}}
 	h.storeSemanticSessionResidue("desktop-user", openOfficeResidue())

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -51,39 +50,77 @@ func TestBackgroundManagedSemanticTurnClassifiesBeforeLegacyDispatch(t *testing.
 	if !handled || resp == nil {
 		t.Fatalf("background route handled=%v response=%#v", handled, resp)
 	}
-	if resp.Error != "required_effect_unsettled" || resp.Text != "完成" {
-		t.Fatalf("a prose-only screenshot response must not complete the required capture: %+v", resp)
+	if resp.Error != "" || resp.Text != "完成" {
+		t.Fatalf("a discovery background turn must not require a preselected screenshot: %+v", resp)
 	}
-	if len(requestTools) == 0 {
-		t.Fatal("managed background turn sent no tool surface")
+	assertDiscoveryBackgroundTools(t, requestTools)
+}
+
+func TestBackgroundDiscoverySkipsSentenceRewrites(t *testing.T) {
+	sentences := []string{
+		"将以下信息保存到知识库：file-cn.example",
+		"向 znsoft@163.com 发送一封邮件",
+		"使用 book-pdf skill 编写教程",
 	}
-	// The governed surface renders the turn's grant plus the grant-less
-	// discovery meta-tool; nothing broader may leak into a background turn.
-	if len(requestTools) != 2 {
-		t.Fatalf("managed background turn published broad tool surface: %#v", requestTools)
+	for _, text := range sentences {
+		t.Run(text, func(t *testing.T) {
+			var requestTools []map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer r.Body.Close()
+				var request struct {
+					Tools []map[string]interface{} `json:"tools"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatalf("decode model request: %v", err)
+				}
+				requestTools = request.Tools
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"resp-background-discovery","choices":[{"message":{"role":"assistant","content":"完成"},"finish_reason":"stop"}]}`))
+			}))
+			defer server.Close()
+
+			h := NewIMMessageHandlerStandalone(StandaloneConfig{
+				UnifiedClassifier: intent.New(intent.Config{Embedder: nil, LLMTimeout: time.Second}),
+				LLMConfigFunc: func() corelib.MaclawLLMConfig {
+					return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+				},
+				MaxIterationsFunc: func() int { return 1 },
+			})
+			defer h.memory.Stop()
+			h.SetBackgroundLoopManager(NewBackgroundLoopManager(nil))
+
+			resp, handled := h.handleBackgroundIMRoute(IMUserMessage{
+				UserID: "background-discovery-user", Platform: "desktop", Text: text,
+				RequestID: "background-discovery-request", IsBackground: true,
+			}, nil, server.Client(), nil)
+			if !handled || resp == nil {
+				t.Fatalf("background route handled=%v response=%#v", handled, resp)
+			}
+			if resp.Error != "" {
+				t.Fatalf("sentence rewrite became a required grant: %+v", resp)
+			}
+			assertDiscoveryBackgroundTools(t, requestTools)
+		})
 	}
-	var function map[string]interface{}
+}
+
+func assertDiscoveryBackgroundTools(t *testing.T, requestTools []map[string]interface{}) {
+	t.Helper()
+	names := map[string]bool{}
 	for _, tool := range requestTools {
 		fn, _ := tool["function"].(map[string]interface{})
 		name, _ := fn["name"].(string)
-		if name == "screenshot" {
-			function = fn
-			continue
+		names[name] = true
+	}
+	if !names[semanticToolsSearchName] {
+		t.Fatalf("discovery background turn omitted tools_search: %#v", requestTools)
+	}
+	for _, closed := range []string{
+		"screenshot", "bash", "write_file", "office", "generate_pdf",
+		"mailbox_send", "knowledge_save_text", "current_datetime",
+	} {
+		if names[closed] {
+			t.Fatalf("discovery background turn preselected %s: %#v", closed, requestTools)
 		}
-		if name != semanticToolsSearchName {
-			t.Fatalf("managed background turn published unexpected tool %q in %#v", name, requestTools)
-		}
-	}
-	if function == nil {
-		t.Fatalf("managed background turn did not publish screenshot: %#v", requestTools)
-	}
-	description, _ := function["description"].(string)
-	if !strings.Contains(strings.ToLower(description), "may briefly leave the list") {
-		t.Fatalf("background tool is not described as a turn-scoped grant: %q", description)
-	}
-	parameters, _ := function["parameters"].(map[string]interface{})
-	properties, _ := parameters["properties"].(map[string]interface{})
-	if len(properties) != 1 || properties["display"] == nil {
-		t.Fatalf("background managed surface exposed legacy-shaped parameters: %#v", parameters)
 	}
 }

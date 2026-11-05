@@ -99,6 +99,26 @@ func TestBuildPromptBundleManagedOmitsSoupSignatures(t *testing.T) {
 	}
 }
 
+func TestBuildPromptBundleDiscoveryOmitsHostSkillAdmission(t *testing.T) {
+	base := SystemPromptConfig{
+		RoleName:        "MaClaw",
+		PromptProfile:   PromptProfileFull,
+		ManagedSemantic: true,
+	}
+	classified := BuildSystemPrompt(SystemPromptDeps{Config: base}, "做一份手册", true)
+	if !strings.Contains(classified, "宿主已选定的本机 Skill") || !strings.Contains(classified, "本机没有匹配的完整 Skill") {
+		t.Fatal("classified managed prompt lost host skill admission")
+	}
+	base.ModelDiscovery = true
+	discovery := BuildSystemPrompt(SystemPromptDeps{Config: base}, "生成庆祝北京建城1500年纪念ppt", true)
+	if strings.Contains(discovery, "宿主已选定的本机 Skill") || strings.Contains(discovery, "本机没有匹配的完整 Skill") {
+		t.Fatal("discovery prompt still treats a listed skill name as a host order")
+	}
+	if !strings.Contains(discovery, "只调用本轮工具列表里实际出现的工具") || !strings.Contains(discovery, "没有 skill_ 或 search_and_install_skill 时") {
+		t.Fatal("discovery lost the rest of the managed principles")
+	}
+}
+
 func TestBuildPromptBundle_LightManagedOmitsSkillDiscoveryCue(t *testing.T) {
 	bundle := BuildPromptBundle(SystemPromptDeps{
 		Config: SystemPromptConfig{

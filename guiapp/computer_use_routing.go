@@ -242,11 +242,10 @@ func (h *IMMessageHandler) gateComputerUse(userText string) (active, fresh bool)
 		Sticky:           sticky,
 		StickyAge:        stickyAge,
 	}
-	if uic := h.getUnifiedClassifier(); uic != nil {
-		in.HasClassification = true
-		in.Classification = uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: text})
-	}
-
+	// Tool routing does not ask the intent classifier to open desktop
+	// control. An explicit trigger and a sticky follow-up still decide.
+	// Desktop-operation wording alone does not put computer_use on the
+	// first wave.
 	d := decideComputerUseActivation(in)
 	if d.ClearSticky {
 		clearComputerUseSessionActive()
@@ -626,15 +625,13 @@ func browserPlaybookSection(active bool) string {
 }
 
 func (h *IMMessageHandler) shouldActivateBrowser(userText string) bool {
-	if h == nil {
+	// The browser playbook used to follow an embedding label. That label
+	// no longer selects tools, so the playbook stays off until the model
+	// petitions browser and the turn is already a browser turn.
+	if h == nil || strings.TrimSpace(userText) == "" {
 		return false
 	}
-	uic := h.getUnifiedClassifier()
-	if uic == nil {
-		return false
-	}
-	res := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: userText})
-	return res.Primary == intent.LabelBrowser
+	return false
 }
 
 // computerUseYOLOAllowed is set from App.GetScreenParsingEnabled when tools register.

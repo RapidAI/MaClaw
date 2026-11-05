@@ -1512,6 +1512,12 @@ func (h *IMMessageHandler) dispatchBackgroundTaskTool(policyUserID string, args 
 	if loop != nil && loop.ChatTaskID != "" {
 		return chatTaskToolRejected("dispatch_background_task", "a background chat task cannot start another one")
 	}
+	if loop != nil && loop.discoveryBatchPendingSearchCount() > 0 && !loop.discoveryCatalogMiss() {
+		return chatTaskToolRejected("dispatch_background_task", discoveryDispatchBeforeProbeMessage)
+	}
+	if loop != nil && loop.discoveryCatalogMiss() {
+		return chatTaskToolRejected("dispatch_background_task", discoveryCatalogMissDispatchReason(loop))
+	}
 	if loop == nil || !loop.OfferChatTaskDispatch {
 		return chatTaskToolRejected("dispatch_background_task", "this turn cannot hand work to a background chat task")
 	}
@@ -1555,6 +1561,11 @@ func (h *IMMessageHandler) dispatchBackgroundTaskTool(policyUserID string, args 
 // A dead-loop stop is left alone.
 func (h *IMMessageHandler) continueSpentForegroundChat(loop *LoopContext, sessionKey, userText string, result agent.LoopResult) (string, bool) {
 	if h == nil || loop == nil || result.HardExit {
+		return "", false
+	}
+	// A catalog miss stays on this turn. Handing the transcript to a worker
+	// lets that worker reclassify the prompt as a download.
+	if loop.discoveryCatalogMiss() {
 		return "", false
 	}
 	// The flag is the explicit close. A turn that ran out of iterations, or

@@ -83,6 +83,12 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	if ctx != nil {
 		platform = ctx.Platform
 	}
+	// A short continuation already chose the previous turn's work tools.
+	// Ranking that reply classifies it again. Lookup continuation still
+	// ranks, so a project-task search can keep web_search.
+	if strings.TrimSpace(profile.Reason) == shortContinuationReason {
+		return h.parentCarryToolSet(userID, userText, ctx, allTools, phase, startedAt)
+	}
 	var preResolved *intent.ClassificationResult
 	if ctx != nil {
 		preResolved = ctx.Runtime.SemanticIntent
@@ -244,26 +250,6 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	lookupCatalog := h.filterPolicyRejectedSurfaceTools(allTools)
 	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, lookupCatalog)
 	baseTools = h.pinClassifierTimeoutWebLookup(userID, ctx, baseTools, lookupCatalog)
-	// The previous full turn's execution tools are restored from that turn's
-	// rendered list. This message's wording is not consulted. Retrieval
-	// tools stay protected from the budget eviction, and the restored names
-	// are ranked ahead of the router's tail so the closed plan drops those
-	// first instead of failing closed on too many required tools.
-	if !phase.ForceSkillPreference && strings.TrimSpace(profile.Reason) == shortContinuationReason {
-		carried := h.parentExecutionTools(userID)
-		before := namedToolPresence(tools, carried)
-		tools = ensureNamedToolsPresent(tools, lookupCatalog, protectPresentRetrieval(tools, carried))
-		baseTools = ensureNamedToolsPresent(baseTools, lookupCatalog, protectPresentRetrieval(baseTools, carried))
-		if namedToolsGained(before, namedToolPresence(tools, carried), carried) {
-			tools = h.filterToolsForExpertUser(userID, tools)
-			baseTools = h.filterToolsForExpertUser(userID, baseTools)
-			if ctx != nil && ctx.LansengerGroupPermissions != nil {
-				tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
-				baseTools = filterToolsForLansengerGroupPermissions(baseTools, *ctx.LansengerGroupPermissions)
-			}
-		}
-		routerRankedNames = rankContinuationTools(routerRankedNames, carried, tools)
-	}
 	// A light classifier-timeout leftover is a narrow web lookup. Every other
 	// full assistant surface pins the execution baseline from the catalog:
 	// bash, read_file, write_file, edit_file, craft_tool, manage_skill. A
@@ -384,6 +370,74 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		PreparationTime:  time.Since(startedAt),
 		WorkflowDecision: workflowFilterPolicy,
 		BrowserBeforeWF:  browserBeforeWF,
+	}
+}
+
+// parentCarryToolSet publishes the previous turn's work tools and nothing
+// the name router would add. The carried names are the selection. The host
+// fence below is the same one a ranked surface passes through: workflow,
+// skill phase, the spilled-result reader, hardware speech, and the MCP
+// gateway. Ranking, the execution baseline, and the closed legacy plan stay
+// off this path.
+func (h *IMMessageHandler) parentCarryToolSet(userID, userText string, ctx *LoopContext, catalog []map[string]interface{}, phase agentLoopPhase, startedAt time.Time) agentLoopToolSet {
+	carried := h.parentExecutionTools(userID)
+	admitted := h.filterPolicyRejectedSurfaceTools(catalog)
+	tools := ensureNamedToolsPresent(nil, admitted, carried)
+	if phase.ForceSkillPreference {
+		switch {
+		case phase.SkillMode == skillPreferenceAgentGuided:
+			tools = applyAgentGuidedWorkflowSurface(tools, admitted)
+		case shouldRestrictToSkillSearch(phase):
+			tools = filterToolsForRemoteSkillSearch(tools)
+		default:
+			tools = filterToolsForSkillPreference(tools)
+		}
+	}
+	tools = applySkillPreferenceSurface(tools, phase)
+	policyOwnerID, policy, applyWorkflowFilter := h.workflowToolFilterOwnerPolicyAndDecision(userID, ctx)
+	if applyWorkflowFilter {
+		if policy == v2.ToolFilterNone {
+			tools = nil
+		} else {
+			tools = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, tools, admitted)
+		}
+	}
+	tools = h.filterToolsForExpertUser(userID, tools)
+	if ctx != nil && ctx.LansengerGroupPermissions != nil {
+		tools = h.ensureLansengerGroupMemoryRecallTool(userID, tools)
+		if ctx.LansengerGroupPermissions.allowsKnowledge() {
+			tools = h.ensureLansengerGroupKnowledgeSearchTool(userID, tools)
+		}
+		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
+	}
+	readerOwnerID := userID
+	if strings.TrimSpace(policyOwnerID) != "" {
+		readerOwnerID = policyOwnerID
+	}
+	tools = h.ensureToolResultReader(readerOwnerID, tools, admitted)
+	platform := ""
+	if ctx != nil {
+		platform = ctx.Platform
+	}
+	tools = filterToolsForHardwareAutoSpeech(tools, platform)
+	tools = removeLegacyModelMCPGateway(tools)
+	tools = filterComputerUseToolsForLocalFileWork(ctx, userText, tools)
+	tools = h.filterPolicyRejectedSurfaceTools(tools)
+	if h.mainLoopInDirectMode(userID, ctx) {
+		tools = filterDirectModeAllowedTools(tools)
+	}
+	tools = stripExecutionContractMetadataForLLM(tools)
+	if ctx != nil {
+		ctx.setExposedToolNames(agentLoopToolNamesForLog(tools))
+	}
+	if len(nonLightToolNames(tools)) > 0 {
+		h.noteParentExecutionUnion(userID, tools)
+	}
+	return agentLoopToolSet{
+		Tools:            tools,
+		BaseTools:        tools,
+		ToolsTokenBudget: estimateToolsTokens(tools),
+		PreparationTime:  time.Since(startedAt),
 	}
 }
 

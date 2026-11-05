@@ -110,7 +110,7 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 	} else if cfg.ManagedSemantic {
 		fmt.Fprintf(&stable, "You are %s, %s: %s. Handle this turn with the tools currently listed; do not invent a larger catalog.\n", roleName, roleTitle, roleDesc)
 		stable.WriteString(PromptOutputFormatRules)
-		stable.WriteString(PromptCorePrinciplesManaged)
+		stable.WriteString(managedCorePrinciples(cfg.ModelDiscovery))
 		stable.WriteString(PromptWritingRules)
 		if EnableDiagramRendering(cfg) {
 			stable.WriteString(PromptVisualizationRulesLight)

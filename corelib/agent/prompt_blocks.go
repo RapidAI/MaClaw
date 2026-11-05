@@ -75,7 +75,10 @@ const PromptWorkingStateContract = `
 // PromptCorePrinciplesManaged is for capability-managed turns whose tools are
 // host-bound grants. It must not teach soup signatures (send_file path=,
 // manage_skill, craft_tool) and must not forbid listed document/delivery tools.
-const PromptCorePrinciplesManaged = `
+// The host-admission bullet is part of this text. A discovery turn lists
+// search_and_install_skill on every request and lists skill_ only after a
+// petition, so managedCorePrinciples omits that bullet there.
+const promptManagedPrinciplesBeforeSkillAdmission = `
 ## 核心原则
 - 只调用本轮工具列表里实际出现的工具。名称就是普通工具名（如 web_search、generate_pdf、send_file）。
 - 主动调用工具，不要只把命令写在回复里。
@@ -84,11 +87,28 @@ const PromptCorePrinciplesManaged = `
 - 多步任务按列表解锁：当前可能只有查询；成功后文档生成或投递会出现在同一次回复的后续请求里。那不是缺工具，不要向用户宣布，也不要用 bash、python、write_file 绕过。
 - 自动提取若带 error_class=encrypted、malformed、source_changed、input_too_large 或 output_too_large，该文件的普通正文注入已经结束。禁止用 bash、pip、Python 或其他 OCR 引擎处理同一文件。256 MiB 以内的扫描版 PDF 只使用列表里的 ocr_recognize（本机 PP-OCRv6）按 start_page 续读，不要拆分或缩小文件；列表里没有就说明本机识别未就绪，不要安装引擎。超过 256 MiB 的 PDF，以及其他超过正文上限的办公文件，才请用户拆分或缩小。
 - 不要凭记忆调用 manage_skill、call_mcp_tool、discover_tool、previous_turn_tool，也不要复用历史里的 invoke_*。
-- 列表里出现以 skill_ 开头的函数时，那是宿主已选定的本机 Skill，先调用它，不要改用 generate_pdf、office 或 bash 做同一件事。列表里出现 search_and_install_skill 时，本机没有匹配的完整 Skill，先用它搜索、安装并运行，不要先把任务做完。这两个名字没出现就不要调用，也不要改叫 manage_skill。
-- 不要请用户重新授权工具。查到依据后立即作答；没有 skill_ 或 search_and_install_skill 时，当前列表一旦出现 generate_pdf，必须立刻调用，不要说请稍候然后结束。
+`
+
+const promptManagedHostSkillAdmission = `- 列表里出现以 skill_ 开头的函数时，那是宿主已选定的本机 Skill，先调用它，不要改用 generate_pdf、office 或 bash 做同一件事。列表里出现 search_and_install_skill 时，本机没有匹配的完整 Skill，先用它搜索、安装并运行，不要先把任务做完。这两个名字没出现就不要调用，也不要改叫 manage_skill。
+`
+
+const promptManagedPrinciplesAfterSkillAdmission = `- 不要请用户重新授权工具。查到依据后立即作答；没有 skill_ 或 search_and_install_skill 时，当前列表一旦出现 generate_pdf，必须立刻调用，不要说请稍候然后结束。
 - 用用户的语言简洁回答；没有依据时说明无法确认。
 - 需要向用户提问时只输出问题，不要同一轮自问自答并执行。
 `
+
+const PromptCorePrinciplesManaged = promptManagedPrinciplesBeforeSkillAdmission + promptManagedHostSkillAdmission + promptManagedPrinciplesAfterSkillAdmission
+
+// managedCorePrinciples is the managed block for this turn. Discovery does
+// not host-select a skill. Keeping the admission bullet there reads the
+// preset search_and_install_skill, and a skill the model just petitioned, as
+// an order to skip office, bash, and generate_pdf.
+func managedCorePrinciples(discovery bool) string {
+	if discovery {
+		return promptManagedPrinciplesBeforeSkillAdmission + promptManagedPrinciplesAfterSkillAdmission
+	}
+	return PromptCorePrinciplesManaged
+}
 
 // PromptLightOneLookupClause is the generic light stop: one successful live
 // lookup is the answer. A current-fact turn must not use it. There, a returned

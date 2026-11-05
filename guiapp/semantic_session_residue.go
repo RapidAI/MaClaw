@@ -276,6 +276,9 @@ func resetSemanticTurnLocalState(ctx *LoopContext) {
 	ctx.ForegroundHandoffNeeded = false
 	ctx.OfferChatTaskDispatch = false
 	ctx.ForegroundChatBudget = 0
+	ctx.DiscoveryCatalogMiss = false
+	ctx.discoveryMissExtensionSettled = false
+	ctx.discoveryBatchPendingSearch = 0
 }
 
 func (h *IMMessageHandler) clearSemanticSessionResidue(key string) {
@@ -435,6 +438,11 @@ func decideSemanticResidueRelation(current intent.ClassificationResult, userText
 
 func decideSemanticResidueRelationWithBare(current intent.ClassificationResult, bare *intent.ClassificationResult, userText string, residue semanticSessionResidue) semanticResidueRelation {
 	if residue.Status != semanticResidueOpen || len(residue.Needs) == 0 {
+		return semanticResidueNone
+	}
+	// non_coding that refused a local tool is a new request. Inheriting the
+	// open office plan would write another deck for a picture.
+	if intent.ClassificationHasCatalogGap(current) || (bare != nil && intent.ClassificationHasCatalogGap(*bare)) {
 		return semanticResidueNone
 	}
 	// A finished wave does not swallow the next sentence. "再改一版" stays
@@ -1065,6 +1073,9 @@ func semanticClassificationWithAuthorizedResidue(current intent.ClassificationRe
 	switch relation {
 	case semanticResidueContinue, semanticResidueUnclear:
 	default:
+		return current, false
+	}
+	if intent.ClassificationHasCatalogGap(current) {
 		return current, false
 	}
 	inherited := semanticOpenResidueClassification(needs, authorized)

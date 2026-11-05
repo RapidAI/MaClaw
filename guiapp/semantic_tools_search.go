@@ -22,12 +22,18 @@ import (
 // not authorization — grants still come only from the plan or a petition.
 const semanticToolsSearchName = "tools_search"
 
+// semanticToolsSearchNeedsMissNote is the header line of a page whose needs
+// filter matched nothing and fell back to the full directory. The repeat
+// guard reads it: that page shares every row with an earlier unfiltered
+// directory but carries the miss step as its new tail.
+const semanticToolsSearchNeedsMissNote = "needs filter matched nothing; showing the task directory\n"
+
 func semanticToolsSearchDefinition() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        semanticToolsSearchName,
-			"description": "Query the task-scoped capability catalog. The query text is explanatory and does not pick tools; user-declared capabilities such as ssh can join the current scope. bash, read_file, and write_file are baseline workspace tools when listed.",
+			"description": "Query the task-scoped capability catalog. The query text does not select tools. Pass directory names in needs to load them onto the next request. A name absent from this request's function list cannot be called until that load succeeds. One needs list can name several workspace tools. ssh, browser, delete_file, and record_audio load only when that name is the sole needs entry. computer_use is not loaded onto this request.",
 			"parameters": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -267,12 +273,17 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	}
 	semanticToolsSearchMaybeExpandScope(cb, query)
 	// Keep the unfiltered directory. A needs filter may hide mailbox_send,
-	// and the confirmation line has to survive that page: the tail is what
-	// a shortened result keeps.
+	// and the confirmation line still has to be on that page. It is the
+	// last line only when this search named nothing else.
 	catalog := semanticToolsSearchBuiltinFirst(semanticToolsSearchCatalog(cb))
 	entries := catalog
 	filterNote := ""
 	var requestedNames map[string]bool
+	discoverySurface := cb != nil && semanticSurfaceIsModelDiscovery(cb.semanticSurface)
+	if cb != nil {
+		// A previous search's guided-skill note is not this page's row.
+		cb.discoverySearchBodies = nil
+	}
 	if len(needs) > 0 {
 		// Models pass tool names ("web_search") in needs. Those are not
 		// capability ids. A filter that matches nothing must not erase the
@@ -289,16 +300,79 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 		for _, entry := range entries {
 			if requestedNames[entry.name] || capabilityOnly[entry.capability] {
 				filtered = append(filtered, entry)
+				// A capability id is not itself a tool name. On a discovery
+				// turn the selected row is the name the next request loads.
+				if discoverySurface && capabilityOnly[entry.capability] {
+					if requestedNames == nil {
+						requestedNames = map[string]bool{}
+					}
+					requestedNames[entry.name] = true
+				}
+			}
+		}
+		// Installed skills and MCP tools are catalog rows, not inventory
+		// lines. A needs token that spells one is the petition. Leaving it
+		// out makes the page a miss and points at search_and_install_skill.
+		if discoverySurface {
+			have := map[string]bool{}
+			for _, entry := range filtered {
+				have[entry.name] = true
+			}
+			for token := range needs {
+				name := strings.TrimSpace(string(token))
+				if name == "" || have[name] {
+					continue
+				}
+				row, ok := cb.discoveryCatalogRow(name)
+				if !ok {
+					continue
+				}
+				summary := strings.TrimSpace(row.Summary)
+				if summary == "" {
+					summary = "已安装。"
+				}
+				filtered = append(filtered, semanticToolsSearchEntry{name: row.Name, summary: summary})
+				have[row.Name] = true
+				if requestedNames == nil {
+					requestedNames = map[string]bool{}
+				}
+				requestedNames[row.Name] = true
 			}
 		}
 		if len(filtered) == 0 {
-			filterNote = "needs filter matched nothing; showing the task directory\n"
-			needs = map[tool.CapabilityID]bool{}
-			requestedNames = nil
+			// A petitionable name with no directory row is still a load.
+			// computer_use is that name: the main conversation cannot publish
+			// it, and treating the token as unknown used to open the catalog
+			// miss and close every other tool. Unknown tokens still miss.
+			if discoverySurface && discoveryNeedsAreLoadableNames(cb, needs) {
+				if requestedNames == nil {
+					requestedNames = map[string]bool{}
+				}
+				for token := range needs {
+					name := strings.TrimSpace(string(token))
+					if name != "" {
+						requestedNames[name] = true
+					}
+				}
+			} else {
+				filterNote = semanticToolsSearchNeedsMissNote
+				needs = map[tool.CapabilityID]bool{}
+				requestedNames = nil
+			}
 		} else {
 			entries = filtered
 			needs = resolved
 		}
+	}
+	// A later needs list can name web_search after the catalog already missed.
+	// Loading it would make the download the fulfillment. Keep the miss page
+	// until the extension path has run, and keep substitute names off even
+	// after that.
+	if discoverySurface && cb.discoverySubstitutionBlocks(requestedNames) {
+		filterNote = semanticToolsSearchNeedsMissNote
+		needs = map[tool.CapabilityID]bool{}
+		requestedNames = nil
+		entries = catalog
 	}
 	collectionDigest := semanticToolsSearchCollectionDigest(entries)
 	// A continuation token is bound to the immutable scope, catalog and exact
@@ -307,6 +381,9 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	// different directory.  Keep numeric offsets only for truly unbound legacy
 	// callers; governed surfaces always have an identity and therefore require
 	// the bound form.
+	// Validate before loading. A copied token from the previous directory
+	// does not match this needs filter. Loading first and then rejecting
+	// grants the tools and tells the model the lookup failed.
 	var pageArg interface{}
 	if pageTokenPresent {
 		pageArg = pageToken
@@ -317,6 +394,44 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	}
 	if pageStart > len(entries) {
 		return "[system rejected] tools_search_page_token_invalid"
+	}
+	// The model names a tool in needs. That name is not on this request's
+	// function list, so the provider keeps emitting tools_search. Load the
+	// selected rows here; the next request is what can call a function.
+	// A guided skill returns its body instead of a function.
+	loadedNotes := ""
+	unloadedPetition := false
+	admitted := false
+	// held means a requested name is already in the plan and waiting: the
+	// predecessor call is this page's action. exclusiveAlone is set when
+	// this search loaded nothing, held nothing, and skipped at least one
+	// fail-closed family. That sentence is the page action. The catalog
+	// miss stays closed, so a later search that names one of them alone
+	// can still load it.
+	held := false
+	exclusiveAlone := ""
+	if filterNote == "" && discoverySurface && len(needs) > 0 && len(requestedNames) > 0 {
+		needNames := make([]string, 0, len(requestedNames))
+		for name := range requestedNames {
+			needNames = append(needNames, name)
+		}
+		sort.Strings(needNames)
+		var exclusiveNote string
+		loadedNotes, admitted, exclusiveNote, held = cb.admitDiscoverySearchNeeds(needNames)
+		// Names were in the directory, and this call loaded none of them.
+		// The clock plan's "现在调用" must not become the answer.
+		unloadedPetition = !admitted && cb != nil && cb.discoveryUnmatchedObligation
+		if exclusiveNote != "" && (admitted || held) {
+			// A workspace name, or the predecessor of a held one, is the
+			// action. The skipped family is a fact in the header.
+			if loadedNotes != "" && !strings.HasSuffix(loadedNotes, "\n") {
+				loadedNotes += "\n"
+			}
+			loadedNotes += exclusiveNote
+		}
+		if exclusiveNote != "" && !admitted && !held && !unloadedPetition {
+			exclusiveAlone = exclusiveNote
+		}
 	}
 	// The surface decision is a property of the plan, not of alphabetical
 	// position and not of the query. It is written before the directory so a
@@ -336,8 +451,59 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	// A lookup that already names a listed tool ends with that directive.
 	// The plan's own "现在调用" / "先调用" would be a second imperative, which
 	// is how a save lookup was sent after a different listed tool.
-	deferCallNow := len(semanticToolsSearchListedNeeds(catalog, requestedNames, statusOf)) > 0
-	decision := semanticToolsSearchSurfaceDecision(cb, catalog, statusOf, deferCallNow)
+	// An unmatched needs token is not a question about the planned successor.
+	// "现在调用 office，不要告诉用户工具缺失" answered a picture search with
+	// the spreadsheet plan (2026-11-05). The directory stays so a bad token
+	// on a real task can still be read. The decision says the name is absent.
+	var decision semanticToolsSearchDecision
+	if unloadedPetition {
+		decision = semanticToolsSearchDecision{
+			text:    semanticToolsSearchDiscoveryUnloaded,
+			closing: semanticToolsSearchDiscoveryNextStep,
+		}
+	} else if filterNote != "" {
+		if discoverySurface {
+			cb.noteDiscoveryCatalogMiss()
+		}
+		decision = semanticToolsSearchUnmatchedDecision(cb)
+	} else if exclusiveAlone != "" {
+		decision = semanticToolsSearchDecision{text: exclusiveAlone + "\n", closing: exclusiveAlone}
+	} else {
+		deferCallNow := len(semanticToolsSearchListedNeeds(catalog, requestedNames, statusOf)) > 0
+		decision = semanticToolsSearchSurfaceDecision(cb, catalog, statusOf, deferCallNow)
+	}
+	// A guided skill has no function to call. Its body is this result.
+	// It stays in the head. The preview keeps the head of an over-budget
+	// page and the tail call, and a suffix cut would drop the procedure.
+	// The call, when a function was also loaded, stays the tail.
+	if note, only := soleDiscoveryDesktopDoorNote(loadedNotes); only && !unloadedPetition && !admitted && !held && exclusiveAlone == "" {
+		// This search asked for desktop control and loaded nothing else.
+		// The plan's own 「现在调用」 is a second imperative: a picture search
+		// used to finish by calling office. The refusal is the whole action,
+		// at the head and as the last line. An already-listed workspace
+		// name, a tool the plan is already holding, a skipped exclusive
+		// family, or a petition that closed the turn each keep their own
+		// action. The refusal stays in the header.
+		decision.callNow = nil
+		decision.nextAppear = nil
+		decision.text = note + "\n"
+		decision.closing = note
+		loadedNotes = ""
+	} else if loadedNotes != "" {
+		if decision.text != "" && !strings.HasSuffix(decision.text, "\n") {
+			decision.text += "\n"
+		}
+		decision.text += loadedNotes
+		if !strings.HasSuffix(decision.text, "\n") {
+			decision.text += "\n"
+		}
+		loadedNotes = ""
+	}
+	// A miss already carries the skill-search step on its own decision.
+	// An empty decision here is a directory whose named tools were just
+	// loaded, or one that still lists those rows. The listed-needs line is
+	// that page's action. Stamping the miss step onto it told a matched
+	// lookup that nothing corresponded and to install a skill.
 	decisionID := semanticToolsSearchDecisionIDForCollection(scopeID, catalogDigest, needs, pageStart, collectionDigest)
 	var header strings.Builder
 	fmt.Fprintf(&header, "tools_search results for %q:\n", query)
@@ -359,7 +525,7 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	// (production 2026-08-27).
 	softenPetition := decision.planned
 	for i, entry := range entries {
-		rows[i] = semanticToolsSearchRenderRow(entry, statusOf(entry.name), softenPetition)
+		rows[i] = semanticToolsSearchRenderRow(entry, semanticToolsSearchRowStatusForAction(statusOf(entry.name), decision), softenPetition)
 	}
 	// The continuation token and the action line are known only after the
 	// page is chosen. FitEnd is an estimate; the assembled page is what the
@@ -367,7 +533,7 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	// while the inline budget still holds.
 	waiting := semanticToolsSearchConfirmationWaiting(catalog, statusOf)
 	assemble := func(end int) string {
-		return semanticToolsSearchAssemblePage(header.String(), rows, entries, pageStart, end, len(entries), scopeID, catalogDigest, needs, collectionDigest, requestedNames, waiting, statusOf, decision)
+		return semanticToolsSearchAssemblePage(header.String(), rows, entries, pageStart, end, len(entries), scopeID, catalogDigest, needs, collectionDigest, requestedNames, waiting, statusOf, decision, discoverySurface)
 	}
 	pageEnd := pageStart
 	if pageStart < len(rows) {
@@ -389,7 +555,7 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	return rendered
 }
 
-func semanticToolsSearchAssemblePage(header string, rows []string, entries []semanticToolsSearchEntry, pageStart, pageEnd, entryCount int, scopeID, catalogDigest string, needs map[tool.CapabilityID]bool, collectionDigest string, requestedNames map[string]bool, waiting []string, statusOf func(string) string, decision semanticToolsSearchDecision) string {
+func semanticToolsSearchAssemblePage(header string, rows []string, entries []semanticToolsSearchEntry, pageStart, pageEnd, entryCount int, scopeID, catalogDigest string, needs map[tool.CapabilityID]bool, collectionDigest string, requestedNames map[string]bool, waiting []string, statusOf func(string) string, decision semanticToolsSearchDecision, discoverySurface bool) string {
 	if pageEnd < pageStart {
 		pageEnd = pageStart
 	}
@@ -417,17 +583,46 @@ func semanticToolsSearchAssemblePage(header string, rows []string, entries []sem
 	// Otherwise the line repeats the surface decision, so a model that reads
 	// the tail follows the same call the head named. Row status still says
 	// which other names are petitionable.
+	// A draft waiting for the user is a fact about the catalog, not that
+	// action. The footer is last only when this search named nothing else:
+	// leaving it last on every page made the tail follower, and the repeat
+	// check, treat a later miss as the directory already shown.
 	page := entries[pageStart:pageEnd]
+	confirmationOnly := semanticToolsSearchRequestedConfirmationOnly(requestedNames, statusOf)
+	writeConfirmation := func() {
+		if len(waiting) == 0 {
+			return
+		}
+		fmt.Fprintf(&out, "\n等待用户确认：%s。不要再次调用，也不要用其它工具完成该动作。\n", strings.Join(waiting, "、"))
+	}
+	if !confirmationOnly {
+		writeConfirmation()
+	}
 	if listed := semanticToolsSearchListedNeeds(page, requestedNames, statusOf); len(listed) > 0 {
 		fmt.Fprintf(&out, "%s%s。不要再查询这些名字。\n", semanticToolsSearchListedDirectivePrefix, strings.Join(listed, ", "))
 	} else if line := semanticToolsSearchClosingLine(decision); line != "" {
 		out.WriteString(line)
 		out.WriteByte('\n')
-	} else {
+	} else if discoverySurface {
+		// The classified sermon says to call the name. That name is not on
+		// this request's function list. needs is what loads it. A search
+		// that only named a draft waiting for the user does not get this
+		// line: it would send the model back to petition that same name.
+		// An unfiltered directory still gets the line when some other row
+		// is waiting, and that line stays the tail.
+		if !confirmationOnly {
+			out.WriteString(semanticToolsSearchDiscoveryLoadLine)
+			out.WriteByte('\n')
+		}
+	} else if !discoverySurface {
+		// This sentence is the classified turn's rule: one petition per
+		// class, and bash / write_file stay off that turn. A discovery
+		// turn has no class budget, and those names are ordinary
+		// petitions. The row status is the eligibility mark.
 		out.WriteString("只有本回合能力目录里标记「可请愿」的名字才可以直接调用一次请愿（每轮每类限一次）。bash 和 write_file 不在普通回合里。ssh、mailbox_send、computer_use 只有主标签就是该能力时才出现。")
 	}
-	if len(waiting) > 0 {
-		fmt.Fprintf(&out, "\n等待用户确认：%s。不要再次调用，也不要用其它工具完成该动作。\n", strings.Join(waiting, "、"))
+	if confirmationOnly {
+		writeConfirmation()
 	}
 	return out.String()
 }
@@ -460,6 +655,18 @@ func semanticToolsSearchRenderRow(entry semanticToolsSearchEntry, status string,
 		status = "[可请愿]"
 	}
 	return fmt.Sprintf("- %s — %s %s", entry.name, semanticToolsSearchOneLine(entry.summary), status)
+}
+
+// semanticToolsSearchRowStatusForAction keeps a planned row from ordering a
+// call the page action does not name. The header clause already drops
+// 「先调用」 when this result names a listed tool. The row was still saying
+// it, so a save lookup followed that predecessor instead of the listed tool.
+// The sentence stays only when callNow is the page action.
+func semanticToolsSearchRowStatusForAction(status string, decision semanticToolsSearchDecision) string {
+	if len(decision.callNow) > 0 || !strings.Contains(status, "先调用") {
+		return status
+	}
+	return "[已列入本轮计划：不要直接调用，也不要请愿]"
 }
 
 // semanticToolsSearchOneLine keeps a directory row an index line. Full tool
@@ -516,6 +723,7 @@ const semanticToolsSearchDecisionBudget = 1500
 // page and repeated, in shorter form, as the page's last action.
 type semanticToolsSearchDecision struct {
 	text       string
+	closing    string
 	callNow    []string
 	nextAppear []string
 	planned    bool
@@ -600,6 +808,9 @@ type semanticToolsSearchPlanned struct {
 // plan names the tool that appears on the next request and does not end on
 // 请愿. A directory with no unlisted plan step does not order every grant.
 func semanticToolsSearchClosingLine(decision semanticToolsSearchDecision) string {
+	if line := strings.TrimSpace(decision.closing); line != "" {
+		return line
+	}
 	switch {
 	case len(decision.callNow) > 0:
 		return "现在调用 " + strings.Join(decision.callNow, "、") + "。"
@@ -686,6 +897,68 @@ func semanticToolsSearchFitDecision(head, tail []string, render func(head, tail 
 	return text, fitted
 }
 
+const semanticToolsSearchUnmatchedNeedsDecision = "所查的名字不在本回合目录里。标记「可请愿」的名字可以单独调用一次来申请。没有对应名字就说明做不到，不要改用已经列出的其它工具。\n"
+
+// semanticToolsSearchDiscoveryUnmatched is the same miss on a discovery
+// turn. A missing directory row is not "the capability is impossible":
+// the next call is search_and_install_skill, then craft_tool.
+const semanticToolsSearchDiscoveryUnmatched = "所查的名字不在本回合目录里，没有对得上的能力。先调用 search_and_install_skill，query 用用户的原话；没有可用 Skill 时再调用 craft_tool。在这两步有结果之前，不要派后台任务，也不要改请愿别的名字。\n"
+
+const semanticToolsSearchDiscoveryNextStep = "先调用 search_and_install_skill，query 用用户的原话；没有可用 Skill 时再调用 craft_tool。"
+
+// semanticToolsSearchDiscoveryUnloaded is a needs list whose names are in
+// the directory and none of them loaded. That is the same closed turn as a
+// name the directory does not have: the next call is the extension path,
+// and dispatch is not how a failed petition becomes a download.
+const semanticToolsSearchDiscoveryUnloaded = "这些名字这一步没有加载。先调用 search_and_install_skill，query 用用户的原话；没有可用 Skill 时再调用 craft_tool。在这两步有结果之前，不要派后台任务，也不要改请愿别的名字。\n"
+
+// semanticToolsSearchDiscoveryLoadLine is the action on a discovery page
+// that has no plan decision and no listed-needs directive. The name is not
+// on this request's function list. tools_search needs is what loads it.
+const semanticToolsSearchDiscoveryLoadLine = "要加载标了「可请愿」的名字，再调用 tools_search，把那个名字放进 needs。当前函数列表里没有的名字不能调用，加载成功后它出现在下一请求。一次 needs 可以写多个工作区工具。"
+
+// discoveryMainLoopComputerUseNote is the page fact when the main
+// conversation was asked to load desktop control. The computer helper
+// operates the desktop. This request does not gain that function.
+const discoveryMainLoopComputerUseNote = "这个对话不操作桌面。computer_use 不会加载到下一请求。桌面操作由电脑助手执行。"
+
+// soleDiscoveryDesktopDoorNote reports that this search loaded nothing and
+// its only sentence is a desktop-control refusal. That sentence is the
+// page's last line. A grant beside it stays in the header.
+func soleDiscoveryDesktopDoorNote(notes string) (string, bool) {
+	notes = strings.TrimSpace(notes)
+	if notes == "" || strings.Contains(notes, "\n") || !strings.Contains(notes, "computer_use 不会加载到下一请求") {
+		return "", false
+	}
+	return notes, true
+}
+
+// discoveryNeedsAreLoadableNames reports that every needs token is a name
+// this discovery turn can petition. A directory row is not required. An
+// unknown token is not loadable, and that list stays a catalog miss.
+func discoveryNeedsAreLoadableNames(cb *sharedAgentLoopCallbacks, needs map[tool.CapabilityID]bool) bool {
+	if cb == nil || len(needs) == 0 {
+		return false
+	}
+	for token := range needs {
+		name := strings.TrimSpace(string(token))
+		if name == "" || !cb.discoverySearchNeedLoadable(name) {
+			return false
+		}
+	}
+	return true
+}
+
+func semanticToolsSearchUnmatchedDecision(cb *sharedAgentLoopCallbacks) semanticToolsSearchDecision {
+	if cb != nil && semanticSurfaceIsModelDiscovery(cb.semanticSurface) {
+		return semanticToolsSearchDecision{
+			text:    semanticToolsSearchDiscoveryUnmatched,
+			closing: semanticToolsSearchDiscoveryNextStep,
+		}
+	}
+	return semanticToolsSearchDecision{text: semanticToolsSearchUnmatchedNeedsDecision}
+}
+
 func semanticToolsSearchListedDecisionText(listed, _ []string) string {
 	return "本轮决定：已在当前工具面：" + strings.Join(listed, "、") + "。\n"
 }
@@ -744,6 +1017,23 @@ func semanticToolsSearchLaterClause(name string, names predecessorNames, factsOn
 	default:
 		return name + "（更早的计划步骤完成后才出现在列表）"
 	}
+}
+
+// semanticToolsSearchRequestedConfirmationOnly reports that this search
+// named only tools waiting for the user. The generic load line would tell
+// the model to petition those names again. An empty request is a directory
+// page, not that search, and keeps the load line.
+func semanticToolsSearchRequestedConfirmationOnly(requested map[string]bool, statusOf func(string) string) bool {
+	if len(requested) == 0 || statusOf == nil {
+		return false
+	}
+	for name := range requested {
+		name = strings.TrimSpace(name)
+		if name == "" || statusOf(name) != "[等待用户确认：不要再次调用]" {
+			return false
+		}
+	}
+	return true
 }
 
 func semanticToolsSearchConfirmationWaiting(entries []semanticToolsSearchEntry, statusOf func(string) string) []string {
@@ -1277,15 +1567,16 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 		return "[本轮不可用：不要调用，用已列出的工具完成]"
 	}
 	surface := cb.semanticSurface
+	hidden := cb != nil && semanticSurfaceIsModelDiscovery(surface) && modelDiscoveryHidesGrant(name)
 	if surface != nil {
-		if _, ok := surface.grants[name]; ok {
+		if _, ok := surface.grants[name]; ok && !hidden {
 			return "[已在当前工具面]"
 		}
 	}
 	// The sidecar grant is a second tools/call while the managed write is
 	// still awaiting its receipt. Do not describe that name as callable.
 	if cb.managedInstalledMCPSpentThisRequest(name) && surface != nil {
-		if grant, ok := surface.retiredGrants[name]; ok {
+		if grant, ok := semanticRetiredGrantForName(surface, name); ok {
 			if awaiting, reason := semanticRetiredAwaitingReceipt(surface, grant.SelectionID); awaiting {
 				if mailboxDraftAwaitingConfirmation(reason) {
 					return "[等待用户确认：不要再次调用]"
@@ -1301,8 +1592,16 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 			return "[已在当前工具面]"
 		}
 	}
+	// A discovery search loads a runnable skill onto the next request.
+	// The binding is that function. It is not a semantic grant.
+	if _, ok := cb.admittedSkillBindings[name]; ok {
+		return "[已在当前工具面]"
+	}
+	if _, ok := cb.discoverySearchBodies[name]; ok {
+		return "[已装载]"
+	}
 	if surface != nil {
-		if grant, ok := surface.retiredGrants[name]; ok {
+		if grant, ok := semanticRetiredGrantForName(surface, name); ok {
 			if strings.HasPrefix(strings.TrimSpace(grant.AdapterName), "installed-mcp:") {
 				return "[已安装的 MCP 工具，继续用这个名字调用]"
 			}
@@ -1323,7 +1622,7 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 	// the same capability (for example read_file/list_directory). Marking every
 	// alias as planned tells the model to wait for a tool that will never be
 	// rendered and recreates the disappearing-tool failure in discovery.
-	if semanticSurfacePlansTool(surface, name) {
+	if semanticSurfacePlansTool(surface, name) && !hidden {
 		// Timing lives in the surface decision. One sentence cannot say
 		// "appears automatically" for both generate_pdf (next request after
 		// web_search) and send_file (only after generate_pdf is itself listed).
@@ -1345,6 +1644,13 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 		}
 		if consumed {
 			return "[本轮请愿机会已用完，不要调用]"
+		}
+		// Discovery does not spend the one-petition budget, and this
+		// provider does not emit a name that is absent from the function
+		// list. "直接调用一次" is that budget and that emit. The row keeps
+		// the eligibility mark. Naming the tool in needs is what loads it.
+		if semanticSurfaceIsModelDiscovery(surface) {
+			return "[可请愿]"
 		}
 		return "[可请愿：直接调用一次]"
 	}

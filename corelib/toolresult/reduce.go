@@ -242,10 +242,23 @@ func previewComputerObserve(s string, limit int) string {
 	return out
 }
 
+// toolsSearchCatalogRow is one directory line. A markdown list in a skill
+// body also starts with "- " and is not a row. Cutting at the first bullet
+// drops the procedure and can hide the call line that follows the rows.
+func toolsSearchCatalogRow(line string) bool {
+	if !strings.HasPrefix(line, "- ") {
+		return false
+	}
+	_, rest, ok := strings.Cut(line, " — ")
+	return ok && strings.Contains(rest, "[")
+}
+
 // previewToolsSearch keeps the surface decision and whole directory rows.
 // A generic head/tail cut deletes the middle of an alphabetical catalog,
 // which is where a planned name such as generate_pdf sits, and leaves the
 // petition sentence in the tail as the only instruction.
+// A skill body in the head can be longer than the budget. The call line
+// after the rows still has to survive that cut.
 func previewToolsSearch(s string, limit int) string {
 	if len(s) <= limit {
 		return s
@@ -253,7 +266,7 @@ func previewToolsSearch(s string, limit int) string {
 	lines := strings.Split(s, "\n")
 	firstRow, lastRow := -1, -1
 	for i, line := range lines {
-		if strings.HasPrefix(line, "- ") {
+		if toolsSearchCatalogRow(line) {
 			if firstRow < 0 {
 				firstRow = i
 			}
@@ -269,7 +282,29 @@ func previewToolsSearch(s string, limit int) string {
 		footer = strings.Join(lines[lastRow+1:], "\n")
 	}
 	if len(prefix) >= limit {
-		return utf8Prefix(prefix, limit)
+		if strings.TrimSpace(footer) == "" {
+			return utf8Prefix(prefix, limit)
+		}
+		footerBudget := limit / 4
+		if footerBudget < 80 {
+			footerBudget = 80
+		}
+		if footerBudget > limit/2 {
+			footerBudget = limit / 2
+		}
+		keptFooter := footer
+		if len(keptFooter) > footerBudget {
+			keptFooter = utf8Suffix(footer, footerBudget)
+		}
+		headBudget := limit - len(keptFooter) - 1
+		if headBudget < 1 {
+			return utf8Suffix(footer, limit)
+		}
+		head := utf8Prefix(prefix, headBudget)
+		if !strings.HasSuffix(head, "\n") {
+			head += "\n"
+		}
+		return head + strings.TrimPrefix(keptFooter, "\n")
 	}
 	footerKeep := footer
 	remain := limit - len(prefix)

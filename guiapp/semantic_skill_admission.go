@@ -311,6 +311,42 @@ func semanticExplicitSkillPlanningNote(out *intent.ClassificationResult) *intent
 	return out
 }
 
+// admitExplicitNamedSkill is the harness /name inject. The match is the
+// skill the user named. A score against the rest of the sentence is not.
+func admitExplicitNamedSkill(exec *SkillExecutor, userText, domain string) (NLSkillDefinition, bool) {
+	if exec == nil || !intent.ExplicitSkillInvocation(userText) {
+		return NLSkillDefinition{}, false
+	}
+	msg := strings.ToLower(strings.TrimSpace(userText))
+	agentDomain := corelib.NormalizeSkillExperienceDomain(domain)
+	var best NLSkillDefinition
+	bestScore := 0
+	found := false
+	for _, entry := range exec.loadSkills() {
+		if strings.TrimSpace(entry.Name) == "" {
+			continue
+		}
+		view := admissionSkillView(entry)
+		if agentDomain != corelib.SkillDomainUniversal && !corelib.SkillVisibleInExperienceDomain(view.ExperienceDomain, agentDomain) {
+			continue
+		}
+		guided, runnable := skillCompleteForAdmission(entry)
+		if !guided && !runnable {
+			continue
+		}
+		_, identity, identityScore := preferredLocalSkillScore(view, msg)
+		if !identity || identityScore <= 0 {
+			continue
+		}
+		if !found || identityScore > bestScore {
+			best = view
+			bestScore = identityScore
+			found = true
+		}
+	}
+	return best, found
+}
+
 func admitLocalSkills(exec *SkillExecutor, userText, domain string) ([]admittedSkillBinding, []NLSkillDefinition) {
 	if exec == nil {
 		return nil, nil
@@ -644,7 +680,18 @@ func skillAdmissionAlias(entry corelib.NLSkillEntry, used map[string]bool) strin
 }
 
 func skillAdmissionToolDefinition(binding admittedSkillBinding) map[string]interface{} {
-	desc := "执行宿主已选定的本机 Skill「" + binding.Name + "」。这个函数只运行这一个 Skill，不要传 Skill 名称，不要再搜索或安装，也不要改叫 manage_skill。"
+	return skillRunToolDefinition(binding, "执行宿主已选定的本机 Skill「"+binding.Name+"」。这个函数只运行这一个 Skill，不要传 Skill 名称，不要再搜索或安装，也不要改叫 manage_skill。")
+}
+
+// discoveryPetitionSkillToolDefinition is the function a discovery petition
+// put on the next request. The host did not select it. The admission
+// description says the host did, and tells the model not to search again,
+// which is how a planned web_search stayed closed after the catalog load.
+func discoveryPetitionSkillToolDefinition(binding admittedSkillBinding) map[string]interface{} {
+	return skillRunToolDefinition(binding, "运行本轮装载的本机 Skill「"+binding.Name+"」。这个函数只运行这一个 Skill，不要传 Skill 名称，也不要改叫 manage_skill。")
+}
+
+func skillRunToolDefinition(binding admittedSkillBinding, desc string) map[string]interface{} {
 	if binding.Description != "" {
 		desc += " " + truncateTraceText(binding.Description, 160)
 	}
@@ -678,6 +725,22 @@ func skillRemoteSearchToolDefinition() map[string]interface{} {
 }
 
 func (h *IMMessageHandler) appendAdmittedAgentGuidedSkillDocs(b *strings.Builder, userMessage string, loopCtx *LoopContext) {
+	if h != nil && loopCtx != nil && loopCtx.Runtime.SemanticIntent != nil && intent.ClassificationIsModelDiscovery(*loopCtx.Runtime.SemanticIntent) {
+		def, ok := admitExplicitNamedSkill(h.getSkillExecutor(), skillAdmissionTaskText(userMessage), h.skillExperienceDomainForOwner(loopCtx.UserID))
+		if !ok && loopCtx.discoveryNamedSkillDoc != nil {
+			def = *loopCtx.discoveryNamedSkillDoc
+			ok = strings.TrimSpace(def.Name) != ""
+		}
+		if ok {
+			content, docPath := skillDocFileForInjection(def)
+			if content != "" {
+				writeMatchedSkillDocs(b, []matchedKnowledgeSkill{{
+					Name: def.Name, Content: content, DocPath: docPath, ParamSchema: buildParamSchemaForSkill(def), Score: 1, AgentGuided: true,
+				}}, defaultKnowledgeSkillTokenBudget)
+			}
+		}
+		return
+	}
 	decision := h.skillAdmissionForTurn(loopCtx, userMessage)
 	if decision.Mode != skillAdmissionGuided || len(decision.Guided) == 0 {
 		return
@@ -706,10 +769,26 @@ func (c *sharedAgentLoopCallbacks) clearSkillAdmission() {
 }
 
 func (c *sharedAgentLoopCallbacks) publishAdmittedSkillTools(userText string) {
-	c.clearSkillAdmission()
-	if c == nil || c.handler == nil || c.foregroundHandoffOnly() {
+	if c == nil {
 		return
 	}
+	// A closed handoff lists only the chat controls. Putting a petitioned
+	// skill back would reopen work tools the handoff just removed.
+	if c.handler == nil || c.foregroundHandoffOnly() {
+		if !semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+			c.clearSkillAdmission()
+		}
+		return
+	}
+	// A discovery petition already stored the one runnable skill it loaded.
+	// The next request rebuilds the visible list from grants, then this puts
+	// that same function back. Clearing the binding here is what made the
+	// ack "下一请求可以调用这个名字" false.
+	if semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+		c.republishDiscoveryPetitionedSkills()
+		return
+	}
+	c.clearSkillAdmission()
 	decision := c.handler.skillAdmissionForTurn(c.loopCtx, userText)
 	var defs []map[string]interface{}
 	switch decision.Mode {
@@ -733,6 +812,22 @@ func (c *sharedAgentLoopCallbacks) publishAdmittedSkillTools(userText string) {
 		defs = append(defs, skillRemoteSearchToolDefinition())
 	default:
 		return
+	}
+	c.appendDiscoveredMCPDefs(defs)
+}
+
+// republishDiscoveryPetitionedSkills puts a runnable skill a discovery
+// petition already admitted back on the list this request will send.
+func (c *sharedAgentLoopCallbacks) republishDiscoveryPetitionedSkills() {
+	if c == nil || len(c.admittedSkillBindings) == 0 {
+		return
+	}
+	defs := make([]map[string]interface{}, 0, len(c.admittedSkillBindings))
+	for _, binding := range c.admittedSkillBindings {
+		if strings.TrimSpace(binding.Alias) == "" {
+			continue
+		}
+		defs = append(defs, discoveryPetitionSkillToolDefinition(binding))
 	}
 	c.appendDiscoveredMCPDefs(defs)
 }
@@ -1030,7 +1125,19 @@ func (c *sharedAgentLoopCallbacks) skillAdmissionIsGuided() bool {
 // complex task without the skill the host already selected. File tools stay
 // open for an agent-guided workflow, because those tools are how it runs.
 // generate_pdf, office, and craft_tool stay closed for that whole turn.
+//
+// A discovery petition stores a runnable skill in admittedSkillBindings so
+// the next request can call that function. The host did not select it, and
+// the same tools_search may have loaded web_search or office as planned
+// steps. Treating the binding as a host order closed those names, left the
+// required search pending, and hard-exited the turn after the file was
+// delivered. The binding stays. executeAdmittedSkillHostCall still runs it.
+// Grants, group policy, and the discovery extension path still decide the
+// other names.
 func (c *sharedAgentLoopCallbacks) skillSubstituteBlocked(name string) (bool, string) {
+	if c == nil || semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+		return false, ""
+	}
 	if !c.skillSurfaceAdmitted() {
 		return false, ""
 	}
@@ -1087,8 +1194,10 @@ func (c *sharedAgentLoopCallbacks) skillObligationReason() string {
 
 // SkillObligationPrompt is the one reminder when the model stops before using
 // the skill the host selected. Empty after that call has been attempted.
+// A discovery petition is not that selection, so the reminder stays empty
+// while the petitioned function remains callable.
 func (c *sharedAgentLoopCallbacks) SkillObligationPrompt() string {
-	if c == nil || c.admittedSkillSettled || !c.skillSurfaceAdmitted() {
+	if c == nil || c.admittedSkillSettled || !c.skillSurfaceAdmitted() || semanticSurfaceIsModelDiscovery(c.semanticSurface) {
 		return ""
 	}
 	return "[系统] " + c.skillObligationReason()

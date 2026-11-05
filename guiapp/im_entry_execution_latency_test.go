@@ -26,17 +26,14 @@ func TestClassifyIMExecutionProfileUsesAuthoritativeSemanticFusion(t *testing.T)
 	profile, semantic := h.classifyIMExecutionProfileAndSemantic(IMUserMessage{
 		Text: "截取当前桌面",
 	}, false, false)
-	if calls != 1 {
-		t.Fatalf("UIC tree calls = %d, want 1", calls)
+	if calls != 0 {
+		t.Fatalf("UIC tree calls = %d, want 0", calls)
 	}
-	if semantic == nil {
-		t.Fatal("expected semantic result")
+	if semantic == nil || !intent.ClassificationIsModelDiscovery(*semantic) {
+		t.Fatalf("semantic = %+v, want model discovery", semantic)
 	}
-	if semantic.Primary != intent.LabelScreenshot || semantic.Layer != 3 {
-		t.Fatalf("semantic = %+v, want authoritative screenshot tree result", semantic)
-	}
-	if profile.IsLight() || profile.IsDirect() || (profile.Reason != "semantic capability-managed intent" && profile.Reason != "semantic capability-managed mutating intent") {
-		t.Fatalf("profile = %+v, want governed non-legacy screenshot route", profile)
+	if profile.IsLight() || profile.IsDirect() || profile.Reason != "model discovery" {
+		t.Fatalf("profile = %+v, want model discovery", profile)
 	}
 }
 
@@ -54,11 +51,11 @@ func TestClassifyIMExecutionProfileUsesSemanticWeatherPDFComposite(t *testing.T)
 
 	h := &IMMessageHandler{unifiedClassifier: uic}
 	profile, semantic := h.classifyIMExecutionProfileAndSemantic(IMUserMessage{Text: "北京天气，输出 格式化pdf报告"}, false, false)
-	if semantic == nil || semantic.Primary != intent.LabelLiveData || len(semantic.Secondary) != 1 || semantic.Secondary[0] != intent.LabelDocumentGenerate {
-		t.Fatalf("semantic=%+v, want live_data + document_generate", semantic)
+	if semantic == nil || !intent.ClassificationIsModelDiscovery(*semantic) {
+		t.Fatalf("semantic=%+v, want model discovery", semantic)
 	}
-	if profile.IsLight() || profile.Reason != "semantic capability-managed mutating intent" {
-		t.Fatalf("profile=%+v, want full governed composite", profile)
+	if profile.IsLight() || profile.Reason != "model discovery" {
+		t.Fatalf("profile=%+v, want model discovery", profile)
 	}
 }
 

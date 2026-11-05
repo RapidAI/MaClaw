@@ -165,6 +165,48 @@ func SelectionAuthorityEqualIgnoringProvider(parent, child PlannedSelection) boo
 	return sameReplanSelectionAuthorityIgnoringProvider(parent, child)
 }
 
+// SelectionAuthorityDrift names the authority fields a child re-plan changed.
+// The provider binding is intentionally absent: a refreshed implementation is
+// allowed. An empty string means the child kept the parent's authority.
+func SelectionAuthorityDrift(parent, child PlannedSelection) string {
+	var parts []string
+	if parent.NeedID != child.NeedID {
+		parts = append(parts, "need "+parent.NeedID+" -> "+child.NeedID)
+	}
+	if parent.Phase != child.Phase {
+		parts = append(parts, "phase "+string(parent.Phase)+" -> "+string(child.Phase))
+	}
+	if parent.RequiresConfirm != child.RequiresConfirm {
+		parts = append(parts, fmt.Sprintf("confirm %v -> %v", parent.RequiresConfirm, child.RequiresConfirm))
+	}
+	if parent.ConfirmationID != child.ConfirmationID {
+		parts = append(parts, "confirmation "+parent.ConfirmationID+" -> "+child.ConfirmationID)
+	}
+	if !replanParametersDoNotExpand(parent.ParameterAuthorization, child.ParameterAuthorization) {
+		parts = append(parts, fmt.Sprintf("params ver %s/%s fields %v -> %v targets %v -> %v artifacts %v -> %v",
+			parent.ParameterAuthorization.CanonicalizerVer, child.ParameterAuthorization.CanonicalizerVer,
+			parent.ParameterAuthorization.AllowedFields, child.ParameterAuthorization.AllowedFields,
+			parent.ParameterAuthorization.AllowedTargets, child.ParameterAuthorization.AllowedTargets,
+			parent.ParameterAuthorization.AllowedArtifactIDs, child.ParameterAuthorization.AllowedArtifactIDs))
+	}
+	if parent.FitProof.MatchedCapability != child.FitProof.MatchedCapability {
+		parts = append(parts, "capability "+string(parent.FitProof.MatchedCapability)+" -> "+string(child.FitProof.MatchedCapability))
+	}
+	if !QualifiersEqual(parent.FitProof.QualifierBindings, child.FitProof.QualifierBindings) {
+		parts = append(parts, fmt.Sprintf("qualifiers %v -> %v", parent.FitProof.QualifierBindings, child.FitProof.QualifierBindings))
+	}
+	if !EffectsEqual(parent.Effects, child.Effects) {
+		parts = append(parts, fmt.Sprintf("effects %v -> %v", parent.Effects, child.Effects))
+	}
+	if !ArtifactContractsEqual(parent.Consumes, child.Consumes) {
+		parts = append(parts, fmt.Sprintf("consumes %v -> %v", parent.Consumes, child.Consumes))
+	}
+	if !ArtifactContractsEqual(parent.Produces, child.Produces) {
+		parts = append(parts, fmt.Sprintf("produces %v -> %v", parent.Produces, child.Produces))
+	}
+	return strings.Join(parts, "; ")
+}
+
 // QualifiersEqual reports whether two qualifier maps carry the same keys and
 // values. GUI petition expansion and replan authority use this one comparison.
 func QualifiersEqual(left, right map[string]string) bool {

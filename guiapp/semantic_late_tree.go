@@ -18,6 +18,9 @@ func (h *IMMessageHandler) adoptLateTreeSemanticIntent(ctx *LoopContext, userID,
 		return false
 	}
 	current := ctx.Runtime.SemanticIntent
+	if current != nil && intent.ClassificationIsModelDiscovery(*current) {
+		return false
+	}
 	if current == nil || !current.Degraded || current.ControlPlaneFailure {
 		return false
 	}

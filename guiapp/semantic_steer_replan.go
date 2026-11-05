@@ -178,6 +178,11 @@ func (c *sharedAgentLoopCallbacks) admitLiveSteerIntoPlan(steerText string) {
 	if steerText == "" {
 		return
 	}
+	// The chat model names the next catalog row. A discovery surface does
+	// not classify the inserted sentence into a new tool.
+	if semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+		return
+	}
 	uic := c.handler.getUnifiedClassifier()
 	if uic == nil {
 		return

@@ -260,6 +260,13 @@ func (c *sharedAgentLoopCallbacks) attachProducedWorkspaceDocuments() {
 		after = afterScan.files
 	}
 	produced := changedWorkspaceDocuments(c.workspaceDocBaseline, after)
+	// A remote fetch is not a document this turn produced. On a catalog miss
+	// the product is whatever search_and_install_skill or craft_tool made.
+	// The 2026-11-05 picture turn downloaded a book PDF while looking for a
+	// scan; the scan then published that PDF as the only artifact because
+	// images are not in workspaceDocumentExts.
+	produced = c.dropResearchAcquisitions(produced)
+	c.deliveredPaths = c.dropResearchAcquisitions(c.deliveredPaths)
 	// A different baseline directory means files already in the child belong
 	// to an earlier round. A walk that hit its directory budget can disagree
 	// with the other side about which old files it saw; mtime keeps those off
@@ -274,6 +281,65 @@ func (c *sharedAgentLoopCallbacks) attachProducedWorkspaceDocuments() {
 	produced = preferToolWrittenDocuments(produced)
 	sortDeliveryDocuments(produced, after)
 	c.deliveredPaths = mergeDeliveredPaths(produced, c.deliveredPaths)
+}
+
+func (c *sharedAgentLoopCallbacks) noteRemoteAcquisition(path string) {
+	if c == nil {
+		return
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+	path = filepath.Clean(path)
+	key := deliveredWorkspaceDocKey(path)
+	if key == "" {
+		return
+	}
+	for _, existing := range c.remoteAcquisitionPaths {
+		if deliveredWorkspaceDocKey(existing) == key {
+			return
+		}
+	}
+	c.remoteAcquisitionPaths = append(c.remoteAcquisitionPaths, path)
+}
+
+// dropResearchAcquisitions removes remote fetches saved after a discovery
+// catalog miss. A fetch saved before the miss, and a download on a turn
+// that never missed, both stay. The baseline is the acquisition list length
+// frozen when the miss was recorded.
+func (c *sharedAgentLoopCallbacks) dropResearchAcquisitions(paths []string) []string {
+	if c == nil || !c.discoveryUnmatchedObligation || len(paths) == 0 {
+		return paths
+	}
+	base := c.discoveryMissAcquisitionBase
+	if base < 0 {
+		base = 0
+	}
+	if base > len(c.remoteAcquisitionPaths) {
+		base = len(c.remoteAcquisitionPaths)
+	}
+	acquired := c.remoteAcquisitionPaths[base:]
+	if len(acquired) == 0 {
+		return paths
+	}
+	drop := map[string]struct{}{}
+	for _, path := range acquired {
+		if key := deliveredWorkspaceDocKey(path); key != "" {
+			drop[key] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if _, ok := drop[deliveredWorkspaceDocKey(path)]; ok {
+			continue
+		}
+		out = append(out, path)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func documentsModifiedSince(paths []string, after map[string]workspaceDocumentStamp, since time.Time) []string {

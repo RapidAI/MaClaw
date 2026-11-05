@@ -101,6 +101,91 @@ func TestValidatePetitionExpansionRejectsRootMismatchAndNoAdd(t *testing.T) {
 	}
 }
 
+func TestPreservePetitionParentAuthorityKeepsContinuationAndTemplate(t *testing.T) {
+	templates := IMSemanticIntentCapabilityNeedRules()[intent.LabelFileDownload]
+	qualifiers := map[string]string{QualifierSearchFreshness: SearchFreshnessReference}
+	clock := testPetitionSelection("need:information.current_time:clock", CapabilityCurrentTime, nil)
+	search := testPetitionSelection("need:information.search.web:abc", CapabilityInformationSearchWeb, qualifiers)
+	search.ID = "selection:" + search.NeedID
+	search.Provider.ImplementationID = "original"
+	search.EvidenceIDs = []string{"intent:search"}
+	continuation := testPetitionSelection("need:information.search.web:abc#06", CapabilityInformationSearchWeb, qualifiers)
+	continuation.ID = "selection:" + continuation.NeedID
+	continuation.AdapterName = "continuation"
+	continuation.Optional = true
+	continuation.EvidenceIDs = []string{"intent:search"}
+	parent := coretool.ToolPlan{RootTaskID: "root-preserve", Selections: []coretool.PlannedSelection{clock, search, continuation}}
+
+	refreshed := search
+	refreshed.ID = "selection:refreshed-search"
+	refreshed.Provider.ImplementationID = "refreshed"
+	widened := clock
+	widened.ParameterAuthorization.AllowedFields = []string{"now"}
+	rewrittenContinuation := continuation
+	rewrittenContinuation.ID = "selection:rewritten-continuation"
+	rewrittenContinuation.AdapterName = "rewritten"
+	rewrittenContinuation.Optional = false
+	rewrittenContinuation.Requires = []string{"selection:other"}
+	rewrittenContinuation.EvidenceIDs = []string{"intent:rewritten"}
+	rewrittenContinuation.ArtifactDependencies = []coretool.ArtifactDependency{{
+		ProducerSelection: "selection:other",
+		Contract:          coretool.ArtifactContract{Kind: "page", MIMEType: "text/html", Required: true},
+	}}
+	rewritten := testPetitionSelection("need:information.search.web:other", CapabilityInformationSearchWeb, qualifiers)
+	rewritten.ParameterAuthorization.AllowedFields = []string{"query"}
+	download := testPetitionSelection("need:artifact.acquire.remote:new", coretool.CapabilityArtifactAcquireRemote, nil)
+	shell := testPetitionSelection("need:shell.execute.local:nope", coretool.CapabilityShellExecuteLocal, nil)
+	child := coretool.ToolPlan{
+		RootTaskID: parent.RootTaskID,
+		Selections: []coretool.PlannedSelection{widened, refreshed, rewrittenContinuation, rewritten, download, shell},
+		Unmet: []coretool.UnmetNeed{
+			{NeedID: continuation.NeedID, ReasonCode: "catalog_incomplete"},
+			{NeedID: "need:browser.control.web:missing", ReasonCode: "catalog_incomplete"},
+		},
+	}
+	preserved := PreservePetitionParentAuthority(parent, child, templates)
+	seen := map[string]coretool.PlannedSelection{}
+	for _, selection := range preserved.Selections {
+		if _, ok := seen[selection.NeedID]; ok {
+			t.Fatalf("duplicate need %s", selection.NeedID)
+		}
+		seen[selection.NeedID] = selection
+	}
+	if got := seen[search.NeedID]; got.Provider.ImplementationID != "original" || got.ID != search.ID {
+		t.Fatalf("parent search = %+v", got)
+	}
+	seen[search.NeedID].EvidenceIDs[0] = "mutated"
+	if parent.Selections[1].EvidenceIDs[0] != "intent:search" {
+		t.Fatal("preserved search shares the parent's evidence slice")
+	}
+	if fields := seen[clock.NeedID].ParameterAuthorization.AllowedFields; len(fields) != 0 {
+		t.Fatalf("widened clock kept fields %v", fields)
+	}
+	gotContinuation := seen[continuation.NeedID]
+	if gotContinuation.AdapterName != "continuation" || !gotContinuation.Optional || gotContinuation.ID != continuation.ID || len(gotContinuation.ArtifactDependencies) != 0 || len(gotContinuation.Requires) != 0 || len(gotContinuation.EvidenceIDs) != 1 || gotContinuation.EvidenceIDs[0] != "intent:search" {
+		t.Fatalf("continuation = %+v", gotContinuation)
+	}
+	if _, ok := seen[download.NeedID]; !ok {
+		t.Fatal("download template was dropped")
+	}
+	if _, ok := seen[rewritten.NeedID]; ok {
+		t.Fatal("rewritten search id survived a download petition")
+	}
+	if _, ok := seen[shell.NeedID]; ok {
+		t.Fatal("shell survived a download petition")
+	}
+	if len(preserved.Unmet) != 1 || preserved.Unmet[0].NeedID != "need:browser.control.web:missing" {
+		t.Fatalf("unmet = %+v", preserved.Unmet)
+	}
+	if err := ValidatePetitionExpansion(parent, preserved, templates); err == nil || !strings.Contains(err.Error(), "unmet needs") {
+		t.Fatalf("unmet browser must still reject the expansion, err=%v", err)
+	}
+	preserved.Unmet = nil
+	if err := ValidatePetitionExpansion(parent, preserved, templates); err != nil {
+		t.Fatalf("parent continuation plus download template = %v", err)
+	}
+}
+
 func TestPetitionLabelForCapabilityIsDeterministic(t *testing.T) {
 	rules := IMSemanticIntentCapabilityNeedRules()
 	cases := []struct {

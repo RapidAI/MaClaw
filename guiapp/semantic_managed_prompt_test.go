@@ -15,7 +15,7 @@ func guiPostSSHRules(t *testing.T, managed bool) string {
 	t.Helper()
 	var b strings.Builder
 	h := &IMMessageHandler{app: &App{testHomeDir: t.TempDir()}}
-	h.appendGUIPostSSHRules(&b, true, "tester", corelib.AppConfig{}, "owner-1", managed)
+	h.appendGUIPostSSHRules(&b, true, "tester", corelib.AppConfig{}, "owner-1", managed, false)
 	return b.String()
 }
 

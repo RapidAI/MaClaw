@@ -633,7 +633,18 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 				// hint keeps the turn alive and the governed surface can still
 				// expand (petition) from there.
 				if l2Ran {
-					if contradicted, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(treeCtx, msg.Text, top.Label); contradicted {
+					contradicted, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(treeCtx, msg.Text, top.Label)
+					// non_coding against a local tool leader is a catalog gap.
+					// Minting that leader is how a picture request became an
+					// office deck. Continuation and unknown stay on their own
+					// path: they are not a missing file type.
+					if stamped, ok := stampCatalogGap(bestResult, leader, leaderScore, verdictScore); ok {
+						log.Printf("[UnifiedIntentClassifier] catalog gap: text_len=%d tree=%s(%.3f) local_leader=%s(%.3f)",
+							utf8.RuneCountInString(msg.Text), top.Label, top.Score, leader, leaderScore)
+						u.cacheAndLog(cacheKey, msg.Text, &stamped)
+						return stamped
+					}
+					if contradicted {
 						log.Printf("[UnifiedIntentClassifier] tree verdict contradicted by local cross-check: text_len=%d verdict=%s(tree %.3f, local %.3f) local_leader=%s(%.3f)",
 							utf8.RuneCountInString(msg.Text), top.Label, top.Score, verdictScore, leader, leaderScore)
 						result := lookupHintOrUnknownFromL2(l2Result, false)
@@ -1812,7 +1823,17 @@ func (u *UnifiedIntentClassifier) scheduleLateTreeVerdictWith(turnCtx context.Co
 		NormalizeDeclaredComposite(&result)
 		applyExecutionAffordances(text, &result)
 		result.ToolNames = u.affinity.Resolve(result.Primary, result.Secondary)
-		if discarded, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(context.Background(), text, result.Primary); discarded {
+		discarded, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(context.Background(), text, result.Primary)
+		if stamped, ok := stampCatalogGap(result, leader, leaderScore, verdictScore); ok {
+			// A late non_coding verdict must keep the gap mark. Caching a
+			// plain non_coding answer would make the resend an ordinary
+			// question, and the next plan would miss craft_tool.
+			log.Printf("[UnifiedIntentClassifier] late catalog gap: text_len=%d tree=%s(%.3f) local_leader=%s(%.3f)",
+				utf8.RuneCountInString(text), result.Primary, result.Confidence, leader, leaderScore)
+			result = stamped
+			discarded = false
+		}
+		if discarded {
 			// A single background LLM sample must not become durable routing
 			// knowledge when the local channel both strongly supports a
 			// different label and shows no support for the verdict. Caching it
@@ -1853,6 +1874,15 @@ func (u *UnifiedIntentClassifier) verdictContradictedByLocal(ctx context.Context
 	}
 	verdictScore = scores[verdict]
 	if leader == "" || leader == verdict {
+		return false, leader, leaderScore, verdictScore
+	}
+	// A non-capability verdict is the tree saying this sentence is not a
+	// tool family. non_coding at 0.90 against a local office leader is a
+	// picture request; discarding it minted document.write.office, and
+	// tools_search then told the model to call office and not to say a
+	// tool was missing (2026-11-05 「生成…图片」). The contradiction guard
+	// only rejects a managed family the local channel does not support.
+	if verdict.IsNonCapabilityLabel() {
 		return false, leader, leaderScore, verdictScore
 	}
 	if declaredCompositeIntentPair(leader, verdict) {
@@ -1912,6 +1942,60 @@ func LateTree(ctx context.Context) bool {
 	}
 	late, _ := ctx.Value(lateTreeContextKey{}).(bool)
 	return late
+}
+
+// ModelDiscoveryReasonMark is a turn whose tool list is not chosen by the
+// intent classifier. The chat model petitions a directory name. The clock
+// label exists only so a surface can be published; it is not a tool decision.
+const ModelDiscoveryReasonMark = "model discovery:"
+
+// ModelDiscoveryClassification is the host stand-in for a classifier verdict.
+// Primary is the local clock so the planner can open a surface. The reason
+// mark is what the directory and the allowlist consult.
+func ModelDiscoveryClassification() ClassificationResult {
+	return ClassificationResult{
+		Primary:    LabelCurrentTime,
+		Confidence: 1,
+		Layer:      0,
+		Reason:     ModelDiscoveryReasonMark + " the chat model chooses the tool",
+	}
+}
+
+// ClassificationIsModelDiscovery reports a turn that must not mint a tool
+// family from an intent model.
+func ClassificationIsModelDiscovery(result ClassificationResult) bool {
+	return strings.Contains(result.Reason, ModelDiscoveryReasonMark)
+}
+
+// CatalogGapReasonMark is a non_coding tree verdict that refused the local
+// tool leader. The host must not mint that leader. It opens skill search,
+// then craft_tool. Continuation, unknown, and ambiguous are not this mark.
+const CatalogGapReasonMark = "catalog gap:"
+
+// ClassificationHasCatalogGap reports a non_coding verdict that refused the
+// local tool leader. RunnerUp is that leader and is not a grant.
+func ClassificationHasCatalogGap(result ClassificationResult) bool {
+	return result.Primary == LabelNonCoding && strings.Contains(result.Reason, CatalogGapReasonMark)
+}
+
+// stampCatalogGap records that non_coding refused a confident local tool.
+// Companions and tool names are cleared so the refused family cannot be
+// petitioned or replayed as this turn's plan.
+func stampCatalogGap(result ClassificationResult, leader IntentLabel, leaderScore, verdictScore float64) (ClassificationResult, bool) {
+	if result.Primary != LabelNonCoding || leader == "" || leader.IsNonCapabilityLabel() {
+		return result, false
+	}
+	if leaderScore < verdictLocalLeaderFloor || leaderScore-verdictScore < verdictLocalMargin {
+		return result, false
+	}
+	result.Secondary = nil
+	result.Offered = nil
+	result.ToolNames = nil
+	result.Degraded = false
+	result.RunnerUp = leader
+	result.RunnerUpScore = leaderScore
+	result.Reason = fmt.Sprintf("%s tree %s(%.3f) refused local leader %s(%.3f)", CatalogGapReasonMark, result.Primary, result.Confidence, leader, leaderScore)
+	return result, true
 }
 
 // verdictLocalLeaderFloor is the local confidence required before the

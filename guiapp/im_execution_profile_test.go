@@ -268,8 +268,8 @@ func TestHandlerClassifyIMExecutionProfileSkipsSemanticForStructuralFullWithoutC
 	if profile.Layer != string(executionLayerFull) {
 		t.Fatalf("profile = %+v, want full", profile)
 	}
-	if semantic != nil {
-		t.Fatalf("structural full profile should not run semantic classifier, got %+v", semantic)
+	if semantic == nil || !intent.ClassificationIsModelDiscovery(*semantic) {
+		t.Fatalf("semantic=%+v, want model discovery without a classifier", semantic)
 	}
 }
 
@@ -284,8 +284,8 @@ func TestHandlerClassifyIMExecutionProfileRetainsSemanticIntentForStructuralFull
 	if profile.Layer != string(executionLayerFull) {
 		t.Fatalf("profile=%+v, want structural full profile", profile)
 	}
-	if semantic == nil || semantic.Primary != intent.LabelScreenshot || !imSemanticIntentIsManaged(*semantic) {
-		t.Fatalf("semantic=%+v, want retained managed screenshot intent", semantic)
+	if semantic == nil || !intent.ClassificationIsModelDiscovery(*semantic) {
+		t.Fatalf("semantic=%+v, want model discovery, not a classifier family", semantic)
 	}
 }
 
@@ -548,8 +548,8 @@ func TestHandlerClassifyIMExecutionProfileUsesCapabilityManagedCurrentTime(t *te
 		t.Fatal(err)
 	}
 	profile := h.classifyIMExecutionProfile(IMUserMessage{Text: "\u73b0\u5728\u51e0\u70b9"}, false, false)
-	if profile.IsDirect() || profile.Reason != "semantic capability-managed intent" {
-		t.Fatalf("profile = %+v, want capability-managed current-time route", profile)
+	if profile.IsDirect() || profile.Reason != "model discovery" {
+		t.Fatalf("profile = %+v, want model discovery", profile)
 	}
 }
 
@@ -578,8 +578,8 @@ func TestHandlerClassifyIMExecutionProfileLocalCurrentTimeUsesUICCapabilityRoute
 		}}),
 	}
 	profile := h.classifyIMExecutionProfile(IMUserMessage{Text: "\u73b0\u5728\u51e0\u70b9\uff1f"}, false, false)
-	if profile.IsDirect() || profile.Reason != "semantic capability-managed intent" {
-		t.Fatalf("profile = %+v, want capability-managed current-time route", profile)
+	if profile.IsDirect() || profile.Reason != "model discovery" {
+		t.Fatalf("profile = %+v, want model discovery", profile)
 	}
 }
 
@@ -598,8 +598,8 @@ func TestExecutionProfileStoresAuthoritativeSemanticResultForMaterialization(t *
 	ctx := NewLoopContext("chat", 300, nil)
 	ctx.Runtime.Execution = profile
 	ctx.Runtime.SemanticIntent = semantic
-	if calls != 1 || semantic.Primary != intent.LabelLiveData || semantic.Layer != 3 {
-		t.Fatalf("UIC result calls=%d semantic=%+v, want authoritative tree classification", calls, semantic)
+	if calls != 0 || !intent.ClassificationIsModelDiscovery(*semantic) {
+		t.Fatalf("calls=%d semantic=%+v, want discovery without the intent model", calls, semantic)
 	}
 }
 

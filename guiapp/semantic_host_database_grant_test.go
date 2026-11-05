@@ -23,6 +23,14 @@ func TestApplyHostDatabaseReadGrantAddsSecondary(t *testing.T) {
 	}
 }
 
+func TestApplyHostDatabaseReadGrantLeavesDiscovery(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	got := applyHostDatabaseReadGrant(discovery, true)
+	if got.Primary != discovery.Primary || got.Reason != discovery.Reason || got.HasLabel(intent.LabelDatabase) {
+		t.Fatalf("discovery gained a database grant: %+v", got)
+	}
+}
+
 func TestApplyHostDatabaseReadGrantNoopWithoutGrant(t *testing.T) {
 	got := applyHostDatabaseReadGrant(intent.ClassificationResult{Primary: intent.LabelUnknown}, false)
 	if got.HasLabel(intent.LabelDatabase) {

@@ -314,7 +314,7 @@ func TestAcquireTrustedRemoteLandsInReadWorkspace(t *testing.T) {
 				RequestID:     "req-other-tab",
 				PolicyOwnerID: tc.owner,
 			}}
-			text, err := h.acquireTrustedRemote(principal, srv.URL+"/samples/"+tc.file, false)
+			text, _, err := h.acquireTrustedRemote(principal, srv.URL+"/samples/"+tc.file, false)
 			if err != nil {
 				t.Fatal(err)
 			}

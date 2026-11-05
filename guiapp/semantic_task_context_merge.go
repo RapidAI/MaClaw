@@ -18,6 +18,11 @@ func semanticClassificationNeedsTaskContext(result *intent.ClassificationResult)
 	if result == nil {
 		return false
 	}
+	// The tree already refused the local tool leader. Merging an older
+	// sentence back in is how a picture request becomes the open office task.
+	if intent.ClassificationHasCatalogGap(*result) {
+		return false
+	}
 	if result.Degraded {
 		// A tree timeout is unconfirmed and may belong to the open task.
 		// An office leader kept over a read is already the write: the read
@@ -51,6 +56,11 @@ func officeReadRunnerUp(label intent.IntentLabel) bool {
 // re-route a bound continuation on its own.
 func pendingAnswerPrefersTaskMerge(result *intent.ClassificationResult, isPendingAnswer bool) bool {
 	if !isPendingAnswer || result == nil {
+		return false
+	}
+	// A catalog gap already refused the local tool. Answering a pending
+	// question must not merge the open office task back onto a picture.
+	if intent.ClassificationHasCatalogGap(*result) {
 		return false
 	}
 	// A pure delivery label is the sentence's own disposition of an existing

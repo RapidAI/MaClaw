@@ -313,7 +313,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			}
 			return &IMAgentResponse{Error: "semantic_turn_replaced", ResponseSource: "ingress_replacement"}
 		}
-		if semanticIntent != nil {
+		if semanticIntent != nil && !intent.ClassificationIsModelDiscovery(*semanticIntent) {
 			if replayed, ok := h.applySessionGovernedContinuation(msg.UserID, msg.Platform, sessionGovernedDestination(loopCtx), opts.WorkflowAgentLoop, *semanticIntent, msg.Text, msg.Attachments); ok {
 				copied := replayed
 				semanticIntent = &copied
@@ -437,29 +437,33 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 				}
 			}
 		}
-		if rewritten := semanticExplicitKnowledgeWrite(semanticIntent, msg.Text); rewritten != nil {
-			semanticIntent = rewritten
-			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-			log.Printf("[semantic-routing] explicit knowledge-write request user=%q", msg.UserID)
-		}
-		if rewritten := semanticGovernedEffectPlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
-			semanticIntent = rewritten
-			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-			logGovernedEffectPlanning(msg.UserID, rewritten.Reason)
-		}
-		semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
-		if rewritten := semanticExplicitSkillPlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
-			semanticIntent = rewritten
-			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-			log.Printf("[semantic-routing] explicit skill invocation planning user=%q primary=%s", msg.UserID, rewritten.Primary)
-		}
-		// After residue and the other late rewrites, and before lookup
-		// continuation can narrow the profile. History covers 「真读内容」
-		// when the classifier never merges the earlier DWG sentence.
-		if rewritten := semanticFetchedDocumentReadPlanning(semanticIntent, msg.Text, history); rewritten != nil {
-			semanticIntent = rewritten
-			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-			log.Printf("[semantic-routing] fetched document read user=%q", msg.UserID)
+		// A discovery mark is the tool-routing decision. Sentence rewrites
+		// must not replace it with knowledge, mail, shell, or a document plan.
+		if semanticIntent != nil && !intent.ClassificationIsModelDiscovery(*semanticIntent) {
+			if rewritten := semanticExplicitKnowledgeWrite(semanticIntent, msg.Text); rewritten != nil {
+				semanticIntent = rewritten
+				executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+				log.Printf("[semantic-routing] explicit knowledge-write request user=%q", msg.UserID)
+			}
+			if rewritten := semanticGovernedEffectPlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
+				semanticIntent = rewritten
+				executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+				logGovernedEffectPlanning(msg.UserID, rewritten.Reason)
+			}
+			semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
+			if rewritten := semanticExplicitSkillPlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
+				semanticIntent = rewritten
+				executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+				log.Printf("[semantic-routing] explicit skill invocation planning user=%q primary=%s", msg.UserID, rewritten.Primary)
+			}
+			// After residue and the other late rewrites, and before lookup
+			// continuation can narrow the profile. History covers 「真读内容」
+			// when the classifier never merges the earlier DWG sentence.
+			if rewritten := semanticFetchedDocumentReadPlanning(semanticIntent, msg.Text, history); rewritten != nil {
+				semanticIntent = rewritten
+				executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+				log.Printf("[semantic-routing] fetched document read user=%q", msg.UserID)
+			}
 		}
 		loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 		markAnswerOnlySocialTurn(loopCtx, loopCtx.Runtime.Execution, msg.Text)

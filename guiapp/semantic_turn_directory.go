@@ -18,6 +18,20 @@ type semanticTurnDirectoryEntry struct {
 	Name    string
 	Summary string
 	Role    string
+	// CatalogKind is set only on a discovery catalog row: mcp or skill.
+	// The grant follows this, not a "__" in the rendered name. A long MCP
+	// name is rewritten without that separator, and a skill alias can
+	// contain it.
+	CatalogKind string
+	// ServerID and ToolName are the MCP bind this row observed. The grant
+	// uses them. A later inventory can fail or drop the tool, and must not
+	// be required to recover an identity the row already has.
+	ServerID string
+	ToolName string
+	// StableID is the skill this row observed. The grant loads that skill
+	// and binds the row's name. A later scan can give the alias to a
+	// different skill; the alias is not the identity.
+	StableID string
 }
 
 // semanticOrdinaryQA is a turn whose labels carry no capability. The legacy
@@ -69,6 +83,9 @@ func semanticSurfaceHasGrant(surface *semanticCallSurface, name string) bool {
 // primary is that family and cleared the write floor. bash and write_file
 // stay out of an ordinary turn.
 func semanticTurnDirectory(result intent.ClassificationResult) []semanticTurnDirectoryEntry {
+	if intent.ClassificationIsModelDiscovery(result) {
+		return modelDiscoveryDirectory()
+	}
 	if semanticOrdinaryQA(result) {
 		return nil
 	}
@@ -123,6 +140,28 @@ func semanticTurnDirectory(result intent.ClassificationResult) []semanticTurnDir
 	return entries
 }
 
+// modelDiscoveryDirectory is the catalog the chat model may petition.
+// The clock anchor is not a choice. ssh, mailbox send, and desktop control
+// are petition rows. They are not on the first-wave function list, and a
+// sentence does not grant them.
+func modelDiscoveryDirectory() []semanticTurnDirectoryEntry {
+	names := make([]string, 0, len(semanticPetitionableCapabilities))
+	for name := range semanticPetitionableCapabilities {
+		if name == "current_datetime" {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	entries := make([]semanticTurnDirectoryEntry, 0, len(names))
+	for _, name := range names {
+		entries = append(entries, semanticTurnDirectoryEntry{
+			Name: name, Summary: semanticDirectorySummary(name), Role: "petition",
+		})
+	}
+	return entries
+}
+
 func semanticDirectoryFamilyCompanions(primary intent.IntentLabel) []intent.IntentLabel {
 	switch primary {
 	case intent.LabelMailboxRead:
@@ -171,7 +210,15 @@ func (c *sharedAgentLoopCallbacks) semanticTurnAdmits(name string) bool {
 		c.directoryAdmitKey = key
 		c.directoryAdmit = names
 	}
-	return c.directoryAdmit[name]
+	if c.directoryAdmit[name] {
+		return true
+	}
+	// Installed skill and MCP names are not in the static directory cache.
+	// A discovery turn admits them by the current catalog.
+	if result, ok := semanticCallbackClassification(c); ok && intent.ClassificationIsModelDiscovery(result) {
+		return c.discoveryCatalogHas(name)
+	}
+	return false
 }
 
 func semanticDirectoryAdmitKey(c *sharedAgentLoopCallbacks) string {
@@ -345,6 +392,7 @@ func semanticDirectorySummaries() map[string]string {
 
 const semanticTurnDirectoryHeading = "## 本回合能力目录\n"
 const semanticTurnDirectoryClose = "[本回合能力目录结束]"
+const semanticDiscoveryDirectoryPreface = "本轮不预选工具。标了「可请愿」的名字，直接调用一次来申请。没有对应名字时，先 search_and_install_skill，再用 craft_tool。不要用另一种工具顶替。文字问题直接回答。\n"
 
 func appendSemanticTurnDirectoryRules(b *strings.Builder, result intent.ClassificationResult) {
 	if b == nil {
@@ -365,6 +413,9 @@ type semanticDirectoryExposure struct {
 	Denied                 map[string]bool
 	ReadPetitionSpent      bool
 	EffectfulPetitionSpent bool
+	// Catalog is the discovery-only list of installed skills and ready MCP
+	// tools. Those names are petition rows. They are not grants.
+	Catalog []semanticTurnDirectoryEntry
 }
 
 func semanticSurfaceExposure(surface *semanticCallSurface) semanticDirectoryExposure {
@@ -381,6 +432,9 @@ func writeSemanticTurnDirectory(b *strings.Builder, result intent.Classification
 	entries := semanticTurnDirectory(result)
 	b.WriteString("\n")
 	b.WriteString(semanticTurnDirectoryHeading)
+	if intent.ClassificationIsModelDiscovery(result) {
+		b.WriteString(semanticDiscoveryDirectoryPreface)
+	}
 	if len(entries) == 0 {
 		b.WriteString("- 本回合没有 bash，也没有 write_file。不要调用它们。\n")
 	} else {
@@ -413,13 +467,27 @@ func writeSemanticTurnDirectory(b *strings.Builder, result intent.Classification
 			}
 		}
 	}
+	writeDiscoveryCatalogRows(b, entries, exposure)
 	// Ambient and host-issued grants (memory_recall, a delivered image) are
 	// already callable. Leaving them out of this section makes the directory
-	// look like the whole menu. They stay out of the petition set.
-	writeGrantedNamesOutsideDirectory(b, entries, exposure.Granted)
-	writePlannedInstalledNames(b, entries, exposure)
+	// look like the whole menu. They stay out of the petition set. A catalog
+	// row already states that name, so the extra writers must not print it again.
+	listed := entriesAlreadyInDirectory(entries, exposure.Catalog)
+	writeGrantedNamesOutsideDirectory(b, listed, exposure.Granted)
+	writePlannedInstalledNames(b, listed, exposure)
 	b.WriteString(semanticTurnDirectoryClose)
 	b.WriteString("\n")
+}
+
+// entriesAlreadyInDirectory marks builtin rows and discovery catalog rows as
+// already printed. The grant and plan extras then skip those names.
+func entriesAlreadyInDirectory(entries, catalog []semanticTurnDirectoryEntry) []semanticTurnDirectoryEntry {
+	if len(catalog) == 0 {
+		return entries
+	}
+	listed := make([]semanticTurnDirectoryEntry, 0, len(entries)+len(catalog))
+	listed = append(listed, entries...)
+	return append(listed, catalog...)
 }
 
 // semanticStableRenderedName is the model spelling that does not depend on a
@@ -607,12 +675,46 @@ func addSemanticDirectoryNames(names map[string]bool, name string, grant tool.In
 	if names == nil {
 		return
 	}
-	for _, candidate := range []string{name, semanticStableRenderedName(name), grant.AdapterName, semanticStableRenderedName(grant.AdapterName)} {
-		candidate = strings.TrimSpace(candidate)
+	for _, candidate := range semanticGrantNameCandidates(name, grant) {
 		if candidate != "" {
 			names[candidate] = true
 		}
 	}
+}
+
+// semanticGrantNameCandidates is the model spellings of one grant. The table
+// key and AdapterName may each be the host adapter or the stable name.
+func semanticGrantNameCandidates(key string, grant tool.InvocationGrant) []string {
+	return []string{
+		strings.TrimSpace(key),
+		semanticStableRenderedName(key),
+		strings.TrimSpace(grant.AdapterName),
+		semanticStableRenderedName(grant.AdapterName),
+	}
+}
+
+// semanticRetiredGrantForName returns the retired grant the model names.
+// An exact table key wins. Otherwise the directory candidates match, so a
+// grant stored as host_document_generate_file answers generate_pdf.
+func semanticRetiredGrantForName(surface *semanticCallSurface, name string) (tool.InvocationGrant, bool) {
+	if surface == nil {
+		return tool.InvocationGrant{}, false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return tool.InvocationGrant{}, false
+	}
+	if grant, ok := surface.retiredGrants[name]; ok {
+		return grant, true
+	}
+	for key, grant := range surface.retiredGrants {
+		for _, candidate := range semanticGrantNameCandidates(key, grant) {
+			if candidate == name {
+				return grant, true
+			}
+		}
+	}
+	return tool.InvocationGrant{}, false
 }
 
 func semanticSurfaceGrantNames(surface *semanticCallSurface) map[string]bool {
@@ -636,7 +738,39 @@ func (c *sharedAgentLoopCallbacks) projectSemanticDirectoryPrompt() {
 	if c == nil || strings.TrimSpace(c.systemPrompt) == "" || c.semanticSurface == nil || c.semanticSurface.replan == nil || c.semanticSurface.replan.Classification.Primary == "" {
 		return
 	}
-	c.systemPrompt = semanticPromptWithTurnDirectory(c.systemPrompt, c.semanticSurface.replan.Classification, c.semanticDirectoryExposure())
+	// semanticDirectoryExposure already filled Catalog from the same
+	// observation that marked granted names. A second lookup here can see
+	// a server finish tools/list and print a different set.
+	exposure := c.semanticDirectoryExposure()
+	c.systemPrompt = semanticPromptWithTurnDirectory(c.systemPrompt, c.semanticSurface.replan.Classification, exposure)
+}
+
+// writeDiscoveryCatalogRows appends installed skills and ready MCP tools.
+// A name the builtin directory already lists is not repeated.
+func writeDiscoveryCatalogRows(b *strings.Builder, entries []semanticTurnDirectoryEntry, exposure semanticDirectoryExposure) {
+	if b == nil || len(exposure.Catalog) == 0 {
+		return
+	}
+	listed := map[string]bool{}
+	for _, entry := range entries {
+		listed[entry.Name] = true
+	}
+	for _, entry := range exposure.Catalog {
+		name := strings.TrimSpace(entry.Name)
+		if name == "" || listed[name] {
+			continue
+		}
+		listed[name] = true
+		summary := directorySingleLine(entry.Summary)
+		if summary == "" {
+			summary = semanticDirectorySummary(name)
+		}
+		if exposure.Granted[name] {
+			fmt.Fprintf(b, "- %s — %s 已在当前函数列表里。\n", name, summary)
+			continue
+		}
+		fmt.Fprintf(b, "- %s — %s 可请愿，不在当前函数列表里。\n", name, summary)
+	}
 }
 
 func (c *sharedAgentLoopCallbacks) semanticDirectoryExposure() semanticDirectoryExposure {
@@ -666,6 +800,7 @@ func (c *sharedAgentLoopCallbacks) semanticDirectoryExposure() semanticDirectory
 			delete(exposure.Granted, name)
 		}
 	}
+	c.noteVisibleDiscoveryCatalog(&exposure, visible)
 	exposure.ReadPetitionSpent = c.semanticPetitionConsumed
 	exposure.EffectfulPetitionSpent = c.semanticEffectfulPetitionConsumed
 	exposure.Wait = semanticDirectoryWaitNotes(c)
@@ -677,6 +812,29 @@ func (c *sharedAgentLoopCallbacks) semanticDirectoryExposure() semanticDirectory
 		exposure.Denied[strings.TrimSpace(name)] = true
 	}
 	return exposure
+}
+
+// noteVisibleDiscoveryCatalog marks a petitioned skill or MCP name as
+// already on the function list once this request actually sends it.
+// A sidecar grant that is not in the visible list stays a petition row.
+// Catalog is that same observation, so the printed rows cannot be a
+// later tools/list than the granted marks.
+func (c *sharedAgentLoopCallbacks) noteVisibleDiscoveryCatalog(exposure *semanticDirectoryExposure, visible map[string]bool) {
+	if c == nil || exposure == nil || !semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+		return
+	}
+	if exposure.Granted == nil {
+		exposure.Granted = map[string]bool{}
+	}
+	rows := c.discoveryCatalogRows()
+	exposure.Catalog = rows
+	for _, row := range rows {
+		name := strings.TrimSpace(row.Name)
+		if name == "" || !visible[name] || !semanticInstalledToolCallable(c, name, visible) {
+			continue
+		}
+		exposure.Granted[name] = true
+	}
 }
 
 func semanticInstalledToolCallable(c *sharedAgentLoopCallbacks, name string, visible map[string]bool) bool {
@@ -730,31 +888,11 @@ func semanticPromptWithTurnDirectory(prompt string, result intent.Classification
 		return prompt
 	}
 	if start := strings.Index(prompt, semanticTurnDirectoryHeading); start >= 0 {
-		end := start + len(semanticTurnDirectoryHeading)
-		for end < len(prompt) {
-			next := strings.IndexByte(prompt[end:], '\n')
-			lineEnd := len(prompt)
-			if next >= 0 {
-				lineEnd = end + next
-			}
-			line := prompt[end:lineEnd]
-			if strings.HasPrefix(line, "- ") {
-				if next < 0 {
-					end = len(prompt)
-					break
-				}
-				end = lineEnd + 1
-				continue
-			}
-			if line == semanticTurnDirectoryClose {
-				if next < 0 {
-					end = len(prompt)
-				} else {
-					end = lineEnd + 1
-				}
-			}
-			break
-		}
+		// The discovery preface sits between the heading and the bullets.
+		// It stays inside the section. The next non-bullet, or the closing
+		// line, is the end, so a later copy of the marker cannot pull the
+		// grant fence into the replacement.
+		end := directorySectionEnd(prompt, start)
 		return prompt[:start] + body + "\n" + prompt[end:]
 	}
 	const fence = "Governed tools:"
@@ -762,6 +900,56 @@ func semanticPromptWithTurnDirectory(prompt string, result intent.Classification
 		return prompt[:at] + body + "\n" + prompt[at:]
 	}
 	return prompt + "\n" + body + "\n"
+}
+
+// directorySingleLine keeps one directory row on one line. A newline in a
+// tool description would otherwise put the status on a following line.
+func directorySingleLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// directorySectionEnd is the index just after the directory that begins at
+// start. The closing marker ends the section only as its own line. The
+// discovery preface is part of the section; any other non-bullet ends it.
+// A later copy of the marker must not pull the grant fence in with it.
+func directorySectionEnd(prompt string, start int) int {
+	end := start + len(semanticTurnDirectoryHeading)
+	if end > len(prompt) {
+		return len(prompt)
+	}
+	for end < len(prompt) {
+		line, next := directoryLineAt(prompt, end)
+		line = strings.TrimRight(line, "\r")
+		if line == semanticTurnDirectoryClose {
+			if next < 0 {
+				return len(prompt)
+			}
+			return next
+		}
+		if !directoryLineStaysInside(line) {
+			return end
+		}
+		if next < 0 {
+			return len(prompt)
+		}
+		end = next
+	}
+	return end
+}
+
+func directoryLineStaysInside(line string) bool {
+	if line == "" || strings.HasPrefix(line, "- ") {
+		return true
+	}
+	return line == strings.TrimSuffix(semanticDiscoveryDirectoryPreface, "\n")
+}
+
+func directoryLineAt(prompt string, at int) (line string, next int) {
+	rest := prompt[at:]
+	if i := strings.IndexByte(rest, '\n'); i >= 0 {
+		return rest[:i], at + i + 1
+	}
+	return rest, -1
 }
 
 // semanticToolsSearchApplyDirectory pins the turn directory at the front of

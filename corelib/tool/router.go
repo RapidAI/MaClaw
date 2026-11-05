@@ -1373,6 +1373,14 @@ func (r *Router) lookupRouteClassification(userMessage string, opts RouteOptions
 	if r == nil {
 		return intent.ClassificationResult{}
 	}
+	// The discovery stand-in uses the clock label so a surface can be
+	// published. It is not a classification this router may activate.
+	// Dropping the pointer and continuing used to run embedding and BM25
+	// and constrain skills as if the turn were a clock request. An empty
+	// result leaves skills unconstrained and does not call the classifier.
+	if opts.PreResolved != nil && intent.ClassificationIsModelDiscovery(*opts.PreResolved) {
+		return intent.ClassificationResult{}
+	}
 	cached, hasCache := cachedRouteClassification(r.unifiedClassifier, userMessage, opts)
 	if opts.PreResolved != nil && classificationActivatesTools(*opts.PreResolved, routeCacheActivationMin(opts)) {
 		return *opts.PreResolved

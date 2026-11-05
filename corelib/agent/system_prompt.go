@@ -28,6 +28,11 @@ type SystemPromptConfig struct {
 	// the legacy send_file(path=)/manage_skill catalog.
 	ManagedSemantic bool
 
+	// ModelDiscovery is a managed turn whose first functions are the
+	// discovery preset, not a host skill selection. The admission bullet
+	// stays off that prompt. Classified managed turns leave this false.
+	ModelDiscovery bool
+
 	// SuppressCodingGateRules suppresses the coding workflow confirmation gate
 	// rules from the system prompt. Used during V2 workflow agent loops where
 	// the phase prompt provides all necessary instructions and the confirmation

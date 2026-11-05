@@ -370,6 +370,83 @@ func (c *LoopContext) markChatTaskHandoffSent() {
 	c.mu.Unlock()
 }
 
+func (c *LoopContext) setDiscoveryCatalogMiss() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.DiscoveryCatalogMiss = true
+	c.mu.Unlock()
+}
+
+func (c *LoopContext) discoveryCatalogMiss() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.DiscoveryCatalogMiss
+}
+
+func (c *LoopContext) markDiscoveryCatalogMissSettled() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.DiscoveryCatalogMiss {
+		c.discoveryMissExtensionSettled = true
+	}
+	c.mu.Unlock()
+}
+
+func (c *LoopContext) catalogMissExtensionSettled() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.discoveryMissExtensionSettled
+}
+
+func discoveryCatalogMissDispatchReason(loop *LoopContext) string {
+	if loop.catalogMissExtensionSettled() {
+		return discoveryUnmatchedSubstituteMessage
+	}
+	return discoveryUnmatchedExtensionMessage
+}
+
+func (c *LoopContext) setDiscoveryBatchPendingSearch(n int) {
+	if c == nil {
+		return
+	}
+	if n < 0 {
+		n = 0
+	}
+	c.mu.Lock()
+	c.discoveryBatchPendingSearch = n
+	c.mu.Unlock()
+}
+
+func (c *LoopContext) discoveryBatchPendingSearchCount() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.discoveryBatchPendingSearch
+}
+
+func (c *LoopContext) consumeDiscoveryBatchPendingSearch() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.discoveryBatchPendingSearch > 0 {
+		c.discoveryBatchPendingSearch--
+	}
+	c.mu.Unlock()
+}
+
 func (c *LoopContext) chatTaskHandoffSent() bool {
 	if c == nil {
 		return false

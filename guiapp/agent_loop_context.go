@@ -25,9 +25,9 @@ type LoopContext struct {
 	SlotKind    SlotKind // Coding, Scheduled, Auto (Background only)
 	Description string   // human-readable task description
 
-	mu                sync.RWMutex
-	maxIterations     int // current max iterations for this loop
-	iteration         int // current iteration count
+	mu            sync.RWMutex
+	maxIterations int // current max iterations for this loop
+	iteration     int // current iteration count
 	// iterationExtensions counts in-place refills after the counter runs out.
 	// The same loop keeps its tool transcript. A new task is not started.
 	iterationExtensions int
@@ -35,11 +35,11 @@ type LoopContext struct {
 	// refill, such as the chat auto-extend. The next message restores the
 	// configured budget.
 	iterationCeilingRaised bool
-	status            LoopState
-	userCancelled     bool  // set only for an explicit user stop, before CancelC is closed
-	pauseAfterCurrent bool  // finish the in-flight request or subtask, then stop before the next one
-	replanRevision    int64 // increments when live user guidance should interrupt/re-plan
-	replansSealed     bool  // final response won the accept/commit race; reject later steering
+	status                 LoopState
+	userCancelled          bool  // set only for an explicit user stop, before CancelC is closed
+	pauseAfterCurrent      bool  // finish the in-flight request or subtask, then stop before the next one
+	replanRevision         int64 // increments when live user guidance should interrupt/re-plan
+	replansSealed          bool  // final response won the accept/commit race; reject later steering
 	// workStopVerdict caches the host's verification of this turn's stop
 	// request. A stop tool call and the post-turn false-claim guard read the
 	// same sentence, and classifying it twice would spend a second model call.
@@ -136,6 +136,9 @@ type LoopContext struct {
 	semanticResidueRemaining   map[string]int
 	semanticResidueLookupFacts bool
 	semanticResidueLookupUsed  bool
+	// discoveryNamedSkillDoc is a skill body the user named, or a discovery
+	// petition loaded. It is instructions. It does not add bash.
+	discoveryNamedSkillDoc *NLSkillDefinition
 	// semanticSessionCeilingSpent closes this turn. No legacy tool name may run.
 	semanticSessionCeilingSpent bool
 	// capabilityExtensionReason opens a closed skill-search and craft_tool
@@ -262,6 +265,23 @@ type LoopContext struct {
 	// It is per message. prepareIMLoopContext clears it, and the entry path
 	// sets it again only when this message may dispatch.
 	OfferChatTaskDispatch bool
+	// DiscoveryCatalogMiss is set when this turn's discovery tools_search
+	// needs matched nothing. Fulfillment is search_and_install_skill, then
+	// craft_tool. Dispatch and the automatic foreground handoff stay closed
+	// for the rest of the turn: a background worker reclassifies from the
+	// prompt it is given and would satisfy the request by downloading
+	// something else. On 2026-11-05 a generate-a-picture turn did that and
+	// the workspace scan then published an unrelated PDF as the artifact.
+	DiscoveryCatalogMiss bool
+	// discoveryMissExtensionSettled is set once search_and_install_skill
+	// installed a skill or craft_tool returned success. Dispatch stays
+	// closed either way; the reason tells the model which step is done.
+	discoveryMissExtensionSettled bool
+	// discoveryBatchPendingSearch counts tools_search calls declared in the
+	// current assistant batch that have not executed. Dispatch stays closed
+	// until they run. Starting the worker first sets the handoff fence, that
+	// fence drops the later search, and a catalog miss is never recorded.
+	discoveryBatchPendingSearch int
 	// ChatTaskID is set when this loop is itself a background chat task.
 	ChatTaskID string
 	// sessionRoundEpochAtStart is the session-round epoch this turn observed

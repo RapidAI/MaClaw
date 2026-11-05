@@ -17,9 +17,11 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-// syncSkillHubTools registers the search_and_install_skill tool when a
-// SkillMarket (HubCenter) is reachable, giving the LLM the ability to
-// proactively search the SkillMarket and install skills during a session.
+// syncSkillHubTools registers search_and_install_skill when this handler has
+// an App, and drops it when the App is gone. Discovery lists the name from
+// the registry and does not rebuild the legacy tool cache, so the discovery
+// preset calls this only while an App is present. A list built without an
+// App leaves a tool that a test or host registered itself.
 func (h *IMMessageHandler) syncSkillHubTools() {
 	if h.registry == nil {
 		return

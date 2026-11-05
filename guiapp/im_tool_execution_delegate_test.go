@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -410,23 +411,33 @@ func TestExecuteAgentLoopDelegateTaskRejectsNonCodingIntent(t *testing.T) {
 		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "should not run"}
 	}
 
+	dir := t.TempDir()
 	h := testHandlerWithDelegateGate(intent.LabelNonCoding, "")
+	request := "fix the bug in the submit handler"
+	payload, err := json.Marshal(map[string]string{
+		"agent":        "coding_workflow",
+		"request":      request,
+		"project_path": dir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	result := h.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
-		UserText: "Cloudflare OAuth login is unavailable; any other operational options?",
+		UserText: request,
 		ToolCall: llm.ToolCall{Function: llm.ToolCallFunction{
 			Name:      "delegate_task",
-			Arguments: `{"agent":"coding_workflow","request":"create a Cloudflare login alternatives guide"}`,
+			Arguments: string(payload),
 		}},
 	})
 
 	if called {
-		t.Fatal("non-coding request must not run CodingSubAgent")
+		t.Fatal("a fix with no code evidence must not run CodingSubAgent")
 	}
 	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected {
 		t.Fatalf("result = %+v, want policy rejection", result)
 	}
-	if !strings.Contains(result.Text, "semantically confirmed coding work") || !strings.Contains(result.Text, "non_coding") {
-		t.Fatalf("rejection text = %q, want semantic non-coding reason", result.Text)
+	if !strings.Contains(result.Text, "no existing code project evidence") {
+		t.Fatalf("rejection text = %q, want missing code evidence", result.Text)
 	}
 }
 
@@ -434,9 +445,6 @@ func TestExecuteAgentLoopDelegateTaskRejectsWhenClassifierUnavailable(t *testing
 	original := runTaskWithSubAgent
 	defer func() { runTaskWithSubAgent = original }()
 
-	// Isolate from the package-global classifier other tests may have
-	// installed: this scenario requires classifyCodingWorkflowDelegateIntent
-	// to find no classifier at all.
 	savedClassifier := unifiedClassifierPtr.Load()
 	unifiedClassifierPtr.Store(nil)
 	defer unifiedClassifierPtr.Store(savedClassifier)
@@ -444,7 +452,7 @@ func TestExecuteAgentLoopDelegateTaskRejectsWhenClassifierUnavailable(t *testing
 	called := false
 	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
 		called = true
-		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "should not run"}
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "implemented without a classifier"}
 	}
 
 	h := &IMMessageHandler{}
@@ -456,14 +464,11 @@ func TestExecuteAgentLoopDelegateTaskRejectsWhenClassifierUnavailable(t *testing
 		}},
 	})
 
-	if called {
-		t.Fatal("CodingSubAgent must fail closed when semantic classifier is unavailable")
+	if !called {
+		t.Fatalf("delegate_task must run without a classifier, result=%+v", result)
 	}
-	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected {
-		t.Fatalf("result = %+v, want policy rejection", result)
-	}
-	if !strings.Contains(result.Text, "classifier is unavailable") {
-		t.Fatalf("rejection text = %q, want classifier unavailable reason", result.Text)
+	if result.Outcome != toolOutcomeSucceeded {
+		t.Fatalf("result = %+v, want the coding subagent", result)
 	}
 }
 

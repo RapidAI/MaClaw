@@ -1494,6 +1494,66 @@ func TestSyncTreeVerdictContradictedByLocalFallsBackToL2Hint(t *testing.T) {
 	}
 }
 
+// A confident non-capability tree verdict is the correction, not a wrong
+// managed family. "生成一张图片" scored office locally and non_coding on the
+// tree; keeping the office hint minted a spreadsheet tool and closed the
+// search that was looking for an image tool.
+func TestSyncTreeNonCapabilityVerdictIsNotReplacedByLocalOffice(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMContextFunc: func(context.Context, context.Context, string, string) (string, error) {
+			return `{"top":[{"skill":"non_coding","score":0.90},{"skill":"office","score":0.72}]}`, nil
+		},
+		FusionTreeDeadline: 2 * time.Second,
+		LLMTimeout:         2 * time.Second,
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelOffice, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelDocumentRead, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelNonCoding, Vecs: [][]float32{{0, 1, 0}}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.ClassifyContext(context.Background(), MessageContext{Text: "生成人与人之间负距离的图片"})
+	if result.Primary != LabelNonCoding || result.Degraded || !ClassificationHasCatalogGap(result) {
+		t.Fatalf("result = %+v, want a non_coding catalog gap, not a degraded office hint", result)
+	}
+	if result.RunnerUp == "" || result.RunnerUp.IsNonCapabilityLabel() {
+		t.Fatalf("runner-up = %s, want the refused local tool leader", result.RunnerUp)
+	}
+	if result.HasLabel(LabelOffice) || len(result.Offered) != 0 || len(result.ToolNames) != 0 {
+		t.Fatalf("refused office must not stay on the result: %+v", result)
+	}
+}
+
+func TestSyncTreeContinuationIsNotACatalogGap(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMContextFunc: func(context.Context, context.Context, string, string) (string, error) {
+			return `{"top":[{"skill":"continuation","score":0.90}]}`, nil
+		},
+		FusionTreeDeadline: 2 * time.Second,
+		LLMTimeout:         2 * time.Second,
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelOffice, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelDocumentRead, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelNonCoding, Vecs: [][]float32{{0, 1, 0}}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.ClassifyContext(context.Background(), MessageContext{Text: "继续"})
+	if result.Primary != LabelContinuation || ClassificationHasCatalogGap(result) || result.Primary == LabelOffice {
+		t.Fatalf("result = %+v, continuation must not become a catalog gap or an office plan", result)
+	}
+}
+
 // A budget-fired tree timeout must not make every other ambiguous turn in the
 // burst pay the full fusion deadline again: escalations for a DIFFERENT scope
 // fail fast into the L2 fallback while the failure is still fresh, a repeat of
