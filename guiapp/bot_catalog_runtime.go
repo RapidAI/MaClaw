@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/botcatalog"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
@@ -49,29 +50,31 @@ func (a *App) ensureCatalogMCPActivated(mcpID string) error {
 	if a == nil || mcpID == "" {
 		return nil
 	}
-	cfg, err := a.LoadConfig()
+	// Patch only the local MCP entries this bot assigned. Saving the whole
+	// config snapshot loaded above races a concurrent field save; the patch
+	// protocol serializes the read-modify-write and skips a no-op.
+	changed, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
+		changed := false
+		for i := range cfg.LocalMCPServers {
+			entry := &cfg.LocalMCPServers[i]
+			if strings.EqualFold(strings.TrimSpace(entry.ID), mcpID) || strings.EqualFold(strings.TrimSpace(entry.Name), mcpID) {
+				if entry.Disabled {
+					entry.Disabled = false
+					changed = true
+				}
+				if !entry.AutoStart {
+					entry.AutoStart = true
+					changed = true
+				}
+			}
+		}
+		return changed
+	})
 	if err != nil {
 		return nil
 	}
-	changed := false
-	for i := range cfg.LocalMCPServers {
-		entry := &cfg.LocalMCPServers[i]
-		if strings.EqualFold(strings.TrimSpace(entry.ID), mcpID) || strings.EqualFold(strings.TrimSpace(entry.Name), mcpID) {
-			if entry.Disabled {
-				entry.Disabled = false
-				changed = true
-			}
-			if !entry.AutoStart {
-				entry.AutoStart = true
-				changed = true
-			}
-		}
-	}
 	if !changed {
 		return nil
-	}
-	if err := a.SaveConfig(cfg); err != nil {
-		return err
 	}
 	if a.imHandler != nil {
 		if mgr := a.imHandler.getLocalMCPManager(); mgr != nil {
