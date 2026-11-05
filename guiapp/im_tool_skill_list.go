@@ -14,6 +14,10 @@ func (h *IMMessageHandler) toolListSkills() string {
 		return "Skill Executor 未初始化"
 	}
 	skills := exec.List()
+	if h != nil && h.app != nil {
+		botID := h.app.resolveCatalogBotIDForTool(desktopUserID, nil)
+		skills = filterSkillsForBotCatalog(h.app, botID, skills)
+	}
 
 	var b strings.Builder
 

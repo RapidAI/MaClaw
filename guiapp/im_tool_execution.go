@@ -183,6 +183,13 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 			log.Printf("[agent-loop] rejected tool outside expert allow-list %q (iter=%d user=%s)", tc.Function.Name, opts.Iteration, opts.UserID)
 		}
 	}
+	if result.Text == "" && h.app != nil {
+		if text := h.app.botCatalogToolRejection(opts.UserID, tc.Function.Name, tc.Function.Arguments); text != "" {
+			result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+			h.appendToolPolicyTrace(opts.Context, opts.UserID, tc.Function.Name, "botcatalog.allowlist", text)
+			log.Printf("[agent-loop] rejected tool outside bot catalog allow-list %q (iter=%d user=%s)", tc.Function.Name, opts.Iteration, opts.UserID)
+		}
+	}
 	if result.Text == "" {
 		if opts.MilestoneTracker != nil {
 			opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)

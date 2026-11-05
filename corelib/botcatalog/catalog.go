@@ -256,3 +256,69 @@ func LoadCatalog(mcpsDir, skillsLockPath, query string, store *AssignmentStore, 
 	})
 	return filtered, nil
 }
+
+// AssignedIDs returns the item ids of kind assigned to botID.
+func (s *AssignmentStore) AssignedIDs(botID string, kind Kind) []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	bot := s.data[strings.TrimSpace(botID)]
+	if len(bot) == 0 {
+		return nil
+	}
+	prefix := string(kind) + ":"
+	out := make([]string, 0, len(bot))
+	for key, ok := range bot {
+		if !ok || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		id := strings.TrimSpace(strings.TrimPrefix(key, prefix))
+		if id != "" {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// HasAssignments reports whether botID has any assignment of kind.
+// An empty assignment set means fail-open (no per-bot restriction yet).
+func (s *AssignmentStore) HasAssignments(botID string, kind Kind) bool {
+	return len(s.AssignedIDs(botID, kind)) > 0
+}
+
+// Allowed reports whether botID may use kind/id.
+// Fail-open: when the bot has no assignments of that kind, everything is allowed.
+func (s *AssignmentStore) Allowed(botID string, kind Kind, id string) bool {
+	if s == nil {
+		return true
+	}
+	botID = strings.TrimSpace(botID)
+	id = strings.TrimSpace(id)
+	if botID == "" || id == "" {
+		return true
+	}
+	if !s.HasAssignments(botID, kind) {
+		return true
+	}
+	return s.IsInstalled(botID, kind, id)
+}
+
+// RuntimeView is the assignment snapshot a bot runtime should load.
+type RuntimeView struct {
+	BotID  string   `json:"bot_id"`
+	Skills []string `json:"skills"`
+	MCPs   []string `json:"mcps"`
+}
+
+// RuntimeFor returns the allow-lists a bot should apply at runtime.
+func (s *AssignmentStore) RuntimeFor(botID string) RuntimeView {
+	botID = strings.TrimSpace(botID)
+	return RuntimeView{
+		BotID:  botID,
+		Skills: s.AssignedIDs(botID, KindSkill),
+		MCPs:   s.AssignedIDs(botID, KindMCP),
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/botcatalog"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
@@ -91,11 +92,33 @@ func (h *IMMessageHandler) toolListMCPTools(args map[string]interface{}) string 
 	}
 
 	filtered := mcputil.FilterTools(entries, query, serverID)
+	if h != nil && h.app != nil {
+		botID := h.app.resolveCatalogBotIDForTool(desktopUserID, args)
+		filtered = filterMCPEntriesForBotCatalog(h.app, botID, filtered)
+	}
 	if len(filtered) == 0 {
 		return fmt.Sprintf("没有匹配的工具（共 %d 个工具已注册）", len(entries))
 	}
 
 	return mcputil.FormatToolList(filtered, query, serverID)
+}
+
+func filterMCPEntriesForBotCatalog(a *App, botID string, entries []mcputil.ToolEntry) []mcputil.ToolEntry {
+	botID = strings.TrimSpace(botID)
+	if a == nil || botID == "" || len(entries) == 0 {
+		return entries
+	}
+	store, err := a.botCatalogAssignmentStore()
+	if err != nil || store == nil || !store.HasAssignments(botID, botcatalog.KindMCP) {
+		return entries
+	}
+	out := make([]mcputil.ToolEntry, 0, len(entries))
+	for _, e := range entries {
+		if a.botCatalogMCPAllowed(botID, e.ServerID) || a.botCatalogMCPAllowed(botID, e.ServerName) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
@@ -119,6 +142,12 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	}
 	if serverRef == "" || toolName == "" {
 		return "缺少 server_id 或 tool_name 参数；server_id 支持 MCP Server 的 ID 或 Name"
+	}
+	if h != nil && h.app != nil {
+		botID := h.app.resolveCatalogBotIDForTool(ownerID, args)
+		if botID != "" && !h.app.botCatalogMCPAllowed(botID, serverRef) {
+			return fmt.Sprintf("[system rejected] bot %s is not assigned MCP %s; install it in Bot Catalog first.", botID, serverRef)
+		}
 	}
 
 	if builtin := h.builtinToolServerRef(serverRef); builtin != "" {

@@ -64,3 +64,30 @@ func TestCatalogInstallUninstallAndSearch(t *testing.T) {
 		t.Fatal("skill assignment should persist")
 	}
 }
+
+func TestAssignmentAllowFailOpenAndRestrict(t *testing.T) {
+	root := t.TempDir()
+	store, err := OpenAssignments(filepath.Join(root, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.Allowed("bot_x", KindSkill, "anything") {
+		t.Fatal("fail-open when empty")
+	}
+	if err := store.Install("bot_x", KindSkill, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Install("bot_x", KindMCP, "codegraph"); err != nil {
+		t.Fatal(err)
+	}
+	if !store.Allowed("bot_x", KindSkill, "alpha") || store.Allowed("bot_x", KindSkill, "beta") {
+		t.Fatal("skill allowlist")
+	}
+	if !store.Allowed("bot_x", KindMCP, "codegraph") || store.Allowed("bot_x", KindMCP, "other") {
+		t.Fatal("mcp allowlist")
+	}
+	view := store.RuntimeFor("bot_x")
+	if len(view.Skills) != 1 || view.Skills[0] != "alpha" || len(view.MCPs) != 1 || view.MCPs[0] != "codegraph" {
+		t.Fatalf("runtime=%#v", view)
+	}
+}

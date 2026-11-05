@@ -1148,6 +1148,7 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 	// Documentation for a skill learned in another experience pool is the same
 	// context bleed as advertising the skill itself, so it is filtered here too.
 	skills = filterSkillsForExperienceDomain(h.skillExperienceDomainForOwner(ownerID), skills)
+	skills = filterSkillsForBotCatalog(h.app, ResolveCatalogBotID(ownerID, "", "", nil), skills)
 	if len(skills) == 0 {
 		return
 	}
@@ -1318,6 +1319,7 @@ func (h *IMMessageHandler) agentGuidedNamedSkillTurn(ownerID, userMessage string
 		return false
 	}
 	skills := filterSkillsForExperienceDomain(h.skillExperienceDomainForOwner(ownerID), h.getSkillExecutor().List())
+	skills = filterSkillsForBotCatalog(h.app, ResolveCatalogBotID(ownerID, "", "", nil), skills)
 	return agentGuidedSkillDocsMatch(skills, userMessage)
 }
 

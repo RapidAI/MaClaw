@@ -98,7 +98,8 @@ func (a *App) ListBotCatalog(botID, query string) ([]BotCatalogItem, error) {
 	return botcatalog.LoadCatalog(paths.mcpsDir, paths.skillsLockPath, query, store, botID)
 }
 
-// InstallBotCatalogItem one-click installs a catalog item for a bot.
+// InstallBotCatalogItem one-click installs a catalog item for a bot and
+// activates matching local MCP servers so the assignment loads at runtime.
 func (a *App) InstallBotCatalogItem(botID, kind, id string) error {
 	botID = strings.TrimSpace(botID)
 	id = strings.TrimSpace(id)
@@ -109,7 +110,14 @@ func (a *App) InstallBotCatalogItem(botID, kind, id string) error {
 	if err != nil {
 		return err
 	}
-	return store.Install(botID, botcatalog.Kind(strings.TrimSpace(kind)), id)
+	k := botcatalog.Kind(strings.TrimSpace(kind))
+	if err := store.Install(botID, k, id); err != nil {
+		return err
+	}
+	if k == botcatalog.KindMCP {
+		_ = a.ensureCatalogMCPActivated(id)
+	}
+	return nil
 }
 
 // UninstallBotCatalogItem one-click uninstalls a catalog item for a bot.

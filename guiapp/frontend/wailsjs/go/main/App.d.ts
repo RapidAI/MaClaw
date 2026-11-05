@@ -3190,3 +3190,6 @@ export function ListSharedPageTools():Promise<Array<Record<string,any>>>;
 export function CallSharedPageTool(arg1:string,arg2:Record<string,any>):Promise<any>;
 
 export function DeleteBotMemories(arg1:string,arg2:Array<string>):Promise<Record<string,any>>;
+
+export function GetBotCatalogRuntime(arg1:string):Promise<BotCatalogRuntime>;
+export function ActivateBotCatalogAssignments(arg1:string):Promise<void>;
