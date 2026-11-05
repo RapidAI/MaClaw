@@ -29,6 +29,7 @@ export const SETTINGS_TABS_SELF_LOADING = [
     'pdfStyles',
     'redeem',
     'memory',
+    'botCatalog',
     'knowledge',
     'misData',
     'embedding',

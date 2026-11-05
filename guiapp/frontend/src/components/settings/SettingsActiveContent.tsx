@@ -22,6 +22,7 @@ import {
     LLMCacheSettingsPanel,
     LLMConfigPanel,
     MemoryManagementPanel,
+    BotCatalogPanel,
     MigrationSettingsPanel,
     MISDataSettingsPanel,
     OCRConfigPanel,
@@ -454,6 +455,11 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         case 'memory':
             body = wrapPanel('settings-content settings-panel', (
                 <MemoryManagementPanel lang={lang} traceFocus={memoryTraceFocus} />
+            ));
+            break;
+        case 'botCatalog':
+            body = wrapPanel('settings-content settings-panel', (
+                <BotCatalogPanel lang={lang} />
             ));
             break;
         case 'knowledge':

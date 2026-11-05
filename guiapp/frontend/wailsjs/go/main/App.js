@@ -3739,6 +3739,16 @@ export function ListMemories(arg1, arg2) {
 export function ListBotMemories(arg1, arg2, arg3) {
   return window['go']['main']['App']['ListBotMemories'](arg1, arg2, arg3);
 }
+export function ListBotCatalog(arg1, arg2) {
+  return window['go']['main']['App']['ListBotCatalog'](arg1, arg2);
+}
+export function InstallBotCatalogItem(arg1, arg2, arg3) {
+  return window['go']['main']['App']['InstallBotCatalogItem'](arg1, arg2, arg3);
+}
+export function UninstallBotCatalogItem(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UninstallBotCatalogItem'](arg1, arg2, arg3);
+}
+
 export function SaveBotMemory(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SaveBotMemory'](arg1, arg2, arg3, arg4);
 }

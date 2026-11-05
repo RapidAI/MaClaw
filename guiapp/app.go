@@ -195,6 +195,8 @@ type App struct {
 	semanticEffectReceiptWorker        *agentservice.DynamicEffectReceiptWorker
 	semanticInvocationKey              []byte
 	testHomeDir                        string // For testing purposes
+	botCatalogMcpsDir                  string // optional override for bot catalog mcps/
+	botCatalogSkillsLock               string // optional override for skills-lock.json
 	testSkillMarketLoginAttemptTimeout time.Duration
 	downloadCancelers                  map[string]*downloadCanceler
 	downloadMutex                      sync.Mutex

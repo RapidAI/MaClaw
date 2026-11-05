@@ -11,6 +11,7 @@ export const DiarizationConfigPanel = lazy(() => import('./components/remote/Dia
 export const OCRConfigPanel = lazy(() => import('./components/remote/OCRConfigPanel').then((module) => ({ default: module.OCRConfigPanel })));
 export const TTSConfigPanel = lazy(() => import('./components/remote/TTSConfigPanel').then((module) => ({ default: module.TTSConfigPanel })));
 export const MemoryManagementPanel = lazy(() => import('./components/remote/MemoryManagementPanel').then((module) => ({ default: module.MemoryManagementPanel })));
+export const BotCatalogPanel = lazy(() => import('./components/remote/BotCatalogPanel').then((module) => ({ default: module.BotCatalogPanel })));
 export const KnowledgeSettingsPanel = lazy(() => import('./components/settings/KnowledgeSettingsPanel').then((module) => ({ default: module.KnowledgeSettingsPanel })));
 export const ProgrammingToolsSettingsPanel = lazy(() => import('./components/settings/ProgrammingToolsSettingsPanel').then((module) => ({ default: module.ProgrammingToolsSettingsPanel })));
 export const LatexSettingsPanel = lazy(() => import('./components/settings/LatexSettingsPanel').then((module) => ({ default: module.LatexSettingsPanel })));
