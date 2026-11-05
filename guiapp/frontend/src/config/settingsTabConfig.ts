@@ -30,6 +30,7 @@ export const SETTINGS_TABS_SELF_LOADING = [
     'redeem',
     'memory',
     'botCatalog',
+    'agentGroup',
     'knowledge',
     'misData',
     'embedding',

@@ -23,6 +23,7 @@ import {
     LLMConfigPanel,
     MemoryManagementPanel,
     BotCatalogPanel,
+    AgentGroupPanel,
     MigrationSettingsPanel,
     MISDataSettingsPanel,
     OCRConfigPanel,
@@ -460,6 +461,11 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         case 'botCatalog':
             body = wrapPanel('settings-content settings-panel', (
                 <BotCatalogPanel lang={lang} />
+            ));
+            break;
+        case 'agentGroup':
+            body = wrapPanel('settings-content settings-panel', (
+                <AgentGroupPanel lang={lang} />
             ));
             break;
         case 'knowledge':

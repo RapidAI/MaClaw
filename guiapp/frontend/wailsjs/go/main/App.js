@@ -6412,3 +6412,17 @@ export function UpdateDesktopDemoSkill(arg1, arg2, arg3, arg4, arg5) {
 export function RouteDesktopBotFollowUp(arg1, arg2) {
   return window['go']['main']['App']['RouteDesktopBotFollowUp'](arg1, arg2);
 }
+
+export function StartAgentGroupRun(arg1, arg2, arg3) {
+  return window['go']['main']['App']['StartAgentGroupRun'](arg1, arg2, arg3);
+}
+export function GetAgentGroupRun(arg1) {
+  return window['go']['main']['App']['GetAgentGroupRun'](arg1);
+}
+export function ListAgentGroupRuns() {
+  return window['go']['main']['App']['ListAgentGroupRuns']();
+}
+
+export function ListDesktopLocalBots() {
+  return window['go']['main']['App']['ListDesktopLocalBots']();
+}

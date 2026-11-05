@@ -1,6 +1,6 @@
 import { localizeText } from '../i18n';
 
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'latex' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'pdfStyles' | 'embedding' | 'memory' | 'botCatalog' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'email' | 'tokenBank' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'latex' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'pdfStyles' | 'embedding' | 'memory' | 'botCatalog' | 'agentGroup' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'email' | 'tokenBank' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
 
 /**
  * Tabs that actually render a settings body panel (rail + SettingsActiveContent).
@@ -21,6 +21,7 @@ export const SETTINGS_CONTENT_TAB_IDS = [
     'embedding',
     'memory',
     'botCatalog',
+    'agentGroup',
     'knowledge',
     'misData',
     'migration',
@@ -88,6 +89,7 @@ const settingsTabGroupById: Partial<Record<SettingsTabId, SettingsTabGroupId>> =
     embedding: 'ai',
     memory: 'data',
     botCatalog: 'data',
+    agentGroup: 'data',
     knowledge: 'data',
     misData: 'data',
     migration: 'data',
@@ -130,6 +132,7 @@ const settingsTabIcons: Record<SettingsTabId, string> = {
     pdfStyles: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h5l3 3V14.5H4z"/><path d="M9 1.5V4.5h3"/><path d="M6 8h4M6 10.5h4"/><path d="M4 6.2h8" stroke-width="2"/></svg>',
     embedding: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="3.5" r="2"/><circle cx="4" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><path d="M8 5.5v2.5L4 10M8 8l4 2"/></svg>',
     memory: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="2" width="9" height="12" rx="1.5"/><path d="M5.5 5h5M5.5 7.5h5M5.5 10h3"/><path d="M3.5 5H2M3.5 8H2M3.5 11H2M12.5 5H14M12.5 8H14M12.5 11H14"/></svg>',
+    agentGroup: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2"/><circle cx="11" cy="6" r="2"/><circle cx="8" cy="11" r="2"/><path d="M5 8v1.5M11 8v1.5M7 11.5H9"/></svg>',
     botCatalog: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="5" height="10" rx="1"/><rect x="9" y="3" width="5" height="10" rx="1"/><path d="M4 6h1M4 8.5h1M11 6h1M11 8.5h1"/></svg>',
     knowledge: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 2.5h5L8 3.5l1-1h5v10h-5l-1 1-1-1H2z"/><path d="M8 3.5v10"/></svg>',
     misData: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>',
@@ -231,6 +234,12 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
             label: textForLang(lang, 'Bot Catalog', '机器人技能目录', '機器人技能目錄'),
             desc: textForLang(lang, 'Browse and one-click install Skills/MCP per bot', '按机器人浏览并一键安装/卸载 Skills 与 MCP', '按機器人瀏覽並一鍵安裝/卸載 Skills 與 MCP'),
             icon: settingsTabIcons.botCatalog,
+        },
+        {
+            id: 'agentGroup' as const,
+            label: textForLang(lang, 'Agent Groups', '智能体编组', '智慧體編組'),
+            desc: textForLang(lang, 'Router plans sub-tasks and teams worker bots by capability', '路由拆分子任务并按能力编组工人机器人', '路由拆分子任務並按能力編組工人機器人'),
+            icon: settingsTabIcons.agentGroup,
         },
         {
             id: 'knowledge' as const,
