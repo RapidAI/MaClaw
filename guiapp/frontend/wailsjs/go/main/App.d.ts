@@ -3188,3 +3188,5 @@ export function EditSharedPageSection(arg1:string,arg2:string,arg3:string,arg4:s
 export function DeleteSharedPage(arg1:string):Promise<void>;
 export function ListSharedPageTools():Promise<Array<Record<string,any>>>;
 export function CallSharedPageTool(arg1:string,arg2:Record<string,any>):Promise<any>;
+
+export function DeleteBotMemories(arg1:string,arg2:Array<string>):Promise<Record<string,any>>;

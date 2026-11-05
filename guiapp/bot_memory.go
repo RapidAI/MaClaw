@@ -110,3 +110,20 @@ func (a *App) DeleteBotMemory(botID, id string) error {
 	a.notifyMemoryWarehouseChanged(warehouseChangeFromEntries(previous, "deleted", ""))
 	return nil
 }
+
+
+// DeleteBotMemories bulk-deletes bot-scoped long-term memory entries.
+func (a *App) DeleteBotMemories(botID string, ids []string) (map[string]any, error) {
+	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
+		return nil, fmt.Errorf("memory store not initialized")
+	}
+	deleted, skipped, err := a.memoryStore.DeleteBotMemories(desktopUserID, strings.TrimSpace(botID), ids)
+	if err != nil {
+		return nil, err
+	}
+	if deleted > 0 {
+		a.notifyMemoryWarehouseChanged(memoryWarehouseChange{})
+	}
+	return map[string]any{"deleted": deleted, "skipped": skipped}, nil
+}

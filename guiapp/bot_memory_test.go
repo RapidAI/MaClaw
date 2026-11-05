@@ -40,3 +40,27 @@ func TestAppBotMemoryBindingsCRUD(t *testing.T) {
 		t.Fatalf("left=%#v err=%v", left, err)
 	}
 }
+
+func TestAppDeleteBotMemoriesBulk(t *testing.T) {
+	store, err := memory.NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	app := &App{memoryStore: store, testHomeDir: t.TempDir()}
+	a, err := app.SaveBotMemory("bot_x", "one", "preference", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := app.SaveBotMemory("bot_x", "two", "preference", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := app.DeleteBotMemories("bot_x", []string{a.ID, b.ID, "nope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["deleted"] != 2 {
+		t.Fatalf("out=%#v", out)
+	}
+}

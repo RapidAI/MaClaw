@@ -199,3 +199,38 @@ func (s *Store) findBotOwnedEntry(owner, id string) (Entry, bool) {
 	}
 	return Entry{}, false
 }
+
+// DeleteBotMemories removes many bot-scoped entries. Protected or foreign ids
+// are skipped and listed in skipped; deleted is the count actually removed.
+func (s *Store) DeleteBotMemories(baseOwner, botID string, ids []string) (deleted int, skipped []string, err error) {
+	owner, err := FormatBotMemoryOwner(baseOwner, botID)
+	if err != nil {
+		return 0, nil, err
+	}
+	if s == nil {
+		return 0, nil, fmt.Errorf("memory store is nil")
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		entry, ok := s.findBotOwnedEntry(owner, id)
+		if !ok {
+			skipped = append(skipped, id+":not_found")
+			continue
+		}
+		if entry.Category.IsProtected() {
+			skipped = append(skipped, id+":protected")
+			continue
+		}
+		if delErr := s.Delete(id); delErr != nil {
+			skipped = append(skipped, id+":"+delErr.Error())
+			continue
+		}
+		deleted++
+	}
+	return deleted, skipped, nil
+}

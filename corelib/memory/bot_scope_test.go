@@ -75,3 +75,44 @@ func TestBotMemoryCRUDIsolation(t *testing.T) {
 		t.Fatalf("after delete A still has %#v", left)
 	}
 }
+
+
+func TestDeleteBotMemoriesBulk(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	a, err := store.SaveBotMemory("desktop-user", "bot_a", "one", string(CategoryUserFact), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := store.SaveBotMemory("desktop-user", "bot_a", "two", string(CategoryUserFact), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveBotMemory("desktop-user", "bot_b", "other", string(CategoryUserFact), nil); err != nil {
+		t.Fatal(err)
+	}
+	deleted, skipped, err := store.DeleteBotMemories("desktop-user", "bot_a", []string{a.ID, b.ID, "missing", a.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted=%d skipped=%v", deleted, skipped)
+	}
+	foundMissing := false
+	for _, s := range skipped {
+		if s == "missing:not_found" {
+			foundMissing = true
+		}
+	}
+	if !foundMissing {
+		t.Fatalf("skipped=%v", skipped)
+	}
+	left, err := store.ListBotMemories("desktop-user", "bot_a", "", "")
+	if err != nil || len(left) != 0 {
+		t.Fatalf("left=%v err=%v", left, err)
+	}
+}

@@ -10,6 +10,7 @@ import {
     SaveBotMemory,
     UpdateBotMemory,
     DeleteBotMemory,
+    DeleteBotMemories,
     ListDesktopBots,
     CompressMemories,
     ListMemoryBackups,
@@ -743,7 +744,11 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
         setBatchDeleteConfirmOpen(false);
         setSelectedIDs(new Set());
         try {
-            await DeleteMemories(ids);
+            if (filterBot) {
+                await DeleteBotMemories(filterBot, ids);
+            } else {
+                await DeleteMemories(ids);
+            }
             await loadEntries();
         } catch (e) {
             // The batch is atomic: refresh restores the unchanged list, then
@@ -788,10 +793,10 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
                 </label>
                 <button
                     type="button"
-                    disabled={selectedIDs.size === 0 || deleting || !!filterBot}
+                    disabled={selectedIDs.size === 0 || deleting}
                     onClick={() => setBatchDeleteConfirmOpen(true)}
                     title={filterBot ? t("Batch delete is unavailable in bot scope", "机器人作用域暂不支持批量删除") : undefined}
-                    style={{ ...dangerBtnStyle, opacity: selectedIDs.size === 0 || deleting || !!filterBot ? 0.55 : 1, cursor: selectedIDs.size === 0 || deleting || !!filterBot ? "not-allowed" : "pointer" }}
+                    style={{ ...dangerBtnStyle, opacity: selectedIDs.size === 0 || deleting ? 0.55 : 1, cursor: selectedIDs.size === 0 || deleting ? "not-allowed" : "pointer" }}
                 >
                     {deleting && <span style={{ ...buttonSpinnerStyle, marginRight: 6 }} />}
                     {t(`Delete selected (${selectedIDs.size})`, `批量删除 (${selectedIDs.size})`)}

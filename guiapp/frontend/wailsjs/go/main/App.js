@@ -6451,3 +6451,7 @@ export function ListSharedPageTools() {
 export function CallSharedPageTool(arg1, arg2) {
   return window['go']['main']['App']['CallSharedPageTool'](arg1, arg2);
 }
+
+export function DeleteBotMemories(arg1, arg2) {
+  return window['go']['main']['App']['DeleteBotMemories'](arg1, arg2);
+}
