@@ -3193,3 +3193,5 @@ export function DeleteBotMemories(arg1:string,arg2:Array<string>):Promise<Record
 
 export function GetBotCatalogRuntime(arg1:string):Promise<BotCatalogRuntime>;
 export function ActivateBotCatalogAssignments(arg1:string):Promise<void>;
+
+export function SyncSharedPageToHub(arg1:string,arg2:string):Promise<void>;

@@ -6463,3 +6463,7 @@ export function GetBotCatalogRuntime(arg1) {
 export function ActivateBotCatalogAssignments(arg1) {
   return window['go']['main']['App']['ActivateBotCatalogAssignments'](arg1);
 }
+
+export function SyncSharedPageToHub(arg1, arg2) {
+  return window['go']['main']['App']['SyncSharedPageToHub'](arg1, arg2);
+}

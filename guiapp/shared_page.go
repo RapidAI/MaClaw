@@ -12,8 +12,9 @@ import (
 type SharedPage = sharedpage.Page
 
 var (
-	sharedPageMu    sync.Mutex
-	sharedPageStore *sharedpage.Store
+	sharedPageMu      sync.Mutex
+	sharedPageStore   *sharedpage.Store
+	sharedPageDataDir string
 )
 
 func (a *App) sharedPages() (*sharedpage.Store, error) {
@@ -29,7 +30,7 @@ func (a *App) sharedPages() (*sharedpage.Store, error) {
 	}
 	sharedPageMu.Lock()
 	defer sharedPageMu.Unlock()
-	if sharedPageStore != nil {
+	if sharedPageStore != nil && sharedPageDataDir == dataDir {
 		return sharedPageStore, nil
 	}
 	store, err := sharedpage.Open(dataDir)
@@ -37,6 +38,7 @@ func (a *App) sharedPages() (*sharedpage.Store, error) {
 		return nil, err
 	}
 	sharedPageStore = store
+	sharedPageDataDir = dataDir
 	return sharedPageStore, nil
 }
 
@@ -85,6 +87,7 @@ func (a *App) AppendSharedPageSection(pageID, title, body, actor string) (*Share
 	if err != nil {
 		return nil, err
 	}
+	_ = a.syncSharedPageToHub(p.ID, actor)
 	return &p, nil
 }
 
@@ -98,6 +101,7 @@ func (a *App) EditSharedPageSection(pageID, sectionID, title, body, actor string
 	if err != nil {
 		return nil, err
 	}
+	_ = a.syncSharedPageToHub(p.ID, actor)
 	return &p, nil
 }
 

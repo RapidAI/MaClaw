@@ -1066,6 +1066,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}}, []tool.EffectClass{tool.EffectExternalEffect})
 	}
 	if h != nil && h.app != nil {
+		registerSharedPageTools(registry, h.app)
 		registerMultiBotTools(registry, h.app.multiBot())
 	}
 }
