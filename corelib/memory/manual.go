@@ -21,6 +21,24 @@ func (s *Store) SaveManualMemory(content string, category Category, tags []strin
 	return s.Save(entry)
 }
 
+// SaveManualMemoryForOwner stores a user-authored memory entry under an
+// explicit owner and boundary. Bot-scoped memories use this so the write stays
+// on the reviewed manual helper instead of calling Store.Save directly.
+func (s *Store) SaveManualMemoryForOwner(content string, category Category, tags []string, owner string, boundary *MemoryBoundary) error {
+	if s == nil {
+		return nil
+	}
+	entry := Entry{
+		Content:    content,
+		Category:   category,
+		Tags:       tags,
+		SourceType: ManualMemorySourceType,
+		OwnerID:    owner,
+		Boundary:   boundary,
+	}
+	return s.Save(entry)
+}
+
 // UpdateManualMemory updates a user-authored memory entry by ID while reusing
 // the same metadata-preserving update path used by generated-memory upserts.
 func (s *Store) UpdateManualMemory(id, content string, category Category, tags []string) error {

@@ -96,15 +96,7 @@ func (s *Store) SaveBotMemory(baseOwner, botID, content, category string, tags [
 		seen[t] = struct{}{}
 		cleaned = append(cleaned, t)
 	}
-	entry := Entry{
-		Content:    content,
-		Category:   Category(category),
-		Tags:       cleaned,
-		OwnerID:    owner,
-		SourceType: ManualMemorySourceType,
-		Boundary:   &MemoryBoundary{OwnerID: owner},
-	}
-	if err := s.Save(entry); err != nil {
+	if err := s.SaveManualMemoryForOwner(content, Category(category), cleaned, owner, &MemoryBoundary{OwnerID: owner}); err != nil {
 		return Entry{}, err
 	}
 	// Save may rewrite ID/timestamps; re-read by owner+content match preferred.
@@ -115,8 +107,14 @@ func (s *Store) SaveBotMemory(baseOwner, botID, content, category string, tags [
 			return got, nil
 		}
 	}
-	entry.Embedding = nil
-	return entry, nil
+	return Entry{
+		Content:    content,
+		Category:   Category(category),
+		Tags:       cleaned,
+		OwnerID:    owner,
+		SourceType: ManualMemorySourceType,
+		Boundary:   &MemoryBoundary{OwnerID: owner},
+	}, nil
 }
 
 // UpdateBotMemory edits one bot-scoped entry. Wrong-owner ids are rejected.
