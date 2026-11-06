@@ -159,23 +159,31 @@ func Parse(markdown string) (SpecAST, []error) {
 		// Section labels only. Step bodies and hop_python lines are consumed above.
 		if !strings.HasPrefix(trimmed, "-") {
 			if label, ok := bareSectionLabel(trimmed); ok {
-				section = canonicalSection(cleanSectionToken(label))
-				continue
+				name := canonicalSection(cleanSectionToken(label))
+				// A goal sentence may end with a colon. Only a real section
+				// label leaves the goal; the sentence stays in the body.
+				if name != "" || section != "goal" {
+					section = name
+					continue
+				}
 			}
 			if key, value, ok := splitSectionColon(trimmed); ok {
 				key = cleanSectionToken(key)
 				value = cleanSectionToken(value)
-				switch canonicalSection(key) {
-				case "id":
-					if value != "" {
-						spec.ID = value
+				if name := canonicalSection(key); name != "" {
+					// The label enters the section even when the value is only
+					// emphasis, as in "**目标：**" with the sentence on the next line.
+					section = name
+					switch name {
+					case "id":
+						if value != "" {
+							spec.ID = value
+						}
+					case "goal":
+						if value != "" {
+							spec.Goal = value
+						}
 					}
-				case "goal":
-					if value != "" {
-						spec.Goal = value
-					}
-				}
-				if canonicalSection(key) != "" {
 					continue
 				}
 			}
@@ -189,6 +197,9 @@ func Parse(markdown string) (SpecAST, []error) {
 			case "outputs":
 				spec.Outputs = append(spec.Outputs, parseVariableDecl(strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))))
 			}
+		}
+		if section == "goal" {
+			spec.Goal = appendGoalBody(spec.Goal, trimmed)
 		}
 	}
 	for step := range bodyOpen {
@@ -441,6 +452,36 @@ func canonicalStepType(value string) (StepType, bool) {
 	default:
 		return "", false
 	}
+}
+
+// appendGoalBody keeps the prose under a Goal heading. An inline
+// "Goal: value" is stored by the heading handler and is not passed here.
+// A following paragraph, one list marker, or a leading ">" is the same body.
+func appendGoalBody(goal, line string) string {
+	text := goalBodyText(line)
+	if text == "" {
+		return goal
+	}
+	if goal == "" {
+		return text
+	}
+	return goal + "\n" + text
+}
+
+func goalBodyText(line string) string {
+	text := strings.TrimSpace(line)
+	if strings.HasPrefix(text, ">") {
+		text = strings.TrimSpace(strings.TrimPrefix(text, ">"))
+	}
+	switch {
+	case strings.HasPrefix(text, "- "):
+		text = strings.TrimSpace(strings.TrimPrefix(text, "- "))
+	case strings.HasPrefix(text, "－ "):
+		text = strings.TrimSpace(strings.TrimPrefix(text, "－ "))
+	case strings.HasPrefix(text, "* "):
+		text = strings.TrimSpace(strings.TrimPrefix(text, "* "))
+	}
+	return cleanSectionToken(text)
 }
 
 // cleanSectionToken drops markdown emphasis around a section label or value.

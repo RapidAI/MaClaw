@@ -348,6 +348,36 @@ Goal：查询
 	}
 }
 
+func TestParseKeepsGoalSectionBody(t *testing.T) {
+	headed, errs := Parse("# Spec: 天气\n## Goal\n查询北京今天的天气\n并给出温度\n## Steps\n1. [exit]\n")
+	if len(errs) != 0 || headed.Goal != "查询北京今天的天气\n并给出温度" {
+		t.Fatalf("headed body = %q errs = %v", headed.Goal, errs)
+	}
+	bold, boldErrs := Parse("# Spec: 天气\n**目标：**\n查询北京天气\n## Steps\n1. [exit]\n")
+	if len(boldErrs) != 0 || bold.Goal != "查询北京天气" {
+		t.Fatalf("bold body = %q errs = %v", bold.Goal, boldErrs)
+	}
+	bullets, bulletErrs := Parse("# Spec: 天气\n## 目标\n- 查询北京天气\n－ 给出温度\n* 说明风力\n> 来自预报\n## Steps\n1. [exit]\n")
+	if len(bulletErrs) != 0 || bullets.Goal != "查询北京天气\n给出温度\n说明风力\n来自预报" {
+		t.Fatalf("bullets = %q errs = %v", bullets.Goal, bulletErrs)
+	}
+	colon, colonErrs := Parse("# Spec: 天气\n## Goal\n查询北京天气：\n温度和风力\n## Outputs\n- report % text\n## Steps\n1. [exit]\n")
+	if len(colonErrs) != 0 || colon.Goal != "查询北京天气：\n温度和风力" || len(colon.Outputs) != 1 {
+		t.Fatalf("colon body = %q outputs = %+v errs = %v", colon.Goal, colon.Outputs, colonErrs)
+	}
+	inline, inlineErrs := Parse("# Spec: 天气\n## 目标：查询北京天气\n## Steps\n1. [exit]\n")
+	if len(inlineErrs) != 0 || inline.Goal != "查询北京天气" {
+		t.Fatalf("inline = %q errs = %v", inline.Goal, inlineErrs)
+	}
+	empty, emptyErrs := Parse("# Spec: 天气\n## Steps\n1. [exit]\n")
+	if len(emptyErrs) != 0 || strings.TrimSpace(empty.Goal) != "" {
+		t.Fatalf("empty = %q errs = %v", empty.Goal, emptyErrs)
+	}
+	if validation := Validate(empty); !diagnosticsContain(validation, "MISSING_GOAL") {
+		t.Fatalf("Validate = %v", validation)
+	}
+}
+
 func TestParseAcceptsFullwidthStepBrackets(t *testing.T) {
 	spec, errs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. ［reason］ 查询\n2、[exit]\n")
 	if len(errs) != 0 || len(spec.Steps) != 2 || spec.Steps[0].Type != StepReason || spec.Steps[0].Summary != "查询" || spec.Steps[1].Type != StepExit {

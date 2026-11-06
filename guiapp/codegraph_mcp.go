@@ -465,15 +465,49 @@ func codegraphMCPExploreHeader(line string) (string, []codegraphMCPExploreSymbol
 			continue
 		}
 		open := strings.LastIndex(part, "(")
-		if open <= 0 || !strings.HasSuffix(part, ")") {
+		if open > 0 && strings.HasSuffix(part, ")") {
+			name := strings.TrimSpace(part[:open])
+			if !codegraphExploreIdent(name) {
+				continue
+			}
+			symbols = append(symbols, codegraphMCPExploreSymbol{
+				name: name,
+				kind: strings.TrimSpace(strings.TrimSuffix(part[open+1:], ")")),
+			})
 			continue
 		}
-		symbols = append(symbols, codegraphMCPExploreSymbol{
-			name: strings.TrimSpace(part[:open]),
-			kind: strings.TrimSpace(strings.TrimSuffix(part[open+1:], ")")),
-		})
+		// A focused explore lists bare names and puts the kind note after
+		// " · ". Dropping those names made the fence look like a symbol map.
+		if codegraphExploreIdent(part) {
+			symbols = append(symbols, codegraphMCPExploreSymbol{name: part})
+		}
 	}
 	return path, symbols
+}
+
+// codegraphExploreIdent is a symbol token in an explore header. A count or a
+// prose note is not a name, so it cannot make a fence count as a definition.
+func codegraphExploreIdent(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c == '_':
+		case c == '~':
+			if i != 0 {
+				return false
+			}
+		case c >= '0' && c <= '9', c == ':', c == '.':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func codegraphMCPHeading(text string) (name, kind string, ok bool) {

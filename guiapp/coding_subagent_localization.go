@@ -2787,7 +2787,13 @@ func codegraphFilesReadyToEdit(output string) []string {
 		}
 		if path, symbols := codegraphMCPExploreHeader(line); path != "" {
 			for _, sym := range symbols {
-				if codegraphMCPKindHasBody(sym.kind) && codegraphExcerptDefinesFile(fence, sym.name, path) {
+				// A focused header lists bare names. An empty kind still
+				// counts when the fence defines that name. A class or other
+				// non-body kind stays a map.
+				if sym.kind != "" && !codegraphMCPKindHasBody(sym.kind) {
+					continue
+				}
+				if codegraphExcerptDefinesFile(fence, sym.name, path) {
 					add(path)
 					break
 				}

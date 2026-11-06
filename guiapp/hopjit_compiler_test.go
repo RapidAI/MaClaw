@@ -112,6 +112,62 @@ func TestCompiledHopSpecAcceptsFullwidthTitle(t *testing.T) {
 	}
 }
 
+func TestCompiledHopSpecKeepsGoalSectionBody(t *testing.T) {
+	const task = "北京天气"
+	body := "# Spec: 天气\n## Goal\n查询北京今天的天气，并给出温度和风力\n## Steps\n1. [exit]\n"
+	kept := prepareCompiledHopMarkdown(body, task)
+	spec, errs := hopspec.Parse(kept)
+	if len(errs) != 0 || spec.Goal != "查询北京今天的天气，并给出温度和风力" {
+		t.Fatalf("goal = %q errs = %v spec = %s", spec.Goal, errs, kept)
+	}
+	if strings.Contains(kept, "Goal: "+task) {
+		t.Fatalf("task replaced the section body: %s", kept)
+	}
+	if err := validateCompiledHopSpec(kept); err != nil {
+		t.Fatal(err)
+	}
+
+	longTask := strings.Repeat("天气", 30)
+	want := longTask + "的正文还更长一些，不能被标题截断替换"
+	longBody := "## 目标\n" + want + "\n## 步骤\n1. [exit]\n"
+	normalized := prepareCompiledHopMarkdown(longBody, longTask)
+	parsed, parseErrs := hopspec.Parse(normalized)
+	if len(parseErrs) != 0 || parsed.Goal != want {
+		t.Fatalf("goal = %q errs = %v spec = %s", parsed.Goal, parseErrs, normalized)
+	}
+	if err := validateCompiledHopSpec(normalized); err != nil {
+		t.Fatal(err)
+	}
+
+	bare := prepareCompiledHopMarkdown("# Spec: 天气\n## Goal\n## Steps\n1. [exit]\n", longTask)
+	if !strings.Contains(bare, "Goal: "+longTask) {
+		t.Fatalf("bare = %q", bare)
+	}
+	if err := validateCompiledHopSpec(bare); err != nil {
+		t.Fatal(err)
+	}
+
+	missing := prepareCompiledHopMarkdown("# Spec: 天气\n## Steps\n1. [exit]\n", "北京  天气\n怎么样")
+	if !strings.Contains(missing, "# Spec: 天气\nGoal: 北京 天气 怎么样\n") {
+		t.Fatalf("filled = %q", missing)
+	}
+	filled, fillErrs := hopspec.Parse(missing)
+	if len(fillErrs) != 0 || filled.Goal != "北京 天气 怎么样" {
+		t.Fatalf("filled goal = %q errs = %v", filled.Goal, fillErrs)
+	}
+	if err := validateCompiledHopSpec(missing); err != nil {
+		t.Fatal(err)
+	}
+
+	none := prepareCompiledHopMarkdown("# Spec: 天气\n## Steps\n1. [exit]\n", " \n\t")
+	if strings.Contains(none, "Goal:") {
+		t.Fatalf("invented goal: %s", none)
+	}
+	if err := validateCompiledHopSpec(none); err == nil || !strings.Contains(err.Error(), "MISSING_GOAL") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestCompiledHopSpecRepairsMissingTitle(t *testing.T) {
 	const task = "查询北京今天的天气并给出一句结论"
 	spec := normalizeCompiledHopMarkdown("Goal: 查询天气\nOutputs:\n- report % text\n## Steps\n1. [exit]\n", task)
@@ -1185,6 +1241,130 @@ func TestRepairLiveLookupDropsRepeatedHostText(t *testing.T) {
 	}
 
 	notes := "# Spec: 整理笔记\nGoal: 整理笔记\nOutputs:\n- report % text\n## Steps\n1. [act] 整理\n  + → report % text\n2. [check] 核验\n  + → report % text\n  + → accepted % bool\n3. [exit]\n"
+	if repairLiveLookupTools(notes, "整理笔记") != notes {
+		t.Fatal("a note check lost its text output")
+	}
+}
+
+func TestRepairLiveLookupMovesHostTextOntoEarlierStep(t *testing.T) {
+	reason := "# Spec: 北京天气\nGoal: 查询天气\nOutputs:\n- report % text\n## Steps\n1. [reason] 查询\n2. [check] 核验\n  + → report % text\n  + → accepted % bool\n3. [exit]\n"
+	if err := liveLookupToolsRequired(reason, "北京天气"); err == nil {
+		t.Fatal("a check that writes the text output counted as retrieved")
+	}
+	got := repairLiveLookupTools(reason, "北京天气")
+	parsed, errs := hopspec.Parse(got)
+	if len(errs) != 0 || len(parsed.Steps) < 2 || parsed.Steps[0].Type != hopspec.StepAct || len(parsed.Steps[0].Tools) != 1 || parsed.Steps[0].Tools[0] != "web_search" || !hopTestStepOutputs(parsed.Steps[0], "report") || parsed.Steps[1].Type != hopspec.StepCheck || hopTestStepOutputs(parsed.Steps[1], "report") || !hopTestStepOutputs(parsed.Steps[1], "accepted") || strings.Contains(got, "[reason]") || strings.Count(got, "工具: web_search") != 1 {
+		t.Fatalf("moved type=%s tools=%v spec=%q errs=%v", parsed.Steps[0].Type, parsed.Steps[0].Tools, got, errs)
+	}
+	if err := liveLookupToolsRequired(got, "北京天气"); err != nil {
+		t.Fatal(err)
+	}
+	if again := repairLiveLookupTools(got, "北京天气"); again != got {
+		t.Fatalf("host move repeated: %q", again)
+	}
+
+	calls := 0
+	caller := &guiHopJITCaller{invoke: func(context.Context, []interface{}, bool) (string, error) {
+		calls++
+		return "# Spec: 北京天气\nGoal: 查询天气\nOutputs:\n- report % text\n## Steps\n1. [reason] 查询\n2. [check] 核验\n  + → report % text\n3. [exit]\n", nil
+	}}
+	spec, err := compileHopSpec(context.Background(), "北京天气", caller)
+	if err != nil || calls != 1 || strings.Count(spec, "工具: web_search") != 1 {
+		t.Fatalf("calls=%d err=%v spec=%q", calls, err, spec)
+	}
+	parsedSpec, specErrs := hopspec.Parse(spec)
+	if len(specErrs) != 0 || len(parsedSpec.Steps) < 2 || parsedSpec.Steps[0].Type != hopspec.StepAct || !hopTestStepOutputs(parsedSpec.Steps[0], "report") || parsedSpec.Steps[1].Type != hopspec.StepCheck || hopTestStepOutputs(parsedSpec.Steps[1], "report") || !hopTestStepOutputs(parsedSpec.Steps[1], "accepted") {
+		t.Fatalf("compiled spec=%q errs=%v", spec, specErrs)
+	}
+
+	confirm := "# Spec: 北京天气\nGoal: 查询天气\nOutputs:\n- report % text\n## Steps\n1. [reason] 查询\n2. [confirm] 确认\n  + → report % text\n  + → accepted % bool\n3. [exit]\n"
+	gotConfirm := repairLiveLookupTools(confirm, "北京天气")
+	parsedConfirm, confirmErrs := hopspec.Parse(gotConfirm)
+	if len(confirmErrs) != 0 || len(parsedConfirm.Steps) < 2 || parsedConfirm.Steps[0].Type != hopspec.StepAct || len(parsedConfirm.Steps[0].Tools) != 1 || hopTestStepOutputs(parsedConfirm.Steps[1], "report") || !hopTestStepOutputs(parsedConfirm.Steps[1], "accepted") {
+		t.Fatalf("confirm spec=%q errs=%v", gotConfirm, confirmErrs)
+	}
+	if err := liveLookupToolsRequired(gotConfirm, "北京天气"); err != nil {
+		t.Fatal(err)
+	}
+
+	ask := "# Spec: 北京天气\nGoal: 查询天气\nOutputs:\n- report % text\n## Steps\n1. ［推理］ 查询\n2. [ask] 确认\n  ＋ → report % text\n3. [exit]\n"
+	gotAsk := repairLiveLookupTools(ask, "北京天气")
+	parsedAsk, askErrs := hopspec.Parse(gotAsk)
+	if len(askErrs) != 0 || len(parsedAsk.Steps) < 2 || parsedAsk.Steps[0].Type != hopspec.StepAct || len(parsedAsk.Steps[0].Tools) != 1 || !hopTestStepOutputs(parsedAsk.Steps[0], "report") || hopTestStepOutputs(parsedAsk.Steps[1], "report") || strings.Contains(gotAsk, "推理") || !strings.Contains(gotAsk, "＋ → report % text") {
+		t.Fatalf("ask spec=%q errs=%v", gotAsk, askErrs)
+	}
+	if err := liveLookupToolsRequired(gotAsk, "北京天气"); err != nil {
+		t.Fatal(err)
+	}
+
+	saving := "# Spec: 北京天气\nGoal: 查询天气\nOutputs:\n- report % text\n## Steps\n1. [act] 记录\n  - 工具: write_file\n2. [check] 核验\n  + → report % text\n  + → accepted % bool\n3. [exit]\n"
+	if repairLiveLookupTools(saving, "北京天气") != saving {
+		t.Fatal("a write_file act received the weather output")
+	}
+	if err := liveLookupToolsRequired(saving, "北京天气"); err == nil {
+		t.Fatal("a check writer counted as retrieved")
+	}
+
+	between := "# Spec: 北京天气\nGoal: 查询天气\nOutputs:\n- report % text\n## Steps\n1. [reason] 查询\n2. [act] 记录\n  - 工具: write_file\n3. [check] 核验\n  + → report % text\n  + → accepted % bool\n4. [exit]\n"
+	gotBetween := repairLiveLookupTools(between, "北京天气")
+	parsedBetween, betweenErrs := hopspec.Parse(gotBetween)
+	if len(betweenErrs) != 0 || len(parsedBetween.Steps) < 3 || parsedBetween.Steps[0].Type != hopspec.StepAct || len(parsedBetween.Steps[0].Tools) != 1 || parsedBetween.Steps[0].Tools[0] != "web_search" || !hopTestStepOutputs(parsedBetween.Steps[0], "report") || parsedBetween.Steps[1].Type != hopspec.StepAct || len(parsedBetween.Steps[1].Tools) != 1 || parsedBetween.Steps[1].Tools[0] != "write_file" || hopTestStepOutputs(parsedBetween.Steps[1], "report") || hopTestStepOutputs(parsedBetween.Steps[2], "report") {
+		t.Fatalf("between spec=%q errs=%v", gotBetween, betweenErrs)
+	}
+	if err := liveLookupToolsRequired(gotBetween, "北京天气"); err != nil {
+		t.Fatal(err)
+	}
+
+	marked := "# Spec: 北京天气\nGoal: 查询天气\nOutputs:\n- report % text\n## Steps\n1. [reason] 查询\n2. [act] 标记\n  + → ok % bool\n3. [check] 核验\n  + → report % text\n  + → accepted % bool\n4. [exit]\n"
+	gotMarked := repairLiveLookupTools(marked, "北京天气")
+	parsedMarked, markedErrs := hopspec.Parse(gotMarked)
+	if len(markedErrs) != 0 || len(parsedMarked.Steps) < 3 || parsedMarked.Steps[0].Type != hopspec.StepAct || len(parsedMarked.Steps[0].Tools) != 1 || !hopTestStepOutputs(parsedMarked.Steps[0], "report") || hopTestStepOutputs(parsedMarked.Steps[1], "report") || !hopTestStepOutputs(parsedMarked.Steps[1], "ok") || len(parsedMarked.Steps[1].Tools) != 0 {
+		t.Fatalf("marked spec=%q errs=%v", gotMarked, markedErrs)
+	}
+	if err := liveLookupToolsRequired(gotMarked, "北京天气"); err != nil {
+		t.Fatal(err)
+	}
+
+	listed := "# Spec: 北京天气\nGoal: 查询天气\nOutputs:\n- log % text\n- report % text\n## Steps\n1. [act] 查询\n  - 工具: web_search\n  + → log % text\n2. [check] 核验\n  + → report % text\n  + → accepted % bool\n3. [exit]\n"
+	gotListed := repairLiveLookupTools(listed, "北京天气")
+	parsedListed, listedErrs := hopspec.Parse(gotListed)
+	if len(listedErrs) != 0 || len(parsedListed.Steps) < 2 || len(parsedListed.Steps[0].Tools) != 1 || parsedListed.Steps[0].Tools[0] != "web_search" || !hopTestStepOutputs(parsedListed.Steps[0], "log") || !hopTestStepOutputs(parsedListed.Steps[0], "report") || hopTestStepOutputs(parsedListed.Steps[1], "report") || strings.Count(gotListed, "工具: web_search") != 1 {
+		t.Fatalf("listed spec=%q errs=%v", gotListed, listedErrs)
+	}
+	if err := liveLookupToolsRequired(gotListed, "北京天气"); err != nil {
+		t.Fatal(err)
+	}
+
+	fence := "  > " + "```hop_python" + "\n  > report = web_search(query: \"北京天气\")\n  > accepted = True\n  > " + "```" + "\n"
+	searching := "# Spec: 北京天气\nGoal: 查询天气\nOutputs:\n- report % text\n## Steps\n1. [reason] 查询\n2. [check] 核验\n  + → report % text\n  + → accepted % bool\n" + fence + "3. [exit]\n"
+	if repairLiveLookupTools(searching, "北京天气") != searching {
+		t.Fatal("a check that calls web_search lost its output")
+	}
+	if err := liveLookupToolsRequired(searching, "北京天气"); err == nil {
+		t.Fatal("a check call without a tool line counted as retrieved")
+	}
+
+	literal := "# Spec: 北京天气\nGoal: 查询天气\nOutputs:\n- report % text\n## Steps\n1. [reason] 查询\n2. [check] 核验\n  + → report % text\n  + → accepted % bool\n  > " + "```hop_python" + "\n  > report = \"晴\"\n  > accepted = True\n  > " + "```" + "\n3. [exit]\n"
+	gotLiteral := repairLiveLookupTools(literal, "北京天气")
+	parsedLiteral, literalErrs := hopspec.Parse(gotLiteral)
+	if len(literalErrs) != 0 || len(parsedLiteral.Steps) < 2 || parsedLiteral.Steps[0].Type != hopspec.StepAct || strings.TrimSpace(parsedLiteral.Steps[0].Body) != "" || len(parsedLiteral.Steps[0].Tools) != 1 || !hopTestStepOutputs(parsedLiteral.Steps[0], "report") || hopTestStepOutputs(parsedLiteral.Steps[1], "report") || !strings.Contains(parsedLiteral.Steps[1].Body, "accepted = True") {
+		t.Fatalf("literal spec=%q errs=%v", gotLiteral, literalErrs)
+	}
+	if err := liveLookupToolsRequired(gotLiteral, "北京天气"); err != nil {
+		t.Fatal(err)
+	}
+
+	both := "# Spec: 北京天气\nGoal: 查询天气\nOutputs:\n- report % text\n## Steps\n1. [reason] 查询\n2. [check] 草稿\n  + → report % text\n  + → accepted % bool\n3. [check] 核验\n  + → report % text\n  + → verdict % bool\n4. [exit]\n"
+	gotBoth := repairLiveLookupTools(both, "北京天气")
+	parsedBoth, bothErrs := hopspec.Parse(gotBoth)
+	if len(bothErrs) != 0 || len(parsedBoth.Steps) < 3 || !hopTestStepOutputs(parsedBoth.Steps[0], "report") || hopTestStepOutputs(parsedBoth.Steps[1], "report") || hopTestStepOutputs(parsedBoth.Steps[2], "report") || !hopTestStepOutputs(parsedBoth.Steps[1], "accepted") || !hopTestStepOutputs(parsedBoth.Steps[2], "verdict") || strings.Count(gotBoth, "工具: web_search") != 1 {
+		t.Fatalf("both spec=%q errs=%v", gotBoth, bothErrs)
+	}
+	if err := liveLookupToolsRequired(gotBoth, "北京天气"); err != nil {
+		t.Fatal(err)
+	}
+
+	notes := "# Spec: 整理笔记\nGoal: 整理笔记\nOutputs:\n- report % text\n## Steps\n1. [reason] 整理\n2. [check] 核验\n  + → report % text\n  + → accepted % bool\n3. [exit]\n"
 	if repairLiveLookupTools(notes, "整理笔记") != notes {
 		t.Fatal("a note check lost its text output")
 	}

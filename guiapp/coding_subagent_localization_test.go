@@ -2188,6 +2188,20 @@ func TestCodegraphContinueHintStaysOnAfterAHit(t *testing.T) {
 	if !strings.Contains(body, "current source") || strings.Contains(body, "names and locations") {
 		t.Fatalf("body hint = %q", body)
 	}
+	focused := "#### snake.cpp — frame, main, Game, reset, queueDir · focused (the methods you named in full, the rest as signatures — codegraph_explore a signature by name for its body; do NOT Read)\n\n```cpp\n47\tvoid reset() {\n48\t    snake_.clear();\n49\t}\n476\tint main(int argc, char** argv) {\n477\t    return runWindow();\n478\t}\n```\n"
+	if hint := codegraphContinueHint("codegraph", focused); strings.Contains(hint, "names and locations") || !strings.Contains(hint, "current source") {
+		t.Fatalf("focused explore with bodies was treated as a name list: %q", hint)
+	}
+	if files := codegraphFilesReadyToEdit(focused); len(files) != 1 || files[0] != "snake.cpp" {
+		t.Fatalf("focused explore files = %#v", files)
+	}
+	skeleton := "#### snake.cpp — drawScene · skeleton (signatures only)\n\n```cpp\n1\tvoid drawScene(HDC dc);\n```\n"
+	if hint := codegraphContinueHint("codegraph", skeleton); !strings.Contains(hint, "names and locations") {
+		t.Fatalf("signature-only explore was treated as source: %q", hint)
+	}
+	if files := codegraphFilesReadyToEdit(skeleton); len(files) != 0 {
+		t.Fatalf("signature-only files = %#v", files)
+	}
 	banner := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - snake.cpp (edited 10ms ago, pending sync)\nFor accurate content of those specific files, Read them directly. The rest of this response is fresh.\n## drawScene (function)\n\n**Location:** snake.cpp:1\n\n```cpp\n1\tstatic void drawScene(HDC dc) { old(); }\n```\n"
 	staleHint := codegraphContinueHint("codegraph", banner)
 	if strings.Contains(staleHint, "Do not read_file") || strings.Contains(staleHint, "current source") {
