@@ -2524,6 +2524,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const storedSection = selected ? sectionByBot[selected.id] : undefined;
     const panelSection: PanelSection = storedSection === 'details' || storedSection === 'schedules' || storedSection === 'tasks' ? storedSection : 'computer';
     const retryForSelected = !!selected && retryByBot[selected.id] === true;
+    // Asleep: hide the whole screen (no video, no viewer chrome), show 休眠中 Zzz.
+    const selectedAsleep = !!selected && asleepByBot[selected.id] === true && !retryForSelected && (!screenPickNow || screenPickNow === selected.id || (screenPickNow === 'mine' && screenByBot[selected.id]?.mode !== 'isolated'));
     // Voluntary viewing stays view-only while this bot is using its desktop.
     // A handoff keeps the keyboard when this bot is not using it.
     const botAskedForDesktop = (botId: string) => {
@@ -7094,7 +7096,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 })}
                             </div>
                             {handBackError ? <p className="desktop-screen-switch__error" data-testid="desktop-bot-handback-error" role="status">{handBackError}</p> : null}
-                            {!ownPictureDown && shownDesktopUrl ? (
+                            {selectedAsleep ? (
+                                <div className="desktop-bot-sleep" data-testid="desktop-bot-sleep" role="status">
+                                    <p className="desktop-bot-sleep__text" data-testid="desktop-bot-asleep">休眠中 Zzz</p>
+                                    <button type="button" className="desktop-bot-sleep__wake" data-testid="desktop-bot-wake" onClick={() => void retryConnection(selected.id)}>{text.wakeDesktop}</button>
+                                </div>
+                            ) : !ownPictureDown && shownDesktopUrl ? (
                                 <div ref={stageRef} className={'desktop-bot-stage' + (stageInteractive ? ' is-user' : ' is-bot') + ((takeover || screenExpanded) ? ' is-fullscreen' : '')} data-testid="desktop-bot-stage">
                                     <div className="desktop-bot-stage__bar">
                                         <p title={stageStatusText}>{stageStatusText}</p>
@@ -7181,9 +7188,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <div className="desktop-bot-screen" data-testid="desktop-bot-screen">
                                     <p>{text.noSharedDesktop}</p>
                                 </div>
-                            ) : (asleepByBot[selected.id] || retryForSelected) ? (
+                            ) : retryForSelected ? (
                                 <div className="desktop-bot-screen" data-testid="desktop-bot-screen">
-                                    <p data-testid="desktop-bot-asleep">{retryForSelected ? text.desktopDown : text.desktopAsleep}</p>
+                                    <p>{text.desktopDown}</p>
                                     <button type="button" data-testid="desktop-bot-wake" onClick={() => void retryConnection(selected.id)}>{text.wakeDesktop}</button>
                                 </div>
                             ) : (
@@ -7194,7 +7201,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     </div>
                                 </div>
                             )}
-                            <p className="desktop-bot-screen__caption">{text.screenOf(selected.title)}</p>
+                            {selectedAsleep ? null : <p className="desktop-bot-screen__caption">{text.screenOf(selected.title)}</p>}
                             <DemoSkillPanel
                                 botId={selected.id}
                                 labels={{

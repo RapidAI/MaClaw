@@ -831,6 +831,22 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-take-computer')).toBeNull();
     });
 
+    it('shows only 休眠中 Zzz (no screen, no viewer chrome) when the desktop is asleep', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: '', user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
+        const sleep = await screen.findByTestId('desktop-bot-sleep');
+        expect(sleep.textContent).toContain('休眠中 Zzz');
+        expect(screen.getByTestId('desktop-bot-wake')).toBeTruthy();
+        expect(screen.queryByTestId('desktop-bot-stage')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-watch-only')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-take-control')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-screen')).toBeNull();
+    });
+
     it('warns in the chat when the account credits are too low to finish a task', async () => {
         getHubCredits.mockResolvedValue({ active: true, credits_total: 100, credits_used: 80, credits_remaining: 20 });
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
