@@ -3867,12 +3867,16 @@
 }
 .desktop-bot-sleep__text {
     margin: 0;
+    padding: 8px 16px;
     font-size: 18px;
     color: var(--text-secondary, #888);
     letter-spacing: 0.04em;
-}
-.desktop-bot-sleep__wake {
-    padding: 6px 16px;
-    border-radius: 6px;
+    background: none;
+    border: none;
     cursor: pointer;
+}
+.desktop-bot-sleep__text:hover,
+.desktop-bot-sleep__text:focus-visible {
+    color: var(--text-primary, #333);
+    text-decoration: underline;
 }

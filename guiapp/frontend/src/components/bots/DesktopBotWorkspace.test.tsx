@@ -17,6 +17,7 @@ const classifyWorkStop = vi.hoisted(() => vi.fn<(...args: any[]) => any>());
 const armSchedule = vi.hoisted(() => vi.fn(async (_botId?: string, _name?: string, _rest?: unknown): Promise<string> => 'task-1'));
 const listSchedules = vi.hoisted(() => vi.fn(async (_botId?: string) => [] as Array<{ id: string; name: string; action: string; interval_minutes: number; hour: number; minute: number; day_of_week: number; next_run_at?: string; status?: string }>));
 const deleteSchedule = vi.hoisted(() => vi.fn(async (_botId?: string, _taskId?: string) => undefined));
+const wakeBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<{ novnc_url: string; user_control: boolean } | undefined> => ({ novnc_url: '', user_control: false })));
 const watchBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode?: string } | undefined> => ({ novnc_url: '', user_control: false })));
 const getScreen = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode: string }> => ({ novnc_url: '', user_control: false, desktop_mode: 'shared' })));
 const hubLink = vi.hoisted(() => vi.fn(async () => ({ state: 'connected' }) as Record<string, unknown> | null));
@@ -86,6 +87,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     ListDesktopBotActiveRuns: (botId: string) => listTaskRuns(botId),
     DeleteDesktopBotSchedule: (botId: string, taskId: string) => deleteSchedule(botId, taskId),
     WatchDesktopBot: (arg: string, epoch?: number) => watchBot(arg, epoch),
+    WakeDesktopBot: (arg: string, epoch?: number) => wakeBot(arg, epoch),
     ReleaseDesktopBotWatch: (arg: string, epoch?: number) => releaseWatch(arg, epoch),
     GetDesktopBotScreen: (botId: string) => getScreen(botId),
     HandBackDesktopBot: (botId: string) => handBack(botId),
@@ -839,12 +841,20 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
         const sleep = await screen.findByTestId('desktop-bot-sleep');
         expect(sleep.textContent).toContain('休眠中 Zzz');
-        expect(screen.getByTestId('desktop-bot-wake')).toBeTruthy();
+        const zzz = screen.getByTestId('desktop-bot-wake');
+        expect(zzz.textContent).toBe('休眠中 Zzz');
+        expect(sleep.querySelectorAll('button').length).toBe(1);
         expect(screen.queryByTestId('desktop-bot-stage')).toBeNull();
         expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
         expect(screen.queryByTestId('desktop-bot-watch-only')).toBeNull();
         expect(screen.queryByTestId('desktop-bot-take-control')).toBeNull();
         expect(screen.queryByTestId('desktop-bot-screen')).toBeNull();
+        wakeBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        fireEvent.click(zzz);
+        expect(await screen.findByTestId('desktop-bot-handoff')).toBeTruthy();
+        expect(wakeBot).toHaveBeenCalledWith('bot_1', expect.any(Number));
+        expect(screen.queryByTestId('desktop-bot-sleep')).toBeNull();
     });
 
     it('warns in the chat when the account credits are too low to finish a task', async () => {

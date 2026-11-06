@@ -7097,9 +7097,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             </div>
                             {handBackError ? <p className="desktop-screen-switch__error" data-testid="desktop-bot-handback-error" role="status">{handBackError}</p> : null}
                             {selectedAsleep ? (
-                                <div className="desktop-bot-sleep" data-testid="desktop-bot-sleep" role="status">
-                                    <p className="desktop-bot-sleep__text" data-testid="desktop-bot-asleep">休眠中 Zzz</p>
-                                    <button type="button" className="desktop-bot-sleep__wake" data-testid="desktop-bot-wake" onClick={() => void retryConnection(selected.id)}>{text.wakeDesktop}</button>
+                                <div className="desktop-bot-sleep" data-testid="desktop-bot-sleep">
+                                    {/* The Zzz text itself is the human 唤醒 control. */}
+                                    <button type="button" className="desktop-bot-sleep__text" data-testid="desktop-bot-wake" title={text.wakeDesktop} aria-label={'休眠中 Zzz · ' + text.wakeDesktop} onClick={() => void retryConnection(selected.id)}>休眠中 Zzz</button>
                                 </div>
                             ) : !ownPictureDown && shownDesktopUrl ? (
                                 <div ref={stageRef} className={'desktop-bot-stage' + (stageInteractive ? ' is-user' : ' is-bot') + ((takeover || screenExpanded) ? ' is-fullscreen' : '')} data-testid="desktop-bot-stage">
