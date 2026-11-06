@@ -81,23 +81,31 @@ func main() {
 	}
 	svc.Stage2Sleep = stage2
 	svc.ToolWorkspace = !strings.EqualFold(strings.TrimSpace(os.Getenv("DESKTOPD_TOOL_WORKSPACE")), "off")
+	workspaceIdle, err := desktopd.ParseWorkspaceMaxIdle(os.Getenv("DESKTOPD_WORKSPACE_MAX_IDLE"))
+	if err != nil {
+		log.Fatalf("[desktopd] %v", err)
+	}
+	svc.WorkspaceMaxIdle = workspaceIdle
 	if svc.Stage2Sleep {
 		if strings.TrimSpace(os.Getenv("DESKTOPD_MAX_IDLE")) != "" {
 			log.Printf("[desktopd] DESKTOPD_SLEEP is on; DESKTOPD_MAX_IDLE is not used")
 		}
-		svc.StartReaper(context.Background(), 10*time.Minute, desktopd.Stage2Idle)
-		log.Printf("[desktopd] stage2 sleep enabled idle=%s restart=%s", desktopd.Stage2Idle, desktopd.RestartPolicy())
+		interval := desktopd.ReaperInterval(desktopd.Stage2Idle)
+		svc.StartReaper(context.Background(), interval, desktopd.Stage2Idle)
+		log.Printf("[desktopd] stage2 sleep enabled idle=%s workspace_idle=%s interval=%s restart=%s", desktopd.Stage2Idle, workspaceIdle, interval, desktopd.RestartPolicy())
 	} else if raw := strings.TrimSpace(os.Getenv("DESKTOPD_MAX_IDLE")); raw != "" {
 		// DESKTOPD_MAX_IDLE stops desktops idle longer than this, catching
 		// containers Hub can no longer name (moved assignments, crashed callers).
-		// Empty keeps the historical behaviour of never reaping.
-		maxIdle, err := time.ParseDuration(raw)
+		// Empty keeps the historical behaviour of never reaping. Prefer 20m
+		// (DesktopIdleDefault) for "sleep after use"; 24h is not that UX.
+		maxIdle, err := desktopd.ParseMaxIdle(raw)
 		if err != nil {
-			log.Fatalf("DESKTOPD_MAX_IDLE is not a duration. Set it to 30m, or leave it empty to disable reaping, then restart desktopd.")
+			log.Fatalf("[desktopd] %v", err)
 		}
 		if maxIdle > 0 {
-			svc.StartReaper(context.Background(), 10*time.Minute, maxIdle)
-			log.Printf("[desktopd] idle reaper enabled max_idle=%s", maxIdle)
+			interval := desktopd.ReaperInterval(maxIdle)
+			svc.StartReaper(context.Background(), interval, maxIdle)
+			log.Printf("[desktopd] idle reaper enabled max_idle=%s workspace_idle=%s interval=%s", maxIdle, workspaceIdle, interval)
 		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

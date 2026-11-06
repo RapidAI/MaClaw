@@ -124,6 +124,10 @@ type Service struct {
 	// old path: those calls start the desktop. cmd/desktopd turns it on
 	// unless DESKTOPD_TOOL_WORKSPACE=off.
 	ToolWorkspace bool
+	// WorkspaceMaxIdle is how long a headless workspace may sit unused.
+	// Zero means WorkspaceIdleDefault. It is independent of the desktop
+	// reaper timeout so a 20m desktop sleep does not stop the workspace.
+	WorkspaceMaxIdle time.Duration
 	// VolumeSync copies the four private volumes. Nil means object storage is
 	// not configured, and stage 2 must not docker stop. The bucket, account,
 	// and region are not chosen here. The syncer must not log a token.

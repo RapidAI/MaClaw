@@ -31,7 +31,6 @@ const (
 	workspaceImageLbl   = "maclaw.work.image"
 	workspaceHold       = `trap 'exit 0' TERM INT; sleep infinity & wait`
 	workspaceStopGrace  = "5"
-	workspaceDefaultIdl = 10 * time.Minute
 )
 
 func workspaceName(tenantID, userID string) string {
@@ -175,12 +174,21 @@ func (s *Service) noteToolUse(spec Spec, container string, onDesktop bool) {
 	s.noteWorkspaceUse(container)
 }
 
+func (s *Service) workspaceIdle() time.Duration {
+	if s != nil && s.WorkspaceMaxIdle > 0 {
+		return s.WorkspaceMaxIdle
+	}
+	return WorkspaceIdleDefault
+}
+
 // reapWorkspaces stops workspaces with no bash or file call for maxIdle. A
 // workspace this process has not seen yet (desktopd restarted) gets a fresh
-// stamp, so it lives one more idle period.
+// stamp, so it lives one more idle period. Callers that pass <=0 get
+// workspaceIdle() (WorkspaceMaxIdle or WorkspaceIdleDefault), not the
+// historical 10m fallback that used to couple to a short desktop sleep.
 func (s *Service) reapWorkspaces(ctx context.Context, maxIdle time.Duration) {
 	if maxIdle <= 0 {
-		maxIdle = workspaceDefaultIdl
+		maxIdle = s.workspaceIdle()
 	}
 	out, err := s.docker(ctx, "ps", "--filter", "label="+workspaceUserLbl, "--format", "{{.Names}}\\t{{.Label \""+workspaceTenantLbl+"\"}}\\t{{.Label \""+workspaceUserLbl+"\"}}")
 	if err != nil {

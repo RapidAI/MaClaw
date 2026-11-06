@@ -51,7 +51,10 @@ func (r *reaper) loop(ctx context.Context, s *Service) {
 			return
 		case <-ticker.C:
 			r.once(ctx, s)
-			s.reapWorkspaces(ctx, r.maxIdle)
+			// Workspaces keep their own idle budget. Passing the desktop
+			// timeout here used to stop a workspace 20m after the last bash
+			// call whenever the desktop sleep was shortened.
+			s.reapWorkspaces(ctx, s.workspaceIdle())
 		}
 	}
 }

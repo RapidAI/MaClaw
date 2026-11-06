@@ -15,6 +15,14 @@ const (
 	// Stage2Idle is the stage-2 sleep. The historical DESKTOPD_MAX_IDLE reaper
 	// is a different switch and is not shortened to this.
 	Stage2Idle = 5 * time.Minute
+	// DesktopIdleDefault is the historical reaper timeout when operators want
+	// "sleep after use". 24h is too long for that promise; 20m matches the
+	// expected UX (viewer or in-progress desktop step still blocks sleep).
+	DesktopIdleDefault = 20 * time.Minute
+	// WorkspaceIdleDefault keeps the headless bash/file workspace around
+	// longer than the GUI desktop. A short desktop sleep must not cull a
+	// workspace that still has packages or files in play.
+	WorkspaceIdleDefault = 24 * time.Hour
 	// WarmStartBudget is how long a tool waits for a stopped container to
 	// accept docker start. Past this the caller gets a retryable error.
 	WarmStartBudget = 25 * time.Second
@@ -22,6 +30,51 @@ const (
 	// with it; restart always would bring the container back and break sleep.
 	desktopRestartPolicy = "unless-stopped"
 )
+
+// ReaperInterval picks how often the idle reconciler runs. A short desktop
+// idle needs a short tick, otherwise a 20m timeout effectively becomes 30m.
+func ReaperInterval(maxIdle time.Duration) time.Duration {
+	if maxIdle <= 0 {
+		return 10 * time.Minute
+	}
+	if maxIdle <= 30*time.Minute {
+		return time.Minute
+	}
+	return 10 * time.Minute
+}
+
+// ParseMaxIdle reads DESKTOPD_MAX_IDLE. Empty disables the historical reaper.
+func ParseMaxIdle(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("DESKTOPD_MAX_IDLE is not a duration. Set it to 20m, or leave it empty to disable reaping, then restart desktopd")
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("DESKTOPD_MAX_IDLE must be >= 0")
+	}
+	return d, nil
+}
+
+// ParseWorkspaceMaxIdle reads DESKTOPD_WORKSPACE_MAX_IDLE. Empty keeps the
+// long workspace default so shortening the desktop idle does not cull it.
+func ParseWorkspaceMaxIdle(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return WorkspaceIdleDefault, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("DESKTOPD_WORKSPACE_MAX_IDLE is not a duration. Set it to 24h, or leave it empty for the default, then restart desktopd")
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("DESKTOPD_WORKSPACE_MAX_IDLE must be >= 0")
+	}
+	return d, nil
+}
 
 // WarmStartError is the retryable tool error for a warm start that is still
 // unfinished after WarmStartBudget. It is not a sentence for the person.
