@@ -4483,7 +4483,10 @@ func codegraphDefinitionPass(lines []string, query, name string, qualifiedOnly b
 		if qualifiedOnly && !codegraphLineHasFittingQualifier(raw, query, name) {
 			continue
 		}
-		if codegraphBraceFollowsCall(lines, i, name) {
+		// A focused explore keeps an opening line when it drops the body:
+		// "47\tvoid reset() {" and the next line is queueDir. The brace is
+		// not the function. A body indents the next line, or it closes.
+		if codegraphBraceFollowsCall(lines, i, name) && !codegraphCollapsedSignature(lines, i) {
 			return i
 		}
 		if codegraphSemiEnds(rest) {
@@ -4496,6 +4499,90 @@ func codegraphDefinitionPass(lines []string, query, name string, qualifiedOnly b
 		}
 	}
 	return -1
+}
+
+// codegraphCollapsedSignature reports a definition line whose body was
+// omitted. The daemon leaves the opening brace and continues with the next
+// symbol. A real body is indented under that line, or the brace closes.
+func codegraphCollapsedSignature(lines []string, i int) bool {
+	if i < 0 || i >= len(lines) {
+		return false
+	}
+	raw := strings.TrimRight(lines[i], "\r")
+	if !codegraphBraceOpens(raw) || codegraphBraceGroupCloses(raw) {
+		return false
+	}
+	next := i + 1
+	for next < len(lines) && strings.TrimSpace(lines[next]) == "" {
+		next++
+	}
+	if next >= len(lines) {
+		return true
+	}
+	curText := codegraphStripNumberedLine(raw)
+	nextRaw := strings.TrimRight(lines[next], "\r")
+	nextText := codegraphStripNumberedLine(nextRaw)
+	if codegraphIndent(nextText) > codegraphIndent(curText) {
+		curN, curOK := codegraphLeadingLineNumber(raw)
+		nextN, nextOK := codegraphLeadingLineNumber(nextRaw)
+		if !curOK || !nextOK || nextN <= curN+1 {
+			return false
+		}
+	}
+	return codegraphSiblingSignature(nextText)
+}
+
+func codegraphLeadingLineNumber(line string) (int, bool) {
+	i := strings.IndexByte(line, '\t')
+	if i <= 0 || i >= 8 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(line[:i]))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// codegraphBraceGroupCloses reports that a '{' on this line is matched here.
+func codegraphBraceGroupCloses(line string) bool {
+	opens, closes := codegraphBraceDelta(line)
+	return opens > 0 && closes >= opens
+}
+
+// codegraphSiblingSignature is the next symbol in a focused fence, not a
+// statement or a control block inside the function. opposite() is followed
+// by "class Game", which is the next symbol and not a function signature.
+func codegraphSiblingSignature(line string) bool {
+	trim := strings.TrimSpace(line)
+	if trim == "" {
+		return false
+	}
+	if codegraphIntroducesType(trim) {
+		return true
+	}
+	if !strings.Contains(trim, "(") || !codegraphBraceOpens(trim) {
+		return false
+	}
+	fields := strings.Fields(trim)
+	if len(fields) == 0 {
+		return false
+	}
+	switch strings.Trim(fields[0], "*&") {
+	case "if", "for", "while", "switch", "catch", "do", "else", "try", "foreach":
+		return false
+	default:
+		return true
+	}
+}
+
+func codegraphIntroducesType(trim string) bool {
+	for _, kw := range []string{"class", "struct", "enum", "namespace", "union"} {
+		if trim == kw || strings.HasPrefix(trim, kw+" ") || strings.HasPrefix(trim, kw+"\t") || strings.HasPrefix(trim, kw+"{") {
+			return true
+		}
+	}
+	return false
 }
 
 func codegraphBraceFollowsCall(lines []string, i int, name string) bool {

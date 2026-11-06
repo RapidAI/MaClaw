@@ -369,6 +369,210 @@ func TestParseKeepsGoalSectionBody(t *testing.T) {
 	if len(inlineErrs) != 0 || inline.Goal != "查询北京天气" {
 		t.Fatalf("inline = %q errs = %v", inline.Goal, inlineErrs)
 	}
+	prose, proseErrs := Parse("# Spec: 天气\n## Goal\n查询北京天气\n输出：温度和风力\n## Outputs\n- report % text\n## Steps\n1. [exit]\n")
+	if len(proseErrs) != 0 || prose.Goal != "查询北京天气\n输出：温度和风力" || len(prose.Outputs) != 1 {
+		t.Fatalf("prose = %q outputs = %+v errs = %v", prose.Goal, prose.Outputs, proseErrs)
+	}
+	hash, hashErrs := Parse("# Spec: 天气\n# 目标\n查询北京天气\n# 注释\n先看预报\n## Steps\n1. [exit]\n")
+	if len(hashErrs) != 0 || hash.Goal != "查询北京天气\n# 注释\n先看预报" {
+		t.Fatalf("hash = %q errs = %v", hash.Goal, hashErrs)
+	}
+	plainBold, plainBoldErrs := Parse("# Spec: 天气\n**目标**\n查询北京天气\n## Steps\n1. [exit]\n")
+	if len(plainBoldErrs) != 0 || plainBold.Goal != "查询北京天气" {
+		t.Fatalf("plain bold = %q errs = %v", plainBold.Goal, plainBoldErrs)
+	}
+	keptStep, keptStepErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [act] 查询\n输出：温度\n  + → report % text\n2. [exit]\n")
+	if len(keptStepErrs) != 0 || len(keptStep.Steps) != 2 || len(keptStep.Steps[0].Outputs) != 1 || keptStep.Steps[0].Outputs[0].Name != "report" {
+		t.Fatalf("step outputs = %+v errs = %v", keptStep.Steps, keptStepErrs)
+	}
+	sub, subErrs := Parse("# Spec: 天气\n## 目标\n查询北京天气\n## 说明\n给出温度和风力\n标识：必须写清城市\n## Steps\n1. [exit]\n")
+	if len(subErrs) != 0 || sub.Goal != "查询北京天气\n## 说明\n给出温度和风力\n标识：必须写清城市" || sub.ID != "" {
+		t.Fatalf("sub goal = %q id = %q errs = %v", sub.Goal, sub.ID, subErrs)
+	}
+	quoted, quotedErrs := Parse("# Spec: 天气\n> ## 目标\n> 查询北京天气\n> 输出：温度和风力\n> ## 说明\n> 给出风力\n## 步骤\n> 1. [act] 示例\n1. [exit]\n")
+	if len(quotedErrs) != 0 || quoted.Goal != "查询北京天气\n输出：温度和风力\n## 说明\n给出风力" || len(quoted.Steps) != 1 {
+		t.Fatalf("quoted = %q steps = %+v errs = %v", quoted.Goal, quoted.Steps, quotedErrs)
+	}
+	keptQuote, keptQuoteErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [act] 查询\n> ## 目标\n> 查询别的\n  + → report % text\n2. [exit]\n")
+	if len(keptQuoteErrs) != 0 || keptQuote.Goal != "查询" || len(keptQuote.Steps) != 2 || len(keptQuote.Steps[0].Outputs) != 1 || !strings.Contains(keptQuote.Steps[0].Instruction, "查询别的") {
+		t.Fatalf("quoted inside step = %+v errs = %v", keptQuote, keptQuoteErrs)
+	}
+	alias, aliasErrs := Parse("# Spec: 天气\n## 目标/Goal\n查询北京天气\n输出：温度和风力\n## 步骤／Steps\n1. [exit]\n")
+	if len(aliasErrs) != 0 || alias.Goal != "查询北京天气\n输出：温度和风力" || len(alias.Steps) != 1 {
+		t.Fatalf("alias = %q steps = %+v errs = %v", alias.Goal, alias.Steps, aliasErrs)
+	}
+	punctHead, punctErrs := Parse("# Spec: 天气\n## 目标。\n查询北京天气\n## 输出。\n- report % text\n## 步骤！\n1. [exit]\n")
+	if len(punctErrs) != 0 || punctHead.Goal != "查询北京天气" || len(punctHead.Outputs) != 1 || len(punctHead.Steps) != 1 {
+		t.Fatalf("punct heading = %+v errs = %v", punctHead, punctErrs)
+	}
+	inlineAlias, inlineAliasErrs := Parse("# Spec: 天气\n## 目标/查询北京天气\n## 说明/补充\n给出风力\n## Steps\n1. [exit]\n")
+	if len(inlineAliasErrs) != 0 || inlineAlias.Goal != "查询北京天气\n## 说明/补充\n给出风力" || len(inlineAlias.Steps) != 1 {
+		t.Fatalf("inline alias = %q steps = %+v errs = %v", inlineAlias.Goal, inlineAlias.Steps, inlineAliasErrs)
+	}
+	inlinePunct, inlinePunctErrs := Parse("# Spec: 天气\n## 目标。查询北京天气\n## Steps\n1. [exit]\n")
+	if len(inlinePunctErrs) != 0 || inlinePunct.Goal != "查询北京天气" || len(inlinePunct.Steps) != 1 {
+		t.Fatalf("inline punct = %q steps = %+v errs = %v", inlinePunct.Goal, inlinePunct.Steps, inlinePunctErrs)
+	}
+	keptAlias, keptAliasErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [act] 查询\n目标/Goal\n目标。\n  + → report % text\n2. [exit]\n")
+	if len(keptAliasErrs) != 0 || keptAlias.Goal != "查询" || len(keptAlias.Steps) != 2 || len(keptAlias.Steps[0].Outputs) != 1 {
+		t.Fatalf("alias inside step = %+v errs = %v", keptAlias, keptAliasErrs)
+	}
+	gloss, glossErrs := Parse("# Spec: 天气\n## 目标（必填）\n查询北京天气\n输出：温度和风力\n## 输出（文本）\n- report % text\n## 步骤（按顺序）\n1. [exit]\n")
+	if len(glossErrs) != 0 || gloss.Goal != "查询北京天气\n输出：温度和风力" || len(gloss.Outputs) != 1 || len(gloss.Steps) != 1 {
+		t.Fatalf("gloss = %+v errs = %v", gloss, glossErrs)
+	}
+	bareGloss, bareGlossErrs := Parse("# Spec: 天气\n目标（必填）\n查询北京天气\n输出（文本）\n- report % text\n1. 步骤（收尾）\n1. [exit]\n")
+	if len(bareGlossErrs) != 0 || bareGloss.Goal != "查询北京天气" || len(bareGloss.Outputs) != 1 || len(bareGloss.Steps) != 1 {
+		t.Fatalf("bare gloss = %+v errs = %v", bareGloss, bareGlossErrs)
+	}
+	inlineGloss, inlineGlossErrs := Parse("# Spec: 天气\n## 1. 目标（必填）查询北京天气\n## Goal (required)\n## 说明（补充）\n给出温度\n## Steps\n1. [exit]\n")
+	if len(inlineGlossErrs) != 0 || inlineGloss.Goal != "查询北京天气\n## 说明（补充）\n给出温度" || len(inlineGloss.Steps) != 1 {
+		t.Fatalf("inline gloss = %q steps = %+v errs = %v", inlineGloss.Goal, inlineGloss.Steps, inlineGlossErrs)
+	}
+	keptGloss, keptGlossErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [act] 查询\n目标（必填）\n  + → report % text\n2. [exit]\n")
+	if len(keptGlossErrs) != 0 || keptGloss.Goal != "查询" || len(keptGloss.Steps) != 2 || len(keptGloss.Steps[0].Outputs) != 1 {
+		t.Fatalf("gloss inside step = %+v errs = %v", keptGloss, keptGlossErrs)
+	}
+	closed, closedErrs := Parse("# Spec: 天气\n## 目标 ##\n查询北京天气\n并给出温度\n## 【输出】\n- report % text\n## 步骤 ##\n1. [exit]\n")
+	if len(closedErrs) != 0 || closed.Goal != "查询北京天气\n并给出温度" || len(closed.Outputs) != 1 || len(closed.Steps) != 1 {
+		t.Fatalf("closed heading = %+v errs = %v", closed, closedErrs)
+	}
+	spaced, spacedErrs := Parse("# Spec: 天气\n## 目标 查询北京天气\n并给出温度\n## 【说明】\n给出风力\n＃＃ 步骤\n1. [exit]\n")
+	if len(spacedErrs) != 0 || spaced.Goal != "查询北京天气\n并给出温度\n## 【说明】\n给出风力" || len(spaced.Steps) != 1 {
+		t.Fatalf("spaced heading = %q steps = %+v errs = %v", spaced.Goal, spaced.Steps, spacedErrs)
+	}
+	bracket, bracketErrs := Parse("# Spec: 天气\n【目标】\n查询北京天气\n【输出】\n- report % text\n【步骤】\n1. [exit]\n")
+	if len(bracketErrs) != 0 || bracket.Goal != "查询北京天气" || len(bracket.Outputs) != 1 || len(bracket.Steps) != 1 {
+		t.Fatalf("bracket = %+v errs = %v", bracket, bracketErrs)
+	}
+	inlineBracket, inlineBracketErrs := Parse("# Spec: 天气\n## 【目标】查询北京天气\n## 1. 步骤 收尾\n1. [exit]\n")
+	if len(inlineBracketErrs) != 0 || inlineBracket.Goal != "查询北京天气" || len(inlineBracket.Steps) != 1 {
+		t.Fatalf("inline bracket = %q steps = %+v errs = %v", inlineBracket.Goal, inlineBracket.Steps, inlineBracketErrs)
+	}
+	stuck, stuckErrs := Parse("# Spec: 天气\n## 目标查询北京天气\n## 步骤\n1. [exit]\n")
+	if len(stuckErrs) != 0 || strings.TrimSpace(stuck.Goal) != "" || len(stuck.Steps) != 1 {
+		t.Fatalf("stuck heading = %q steps = %+v errs = %v", stuck.Goal, stuck.Steps, stuckErrs)
+	}
+	atxNum, atxNumErrs := Parse("# Spec: 天气\n## 1. 目标\n查询北京天气\n## 2. 输出\n- report % text\n## 3. 步骤\n1. [exit]\n")
+	if len(atxNumErrs) != 0 || atxNum.Goal != "查询北京天气" || len(atxNum.Outputs) != 1 || len(atxNum.Steps) != 1 {
+		t.Fatalf("atx numbered = %+v errs = %v", atxNum, atxNumErrs)
+	}
+	boldNum, boldNumErrs := Parse("# Spec: 天气\n**1. 目标**\n查询北京天气\n**（2）步骤**\n1. [exit]\n")
+	if len(boldNumErrs) != 0 || boldNum.Goal != "查询北京天气" || len(boldNum.Steps) != 1 {
+		t.Fatalf("bold numbered = %q steps = %+v errs = %v", boldNum.Goal, boldNum.Steps, boldNumErrs)
+	}
+	hashNum, hashNumErrs := Parse("# Spec: 天气\n# 1. 目标\n查询北京天气\n# 2. 注释\n先看预报\n# 3. 步骤\n1. [exit]\n")
+	if len(hashNumErrs) != 0 || hashNum.Goal != "查询北京天气\n# 2. 注释\n先看预报" || len(hashNum.Steps) != 1 {
+		t.Fatalf("hash numbered = %q steps = %+v errs = %v", hashNum.Goal, hashNum.Steps, hashNumErrs)
+	}
+	unknownNum, unknownNumErrs := Parse("# Spec: 天气\n## 1. 目标\n查询北京天气\n## 2. 说明\n给出温度和风力\n## 3. 步骤\n1. [exit]\n")
+	if len(unknownNumErrs) != 0 || unknownNum.Goal != "查询北京天气\n## 2. 说明\n给出温度和风力" || len(unknownNum.Steps) != 1 {
+		t.Fatalf("unknown numbered = %q steps = %+v errs = %v", unknownNum.Goal, unknownNum.Steps, unknownNumErrs)
+	}
+	inlineAtx, inlineAtxErrs := Parse("# Spec: 天气\n## （1）目标：查询北京天气\n## 2. 步骤\n1. [exit]\n")
+	if len(inlineAtxErrs) != 0 || inlineAtx.Goal != "查询北京天气" || len(inlineAtx.Steps) != 1 {
+		t.Fatalf("inline atx = %q steps = %+v errs = %v", inlineAtx.Goal, inlineAtx.Steps, inlineAtxErrs)
+	}
+	numbered, numberedErrs := Parse("# Spec: 天气\n1. 目标\n查询北京天气\n一、输出\n- report % text\n- 步骤\n1. [exit]\n")
+	if len(numberedErrs) != 0 || numbered.Goal != "查询北京天气" || len(numbered.Outputs) != 1 || len(numbered.Steps) != 1 {
+		t.Fatalf("numbered = %+v errs = %v", numbered, numberedErrs)
+	}
+	inlineNum, inlineNumErrs := Parse("# Spec: 天气\n（1）目标：查询北京天气\n2. 步骤\n1. [exit]\n")
+	if len(inlineNumErrs) != 0 || inlineNum.Goal != "查询北京天气" || len(inlineNum.Steps) != 1 {
+		t.Fatalf("inline numbered = %q steps = %+v errs = %v", inlineNum.Goal, inlineNum.Steps, inlineNumErrs)
+	}
+	proseNum, proseNumErrs := Parse("# Spec: 天气\n## Goal\n1. 查询天气\n- 查询北京天气\n## Steps\n1. [exit]\n")
+	if len(proseNumErrs) != 0 || proseNum.Goal != "1. 查询天气\n查询北京天气" || len(proseNum.Steps) != 1 {
+		t.Fatalf("numbered prose = %q steps = %+v errs = %v", proseNum.Goal, proseNum.Steps, proseNumErrs)
+	}
+	keptMark, keptMarkErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [act] 查询\n1. 目标\n- 步骤\n  + → report % text\n2. [exit]\n")
+	if len(keptMarkErrs) != 0 || keptMark.Goal != "查询" || len(keptMark.Steps) != 2 || len(keptMark.Steps[0].Outputs) != 1 {
+		t.Fatalf("mark inside step = %+v errs = %v", keptMark, keptMarkErrs)
+	}
+	outline, outlineErrs := Parse("# Spec: 天气\n目标\n查询北京天气\n输出\n- report % text\n步骤\n1. [exit]\n")
+	if len(outlineErrs) != 0 || outline.Goal != "查询北京天气" || len(outline.Outputs) != 1 || len(outline.Steps) != 1 {
+		t.Fatalf("outline = %+v errs = %v", outline, outlineErrs)
+	}
+	note, noteErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [act] 查询\n## 备注\n  + → report % text\n2. [exit]\n")
+	if len(noteErrs) != 0 || len(note.Steps) != 2 || len(note.Steps[0].Outputs) != 0 {
+		t.Fatalf("note outputs = %+v errs = %v", note.Steps, noteErrs)
+	}
+	noteNum, noteNumErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [act] 查询\n## 1. 说明\n  + → report % text\n2. [exit]\n")
+	if len(noteNumErrs) != 0 || len(noteNum.Steps) != 2 || len(noteNum.Steps[0].Outputs) != 0 {
+		t.Fatalf("numbered note outputs = %+v errs = %v", noteNum.Steps, noteNumErrs)
+	}
+	wrapped, wrappedErrs := Parse("# Spec: 天气\nGoal: \"查询北京天气\"\n## Steps\n1. [exit]\n")
+	if len(wrappedErrs) != 0 || wrapped.Goal != "查询北京天气" || len(wrapped.Steps) != 1 {
+		t.Fatalf("wrapped goal = %q steps = %+v errs = %v", wrapped.Goal, wrapped.Steps, wrappedErrs)
+	}
+	corner, cornerErrs := Parse("# Spec: 天气\n## 目标：「查询北京天气」\n\"再看风力\"\n输出：温度和风力\n## Steps\n1. [exit]\n")
+	if len(cornerErrs) != 0 || corner.Goal != "查询北京天气\n再看风力\n输出：温度和风力" || len(corner.Steps) != 1 {
+		t.Fatalf("corner goal = %q steps = %+v errs = %v", corner.Goal, corner.Steps, cornerErrs)
+	}
+	scalar, scalarErrs := Parse("# Spec: 天气\nGoal: |\n查询北京天气\n输出：温度和风力\n## Steps\n1. [exit]\n")
+	if len(scalarErrs) != 0 || scalar.Goal != "查询北京天气\n输出：温度和风力" || len(scalar.Steps) != 1 {
+		t.Fatalf("scalar goal = %q steps = %+v errs = %v", scalar.Goal, scalar.Steps, scalarErrs)
+	}
+	folded, foldedErrs := Parse("# Spec: 天气\nGoal: > 查询北京天气\nGoal: |-\n给出风力\n## Steps\n1. [exit]\n")
+	if len(foldedErrs) != 0 || folded.Goal != "查询北京天气\n给出风力" || len(folded.Steps) != 1 {
+		t.Fatalf("folded goal = %q steps = %+v errs = %v", folded.Goal, folded.Steps, foldedErrs)
+	}
+	marker, markerErrs := Parse("# Spec: 天气\nGoal: \"|\"\n查询北京天气\n## Steps\n1. [exit]\n")
+	if len(markerErrs) != 0 || marker.Goal != "查询北京天气" || len(marker.Steps) != 1 {
+		t.Fatalf("quoted marker = %q steps = %+v errs = %v", marker.Goal, marker.Steps, markerErrs)
+	}
+	plainFold, plainFoldErrs := Parse("# Spec: 天气\nGoal: >\n查询北京天气\n## Steps\n1. [exit]\n")
+	if len(plainFoldErrs) != 0 || plainFold.Goal != "查询北京天气" {
+		t.Fatalf("plain fold = %q errs = %v", plainFold.Goal, plainFoldErrs)
+	}
+	apostrophe, apostropheErrs := Parse("# Spec: 天气\nGoal: it's rainy\n## Steps\n1. [exit]\n")
+	if len(apostropheErrs) != 0 || apostrophe.Goal != "it's rainy" {
+		t.Fatalf("apostrophe = %q errs = %v", apostrophe.Goal, apostropheErrs)
+	}
+	nestedQuote, nestedErrs := Parse("# Spec: 天气\nGoal: \"say \"hi\"\"\n## Steps\n1. [exit]\n")
+	if len(nestedErrs) != 0 || nestedQuote.Goal != "\"say \"hi\"\"" {
+		t.Fatalf("nested quote = %q errs = %v", nestedQuote.Goal, nestedErrs)
+	}
+	keptID, keptIDErrs := Parse("# Spec: 天气\nId: \"beijing\"\nGoal: 查询\n## Steps\n1. [exit]\n")
+	if len(keptIDErrs) != 0 || keptID.ID != "\"beijing\"" || keptID.Goal != "查询" {
+		t.Fatalf("id = %q goal = %q errs = %v", keptID.ID, keptID.Goal, keptIDErrs)
+	}
+	quotedTitle, quotedTitleErrs := Parse("> # Spec: 天气\n## 目标\n查询北京天气\n## 步骤\n> 1. [exit]\n1. [exit]\n")
+	if len(quotedTitleErrs) != 0 || quotedTitle.Title != "天气" || quotedTitle.Goal != "查询北京天气" || len(quotedTitle.Steps) != 1 {
+		t.Fatalf("quoted title = %+v errs = %v", quotedTitle, quotedTitleErrs)
+	}
+	coded, codedErrs := Parse("# Spec: 天气\n## `目标`\n查询北京天气\n输出：温度和风力\n## `说明`\n给出风力\n## `步骤`\n1. [exit]\n")
+	if len(codedErrs) != 0 || coded.Goal != "查询北京天气\n输出：温度和风力\n## `说明`\n给出风力" || len(coded.Steps) != 1 {
+		t.Fatalf("code heading = %q steps = %+v errs = %v", coded.Goal, coded.Steps, codedErrs)
+	}
+	bareCode, bareCodeErrs := Parse("# Spec: 天气\n`目标`\n查询北京天气\n使用 `web_search` 查询\n`步骤`\n1. [exit]\n")
+	if len(bareCodeErrs) != 0 || bareCode.Goal != "查询北京天气\n使用 `web_search` 查询" || len(bareCode.Steps) != 1 {
+		t.Fatalf("bare code = %q steps = %+v errs = %v", bareCode.Goal, bareCode.Steps, bareCodeErrs)
+	}
+	codeValue, codeValueErrs := Parse("# Spec: 天气\nGoal: `查询北京天气`\nGoal: \"`再看风力`\"\n## Steps\n1. [exit]\n")
+	if len(codeValueErrs) != 0 || codeValue.Goal != "查询北京天气\n再看风力" || len(codeValue.Steps) != 1 {
+		t.Fatalf("code value = %q steps = %+v errs = %v", codeValue.Goal, codeValue.Steps, codeValueErrs)
+	}
+	bracketColon, bracketColonErrs := Parse("# Spec: 天气\n【目标】：查询北京天气\n输出：温度和风力\n【输出】\n- report % text\n【步骤】\n1. [exit]\n")
+	if len(bracketColonErrs) != 0 || bracketColon.Goal != "查询北京天气\n输出：温度和风力" || len(bracketColon.Outputs) != 1 || len(bracketColon.Steps) != 1 {
+		t.Fatalf("bracket colon = %+v errs = %v", bracketColon, bracketColonErrs)
+	}
+	bracketGloss, bracketGlossErrs := Parse("# Spec: 天气\n【目标】（必填）\n查询北京天气\n【说明】（补充）\n给出风力\n【步骤】\n1. [exit]\n")
+	if len(bracketGlossErrs) != 0 || bracketGloss.Goal != "查询北京天气\n【说明】（补充）\n给出风力" || len(bracketGloss.Steps) != 1 {
+		t.Fatalf("bracket gloss = %q steps = %+v errs = %v", bracketGloss.Goal, bracketGloss.Steps, bracketGlossErrs)
+	}
+	keptCode, keptCodeErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [act] 查询\n`目标`\n1. `目标`：别的\n  + → report % text\n2. [exit]\n")
+	if len(keptCodeErrs) != 0 || keptCode.Goal != "查询" || len(keptCode.Steps) != 2 || len(keptCode.Steps[0].Outputs) != 1 {
+		t.Fatalf("code inside step = %+v errs = %v", keptCode, keptCodeErrs)
+	}
+	keptBracket, keptBracketErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [act] 查询\n【目标】：别的\n  + → report % text\n2. [exit]\n")
+	if len(keptBracketErrs) != 0 || keptBracket.Goal != "别的" || len(keptBracket.Steps) != 2 || len(keptBracket.Steps[0].Outputs) != 1 {
+		t.Fatalf("bracket inside step = %+v errs = %v", keptBracket, keptBracketErrs)
+	}
+	doubleTitle, doubleTitleErrs := Parse(">> # Spec: 天气\n## 目标\n查询北京天气\n## 步骤\n1. [exit]\n")
+	if doubleTitle.Title != "" || doubleTitle.Goal != "查询北京天气" || len(doubleTitle.Steps) != 1 || !diagnosticsContain(doubleTitleErrs, "MISSING_SPEC_TITLE") {
+		t.Fatalf("double title = %+v errs = %v", doubleTitle, doubleTitleErrs)
+	}
 	empty, emptyErrs := Parse("# Spec: 天气\n## Steps\n1. [exit]\n")
 	if len(emptyErrs) != 0 || strings.TrimSpace(empty.Goal) != "" {
 		t.Fatalf("empty = %q errs = %v", empty.Goal, emptyErrs)

@@ -488,6 +488,28 @@ func TestCodegraphLocationPathDropsLineAndColumn(t *testing.T) {
 	}
 }
 
+func TestFocusedExploreAttachesAnonymousNamespaceConstants(t *testing.T) {
+	dir := t.TempDir()
+	src := "namespace {\nconstexpr int kWidth = 40;\nconstexpr int kHeight = 20;\nconstexpr int kLineWidth = kWidth + 2;\nconstexpr auto kTick = std::chrono::milliseconds(120);\nvoid reset() {\n    use(kWidth, kHeight, kLineWidth, kTick);\n}\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	focused := "#### snake.cpp — frame, main, Game, reset, queueDir · focused (the methods you named in full, the rest as signatures — codegraph_explore a signature by name for its body; do NOT Read)\n\n```cpp\n5\tvoid reset() {\n6\t    use(kWidth, kHeight, kLineWidth, kTick);\n7\t}\n```\n"
+	got := codegraphAttachReferencedDecls(dir, focused)
+	for _, want := range []string{"kWidth = 40", "kHeight = 20", "kLineWidth = kWidth + 2", "kTick = std::chrono::milliseconds(120)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("focused explore dropped %s:\n%s", want, got)
+		}
+	}
+	if hint := codegraphContinueHint("codegraph", got); strings.Contains(hint, "names and locations") || !strings.Contains(hint, "current source") {
+		t.Fatalf("attached focused explore hint = %q", hint)
+	}
+	refreshed := codegraphMCPRefreshExplore(dir, focused)
+	if !strings.Contains(refreshed, "use(kWidth, kHeight, kLineWidth, kTick)") {
+		t.Fatalf("refresh replaced the focused body: %s", refreshed)
+	}
+}
+
 func TestCodegraphAttachReferencedDecls(t *testing.T) {
 	dir := t.TempDir()
 	src := "#include \"theme.h\"\n#include <windows.h>\n#include \"../secret.h\"\n#define MAX(a, b) ((a) > (b) ? (a) : (b))\n#define SCALE(v) \\\n    ((v) * DPI)\nREGISTER_GAME(drawScene)\nnamespace {\nstatic const int CLIENT_W = 824;\nstatic const int PAD = CLIENT_W;\nstatic const int MARGIN = CLIENT_W;\nstatic const int GAP = CLIENT_W;\nstatic const int BORDER = CLIENT_W;\nstatic const int SHADOW = CLIENT_W;\nstatic const int TITLE_H = CLIENT_W;\nstatic const int FOOTER_H = CLIENT_W;\nstatic const int ICON_W = CLIENT_W;\nstatic const int ICON_H = CLIENT_W;\nstatic const int GRID_W = CLIENT_W;\nstatic const int GRID_H = CLIENT_W;\nstatic const int HUD_W = CLIENT_W;\nstatic const int DPI = 96;\nstatic bool g_polishEnabled = true;\nstatic HBRUSH g_brush = CreateSolidBrush(\n    RGB(1, 2, 3));\nenum {\n    CELL_SIZE = 16,\n};\nstatic void fillDot(\n    int x);\nstatic void fillDot(int x) { x = CLIENT_W; }\nstatic void drawScene() {\n    if (g_polishEnabled) fillDot(MAX(CLIENT_W, SCALE(DPI)));\n    SelectObject(dc, g_brush);\n    step(CELL_SIZE);\n    paint(THEME_W);\n}\n}\n"
@@ -2201,6 +2223,81 @@ func TestCodegraphContinueHintStaysOnAfterAHit(t *testing.T) {
 	}
 	if files := codegraphFilesReadyToEdit(skeleton); len(files) != 0 {
 		t.Fatalf("signature-only files = %#v", files)
+	}
+	_, kinded := codegraphMCPExploreHeader("#### util.h — clamp<int>(function), operator()(method), reset")
+	if len(kinded) != 3 || kinded[0].name != "clamp<int>" || kinded[0].kind != "function" || kinded[1].name != "operator()" || kinded[1].kind != "method" || kinded[2].name != "reset" || kinded[2].kind != "" {
+		t.Fatalf("explore header symbols = %#v", kinded)
+	}
+	_, ops := codegraphMCPExploreHeader("#### snake.cpp — operator==, operator(), clamp<int, int>(function), operator[](method) · focused")
+	if len(ops) != 4 || ops[0].name != "operator==" || ops[0].kind != "" || ops[1].name != "operator()" || ops[1].kind != "" || ops[2].name != "clamp<int, int>" || ops[2].kind != "function" || ops[3].name != "operator[]" || ops[3].kind != "method" {
+		t.Fatalf("operator header symbols = %#v", ops)
+	}
+	_, note := codegraphMCPExploreHeader("#### snake.cpp — see the note · focused")
+	if len(note) != 0 {
+		t.Fatalf("prose header symbols = %#v", note)
+	}
+	eqBody := "#### snake.cpp — operator== · focused\n\n```cpp\n27\tbool operator==(const Point& other) const {\n28\t    return x == other.x && y == other.y;\n29\t}\n```\n"
+	if hint := codegraphContinueHint("codegraph", eqBody); strings.Contains(hint, "names and locations") || !strings.Contains(hint, "current source") {
+		t.Fatalf("operator== body was treated as a name list: %q", hint)
+	}
+	if files := codegraphFilesReadyToEdit(eqBody); len(files) != 1 || files[0] != "snake.cpp" {
+		t.Fatalf("operator== files = %#v", files)
+	}
+	eqSig := "#### snake.cpp — operator== · focused\n\n```cpp\n27\tbool operator==(const Point& other) const;\n```\n"
+	if hint := codegraphContinueHint("codegraph", eqSig); !strings.Contains(hint, "names and locations") {
+		t.Fatalf("operator== signature was treated as source: %q", hint)
+	}
+	tmpl := "#### util.h — clamp<int, int>(function) · focused\n\n```cpp\nint clamp<int, int>(int a, int b) {\n    return a < b ? a : b;\n}\n```\n"
+	if hint := codegraphContinueHint("codegraph", tmpl); strings.Contains(hint, "names and locations") || !strings.Contains(hint, "current source") {
+		t.Fatalf("template specialization was treated as a name list: %q", hint)
+	}
+	_, rel := codegraphMCPExploreHeader("#### util.h — operator<, operator>, operator<<, operator new, operator delete[], operator bool, reset · focused")
+	if len(rel) != 7 || rel[0].name != "operator<" || rel[1].name != "operator>" || rel[2].name != "operator<<" || rel[3].name != "operator new" || rel[4].name != "operator delete[]" || rel[5].name != "operator bool" || rel[6].name != "reset" {
+		t.Fatalf("relational operator symbols = %#v", rel)
+	}
+	_, shiftKind := codegraphMCPExploreHeader("#### util.h — operator<<(function), operator new(method)")
+	if len(shiftKind) != 2 || shiftKind[0].name != "operator<<" || shiftKind[0].kind != "function" || shiftKind[1].name != "operator new" || shiftKind[1].kind != "method" {
+		t.Fatalf("operator kind suffix = %#v", shiftKind)
+	}
+	less := "#### util.h — operator<, reset · focused\n\n```cpp\nbool operator<(const Point& other) const {\n    return x < other.x;\n}\n```\n"
+	if hint := codegraphContinueHint("codegraph", less); strings.Contains(hint, "names and locations") || !strings.Contains(hint, "current source") {
+		t.Fatalf("operator< body was treated as a name list: %q", hint)
+	}
+	shift := "#### util.h — operator<<, reset · focused\n\n```cpp\nstd::ostream& operator<<(std::ostream& out, const Point& p) {\n    return out;\n}\n```\n"
+	if hint := codegraphContinueHint("codegraph", shift); strings.Contains(hint, "names and locations") || !strings.Contains(hint, "current source") {
+		t.Fatalf("operator<< body was treated as a name list: %q", hint)
+	}
+	if files := codegraphFilesReadyToEdit(shift); len(files) != 1 || files[0] != "util.h" {
+		t.Fatalf("operator<< files = %#v", files)
+	}
+	alloc := "#### util.h — operator new · focused\n\n```cpp\nvoid* operator new(size_t n) {\n    return 0;\n}\n```\n"
+	if hint := codegraphContinueHint("codegraph", alloc); strings.Contains(hint, "names and locations") || !strings.Contains(hint, "current source") {
+		t.Fatalf("operator new body was treated as a name list: %q", hint)
+	}
+	stub := "#### snake.cpp — reset, queueDir · focused\n\n```cpp\n47\tvoid reset() {\n62\tvoid queueDir(Dir next) {\n```\n"
+	opp := "#### snake.cpp — opposite · focused\n\n```cpp\n34\tbool opposite(Dir a, Dir b) {\n39\tclass Game {\n```\n"
+	if hint := codegraphContinueHint("codegraph", opp); !strings.Contains(hint, "names and locations") {
+		t.Fatalf("signature closed by a class was treated as source: %q", hint)
+	}
+	if files := codegraphFilesReadyToEdit(opp); len(files) != 0 {
+		t.Fatalf("signature closed by a class files = %#v", files)
+	}
+	typeNext := "#### snake.cpp — reset · focused\n\n```cpp\n10\tvoid reset() {\n20\tstruct Point {\n```\n"
+	if hint := codegraphContinueHint("codegraph", typeNext); !strings.Contains(hint, "names and locations") {
+		t.Fatalf("signature closed by a struct was treated as source: %q", hint)
+	}
+	if hint := codegraphContinueHint("codegraph", stub); !strings.Contains(hint, "names and locations") {
+		t.Fatalf("collapsed signature was treated as source: %q", hint)
+	}
+	if files := codegraphFilesReadyToEdit(stub); len(files) != 0 {
+		t.Fatalf("collapsed signature files = %#v", files)
+	}
+	mixed := "#### snake.cpp — frame, reset · focused\n\n```cpp\n47\tvoid reset() {\n62\tvoid queueDir(Dir next) {\n129\tvoid frame() {\n130\t    for (int y = 0; y < kHeight; ++y) {\n131\t        paint(y);\n132\t    }\n133\t    return;\n134\t}\n```\n"
+	if hint := codegraphContinueHint("codegraph", mixed); strings.Contains(hint, "names and locations") || !strings.Contains(hint, "current source") {
+		t.Fatalf("collapsed signature hid the closed function: %q", hint)
+	}
+	if files := codegraphFilesReadyToEdit(mixed); len(files) != 1 || files[0] != "snake.cpp" {
+		t.Fatalf("mixed focused files = %#v", files)
 	}
 	banner := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - snake.cpp (edited 10ms ago, pending sync)\nFor accurate content of those specific files, Read them directly. The rest of this response is fresh.\n## drawScene (function)\n\n**Location:** snake.cpp:1\n\n```cpp\n1\tstatic void drawScene(HDC dc) { old(); }\n```\n"
 	staleHint := codegraphContinueHint("codegraph", banner)

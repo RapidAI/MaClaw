@@ -126,6 +126,75 @@ func TestCompiledHopSpecKeepsGoalSectionBody(t *testing.T) {
 	if err := validateCompiledHopSpec(kept); err != nil {
 		t.Fatal(err)
 	}
+	sentence := prepareCompiledHopMarkdown("# Spec: 天气\n# 目标\n查询北京天气\n输出：温度和风力\n## Steps\n1. [exit]\n", task)
+	sentenceSpec, sentenceErrs := hopspec.Parse(sentence)
+	if len(sentenceErrs) != 0 || sentenceSpec.Goal != "查询北京天气\n输出：温度和风力" || strings.Contains(sentence, "Goal: "+task) {
+		t.Fatalf("sentence = %q spec = %s errs = %v", sentenceSpec.Goal, sentence, sentenceErrs)
+	}
+
+	outline := prepareCompiledHopMarkdown("目标\n查询北京天气\n## 说明\n给出温度和风力\n步骤\n1. [exit]\n", task)
+	outlineSpec, outlineErrs := hopspec.Parse(outline)
+	if len(outlineErrs) != 0 || outlineSpec.Goal != "查询北京天气\n## 说明\n给出温度和风力" || strings.Contains(outline, "Goal: "+task) {
+		t.Fatalf("outline goal = %q spec = %s errs = %v", outlineSpec.Goal, outline, outlineErrs)
+	}
+	if !strings.HasPrefix(outline, "# Spec: "+task+"\n") {
+		t.Fatalf("outline title = %q", outline)
+	}
+	quoted := prepareCompiledHopMarkdown("> ## 目标\n> 查询北京天气\n> ## 说明\n> 给出温度和风力\n## 步骤\n1. [exit]\n", task)
+	quotedSpec, quotedErrs := hopspec.Parse(quoted)
+	if len(quotedErrs) != 0 || quotedSpec.Goal != "查询北京天气\n## 说明\n给出温度和风力" || strings.Contains(quoted, "Goal: "+task) || !strings.HasPrefix(quoted, "# Spec: "+task+"\n") {
+		t.Fatalf("quoted goal = %q spec = %s errs = %v", quotedSpec.Goal, quoted, quotedErrs)
+	}
+	aliased := prepareCompiledHopMarkdown("## 目标/Goal。\n查询北京天气\n## 说明/补充\n给出温度和风力\n## 步骤｜Steps\n1. [exit]\n", task)
+	aliasSpec, aliasErrs := hopspec.Parse(aliased)
+	if len(aliasErrs) != 0 || aliasSpec.Goal != "查询北京天气\n## 说明/补充\n给出温度和风力" || strings.Contains(aliased, "Goal: "+task) || !strings.HasPrefix(aliased, "# Spec: "+task+"\n") {
+		t.Fatalf("alias goal = %q spec = %s errs = %v", aliasSpec.Goal, aliased, aliasErrs)
+	}
+	glossed := prepareCompiledHopMarkdown("## 目标（必填）\n查询北京天气\n## 说明（补充）\n给出温度和风力\n## 步骤（按顺序）\n1. [exit]\n", task)
+	glossSpec, glossErrs := hopspec.Parse(glossed)
+	if len(glossErrs) != 0 || glossSpec.Goal != "查询北京天气\n## 说明（补充）\n给出温度和风力" || strings.Contains(glossed, "Goal: "+task) || !strings.HasPrefix(glossed, "# Spec: "+task+"\n") {
+		t.Fatalf("gloss goal = %q spec = %s errs = %v", glossSpec.Goal, glossed, glossErrs)
+	}
+	closed := prepareCompiledHopMarkdown("## 目标 查询北京天气\n## 【说明】\n给出温度和风力\n## 步骤 ##\n1. [exit]\n", task)
+	closedSpec, closedErrs := hopspec.Parse(closed)
+	if len(closedErrs) != 0 || closedSpec.Goal != "查询北京天气\n## 【说明】\n给出温度和风力" || strings.Contains(closed, "Goal: "+task) || !strings.HasPrefix(closed, "# Spec: "+task+"\n") {
+		t.Fatalf("closed goal = %q spec = %s errs = %v", closedSpec.Goal, closed, closedErrs)
+	}
+	atxNumbered := prepareCompiledHopMarkdown("## 1. 目标\n查询北京天气\n## 2. 说明\n给出温度和风力\n## 3. 步骤\n1. [exit]\n", task)
+	atxSpec, atxErrs := hopspec.Parse(atxNumbered)
+	if len(atxErrs) != 0 || atxSpec.Goal != "查询北京天气\n## 2. 说明\n给出温度和风力" || strings.Contains(atxNumbered, "Goal: "+task) || !strings.HasPrefix(atxNumbered, "# Spec: "+task+"\n") {
+		t.Fatalf("atx numbered goal = %q spec = %s errs = %v", atxSpec.Goal, atxNumbered, atxErrs)
+	}
+	scalar := prepareCompiledHopMarkdown("Goal: |\n查询北京天气\n## 说明\n给出温度和风力\n## 步骤\n1. [exit]\n", task)
+	scalarSpec, scalarErrs := hopspec.Parse(scalar)
+	if len(scalarErrs) != 0 || scalarSpec.Goal != "查询北京天气\n## 说明\n给出温度和风力" || strings.Contains(scalar, "Goal: "+task) || !strings.HasPrefix(scalar, "# Spec: "+task+"\n") {
+		t.Fatalf("scalar goal = %q spec = %s errs = %v", scalarSpec.Goal, scalar, scalarErrs)
+	}
+	wrappedGoal := prepareCompiledHopMarkdown("Goal: \"查询北京天气\"\n## 步骤\n1. [exit]\n", task)
+	wrappedSpec, wrappedErrs := hopspec.Parse(wrappedGoal)
+	if len(wrappedErrs) != 0 || wrappedSpec.Goal != "查询北京天气" || strings.Contains(wrappedGoal, "Goal: "+task) || !strings.HasPrefix(wrappedGoal, "# Spec: "+task+"\n") {
+		t.Fatalf("wrapped goal = %q spec = %s errs = %v", wrappedSpec.Goal, wrappedGoal, wrappedErrs)
+	}
+	quotedTitle := prepareCompiledHopMarkdown("> # Spec: 天气\nGoal: |\n查询北京天气\n## 步骤\n1. [exit]\n", task)
+	quotedTitleSpec, quotedTitleErrs := hopspec.Parse(quotedTitle)
+	if len(quotedTitleErrs) != 0 || quotedTitleSpec.Title != "天气" || quotedTitleSpec.Goal != "查询北京天气" || strings.Contains(quotedTitle, "Goal: "+task) || strings.Contains(quotedTitle, "# Spec: "+task) {
+		t.Fatalf("quoted title = %+v spec = %s errs = %v", quotedTitleSpec, quotedTitle, quotedTitleErrs)
+	}
+	coded := prepareCompiledHopMarkdown("`目标`\n查询北京天气\n## `说明`\n给出温度和风力\n`步骤`\n1. [exit]\n", task)
+	codedSpec, codedErrs := hopspec.Parse(coded)
+	if len(codedErrs) != 0 || codedSpec.Goal != "查询北京天气\n## `说明`\n给出温度和风力" || strings.Contains(coded, "Goal: "+task) || !strings.HasPrefix(coded, "# Spec: "+task+"\n") {
+		t.Fatalf("coded goal = %q spec = %s errs = %v", codedSpec.Goal, coded, codedErrs)
+	}
+	bracketed := prepareCompiledHopMarkdown("【目标】：查询北京天气\n【步骤】\n1. [exit]\n", task)
+	bracketSpec, bracketErrs := hopspec.Parse(bracketed)
+	if len(bracketErrs) != 0 || bracketSpec.Goal != "查询北京天气" || strings.Contains(bracketed, "Goal: "+task) || !strings.HasPrefix(bracketed, "# Spec: "+task+"\n") {
+		t.Fatalf("bracket goal = %q spec = %s errs = %v", bracketSpec.Goal, bracketed, bracketErrs)
+	}
+	numbered := prepareCompiledHopMarkdown("1. 目标\n查询北京天气\n- 步骤\n1. [exit]\n", task)
+	numberedSpec, numberedErrs := hopspec.Parse(numbered)
+	if len(numberedErrs) != 0 || numberedSpec.Goal != "查询北京天气" || strings.Contains(numbered, "Goal: "+task) || !strings.HasPrefix(numbered, "# Spec: "+task+"\n") {
+		t.Fatalf("numbered goal = %q spec = %s errs = %v", numberedSpec.Goal, numbered, numberedErrs)
+	}
 
 	longTask := strings.Repeat("天气", 30)
 	want := longTask + "的正文还更长一些，不能被标题截断替换"

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -459,55 +460,172 @@ func codegraphMCPExploreHeader(line string) (string, []codegraphMCPExploreSymbol
 		tail = tail[:dot]
 	}
 	var symbols []codegraphMCPExploreSymbol
-	for _, part := range strings.Split(tail, ",") {
+	for _, part := range codegraphSplitExploreFields(tail) {
 		part = strings.TrimSpace(part)
 		if part == "" || strings.HasPrefix(part, "+") {
 			continue
 		}
-		open := strings.LastIndex(part, "(")
-		if open > 0 && strings.HasSuffix(part, ")") {
-			name := strings.TrimSpace(part[:open])
-			if !codegraphExploreIdent(name) {
-				continue
-			}
-			symbols = append(symbols, codegraphMCPExploreSymbol{
-				name: name,
-				kind: strings.TrimSpace(strings.TrimSuffix(part[open+1:], ")")),
-			})
+		// name(kind) is the older header. The parentheses in operator()
+		// are the name, so an empty suffix stays on the bare-token path.
+		if name, kind, ok := codegraphExploreKindSuffix(part); ok {
+			symbols = append(symbols, codegraphMCPExploreSymbol{name: name, kind: kind})
 			continue
 		}
-		// A focused explore lists bare names and puts the kind note after
-		// " · ". Dropping those names made the fence look like a symbol map.
-		if codegraphExploreIdent(part) {
+		// A focused explore lists bare names, including operator== and
+		// clamp<int, int>. A note has a space outside brackets.
+		if codegraphExploreSymbolToken(part) {
 			symbols = append(symbols, codegraphMCPExploreSymbol{name: part})
 		}
 	}
 	return path, symbols
 }
 
-// codegraphExploreIdent is a symbol token in an explore header. A count or a
-// prose note is not a name, so it cannot make a fence count as a definition.
-func codegraphExploreIdent(name string) bool {
+// codegraphSplitExploreFields splits a header's name list. A comma inside
+// <...> or (...) belongs to one symbol, as in clamp<int, int>(function).
+// The < and > in operator< or operator<< are the operator, not a template.
+func codegraphSplitExploreFields(tail string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(tail); {
+		if depth == 0 {
+			if end := codegraphOperatorSpan(tail, i); end > i {
+				i = end
+				continue
+			}
+		}
+		switch tail[i] {
+		case '<', '(':
+			depth++
+		case '>', ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				parts = append(parts, tail[start:i])
+				start = i + 1
+			}
+		}
+		i++
+	}
+	return append(parts, tail[start:])
+}
+
+// codegraphOperatorTokens are the C++ operator spellings, longest first.
+// operator<< must win over operator<, or the next symbol's comma stays inside
+// a template that is not there.
+var codegraphOperatorTokens = []string{
+	"<<=", ">>=", "<=>", "->*",
+	"<<", ">>", "<=", ">=", "==", "!=", "&&", "||", "++", "--",
+	"+=", "-=", "*=", "/=", "%=", "^=", "&=", "|=", "->",
+	"()", "[]",
+	"+", "-", "*", "/", "%", "^", "&", "|", "~", "!", "=", "<", ">", ",",
+}
+
+// codegraphOperatorSpan reports the end of an operator name starting at i.
+// It returns i when s[i:] is not one. operator new and operator bool include
+// the space. The span stops before a kind suffix or a separating comma.
+func codegraphOperatorSpan(s string, i int) int {
+	if i < 0 || i >= len(s) {
+		return i
+	}
+	if i > 0 {
+		p := s[i-1]
+		if p == '_' || (p >= '0' && p <= '9') || (p >= 'a' && p <= 'z') || (p >= 'A' && p <= 'Z') {
+			return i
+		}
+	}
+	const key = "operator"
+	if i+len(key) > len(s) || s[i:i+len(key)] != key {
+		return i
+	}
+	j := i + len(key)
+	if j < len(s) {
+		c := s[j]
+		if c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			return i
+		}
+	}
+	if j >= len(s) {
+		return j
+	}
+	for _, tok := range codegraphOperatorTokens {
+		if strings.HasPrefix(s[j:], tok) {
+			return j + len(tok)
+		}
+	}
+	k := j
+	if s[k] == ' ' || s[k] == '\t' {
+		k++
+		if k >= len(s) || !codegraphExploreIdentStart(s[k]) {
+			return j
+		}
+		k++
+		for k < len(s) && codegraphExploreIdentCont(s[k]) {
+			k++
+		}
+		if strings.HasPrefix(s[k:], "[]") {
+			k += 2
+		}
+		return k
+	}
+	return j
+}
+
+func codegraphExploreIdentStart(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func codegraphExploreIdentCont(c byte) bool {
+	return codegraphExploreIdentStart(c) || (c >= '0' && c <= '9')
+}
+
+func codegraphExploreKindSuffix(part string) (string, string, bool) {
+	open := strings.LastIndex(part, "(")
+	if open <= 0 || !strings.HasSuffix(part, ")") {
+		return "", "", false
+	}
+	name := strings.TrimSpace(part[:open])
+	kind := strings.TrimSpace(strings.TrimSuffix(part[open+1:], ")"))
+	if name == "" || kind == "" || !codegraphExploreSymbolToken(name) || !codegraphExploreSymbolToken(kind) {
+		return "", "", false
+	}
+	return name, kind, true
+}
+
+// codegraphExploreSymbolToken reports one header field that names a symbol.
+// A space outside <> and () is a note. operator==, operator(), and
+// clamp<int, int> are names. A count or a word with no letter is not.
+func codegraphExploreSymbolToken(name string) bool {
 	if name == "" {
 		return false
 	}
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c == '_':
-		case c == '~':
-			if i != 0 {
+	// operator new, operator delete[], and operator bool contain a space.
+	// That space is the name, not a note.
+	if codegraphOperatorSpan(name, 0) == len(name) {
+		return true
+	}
+	depth := 0
+	letter := false
+	for _, r := range name {
+		switch r {
+		case '<', '(':
+			depth++
+		case '>', ')':
+			if depth > 0 {
+				depth--
+			}
+		case ' ', '\t', '\n', '\r':
+			if depth == 0 {
 				return false
 			}
-		case c >= '0' && c <= '9', c == ':', c == '.':
-			if i == 0 {
-				return false
-			}
-		default:
-			return false
+		}
+		if r == '_' || unicode.IsLetter(r) {
+			letter = true
 		}
 	}
-	return true
+	return letter
 }
 
 func codegraphMCPHeading(text string) (name, kind string, ok bool) {

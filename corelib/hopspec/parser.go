@@ -138,52 +138,58 @@ func Parse(markdown string) (SpecAST, []error) {
 				continue
 			}
 		}
-		if strings.HasPrefix(trimmed, "##") {
-			heading := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
-			label, value := heading, ""
-			if key, rest, ok := splitSectionColon(heading); ok {
-				label, value = key, rest
+		// One blockquote mark, then the same line. "> ## 目标" opens the goal.
+		// A quoted line inside an open step was kept above, so it stays instruction.
+		// The step matcher already ran, so "> 1. [exit]" is not a step.
+		if rest, ok := oneBlockquote(trimmed); ok {
+			trimmed = rest
+			if trimmed == "" {
+				continue
 			}
-			section = canonicalSection(cleanSectionToken(strings.TrimRight(label, ":：")))
-			if value = cleanSectionToken(value); value != "" {
-				switch section {
+		}
+		if name, value, ok := atxSection(trimmed); ok && !(name == "" && section == "goal") {
+			if value != "" {
+				switch name {
 				case "id":
 					spec.ID = value
 				case "goal":
-					spec.Goal = value
+					spec.Goal = goalValue(value)
 				}
 			}
+			section = name
 			current = nil
 			continue
 		}
 		// Section labels only. Step bodies and hop_python lines are consumed above.
+		// An unknown ## inside the goal stays above, so its sentence is the goal.
 		if !strings.HasPrefix(trimmed, "-") {
-			if label, ok := bareSectionLabel(trimmed); ok {
-				name := canonicalSection(cleanSectionToken(label))
-				// A goal sentence may end with a colon. Only a real section
-				// label leaves the goal; the sentence stays in the body.
-				if name != "" || section != "goal" {
+			if name, value, ok := sectionLabel(trimmed); ok {
+				prev := section
+				if noteSectionLabel(&spec, &section, name, value) {
+					if prev == "steps" && section != "steps" {
+						current = nil
+					}
+					continue
+				}
+			}
+			if section != "steps" {
+				if name, ok := wholeLineSection(trimmed); ok {
 					section = name
 					continue
 				}
 			}
-			if key, value, ok := splitSectionColon(trimmed); ok {
-				key = cleanSectionToken(key)
-				value = cleanSectionToken(value)
-				if name := canonicalSection(key); name != "" {
-					// The label enters the section even when the value is only
-					// emphasis, as in "**目标：**" with the sentence on the next line.
-					section = name
-					switch name {
-					case "id":
-						if value != "" {
-							spec.ID = value
-						}
-					case "goal":
-						if value != "" {
-							spec.Goal = value
-						}
+		}
+		// One bullet or enumerator, then the same heading: "- 步骤", "1. 目标".
+		// This stays outside an open step, so a bullet in the step body is not a heading.
+		// The remainder must be a section name, so "1. 查询天气" stays prose.
+		if section != "steps" {
+			if rest := stripSectionMark(trimmed); rest != "" && rest != trimmed {
+				if name, value, ok := sectionLabel(rest); ok {
+					if noteSectionLabel(&spec, &section, name, value) {
+						continue
 					}
+				} else if name, ok := wholeLineSection(rest); ok {
+					section = name
 					continue
 				}
 			}
@@ -454,6 +460,463 @@ func canonicalStepType(value string) (StepType, bool) {
 	}
 }
 
+// atxSection reads a markdown heading. ## always starts a section, so an
+// unknown heading still ends the current step. A single # is a section only
+// when the label is a real one, so "# 注释" inside a goal stays prose.
+// "1. 目标" under the hashes is that same section. "1. 说明" is not.
+// A closing hash run, a fullwidth ＃, "目标 查询", and "【目标】" are the same heading.
+func atxSection(line string) (string, string, bool) {
+	level, heading, ok := atxMarks(line)
+	if !ok {
+		return "", "", false
+	}
+	label, value := heading, ""
+	if key, rest, split := splitSectionColon(heading); split {
+		label, value = key, rest
+	}
+	name := sectionToken(label)
+	if name == "" && strings.TrimSpace(value) == "" {
+		if inline, rest, split := splitInlineHeading(heading); split {
+			name, value = inline, rest
+		}
+	}
+	if glossOnly(value) {
+		value = ""
+	}
+	if level < 2 && name == "" {
+		return "", "", false
+	}
+	return name, cleanSectionToken(value), true
+}
+
+// atxMarks reads the opening hash run. Fullwidth ＃ is the same mark.
+// Hashes that close the heading are not part of the label.
+func atxMarks(line string) (int, string, bool) {
+	level := 0
+	rest := line
+	for {
+		switch {
+		case strings.HasPrefix(rest, "#"):
+			rest = rest[len("#"):]
+		case strings.HasPrefix(rest, "＃"):
+			rest = rest[len("＃"):]
+		default:
+			if level == 0 {
+				return 0, "", false
+			}
+			heading := strings.TrimSpace(rest)
+			heading = strings.TrimSpace(strings.TrimRight(heading, "#＃"))
+			return level, heading, true
+		}
+		level++
+	}
+}
+
+// sectionToken is the canonical section for a heading label. The label may
+// be the bare name or one enumerator in front of it: "目标", "1. 目标",
+// or "1. **目标**". Brackets or a parenthetical gloss, such as "【目标】"
+// or "目标（必填）", are the same label. A sentence such as "1. 说明" is not.
+func sectionToken(label string) string {
+	label = strings.TrimSpace(strings.TrimRight(strings.TrimSpace(label), ":："))
+	if name := canonicalSection(cleanSectionToken(label)); name != "" {
+		return name
+	}
+	cleaned := cleanSectionToken(label)
+	if rest := stripSectionMark(cleaned); rest != "" && rest != cleaned {
+		if name := canonicalSection(cleanSectionToken(rest)); name != "" {
+			return name
+		}
+		cleaned = cleanSectionToken(rest)
+	}
+	if punct := trimHeadingPunct(cleaned); punct != cleaned {
+		if name := canonicalSection(punct); name != "" {
+			return name
+		}
+		cleaned = punct
+	}
+	if name, _, pure, ok := aliasSection(cleaned); ok && pure {
+		return name
+	}
+	if name, after, ok := parenSection(cleaned); ok && strings.TrimSpace(after) == "" {
+		return name
+	}
+	inner, trailing, ok := unwrapSectionBrackets(cleaned)
+	if !ok {
+		return ""
+	}
+	// "【目标】（必填）" is the goal. "【目标】查询" is not a heading:
+	// the trailing sentence is not a gloss, and a whole-line heading has no value.
+	if trailing = strings.TrimSpace(trailing); trailing != "" && !glossOnly(trailing) {
+		return ""
+	}
+	inner = strings.TrimSpace(inner)
+	if name := canonicalSection(cleanSectionToken(inner)); name != "" {
+		return name
+	}
+	if rest := stripSectionMark(inner); rest != "" && rest != inner {
+		if name := canonicalSection(cleanSectionToken(rest)); name != "" {
+			return name
+		}
+		inner = strings.TrimSpace(cleanSectionToken(rest))
+	}
+	if name, after, ok := parenSection(inner); ok && strings.TrimSpace(after) == "" {
+		return name
+	}
+	return ""
+}
+
+// parenSection reads a section name with one parenthetical gloss.
+// "目标（必填）" and "Goal (required)" are the goal. The text after the
+// closer is an inline value. "说明（补充）" and "查询（北京）" are not sections.
+func parenSection(label string) (string, string, bool) {
+	pairs := [][2]string{{"（", "）"}, {"(", ")"}}
+	for _, pair := range pairs {
+		idx := strings.Index(label, pair[0])
+		if idx <= 0 {
+			continue
+		}
+		head := strings.TrimSpace(label[:idx])
+		name := canonicalSection(cleanSectionToken(head))
+		if name == "" {
+			continue
+		}
+		rest := label[idx+len(pair[0]):]
+		end := strings.Index(rest, pair[1])
+		if end < 0 {
+			continue
+		}
+		return name, strings.TrimSpace(rest[end+len(pair[1]):]), true
+	}
+	return "", "", false
+}
+
+// glossOnly reports a value that is only a parenthetical note, such as "（Goal）".
+func glossOnly(value string) bool {
+	value = strings.TrimSpace(value)
+	for _, pair := range [][2]string{{"（", "）"}, {"(", ")"}} {
+		if len(value) <= len(pair[0])+len(pair[1]) || !strings.HasPrefix(value, pair[0]) || !strings.HasSuffix(value, pair[1]) {
+			continue
+		}
+		inner := value[len(pair[0]) : len(value)-len(pair[1])]
+		if !strings.Contains(inner, pair[0]) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitInlineHeading reads a heading whose name is not the whole line.
+// "目标 查询北京天气", "1. 目标 查询北京天气", and "【目标】查询北京天气" are the
+// goal. "说明 补充" and "目标查询北京天气" are not headings.
+func splitInlineHeading(heading string) (string, string, bool) {
+	base := heading
+	if rest := stripSectionMark(heading); rest != "" && rest != heading {
+		base = rest
+	}
+	fields := strings.Fields(base)
+	if len(fields) >= 2 {
+		if name := sectionToken(fields[0]); name != "" {
+			return name, strings.TrimSpace(strings.TrimPrefix(base, fields[0])), true
+		}
+	}
+	inner, trailing, ok := unwrapSectionBrackets(strings.TrimSpace(base))
+	if ok && strings.TrimSpace(trailing) != "" {
+		if name := sectionToken(inner); name != "" {
+			return name, strings.TrimSpace(trailing), true
+		}
+	}
+	if name, after, ok := parenSection(strings.TrimSpace(base)); ok {
+		return name, after, true
+	}
+	if name, value, pure, ok := aliasSection(strings.TrimSpace(base)); ok && !pure {
+		return name, value, true
+	}
+	if name, value, ok := punctHeading(strings.TrimSpace(base)); ok {
+		return name, value, true
+	}
+	return "", "", false
+}
+
+// trimHeadingPunct drops a trailing sentence mark. "目标。" is 目标.
+// A sentence such as "查询。" is still not a section name.
+func trimHeadingPunct(label string) string {
+	return strings.TrimSpace(strings.TrimRight(strings.TrimSpace(label), "。！？!?．."))
+}
+
+// aliasSection reads a bilingual heading. "目标/Goal" and "步骤｜Steps" are
+// that section. The other side is an alias when it is also a section name.
+// "目标/查询北京天气" keeps the sentence. "说明/补充" is not a section.
+func aliasSection(label string) (string, string, bool, bool) {
+	sepAt, sepLen := indexAliasSep(label)
+	if sepAt <= 0 {
+		return "", "", false, false
+	}
+	name := aliasName(label[:sepAt])
+	if name == "" {
+		return "", "", false, false
+	}
+	right := strings.TrimSpace(label[sepAt+sepLen:])
+	if right == "" || aliasName(right) != "" {
+		return name, "", true, true
+	}
+	return name, right, false, true
+}
+
+func aliasName(side string) string {
+	side = cleanSectionToken(trimHeadingPunct(side))
+	if name := canonicalSection(side); name != "" {
+		return name
+	}
+	if name, after, ok := parenSection(side); ok && after == "" {
+		return name
+	}
+	return ""
+}
+
+func indexAliasSep(label string) (int, int) {
+	best, size := -1, 0
+	for _, sep := range []string{"/", "／", "|", "｜"} {
+		at := strings.Index(label, sep)
+		if at >= 0 && (best < 0 || at < best) {
+			best, size = at, len(sep)
+		}
+	}
+	return best, size
+}
+
+// punctHeading reads a section name ended by a sentence mark, then a value.
+// "目标。查询北京天气" is the goal. "查询。天气" is not a heading.
+func punctHeading(label string) (string, string, bool) {
+	best, sep := -1, ""
+	for _, mark := range []string{"。", "！", "？", "!", "?", "．"} {
+		at := strings.Index(label, mark)
+		if at > 0 && (best < 0 || at < best) {
+			best, sep = at, mark
+		}
+	}
+	if best <= 0 {
+		return "", "", false
+	}
+	name := aliasName(label[:best])
+	if name == "" {
+		return "", "", false
+	}
+	value := strings.TrimSpace(label[best+len(sep):])
+	if value == "" {
+		return "", "", false
+	}
+	return name, value, true
+}
+
+// unwrapSectionBrackets peels one bracket pair around a section name.
+// The text after the closer is the inline value, and it may be empty.
+func unwrapSectionBrackets(label string) (string, string, bool) {
+	pairs := [][2]string{{"【", "】"}, {"［", "］"}, {"[", "]"}, {"「", "」"}, {"『", "』"}}
+	for _, pair := range pairs {
+		if !strings.HasPrefix(label, pair[0]) {
+			continue
+		}
+		rest := label[len(pair[0]):]
+		end := strings.Index(rest, pair[1])
+		if end <= 0 {
+			return "", "", false
+		}
+		return rest[:end], rest[end+len(pair[1]):], true
+	}
+	return "", "", false
+}
+
+// sectionLabel reads a section label that is not an ATX heading.
+// "**目标**", "**目标：**", and "Goal: 查询" are labels. A sentence is not.
+func sectionLabel(line string) (string, string, bool) {
+	if name, value, ok := emphasisLabel(line); ok {
+		return name, value, true
+	}
+	if label, ok := bareSectionLabel(line); ok {
+		name := plainSectionName(label)
+		if name == "" {
+			return "", "", false
+		}
+		return name, "", true
+	}
+	key, value, ok := splitSectionColon(line)
+	if !ok {
+		return "", "", false
+	}
+	name := plainSectionName(key)
+	if name == "" {
+		return "", "", false
+	}
+	return name, cleanSectionToken(value), true
+}
+
+// plainSectionName is a section name with no enumerator. "目标（必填）" is
+// the goal. "1. 目标" is not, so a numbered line inside a step stays put.
+func plainSectionName(label string) string {
+	label = cleanSectionToken(label)
+	if name := canonicalSection(label); name != "" {
+		return name
+	}
+	if name, after, ok := parenSection(label); ok && after == "" {
+		return name
+	}
+	if punct := trimHeadingPunct(label); punct != label {
+		if name := canonicalSection(punct); name != "" {
+			return name
+		}
+	}
+	if name, _, pure, ok := aliasSection(label); ok && pure {
+		return name
+	}
+	// "【目标】：查询" is the goal. The colon was already split off.
+	// An enumerator stays in place, so "1. 目标：查询" inside a step is not a heading.
+	inner, trailing, ok := unwrapSectionBrackets(label)
+	if !ok {
+		return ""
+	}
+	if trailing = strings.TrimSpace(trailing); trailing != "" && !glossOnly(trailing) {
+		return ""
+	}
+	return plainSectionName(strings.TrimSpace(inner))
+}
+
+// wholeLineSection reads a line that is only the section name, such as "目标", "步骤", or "【目标】".
+func wholeLineSection(line string) (string, bool) {
+	if strings.ContainsAny(line, ":：") {
+		return "", false
+	}
+	name := sectionToken(line)
+	if name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// SectionHeading is the section a heading line opens. A sentence that only
+// contains a colon, such as "输出：温度", is not a heading. A list mark in
+// front of the name, such as "1. 目标" or "- 步骤", is the same heading.
+// The compiler uses this so a title is added for the same headings the parser accepts.
+func SectionHeading(line string) string {
+	line = strings.TrimSpace(line)
+	if name := headingName(line); name != "" {
+		return name
+	}
+	rest, ok := oneBlockquote(line)
+	if !ok {
+		return ""
+	}
+	return headingName(rest)
+}
+
+func headingName(line string) string {
+	if name := namedHeading(line); name != "" {
+		return name
+	}
+	rest := stripSectionMark(line)
+	if rest == "" || rest == line {
+		return ""
+	}
+	return namedHeading(rest)
+}
+
+// oneBlockquote strips one leading ">". The caller checks the remainder,
+// so "> 查询北京天气" stays prose and "> 1. [exit]" is not matched as a step.
+func oneBlockquote(line string) (string, bool) {
+	if !strings.HasPrefix(line, ">") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(line, ">")), true
+}
+
+func namedHeading(line string) string {
+	if name, _, ok := atxSection(line); ok && name != "" {
+		return name
+	}
+	if name, value, ok := sectionLabel(line); ok && (value == "" || name == "goal" || name == "id") {
+		return name
+	}
+	if name, ok := wholeLineSection(line); ok {
+		return name
+	}
+	return ""
+}
+
+var sectionEnumPattern = regexp.MustCompile(`^(?:\d+|[一二三四五六七八九十]+)[.、．]\s*|^[（(](?:\d+|[一二三四五六七八九十]+)[）)]\s*`)
+
+// stripSectionMark removes one bullet or enumerator. The caller checks
+// whether the remainder is a section name, so "1. 查询天气" stays prose.
+func stripSectionMark(line string) string {
+	for _, prefix := range []string{"- ", "－ ", "* ", "• ", "· ", "● "} {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(line[len(prefix):])
+		}
+	}
+	if loc := sectionEnumPattern.FindStringIndex(line); loc != nil {
+		return strings.TrimSpace(line[loc[1]:])
+	}
+	return line
+}
+
+// emphasisLabel reads a label wrapped in * or _. The text after the closing
+// mark is the value, which may be empty when the sentence is the next line.
+func emphasisLabel(line string) (string, string, bool) {
+	rest := strings.TrimSpace(line)
+	mark := ""
+	switch {
+	case strings.HasPrefix(rest, "**"), strings.HasPrefix(rest, "__"):
+		mark = rest[:2]
+	case strings.HasPrefix(rest, "*"), strings.HasPrefix(rest, "_"):
+		mark = rest[:1]
+	default:
+		return "", "", false
+	}
+	rest = strings.TrimSpace(rest[len(mark):])
+	end := strings.Index(rest, mark)
+	if end <= 0 {
+		return "", "", false
+	}
+	label := strings.TrimRight(strings.TrimSpace(rest[:end]), ":：")
+	name := sectionToken(label)
+	if name == "" {
+		return "", "", false
+	}
+	return name, cleanSectionToken(strings.TrimSpace(rest[end+len(mark):])), true
+}
+
+// noteSectionLabel stores a Goal or Id value and moves to that section.
+// An empty label is a heading, so "输出：" opens Outputs. A sentence such as
+// "输出：温度和风力" stays in the open goal. A sentence under an open step
+// does not leave the step, so the step's later output line still attaches.
+func noteSectionLabel(spec *SpecAST, section *string, name, value string) bool {
+	if name == "" {
+		return false
+	}
+	// A sentence stays in the open goal. "标识：必须写清城市" is that sentence.
+	// "Id: slug" before the goal still assigns the id, because the goal is not open.
+	if name != "goal" && *section == "goal" && value != "" {
+		return false
+	}
+	switch name {
+	case "id":
+		if value != "" {
+			spec.ID = value
+		}
+	case "goal":
+		value = goalValue(value)
+		if value != "" {
+			if *section == "goal" && spec.Goal != "" && spec.Goal != value {
+				spec.Goal = appendGoalBody(spec.Goal, value)
+			} else {
+				spec.Goal = value
+			}
+		}
+	}
+	if value == "" || ((name == "goal" || name == "id") && *section != "steps") {
+		*section = name
+	}
+	return true
+}
+
 // appendGoalBody keeps the prose under a Goal heading. An inline
 // "Goal: value" is stored by the heading handler and is not passed here.
 // A following paragraph, one list marker, or a leading ">" is the same body.
@@ -469,10 +932,7 @@ func appendGoalBody(goal, line string) string {
 }
 
 func goalBodyText(line string) string {
-	text := strings.TrimSpace(line)
-	if strings.HasPrefix(text, ">") {
-		text = strings.TrimSpace(strings.TrimPrefix(text, ">"))
-	}
+	text := goalValue(line)
 	switch {
 	case strings.HasPrefix(text, "- "):
 		text = strings.TrimSpace(strings.TrimPrefix(text, "- "))
@@ -481,15 +941,70 @@ func goalBodyText(line string) string {
 	case strings.HasPrefix(text, "* "):
 		text = strings.TrimSpace(strings.TrimPrefix(text, "* "))
 	}
-	return cleanSectionToken(text)
+	return text
+}
+
+// goalValue keeps the sentence of a goal. One matching quote pair is that
+// sentence. A YAML block marker, such as "|" or ">", is not the sentence, so
+// the following paragraph is the goal. One leading ">" in front of a sentence
+// is the same sentence. An id value does not come through here.
+func goalValue(value string) string {
+	text := cleanSectionToken(unwrapGoalQuotes(cleanSectionToken(value)))
+	if yamlBlockMarker(text) {
+		return ""
+	}
+	rest, ok := oneBlockquote(text)
+	if !ok {
+		return text
+	}
+	text = cleanSectionToken(unwrapGoalQuotes(rest))
+	if yamlBlockMarker(text) {
+		return ""
+	}
+	return text
+}
+
+func unwrapGoalQuotes(value string) string {
+	pairs := [][2]string{
+		{`"`, `"`},
+		{`'`, `'`},
+		{"“", "”"},
+		{"‘", "’"},
+		{"「", "」"},
+		{"『", "』"},
+	}
+	for _, pair := range pairs {
+		open, close := pair[0], pair[1]
+		if len(value) < len(open)+len(close) || !strings.HasPrefix(value, open) || !strings.HasSuffix(value, close) {
+			continue
+		}
+		inner := value[len(open) : len(value)-len(close)]
+		if strings.Contains(inner, open) {
+			return value
+		}
+		return strings.TrimSpace(inner)
+	}
+	return value
+}
+
+func yamlBlockMarker(text string) bool {
+	switch text {
+	case "|", "|-", "|+", ">", ">-", ">+":
+		return true
+	default:
+		return false
+	}
 }
 
 // cleanSectionToken drops markdown emphasis around a section label or value.
 // Emphasis can sit on either side of the colon, so stars and spaces are peeled
 // until the token is stable: "**目标：** 查询" yields 目标 and 查询.
+// One code span around the whole token is the same token: "`目标`" is 目标.
+// A span in the middle of a sentence, such as "使用 `web_search`", stays.
 func cleanSectionToken(value string) string {
 	for {
 		next := strings.TrimSpace(strings.Trim(strings.TrimSpace(value), "*_"))
+		next = unwrapCodeSpan(next)
 		if next == value {
 			return value
 		}
@@ -497,7 +1012,41 @@ func cleanSectionToken(value string) string {
 	}
 }
 
+// unwrapCodeSpan peels one matching backtick run around the whole token.
+// The inner text must not contain that same run.
+func unwrapCodeSpan(value string) string {
+	if !strings.HasPrefix(value, "`") || !strings.HasSuffix(value, "`") {
+		return value
+	}
+	n := 0
+	for n < len(value) && value[n] == '`' {
+		n++
+	}
+	if n == 0 || len(value) < n*2 || !strings.HasSuffix(value, strings.Repeat("`", n)) {
+		return value
+	}
+	inner := value[n : len(value)-n]
+	if strings.TrimSpace(inner) == "" || strings.Contains(inner, strings.Repeat("`", n)) {
+		return value
+	}
+	return strings.TrimSpace(inner)
+}
+
+// specTitle reads "# Spec: title". One leading ">" is the same title.
+// ">> # Spec" is not, and this runs before step matching, so "> 1. [exit]"
+// is still not a step.
 func specTitle(line string) (string, bool) {
+	if title, ok := specTitlePrefix(line); ok {
+		return title, true
+	}
+	rest, ok := oneBlockquote(line)
+	if !ok {
+		return "", false
+	}
+	return specTitlePrefix(rest)
+}
+
+func specTitlePrefix(line string) (string, bool) {
 	for _, prefix := range []string{"# Spec:", "# Spec："} {
 		if strings.HasPrefix(line, prefix) {
 			return strings.TrimSpace(strings.TrimPrefix(line, prefix)), true

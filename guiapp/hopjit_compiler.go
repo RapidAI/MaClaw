@@ -16,7 +16,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/hopspec"
 )
 
-var hopSpecHeadingPattern = regexp.MustCompile(`(?m)^[ \t]*# Spec[:：]`)
+// One leading ">" is the same title the parser accepts: "> # Spec: 天气".
+var hopSpecHeadingPattern = regexp.MustCompile(`(?m)^[ \t]*>?[ \t]*# Spec[:：]`)
 
 func (a *App) CompileHopSpec(task string) (string, error) {
 	return a.compileHopSpecWithIdentity(hopJITExecutionIdentity{}, task)
@@ -660,35 +661,11 @@ func hopSpecHasGoalAndSteps(text string) bool {
 }
 
 func hopSpecGoalLine(line string) bool {
-	line = strings.TrimSpace(line)
-	line = strings.TrimSpace(strings.TrimLeft(line, "#"))
-	line = strings.TrimLeft(line, "*_")
-	line = strings.TrimSpace(line)
-	for _, label := range []string{"Goal", "目标"} {
-		if len(line) < len(label) {
-			continue
-		}
-		head := line[:len(label)]
-		if !strings.EqualFold(head, label) {
-			continue
-		}
-		rest := strings.TrimSpace(line[len(label):])
-		if rest == "" || strings.HasPrefix(rest, ":") || strings.HasPrefix(rest, "：") {
-			return true
-		}
-	}
-	return false
+	return hopspec.SectionHeading(line) == "goal"
 }
 
 func hopSpecStepsHeading(line string) bool {
-	line = strings.TrimSpace(line)
-	line = strings.TrimRight(line, ":：")
-	switch strings.ToLower(line) {
-	case "## steps", "## 步骤":
-		return true
-	default:
-		return false
-	}
+	return hopspec.SectionHeading(line) == "steps"
 }
 
 func hopSpecTitleFromTask(task string) string {
