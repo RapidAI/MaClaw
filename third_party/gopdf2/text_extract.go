@@ -129,6 +129,12 @@ func ExtractPageText(pdfData []byte, pageIndex int) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return joinExtractedPlain(texts), nil
+}
+
+// joinExtractedPlain is the line break ExtractPageText uses: a new line when
+// the baseline moves, a space when the next run stays on that baseline.
+func joinExtractedPlain(texts []ExtractedText) string {
 	var sb strings.Builder
 	lastY := math.MaxFloat64
 	for _, t := range texts {
@@ -140,7 +146,28 @@ func ExtractPageText(pdfData []byte, pageIndex int) (string, error) {
 		sb.WriteString(t.Text)
 		lastY = t.Y
 	}
-	return sb.String(), nil
+	return sb.String()
+}
+
+// rawPagePlainText reads one page from an already-open raw parser.
+// pageIndex is 0-based. A page with no content stream is empty.
+func rawPagePlainText(parser *rawPDFParser, pageIndex int) string {
+	if parser == nil || pageIndex < 0 || pageIndex >= len(parser.pages) {
+		return ""
+	}
+	stream := parser.getPageContentStream(pageIndex)
+	if len(stream) == 0 {
+		return ""
+	}
+	page := parser.pages[pageIndex]
+	fonts := buildFontMap(parser, page)
+	return joinExtractedPlain(parseTextOperatorsCtx(&extractionContext{
+		parser:   parser,
+		fonts:    fonts,
+		xobjs:    page.resources.xobjs,
+		mediaBox: page.mediaBox,
+		visited:  map[int]bool{},
+	}, stream))
 }
 
 // fontInfo holds decoded font information for text extraction.

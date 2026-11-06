@@ -1445,6 +1445,26 @@ export function ListFileCompanionLibrary() {
   return window['go']['main']['App']['ListFileCompanionLibrary']();
 }
 
+export function ListFileCompanionCatalog() {
+  return window['go']['main']['App']['ListFileCompanionCatalog']();
+}
+
+export function CreateFileCompanionFolder(arg1) {
+  return window['go']['main']['App']['CreateFileCompanionFolder'](arg1);
+}
+
+export function RenameFileCompanionFolder(arg1, arg2) {
+  return window['go']['main']['App']['RenameFileCompanionFolder'](arg1, arg2);
+}
+
+export function DeleteFileCompanionFolder(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DeleteFileCompanionFolder'](arg1, arg2, arg3);
+}
+
+export function MoveFileCompanionLibraryItem(arg1, arg2, arg3) {
+  return window['go']['main']['App']['MoveFileCompanionLibraryItem'](arg1, arg2, arg3);
+}
+
 export function ShareFileCompanionDocument(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['ShareFileCompanionDocument'](arg1, arg2, arg3, arg4, arg5, arg6);
 }

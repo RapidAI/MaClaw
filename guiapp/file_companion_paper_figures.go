@@ -6,6 +6,7 @@ import (
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,6 +22,10 @@ const (
 	// A near full-page image is a scan of the page, not a principle diagram.
 	paperFigureMaxDisplayW = 520
 	paperFigureMaxDisplayH = 740
+	// An on-page box shorter than this on its long side is a template icon
+	// or a logo. Elsevier paints the corresponding-author envelope as a
+	// 225px JPEG at about 8pt; the pixel buffer alone looks like a figure.
+	paperFigureMinDisplay = 36
 )
 
 type paperFigure struct {
@@ -79,6 +84,13 @@ func fileCompanionExtractPaperFigures(source string) ([]paperFigure, error) {
 	if err != nil {
 		return nil, err
 	}
+	return paperFiguresFromPDFBytes(data)
+}
+
+func paperFiguresFromPDFBytes(data []byte) ([]paperFigure, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
 	pages, err := safeExtractPaperPDFImages(data)
 	if err != nil {
 		return nil, err
@@ -123,11 +135,31 @@ func fileCompanionExtractPaperFigures(source string) ([]paperFigure, error) {
 	return found, nil
 }
 
+// paperFigurePaintedAsIcon reports a bitmap placed smaller than a figure.
+// A missing placement (either side near zero) is not an icon: the pixel
+// check still decides, so a chart whose matrix was not recovered stays.
+func paperFigurePaintedAsIcon(extracted gopdf2.ExtractedImage) bool {
+	w := math.Abs(extracted.DisplayWidth)
+	h := math.Abs(extracted.DisplayHeight)
+	if w < 1 || h < 1 {
+		return false
+	}
+	long := w
+	if h > long {
+		long = h
+	}
+	return long < paperFigureMinDisplay
+}
+
 func paperFigureFromExtracted(page int, extracted gopdf2.ExtractedImage) (paperFigure, bool) {
 	if len(extracted.Data) < paperFigureMinBytes {
 		return paperFigure{}, false
 	}
-	if extracted.DisplayWidth > paperFigureMaxDisplayW && extracted.DisplayHeight > paperFigureMaxDisplayH {
+	if paperFigurePaintedAsIcon(extracted) {
+		return paperFigure{}, false
+	}
+	// A mirrored image stores a negative side. Magnitude is the on-page size.
+	if math.Abs(extracted.DisplayWidth) > paperFigureMaxDisplayW && math.Abs(extracted.DisplayHeight) > paperFigureMaxDisplayH {
 		return paperFigure{}, false
 	}
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(extracted.Data))

@@ -388,6 +388,19 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof AIAssistantP
             ...overrides.window,
         },
     };
+    // Message fixtures used to render on the idle local tab. That tab is the
+    // new-task guide now. A task identity keeps the execution transcript mounted
+    // for card, file, and chrome checks. Pass activeAssistantTask: null to see the guide.
+    const messages = props.state?.messages;
+    if (
+        overrides.activeAssistantTask === undefined
+        && props.activeAssistantTask == null
+        && !props.pendingProjectTabOpen
+        && Array.isArray(messages)
+        && messages.length > 0
+    ) {
+        props.activeAssistantTask = { projectPath: 'D:/tasks/chat-canvas' };
+    }
     return render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
 }
 
@@ -547,27 +560,23 @@ describe('AIAssistantPanel property tests', () => {
         })).toBe(true);
     });
 
-    it('saves the current main conversation as a task from the title bar', async () => {
-        const onTaskPrefsChanged = vi.fn();
-        renderPanel({
+    it('shows the new-task guide instead of a leftover local conversation', () => {
+        const { getByTestId, queryByTestId, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            activeAssistantTask: null,
             state: {
                 messages: [
                     makeMsg({ id: 'save-user', role: 'user', content: 'Create a launch deck' }),
                     makeMsg({ id: 'save-assistant', role: 'assistant', content: 'Working on the deck.' }),
                 ],
+                ready: true,
             },
-            actions: { onTaskPrefsChanged },
         });
-
-        fireEvent.click(screen.getByTestId('save-current-task-btn'));
-
-        const input = await screen.findByLabelText('Task name');
-        expect((input as HTMLInputElement).value).toBe('Suggested task');
-        fireEvent.change(input, { target: { value: 'Launch deck task' } });
-        fireEvent.click(screen.getByText('Save'));
-
-        await waitFor(() => expect(saveCurrentChatAsTaskMock).toHaveBeenCalledWith('Launch deck task'));
-        expect(onTaskPrefsChanged).toHaveBeenCalled();
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
+        expect(getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('welcome');
+        expect(queryByTestId('save-current-task-btn')).toBeNull();
+        expect(queryByTestId('task-execution-header')).toBeNull();
+        expect(queryByText('Working on the deck.')).toBeNull();
     });
 
     it('binds workflow review confirmation to the input area when the current phase waits for review', async () => {
@@ -1724,7 +1733,9 @@ describe('AIAssistantPanel property tests', () => {
     it('closes the save-task dialog when app navigation hides the retained panel', async () => {
         const { getByTestId, queryByRole, rerender } = renderPanel({
             window: { inline: true },
-            state: { messages: [makeMsg({ role: 'user', content: 'Draft proposal' })], sending: false, streaming: false, ready: true, active: true },
+            // A live local turn still paints so it can be stopped. That is the
+            // surface that still offers "save current conversation as task".
+            state: { messages: [makeMsg({ role: 'user', content: 'Draft proposal' })], sending: true, streaming: false, ready: true, active: true },
         });
 
         fireEvent.mouseDown(getByTestId('save-current-task-btn'));
@@ -1768,7 +1779,7 @@ describe('AIAssistantPanel property tests', () => {
                     makeMsg({ role: 'user', content: 'Earlier question' }),
                     makeMsg({ role: 'assistant', content: 'Latest answer' }),
                 ],
-                sending: false,
+                sending: true,
                 streaming: false,
                 ready: true,
                 active: true,
@@ -2057,6 +2068,7 @@ describe('AIAssistantPanel property tests', () => {
         rerender(
             <AIAssistantPanel
                 {...props}
+                activeAssistantTask={{ projectPath: 'D:/tasks/chat-canvas' }}
                 state={{
                     ...props.state,
                     messages,
@@ -2355,6 +2367,7 @@ describe('AIAssistantPanel property tests', () => {
         const user = makeMsg({ role: 'user', content: '成都天气' });
         const assistant = makeMsg({ id: 'a-live-reasoning', role: 'assistant', content: '', reasoning: '先查天气源。' });
         const props = defaultPanelProps();
+        props.activeAssistantTask = { projectPath: 'D:/tasks/chat-canvas' };
         const { container, rerender } = render(
             <AIAssistantPanel
                 {...props}
@@ -2447,6 +2460,7 @@ describe('AIAssistantPanel property tests', () => {
         const nextUser = makeMsg({ id: 'u-next-request', role: 'user', content: 'Second request' });
         const streaming = makeMsg({ id: 'a-next-reasoning', role: 'assistant', content: 'Second answer.', reasoning: 'Checking the second request.' });
         const props = defaultPanelProps();
+        props.activeAssistantTask = { projectPath: 'D:/tasks/chat-canvas' };
         const { container, rerender } = render(
             <AIAssistantPanel
                 {...props}
@@ -2711,7 +2725,7 @@ describe('AIAssistantPanel property tests', () => {
             makeNews('1'),
         ];
 
-        const { getByTestId } = renderPanel({ state: { messages, scrollToTopSeq: 1, sending: false, streaming: false, ready: true } });
+        const { getByTestId } = renderPanel({ activeAssistantTask: null, state: { messages, scrollToTopSeq: 1, sending: false, streaming: false, ready: true } });
 
         // With only news messages and no conversation, the welcome view should be shown
         // (news cards are integrated into the welcome view).
@@ -2908,11 +2922,12 @@ describe('AIAssistantPanel property tests', () => {
         expect(queryByTestId('buffer-queue-panel')).toBeTruthy();
     });
 
-    it('keeps rejected local guide fire queued without supplementary fallback', async () => {
+    it('keeps a refused local send-now queued without steering the local session', async () => {
         localStorage.removeItem('ai_assistant_buffer_queue');
         const injectSupplementary = vi.fn().mockResolvedValue(true);
-        const guideLaunchReference = vi.fn().mockResolvedValue(false);
+        const guideLaunchReference = vi.fn().mockResolvedValue(true);
         const sendMessage = vi.fn().mockResolvedValue(undefined);
+        createTaskUnifiedMock.mockResolvedValueOnce({});
         const { getByTestId, getByText } = renderPanel({
             state: { messages: [], sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true },
             actions: {
@@ -2931,15 +2946,16 @@ describe('AIAssistantPanel property tests', () => {
         expect(fireButton).toBeTruthy();
         fireEvent.click(fireButton!);
 
-        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('stay in selected session', 'desktop-user', expect.any(String)));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'stay in selected session' })));
+        expect(guideLaunchReference).not.toHaveBeenCalled();
         expect(injectSupplementary).not.toHaveBeenCalled();
         expect(sendMessage).not.toHaveBeenCalled();
         expect(getByText('stay in selected session')).toBeTruthy();
     });
 
-    it('falls back to the next normal turn when the busy-turn steer loses the completion race', async () => {
+    it('creates a task when send-now fires a queued line on the busy local page', async () => {
         localStorage.removeItem('ai_assistant_buffer_queue');
-        const guideLaunchReference = vi.fn().mockResolvedValue(false);
+        const guideLaunchReference = vi.fn().mockResolvedValue(true);
         const sendMessage = vi.fn().mockResolvedValue(true);
         const props = defaultPanelProps();
         props.actions = { ...props.actions, guideLaunchReference, sendMessage };
@@ -2955,15 +2971,16 @@ describe('AIAssistantPanel property tests', () => {
         expect(fireButton).toBeTruthy();
         fireEvent.click(fireButton!);
 
-        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('do not lose this instruction', 'desktop-user', expect.any(String)));
-        expect(getByTestId('buffer-queue-panel')).toBeTruthy();
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'do not lose this instruction' })));
+        expect(guideLaunchReference).not.toHaveBeenCalled();
         expect(sendMessage).not.toHaveBeenCalled();
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
 
+        createTaskUnifiedMock.mockClear();
         props.state = { ...props.state, sending: false, streaming: false };
         rerender(<AIAssistantPanel {...props} />);
-
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('do not lose this instruction', expect.objectContaining({ tabId: 'local' })));
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+        expect(createTaskUnifiedMock).not.toHaveBeenCalled();
     });
 
     it('keeps busy slash commands as ordered next turns instead of steering them into the model', async () => {
@@ -2986,7 +3003,8 @@ describe('AIAssistantPanel property tests', () => {
         props.state = { ...props.state, sending: false, streaming: false };
         rerender(<AIAssistantPanel {...props} />);
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('/goal revise the release plan', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'revise the release plan' })));
+        expect(sendMessage).not.toHaveBeenCalled();
         expect(guideLaunchReference).not.toHaveBeenCalled();
     });
 
@@ -3012,8 +3030,9 @@ describe('AIAssistantPanel property tests', () => {
         props.state = { ...props.state, sending: false, streaming: false };
         rerender(<AIAssistantPanel {...props} />);
 
-        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(1, '/goal keep the release scope', expect.objectContaining({ tabId: 'local' })));
-        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'also prioritize the migration', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenNthCalledWith(1, expect.objectContaining({ name: 'keep the release scope' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenNthCalledWith(2, expect.objectContaining({ name: 'also prioritize the migration' })));
+        expect(sendMessage).not.toHaveBeenCalled();
         expect(guideLaunchReference).not.toHaveBeenCalled();
     });
 
@@ -3035,7 +3054,8 @@ describe('AIAssistantPanel property tests', () => {
         props.state = { ...props.state, sending: false, streaming: false };
         rerender(<AIAssistantPanel {...props} />);
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued while busy', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'queued while busy' })));
+        expect(sendMessage).not.toHaveBeenCalled();
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
     });
 
@@ -3049,8 +3069,24 @@ describe('AIAssistantPanel property tests', () => {
             actions: { sendMessage },
         });
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued before idle', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'queued before idle' })));
+        expect(sendMessage).not.toHaveBeenCalled();
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
+    it('rewinds the local session when a queued /branch command drains on the guide', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'auto-drain-branch', text: '/branch 1', attachments: [], createdAt: 1, autoDrain: true },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+        expect(sendMessage.mock.calls[0][0]).toBe('/branch 1');
+        expect(createTaskUnifiedMock).not.toHaveBeenCalled();
     });
 
     it('keeps an automatic queue drain bound to its durable project owner', async () => {
@@ -3099,7 +3135,8 @@ describe('AIAssistantPanel property tests', () => {
         props.state = { ...props.state, ready: true };
         rerender(<AIAssistantPanel {...props} />);
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued until ready', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'queued until ready' })));
+        expect(sendMessage).not.toHaveBeenCalled();
     });
 
     it('auto-drains all restored queue entries one by one after restart', async () => {
@@ -3113,8 +3150,9 @@ describe('AIAssistantPanel property tests', () => {
             actions: { sendMessage },
         });
 
-        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(1, 'restored first', expect.objectContaining({ tabId: 'local' })));
-        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'restored second', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenNthCalledWith(1, expect.objectContaining({ name: 'restored first' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenNthCalledWith(2, expect.objectContaining({ name: 'restored second' })));
+        expect(sendMessage).not.toHaveBeenCalled();
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
     });
 
@@ -3161,7 +3199,8 @@ describe('AIAssistantPanel property tests', () => {
         };
         rerender(<AIAssistantPanel {...props} />);
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued behind unfinished card', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'queued behind unfinished card' })));
+        expect(sendMessage).not.toHaveBeenCalled();
     });
 
     it('does not start the next restored queue entry until the current one is accepted', async () => {
@@ -3169,25 +3208,27 @@ describe('AIAssistantPanel property tests', () => {
             { id: 'restore-slow-one', text: 'slow restored first', attachments: [], createdAt: 1 },
             { id: 'restore-slow-two', text: 'slow restored second', attachments: [], createdAt: 2 },
         ]));
-        let resolveFirst!: (value: boolean) => void;
-        const sendMessage = vi.fn((text: string) => {
-            if (text === 'slow restored first') {
-                return new Promise<boolean>((resolve) => { resolveFirst = resolve; });
+        let resolveFirst!: (value: { projectPath: string }) => void;
+        createTaskUnifiedMock.mockImplementation((opts: { name?: string }) => {
+            if (opts?.name === 'slow restored first') {
+                return new Promise<{ projectPath: string }>((resolve) => { resolveFirst = resolve; });
             }
-            return Promise.resolve(true);
+            return Promise.resolve({ projectPath: 'D:/tasks/wizard-task' });
         });
+        const sendMessage = vi.fn().mockResolvedValue(true);
         renderPanel({
             state: { messages: [], sending: false, streaming: false, ready: true },
             actions: { sendMessage },
         });
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
-        expect(sendMessage).toHaveBeenCalledWith('slow restored first', expect.objectContaining({ tabId: 'local' }));
-        expect(sendMessage).not.toHaveBeenCalledWith('slow restored second');
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1));
+        expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'slow restored first' }));
+        expect(createTaskUnifiedMock).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'slow restored second' }));
 
-        resolveFirst(true);
+        resolveFirst({ projectPath: 'D:/tasks/wizard-task' });
 
-        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'slow restored second', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenNthCalledWith(2, expect.objectContaining({ name: 'slow restored second' })));
+        expect(sendMessage).not.toHaveBeenCalled();
     });
 
     it('sanitizes restored queue attachments before auto-draining', async () => {
@@ -3205,16 +3246,27 @@ describe('AIAssistantPanel property tests', () => {
             { id: 'restore-empty', text: '   ', attachments: [], createdAt: 2 },
         ]));
         const sendMessage = vi.fn().mockResolvedValue(true);
-        renderPanel({
-            state: { messages: [], sending: false, streaming: false, ready: true },
-            actions: { sendMessage },
-        });
+        const launches: CustomEvent[] = [];
+        const listener = (event: Event) => launches.push(event as CustomEvent);
+        window.addEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        try {
+            renderPanel({
+                state: { messages: [], sending: false, streaming: false, ready: true },
+                actions: { sendMessage },
+            });
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
-        const sentText = String(sendMessage.mock.calls[0]?.[0] || '');
-        expect(sentText).toContain('restored with attachments');
-        expect(sentText).toContain('D:\\cases\\report.pdf');
-        expect(sentText).not.toContain('[object Object]');
+            await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1));
+            expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'restored with attachments' }));
+            await waitFor(() => expect(launches).toHaveLength(1));
+            const sentText = String((launches[0].detail as { initialMessage?: string })?.initialMessage || '');
+            expect(sentText).toContain('restored with attachments');
+            expect(sentText).toContain('D:\\cases\\report.pdf');
+            expect(sentText).not.toContain('[object Object]');
+            expect(sendMessage).not.toHaveBeenCalled();
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        } finally {
+            window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        }
     });
 
     it('does not downgrade rejected project guide fire into global supplementary injection', async () => {
@@ -5200,7 +5252,7 @@ describe('AIAssistantPanel property tests', () => {
         expect((getByTestId('remote-reconnect-password') as HTMLInputElement).disabled).toBe(false);
     });
 
-    it('routes legacy supplementary steering by the queue entry owner', async () => {
+    it('creates a task when a local queue line is sent now without a steer handler', async () => {
         localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([{
             id: 'legacy-owned-steer',
             text: 'keep this in the owned session',
@@ -5217,10 +5269,43 @@ describe('AIAssistantPanel property tests', () => {
         const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
         expect(fireButton).toBeTruthy();
         fireEvent.click(fireButton!);
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({
+            name: 'keep this in the owned session',
+        })));
+        expect(injectSupplementary).not.toHaveBeenCalled();
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
+    it('routes legacy supplementary steering by the project queue entry owner', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([{
+            id: 'legacy-project-steer',
+            text: 'keep this in the project session',
+            attachments: [],
+            createdAt: 1,
+            sessionKey: 'desktop-user:D:/tasks/legacy-steer',
+        }]));
+        const injectSupplementary = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const { queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/legacy-steer',
+                taskTitle: 'Legacy steer task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user:D:/tasks/legacy-steer', streaming: true, streamingSessionKey: 'desktop-user:D:/tasks/legacy-steer', ready: true },
+            actions: { guideLaunchReference: undefined as any, injectSupplementary },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
         await waitFor(() => expect(injectSupplementary).toHaveBeenCalledWith(
-            'keep this in the owned session',
-            'desktop-user',
+            'keep this in the project session',
+            'desktop-user:D:/tasks/legacy-steer',
         ));
+        expect(createTaskUnifiedMock).not.toHaveBeenCalled();
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
     });
 
@@ -5615,12 +5700,13 @@ describe('AIAssistantPanel property tests', () => {
         expect(sendMessage).not.toHaveBeenCalled();
     });
 
-    it('disables queued entry actions while a guide fire is in flight', async () => {
+    it('disables queued entry actions while a local send-now is creating a task', async () => {
         localStorage.removeItem('ai_assistant_buffer_queue');
-        let resolveGuide!: (value: boolean) => void;
-        const guideLaunchReference = vi.fn(() => new Promise<boolean>((resolve) => {
-            resolveGuide = resolve;
+        let resolveCreate!: (value: { projectPath: string }) => void;
+        createTaskUnifiedMock.mockImplementation(() => new Promise<{ projectPath: string }>((resolve) => {
+            resolveCreate = resolve;
         }));
+        const guideLaunchReference = vi.fn().mockResolvedValue(true);
         const { getByTestId, getByText, queryByTestId } = renderPanel({
             state: { messages: [], sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true },
             actions: {
@@ -5637,7 +5723,8 @@ describe('AIAssistantPanel property tests', () => {
         expect(fireButton).toBeTruthy();
         fireEvent.click(fireButton!);
 
-        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('pending guide lock', 'desktop-user', expect.any(String)));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'pending guide lock' })));
+        expect(guideLaunchReference).not.toHaveBeenCalled();
         await waitFor(() => expect((document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null)?.disabled).toBe(true));
         expect(document.body.textContent || '').toContain('Attaching to the running task');
         expect(document.body.textContent || '').toContain('Attaching...');
@@ -5648,7 +5735,7 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.click(document.querySelector('[data-testid^="delete-btn-"]') as HTMLButtonElement);
         expect(getByText('pending guide lock')).toBeTruthy();
 
-        resolveGuide(true);
+        resolveCreate({ projectPath: 'D:/tasks/wizard-task' });
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
     });
     it('routes pending project auto-send messages to the created project tab only', async () => {
@@ -5688,7 +5775,8 @@ describe('AIAssistantPanel property tests', () => {
         expect(document.body.textContent || '').toContain('checking weather');
 
         activateLocalTab();
-        expect(getByText(/local before auto-send/)).toBeTruthy();
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
+        expect(document.body.textContent || '').not.toContain('local before auto-send');
         expect(document.body.textContent || '').not.toContain('weather query');
         expect(document.body.textContent || '').not.toContain('checking weather');
 
@@ -5762,13 +5850,9 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'local question during project' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local question during project', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'local question during project' })));
+        expect(sendMessage).not.toHaveBeenCalledWith('local question during project', expect.anything());
         expect(queryByTestId('buffer-queue-panel')).toBeNull();
-        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, sending: true, streaming: true }} />);
-        fireEvent.change(getByTestId('ai-input'), { target: { value: 'second local waits for local agent' } });
-        fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter' });
-        expect(sendMessage).not.toHaveBeenCalledWith('second local waits for local agent');
-        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('second local waits for local agent'));
         resolveProjectSend(true);
     });
 
@@ -5810,7 +5894,8 @@ describe('AIAssistantPanel property tests', () => {
         const localInput = getByTestId('ai-input') as HTMLTextAreaElement;
         fireEvent.change(localInput, { target: { value: 'local takes over stale project' } });
         fireEvent.keyDown(localInput, { key: 'Enter' });
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local takes over stale project', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'local takes over stale project' })));
+        expect(sendMessage).not.toHaveBeenCalledWith('local takes over stale project', expect.anything());
 
         rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, messages: [localBefore], sending: false, streaming: false }} />);
         const projectTabButton = queryByTestId(`ai-tab-${projectTabId}`);
@@ -6006,8 +6091,9 @@ describe('AIAssistantPanel property tests', () => {
 
 	it('does not record a stale guide after its session queue is forgotten in flight', async () => {
 		localStorage.removeItem('ai_assistant_buffer_queue');
-		let resolveGuide!: (value: boolean) => void;
-		const guideLaunchReference = vi.fn(() => new Promise<boolean>(resolve => { resolveGuide = resolve; }));
+		let resolveCreate!: (value: { projectPath: string }) => void;
+		createTaskUnifiedMock.mockImplementation(() => new Promise<{ projectPath: string }>(resolve => { resolveCreate = resolve; }));
+		const guideLaunchReference = vi.fn().mockResolvedValue(true);
 		const recordSubmittedPrompt = vi.fn();
 		const { getByTestId, queryByTestId } = renderPanel({
 			state: { messages: [], sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true },
@@ -6020,12 +6106,13 @@ describe('AIAssistantPanel property tests', () => {
 		const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
 		expect(fireButton).toBeTruthy();
 		fireEvent.click(fireButton!);
-		await waitFor(() => expect(guideLaunchReference).toHaveBeenCalled());
+		await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'forgotten while attaching' })));
 
 		act(() => forgetAIAssistantSessionRounds('desktop-user'));
 		expect(queryByTestId('buffer-queue-panel')).toBeNull();
-		resolveGuide(true);
-		await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledTimes(1));
+		resolveCreate({ projectPath: 'D:/tasks/wizard-task' });
+		await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1));
+		expect(guideLaunchReference).not.toHaveBeenCalled();
 		expect(recordSubmittedPrompt).not.toHaveBeenCalled();
 	});
     it('routes a queued guide by its durable session owner after a tab switch', async () => {
@@ -6217,6 +6304,7 @@ describe('AIAssistantPanel property tests', () => {
         ]));
         const sendMessage = vi.fn().mockResolvedValue(undefined);
         const { getByTestId, getByText } = renderPanel({
+            activeAssistantTask: { projectPath: 'D:/tasks/chat-canvas' },
             state: { messages: [], sending: false, streaming: false, ready: true },
             actions: { sendMessage },
         });
@@ -6242,6 +6330,7 @@ describe('AIAssistantPanel property tests', () => {
         ]));
         const sendMessage = vi.fn().mockResolvedValue(undefined);
         const { getByTestId, getByText, queryByTestId } = renderPanel({
+            activeAssistantTask: { projectPath: 'D:/tasks/chat-canvas' },
             state: { messages: [], sending: false, streaming: false, ready: true },
             actions: { sendMessage },
         });
@@ -6264,7 +6353,8 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'fresh prompt after empty edit' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('fresh prompt after empty edit', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'fresh prompt after empty edit' })));
+        expect(sendMessage).not.toHaveBeenCalled();
     });
 
     it('hides background launch control even if a background handler exists', () => {
@@ -7390,6 +7480,7 @@ describe('AIAssistantPanel property tests', () => {
         const placeholder = makeMsg({ id: 'shot-cached', role: 'assistant', content: '' });
         const props = defaultPanelProps();
         props.state = { ...props.state, messages: [placeholder], sending: false, streaming: false, ready: true };
+        props.activeAssistantTask = { projectPath: 'D:/tasks/chat-canvas' };
 
         const { queryByTestId, getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
         expect(queryByTestId('screenshot-preview-block')).toBeNull();
@@ -7398,10 +7489,11 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('screenshot-preview-block')).toBeTruthy();
     });
 
-    it('normal send records each manual prompt once so consecutive duplicates can be deduplicated upstream', async () => {
+    it('creates a task when the idle local page sends a prompt', async () => {
         const sendMessage = vi.fn<() => Promise<void>>().mockResolvedValue();
         const recordSubmittedPrompt = vi.fn();
         const { getByTestId } = renderPanel({
+            activeAssistantTask: null,
             state: { messages: [makeMsg({ role: 'user', content: 'earlier' })], submittedPrompts: [], sending: false, streaming: false, ready: true },
             actions: {
                 sendMessage,
@@ -7416,11 +7508,129 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'same prompt' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
-        await waitFor(() => {
-            expect(recordSubmittedPrompt).toHaveBeenCalledTimes(1);
-            expect(recordSubmittedPrompt).toHaveBeenCalledWith('same prompt');
-            expect(sendMessage).toHaveBeenCalledWith('same prompt', expect.objectContaining({ tabId: 'local' }));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'same prompt' })));
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('creates a task when the local page still shows a confirmation card', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            activeAssistantTask: null,
+            state: {
+                messages: [makeMsg({
+                    role: 'assistant',
+                    content: 'Please confirm',
+                    confirmation: {
+                        id: 'c-open',
+                        summary: 'Review the request',
+                        taskType: 'chat',
+                        targetPaths: [],
+                        plannedActions: [],
+                        riskFlags: [],
+                        revisionHints: [],
+                        status: 'pending',
+                    },
+                })],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
+            actions: { sendMessage },
         });
+
+        expect(getByTestId('task-execution-header')).toBeTruthy();
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'start this as its own task' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'start this as its own task' })));
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('keeps a finished recording on the local session', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const previousMedia = navigator.mediaDevices;
+        Object.defineProperty(navigator, 'mediaDevices', {
+            configurable: true,
+            value: { getUserMedia: vi.fn().mockRejectedValue(new Error('no mic')) },
+        });
+        try {
+            renderPanel({
+                activeAssistantTask: null,
+                state: {
+                    messages: [makeMsg({
+                        role: 'assistant',
+                        content: '',
+                        recordingSession: { title: 'standup', active: true },
+                    })],
+                    sending: false,
+                    streaming: false,
+                    ready: true,
+                },
+                actions: { sendMessage },
+            });
+
+            await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(
+                expect.stringContaining('[Recording completed]'),
+                expect.objectContaining({ uiAction: true }),
+            ));
+            expect(createTaskUnifiedMock).not.toHaveBeenCalled();
+        } finally {
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: previousMedia,
+            });
+        }
+    });
+
+    it('rewinds the local session when the branch control sends /branch N', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({
+            activeAssistantTask: null,
+            state: {
+                messages: [makeMsg({
+                    role: 'assistant',
+                    content: 'Please confirm',
+                    confirmation: {
+                        id: 'c-open',
+                        summary: 'Review the request',
+                        taskType: 'chat',
+                        targetPaths: [],
+                        plannedActions: [],
+                        riskFlags: [],
+                        revisionHints: [],
+                        status: 'pending',
+                    },
+                })],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        window.dispatchEvent(new CustomEvent('ai-send-branch-command', { detail: { command: '/branch 1' } }));
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+        expect(sendMessage.mock.calls[0][0]).toBe('/branch 1');
+        expect(createTaskUnifiedMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps a typed /branch command on the new-task page', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            activeAssistantTask: null,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '/branch 2' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+        expect(sendMessage.mock.calls[0][0]).toBe('/branch 2');
+        expect(createTaskUnifiedMock).not.toHaveBeenCalled();
     });
 
     it('Escape exits history browsing and restores the pre-history draft', async () => {
@@ -8936,11 +9146,15 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
         activateLocalTab();
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Enter a task or command...');
-        fireEvent.change(input, { target: { value: 'local tab should not inherit project busy' } });
+        expect(input.disabled).toBe(false);
+        expect(input.placeholder).toBe('Tell MaClaw what work you need to finish...');
+        fireEvent.change(input, { target: { value: 'local stays free' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local tab should not inherit project busy', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({
+            name: 'local stays free',
+        })));
+        expect(sendMessage).not.toHaveBeenCalledWith('local stays free', expect.anything());
         expect(queryByTestId('buffer-queue-panel')).toBeNull();
     });
 
@@ -9199,7 +9413,7 @@ describe('AIAssistantPanel property tests', () => {
         const sendMessage = vi.fn().mockResolvedValue(true);
         const onHandled = vi.fn();
 
-        const { getByTestId } = renderPanel({
+        const { getByTestId, queryByTestId } = renderPanel({
             pendingProjectTabOpen: {
                 projectPath: 'D:/tasks/detached-project-streaming',
                 taskTitle: 'Detached project streaming',
@@ -9222,7 +9436,9 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('assistant-reasoning-label').textContent).toBe('Contacting the model');
 
         activateLocalTab();
-        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Enter a task or command...');
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Tell MaClaw what work you need to finish...');
+        expect(queryByTestId('assistant-reasoning-label')).toBeNull();
     });
 
     it('keeps an idle project tab input unlocked when legacy busy state has no session key', async () => {
@@ -9279,9 +9495,12 @@ describe('AIAssistantPanel property tests', () => {
 
         activateLocalTab();
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
 
-        // The guide takes no tab slot, so the task tab sits in the bar itself.
-        fireEvent.click(screen.getByRole('tab', { name: 'Queue isolated task' }));
+        const handler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === EVENT_PROJECT_TASK_ACTIVATE)
+            .at(-1)?.[1] as ((payload: { projectPath?: string }) => void) | undefined;
+        act(() => { handler?.({ projectPath: 'D:/tasks/queue-isolated' }); });
         await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('project queued only'));
     });
 
@@ -10137,13 +10356,15 @@ describe('local execution heading', () => {
     it('uses the localized assistant title instead of the stored Chinese default', () => {
         renderPanel({
             lang: 'en',
+            activeAssistantTask: null,
             state: { messages: [makeMsg({ role: 'user', content: 'hi' })], sending: false, streaming: false, ready: true },
         });
-        const header = screen.getByTestId('task-execution-header');
-        expect(header.textContent).toContain('New task');
-        expect(header.textContent).not.toContain('Default Task');
-        expect(header.textContent).not.toContain('默认任务');
-        expect(header.textContent).not.toContain('Created by you');
+        expect(screen.queryByTestId('task-execution-header')).toBeNull();
+        expect(screen.getByTestId('ai-titlebar-title').textContent).toContain('New task');
+        const page = screen.getByTestId('ai-panel-root').textContent || '';
+        expect(page).not.toContain('Default Task');
+        expect(page).not.toContain('默认任务');
+        expect(page).not.toContain('Created by you');
     });
 });
 

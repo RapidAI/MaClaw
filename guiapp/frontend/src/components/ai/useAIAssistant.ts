@@ -9,7 +9,7 @@ import { localizeText } from "./aiAssistantI18n";
 import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertTaskSessionKey, sessionKeysForExpert, isHostGoalChecklistText, formatGoalChecklistFromRecord, goalChecklistMessageId, messageBelongsToSession, upsertGoalChecklistInHistory, fileTerminalResponseWithoutRound, type GoalChecklistRecord } from "./aiAssistantPanelSessionUtils";
 import { noteAIScrollStreamFlush, noteAIScrollStreamRoundEnd, noteAIScrollStreamToken } from "./assistantScrollDiag";
 import { appendRolePrefixStrip, createRolePrefixStreamCursor, findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay, type RolePrefixStreamCursor } from "./rolePrefixDisplay";
-import { isHistoryResetCommandText } from "./composeAction";
+import { isConversationBranchRewindCommand, isHistoryResetCommandText } from "./composeAction";
 import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
 import { liveStatusProgress } from "./aiAssistantProgressUtils";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
@@ -1169,10 +1169,8 @@ function resolveContextStartIndex(messages: ChatMessage[], boundaryMessageID: st
 }
 
 function isExplicitHistoryResetCommand(text: string): boolean {
-    if (isHistoryResetCommandText(text)) return true;
-    // /branch N (with a numeric argument) resets the UI after rewinding history.
-    // /branch without argument (list mode) does NOT reset.
-    return /^\/branch\s+\d+$/.test(text.trim().toLowerCase());
+    // /branch N clears the transcript after the backend rewinds. Bare /branch only lists points.
+    return isHistoryResetCommandText(text) || isConversationBranchRewindCommand(text);
 }
 
 

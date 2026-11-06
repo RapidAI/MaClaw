@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -209,6 +210,133 @@ func TestFileCompanionOpenDoesNotParseHeavyDocumentsForFigures(t *testing.T) {
 	st.mu.Unlock()
 	if cached == nil || len(cached.figures) != 1 {
 		t.Fatalf("markdown figures = %+v, want the drawing restored at open", cached)
+	}
+}
+
+// A PDF whose only picture is still missing because pymupdf is not installed
+// must not stay empty after the engine probe expires. A decoded chart stays
+// cached for that file's size and mtime.
+func TestFileCompanionPdfFigureCacheFollowsTheCropEngine(t *testing.T) {
+	prevCache := paperRasterCached
+	prevProbed := paperRasterProbedAt
+	prevHook := fileCompanionClipPageFiguresHook
+	t.Cleanup(func() {
+		paperRasterCached = prevCache
+		paperRasterProbedAt = prevProbed
+		fileCompanionClipPageFiguresHook = prevHook
+	})
+	paperRasterCached = paperRasterEngine{}
+	paperRasterProbedAt = time.Now()
+	fileCompanionClipPageFiguresHook = nil
+
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "empty.pdf")
+	if err := os.WriteFile(pdfPath, []byte("%PDF-1.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := fileCompanionCanonicalPath(pdfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if figures := app.fileCompanionFigures(canonical); len(figures) != 0 {
+		t.Fatalf("figures = %+v, want none without a crop engine", figures)
+	}
+	st := app.companionRuntime()
+	st.mu.Lock()
+	cached := st.figures[canonical]
+	st.mu.Unlock()
+	if cached == nil || cached.retry.IsZero() || !cached.retry.After(time.Now()) {
+		t.Fatal("a missing crop engine froze an empty inventory")
+	}
+	kept := cached.retry
+	if again := app.fileCompanionFigures(canonical); len(again) != 0 {
+		t.Fatalf("figures = %+v", again)
+	}
+	st.mu.Lock()
+	cached = st.figures[canonical]
+	st.mu.Unlock()
+	if !cached.retry.Equal(kept) {
+		t.Fatal("the empty inventory was rebuilt before the engine probe was due")
+	}
+	st.mu.Lock()
+	cached.retry = time.Now().Add(-time.Second)
+	st.mu.Unlock()
+	_ = app.fileCompanionFigures(canonical)
+	st.mu.Lock()
+	cached = st.figures[canonical]
+	st.mu.Unlock()
+	if cached.retry.IsZero() || !cached.retry.After(time.Now()) {
+		t.Fatal("an expired empty inventory was not rebuilt")
+	}
+
+	chartDir := t.TempDir()
+	chartPath := filepath.Join(chartDir, "chart.pdf")
+	writePaperPDFWithFigures(t, chartPath)
+	chartCanonical, err := fileCompanionCanonicalPath(chartPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if figures := app.fileCompanionFigures(chartCanonical); len(figures) == 0 {
+		t.Fatal("expected the embedded chart")
+	}
+	st.mu.Lock()
+	chartCached := st.figures[chartCanonical]
+	st.mu.Unlock()
+	if chartCached == nil || !chartCached.retry.IsZero() {
+		t.Fatal("a decoded figure list must stay cached")
+	}
+}
+
+// Bitmaps that cannot be written are not "this paper has no figures".
+func TestFileCompanionPdfFigureCacheRetriesWhenNothingCouldBeSaved(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "chart.pdf")
+	writePaperPDFWithFigures(t, pdfPath)
+	canonical, err := fileCompanionCanonicalPath(pdfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	figureDir := app.fileCompanionFigureDir(canonical)
+	if err := os.MkdirAll(filepath.Dir(figureDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(figureDir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if figures := app.fileCompanionFigures(canonical); len(figures) != 0 {
+		t.Fatalf("figures = %+v, want none when the cache directory is not a directory", figures)
+	}
+	st := app.companionRuntime()
+	st.mu.Lock()
+	cached := st.figures[canonical]
+	st.mu.Unlock()
+	if cached == nil || cached.retry.IsZero() || !cached.retry.After(time.Now()) {
+		t.Fatal("a failed figure write froze an empty inventory")
+	}
+}
+
+// A PDF that cannot be read is not a paper with no figures. An empty file is.
+func TestFileCompanionPdfReadFailureRetries(t *testing.T) {
+	app := &App{}
+	dir := filepath.Join(t.TempDir(), "paper.pdf")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	figures, retry := app.fileCompanionPdfFigures(dir)
+	if len(figures) != 0 || !retry.After(time.Now()) {
+		t.Fatalf("figures=%d retry=%v, want a retry after a failed read", len(figures), retry)
+	}
+	empty := filepath.Join(t.TempDir(), "empty.pdf")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	figures, retry = app.fileCompanionPdfFigures(empty)
+	if len(figures) != 0 || !retry.IsZero() {
+		t.Fatalf("figures=%d retry=%v, want an empty file cached as final", len(figures), retry)
 	}
 }
 

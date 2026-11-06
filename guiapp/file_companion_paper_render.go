@@ -18,7 +18,13 @@ import (
 	gopdf2 "github.com/VantageDataChat/GoPDF2"
 )
 
-const paperFigurePageLimit = 80
+const (
+	paperFigurePageLimit = 80
+	// paperFigureScanPageMax is how far a whole-page raster looks for a caption.
+	// The ordinary clip uses paperFigurePageLimit. Both caps are applied inside
+	// the one text open, so the scan does not open the file again to count pages.
+	paperFigureScanPageMax = 500
+)
 
 // paperFigureCaptionRe matches a figure caption at the start of a line.
 // A letter before the number, as in Figure C.1, marks an appendix figure.
@@ -204,15 +210,54 @@ func paperFigureCaptionHit(line string) (appendix bool, ok bool) {
 	return match[1] != "", true
 }
 
-// paperExtractPageText is the per-page text read. Tests replace it; the
-// production function re-parses the file, so the scan stops once it has
-// enough body figures to fill the reply.
-var paperExtractPageText = safeExtractPaperPageText
+// paperExtractPageText replaces the one-open caption scan in tests.
+// Production leaves it nil. Each call of the replacement re-parses, which is
+// what TestPaperFigureCaptionPagesStopsAfterEnoughBodyFigures counts.
+var paperExtractPageText func(data []byte, page int) (string, error)
 
 func paperFigureCaptionPages(data []byte) []paperFigurePage {
 	if len(data) == 0 {
 		return nil
 	}
+	if paperExtractPageText != nil {
+		return paperFigureCaptionPagesExtracted(data)
+	}
+	return paperFigurePagesFromText(data, paperFigureScanPageMax, paperLineCaptionKind, paperFigureMaxCount)
+}
+
+// paperFigurePagesFromText reads the window once. maxBody stops after that
+// many body captions. Zero reads every page in the window: the clip path
+// does that, then one crop keeps the first drawings that actually save.
+// A whole-page raster passes paperFigureMaxCount, because each extra page
+// is rendered in full. kind reports whether that page's text names a
+// caption, and whether every caption on it is an appendix caption.
+func paperFigurePagesFromText(data []byte, limit int, kind func(string) (appendix bool, ok bool), maxBody int) []paperFigurePage {
+	if len(data) == 0 || kind == nil || limit == 0 {
+		return nil
+	}
+	var found []paperFigurePage
+	body := 0
+	_, err := gopdf2.PlainTextByPageUntil(data, limit, func(page int, text string) bool {
+		appendix, ok := kind(text)
+		if !ok {
+			return false
+		}
+		found = append(found, paperFigurePage{page: page, appendix: appendix})
+		// Later body figures sort ahead of these and are cut by the reply cap.
+		// Appendix figures only fill slots the body did not take.
+		if appendix {
+			return false
+		}
+		body++
+		return maxBody > 0 && body >= maxBody
+	})
+	if err != nil && len(found) == 0 {
+		return nil
+	}
+	return found
+}
+
+func paperFigureCaptionPagesExtracted(data []byte) []paperFigurePage {
 	limit := paperSourcePageCount(data)
 	if limit <= 0 {
 		limit = paperFigurePageLimit
@@ -227,25 +272,11 @@ func paperFigureCaptionPages(data []byte) []paperFigurePage {
 			}
 			continue
 		}
-		seen := false
-		appendix := false
-		for _, line := range strings.Split(text, "\n") {
-			lineAppendix, ok := paperFigureCaptionHit(line)
-			if !ok {
-				continue
-			}
-			seen = true
-			appendix = lineAppendix
-			if !lineAppendix {
-				break
-			}
-		}
-		if !seen {
+		appendix, ok := paperLineCaptionKind(text)
+		if !ok {
 			continue
 		}
 		found = append(found, paperFigurePage{page: i + 1, appendix: appendix})
-		// Later body figures sort after these and are cut by the reply cap.
-		// Appendix figures only fill slots the body did not take.
 		if !appendix {
 			body++
 			if body >= paperFigureMaxCount {
@@ -254,6 +285,27 @@ func paperFigureCaptionPages(data []byte) []paperFigurePage {
 		}
 	}
 	return found
+}
+
+// paperLineCaptionKind is the strict line-start caption check used when a
+// page is rasterized whole. A glued header does not count: loosening this
+// would send a sentence page to the union raster.
+func paperLineCaptionKind(text string) (appendix bool, ok bool) {
+	for _, line := range strings.Split(text, "\n") {
+		lineAppendix, hit := paperFigureCaptionHit(line)
+		if !hit {
+			continue
+		}
+		if !lineAppendix {
+			return false, true
+		}
+		ok = true
+		appendix = true
+	}
+	if !ok {
+		return false, false
+	}
+	return appendix, true
 }
 
 func paperChooseFigurePages(pages []paperFigurePage) []int {
@@ -289,8 +341,8 @@ func paperSourcePageCount(data []byte) (n int) {
 	if err != nil || count <= 0 {
 		return 0
 	}
-	if count > 500 {
-		return 500
+	if count > paperFigureScanPageMax {
+		return paperFigureScanPageMax
 	}
 	return count
 }

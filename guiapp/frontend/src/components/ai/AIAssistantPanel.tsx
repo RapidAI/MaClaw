@@ -52,7 +52,7 @@ import { KnowledgeDialog } from "./KnowledgeDialog";
 import { AssistantInputStack } from "./AssistantInputStack";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./composeAction";
-import { applyComposeActionToText, btwQueryFromText, getComposeActionPlaceholder, isBtwCommandText, isHistoryResetCommandText, isInstallCommandText, normalizeInstallCommandText } from "./composeAction";
+import { applyComposeActionToText, btwQueryFromText, getComposeActionPlaceholder, isBtwCommandText, isConversationBranchCommandText, isHistoryResetCommandText, isInstallCommandText, normalizeInstallCommandText } from "./composeAction";
 import { InlineChatCard } from "./InlineChatCard";
 import { syncLocalStartMenuTemplates, type WelcomeComposerProps, type WelcomePromptSubmitMeta } from "./AssistantWelcomeView";
 import { useTaskConfigWiring } from "./task-config/useTaskConfigWiring";
@@ -2795,6 +2795,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const pendingRemoteInitialSendRef = useRef<Map<string, { text: string; projectPath: string }>>(new Map());
     const projectPrepareTimersRef = useRef<Map<string, number>>(new Map());
     const sendMessageForTabRef = useRef<((text: string, options?: Record<string, unknown>) => Promise<boolean>) | null>(null);
+    const launchNewTaskFromTextRef = useRef<((text: string, knownPaths?: readonly string[]) => Promise<boolean>) | null>(null);
     /** Event-driven entry points share the same lifecycle gate as the composer. */
     const dispatchTaskIntentRef = useRef<((text: string, options?: Record<string, unknown>) => Promise<boolean>) | null>(null);
     const activeTabIdRef = useRef<string>(activeTab.id);
@@ -3713,6 +3714,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 await clearHistory();
             }
             return true;
+        }
+        // Local tab sends open a task. A card uiAction and /branch stay on this session.
+        if (liveActiveTab.type === "local" && !isProjectSend && !expertRouteOwnsSend && sendOptions.uiAction !== true && !isConversationBranchCommandText(text) && !isConversationBranchCommandText(typeof sendOptions.displayText === "string" ? sendOptions.displayText : "")) {
+            const launch = launchNewTaskFromTextRef.current;
+            if (!launch) return false;
+            const visible = typeof sendOptions.displayText === "string" ? sendOptions.displayText.trim() : "";
+            const paths = (Array.isArray(sendOptions.displayAttachments) ? sendOptions.displayAttachments : []).map((item) => (
+                item && typeof item === "object" ? String((item as { filePath?: unknown }).filePath || "").trim() : ""
+            )).filter((path) => path.length > 0);
+            return launch(visible || (paths.length > 0 ? "" : text.trim()), paths.length > 0 ? paths : undefined);
         }
         // ACP owns the turn lifecycle outside the desktop project assistant.
         // Its mirror may share a working directory with a normal project tab, so
@@ -5392,7 +5403,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Keep active workflow and preview surfaces out of the welcome landing.
     const workflowExecutionActive = workflowState.active || workflowCurrentPhaseRunning || workflowState.splitMode || codePreviewState.active || showAgentView || codingConflictOpen;
     const landing = canShowWorkbenchLanding({ enabled: startOnWorkbenchHome, requested: workbenchHomeRequested, local: isLocalTabActive, coding: isPureCodingEnvironment, activeTask: !!activeAssistantTaskProp, progress: displayProgressMessages.length, thinking: showThinkingState, processing: showProcessingState, preparing: activeProjectPreparing, form: workflowAwaitingForm, generating: workflowFormGeneratingDocument, review: workflowAwaitingReview, starting: !!workflowStartingLabel, queue: queue.length, editing: queueEditDraftActive, interacted: queueInteractionStarted, workflowActive: workflowExecutionActive });
-    const showWelcomeViewBase = ready && !onboardingIncomplete && !activeAssistantTaskProp && !workflowExecutionActive && conversationArchive.earlierCount === 0 && (landing || (otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || (isProjectTabActive && !isPureCodingEnvironment))));
+    // The local tab is the new-task guide, not a task page. A leftover local
+    // transcript stays off screen until a turn is running, or a card still
+    // needs a reply (resume, recover, or confirm).
+    const localNeedsReply = displayMessages.some((message: ChatMessage) =>
+        (message.unfinishedSlot?.actions?.length ?? 0) > 0
+        || (message.recoverableSession?.actions?.length ?? 0) > 0
+        || (!!message.confirmation && message.confirmation.status !== "confirmed" && message.confirmation.status !== "cancelled"));
+    const localIdleGuide = isLocalTabActive && !recordingActive && !liveWorkActive && !showThinkingState && !showProcessingState && !localNeedsReply;
+    const showWelcomeViewBase = ready && !onboardingIncomplete && !activeAssistantTaskProp && !workflowExecutionActive && (localIdleGuide || (conversationArchive.earlierCount === 0 && (landing || (otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || (isProjectTabActive && !isPureCodingEnvironment))))));
     const taskCreatedTimestamp = displayMessages.find((message: ChatMessage) => message.role === "user")?.timestamp ?? displayMessages[0]?.timestamp;
     const taskCreatedLabel = formatTaskCreatedAt(taskCreatedTimestamp, lang);
     const pendingUnfinishedStatus = latestPendingUnfinishedStatus(displayMessages);
@@ -5625,6 +5644,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     /** Shared /btw dispatch used by typed send, voice, queue drain, and queue fire. */
     const dispatchBtwText = useCallback(async (commandText: string): Promise<boolean> => {
         if (!sendBtwMessage || !isBtwCommandText(commandText)) return false;
+        // /btw on the new-task page is a new task, not a side query on this session.
+        if (isLocalTabActive) return (await launchNewTaskFromTextRef.current?.(commandText.trim())) === true;
         const recorded = commandText.trim();
         try {
             await sendBtwMessage(btwQueryFromText(recorded));
@@ -5635,7 +5656,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             console.warn("[AIAssistantPanel] /btw send failed", err);
             return false;
         }
-    }, [recordPrompt, sendBtwMessage]);
+    }, [isLocalTabActive, recordPrompt, sendBtwMessage]);
     const handleInsertTemplate = useCallback((template: string) => {
         setComposeAction(null);
         updateInputValue(template);
@@ -5983,6 +6004,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         activateTab, setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
         showAlert, showConfirm,
     });
+    launchNewTaskFromTextRef.current = taskConfigWiring.launchNewTaskFromText;
     const composerExpert = composerExpertForOpenTab(activeTab, taskListProp, taskConfigWiring.taskConfig.experts);
     dismissCoveredNewTaskRef.current = taskConfigWiring.wizardOverlay ? taskConfigWiring.dismissWizardOverlay : null;
     wizardScrollSuspendRef.current = taskConfigWiring.wizardOverlay;
@@ -6068,14 +6090,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // Install commands must go through the plain send path (same as
             // handleFireEntry), not attachment-wrapping multi builders.
             const entryInstall = normalizeInstallCommandText(entryText);
-            const drainPromise = entryIsBtw
+            // A queued line on the new-task guide belongs to a new task page,
+            // not the local session hiding behind the guide.
+            const guideOwnsQueue = showWelcomeView && isLocalTabActive && !isHistoryResetCommandText(entryText) && !isConversationBranchCommandText(entryText);
+            const drainPromise = guideOwnsQueue
+                ? taskConfigWiring.launchNewTaskFromText(entry.text, entry.attachments.map((att) => att.filePath))
+                : entryIsBtw
                 ? dispatchBtwText(entryText)
                 : entryInstall
                     ? sendEntryAsTurn(entryInstall)
-                    : isHistoryResetCommandText(entryText)
+                    : (isHistoryResetCommandText(entryText) || isConversationBranchCommandText(entryText))
                         ? sendEntryAsTurn(entryText)
                         : sendEntryAsTurn(buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath)));
-            drainPromise.then((sent) => {
+            drainPromise.then((sent: boolean) => {
                 if (sent === false) {
                     // The send was refused (e.g. cloud workspace lease recovery
                     // failed). Keep the entry in the queue but stop auto-drain
@@ -6098,7 +6125,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         prevSubmitLockedRef.current = submitLocked;
         prevShowChatUIRef.current = showChatUI;
-    }, [activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, codingTaskReadyForIntents, dispatchBtwText, displayMessages, queue, queueEditDraftActive, queueInFlightVersion, ready, recordPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, submitLocked, updateEntry]);
+    }, [activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, codingTaskReadyForIntents, dispatchBtwText, displayMessages, isLocalTabActive, queue, queueEditDraftActive, queueInFlightVersion, ready, recordPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, showWelcomeView, submitLocked, taskConfigWiring.launchNewTaskFromText, updateEntry]);
     const handleFireEntry = useCallback(async (id: string) => {
         if (firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id)) return;
         const entry = queue.find(item => item.id === id);
@@ -6146,9 +6173,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             const outgoing = buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath));
             let injected = false;
-            if (guideLaunchReference) {
-                // Route by the queue item's durable owner, not whichever tab is
-                // active when an async click/effect eventually runs.
+            // Local-session lines open a task. Other owners still steer that turn.
+            if (entrySessionKey === "desktop-user") {
+                injected = (await sendEntryAsTurn(entry.text)) !== false;
+            } else if (guideLaunchReference) {
                 injected = await guideLaunchReference(outgoing, entrySessionKey, entry.id);
             } else if (injectSupplementary) {
                 injected = await injectSupplementary(outgoing, entrySessionKey);

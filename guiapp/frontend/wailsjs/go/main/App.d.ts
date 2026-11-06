@@ -723,6 +723,16 @@ export function FileCompanionExportProject(arg1:string,arg2:string):Promise<stri
 
 export function ListFileCompanionLibrary():Promise<{items:Array<Record<string, any>>, notice?:string}>;
 
+export function ListFileCompanionCatalog():Promise<{rev:number, folders:Array<{id:string, name:string}>, placements:Record<string, string>}>;
+
+export function CreateFileCompanionFolder(arg1:string):Promise<{rev:number, folders:Array<{id:string, name:string}>, placements:Record<string, string>}>;
+
+export function RenameFileCompanionFolder(arg1:string, arg2:string):Promise<{rev:number, folders:Array<{id:string, name:string}>, placements:Record<string, string>}>;
+
+export function DeleteFileCompanionFolder(arg1:string, arg2:string, arg3:string):Promise<{rev:number, folders:Array<{id:string, name:string}>, placements:Record<string, string>}>;
+
+export function MoveFileCompanionLibraryItem(arg1:string, arg2:string, arg3:string):Promise<{rev:number, folders:Array<{id:string, name:string}>, placements:Record<string, string>}>;
+
 export function ShareFileCompanionDocument(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:number):Promise<Record<string, any>>;
 
 export function UpdateFileCompanionShare(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<Record<string, any>>;

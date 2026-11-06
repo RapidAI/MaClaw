@@ -828,6 +828,9 @@ func fileCompanionToolFigureFromExtracted(page int, extracted gopdf2.ExtractedIm
 	if len(extracted.Data) < paperFigureMinBytes {
 		return paperFigure{}, false
 	}
+	if paperFigurePaintedAsIcon(extracted) {
+		return paperFigure{}, false
+	}
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(extracted.Data))
 	if err != nil {
 		return paperFigure{}, false
@@ -1005,6 +1008,31 @@ func renderAttemptContext(parent context.Context) (context.Context, context.Canc
 			}
 		}()
 	}
+	return ctx, cancel
+}
+
+// clipRenderContext is the deadline for one pymupdf crop. A crop has no
+// later engine, so it gets the full render budget that covers a cold import.
+// The per-engine slice exists so poppler still has a window after pymupdf;
+// applying it here kills the import and the retry repeats that timeout.
+// Background has no Done channel and does not start a watcher. A cancelled
+// parent still stops the process.
+func clipRenderContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), fileCompanionRenderBudget)
+	if parent == nil || parent.Done() == nil {
+		return ctx, cancel
+	}
+	if parent.Err() != nil {
+		cancel()
+		return ctx, cancel
+	}
+	go func() {
+		select {
+		case <-parent.Done():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	return ctx, cancel
 }
 

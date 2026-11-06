@@ -343,14 +343,28 @@
     padding-right: 2px;
 }
 
-/* 左列：数字员工卡片（头像 + 名称 + 描述 + 状态灯） */
+/* 左列：数字员工卡片（头像 + 名称 + 描述 + 状态灯）。
+   整行即卡片：hover/选中态画在 li 上，内部按钮保持透明铺满；
+   行尾 ⋯ 是真实排版的兄弟元素，不再用浮层按钮盖住名称与「主」徽标。 */
 .desktop-bot-workspace__row {
-    /* 6px inset + two 28px icons + 4px gap + 6px before the name. */
-    --desktop-bot-row-actions: 72px;
     position: relative;
     display: flex;
-    align-items: center;
-    gap: 6px;
+    align-items: stretch;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    transition: background 120ms ease, border-color 120ms ease;
+}
+
+.desktop-bot-workspace__row:hover,
+.desktop-bot-workspace__row:focus-within {
+    background: var(--theme-surface-muted, #f2f4f7);
+}
+
+/* 选中行走主题色：靛蓝淡底 + 主题细边，和导航/任务列表同一语言；
+   未选中行保持纯 hover 灰。 */
+.desktop-bot-workspace__row.is-selected {
+    background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 12%, var(--theme-surface, #fff));
+    border-color: color-mix(in srgb, var(--mc-accent, #2f6fbc) 38%, transparent);
 }
 
 .desktop-bot-workspace__open {
@@ -360,24 +374,12 @@
     align-items: center;
     gap: 10px;
     padding: 10px;
-    border: 1px solid transparent;
+    border: none;
     border-radius: 12px;
     background: transparent;
     color: inherit;
     text-align: left;
     cursor: pointer;
-    transition: background 120ms ease, border-color 120ms ease, padding-right 120ms ease;
-}
-
-.desktop-bot-workspace__open:hover {
-    background: var(--theme-surface-muted, #f2f4f7);
-}
-
-/* 选中行走主题色：靛蓝淡底 + 主题细边，和导航/任务列表同一语言；
-   未选中行保持纯 hover 灰。 */
-.desktop-bot-workspace__row.is-selected .desktop-bot-workspace__open {
-    background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 12%, var(--theme-surface, #fff));
-    border-color: color-mix(in srgb, var(--mc-accent, #2f6fbc) 38%, transparent);
 }
 
 .desktop-bot-workspace__avatar {
@@ -420,8 +422,9 @@
     white-space: normal;
 }
 
+/* 名字不再抢占整行宽度：主徽标紧贴在名字后，长名时名字自身截断。 */
 .desktop-bot-workspace__titleline strong {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
 }
 
@@ -432,13 +435,14 @@
     white-space: nowrap;
     font-style: normal;
     font-size: 10px;
-    font-weight: 600;
+    font-weight: 700;
     line-height: 1.4;
     letter-spacing: 0.04em;
-    padding: 0 4px;
-    border-radius: 4px;
-    color: var(--theme-text, #344054);
-    background: var(--theme-surface-muted, rgba(15, 23, 42, 0.06));
+    padding: 1px 6px;
+    border: 1px solid color-mix(in srgb, var(--mc-accent, #2f6fbc) 32%, transparent);
+    border-radius: 999px;
+    color: var(--mc-accent, #2f6fbc);
+    background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 10%, transparent);
 }
 
 .desktop-bot-workspace__who span {
@@ -478,67 +482,124 @@
     50% { opacity: 0.35; }
 }
 
-/* 图标贴在行尾，不参加排版。藏着的时候不占名称的宽度，也不吃点击。 */
-.desktop-bot-workspace__actions {
-    position: absolute;
-    z-index: 1;
-    top: 50%;
-    right: 6px;
-    transform: translateY(-50%);
-    display: flex;
-    gap: 4px;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 120ms ease;
-}
-
-.desktop-bot-workspace__row:hover .desktop-bot-workspace__actions,
-.desktop-bot-workspace__row:focus-within .desktop-bot-workspace__actions,
-.desktop-bot-workspace__row.is-selected .desktop-bot-workspace__actions {
-    opacity: 1;
-    pointer-events: auto;
-}
-
-.desktop-bot-workspace__row:hover .desktop-bot-workspace__open,
-.desktop-bot-workspace__row:focus-within .desktop-bot-workspace__open,
-.desktop-bot-workspace__row.is-selected .desktop-bot-workspace__open {
-    padding-right: var(--desktop-bot-row-actions);
-}
-
-.desktop-bot-workspace__actions button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    box-sizing: border-box;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border: 1px solid var(--theme-border, #d0d5dd);
-    background: var(--theme-surface, #fff);
-    color: var(--theme-text-primary, #101828);
-    border-radius: 8px;
-    cursor: pointer;
-}
-
-.desktop-bot-workspace__actions button:focus-visible {
-    outline: 2px solid var(--mc-accent, #2f6fbc);
-    outline-offset: 2px;
-}
-
 .desktop-bot-workspace__action-icon {
     display: block;
     width: 14px;
     height: 14px;
 }
 
-.desktop-bot-workspace__actions button:hover {
+/* 行尾 ⋯ 按钮：hover/聚焦/选中行浮现，其余时候占位但看不见、不吃点击。 */
+.desktop-bot-workspace__more {
+    flex: 0 0 auto;
+    align-self: center;
+    margin: 0 6px 0 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--theme-text-muted, #98a2b3);
+    cursor: pointer;
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 120ms ease, visibility 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.desktop-bot-workspace__row:hover .desktop-bot-workspace__more,
+.desktop-bot-workspace__row:focus-within .desktop-bot-workspace__more,
+.desktop-bot-workspace__row.is-selected .desktop-bot-workspace__more,
+.desktop-bot-workspace__more.is-open {
+    visibility: visible;
+    opacity: 1;
+}
+
+.desktop-bot-workspace__more:hover {
+    background: color-mix(in srgb, var(--theme-text-primary, #101828) 8%, transparent);
+    color: var(--theme-text-primary, #101828);
+}
+
+.desktop-bot-workspace__more.is-open {
+    background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 14%, transparent);
+    color: var(--mc-accent, #2f6fbc);
+}
+
+.desktop-bot-workspace__more:focus-visible {
+    outline: 2px solid var(--mc-accent, var(--theme-primary, #2f6fbc));
+    outline-offset: 2px;
+}
+
+.desktop-bot-workspace__more .desktop-bot-workspace__action-icon {
+    width: 16px;
+    height: 16px;
+}
+
+/* portal 弹出菜单：fixed 定位，坐标由 BotRowActions 测触发器 rect 计算，
+   底部行向上翻转避开视口与列表滚动裁切。 */
+.desktop-bot-workspace__row-menu {
+    position: fixed;
+    box-sizing: border-box;
+    min-width: 168px;
+    padding: 6px;
+    border: 1px solid var(--theme-border, #d0d5dd);
+    border-radius: 10px;
+    background: var(--theme-surface, #fff);
+    box-shadow: 0 10px 28px color-mix(in srgb, #0f172a 18%, transparent);
+}
+
+.desktop-bot-workspace__row-menuitem {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--theme-text-primary, #101828);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.desktop-bot-workspace__row-menuitem:hover {
     background: var(--theme-surface-muted, #f2f4f7);
 }
 
-.desktop-bot-workspace__row.is-selected button[data-testid$='delete']:hover,
-.desktop-bot-workspace__actions button[data-testid^='desktop-bot-delete-']:hover {
+.desktop-bot-workspace__row-menuitem:focus-visible {
+    outline: 2px solid var(--mc-accent, var(--theme-primary, #2f6fbc));
+    outline-offset: -2px;
+}
+
+.desktop-bot-workspace__row-menuitem.is-danger {
     color: var(--theme-danger, #d92d20);
-    border-color: color-mix(in srgb, var(--theme-danger, #d92d20) 40%, transparent);
+}
+
+.desktop-bot-workspace__row-menuitem.is-danger:hover {
+    background: color-mix(in srgb, var(--theme-danger, #d92d20) 9%, transparent);
+}
+
+.desktop-bot-workspace__menu-divider {
+    display: block;
+    height: 1px;
+    margin: 4px 8px;
+    background: var(--theme-border, #d0d5dd);
+}
+
+[data-ai-theme='dark'] .desktop-bot-workspace__row-menu {
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .desktop-bot-workspace__row,
+    .desktop-bot-workspace__more {
+        transition: none;
+    }
 }
 
 /* 编辑 Bot 信息弹窗：表单字段与提示，骨架复用 custom-dialog 样式。 */

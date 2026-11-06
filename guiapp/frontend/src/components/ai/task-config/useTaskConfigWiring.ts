@@ -30,7 +30,7 @@ import type { WelcomePromptSubmitMeta } from "../AssistantWelcomeView";
 import { isCloudWorkspacePath } from "../codingTaskMode";
 import { builtinExpertIcon, expertDefinitionFromInstallResult, expertTabId, overlayInstalledItems, parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON } from "../expertTypes";
 import { extractErrorMessage } from "../participantAddError";
-import { applyComposeActionToText, goalCreateCommand, isBtwCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
+import { applyComposeActionToText, goalCreateCommand, hopCreateCommand, isBtwCommandText, isConversationBranchCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
 import { buildOutgoingMessageMulti } from "../useAIAssistant";
 import { defaultTaskDraft, draftFromWizardSeed, hasWizardSeedContent, isDraftDefault, withCloudWorkspace, withExpert, withTaskType, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
 import { suggestedExpertForDraft, type NewTaskExpertSuggestion } from "./taskExpertSuggest";
@@ -180,6 +180,8 @@ export interface TaskConfigWiring {
     taskConfig: TaskConfigPanelModel;
     handleSendWithTaskConfig: () => void;
     handleWelcomePromptSendWithTaskConfig: (text: string, meta?: WelcomePromptSubmitMeta) => Promise<unknown>;
+    /** Routes composer/queue text: /hop and goal commands open a task page, others send on the current page. */
+    launchNewTaskFromText: (text: string, knownPaths?: readonly string[]) => Promise<boolean>;
     /** Welcome page is covering a live conversation so a new task can be created without stopping it. */
     wizardOverlay: boolean;
     dismissWizardOverlay: () => void;
@@ -789,31 +791,66 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         return runConfiguredTaskSend(named, { force: wizardActive, initialMessage, classifyText });
     }, [collectGuideFilePaths, runConfiguredTaskSend, scheduleConfiguredTask]);
 
-    // Composer Enter on the local guide always creates a task. A default
-    // draft on any other surface keeps the legacy send path.
+    // The local 新建任务 page is not a conversation. Text typed there, including
+    // /hop and other commands, opens a task page. /clear /new /reset wipe this
+    // page. /branch lists or rewinds it and is sent, not launched.
+    const launchNewTaskFromText = useCallback(async (text: string, knownPaths?: readonly string[]) => {
+        const raw = (text || "").trim();
+        if (isHistoryResetCommandText(raw) || isConversationBranchCommandText(raw)) return false;
+        const hop = hopCreateCommand(raw);
+        if (hop) return startGuideTask(hop.command, true, hop.title, knownPaths);
+        const goal = goalCreateCommand(raw);
+        if (goal) return startGuideTask(goal.command, true, goal.objective, knownPaths);
+        const composed = applyComposeActionToText(raw, (composeAction as ComposeAction | null) ?? null);
+        return startGuideTask(composed || raw, true, composeAction ? raw : undefined, knownPaths);
+    }, [composeAction, startGuideTask]);
+
+    // Reset wipes this page inside handleSend. /branch is sent so the backend can rewind.
+    const sendOnCurrentPage = useCallback((raw: string, separateScreen: boolean) => {
+        if (wizardOverlayRef.current && raw) {
+            if (separateScreen) handleSend(raw);
+            else handleSend();
+            dismissWizardOverlayRef.current();
+            clearGuideDraft?.();
+            return;
+        }
+        handleSend();
+    }, [clearGuideDraft, handleSend]);
+
+    // Composer Enter on the local guide creates a task. /clear /new /reset and
+    // /branch stay on this page. A default draft elsewhere keeps the legacy path.
     const handleSendWithTaskConfig = useCallback(() => {
         if (taskConfigSendingRef.current) return;
         const draft = taskConfigDraftRef.current;
         const wizardActive = isNewTaskWizardTabActive();
+        const separateScreen = wizardOverlayRef.current && !isLocalTabActive;
+        const rawInputValue = separateScreen
+            ? (guideInputRef?.current?.value ?? guideInputValue)
+            : (inputRef.current?.value ?? inputValue);
+        const raw = (rawInputValue || "").trim();
+        // Local tab and the cover are the new-task page, even after the local
+        // session has picked up a transcript. A project task keeps its own chat.
+        if (wizardActive || isLocalTabActive) {
+            if (raw && (isHistoryResetCommandText(raw) || isConversationBranchCommandText(raw))) {
+                sendOnCurrentPage(raw, separateScreen);
+                return;
+            }
+            void (async () => {
+                if (taskConfigSendingRef.current) return;
+                const filePaths = await collectGuideFilePaths();
+                if (taskConfigSendingRef.current) return;
+                if (!raw && filePaths.length === 0) return;
+                await launchNewTaskFromText(raw, filePaths);
+            })();
+            return;
+        }
         // Compose mode on any other page keeps its dedicated send path.
         // On the guide it is still a new task; the prefix rides on the first message.
         if (!wizardActive && !isRunWindowScheduled(draft) && (isDraftDefault(draft) || composeAction)) {
             handleSend();
             return;
         }
-        const separateScreen = wizardOverlayRef.current && !isLocalTabActive;
-        const rawInputValue = separateScreen
-            ? (guideInputRef?.current?.value ?? guideInputValue)
-            : (inputRef.current?.value ?? inputValue);
-        const raw = (rawInputValue || "").trim();
         const text = applyComposeActionToText(raw, (composeAction as ComposeAction | null) ?? null);
-        // /goal <objective> is a new task. Session verbs and other slash
-        // commands stay on the conversation that is already open.
-        const createdGoal = goalCreateCommand(raw);
-        if (wizardActive && createdGoal) {
-            void startGuideTask(createdGoal.command, wizardActive, createdGoal.objective);
-            return;
-        }
         // A slash the user typed (including fullwidth ／) stays on the command
         // path. A prefix added by compose mode, such as /goal, still creates a task.
         const typedSlash = raw.startsWith("/") || raw.startsWith("／");
@@ -846,7 +883,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             }
             await startGuideTask(text, wizardActive, taskName, filePaths);
         })();
-    }, [clearGuideDraft, collectGuideFilePaths, composeAction, guideInputRef, guideInputValue, handleSend, inputValue, isLocalTabActive, isNewTaskWizardTabActive, startGuideTask]);
+    }, [clearGuideDraft, collectGuideFilePaths, composeAction, guideInputRef, guideInputValue, handleSend, inputValue, isLocalTabActive, isNewTaskWizardTabActive, launchNewTaskFromText, sendOnCurrentPage, startGuideTask]);
 
     // Welcome card "send now" path uses the same task create, including files
     // already sitting on the composer.
@@ -857,12 +894,27 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         const trimmed = (text || "").trim();
         // Fullwidth ／ from a Chinese IME is the same slash as "/".
         const commandText = trimmed.startsWith("／") ? `/${trimmed.slice(1)}` : trimmed;
-        const composed = applyComposeActionToText(commandText, (composeAction as ComposeAction | null) ?? null);
-        const createdGoal = goalCreateCommand(commandText);
-        if (wizardActive && createdGoal) {
-            await startGuideTask(createdGoal.command, wizardActive, createdGoal.objective);
-            return;
+        if (wizardActive || isLocalTabActive) {
+            if (commandText && (isHistoryResetCommandText(commandText) || isConversationBranchCommandText(commandText))) {
+                if (wizardOverlayRef.current && !isLocalTabActive) {
+                    handleSend(commandText);
+                    dismissWizardOverlayRef.current();
+                    clearGuideDraft?.();
+                    return;
+                }
+                const pending = handleWelcomePromptSend(commandText, meta);
+                if (wizardOverlayRef.current) {
+                    dismissWizardOverlayRef.current();
+                    clearGuideDraft?.();
+                }
+                return pending;
+            }
+            if (commandText) {
+                await launchNewTaskFromText(commandText);
+                return;
+            }
         }
+        const composed = applyComposeActionToText(commandText, (composeAction as ComposeAction | null) ?? null);
         const typedSlash = commandText.startsWith("/");
         if (typedSlash || isHistoryResetCommandText(composed) || isBtwCommandText(composed) || normalizeInstallCommandText(composed)) {
             const command = typedSlash ? commandText : composed;
@@ -887,7 +939,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             return;
         }
         return handleWelcomePromptSend(composed || text, meta);
-    }, [clearGuideDraft, collectGuideFilePaths, composeAction, handleSend, handleWelcomePromptSend, isLocalTabActive, isNewTaskWizardTabActive, startGuideTask]);
+    }, [clearGuideDraft, collectGuideFilePaths, composeAction, handleSend, handleWelcomePromptSend, isLocalTabActive, isNewTaskWizardTabActive, launchNewTaskFromText, startGuideTask]);
 
     // --- New-task wizard page opening (task-pane "新建任务" button) ---
     // Opening the screen does not switch tabs and does not unmount the
@@ -1068,5 +1120,5 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         isNewTaskWizardTabActive,
     ]);
 
-    return { taskConfig, handleSendWithTaskConfig, handleWelcomePromptSendWithTaskConfig, wizardOverlay, dismissWizardOverlay };
+    return { taskConfig, handleSendWithTaskConfig, handleWelcomePromptSendWithTaskConfig, launchNewTaskFromText, wizardOverlay, dismissWizardOverlay };
 }

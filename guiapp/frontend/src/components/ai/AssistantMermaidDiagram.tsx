@@ -1581,7 +1581,6 @@ export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code:
     const citeLabel = localizeText(lang, "Add to chat", "添加到对话", "新增到對話");
     const downloadLabel = localizeText(lang, "Download", "下载到本地", "下載到本機");
     const moreLabel = localizeText(lang, "More diagram actions", "更多操作", "更多操作");
-    const saveImageLabel = localizeText(lang, "Save as image", "保存为图片", "儲存為圖片");
     const copyCodeLabel = localizeText(lang, "Copy code", "复制代码", "複製程式碼");
     const viewCodeLabel = sourceOpen
         ? localizeText(lang, "Hide code", "隐藏代码", "隱藏程式碼")
@@ -1775,9 +1774,6 @@ export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code:
                             </button>
                             {menuOpen ? (
                                 <div role="menu" className={menuUp ? "amd-more-menu amd-more-menu-up" : "amd-more-menu"} data-testid="assistant-mermaid-menu" ref={menuPanelRef}>
-                                    <button type="button" role="menuitem" className="amd-action" onClick={() => { setMenuOpen(false); setMenuUp(false); saveDiagram(); }}>
-                                        {saveImageLabel}
-                                    </button>
                                     <button type="button" role="menuitem" className="amd-action" data-testid="assistant-mermaid-copy" onClick={() => { setMenuOpen(false); setMenuUp(false); copyDiagram(); }}>
                                         {copyCodeLabel}
                                     </button>

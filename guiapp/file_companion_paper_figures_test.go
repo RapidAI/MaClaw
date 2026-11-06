@@ -9,6 +9,7 @@ import (
 	"image/jpeg"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -165,6 +166,35 @@ func TestRenderAttemptContextHasOwnIndependentWindow(t *testing.T) {
 	remaining := time.Until(deadline)
 	if remaining < fileCompanionRenderAttemptBudget-time.Second || remaining > fileCompanionRenderAttemptBudget+2*time.Second {
 		t.Fatalf("attempt window = %v, want ~%v", remaining, fileCompanionRenderAttemptBudget)
+	}
+}
+
+// A crop is the only engine on that path. Its window is the full render
+// budget, so a cold pymupdf import that runs past the per-engine slice can
+// finish. A cancelled parent still stops it. Background starts no watcher.
+func TestClipRenderContextCoversAColdImport(t *testing.T) {
+	child, cancel := clipRenderContext(context.Background())
+	defer cancel()
+	deadline, ok := child.Deadline()
+	if !ok {
+		t.Fatal("clip context must carry its own deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining < fileCompanionRenderBudget-time.Second || remaining > fileCompanionRenderBudget+2*time.Second {
+		t.Fatalf("clip window = %v, want ~%v", remaining, fileCompanionRenderBudget)
+	}
+	if remaining < fileCompanionRenderAttemptBudget+time.Second {
+		t.Fatal("clip window collapsed to the per-engine slice")
+	}
+
+	parent, cancelParent := context.WithCancel(context.Background())
+	followed, cancelFollowed := clipRenderContext(parent)
+	defer cancelFollowed()
+	cancelParent()
+	select {
+	case <-followed.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("clip context did not cancel when its parent did")
 	}
 }
 
@@ -797,6 +827,380 @@ func TestFileCompanionPaperEmbedsExtractedFigures(t *testing.T) {
 	plain := fileCompanionEmbedPaperFigures(filepath.Join(dir, "notes.md"), dir, markdown, "fc_fig")
 	if plain != markdown {
 		t.Fatalf("non-pdf changed: %s", plain)
+	}
+}
+
+func TestPaperPageMentionsClipCaptionAfterARunningHeader(t *testing.T) {
+	glued := " C. Xiao et al./ Knowledge-Based System  Figure 1: The overall architecture of NeurRank."
+	if !paperPageMentionsClipCaption(glued) {
+		t.Fatal("a caption glued to the running header was missed")
+	}
+	if paperPageMentionsClipCaption("As shown in Figure 1, the method stays prose.") {
+		t.Fatal("a sentence mention was treated as a caption")
+	}
+	if !paperPageMentionsClipCaption("Figure 2 : Effect of the threshold.") {
+		t.Fatal("a caption with a space before the colon was missed")
+	}
+	if paperPageMentionsClipCaption("Figure 1 shows the method and stays prose.") {
+		t.Fatal("a sentence was treated as a caption")
+	}
+	if paperPageMentionsClipCaption("see Fig. 1. The method stays prose.") {
+		t.Fatal("a sentence ending in a period was treated as a caption")
+	}
+	if !paperPageMentionsClipCaption("Figure 1. The architecture of the method.") {
+		t.Fatal("a line-start caption with a period was missed")
+	}
+	if !paperPageMentionsClipCaption("Figure 1") {
+		t.Fatal("a bare figure line was missed")
+	}
+	if !paperPageMentionsClipCaption("图 2 附录") {
+		t.Fatal("a line-start 图 caption was missed")
+	}
+	if paperPageMentionsClipCaption("见图1：方法保持为正文。") {
+		t.Fatal("a 见图 reference was treated as a caption")
+	}
+	if paperPageMentionsClipCaption("如图1：所示，方法保持为正文。") {
+		t.Fatal("a 如图 reference was treated as a caption")
+	}
+	if !paperPageMentionsClipCaption("学报  图 1：整体架构") {
+		t.Fatal("a 图 caption glued after a header was missed")
+	}
+	appendix, ok := paperClipCaptionKind("Figure C.1: BrowserUse")
+	if !ok || !appendix {
+		t.Fatalf("appendix caption ok=%v appendix=%v", ok, appendix)
+	}
+	appendix, ok = paperClipCaptionKind("Figure C.1: extra\nFigure 1: body")
+	if !ok || appendix {
+		t.Fatalf("mixed captions ok=%v appendix=%v", ok, appendix)
+	}
+}
+
+func TestPaperFigureClipPagesReadsTheFileOnce(t *testing.T) {
+	font := `C:\Windows\Fonts\arial.ttf`
+	if _, err := os.Stat(font); err != nil {
+		t.Skip("no arial")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "paper.pdf")
+	writePaperPDFIconAndCaption(t, path, font)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, previewErr := gopdf2.PlainTextByPage(data, 2)
+	if previewErr != nil || len(preview) == 0 || !strings.Contains(preview[0], "Figure") {
+		t.Skip("caption text was not extracted from the generated pdf")
+	}
+	if got := paperFigureCaptionPages(data); len(got) != 1 || got[0].page != 1 || got[0].appendix {
+		t.Fatalf("caption pages = %+v, want page 1", got)
+	}
+	calls := 0
+	prev := paperExtractPageText
+	paperExtractPageText = func(pdf []byte, page int) (string, error) {
+		calls++
+		return "", nil
+	}
+	t.Cleanup(func() { paperExtractPageText = prev })
+	pages := paperFigureClipPages(data)
+	if calls != 0 {
+		t.Fatalf("per-page extracts = %d, want one open", calls)
+	}
+	if len(pages) != 1 || pages[0] != 1 {
+		t.Fatalf("pages = %v, want page 1", pages)
+	}
+}
+
+// The clip names every caption in the window. The whole-page raster still
+// stops at paperFigureMaxCount, because each extra page is drawn in full.
+// An early caption that the crop cannot keep must not hide a later figure.
+func TestPaperFigureClipPagesReadsPastTheRasterBudget(t *testing.T) {
+	font := `C:\Windows\Fonts\arial.ttf`
+	if _, err := os.Stat(font); err != nil {
+		t.Skip("no arial")
+	}
+	const pages = paperFigureMaxCount + 2
+	dir := t.TempDir()
+	path := filepath.Join(dir, "captions.pdf")
+	writePaperPDFCaptionPages(t, path, font, pages)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, previewErr := gopdf2.PlainTextByPage(data, pages)
+	if previewErr != nil || len(preview) < pages {
+		t.Skip("caption text was not extracted from the generated pdf")
+	}
+	for i, text := range preview {
+		if !strings.Contains(text, "Figure") {
+			t.Skipf("page %d caption was not extracted", i+1)
+		}
+	}
+	raster := paperFigureCaptionPages(data)
+	if len(raster) != paperFigureMaxCount {
+		t.Fatalf("raster pages = %d, want the render budget", len(raster))
+	}
+	clip := paperFigureClipPages(data)
+	if len(clip) != pages {
+		t.Fatalf("clip pages = %v, want all %d caption pages", clip, pages)
+	}
+}
+
+// A crop that errors is not "this paper has no figures". The empty inventory
+// is asked again after the probe window. A crop that answers with nothing
+// stays cached.
+func TestFileCompanionPdfFigureCacheRetriesAFailedCrop(t *testing.T) {
+	font := `C:\Windows\Fonts\arial.ttf`
+	if _, err := os.Stat(font); err != nil {
+		t.Skip("no arial")
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "paper.pdf")
+	writePaperPDFIconAndCaption(t, pdfPath, font)
+	data, err := os.ReadFile(pdfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paperFigureClipPages(data)) == 0 {
+		t.Skip("caption text was not extracted from the generated pdf")
+	}
+	canonical, err := fileCompanionCanonicalPath(pdfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := fileCompanionClipPageFiguresHook
+	t.Cleanup(func() { fileCompanionClipPageFiguresHook = prev })
+	calls := 0
+	fileCompanionClipPageFiguresHook = func(context.Context, string, string, int, int, string) ([]companionFigure, error) {
+		calls++
+		return nil, errors.New("crop failed")
+	}
+	if figures := app.fileCompanionFigures(canonical); len(figures) != 0 {
+		t.Fatalf("figures = %+v, want none after a failed crop", figures)
+	}
+	st := app.companionRuntime()
+	st.mu.Lock()
+	cached := st.figures[canonical]
+	st.mu.Unlock()
+	if cached == nil || cached.retry.IsZero() || !cached.retry.After(time.Now()) {
+		t.Fatal("a failed crop froze an empty inventory")
+	}
+	if calls != 1 {
+		t.Fatalf("crop calls = %d, want 1", calls)
+	}
+	kept := cached.retry
+	if again := app.fileCompanionFigures(canonical); len(again) != 0 {
+		t.Fatalf("figures = %+v", again)
+	}
+	if calls != 1 {
+		t.Fatal("the failed crop ran again before the probe was due")
+	}
+	st.mu.Lock()
+	cached = st.figures[canonical]
+	st.mu.Unlock()
+	if !cached.retry.Equal(kept) {
+		t.Fatal("the empty inventory was rebuilt before the probe was due")
+	}
+
+	fileCompanionClipPageFiguresHook = func(context.Context, string, string, int, int, string) ([]companionFigure, error) {
+		calls++
+		return nil, nil
+	}
+	st.mu.Lock()
+	cached.retry = time.Now().Add(-time.Second)
+	st.mu.Unlock()
+	if figures := app.fileCompanionFigures(canonical); len(figures) != 0 {
+		t.Fatalf("figures = %+v, want none when the crop saves nothing", figures)
+	}
+	st.mu.Lock()
+	cached = st.figures[canonical]
+	st.mu.Unlock()
+	if cached == nil || !cached.retry.IsZero() {
+		t.Fatal("a crop that saved nothing was scheduled to run again")
+	}
+	if calls != 2 {
+		t.Fatalf("crop calls = %d, want the one retry after the probe", calls)
+	}
+	_ = app.fileCompanionFigures(canonical)
+	if calls != 2 {
+		t.Fatal("a finished empty crop ran again")
+	}
+}
+
+func TestPaperFigureFromExtractedDropsAHighResolutionIcon(t *testing.T) {
+	jpeg := paperTestJPEG(t, 225, 225)
+	icon := gopdf2.ExtractedImage{
+		Data:          jpeg,
+		Width:         225,
+		Height:        225,
+		DisplayWidth:  8,
+		DisplayHeight: 8,
+	}
+	if _, ok := paperFigureFromExtracted(1, icon); ok {
+		t.Fatal("an 8pt email icon was kept as a figure")
+	}
+	if _, ok := fileCompanionToolFigureFromExtracted(1, icon); ok {
+		t.Fatal("extract kept the 8pt email icon")
+	}
+	mirrored := icon
+	mirrored.DisplayWidth = -8
+	mirrored.DisplayHeight = 8
+	if _, ok := paperFigureFromExtracted(1, mirrored); ok {
+		t.Fatal("a mirrored 8pt icon was kept as a figure")
+	}
+	chart := icon
+	chart.DisplayWidth = 220
+	chart.DisplayHeight = 180
+	if _, ok := paperFigureFromExtracted(1, chart); !ok {
+		t.Fatal("a page-sized chart was dropped")
+	}
+	unknown := icon
+	unknown.DisplayWidth = 0
+	unknown.DisplayHeight = 0
+	if _, ok := paperFigureFromExtracted(1, unknown); !ok {
+		t.Fatal("a large bitmap with no placement was dropped")
+	}
+	scan := chart
+	scan.DisplayWidth = -600
+	scan.DisplayHeight = -800
+	if _, ok := paperFigureFromExtracted(1, scan); ok {
+		t.Fatal("a mirrored full-page scan was kept")
+	}
+}
+
+func TestFileCompanionExtractDropsTemplateEmailIcon(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "paper.pdf")
+	icon, err := gopdf2.ImageHolderByBytes(paperTestJPEG(t, 225, 225))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chart, err := gopdf2.ImageHolderByBytes(paperTestJPEG(t, 220, 180))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdf := &gopdf2.GoPdf{}
+	pdf.Start(gopdf2.Config{PageSize: *gopdf2.PageSizeA4})
+	pdf.AddPage()
+	if err := pdf.ImageByHolder(icon, 69, 74, &gopdf2.Rect{W: 8, H: 8}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.ImageByHolder(chart, 48, 160, &gopdf2.Rect{W: 220, H: 180}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.WritePdf(path); err != nil {
+		t.Fatal(err)
+	}
+	found, err := fileCompanionExtractPaperFigures(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].area != 220*180 {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		pages, extractErr := safeExtractPaperPDFImages(data)
+		if extractErr != nil {
+			t.Fatal(extractErr)
+		}
+		for page, images := range pages {
+			for _, img := range images {
+				t.Logf("page %d %dx%d display %.2fx%.2f bytes %d", page, img.Width, img.Height, img.DisplayWidth, img.DisplayHeight, len(img.Data))
+			}
+		}
+		t.Fatalf("kept %d figures, want the 220x180 chart only", len(found))
+	}
+}
+
+func TestFileCompanionPdfFiguresClipsWhenOnlyIconsRemain(t *testing.T) {
+	font := `C:\Windows\Fonts\arial.ttf`
+	if _, err := os.Stat(font); err != nil {
+		t.Skip("no arial")
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "paper.pdf")
+	writePaperPDFIconAndCaption(t, pdfPath, font)
+	data, err := os.ReadFile(pdfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paperChooseFigurePages(paperFigureCaptionPages(data))) == 0 {
+		t.Skip("caption text was not extracted from the generated pdf")
+	}
+	clip := filepath.Join(dir, "architecture.png")
+	writeCompanionFigurePNG(t, clip, 220, 160)
+	prev := fileCompanionClipPageFiguresHook
+	fileCompanionClipPageFiguresHook = func(ctx context.Context, source, outDir string, page, dpi int, figure string) ([]companionFigure, error) {
+		if page != 1 || dpi != paperFigureCLIDPI || figure != "" {
+			t.Errorf("clip args page=%d dpi=%d figure=%q", page, dpi, figure)
+		}
+		return []companionFigure{{path: clip, caption: "Figure 1: architecture", size: 2048}}, nil
+	}
+	t.Cleanup(func() { fileCompanionClipPageFiguresHook = prev })
+	canonical, err := fileCompanionCanonicalPath(pdfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	figures := app.fileCompanionFigures(canonical)
+	if len(figures) != 1 || figures[0].path != clip {
+		t.Fatalf("figures = %+v, want the caption crop and not the email icon", figures)
+	}
+	if !strings.Contains(figures[0].caption, "Figure 1") {
+		t.Fatalf("caption = %q", figures[0].caption)
+	}
+}
+
+func writePaperPDFCaptionPages(t *testing.T, path, font string, pages int) {
+	t.Helper()
+	pdf := &gopdf2.GoPdf{}
+	pdf.Start(gopdf2.Config{PageSize: *gopdf2.PageSizeA4})
+	if err := pdf.AddTTFFont("arial", font); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= pages; i++ {
+		pdf.AddPage()
+		if err := pdf.SetFont("arial", "", 12); err != nil {
+			t.Fatal(err)
+		}
+		pdf.SetXY(48, 200)
+		line := "Figure " + strconv.Itoa(i) + ": chart on this page"
+		if err := pdf.Cell(&gopdf2.Rect{W: 460, H: 18}, line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pdf.WritePdf(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writePaperPDFIconAndCaption(t *testing.T, path, font string) {
+	t.Helper()
+	icon, err := gopdf2.ImageHolderByBytes(paperTestJPEG(t, 225, 225))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdf := &gopdf2.GoPdf{}
+	pdf.Start(gopdf2.Config{PageSize: *gopdf2.PageSizeA4})
+	pdf.AddPage()
+	if err := pdf.AddTTFFont("arial", font); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.SetFont("arial", "", 12); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.ImageByHolder(icon, 69, 74, &gopdf2.Rect{W: 8, H: 8}); err != nil {
+		t.Fatal(err)
+	}
+	pdf.SetXY(48, 200)
+	if err := pdf.Cell(&gopdf2.Rect{W: 460, H: 18}, "Figure 1: architecture of the method"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.WritePdf(path); err != nil {
+		t.Fatal(err)
 	}
 }
 

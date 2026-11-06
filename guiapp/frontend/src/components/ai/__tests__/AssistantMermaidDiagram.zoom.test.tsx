@@ -782,7 +782,7 @@ describe("zoom lifecycle", () => {
         expect(screen.getByTestId("assistant-mermaid-download").textContent).toBe("下载到本地");
         fireEvent.click(screen.getByTestId("assistant-mermaid-more"));
         const menu = screen.getByRole("menu");
-        expect(menu.textContent).toContain("保存为图片");
+        expect(menu.textContent).not.toContain("保存为图片");
         expect(menu.textContent).toContain("复制代码");
         expect(menu.textContent).toContain("查看代码");
         fireEvent.click(screen.getByTestId("assistant-mermaid-view-code"));

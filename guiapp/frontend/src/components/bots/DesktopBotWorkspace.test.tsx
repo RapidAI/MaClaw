@@ -201,6 +201,19 @@ async function confirmBotDelete(label = '删除') {
     fireEvent.click(within(dialog).getByRole('button', { name: label }));
 }
 
+// 行内操作已收进 ⋯ 菜单：先点触发器，再点弹出菜单里的目标项。
+function openBotRowMenu(botId: string) {
+    fireEvent.click(screen.getByTestId(`desktop-bot-more-${botId}`));
+}
+
+function clickBotAction(botId: string, action: 'edit' | 'style' | 'delete') {
+    openBotRowMenu(botId);
+    // 点击会把菜单关掉，节点引用必须先抓住再点。
+    const item = screen.getByTestId(`desktop-bot-${action}-${botId}`);
+    fireEvent.click(item);
+    return item;
+}
+
 beforeEach(() => {
     localStorage.clear();
     resetBotLookCacheForTest();
@@ -474,7 +487,7 @@ describe('DesktopBotWorkspace', () => {
         expect(list.textContent).toContain('远程电脑上的7x24小时数字助理。');
         expect(screen.getByTestId('desktop-bot-command')).toBeTruthy();
 
-        fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
+        clickBotAction('bot_1', 'edit');
         const editDialog = await screen.findByTestId('bot-edit-dialog');
         fireEvent.change(within(editDialog).getByLabelText('名称'), { target: { value: '值班' } });
         fireEvent.change(within(editDialog).getByLabelText('描述'), { target: { value: '晚上值守' } });
@@ -485,9 +498,9 @@ describe('DesktopBotWorkspace', () => {
         expect(list.textContent).toContain('晚上值守');
 
         const row = screen.getByText('晚上值守').closest('li');
-        const remove = row?.querySelector('button[data-testid^="desktop-bot-delete-"]') as HTMLButtonElement;
-        fireEvent.click(remove);
-        expect(remove.getAttribute('aria-label')).toBe('删除');
+        const botId = row?.getAttribute('data-testid')?.replace('desktop-bot-', '') ?? '';
+        const remove = clickBotAction(botId, 'delete');
+        expect(remove.textContent).toBe('删除');
         expect(remove.querySelector('svg')).toBeTruthy();
         const dialog = await screen.findByRole('dialog');
         expect(dialog.textContent).toContain('确定删除 Bot');
@@ -498,7 +511,7 @@ describe('DesktopBotWorkspace', () => {
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
         expect(deleteBot).not.toHaveBeenCalled();
         expect(screen.getByText('晚上值守')).toBeTruthy();
-        fireEvent.click(remove);
+        clickBotAction(botId, 'delete');
         await confirmBotDelete();
         expect(await screen.findByTestId('desktop-bot-empty')).toBeTruthy();
         expect(screen.queryByText('晚上值守')).toBeNull();
@@ -2140,9 +2153,9 @@ describe('DesktopBotWorkspace', () => {
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(await screen.findByText('值班'));
         const row = screen.getByTestId('desktop-bot-bot_1');
-        const removeButton = row?.querySelector('button[data-testid^="desktop-bot-delete-"]') as HTMLButtonElement;
-        fireEvent.click(removeButton);
-        expect(removeButton.getAttribute('aria-label')).toBe('删除');
+        expect(row?.querySelector('.desktop-bot-workspace__more')).toBeTruthy();
+        const removeButton = clickBotAction('bot_1', 'delete');
+        expect(removeButton.textContent).toBe('删除');
         expect(removeButton.querySelector('svg')).toBeTruthy();
         await confirmBotDelete();
         expect(await screen.findByTestId('desktop-bot-empty')).toBeTruthy();
@@ -2159,16 +2172,16 @@ describe('DesktopBotWorkspace', () => {
         deleteBot.mockImplementation(() => new Promise(resolve => { release = resolve; }));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(await screen.findByText('值班'));
-        const remove = screen.getByTestId('desktop-bot-bot_1').querySelector('[data-testid^="desktop-bot-delete-"]') as HTMLButtonElement;
-        fireEvent.click(remove);
-        fireEvent.click(remove);
+        // 快速重复点删除项也只弹一个确认框（removeLock 顶住）。
+        clickBotAction('bot_1', 'delete');
+        const remove = clickBotAction('bot_1', 'delete');
         expect(screen.getAllByRole('dialog')).toHaveLength(1);
-        expect(remove.getAttribute('aria-label')).toBe('删除');
+        expect(remove.textContent).toBe('删除');
         expect(remove.querySelector('svg')).toBeTruthy();
         expect(deleteBot).not.toHaveBeenCalled();
         await confirmBotDelete();
         expect(deleteBot).toHaveBeenCalledTimes(1);
-        fireEvent.click(remove);
+        clickBotAction('bot_1', 'delete');
         expect(screen.queryByRole('dialog')).toBeNull();
         expect(deleteBot).toHaveBeenCalledTimes(1);
         fireEvent.click(screen.getByText('日报'));
@@ -2183,13 +2196,12 @@ describe('DesktopBotWorkspace', () => {
         deleteBot.mockRejectedValueOnce(new Error('MaClawSrv 不可达'));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(await screen.findByText('值班'));
-        const remove = screen.getByTestId('desktop-bot-delete-bot_1');
-        fireEvent.click(remove);
+        clickBotAction('bot_1', 'delete');
         await confirmBotDelete();
         expect((await screen.findByTestId('desktop-bot-list-error')).textContent).toBe('MaClawSrv 不可达');
         expect(screen.getByTestId('desktop-bot-bot_1')).toBeTruthy();
         deleteBot.mockResolvedValueOnce(undefined);
-        fireEvent.click(remove);
+        clickBotAction('bot_1', 'delete');
         await confirmBotDelete();
         expect(await screen.findByTestId('desktop-bot-empty')).toBeTruthy();
         expect(deleteBot).toHaveBeenCalledTimes(2);
@@ -2204,7 +2216,7 @@ describe('DesktopBotWorkspace', () => {
         deleteBot.mockImplementation(() => new Promise(resolve => { release = resolve; }));
         const view = renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(await screen.findByText('值班'));
-        fireEvent.click(screen.getByTestId('desktop-bot-delete-bot_1'));
+        clickBotAction('bot_1', 'delete');
         await confirmBotDelete();
         expect(deleteBot).toHaveBeenCalledWith('bot_1');
         view.unmount();
@@ -2222,7 +2234,7 @@ describe('DesktopBotWorkspace', () => {
         deleteBot.mockImplementation(() => new Promise(resolve => { release = resolve; }));
         const view = renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(await screen.findByText('值班'));
-        fireEvent.click(screen.getByTestId('desktop-bot-delete-bot_1'));
+        clickBotAction('bot_1', 'delete');
         await confirmBotDelete();
         expect(deleteBot).toHaveBeenCalledWith('bot_1');
 
@@ -2260,11 +2272,65 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-empty')).toBeNull();
     });
 
+    it('offers row actions from the ⋯ menu and closes on Escape or outside pointer', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 1', description: '值班', instance_id: 'inst_1' }]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        expect(await screen.findByText('Bot 1')).toBeTruthy();
+        // 收起时行内没有零散的操作按钮，只有一枚 ⋯。
+        expect(screen.queryByTestId('desktop-bot-edit-bot_1')).toBeNull();
+        const more = screen.getByTestId('desktop-bot-more-bot_1');
+        expect(more.getAttribute('aria-haspopup')).toBe('menu');
+        expect(more.getAttribute('aria-expanded')).toBe('false');
+        expect(more.getAttribute('aria-label')).toBe('更多操作');
+        expect(more.getAttribute('title')).toBe('更多操作');
+        fireEvent.click(more);
+        expect(more.getAttribute('aria-expanded')).toBe('true');
+        const menu = screen.getByRole('menu');
+        expect(within(menu).getByTestId('desktop-bot-edit-bot_1').textContent).toBe('编辑信息');
+        expect(within(menu).getByTestId('desktop-bot-style-bot_1').textContent).toBe('性格与说话风格');
+        expect(within(menu).getByTestId('desktop-bot-delete-bot_1').textContent).toBe('删除');
+
+        // Escape 关闭，并把焦点还给触发器。
+        fireEvent.keyDown(menu, { key: 'Escape' });
+        await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+        expect(document.activeElement).toBe(more);
+
+        // 点击菜单之外（document pointerdown）也会关闭。
+        openBotRowMenu('bot_1');
+        expect(screen.getByRole('menu')).toBeTruthy();
+        fireEvent.pointerDown(document.body);
+        await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    });
+
+    it('keeps only one row menu open at a time', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' },
+            { id: 'bot_2', title: '日报', description: '早上', instance_id: 'inst_2' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        expect(await screen.findByText('值班')).toBeTruthy();
+        openBotRowMenu('bot_1');
+        expect(screen.getAllByRole('menu')).toHaveLength(1);
+        // 真实浏览器里 pointerdown 先关上一份菜单，再点开下一行。
+        fireEvent.pointerDown(screen.getByTestId('desktop-bot-more-bot_2'));
+        fireEvent.click(screen.getByTestId('desktop-bot-more-bot_2'));
+        expect(screen.getAllByRole('menu')).toHaveLength(1);
+        expect(screen.getByTestId('desktop-bot-delete-bot_2')).toBeTruthy();
+        expect(screen.queryByTestId('desktop-bot-delete-bot_1')).toBeNull();
+
+        // 键盘 Enter 激活不经过 pointerdown：父组件抓手互斥，仍只留一份。
+        fireEvent.click(screen.getByTestId('desktop-bot-more-bot_1'));
+        expect(screen.getAllByRole('menu')).toHaveLength(1);
+        expect(screen.getByTestId('desktop-bot-delete-bot_1')).toBeTruthy();
+        expect(screen.queryByTestId('desktop-bot-delete-bot_2')).toBeNull();
+    });
+
     it('keeps the bot when renaming fails', async () => {
         listBots.mockResolvedValueOnce([{ id: 'bot_1', title: 'Bot 1', description: '值班', instance_id: 'inst_1' }]);
         renameBot.mockRejectedValueOnce(new Error('MaClawSrv 不可达'));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         expect(await screen.findByText('Bot 1')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('desktop-bot-more-bot_1'));
         fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
         const editDialog = await screen.findByTestId('bot-edit-dialog');
         fireEvent.change(within(editDialog).getByLabelText('名称'), { target: { value: '新名字' } });
@@ -2283,6 +2349,7 @@ describe('DesktopBotWorkspace', () => {
         expect(await screen.findByText('Bot 1')).toBeTruthy();
 
         // The dialog owns the fields; the row never turns into inputs.
+        fireEvent.click(screen.getByTestId('desktop-bot-more-bot_1'));
         fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
         const dialog = screen.getByTestId('bot-edit-dialog');
         expect(within(dialog).getByLabelText('名称')).toBeTruthy();
@@ -2301,6 +2368,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByText('Bot 1')).toBeTruthy();
 
         // Reopen and save: the rename reaches the backend and refreshes the row.
+        fireEvent.click(screen.getByTestId('desktop-bot-more-bot_1'));
         fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
         const reopened = screen.getByTestId('bot-edit-dialog');
         fireEvent.change(within(reopened).getByLabelText('名称'), { target: { value: '值班' } });
@@ -3823,8 +3891,13 @@ describe('DesktopBotWorkspace', () => {
         expect(log.nextElementSibling).toBe(form);
         expect(screen.getByLabelText('Bot').contains(screen.getByTestId('desktop-bot-bot_1'))).toBe(true);
         const botRow = screen.getByTestId('desktop-bot-bot_1');
-        expect(within(botRow).getByRole('button', { name: '编辑信息' }).querySelector('svg')).toBeTruthy();
-        expect(within(botRow).getByRole('button', { name: '删除' }).querySelector('svg')).toBeTruthy();
+        // 行内只有一枚带图标的 ⋯；三项操作收进弹出菜单，各自带图标。
+        expect(within(botRow).getByTestId('desktop-bot-more-bot_1').querySelector('svg')).toBeTruthy();
+        openBotRowMenu('bot_1');
+        const rowActionMenu = screen.getByRole('menu');
+        expect(within(rowActionMenu).getByTestId('desktop-bot-edit-bot_1').querySelector('svg')).toBeTruthy();
+        expect(within(rowActionMenu).getByTestId('desktop-bot-delete-bot_1').querySelector('svg')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('desktop-bot-more-bot_1'));
         expect(botRow.textContent).not.toContain('编辑信息');
         expect(botRow.textContent).not.toContain('删除');
 
@@ -4365,6 +4438,7 @@ describe('DesktopBotWorkspace', () => {
         await waitFor(() => expect(setAppearance).toHaveBeenCalledTimes(1));
         expect(setAppearance).toHaveBeenLastCalledWith('bot_1', '#2563eb', 'cloud');
 
+        fireEvent.click(screen.getByTestId('desktop-bot-more-bot_1'));
         fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
         fireEvent.click(screen.getByTestId('bot-edit-color-16a34a'));
         fireEvent.click(screen.getByTestId('bot-edit-shape-leaf'));
@@ -4395,6 +4469,7 @@ describe('DesktopBotWorkspace', () => {
         await waitFor(() => expect(setAppearance).toHaveBeenCalledTimes(1));
         expect(setAppearance).toHaveBeenLastCalledWith('bot_1', '#2563eb', 'cloud');
 
+        fireEvent.click(screen.getByTestId('desktop-bot-more-bot_1'));
         fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
         fireEvent.click(screen.getByTestId('bot-edit-color-16a34a'));
         fireEvent.click(screen.getByTestId('bot-edit-shape-leaf'));
@@ -4430,6 +4505,7 @@ describe('DesktopBotWorkspace', () => {
         expect(setAppearance).toHaveBeenLastCalledWith('bot_new', '#2563eb', 'cloud');
 
         setAppearance.mockImplementation(async (_botId?: string, color?: string, shape?: string) => ({ color, shape }));
+        fireEvent.click(screen.getByTestId('desktop-bot-more-bot_new'));
         fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_new'));
         fireEvent.click(screen.getByTestId('bot-edit-color-16a34a'));
         fireEvent.click(screen.getByTestId('bot-edit-shape-leaf'));
@@ -4537,8 +4613,7 @@ describe('DesktopBotWorkspace', () => {
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         expect(await screen.findByText('值班')).toBeTruthy();
         await waitFor(() => expect(setAppearance).toHaveBeenCalledTimes(1));
-        const remove = screen.getByTestId('desktop-bot-bot_1').querySelector('[data-testid^="desktop-bot-delete-"]') as HTMLButtonElement;
-        fireEvent.click(remove);
+        clickBotAction('bot_1', 'delete');
         await confirmBotDelete();
         expect(await screen.findByTestId('desktop-bot-empty')).toBeTruthy();
         await act(async () => { releaseFirst({ color: '#2563eb', shape: 'cloud' }); });
@@ -4559,6 +4634,7 @@ describe('DesktopBotWorkspace', () => {
             expect(view.container.querySelector('.desktop-bot-workspace__avatar')?.getAttribute('data-color')).toBe('#2563eb');
         });
         expect(appearancesForUser('alice').bot_1).toEqual({ color: '#2563eb', shape: 'cloud' });
+        fireEvent.click(screen.getByTestId('desktop-bot-more-bot_1'));
         fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
         fireEvent.click(screen.getByTestId('bot-edit-color-16a34a'));
         fireEvent.click(screen.getByTestId('bot-edit-shape-leaf'));
@@ -4661,13 +4737,17 @@ describe('DesktopBotWorkspace', () => {
         expect(css).toMatch(/\.desktop-bot-chat__chevron\s*\{[^}]*opacity:\s*0/);
         expect(css).toContain('.desktop-bot-chat__identity-btn:hover .desktop-bot-chat__chevron');
         expect(css).toContain('.desktop-bot-chat__identity-btn:focus-visible .desktop-bot-chat__chevron');
-        expect(css).toMatch(/\.desktop-bot-workspace__actions\s*\{[^}]*position:\s*absolute/);
-        expect(css).toMatch(/\.desktop-bot-workspace__actions\s*\{[^}]*pointer-events:\s*none/);
+        expect(css).toMatch(/\.desktop-bot-workspace__row-menu\s*\{[^}]*position:\s*fixed/);
+        expect(css).toMatch(/\.desktop-bot-workspace__more\s*\{[^}]*visibility:\s*hidden/);
+        expect(css).toMatch(/prefers-reduced-motion:\s*reduce\)\s*\{[^@]*?\.desktop-bot-workspace__more\s*\{[^}]*transition:\s*none/);
+        expect(css).toMatch(/\.desktop-bot-workspace__more\s*\{[^}]*margin:\s*0 6px 0 0/);
+        expect(css).toMatch(/\.desktop-bot-workspace__row\.is-selected \.desktop-bot-workspace__more[^{]*\{[^}]*visibility:\s*visible/);
+        expect(css).toMatch(/\.desktop-bot-workspace__row-menuitem\.is-danger\s*\{[^}]*var\(--theme-danger/);
         expect(css).toMatch(/\.bot-edit-dialog__input\s*\{[^}]*border-radius:\s*8px/);
         expect(css).toMatch(/\.bot-edit-dialog__notice\s*\{[^}]*var\(--theme-danger/);
-        expect(css).toMatch(/\.desktop-bot-workspace__actions button\s*\{[^}]*width:\s*28px/);
-        expect(css).toMatch(/\.desktop-bot-workspace__actions button\s*\{[^}]*height:\s*28px/);
-        expect(css).toMatch(/\.desktop-bot-workspace__actions button\s*\{[^}]*padding:\s*0/);
+        expect(css).toMatch(/\.desktop-bot-workspace__more\s*\{[^}]*width:\s*30px/);
+        expect(css).toMatch(/\.desktop-bot-workspace__more\s*\{[^}]*height:\s*30px/);
+        expect(css).toMatch(/\.desktop-bot-workspace__more\s*\{[^}]*padding:\s*0/);
         expect(css).toMatch(/\.desktop-bot-chat__identity-btn\s*\{[^}]*cursor:\s*grab/);
         expect(css).toMatch(/\.desktop-bot-chat__header\s*\{[^}]*touch-action:\s*none/);
         expect(css).toMatch(/\.desktop-bot-workspace\.is-identity-dragging iframe\s*\{[^}]*pointer-events:\s*none/);
@@ -5500,7 +5580,9 @@ describe('DesktopBotWorkspace', () => {
         const current = screen.getByTestId('desktop-bot-set-primary');
         expect(current.textContent).toBe('已是主 Bot');
         expect(current.hasAttribute('disabled')).toBe(true);
+        openBotRowMenu('bot_1');
         expect(screen.getByTestId('desktop-bot-edit-bot_1')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('desktop-bot-more-bot_1'));
         fireEvent.click(screen.getByText('Bot 6'));
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
         fireEvent.click(screen.getByTestId('desktop-bot-tab-details'));

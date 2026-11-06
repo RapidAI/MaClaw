@@ -70,196 +70,211 @@ import pymupdf
 
 pdf_path = sys.argv[1]
 out_dir = sys.argv[2]
-page_no = int(sys.argv[3])
+page_nos = [int(token) for token in sys.argv[3].split(",") if token.strip()]
 dpi = float(sys.argv[4])
 want = sys.argv[5].strip()
 caption_re = re.compile(r"(?i)^\s*(?:figure|fig\.?|图)\s*([A-Za-z])?\.?\s*(\d+(?:\.\d+)?)")
 doc = pymupdf.open(pdf_path)
-page = doc[page_no - 1]
-pw = page.rect.width
-ph = page.rect.height
-graphics = []
-for info in page.get_image_info():
-    bbox = info.get("bbox")
-    if not bbox:
-        continue
-    rect = pymupdf.Rect(bbox)
-    if rect.width >= 40 and rect.height >= 40:
-        graphics.append(rect)
-for drawing in page.get_drawings():
-    raw = drawing.get("rect")
-    if raw is None:
-        continue
-    rect = pymupdf.Rect(raw)
-    if rect.width < 2 or rect.height < 2:
-        continue
-    if rect.width > 0.96 * pw or rect.height > 0.85 * ph:
-        continue
-    if rect.width > 0.9 * pw and rect.height < 4:
-        continue
-    graphics.append(rect)
-
-def overlaps_x(a, b):
-    return a.x0 - 24 < b.x1 and a.x1 + 24 > b.x0
-
-def caption_parts(text):
-    # "Figure 1: title" and "图1 标题" are captions. "Figure 1 shows" is a
-    # sentence, and treating it as a caption pulls in the table under it.
-    match = caption_re.match(text)
-    if match is None:
-        return None
-    if not text.lstrip().startswith("图"):
-        rest = text[match.end():].lstrip()
-        if rest and rest[0] not in ":：.．-—–":
-            return None
-    return match
-
-def gap_of(a, b):
-    gap_y = 0.0
-    if a.y1 < b.y0:
-        gap_y = b.y0 - a.y1
-    elif b.y1 < a.y0:
-        gap_y = a.y0 - b.y1
-    gap_x = 0.0
-    if a.x1 < b.x0:
-        gap_x = b.x0 - a.x1
-    elif b.x1 < a.x0:
-        gap_x = a.x0 - b.x1
-    return gap_y, gap_x
-
-lines = []
-for block in page.get_text("dict").get("blocks", []):
-    if block.get("type") != 0:
-        continue
-    for line in block.get("lines", []):
-        spans = line.get("spans") or []
-        text = "".join(span.get("text", "") for span in spans).strip()
-        if not text or "bbox" not in line:
-            continue
-        lines.append((pymupdf.Rect(line["bbox"]), text))
-lines.sort(key=lambda item: (item[0].y0, item[0].x0))
-
-def sentence_continues(index):
-    # A bare "Figure 1" with "shows ..." on the next line is one sentence.
-    # The drawing above that sentence is not a second figure.
-    bb, text = lines[index]
-    if text.lstrip().startswith("图"):
-        return False
-    match = caption_re.match(text)
-    if match is None or text[match.end():].strip():
-        return False
-    if index + 1 >= len(lines):
-        return False
-    bb2, text2 = lines[index + 1]
-    if bb2.y0 < bb.y1 - 2 or not overlaps_x(bb2, bb) or bb2.y0 - bb.y1 > 14:
-        return False
-    head = text2.lstrip()
-    return bool(head) and head[0].islower()
-
-captions = []
-for index, (bb, text) in enumerate(lines):
-    match = caption_parts(text)
-    if match is None or sentence_continues(index):
-        continue
-    cap = pymupdf.Rect(bb)
-    prev = bb
-    taken = 1
-    for bb2, text2 in lines[index + 1:]:
-        if taken >= 6 or bb2.y0 - prev.y1 > 8:
-            break
-        if caption_parts(text2):
-            break
-        if not overlaps_x(bb2, bb):
-            continue
-        cap |= bb2
-        prev = bb2
-        taken += 1
-    letter = match.group(1) or ""
-    number = match.group(2) or ""
-    ident = (letter + "." + number) if letter else number
-    label = ("图 " if text.lstrip().startswith("图") else "Figure ") + ident
-    captions.append((bb, cap, label, ident, number))
-captions.sort(key=lambda item: (item[0].y0, item[0].x0))
-
-def cluster(caption_bb, cap, prev_bottom, next_top, below):
-    # A seed touches the caption. Other boxes of the same diagram join across
-    # a gutter. A drawing that merely shares the page does not.
-    def eligible(rect):
-        if rect.y1 < prev_bottom - 2:
-            return False
-        if next_top < ph and rect.y0 > next_top + 2:
-            return False
-        if below:
-            return cap.y1 - 4 <= rect.y0 <= cap.y1 + 140
-        if rect.y0 > caption_bb.y1 + 6:
-            return False
-        if rect.y1 > caption_bb.y0 + 14 and rect.y0 > caption_bb.y0:
-            return False
-        if not overlaps_x(rect, cap) and not overlaps_x(rect, caption_bb):
-            if rect.y1 < caption_bb.y0 - 4:
-                return False
-        return True
-    pool = []
-    seeds = []
-    for index, rect in enumerate(graphics):
-        if not eligible(rect):
-            continue
-        pool.append(index)
-        if below or rect.y1 >= caption_bb.y0 - 48:
-            seeds.append(index)
-    if not seeds:
-        return None
-    taken = [False] * len(graphics)
-    chosen = []
-    graphic = None
-    for index in seeds:
-        taken[index] = True
-        chosen.append(index)
-        graphic = graphics[index] if graphic is None else graphic | graphics[index]
-    grew = True
-    while grew:
-        grew = False
-        for index in pool:
-            if taken[index]:
-                continue
-            rect = graphics[index]
-            gap_y, gap_x = gap_of(rect, graphic)
-            if gap_y <= 72 and gap_x <= 72:
-                taken[index] = True
-                chosen.append(index)
-                graphic |= rect
-                grew = True
-    return graphic
-
 saved = []
-for index, (bb, cap, label, ident, number) in enumerate(captions):
-    if want and want != ident and want != number and want != label:
-        continue
-    prev_bottom = 0
-    if index > 0 and captions[index - 1][0].y1 < bb.y0 - 12:
-        prev_bottom = captions[index - 1][1].y1
-    next_top = ph
-    if index + 1 < len(captions) and captions[index + 1][0].y0 > cap.y1 + 12:
-        next_top = captions[index + 1][0].y0
-    graphic = cluster(bb, cap, prev_bottom, next_top, False)
-    if graphic is None:
-        graphic = cluster(bb, cap, prev_bottom, next_top, True)
-    if graphic is None:
-        continue
-    clip = (graphic + (-6, -6, 6, 4)) & page.rect
-    clip |= cap
-    clip &= page.rect
-    if clip.width < 40 or clip.height < 24:
-        continue
-    if clip.height > 0.78 * ph and clip.width > 0.85 * pw:
-        continue
-    safe = ident.replace(".", "_") or str(index + 1)
-    path = os.path.join(out_dir, "fig-%s.png" % safe)
-    pix = page.get_pixmap(matrix=pymupdf.Matrix(dpi / 72.0, dpi / 72.0), clip=clip, alpha=False)
-    pix.save(path)
-    saved.append({"label": label, "file": path})
+
+def crop_one(page_no):
+    # One document stays open for every caption page. A fresh process per page
+    # pays the pymupdf import again, which is the slow part of the crop.
+    global saved
+    if len(saved) >= 4:
+        return
+    page = doc[page_no - 1]
+    pw = page.rect.width
+    ph = page.rect.height
+    graphics = []
+    for info in page.get_image_info():
+        bbox = info.get("bbox")
+        if not bbox:
+            continue
+        rect = pymupdf.Rect(bbox)
+        if rect.width >= 40 and rect.height >= 40:
+            graphics.append(rect)
+    for drawing in page.get_drawings():
+        raw = drawing.get("rect")
+        if raw is None:
+            continue
+        rect = pymupdf.Rect(raw)
+        if rect.width < 2 or rect.height < 2:
+            continue
+        if rect.width > 0.96 * pw or rect.height > 0.85 * ph:
+            continue
+        if rect.width > 0.9 * pw and rect.height < 4:
+            continue
+        graphics.append(rect)
+
+    def overlaps_x(a, b):
+        return a.x0 - 24 < b.x1 and a.x1 + 24 > b.x0
+
+    def caption_parts(text):
+        # "Figure 1: title" and "图1 标题" are captions. "Figure 1 shows" is a
+        # sentence, and treating it as a caption pulls in the table under it.
+        match = caption_re.match(text)
+        if match is None:
+            return None
+        if not text.lstrip().startswith("图"):
+            rest = text[match.end():].lstrip()
+            if rest and rest[0] not in ":：.．-—–":
+                return None
+        return match
+
+    def gap_of(a, b):
+        gap_y = 0.0
+        if a.y1 < b.y0:
+            gap_y = b.y0 - a.y1
+        elif b.y1 < a.y0:
+            gap_y = a.y0 - b.y1
+        gap_x = 0.0
+        if a.x1 < b.x0:
+            gap_x = b.x0 - a.x1
+        elif b.x1 < a.x0:
+            gap_x = a.x0 - b.x1
+        return gap_y, gap_x
+
+    lines = []
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            spans = line.get("spans") or []
+            text = "".join(span.get("text", "") for span in spans).strip()
+            if not text or "bbox" not in line:
+                continue
+            lines.append((pymupdf.Rect(line["bbox"]), text))
+    lines.sort(key=lambda item: (item[0].y0, item[0].x0))
+
+    def sentence_continues(index):
+        # A bare "Figure 1" with "shows ..." on the next line is one sentence.
+        # The drawing above that sentence is not a second figure.
+        bb, text = lines[index]
+        if text.lstrip().startswith("图"):
+            return False
+        match = caption_re.match(text)
+        if match is None or text[match.end():].strip():
+            return False
+        if index + 1 >= len(lines):
+            return False
+        bb2, text2 = lines[index + 1]
+        if bb2.y0 < bb.y1 - 2 or not overlaps_x(bb2, bb) or bb2.y0 - bb.y1 > 14:
+            return False
+        head = text2.lstrip()
+        return bool(head) and head[0].islower()
+
+    captions = []
+    for index, (bb, text) in enumerate(lines):
+        match = caption_parts(text)
+        if match is None or sentence_continues(index):
+            continue
+        cap = pymupdf.Rect(bb)
+        prev = bb
+        taken = 1
+        for bb2, text2 in lines[index + 1:]:
+            if taken >= 6 or bb2.y0 - prev.y1 > 8:
+                break
+            if caption_parts(text2):
+                break
+            if not overlaps_x(bb2, bb):
+                continue
+            cap |= bb2
+            prev = bb2
+            taken += 1
+        letter = match.group(1) or ""
+        number = match.group(2) or ""
+        ident = (letter + "." + number) if letter else number
+        label = ("图 " if text.lstrip().startswith("图") else "Figure ") + ident
+        captions.append((bb, cap, label, ident, number))
+    captions.sort(key=lambda item: (item[0].y0, item[0].x0))
+
+    def cluster(caption_bb, cap, prev_bottom, next_top, below):
+        # A seed touches the caption. Other boxes of the same diagram join across
+        # a gutter. A drawing that merely shares the page does not.
+        def eligible(rect):
+            if rect.y1 < prev_bottom - 2:
+                return False
+            if next_top < ph and rect.y0 > next_top + 2:
+                return False
+            if below:
+                return cap.y1 - 4 <= rect.y0 <= cap.y1 + 140
+            if rect.y0 > caption_bb.y1 + 6:
+                return False
+            if rect.y1 > caption_bb.y0 + 14 and rect.y0 > caption_bb.y0:
+                return False
+            if not overlaps_x(rect, cap) and not overlaps_x(rect, caption_bb):
+                if rect.y1 < caption_bb.y0 - 4:
+                    return False
+            return True
+        pool = []
+        seeds = []
+        for index, rect in enumerate(graphics):
+            if not eligible(rect):
+                continue
+            pool.append(index)
+            if below or rect.y1 >= caption_bb.y0 - 48:
+                seeds.append(index)
+        if not seeds:
+            return None
+        taken = [False] * len(graphics)
+        chosen = []
+        graphic = None
+        for index in seeds:
+            taken[index] = True
+            chosen.append(index)
+            graphic = graphics[index] if graphic is None else graphic | graphics[index]
+        grew = True
+        while grew:
+            grew = False
+            for index in pool:
+                if taken[index]:
+                    continue
+                rect = graphics[index]
+                gap_y, gap_x = gap_of(rect, graphic)
+                if gap_y <= 72 and gap_x <= 72:
+                    taken[index] = True
+                    chosen.append(index)
+                    graphic |= rect
+                    grew = True
+        return graphic
+
+    for index, (bb, cap, label, ident, number) in enumerate(captions):
+        if len(saved) >= 4:
+            break
+        if want and want != ident and want != number and want != label:
+            continue
+        prev_bottom = 0
+        if index > 0 and captions[index - 1][0].y1 < bb.y0 - 12:
+            prev_bottom = captions[index - 1][1].y1
+        next_top = ph
+        if index + 1 < len(captions) and captions[index + 1][0].y0 > cap.y1 + 12:
+            next_top = captions[index + 1][0].y0
+        graphic = cluster(bb, cap, prev_bottom, next_top, False)
+        if graphic is None:
+            graphic = cluster(bb, cap, prev_bottom, next_top, True)
+        if graphic is None:
+            continue
+        clip = (graphic + (-6, -6, 6, 4)) & page.rect
+        clip |= cap
+        clip &= page.rect
+        if clip.width < 40 or clip.height < 24:
+            continue
+        if clip.height > 0.78 * ph and clip.width > 0.85 * pw:
+            continue
+        safe = ident.replace(".", "_") or str(index + 1)
+        path = os.path.join(out_dir, "fig-%s.png" % safe)
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(dpi / 72.0, dpi / 72.0), clip=clip, alpha=False)
+        pix.save(path)
+        saved.append({"label": label, "file": path, "page": page_no})
+
+for page_no in page_nos:
     if len(saved) >= 4:
         break
+    try:
+        crop_one(page_no)
+    except Exception:
+        continue
 doc.close()
 sys.stdout.write(json.dumps(saved, ensure_ascii=False))
 `
@@ -267,6 +282,7 @@ sys.stdout.write(json.dumps(saved, ensure_ascii=False))
 type figureClipFile struct {
 	Label string `json:"label"`
 	File  string `json:"file"`
+	Page  int    `json:"page"`
 }
 
 // fileCompanionClipPageFigures crops the figures on one page into dir.
@@ -276,6 +292,12 @@ func fileCompanionClipPageFigures(ctx context.Context, source, dir string, page,
 	if fileCompanionClipPageFiguresHook != nil {
 		return fileCompanionClipPageFiguresHook(ctx, source, dir, page, dpi, figure)
 	}
+	return fileCompanionClipPageSpec(ctx, source, dir, strconv.Itoa(page), dpi, figure, page)
+}
+
+// fileCompanionClipPageSpec crops every page in a comma-separated list with
+// one pymupdf process. fallbackPage is the caption page when a result omits one.
+func fileCompanionClipPageSpec(ctx context.Context, source, dir, pages string, dpi int, figure string, fallbackPage int) ([]companionFigure, error) {
 	python := paperRasterEngines().python
 	if python == "" {
 		return nil, nil
@@ -296,9 +318,9 @@ func fileCompanionClipPageFigures(ctx context.Context, source, dir string, page,
 	if err := script.Close(); err != nil {
 		return nil, err
 	}
-	pyCtx, cancel := renderAttemptContext(ctx)
+	pyCtx, cancel := clipRenderContext(ctx)
 	defer cancel()
-	cmd := exec.CommandContext(pyCtx, python, name, source, dir, strconv.Itoa(page), strconv.Itoa(dpi), figure)
+	cmd := exec.CommandContext(pyCtx, python, name, source, dir, pages, strconv.Itoa(dpi), figure)
 	hideCommandWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
@@ -331,13 +353,181 @@ func fileCompanionClipPageFigures(ctx context.Context, source, dir string, page,
 		if err != nil || info.Size() < paperFigureMinBytes {
 			continue
 		}
+		shown := file.Page
+		if shown <= 0 {
+			shown = fallbackPage
+		}
 		figures = append(figures, companionFigure{
 			path:    abs,
-			caption: fmt.Sprintf("%s（第 %d 页）", label, page),
+			caption: fmt.Sprintf("%s（第 %d 页）", label, shown),
 			size:    info.Size(),
 		})
 	}
 	return figures, nil
+}
+
+// paperFigureInlineCaptionRe matches an English caption the extractor glued
+// onto a running header ("Knowledge-Based System  Figure 1: ..."). Only a
+// colon or a dash counts. A period does not: "see Fig. 1." is a sentence, and
+// the crop rejects it, so selecting the page would only start Python.
+// Group 1 is the appendix letter in "Figure C.1:".
+var paperFigureInlineCaptionRe = regexp.MustCompile(`(?i)(?:figure|fig\.?)\s*([A-Za-z])?\.?\s*\d+(?:\.\d+)?\s*[:：\-—–]`)
+
+// paperFigureInlineTuCaptionRe matches 图 when a gap or the line start is in
+// front of it, so a header glued on the same line still counts. "见图1：" does
+// not: 见 sits against 图, and the crop only keeps a line that starts with 图.
+var paperFigureInlineTuCaptionRe = regexp.MustCompile(`(?:^|\s)图\s*([A-Za-z])?\.?\s*\d+(?:\.\d+)?\s*[:：\-—–]`)
+
+// paperFigureLineCaptionRe matches an English caption at the start of a line,
+// including "Figure 1." and a bare "Figure 1". "Figure 1 shows" does not match.
+// The crop keeps these lines. A period only counts here, not mid-sentence.
+var paperFigureLineCaptionRe = regexp.MustCompile(`(?im)^\s*(?:figure|fig\.?)\s*([A-Za-z])?\.?\s*\d+(?:\.\d+)?\s*(?:[:：.．\-—–]|$)`)
+
+// paperFigureBareTuCaptionRe matches a line-start 图 caption with no colon.
+// The crop keeps those. An English line without caption punctuation does not.
+var paperFigureBareTuCaptionRe = regexp.MustCompile(`(?m)^\s*图\s*([A-Za-z])?\.?\s*\d`)
+
+func paperPageMentionsClipCaption(text string) bool {
+	_, ok := paperClipCaptionKind(text)
+	return ok
+}
+
+// paperClipCaptionKind reports whether text names a caption the crop will keep.
+// appendix is true only when every caption on the page is an appendix caption.
+func paperClipCaptionKind(text string) (appendix bool, ok bool) {
+	if strings.TrimSpace(text) == "" {
+		return false, false
+	}
+	body := false
+	saw := false
+	note := func(letter string) {
+		saw = true
+		if letter == "" {
+			body = true
+		}
+	}
+	for _, match := range paperFigureInlineCaptionRe.FindAllStringSubmatch(text, -1) {
+		letter := ""
+		if len(match) > 1 {
+			letter = match[1]
+		}
+		note(letter)
+	}
+	for _, match := range paperFigureInlineTuCaptionRe.FindAllStringSubmatch(text, -1) {
+		letter := ""
+		if len(match) > 1 {
+			letter = match[1]
+		}
+		note(letter)
+	}
+	if !body {
+		for _, line := range strings.Split(text, "\n") {
+			if paperFigureInlineCaptionRe.MatchString(line) || paperFigureInlineTuCaptionRe.MatchString(line) {
+				continue
+			}
+			if match := paperFigureLineCaptionRe.FindStringSubmatch(line); match != nil {
+				letter := ""
+				if len(match) > 1 {
+					letter = match[1]
+				}
+				note(letter)
+				if body {
+					break
+				}
+				continue
+			}
+			match := paperFigureBareTuCaptionRe.FindStringSubmatch(line)
+			if match == nil {
+				continue
+			}
+			note(match[1])
+			if body {
+				break
+			}
+		}
+	}
+	if !saw {
+		return false, false
+	}
+	return !body, true
+}
+
+// paperFigureClipPages lists pages whose text names a figure caption.
+// One open covers the page window. It does not stop after the first few
+// body captions: a line that only looks like a caption must not hide a
+// later figure. The crop keeps paperFigureMaxCount drawings. A caption
+// glued onto a running header counts.
+func paperFigureClipPages(data []byte) []int {
+	if len(data) == 0 {
+		return nil
+	}
+	return paperChooseFigurePages(paperFigurePagesFromText(data, paperFigurePageLimit, paperClipCaptionKind, 0))
+}
+
+// fileCompanionClippedPaperFigures crops captioned figures when the PDF has
+// no embedded drawing large enough to show. Vector charts in an Elsevier
+// preprint are this case: the only bitmap is the corresponding-author icon.
+// again is true when the empty result should be asked on a later question:
+// pymupdf is missing, the cache directory could not be created, or the crop
+// failed before it answered. A paper with no caption, and a crop that ran
+// and saved nothing, are final for this file.
+func (a *App) fileCompanionClippedPaperFigures(canonical string, data []byte) ([]companionFigure, bool) {
+	if a == nil || len(data) == 0 {
+		return nil, false
+	}
+	if paperRasterEngines().python == "" && fileCompanionClipPageFiguresHook == nil {
+		return nil, true
+	}
+	pages := paperFigureClipPages(data)
+	if len(pages) == 0 {
+		return nil, false
+	}
+	dir := a.fileCompanionFigureDir(canonical)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, true
+	}
+	// Tests replace one page at a time. Production opens pymupdf once for the
+	// whole list: the import, not the crop, is what makes the first question wait.
+	if fileCompanionClipPageFiguresHook != nil {
+		var out []companionFigure
+		attempted := 0
+		failed := 0
+		for _, page := range pages {
+			if len(out) >= paperFigureMaxCount {
+				break
+			}
+			attempted++
+			clips, clipErr := fileCompanionClipPageFigures(context.Background(), canonical, dir, page, paperFigureCLIDPI, "")
+			if clipErr != nil {
+				failed++
+				continue
+			}
+			for _, clip := range clips {
+				if len(out) >= paperFigureMaxCount {
+					break
+				}
+				out = append(out, clip)
+			}
+		}
+		// One page that answered, even with nothing to save, is a finished
+		// crop. Retry only when every page failed before it could answer.
+		if len(out) == 0 && attempted > 0 && failed == attempted {
+			return nil, true
+		}
+		return out, false
+	}
+	spec := make([]string, len(pages))
+	for i, page := range pages {
+		spec[i] = strconv.Itoa(page)
+	}
+	clips, err := fileCompanionClipPageSpec(context.Background(), canonical, dir, strings.Join(spec, ","), paperFigureCLIDPI, "", 0)
+	if err != nil {
+		return nil, true
+	}
+	if len(clips) > paperFigureMaxCount {
+		return clips[:paperFigureMaxCount], false
+	}
+	return clips, false
 }
 
 // fileCompanionPageCaptionState is 1 when the page text has a figure caption,

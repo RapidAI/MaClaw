@@ -200,10 +200,74 @@ export function goalCreateCommand(text: string): { command: string; objective: s
     return { command, objective };
 }
 
+const HOP_KNOWN_ACTIONS = new Set([
+    "help", "usage", "--help", "-h",
+    "run", "compile", "resume", "status", "abort",
+    "list", "spec", "define", "specs", "delete", "events",
+]);
+
+function hopFirstLine(text: string): string {
+    return (text.split(/\r?\n/).map((part) => part.trim()).find(Boolean) || "").replace(/\s+/g, " ").trim();
+}
+
+/** Task name for `/hop run` / `/hop compile`. A direct spec keeps its title. */
+function hopRunTitle(payload: string): string {
+    let body = payload.trim();
+    if (body.startsWith("--inputs")) {
+        const split = body.match(/\s--\s+([\s\S]*)$/);
+        body = (split?.[1] || "").trim();
+    }
+    const spec = body.match(/^#\s*Spec\s*[:：]\s*(.+)$/im);
+    if (spec) {
+        const name = hopFirstLine(spec[1]);
+        if (name) return name;
+    }
+    return hopFirstLine(body);
+}
+
+function hopTaskTitle(rest: string): string {
+    if (!rest) return "Hop";
+    const headMatch = rest.match(/^(\S+)(?:\s+([\s\S]+))?$/);
+    const head = (headMatch?.[1] || "").toLowerCase();
+    const payload = (headMatch?.[2] || "").trim();
+    if (!HOP_KNOWN_ACTIONS.has(head)) return hopRunTitle(rest) || "Hop";
+    if (head === "list") return "Hop 运行列表";
+    if (head === "specs") return "Hop 规约";
+    if (head === "help" || head === "usage" || head === "--help" || head === "-h") return "Hop";
+    if (head === "run" || head === "compile") return hopRunTitle(payload) || "Hop";
+    if (head === "define") return payload.split(/\s+/)[0] || "Hop";
+    return payload.split(/\s+/)[0] || "Hop";
+}
+
+/**
+ * `/hop` typed on the standing 新建任务 page starts a task of its own.
+ * The command is the first message. The title is the task text, not the verb.
+ * `/hope` is not a hop command.
+ */
+export function hopCreateCommand(text: string): { command: string; title: string } | null {
+    const command = commandSlashText(text);
+    const match = command.match(/^\/hop(?=$|\s)(?:\s+([\s\S]+))?$/i);
+    if (!match) return null;
+    return { command, title: hopTaskTitle((match[1] || "").trim()) || "Hop" };
+}
+
 /** True when text is an explicit conversation-reset slash command. */
 export function isHistoryResetCommandText(text: string): boolean {
     const trimmed = commandSlashText(text).toLowerCase();
     return trimmed === "/new" || trimmed === "/reset" || trimmed === "/clear";
+}
+
+/**
+ * `/branch` lists rewind points and `/branch …` rewinds or reports an error.
+ * Both belong to the current conversation. `/branches` is not this command.
+ */
+export function isConversationBranchCommandText(text: string): boolean {
+    return /^\/branch(?:\s|$)/i.test(commandSlashText(text));
+}
+
+/** `/branch N` rewinds. Bare `/branch` only lists points and does not clear the transcript. */
+export function isConversationBranchRewindCommand(text: string): boolean {
+    return /^\/branch\s+\d+$/i.test(commandSlashText(text));
 }
 
 /**

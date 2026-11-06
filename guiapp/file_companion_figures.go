@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
@@ -80,6 +81,11 @@ type companionFigureInventory struct {
 	size    int64
 	mod     int64
 	figures []companionFigure
+	// retry is when an empty PDF list may be built again. Zero means this
+	// size and mtime are final. A missing crop engine, a crop that failed
+	// before it could answer, or a figure that could not be written sets it.
+	// A crop that ran and saved nothing stays final.
+	retry time.Time
 }
 
 // The angle-bracket form is how markdown spells a target with spaces in it.
@@ -124,7 +130,9 @@ func (a *App) fileCompanionFiguresBounded(canonical string, cheapOnly bool) []co
 	cached := st.figures[canonical]
 	st.mu.Unlock()
 	if cached != nil && cached.size == info.Size() && cached.mod == info.ModTime().UnixNano() {
-		return cached.figures
+		if cached.retry.IsZero() || time.Now().Before(cached.retry) {
+			return cached.figures
+		}
 	}
 	if cheapOnly {
 		switch strings.ToLower(filepath.Ext(canonical)) {
@@ -133,28 +141,28 @@ func (a *App) fileCompanionFiguresBounded(canonical string, cheapOnly bool) []co
 			return nil
 		}
 	}
-	figures := a.extractFileCompanionFigures(canonical)
+	figures, retry := a.extractFileCompanionFigures(canonical)
 	st.mu.Lock()
 	if st.figures == nil {
 		st.figures = map[string]*companionFigureInventory{}
 	}
-	st.figures[canonical] = &companionFigureInventory{size: info.Size(), mod: info.ModTime().UnixNano(), figures: figures}
+	st.figures[canonical] = &companionFigureInventory{size: info.Size(), mod: info.ModTime().UnixNano(), figures: figures, retry: retry}
 	st.mu.Unlock()
 	return figures
 }
 
-func (a *App) extractFileCompanionFigures(canonical string) []companionFigure {
+func (a *App) extractFileCompanionFigures(canonical string) ([]companionFigure, time.Time) {
 	switch strings.ToLower(filepath.Ext(canonical)) {
 	case ".md", ".markdown":
-		return a.fileCompanionTextFigures(canonical, true)
+		return a.fileCompanionTextFigures(canonical, true), time.Time{}
 	case ".html", ".htm":
-		return a.fileCompanionTextFigures(canonical, false)
+		return a.fileCompanionTextFigures(canonical, false), time.Time{}
 	case ".docx":
-		return a.fileCompanionDocxFigures(canonical)
+		return a.fileCompanionDocxFigures(canonical), time.Time{}
 	case ".pdf":
 		return a.fileCompanionPdfFigures(canonical)
 	default:
-		return nil
+		return nil, time.Time{}
 	}
 }
 
@@ -266,16 +274,34 @@ func (a *App) fileCompanionDocxFigures(canonical string) []companionFigure {
 	return out
 }
 
-// fileCompanionPdfFigures uses the same XObject extraction the paper
-// interpretation already relies on. Page renders need an external rasteriser,
-// which an ordinary companion turn must not depend on.
-func (a *App) fileCompanionPdfFigures(canonical string) []companionFigure {
+// fileCompanionPdfFigures lists the drawings an ordinary question can show.
+// Embedded bitmaps come first. A page of only template icons is not a
+// figure list: captioned vector drawings are cropped when pymupdf is
+// present. The turn still answers when that crop cannot run.
+func (a *App) fileCompanionPdfFigures(canonical string) ([]companionFigure, time.Time) {
 	if info, err := os.Stat(canonical); err != nil || info.Size() > fileCompanionPdfFigureMaxBytes {
-		return nil
+		return nil, time.Time{}
 	}
-	found, err := fileCompanionExtractPaperFigures(canonical)
-	if err != nil || len(found) == 0 {
-		return nil
+	data, err := os.ReadFile(canonical)
+	if err != nil {
+		// A locked or unreadable file is not a paper with no figures.
+		return nil, time.Now().Add(paperRasterNegativeTTL)
+	}
+	if len(data) == 0 {
+		return nil, time.Time{}
+	}
+	found, err := paperFiguresFromPDFBytes(data)
+	if err != nil {
+		// A parse failure is not "this file has no figures". The next question
+		// after the probe window tries again.
+		return nil, time.Now().Add(paperRasterNegativeTTL)
+	}
+	if len(found) == 0 {
+		clips, again := a.fileCompanionClippedPaperFigures(canonical, data)
+		if again {
+			return nil, time.Now().Add(paperRasterNegativeTTL)
+		}
+		return clips, time.Time{}
 	}
 	var out []companionFigure
 	for i, fig := range found {
@@ -292,7 +318,12 @@ func (a *App) fileCompanionPdfFigures(canonical string) []companionFigure {
 			break
 		}
 	}
-	return out
+	// The paper has bitmaps. An empty list here means none of them reached
+	// the cache, so the next question tries the write again.
+	if len(out) == 0 {
+		return nil, time.Now().Add(paperRasterNegativeTTL)
+	}
+	return out, time.Time{}
 }
 
 // writeFileCompanionFigure drops one extracted image into the session's figure

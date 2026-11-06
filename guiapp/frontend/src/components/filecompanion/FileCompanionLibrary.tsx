@@ -10,6 +10,11 @@ import {
     LeaveFileCompanionGroup,
     ListFileCompanionGroups,
     ListFileCompanionLibrary,
+    ListFileCompanionCatalog,
+    CreateFileCompanionFolder,
+    RenameFileCompanionFolder,
+    DeleteFileCompanionFolder,
+    MoveFileCompanionLibraryItem,
     RemoveFileCompanionGroupMember,
     ShareFileCompanionDocument,
     ShowItemInFolder,
@@ -358,7 +363,7 @@ function GroupGlyph({ icon }: { icon: string }) {
     );
 }
 
-type LibraryGlyphName = "share" | "globe" | "lock" | "person" | "people" | "copy" | "x" | "back" | "import";
+type LibraryGlyphName = "share" | "globe" | "lock" | "person" | "people" | "copy" | "x" | "back" | "import" | "folder";
 
 function LibraryGlyph({ name, size = 14 }: { name: LibraryGlyphName; size?: number }) {
     const stroke = {
@@ -420,6 +425,11 @@ function LibraryGlyph({ name, size = 14 }: { name: LibraryGlyphName; size?: numb
             ) : null}
             {name === "x" ? <path {...stroke} d="m6.5 6.5 11 11M17.5 6.5l-11 11" /> : null}
             {name === "back" ? <path {...stroke} d="M14.5 5 8 12l6.5 7" /> : null}
+            {name === "folder" ? (
+                <>
+                    <path {...stroke} d="M4.5 8.2V17a1.8 1.8 0 0 0 1.8 1.8h11.4A1.8 1.8 0 0 0 19.5 17V9.6a1.6 1.6 0 0 0-1.6-1.6h-6.2L9.8 6.2H6.1A1.6 1.6 0 0 0 4.5 7.8v.4z" />
+                </>
+            ) : null}
         </svg>
     );
 }
@@ -569,6 +579,60 @@ export function companionSharePathKey(path: string): string {
     const text = path.trim().replace(/\\/g, "/");
     if (/^[a-zA-Z]:\//.test(text) || text.startsWith("//")) return text.toLowerCase();
     return text;
+}
+
+export type CompanionLibraryFolder = { id: string; name: string };
+
+const companionFolderNameCap = 40;
+
+export function companionFolderNameError(name: string): string {
+    const cleaned = name.trim();
+    if (!cleaned) return cs("请填写文件夹名称");
+    if ([...cleaned].length > companionFolderNameCap) return cs("文件夹名称过长");
+    return "";
+}
+
+// companionLibraryNameMatch is the 按文件名过滤 test. An empty query keeps
+// every row. Matching is a case-insensitive substring of the file name.
+export function companionLibraryNameMatch(name: string, query: string): boolean {
+    const needle = query.trim().toLocaleLowerCase();
+    if (!needle) return true;
+    return name.toLocaleLowerCase().includes(needle);
+}
+
+// companionLibraryFolderID is the folder a row belongs to. The item key is
+// the row id. The path key keeps the folder when that row is replaced by a
+// share of the same file. An unknown value is uncategorized.
+export function companionLibraryFolderID(item: { id: string; path: string }, placements: Record<string, string> | null | undefined): string {
+    if (!placements) return "";
+    const byItem = placements["item:" + item.id];
+    if (byItem) return byItem;
+    const key = companionSharePathKey(item.path || "");
+    if (!key) return "";
+    return placements["path:" + key] || "";
+}
+
+export function readCompanionLibraryCatalog(raw: unknown): { rev: number; folders: CompanionLibraryFolder[]; placements: Record<string, string> } {
+    const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+    const rev = numberOf(record, "rev", "Rev");
+    const rawFolders = Array.isArray(record.folders) ? record.folders : Array.isArray(record.Folders) ? record.Folders : [];
+    const folders: CompanionLibraryFolder[] = [];
+    for (const item of rawFolders) {
+        if (!item || typeof item !== "object") continue;
+        const row = item as Record<string, unknown>;
+        const id = textOf(row, "id", "ID");
+        const name = textOf(row, "name", "Name");
+        if (!id || !name) continue;
+        folders.push({ id, name });
+    }
+    const rawPlaces = record.placements ?? record.Placements;
+    const placements: Record<string, string> = {};
+    if (rawPlaces && typeof rawPlaces === "object" && !Array.isArray(rawPlaces)) {
+        for (const [key, value] of Object.entries(rawPlaces as Record<string, unknown>)) {
+            if (typeof value === "string" && value) placements[key] = value;
+        }
+    }
+    return { rev, folders, placements };
 }
 
 // companionInstalledSharePath is a file this machine accepted into the share
@@ -994,10 +1058,109 @@ function useDialogFocus<T extends HTMLElement>(selector: string, ready = true) {
     return ref;
 }
 
+// FolderDeletePrompt asks what to do with the documents in a folder before
+// that folder is removed. Merge moves them. Remove drops them from 文档管理
+// and leaves the source files on disk.
+function FolderDeletePrompt({
+    folder,
+    count,
+    folders,
+    busy,
+    onCancel,
+    onConfirm,
+}: {
+    folder: CompanionLibraryFolder;
+    count: number;
+    folders: CompanionLibraryFolder[];
+    busy: boolean;
+    onCancel: () => void;
+    onConfirm: (mode: "merge" | "remove", targetID: string) => void;
+}) {
+    const others = folders.filter((item) => item.id !== folder.id);
+    const [mode, setMode] = useState<"merge" | "remove">(others.length > 0 ? "merge" : "remove");
+    const [targetID, setTargetID] = useState(others[0]?.id ?? "");
+    const mergeBlocked = mode === "merge" && (others.length === 0 || !targetID);
+    useEffect(() => {
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key !== "Escape" || busy) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            onCancel();
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+    }, [busy, onCancel]);
+    return (
+        <div className="file-companion-folder-prompt" role="presentation">
+            <div
+                className="file-companion-folder-prompt-card"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="file-companion-folder-delete-title"
+                data-testid="file-companion-folder-delete"
+            >
+                <h3 id="file-companion-folder-delete-title">{cs("删除文件夹")}</h3>
+                <p>
+                    {companionFill(getCompanionUiLang(), "「${name}」里有 ${count} 个文档。可以合并到其他文件夹，或从文档管理删除这些文档。源文件会保留。", { name: folder.name, count })}
+                </p>
+                <label className="file-companion-folder-choice">
+                    <input
+                        type="radio"
+                        name="file-companion-folder-delete-mode"
+                        data-testid="file-companion-folder-delete-merge"
+                        checked={mode === "merge"}
+                        disabled={others.length === 0 || busy}
+                        onChange={() => setMode("merge")}
+                    />
+                    <span>{cs("合并到其他文件夹")}</span>
+                </label>
+                <select
+                    className="file-companion-dialog-input"
+                    data-testid="file-companion-folder-delete-target"
+                    aria-label={cs("合并到其他文件夹")}
+                    value={targetID}
+                    disabled={mode !== "merge" || others.length === 0 || busy}
+                    onChange={(event) => setTargetID(event.target.value)}
+                >
+                    {others.length === 0 ? <option value="">{cs("没有其他文件夹可以合并")}</option> : null}
+                    {others.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+                <label className="file-companion-folder-choice">
+                    <input
+                        type="radio"
+                        name="file-companion-folder-delete-mode"
+                        data-testid="file-companion-folder-delete-remove"
+                        checked={mode === "remove"}
+                        disabled={busy}
+                        onChange={() => setMode("remove")}
+                    />
+                    <span>{cs("删除这些文档")}</span>
+                </label>
+                <p className="file-companion-folder-prompt-note">{cs("本机文档会清除伴读数据。你的云端分享会取消，文档回到未分类。收到的分享会从列表移除。")}</p>
+                <div className="file-companion-folder-prompt-actions">
+                    <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-folder-delete-cancel" disabled={busy} onClick={onCancel}>
+                        {cs("取消")}
+                    </button>
+                    <button
+                        type="button"
+                        className="file-companion-dialog-primary file-companion-folder-danger"
+                        data-testid="file-companion-folder-delete-confirm"
+                        disabled={busy || mergeBlocked}
+                        onClick={() => onConfirm(mode, mode === "merge" ? targetID : "")}
+                    >
+                        {busy ? cs("删除中…") : mode === "merge" ? cs("合并并删除") : cs("删除文档并移除文件夹")}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // CompanionLibraryView is the 文档管理 screen: every local document and every
 // accepted share is one 项目 card — the document, its annotations, and its
-// discussion travel together. Actions open it for reading, share it, sync the
-// newest marks, or pack it as a companion project zip.
+// discussion travel together. A single level of folders groups those cards.
+// A file-name field narrows the list. Actions open a document for reading,
+// share it, sync the newest marks, or pack it as a companion project zip.
 export function CompanionLibraryView({
     lang,
     activePath,
@@ -1042,6 +1205,16 @@ export function CompanionLibraryView({
     const [loading, setLoading] = useState(listedSnapshot == null);
     const [syncing, setSyncing] = useState(seeded.syncing);
     const [rowBusy, setRowBusy] = useState<Record<string, string>>({});
+    const [folders, setFolders] = useState<CompanionLibraryFolder[]>([]);
+    const [placements, setPlacements] = useState<Record<string, string>>({});
+    // "" is every document. "none" is 未分类. Any other value is a folder id.
+    const [selectedFolder, setSelectedFolder] = useState("");
+    const [nameQuery, setNameQuery] = useState("");
+    const [folderDraft, setFolderDraft] = useState("");
+    const [editingID, setEditingID] = useState("");
+    const [editingName, setEditingName] = useState("");
+    const [pendingDelete, setPendingDelete] = useState<(CompanionLibraryFolder & { count: number }) | null>(null);
+    const [folderBusy, setFolderBusy] = useState(false);
     const { showConfirm } = useDialog();
     const updatedRef = useRef(onShareUpdated);
     const listedRef = useRef(onListed);
@@ -1054,6 +1227,11 @@ export function CompanionLibraryView({
     // The delete confirm is the shared custom dialog. While it is open, Escape
     // belongs to that dialog and must not also leave 文档管理.
     const confirmOpenRef = useRef(false);
+    // The folder-delete choice owns Escape the same way the confirm dialog does.
+    const folderPromptRef = useRef(false);
+    folderPromptRef.current = pendingDelete !== null;
+    const folderBusyRef = useRef(false);
+    const catalogRevRef = useRef(0);
     // showConfirm replaces a dialog that is already open and resolves the first
     // one as cancel. A second click before React disables the button would
     // close the real confirm and clear confirmOpenRef while it is still showing.
@@ -1115,9 +1293,35 @@ export function CompanionLibraryView({
         applyList(listedSnapshot, true);
     }, [listedSnapshot, applyList]);
 
+    const applyCatalog = useCallback((raw: unknown) => {
+        const next = readCompanionLibraryCatalog(raw);
+        if (next.rev > 0 && next.rev < catalogRevRef.current) return;
+        catalogRevRef.current = Math.max(catalogRevRef.current, next.rev);
+        setFolders(next.folders);
+        setPlacements(next.placements);
+    }, []);
+
+    const refreshCatalog = useCallback(async () => {
+        if (typeof ListFileCompanionCatalog !== "function") return;
+        try {
+            applyCatalog(await ListFileCompanionCatalog());
+        } catch {
+            // The document list still opens when the folder file cannot be read.
+        }
+    }, [applyCatalog]);
+
+    useEffect(() => {
+        void refreshCatalog();
+    }, [refreshCatalog]);
+
+    useEffect(() => {
+        if (selectedFolder === "" || selectedFolder === "none") return;
+        if (!folders.some((folder) => folder.id === selectedFolder)) setSelectedFolder("");
+    }, [folders, selectedFolder]);
+
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
-            if (event.key !== "Escape" || dialogOpenRef.current || confirmOpenRef.current) return;
+            if (event.key !== "Escape" || dialogOpenRef.current || confirmOpenRef.current || folderPromptRef.current) return;
             event.preventDefault();
             onExit();
         };
@@ -1255,23 +1459,156 @@ export function CompanionLibraryView({
         }
     };
 
-    const { localItems, cloudItems } = useMemo(() => ({
-        localItems: items.filter((item) => item.source !== "cloud"),
-        cloudItems: items.filter((item) => item.source === "cloud"),
-    }), [items]);
+    const beginFolder = () => {
+        if (folderBusyRef.current) return false;
+        folderBusyRef.current = true;
+        setFolderBusy(true);
+        return true;
+    };
+
+    const endFolder = () => {
+        folderBusyRef.current = false;
+        setFolderBusy(false);
+    };
+
+    const createFolder = async () => {
+        const problem = companionFolderNameError(folderDraft);
+        if (problem) {
+            showToast(problem, "error", 6000);
+            return;
+        }
+        if (typeof CreateFileCompanionFolder !== "function" || !beginFolder()) return;
+        try {
+            applyCatalog(await CreateFileCompanionFolder(folderDraft.trim()));
+            setFolderDraft("");
+            showToast(cs("已创建文件夹"), "success", 6000);
+        } catch (err) {
+            showToast(libraryError(err), "error", 6000);
+        } finally {
+            endFolder();
+        }
+    };
+
+    const renameFolder = async (id: string) => {
+        const problem = companionFolderNameError(editingName);
+        if (problem) {
+            showToast(problem, "error", 6000);
+            return;
+        }
+        if (typeof RenameFileCompanionFolder !== "function" || !beginFolder()) return;
+        try {
+            applyCatalog(await RenameFileCompanionFolder(id, editingName.trim()));
+            setEditingID("");
+            showToast(cs("已重命名文件夹"), "success", 6000);
+        } catch (err) {
+            showToast(libraryError(err), "error", 6000);
+        } finally {
+            endFolder();
+        }
+    };
+
+    const commitDeleteFolder = async (id: string, mode: "" | "merge" | "remove", targetID: string) => {
+        if (typeof DeleteFileCompanionFolder !== "function" || !beginFolder()) return;
+        try {
+            applyCatalog(await DeleteFileCompanionFolder(id, mode, targetID));
+            if (mode === "remove") await reload();
+            if (selectedFolder === id) setSelectedFolder("");
+            setPendingDelete(null);
+            setEditingID("");
+            showToast(cs("已删除文件夹"), "success", 6000);
+        } catch (err) {
+            showToast(libraryError(err), "error", 6000);
+            await refreshCatalog();
+            if (mode === "remove") await reload();
+        } finally {
+            endFolder();
+        }
+    };
+
+    const askDeleteFolder = async (folder: CompanionLibraryFolder, count: number) => {
+        if (count > 0) {
+            setPendingDelete({ ...folder, count });
+            return;
+        }
+        if (deleteGate.current) return;
+        deleteGate.current = true;
+        confirmOpenRef.current = true;
+        let ok = false;
+        try {
+            ok = await showConfirm(
+                companionFill(getCompanionUiLang(), "确认删除空文件夹「${name}」？", { name: folder.name }),
+                cs("删除文件夹"),
+                { confirmText: cs("删除"), cancelText: cs("取消"), confirmVariant: "danger" },
+            );
+        } finally {
+            confirmOpenRef.current = false;
+            deleteGate.current = false;
+        }
+        if (ok) await commitDeleteFolder(folder.id, "", "");
+    };
+
+    const moveItem = async (item: CompanionLibraryItem, folderID: string) => {
+        if (typeof MoveFileCompanionLibraryItem !== "function" || !beginFolder()) return;
+        try {
+            applyCatalog(await MoveFileCompanionLibraryItem(item.id, item.path || "", folderID));
+            const folder = folders.find((entry) => entry.id === folderID);
+            showToast(
+                folder
+                    ? companionFill(getCompanionUiLang(), "已移动到「${name}」", { name: folder.name })
+                    : cs("已移出文件夹"),
+                "success",
+                6000,
+            );
+        } catch (err) {
+            showToast(libraryError(err), "error", 6000);
+        } finally {
+            endFolder();
+        }
+    };
+
+    const libraryView = useMemo(() => {
+        const known = new Set(folders.map((folder) => folder.id));
+        const placedOf = (item: CompanionLibraryItem) => {
+            const id = companionLibraryFolderID(item, placements);
+            return known.has(id) ? id : "";
+        };
+        const inFolder = (item: CompanionLibraryItem) => {
+            if (selectedFolder === "") return true;
+            const id = placedOf(item);
+            if (selectedFolder === "none") return id === "";
+            return id === selectedFolder;
+        };
+        const scoped = items.filter(inFolder);
+        const matched = scoped.filter((item) => companionLibraryNameMatch(item.name, nameQuery));
+        const countOf = (folderID: string) => items.filter((item) => {
+            const id = placedOf(item);
+            if (folderID === "") return true;
+            if (folderID === "none") return id === "";
+            return id === folderID;
+        }).length;
+        return {
+            placedOf,
+            localItems: matched.filter((item) => item.source !== "cloud"),
+            cloudItems: matched.filter((item) => item.source === "cloud"),
+            scopedCount: scoped.length,
+            shownCount: matched.length,
+            countOf,
+        };
+    }, [items, folders, placements, selectedFolder, nameQuery]);
+    const { localItems, cloudItems, shownCount, scopedCount, countOf, placedOf } = libraryView;
     // A local document that was already published has a cloud row beside it.
     // The local card must offer 修改 on that row instead of 分享, or the same
     // paper ends up with two links. An expired link is not live, so it does
     // not hold that seat any more.
     const sharedByPath = useMemo(() => {
         const map = new Map<string, CompanionLibraryItem>();
-        for (const item of cloudItems) {
-            if (!item.mine || item.expired || !item.path) continue;
+        for (const item of items) {
+            if (item.source !== "cloud" || !item.mine || item.expired || !item.path) continue;
             const key = companionSharePathKey(item.path);
             if (key && !map.has(key)) map.set(key, item);
         }
         return map;
-    }, [cloudItems]);
+    }, [items]);
     // One parse for the whole list; each row then reads its count from the map.
     const markCounts = useMemo(
         () => loadPdfMarkCounts(items.map((item) => item.path).filter(Boolean)),
@@ -1343,6 +1680,20 @@ export function CompanionLibraryView({
                     {item.shareUrl && !item.expired ? <small className="file-companion-project-url" data-testid={`file-companion-library-url-${item.id}`}>{item.shareUrl}</small> : null}
                 </div>
                 <div className="file-companion-project-actions">
+                    {folders.length > 0 ? (
+                        <select
+                            className="file-companion-folder-move"
+                            data-testid={`file-companion-library-move-${item.id}`}
+                            aria-label={cs("移动到文件夹")}
+                            title={cs("移动到文件夹")}
+                            value={placedOf(item)}
+                            disabled={Boolean(busy) || folderBusy}
+                            onChange={(event) => { void moveItem(item, event.target.value); }}
+                        >
+                            <option value="">{cs("未分类")}</option>
+                            {folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+                        </select>
+                    ) : null}
                     {item.expired ? (
                         <span
                             className="file-companion-badge"
@@ -1452,7 +1803,7 @@ export function CompanionLibraryView({
 
     return (
         <div className="file-companion-dialog" data-testid="file-companion-library-panel" role="dialog" aria-modal="true" aria-labelledby="file-companion-library-title">
-            <div className="file-companion-dialog-scrim" data-testid="file-companion-library-scrim" onMouseDown={() => { if (confirmOpenRef.current) return; onExit(); }} />
+            <div className="file-companion-dialog-scrim" data-testid="file-companion-library-scrim" onMouseDown={() => { if (confirmOpenRef.current || folderPromptRef.current) return; onExit(); }} />
             <div className="file-companion-dialog-card file-companion-library-dialog" ref={cardRef}>
                 <header className="file-companion-dialog-head">
                     <div className="file-companion-dialog-heading">
@@ -1488,24 +1839,219 @@ export function CompanionLibraryView({
                         </button>
                     </div>
                 </header>
-                <div className="file-companion-dialog-body">
-                    {notice ? <p className="file-companion-library-notice" data-testid="file-companion-library-notice" role="status">{cs(notice)}</p> : null}
-                    {loading ? <p className="file-companion-library-note">{cs("正在读取…")}</p> : null}
-                    {syncing && !loading ? <p className="file-companion-library-note">{cs("正在同步云端分享")}</p> : null}
-                    <section className="file-companion-library-section" data-testid="file-companion-library-local" aria-label={cs("本机项目")}>
-                        <h3 className="file-companion-dialog-label">{cs("本机项目")}<span className="file-companion-dialog-optional">{localItems.length}</span></h3>
-                        {localItems.length === 0
-                            ? (loading || syncing ? null : <p className="file-companion-library-empty">{cs("还没有本机项目 — 打开或导入一个文档开始")}</p>)
-                            : <div className="file-companion-project-list">{localItems.map(renderRow)}</div>}
-                    </section>
-                    <section className="file-companion-library-section" data-testid="file-companion-library-cloud" aria-label={cs("云端项目")}>
-                        <h3 className="file-companion-dialog-label">{cs("云端项目")}<span className="file-companion-dialog-optional">{cloudItems.length}</span></h3>
-                        {cloudItems.length === 0
-                            ? (loading || syncing ? null : <p className="file-companion-library-empty">{cs("还没有云端项目 — 分享后会出现在这里")}</p>)
-                            : <div className="file-companion-project-list">{cloudItems.map(renderRow)}</div>}
-                    </section>
+                <div className="file-companion-library-body">
+                    <aside className="file-companion-library-rail" aria-label={cs("文件夹")}>
+                        <form
+                            className="file-companion-library-folder-create"
+                            data-testid="file-companion-folder-create"
+                            onSubmit={(event) => {
+                                event.preventDefault();
+                                void createFolder();
+                            }}
+                        >
+                            <input
+                                className="file-companion-dialog-input"
+                                data-testid="file-companion-folder-name"
+                                aria-label={cs("新文件夹")}
+                                placeholder={cs("新文件夹")}
+                                value={folderDraft}
+                                disabled={folderBusy}
+                                onChange={(event) => setFolderDraft(event.target.value)}
+                                onKeyDown={(event) => {
+                                    // Enter confirms an IME candidate. It must not also create the folder.
+                                    if (event.nativeEvent.isComposing && event.key === "Enter") event.preventDefault();
+                                }}
+                            />
+                            <button type="submit" className="file-companion-dialog-primary" data-testid="file-companion-folder-add" disabled={folderBusy}>
+                                {cs("创建")}
+                            </button>
+                        </form>
+                        <div
+                            className="file-companion-library-tree"
+                            role="tree"
+                            aria-label={cs("文件夹")}
+                            data-testid="file-companion-library-folders"
+                        >
+                            <FolderTreeRow
+                                testId="file-companion-folder-all"
+                                label={cs("全部")}
+                                count={countOf("")}
+                                selected={selectedFolder === ""}
+                                onSelect={() => setSelectedFolder("")}
+                            />
+                            <FolderTreeRow
+                                testId="file-companion-folder-none"
+                                label={cs("未分类")}
+                                count={countOf("none")}
+                                selected={selectedFolder === "none"}
+                                onSelect={() => setSelectedFolder("none")}
+                            />
+                            {folders.map((folder) => (
+                                <div key={folder.id} className="file-companion-folder-row" role="treeitem" aria-selected={selectedFolder === folder.id} aria-level={1}>
+                                    {editingID === folder.id ? (
+                                        <form
+                                            className="file-companion-folder-rename"
+                                            onSubmit={(event) => {
+                                                event.preventDefault();
+                                                void renameFolder(folder.id);
+                                            }}
+                                        >
+                                            <input
+                                                className="file-companion-dialog-input"
+                                                data-testid={`file-companion-folder-rename-input-${folder.id}`}
+                                                aria-label={cs("重命名文件夹")}
+                                                value={editingName}
+                                                disabled={folderBusy}
+                                                autoFocus
+                                                onChange={(event) => setEditingName(event.target.value)}
+                                                onKeyDown={(event) => {
+                                                    if (event.nativeEvent.isComposing) return;
+                                                    if (event.key === "Escape") {
+                                                        event.preventDefault();
+                                                        setEditingID("");
+                                                    }
+                                                }}
+                                            />
+                                        </form>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            className="file-companion-folder-name"
+                                            data-testid={`file-companion-folder-${folder.id}`}
+                                            onClick={() => setSelectedFolder(folder.id)}
+                                        >
+                                            <LibraryGlyph name="folder" size={14} />
+                                            <span>{folder.name}</span>
+                                        </button>
+                                    )}
+                                    <span className="file-companion-folder-count">{countOf(folder.id)}</span>
+                                    <button
+                                        type="button"
+                                        className="file-companion-folder-icon"
+                                        data-testid={`file-companion-folder-rename-${folder.id}`}
+                                        aria-label={cs("重命名文件夹")}
+                                        title={cs("重命名文件夹")}
+                                        disabled={folderBusy}
+                                        onClick={() => {
+                                            setEditingID(folder.id);
+                                            setEditingName(folder.name);
+                                            setSelectedFolder(folder.id);
+                                        }}
+                                    >
+                                        {cs("重命名")}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="file-companion-folder-icon"
+                                        data-testid={`file-companion-folder-delete-${folder.id}`}
+                                        aria-label={cs("删除文件夹")}
+                                        title={cs("删除文件夹")}
+                                        disabled={folderBusy}
+                                        onClick={() => { void askDeleteFolder(folder, countOf(folder.id)); }}
+                                    >
+                                        {cs("删除")}
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </aside>
+                    <div className="file-companion-library-main">
+                        <div className="file-companion-library-filter">
+                            <input
+                                className="file-companion-dialog-input"
+                                data-testid="file-companion-library-filter"
+                                aria-label={cs("按文件名过滤")}
+                                placeholder={cs("按文件名过滤")}
+                                value={nameQuery}
+                                onChange={(event) => setNameQuery(event.target.value)}
+                            />
+                            {nameQuery ? (
+                                <button
+                                    type="button"
+                                    className="file-companion-dialog-secondary"
+                                    data-testid="file-companion-library-filter-clear"
+                                    onClick={() => setNameQuery("")}
+                                >
+                                    {cs("清除过滤")}
+                                </button>
+                            ) : null}
+                        </div>
+                        {nameQuery.trim() ? (
+                            <p className="file-companion-library-filter-count" data-testid="file-companion-library-filter-count">
+                                {companionFill(getCompanionUiLang(), "显示 ${shown} / 共 ${count} 个", { shown: shownCount, count: scopedCount })}
+                            </p>
+                        ) : null}
+                        {notice ? <p className="file-companion-library-notice" data-testid="file-companion-library-notice" role="status">{cs(notice)}</p> : null}
+                        {loading ? <p className="file-companion-library-note">{cs("正在读取…")}</p> : null}
+                        {syncing && !loading ? <p className="file-companion-library-note">{cs("正在同步云端分享")}</p> : null}
+                        {narrowedLibrary(nameQuery, selectedFolder) && localItems.length === 0 && cloudItems.length === 0 && !loading && !syncing ? (
+                            <p className="file-companion-library-empty" data-testid="file-companion-library-filter-empty">
+                                {nameQuery.trim()
+                                    ? cs("没有匹配的文件")
+                                    : selectedFolder === "none"
+                                        ? cs("未分类里还没有文档")
+                                        : cs("这个文件夹里还没有文档")}
+                            </p>
+                        ) : (
+                            <>
+                                {narrowedLibrary(nameQuery, selectedFolder) && localItems.length === 0 ? null : (
+                                    <section className="file-companion-library-section" data-testid="file-companion-library-local" aria-label={cs("本机项目")}>
+                                        <h3 className="file-companion-dialog-label">{cs("本机项目")}<span className="file-companion-dialog-optional">{localItems.length}</span></h3>
+                                        {localItems.length === 0
+                                            ? (loading || syncing ? null : <p className="file-companion-library-empty">{cs("还没有本机项目 — 打开或导入一个文档开始")}</p>)
+                                            : <div className="file-companion-project-list">{localItems.map(renderRow)}</div>}
+                                    </section>
+                                )}
+                                {narrowedLibrary(nameQuery, selectedFolder) && cloudItems.length === 0 ? null : (
+                                    <section className="file-companion-library-section" data-testid="file-companion-library-cloud" aria-label={cs("云端项目")}>
+                                        <h3 className="file-companion-dialog-label">{cs("云端项目")}<span className="file-companion-dialog-optional">{cloudItems.length}</span></h3>
+                                        {cloudItems.length === 0
+                                            ? (loading || syncing ? null : <p className="file-companion-library-empty">{cs("还没有云端项目 — 分享后会出现在这里")}</p>)
+                                            : <div className="file-companion-project-list">{cloudItems.map(renderRow)}</div>}
+                                    </section>
+                                )}
+                            </>
+                        )}
+                    </div>
                 </div>
+                {pendingDelete ? (
+                    <FolderDeletePrompt
+                        folder={pendingDelete}
+                        count={pendingDelete.count}
+                        folders={folders}
+                        busy={folderBusy}
+                        onCancel={() => { if (!folderBusy) setPendingDelete(null); }}
+                        onConfirm={(mode, targetID) => { void commitDeleteFolder(pendingDelete.id, mode, targetID); }}
+                    />
+                ) : null}
             </div>
+        </div>
+    );
+}
+
+function narrowedLibrary(query: string, selectedFolder: string): boolean {
+    return query.trim() !== "" || selectedFolder !== "";
+}
+
+function FolderTreeRow({
+    testId,
+    label,
+    count,
+    selected,
+    onSelect,
+}: {
+    testId: string;
+    label: string;
+    count: number;
+    selected: boolean;
+    onSelect: () => void;
+}) {
+    return (
+        <div className="file-companion-folder-row" role="treeitem" aria-selected={selected} aria-level={1}>
+            <button type="button" className="file-companion-folder-name" data-testid={testId} onClick={onSelect}>
+                <span>{label}</span>
+            </button>
+            <span className="file-companion-folder-count">{count}</span>
         </div>
     );
 }

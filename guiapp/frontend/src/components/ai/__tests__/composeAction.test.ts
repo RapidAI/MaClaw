@@ -6,7 +6,10 @@ import {
     getComposeActionLabel,
     getComposeActionPlaceholder,
     goalCreateCommand,
+    hopCreateCommand,
     isBtwCommandText,
+    isConversationBranchCommandText,
+    isConversationBranchRewindCommand,
     isHistoryResetCommandText,
     LOOP_COMMAND_TEMPLATE,
     PLUS_MENU_ACTION_ITEMS,
@@ -99,6 +102,26 @@ describe("goalCreateCommand", () => {
     });
 });
 
+describe("hopCreateCommand", () => {
+    it("turns /hop run into a task whose title is the instruction", () => {
+        expect(hopCreateCommand("/hop run 北京天气")).toEqual({ command: "/hop run 北京天气", title: "北京天气" });
+        expect(hopCreateCommand("／hop run 北京天气")).toEqual({ command: "/hop run 北京天气", title: "北京天气" });
+        expect(hopCreateCommand("/HOP compile 生成摘要")).toEqual({ command: "/HOP compile 生成摘要", title: "生成摘要" });
+        expect(hopCreateCommand("/hop 北京天气")).toEqual({ command: "/hop 北京天气", title: "北京天气" });
+        expect(hopCreateCommand("/hop")).toEqual({ command: "/hop", title: "Hop" });
+        expect(hopCreateCommand("/hop list")).toEqual({ command: "/hop list", title: "Hop 运行列表" });
+        expect(hopCreateCommand("/hope test")).toBeNull();
+        expect(hopCreateCommand("/help")).toBeNull();
+    });
+
+    it("uses the spec title when /hop run carries a HopSpec", () => {
+        expect(hopCreateCommand("/hop run # Spec: 北京天气\nGoal: 查询")).toEqual({
+            command: "/hop run # Spec: 北京天气\nGoal: 查询",
+            title: "北京天气",
+        });
+    });
+});
+
 describe("isHistoryResetCommandText", () => {
     it("detects /clear /new /reset and ignores neighboring slash commands", () => {
         expect(isHistoryResetCommandText("/clear")).toBe(true);
@@ -111,6 +134,23 @@ describe("isHistoryResetCommandText", () => {
         expect(isHistoryResetCommandText("/help")).toBe(false);
         expect(isHistoryResetCommandText("/compress")).toBe(false);
         expect(isHistoryResetCommandText("clear")).toBe(false);
+    });
+});
+
+describe("isConversationBranchCommandText", () => {
+    it("keeps /branch list and rewind on the command, and ignores neighbors", () => {
+        expect(isConversationBranchCommandText("/branch")).toBe(true);
+        expect(isConversationBranchCommandText("  /BRANCH 1  ")).toBe(true);
+        expect(isConversationBranchCommandText("／branch 2")).toBe(true);
+        expect(isConversationBranchCommandText("/branch foo")).toBe(true);
+        expect(isConversationBranchCommandText("/branches")).toBe(false);
+        expect(isConversationBranchCommandText("/hop run 北京天气")).toBe(false);
+        expect(isConversationBranchCommandText("/clear")).toBe(false);
+        expect(isConversationBranchRewindCommand("/branch 1")).toBe(true);
+        expect(isConversationBranchRewindCommand("／branch 12")).toBe(true);
+        expect(isConversationBranchRewindCommand("/branch")).toBe(false);
+        expect(isConversationBranchRewindCommand("/branch foo")).toBe(false);
+        expect(isConversationBranchRewindCommand("/branch 1 extra")).toBe(false);
     });
 });
 

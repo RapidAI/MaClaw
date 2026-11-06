@@ -1,9 +1,10 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { DesktopBotOptionChips } from './DesktopBotOptionChips';
 import { DesktopBotInquiryCard, askUserAllowsMultiple } from './DesktopBotInquiryCard';
 import { DesktopBotMaterialChips, DesktopBotMaterialStrip } from './DesktopBotMaterialStrip';
 import { materialTooLarge, materialUploadId, splitMaterials, uploadMaterial, withMaterials, type MaterialItem } from './desktopBotMaterials';
 import { createPortal } from 'react-dom';
+import { Z } from '../ui/zIndex';
 import { useDialog } from '../CustomDialog';
 import { EventsOn } from '../../../wailsjs/runtime';
 import {
@@ -767,6 +768,7 @@ function copy(lang: string) {
             shared: 'A bot is a digital assistant stationed on the remote computer around the clock.',
             empty: 'No bots yet.',
             create: 'New',
+            rowActions: 'Bot actions',
             editInfo: 'Edit info',
             styleInfo: 'Character and voice',
             editTitle: 'Edit bot info',
@@ -980,6 +982,7 @@ function copy(lang: string) {
             shared: 'Bot為24小時駐守遠端電腦上的數位助理。',
             empty: '還沒有 Bot。',
             create: '新建',
+            rowActions: '更多操作',
             editInfo: '編輯資訊',
             styleInfo: '性格與說話風格',
             editTitle: '編輯 Bot 資訊',
@@ -1191,6 +1194,7 @@ function copy(lang: string) {
         shared: 'Bot为24小时驻守远程电脑上的数字助理。',
         empty: '还没有 Bot。',
         create: '新建',
+        rowActions: '更多操作',
         editInfo: '编辑信息',
         styleInfo: '性格与说话风格',
         editTitle: '编辑 Bot 信息',
@@ -1788,6 +1792,178 @@ function RowActionIcon({ name }: { name: 'rename' | 'remove' | 'style' }) {
     );
 }
 
+function MoreIcon() {
+    return (
+        <svg className="desktop-bot-workspace__action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <circle cx="3.2" cy="8" r="1.4" fill="currentColor" />
+            <circle cx="8" cy="8" r="1.4" fill="currentColor" />
+            <circle cx="12.8" cy="8" r="1.4" fill="currentColor" />
+        </svg>
+    );
+}
+
+type BotRowActionsProps = {
+    botId: string;
+    // 开关状态由父组件统一持有（互斥菜单），()=>void 保证键盘 Enter 激活也只开一份。
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    labels: { rowActions: string; editInfo: string; styleInfo: string; remove: string };
+    onEdit: () => void;
+    onStyle: () => void;
+    onDelete: () => void;
+};
+
+// 行尾的 ⋯ 按钮：编辑/性格/删除收进 portal 小菜单，按钮占真实排版空间，
+// 不再以浮层盖住名字与「主」徽标。定位与关闭套路照抄 AssistantPermissionModeMenu：
+// 测触发器 rect、右对齐、上下翻转、外点/Escape 关闭、滚动与缩放重定位。
+function BotRowActions({ botId, open, onOpenChange, labels, onEdit, onStyle, onDelete }: BotRowActionsProps) {
+    const [menuPosition, setMenuPosition] = useState<{ left: number; top: number; openUp: boolean; maxHeight: number } | null>(null);
+    // 收进 ref 再进 effect，父组件重渲染换回调也不必反复拆挂监听。
+    const onOpenChangeRef = useRef(onOpenChange);
+    onOpenChangeRef.current = onOpenChange;
+    const triggerRef = useRef<HTMLButtonElement | null>(null);
+    const menuRef = useRef<HTMLDivElement | null>(null);
+    const menuId = useMemo(() => `desktop-bot-row-menu-${botId}`, [botId]);
+
+    const updateMenuPosition = useCallback(() => {
+        const trigger = triggerRef.current;
+        if (!trigger || typeof window === 'undefined') return;
+        const rect = trigger.getBoundingClientRect();
+        const menuWidth = 168;
+        const viewportPadding = 8;
+        const menuGap = 6;
+        const spaceAbove = Math.max(0, rect.top - menuGap - viewportPadding);
+        const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - menuGap - viewportPadding);
+        // 挑更宽裕的一侧展开，列表底部行也不让菜单被视口裁掉。
+        const openUp = spaceAbove >= spaceBelow;
+        const availableHeight = openUp ? spaceAbove : spaceBelow;
+        const left = Math.min(
+            Math.max(viewportPadding, rect.right - menuWidth),
+            Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding),
+        );
+        setMenuPosition({
+            left,
+            top: openUp ? rect.top - menuGap : rect.bottom + menuGap,
+            openUp,
+            maxHeight: Math.min(240, availableHeight),
+        });
+    }, []);
+
+    const setMenuOpen = useCallback((next: boolean) => {
+        if (next) updateMenuPosition();
+        onOpenChangeRef.current(next);
+    }, [updateMenuPosition]);
+
+    const close = useCallback((focusTrigger: boolean) => {
+        onOpenChangeRef.current(false);
+        if (focusTrigger) triggerRef.current?.focus();
+    }, []);
+
+    useEffect(() => {
+        if (!open) return;
+        const handlePointerDown = (event: globalThis.PointerEvent) => {
+            const target = event.target as Node;
+            if (!triggerRef.current?.contains(target) && !menuRef.current?.contains(target)) close(false);
+        };
+        const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+            if (event.key === 'Escape') close(true);
+        };
+        const handleReposition = () => updateMenuPosition();
+        document.addEventListener('pointerdown', handlePointerDown);
+        document.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('resize', handleReposition);
+        window.addEventListener('scroll', handleReposition, true);
+        return () => {
+            document.removeEventListener('pointerdown', handlePointerDown);
+            document.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('resize', handleReposition);
+            window.removeEventListener('scroll', handleReposition, true);
+        };
+    }, [open, updateMenuPosition, close]);
+
+    // 打开时把焦点交给首项，键盘就直接可用；点击项后关闭并回焦触发器。
+    useEffect(() => {
+        if (open) menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    }, [open]);
+
+    const runAction = (action: () => void) => {
+        close(false);
+        action();
+    };
+
+    const items = [
+        { key: 'edit' as const, label: labels.editInfo, danger: false, icon: <RowActionIcon name="rename" />, onClick: () => runAction(onEdit) },
+        { key: 'style' as const, label: labels.styleInfo, danger: false, icon: <RowActionIcon name="style" />, onClick: () => runAction(onStyle) },
+        { key: 'delete' as const, label: labels.remove, danger: true, icon: <RowActionIcon name="remove" />, onClick: () => runAction(onDelete) },
+    ];
+
+    return (
+        <>
+            <button
+                type="button"
+                ref={triggerRef}
+                className={'desktop-bot-workspace__more' + (open ? ' is-open' : '')}
+                data-testid={`desktop-bot-more-${botId}`}
+                aria-haspopup="menu"
+                aria-expanded={open}
+                aria-controls={open ? menuId : undefined}
+                aria-label={labels.rowActions}
+                title={labels.rowActions}
+                onClick={() => setMenuOpen(!open)}
+                onKeyDown={(event: KeyboardEvent<HTMLButtonElement>) => {
+                    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                        event.preventDefault();
+                        setMenuOpen(true);
+                    }
+                }}
+            >
+                <MoreIcon />
+            </button>
+            {open && menuPosition && typeof document !== 'undefined' && createPortal(
+                <div
+                    ref={menuRef}
+                    id={menuId}
+                    role="menu"
+                    aria-label={labels.rowActions}
+                    className="desktop-bot-workspace__row-menu"
+                    style={{ left: menuPosition.left, top: menuPosition.top, transform: menuPosition.openUp ? 'translateY(-100%)' : undefined, zIndex: Z.panelTop, maxHeight: `${menuPosition.maxHeight}px` }}
+                >
+                    {items.map((item) => (
+                        <Fragment key={item.key}>
+                            {item.key === 'delete' ? <span className="desktop-bot-workspace__menu-divider" aria-hidden="true" /> : null}
+                            <button
+                                type="button"
+                                role="menuitem"
+                                className={'desktop-bot-workspace__row-menuitem' + (item.danger ? ' is-danger' : '')}
+                                data-testid={`desktop-bot-${item.key}-${botId}`}
+                                onClick={item.onClick}
+                                onKeyDown={(event: KeyboardEvent<HTMLButtonElement>) => {
+                                    const menuItems = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') || []);
+                                    const indexNow = menuItems.indexOf(event.currentTarget);
+                                    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                                        event.preventDefault();
+                                        menuItems[(indexNow + (event.key === 'ArrowDown' ? 1 : menuItems.length - 1)) % menuItems.length]?.focus();
+                                    } else if (event.key === 'Home') {
+                                        event.preventDefault();
+                                        menuItems[0]?.focus();
+                                    } else if (event.key === 'End') {
+                                        event.preventDefault();
+                                        menuItems[menuItems.length - 1]?.focus();
+                                    }
+                                }}
+                            >
+                                <span className="desktop-bot-workspace__row-menuitem-icon">{item.icon}</span>
+                                <span>{item.label}</span>
+                            </button>
+                        </Fragment>
+                    ))}
+                </div>,
+                document.body,
+            )}
+        </>
+    );
+}
+
 function readListWidth(): number {
     try {
         const raw = window.localStorage.getItem(LIST_WIDTH_KEY);
@@ -1826,6 +2002,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const hiddenBotIds = useRef<Set<string>>(new Set());
     const renamedBots = useRef<Map<string, { title: string; description: string }>>(new Map());
     const [selectedId, setSelectedId] = useState('');
+    // 全局唯一的行操作菜单 id：开新的必关旧的，与触发方式（鼠标/键盘）无关。
+    const [rowMenuId, setRowMenuId] = useState<string | null>(null);
     const userIdRef = useRef(userId);
     userIdRef.current = userId;
     // Non-zero while a confirm dialog or its delete request is in progress.
@@ -6468,11 +6646,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             </span>
                                         ) : null}
                                     </button>
-                                    <div className="desktop-bot-workspace__actions">
-                                        <button type="button" data-testid={`desktop-bot-edit-${bot.id}`} aria-label={text.editInfo} title={text.editInfo} onClick={() => { setEditBot(bot); setEditNotice(''); }}><RowActionIcon name="rename" /></button>
-                                        <button type="button" data-testid={`desktop-bot-style-${bot.id}`} aria-label={text.styleInfo} title={text.styleInfo} onClick={() => setStyleBot(bot)}><RowActionIcon name="style" /></button>
-                                        <button type="button" data-testid={`desktop-bot-delete-${bot.id}`} aria-label={text.remove} title={text.remove} onClick={() => { void remove(bot.id); }}><RowActionIcon name="remove" /></button>
-                                    </div>
+                                    <BotRowActions
+                                        botId={bot.id}
+                                        open={rowMenuId === bot.id}
+                                        onOpenChange={(next) => setRowMenuId(next ? bot.id : null)}
+                                        labels={{ rowActions: text.rowActions, editInfo: text.editInfo, styleInfo: text.styleInfo, remove: text.remove }}
+                                        onEdit={() => { setEditBot(bot); setEditNotice(''); }}
+                                        onStyle={() => setStyleBot(bot)}
+                                        onDelete={() => { void remove(bot.id); }}
+                                    />
                                 </li>
                             );
                         })}
