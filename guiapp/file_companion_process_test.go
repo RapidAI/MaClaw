@@ -377,9 +377,13 @@ func TestFileCompanionCanonicalDedupeInBootQueue(t *testing.T) {
 
 func TestFileCompanionStartupDoesNotOpenMainTranscriptOrEnvCheck(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(app.stopFileCompanionLanguageWatcher)
+	t.Cleanup(app.stopFileCompanionNotificationWatch)
 	before := environmentCheckEntries.Load()
 	app.fileCompanionStartup(context.Background())
-	t.Cleanup(app.stopFileCompanionLanguageWatcher)
+	if !fileCompanionNotificationWatchRunning() {
+		t.Fatal("companion startup did not start the notification watch")
+	}
 	if environmentCheckEntries.Load() != before {
 		t.Fatal("companion startup called CheckEnvironment")
 	}
@@ -562,6 +566,33 @@ func TestShowFileCompanionLaunchesWithoutAPath(t *testing.T) {
 	}
 	if len(argv) != 2 || argv[1] != "open-file" {
 		t.Fatalf("argv = %#v", argv)
+	}
+}
+
+func TestLaunchFileCompanionFromCompanionProcessDoesNotSpawn(t *testing.T) {
+	app := &App{}
+	app.seedFileCompanionPaths(nil)
+	app.FileCompanionUIReady()
+	spawned := false
+	app.processHooks.startProcess = func(got []string) error {
+		spawned = true
+		return nil
+	}
+	shown := 0
+	app.processHooks.showWindow = func() { shown++ }
+	file := filepath.Join(t.TempDir(), "shared.pdf")
+	if err := app.LaunchFileCompanion([]string{file}); err != nil {
+		t.Fatal(err)
+	}
+	if spawned {
+		t.Fatal("companion process started another companion")
+	}
+	if shown != 1 {
+		t.Fatalf("shown = %d", shown)
+	}
+	emitted := app.fileCompanion.emitted
+	if len(emitted) != 1 || len(emitted[0]) != 1 || emitted[0][0] != file {
+		t.Fatalf("emitted = %#v", emitted)
 	}
 }
 

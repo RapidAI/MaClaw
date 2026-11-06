@@ -180,6 +180,9 @@ func (c *guiHopJITCaller) stepToolProviderFactory() hopjit.StepToolProviderFacto
 		if err != nil {
 			return nil, err
 		}
+		if query := hopLookupQuery(c.task, step); query != "" {
+			return hopLookupSearchProvider{inner: provider, query: query}, nil
+		}
 		return provider, nil
 	}
 }

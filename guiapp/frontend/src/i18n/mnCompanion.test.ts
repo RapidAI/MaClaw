@@ -26,6 +26,8 @@ describe("companion Mongolian copy", () => {
         expect(companionSay("mn", "发送")).not.toMatch(/[\u3400-\u9fff]/);
         expect(companionSay("mn", "Not a companion sentence")).toBe("Not a companion sentence");
         expect(companionFill("mn", "关闭 ${name}", { name: "a.pdf" })).toBe("a.pdf-г хаах");
+        expect(companionFill("en", "待审核 ${count}", { count: 2 })).toBe("Review waiting 2");
+        expect(companionFill("mn", "讨论 ${count}", { count: 6 })).toBe("Хэлэлцүүлэг 6");
     });
 
     it("translates note progress for display and keeps the Chinese stage token", () => {

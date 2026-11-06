@@ -363,7 +363,11 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		sourceLabel = "GitHub"
 
 	case strings.Contains(hubURL, "clawhub") || strings.Contains(hubURL, "clawhub-mirror"):
-		entry, err = cskill.DefaultHubClient().DownloadClawHub(ctx, skillID)
+		stagingDir, err = cskill.PrepareStagingDir(skillID)
+		if err != nil {
+			return fmt.Sprintf("创建临时目录失败: %s", err.Error())
+		}
+		entry, err = cskill.DefaultHubClient().DownloadClawHubWithOptions(ctx, skillID, cskill.ClawHubDownloadOptions{TargetDir: stagingDir, Source: "clawhub"})
 		sourceLabel = "ClawHub"
 
 	default:

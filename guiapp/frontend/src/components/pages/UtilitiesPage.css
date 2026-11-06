@@ -232,6 +232,145 @@
     outline-offset: 1px;
 }
 
+.browser-ext__lead {
+    max-width: 40rem;
+    margin-top: 6px;
+    line-height: 1.5;
+}
+
+.browser-ext__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 12px;
+    max-width: 760px;
+}
+
+.browser-ext__card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+        "mark body"
+        "actions actions";
+    gap: 10px 14px;
+    align-items: start;
+    padding: 16px 18px;
+    border: 1px solid var(--theme-border-subtle, var(--theme-border, #d5e0ef));
+    border-radius: var(--radius-lg, 14px);
+    background: var(--theme-surface, #ffffff);
+    box-shadow: 0 1px 2px rgba(30, 58, 95, 0.04);
+}
+
+.browser-ext__mark {
+    grid-area: mark;
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--theme-primary, #2f6fbc) 12%, var(--theme-surface, #ffffff));
+    color: var(--theme-primary-strong, #235a9e);
+    font-weight: 700;
+    font-size: 1rem;
+    letter-spacing: -0.03em;
+}
+
+.browser-ext__body {
+    grid-area: body;
+    min-width: 0;
+}
+
+.browser-ext__title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.browser-ext__title strong {
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--theme-text-primary, #24364e);
+}
+
+.browser-ext__badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--theme-surface-muted, #f0f4f9);
+    color: var(--theme-text-secondary, #546479);
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.browser-ext__badge[data-state="installed"] {
+    background: color-mix(in srgb, var(--theme-success, #4f7f6f) 14%, var(--theme-surface, #ffffff));
+    color: color-mix(in srgb, var(--theme-success, #4f7f6f) 78%, var(--theme-text-primary, #24364e));
+}
+
+.browser-ext__badge[data-state="needs-enable"],
+.browser-ext__badge[data-state="needs-restart"] {
+    background: color-mix(in srgb, var(--theme-primary, #2f6fbc) 12%, var(--theme-surface, #ffffff));
+    color: var(--theme-primary-strong, #235a9e);
+}
+
+.browser-ext__badge[data-state="failed"] {
+    background: var(--theme-danger-bg, #fbf1f0);
+    color: color-mix(in srgb, var(--theme-danger, #dc1f25) 78%, var(--theme-text-primary, #24364e));
+}
+
+.browser-ext__status {
+    margin: 6px 0 0;
+    color: var(--theme-text-secondary, #546479);
+    font-size: 0.86rem;
+    line-height: 1.5;
+}
+
+.browser-ext__actions {
+    grid-area: actions;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.browser-ext__folder {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    max-width: 760px;
+    margin-top: 12px;
+}
+
+.browser-ext__path {
+    flex: 1 1 16rem;
+    min-width: 0;
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--theme-surface-muted, #f0f4f9);
+    color: var(--theme-text-primary, #24364e);
+    font-size: 0.8rem;
+    line-height: 1.4;
+    word-break: break-all;
+}
+
+@media (min-width: 720px) {
+    .browser-ext__card {
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        grid-template-areas: "mark body actions";
+        align-items: center;
+    }
+
+    .browser-ext__actions {
+        justify-content: flex-end;
+    }
+}
+
 .utilities-page__grid {
     display: grid;
     /* Compact, uniform cards: 25% smaller than the prior 300–360px tracks.

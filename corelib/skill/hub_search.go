@@ -893,43 +893,7 @@ func clawHubNameLooksLikeProse(name string) bool {
 	}
 }
 
-// DownloadClawHub downloads a skill from ClawHub mirror and returns an
-// NLSkillEntry with a craft_tool step using the SKILL.md content.
-func (c *HubClient) DownloadClawHub(ctx context.Context, slug string) (*corelib.NLSkillEntry, error) {
-	endpoint := ClawHubMirrorURL + "/api/v1/skills/" + url.PathEscape(slug)
 
-	var raw clawHubSkillResponse
-	if err := c.getJSON(ctx, endpoint, &raw); err != nil {
-		return nil, fmt.Errorf("下载 ClawHub Skill 失败: %w", err)
-	}
-
-	name := clawHubInstallName(raw.Skill.DisplayName, raw.Skill.Slug)
-
-	skillMD := raw.MetaContent.SkillMD
-	if skillMD == "" {
-		return nil, fmt.Errorf("skill %s has no SKILL.md content", slug)
-	}
-
-	return &corelib.NLSkillEntry{
-		Name:        name,
-		Description: raw.Skill.Summary,
-		Triggers:    []string{raw.Skill.Slug},
-		Steps: []corelib.NLSkillStep{
-			{
-				Action: "craft_tool",
-				Params: map[string]interface{}{
-					"instructions":      skillMD,
-					"verification_mode": "artifact_optional",
-					"register_policy":   "manual",
-				},
-			},
-		},
-		Status:     "active",
-		CreatedAt:  time.Now().Format(time.RFC3339),
-		Source:     "clawhub",
-		TrustLevel: "community",
-	}, nil
-}
 
 // DownloadGitHub downloads a skill from GitHub using the InstallRef
 // (JSON-serialized GitHubSkillCandidate) and returns an NLSkillEntry.
@@ -1112,13 +1076,4 @@ type clawHubSearchItem struct {
 	UpdatedAt   int64   `json:"updatedAt"`
 }
 
-type clawHubSkillResponse struct {
-	Skill struct {
-		Slug        string `json:"slug"`
-		DisplayName string `json:"displayName"`
-		Summary     string `json:"summary"`
-	} `json:"skill"`
-	MetaContent struct {
-		SkillMD string `json:"skillMd"`
-	} `json:"metaContent"`
-}
+

@@ -368,9 +368,9 @@ func (p *expressionParser) parseAtom() (any, error) {
 		return token.value, nil
 	case "identifier":
 		switch token.text {
-		case "true":
+		case "true", "True", "TRUE":
 			return true, nil
-		case "false":
+		case "false", "False", "FALSE":
 			return false, nil
 		case "None", "none", "null":
 			return nil, nil
@@ -380,7 +380,13 @@ func (p *expressionParser) parseAtom() (any, error) {
 			}
 			value := p.variables[token.text]
 			if !value.Assigned {
-				return nil, nil
+				// A skipped and/or side is not evaluated. An undefined name
+				// on the evaluated side is an error: treating it as nil makes
+				// `name != ""` true when the check never received the value.
+				if p.skip > 0 {
+					return nil, nil
+				}
+				return nil, fmt.Errorf("undefined name %s", token.text)
 			}
 			return value.Value, nil
 		}

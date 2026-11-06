@@ -223,6 +223,16 @@ func substituteHostProcedureSkillDir(command, skillDir string, shell hostShellKi
 		if rel := strings.TrimLeft(suffix, `/\`); rel != "" {
 			full = filepath.Join(skillDir, filepath.FromSlash(rel))
 		}
+		// The token is the procedure directory. A suffix that climbs out of
+		// that directory stays literal, the same boundary read_file enforces
+		// by rejecting the call.
+		abs, absErr := filepath.Abs(full)
+		if absErr != nil || !hostProcedureTreeContains(skillDir, abs) {
+			b.WriteString(command[start:end])
+			prev = end
+			continue
+		}
+		full = abs
 		alreadyQuoted := start > 0 && (command[start-1] == '"' || command[start-1] == '\'')
 		if alreadyQuoted {
 			b.WriteString(full)

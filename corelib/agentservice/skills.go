@@ -1505,6 +1505,9 @@ func (s *Service) persistImportedEntriesWithCommitter(ctx context.Context, p Pri
 			return nil, err
 		}
 		item.stageDir = stageDir
+		if src := strings.TrimSpace(entry.SkillDir); src != "" && filepath.Clean(src) != filepath.Clean(item.finalDir) {
+			skill.RetargetInstalledSkillPaths(&entry, src, item.finalDir)
+		}
 		if err := writeEntryToSkillDir(item.stageDir, entry); err != nil {
 			cleanupStage(item.stageDir)
 			return nil, err
@@ -2562,9 +2565,7 @@ func writeEntryToSkillDir(dir string, entry corelib.NLSkillEntry) error {
 }
 
 func isEphemeralSkillDownloadDir(dir string) bool {
-	base := filepath.Base(strings.TrimSpace(dir))
-	return strings.HasPrefix(base, "maclaw-skillhub-dl-") ||
-		strings.HasPrefix(base, "maclaw-skillmarket-dl-")
+	return skill.EphemeralSkillDownloadDir(dir)
 }
 
 // copySkillPackageFiles copies regular files from src into dst, preserving

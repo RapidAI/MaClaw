@@ -486,6 +486,23 @@ func TestBuildRemoteCodingPlanStepTextUnplannedKeepsFullPlanContext(t *testing.T
 	}
 }
 
+func TestBuildRemoteCodingPlanStepTextKeepsPriorDeliverable(t *testing.T) {
+	marker := "REMOTE_SUMMARY_TAIL"
+	sum := strings.Repeat("测", 700) + marker
+	text := buildRemoteCodingPlanStepText(nil, 1, 1, false, "follow up", nil, 2, "goal", sum, nil, nil)
+	if !strings.Contains(text, "Previous turn summary:") || !strings.Contains(text, marker) {
+		t.Fatal("unplanned remote prompt dropped the previous deliverable")
+	}
+	if !strings.Contains(text, codingPriorDeliverableInputRule) {
+		t.Fatal("unplanned remote prompt missing the prior-deliverable contract")
+	}
+	for _, banned := range []string{"Active multi-step execution plan:", "Focus on this step only"} {
+		if strings.Contains(text, banned) {
+			t.Fatalf("unplanned prompt must not include %q", banned)
+		}
+	}
+}
+
 func TestBuildRemoteCodingPlanStepTextLaterStepUsesOwnDescriptionOnly(t *testing.T) {
 	tasks := []*v2.TaskItem{
 		{Index: 1, Title: "检查环境", Description: "仅检查"},
@@ -513,6 +530,21 @@ func TestBuildRemoteCodingPlanStepTextLaterStepUsesOwnDescriptionOnly(t *testing
 	}
 	if !strings.Contains(text, "- T2: 实现功能  ← current (do only this)") {
 		t.Fatalf("current step should be marked in outline, got:\n%s", text)
+	}
+	if strings.Contains(text, codingPriorDeliverableInputRule) {
+		t.Fatal("a planned remote step must execute its own step, not treat the prior summary as frozen input")
+	}
+}
+
+func TestBuildRemoteCodingPlanStepTextHostNoteIsNotADeliverable(t *testing.T) {
+	for _, note := range []string{codingContinuationResumeNote(), codingPlanResumeStopNote()} {
+		text := buildRemoteCodingPlanStepText(nil, 1, 1, false, "follow up", nil, 2, "goal", note, nil, nil)
+		if strings.Contains(text, codingPriorDeliverableInputRule) {
+			t.Fatalf("host note must not attach the measurement rule:\n%s", text)
+		}
+		if !strings.Contains(text, note) {
+			t.Fatal("host note must be carried in full")
+		}
 	}
 }
 
@@ -543,5 +575,14 @@ func TestSetRemotePlanLastSummary(t *testing.T) {
 	setRemotePlanLastSummary(&mem, true, 2, "x", "ok", "   ")
 	if mem.LastSummary != "plain summary" {
 		t.Fatalf("empty sum should not clear: %q", mem.LastSummary)
+	}
+	long := strings.Repeat("测", 900)
+	setRemotePlanLastSummary(&mem, false, 1, "记录", "success", long)
+	if mem.LastSummary != long {
+		t.Fatalf("unplanned remote summary was cut below the model cap: %d", len([]rune(mem.LastSummary)))
+	}
+	setRemotePlanLastSummary(&mem, true, 2, "实现", "success", long)
+	if strings.Count(mem.LastSummary, "测") >= 900 {
+		t.Fatal("planned carry should stay a short step context")
 	}
 }

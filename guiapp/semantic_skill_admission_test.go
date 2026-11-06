@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -382,6 +383,18 @@ func TestHostProcedureShellBindsTheSkillDirectory(t *testing.T) {
 	if untouched != `echo $CLAUDE_SKILL_DIR_EXTRA` {
 		t.Fatalf("extra variable = %q", untouched)
 	}
+	escaped := substituteHostProcedureSkillDir(`type "{baseDir}/../secret.txt"`, dir, shell)
+	if escaped != `type "{baseDir}/../secret.txt"` {
+		t.Fatalf("bash token left the procedure: %q", escaped)
+	}
+	rawEscape := substituteHostProcedureSkillDir(`${CLAUDE_SKILL_DIR}/../secret.txt`, dir, shell)
+	if rawEscape != `${CLAUDE_SKILL_DIR}/../secret.txt` {
+		t.Fatalf("bash token left the procedure: %q", rawEscape)
+	}
+	stays := substituteHostProcedureSkillDir(`${CLAUDE_SKILL_DIR}/scripts/../scripts/intake.py`, dir, shell)
+	if !strings.Contains(stays, filepath.Join(dir, "scripts", "intake.py")) || strings.Contains(stays, "${CLAUDE_SKILL_DIR}") {
+		t.Fatalf("in-tree parent segment = %q", stays)
+	}
 	plain := bindHostProcedureShellCommand("echo ok", dir, shell)
 	if !strings.Contains(plain, dir) || !strings.Contains(plain, "echo ok") {
 		t.Fatalf("prefix = %q", plain)
@@ -530,6 +543,167 @@ func TestHostProcedureReadReachesTheSkillTree(t *testing.T) {
 	cb = empty
 	if missed := read(skillFile); strings.Contains(missed, marker) {
 		t.Fatalf("read without a procedure = %q", missed)
+	}
+}
+
+func TestHostProcedureRelativeReadKeepsTheWorkspaceFile(t *testing.T) {
+	workspace := t.TempDir()
+	skill := filepath.Join(t.TempDir(), "skill dir")
+	if err := os.MkdirAll(filepath.Join(skill, "references"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte("workspace-body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skill, "notes.txt"), []byte("skill-body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skill, "references", "prompt.md"), []byte("MOUSE-CAT-SIBLING\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("# Drawing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(skill), "secret.txt"), []byte("secret-body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := hostProcedureRelativeReadPath(skill, workspace, "notes.txt"); got != "" {
+		t.Fatalf("workspace file was redirected: %s", got)
+	}
+	wantSibling := filepath.Join(skill, "references", "prompt.md")
+	if got := hostProcedureRelativeReadPath(skill, workspace, "references/prompt.md"); got != wantSibling {
+		t.Fatalf("sibling = %q", got)
+	}
+	for _, requested := range []string{"", ".", "~/notes.txt", filepath.Join(skill, "notes.txt"), "../escape.txt", "/references/prompt.md"} {
+		if got := hostProcedureRelativeReadPath(skill, workspace, requested); got != "" {
+			t.Fatalf("path %q redirected to %s", requested, got)
+		}
+	}
+	if got := hostProcedureRelativeReadPath("", workspace, "references/prompt.md"); got != "" {
+		t.Fatalf("missing procedure redirected: %s", got)
+	}
+
+	principal := desktopUserID + ":" + workspace
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	registerBuiltinTools(h.registry, h)
+	cb := &sharedAgentLoopCallbacks{
+		handler: h, userID: principal, hostProcedureDir: skill,
+		loopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "req-relative-read", PolicyOwnerID: principal}},
+	}
+	read := func(path string) string {
+		t.Helper()
+		raw, err := json.Marshal(map[string]string{"path": path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cb.executeTrustedFileRead(tool.PlannedSelection{}, tool.CanonicalRequest{CanonicalJSON: raw})
+	}
+	kept := read("notes.txt")
+	if !strings.Contains(kept, "workspace-body") || strings.Contains(kept, "skill-body") {
+		t.Fatalf("workspace read = %q", kept)
+	}
+	got := read("references/prompt.md")
+	if !strings.Contains(got, "MOUSE-CAT-SIBLING") || strings.Contains(got, "[system rejected]") {
+		t.Fatalf("sibling read = %q", got)
+	}
+	denied := read("../escape.txt")
+	if strings.Contains(denied, "secret-body") || !strings.Contains(denied, "[system rejected]") {
+		t.Fatalf("escape read = %q", denied)
+	}
+	listed := read("")
+	if !strings.Contains(listed, "notes.txt") || strings.Contains(listed, "prompt.md") {
+		t.Fatalf("empty path listed the procedure: %q", listed)
+	}
+
+	writeArgs := `{"path":"references/prompt.md","content":"x"}`
+	if got, reject := bindHostProcedureRelativeRead(h, principal, skill, "write_file", writeArgs); reject || got != writeArgs {
+		t.Fatalf("write_file was redirected: reject=%v got=%s", reject, got)
+	}
+	writeToken := `{"path":"{baseDir}/x","content":"x"}`
+	if got, reject := bindHostProcedureRelativeRead(h, principal, skill, "write_file", writeToken); reject || got != writeToken {
+		t.Fatalf("write_file token was redirected: reject=%v got=%s", reject, got)
+	}
+	searchArgs := `{"path":"references"}`
+	if got, reject := bindHostProcedureRelativeRead(h, principal, skill, "search_files", searchArgs); reject || got != searchArgs {
+		t.Fatalf("search_files was redirected: reject=%v got=%s", reject, got)
+	}
+	if got, reject := bindHostProcedureRelativeRead(h, principal, skill, "read_file", `{"path":"notes.txt"}`); reject || got != `{"path":"notes.txt"}` {
+		t.Fatalf("workspace read rewritten: reject=%v got=%s", reject, got)
+	}
+	extra := `{"path":"$CLAUDE_SKILL_DIR_EXTRA/x"}`
+	if got, reject := bindHostProcedureRelativeRead(h, principal, skill, "read_file", extra); reject || got != extra {
+		t.Fatalf("longer name was treated as the procedure token: reject=%v got=%s", reject, got)
+	}
+	tokenNotes, reject := bindHostProcedureRelativeRead(h, principal, skill, "read_file", `{"path":"{baseDir}/notes.txt"}`)
+	if reject {
+		t.Fatal("procedure token was rejected")
+	}
+	var tokenArgs map[string]string
+	if err := json.Unmarshal([]byte(tokenNotes), &tokenArgs); err != nil {
+		t.Fatal(err)
+	}
+	if normalizeProjectSessionPath(tokenArgs["path"]) != normalizeProjectSessionPath(filepath.Join(skill, "notes.txt")) {
+		t.Fatalf("token path = %q", tokenArgs["path"])
+	}
+	body := cb.executeToolWithoutSemanticSurface("read_file", `{"path":"references/prompt.md"}`)
+	if !strings.Contains(body, "MOUSE-CAT-SIBLING") {
+		t.Fatalf("ungranted read = %q", body)
+	}
+	listedDir := cb.executeToolWithoutSemanticSurface("list_directory", `{"path":"references"}`)
+	if !strings.Contains(listedDir, "prompt.md") {
+		t.Fatalf("ungranted list = %q", listedDir)
+	}
+	workspaceRead := cb.executeToolWithoutSemanticSurface("read_file", `{"path":"notes.txt"}`)
+	if !strings.Contains(workspaceRead, "workspace-body") || strings.Contains(workspaceRead, "skill-body") {
+		t.Fatalf("ungranted workspace read = %q", workspaceRead)
+	}
+	for _, path := range []string{
+		"{baseDir}/references/prompt.md",
+		"${CLAUDE_SKILL_DIR}/references/prompt.md",
+		"$CLAUDE_SKILL_DIR/references/prompt.md",
+		`./{baseDir}/references/prompt.md`,
+		`{baseDir}\references\prompt.md`,
+	} {
+		got := read(path)
+		if !strings.Contains(got, "MOUSE-CAT-SIBLING") || strings.Contains(got, "secret-body") {
+			t.Fatalf("token read %s = %q", path, got)
+		}
+		ungranted := cb.executeToolWithoutSemanticSurface("read_file", `{"path":`+strconv.Quote(path)+`}`)
+		if !strings.Contains(ungranted, "MOUSE-CAT-SIBLING") || strings.Contains(ungranted, "secret-body") {
+			t.Fatalf("ungranted token read %s = %q", path, ungranted)
+		}
+	}
+	tokenNotesBody := read("{baseDir}/notes.txt")
+	if !strings.Contains(tokenNotesBody, "skill-body") || strings.Contains(tokenNotesBody, "workspace-body") {
+		t.Fatalf("token notes = %q", tokenNotesBody)
+	}
+	ungrantedNotes := cb.executeToolWithoutSemanticSurface("read_file", `{"path":"{baseDir}/notes.txt"}`)
+	if !strings.Contains(ungrantedNotes, "skill-body") || strings.Contains(ungrantedNotes, "workspace-body") {
+		t.Fatalf("ungranted token notes = %q", ungrantedNotes)
+	}
+	for _, path := range []string{"{baseDir}/../secret.txt", "${CLAUDE_SKILL_DIR}/../secret.txt", `$CLAUDE_SKILL_DIR\..\secret.txt`} {
+		deniedToken := read(path)
+		if strings.Contains(deniedToken, "secret-body") || !strings.Contains(deniedToken, "trusted_file_read_path_rejected") {
+			t.Fatalf("token escape %s = %q", path, deniedToken)
+		}
+		ungrantedEscape := cb.executeToolWithoutSemanticSurface("read_file", `{"path":`+strconv.Quote(path)+`}`)
+		if strings.Contains(ungrantedEscape, "secret-body") || !strings.Contains(ungrantedEscape, "[system rejected]") || !strings.Contains(ungrantedEscape, "trusted_file_read_path_rejected") {
+			t.Fatalf("ungranted token escape %s = %q", path, ungrantedEscape)
+		}
+	}
+	listedRoot := cb.executeToolWithoutSemanticSurface("list_directory", `{"path":"{baseDir}"}`)
+	if !strings.Contains(listedRoot, "references/") || !strings.Contains(listedRoot, "SKILL.md") || !strings.Contains(listedRoot, "skill dir") {
+		t.Fatalf("token list = %q", listedRoot)
+	}
+	cb.agentGuidedHostTools = true
+	escapeText, handled, ok := cb.executeAdmittedSkillHostCall("read_file", `{"path":"{baseDir}/../secret.txt"}`)
+	if !handled || ok || cb.admittedSkillSettled || strings.Contains(escapeText, "secret-body") {
+		t.Fatalf("escape counted as the procedure: handled=%v ok=%v settled=%v text=%q", handled, ok, cb.admittedSkillSettled, escapeText)
+	}
+	followed, handled, ok := cb.executeAdmittedSkillHostCall("read_file", `{"path":"{baseDir}/references/prompt.md"}`)
+	if !handled || !ok || !cb.admittedSkillSettled || !strings.Contains(followed, "MOUSE-CAT-SIBLING") {
+		t.Fatalf("token read did not follow the procedure: handled=%v ok=%v settled=%v text=%q", handled, ok, cb.admittedSkillSettled, followed)
 	}
 }
 

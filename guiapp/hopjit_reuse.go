@@ -29,10 +29,13 @@ type guiHopJITCaller struct {
 	invoke   hopJITLLMInvoke
 	identity hopJITExecutionIdentity
 	specs    hopjit.SpecProvider
+	task     string
 }
 
 func (c *guiHopJITCaller) ExecuteStep(ctx context.Context, step hopjit.StepReady) (map[string]any, error) {
-	if step.StepType == hopspec.StepAct {
+	// A tool agent runs only for an explicit whitelist or an act free step.
+	// A plain act with no tools is the same JSON completion as reason.
+	if step.StepType == hopspec.StepAct && (len(step.Tools) > 0 || step.Free) {
 		return c.executeActFree(ctx, step)
 	}
 	messages := []interface{}{

@@ -472,7 +472,16 @@ func paperFigureClipPages(data []byte) []int {
 // failed before it answered. A paper with no caption, and a crop that ran
 // and saved nothing, are final for this file.
 func (a *App) fileCompanionClippedPaperFigures(canonical string, data []byte) ([]companionFigure, bool) {
-	if a == nil || len(data) == 0 {
+	if a == nil {
+		return nil, false
+	}
+	return fileCompanionClipSavedFigures(canonical, a.fileCompanionFigureDir(canonical), data)
+}
+
+// fileCompanionClipSavedFigures crops captioned figures into dir.
+// again has the same meaning as fileCompanionClippedPaperFigures.
+func fileCompanionClipSavedFigures(source, dir string, data []byte) ([]companionFigure, bool) {
+	if len(data) == 0 || strings.TrimSpace(source) == "" || strings.TrimSpace(dir) == "" {
 		return nil, false
 	}
 	if paperRasterEngines().python == "" && fileCompanionClipPageFiguresHook == nil {
@@ -482,7 +491,6 @@ func (a *App) fileCompanionClippedPaperFigures(canonical string, data []byte) ([
 	if len(pages) == 0 {
 		return nil, false
 	}
-	dir := a.fileCompanionFigureDir(canonical)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, true
 	}
@@ -497,7 +505,7 @@ func (a *App) fileCompanionClippedPaperFigures(canonical string, data []byte) ([
 				break
 			}
 			attempted++
-			clips, clipErr := fileCompanionClipPageFigures(context.Background(), canonical, dir, page, paperFigureCLIDPI, "")
+			clips, clipErr := fileCompanionClipPageFigures(context.Background(), source, dir, page, paperFigureCLIDPI, "")
 			if clipErr != nil {
 				failed++
 				continue
@@ -520,7 +528,7 @@ func (a *App) fileCompanionClippedPaperFigures(canonical string, data []byte) ([
 	for i, page := range pages {
 		spec[i] = strconv.Itoa(page)
 	}
-	clips, err := fileCompanionClipPageSpec(context.Background(), canonical, dir, strings.Join(spec, ","), paperFigureCLIDPI, "", 0)
+	clips, err := fileCompanionClipPageSpec(context.Background(), source, dir, strings.Join(spec, ","), paperFigureCLIDPI, "", 0)
 	if err != nil {
 		return nil, true
 	}

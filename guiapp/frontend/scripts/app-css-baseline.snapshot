@@ -27190,16 +27190,16 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 /* SessionWorkingDirChip.tsx */
 .swdc-placeholder { display: inline-flex; align-items: center; min-height: var(--mc-composer-control-height, 28px); box-sizing: border-box; flex-shrink: 0; }
 .swdc-placeholder-icon { opacity: 0.35; display: inline-flex; color: var(--theme-text-muted); }
-/* Folder plus expert mark. flex-shrink 0 makes the wrapping toolbar move the
-   whole pair to the next line. max-width 100% still ellipsizes a long expert
-   name inside that row, and the kind label stays intact. */
+/* Folder plus expert mark. The pair keeps its width and wraps with the toolbar.
+   A long persona name ellipsizes inside the chip; the key and icon stay. */
 .swdc-bar { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 6px; min-width: 0; max-width: 100%; box-sizing: border-box; flex: 0 0 auto; overflow: visible; }
 .swdc-root { flex-shrink: 0; min-width: 0; max-width: 100%; }
 .swdc-chip-icon { display: inline-flex; flex-shrink: 0; opacity: 0.8; }
 .swdc-chip-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.swdc-expert { display: inline-flex; align-items: center; gap: 4px; height: var(--mc-composer-control-height, 28px); max-width: 11rem; min-width: 0; padding: 0 8px; border: 1px solid var(--mc-line, var(--theme-border)); border-radius: var(--radius-md); box-sizing: border-box; flex: 0 1 auto; overflow: hidden; background: var(--mc-muted-surface, var(--theme-surface)); color: var(--mc-copy, var(--theme-text-secondary)); font-size: 11px; line-height: 1.4; cursor: default; user-select: none; }
+.swdc-expert { display: inline-flex; align-items: center; gap: 5px; height: var(--mc-composer-control-height, 28px); max-width: 16rem; padding: 0 6px; border: none; border-radius: var(--radius-md); box-sizing: border-box; flex: 0 1 auto; overflow: hidden; white-space: nowrap; background: color-mix(in srgb, var(--mc-accent) 8%, transparent); color: var(--mc-accent); font-size: 12.5px; font-weight: 600; line-height: 1.4; cursor: default; user-select: none; }
+.swdc-expert-key { flex-shrink: 0; color: var(--mc-muted, var(--theme-text-muted)); font-weight: 400; }
 .swdc-expert-icon { flex-shrink: 0; font-size: 13px; line-height: 1; }
-.swdc-expert-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.swdc-expert-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
 /* aiAssistantControls.tsx */
 .aac-bars { display: inline-flex; align-items: center; justify-content: center; gap: 1px; width: 22px; height: 18px; overflow: hidden; }
@@ -27263,13 +27263,41 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .amd-source { margin: 8px 0 0; max-height: 240px; overflow: auto; }
 .amd-measure-host { position: absolute; left: 0; top: 0; width: 100%; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
 .amd-diagram { max-width: 100%; overflow: auto; contain: content; }
-/* The zoom is the root svg's width as a percentage of this box, so a zoomed-out
-   diagram is narrower than the column. Auto margins centre that narrower
-   drawing instead of leaving it pinned to the left edge. Once the zoom is past
-   100% the box is over-constrained, the auto margins resolve to 0, and the
-   overflow scrolls from the left as before. */
+/* The preview owns a second copy of the drawing. Hiding the chat copy skips
+   laying out that SVG under an opaque full-screen layer. */
+.amd-figure-body.is-previewing > .amd-diagram { display: none; }
+/* The zoom is the root svg's width as a percentage of this box. Under 100%
+   the drawing is narrower than the column and these margins centre it. Past
+   100% the box overflows and the margins resolve to 0; the diagram element
+   then scrolls so the middle of the drawing stays in view. */
 .mc-conversation-body .amd-diagram > svg,
 .amd-diagram > svg { display: block; max-width: none; height: auto; margin-left: auto; margin-right: auto; }
+/* Double-click and the View button open the full-screen preview. The cursor
+   stays on the chat drawing only; the preview stage uses grab instead. */
+.amd-figure-body > .amd-diagram { cursor: zoom-in; }
+/* Full-screen diagram preview. z-index is set inline from Z.topmost so it
+   covers the assistant and companion chrome and stays under alert dialogs.
+   The stage clips; the canvas is what zoom and pan move. */
+.amd-preview { position: fixed; inset: 0; display: flex; flex-direction: column; box-sizing: border-box; background: var(--amd-preview-bg); color: var(--amd-preview-text); }
+.amd-preview-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 8px 10px 16px; border-bottom: 1px solid var(--amd-preview-line); background: var(--amd-preview-bar); flex-shrink: 0; }
+.amd-preview-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.amd-preview-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.amd-preview-close { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 8px; background: transparent; color: var(--amd-preview-muted); font-size: 16px; line-height: 1; cursor: pointer; }
+.amd-preview-close:hover { background: color-mix(in srgb, var(--amd-preview-text) 8%, transparent); }
+.amd-preview-close:focus-visible { outline: 2px solid var(--amd-preview-text); outline-offset: -2px; }
+.amd-preview-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--amd-preview-paper); cursor: grab; touch-action: none; user-select: none; }
+.amd-preview-stage.is-panning { cursor: grabbing; }
+.amd-preview-stage.is-panning .amd-preview-canvas { will-change: transform; }
+/* The canvas is the drawing at zoom 1, centred on the stage, and scale grows
+   it from that centre. Until the stage is measured it fills the stage.
+   min-width/min-height 0 lets the svg shrink to that box: a flex item's
+   automatic minimum is its intrinsic size, which would otherwise pin a wide
+   drawing to the left of the canvas. */
+.amd-preview-canvas { position: absolute; display: flex; align-items: center; justify-content: center; transform-origin: center center; }
+.amd-preview-canvas.is-unmeasured { inset: 0; }
+.amd-preview-canvas.is-fitted { left: 50%; top: 50%; }
+.amd-preview-canvas .amd-diagram { width: 100%; height: 100%; min-width: 0; min-height: 0; max-width: none; overflow: visible; contain: none; display: flex; align-items: center; justify-content: center; }
+.amd-preview-canvas .amd-diagram > svg { width: 100%; height: 100%; min-width: 0; min-height: 0; max-width: 100%; max-height: 100%; margin: auto; }
 .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-']:has(.amd-figure),
 [data-testid='file-companion-message-assistant']:has(.amd-figure) { width: 100%; }
 /* Mermaid nests its stylesheet under the svg id. A matching copy is written
@@ -31963,11 +31991,6 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-task-result-card__file { display: flex; align-items: center; gap: 6px; color: var(--theme-text-secondary); font-size: 12px; }
 .mc-task-result-card__file a { flex: 1 1 auto; min-width: 0; color: var(--theme-text-secondary); text-decoration: none; word-break: break-all; }
 .mc-task-result-card__file a:hover { color: var(--mc-accent, #2e75cb); text-decoration: underline; }
-.mc-task-result-card__upload { flex: none; width: 22px; height: 22px; display: inline-grid; place-items: center; padding: 0; border: none; border-radius: var(--radius-sm); background: transparent; color: var(--theme-text-muted); font-size: 13px; line-height: 1; cursor: pointer; }
-.mc-task-result-card__upload--idle:hover:not(:disabled) { background: var(--theme-primary-soft); color: var(--mc-accent, #2e75cb); }
-.mc-task-result-card__upload--uploading { opacity: .5; cursor: default; }
-.mc-task-result-card__upload--done { color: var(--theme-success); cursor: default; }
-.mc-task-result-card__upload--error { color: var(--theme-danger); }
 .mc-task-summary-status { margin: 0 0 6px; color: var(--theme-text-muted); font-size: 12px; }
 .mc-task-summary-status[data-status='incomplete'] { color: var(--theme-danger, #a33b32); }
 /* Task artifacts: a quiet "deliverable" section holding one card per file.
@@ -32006,9 +32029,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   box-shadow: var(--shadow-md); transform: translateY(-1px);
 }
 .mc-task-artifact-item__head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 10px 12px 9px; }
-.mc-task-artifact-item__head .mc-task-artifact { flex: 0 1 auto; }
-/* The cloud-upload affordance rides the card's right edge. */
-.mc-task-artifact-item__head .mc-task-result-card__upload { margin-left: auto; }
+/* Grow into the title row, but keep .mc-task-artifact's 340px cap so a long name ellipsizes. */
+.mc-task-artifact-item__head .mc-task-artifact { flex: 1 1 auto; min-width: 0; }
 /* 120-app-responsive excludes .mc-task-artifact-item__actions from the generic
    #App repaint, so this strip owns its own palette and hover states outright. */
 .mc-task-artifact-item__actions.mc-task-result-card__actions {
@@ -32017,6 +32039,17 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   background: color-mix(in srgb, var(--theme-surface-muted) 44%, var(--theme-surface));
 }
 .mc-task-artifact-item__actions.mc-task-result-card__actions button { min-height: 30px; padding: 0 12px; border-radius: 9px; font-size: 12px; transition: border-color 140ms ease, color 140ms ease, background 140ms ease, box-shadow 140ms ease; }
+/* Status tint has to beat .mc-task-result-card__actions button's color.
+   The label already says 上传中…, so skip the global aria-busy spinner that would widen this pill. */
+.mc-task-artifact-item__actions .mc-task-upload { white-space: nowrap; }
+.mc-task-artifact-item__actions .mc-task-upload[aria-busy='true']::after { content: none; }
+.mc-task-artifact-item__actions.mc-task-result-card__actions .mc-task-upload--done,
+.mc-task-artifact-item__actions.mc-task-result-card__actions .mc-task-upload--done:hover:not(:disabled) {
+  color: var(--theme-success); cursor: default;
+  background: var(--theme-surface); border-color: var(--theme-border);
+}
+.mc-task-artifact-item__actions.mc-task-result-card__actions .mc-task-upload--error,
+.mc-task-artifact-item__actions.mc-task-result-card__actions .mc-task-upload--error:hover:not(:disabled) { color: var(--theme-danger); }
 /* Filled primary (预览) leads the strip. The class says "fill", not
    "primary": a global office-repaint repaints button[class*='primary']
    with --office-accent and would fight this theme-token fill here. */
@@ -32075,8 +32108,6 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 #App[data-ai-theme='dark'] .mc-task-result-card__heading,
 #App[data-ai-theme='dark'] .mc-task-result-card__file { color: var(--theme-text-primary); }
 #App[data-ai-theme='dark'] .mc-task-result-card__file a { color: var(--theme-text-secondary); }
-#App[data-ai-theme='dark'] .mc-task-result-card__upload { color: var(--theme-text-secondary); }
-#App[data-ai-theme='dark'] .mc-task-result-card__upload--idle:hover:not(:disabled) { background: var(--theme-surface-muted); color: var(--theme-primary-strong); }
 #App[data-ai-theme='dark'] .mc-task-result-card__actions button { border-color: var(--theme-border); background: var(--theme-surface-muted); color: var(--theme-text-secondary); }
 #App[data-ai-theme='dark'] .mc-task-artifacts {
   border-color: color-mix(in srgb, var(--theme-primary) 14%, var(--theme-border));
@@ -32094,6 +32125,12 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 /* Scoped so they out-rank the generic dark action rule above. */
 #App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions button { border-color: var(--theme-border); background: transparent; color: var(--theme-text-secondary); }
 #App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--theme-primary) 42%, var(--theme-border)); background: var(--theme-primary-soft); color: var(--theme-primary-strong); }
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-task-upload--done,
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-task-upload--done:hover:not(:disabled) {
+  color: var(--theme-success); background: transparent; border-color: var(--theme-border);
+}
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-task-upload--error,
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-task-upload--error:hover:not(:disabled) { color: var(--theme-danger); }
 #App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-artifact-btn--fill,
 #App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-artifact-btn--fill:hover:not(:disabled) {
   border-color: transparent;
@@ -34008,6 +34045,26 @@ input.cwshare-url {
   flex: 1 1 auto;
   min-width: 0;
 }
+/* The notification bell sits in the slot before the host badge. The panel
+   hangs below the bar; the bar clips its row, so an open panel has to be
+   allowed out, the same way the 打开 menu is. */
+.file-companion-titlebar-notifications {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  z-index: 2;
+}
+.file-companion-titlebar:has(.notification-panel) {
+  overflow: visible;
+}
+/* The dismiss scrim is a title-bar child at the same layer as the 打开
+   scrim (z-index 20) and covers the document, including the PDF iframe.
+   The panel lives in this slot, so the slot has to paint above that scrim.
+   Otherwise a click on a notice hits the scrim and closes the panel. */
+.file-companion-titlebar:has(.notification-panel) .file-companion-titlebar-notifications {
+  z-index: 30;
+}
 /* Everything clickable opts out of the window drag region. --wails-draggable
    inherits, and Wails starts the drag on the first mousemove after mousedown,
    so a click with a pixel of shake on a tab or a tool button moved the window
@@ -34016,6 +34073,7 @@ input.cwshare-url {
 .file-companion-titlebar-files,
 .file-companion-titlebar-tabs,
 .file-companion-titlebar-actions,
+.file-companion-titlebar-notifications,
 .file-companion-titlebar .file-companion-tool--fullscreen,
 .file-companion-titlebar .file-companion-tool--close {
   --wails-draggable: no-drag;
@@ -34359,7 +34417,8 @@ input.cwshare-url {
 }
 /* The pen sits over the top of this column. Padding stays outside the
    scrolling list, so a long list does not slide under the pen. Width is set
-   inline from the drag handle on the right edge. */
+   inline from the drag handle on the right edge. Folding leaves a strip as
+   wide as the fold button, so the page lays out beside the control. */
 .companion-pdf-bookmark-column {
   position: relative;
   flex: 0 0 156px;
@@ -34373,6 +34432,32 @@ input.cwshare-url {
   padding: 54px 8px 8px 10px;
   z-index: 7;
   --wails-draggable: no-drag;
+}
+.companion-pdf-bookmark-column[data-collapsed="true"] {
+  padding: 0;
+  /* Clip anything that is not the fold button. The list itself is display:none. */
+  overflow: hidden;
+}
+.companion-pdf-bookmark-column[data-collapsed="true"]::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 1px;
+  background: var(--theme-border, #d5e0ef);
+}
+.companion-pdf-bookmark-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+/* display:flex above would otherwise win over the hidden attribute and leave
+   a slice of the chips in the folded strip. */
+.companion-pdf-bookmark-body[hidden] {
+  display: none;
 }
 .companion-pdf-bookmark-resize {
   position: absolute;
@@ -34407,6 +34492,53 @@ input.cwshare-url {
 }
 .companion-pdf-bookmark-resize:focus-visible {
   outline: none;
+}
+/* The fold control sits on the divider. Eight pixels of it cover the column
+   padding, so the chevron stays on the line without covering a chip. Folded,
+   it fills the strip (PDF_BOOKMARK_RAIL_FOLDED) and stays off the page. */
+.companion-pdf-bookmark-fold {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 24px;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-pill);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-secondary, #46586f);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.16);
+  cursor: pointer;
+  transform: translate(-8px, -50%);
+  --wails-draggable: no-drag;
+}
+.companion-pdf-bookmark-column[data-collapsed="true"] .companion-pdf-bookmark-fold {
+  left: 0;
+  width: 100%;
+  transform: translate(0, -50%);
+}
+.companion-pdf-bookmark-fold svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+.companion-pdf-bookmark-fold:hover,
+.companion-pdf-bookmark-fold:focus-visible {
+  border-color: var(--theme-primary, #2e75cb);
+  color: var(--theme-primary, #2e75cb);
+}
+.companion-pdf-bookmark-fold:focus-visible {
+  outline: 2px solid var(--theme-primary, #2e75cb);
+  outline-offset: 2px;
+}
+/* The folded strip clips its overflow, so the ring stays inside the button. */
+.companion-pdf-bookmark-column[data-collapsed="true"] .companion-pdf-bookmark-fold:focus-visible {
+  outline-offset: -3px;
 }
 /* Two lists share the column: bookmarks on top, notes below. Each list has
    its own scroll box, so a long bookmark list cannot push the notes off the
@@ -35460,8 +35592,240 @@ body.companion-pdf-translation-dragging * {
 /* Two classes so the width wins over the single-class dialog shell that is
    emitted later in the sheet. */
 .file-companion-dialog-card.file-companion-library-dialog {
-  width: min(680px, 100%);
-  max-height: min(660px, 100%);
+  width: min(920px, 100%);
+  max-height: min(720px, 100%);
+  min-height: min(480px, 100%);
+}
+/* 文档管理: one folder level on the left, the document list on the right.
+   The rail scrolls on its own. The list scrolls on its own. */
+.file-companion-library-body {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.file-companion-library-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 12px;
+  border-right: 1px solid var(--theme-border-subtle, #e6edf6);
+  background: var(--theme-surface-muted, #f8fafc);
+}
+.file-companion-library-folder-create {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.file-companion-library-folder-create .file-companion-dialog-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+}
+.file-companion-library-folder-create .file-companion-dialog-primary {
+  height: 32px;
+  padding: 0 12px;
+  flex: 0 0 auto;
+}
+.file-companion-library-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.file-companion-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 4px 0 2px;
+  border-radius: var(--radius-sm, 6px);
+}
+.file-companion-folder-row[aria-selected="true"] {
+  background: color-mix(in srgb, var(--theme-primary, #2563eb) 10%, transparent);
+}
+.file-companion-folder-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--theme-text-primary, #1f2937);
+  font: 600 12.5px/1.2 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+.file-companion-folder-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-companion-folder-name:hover {
+  color: var(--theme-primary, #2563eb);
+}
+.file-companion-folder-name:focus-visible,
+.file-companion-folder-icon:focus-visible,
+.file-companion-folder-move:focus-visible {
+  outline: 2px solid var(--theme-primary, #2563eb);
+  outline-offset: 1px;
+}
+.file-companion-folder-count {
+  flex: 0 0 auto;
+  min-width: 1.2em;
+  color: var(--theme-text-muted, #64748b);
+  font: 600 11px/1 "Segoe UI", "SF Pro Text", sans-serif;
+  text-align: right;
+}
+.file-companion-folder-icon {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--theme-text-muted, #64748b);
+  font: 600 11px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.file-companion-folder-icon:hover:not(:disabled) {
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-primary, #2563eb);
+}
+.file-companion-folder-icon:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.file-companion-folder-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.file-companion-folder-rename .file-companion-dialog-input {
+  height: 28px;
+  padding: 0 8px;
+}
+.file-companion-library-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 14px;
+}
+.file-companion-library-filter {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding-bottom: 2px;
+  background: var(--theme-surface, #ffffff);
+}
+.file-companion-library-filter .file-companion-dialog-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 34px;
+}
+.file-companion-library-filter .file-companion-dialog-secondary {
+  flex: 0 0 auto;
+  height: 34px;
+}
+.file-companion-library-filter-count {
+  margin: -6px 0 0;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+}
+.file-companion-folder-move {
+  box-sizing: border-box;
+  max-width: 128px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text-secondary, #46586f);
+  font: 600 11.5px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+}
+.file-companion-folder-prompt {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: var(--theme-overlay, rgba(15, 23, 42, 0.48));
+}
+.file-companion-folder-prompt-card {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(420px, 100%);
+  padding: 16px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-lg, 12px);
+  background: var(--theme-surface, #ffffff);
+  box-shadow: var(--shadow-xl, 0 12px 40px -8px rgba(30, 58, 95, 0.22));
+}
+.file-companion-folder-prompt-card h3 {
+  margin: 0;
+  font: 600 15px/1.3 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+}
+.file-companion-folder-prompt-card p {
+  margin: 0;
+  color: var(--theme-text-secondary, #46586f);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.file-companion-folder-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 600 13px/1.3 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+}
+.file-companion-folder-prompt-note {
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+}
+.file-companion-folder-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.file-companion-folder-danger {
+  border-color: var(--theme-danger, #dc2626);
+  background: var(--theme-danger, #dc2626);
+}
+.file-companion-folder-danger:hover:not(:disabled) {
+  border-color: var(--theme-danger, #dc2626);
+  background: color-mix(in srgb, var(--theme-danger, #dc2626) 88%, #000000);
+}
+@media (max-width: 720px) {
+  .file-companion-library-body {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+  }
+  .file-companion-library-rail {
+    max-height: 200px;
+    border-right: 0;
+    border-bottom: 1px solid var(--theme-border-subtle, #e6edf6);
+  }
 }
 .file-companion-dialog-head-actions {
   display: flex;
@@ -37254,7 +37618,7 @@ body.companion-pdf-translation-dragging * {
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
   flex: 0 0 40px;
   height: 40px;
@@ -37265,7 +37629,9 @@ body.companion-pdf-translation-dragging * {
   user-select: none;
 }
 .file-companion-annotations-head .file-companion-annotations-kicker {
-  flex: 1 1 auto;
+  /* Stay beside the pending badge. Growing here would push that badge
+     against the chevron and split the two counts across the bar. */
+  flex: 0 1 auto;
   min-width: 0;
   margin: 0;
   overflow: hidden;
@@ -37283,7 +37649,7 @@ body.companion-pdf-translation-dragging * {
   flex: 0 0 auto;
   width: 28px;
   height: 28px;
-  margin: 0;
+  margin: 0 0 0 auto;
   padding: 0;
   border: none;
   border-radius: 6px;
@@ -39970,10 +40336,6 @@ body.companion-pdf-translation-dragging * {
   color: var(--mc-accent) !important;
 }
 #App .mc-task-result-card__file a:hover { color: var(--mc-accent-strong) !important; }
-#App .mc-task-result-card__upload { color: var(--mc-muted) !important; }
-#App .mc-task-result-card__upload--idle:hover:not(:disabled) { background: color-mix(in srgb, var(--mc-accent) 10%, var(--mc-surface)) !important; color: var(--mc-accent) !important; }
-#App .mc-task-result-card__upload--done { color: var(--theme-success) !important; }
-#App .mc-task-result-card__upload--error { color: var(--theme-danger) !important; }
 /* The per-file artifact action strip (deliverable cards) is excluded here:
    .mc-task-artifact-item__actions brings its own palette, hover states and a
    filled primary button, so the generic repaint below would fight them.

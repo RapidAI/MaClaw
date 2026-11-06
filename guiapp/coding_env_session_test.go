@@ -52,6 +52,53 @@ func TestStickyCodingWorkbenchMemoryPrevOutputs(t *testing.T) {
 	}
 }
 
+func TestPrevOutputsKeepsStoredTurnSummary(t *testing.T) {
+	body := strings.Repeat("甲", 1500)
+	mem := stickyCodingWorkbenchMemory{TurnCount: 1, LastSummary: body}
+	joined := strings.Join(mem.prevOutputs(), "\n")
+	if !strings.Contains(joined, codingPreviousTurnResultPrefix+body) {
+		t.Fatal("previous turn summary was cut below the stored cap")
+	}
+}
+
+func TestCodingUnplannedReqCtxUsesStoredRestatement(t *testing.T) {
+	got := codingUnplannedReqCtx(3, "这次把已经给出的结果写进说明文件")
+	if strings.Contains(got, "Prefer incremental") || strings.Contains(got, "Continue full coding") {
+		t.Fatalf("stored restatement should replace the generic continue contract, got %q", got)
+	}
+	if got != "这次把已经给出的结果写进说明文件" {
+		t.Fatalf("got %q", got)
+	}
+	cont := codingUnplannedReqCtx(3, "  ")
+	if !strings.Contains(cont, "turn 4") || !strings.Contains(cont, "Prefer incremental changes on prior work.") {
+		t.Fatalf("empty restatement keeps the continue contract, got %q", cont)
+	}
+	if codingUnplannedReqCtx(0, "") != "" {
+		t.Fatal("first turn without a restatement has no continue contract")
+	}
+}
+
+func TestPrependCodingRequestUnderstanding(t *testing.T) {
+	const text = "follow up task\n"
+	const rest = "这次把结果写入说明，其它先不动。"
+	got := prependCodingRequestUnderstanding(text, rest)
+	if !strings.HasPrefix(got, codingCurrentRequestUnderstandingPrefix) {
+		t.Fatalf("missing understanding label: %q", got)
+	}
+	if !strings.Contains(got, rest) || !strings.Contains(got, "follow up task") {
+		t.Fatalf("restatement or task dropped: %q", got)
+	}
+	if prependCodingRequestUnderstanding(text, text) != text {
+		t.Fatal("identical restatement must leave the prompt unchanged")
+	}
+	if prependCodingRequestUnderstanding("  "+text+"  ", " "+strings.TrimSpace(text)) != "  "+text+"  " {
+		t.Fatal("trimmed-equal restatement must leave the original prompt unchanged")
+	}
+	if prependCodingRequestUnderstanding(text, "  ") != text {
+		t.Fatal("blank restatement must leave the prompt unchanged")
+	}
+}
+
 func TestRecordStickyLocalCodingTurnAndClear(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := stickyTestUserID(t)

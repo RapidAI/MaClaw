@@ -3057,14 +3057,14 @@ func (h *IMMessageHandler) planCodingWorkbenchTasks(
 		ctxBuilder.WriteString(p)
 		ctxBuilder.WriteString("\n")
 	}
-	if s := strings.TrimSpace(sessionMem.SessionPlan); s != "" {
+	if s := codingPromptChannelText(sessionMem.SessionPlan, 400); s != "" {
 		ctxBuilder.WriteString("\nSession goal:\n")
-		ctxBuilder.WriteString(truncateRunesV2(s, 400))
+		ctxBuilder.WriteString(s)
 		ctxBuilder.WriteString("\n")
 	}
-	if s := strings.TrimSpace(sessionMem.LastSummary); s != "" {
+	if s := codingPromptChannelText(sessionMem.LastSummary, 500); s != "" {
 		ctxBuilder.WriteString("\nPrevious turn summary:\n")
-		ctxBuilder.WriteString(truncateRunesV2(s, 500))
+		ctxBuilder.WriteString(s)
 		ctxBuilder.WriteString("\n")
 	}
 

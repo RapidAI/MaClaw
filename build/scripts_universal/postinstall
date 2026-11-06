@@ -55,4 +55,15 @@ if [ -d "$APP_PATH" ]; then
         sudo -u "$CURRENT_USER" killall Dock
     fi
 fi
+
+# Companion browser plugin. pkgbuild ships only this scripts directory, so the
+# shared script is copied next to postinstall and sourced from there.
+companion_script="$(cd "$(dirname "$0")" && pwd)/install-companion-browser.sh"
+if [ -f "$companion_script" ]; then
+    # shellcheck disable=SC1090
+    . "$companion_script"
+else
+    logger "${APP_NAME}: browser plugin script missing, skipping"
+fi
+
 exit 0

@@ -830,6 +830,225 @@ func TestFileCompanionPaperEmbedsExtractedFigures(t *testing.T) {
 	}
 }
 
+// A glued running header hides the caption from the whole-page raster, and the
+// only embedded bitmap is the template icon. The interpretation still receives
+// the cropped figure. A real bitmap is not replaced by that crop.
+func TestFileCompanionPaperEmbedsClippedFiguresWhenRasterMisses(t *testing.T) {
+	font := `C:\Windows\Fonts\arial.ttf`
+	if _, err := os.Stat(font); err != nil {
+		t.Skip("no arial")
+	}
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "paper.pdf")
+	writePaperPDFIconAndCaption(t, pdfPath, font)
+	data, err := os.ReadFile(pdfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paperFigureClipPages(data)) == 0 {
+		t.Skip("caption text was not extracted from the generated pdf")
+	}
+	prevText := paperExtractPageText
+	paperExtractPageText = func(_ []byte, page int) (string, error) {
+		if page > 0 {
+			return "", errors.New("page out of range")
+		}
+		return "C. Xiao et al./ Knowledge-Based System", nil
+	}
+	t.Cleanup(func() { paperExtractPageText = prevText })
+	if pages := paperChooseFigurePages(paperFigureCaptionPages(data)); len(pages) != 0 {
+		t.Fatalf("raster pages = %v, want none when the caption is glued to the header", pages)
+	}
+	clip := filepath.Join(dir, "figures", "fig-1.png")
+	writeCompanionFigurePNG(t, clip, 220, 160)
+	prevHook := fileCompanionClipPageFiguresHook
+	calls := 0
+	fileCompanionClipPageFiguresHook = func(_ context.Context, _, _ string, page, dpi int, figure string) ([]companionFigure, error) {
+		calls++
+		if calls > 1 {
+			// The next paper's crop writes the same scratch name. The previous
+			// snapshot's picture has to stay the bytes from the first crop.
+			writeCompanionFigurePNG(t, clip, 240, 180)
+		}
+		if page != 1 || dpi != paperFigureCLIDPI || figure != "" {
+			t.Errorf("clip args page=%d dpi=%d figure=%q", page, dpi, figure)
+		}
+		return []companionFigure{{path: clip, caption: "Figure 1（第 1 页）", size: 2048}}, nil
+	}
+	t.Cleanup(func() { fileCompanionClipPageFiguresHook = prevHook })
+	markdown := "## 主要原理图及说明\n文字说明。\n\n## 实验方法\n对比。\n"
+	out := fileCompanionEmbedPaperFigures(pdfPath, dir, markdown, "fc_clip")
+	if !strings.Contains(out, "Figure 1（第 1 页）") || strings.Contains(out, filepath.ToSlash(clip)) {
+		t.Fatalf("clipped figure:\n%s", out)
+	}
+	published := paperMarkdownImagePath(out, "Figure 1（第 1 页）")
+	if !strings.HasSuffix(filepath.Base(published), "-fig-1.png") {
+		t.Fatalf("published name = %s", published)
+	}
+	firstBytes, err := os.ReadFile(published)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "figures", "clip-source.txt")); !os.IsNotExist(statErr) {
+		t.Fatal("clip identity is still a second file")
+	}
+	figureAt := strings.Index(out, "![Figure 1（第 1 页）](")
+	noteAt := strings.Index(out, "文字说明。")
+	methodAt := strings.Index(out, "## 实验方法")
+	if figureAt < 0 || noteAt < 0 || methodAt < 0 || figureAt > noteAt || noteAt > methodAt {
+		t.Fatalf("figure placement:\n%s", out)
+	}
+	if calls != 1 {
+		t.Fatalf("crop calls = %d, want 1", calls)
+	}
+	again := fileCompanionEmbedPaperFigures(pdfPath, dir, markdown, "fc_clip")
+	if again != out {
+		t.Fatalf("second interpretation:\n%s", again)
+	}
+	if calls != 1 {
+		t.Fatal("the saved crop was drawn again")
+	}
+	older := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(pdfPath, older, older); err != nil {
+		t.Fatal(err)
+	}
+	replaced := fileCompanionEmbedPaperFigures(pdfPath, dir, markdown, "fc_clip")
+	if replaced == "" {
+		t.Fatal("a replaced pdf produced no interpretation")
+	}
+	if calls != 2 {
+		t.Fatal("a pdf with an older timestamp reused the previous crop")
+	}
+	if strings.Contains(replaced, filepath.ToSlash(published)) {
+		t.Fatal("the replaced pdf still shows the previous snapshot")
+	}
+	kept, err := os.ReadFile(published)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(kept, firstBytes) {
+		t.Fatal("the next crop replaced the previous snapshot's picture")
+	}
+
+	chartDir := t.TempDir()
+	chartPath := filepath.Join(chartDir, "chart.pdf")
+	writePaperPDFWithFigures(t, chartPath)
+	called := false
+	fileCompanionClipPageFiguresHook = func(context.Context, string, string, int, int, string) ([]companionFigure, error) {
+		called = true
+		return nil, errors.New("bitmap paper must not be cropped")
+	}
+	chartMarkdown := "## 主要原理图及说明\n文字说明模块和数据流。\n\n## 实验方法\n对比基线。\n"
+	chartOut := fileCompanionEmbedPaperFigures(chartPath, chartDir, chartMarkdown, "fc_chart")
+	if called {
+		t.Fatal("a decoded chart was sent to the vector crop")
+	}
+	if !strings.Contains(chartOut, "![原文第1页](") {
+		t.Fatalf("chart embed:\n%s", chartOut)
+	}
+}
+
+func paperMarkdownImagePath(markdown, alt string) string {
+	needle := "![" + alt + "]("
+	at := strings.Index(markdown, needle)
+	if at < 0 {
+		return ""
+	}
+	rest := markdown[at+len(needle):]
+	end := strings.Index(rest, ")")
+	if end <= 0 {
+		return ""
+	}
+	return filepath.FromSlash(rest[:end])
+}
+
+// The crop writes fig-1.png before the list is published. A second file used
+// to name the PDF, so a failed update could pair the old PDF with the new
+// picture. One list names pictures that the next scratch write does not touch.
+func TestPaperClipSnapshotKeepsThePreviousPicture(t *testing.T) {
+	dir := t.TempDir()
+	figures := filepath.Join(dir, "figures")
+	scratch := filepath.Join(figures, "fig-1.png")
+	writeCompanionFigurePNG(t, scratch, 220, 160)
+	source := filepath.Join(dir, "paper.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(figures, paperClipListMarker), []byte("Figure 1（第 3 页）\tfig-1.png\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marker := strconv.FormatInt(info.Size(), 10) + "\t" + strconv.FormatInt(info.ModTime().UnixNano(), 10) + "\n" + source
+	if err := os.WriteFile(filepath.Join(figures, "clip-source.txt"), []byte(marker), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if paperFreshClipLines(source, figures) != nil {
+		t.Fatal("the split cache was reused")
+	}
+	lines := paperRememberClipLines(source, figures, []paperClipRecord{{alt: "Figure 1（第 3 页）", name: "fig-1.png"}}, info.Size(), info.ModTime().UnixNano())
+	if len(lines) != 1 {
+		t.Fatalf("remember = %v", lines)
+	}
+	if _, statErr := os.Stat(filepath.Join(figures, "clip-source.txt")); !os.IsNotExist(statErr) {
+		t.Fatal("clip identity is still a second file")
+	}
+	published := paperMarkdownImagePath(lines[0], "Figure 1（第 3 页）")
+	first, err := os.ReadFile(published)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCompanionFigurePNG(t, scratch, 240, 180)
+	kept, err := os.ReadFile(published)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, kept) {
+		t.Fatal("overwriting the scratch crop replaced the published picture")
+	}
+	if fresh := paperFreshClipLines(source, figures); len(fresh) != 1 || fresh[0] != lines[0] {
+		t.Fatalf("fresh = %v", fresh)
+	}
+	older := info.ModTime().Add(-2 * time.Hour)
+	if err := os.Chtimes(source, older, older); err != nil {
+		t.Fatal(err)
+	}
+	if paperFreshClipLines(source, figures) != nil {
+		t.Fatal("an older timestamp reused the previous snapshot")
+	}
+	info, err = os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := paperRememberClipLines(source, figures, []paperClipRecord{{alt: "Figure 1（第 3 页）", name: "fig-1.png"}}, info.Size(), info.ModTime().UnixNano())
+	if len(next) != 1 || next[0] == lines[0] {
+		t.Fatalf("next snapshot = %v", next)
+	}
+	kept, err = os.ReadFile(published)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, kept) {
+		t.Fatal("publishing the next snapshot replaced the previous picture")
+	}
+	nextBytes, err := os.ReadFile(paperMarkdownImagePath(next[0], "Figure 1（第 3 页）"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(nextBytes, first) {
+		t.Fatal("the next snapshot kept the previous picture bytes")
+	}
+	weird := source + "\nextra"
+	_, _, parsedPath, parsedRows, ok := paperParseClipSnapshot([]byte(
+		strconv.FormatInt(info.Size(), 10) + "\t" + strconv.FormatInt(info.ModTime().UnixNano(), 10) + "\t" + strconv.Itoa(len(weird)) + "\n" + weird + "\nFigure 1（第 3 页）\tfig-1.png\n",
+	))
+	if !ok || parsedPath != weird || len(parsedRows) != 1 {
+		t.Fatalf("newline path ok=%v path=%q rows=%v", ok, parsedPath, parsedRows)
+	}
+}
+
 func TestPaperPageMentionsClipCaptionAfterARunningHeader(t *testing.T) {
 	glued := " C. Xiao et al./ Knowledge-Based System  Figure 1: The overall architecture of NeurRank."
 	if !paperPageMentionsClipCaption(glued) {

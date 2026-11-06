@@ -437,23 +437,46 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 		cskill.CleanupStaging(stagingDir)
 		return trace, nil
 	case skillSearchSourceClawHub:
-		skill, err := downloadClawHubSkill(ctx, id)
+		stagingRoot, err := a.skillStagingDir()
 		if err != nil {
 			return trace, err
 		}
+		stagingDir, err := cskill.PrepareStagingDirInRoot(stagingRoot, firstNonEmpty(id, "clawhub-skill"))
+		if err != nil {
+			return trace, err
+		}
+		skill, err := downloadClawHubSkill(ctx, id, stagingDir)
+		if err != nil {
+			cskill.CleanupStaging(stagingDir)
+			return trace, err
+		}
 		if a.skillNameAlreadyRegistered(skill.Name) {
+			cskill.CleanupStaging(stagingDir)
 			return trace, fmt.Errorf("skill %q already exists", skill.Name)
 		}
 		report, err := a.scanAndAdmitSkillBeforeRegister(ctx, skill, "mixed clawhub search")
 		if err != nil {
+			cskill.CleanupStaging(stagingDir)
 			return trace, err
 		}
 		if err := writeSkillScanCacheForInstalledEntry(skill, report); err != nil {
+			cskill.CleanupStaging(stagingDir)
 			return trace, fmt.Errorf("write skill scan cache: %w", err)
 		}
+		if strings.TrimSpace(skill.SkillDir) == "" {
+			skill.SkillDir = stagingDir
+		}
+		if strings.TrimSpace(skill.SkillDir) != "" {
+			if err := a.commitStagedSkillInstall(ctx, skill, stagingDir, string(kind), report, requestID, configRevision); err != nil {
+				return trace, err
+			}
+			return trace, nil
+		}
 		if err := commitSimpleInstall(skill, report); err != nil {
+			cskill.CleanupStaging(stagingDir)
 			return trace, err
 		}
+		cskill.CleanupStaging(stagingDir)
 		return trace, nil
 	case skillSearchSourceGitHub:
 		var candidate cskill.GitHubSkillCandidate
@@ -647,6 +670,11 @@ func (a *App) installedSkillForInstall(candidate *corelib.NLSkillEntry) *corelib
 // a stable definition fingerprint that excludes runtime paths and counters.
 func skillInstallAlreadyCurrent(existing, candidate *corelib.NLSkillEntry) bool {
 	if existing == nil || candidate == nil {
+		return false
+	}
+	// Same step text does not mean the folder was published. An empty
+	// install must take the candidate that actually has the package.
+	if installedSkillPackageMissing(existing) && !installedSkillPackageMissing(candidate) {
 		return false
 	}
 	// A present stable identity is authoritative. A different Hub package must
@@ -847,21 +875,9 @@ func (a *App) commitStagedSkillInstallWithExistingInRootAndVia(ctx context.Conte
 	}
 	finalRoot = filepath.Clean(finalRoot)
 	finalDir := cskill.PlannedSkillDir(finalRoot, entry.Name)
-	if _, statErr := os.Stat(finalDir); statErr == nil {
-		if existing == nil {
-			cskill.CleanupStaging(stagingDir)
-			return fmt.Errorf("skill directory %q already exists", filepath.Base(finalDir))
-		}
-	} else if !os.IsNotExist(statErr) {
+	if err := prepareInstalledSkillPublishDestination(finalDir, existing != nil); err != nil {
 		cskill.CleanupStaging(stagingDir)
-		return fmt.Errorf("inspect skill destination: %w", statErr)
-	}
-	if _, backupErr := os.Stat(finalDir + ".prev"); backupErr == nil {
-		cskill.CleanupStaging(stagingDir)
-		return fmt.Errorf("skill destination has a stale previous backup: %s", filepath.Base(finalDir+".prev"))
-	} else if !os.IsNotExist(backupErr) {
-		cskill.CleanupStaging(stagingDir)
-		return fmt.Errorf("inspect previous skill backup: %w", backupErr)
+		return err
 	}
 	if err := cskill.RecordEvolutionEventStrict("skill:definition_install_started", map[string]string{
 		"skill": entry.Name, "action": "install", "decision": "pending", "via": via, "source": source,
@@ -1047,6 +1063,9 @@ func rewriteSkillStepWorkingDir(entry *corelib.NLSkillEntry, finalDir string) {
 		return
 	}
 	oldDir := strings.TrimSpace(entry.SkillDir)
+	// Import writes the staging path into the command string. working_dir
+	// alone still leaves bash pointed at a directory the commit deletes.
+	cskill.RetargetInstalledSkillPaths(entry, oldDir, finalDir)
 	for i := range entry.Steps {
 		if entry.Steps[i].Params == nil {
 			continue

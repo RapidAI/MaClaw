@@ -148,8 +148,9 @@ func (h *IMMessageHandler) readTrustedFile(principalID, path, query, filePattern
 }
 
 // hostProcedureTreeContains reports whether path is an absolute file inside
-// the installed procedure directory. A relative path stays in the task
-// workspace, so a workspace file is not hidden by a same-named skill file.
+// the installed procedure directory. A relative path is not absolute, so it
+// does not match here. A sibling named in the document is resolved by
+// hostProcedureRelativeReadPath, which keeps a workspace file of the same name.
 func hostProcedureTreeContains(root, path string) bool {
 	root = strings.TrimSpace(root)
 	path = strings.TrimSpace(path)
@@ -161,6 +162,175 @@ func hostProcedureTreeContains(root, path string) bool {
 	}
 	_, _, kind := resolvePathInsideWorkspace(root, path)
 	return kind == trustedPathOK
+}
+
+// hostProcedureRelativeCandidate reports a sibling name. An empty path lists
+// the workspace. An absolute path, a home path, and a root-relative path are
+// already decided by the tool that received them.
+func hostProcedureRelativeCandidate(skillDir, requested string) bool {
+	skillDir = strings.TrimSpace(skillDir)
+	requested = strings.TrimSpace(requested)
+	if skillDir == "" || requested == "" || filepath.Clean(requested) == "." {
+		return false
+	}
+	if strings.HasPrefix(requested, "~") || filepath.IsAbs(requested) {
+		return false
+	}
+	// On Windows a leading slash is not absolute. Joining it would leave the
+	// procedure tree, so it is not a sibling name.
+	if strings.HasPrefix(requested, "/") || strings.HasPrefix(requested, `\`) {
+		return false
+	}
+	return true
+}
+
+// hostProcedureRelativeReadPath returns the absolute procedure path for a
+// relative read or list. The workspace file wins: the procedure path is used
+// only when that relative name is inside the procedure tree, the workspace
+// path is confirmed missing, and the procedure path exists. Writes stay in
+// the workspace. An empty result means the caller keeps the requested path.
+func hostProcedureRelativeReadPath(skillDir, workspace, requested string) string {
+	skillDir = strings.TrimSpace(skillDir)
+	workspace = strings.TrimSpace(workspace)
+	requested = strings.TrimSpace(requested)
+	if !hostProcedureRelativeCandidate(skillDir, requested) {
+		return ""
+	}
+	skillAbs, _, kind := resolvePathInsideWorkspace(skillDir, requested)
+	if kind != trustedPathOK || !hostProcedureTreeContains(skillDir, skillAbs) {
+		return ""
+	}
+	if workspace != "" {
+		wsAbs, _, wsKind := resolvePathInsideWorkspace(workspace, requested)
+		if wsKind != trustedPathOK {
+			return ""
+		}
+		if _, err := os.Stat(wsAbs); err == nil || !os.IsNotExist(err) {
+			return ""
+		}
+	}
+	if _, err := os.Stat(skillAbs); err != nil {
+		return ""
+	}
+	return skillAbs
+}
+
+// legacyHostProcedureReadPath applies that fallback to the path toolReadFile
+// and toolListDirectory would open. The existence check uses the same owner
+// resolution as those tools, including a project workspace, so a file the
+// tool would already find is not replaced by a skill file of the same name.
+func legacyHostProcedureReadPath(h *IMMessageHandler, ownerID, skillDir, requested string) string {
+	if h == nil || !hostProcedureRelativeCandidate(skillDir, requested) {
+		return ""
+	}
+	resolved, err := h.resolveFileToolPathForOwner(requested, ownerID)
+	if err != nil {
+		return ""
+	}
+	if _, statErr := os.Stat(resolved); statErr == nil || !os.IsNotExist(statErr) {
+		return ""
+	}
+	return hostProcedureRelativeReadPath(skillDir, "", requested)
+}
+
+func hostProcedureArgPath(argsJSON string) string {
+	var args map[string]interface{}
+	if json.Unmarshal([]byte(argsJSON), &args) != nil || args == nil {
+		return ""
+	}
+	path, _ := args["path"].(string)
+	return path
+}
+
+func rewriteHostProcedureReadPathArg(argsJSON, abs string) string {
+	abs = strings.TrimSpace(abs)
+	if abs == "" {
+		return argsJSON
+	}
+	var args map[string]interface{}
+	if json.Unmarshal([]byte(argsJSON), &args) != nil || args == nil {
+		return argsJSON
+	}
+	if _, ok := args["path"].(string); !ok {
+		return argsJSON
+	}
+	args["path"] = abs
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return argsJSON
+	}
+	return string(encoded)
+}
+
+// hostProcedureTokenRelative reports the path after a procedure-directory
+// token. The token is the whole operand bash already substitutes. A longer
+// name such as $CLAUDE_SKILL_DIR_EXTRA is a different file.
+func hostProcedureTokenRelative(requested string) (string, bool) {
+	requested = strings.TrimSpace(requested)
+	for strings.HasPrefix(requested, "./") || strings.HasPrefix(requested, `.\`) {
+		requested = strings.TrimSpace(requested[2:])
+	}
+	if requested == "" {
+		return "", false
+	}
+	for _, token := range []string{"${CLAUDE_SKILL_DIR}", "{baseDir}", "$CLAUDE_SKILL_DIR"} {
+		if requested == token {
+			return ".", true
+		}
+		if strings.HasPrefix(requested, token+"/") || strings.HasPrefix(requested, token+`\`) {
+			rest := strings.TrimLeft(requested[len(token):], `/\`)
+			if rest == "" {
+				return ".", true
+			}
+			return rest, true
+		}
+	}
+	return "", false
+}
+
+// hostProcedureTokenReadPath expands {baseDir}, ${CLAUDE_SKILL_DIR}, and
+// $CLAUDE_SKILL_DIR to this procedure directory. Those tokens name the skill
+// tree, so a workspace file of the remaining relative name does not replace
+// them. An expansion that leaves the tree is rejected. A path with no token
+// returns an empty absolute path and reject false.
+func hostProcedureTokenReadPath(skillDir, requested string) (string, bool) {
+	skillDir = filepath.Clean(strings.TrimSpace(skillDir))
+	if skillDir == "" || !filepath.IsAbs(skillDir) {
+		return "", false
+	}
+	rel, ok := hostProcedureTokenRelative(requested)
+	if !ok {
+		return "", false
+	}
+	abs, _, kind := resolvePathInsideWorkspace(skillDir, rel)
+	if kind != trustedPathOK || !hostProcedureTreeContains(skillDir, abs) {
+		return "", true
+	}
+	return abs, false
+}
+
+// bindHostProcedureRelativeRead rewrites a read_file or list_directory path
+// onto the procedure tree. A directory token is that tree. A bare relative
+// name is that tree only when the workspace does not already have it.
+// write_file, edit_file, and search_files keep the path the model sent.
+// reject is true when a directory token leaves the procedure tree.
+func bindHostProcedureRelativeRead(h *IMMessageHandler, ownerID, skillDir, name, argsJSON string) (string, bool) {
+	switch strings.TrimSpace(name) {
+	case "read_file", "list_directory":
+	default:
+		return argsJSON, false
+	}
+	requested := hostProcedureArgPath(argsJSON)
+	if abs, reject := hostProcedureTokenReadPath(skillDir, requested); reject {
+		return argsJSON, true
+	} else if abs != "" {
+		return rewriteHostProcedureReadPathArg(argsJSON, abs), false
+	}
+	abs := legacyHostProcedureReadPath(h, ownerID, skillDir, requested)
+	if abs == "" {
+		return argsJSON, false
+	}
+	return rewriteHostProcedureReadPathArg(argsJSON, abs), false
 }
 
 // readHostProcedureTree reads one path inside the installed procedure.

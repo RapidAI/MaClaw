@@ -61,6 +61,9 @@ type fileCompanionRuntime struct {
 	uiReady   bool
 	bootTaken bool
 	pending   []string
+	notice    string
+	notices   []string
+	shows     int
 	seen      map[string]bool
 	emitted   [][]string
 	grants    map[string]*fileCompanionGrant
@@ -226,8 +229,9 @@ func (a *App) fileCompanionPaperBuildLock(sessionID string) *sync.Mutex {
 
 // FileCompanionBoot is the first payload the companion window reads.
 type FileCompanionBoot struct {
-	Mode  string   `json:"mode,omitempty"`
-	Paths []string `json:"paths,omitempty"`
+	Mode   string   `json:"mode,omitempty"`
+	Paths  []string `json:"paths,omitempty"`
+	Notice string   `json:"notice,omitempty"`
 }
 
 func (a *App) isFileCompanionProcess() bool {
@@ -265,6 +269,15 @@ func (a *App) darwinLatchedStartup(ctx context.Context) {
 	a.ctx = ctx
 	a.armDarwinDocumentLatch()
 	logFileCompanion("darwin latch armed; main startup deferred")
+}
+
+// darwinOnURLOpen drops maclaw://companion-paper. No nonce is ever issued,
+// so the URL does not download and does not show a window. Other host names
+// stay dropped, which is what Darwin already did.
+func (a *App) darwinOnURLOpen(raw string) {
+	if companionPaperURL(raw) {
+		return
+	}
 }
 
 // darwinOnFileOpen is mac.Options.OnFileOpen. While the latch is open it only
@@ -515,8 +528,12 @@ func (a *App) ShowFileCompanion() error {
 	return a.startCompanionProcess([]string{exe, fileCompanionOpenArg})
 }
 
-// LaunchFileCompanion starts this binary in open-file mode. It does not insert
-// the paths into the current assistant session.
+// LaunchFileCompanion opens the documents in the companion. It does not insert
+// the paths into the current assistant session. The main window starts the
+// companion process. This process, when it is already the companion, delivers
+// the paths on the same queue a second open-file instance uses and reveals
+// this window. Starting another process here would only hit the single-instance
+// lock and bounce the path back.
 func (a *App) LaunchFileCompanion(paths []string) error {
 	if a == nil {
 		return errors.New("app unavailable")
@@ -532,7 +549,24 @@ func (a *App) LaunchFileCompanion(paths []string) error {
 	if len(cleaned) == 0 {
 		return errors.New("no file selected")
 	}
-	return a.forwardFilesToCompanion(cleaned)
+	if !a.isFileCompanionProcess() {
+		return a.forwardFilesToCompanion(cleaned)
+	}
+	dir, _ := os.Getwd()
+	docs := make([]string, 0, len(cleaned))
+	for _, path := range cleaned {
+		doc, ok := fileCompanionDocumentArg(path, dir)
+		if !ok {
+			continue
+		}
+		docs = append(docs, doc)
+	}
+	if len(docs) == 0 {
+		return errors.New("no file to open")
+	}
+	a.enqueueFileCompanionPaths(docs)
+	a.revealFileCompanionWindow()
+	return nil
 }
 
 func (a *App) seedFileCompanionPaths(paths []string) {
@@ -541,6 +575,17 @@ func (a *App) seedFileCompanionPaths(paths []string) {
 	st.process = true
 	st.mu.Unlock()
 	a.enqueueFileCompanionPaths(paths)
+}
+
+func (a *App) seedFileCompanionNotice(code string) {
+	if !companionPaperNoticeCode(code) {
+		return
+	}
+	st := a.companionRuntime()
+	st.mu.Lock()
+	st.process = true
+	st.notice = code
+	st.mu.Unlock()
 }
 
 func (a *App) enqueueFileCompanionPaths(paths []string) {
@@ -605,7 +650,9 @@ func (a *App) GetFileCompanionBoot() FileCompanionBoot {
 	}
 	st.bootTaken = true
 	boot.Paths = append([]string(nil), st.pending...)
+	boot.Notice = st.notice
 	st.pending = nil
+	st.notice = ""
 	return boot
 }
 
@@ -644,6 +691,11 @@ func (a *App) onFileCompanionSecondInstance(data options.SecondInstanceData) {
 	if launch.Mode != desktopLaunchFileCompanion {
 		return
 	}
+	if launch.Notice != "" {
+		logFileCompanion("second instance notice=%s", launch.Notice)
+		a.presentCompanionPaperNotice(launch.Notice)
+		return
+	}
 	// This process cwd is the install directory. On Windows and Linux the
 	// new process sends its own cwd. Darwin's payload is the executable
 	// directory, so a relative document stays relative there.
@@ -677,11 +729,35 @@ func (a *App) notifyFileCompanionShow() {
 	st := a.companionRuntime()
 	st.mu.Lock()
 	ready := st.uiReady
+	if ready {
+		st.shows++
+	}
 	st.mu.Unlock()
 	if !ready {
 		return
 	}
 	a.emitEvent("file-companion:show", nil)
+}
+
+// presentCompanionPaperNotice shows one of the six failure sentences.
+// It reveals the companion and does not open the 打开 panel.
+func (a *App) presentCompanionPaperNotice(code string) {
+	if a == nil || !companionPaperNoticeCode(code) {
+		return
+	}
+	st := a.companionRuntime()
+	st.mu.Lock()
+	st.process = true
+	st.notices = append(st.notices, code)
+	ready := st.uiReady
+	if !ready {
+		st.notice = code
+	}
+	st.mu.Unlock()
+	a.revealFileCompanionWindow()
+	if ready {
+		a.emitEvent("file-companion:notice", code)
+	}
 }
 
 // revealFileCompanionWindow brings the already-running companion forward.
@@ -744,7 +820,11 @@ func applyDesktopLaunchOptions(app *App, opts *options.App, launch desktopLaunch
 		return
 	}
 	if launch.Mode == desktopLaunchFileCompanion {
-		app.seedFileCompanionPaths(launch.Paths)
+		if launch.Notice != "" {
+			app.seedFileCompanionNotice(launch.Notice)
+		} else {
+			app.seedFileCompanionPaths(launch.Paths)
+		}
 		opts.Width = 1280
 		opts.Height = 800
 		opts.WindowStartState = options.Normal
@@ -767,13 +847,15 @@ func applyDesktopLaunchOptions(app *App, opts *options.App, launch desktopLaunch
 			opts.Mac = &mac.Options{}
 		}
 		opts.Mac.OnFileOpen = app.darwinOnFileOpen
-		logFileCompanion("process lock=%s paths=%d", launch.LockID, len(launch.Paths))
+		opts.Mac.OnUrlOpen = app.darwinOnURLOpen
+		logFileCompanion("process lock=%s paths=%d notice=%s", launch.LockID, len(launch.Paths), launch.Notice)
 		return
 	}
 	if opts.Mac == nil {
 		opts.Mac = &mac.Options{}
 	}
 	opts.Mac.OnFileOpen = app.darwinOnFileOpen
+	opts.Mac.OnUrlOpen = app.darwinOnURLOpen
 	if launch.StartHidden {
 		opts.StartHidden = true
 		app.armDarwinDocumentLatch()
@@ -798,7 +880,8 @@ func fileCompanionWebviewUserDataPath() string {
 // config.json only to drop the in-memory snapshot, and prepares a Hub client.
 // It does not build an IM handler, open the main transcript, or start tray,
 // environment check, updates, ACP, MCP, pet, TinyTeX, Computer Use, workflow,
-// or a workspace-directory write.
+// or a workspace-directory write. The notification watch pulls unread rows
+// over HTTP; this startup does not open a second Hub websocket.
 func (a *App) fileCompanionStartup(ctx context.Context) {
 	if a == nil {
 		return
@@ -823,6 +906,9 @@ func (a *App) fileCompanionStartup(ctx context.Context) {
 	// still answers reader notes on its own shares; the Hub claim link keeps
 	// this process and the main window from answering the same note twice.
 	a.startFileCompanionShareDiscussionWatch()
+	// The bell on this window reads this process's cache. The watch fills it
+	// without taking the main window's Hub connection.
+	a.startFileCompanionNotificationWatch()
 	logFileCompanion("startup complete")
 }
 

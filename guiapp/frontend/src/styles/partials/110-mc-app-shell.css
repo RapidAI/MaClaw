@@ -4284,6 +4284,26 @@ input.cwshare-url {
   flex: 1 1 auto;
   min-width: 0;
 }
+/* The notification bell sits in the slot before the host badge. The panel
+   hangs below the bar; the bar clips its row, so an open panel has to be
+   allowed out, the same way the 打开 menu is. */
+.file-companion-titlebar-notifications {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  z-index: 2;
+}
+.file-companion-titlebar:has(.notification-panel) {
+  overflow: visible;
+}
+/* The dismiss scrim is a title-bar child at the same layer as the 打开
+   scrim (z-index 20) and covers the document, including the PDF iframe.
+   The panel lives in this slot, so the slot has to paint above that scrim.
+   Otherwise a click on a notice hits the scrim and closes the panel. */
+.file-companion-titlebar:has(.notification-panel) .file-companion-titlebar-notifications {
+  z-index: 30;
+}
 /* Everything clickable opts out of the window drag region. --wails-draggable
    inherits, and Wails starts the drag on the first mousemove after mousedown,
    so a click with a pixel of shake on a tab or a tool button moved the window
@@ -4292,6 +4312,7 @@ input.cwshare-url {
 .file-companion-titlebar-files,
 .file-companion-titlebar-tabs,
 .file-companion-titlebar-actions,
+.file-companion-titlebar-notifications,
 .file-companion-titlebar .file-companion-tool--fullscreen,
 .file-companion-titlebar .file-companion-tool--close {
   --wails-draggable: no-drag;
@@ -4653,7 +4674,8 @@ input.cwshare-url {
 }
 .companion-pdf-bookmark-column[data-collapsed="true"] {
   padding: 0;
-  overflow: visible;
+  /* Clip anything that is not the fold button. The list itself is display:none. */
+  overflow: hidden;
 }
 .companion-pdf-bookmark-column[data-collapsed="true"]::before {
   content: "";
@@ -4670,6 +4692,11 @@ input.cwshare-url {
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
+}
+/* display:flex above would otherwise win over the hidden attribute and leave
+   a slice of the chips in the folded strip. */
+.companion-pdf-bookmark-body[hidden] {
+  display: none;
 }
 .companion-pdf-bookmark-resize {
   position: absolute;
@@ -4747,6 +4774,10 @@ input.cwshare-url {
 .companion-pdf-bookmark-fold:focus-visible {
   outline: 2px solid var(--theme-primary, #2e75cb);
   outline-offset: 2px;
+}
+/* The folded strip clips its overflow, so the ring stays inside the button. */
+.companion-pdf-bookmark-column[data-collapsed="true"] .companion-pdf-bookmark-fold:focus-visible {
+  outline-offset: -3px;
 }
 /* Two lists share the column: bookmarks on top, notes below. Each list has
    its own scroll box, so a long bookmark list cannot push the notes off the
@@ -5802,15 +5833,17 @@ body.companion-pdf-translation-dragging * {
 .file-companion-dialog-card.file-companion-library-dialog {
   width: min(920px, 100%);
   max-height: min(720px, 100%);
+  min-height: min(480px, 100%);
 }
 /* 文档管理: one folder level on the left, the document list on the right.
    The rail scrolls on its own. The list scrolls on its own. */
 .file-companion-library-body {
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-columns: 248px minmax(0, 1fr);
   flex: 1 1 auto;
-  min-height: 380px;
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
 }
 .file-companion-library-rail {
   display: flex;
@@ -5843,7 +5876,8 @@ body.companion-pdf-translation-dragging * {
   gap: 2px;
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 .file-companion-folder-row {
   display: flex;
@@ -5902,6 +5936,7 @@ body.companion-pdf-translation-dragging * {
   background: transparent;
   color: var(--theme-text-muted, #64748b);
   font: 600 11px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  white-space: nowrap;
   cursor: pointer;
 }
 .file-companion-folder-icon:hover:not(:disabled) {
@@ -7822,7 +7857,7 @@ body.companion-pdf-translation-dragging * {
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
   flex: 0 0 40px;
   height: 40px;
@@ -7833,7 +7868,9 @@ body.companion-pdf-translation-dragging * {
   user-select: none;
 }
 .file-companion-annotations-head .file-companion-annotations-kicker {
-  flex: 1 1 auto;
+  /* Stay beside the pending badge. Growing here would push that badge
+     against the chevron and split the two counts across the bar. */
+  flex: 0 1 auto;
   min-width: 0;
   margin: 0;
   overflow: hidden;
@@ -7851,7 +7888,7 @@ body.companion-pdf-translation-dragging * {
   flex: 0 0 auto;
   width: 28px;
   height: 28px;
-  margin: 0;
+  margin: 0 0 0 auto;
   padding: 0;
   border: none;
   border-radius: 6px;

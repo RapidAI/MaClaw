@@ -749,7 +749,10 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// quality failure after the underlying compiler already succeeded.
 	// The recovery exists only to satisfy the quality gate, so it stays idle
 	// while that gate is off.
-	if qualityGateEnabled && !s.horizonPosture && !operational && !inquiry && !goalTurn && result.Error == "" && !result.HardExit && result.AskUser == nil && !cb.ShouldStop() {
+	// Documentation paths are a file class, same as the remote gate. An empty
+	// edit set stays on the existing post-loop path.
+	docOnlyEdits := cb != nil && codingEditsAreDocumentationOnly(cb.getFilesModified(), cb.getFilesCreated())
+	if qualityGateEnabled && !s.horizonPosture && !operational && !inquiry && !goalTurn && result.Error == "" && !result.HardExit && result.AskUser == nil && !cb.ShouldStop() && !docOnlyEdits {
 		if verifiers := cb.recoverableVerifications(); len(verifiers) > 0 {
 			// The original wrapper already ran successfully.  Recovery exists to
 			// obtain an auditable exit status, not to let an automatic retry alter
@@ -944,6 +947,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 				stepTitle, stepDesc := resolveCodingPlanStepFocus(task.Title, task.Description, reqCtx)
 				verificationStatus, verificationSummary = maybeRelaxDeferredPlanStepVerification(stepTitle, stepDesc, reqCtx, verificationStatus, verificationSummary)
 			}
+			verificationStatus, verificationSummary = relaxDocumentationOnlyVerification(verificationStatus, verificationSummary, allFilesModified, allFilesCreated)
 			status, errMsg = applySubAgentExplorationOutcome(status, errMsg, explorationStatus, explorationSummary, len(existingFilesModified))
 			status, errMsg = applySubAgentVerificationOutcome(status, errMsg, verificationStatus, verificationSummary)
 		} else {
@@ -11302,6 +11306,489 @@ func codingPlanLeadingStepNumber(text string) (int, bool) {
 	return n, found
 }
 
+// codingPriorDeliverableInputRule is attached whenever a previous turn
+// deliverable is already in the prompt. It does not inspect the task text.
+// The model runs a measurement only when that text asks for one.
+const codingPriorDeliverableInputRule = "上一轮交付是本轮输入。其中已经给出的测试、基准和测量结果直接引用，不要为了重新得到这些数字再执行测试、基准或测量。只有当前任务正文要求运行时才运行。本轮新改的代码仍要验证。"
+
+// codingCompletedStepResultPrefix marks one finished step's own summary inside
+// a multi-step run. The bullet clip would add a recovery marker and the next
+// step would go search for the missing measurements.
+const codingCompletedStepResultPrefix = "Completed step result:\n"
+
+// codingSubAgentRecoveryMarker is the suffix truncateRunesForSubAgent appends.
+// compactSubAgentModelSummary keeps it on the stored, user-visible summary.
+// The prompt channel strips one trailing copy. The marker tells the model to
+// go recover the cut, which restarts a measurement the previous turn already
+// reported.
+const codingSubAgentRecoveryMarker = "…（已截断）"
+
+func codingLabeledPrevOutputBody(prevOutputs []string, prefix string) string {
+	for _, item := range prevOutputs {
+		body, ok := strings.CutPrefix(item, prefix)
+		if !ok {
+			continue
+		}
+		return strings.TrimSpace(body)
+	}
+	return ""
+}
+
+// codingHostAccountingSummary is a prompt-only note the host wrote. It is not
+// the previous turn's measurement, so it must not be treated as input that
+// later turns are forbidden to re-run.
+func codingHostAccountingSummary(body string) bool {
+	switch strings.TrimSpace(body) {
+	case codingContinuationResumeNote(), codingPlanResumeStopNote():
+		return true
+	default:
+		return false
+	}
+}
+
+func codingHostAccountingBody(prevOutputs []string) string {
+	body := codingLabeledPrevOutputBody(prevOutputs, codingPreviousTurnResultPrefix)
+	if !codingHostAccountingSummary(body) {
+		return ""
+	}
+	return body
+}
+
+// codingStripOneRecoveryMarker removes one trailing marker added by
+// truncateRunesForSubAgent. The stored text may keep it. A prompt that quotes
+// the text must not: the marker tells the model to go recover the cut.
+func codingStripOneRecoveryMarker(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || !strings.HasSuffix(s, codingSubAgentRecoveryMarker) {
+		return s
+	}
+	return strings.TrimSpace(strings.TrimSuffix(s, codingSubAgentRecoveryMarker))
+}
+
+// codingPromptChannelText is text this process wrote and the next prompt quotes
+// in full. One trailing recovery marker is removed, then the body is hard-cut.
+// A string that is only the marker is empty, so it cannot become a deliverable.
+func codingPromptChannelText(s string, maxRunes int) string {
+	s = codingStripOneRecoveryMarker(s)
+	if s == "" || maxRunes <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(truncateRunesV2(s, maxRunes))
+}
+
+// codingPromptChannelTail keeps the ending of a previous delivery. The latest
+// step, including a product path, sits at the end of a multi-step carry.
+// A verify log after the host status line is dropped first: it is longer than
+// this bullet, and keeping it hides the path. Text after that log stays.
+func codingPromptChannelTail(s string, maxRunes int) string {
+	s = codingStripTrailingVerifyLog(codingStripOneRecoveryMarker(s))
+	if s == "" || maxRunes <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(truncateRunesV2Tail(s, maxRunes))
+}
+
+// codingStripTrailingVerifyLog drops the compiler log after the last host
+// verify status line. The line itself stays. The log is only the text after
+// that line until the next blank line. A blank line immediately after the
+// status line is the following step, so that step stays. A mention that does
+// not start a line is prose, not a status line.
+func codingStripTrailingVerifyLog(s string) string {
+	const marker = "step verify "
+	idx := -1
+	for from := len(s); from > 0; {
+		at := strings.LastIndex(s[:from], marker)
+		if at < 0 {
+			break
+		}
+		if at == 0 || s[at-1] == '\n' {
+			idx = at
+			break
+		}
+		from = at
+	}
+	if idx < 0 {
+		return strings.TrimSpace(s)
+	}
+	rel := strings.IndexByte(s[idx:], '\n')
+	if rel < 0 {
+		return strings.TrimSpace(s)
+	}
+	nl := idx + rel
+	head := strings.TrimSpace(s[:nl])
+	if nl+1 >= len(s) {
+		return head
+	}
+	rest := s[nl+1:]
+	var later string
+	if strings.HasPrefix(rest, "\n") {
+		later = strings.TrimSpace(rest[1:])
+	} else if cut := strings.Index(rest, "\n\n"); cut >= 0 {
+		later = strings.TrimSpace(rest[cut+2:])
+	} else {
+		return head
+	}
+	if later == "" {
+		return head
+	}
+	return head + "\n\n" + later
+}
+
+// codingPromptPreviousTurnSummary is the previous assistant text as the next
+// prompt may quote it.
+func codingPromptPreviousTurnSummary(s string) string {
+	return codingPromptChannelText(s, codingSubAgentModelSummaryMaxRunes)
+}
+
+func codingPreviousTurnResultBody(prevOutputs []string) string {
+	body := codingPromptPreviousTurnSummary(codingLabeledPrevOutputBody(prevOutputs, codingPreviousTurnResultPrefix))
+	if body == "" || codingHostAccountingSummary(body) {
+		return ""
+	}
+	return body
+}
+
+// codingPreviousTurnMarkerOnly is a stored summary whose only prompt text is
+// the recovery marker. It must not occupy a bullet or count as a deliverable.
+func codingPreviousTurnMarkerOnly(prevOutputs []string) bool {
+	raw := codingLabeledPrevOutputBody(prevOutputs, codingPreviousTurnResultPrefix)
+	return raw != "" && !codingHostAccountingSummary(raw) && codingPromptPreviousTurnSummary(raw) == ""
+}
+
+func codingDropLabeledPrevOutputs(prevOutputs []string, prefixes ...string) []string {
+	active := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		if prefix != "" {
+			active = append(active, prefix)
+		}
+	}
+	if len(active) == 0 {
+		return prevOutputs
+	}
+	out := make([]string, 0, len(prevOutputs))
+	for _, item := range prevOutputs {
+		drop := false
+		for _, prefix := range active {
+			if strings.HasPrefix(item, prefix) {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func codingCompletedStepBodies(prevOutputs []string) []string {
+	var out []string
+	for _, item := range prevOutputs {
+		body, ok := strings.CutPrefix(item, codingCompletedStepResultPrefix)
+		if !ok {
+			continue
+		}
+		if body = strings.TrimSpace(body); body != "" {
+			out = append(out, body)
+		}
+	}
+	return out
+}
+
+// formatCodingCompletedStepResult is the in-run carry from one finished step
+// to the next. The cap matches the stored turn summary. A recovery marker is
+// not added: the next step would treat it as a missing measurement.
+func formatCodingCompletedStepResult(index int, title, summary string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = fmt.Sprintf("T%d", index)
+	}
+	// The step summary is already compactSubAgentModelSummary output. A paragraph
+	// cut keeps that formatter's recovery marker under the hard cap. Leaving it
+	// on this carry sends the next step back to the benchmark.
+	summary = codingPromptPreviousTurnSummary(summary)
+	if summary == "" {
+		return ""
+	}
+	return fmt.Sprintf("%sT%d (%s):\n%s", codingCompletedStepResultPrefix, index, title, summary)
+}
+
+// codingPrevOutputsForBullets drops text that is written in full after the
+// clip. A host note is included: the note plus its label is longer than the
+// bullet cap, and the clip marker tells the model to go look up the missing
+// words. The session plan is the same kind of channel.
+func codingPrevOutputsForBullets(prevOutputs []string) []string {
+	var prefixes []string
+	if codingPreviousTurnResultBody(prevOutputs) != "" || codingHostAccountingBody(prevOutputs) != "" || codingPreviousTurnMarkerOnly(prevOutputs) {
+		prefixes = append(prefixes, codingPreviousTurnResultPrefix)
+	}
+	if codingLabeledPrevOutputBody(prevOutputs, codingCurrentRequestUnderstandingPrefix) != "" {
+		prefixes = append(prefixes, codingCurrentRequestUnderstandingPrefix)
+	}
+	if codingLabeledPrevOutputBody(prevOutputs, codingSessionPlanPrefix) != "" {
+		prefixes = append(prefixes, codingSessionPlanPrefix)
+	}
+	if len(codingCompletedStepBodies(prevOutputs)) > 0 {
+		prefixes = append(prefixes, codingCompletedStepResultPrefix)
+	}
+	return codingDropLabeledPrevOutputs(prevOutputs, prefixes...)
+}
+
+// codingPrevOutputsForOperationalBullets keeps a short tail of the prior
+// result so the turn can locate an existing binary. The multi-step carry
+// puts the latest step at the end, which is where the product path sits.
+// codingBulletItemText hard-cuts that tail: a recovery marker would send
+// the model back to recreate the cut measurements. The current
+// understanding, host notes, finished-step results, and the session plan
+// are removed and written whole. This path does not receive the
+// measurement rule.
+func codingPrevOutputsForOperationalBullets(prevOutputs []string) []string {
+	var prefixes []string
+	if codingHostAccountingBody(prevOutputs) != "" || codingPreviousTurnMarkerOnly(prevOutputs) {
+		prefixes = append(prefixes, codingPreviousTurnResultPrefix)
+	}
+	if codingLabeledPrevOutputBody(prevOutputs, codingCurrentRequestUnderstandingPrefix) != "" {
+		prefixes = append(prefixes, codingCurrentRequestUnderstandingPrefix)
+	}
+	if codingLabeledPrevOutputBody(prevOutputs, codingSessionPlanPrefix) != "" {
+		prefixes = append(prefixes, codingSessionPlanPrefix)
+	}
+	if len(codingCompletedStepBodies(prevOutputs)) > 0 {
+		prefixes = append(prefixes, codingCompletedStepResultPrefix)
+	}
+	return codingDropLabeledPrevOutputs(prevOutputs, prefixes...)
+}
+
+// codingPrevOutputsForExecutorStep drops the sticky multi-step recipe before
+// an executor call. The step context already names the current step and a
+// titles-only outline. Planned and unplanned turns both use this. Sticky
+// memory still returns the plan from prevOutputs.
+func codingPrevOutputsForExecutorStep(prevOutputs []string) []string {
+	return codingDropLabeledPrevOutputs(prevOutputs, codingActiveExecutionPlanPrefix)
+}
+
+// codingPrevOutputsForUnplannedTurn removes a sticky multi-step recipe from a
+// follow-up that is not executing that plan, so the recipe does not consume a
+// continuity slot. Remote prompts already omit it.
+func codingPrevOutputsForUnplannedTurn(prevOutputs []string) []string {
+	return codingPrevOutputsForExecutorStep(prevOutputs)
+}
+
+func codingSessionPlanBody(prevOutputs []string) string {
+	return codingPromptChannelText(codingLabeledPrevOutputBody(prevOutputs, codingSessionPlanPrefix), codingSessionPlanMaxRunes)
+}
+
+const (
+	codingPrevOutputFiller = iota
+	codingPrevOutputCompleted
+	codingPrevOutputProtected
+)
+
+// codingPrevOutputTrimClass decides what an in-loop trim may discard.
+// The previous-turn result and the current understanding are the contract for
+// a later step. Completed-step results are the measurements those steps just
+// produced. Continuity lines, file lists, project instructions, the session
+// plan, and the active execution plan are filler. The session plan is
+// rendered from this same slice, so a later step loses it only when a
+// measurement needs the slot. The active plan is also removed before every
+// executor call.
+func codingPrevOutputTrimClass(item string) int {
+	switch {
+	case strings.HasPrefix(item, codingPreviousTurnResultPrefix),
+		strings.HasPrefix(item, codingCurrentRequestUnderstandingPrefix):
+		return codingPrevOutputProtected
+	case strings.HasPrefix(item, codingCompletedStepResultPrefix):
+		return codingPrevOutputCompleted
+	default:
+		return codingPrevOutputFiller
+	}
+}
+
+// trimCodingPrevOutputs keeps the previous-turn result, the current
+// understanding, and the newest completed steps inside the sticky cap.
+// A tail cut drops those two channels once a full session slice is already at
+// the cap, and the next step then re-runs a measurement it no longer has.
+// Filler goes first, then the oldest completed steps. Relative order stays.
+// A slice that already fits is returned unchanged.
+func trimCodingPrevOutputs(prevOutputs []string) []string {
+	return trimCodingPrevOutputsTo(prevOutputs, stickyCodingMemoryPrevOutputsMax)
+}
+
+// trimCodingPrevOutputsTo is trimCodingPrevOutputs with an explicit slot cap.
+// Protected items are never dropped, so the result can be longer than max
+// when those two channels alone exceed it. A non-positive cap drops everything.
+func trimCodingPrevOutputsTo(prevOutputs []string, max int) []string {
+	if max <= 0 {
+		return nil
+	}
+	if len(prevOutputs) <= max {
+		return prevOutputs
+	}
+	drop := make([]bool, len(prevOutputs))
+	excess := len(prevOutputs) - max
+	for _, want := range []int{codingPrevOutputFiller, codingPrevOutputCompleted} {
+		if excess == 0 {
+			break
+		}
+		for i, item := range prevOutputs {
+			if excess == 0 {
+				break
+			}
+			if drop[i] || codingPrevOutputTrimClass(item) != want {
+				continue
+			}
+			drop[i] = true
+			excess--
+		}
+	}
+	out := make([]string, 0, max)
+	for i, item := range prevOutputs {
+		if !drop[i] {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+const (
+	codingSpawnPrevOutputsMax    = 3
+	codingSpawnParentReqMaxRunes = 1500
+	codingSpawnContextMaxRunes   = 2000
+)
+
+// codingPrevOutputsForSpawn copies the parent slice, then keeps the same
+// protected channels as an in-loop trim inside the spawn budget. A raw tail
+// keeps the previous user request and drops the current understanding, and
+// once completed steps fill that tail it also drops the previous-turn
+// deliverable. The copy happens before the trim so a child that already fits
+// does not share the parent's slice header.
+func codingPrevOutputsForSpawn(prevOutputs []string) []string {
+	if len(prevOutputs) == 0 {
+		return nil
+	}
+	copied := append([]string(nil), prevOutputs...)
+	return trimCodingPrevOutputsTo(copied, codingSpawnPrevOutputsMax)
+}
+
+// codingSpawnCarryContext is the parent request and the spawn context as the
+// child quotes them. Both are hard-cut. A recovery marker on either one tells
+// the child to go search and re-measure work the parent already finished.
+func codingSpawnCarryContext(parentReq, spawnContext string) string {
+	var b strings.Builder
+	if parentReq = codingPromptChannelText(parentReq, codingSpawnParentReqMaxRunes); parentReq != "" {
+		b.WriteString("\n\n## Parent request context\n")
+		b.WriteString(parentReq)
+	}
+	if spawnContext = codingPromptChannelText(spawnContext, codingSpawnContextMaxRunes); spawnContext != "" {
+		b.WriteString("\n\n## Spawn context\n")
+		b.WriteString(spawnContext)
+	}
+	return b.String()
+}
+
+func appendCodingSessionPlan(b *strings.Builder, prevOutputs []string) {
+	if b == nil {
+		return
+	}
+	plan := codingSessionPlanBody(prevOutputs)
+	if plan == "" {
+		return
+	}
+	b.WriteString("\n\n")
+	b.WriteString(codingSessionPlanPrefix)
+	b.WriteString(plan)
+	b.WriteString("\n")
+}
+
+func appendCodingRequestUnderstanding(b *strings.Builder, prevOutputs []string) {
+	if b == nil {
+		return
+	}
+	understanding := codingStripOneRecoveryMarker(codingLabeledPrevOutputBody(prevOutputs, codingCurrentRequestUnderstandingPrefix))
+	if understanding == "" {
+		return
+	}
+	b.WriteString("\n\n## 本轮需求理解\n")
+	b.WriteString(understanding)
+	b.WriteString("\n")
+}
+
+func appendCodingHostAccountingNote(b *strings.Builder, prevOutputs []string) {
+	if b == nil {
+		return
+	}
+	note := codingHostAccountingBody(prevOutputs)
+	if note == "" {
+		return
+	}
+	b.WriteString("\n\n")
+	b.WriteString(note)
+	b.WriteString("\n")
+}
+
+func appendCodingCompletedStepResults(b *strings.Builder, prevOutputs []string) {
+	if b == nil {
+		return
+	}
+	for _, step := range codingCompletedStepBodies(prevOutputs) {
+		b.WriteString("\n\n## 已完成步骤\n")
+		b.WriteString(step)
+		b.WriteString("\n")
+	}
+}
+
+func appendCodingPriorDeliverable(message string, prevOutputs []string) string {
+	var b strings.Builder
+	b.WriteString(message)
+	// The session plan is context. It does not by itself make prior
+	// measurements into input the model must not re-run.
+	appendCodingSessionPlan(&b, prevOutputs)
+	appendCodingRequestUnderstanding(&b, prevOutputs)
+	appendCodingHostAccountingNote(&b, prevOutputs)
+	appendCodingCompletedStepResults(&b, prevOutputs)
+	body := codingPreviousTurnResultBody(prevOutputs)
+	if body == "" && len(codingCompletedStepBodies(prevOutputs)) == 0 {
+		return b.String()
+	}
+	if body != "" {
+		b.WriteString("\n\n## 上一轮交付\n")
+		b.WriteString(body)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n\n")
+	b.WriteString(codingPriorDeliverableInputRule)
+	b.WriteString("\n")
+	return b.String()
+}
+
+// codingEditsAreDocumentationOnly is true when every written path is documentation.
+// The class is remoteCodingDocumentationPath. An empty edit set is not
+// documentation-only, so a turn that wrote nothing keeps the existing gate.
+func codingEditsAreDocumentationOnly(modified, created []string) bool {
+	saw := false
+	for _, path := range append(append([]string{}, modified...), created...) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		saw = true
+		if !remoteCodingDocumentationPath(path) {
+			return false
+		}
+	}
+	return saw
+}
+
+// relaxDocumentationOnlyVerification drops a missing verifier for documentation
+// edits. A failed verifier stays failed. A non-documentation create or edit
+// keeps the missing status.
+func relaxDocumentationOnlyVerification(status codingSubAgentQualityStatus, summary string, modified, created []string) (codingSubAgentQualityStatus, string) {
+	if status != codingSubAgentQualityMissing || !codingEditsAreDocumentationOnly(modified, created) {
+		return status, summary
+	}
+	return codingSubAgentQualityNotNeeded, "documentation-only edits do not require a project verifier"
+}
+
 func summarizeSubAgentVerification(filesModified []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64) (codingSubAgentQualityStatus, string) {
 	if len(filesModified) == 0 {
 		return codingSubAgentQualityNotNeeded, "未检测到文件修改，跳过命令验证要求。"
@@ -16713,12 +17200,18 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 		} else {
 			appendCodingSubAgentOperationalChecklist(&b, codingTaskOperationalAcceptance(c.task), c.codingQualityGateOn())
 		}
-		if len(c.prevOutputs) > 0 {
+		if bullets := codingPrevOutputsForOperationalBullets(c.prevOutputs); len(bullets) > 0 {
 			b.WriteString("**前置任务上下文**（可用来定位已生成的可执行文件）：\n")
-			appendSubAgentBulletList(&b, c.prevOutputs, codingSubAgentPrevOutputsMax, codingSubAgentPromptBulletMaxRunes)
+			appendSubAgentBulletList(&b, bullets, codingSubAgentPrevOutputsMax, codingSubAgentPromptBulletMaxRunes)
 			b.WriteString("\n")
 		}
-		return compactCodingSubAgentTaskUserMessage(b.String())
+		var out strings.Builder
+		out.WriteString(compactCodingSubAgentTaskUserMessage(b.String()))
+		appendCodingSessionPlan(&out, c.prevOutputs)
+		appendCodingRequestUnderstanding(&out, c.prevOutputs)
+		appendCodingCompletedStepResults(&out, c.prevOutputs)
+		appendCodingHostAccountingNote(&out, c.prevOutputs)
+		return out.String()
 	}
 	b.WriteString(fmt.Sprintf("请执行以下编码任务：\n\n## T%d: %s\n\n", taskDisplayNumber(c.task), compactSubAgentTaskTitle(c.task.Title)))
 	if c.task.Description != "" {
@@ -16730,9 +17223,9 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 	} else {
 		appendCodingSubAgentPreflightChecklist(&b, c.codingQualityGateOn())
 	}
-	if len(c.prevOutputs) > 0 {
+	if bullets := codingPrevOutputsForBullets(c.prevOutputs); len(bullets) > 0 {
 		b.WriteString("**前置任务上下文**：\n")
-		appendSubAgentBulletList(&b, c.prevOutputs, codingSubAgentPrevOutputsMax, codingSubAgentPromptBulletMaxRunes)
+		appendSubAgentBulletList(&b, bullets, codingSubAgentPrevOutputsMax, codingSubAgentPromptBulletMaxRunes)
 		b.WriteString("\n")
 	}
 	if len(c.task.Files) > 0 {
@@ -16745,7 +17238,11 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 		appendSubAgentAcceptanceCriteriaList(&b, c.task.AcceptanceCriteria, codingSubAgentAcceptanceCriteriaMax, codingSubAgentPromptBulletMaxRunes)
 		b.WriteString("\n**验收验证要求**：将最终验证命令或检查结果对应到上述验收标准；无法自动验证的标准必须说明原因，不要只笼统声称完成。\n")
 	}
-	return compactCodingSubAgentTaskUserMessage(b.String())
+	// Compact keeps the head and the bullet list clips every item to 160 runes.
+	// A clipped deliverable is marked truncated, which is the cue to go search
+	// for the missing numbers. The full understanding and deliverable are
+	// appended after that cut.
+	return appendCodingPriorDeliverable(compactCodingSubAgentTaskUserMessage(b.String()), c.prevOutputs)
 }
 
 // appendCodingSubAgentCompatibilityChecklist mirrors the only currently
@@ -16764,8 +17261,10 @@ func appendCodingSubAgentCompatibilityChecklist(b *strings.Builder) {
 }
 
 func compactCodingSubAgentTaskUserMessage(message string) string {
+	// Hard cut. truncateRunesForSubAgent would end this head with the recovery
+	// marker, and the deliverable is appended immediately after that cut.
 	const overheadBudget = codingSubAgentTaskTitleMaxRunes + 1000
-	return truncateRunesForSubAgent(message, codingSubAgentTaskDescriptionMaxRunes+overheadBudget)
+	return truncateRunesV2(message, codingSubAgentTaskDescriptionMaxRunes+overheadBudget)
 }
 
 func appendCodingSubAgentPreflightChecklist(b *strings.Builder, qualityGateEnabled bool) {
@@ -17575,7 +18074,7 @@ func compactSubAgentTaskDescription(description string) string {
 	if description == "" {
 		return ""
 	}
-	return truncateRunesForSubAgent(description, codingSubAgentTaskDescriptionMaxRunes)
+	return codingPromptChannelText(description, codingSubAgentTaskDescriptionMaxRunes)
 }
 
 func compactSubAgentDynamicSelectionDescription(task *TaskItem) string {
@@ -17618,19 +18117,19 @@ func codingSubAgentDynamicSelectionTextWithContext(task *TaskItem, reqCtx, desig
 		b.WriteString("Acceptance criteria:\n")
 		appendSubAgentBulletList(&b, uniqueSubAgentStrings(task.AcceptanceCriteria), codingSubAgentAcceptanceCriteriaMax, codingSubAgentPromptBulletMaxRunes)
 	}
-	if reqCtx = strings.TrimSpace(reqCtx); reqCtx != "" {
+	if reqCtx = codingPromptChannelText(reqCtx, codingSubAgentDynamicSelectionContextMaxRunes); reqCtx != "" {
 		b.WriteString("Requirement context:\n")
-		b.WriteString(truncateRunesForSubAgent(reqCtx, codingSubAgentDynamicSelectionContextMaxRunes))
+		b.WriteString(reqCtx)
 		b.WriteString("\n")
 	}
-	if designCtx = strings.TrimSpace(designCtx); designCtx != "" {
+	if designCtx = codingPromptChannelText(designCtx, codingSubAgentDynamicSelectionContextMaxRunes); designCtx != "" {
 		b.WriteString("Design context:\n")
-		b.WriteString(truncateRunesForSubAgent(designCtx, codingSubAgentDynamicSelectionContextMaxRunes))
+		b.WriteString(designCtx)
 		b.WriteString("\n")
 	}
-	if len(prevOutputs) > 0 {
+	if bullets := codingPrevOutputsForBullets(prevOutputs); len(bullets) > 0 {
 		b.WriteString("Previous task outputs:\n")
-		appendSubAgentBulletList(&b, prevOutputs, codingSubAgentDynamicSelectionPrevOutputsMax, codingSubAgentPromptBulletMaxRunes)
+		appendSubAgentBulletList(&b, bullets, codingSubAgentDynamicSelectionPrevOutputsMax, codingSubAgentPromptBulletMaxRunes)
 	}
 	return truncateRunesForSubAgent(strings.TrimSpace(b.String()), codingSubAgentDynamicSelectionTextMaxRunes)
 }
@@ -18018,15 +18517,16 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 		} else {
 			b.WriteString(fmt.Sprintf("平台: %s\n", normalizedRemotePlatform()))
 		}
-		if reqCtx != "" {
+		if summary := codingPromptChannelText(reqCtx, 280); summary != "" {
 			b.WriteString("\n## 需求摘要\n")
-			b.WriteString(truncateRunesForSubAgent(reqCtx, 280))
+			b.WriteString(summary)
 			b.WriteString("\n")
 		}
-		if len(prevOutputs) > 0 {
+		if bullets := codingPrevOutputsForOperationalBullets(prevOutputs); len(bullets) > 0 {
 			b.WriteString("\n## 前置轮次摘要\n")
-			appendSubAgentBulletList(&b, prevOutputs, 4, 200)
+			appendSubAgentBulletList(&b, bullets, 4, 200)
 		}
+		appendCodingHostAccountingNote(&b, prevOutputs)
 		now := time.Now()
 		b.WriteString(fmt.Sprintf("\n当前时间: %s\n", now.Format("2006-01-02 15:04")))
 		return b.String()
@@ -18092,6 +18592,14 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - 验证命令不要追加 echo exit=$LASTEXITCODE 显示尾：bash 结果末尾自带 command exited with code N（含成功 0），此类尾巴会判 failure-suppressing 而失败。
 `))
 
+	// Goal phases carry their own contract. A prior measurement must not
+	// become a reason to skip the step the host just assigned.
+	if goalContinuationPhase(source) == "" && (codingPreviousTurnResultBody(prevOutputs) != "" || len(codingCompletedStepBodies(prevOutputs)) > 0) {
+		b.WriteString("\n## 上一轮交付\n")
+		b.WriteString(codingPriorDeliverableInputRule)
+		b.WriteString("\n")
+	}
+
 	b.WriteString(fmt.Sprintf("\n## 项目路径\n%s\n", projectPath))
 
 	// Platform hint so the LLM generates correct shell commands.
@@ -18104,15 +18612,15 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 		b.WriteString("\n")
 	}
 
-	if reqCtx != "" {
+	if summary := codingPromptChannelText(reqCtx, 280); summary != "" {
 		b.WriteString("\n## 需求摘要\n")
-		b.WriteString(truncateRunesForSubAgent(reqCtx, 280))
+		b.WriteString(summary)
 		b.WriteString("\n")
 	}
 
-	if designCtx != "" {
+	if summary := codingPromptChannelText(designCtx, 280); summary != "" {
 		b.WriteString("\n## 设计摘要\n")
-		b.WriteString(truncateRunesForSubAgent(designCtx, 280))
+		b.WriteString(summary)
 		b.WriteString("\n")
 	}
 
@@ -18121,6 +18629,37 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	b.WriteString("\n" + visualPreviewPromptSentence + "\n")
 
 	return b.String()
+}
+
+// codingBulletItemText clips one continuity bullet. File lists and project
+// instructions keep the recovery marker: it means the rest is on disk.
+// The previous user request and the previous-turn result are not files.
+// A marker on either bullet tells the model to recover the cut text.
+// The previous ask keeps its head. The previous delivery keeps its ending,
+// where the latest step and the product path sit. The full previous ask
+// is not appended. An operational turn uses only that ending, so it can
+// locate an existing binary without being told to recreate the measurement.
+func codingBulletItemText(item string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	for _, prefix := range []string{codingPreviousUserRequestPrefix, codingPreviousTurnResultPrefix} {
+		if !strings.HasPrefix(item, prefix) {
+			continue
+		}
+		room := maxRunes - len([]rune(prefix))
+		body := strings.TrimPrefix(item, prefix)
+		if prefix == codingPreviousTurnResultPrefix {
+			body = codingPromptChannelTail(body, room)
+		} else {
+			body = codingPromptChannelText(body, room)
+		}
+		if body == "" {
+			return ""
+		}
+		return prefix + body
+	}
+	return truncateRunesForSubAgent(item, maxRunes)
 }
 
 func appendSubAgentBulletList(b *strings.Builder, items []string, maxItems, maxRunes int) {
@@ -18132,8 +18671,12 @@ func appendSubAgentBulletList(b *strings.Builder, items []string, maxItems, maxR
 		shown = maxItems
 	}
 	for _, item := range items[:shown] {
+		rendered := codingBulletItemText(item, maxRunes)
+		if rendered == "" {
+			continue
+		}
 		b.WriteString("- ")
-		b.WriteString(truncateRunesForSubAgent(item, maxRunes))
+		b.WriteString(rendered)
 		b.WriteString("\n")
 	}
 	if remaining := len(items) - shown; remaining > 0 {

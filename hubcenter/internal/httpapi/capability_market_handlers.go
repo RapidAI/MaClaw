@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"hash/fnv"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -981,6 +982,17 @@ func AdminCapabilityMarketImportHandler(settings store.SystemSettingsRepository,
 				result["description"] = entry.Description
 				result["version"] = entry.HubVersion
 
+				downloadDir := ""
+				if source == corelib.CapabilitySourceClawHub {
+					downloadDir = strings.TrimSpace(entry.SkillDir)
+					if coreskill.EphemeralSkillDownloadDir(downloadDir) {
+						defer func() { _ = os.RemoveAll(downloadDir) }()
+					}
+					// Bash steps name the temp folder. The catalog copy is
+					// {baseDir}, the same token a desktop install rewrites.
+					coreskill.RetargetInstalledSkillPaths(entry, downloadDir, "{baseDir}")
+				}
+
 				// Persist to SkillStore so it appears in the Capability Catalog.
 				if skillStore != nil {
 					now := time.Now().UTC().Format(time.RFC3339)
@@ -1014,6 +1026,14 @@ func AdminCapabilityMarketImportHandler(settings store.SystemSettingsRepository,
 							Params:  step.Params,
 							OnError: step.OnError,
 						})
+					}
+					if downloadDir != "" {
+						files, filesErr := coreskill.PackageFilesBase64(downloadDir)
+						if filesErr != nil {
+							writeError(w, http.StatusBadGateway, "PACKAGE_FILES_FAILED", "failed to read skill package: "+filesErr.Error())
+							return
+						}
+						hubSkill.Files = files
 					}
 					// Check for duplicate by source URL + name
 					if existing := skillStore.FindBySourceURL(sourceURL, entry.Name); existing != nil {

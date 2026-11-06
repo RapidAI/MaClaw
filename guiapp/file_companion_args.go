@@ -26,6 +26,8 @@ type desktopLaunch struct {
 	StartHidden bool
 	Paths       []string
 	Explicit    bool
+	// Notice is a companion-paper failure code. Paths stays empty.
+	Notice string
 }
 
 // fileCompanionLockID is the companion single-instance id. It appends a suffix
@@ -62,6 +64,22 @@ func classifyDesktopLaunchForOS(args []string, goos string) desktopLaunch {
 			Mode:     desktopLaunchFileCompanion,
 			LockID:   fileCompanionLockID(),
 			Paths:    pathsAfterOpenFile(user),
+			Explicit: true,
+		}
+	}
+	if filtered[0] == companionPaperNoticeArg {
+		code := ""
+		if len(filtered) >= 2 {
+			code = filtered[1]
+		}
+		// A free-text reason is not a notice. It stays on the main lock.
+		if !companionPaperNoticeCode(code) {
+			return main
+		}
+		return desktopLaunch{
+			Mode:     desktopLaunchFileCompanion,
+			LockID:   fileCompanionLockID(),
+			Notice:   code,
 			Explicit: true,
 		}
 	}

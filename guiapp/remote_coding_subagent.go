@@ -6240,13 +6240,7 @@ func (c *remoteCodingCallbacks) buildRemoteKnowledgePromptSections() string {
 	if c.agent.handler != nil && c.agent.handler.app != nil {
 		pack = c.agent.handler.app.mergeEnterpriseCodingPack(ctx, pack, taskQuery, language, c.agent.projectDir, 4)
 	}
-	if len(pack.Items) > 0 {
-		b.WriteString("\n## 相关编码经验（来自编程知识库）\n")
-		b.WriteString("以下经验来自历史编码任务积累，供参考：\n")
-		for _, item := range pack.Items {
-			b.WriteString(fmt.Sprintf("- **%s**: %s\n", item.Title, truncateRunesForSubAgent(item.Text, 300)))
-		}
-	}
+	appendCodingKnowledgePromptItems(&b, pack.Items)
 
 	// 2. General knowledge (project docs)
 	if c.agent.generalKB != nil {

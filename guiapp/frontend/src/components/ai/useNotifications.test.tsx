@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useNotifications } from "./useNotifications";
 
 const { eventHandlers } = vi.hoisted(() => ({
-  eventHandlers: new Map<string, Array<(payload?: any) => void>>(),
+  // Real handlers (e.g. notification:sync)'s handleSync) take data plus an
+  // optional second argument such as the cache generation.
+  eventHandlers: new Map<string, Array<(payload?: any, extra?: any) => void>>(),
 }));
 
 vi.mock("../../../wailsjs/runtime", () => ({
@@ -172,5 +174,111 @@ describe("useNotifications", () => {
     });
     expect(result.current.notifications).toHaveLength(0);
     expect(result.current.urgentToast).toBeNull();
+  });
+
+  it("keeps a sync that lands before the initial unread read resolves", async () => {
+    let resolveLoad: (value: unknown) => void = () => {};
+    (window as any).go.main.App.GetUnreadNotifications = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveLoad = resolve;
+        }),
+    );
+    const { result } = renderHook(() => useNotifications());
+
+    await waitFor(() => {
+      expect(eventHandlers.get("notification:sync")?.length ?? 0).toBeGreaterThan(0);
+    });
+    act(() => {
+      for (const handler of eventHandlers.get("notification:sync") || []) {
+        handler([unreadNotice]);
+      }
+    });
+    expect(result.current.notifications.map((item) => item.id)).toEqual(["n-sync"]);
+
+    await act(async () => {
+      resolveLoad([]);
+    });
+    expect(result.current.notifications.map((item) => item.id)).toEqual(["n-sync"]);
+    expect(result.current.unreadCount).toBe(1);
+  });
+
+  it("merges a push that arrives while the initial unread read is in flight", async () => {
+    let resolveLoad: (value: unknown) => void = () => {};
+    (window as any).go.main.App.GetUnreadNotifications = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveLoad = resolve;
+        }),
+    );
+    const { result } = renderHook(() => useNotifications());
+    await waitFor(() => {
+      expect(eventHandlers.get("notification:new")?.length ?? 0).toBeGreaterThan(0);
+    });
+
+    const pushed = { ...unreadNotice, id: "n-push", title: "Pushed while loading" };
+    act(() => {
+      for (const handler of eventHandlers.get("notification:new") || []) {
+        handler(pushed);
+      }
+    });
+    await act(async () => {
+      resolveLoad([unreadNotice]);
+    });
+
+    expect(result.current.notifications.map((item) => item.id)).toEqual(["n-push", "n-sync"]);
+    expect(result.current.unreadCount).toBe(2);
+  });
+
+  it("drops a notice revoked while the initial unread read is in flight", async () => {
+    let resolveLoad: (value: unknown) => void = () => {};
+    (window as any).go.main.App.GetUnreadNotifications = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveLoad = resolve;
+        }),
+    );
+    const { result } = renderHook(() => useNotifications());
+    await waitFor(() => {
+      expect(eventHandlers.get("notification:revoke")?.length ?? 0).toBeGreaterThan(0);
+    });
+
+    act(() => {
+      for (const handler of eventHandlers.get("notification:revoke") || []) {
+        handler("n-sync");
+      }
+    });
+    await act(async () => {
+      resolveLoad([unreadNotice]);
+    });
+
+    expect(result.current.notifications).toHaveLength(0);
+    expect(result.current.unreadCount).toBe(0);
+  });
+
+  it("ignores an older sync after a newer read and still accepts a later pull", async () => {
+    const { result } = renderHook(() => useNotifications());
+    await waitFor(() =>
+      expect((window as any).go.main.App.GetUnreadNotifications).toHaveBeenCalled()
+    );
+
+    const read = { ...unreadNotice, is_read: true };
+    act(() => {
+      for (const handler of eventHandlers.get("notification:sync") || []) {
+        handler([read], 2);
+        handler([unreadNotice], 1);
+      }
+    });
+    expect(result.current.notifications.map((item) => item.id)).toEqual(["n-sync"]);
+    expect(result.current.notifications[0]?.is_read).toBe(true);
+    expect(result.current.unreadCount).toBe(0);
+
+    act(() => {
+      for (const handler of eventHandlers.get("notification:sync") || []) {
+        handler([unreadNotice], 3);
+      }
+    });
+    expect(result.current.notifications[0]?.is_read).toBe(false);
+    expect(result.current.unreadCount).toBe(1);
   });
 });

@@ -514,11 +514,14 @@ func TestBuildCodingSubAgentSystemPrompt_WithContext(t *testing.T) {
 
 	prompt := buildCodingSubAgentSystemPrompt(task, "/project", longReq, longDesign, prevOutputs)
 
-	// Context should be truncated: the static template (workflow, guardrails,
-	// Windows shell contract) accounts for most of the budget, so the cap only
-	// needs to catch untruncated 1000-rune contexts leaking through.
-	if !strings.Contains(prompt, "…（已截断）") {
-		t.Error("long requirement/design context should carry a truncation marker")
+	// Requirement and design context are hard-cut. A recovery marker on this
+	// channel tells the executor to go search and re-measure. The static
+	// template still dominates the length check below.
+	if strings.Contains(prompt, codingSubAgentRecoveryMarker) {
+		t.Error("requirement/design context must be hard-cut without the recovery marker")
+	}
+	if !strings.Contains(prompt, "需求内容。") || !strings.Contains(prompt, "设计内容。") {
+		t.Error("the head of the requirement and design context should remain")
 	}
 	if strings.Contains(prompt, longReq) || strings.Contains(prompt, longDesign) {
 		t.Error("full untruncated context should not appear in the prompt")
@@ -886,6 +889,704 @@ func TestCodingSubAgentTaskUserMessageCapsPreviousOutputs(t *testing.T) {
 	}
 	if !strings.Contains(userMsg, "前置任务上下文") || !strings.Contains(userMsg, "还有 4 项未展开") {
 		t.Fatalf("previous outputs should report remaining count in task message, got %q", userMsg)
+	}
+}
+
+func TestCodingSubAgentTaskUserMessageKeepsPriorDeliverable(t *testing.T) {
+	marker := "PRIOR_DELIVERABLE_MARKER_48291"
+	body := "DELIVERABLE_HEAD " + strings.Repeat("测", codingSubAgentPromptBulletMaxRunes+40) + marker
+	understanding := codingCurrentRequestUnderstandingPrefix + "UNDERSTANDING_HEAD " + strings.Repeat("理", codingSubAgentPromptBulletMaxRunes+20) + "UNDERSTANDING_TAIL"
+	fileLine := "Files modified earlier in this session: " + strings.Repeat("src/very_long_component_", 20) + "UNIQUE_FILE_TAIL"
+	shortMsg := (&codingSubAgentCallbacks{
+		task:        &TaskItem{Index: 3, Title: "记录", Description: "把结果写进说明"},
+		prevOutputs: []string{fileLine, understanding, codingPreviousTurnResultPrefix + body},
+	}).buildTaskUserMessage()
+	if !strings.Contains(shortMsg, marker) || !strings.Contains(shortMsg, codingPriorDeliverableInputRule) {
+		t.Fatal("prior deliverable must survive the 160-rune bullet clip")
+	}
+	if strings.Count(shortMsg, "DELIVERABLE_HEAD ") != 1 || strings.Count(shortMsg, "UNDERSTANDING_HEAD ") != 1 {
+		t.Fatal("deliverable and understanding must be written once, after the bullet clip")
+	}
+	if !strings.Contains(shortMsg, "UNDERSTANDING_TAIL") || !strings.Contains(shortMsg, "## 本轮需求理解") {
+		t.Fatal("request understanding must survive the 160-rune bullet clip")
+	}
+	if strings.Contains(shortMsg, "UNIQUE_FILE_TAIL") {
+		t.Fatal("file-list bullets must stay clipped")
+	}
+	onlyDeliverable := (&codingSubAgentCallbacks{
+		task:        &TaskItem{Index: 3, Title: "记录", Description: "把结果写进说明"},
+		prevOutputs: []string{codingPreviousTurnResultPrefix + body},
+	}).buildTaskUserMessage()
+	if strings.Contains(onlyDeliverable, "前置任务上下文") || strings.Count(onlyDeliverable, "DELIVERABLE_HEAD ") != 1 {
+		t.Fatal("an empty bullet list must not be written when the only item is the deliverable")
+	}
+
+	prev := make([]string, 0, codingSubAgentPrevOutputsMax+1)
+	for i := 0; i < codingSubAgentPrevOutputsMax; i++ {
+		prev = append(prev, strings.Repeat("前", codingSubAgentPromptBulletMaxRunes))
+	}
+	const droppedTail = "TAIL_BULLET_DROPPED"
+	prev[len(prev)-1] = strings.Repeat("前", 40) + droppedTail
+	prev = append(prev, codingPreviousTurnResultPrefix+body)
+	longMsg := (&codingSubAgentCallbacks{
+		task: &TaskItem{
+			Index:       3,
+			Title:       "记录",
+			Description: strings.Repeat("任务说明。", codingSubAgentTaskDescriptionMaxRunes),
+		},
+		prevOutputs: prev,
+	}).buildTaskUserMessage()
+	if strings.Contains(longMsg, droppedTail) {
+		t.Fatal("compact should drop tail bullets; the deliverable is appended after that cut")
+	}
+	if !strings.Contains(longMsg, marker) || !strings.Contains(longMsg, codingPriorDeliverableInputRule) {
+		t.Fatal("prior deliverable must be appended after the task-message cap")
+	}
+}
+
+func TestCodingSubAgentOperationalPromptLeavesPriorDeliverable(t *testing.T) {
+	marker := "PRIOR_DELIVERABLE_MARKER_48291"
+	body := strings.Repeat("测", codingSubAgentPromptBulletMaxRunes+40) + marker
+	prev := []string{codingPreviousTurnResultPrefix + body}
+	task := &TaskItem{Index: 2, Title: "运行已有程序", RequestKind: codingRequestOperational}
+	userMsg := (&codingSubAgentCallbacks{task: task, prevOutputs: prev}).buildTaskUserMessage()
+	if !strings.Contains(userMsg, marker) || strings.Contains(userMsg, codingPriorDeliverableInputRule) || strings.Contains(userMsg, codingSubAgentRecoveryMarker) {
+		t.Fatal("operational user message must keep the ending of the prior result and its run contract")
+	}
+	if !strings.Contains(userMsg, "不要改代码") {
+		t.Fatalf("operational user message changed shape: %q", userMsg)
+	}
+	understanding := codingCurrentRequestUnderstandingPrefix + "UNDERSTANDING_HEAD " + strings.Repeat("理", codingSubAgentPromptBulletMaxRunes+20) + "UNDERSTANDING_TAIL" + codingSubAgentRecoveryMarker
+	withUnderstanding := (&codingSubAgentCallbacks{task: task, prevOutputs: []string{codingPreviousTurnResultPrefix + body, understanding}}).buildTaskUserMessage()
+	if !strings.Contains(withUnderstanding, "UNDERSTANDING_TAIL") || !strings.Contains(withUnderstanding, "## 本轮需求理解") || !strings.Contains(withUnderstanding, marker) || strings.Contains(withUnderstanding, codingSubAgentRecoveryMarker) || strings.Contains(withUnderstanding, codingPriorDeliverableInputRule) {
+		t.Fatalf("operational prompt clipped the current contract with a recovery marker:\n%s", withUnderstanding)
+	}
+	opPrompt := buildCodingSubAgentSystemPrompt(task, t.TempDir(), "", "", prev)
+	if strings.Contains(opPrompt, codingPriorDeliverableInputRule) || strings.Contains(opPrompt, codingSubAgentRecoveryMarker) || !strings.Contains(opPrompt, marker) {
+		t.Fatal("operational system prompt must keep the ending of the prior result and still run")
+	}
+	impl := buildCodingSubAgentSystemPrompt(&TaskItem{Index: 2, Title: "写入", RequestKind: codingRequestImplementation}, t.TempDir(), "", "", prev)
+	if !strings.Contains(impl, codingPriorDeliverableInputRule) {
+		t.Fatal("implementation system prompt should treat the prior deliverable as input")
+	}
+	if strings.Contains(impl, marker) {
+		t.Fatal("system prompt should not copy the deliverable body")
+	}
+	const product = "build\\snake.exe"
+	const logTail = "VERIFY_LOG_TAIL_SHOULD_NOT_LEAD"
+	withLog := strings.Repeat("前", 80) + "产物 " + product + "\n\nstep verify PASS: cmake --build build\n" + strings.Repeat("编译输出", 40) + logTail
+	opWithLog := (&codingSubAgentCallbacks{task: task, prevOutputs: []string{codingPreviousTurnResultPrefix + withLog}}).buildTaskUserMessage()
+	if !strings.Contains(opWithLog, product) || !strings.Contains(opWithLog, "step verify PASS") || strings.Contains(opWithLog, logTail) {
+		t.Fatalf("operational bullet followed the verify log and lost the product path:\n%s", opWithLog)
+	}
+	implWithLog := (&codingSubAgentCallbacks{task: &TaskItem{Index: 2, Title: "写入", RequestKind: codingRequestImplementation}, prevOutputs: []string{codingPreviousTurnResultPrefix + withLog}}).buildTaskUserMessage()
+	if !strings.Contains(implWithLog, logTail) || !strings.Contains(implWithLog, product) {
+		t.Fatal("implementation prompt must keep the verify log and the product path")
+	}
+	const midLog = "VERIFY_LOG_BETWEEN_STEPS"
+	later := "早期产物 build\\old.exe\n\nstep verify PASS: ctest\n" + midLog + "\n\n最终产物 build\\snake.exe"
+	laterMsg := (&codingSubAgentCallbacks{task: task, prevOutputs: []string{codingPreviousTurnResultPrefix + later}}).buildTaskUserMessage()
+	if !strings.Contains(laterMsg, "build\\snake.exe") || !strings.Contains(laterMsg, "step verify PASS") || strings.Contains(laterMsg, midLog) {
+		t.Fatalf("verify-log trim dropped the later step:\n%s", laterMsg)
+	}
+	implLater := (&codingSubAgentCallbacks{task: &TaskItem{Index: 2, Title: "写入", RequestKind: codingRequestImplementation}, prevOutputs: []string{codingPreviousTurnResultPrefix + later}}).buildTaskUserMessage()
+	if !strings.Contains(implLater, midLog) || !strings.Contains(implLater, "build\\snake.exe") {
+		t.Fatal("implementation prompt must keep the verify log and the later step")
+	}
+	direct := "产物 " + product + "\n\nstep verify PASS: cmake --build build\n\n最终说明 README"
+	if got := codingStripTrailingVerifyLog(direct); !strings.Contains(got, product) || !strings.Contains(got, "最终说明 README") || !strings.Contains(got, "step verify PASS") {
+		t.Fatalf("a step after a verify line with no log was dropped: %q", got)
+	}
+	prose := "产物 " + product + "。记载了 step verify 的结论。"
+	if got := codingStripTrailingVerifyLog(prose); got != prose {
+		t.Fatalf("a mid-line mention was treated as the host status line: %q", got)
+	}
+	mixed := "产物 build\\old.exe\nstep verify PASS: ctest\n" + midLog + "\n\n后文提到 step verify 只是说明。\n最终产物 build\\snake.exe"
+	if got := codingStripTrailingVerifyLog(mixed); strings.Contains(got, midLog) || !strings.Contains(got, "build\\snake.exe") || !strings.Contains(got, "只是说明") || !strings.Contains(got, "step verify PASS") {
+		t.Fatalf("log trim kept the compiler log or dropped the later step: %q", got)
+	}
+}
+
+func TestCodingSubAgentContinuationNoteIsNotADeliverable(t *testing.T) {
+	implTask := &TaskItem{Index: 2, Title: "继续", RequestKind: codingRequestImplementation}
+	opTask := &TaskItem{Index: 2, Title: "运行", RequestKind: codingRequestOperational}
+	for _, note := range []string{codingContinuationResumeNote(), codingPlanResumeStopNote()} {
+		prev := []string{codingPreviousTurnResultPrefix + note}
+		msg := (&codingSubAgentCallbacks{task: implTask, prevOutputs: prev}).buildTaskUserMessage()
+		if strings.Contains(msg, codingPriorDeliverableInputRule) || strings.Count(msg, note) != 1 || strings.Contains(msg, "…（已截断）") {
+			t.Fatalf("implementation prompt must carry the host note whole and without the measurement rule:\n%s", msg)
+		}
+		opMsg := (&codingSubAgentCallbacks{task: opTask, prevOutputs: prev}).buildTaskUserMessage()
+		if strings.Contains(opMsg, codingPriorDeliverableInputRule) || strings.Count(opMsg, note) != 1 || strings.Contains(opMsg, "…（已截断）") || !strings.Contains(opMsg, "不要改代码") {
+			t.Fatalf("operational user message must carry the host note whole:\n%s", opMsg)
+		}
+		opPrompt := buildCodingSubAgentSystemPrompt(opTask, t.TempDir(), "", "", prev)
+		if strings.Contains(opPrompt, codingPriorDeliverableInputRule) || strings.Count(opPrompt, note) != 1 || strings.Contains(opPrompt, "…（已截断）") {
+			t.Fatalf("operational system prompt must carry the host note whole:\n%s", opPrompt)
+		}
+		implPrompt := buildCodingSubAgentSystemPrompt(implTask, t.TempDir(), "", "", prev)
+		if strings.Contains(implPrompt, codingPriorDeliverableInputRule) {
+			t.Fatal("a host note is not a prior measurement")
+		}
+	}
+}
+
+func TestCodingCompletedStepResultSurvivesBulletClip(t *testing.T) {
+	const tail = "COMPLETED_STEP_TAIL"
+	item := formatCodingCompletedStepResult(1, "测量", strings.Repeat("测", codingSubAgentPromptBulletMaxRunes+40)+tail)
+	implTask := &TaskItem{Index: 2, Title: "写入", Description: "把结果写进说明", RequestKind: codingRequestImplementation}
+	msg := (&codingSubAgentCallbacks{task: implTask, prevOutputs: []string{item}}).buildTaskUserMessage()
+	if strings.Count(msg, tail) != 1 || strings.Contains(msg, "…（已截断）") || strings.Contains(msg, "前置任务上下文") {
+		t.Fatalf("completed step result was clipped into a bullet:\n%s", msg)
+	}
+	if strings.Count(msg, codingPriorDeliverableInputRule) != 1 {
+		t.Fatal("completed step measurements are input, and the rule is attached once")
+	}
+	opTask := &TaskItem{Index: 2, Title: "运行", RequestKind: codingRequestOperational}
+	opMsg := (&codingSubAgentCallbacks{task: opTask, prevOutputs: []string{item}}).buildTaskUserMessage()
+	if !strings.Contains(opMsg, tail) || strings.Contains(opMsg, codingPriorDeliverableInputRule) || strings.Contains(opMsg, "…（已截断）") || !strings.Contains(opMsg, "不要改代码") {
+		t.Fatalf("operational prompt should show the step result and still run:\n%s", opMsg)
+	}
+	huge := strings.Repeat("测", codingSubAgentModelSummaryMaxRunes+80) + "HUGE_STEP_TAIL"
+	stored := formatCodingCompletedStepResult(1, "测量", huge)
+	if strings.Contains(stored, "HUGE_STEP_TAIL") || strings.Contains(stored, "…（已截断）") {
+		t.Fatal("completed step carry must hard-cap without a recovery marker")
+	}
+	goal := &TaskItem{
+		Index:       2,
+		Title:       "执行",
+		Description: "[系统续接][execute]\n完成当前步骤",
+		RequestKind: codingRequestImplementation,
+	}
+	if strings.Contains(buildCodingSubAgentSystemPrompt(goal, t.TempDir(), "", "", []string{item}), codingPriorDeliverableInputRule) {
+		t.Fatal("goal execute must not freeze a completed step's measurements")
+	}
+	if !strings.Contains(buildCodingSubAgentSystemPrompt(implTask, t.TempDir(), "", "", []string{item}), codingPriorDeliverableInputRule) {
+		t.Fatal("implementation system prompt should treat the completed step as input")
+	}
+}
+
+func TestCodingPrevOutputsForUnplannedTurnDropsActivePlan(t *testing.T) {
+	plan := codingActiveExecutionPlanPrefix + "T1 run the bench\nT2 write the notes"
+	deliverable := codingPreviousTurnResultPrefix + "12.5 ms"
+	got := strings.Join(codingPrevOutputsForUnplannedTurn([]string{plan, deliverable, "Files modified earlier: a.go"}), "\n")
+	if strings.Contains(got, "Active multi-step execution plan:") || strings.Contains(got, "run the bench") {
+		t.Fatalf("unplanned follow-up kept the stale recipe: %q", got)
+	}
+	if !strings.Contains(got, deliverable) || !strings.Contains(got, "a.go") {
+		t.Fatalf("unplanned follow-up dropped continuity: %q", got)
+	}
+}
+
+func TestCodingPrevOutputsForExecutorStepDropsActivePlan(t *testing.T) {
+	plan := codingActiveExecutionPlanPrefix + strings.Repeat("步", codingSubAgentPromptBulletMaxRunes+20) + "PLAN_STEP_TAIL"
+	deliverable := codingPreviousTurnResultPrefix + "12.5 ms"
+	understanding := codingCurrentRequestUnderstandingPrefix + "write the readme"
+	got := strings.Join(codingPrevOutputsForExecutorStep([]string{plan, deliverable, understanding}), "\n")
+	if strings.Contains(got, "Active multi-step execution plan:") || strings.Contains(got, "PLAN_STEP_TAIL") {
+		t.Fatalf("executor step kept the full recipe: %q", got)
+	}
+	if !strings.Contains(got, deliverable) || !strings.Contains(got, understanding) {
+		t.Fatalf("executor step dropped continuity: %q", got)
+	}
+	mem := stickyCodingWorkbenchMemory{ExecutionPlan: "T1 bench\nT2 write the readme"}
+	if !strings.Contains(strings.Join(mem.prevOutputs(), "\n"), codingActiveExecutionPlanPrefix+"T1 bench") {
+		t.Fatal("sticky prevOutputs must still show the execution plan")
+	}
+}
+
+func TestTrimCodingPrevOutputsKeepsDeliverableAndUnderstanding(t *testing.T) {
+	continuity := "Session continuity: this is turn 4 in the same full coding workbench session."
+	sessionPlan := codingSessionPlanPrefix + "ship the benchmark notes"
+	understanding := codingCurrentRequestUnderstandingPrefix + "write the results into the readme"
+	execPlan := codingActiveExecutionPlanPrefix + "T1 bench\nT2 write readme"
+	instructions := "Project instructions (must follow; from AGENTS.md):\n" + strings.Repeat("规", 30)
+	prevUser := "Previous user request:\nrun the benchmark"
+	deliverable := codingPreviousTurnResultPrefix + "bench 12.5 ms TABLE"
+	files := "Files modified earlier in this session: README.md"
+	created := "Files created earlier in this session: notes.md"
+	room := stickyCodingMemoryPrevOutputsMax - 2
+	if room < 2 {
+		t.Fatal("protected channels must leave room for a completed-step tail")
+	}
+	steps := room + 2
+	in := []string{continuity, sessionPlan, understanding, execPlan, instructions, prevUser, deliverable, files, created}
+	for i := 1; i <= steps; i++ {
+		in = append(in, formatCodingCompletedStepResult(i, fmt.Sprintf("S%d", i), fmt.Sprintf("STEP_%d_BODY", i)))
+	}
+	got := trimCodingPrevOutputs(in)
+	if len(got) != stickyCodingMemoryPrevOutputsMax {
+		t.Fatalf("len=%d want %d\n%#v", len(got), stickyCodingMemoryPrevOutputsMax, got)
+	}
+	joined := strings.Join(got, "\n")
+	for _, banned := range []string{continuity, "ship the benchmark notes", "T2 write readme", "Project instructions", "run the benchmark", "README.md", "notes.md", "STEP_1_BODY", "STEP_2_BODY"} {
+		if strings.Contains(joined, banned) {
+			t.Fatalf("dropped the wrong item %q\n%s", banned, joined)
+		}
+	}
+	if !strings.Contains(joined, "write the results into the readme") || !strings.Contains(joined, "bench 12.5 ms TABLE") {
+		t.Fatalf("protected channels dropped:\n%s", joined)
+	}
+	if !strings.Contains(joined, "STEP_3_BODY") || !strings.Contains(joined, fmt.Sprintf("STEP_%d_BODY", steps)) {
+		t.Fatalf("newest completed steps dropped:\n%s", joined)
+	}
+	pos := -1
+	for _, needle := range []string{"write the results into the readme", "bench 12.5 ms TABLE", "STEP_3_BODY", fmt.Sprintf("STEP_%d_BODY", steps)} {
+		at := strings.Index(joined, needle)
+		if at < 0 || at <= pos {
+			t.Fatalf("order broken at %q\n%s", needle, joined)
+		}
+		pos = at
+	}
+
+	mild := []string{continuity, understanding, deliverable, files, created, prevUser, instructions, sessionPlan, execPlan}
+	mildGot := trimCodingPrevOutputs(mild)
+	if len(mildGot) != stickyCodingMemoryPrevOutputsMax || mildGot[0] != understanding {
+		t.Fatalf("mild trim = %#v", mildGot)
+	}
+	mildJoined := strings.Join(mildGot, "\n")
+	if strings.Contains(mildJoined, continuity) || !strings.Contains(mildJoined, deliverable) {
+		t.Fatalf("mild trim dropped a protected channel or kept the oldest filler: %#v", mildGot)
+	}
+	short := []string{understanding, deliverable}
+	if strings.Join(trimCodingPrevOutputs(short), "\n") != strings.Join(short, "\n") {
+		t.Fatal("under-cap trim changed the slice")
+	}
+	if got := trimCodingPrevOutputs(short); len(got) > 0 && &got[0] != &short[0] {
+		t.Fatal("under-cap trim must return the same slice")
+	}
+}
+
+func TestCodingPrevOutputsForSpawnKeepsContract(t *testing.T) {
+	understanding := codingCurrentRequestUnderstandingPrefix + "write the results into the readme"
+	deliverable := codingPreviousTurnResultPrefix + "bench 12.5 ms TABLE"
+	prevUser := "Previous user request:\n测试基准"
+	files := "Files modified earlier in this session: README.md"
+	oldStep := formatCodingCompletedStepResult(1, "bench", "STEP_OLD")
+	newStep := formatCodingCompletedStepResult(2, "notes", "STEP_NEW")
+	parent := []string{understanding, deliverable, prevUser, files, oldStep, newStep}
+	got := codingPrevOutputsForSpawn(parent)
+	want := []string{understanding, deliverable, newStep}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("spawn carry = %#v\nwant %#v", got, want)
+	}
+	if len(got) != codingSpawnPrevOutputsMax {
+		t.Fatalf("len=%d want %d", len(got), codingSpawnPrevOutputsMax)
+	}
+	joined := strings.Join(got, "\n")
+	for _, banned := range []string{"测试基准", "README.md", "STEP_OLD"} {
+		if strings.Contains(joined, banned) {
+			t.Fatalf("spawn kept filler %q\n%s", banned, joined)
+		}
+	}
+
+	short := []string{understanding, deliverable}
+	copied := codingPrevOutputsForSpawn(short)
+	if strings.Join(copied, "\n") != strings.Join(short, "\n") {
+		t.Fatalf("under-cap spawn carry = %#v", copied)
+	}
+	copied[0] = "mutated"
+	if short[0] != understanding {
+		t.Fatal("spawn carry shared the parent slice header")
+	}
+	if codingPrevOutputsForSpawn(nil) != nil {
+		t.Fatal("empty parent outputs must stay empty")
+	}
+}
+
+func TestCodingSpawnCarryContextDropsRecoveryMarker(t *testing.T) {
+	parent := strings.Repeat("父", codingSpawnParentReqMaxRunes) + "PARENT_TAIL" + codingSubAgentRecoveryMarker
+	spawn := strings.Repeat("子", codingSpawnContextMaxRunes) + "SPAWN_TAIL" + codingSubAgentRecoveryMarker
+	got := codingSpawnCarryContext(parent, spawn)
+	if strings.Contains(got, codingSubAgentRecoveryMarker) || strings.Contains(got, "PARENT_TAIL") || strings.Contains(got, "SPAWN_TAIL") {
+		t.Fatalf("spawn context kept a recovery marker or a cut tail:\n%s", got)
+	}
+	if !strings.Contains(got, "## Parent request context\n") || !strings.Contains(got, "父") || !strings.Contains(got, "## Spawn context\n") || !strings.Contains(got, "子") {
+		t.Fatalf("spawn context dropped a channel head:\n%s", got)
+	}
+	if codingSpawnCarryContext(codingSubAgentRecoveryMarker, "  "+codingSubAgentRecoveryMarker) != "" {
+		t.Fatal("marker-only parent and spawn context must not open an empty section")
+	}
+	if codingSpawnCarryContext("", "") != "" {
+		t.Fatal("empty spawn carry must stay empty")
+	}
+	remoteParent := strings.Repeat("测", codingSpawnParentReqMaxRunes) + "BENCH_TAIL" + codingSubAgentRecoveryMarker
+	remoteTask := strings.Repeat("任", 900) + "TASK_TAIL" + codingSubAgentRecoveryMarker
+	remoteSpawn := strings.Repeat("子", codingSpawnContextMaxRunes) + "SPAWN_TAIL" + codingSubAgentRecoveryMarker
+	remoteGot := remoteCodingSpawnCarryContext(remoteParent, remoteTask, remoteSpawn)
+	if strings.Contains(remoteGot, codingSubAgentRecoveryMarker) || strings.Contains(remoteGot, "BENCH_TAIL") || strings.Contains(remoteGot, "TASK_TAIL") || strings.Contains(remoteGot, "SPAWN_TAIL") {
+		t.Fatalf("remote spawn carry kept a recovery marker or a cut tail: %q", remoteGot)
+	}
+	if !strings.Contains(remoteGot, "## Parent remote task context\n") || !strings.Contains(remoteGot, "## Parent task\n") || !strings.Contains(remoteGot, "## Spawn context\n") || !strings.Contains(remoteGot, "测") || !strings.Contains(remoteGot, "任") || !strings.Contains(remoteGot, "子") {
+		t.Fatalf("remote spawn carry dropped a section head: %q", remoteGot)
+	}
+	if remoteCodingSpawnCarryContext(codingSubAgentRecoveryMarker, "  "+codingSubAgentRecoveryMarker, codingSubAgentRecoveryMarker) != "" {
+		t.Fatal("marker-only remote spawn carry must stay empty")
+	}
+	longTitle := codingSpawnTaskTitle(codingRoleWorker, strings.Repeat("写", 120)+"TITLE_TAIL"+codingSubAgentRecoveryMarker)
+	if strings.Contains(longTitle, codingSubAgentRecoveryMarker) || strings.Contains(longTitle, "TITLE_TAIL") || !strings.HasPrefix(longTitle, "[worker] 写") {
+		t.Fatalf("spawn task title = %q", longTitle)
+	}
+}
+
+func TestSystemPromptContextIsHardCut(t *testing.T) {
+	req := "PLAN_HEAD " + strings.Repeat("步", 400) + "PLAN_TAIL" + codingSubAgentRecoveryMarker
+	design := "DESIGN_HEAD " + strings.Repeat("设", 400) + "DESIGN_TAIL" + codingSubAgentRecoveryMarker
+	impl := buildCodingSubAgentSystemPrompt(
+		&TaskItem{Index: 1, Title: "写入", RequestKind: codingRequestImplementation},
+		t.TempDir(), req, design, nil,
+	)
+	if strings.Contains(impl, codingSubAgentRecoveryMarker) || strings.Contains(impl, "PLAN_TAIL") || strings.Contains(impl, "DESIGN_TAIL") {
+		t.Fatal("implementation system prompt kept a recovery marker or a cut tail")
+	}
+	if !strings.Contains(impl, "PLAN_HEAD ") || !strings.Contains(impl, "DESIGN_HEAD ") || !strings.Contains(impl, "## 需求摘要") || !strings.Contains(impl, "## 设计摘要") {
+		t.Fatal("implementation system prompt dropped the head of the step contract")
+	}
+	op := buildCodingSubAgentSystemPrompt(
+		&TaskItem{Index: 1, Title: "运行", RequestKind: codingRequestOperational},
+		t.TempDir(), req, "", nil,
+	)
+	if strings.Contains(op, codingSubAgentRecoveryMarker) || strings.Contains(op, "PLAN_TAIL") || !strings.Contains(op, "PLAN_HEAD ") || !strings.Contains(op, "操作执行器") {
+		t.Fatal("operational system prompt clipped the step contract with a recovery marker")
+	}
+	marked := "KEEP_BODY" + codingSubAgentRecoveryMarker
+	short := buildCodingSubAgentSystemPrompt(
+		&TaskItem{Index: 1, Title: "写入", RequestKind: codingRequestImplementation},
+		t.TempDir(), marked, marked, nil,
+	)
+	if strings.Contains(short, codingSubAgentRecoveryMarker) || !strings.Contains(short, "KEEP_BODY") {
+		t.Fatal("a short stored context must drop one trailing recovery marker")
+	}
+}
+
+func TestDynamicSelectionContextIsHardCut(t *testing.T) {
+	req := "REQ_HEAD " + strings.Repeat("需", codingSubAgentDynamicSelectionContextMaxRunes) + "REQ_TAIL" + codingSubAgentRecoveryMarker
+	design := "DESIGN_HEAD " + strings.Repeat("设", codingSubAgentDynamicSelectionContextMaxRunes) + "DESIGN_TAIL" + codingSubAgentRecoveryMarker
+	text := codingSubAgentDynamicSelectionTextWithContext(
+		&TaskItem{Title: "写入说明"},
+		req,
+		design,
+		nil,
+	)
+	if strings.Contains(text, codingSubAgentRecoveryMarker) || strings.Contains(text, "REQ_TAIL") || strings.Contains(text, "DESIGN_TAIL") {
+		t.Fatalf("selection context kept a recovery marker or a cut tail:\n%s", text)
+	}
+	if !strings.Contains(text, "REQ_HEAD ") || !strings.Contains(text, "DESIGN_HEAD ") {
+		t.Fatalf("selection context dropped a channel head:\n%s", text)
+	}
+}
+
+func TestCompactSubAgentTaskDescriptionIsHardCut(t *testing.T) {
+	desc := strings.Repeat("描", codingSubAgentTaskDescriptionMaxRunes) + "DESC_TAIL" + codingSubAgentRecoveryMarker
+	got := compactSubAgentTaskDescription(desc)
+	if strings.Contains(got, codingSubAgentRecoveryMarker) || strings.Contains(got, "DESC_TAIL") || !strings.HasPrefix(got, "描") {
+		t.Fatalf("task description = %q", got)
+	}
+	if len([]rune(got)) > codingSubAgentTaskDescriptionMaxRunes {
+		t.Fatalf("task description len=%d", len([]rune(got)))
+	}
+	if compactSubAgentTaskDescription("short body"+codingSubAgentRecoveryMarker) != "short body" {
+		t.Fatal("a short description must drop one trailing recovery marker")
+	}
+	if compactSubAgentTaskDescription(codingSubAgentRecoveryMarker) != "" {
+		t.Fatal("a description that is only the recovery marker is empty")
+	}
+}
+
+func TestLongTaskUserMessageDoesNotMarkTheDeliverableCut(t *testing.T) {
+	msg := (&codingSubAgentCallbacks{
+		task: &TaskItem{
+			Index:       1,
+			Title:       "写入",
+			Description: strings.Repeat("任务说明。", codingSubAgentTaskDescriptionMaxRunes),
+			RequestKind: codingRequestImplementation,
+		},
+		prevOutputs: []string{
+			codingSessionPlanPrefix + "ship the notes",
+			codingPreviousTurnResultPrefix + "BENCH_12_5 table",
+		},
+	}).buildTaskUserMessage()
+	if strings.Contains(msg, codingSubAgentRecoveryMarker) {
+		t.Fatal("a long task body must be hard-cut so the recovery marker is not written in front of the deliverable")
+	}
+	if !strings.Contains(msg, "BENCH_12_5") || !strings.Contains(msg, "ship the notes") || strings.Count(msg, codingPriorDeliverableInputRule) != 1 {
+		t.Fatalf("long task compact dropped the deliverable:\n%s", msg)
+	}
+}
+
+func TestPreviousUserBulletDoesNotCarryRecoveryMarker(t *testing.T) {
+	mem := stickyCodingWorkbenchMemory{TurnCount: 2, LastUserText: strings.Repeat("测", 500) + "USER_STORED_TAIL"}
+	joined := strings.Join(mem.prevOutputs(), "\n")
+	if strings.Contains(joined, codingSubAgentRecoveryMarker) || strings.Contains(joined, "USER_STORED_TAIL") || !strings.Contains(joined, codingPreviousUserRequestPrefix) {
+		t.Fatalf("stored previous user request = %q", joined)
+	}
+	body := strings.Repeat("测", 180) + "USER_TAIL"
+	item := codingPreviousUserRequestPrefix + body + codingSubAgentRecoveryMarker
+	file := "Files modified earlier in this session: " + strings.Repeat("src/component_", 30) + "FILE_TAIL"
+	msg := (&codingSubAgentCallbacks{
+		task:        &TaskItem{Index: 1, Title: "写入", Description: "把结果写入说明", RequestKind: codingRequestImplementation},
+		prevOutputs: []string{item, file, codingPreviousTurnResultPrefix + "BENCH_12_5"},
+	}).buildTaskUserMessage()
+	for _, line := range strings.Split(msg, "\n") {
+		if strings.Contains(line, codingPreviousUserRequestPrefix) && strings.Contains(line, codingSubAgentRecoveryMarker) {
+			t.Fatalf("previous user bullet recovered the cut ask: %q", line)
+		}
+	}
+	if strings.Contains(msg, "USER_TAIL") || strings.Contains(msg, body) {
+		t.Fatal("previous user request was lifted in full")
+	}
+	if !strings.Contains(msg, "测") || !strings.Contains(msg, "BENCH_12_5") {
+		t.Fatal("previous user head or deliverable was dropped")
+	}
+	if !strings.Contains(msg, codingSubAgentRecoveryMarker) || strings.Contains(msg, "FILE_TAIL") {
+		t.Fatal("file bullets must still say the rest is on disk")
+	}
+}
+
+func TestCodingKnowledgeFallbackQueryUsesCurrentUnderstanding(t *testing.T) {
+	understanding := codingCurrentRequestUnderstandingPrefix + "write the results into the readme"
+	deliverable := codingPreviousTurnResultPrefix + strings.Repeat("测", 800) + "BENCH_TAIL"
+	q := codingKnowledgeFallbackQuery(
+		"Session continuity: this is turn 27 in the same full coding workbench session.",
+		understanding,
+		deliverable,
+		"Files modified earlier in this session: README.md",
+	)
+	if q != "write the results into the readme" {
+		t.Fatalf("fallback query = %q", q)
+	}
+	remote := codingCurrentRequestUnderstandingPrefix + "write the results into the readme\n\n将上述测试结果写入readme\n\n" + strings.Repeat("测", 2000) + "BENCH_TAIL"
+	remoteQ := codingKnowledgeFallbackQuery(remote)
+	if !strings.Contains(remoteQ, "write the results into the readme") || strings.Contains(remoteQ, "BENCH_TAIL") {
+		t.Fatalf("remote fallback query = %q", remoteQ)
+	}
+	failure := codingKnowledgeFallbackQuery(strings.Repeat("前", 1000), "retry failed: nil http client panic")
+	if !strings.Contains(failure, "nil http client panic") {
+		t.Fatalf("failure fallback query = %q", failure)
+	}
+}
+
+func TestSpawnChildReportDropsRecoveryMarker(t *testing.T) {
+	var b strings.Builder
+	long := strings.Repeat("测", codingSubAgentModelSummaryMaxRunes) + "CHILD_TAIL" + codingSubAgentRecoveryMarker
+	appendCodingSpawnChildReport(&b, 0, codingRoleWorker, strings.Repeat("写", 200)+"TASK_TAIL"+codingSubAgentRecoveryMarker, "passed", 1, 2, "", long, "", nil, nil)
+	got := b.String()
+	if strings.Contains(got, codingSubAgentRecoveryMarker) || strings.Contains(got, "CHILD_TAIL") || strings.Contains(got, "TASK_TAIL") || !strings.Contains(got, "summary:\n") || !strings.Contains(got, "测") || !strings.Contains(got, "写") {
+		t.Fatalf("spawn child report = %q", got)
+	}
+	if len([]rune(got)) == 0 {
+		t.Fatal("empty report")
+	}
+	var only strings.Builder
+	appendCodingSpawnChildReport(&only, 0, codingRoleWorker, "write readme", "passed", 1, 0, "", codingSubAgentRecoveryMarker, "", nil, nil)
+	if strings.Contains(only.String(), "summary:") {
+		t.Fatalf("marker-only child summary was quoted: %q", only.String())
+	}
+}
+
+func TestPreviousTurnPromptDropsRecoveryMarker(t *testing.T) {
+	body := strings.Repeat("测", 80) + "BENCH_12_5"
+	stored := body + "\n" + codingSubAgentRecoveryMarker
+	mem := stickyCodingWorkbenchMemory{TurnCount: 2, LastSummary: stored}
+	outs := mem.prevOutputs()
+	joined := strings.Join(outs, "\n")
+	if strings.Contains(joined, codingSubAgentRecoveryMarker) || !strings.Contains(joined, "BENCH_12_5") {
+		t.Fatalf("prompt channel kept the recovery marker or dropped the measurement: %q", joined)
+	}
+	msg := (&codingSubAgentCallbacks{
+		task:        &TaskItem{Index: 1, Title: "写入", Description: "把结果写进说明", RequestKind: codingRequestImplementation},
+		prevOutputs: outs,
+	}).buildTaskUserMessage()
+	if strings.Contains(msg, codingSubAgentRecoveryMarker) || !strings.Contains(msg, "BENCH_12_5") || strings.Count(msg, codingPriorDeliverableInputRule) != 1 {
+		t.Fatalf("implementation prompt did not keep the measurement without the marker:\n%s", msg)
+	}
+	huge := strings.Repeat("测", codingSubAgentModelSummaryMaxRunes+80) + "HUGE_TAIL"
+	compacted := compactSubAgentModelSummary(huge)
+	if !strings.HasSuffix(compacted, codingSubAgentRecoveryMarker) || strings.Contains(compacted, "HUGE_TAIL") {
+		t.Fatal("stored summary must keep the recovery marker")
+	}
+	cleaned := codingPromptPreviousTurnSummary(compacted)
+	if strings.Contains(cleaned, codingSubAgentRecoveryMarker) || strings.Contains(cleaned, "HUGE_TAIL") || len([]rune(cleaned)) > codingSubAgentModelSummaryMaxRunes || cleaned == "" {
+		t.Fatalf("prompt summary = %d runes, marker=%v", len([]rune(cleaned)), strings.Contains(cleaned, codingSubAgentRecoveryMarker))
+	}
+	if codingPromptPreviousTurnSummary(codingSubAgentRecoveryMarker) != "" || codingPromptPreviousTurnSummary("\n"+codingSubAgentRecoveryMarker) != "" {
+		t.Fatal("a summary that is only the recovery marker is not a deliverable")
+	}
+	only := stickyCodingWorkbenchMemory{TurnCount: 1, LastSummary: codingSubAgentRecoveryMarker}.prevOutputs()
+	onlyMsg := (&codingSubAgentCallbacks{
+		task:        &TaskItem{Index: 1, Title: "写入", RequestKind: codingRequestImplementation},
+		prevOutputs: only,
+	}).buildTaskUserMessage()
+	if strings.Contains(strings.Join(only, "\n"), codingPreviousTurnResultPrefix) || strings.Contains(onlyMsg, codingPriorDeliverableInputRule) || strings.Contains(onlyMsg, codingSubAgentRecoveryMarker) {
+		t.Fatal("marker-only summary became a deliverable")
+	}
+	if codingPromptPreviousTurnSummary(codingContinuationResumeNote()) != codingContinuationResumeNote() {
+		t.Fatal("host note was altered on the prompt channel")
+	}
+	remote := buildRemoteCodingPlanStepText(nil, 1, 1, false, "follow up", nil, 2, "goal", stored, nil, nil)
+	if strings.Contains(remote, codingSubAgentRecoveryMarker) || !strings.Contains(remote, "BENCH_12_5") || !strings.Contains(remote, codingPriorDeliverableInputRule) {
+		t.Fatalf("remote prompt kept the recovery marker:\n%s", remote)
+	}
+	remoteOnly := buildRemoteCodingPlanStepText(nil, 1, 1, false, "follow up", nil, 2, "goal", codingSubAgentRecoveryMarker, nil, nil)
+	if strings.Contains(remoteOnly, "Previous turn summary:") || strings.Contains(remoteOnly, codingPriorDeliverableInputRule) {
+		t.Fatalf("marker-only remote summary became a deliverable:\n%s", remoteOnly)
+	}
+}
+
+func TestCodingSessionPlanSurvivesBulletClip(t *testing.T) {
+	planBody := strings.Repeat("计", codingSubAgentPromptBulletMaxRunes+30) + "PLAN_TAIL"
+	item := codingSessionPlanPrefix + planBody
+	fileLine := "Files modified earlier in this session: a.go"
+	impl := &TaskItem{Index: 1, Title: "写入", Description: "把结果写进说明", RequestKind: codingRequestImplementation}
+	msg := (&codingSubAgentCallbacks{task: impl, prevOutputs: []string{item, fileLine}}).buildTaskUserMessage()
+	if strings.Count(msg, "PLAN_TAIL") != 1 || strings.Contains(msg, codingSubAgentRecoveryMarker) || strings.Contains(msg, codingPriorDeliverableInputRule) {
+		t.Fatalf("session plan was clipped or treated as a measurement:\n%s", msg)
+	}
+	bulletAt := strings.Index(msg, "前置任务上下文")
+	prefixAt := strings.Index(msg, codingSessionPlanPrefix)
+	if bulletAt < 0 || prefixAt < bulletAt || strings.Contains(msg[bulletAt:prefixAt], "PLAN_TAIL") {
+		t.Fatalf("session plan landed inside the bullet list:\n%s", msg)
+	}
+	only := (&codingSubAgentCallbacks{task: impl, prevOutputs: []string{item}}).buildTaskUserMessage()
+	if strings.Contains(only, "前置任务上下文") || strings.Count(only, "PLAN_TAIL") != 1 || strings.Contains(only, codingPriorDeliverableInputRule) {
+		t.Fatalf("session plan alone was rendered as a bullet or a measurement:\n%s", only)
+	}
+	op := &TaskItem{Index: 1, Title: "运行", RequestKind: codingRequestOperational}
+	opMsg := (&codingSubAgentCallbacks{task: op, prevOutputs: []string{item}}).buildTaskUserMessage()
+	if strings.Count(opMsg, "PLAN_TAIL") != 1 || strings.Contains(opMsg, codingPriorDeliverableInputRule) || strings.Contains(opMsg, codingSubAgentRecoveryMarker) || !strings.Contains(opMsg, "不要改代码") {
+		t.Fatalf("operational prompt should show the session plan without the measurement rule:\n%s", opMsg)
+	}
+	sel := codingSubAgentDynamicSelectionTextWithContext(impl, "", "", []string{item})
+	if strings.Contains(sel, "PLAN_TAIL") {
+		t.Fatalf("dynamic selection carried the session plan:\n%s", sel)
+	}
+	long := strings.Repeat("计", codingSessionPlanMaxRunes+40) + "PLAN_OVER"
+	stored := strings.Join((stickyCodingWorkbenchMemory{TurnCount: 1, SessionPlan: long}).prevOutputs(), "\n")
+	if strings.Contains(stored, codingSubAgentRecoveryMarker) || strings.Contains(stored, "PLAN_OVER") || !strings.Contains(stored, codingSessionPlanPrefix) {
+		t.Fatalf("session plan prompt channel = %q", stored)
+	}
+	body, ok := strings.CutPrefix(stored, "Session continuity: this is turn 2 in the same full coding workbench session.\n"+codingSessionPlanPrefix)
+	if !ok || len([]rune(body)) != codingSessionPlanMaxRunes {
+		t.Fatalf("session plan hard cap failed, ok=%v runes=%d", ok, len([]rune(body)))
+	}
+}
+
+func TestStoredRecoveryMarkerStaysOffPromptChannels(t *testing.T) {
+	impl := &TaskItem{Index: 1, Title: "写入", Description: "把结果写进说明", RequestKind: codingRequestImplementation}
+	planStored := truncateRunesForSubAgent(strings.Repeat("计", codingSessionPlanMaxRunes+25)+"PLAN_STORED_TAIL", codingSessionPlanMaxRunes)
+	if !strings.HasSuffix(planStored, codingSubAgentRecoveryMarker) || strings.Contains(planStored, "PLAN_STORED_TAIL") {
+		t.Fatal("session-plan storage still has to keep the recovery marker")
+	}
+	planOut := (stickyCodingWorkbenchMemory{TurnCount: 1, SessionPlan: planStored}).prevOutputs()
+	planMsg := (&codingSubAgentCallbacks{task: impl, prevOutputs: planOut}).buildTaskUserMessage()
+	if strings.Contains(strings.Join(planOut, "\n"), codingSubAgentRecoveryMarker) || strings.Contains(planMsg, codingSubAgentRecoveryMarker) || strings.Contains(planMsg, codingPriorDeliverableInputRule) || !strings.Contains(planMsg, "计") {
+		t.Fatalf("session plan prompt kept the stored recovery marker:\n%s", planMsg)
+	}
+	remotePlan := buildRemoteCodingPlanStepText(nil, 1, 1, false, "follow up", nil, 2, planStored, "", nil, nil)
+	if strings.Contains(remotePlan, codingSubAgentRecoveryMarker) || !strings.Contains(remotePlan, "计") {
+		t.Fatalf("remote session plan kept the recovery marker:\n%s", remotePlan)
+	}
+
+	understood := truncateRunesForSubAgent(strings.Repeat("理", 480)+"UNDERSTAND_STORED_TAIL", 400)
+	if !strings.HasSuffix(understood, codingSubAgentRecoveryMarker) {
+		t.Fatal("restatement storage still has to keep the recovery marker")
+	}
+	understoodMsg := (&codingSubAgentCallbacks{
+		task:        impl,
+		prevOutputs: (stickyCodingWorkbenchMemory{TurnCount: 1, RequirementRestatement: understood}).prevOutputs(),
+	}).buildTaskUserMessage()
+	if strings.Contains(understoodMsg, codingSubAgentRecoveryMarker) || strings.Contains(understoodMsg, codingPriorDeliverableInputRule) || !strings.Contains(understoodMsg, "理") || strings.Contains(understoodMsg, "UNDERSTAND_STORED_TAIL") {
+		t.Fatalf("understanding prompt kept the stored recovery marker:\n%s", understoodMsg)
+	}
+	remoteUnderstanding := prependCodingRequestUnderstanding("follow up", "把结果写入说明"+codingSubAgentRecoveryMarker)
+	if strings.Contains(remoteUnderstanding, codingSubAgentRecoveryMarker) || !strings.Contains(remoteUnderstanding, "把结果写入说明") {
+		t.Fatalf("remote understanding kept the recovery marker: %q", remoteUnderstanding)
+	}
+
+	step := formatCodingCompletedStepResult(1, "测量", strings.Repeat("测", 80)+"STEP_BENCH\n"+codingSubAgentRecoveryMarker)
+	if step == "" || strings.Contains(step, codingSubAgentRecoveryMarker) || !strings.Contains(step, "STEP_BENCH") {
+		t.Fatalf("completed step carry = %q", step)
+	}
+	stepMsg := (&codingSubAgentCallbacks{task: impl, prevOutputs: []string{step}}).buildTaskUserMessage()
+	if strings.Contains(stepMsg, codingSubAgentRecoveryMarker) || !strings.Contains(stepMsg, "STEP_BENCH") || strings.Count(stepMsg, codingPriorDeliverableInputRule) != 1 {
+		t.Fatalf("completed step prompt kept the recovery marker:\n%s", stepMsg)
+	}
+	if formatCodingCompletedStepResult(2, "空", codingSubAgentRecoveryMarker) != "" {
+		t.Fatal("a step summary that is only the recovery marker is not a result")
+	}
+}
+
+func TestGoalExecutePromptDoesNotFreezePriorMeasurements(t *testing.T) {
+	prev := []string{codingPreviousTurnResultPrefix + "bench result 12.5ms"}
+	exec := &TaskItem{
+		Index:       1,
+		Title:       "执行",
+		Description: "[系统续接][execute]\n完成当前步骤并记录结果",
+		RequestKind: codingRequestImplementation,
+	}
+	prompt := buildCodingSubAgentSystemPrompt(exec, t.TempDir(), "", "", prev)
+	if strings.Contains(prompt, codingPriorDeliverableInputRule) {
+		t.Fatal("goal execute prompt must not freeze prior measurements")
+	}
+	if !strings.Contains(prompt, "本轮只执行") {
+		t.Fatal("expected the goal execute contract")
+	}
+	plan := &TaskItem{
+		Index:       1,
+		Title:       "规划",
+		Description: "[系统续接][plan]\n本轮只做规划",
+		RequestKind: codingRequestImplementation,
+	}
+	planPrompt := buildCodingSubAgentSystemPrompt(plan, t.TempDir(), "", "", prev)
+	if strings.Contains(planPrompt, codingPriorDeliverableInputRule) {
+		t.Fatal("goal plan prompt must not freeze prior measurements")
+	}
+	ordinary := buildCodingSubAgentSystemPrompt(&TaskItem{Index: 1, Title: "写入", RequestKind: codingRequestImplementation}, t.TempDir(), "", "", prev)
+	if !strings.Contains(ordinary, codingPriorDeliverableInputRule) {
+		t.Fatal("an ordinary implementation prompt still treats a real deliverable as input")
+	}
+}
+
+func TestCodingEditsAreDocumentationOnly(t *testing.T) {
+	if codingEditsAreDocumentationOnly(nil, nil) || codingEditsAreDocumentationOnly([]string{"  "}, nil) {
+		t.Fatal("empty edits are not documentation-only")
+	}
+	if !codingEditsAreDocumentationOnly([]string{`docs\README.md`}, []string{"CHANGELOG.rst"}) {
+		t.Fatal("readme and changelog should be documentation")
+	}
+	if codingEditsAreDocumentationOnly([]string{"README.md"}, []string{"bench.py"}) {
+		t.Fatal("a created script beside a readme is not documentation-only")
+	}
+	if codingEditsAreDocumentationOnly([]string{"CMakeLists.txt"}, nil) {
+		t.Fatal("CMakeLists.txt is build configuration")
+	}
+}
+
+func TestDocumentationOnlyEditsDoNotRequireVerification(t *testing.T) {
+	missing, why := summarizeSubAgentVerification([]string{"README.md"}, nil, 0)
+	if missing != codingSubAgentQualityMissing {
+		t.Fatalf("readme edit without a verifier is missing, got %s %s", missing, why)
+	}
+	status, summary := relaxDocumentationOnlyVerification(missing, why, []string{"README.md"}, nil)
+	if status != codingSubAgentQualityNotNeeded {
+		t.Fatalf("documentation-only missing verification should be not needed, got %s %s", status, summary)
+	}
+	status, summary = relaxDocumentationOnlyVerification(missing, why, []string{"README.md"}, []string{"bench.py"})
+	if status != codingSubAgentQualityMissing {
+		t.Fatalf("script create must keep verification, got %s %s", status, summary)
+	}
+	status, summary = relaxDocumentationOnlyVerification(missing, why, []string{"CMakeLists.txt"}, nil)
+	if status != codingSubAgentQualityMissing {
+		t.Fatalf("build config must keep verification, got %s %s", status, summary)
+	}
+	failedWhy := "有 1 条验证命令未通过"
+	status, summary = relaxDocumentationOnlyVerification(codingSubAgentQualityFailed, failedWhy, []string{"README.md"}, nil)
+	if status != codingSubAgentQualityFailed || summary != failedWhy {
+		t.Fatalf("failed verifier must stay failed, got %s %s", status, summary)
+	}
+	status, _ = relaxDocumentationOnlyVerification(codingSubAgentQualityNotNeeded, "", nil, nil)
+	if status != codingSubAgentQualityNotNeeded {
+		t.Fatal("empty edits must not be rewritten")
 	}
 }
 
@@ -5517,6 +6218,31 @@ func TestCodingSubAgentDynamicSelectionTextIncludesCappedContextSignals(t *testi
 	}
 	if !strings.Contains(text, "还有 2 项未展开") {
 		t.Fatalf("dynamic selection previous outputs should report remaining count, got %q", text)
+	}
+}
+
+func TestCodingSubAgentDynamicSelectionLeavesDeliverableOutOfBulletSlots(t *testing.T) {
+	var prevOutputs []string
+	prevOutputs = append(prevOutputs, codingPreviousTurnResultPrefix+"DELIVERABLE_HEAD "+strings.Repeat("测", codingSubAgentPromptBulletMaxRunes+40)+"DELIVERABLE_TAIL")
+	prevOutputs = append(prevOutputs, codingCurrentRequestUnderstandingPrefix+"UNDERSTANDING_HEAD "+strings.Repeat("理", codingSubAgentPromptBulletMaxRunes+20)+"UNDERSTANDING_TAIL")
+	prevOutputs = append(prevOutputs, codingPreviousTurnResultPrefix+codingContinuationResumeNote())
+	for i := 0; i < codingSubAgentDynamicSelectionPrevOutputsMax; i++ {
+		prevOutputs = append(prevOutputs, fmt.Sprintf("Previous output %02d mentions browser MCP screenshot flow", i))
+	}
+	text := codingSubAgentDynamicSelectionTextWithContext(
+		&TaskItem{Title: "Polish status panel"},
+		"",
+		"",
+		prevOutputs,
+	)
+	for i := 0; i < codingSubAgentDynamicSelectionPrevOutputsMax; i++ {
+		want := fmt.Sprintf("Previous output %02d", i)
+		if !strings.Contains(text, want) {
+			t.Fatalf("deliverable occupied a selection slot, missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "DELIVERABLE_HEAD ") || strings.Contains(text, "UNDERSTANDING_HEAD ") || strings.Contains(text, "The previous round ended") {
+		t.Fatalf("selection text must not clip the deliverable, understanding, or host note:\n%s", text)
 	}
 }
 

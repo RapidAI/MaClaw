@@ -135,6 +135,7 @@ type StepReady struct {
 	StepID       string                 `json:"step_id"`
 	StepType     hopspec.StepType       `json:"step_type"`
 	Summary      string                 `json:"summary"`
+	Free         bool                   `json:"free,omitempty"`
 	Inputs       map[string]any         `json:"inputs"`
 	Instruction  string                 `json:"instruction,omitempty"`
 	Tools        []string               `json:"tools,omitempty"`

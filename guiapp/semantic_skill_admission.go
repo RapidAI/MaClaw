@@ -3,6 +3,7 @@ package guiapp
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -766,10 +768,20 @@ func (c *sharedAgentLoopCallbacks) clearSkillAdmission() {
 	c.skillRemoteSearchOffered = false
 	c.agentGuidedHostTools = false
 	c.hostProcedureDir = ""
+	// adoptedProcedureDir stays. It is the package this turn just installed.
+	// republishAdoptedProcedure puts that directory back after this clear.
 }
 
 func (c *sharedAgentLoopCallbacks) publishAdmittedSkillTools(userText string) {
 	if c == nil {
+		return
+	}
+	defer c.republishAdoptedProcedure()
+	// The package installed on this turn is the procedure. A managed turn
+	// must not offer market search again. Discovery keeps its preset list;
+	// craft_tool is closed at the call gate, not stripped from that list.
+	if strings.TrimSpace(c.adoptedProcedureDir) != "" && !c.foregroundHandoffOnly() && !semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+		c.clearSkillAdmission()
 		return
 	}
 	// A closed handoff lists only the chat controls. Putting a petitioned
@@ -842,8 +854,12 @@ func (c *sharedAgentLoopCallbacks) republishDiscoveryPetitionedSkills() {
 // back. A light surface and an operational continuation keep their own list.
 // Anything else clears admission, which is the previous contract.
 func (c *sharedAgentLoopCallbacks) publishHostProcedureTools(userText string) {
+	if c == nil {
+		return
+	}
+	defer c.republishAdoptedProcedure()
 	c.clearSkillAdmission()
-	if c == nil || c.handler == nil || c.foregroundHandoffOnly() {
+	if c.handler == nil || c.foregroundHandoffOnly() {
 		return
 	}
 	profile := executionProfileFromLoop(c.loopCtx)
@@ -861,6 +877,107 @@ func (c *sharedAgentLoopCallbacks) publishHostProcedureTools(userText string) {
 		}
 	}
 	c.appendDiscoveredMCPDefs(c.handler.agentGuidedHostToolDefinitions())
+}
+
+const adoptedProcedureDocBytes = 256 * 1024
+
+const adoptedProcedurePromptMarkPrefix = "本轮已安装流程："
+
+// republishAdoptedProcedure puts the just-installed instruction package back
+// after clearSkillAdmission. A handoff stays closed. Discovery keeps the
+// preset list and gains the host file tools.
+func (c *sharedAgentLoopCallbacks) republishAdoptedProcedure() {
+	if c == nil || strings.TrimSpace(c.adoptedProcedureDir) == "" || c.foregroundHandoffOnly() {
+		return
+	}
+	c.agentGuidedHostTools = true
+	c.hostProcedureDir = c.adoptedProcedureDir
+	c.skillRemoteSearchOffered = false
+	if c.handler != nil {
+		c.appendDiscoveredMCPDefs(c.handler.agentGuidedHostToolDefinitions())
+	}
+}
+
+// adoptInstalledProcedure pins a just-installed SKILL.md as this turn's procedure.
+// The directory has to exist and contain the document. A missing folder does
+// not open host file tools.
+func (c *sharedAgentLoopCallbacks) adoptInstalledProcedure(dir, name string) {
+	if c == nil || c.foregroundHandoffOnly() {
+		return
+	}
+	dir = strings.TrimSpace(dir)
+	if dir == "" || !filepath.IsAbs(dir) {
+		return
+	}
+	info, err := os.Stat(dir)
+	if err != nil || info == nil || !info.IsDir() {
+		return
+	}
+	if findSkillMarkdownDocPath(dir) == "" {
+		return
+	}
+	c.adoptedProcedureDir = filepath.Clean(dir)
+	c.adoptedProcedureName = strings.TrimSpace(name)
+	c.republishAdoptedProcedure()
+	c.ensureAdoptedProcedureDocs()
+}
+
+func (c *sharedAgentLoopCallbacks) adoptedProcedureReason() string {
+	name := strings.TrimSpace(c.adoptedProcedureName)
+	if name == "" {
+		name = "已安装的 Skill"
+	}
+	return name + " 已安装，是这一轮的流程。按使用文档用 bash、read_file、write_file、edit_file、list_directory 完成，不要改用 generate_pdf、office、craft_tool 或 search_and_install_skill。"
+}
+
+func (c *sharedAgentLoopCallbacks) ensureAdoptedProcedureDocs() {
+	if c == nil || strings.TrimSpace(c.adoptedProcedureDir) == "" {
+		return
+	}
+	mark := adoptedProcedurePromptMarkPrefix + c.adoptedProcedureDir
+	if strings.Contains(c.systemPrompt, mark) {
+		return
+	}
+	docPath := findSkillMarkdownDocPath(c.adoptedProcedureDir)
+	content := readAdoptedProcedureDoc(docPath)
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	name := strings.TrimSpace(c.adoptedProcedureName)
+	if name == "" {
+		name = filepath.Base(c.adoptedProcedureDir)
+	}
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(mark)
+	b.WriteString("\n")
+	writeMatchedSkillDocs(&b, []matchedKnowledgeSkill{{
+		Name:        name,
+		Content:     content,
+		DocPath:     docPath,
+		AgentGuided: true,
+	}}, defaultKnowledgeSkillTokenBudget)
+	c.systemPrompt += b.String()
+}
+
+func readAdoptedProcedureDoc(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, adoptedProcedureDocBytes))
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	for len(data) > 0 && !utf8.Valid(data) {
+		data = data[:len(data)-1]
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // hostProcedureDirectory is the absolute install directory of a host procedure.
@@ -983,6 +1100,9 @@ func (c *sharedAgentLoopCallbacks) executeAdmittedSkillHostCall(name, argsJSON s
 		}
 		result := c.handler.executeSkillSearchInstallAdmitted(args, nil, true)
 		c.admittedSkillSettled = true
+		if result.Success {
+			c.adoptInstalledProcedure(result.ProcedureDir, result.ProcedureName)
+		}
 		return result.Text, true, result.Success
 	}
 	text := c.executeToolWithoutSemanticSurface(name, argsJSON)
@@ -1135,7 +1255,17 @@ func (c *sharedAgentLoopCallbacks) skillAdmissionIsGuided() bool {
 // Grants, group policy, and the discovery extension path still decide the
 // other names.
 func (c *sharedAgentLoopCallbacks) skillSubstituteBlocked(name string) (bool, string) {
-	if c == nil || semanticSurfaceIsModelDiscovery(c.semanticSurface) {
+	if c == nil {
+		return false, ""
+	}
+	// An instruction package installed on this turn is the procedure, including
+	// a discovery turn. craft_tool or another search would abandon the document.
+	// The check is empty when nothing was adopted, so a petition still leaves
+	// craft_tool open.
+	if strings.TrimSpace(c.adoptedProcedureDir) != "" && adoptedProcedureToolClosed(name) {
+		return true, c.adoptedProcedureReason()
+	}
+	if semanticSurfaceIsModelDiscovery(c.semanticSurface) {
 		return false, ""
 	}
 	if !c.skillSurfaceAdmitted() {
@@ -1151,6 +1281,15 @@ func (c *sharedAgentLoopCallbacks) skillSubstituteBlocked(name string) (bool, st
 		return true, c.skillObligationReason()
 	}
 	return false, ""
+}
+
+func adoptedProcedureToolClosed(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "search_and_install_skill", "manage_skill", "discover_tool":
+		return true
+	default:
+		return skillAdmissionSubstitute(name, true)
+	}
 }
 
 func skillAdmissionSubstitute(name string, guided bool) bool {

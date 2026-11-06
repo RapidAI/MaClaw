@@ -2129,8 +2129,9 @@ func (a *App) decideFileCompanionShareHost(token, decision string) error {
 
 // OpenFileCompanionShareFromNotification opens one shared document from a Hub
 // notification. An already imported copy is opened as-is; otherwise the share
-// is downloaded first (person and group notices need no password). The caller
-// is the main window, so LaunchFileCompanion starts or reveals the companion.
+// is downloaded first (person and group notices need no password).
+// LaunchFileCompanion starts the companion from the main window, and opens
+// the file in this window when the caller is already the companion.
 func (a *App) OpenFileCompanionShareFromNotification(token string) (string, error) {
 	if a == nil {
 		return "", errors.New("app unavailable")

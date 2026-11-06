@@ -11,6 +11,11 @@ import (
 type skillInstallExecutionResult struct {
 	Text    string
 	Success bool
+	// ProcedureDir is the installed instruction package this turn must follow.
+	// Empty when the runner executed the skill, or when the install failed.
+	ProcedureDir string
+	// ProcedureName is the skill name that owns ProcedureDir.
+	ProcedureName string
 	// SilentFailure indicates the failure was already communicated to the user
 	// through another channel (e.g., the confirmation UI showed rejection/timeout
 	// feedback inline). When true, the caller should NOT emit additional failure

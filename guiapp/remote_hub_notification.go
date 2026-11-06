@@ -28,14 +28,15 @@ func (a *App) handleNotificationPush(payload json.RawMessage) {
 		a.notifCache.Add(push.Notification)
 		// Notify frontend of the new notification.
 		emitNotificationFrontendEvent(a, "notification:new", push.Notification)
-		// An invitation also needs the operating system's notice: the bell is
-		// only visible on the assistant panel. This re-reads the invite list, so
-		// it must not hold up the WebSocket read loop.
+		// An invitation also needs the operating system's notice. Both title
+		// bars show the bell; a hidden window still needs the system notice.
+		// This re-reads the invite list, so it must not hold up the WebSocket
+		// read loop.
 		if isCompanionGroupInviteNotification(push.Notification.Source) {
 			go a.announceCompanionGroupInviteNotice(push.Notification.ID, push.Notification.SourceID, push.Notification.Content)
 		}
-		// A shared document uses the same OS channel: the bell is only visible
-		// on the assistant panel.
+		// A shared document uses the same OS channel. The companion title bar
+		// shows the same bell; a hidden window still needs the system notice.
 		if isCompanionShareNotification(push.Notification.Source) || isCompanionHostTransferNotification(push.Notification.Source) {
 			go a.announceCompanionShareNotification(push.Notification.ID, push.Notification.Title, push.Notification.Content)
 		}

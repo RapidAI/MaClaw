@@ -12,6 +12,11 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     LeaveFileCompanionGroup: vi.fn(),
     ListFileCompanionGroups: vi.fn(),
     ListFileCompanionLibrary: vi.fn(),
+    ListFileCompanionCatalog: vi.fn(),
+    CreateFileCompanionFolder: vi.fn(),
+    RenameFileCompanionFolder: vi.fn(),
+    DeleteFileCompanionFolder: vi.fn(),
+    MoveFileCompanionLibraryItem: vi.fn(),
     RemoveFileCompanionGroupMember: vi.fn(),
     ShareFileCompanionDocument: vi.fn(),
     ShowItemInFolder: vi.fn(),
@@ -23,7 +28,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     FileCompanionExportProject: vi.fn(),
 }));
 
-import { companionInstalledSharePath, companionLibrarySync, companionShareDocumentCatchUp, companionShareMarksBehind, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionWithdrawnNotice } from "./FileCompanionLibrary";
+import { companionFolderNameError, companionInstalledSharePath, companionLibraryFolderID, companionLibraryNameMatch, companionLibrarySync, companionShareDocumentCatchUp, companionShareMarksBehind, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionWithdrawnNotice } from "./FileCompanionLibrary";
 
 describe("companionInstalledSharePath", () => {
     it("recognizes a received copy by the share folder", () => {
@@ -135,5 +140,37 @@ describe("companionLibrarySync", () => {
         expect(companionLibrarySync(null)).toEqual(empty);
         expect(companionLibrarySync("removed")).toEqual(empty);
         expect(companionLibrarySync({})).toEqual(empty);
+    });
+});
+
+describe("companion library folders", () => {
+    it("rejects a blank, reserved, or duplicate folder name", () => {
+        expect(companionFolderNameError("  ")).toBe("请填写文件夹名称");
+        expect(companionFolderNameError("好\n名")).toBe("请填写文件夹名称");
+        expect(companionFolderNameError("未分类")).toBe("全部和未分类不能用作文件夹名称");
+        expect(companionFolderNameError("论文", [{ id: "fld_a", name: "论文" }])).toBe("已有同名文件夹");
+        expect(companionFolderNameError("论文", [{ id: "fld_a", name: "论文" }], "fld_a")).toBe("");
+    });
+
+    it("matches a file name without case and keeps an empty query", () => {
+        expect(companionLibraryNameMatch("Alpha.MD", "alpha")).toBe(true);
+        expect(companionLibraryNameMatch("beta.md", "  ")).toBe(true);
+        expect(companionLibraryNameMatch("beta.md", "alpha")).toBe(false);
+    });
+
+    it("prefers the item placement over the path placement", () => {
+        const item = { id: "local:a", path: "C:/notes/a.md" };
+        const placements = { "item:local:a": "fld_item", "path:c:/notes/a.md": "fld_path" };
+        expect(companionLibraryFolderID(item, placements)).toBe("fld_item");
+        expect(companionLibraryFolderID({ id: "local:b", path: "C:/notes/a.md" }, placements)).toBe("fld_path");
+    });
+
+    it("reads a Windows path key and keeps an explicit uncategorized row", () => {
+        const backslash = { "path:c:\\notes\\a.md": "fld_path" };
+        expect(companionLibraryFolderID({ id: "local:b", path: "C:/notes/a.md" }, backslash)).toBe("fld_path");
+        expect(companionLibraryFolderID(
+            { id: "local:a", path: "C:/notes/a.md" },
+            { "item:local:a": "none", "path:c:\\notes\\a.md": "fld_path" },
+        )).toBe("");
     });
 });

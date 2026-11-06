@@ -525,20 +525,27 @@ func codingSpawnRemoteFailure(msg string) string {
 	return "错误: " + msg
 }
 
+// codingSpawnTaskTitle is the child executor's task title. The description
+// still carries the task. A recovery marker on the title tells the child to
+// go find the rest of an assignment it already has.
+func codingSpawnTaskTitle(role codingSubAgentRole, task string) string {
+	return fmt.Sprintf("[%s] %s", role, codingPromptChannelText(task, 80))
+}
+
 func appendCodingSpawnChildReport(b *strings.Builder, idx int, role codingSubAgentRole, task, status string, iterations, toolCalls int, mergeNote, summary, errText string, modified, created []string) {
 	if b == nil {
 		return
 	}
-	b.WriteString(fmt.Sprintf("\n### agent[%d] role=%s task=%q\n", idx, role, truncateRunesForSubAgent(task, 120)))
+	b.WriteString(fmt.Sprintf("\n### agent[%d] role=%s task=%q\n", idx, role, codingPromptChannelText(task, 120)))
 	b.WriteString(fmt.Sprintf("status=%s iterations=%d tools=%d\n", status, iterations, toolCalls))
 	if mergeNote != "" {
 		b.WriteString("merge: ")
 		b.WriteString(mergeNote)
 		b.WriteString("\n")
 	}
-	if summary != "" {
+	if summary = codingPromptChannelText(summary, codingSubAgentModelSummaryMaxRunes); summary != "" {
 		b.WriteString("summary:\n")
-		b.WriteString(truncateRunesForSubAgent(summary, 4000))
+		b.WriteString(summary)
 		b.WriteString("\n")
 	}
 	if errText != "" {
@@ -1103,7 +1110,7 @@ func (parent *CodingSubAgent) runNestedCodingAgent(spec codingSpawnSpec, parentC
 	child.codingKB = parent.codingKB
 	child.generalKB = parent.generalKB
 
-	taskTitle := fmt.Sprintf("[%s] %s", spec.Role, truncateRunesForSubAgent(spec.Task, 80))
+	taskTitle := codingSpawnTaskTitle(spec.Role, spec.Task)
 	task := &TaskItem{
 		Index:       1,
 		Title:       taskTitle,
@@ -1113,12 +1120,11 @@ func (parent *CodingSubAgent) runNestedCodingAgent(spec codingSpawnSpec, parentC
 	}
 
 	reqCtx := codingSpawnRolePromptHint(spec.Role)
-	if parentCB != nil && parentCB.reqCtx != "" {
-		reqCtx += "\n\n## Parent request context\n" + truncateRunesForSubAgent(parentCB.reqCtx, 1500)
+	parentReq := ""
+	if parentCB != nil {
+		parentReq = parentCB.reqCtx
 	}
-	if spec.Context != "" {
-		reqCtx += "\n\n## Spawn context\n" + truncateRunesForSubAgent(spec.Context, 2000)
-	}
+	reqCtx += codingSpawnCarryContext(parentReq, spec.Context)
 	if spec.Role == codingRoleWorker && len(spec.Files) > 0 {
 		reqCtx += "\n\n## Declared write-set\n" + strings.Join(spec.Files, "\n")
 	}
@@ -1128,12 +1134,7 @@ func (parent *CodingSubAgent) runNestedCodingAgent(spec codingSpawnSpec, parentC
 	}
 	var prev []string
 	if parentCB != nil && len(parentCB.prevOutputs) > 0 {
-		// Copy a short tail so parallel children never share a mutated slice header.
-		src := parentCB.prevOutputs
-		if len(src) > 3 {
-			src = src[len(src)-3:]
-		}
-		prev = append([]string(nil), src...)
+		prev = codingPrevOutputsForSpawn(parentCB.prevOutputs)
 	}
 
 	log.Printf("[coding-subagent-spawn] start role=%s depth=%d task=%q project=%s",

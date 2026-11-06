@@ -150,8 +150,30 @@ func resolveIMProactiveCaption(lang, message, fileName, mimeType string) string 
 }
 
 type searchAndInstallSkillResult struct {
-	Text    string
-	Success bool
+	Text          string
+	Success       bool
+	ProcedureDir  string
+	ProcedureName string
+}
+
+type skillInstallResultContextKey struct{}
+
+func withSkillInstallResultSink(ctx context.Context, sink *searchAndInstallSkillResult) context.Context {
+	if sink == nil {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, skillInstallResultContextKey{}, sink)
+}
+
+func skillInstallResultFromContext(ctx context.Context) *searchAndInstallSkillResult {
+	if ctx == nil {
+		return nil
+	}
+	sink, _ := ctx.Value(skillInstallResultContextKey{}).(*searchAndInstallSkillResult)
+	return sink
 }
 
 func (h *IMMessageHandler) executeSkillSearchInstall(args map[string]interface{}, onProgress tool.ProgressCallback) searchAndInstallSkillResult {
@@ -212,7 +234,12 @@ func (h *IMMessageHandler) toolSearchAndInstallSkillResultAdmitted(args map[stri
 		return searchAndInstallSkillResult{Text: fmt.Sprintf("No matching skill found for %q.", query), Success: false}
 	}
 	installResult := h.installAndExecuteSkill(ctx, best, query, platform, policyOwnerID, policyOwnerID, sendStatus)
-	return searchAndInstallSkillResult{Text: installResult.Text, Success: installResult.Success}
+	return searchAndInstallSkillResult{
+		Text:          installResult.Text,
+		Success:       installResult.Success,
+		ProcedureDir:  installResult.ProcedureDir,
+		ProcedureName: installResult.ProcedureName,
+	}
 }
 
 func skillSearchCompatibilityTaskText(query string) string {

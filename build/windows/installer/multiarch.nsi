@@ -7,6 +7,24 @@
 ; CI's packaging step filters that exact line from its output instead of
 ; weakening the local flow's fail-loud behavior.
 !include /NONFATAL "build_params.nsh.tmp"
+!include "StrFunc.nsh"
+${StrRep}
+
+; Browser plugin. The installer detects Chrome and Edge and registers only
+; the browsers that are already installed. It does not ask the user to pick
+; one, and it does not download a browser. Safari is not part of this Windows
+; package. The store update URL is optional; an empty value still registers
+; the native-messaging host and says why the extension itself was not registered.
+!define COMPANION_BROWSER_EXTENSION_ID "iidkjocaelnacgnadidhbedomegjndjk"
+!define COMPANION_BROWSER_HOST_NAME "com.maclaw.companion"
+!define COMPANION_CHROME_STORE_UPDATE_URL "https://clients2.google.com/service/update2/crx"
+!define COMPANION_EDGE_STORE_UPDATE_URL "https://edge.microsoft.com/extensionwebstorebase/v1/crx"
+!ifndef BROWSER_EXT_CHROME_UPDATE_URL
+!define BROWSER_EXT_CHROME_UPDATE_URL ""
+!endif
+!ifndef BROWSER_EXT_EDGE_UPDATE_URL
+!define BROWSER_EXT_EDGE_UPDATE_URL ""
+!endif
 
 !ifndef INFO_PROJECTNAME
 !define INFO_PROJECTNAME "MaClaw"
@@ -583,6 +601,7 @@ Section
         !insertmacro ${OP} "Software\Classes\SystemFileAssociations\.oga\shell\${INFO_PROJECTNAME}.FileCompanion"
     !macroend
     !insertmacro FileCompanionVerbTargets FileCompanionAddVerb
+    Call CompanionInstallBrowserPlugins
     System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
 
     
@@ -605,6 +624,230 @@ Section
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${AUTOSTART_REG_NAME}" "$\"$INSTDIR\${PRODUCT_EXECUTABLE}$\" autostart"
 SectionEnd
 
+; $0 in and out. A registry path counts only when that file is still on disk,
+; so an uninstalled browser's leftover App Paths key is not a hit. Quotes
+; around the path are stripped. An empty result means not installed.
+Function CompanionExistingExe
+    Push $4
+    ${StrRep} $4 $0 "$\"" ""
+    StrCpy $0 $4
+    StrCmp $0 "" companion_exe_miss
+    IfFileExists "$0" companion_exe_hit companion_exe_miss
+    companion_exe_hit:
+    Pop $4
+    Return
+    companion_exe_miss:
+    StrCpy $0 ""
+    Pop $4
+FunctionEnd
+
+; CompanionFindBrowser leaves the executable path in $0, or empty when that
+; browser is not installed. $1 is the exe name (chrome.exe / msedge.exe).
+; $2 is the directory under Program Files and LocalAppData
+; (Google\Chrome\Application or Microsoft\Edge\Application).
+; $LOCALAPPDATA is the account running this elevated installer. A per-user
+; browser that belongs to a different standard user is found only when App
+; Paths or Program Files still points at it.
+Function CompanionFindBrowser
+    Push $4
+    StrCpy $0 ""
+    SetRegView 64
+    ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\App Paths\$1" ""
+    Call CompanionExistingExe
+    StrCmp $0 "" 0 companion_find_hit
+    ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\$1" ""
+    Call CompanionExistingExe
+    StrCmp $0 "" 0 companion_find_hit
+    SetRegView 32
+    ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\App Paths\$1" ""
+    Call CompanionExistingExe
+    StrCmp $0 "" 0 companion_find_hit
+    ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\$1" ""
+    Call CompanionExistingExe
+    StrCmp $0 "" 0 companion_find_hit
+    IfFileExists "$PROGRAMFILES64\$2\$1" 0 companion_find_pf32
+    StrCpy $0 "$PROGRAMFILES64\$2\$1"
+    Goto companion_find_hit
+    companion_find_pf32:
+    IfFileExists "$PROGRAMFILES32\$2\$1" 0 companion_find_local
+    StrCpy $0 "$PROGRAMFILES32\$2\$1"
+    Goto companion_find_hit
+    companion_find_local:
+    IfFileExists "$LOCALAPPDATA\$2\$1" 0 companion_find_miss
+    StrCpy $0 "$LOCALAPPDATA\$2\$1"
+    Goto companion_find_hit
+    companion_find_miss:
+    StrCpy $0 ""
+    companion_find_hit:
+    SetRegView 64
+    Pop $4
+FunctionEnd
+
+; $0 out: "1" when com.maclaw.companion.json is UTF-8 on disk, empty on failure.
+; Unicode NSIS FileWrite writes the system ANSI code page. A Chinese install
+; path would be stored as GBK, and Chrome rejects a host manifest that is
+; not UTF-8. Convert with WideCharToMultiByte and write those bytes.
+Function CompanionWriteHostManifest
+    Push $1
+    Push $2
+    Push $3
+    Push $4
+    Push $5
+    Push $6
+    StrCpy $0 ""
+    StrCpy $1 "$INSTDIR\${PRODUCT_EXECUTABLE}"
+    ${StrRep} $2 $1 "\" "\\"
+    StrCpy $1 '{"name":"${COMPANION_BROWSER_HOST_NAME}","description":"Add the current paper to Companion","path":"'
+    StrCpy $1 "$1$2"
+    StrCpy $1 '$1","type":"stdio","allowed_origins":["chrome-extension://${COMPANION_BROWSER_EXTENSION_ID}/"]}'
+    System::Call 'kernel32::WideCharToMultiByte(i 65001, i 0, w r1, i -1, p 0, i 0, p 0, p 0) i.r2'
+    IntCmp $2 2 companion_utf8_len companion_utf8_fail
+    companion_utf8_len:
+    IntOp $3 $2 - 1
+    System::Alloc $2
+    Pop $4
+    StrCmp $4 "error" companion_utf8_fail
+    StrCmp $4 "0" companion_utf8_fail
+    System::Call 'kernel32::WideCharToMultiByte(i 65001, i 0, w r1, i -1, p r4, i r2, p 0, p 0) i.r2'
+    IntCmp $2 1 companion_utf8_free companion_utf8_free
+    ; The path stays in a register. Inlining it into System::Call splits on
+    ; commas and quotes, so an install directory like "C:\a,b" never opens.
+    StrCpy $6 "$INSTDIR\com.maclaw.companion.json"
+    System::Call 'kernel32::CreateFileW(w r6, i 0x40000000, i 0, p 0, i 2, i 0x80, p 0) p.r5'
+    StrCmp $5 "error" companion_utf8_free
+    StrCmp $5 "0" companion_utf8_free
+    StrCmp $5 "-1" companion_utf8_free
+    StrCmp $5 "4294967295" companion_utf8_free
+    System::Call 'kernel32::WriteFile(p r5, p r4, i r3, *i .r6, p 0) i.r2'
+    System::Call 'kernel32::CloseHandle(p r5)'
+    StrCmp $2 "0" companion_utf8_badwrite
+    StrCmp $6 $3 companion_utf8_ok companion_utf8_badwrite
+    companion_utf8_badwrite:
+    Delete "$INSTDIR\com.maclaw.companion.json"
+    Goto companion_utf8_free
+    companion_utf8_ok:
+    StrCpy $0 "1"
+    companion_utf8_free:
+    System::Free $4
+    StrCmp $0 "1" companion_utf8_pop
+    companion_utf8_fail:
+    StrCpy $0 ""
+    DetailPrint "浏览器插件：消息通道文件没有写成 UTF-8，已跳过登记。"
+    companion_utf8_pop:
+    Pop $6
+    Pop $5
+    Pop $4
+    Pop $3
+    Pop $2
+    Pop $1
+FunctionEnd
+
+; $1 is "Google\Chrome" or "Microsoft\Edge". $2 is the update URL to write, or empty.
+; HKLM only. An elevated installer must not write HKCU: that hive belongs to
+; the elevated account, not necessarily the person who launched setup.
+; The per-user tools page writes HKCU later.
+Function CompanionRegisterDetectedBrowser
+    WriteRegStr HKLM "Software\$1\NativeMessagingHosts\${COMPANION_BROWSER_HOST_NAME}" "" "$INSTDIR\com.maclaw.companion.json"
+    StrCmp $2 "" companion_register_no_store
+    WriteRegStr HKLM "Software\$1\Extensions\${COMPANION_BROWSER_EXTENSION_ID}" "update_url" "$2"
+    DetailPrint "浏览器插件：已登记 $1。首次打开浏览器时确认启用。"
+    Goto companion_register_done
+    companion_register_no_store:
+    DetailPrint "浏览器插件：已为 $1 登记消息通道。商店地址未配置，扩展还不会自动出现。"
+    companion_register_done:
+FunctionEnd
+
+Function CompanionInstallBrowserPlugins
+    Push $0
+    Push $1
+    Push $2
+    Push $3
+    Push $5
+    Push $6
+    DetailPrint "浏览器插件：正在检测已安装的 Chrome、Edge。未安装的不登记。Windows 安装包不处理 Safari。"
+    StrCpy $1 "chrome.exe"
+    StrCpy $2 "Google\Chrome\Application"
+    Call CompanionFindBrowser
+    StrCpy $5 $0
+    StrCpy $1 "msedge.exe"
+    StrCpy $2 "Microsoft\Edge\Application"
+    Call CompanionFindBrowser
+    StrCpy $6 $0
+    StrCmp $5 "" 0 companion_have_browser
+    StrCmp $6 "" companion_no_browser companion_have_browser
+    companion_no_browser:
+    DetailPrint "浏览器插件：未检测到 Chrome 或 Edge，不写消息通道。"
+    Goto companion_install_pop
+    companion_have_browser:
+    Call CompanionWriteHostManifest
+    StrCmp $0 "" companion_install_pop
+    StrCmp $5 "" companion_skip_chrome
+    StrCpy $0 $5
+    DetailPrint "浏览器插件：检测到 Google Chrome ($0)"
+    StrCpy $1 "Google\Chrome"
+    StrCpy $2 "${BROWSER_EXT_CHROME_UPDATE_URL}"
+    StrCmp $2 "${COMPANION_CHROME_STORE_UPDATE_URL}" 0 companion_chrome_bad_url
+    Goto companion_chrome_register
+    companion_chrome_bad_url:
+    StrCmp $2 "" companion_chrome_register
+    DetailPrint "浏览器插件：Chrome 商店地址不是允许的值，只登记消息通道。"
+    StrCpy $2 ""
+    companion_chrome_register:
+    SetRegView 64
+    Call CompanionRegisterDetectedBrowser
+    SetRegView 32
+    Call CompanionRegisterDetectedBrowser
+    SetRegView 64
+    Goto companion_after_chrome
+    companion_skip_chrome:
+    DetailPrint "浏览器插件：未检测到 Google Chrome，跳过。"
+    companion_after_chrome:
+    StrCmp $6 "" companion_skip_edge
+    StrCpy $0 $6
+    DetailPrint "浏览器插件：检测到 Microsoft Edge ($0)"
+    StrCpy $1 "Microsoft\Edge"
+    StrCpy $2 "${BROWSER_EXT_EDGE_UPDATE_URL}"
+    StrCmp $2 "${COMPANION_EDGE_STORE_UPDATE_URL}" companion_edge_register companion_edge_try_chrome
+    companion_edge_try_chrome:
+    StrCmp $2 "" 0 companion_edge_bad_url
+    StrCmp "${BROWSER_EXT_CHROME_UPDATE_URL}" "${COMPANION_CHROME_STORE_UPDATE_URL}" 0 companion_edge_register
+    StrCpy $2 "${COMPANION_CHROME_STORE_UPDATE_URL}"
+    DetailPrint "浏览器插件：Edge 使用 Chrome 商店地址。可能还要打开“允许来自其他应用商店的扩展”。"
+    Goto companion_edge_register
+    companion_edge_bad_url:
+    DetailPrint "浏览器插件：Edge 商店地址不是允许的值，只登记消息通道。"
+    StrCpy $2 ""
+    companion_edge_register:
+    SetRegView 64
+    Call CompanionRegisterDetectedBrowser
+    SetRegView 32
+    Call CompanionRegisterDetectedBrowser
+    SetRegView 64
+    Goto companion_after_edge
+    companion_skip_edge:
+    DetailPrint "浏览器插件：未检测到 Microsoft Edge，跳过。"
+    companion_after_edge:
+    companion_install_pop:
+    Pop $6
+    Pop $5
+    Pop $3
+    Pop $2
+    Pop $1
+    Pop $0
+FunctionEnd
+
+Function un.CompanionRemoveBrowserPlugins
+    DeleteRegKey HKLM "Software\Google\Chrome\NativeMessagingHosts\${COMPANION_BROWSER_HOST_NAME}"
+    DeleteRegKey HKLM "Software\Microsoft\Edge\NativeMessagingHosts\${COMPANION_BROWSER_HOST_NAME}"
+    DeleteRegKey HKLM "Software\Google\Chrome\Extensions\${COMPANION_BROWSER_EXTENSION_ID}"
+    DeleteRegKey HKLM "Software\Microsoft\Edge\Extensions\${COMPANION_BROWSER_EXTENSION_ID}"
+    DeleteRegKey HKCU "Software\Google\Chrome\NativeMessagingHosts\${COMPANION_BROWSER_HOST_NAME}"
+    DeleteRegKey HKCU "Software\Microsoft\Edge\NativeMessagingHosts\${COMPANION_BROWSER_HOST_NAME}"
+    DeleteRegKey HKCU "Software\Google\Chrome\Extensions\${COMPANION_BROWSER_EXTENSION_ID}"
+    DeleteRegKey HKCU "Software\Microsoft\Edge\Extensions\${COMPANION_BROWSER_EXTENSION_ID}"
+    Delete "$INSTDIR\com.maclaw.companion.json"
+FunctionEnd
+
 Section "uninstall"
     SetShellVarContext all
     # Matches the registry view used by the installer for app-owned entries.
@@ -619,6 +862,13 @@ Section "uninstall"
     Pop $0
     nsExec::Exec 'taskkill /F /IM "${ACP_BRIDGE_EXECUTABLE}"'
     Pop $0
+
+    # Drop the plugin registration while the install directory still exists.
+    SetRegView 64
+    Call un.CompanionRemoveBrowserPlugins
+    SetRegView 32
+    Call un.CompanionRemoveBrowserPlugins
+    SetRegView 64
 
     # Remove the WebView2 profile only on an interactive uninstall, where the
     # user is present to accept the loss. A silent uninstall (the QuietUninstall

@@ -44,8 +44,11 @@ func (h *IMMessageHandler) syncSkillHubTools() {
 				"query": map[string]string{"type": "string", "description": "Search query describing the capability you need."},
 			},
 			Required: []string{"query"},
+			HandlerCtx: func(ctx context.Context, args map[string]interface{}, onProgress tool.ProgressCallback) string {
+				return h.recordSkillSearchInstall(ctx, args, onProgress)
+			},
 			HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-				return h.executeSkillSearchInstall(args, onProgress).Text
+				return h.recordSkillSearchInstall(context.Background(), args, onProgress)
 			},
 		})
 	} else if !hasApp && hasSearchTool {
@@ -125,18 +128,16 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 				return skillInstallExecutionResult{Text: reason, SilentFailure: true}
 			}
 		}
-		skill, dlErr := downloadClawHubSkill(ctx, best.ID)
+		stagingDir, stagingErr := cskill.PrepareStagingDir(firstNonEmpty(best.ID, best.Name, "clawhub-skill"))
+		if stagingErr != nil {
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Found ClawHub skill %s but staging failed: %v", best.Name, stagingErr)}
+		}
+		skill, dlErr := downloadClawHubSkill(ctx, best.ID, stagingDir)
 		if dlErr != nil {
+			cskill.CleanupStaging(stagingDir)
 			return skillInstallExecutionResult{Text: fmt.Sprintf("Found ClawHub skill %s but download failed: %v", best.Name, dlErr)}
 		}
 		skill.Source = "auto_clawhub"
-		// Assign a staging directory for ClawHub skills so they go through
-		// the same staging → security scan → commit isolation as Hub skills.
-		if skill.SkillDir == "" {
-			if stagingDir, stagingErr := cskill.PrepareStagingDir(skill.Name); stagingErr == nil {
-				skill.SkillDir = stagingDir
-			}
-		}
 		return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_clawhub", platform, userID, policyOwnerID, sendStatus)
 	}
 
@@ -162,13 +163,21 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 	return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_hub", platform, userID, policyOwnerID, sendStatus)
 }
 
-// downloadClawHubSkill fetches a skill from the ClawHub mirror and converts
-// the SKILL.md content into an NLSkillEntry with a single craft_tool step
-// that uses the SKILL.md as instructions.
-// Delegates to the shared corelib/skill.HubClient.
-func downloadClawHubSkill(ctx context.Context, slug string) (*corelib.NLSkillEntry, error) {
+// recordSkillSearchInstall runs the search and, when this call carries a
+// sink, keeps the procedure directory the text result would otherwise drop.
+func (h *IMMessageHandler) recordSkillSearchInstall(ctx context.Context, args map[string]interface{}, onProgress tool.ProgressCallback) string {
+	result := h.executeSkillSearchInstall(args, onProgress)
+	if sink := skillInstallResultFromContext(ctx); sink != nil {
+		*sink = result
+	}
+	return result.Text
+}
+
+// downloadClawHubSkill fetches a ClawHub skill folder into targetDir.
+// The directory is the package: SKILL.md, sibling documents, and any scripts.
+func downloadClawHubSkill(ctx context.Context, slug, targetDir string) (*corelib.NLSkillEntry, error) {
 	client := cskill.DefaultHubClient()
-	return client.DownloadClawHub(ctx, slug)
+	return client.DownloadClawHubWithOptions(ctx, slug, cskill.ClawHubDownloadOptions{TargetDir: targetDir})
 }
 
 // downloadSkillJSON fetches a skill definition from the given URL and
@@ -431,6 +440,17 @@ func skillInitialExecutionFailureNote(name string, execErr error) string {
 // replacement that needs the same variable.
 const installedSkillCredentialRefusal = "required credentials are empty"
 
+// installedSkillInstructionDocument is a package whose program is SKILL.md.
+// The runner would turn that into one craft_tool step. Adopting the document
+// is how this turn follows it. An empty directory is not this reason.
+const installedSkillInstructionDocument = "instruction document"
+
+// installedSkillUnreadablePackage is a directory this process could not list.
+// That is not evidence the package is empty, so it must not be marked
+// needs_setup and must not send the model to craft_tool. A later turn can
+// read the same folder and adopt it.
+const installedSkillUnreadablePackage = "package could not be read"
+
 // skillInitialExecutionUnrunnableNote is the tool result when a just-installed
 // skill must not be executed. The first line is the shared tool-failure
 // marker, so a text-only handler classifies it the same way the Success bit
@@ -451,6 +471,14 @@ func skillInitialExecutionUnrunnableFollow(reason string) string {
 		return "Do not install or run this skill again for this failure."
 	}
 	return "Call craft_tool for the original task. Do not install or run this skill again for this failure."
+}
+
+// skillInitialExecutionUnreadableNote is the tool result when the package
+// directory could not be listed. The failed: prefix keeps the catalog miss
+// open. The status is unchanged, and the note does not name craft_tool:
+// an unread tree is not an empty package.
+func skillInitialExecutionUnreadableNote(name string) string {
+	return fmt.Sprintf("failed: Skill %s was installed but its directory could not be read. Its status was left unchanged. Continue the original task with the tools already available. Do not install or run this skill again for this failure.", name)
 }
 
 func skillInitialExecutionUnpersistedNote(name string, execErr, statusErr error) string {
@@ -489,6 +517,20 @@ func (h *IMMessageHandler) executeInstalledSkill(ctx context.Context, skill *cor
 	// OpenAI proxy and spent minutes in simple_llm, then told the model to
 	// call manage_skill, which discovery does not expose.
 	if reason := installedSkillAutoRunRefusal(skill); reason != "" {
+		if reason == installedSkillInstructionDocument {
+			log.Printf("[skill-auto] adopt instruction skill %s", skill.Name)
+			return installedSkillInstructionResult(skill)
+		}
+		if reason == installedSkillUnreadablePackage {
+			// A list error is not an empty package. needs_setup would skip
+			// the skill after the directory can be read again.
+			log.Printf("[skill-auto] skip execute skill %s: %s", skill.Name, reason)
+			name := ""
+			if skill != nil {
+				name = skill.Name
+			}
+			return skillInstallExecutionResult{Text: skillInitialExecutionUnreadableNote(name)}
+		}
 		log.Printf("[skill-auto] skip execute skill %s: %s", skill.Name, reason)
 		return h.finishInstalledSkillUnrunnable(skill, reason)
 	}
@@ -542,20 +584,61 @@ func installedSkillAutoRunRefusal(entry *corelib.NLSkillEntry) string {
 	if installedSkillMissingCredentials(entry) {
 		return installedSkillCredentialRefusal
 	}
-	if cskill.IsKnowledgeSkillType(entry.Type) || cskill.IsInstructionOnlySkillType(entry.Type) {
+	if cskill.IsKnowledgeSkillType(entry.Type) {
 		return "no runnable steps"
 	}
 	report := cskill.AssessRunnerCompatibility(entry, cskill.RunnerBackendGUI)
-	if !report.Runnable || report.StepCount == 0 || report.SupportedSteps == 0 {
+	// A bash step is the program. A sibling SKILL.md does not replace it.
+	if report.Runnable && report.SupportedSteps > 0 && !report.CraftToolOnly {
+		return ""
+	}
+	// A craft_tool step over a SKILL.md is the runner's picture of the
+	// document, not a program. Running it spends the turn in simple_llm.
+	// A loose script file does not change that: the step is still craft_tool.
+	if installedSkillDirHasDocument(entry.SkillDir) && !report.HasBash {
+		return installedSkillInstructionDocument
+	}
+	found, walkErr := installedSkillProgramScan(entry.SkillDir)
+	if found && report.Runnable && report.SupportedSteps > 0 {
+		return ""
+	}
+	if cskill.IsInstructionOnlySkillType(entry.Type) || !report.Runnable || report.StepCount == 0 || report.SupportedSteps == 0 {
 		return "no runnable steps"
 	}
-	// Marketplace markdown is stored as one craft_tool step. With no program
-	// in the skill directory, executing it asks the model to invent the
-	// program. That is the host craft_tool's job, not an automatic first run.
-	if report.CraftToolOnly && !installedSkillDirHasProgram(entry.SkillDir) {
+	if report.CraftToolOnly && !found {
+		// The scan could not read a directory. "No program" would mark
+		// needs_setup and close the skill; the program may still be there.
+		if walkErr != nil && !os.IsNotExist(walkErr) {
+			return installedSkillUnreadablePackage
+		}
 		return "package has no runnable program"
 	}
 	return ""
+}
+
+func installedSkillInstructionResult(skill *corelib.NLSkillEntry) skillInstallExecutionResult {
+	name := ""
+	dir := ""
+	if skill != nil {
+		name = strings.TrimSpace(skill.Name)
+		dir = strings.TrimSpace(skill.SkillDir)
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if name == "" || dir == "" || !filepath.IsAbs(dir) || findSkillMarkdownDocPath(dir) == "" {
+		return skillInstallExecutionResult{Text: skillInitialExecutionUnrunnableNote(name, "package has no runnable program")}
+	}
+	return skillInstallExecutionResult{
+		Text:          skillInitialExecutionInstructionNote(name, dir),
+		Success:       true,
+		ProcedureDir:  filepath.Clean(dir),
+		ProcedureName: name,
+	}
+}
+
+func skillInitialExecutionInstructionNote(name, dir string) string {
+	return fmt.Sprintf("Skill %s is installed at %s and is this task's procedure. Follow ## Skill 使用文档 with bash, read_file, write_file, or edit_file. Read the sibling files the document names. Do not call discover_tool, search_and_install_skill, generate_pdf, or manage_skill.", name, dir)
 }
 
 // installedSkillMissingCredentials reports an env requirement the GUI runner
@@ -602,14 +685,22 @@ func installedSkillDeclaresCredentialEnv(entry *corelib.NLSkillEntry) bool {
 	return false
 }
 
-func installedSkillDirHasProgram(dir string) bool {
+// installedSkillProgramScan walks dir for a program file. A list error does
+// not end the walk, so a program later in the tree is still found. readErr
+// keeps a failure to read some directory. A disappeared path yields to any
+// other failure: only a tree that was fully read, or that disappeared, can
+// count as empty.
+func installedSkillProgramScan(dir string) (found bool, readErr error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
-		return false
+		return false, nil
 	}
-	found := false
-	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d == nil {
+	walkErr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			readErr = preferSkillTreeReadErr(readErr, err)
+			return nil
+		}
+		if d == nil {
 			return nil
 		}
 		name := d.Name()
@@ -629,5 +720,159 @@ func installedSkillDirHasProgram(dir string) bool {
 		}
 		return nil
 	})
-	return found
+	readErr = preferSkillTreeReadErr(readErr, walkErr)
+	return found, readErr
+}
+
+func preferSkillTreeReadErr(current, next error) error {
+	if next == nil {
+		return current
+	}
+	if current == nil || (os.IsNotExist(current) && !os.IsNotExist(next)) {
+		return next
+	}
+	return current
+}
+
+func installedSkillDirHasDocument(dir string) bool {
+	return findSkillMarkdownDocPath(strings.TrimSpace(dir)) != ""
+}
+
+// installedSkillPackageMissing reports a recorded directory that has neither
+// the skill document nor a program. A needs_setup entry with no SkillDir is
+// a real failed install and stays skipped. A missing folder, or a folder
+// that holds only the scan database, is an incomplete download.
+func installedSkillPackageMissing(entry *corelib.NLSkillEntry) bool {
+	if entry == nil {
+		return false
+	}
+	dir := strings.TrimSpace(entry.SkillDir)
+	if dir == "" {
+		return false
+	}
+	info, err := os.Stat(dir)
+	if decided, missing := installedSkillDirectoryStat(info, err); decided {
+		return missing
+	}
+	// Stat can succeed for a directory this process cannot list. That is not
+	// an incomplete download: the package may still be there, and replacing
+	// it would discard a skill we failed to read.
+	_, listErr := os.ReadDir(dir)
+	if decided, missing := installedSkillListMissing(listErr); decided {
+		return missing
+	}
+	// The document lookup only reads this directory. A nested directory that
+	// cannot be listed is the same failure one level down: the program may
+	// still be there, so the package stays. A path that only disappeared,
+	// with no document and no visible program, is still incomplete.
+	if installedSkillDirHasDocument(dir) {
+		return false
+	}
+	found, walkErr := installedSkillProgramScan(dir)
+	if found {
+		return false
+	}
+	if decided, missing := installedSkillListMissing(walkErr); decided {
+		return missing
+	}
+	return true
+}
+
+// installedSkillListMissing reports whether listing the directory already
+// answered the package question. A directory that disappeared is incomplete.
+// Any other list error leaves the recorded package in place.
+func installedSkillListMissing(err error) (decided bool, missing bool) {
+	if err == nil {
+		return false, false
+	}
+	return true, os.IsNotExist(err)
+}
+
+// installedSkillDirectoryStat reports whether Stat already answered the
+// package question. A path that is not there, or that is not a directory, is
+// an incomplete download. A permission or other transient error is not: the
+// folder may still hold the package, and treating it as missing would replace
+// a skill that is still installed.
+func installedSkillDirectoryStat(info os.FileInfo, err error) (decided bool, missing bool) {
+	if err != nil {
+		return true, os.IsNotExist(err)
+	}
+	if info == nil || !info.IsDir() {
+		return true, true
+	}
+	return false, false
+}
+
+// installedSkillDirIsScanResidue reports a directory whose only entries are
+// the skill scan database. An empty directory, a symlink, and any real file
+// are not residue: those must not be deleted to make room for a publish.
+func installedSkillDirIsScanResidue(dir string) bool {
+	dir = strings.TrimSpace(dir)
+	info, err := os.Lstat(dir)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) == 0 {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() || !isSkillScanStoreFile(entry.Name()) {
+			return false
+		}
+	}
+	return true
+}
+
+// removeInstalledSkillScanResidue deletes that database. Windows can keep
+// the file open for a moment after the scanner reads it, so a single
+// RemoveAll is not enough.
+func removeInstalledSkillScanResidue(dir string) error {
+	var last error
+	for attempt := 0; attempt < 40; attempt++ {
+		err := os.RemoveAll(dir)
+		if err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		last = err
+		delay := time.Duration(attempt+1) * 10 * time.Millisecond
+		if delay > 100*time.Millisecond {
+			delay = 100 * time.Millisecond
+		}
+		time.Sleep(delay)
+	}
+	return last
+}
+
+// prepareInstalledSkillPublishDestination checks the destination before any
+// residue is deleted. A stale .prev is the previous package kept for
+// recovery. Deleting the scan-only directory first, then failing on that
+// backup, would throw away the only leftover and leave the next install
+// stuck on the same backup.
+func prepareInstalledSkillPublishDestination(finalDir string, replacing bool) error {
+	if _, backupErr := os.Stat(finalDir + ".prev"); backupErr == nil {
+		return fmt.Errorf("skill destination has a stale previous backup: %s", filepath.Base(finalDir+".prev"))
+	} else if !os.IsNotExist(backupErr) {
+		return fmt.Errorf("inspect previous skill backup: %w", backupErr)
+	}
+	if _, statErr := os.Stat(finalDir); statErr == nil {
+		if replacing {
+			return nil
+		}
+		// A failed publish leaves the scan database and no package. That
+		// directory is not another skill. Removing it lets this install
+		// create the folder. A directory with a document or a program still
+		// blocks. A recorded entry replaces through .prev and does not land
+		// here.
+		if installedSkillDirIsScanResidue(finalDir) {
+			if rmErr := removeInstalledSkillScanResidue(finalDir); rmErr != nil {
+				return fmt.Errorf("remove incomplete skill directory %s: %w", filepath.Base(finalDir), rmErr)
+			}
+			return nil
+		}
+		return fmt.Errorf("skill directory %q already exists", filepath.Base(finalDir))
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect skill destination: %w", statErr)
+	}
+	return nil
 }

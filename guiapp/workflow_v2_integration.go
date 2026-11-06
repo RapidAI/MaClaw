@@ -3328,6 +3328,30 @@ func formatTaskListBriefWithCurrent(tasks []*v2.TaskItem, currentIdx int) string
 	return sb.String()
 }
 
+// codingUnplannedReqCtx is the contract for a turn that is not inside a
+// multi-step plan. The stored restatement is the host's decision for this
+// turn. It replaces the generic continue line, which tells the executor to
+// keep changing the previous task.
+func codingUnplannedReqCtx(turnCount int, restatement string) string {
+	if s := strings.TrimSpace(restatement); s != "" {
+		return s
+	}
+	if turnCount > 0 {
+		return fmt.Sprintf("Continue full coding workbench session (turn %d). Prefer incremental changes on prior work.", turnCount+1)
+	}
+	return ""
+}
+
+// prependCodingRequestUnderstanding puts the host restatement in front of an
+// unplanned prompt. The restatement is the contract already shown to the user.
+func prependCodingRequestUnderstanding(text, restatement string) string {
+	restatement = codingStripOneRecoveryMarker(restatement)
+	if restatement == "" || restatement == strings.TrimSpace(text) {
+		return text
+	}
+	return codingCurrentRequestUnderstandingPrefix + restatement + "\n\n" + strings.TrimSpace(text)
+}
+
 // localCodingPlanStepReqCtx appends the plan-step context for a local plan
 // step to the turn context. It mirrors the remote plan-step prompt shape
 // ([Plan step Tn/N] header + step description + titles-only outline) so the
@@ -3416,7 +3440,10 @@ func setRemotePlanLastSummary(sessionMem *stickyCodingWorkbenchMemory, planned b
 		sessionMem.LastSummary = formatRemotePlanStepCarrySummary(stepIndex, title, status, sum)
 		return
 	}
-	sessionMem.LastSummary = truncateRunesV2(sum, 800)
+	// Same cap as the prompt reader. A shorter cut drops the measurements the
+	// next step is supposed to transcribe. Hard cut: a recovery marker here
+	// sends the model back to the benchmark.
+	sessionMem.LastSummary = truncateRunesV2(sum, codingSubAgentModelSummaryMaxRunes)
 }
 
 // applyRemoteCodingTurnFileAudit keeps every remote step's writes on the
@@ -3544,10 +3571,12 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 
 	// Multi-turn session memory: carry prior summaries/files into this turn.
 	sessionMem := h.getStickyCodingWorkbenchMemory(userID)
-	if isSessionRoundContinuation(userText) {
-		// Prompt-only copy: the previous round's failure summary is host
-		// accounting, not the state of the work. A planned resume replaces
-		// this note with its own step-specific one below.
+	// Prompt-only. getSticky returns a copy, so a later reload must apply
+	// this note again or the executor sees the stored failure summary.
+	carryContinuationNote := isSessionRoundContinuation(userText)
+	if carryContinuationNote {
+		// The previous round's failure summary is host accounting, not the
+		// state of the work. A planned resume replaces this note below.
 		sessionMem.LastSummary = codingContinuationResumeNote()
 	}
 	prevOutputs := sessionMem.prevOutputs()
@@ -3664,14 +3693,29 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			}
 		}
 	}
-	if planned && planMarkdown != "" && !resumeIncompletePlan {
-		// Refresh prevOutputs after plan was persisted so steps see the plan.
+	if !resumeIncompletePlan {
+		// publish/refine stored this turn's understanding after the snapshot
+		// above. Unplanned follow-ups otherwise execute the previous restatement.
 		sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+		if carryContinuationNote {
+			sessionMem.LastSummary = codingContinuationResumeNote()
+		}
+		attachCodingWorkRoot(&sessionMem, projectPath)
 		prevOutputs = sessionMem.prevOutputs()
+		if !planned {
+			reqCtx = codingUnplannedReqCtx(sessionMem.TurnCount, sessionMem.RequirementRestatement)
+		}
+	}
+	if planned && planMarkdown != "" && !resumeIncompletePlan {
 		reqCtx = strings.TrimSpace(reqCtx + "\n\nA multi-step execution plan was generated for this request. Complete the CURRENT step fully, then stop; later steps run as separate tasks.")
 	}
 	if len(tasks) == 0 {
 		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(recordUserText, 80), Description: recordUserText}}
+		// The plan sentence may already have been appended. This turn has no
+		// steps, so the contract is the stored restatement.
+		if planned && !resumeIncompletePlan {
+			reqCtx = codingUnplannedReqCtx(sessionMem.TurnCount, sessionMem.RequirementRestatement)
+		}
 		planned = false
 	}
 	planOutline = tasks
@@ -3683,6 +3727,11 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		prevOutputs = promptMem.prevOutputs()
 		sessionMem = promptMem
 		reqCtx = strings.TrimSpace(reqCtx + "\n\nSession plan is context only. Execute the current unfinished step; do not redo passed steps.")
+	}
+	if !planned && !resumeIncompletePlan {
+		// A finished or abandoned recipe is not this turn's task. Remote
+		// unplanned prompts already leave it out.
+		prevOutputs = codingPrevOutputsForUnplannedTurn(prevOutputs)
 	}
 	// Cap this request's continuation chain at the dispatch work actually
 	// planned: writer + reviewer per step plus retry slack (see
@@ -3843,7 +3892,10 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		}
 		// Snapshot prevOutputs under lock so parallel waves don't race the slice.
 		usageMu.Lock()
-		stepPrev := append([]string(nil), prevOutputs...)
+		// The active plan is a full recipe. localCodingPlanStepReqCtx already
+		// names this step and a titles-only outline, so the recipe is not
+		// copied into the executor prompt. Sticky prevOutputs still has it.
+		stepPrev := codingPrevOutputsForExecutorStep(prevOutputs)
 		if note := codingSessionWriteContractContext(requestKind, sessionMem); note != "" {
 			stepPrev = append(stepPrev, note)
 		}
@@ -3946,11 +3998,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			mergedModified = append(mergedModified, v1Result.FilesModified...)
 			mergedCreated = append(mergedCreated, v1Result.FilesCreated...)
 			// Later steps see earlier step summaries in continuity context.
-			if sum := strings.TrimSpace(v1Result.Summary); sum != "" {
-				prevOutputs = append(prevOutputs, fmt.Sprintf("Completed T%d (%s):\n%s", t.Index, t.Title, truncateRunesV2(sum, 600)))
-				if len(prevOutputs) > stickyCodingMemoryPrevOutputsMax {
-					prevOutputs = prevOutputs[len(prevOutputs)-stickyCodingMemoryPrevOutputsMax:]
-				}
+			if item := formatCodingCompletedStepResult(t.Index, t.Title, v1Result.Summary); item != "" {
+				prevOutputs = append(prevOutputs, item)
+				prevOutputs = trimCodingPrevOutputs(prevOutputs)
 			}
 			usageMu.Unlock()
 			// Attachments only needed on the first step of a multi-step plan.
@@ -4136,13 +4186,20 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	// The next round is already queued, so the transcript does not get a
 	// closing error or a quota notice. A real failure in the same turn stays.
 	_, continuing := h.continueCodingWorkbenchAfterIterationBudget(loopCtx, userID, userText, runResults, totalToolCalls)
-	report := formatCodingWorkbenchUserAnswer(requestKind, codingWorkbenchResultsForReport(runResults, continuing), runCtx.Err() != nil)
+	reported := codingWorkbenchResultsForReport(runResults, continuing)
+	report := formatCodingWorkbenchUserAnswer(requestKind, reported, runCtx.Err() != nil)
 	if lastCodingResult != nil {
 		// Aggregate file audit across multi-step runs for sticky memory.
 		lastCodingResult.FilesModified = uniqueSortedSubAgentStrings(append(lastCodingResult.FilesModified, mergedModified...))
 		lastCodingResult.FilesCreated = uniqueSortedSubAgentStrings(append(lastCodingResult.FilesCreated, mergedCreated...))
 		lastCodingResult.ToolCalls = totalToolCalls
 		lastCodingResult.Iterations = totalIters
+		// The chat answer joins every finished step. LastSummary used to
+		// keep only this last executor, so the next turn did not have the
+		// earlier deliveries.
+		if carry := codingWorkbenchStickyCarry(reported, lastCodingResult.Summary); carry != "" {
+			lastCodingResult.Summary = carry
+		}
 	}
 	// Refresh the preview from files this turn actually created or modified.
 	// allowScan is false: a directory listing is not a change, so a read-only
@@ -4306,14 +4363,28 @@ func buildRemoteCodingPlanStepText(
 			cont.WriteString("\nPlan outline (titles only; later steps are separate remote tasks — do not execute them now):\n")
 			cont.WriteString(outline)
 		}
-	} else if plan := strings.TrimSpace(sessionPlan); plan != "" {
-		cont.WriteString("\nSession plan / overall goal:\n")
-		cont.WriteString(truncateRunesV2(plan, 800))
+	} else if plan := codingPromptChannelText(sessionPlan, codingSessionPlanMaxRunes); plan != "" {
+		cont.WriteString("\n")
+		cont.WriteString(codingSessionPlanPrefix)
+		cont.WriteString(plan)
 	}
-	if sum := strings.TrimSpace(lastSummary); sum != "" {
+	if sum := codingPromptPreviousTurnSummary(lastSummary); sum != "" {
 		cont.WriteString("\nPrevious turn summary:\n")
-		// Carry summaries are pre-truncated for planned runs; still cap hard here.
-		cont.WriteString(truncateRunesV2(sum, 600))
+		// Planned carries are already short. Unplanned summaries are stored
+		// up to the model-summary cap; a 600-rune cut drops the result the
+		// next turn is supposed to transcribe. The recovery marker is stripped
+		// here so a stored compact summary does not send the model back to the
+		// benchmark. The stored summary itself still keeps that marker.
+		cont.WriteString(sum)
+		// Planned steps already say to execute the current step. The
+		// don't-recreate rule is for an unplanned follow-up whose previous
+		// answer is the thing to transcribe. Host stop/continuation notes
+		// are not that answer.
+		if !planned && !codingHostAccountingSummary(sum) {
+			cont.WriteString("\n")
+			cont.WriteString(codingPriorDeliverableInputRule)
+			cont.WriteString("\n")
+		}
 	}
 	if len(filesModified) > 0 {
 		files := uniqueSortedSubAgentStrings(filesModified)
@@ -4565,6 +4636,9 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			sessionMem.FilesModified,
 			sessionMem.FilesCreated,
 		)
+		if !planned && !resumeIncompletePlan {
+			text = prependCodingRequestUnderstanding(text, sessionMem.RequirementRestatement)
+		}
 		if note := codingSessionWriteContractContext(remoteCtx.RequestKind, sessionMem); note != "" {
 			text += "\n\n" + note
 		}
@@ -4846,14 +4920,20 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if result != nil && codingLoopIterationExhausted(result.Error) && failedSteps == 0 {
 		executorOutcome = ""
 	}
-	h.recordStickyRemoteCodingTurn(userID, recordUserText, result,
-		codingWorkbenchTurnOutcomeFromPlan(executorOutcome, failedSteps, cancelled))
 	statusText := formatRemoteCodingPlanStatusText(planned, resultStatus, totalSteps, passedSteps, failedSteps, skippedSteps, remoteCtx.Maintenance)
 	log.Printf("[workflow-v2] remote coding complete: %s", statusText)
 	// The next round is already queued. Do not close the transcript with a
 	// limit notice or a task-error paragraph. A real failure still shows.
 	_, continuing := h.continueCodingWorkbenchAfterIterationBudget(loopCtx, userID, userText, runResults, totalTools)
-	report := formatCodingWorkbenchUserAnswer(decision.Kind, codingWorkbenchResultsForReport(runResults, continuing), cancelled)
+	reported := codingWorkbenchResultsForReport(runResults, continuing)
+	report := formatCodingWorkbenchUserAnswer(decision.Kind, reported, cancelled)
+	if result != nil {
+		if carry := codingWorkbenchStickyCarry(reported, result.Summary); carry != "" {
+			result.Summary = carry
+		}
+	}
+	h.recordStickyRemoteCodingTurn(userID, recordUserText, result,
+		codingWorkbenchTurnOutcomeFromPlan(executorOutcome, failedSteps, cancelled))
 	if strings.TrimSpace(report) == "" && !continuing {
 		report = codingExecText("No coding steps ran.", "No coding steps ran.", "No coding steps ran.")
 	}

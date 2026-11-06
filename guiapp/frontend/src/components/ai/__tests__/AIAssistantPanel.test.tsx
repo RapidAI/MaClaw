@@ -3156,7 +3156,7 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
     });
 
-    it('holds the type-ahead queue while an unfinished task card is unresolved', async () => {
+    it('opens a task for a queued line while an unfinished local card is still up', async () => {
         localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
             { id: 'held-by-slot', text: 'queued behind unfinished card', attachments: [], createdAt: 1, autoDrain: true },
         ]));
@@ -3180,27 +3180,47 @@ describe('AIAssistantPanel property tests', () => {
             streaming: false,
             ready: true,
         };
-        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const { getByRole, getByTestId, queryByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
 
-        // The unresolved card intercepts every new turn, so the queue must not
-        // drain into it and burn each queued command into a duplicate card.
-        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'queued behind unfinished card' })));
         expect(sendMessage).not.toHaveBeenCalled();
+        expect(getByTestId('unfinished-slot-card')).toBeTruthy();
+        expect(getByRole('button', { name: 'Resume previous task' })).toBeTruthy();
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
 
-        // Resolving the card (its actions are cleared) releases the held queue.
+    it('sends a queued /branch while an unfinished local card is still up', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'held-branch', text: '/branch 1', attachments: [], createdAt: 1, autoDrain: true },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const props = defaultPanelProps();
+        props.actions = { ...props.actions, sendMessage };
         props.state = {
             ...props.state,
             messages: [makeMsg({
                 role: 'assistant',
-                content: 'Task is continuing.',
-                unfinishedSlot: { slotID: 'slot-hold', status: 'resumed', title: 'previous task', actions: [] },
+                content: 'Detected an unfinished task.',
+                unfinishedSlot: {
+                    slotID: 'slot-hold',
+                    title: 'previous task',
+                    actions: [
+                        { label: 'Resume previous task', command: '__resume_unfinished__ slot-hold', style: 'default' },
+                    ],
+                },
             })],
+            sending: false,
+            streaming: false,
+            ready: true,
         };
-        rerender(<AIAssistantPanel {...props} />);
+        const { getByRole, getByTestId, queryByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
 
-        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'queued behind unfinished card' })));
-        expect(sendMessage).not.toHaveBeenCalled();
+        await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+        expect(sendMessage.mock.calls[0][0]).toBe('/branch 1');
+        expect(createTaskUnifiedMock).not.toHaveBeenCalled();
+        expect(getByTestId('unfinished-slot-card')).toBeTruthy();
+        expect(getByRole('button', { name: 'Resume previous task' })).toBeTruthy();
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
     });
 
     it('does not start the next restored queue entry until the current one is accepted', async () => {

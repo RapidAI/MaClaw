@@ -1133,6 +1133,9 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 
 	if kind == agentToolKindSearchAndInstallSkill {
 		installResult := h.executeSkillSearchInstall(args, onProgress)
+		if sink := skillInstallResultFromContext(execCtx); sink != nil {
+			*sink = installResult
+		}
 		outcome := toolOutcomeFailed
 		if installResult.Success {
 			outcome = toolOutcomeSucceeded

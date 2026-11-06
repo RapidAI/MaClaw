@@ -2487,6 +2487,125 @@ func TestEmitCodingAgentFinishTokenAlwaysStreamsVisibleAnswer(t *testing.T) {
 	}
 }
 
+func TestCodingWorkbenchStickyCarryKeepsEarlierSteps(t *testing.T) {
+	results := []v2.TaskRunResult{
+		{Status: v2.TaskPassed, Summary: "空工作区，后续新建贪吃蛇。"},
+		{Status: v2.TaskPassed, Summary: "固定 40×20 网格，WASD 转向。snake.exe --self-check 返回 0。"},
+		{Status: v2.TaskPassed, Summary: "已添加 CMakeLists.txt。"},
+		{Status: v2.TaskPassed, Summary: "`cmake -S . -B build && cmake --build build` 通过，产物是 `build\\snake.exe`。"},
+	}
+	last := results[len(results)-1].Summary
+	carry := codingWorkbenchStickyCarry(results, last)
+	if carry == last {
+		t.Fatalf("carry kept only the last step: %q", carry)
+	}
+	for _, want := range []string{"40×20", "--self-check", "cmake --build build", "snake.exe"} {
+		if !strings.Contains(carry, want) {
+			t.Fatalf("carry missing %q: %q", want, carry)
+		}
+	}
+	if strings.Contains(carry, codingSubAgentRecoveryMarker) {
+		t.Fatalf("carry has recovery marker: %q", carry)
+	}
+	shown := codingPromptPreviousTurnSummary(carry)
+	if !strings.Contains(shown, "40×20") || !strings.Contains(shown, "snake.exe") || strings.Contains(shown, codingSubAgentRecoveryMarker) {
+		t.Fatalf("prompt channel dropped a step: %q", shown)
+	}
+
+	one := "built snake.exe"
+	if got := codingWorkbenchStickyCarry([]v2.TaskRunResult{{Status: v2.TaskPassed, Summary: one}}, one); got != one {
+		t.Fatalf("single step changed: %q", got)
+	}
+	marked := one + codingSubAgentRecoveryMarker
+	if got := codingWorkbenchStickyCarry([]v2.TaskRunResult{{Status: v2.TaskPassed, Summary: marked}}, marked); got != marked {
+		t.Fatalf("single marked step changed: %q", got)
+	}
+	if got := codingWorkbenchStickyCarry(nil, one); got != one {
+		t.Fatalf("empty report dropped last step: %q", got)
+	}
+
+	inquiry := []v2.TaskRunResult{{Status: v2.TaskPassed, Summary: "树里只有 snake.cpp。"}}
+	shownInquiry := formatCodingWorkbenchUserAnswer(codingRequestInquiry, inquiry, false)
+	if !strings.Contains(shownInquiry, "Read-only") {
+		t.Fatalf("inquiry answer lost its note: %q", shownInquiry)
+	}
+	if got := codingWorkbenchStickyCarry(inquiry, inquiry[0].Summary); got != inquiry[0].Summary || strings.Contains(got, "Read-only") {
+		t.Fatalf("inquiry note entered the next turn: %q", got)
+	}
+
+	failed := []v2.TaskRunResult{
+		{Status: v2.TaskPassed, Summary: "snake.cpp 已写好。"},
+		{Status: v2.TaskFailed, Summary: "cmake 失败", Error: "compiler error"},
+	}
+	mixed := codingWorkbenchStickyCarry(failed, failed[1].Summary)
+	if strings.Contains(mixed, "still failed") || !strings.Contains(mixed, "snake.cpp") || !strings.Contains(mixed, "cmake 失败") {
+		t.Fatalf("count line replaced a step: %q", mixed)
+	}
+
+	early := strings.Repeat("前", 2500)
+	tail := "cmake 通过，产物 build\\snake.exe。\n\nstep verify PASS: cmake --build build"
+	fit := codingWorkbenchStickyCarry([]v2.TaskRunResult{
+		{Status: v2.TaskPassed, Summary: early},
+		{Status: v2.TaskPassed, Summary: tail + codingSubAgentRecoveryMarker},
+	}, tail)
+	if n := utf8.RuneCountInString(fit); n > codingSubAgentModelSummaryMaxRunes {
+		t.Fatalf("fit len %d", n)
+	}
+	if !strings.Contains(fit, "cmake 通过") || !strings.Contains(fit, "step verify PASS") || !strings.Contains(fit, "前") || strings.Contains(fit, codingSubAgentRecoveryMarker) {
+		t.Fatalf("over-cap carry split the last step: %q", fit)
+	}
+
+	oldest := "DROP_HEAD" + strings.Repeat("中", 5000) + "OLDEST_END"
+	packed := codingWorkbenchStickyCarry([]v2.TaskRunResult{
+		{Status: v2.TaskPassed, Summary: oldest},
+		{Status: v2.TaskPassed, Summary: "BENCH_40x20"},
+		{Status: v2.TaskPassed, Summary: "CMAKE_PASS"},
+		{Status: v2.TaskSkipped, Summary: "skipped: prior step failed"},
+	}, "CMAKE_PASS")
+	if n := utf8.RuneCountInString(packed); n > codingSubAgentModelSummaryMaxRunes {
+		t.Fatalf("packed len %d", n)
+	}
+	if strings.Contains(packed, "DROP_HEAD") || strings.Contains(packed, "skipped") || !strings.Contains(packed, "OLDEST_END") || !strings.Contains(packed, "BENCH_40x20") || !strings.Contains(packed, "CMAKE_PASS") {
+		t.Fatalf("oldest dump crowded out the later measurement: %q", packed)
+	}
+
+	stock := "任务运行错误 T1，300 轮迭代，322 次工具调用"
+	if stickyCodingCarrySummary(stock, "max iterations reached") != "" {
+		t.Fatal("stock iteration handoff was stored")
+	}
+	if got := codingWorkbenchStickyCarry([]v2.TaskRunResult{{
+		Status: v2.TaskFailed, Summary: stock, Error: "max iterations reached",
+	}}, stock); got != stock {
+		t.Fatalf("cap sentence replaced the executor summary: %q", got)
+	}
+	longStep := "OPENING" + strings.Repeat("中", codingSubAgentModelSummaryMaxRunes) + "\n\nstep verify PASS: cmake --build build"
+	keptEnd := codingWorkbenchStickyCarry([]v2.TaskRunResult{
+		{Status: v2.TaskPassed, Summary: "40×20 self-check 0"},
+		{Status: v2.TaskPassed, Summary: longStep},
+	}, "40×20 self-check 0")
+	if !strings.Contains(keptEnd, "step verify PASS") || !strings.Contains(keptEnd, "40×20") || strings.Contains(keptEnd, "OPENING") {
+		t.Fatalf("over-cap last step kept its opening and dropped the verify line: %q", keptEnd)
+	}
+	if n := utf8.RuneCountInString(keptEnd); n > codingSubAgentModelSummaryMaxRunes {
+		t.Fatalf("kept-end len %d", n)
+	}
+	nearCap := strings.Repeat("尾", codingSubAgentModelSummaryMaxRunes-1)
+	near := codingWorkbenchStickyCarry([]v2.TaskRunResult{
+		{Status: v2.TaskPassed, Summary: "BENCH_40x20"},
+		{Status: v2.TaskPassed, Summary: nearCap},
+	}, nearCap)
+	if !strings.Contains(near, "BENCH_40x20") || !strings.HasSuffix(near, "尾") {
+		t.Fatalf("a nearly full last step dropped the earlier measurement: %q", near)
+	}
+	if n := utf8.RuneCountInString(near); n > codingSubAgentModelSummaryMaxRunes {
+		t.Fatalf("near-cap len %d", n)
+	}
+	joined := "40×20 self-check 0\n\n" + stock
+	if got := stickyCodingCarrySummary(joined, "max iterations reached"); got != joined {
+		t.Fatalf("joined delivery was dropped with the cap notice: %q", got)
+	}
+}
+
 func TestFinalizeFillsMissingMidPlanDeps(t *testing.T) {
 	tasks := finalizeCodingWorkbenchTasks([]*v2.TaskItem{
 		{Title: "a", Description: "a", DependsOn: nil},

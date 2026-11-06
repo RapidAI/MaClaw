@@ -115,6 +115,73 @@ Outputs:
 	}
 }
 
+func TestParseAcceptsBoolVerdictForms(t *testing.T) {
+	spec, errs := Parse(`# Spec: 判定
+Goal: 核验
+Outputs:
+- report % text
+## Steps
+1. [act] 取数
+  - 工具：web_search
+  + -> report % text
+2. [check] 判定
+  -<-report
+  + -> accepted % boolean
+  +→ flag % Bool
+3. [confirm] 确认
+  － ← report
+  ＋ → 通过 % 布尔
+  + -> 结论 % 真假
+4. [call weather(city: report)] 查询
+  + -> report: result
+5. [exit]
+`)
+	if len(errs) != 0 {
+		t.Fatalf("Parse() errors = %v", errs)
+	}
+	if spec.Steps[0].Outputs[0].Name != "report" || spec.Steps[0].Outputs[0].Type != "text" || len(spec.Steps[0].Tools) != 1 || spec.Steps[0].Tools[0] != "web_search" {
+		t.Fatalf("ascii arrow output = %+v tools = %+v", spec.Steps[0].Outputs, spec.Steps[0].Tools)
+	}
+	check := spec.Steps[1]
+	if len(check.Inputs) != 1 || check.Inputs[0] != "report" {
+		t.Fatalf("check inputs = %+v", check.Inputs)
+	}
+	if len(check.Outputs) != 2 || check.Outputs[0].Name != "accepted" || check.Outputs[0].Type != "bool" || check.Outputs[1].Name != "flag" || check.Outputs[1].Type != "bool" {
+		t.Fatalf("check outputs = %+v", check.Outputs)
+	}
+	confirm := spec.Steps[2]
+	if len(confirm.Inputs) != 1 || confirm.Inputs[0] != "report" {
+		t.Fatalf("confirm inputs = %+v", confirm.Inputs)
+	}
+	if len(confirm.Outputs) != 2 || confirm.Outputs[0].Name != "通过" || confirm.Outputs[0].Type != "bool" || confirm.Outputs[1].Name != "结论" || confirm.Outputs[1].Type != "bool" {
+		t.Fatalf("confirm outputs = %+v", confirm.Outputs)
+	}
+	if spec.Steps[3].Call == nil || spec.Steps[3].Call.Inputs["city"] != "report" || spec.Steps[3].Call.Outputs["report"] != "result" || spec.Steps[3].Outputs[0].Type != "any" {
+		t.Fatalf("call = %+v outputs = %+v", spec.Steps[3].Call, spec.Steps[3].Outputs)
+	}
+	if verrs := Validate(spec); len(verrs) != 0 {
+		t.Fatalf("Validate() errors = %v", verrs)
+	}
+	plain, plainErrs := Parse("# Spec: 类型\nGoal: 保持\n## Steps\n1. [act] 写\n  + → note % string\n  + → title % Text\n  + → raw % 布尔值\n2. [exit]\n")
+	if len(plainErrs) != 0 || len(plain.Steps) != 2 || len(plain.Steps[0].Outputs) != 3 {
+		t.Fatalf("plain = %+v errs = %v", plain.Steps, plainErrs)
+	}
+	got := []string{plain.Steps[0].Outputs[0].Type, plain.Steps[0].Outputs[1].Type, plain.Steps[0].Outputs[2].Type}
+	if got[0] != "string" || got[1] != "Text" || got[2] != "布尔值" {
+		t.Fatalf("types = %v", got)
+	}
+	punct, punctErrs := Parse("# Spec: 句号\nGoal: 核验\n## Steps\n1. [check] 核验\n  + → accepted % bool。\n  + → note % text。\n2. [exit]\n")
+	if len(punctErrs) != 0 || len(punct.Steps) != 2 || len(punct.Steps[0].Outputs) != 2 {
+		t.Fatalf("punct = %+v errs = %v", punct.Steps, punctErrs)
+	}
+	if punct.Steps[0].Outputs[0].Type != "bool" || punct.Steps[0].Outputs[1].Type != "text。" {
+		t.Fatalf("punct types = %+v", punct.Steps[0].Outputs)
+	}
+	if verrs := Validate(punct); len(verrs) != 0 {
+		t.Fatalf("punct Validate() errors = %v", verrs)
+	}
+}
+
 func TestParseRejectsUnknownStepType(t *testing.T) {
 	_, errs := Parse("# Spec: bad\nGoal: bad\n## Steps\n1. [unknown] bad\n")
 	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "UNKNOWN_STEP_TYPE") {
@@ -165,6 +232,14 @@ Goal: 限制工具面
 	tools := spec.Steps[0].Tools
 	if len(tools) != 2 || tools[0] != "web_search" || tools[1] != "web_fetch" {
 		t.Fatalf("tools=%v", tools)
+	}
+	wide, wideErrs := Parse("# Spec: 全角工具\nGoal: 限制工具面\n## Steps\n1. [act] 查询\n  － 工具: web_search\n2. [act] 抓取\n  - Tools：web_fetch\n3. [exit]\n")
+	if len(wideErrs) != 0 || len(wide.Steps) != 3 || len(wide.Steps[0].Tools) != 1 || wide.Steps[0].Tools[0] != "web_search" || len(wide.Steps[1].Tools) != 1 || wide.Steps[1].Tools[0] != "web_fetch" {
+		t.Fatalf("wide tools=%v %v errs=%v", wide.Steps[0].Tools, wide.Steps[1].Tools, wideErrs)
+	}
+	spaced, spacedErrs := Parse("# Spec: 空格工具\nGoal: 限制工具面\n## Steps\n1. [act] 查询\n  - 工具 : web_search\n2. [act] 抓取\n  -工具:web_fetch\n3. [act] 再查\n  - tools: web_search\n4. [exit]\n")
+	if len(spacedErrs) != 0 || len(spaced.Steps) != 4 || len(spaced.Steps[0].Tools) != 1 || spaced.Steps[0].Tools[0] != "web_search" || len(spaced.Steps[1].Tools) != 1 || spaced.Steps[1].Tools[0] != "web_fetch" || len(spaced.Steps[2].Tools) != 1 || spaced.Steps[2].Tools[0] != "web_search" {
+		t.Fatalf("spaced tools=%v %v %v errs=%v", spaced.Steps[0].Tools, spaced.Steps[1].Tools, spaced.Steps[2].Tools, spacedErrs)
 	}
 }
 
@@ -273,6 +348,21 @@ Goal：查询
 	}
 }
 
+func TestParseAcceptsFullwidthStepBrackets(t *testing.T) {
+	spec, errs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. ［reason］ 查询\n2、[exit]\n")
+	if len(errs) != 0 || len(spec.Steps) != 2 || spec.Steps[0].Type != StepReason || spec.Steps[0].Summary != "查询" || spec.Steps[1].Type != StepExit {
+		t.Fatalf("steps = %+v errs = %v", spec.Steps, errs)
+	}
+	prose, proseErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. 查询天气\n1. exit\n")
+	if len(prose.Steps) != 0 || len(proseErrs) != 0 {
+		t.Fatalf("prose steps = %+v errs = %v", prose.Steps, proseErrs)
+	}
+	kept, keptErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [act] 使用【北京】\n2. [exit]\n")
+	if len(keptErrs) != 0 || len(kept.Steps) != 2 || kept.Steps[0].Summary != "使用【北京】" {
+		t.Fatalf("summary = %+v errs = %v", kept.Steps, keptErrs)
+	}
+}
+
 func TestParseKeepsColonsInsideHopPython(t *testing.T) {
 	spec, errs := Parse("# Spec: py\nGoal: keep\n## Steps\n1. [act] 运行\n  > ```hop_python\n  > report = \"a:b：c\"\n  > ```\n")
 	if len(errs) != 0 {
@@ -280,6 +370,18 @@ func TestParseKeepsColonsInsideHopPython(t *testing.T) {
 	}
 	if len(spec.Steps) != 1 || spec.Steps[0].Body != `report = "a:b：c"` {
 		t.Fatalf("body = %q", spec.Steps[0].Body)
+	}
+	rawFence, rawErrs := Parse("# Spec: py\nGoal: keep\n## Steps\n1. [act] 运行\n```hop_python\n## 标题\n1. [act] 假\n```\n2. [exit]\n")
+	if len(rawErrs) != 0 || len(rawFence.Steps) != 2 || rawFence.Steps[0].Summary != "运行" || rawFence.Steps[0].Body != "## 标题\n1. [act] 假" || rawFence.Steps[1].Type != StepExit {
+		t.Fatalf("raw fence steps = %+v errs = %v", rawFence.Steps, rawErrs)
+	}
+	assigned, assignedErrs := Parse("# Spec: py\nGoal: keep\n## Steps\n1. [act] 运行\n  ```hop_python\n  report = \"a:b：c\"\n  ```\n2. [exit]\n")
+	if len(assignedErrs) != 0 || len(assigned.Steps) != 2 || assigned.Steps[0].Body != `report = "a:b：c"` || assigned.Steps[1].Type != StepExit {
+		t.Fatalf("assigned body = %+v errs = %v", assigned.Steps, assignedErrs)
+	}
+	afterExit, afterErrs := Parse("# Spec: py\nGoal: keep\n## Steps\n1. [exit]\n```hop_python\n1. [act] 假\n```\n")
+	if len(afterErrs) != 0 || len(afterExit.Steps) != 1 || afterExit.Steps[0].Type != StepExit || afterExit.Steps[0].Body != "" {
+		t.Fatalf("fence after exit = %+v errs = %v", afterExit.Steps, afterErrs)
 	}
 }
 

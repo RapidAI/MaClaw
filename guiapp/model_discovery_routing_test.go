@@ -808,6 +808,111 @@ func TestDiscoveryUnrunnableSkillDoesNotSettleTheMiss(t *testing.T) {
 	}
 }
 
+// TestDiscoveryAdoptedInstructionSkillSettlesAndClosesCraftTool is a ClawHub
+// package whose program is SKILL.md. The install succeeds, the miss settles,
+// and craft_tool stays closed so the model follows the document.
+func TestDiscoveryAdoptedInstructionSkillSettlesAndClosesCraftTool(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "生成老鼠戏猫图，需要生动", discovery)
+	cb.userText = "生成老鼠戏猫图，需要生动"
+	cb.systemPrompt = "base"
+	// This harness has no App, so syncSkillHubTools does not register the
+	// discovery preset. A desktop turn does. Register it here so the next
+	// request still lists it after the instruction package is adopted.
+	if err := cb.handler.registry.Register(RegisteredTool{Name: "search_and_install_skill", Status: RegToolAvailable}); err != nil {
+		t.Fatal(err)
+	}
+	got := cb.runSemanticToolsSearch(`{"query":"生成老鼠戏猫图，需要生动","needs":["web_search"]}`)
+	if !cb.discoveryUnmatchedObligation || !cb.loopCtx.discoveryCatalogMiss() {
+		t.Fatalf("picture search did not miss:\n%s", got)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Drawing\n\nMOUSE-CAT-PROCEDURE\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb.handler.skillSearchInstallHandler = func(map[string]interface{}, tool.ProgressCallback) searchAndInstallSkillResult {
+		return searchAndInstallSkillResult{
+			Text:          skillInitialExecutionInstructionNote("Drawing", dir),
+			Success:       true,
+			ProcedureDir:  dir,
+			ProcedureName: "Drawing",
+		}
+	}
+	skill := cb.ExecuteTool("search_and_install_skill", `{"query":"生成老鼠戏猫图，需要生动"}`)
+	if !cb.discoverySkillSearchRan || !cb.discoverySkillInstalled || !cb.discoveryExtensionSettled() {
+		t.Fatalf("instruction install did not settle: ran=%v installed=%v settled=%v text=%s", cb.discoverySkillSearchRan, cb.discoverySkillInstalled, cb.discoveryExtensionSettled(), skill)
+	}
+	if strings.Contains(skill, "craft_tool") || strings.HasPrefix(skill, "failed:") || !strings.Contains(skill, filepath.Clean(dir)) && !strings.Contains(skill, dir) {
+		t.Fatalf("tool result = %s", skill)
+	}
+	if cb.adoptedProcedureDir != filepath.Clean(dir) || cb.adoptedProcedureName != "Drawing" {
+		t.Fatalf("adopted dir=%q name=%q", cb.adoptedProcedureDir, cb.adoptedProcedureName)
+	}
+	if blocked, reason := cb.skillSubstituteBlocked("craft_tool"); !blocked {
+		t.Fatalf("craft_tool stayed open: %s", reason)
+	}
+	if blocked, reason := cb.skillSubstituteBlocked("bash"); blocked {
+		t.Fatalf("bash closed: %s", reason)
+	}
+	if blocked, reason := cb.skillSubstituteBlocked("generate_pdf"); !blocked {
+		t.Fatalf("generate_pdf stayed open: %s", reason)
+	}
+	if !strings.Contains(cb.systemPrompt, "MOUSE-CAT-PROCEDURE") || !strings.Contains(cb.systemPrompt, filepath.Clean(dir)) {
+		t.Fatalf("prompt missing the procedure:\n%s", cb.systemPrompt)
+	}
+	next := cb.BuildToolsForModelRequest(cb.userText, 2)
+	have := turnDirectoryHave(next)
+	for _, name := range []string{"read_file", "bash", "write_file", "search_and_install_skill", "craft_tool"} {
+		if !have[name] {
+			t.Fatalf("next request missing %s: %v", name, turnDirectoryNames(next))
+		}
+	}
+	if prompt := cb.BuildSystemPrompt(cb.userText, false); !strings.Contains(prompt, "MOUSE-CAT-PROCEDURE") {
+		t.Fatalf("rebuilt prompt dropped the procedure:\n%s", prompt)
+	}
+	if allowed, reason := cb.IsToolCallAllowed("craft_tool", `{"task":"draw"}`); allowed {
+		t.Fatalf("craft_tool allowed after adoption: %s", reason)
+	}
+	if allowed, reason := cb.IsToolCallAllowed("search_and_install_skill", `{"query":"生成老鼠戏猫图，需要生动"}`); allowed {
+		t.Fatalf("search_and_install_skill allowed after adoption: %s", reason)
+	}
+	if allowed, reason := cb.IsToolCallAllowed("bash", `{"command":"echo hi"}`); !allowed {
+		t.Fatalf("bash refused: %s", reason)
+	}
+	if allowed, reason := cb.IsToolCallAllowed("read_file", `{"path":"SKILL.md"}`); !allowed {
+		t.Fatalf("read_file refused: %s", reason)
+	}
+	for _, name := range []string{"manage_skill", "discover_tool"} {
+		if blocked, reason := cb.skillSubstituteBlocked(name); !blocked {
+			t.Fatalf("%s stayed open after adoption: %s", name, reason)
+		}
+	}
+}
+
+func TestEnsureAdoptedProcedureDocsRetriesWhenTheDocumentWasEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(path, []byte("   \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{systemPrompt: "base", adoptedProcedureDir: dir, adoptedProcedureName: "Drawing"}
+	cb.ensureAdoptedProcedureDocs()
+	if strings.Contains(cb.systemPrompt, adoptedProcedurePromptMarkPrefix) {
+		t.Fatalf("empty document pinned the prompt:\n%s", cb.systemPrompt)
+	}
+	if err := os.WriteFile(path, []byte("# Drawing\n\nMOUSE-CAT-PROCEDURE\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb.ensureAdoptedProcedureDocs()
+	if !strings.Contains(cb.systemPrompt, "MOUSE-CAT-PROCEDURE") || strings.Count(cb.systemPrompt, adoptedProcedurePromptMarkPrefix) != 1 {
+		t.Fatalf("retry did not adopt the document:\n%s", cb.systemPrompt)
+	}
+	cb.ensureAdoptedProcedureDocs()
+	if strings.Count(cb.systemPrompt, adoptedProcedurePromptMarkPrefix) != 1 {
+		t.Fatalf("procedure was appended twice:\n%s", cb.systemPrompt)
+	}
+}
+
 // TestDiscoveryPictureSubstituteNeedsAreACatalogMiss is the 2026-11-06
 // picture turn. needs named web_search, a real directory row, so the host
 // loaded it and never opened the catalog miss. A picture request has no

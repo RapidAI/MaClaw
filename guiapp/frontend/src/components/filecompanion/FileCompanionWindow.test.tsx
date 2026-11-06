@@ -9,6 +9,8 @@ import FileCompanionWindow, {
     clampCompanionTabScroll,
     companionLibraryPollFast,
     companionAnnotationMarkdown,
+    companionDiscussionCounts,
+    companionDiscussionKicker,
     companionMessageReview,
     companionOpenSetPaths,
     companionTabEndsFromBoxes,
@@ -18,6 +20,7 @@ import FileCompanionWindow, {
 } from "./FileCompanionWindow";
 import { normalizeInlineListMarkers } from "../ai/aiAssistantMarkdownNormalize";
 import { finishCompanionReply, splitCompanionStreamDelta } from "./companionReasoning";
+import { companionPaperNotice } from "../../i18n/mnCompanion";
 import { ToastProvider } from "../Toast";
 import { DialogProvider } from "../CustomDialog";
 import { resetCompanionLibraryList } from "./FileCompanionLibrary";
@@ -29,6 +32,7 @@ import { hydratePdfDrawings, loadPdfDrawings, notifyPdfDrawingsChanged, savePdfD
 import { hydratePdfBookmarks, loadPdfBookmarks } from "./pdfBookmarks";
 import { chatTextSpans } from "./chatMarkAnchors";
 import { fileCompanionInputHistory, hydrateFileCompanionInputHistory } from "./fileCompanionInputHistory";
+import { setCompanionUiLang } from "../../i18n/mnCompanion";
 
 const boot = vi.fn();
 const resume = vi.fn();
@@ -157,6 +161,11 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     FileCompanionExportPDF: (...args: Parameters<typeof exportPdf>) => exportPdf(...args),
     FileCompanionExportProject: (...args: Parameters<typeof exportProject>) => exportProject(...args),
     ListFileCompanionLibrary: (...args: Parameters<typeof listLibrary>) => listLibrary(...args),
+    ListFileCompanionCatalog: vi.fn(async () => ({ rev: 0, folders: [], placements: {} })),
+    CreateFileCompanionFolder: vi.fn(),
+    RenameFileCompanionFolder: vi.fn(),
+    DeleteFileCompanionFolder: vi.fn(),
+    MoveFileCompanionLibraryItem: vi.fn(),
     ShareFileCompanionDocument: (...args: Parameters<typeof shareDocument>) => shareDocument(...args),
     UpdateFileCompanionShare: (...args: Parameters<typeof updateShare>) => updateShare(...args),
     ImportFileCompanionShare: (...args: Parameters<typeof importShare>) => importShare(...args),
@@ -289,6 +298,7 @@ function doc(path: string, extra: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+    setCompanionUiLang("zh-Hans");
     resetCompanionLibraryList();
     localStorage.removeItem("ai_assistant_theme_mode");
     localStorage.removeItem("maclaw.ai.themeMode");
@@ -702,6 +712,21 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => {
             expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("beta");
         });
+    });
+
+    it("shows a browser paper notice without opening the library or the open menu", async () => {
+        boot.mockResolvedValue({ notice: "no-pdf", paths: [] });
+        renderWindow();
+        expect((await screen.findByTestId("file-companion-paper-notice")).textContent).toBe("这个页面没有可下载的 PDF，没有加入文档管理。");
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+        expect(open).not.toHaveBeenCalled();
+        expect(companionPaperNotice("zh-Hant", "no-pdf")).toBe("這個頁面沒有可下載的 PDF，沒有加入文件管理。");
+        expect(companionPaperNotice("en", "bad-scheme")).toBe("Only public http and https links are accepted. Nothing was added to the library.");
+        expect(companionPaperNotice("mn", "not-pdf")).toBe("Татсан агуулга PDF биш. Санд нэмээгүй.");
+        expect(companionPaperNotice("mn", "too-big")).toBe("PDF 25 MiB-ээс их тул хадгалсангүй.");
+        expect(companionPaperNotice("mn", "timeout")).toBe("Таталт 60 секундээс хэтэрсэн тул хадгалсангүй.");
+        expect(companionPaperNotice("mn", "save-failed")).toBe("Хадгалалт амжилтгүй. Санд нэмээгүй.");
+        expect(companionPaperNotice("en", "nope")).toBe("");
     });
 
     it("opens the companion chooser when the window is empty, and again when shown with no tab", async () => {
@@ -2066,7 +2091,10 @@ describe("FileCompanionWindow", () => {
                     { id: "cn_pending", author: "reader@example.com", text: "待审核", createdAt: "2026-10-25T00:00:00Z", decision: "pending" },
                     { id: "cn_approved", author: "reader@example.com", text: "已通过", createdAt: "2026-10-25T00:01:00Z", decision: "approved" },
                     { id: "cn_ignored", author: "reader@example.com", text: "已忽略", createdAt: "2026-10-25T00:02:00Z", decision: "ignored" },
-                    { id: "cn_host", author: "me@example.com", text: "主持人回答", createdAt: "2026-10-25T00:03:00Z", host: true, replyTo: "cn_approved" },
+                    { id: "cn_stale", author: "reader@example.com", text: "已回复但仍标着待审核", createdAt: "2026-10-25T00:03:00Z", decision: "pending" },
+                    { id: "cn_blank", author: "reader@example.com", text: "没有决定", createdAt: "2026-10-25T00:04:00Z", decision: "" },
+                    { id: "cn_host", author: "me@example.com", text: "主持人回答", createdAt: "2026-10-25T00:05:00Z", host: true, replyTo: "cn_approved" },
+                    { id: "cn_stale_reply", author: "me@example.com", text: "已经答过", createdAt: "2026-10-25T00:06:00Z", host: true, replyTo: "cn_stale" },
                 ],
             }],
             notice: "",
@@ -2078,6 +2106,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-library"));
         await screen.findByTestId("file-companion-library-panel");
         expect((await screen.findByTestId(`file-companion-library-pending-${token}`)).textContent).toContain("待审核 1");
+        expect(screen.getByTestId(`file-companion-library-card-${token}`).textContent).toContain("讨论 5");
     });
 
     it("marks an already shared cloud project instead of offering 分享 again, and edits that link", async () => {
@@ -2361,6 +2390,42 @@ describe("FileCompanionWindow", () => {
         expect(await screen.findByTestId("file-companion-host-sync")).toBeTruthy();
         expect(screen.queryByTestId("file-companion-share-open")).toBeNull();
         expect(screen.getByTestId("file-companion-host-badge").textContent).toBe("你是主持人");
+        const bell = screen.getByTestId("notification-bell-btn");
+        const badge = screen.getByTestId("file-companion-host-badge");
+        const gap = screen.getByTestId("file-companion-titlebar-gap");
+        const slot = screen.getByTestId("file-companion-notifications");
+        expect(slot.parentElement).toBe(screen.getByTestId("file-companion-titlebar"));
+        expect(gap.compareDocumentPosition(bell) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(bell.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(bell.getAttribute("aria-label")).toBe("通知");
+        fireEvent.click(bell);
+        const panel = screen.getByTestId("notification-panel");
+        const bar = screen.getByTestId("file-companion-titlebar");
+        expect(panel.closest("[data-testid='file-companion-titlebar']")).toBe(bar);
+        expect(bell.getAttribute("aria-expanded")).toBe("true");
+        // The PDF page is an iframe, so a click there never reaches the
+        // document listener. The scrim is the hit target over that page.
+        const scrim = screen.getByTestId("file-companion-notification-scrim");
+        expect(scrim.parentElement).toBe(bar);
+        expect(scrim.className).toContain("file-companion-open-scrim");
+        expect(scrim.getAttribute("data-window-no-drag")).not.toBeNull();
+        expect(panel.contains(scrim)).toBe(false);
+        fireEvent.mouseDown(scrim);
+        expect(screen.queryByTestId("notification-panel")).toBeNull();
+        expect(screen.queryByTestId("file-companion-notification-scrim")).toBeNull();
+    });
+
+    it("keeps the notification bell when the companion has no document", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-empty");
+        const bell = screen.getByTestId("notification-bell-btn");
+        expect(bell.getAttribute("aria-label")).toBe("通知");
+        const gap = screen.getByTestId("file-companion-titlebar-gap");
+        const fullscreen = screen.getByTestId("file-companion-fullscreen");
+        expect(gap.compareDocumentPosition(bell) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(bell.compareDocumentPosition(fullscreen) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it("keeps 分享 but drops 同步 for the admin who handed the seat over", async () => {
@@ -4208,7 +4273,8 @@ describe("FileCompanionWindow", () => {
         expect(panel.getAttribute("data-collapsed")).toBe("true");
         expect(body.hidden).toBe(true);
         expect(screen.getByText("折叠后这条不该占高度").closest("[hidden]")).toBe(body);
-        expect(panel.querySelector(".file-companion-annotations-kicker")?.textContent).toBe("讨论");
+        expect(panel.querySelector(".file-companion-annotations-kicker")?.textContent).toBe("讨论 1");
+        expect(screen.queryByTestId("file-companion-annotations-pending")).toBeNull();
         fireEvent.click(panel.querySelector(".file-companion-annotations-kicker") as HTMLElement);
         expect(panel.getAttribute("data-collapsed")).toBe("false");
         expect(body.hidden).toBe(false);
@@ -4223,6 +4289,130 @@ describe("FileCompanionWindow", () => {
         expect(body.hidden).toBe(false);
         expect(screen.getByText("折叠后这条不该占高度")).toBeTruthy();
         expect(screen.getByRole("button", { name: "折叠讨论" }).getAttribute("aria-expanded")).toBe("true");
+    });
+
+    it("shows the discussion total and the notes still waiting when the panel is folded", async () => {
+        const waiting = { id: "cn_wait", author: "reader@example.com", text: "还没审的一条", createdAt: "2026-10-25T00:00:00Z", decision: "pending" };
+        const passed = { id: "cn_pass", author: "reader@example.com", text: "已经通过的一条", createdAt: "2026-10-25T00:01:00Z", decision: "approved" };
+        const answer = { id: "cn_host", author: "host@example.com", text: "主持人已经回复", createdAt: "2026-10-25T00:02:00Z", host: true, replyTo: "cn_pass" };
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: true,
+                notesRevision: 3,
+                notes: [waiting, passed, answer],
+            }],
+            notice: "",
+            notesReview: true,
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("还没审的一条");
+        const kicker = screen.getByTestId("file-companion-annotations-kicker");
+        expect(kicker.textContent).toBe("讨论 · 待审核 1");
+        expect(screen.queryByTestId("file-companion-annotations-pending")).toBeNull();
+        fireEvent.click(screen.getByRole("button", { name: "折叠讨论" }));
+        expect(screen.getByTestId("file-companion-annotations").getAttribute("data-collapsed")).toBe("true");
+        expect(kicker.textContent).toBe("讨论 2");
+        const waitingBadge = screen.getByTestId("file-companion-annotations-pending");
+        expect(waitingBadge.textContent).toBe("待审核 1");
+        expect(waitingBadge.getAttribute("data-tone")).toBe("pending");
+        fireEvent.click(screen.getByRole("button", { name: "展开讨论" }));
+        expect(kicker.textContent).toBe("讨论 · 待审核 1");
+        expect(screen.queryByTestId("file-companion-annotations-pending")).toBeNull();
+    });
+
+    it("shows a zero waiting count when a reviewed share is folded with nothing left to decide", async () => {
+        const passed = { id: "cn_pass", author: "reader@example.com", text: "已经通过的一条", createdAt: "2026-10-25T00:01:00Z", decision: "approved" };
+        const answer = { id: "cn_host", author: "host@example.com", text: "主持人已经回复", createdAt: "2026-10-25T00:02:00Z", host: true, replyTo: "cn_pass" };
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: true,
+                notesRevision: 2,
+                notes: [passed, answer],
+            }],
+            notice: "",
+            notesReview: true,
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("已经通过的一条");
+        const kicker = screen.getByTestId("file-companion-annotations-kicker");
+        expect(kicker.textContent).toBe("讨论");
+        fireEvent.click(screen.getByRole("button", { name: "折叠讨论" }));
+        expect(kicker.textContent).toBe("讨论 1");
+        const clearBadge = screen.getByTestId("file-companion-annotations-pending");
+        expect(clearBadge.textContent).toBe("待审核 0");
+        expect(clearBadge.getAttribute("data-tone")).toBeNull();
+    });
+
+    it("a participant sees both counts only after folding", async () => {
+        const waiting = { id: "cn_wait", author: "me@example.com", text: "还没审的一条", createdAt: "2026-10-25T00:00:00Z", decision: "pending" };
+        const passed = { id: "cn_pass", author: "me@example.com", text: "已经通过的一条", createdAt: "2026-10-25T00:01:00Z", decision: "approved" };
+        const answer = { id: "cn_host", author: "host@example.com", text: "主持人已经回复", createdAt: "2026-10-25T00:02:00Z", host: true, replyTo: "cn_pass" };
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                notesRevision: 3,
+                notes: [waiting, passed, answer],
+            }],
+            notice: "",
+            notesReview: true,
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("还没审的一条");
+        const kicker = screen.getByTestId("file-companion-annotations-kicker");
+        expect(kicker.textContent).toBe("讨论");
+        expect(screen.queryByTestId("file-companion-annotations-pending")).toBeNull();
+        fireEvent.click(screen.getByRole("button", { name: "折叠讨论" }));
+        expect(kicker.textContent).toBe("讨论 2");
+        expect(screen.getByTestId("file-companion-annotations-pending").textContent).toBe("待审核 1");
+    });
+
+    it("counts the thread once and keeps the folded label on the requested language", () => {
+        const counts = companionDiscussionCounts([
+            { id: "a", author: "r", text: "wait", createdAt: "2026-10-25T00:00:00Z", decision: "pending" },
+            { id: "b", author: "r", text: "unset", createdAt: "2026-10-25T00:00:00Z" },
+            { id: "c", author: "r", text: "passed", createdAt: "2026-10-25T00:00:00Z", decision: "approved" },
+            { id: "d", author: "r", text: "skipped", createdAt: "2026-10-25T00:00:00Z", decision: "ignored" },
+            { id: "e", author: "r", text: "answered anyway", createdAt: "2026-10-25T00:00:00Z", decision: "pending" },
+            { id: "f", author: "h", text: "reply", createdAt: "2026-10-25T00:00:00Z", host: true, replyTo: "e" },
+            { id: "g", author: "h", text: "host line", createdAt: "2026-10-25T00:00:00Z", host: true },
+        ]);
+        expect(counts.total).toBe(6);
+        expect(counts.pending).toBe(2);
+        expect(counts.explicitPending).toBe(1);
+        expect(counts.answered.has("e")).toBe(true);
+        const padded = companionDiscussionCounts([
+            { id: " e ", author: "r", text: "wait", createdAt: "2026-10-25T00:00:00Z", decision: " Pending " },
+            { id: "f", author: "h", text: "reply", createdAt: "2026-10-25T00:00:00Z", host: true, replyTo: "e" },
+        ]);
+        expect(padded.total).toBe(1);
+        expect(padded.pending).toBe(0);
+        expect(padded.answered.has("e")).toBe(true);
+        const orphan = companionDiscussionCounts([
+            { id: "f", author: "h", text: "reply", createdAt: "2026-10-25T00:00:00Z", host: true, replyTo: "gone" },
+        ]);
+        expect(orphan.total).toBe(1);
+        expect(companionDiscussionKicker("en", counts.total, counts.pending, true, true, false)).toEqual({ title: "Discussion 6", pendingLabel: "Review waiting 2" });
+        expect(companionDiscussionKicker("en", counts.total, counts.pending, false, true, false)).toEqual({ title: "Discussion", pendingLabel: "" });
+        expect(companionDiscussionKicker("en", counts.total, counts.pending, false, true, true)).toEqual({ title: "Discussion · 2 waiting for review", pendingLabel: "" });
+        expect(companionDiscussionKicker("zh-Hans", 4, 0, true, false, true)).toEqual({ title: "讨论 4", pendingLabel: "" });
     });
 
     it("folds annotations for the open document only", async () => {
@@ -9118,12 +9308,19 @@ describe("companion titlebar keeps its controls out of the window drag region", 
         expect(split![0]).not.toMatch(/z-index/);
     });
 
+    it("paints the notification panel above the document scrim", () => {
+        const source = css();
+        expect(source).toMatch(/\.file-companion-open-scrim\s*\{[^}]*z-index:\s*20/);
+        expect(source).toMatch(/\.file-companion-titlebar:has\(\.notification-panel\)\s+\.file-companion-titlebar-notifications\s*\{[^}]*z-index:\s*30/);
+    });
+
     it("declares no-drag on every clickable region of the bar", () => {
         const source = css();
         for (const selector of [
             ".file-companion-titlebar-files",
             ".file-companion-titlebar-tabs",
             ".file-companion-titlebar-actions",
+            ".file-companion-titlebar-notifications",
             ".file-companion-library-anchor",
             ".file-companion-tool--fullscreen",
             ".file-companion-tool--close",

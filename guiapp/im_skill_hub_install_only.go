@@ -93,8 +93,13 @@ func (h *IMMessageHandler) installSkillOnly(ctx context.Context, best *SkillSear
 		if sendStatus != nil {
 			sendStatus(fmt.Sprintf("正在安装: %s ...", best.Name))
 		}
-		skill, dlErr := downloadClawHubSkill(ctx, best.ID)
+		stagingDir, stagingErr := cskill.PrepareStagingDir(firstNonEmpty(best.ID, best.Name, "clawhub-skill"))
+		if stagingErr != nil {
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Found ClawHub skill %s but staging failed: %v", best.Name, stagingErr)}
+		}
+		skill, dlErr := downloadClawHubSkill(ctx, best.ID, stagingDir)
 		if dlErr != nil {
+			cskill.CleanupStaging(stagingDir)
 			return skillInstallExecutionResult{Text: fmt.Sprintf("Found ClawHub skill %s but download failed: %v", best.Name, dlErr)}
 		}
 		skill.Source = "auto_clawhub"

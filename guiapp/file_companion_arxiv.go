@@ -56,6 +56,20 @@ var arxivPaperDirHook func() (string, error)
 // fetcher, so a test can prove two concurrent downloads never share one.
 var arxivSavePathHook func(path string)
 
+// arxivRenameHook replaces os.Rename in tests that need the target to appear
+// valid only after the rename has already failed.
+var arxivRenameHook func(oldPath, newPath string) error
+
+// arxivStrategyProbe counts in-app strategy lookups. The public path must not call it.
+var arxivStrategyProbe func()
+
+func arxivRename(oldPath, newPath string) error {
+	if arxivRenameHook != nil {
+		return arxivRenameHook(oldPath, newPath)
+	}
+	return os.Rename(oldPath, newPath)
+}
+
 var (
 	// 2510.16079 — the current arXiv identifier shape.
 	arxivNewIDRe = regexp.MustCompile(`^\d{4}\.\d{4,5}$`)
@@ -181,7 +195,9 @@ func arxivParseID(raw string) string {
 	// not an ID and must stay rejected.
 	if isURL {
 		raw = strings.TrimPrefix(raw, "/")
-		for _, prefix := range []string{"abs/", "pdf/", "html/", "format/", "browse/"} {
+		// src/ is the source-archive page. The menu offers it as the paper, so
+		// the id is the same one abs/ and html/ use. The PDF is what gets saved.
+		for _, prefix := range []string{"abs/", "pdf/", "html/", "src/", "format/", "browse/"} {
 			if len(raw) > len(prefix) && strings.HasPrefix(strings.ToLower(raw), prefix) {
 				raw = raw[len(prefix):]
 				break
@@ -315,10 +331,21 @@ func fileIsPDF(path string) bool {
 	return bytes.Contains(head, []byte("%PDF-"))
 }
 
+// arxivOpenOptions selects the download client. The in-app menu keeps the
+// strategy client, 100 MiB and 90 seconds. A browser right-click sets
+// PublicNetworkOnly so the fetch cannot enter the Hub or a private network.
+type arxivOpenOptions struct {
+	PublicNetworkOnly bool
+}
+
 // FileCompanionOpenArxiv downloads one arXiv paper and returns its local path.
 // The companion window opens that path as a tab. A paper already in the folder
 // is reused instead of downloaded again.
 func (a *App) FileCompanionOpenArxiv(input string) (string, error) {
+	return a.openArxivPaper(input, arxivOpenOptions{})
+}
+
+func (a *App) openArxivPaper(input string, openOpts arxivOpenOptions) (string, error) {
 	id := arxivIDFromInput(input)
 	if id == "" {
 		return "", errors.New("请填写 Arxiv ID 或论文链接")
@@ -338,7 +365,13 @@ func (a *App) FileCompanionOpenArxiv(input string) (string, error) {
 	kept := target + arxivKeptStageSuffix
 	if info, statErr := os.Stat(kept); statErr == nil && !info.IsDir() {
 		if fileIsPDF(kept) {
-			if renameErr := os.Rename(kept, target); renameErr != nil {
+			if renameErr := arxivRename(kept, target); renameErr != nil {
+				// Another attempt may have filed the paper under the real name
+				// while this rename was failing. That file is the paper.
+				if fileIsPDF(target) {
+					logFileCompanion("arxiv reuse id=%s", id)
+					return target, nil
+				}
 				// The name is still occupied, so the bytes cannot be delivered
 				// however often they are fetched. Fail without burning bandwidth.
 				return "", fmt.Errorf("保存失败：%s", renameErr.Error())
@@ -381,26 +414,42 @@ func (a *App) FileCompanionOpenArxiv(input string) (string, error) {
 		}
 	}()
 	parent := context.Background()
-	if a != nil && a.ctx != nil {
-		parent = a.ctx
-	}
-	ctx, cancel := context.WithTimeout(parent, arxivDownloadTimeoutS*time.Second+arxivDownloadSlack)
-	defer cancel()
+	fetchTimeout := time.Duration(arxivDownloadTimeoutS)*time.Second + arxivDownloadSlack
 	opts := &websearch.FetchOptions{
 		SavePath: staged,
 		MaxBytes: maxWebFetchDownloadBytes,
 		TimeoutS: arxivDownloadTimeoutS,
 	}
+	if openOpts.PublicNetworkOnly {
+		parent = context.Background()
+		fetchTimeout = time.Duration(companionPaperPDFTimeoutS) * time.Second
+		opts.MaxBytes = companionPaperPDFMaxBytes
+		opts.TimeoutS = companionPaperPDFTimeoutS
+	} else if a != nil && a.ctx != nil {
+		parent = a.ctx
+	}
+	ctx, cancel := context.WithTimeout(parent, fetchTimeout)
+	defer cancel()
 	// Tests observe the staging path each attempt hands to the fetcher: two
 	// concurrent downloads must never be given the same one.
 	if arxivSavePathHook != nil {
 		arxivSavePathHook(staged)
 	}
-	var strategy corelib.WebSearchStrategy
-	if a != nil && a.imHandler != nil {
-		strategy = a.imHandler.getWebSearchStrategy()
+	pdfURL := arxivPDFBaseURL + id
+	var result *websearch.FetchResult
+	if openOpts.PublicNetworkOnly {
+		// The public path never asks the signed-in strategy client for a route.
+		result, err = paperFetch(ctx, pdfURL, opts)
+	} else {
+		var strategy corelib.WebSearchStrategy
+		if a != nil && a.imHandler != nil {
+			if arxivStrategyProbe != nil {
+				arxivStrategyProbe()
+			}
+			strategy = a.imHandler.getWebSearchStrategy()
+		}
+		result, err = websearch.FetchWithStrategyCtx(ctx, pdfURL, opts, strategy)
 	}
-	result, err := websearch.FetchWithStrategyCtx(ctx, arxivPDFBaseURL+id, opts, strategy)
 	if err != nil {
 		return "", errors.New(arxivDownloadErrorText(err))
 	}
@@ -414,14 +463,22 @@ func (a *App) FileCompanionOpenArxiv(input string) (string, error) {
 	if !fileIsPDF(saved) {
 		return "", errors.New("下载失败：没有拿到 PDF，可能这篇论文不存在")
 	}
-	if err := os.Rename(saved, target); err != nil {
+	if err := arxivRename(saved, target); err != nil {
+		// A concurrent attempt can win the name after this download finished.
+		// The file now at the target is the paper the reader should open.
+		if fileIsPDF(target) {
+			stagedGone = true
+			_ = os.Remove(saved)
+			logFileCompanion("arxiv download id=%s bytes_path=%s", id, target)
+			return target, nil
+		}
 		// The paper itself is already on disk and valid; deleting it here
 		// would throw away a good download over a bookkeeping failure. Park it
 		// at the deterministic name so the next attempt for this ID finds it
 		// and only has to retry the rename. If even that fails, the unique
 		// staging name is left for the deferred cleanup: nothing would ever
 		// look for it again.
-		if parkErr := os.Rename(saved, kept); parkErr == nil {
+		if parkErr := arxivRename(saved, kept); parkErr == nil {
 			stagedGone = true
 		}
 		return "", fmt.Errorf("保存失败：%s", err.Error())

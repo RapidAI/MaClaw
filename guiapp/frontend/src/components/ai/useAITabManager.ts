@@ -9,8 +9,8 @@ import { addParticipantIdentityKeys, participantIdentityMatches } from "./partic
 import { veStatusEventInfo } from "./veStatusEvent";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { archiveExpertTranscriptForProject, expertSessionKey, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache } from "./aiAssistantPanelSessionUtils";
-import { mergeProjectRoundHistory } from "./aiAssistantProjectTabState";
-import { loadRestoredProjectConversationHistory } from "./assistantPreviewState";
+import { mergeProjectRoundHistory, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
+import { hasRestorableProjectConversation, loadRestoredProjectConversationHistory } from "./assistantPreviewState";
 import { splitConversationView } from "./conversationViewWindow";
 import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy } from "./codingTaskMode";
 import type { TaskManagementItem } from "../layout/SidebarTaskManagement";
@@ -389,16 +389,37 @@ function cacheHasConversation(history: unknown[] | undefined): boolean {
     });
 }
 
+function durableTranscriptMessages(history: unknown[]): ChatMessage[] {
+    return history.filter((message): message is ChatMessage => {
+        if (!message || typeof message !== "object") return false;
+        const kind = (message as { kind?: unknown }).kind;
+        return kind !== "guideReceipt" && kind !== "guideRejection" && kind !== "taskContext";
+    });
+}
+
 /**
- * The session file is this tab's conversation. Placeholder rows written while
- * it was still missing yield, then the live view keeps the hot suffix.
+ * Merge a loaded transcript under the local tail.
+ * Shared ids mean the load is already this cache: keep that order.
+ * Disjoint ids are the older conversation, so they come first.
+ * Placeholder ids in the cache yield. The caller decides whether the hot
+ * window then drops the prefix. Project memory has no archive yet, so that
+ * cut would delete turns the open view can still show.
  */
-function mergedBackendTranscript(existingHistory: unknown[] | undefined, conversation: unknown[]): ChatMessage[] {
-    const history = persistableProjectHistory(Array.isArray(conversation) ? conversation : []);
-    const transcript = (history as ChatMessage[]).filter(entry => !!entry && typeof entry === "object");
+function mergeLoadedTranscript(existingHistory: unknown[] | undefined, conversation: unknown[]): ChatMessage[] {
+    const transcript = durableTranscriptMessages(Array.isArray(conversation) ? conversation : []);
     const kept = ((Array.isArray(existingHistory) ? existingHistory : []) as ChatMessage[])
         .filter(entry => !(typeof entry?.id === "string" && entry.id.startsWith("restored-")));
-    return splitConversationView(mergeProjectRoundHistory(kept, kept, transcript)).visible;
+    const keptIds = new Set(kept.map(message => message.id).filter((id): id is string => typeof id === "string" && id.length > 0));
+    const sharesTurn = transcript.some(message => typeof message.id === "string" && message.id.length > 0 && keptIds.has(message.id));
+    return sharesTurn
+        ? mergeProjectRoundHistory(kept, kept, transcript)
+        : mergeProjectRoundHistory(transcript, transcript, kept);
+}
+
+/** Session-file adopt. The backend already archived the prefix, so the cache keeps the hot suffix. */
+function mergedBackendTranscript(existingHistory: unknown[] | undefined, conversation: unknown[]): ChatMessage[] {
+    const history = persistableProjectHistory(Array.isArray(conversation) ? conversation : []);
+    return splitConversationView(mergeLoadedTranscript(existingHistory, history)).visible;
 }
 
 /** Persist project/expert tab conversation histories to localStorage. Debounced externally. */
@@ -1235,21 +1256,29 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             LoadProjectTabConversation(tab.id).then(async (conversation) => {
                 const adopted = adoptBackendTranscript(tab.id, conversation, generationAtRequest);
                 if (adopted === null) return;
-                // The session file is authoritative when it has rows. An empty
-                // file is how a startup tab misses the project memory that a
-                // later reopen loads, so the first focus stays blank.
-                if (Array.isArray(conversation) && conversation.length > 0) return;
+                // A session file that has turns wins. Receipts and context cards
+                // do not. Reopening the task already reads project memory in
+                // that case; the first focus has to as well.
+                if (hasRestorableProjectConversation(withoutProjectContextMessages(adopted))) return;
                 if (tab.type !== "project" || !tab.projectPath) return;
                 if (cacheHasConversation(tabStatesRef.current.get(tab.id)?.history)) return;
                 const restored = await loadProjectMemoryFallback(tab.projectPath);
                 if ((historyGenerationByTabIdRef.current.get(tab.id) || 0) !== generationAtRequest) return;
                 if (!tabStateRef.current.tabs.some(open => open.id === tab.id && open.type === "project")) return;
-                if (cacheHasConversation(tabStatesRef.current.get(tab.id)?.history)) {
-                    noteActiveTranscriptLanded(tab.id);
+                if (restored.length === 0) {
+                    if (cacheHasConversation(tabStatesRef.current.get(tab.id)?.history)) noteActiveTranscriptLanded(tab.id);
                     return;
                 }
-                if (restored.length === 0) return;
-                adoptBackendTranscript(tab.id, restored, generationAtRequest);
+                // Keep every restored turn. The session-file adopt windows to
+                // the hot suffix because those earlier turns are already archived.
+                const existing = tabStatesRef.current.get(tab.id);
+                const merged = mergeLoadedTranscript(existing?.history, restored);
+                tabStatesRef.current.set(tab.id, {
+                    ...(existing || { scrollTop: 0, inputText: "" }),
+                    history: merged,
+                    lastActiveAt: Date.now(),
+                });
+                if (cacheHasConversation(merged)) noteActiveTranscriptLanded(tab.id);
             }).catch(() => {});
         }
     }, [adoptBackendTranscript, loadProjectMemoryFallback, noteActiveTranscriptLanded]);

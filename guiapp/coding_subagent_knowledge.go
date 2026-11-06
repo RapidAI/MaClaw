@@ -158,13 +158,7 @@ func (c *codingSubAgentCallbacks) buildKnowledgePromptSections() string {
 	if c.subagent.handler != nil && c.subagent.handler.app != nil {
 		pack = c.subagent.handler.app.mergeEnterpriseCodingPack(ctx, pack, taskQuery, taskLanguage, projectPath, 4)
 	}
-	if len(pack.Items) > 0 {
-		b.WriteString("\n## 相关编码经验（来自编程知识库）\n")
-		b.WriteString("以下经验来自历史编码任务积累，供参考：\n")
-		for _, item := range pack.Items {
-			b.WriteString(fmt.Sprintf("- **%s**: %s\n", item.Title, truncateRunesForSubAgent(item.Text, 300)))
-		}
-	}
+	appendCodingKnowledgePromptItems(&b, pack.Items)
 
 	// 2. General knowledge (project docs)
 	if c.subagent.generalKB != nil {
@@ -702,10 +696,52 @@ func formatCodingExperienceSearchHits(experiences []knowledge.CodingExperience) 
 	return b.String()
 }
 
+// codingKnowledgePromptItemMaxRunes is the executor system-prompt budget for
+// one recalled experience. The snippet has no file behind it.
+const codingKnowledgePromptItemMaxRunes = 300
+
+// codingKnowledgePromptItemText quotes one recalled experience. A recovery
+// marker would tell the model to reconstruct the cut text. There is no file
+// to open, so that reconstruction becomes another search or another run.
+func codingKnowledgePromptItemText(text string) string {
+	return codingPromptChannelText(text, codingKnowledgePromptItemMaxRunes)
+}
+
+// appendCodingKnowledgePromptItems writes the recalled experiences into the
+// executor system prompt. A snippet that is only the recovery marker is
+// omitted, so the section is not a cue to go recover it.
+func appendCodingKnowledgePromptItems(b *strings.Builder, items []knowledge.ContextPackItem) {
+	if b == nil {
+		return
+	}
+	var lines []string
+	for _, item := range items {
+		text := codingKnowledgePromptItemText(item.Text)
+		if text == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- **%s**: %s\n", item.Title, text))
+	}
+	if len(lines) == 0 {
+		return
+	}
+	b.WriteString("\n## 相关编码经验（来自编程知识库）\n")
+	b.WriteString("以下经验来自历史编码任务积累，供参考：\n")
+	for _, line := range lines {
+		b.WriteString(line)
+	}
+}
+
 // codingKnowledgeFallbackQuery builds a bounded recall query from prior turn
-// outputs. It keeps the most recent text because a retry's failure summary is
-// usually the last item, and caps the result so the FTS query stays focused.
+// outputs. The current request understanding is the contract for this turn.
+// A tail of the whole list is the end of the previous measurement once that
+// summary is long, so the search looks up the benchmark instead of the ask.
+// Without that contract, the most recent text is kept: a retry's failure
+// summary is usually the last item.
 func codingKnowledgeFallbackQuery(texts ...string) string {
+	if body := codingPromptChannelText(codingLabeledPrevOutputBody(texts, codingCurrentRequestUnderstandingPrefix), 400); body != "" {
+		return body
+	}
 	runes := make([]rune, 0, 512)
 	for _, text := range texts {
 		text = strings.TrimSpace(text)

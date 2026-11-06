@@ -1173,15 +1173,16 @@ const agentGuidedSkillDocsLeadIn = "以下是已安装且匹配当前请求的 a
 // skillProcedureRootLine names the file the injected body was loaded from.
 // The body is cut to the knowledge-skill token budget, which can end before
 // the procedure's commands. The path is charged to that same budget and is
-// not itself truncated: read_file still has an operand, and ${CLAUDE_SKILL_DIR}
-// and {baseDir} both name this skill directory.
+// not itself truncated: read_file still has an operand. ${CLAUDE_SKILL_DIR}
+// and {baseDir} name this skill directory. bash, read_file, and list_directory
+// expand them only to a path inside it.
 func skillProcedureRootLine(docPath string) string {
 	docPath = strings.TrimSpace(docPath)
 	if docPath == "" {
 		return ""
 	}
 	dir := filepath.Dir(docPath)
-	return "流程文件：" + docPath + "\n技能目录：" + dir + "\n${CLAUDE_SKILL_DIR} 与 {baseDir} 都是这个技能目录。bash 执行时主机会替换这两个标记并设置 CLAUDE_SKILL_DIR。被截断的部分在流程文件里。\n"
+	return "流程文件：" + docPath + "\n技能目录：" + dir + "\n${CLAUDE_SKILL_DIR} 与 {baseDir} 都是这个技能目录。bash、read_file 和 list_directory 只把这两个标记展开为该目录内的路径。bash 同时设置 CLAUDE_SKILL_DIR。被截断的部分在流程文件里。\n"
 }
 
 func writeMatchedSkillDocs(b *strings.Builder, matched []matchedKnowledgeSkill, tokenBudget int) {

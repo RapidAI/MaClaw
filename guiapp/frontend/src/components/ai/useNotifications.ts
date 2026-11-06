@@ -143,6 +143,13 @@ function normalizeNotificationList(raw: unknown): AdminNotification[] {
   return list;
 }
 
+// syncGeneration reads the cache generation attached to notification:sync.
+// A missing value still applies: tests and older events send the list alone.
+function syncGeneration(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
@@ -176,6 +183,16 @@ export function useNotifications(): UseNotificationsReturn {
   const initialLoadDone = useRef(false);
   // Ref to track mount state — prevents setState on unmounted component.
   const mountedRef = useRef(true);
+  // The first GetUnreadNotifications is in flight at mount. A sync that lands
+  // first is the cache; applying the older read afterwards would put rows back.
+  const syncToken = useRef(0);
+  // Each sync carries the cache generation from the moment that list was
+  // copied. An older copy must not cover a click that published a newer one.
+  const syncGen = useRef(0);
+  // new and revoke during that read are newer than the snapshot. Their ids are
+  // merged back, and a revoked id is not taken from the snapshot.
+  const loadToken = useRef(0);
+  const revokedIds = useRef(new Set<string>());
 
   useEffect(() => {
     mountedRef.current = true;
@@ -187,28 +204,41 @@ export function useNotifications(): UseNotificationsReturn {
   // -------------------------------------------------------------------------
 
   const loadUnread = useCallback(async () => {
+    const syncAtStart = syncToken.current;
+    const loadAtStart = loadToken.current;
     try {
       const notifications = await callGetUnreadNotifications();
       if (!mountedRef.current) return;
+      // A full sync replaced the list while this read was in flight. The sync
+      // list wins. Unioning this snapshot back in would restore revoked rows.
+      if (syncToken.current !== syncAtStart) return;
       const list = normalizeNotificationList(notifications);
-      const unreadCount = list.filter((n) => !n.is_read).length;
-      setState((prev) => ({
-        ...prev,
-        notifications: list,
-        unreadCount,
-      }));
+      setState((prev) => {
+        if (syncToken.current !== syncAtStart) return prev;
+        const revoked = revokedIds.current;
+        let next = list.filter((item) => !revoked.has(item.id));
+        if (loadToken.current !== loadAtStart) {
+          const liveById = new Map(prev.notifications.map((item) => [item.id, item]));
+          next = next.map((item) => liveById.get(item.id) ?? item);
+          const seen = new Set(next.map((item) => item.id));
+          const extras = prev.notifications.filter(
+            (item) => !seen.has(item.id) && !revoked.has(item.id),
+          );
+          next = [...extras, ...next].slice(0, 10);
+        }
+        // The cache is empty on a fresh window. Replacing the initial empty
+        // state with another empty list only re-renders the bell.
+        if (next.length === 0 && prev.notifications.length === 0 && prev.unreadCount === 0) {
+          return prev;
+        }
+        const unreadCount = next.filter((item) => !item.is_read).length;
+        return { ...prev, notifications: next, unreadCount };
+      });
     } catch (err) {
       // Silently fail — backend may not be ready yet. Will sync on next event.
       console.warn("[useNotifications] loadUnread failed:", err);
     }
   }, []);
-
-  useEffect(() => {
-    if (initialLoadDone.current) return;
-    initialLoadDone.current = true;
-
-    loadUnread();
-  }, [loadUnread]);
 
   // -------------------------------------------------------------------------
   // Event handlers
@@ -217,6 +247,8 @@ export function useNotifications(): UseNotificationsReturn {
   const handleNew = useCallback((notification: AdminNotification) => {
     const notice = normalizeNotification(notification);
     if (!notice) return;
+    loadToken.current += 1;
+    revokedIds.current.delete(notice.id);
     setState((prev) => {
       // Deduplicate
       const filtered = prev.notifications.filter(
@@ -232,6 +264,8 @@ export function useNotifications(): UseNotificationsReturn {
   const handleRevoke = useCallback((notificationId: unknown) => {
     const id = asNotificationId(notificationId);
     if (!id) return;
+    loadToken.current += 1;
+    revokedIds.current.add(id);
     setState((prev) => {
       const updated = prev.notifications.filter((n) => n.id !== id);
       const unreadCount = updated.filter((n) => !n.is_read).length;
@@ -240,7 +274,11 @@ export function useNotifications(): UseNotificationsReturn {
     setUrgentToast((prev) => (prev?.id === id ? null : prev));
   }, []);
 
-  const handleSync = useCallback((notifications: AdminNotification[]) => {
+  const handleSync = useCallback((notifications: AdminNotification[], generation?: unknown) => {
+    const gen = syncGeneration(generation);
+    if (gen != null && gen < syncGen.current) return;
+    if (gen != null) syncGen.current = gen;
+    syncToken.current += 1;
     const list = normalizeNotificationList(notifications);
     const capped = list.slice(0, 10);
     const unreadCount = capped.filter((n) => !n.is_read).length;
@@ -284,6 +322,15 @@ export function useNotifications(): UseNotificationsReturn {
       else EventsOff("notification:urgent-toast");
     };
   }, [handleNew, handleRevoke, handleSync, handleUrgentToast]);
+
+  // Subscribe first, then read the cache. A sync that arrives while that read
+  // is in flight is then visible to this hook and wins over the older snapshot.
+  useEffect(() => {
+    if (initialLoadDone.current) return;
+    initialLoadDone.current = true;
+
+    loadUnread();
+  }, [loadUnread]);
 
   // -------------------------------------------------------------------------
   // Actions

@@ -34045,6 +34045,26 @@ input.cwshare-url {
   flex: 1 1 auto;
   min-width: 0;
 }
+/* The notification bell sits in the slot before the host badge. The panel
+   hangs below the bar; the bar clips its row, so an open panel has to be
+   allowed out, the same way the 打开 menu is. */
+.file-companion-titlebar-notifications {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  z-index: 2;
+}
+.file-companion-titlebar:has(.notification-panel) {
+  overflow: visible;
+}
+/* The dismiss scrim is a title-bar child at the same layer as the 打开
+   scrim (z-index 20) and covers the document, including the PDF iframe.
+   The panel lives in this slot, so the slot has to paint above that scrim.
+   Otherwise a click on a notice hits the scrim and closes the panel. */
+.file-companion-titlebar:has(.notification-panel) .file-companion-titlebar-notifications {
+  z-index: 30;
+}
 /* Everything clickable opts out of the window drag region. --wails-draggable
    inherits, and Wails starts the drag on the first mousemove after mousedown,
    so a click with a pixel of shake on a tab or a tool button moved the window
@@ -34053,6 +34073,7 @@ input.cwshare-url {
 .file-companion-titlebar-files,
 .file-companion-titlebar-tabs,
 .file-companion-titlebar-actions,
+.file-companion-titlebar-notifications,
 .file-companion-titlebar .file-companion-tool--fullscreen,
 .file-companion-titlebar .file-companion-tool--close {
   --wails-draggable: no-drag;
@@ -34414,7 +34435,8 @@ input.cwshare-url {
 }
 .companion-pdf-bookmark-column[data-collapsed="true"] {
   padding: 0;
-  overflow: visible;
+  /* Clip anything that is not the fold button. The list itself is display:none. */
+  overflow: hidden;
 }
 .companion-pdf-bookmark-column[data-collapsed="true"]::before {
   content: "";
@@ -34431,6 +34453,11 @@ input.cwshare-url {
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
+}
+/* display:flex above would otherwise win over the hidden attribute and leave
+   a slice of the chips in the folded strip. */
+.companion-pdf-bookmark-body[hidden] {
+  display: none;
 }
 .companion-pdf-bookmark-resize {
   position: absolute;
@@ -34508,6 +34535,10 @@ input.cwshare-url {
 .companion-pdf-bookmark-fold:focus-visible {
   outline: 2px solid var(--theme-primary, #2e75cb);
   outline-offset: 2px;
+}
+/* The folded strip clips its overflow, so the ring stays inside the button. */
+.companion-pdf-bookmark-column[data-collapsed="true"] .companion-pdf-bookmark-fold:focus-visible {
+  outline-offset: -3px;
 }
 /* Two lists share the column: bookmarks on top, notes below. Each list has
    its own scroll box, so a long bookmark list cannot push the notes off the
@@ -35561,8 +35592,240 @@ body.companion-pdf-translation-dragging * {
 /* Two classes so the width wins over the single-class dialog shell that is
    emitted later in the sheet. */
 .file-companion-dialog-card.file-companion-library-dialog {
-  width: min(680px, 100%);
-  max-height: min(660px, 100%);
+  width: min(920px, 100%);
+  max-height: min(720px, 100%);
+  min-height: min(480px, 100%);
+}
+/* 文档管理: one folder level on the left, the document list on the right.
+   The rail scrolls on its own. The list scrolls on its own. */
+.file-companion-library-body {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.file-companion-library-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 12px;
+  border-right: 1px solid var(--theme-border-subtle, #e6edf6);
+  background: var(--theme-surface-muted, #f8fafc);
+}
+.file-companion-library-folder-create {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.file-companion-library-folder-create .file-companion-dialog-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+}
+.file-companion-library-folder-create .file-companion-dialog-primary {
+  height: 32px;
+  padding: 0 12px;
+  flex: 0 0 auto;
+}
+.file-companion-library-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.file-companion-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 4px 0 2px;
+  border-radius: var(--radius-sm, 6px);
+}
+.file-companion-folder-row[aria-selected="true"] {
+  background: color-mix(in srgb, var(--theme-primary, #2563eb) 10%, transparent);
+}
+.file-companion-folder-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--theme-text-primary, #1f2937);
+  font: 600 12.5px/1.2 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+.file-companion-folder-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-companion-folder-name:hover {
+  color: var(--theme-primary, #2563eb);
+}
+.file-companion-folder-name:focus-visible,
+.file-companion-folder-icon:focus-visible,
+.file-companion-folder-move:focus-visible {
+  outline: 2px solid var(--theme-primary, #2563eb);
+  outline-offset: 1px;
+}
+.file-companion-folder-count {
+  flex: 0 0 auto;
+  min-width: 1.2em;
+  color: var(--theme-text-muted, #64748b);
+  font: 600 11px/1 "Segoe UI", "SF Pro Text", sans-serif;
+  text-align: right;
+}
+.file-companion-folder-icon {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--theme-text-muted, #64748b);
+  font: 600 11px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.file-companion-folder-icon:hover:not(:disabled) {
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-primary, #2563eb);
+}
+.file-companion-folder-icon:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.file-companion-folder-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.file-companion-folder-rename .file-companion-dialog-input {
+  height: 28px;
+  padding: 0 8px;
+}
+.file-companion-library-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 14px;
+}
+.file-companion-library-filter {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding-bottom: 2px;
+  background: var(--theme-surface, #ffffff);
+}
+.file-companion-library-filter .file-companion-dialog-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 34px;
+}
+.file-companion-library-filter .file-companion-dialog-secondary {
+  flex: 0 0 auto;
+  height: 34px;
+}
+.file-companion-library-filter-count {
+  margin: -6px 0 0;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+}
+.file-companion-folder-move {
+  box-sizing: border-box;
+  max-width: 128px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text-secondary, #46586f);
+  font: 600 11.5px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+}
+.file-companion-folder-prompt {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: var(--theme-overlay, rgba(15, 23, 42, 0.48));
+}
+.file-companion-folder-prompt-card {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(420px, 100%);
+  padding: 16px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-lg, 12px);
+  background: var(--theme-surface, #ffffff);
+  box-shadow: var(--shadow-xl, 0 12px 40px -8px rgba(30, 58, 95, 0.22));
+}
+.file-companion-folder-prompt-card h3 {
+  margin: 0;
+  font: 600 15px/1.3 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+}
+.file-companion-folder-prompt-card p {
+  margin: 0;
+  color: var(--theme-text-secondary, #46586f);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.file-companion-folder-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 600 13px/1.3 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+}
+.file-companion-folder-prompt-note {
+  color: var(--theme-text-muted, #64748b);
+  font-size: 12px;
+}
+.file-companion-folder-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.file-companion-folder-danger {
+  border-color: var(--theme-danger, #dc2626);
+  background: var(--theme-danger, #dc2626);
+}
+.file-companion-folder-danger:hover:not(:disabled) {
+  border-color: var(--theme-danger, #dc2626);
+  background: color-mix(in srgb, var(--theme-danger, #dc2626) 88%, #000000);
+}
+@media (max-width: 720px) {
+  .file-companion-library-body {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+  }
+  .file-companion-library-rail {
+    max-height: 200px;
+    border-right: 0;
+    border-bottom: 1px solid var(--theme-border-subtle, #e6edf6);
+  }
 }
 .file-companion-dialog-head-actions {
   display: flex;
@@ -37355,7 +37618,7 @@ body.companion-pdf-translation-dragging * {
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
   flex: 0 0 40px;
   height: 40px;
@@ -37366,7 +37629,9 @@ body.companion-pdf-translation-dragging * {
   user-select: none;
 }
 .file-companion-annotations-head .file-companion-annotations-kicker {
-  flex: 1 1 auto;
+  /* Stay beside the pending badge. Growing here would push that badge
+     against the chevron and split the two counts across the bar. */
+  flex: 0 1 auto;
   min-width: 0;
   margin: 0;
   overflow: hidden;
@@ -37384,7 +37649,7 @@ body.companion-pdf-translation-dragging * {
   flex: 0 0 auto;
   width: 28px;
   height: 28px;
-  margin: 0;
+  margin: 0 0 0 auto;
   padding: 0;
   border: none;
   border-radius: 6px;

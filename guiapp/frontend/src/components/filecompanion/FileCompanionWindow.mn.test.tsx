@@ -12,6 +12,11 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     GetFileCompanionBoot: vi.fn(async () => ({ paths: [] })),
     GetBrandInfo: vi.fn(async () => ({ displayName: "MaClaw" })),
     ListFileCompanionLibrary: vi.fn(async () => ({ items: [], notice: "登录后可以查看云端分享" })),
+    ListFileCompanionCatalog: vi.fn(async () => ({ rev: 0, folders: [], placements: {} })),
+    CreateFileCompanionFolder: vi.fn(),
+    RenameFileCompanionFolder: vi.fn(),
+    DeleteFileCompanionFolder: vi.fn(),
+    MoveFileCompanionLibraryItem: vi.fn(),
     ListFileCompanionGroups: vi.fn(async () => [{
         id: "cg_0123456789abcdef0123456789abcdef",
         name: "уншлагын бүлэг",

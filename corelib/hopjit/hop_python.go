@@ -21,6 +21,104 @@ func validateHopPythonBody(body string) error {
 	return err
 }
 
+// StripHopPythonLineComment drops a # that sits outside quotes, including
+// one that follows code on the same line. A # inside a string stays. The
+// compiler uses this same cut when it decides a body is a retrieval, so the
+// body it keeps is the body parseHopPython runs.
+func StripHopPythonLineComment(line string) string {
+	var quote rune
+	escaped := false
+	runes := []rune(line)
+	for index, r := range runes {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+				continue
+			}
+			if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		if r == '"' || r == '\'' {
+			quote = r
+			continue
+		}
+		if r == '#' {
+			return string(runes[:index])
+		}
+	}
+	return line
+}
+
+// HopPythonRuns reports whether the interpreter can evaluate body.
+// defined are names already assigned when the step starts. Every branch is
+// checked. A tool call must use named arguments, and a name that is read on
+// the evaluated side must already be assigned. The probe tool returns a
+// non-empty string, matching a search result that lets or keep its left side.
+func HopPythonRuns(body string, defined []string) error {
+	statements, err := parseHopPython(body)
+	if err != nil {
+		return err
+	}
+	scope := make(map[string]bool, len(defined))
+	for _, name := range defined {
+		if name != "" {
+			scope[name] = true
+		}
+	}
+	return hopPythonBlockRuns(statements, scope)
+}
+
+func hopPythonBlockRuns(statements []*hopStatement, scope map[string]bool) error {
+	for _, statement := range statements {
+		switch statement.kind {
+		case "assign":
+			if err := hopPythonExpressionRuns(statement.expression, scope); err != nil {
+				return fmt.Errorf("line %d: %w", statement.line, err)
+			}
+			scope[statement.target] = true
+		case "if", "elif":
+			if err := hopPythonExpressionRuns(statement.expression, scope); err != nil {
+				return fmt.Errorf("line %d: %w", statement.line, err)
+			}
+			if err := hopPythonBlockRuns(statement.children, cloneBoolSet(scope)); err != nil {
+				return err
+			}
+		case "else":
+			if err := hopPythonBlockRuns(statement.children, cloneBoolSet(scope)); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("line %d: unsupported statement %s", statement.line, statement.kind)
+		}
+	}
+	return nil
+}
+
+func hopPythonExpressionRuns(expression string, scope map[string]bool) error {
+	variables := make(map[string]VariableValue, len(scope))
+	for name := range scope {
+		variables[name] = VariableValue{Value: "probe", Assigned: true}
+	}
+	_, err := evalExpression(context.Background(), expression, variables, ToolProviderFunc(func(context.Context, string, map[string]any) (any, error) {
+		return "probe", nil
+	}))
+	return err
+}
+
+func cloneBoolSet(scope map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(scope))
+	for name := range scope {
+		out[name] = true
+	}
+	return out
+}
+
 func executeHopPython(ctx context.Context, body string, variables map[string]VariableValue, tools ToolProvider) error {
 	statements, err := parseHopPython(body)
 	if err != nil {
@@ -32,14 +130,15 @@ func executeHopPython(ctx context.Context, body string, variables map[string]Var
 func parseHopPython(body string) ([]*hopStatement, error) {
 	var flat []*hopStatement
 	for index, raw := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
-		if strings.TrimSpace(raw) == "" || strings.HasPrefix(strings.TrimSpace(raw), "#") {
+		code := StripHopPythonLineComment(raw)
+		if strings.TrimSpace(code) == "" {
 			continue
 		}
-		if strings.ContainsRune(raw, '\t') {
+		if strings.ContainsRune(code, '\t') {
 			return nil, fmt.Errorf("HOP_PYTHON_TAB: line %d uses tab indentation", index+1)
 		}
-		indent := len(raw) - len(strings.TrimLeft(raw, " "))
-		text := strings.TrimSpace(raw)
+		indent := len(code) - len(strings.TrimLeft(code, " "))
+		text := strings.TrimSpace(code)
 		statement := &hopStatement{line: index + 1, indent: indent}
 		switch {
 		case strings.HasPrefix(text, "if ") && strings.HasSuffix(text, ":"):

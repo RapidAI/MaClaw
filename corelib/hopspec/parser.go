@@ -20,7 +20,7 @@ func (d Diagnostic) Error() string {
 	return d.Code + ": " + d.Message
 }
 
-var stepLinePattern = regexp.MustCompile(`^(\d+(?:\.\d+)*)\.\s+\[([^]]+)\]\s*(.*)$`)
+var stepLinePattern = regexp.MustCompile(`^(\d+(?:\.\d+)*)[.、．]\s*[\[［【]([^\]］】]+)[\]］】]\s*(.*)$`)
 
 func Parse(markdown string) (SpecAST, []error) {
 	var spec SpecAST
@@ -30,12 +30,25 @@ func Parse(markdown string) (SpecAST, []error) {
 	bodyOpen := map[*Step]bool{}
 	var current *Step
 	section := ""
+	skipUntil := -1
 	addErr := func(code string, line int, message string) {
 		errs = append(errs, Diagnostic{Code: code, Line: line, Message: message})
 	}
 	for index, raw := range lines {
+		// A closed raw hop_python fence is code. Step lines inside it are
+		// not steps. On an act, check, or commit step the fence is the body.
+		// The quoted "> ```hop_python" form is handled below.
+		if index <= skipUntil {
+			continue
+		}
 		lineNo := index + 1
 		trimmed := strings.TrimSpace(raw)
+		if strings.HasPrefix(trimmed, "```hop_python") {
+			if end := takeRawHopPython(lines, index, current); end >= 0 {
+				skipUntil = end
+				continue
+			}
+		}
 		if trimmed == "" {
 			continue
 		}
@@ -43,8 +56,8 @@ func Parse(markdown string) (SpecAST, []error) {
 			spec.Title = title
 			continue
 		}
-		if match := stepLinePattern.FindStringSubmatch(trimmed); match != nil {
-			step, stepErr := parseStep(match[1], match[2], match[3], lineNo)
+		if id, descriptor, summary, ok := matchStepLine(trimmed); ok {
+			step, stepErr := parseStep(id, descriptor, summary, lineNo)
 			if stepErr != nil {
 				errs = append(errs, stepErr...)
 				continue
@@ -70,20 +83,18 @@ func Parse(markdown string) (SpecAST, []error) {
 			continue
 		}
 		if current != nil && section == "steps" {
-			if strings.HasPrefix(trimmed, "- ←") {
+			if value, ok := inputDeclValue(trimmed); ok {
 				step := current
-				step.Inputs = append(step.Inputs, parseInputNames(strings.TrimSpace(strings.TrimPrefix(trimmed, "- ←")))...)
+				step.Inputs = append(step.Inputs, parseInputNames(value)...)
 				step.Source.LineEnd = lineNo
 				continue
 			}
-			if strings.HasPrefix(trimmed, "- 工具:") || strings.HasPrefix(trimmed, "- 工具：") || strings.HasPrefix(trimmed, "- Tools:") {
-				_, value, _ := splitSectionColon(trimmed)
+			if value, ok := toolDeclValue(trimmed); ok {
 				current.Tools = append(current.Tools, parseInputNames(value)...)
 				current.Source.LineEnd = lineNo
 				continue
 			}
-			if strings.HasPrefix(trimmed, "+ →") {
-				value := strings.TrimSpace(strings.TrimPrefix(trimmed, "+ →"))
+			if value, ok := outputDeclValue(trimmed); ok {
 				decl := parseVariableDecl(value)
 				step := current
 				if step.Type == StepCall && step.Call != nil && !strings.Contains(value, "%") {
@@ -187,6 +198,89 @@ func Parse(markdown string) (SpecAST, []error) {
 		addErr("MISSING_SPEC_TITLE", 0, "expected # Spec: <title>")
 	}
 	return spec, errs
+}
+
+func rawHopPythonEnd(lines []string, from int) int {
+	for index := from; index < len(lines); index++ {
+		if strings.TrimSpace(lines[index]) == "```" {
+			return index
+		}
+	}
+	return -1
+}
+
+// takeRawHopPython consumes a closed raw fence. The interior is code, not
+// steps. On an act, check, or commit step it is that step's hop_python body.
+// An unclosed fence is left for the normal line scan.
+func takeRawHopPython(lines []string, opener int, current *Step) int {
+	end := rawHopPythonEnd(lines, opener+1)
+	if end < 0 {
+		return -1
+	}
+	if current != nil && (current.Type == StepAct || current.Type == StepCheck || current.Type == StepCommit) {
+		if body := rawHopPythonBody(lines, opener, end); body != "" {
+			if current.Body != "" {
+				current.Body += "\n"
+			}
+			current.Body += body
+			current.Source.LineEnd = end + 1
+		}
+	}
+	return end
+}
+
+func rawHopPythonBody(lines []string, opener, end int) string {
+	indent := len(lines[opener]) - len(strings.TrimLeft(lines[opener], " "))
+	prefix := strings.Repeat(" ", indent)
+	var b strings.Builder
+	for index := opener + 1; index < end; index++ {
+		line := lines[index]
+		if indent > 0 && strings.HasPrefix(line, prefix) {
+			line = line[indent:]
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(line)
+	}
+	return strings.Trim(b.String(), "\n")
+}
+
+// CountStepLines counts bracketed step lines. It does not parse the spec:
+// a line still counts when a later structural check will reject it.
+// StepLineCounts also returns how many of those steps are not a bare exit.
+func CountStepLines(markdown string) int {
+	steps, _ := StepLineCounts(markdown)
+	return steps
+}
+
+func StepLineCounts(markdown string) (steps, work int) {
+	for _, line := range strings.Split(markdown, "\n") {
+		_, descriptor, _, ok := matchStepLine(strings.TrimSpace(line))
+		if !ok {
+			continue
+		}
+		steps++
+		token := descriptor
+		if index := strings.IndexAny(token, " \t"); index >= 0 {
+			token = token[:index]
+		}
+		if typ, known := canonicalStepType(token); known && typ != StepExit {
+			work++
+		}
+	}
+	return steps, work
+}
+
+// matchStepLine reads one bracketed step. Fullwidth brackets and the
+// separators 、 and ． are the same line as "1. [act] 摘要". The summary is
+// not rewritten. A prose numbered line is not a step.
+func matchStepLine(trimmed string) (id, descriptor, summary string, ok bool) {
+	match := stepLinePattern.FindStringSubmatch(trimmed)
+	if match == nil {
+		return "", "", "", false
+	}
+	return match[1], match[2], match[3], true
 }
 
 func parseStep(id, descriptor, summary string, line int) (*Step, []error) {
@@ -423,6 +517,36 @@ func stepParentID(id string) string {
 	return ""
 }
 
+// toolDeclValue reads a step tool whitelist. The mark may be "-" or "－".
+// Space before the label is optional, and either colon may have spaces
+// around it. The label is 工具, Tools, or tools, and it must end at the
+// colon so a longer word is left alone.
+func toolDeclValue(trimmed string) (string, bool) {
+	rest := ""
+	switch {
+	case strings.HasPrefix(trimmed, "-"):
+		rest = trimmed[len("-"):]
+	case strings.HasPrefix(trimmed, "－"):
+		rest = trimmed[len("－"):]
+	default:
+		return "", false
+	}
+	rest = strings.TrimSpace(rest)
+	for _, label := range []string{"工具", "Tools", "tools"} {
+		if !strings.HasPrefix(rest, label) {
+			continue
+		}
+		after := strings.TrimSpace(rest[len(label):])
+		if strings.HasPrefix(after, ":") {
+			return strings.TrimSpace(strings.TrimPrefix(after, ":")), true
+		}
+		if strings.HasPrefix(after, "：") {
+			return strings.TrimSpace(strings.TrimPrefix(after, "：")), true
+		}
+	}
+	return "", false
+}
+
 func parseInputNames(value string) []string {
 	parts := strings.Split(value, ",")
 	out := make([]string, 0, len(parts))
@@ -432,6 +556,34 @@ func parseInputNames(value string) []string {
 		}
 	}
 	return out
+}
+
+// outputDeclValue reads a step output. The plus may be "+" or "＋", and the
+// arrow may be "→" or "->", with or without a space between them.
+func outputDeclValue(trimmed string) (string, bool) {
+	return markedDeclValue(trimmed, []string{"+", "＋"}, []string{"→", "->"})
+}
+
+// inputDeclValue reads a step input. The hyphen may be "-" or "－", and the
+// arrow may be "←" or "<-", with or without a space between them.
+func inputDeclValue(trimmed string) (string, bool) {
+	return markedDeclValue(trimmed, []string{"-", "－"}, []string{"←", "<-"})
+}
+
+func markedDeclValue(trimmed string, marks, arrows []string) (string, bool) {
+	for _, mark := range marks {
+		if !strings.HasPrefix(trimmed, mark) {
+			continue
+		}
+		rest := strings.TrimSpace(trimmed[len(mark):])
+		for _, arrow := range arrows {
+			if strings.HasPrefix(rest, arrow) {
+				return strings.TrimSpace(rest[len(arrow):]), true
+			}
+		}
+		return "", false
+	}
+	return "", false
 }
 
 func parseVariableDecl(value string) VariableDecl {
@@ -446,5 +598,18 @@ func parseVariableDecl(value string) VariableDecl {
 	} else if before, after, ok := splitSectionColon(value); ok {
 		name, typ = strings.TrimSpace(before), strings.TrimSpace(after)
 	}
-	return VariableDecl{Name: name, Type: typ, Description: description}
+	return VariableDecl{Name: name, Type: canonicalBoolType(typ), Description: description}
+}
+
+// canonicalBoolType stores the verdict synonyms as bool. A trailing 。．.，,
+// is punctuation, not part of the type. Other types stay as written, so
+// text and string are not rewritten.
+func canonicalBoolType(typ string) string {
+	candidate := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(typ), "。．.，,"))
+	switch strings.ToLower(candidate) {
+	case "bool", "boolean", "布尔", "真假":
+		return "bool"
+	default:
+		return typ
+	}
 }

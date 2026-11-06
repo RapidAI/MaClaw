@@ -172,29 +172,62 @@ const stickyCodingMemoryPrevOutputsMax = 8
 const stickyCodingMemoryFileName = ".coding_workbench.json"
 const stickyCodingMemoryMaxAge = 30 * 24 * time.Hour
 
+// codingPreviousTurnResultPrefix marks the previous assistant deliverable in
+// prevOutputs. Callers that must show the full text look for this label.
+// The label is ours; it is not a match against the user's wording.
+const codingPreviousTurnResultPrefix = "Previous turn result summary:\n"
+
+// codingActiveExecutionPlanPrefix marks a sticky multi-step recipe. Unplanned
+// follow-ups drop it, and every executor step drops it too: the step context
+// already carries the current step and a titles-only outline. The label is
+// ours; it is not matched against user text.
+const codingActiveExecutionPlanPrefix = "Active multi-step execution plan:\n"
+
+// codingSessionPlanPrefix marks the overall goal. The bullet clip would add a
+// recovery marker, so the prompt appends this text after compact. The phrase
+// is ours; callers and tests match it literally.
+const codingSessionPlanPrefix = "Session plan / overall goal:\n"
+
+// codingSessionPlanMaxRunes matches the remote unplanned prompt. A recovery
+// marker is not added: the next turn would treat the cut as a missing goal.
+const codingSessionPlanMaxRunes = 800
+
+// codingCurrentRequestUnderstandingPrefix marks the host restatement already
+// shown to the user. The bullet renderer clips every item, so the full text
+// is copied out of that list before the prompt is built.
+const codingCurrentRequestUnderstandingPrefix = "Current request understanding (already shown to the user; implement this and do not restate it):\n"
+
+// codingPreviousUserRequestPrefix marks the prior user message. It stays in
+// the bullet list. There is no file behind it, so the bullet must hard-cut
+// the head instead of adding a recovery marker. The full text is not appended.
+const codingPreviousUserRequestPrefix = "Previous user request:\n"
+
 func (m stickyCodingWorkbenchMemory) prevOutputs() []string {
 	var out []string
 	if m.TurnCount > 0 {
 		out = append(out, fmt.Sprintf("Session continuity: this is turn %d in the same full coding workbench session.", m.TurnCount+1))
 	}
-	if s := strings.TrimSpace(m.SessionPlan); s != "" {
-		out = append(out, "Session plan / overall goal:\n"+truncateRunesForSubAgent(s, 800))
+	if s := codingPromptChannelText(m.SessionPlan, codingSessionPlanMaxRunes); s != "" {
+		out = append(out, codingSessionPlanPrefix+s)
 	}
-	if s := strings.TrimSpace(m.RequirementRestatement); s != "" {
-		out = append(out, "Current request understanding (already shown to the user; implement this and do not restate it):\n"+truncateRunesForSubAgent(s, 400))
+	if s := codingPromptChannelText(m.RequirementRestatement, 400); s != "" {
+		out = append(out, codingCurrentRequestUnderstandingPrefix+s)
 	}
 	if s := strings.TrimSpace(m.ExecutionPlan); s != "" {
-		out = append(out, "Active multi-step execution plan:\n"+truncateRunesForSubAgent(s, 1200))
+		out = append(out, codingActiveExecutionPlanPrefix+truncateRunesForSubAgent(s, 1200))
 	}
 	// Project AGENTS.md / CLAUDE.md — high priority for agent behavior.
 	if s := strings.TrimSpace(m.ProjectInstructions); s != "" {
 		out = append(out, formatProjectInstructionsForContext(s, m.ProjectInstructionSources))
 	}
-	if s := strings.TrimSpace(m.LastUserText); s != "" {
-		out = append(out, "Previous user request:\n"+truncateRunesForSubAgent(s, 400))
+	if s := codingPromptChannelText(m.LastUserText, 400); s != "" {
+		out = append(out, codingPreviousUserRequestPrefix+s)
 	}
-	if s := strings.TrimSpace(m.LastSummary); s != "" {
-		out = append(out, "Previous turn result summary:\n"+truncateRunesForSubAgent(s, 1200))
+	if s := codingPromptPreviousTurnSummary(m.LastSummary); s != "" {
+		// Storage may already end with the recovery marker compactSubAgentModelSummary
+		// adds. The prompt channel hard-cuts and strips that one marker. A shorter
+		// cut drops tables the next turn has to transcribe.
+		out = append(out, codingPreviousTurnResultPrefix+s)
 	}
 	if len(m.FilesModified) > 0 {
 		files := uniqueSortedSubAgentStrings(m.FilesModified)
@@ -715,10 +748,21 @@ func stickyCodingCarrySummary(summary, errText string) string {
 		}
 		return summary
 	}
-	if summary == "" || summary == strings.TrimSpace(errText) || codingAgentSummaryIsIterationFallback(summary) {
+	if summary == "" || summary == strings.TrimSpace(errText) || codingCarryIsStockIterationHandoff(summary) {
 		return ""
 	}
 	return summary
+}
+
+// codingCarryIsStockIterationHandoff is the one-line cap notice. A multi-step
+// delivery can quote that notice in a later step and still hold earlier
+// results; dropping the whole text would make the next turn rediscover them.
+func codingCarryIsStockIterationHandoff(summary string) bool {
+	summary = strings.TrimSpace(summary)
+	if strings.Contains(summary, "\n") {
+		return false
+	}
+	return codingAgentSummaryIsIterationFallback(summary)
 }
 
 // setStickyCodingTurnOutcome records the finished turn's terminal result. An

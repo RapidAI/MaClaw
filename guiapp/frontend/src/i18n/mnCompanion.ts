@@ -10,6 +10,12 @@ type Row = readonly [string, string, string];
 // zh, en, mn. Templates use ${name} in the same order in all three.
 const ROWS: readonly Row[] = [
     ["保存失败", "Save failed", "Хадгалж чадсангүй"],
+    ["只接受公网上的 http 和 https 链接，没有加入文档管理。", "Only public http and https links are accepted. Nothing was added to the library.", "Зөвхөн нийтийн сүлжээний http ба https холбоос авна. Санд нэмээгүй."],
+    ["这个页面没有可下载的 PDF，没有加入文档管理。", "This page has no downloadable PDF. Nothing was added to the library.", "Энэ хуудсаас татах PDF олдсонгүй. Санд нэмээгүй."],
+    ["下载到的内容不是 PDF，没有加入文档管理。", "The download is not a PDF. Nothing was added to the library.", "Татсан агуулга PDF биш. Санд нэмээгүй."],
+    ["PDF 超过 25 MiB，没有保存。", "The PDF is over 25 MiB and was not saved.", "PDF 25 MiB-ээс их тул хадгалсангүй."],
+    ["下载超过 60 秒，没有保存。", "The download exceeded 60 seconds and was not saved.", "Таталт 60 секундээс хэтэрсэн тул хадгалсангүй."],
+    ["保存失败，没有加入文档管理。", "Saving failed. Nothing was added to the library.", "Хадгалалт амжилтгүй. Санд нэмээгүй."],
     ["保存修改", "Save changes", "Өөрчлөлтийг хадгалах"],
     ["保留扫描版式，生成可以选中和搜索的 PDF", "Keep the scanned layout and make a PDF you can select and search", "Сканнердсан бүтцийг хадгалж, сонгож хайж болох PDF үүсгэнэ"],
     ["本机", "This computer", "Энэ компьютер"],
@@ -652,6 +658,7 @@ const ROWS: readonly Row[] = [
     ["已移动到「${name}」", "Moved to “${name}”", "“${name}” руу зөөгдлөө"],
     ["已移出文件夹", "Removed from the folder", "Хавтаснаас гаргалаа"],
     ["显示 ${shown} / 共 ${count} 个", "Showing ${shown} of ${count}", "${count}-оос ${shown} харагдаж байна"],
+    ["全部和未分类不能用作文件夹名称", "All and Uncategorized cannot be folder names", "Бүгд ба Ангилаагүй гэсэн нэрийг өгөхгүй"],
     ["登录后可以查看云端分享", "Sign in to see cloud shares", "Нэвтэрсний дараа үүлэн хуваалцалтыг харж болно"],
     ["暂时无法连接云端，本机文档仍可查看", "The cloud is temporarily unreachable. Documents on this computer are still available.", "Үүлэнтэй түр холбогдож чадсангүй. Энэ компьютерийн баримтыг харж болно."],
 ];
@@ -690,6 +697,46 @@ export function companionText(lang: string | undefined | null, en: string, zhHan
     if (kind === "zh-Hant") return zhHant || zhHans;
     if (kind === "mn") return byEn.get(en) || en;
     return en;
+}
+
+const PAPER_NOTICE: Record<string, readonly [string, string, string]> = {
+    "bad-scheme": [
+        "Only public http and https links are accepted. Nothing was added to the library.",
+        "只接受公网上的 http 和 https 链接，没有加入文档管理。",
+        "只接受公網上的 http 和 https 連結，沒有加入文件管理。",
+    ],
+    "no-pdf": [
+        "This page has no downloadable PDF. Nothing was added to the library.",
+        "这个页面没有可下载的 PDF，没有加入文档管理。",
+        "這個頁面沒有可下載的 PDF，沒有加入文件管理。",
+    ],
+    "not-pdf": [
+        "The download is not a PDF. Nothing was added to the library.",
+        "下载到的内容不是 PDF，没有加入文档管理。",
+        "下載到的內容不是 PDF，沒有加入文件管理。",
+    ],
+    "too-big": [
+        "The PDF is over 25 MiB and was not saved.",
+        "PDF 超过 25 MiB，没有保存。",
+        "PDF 超過 25 MiB，沒有儲存。",
+    ],
+    timeout: [
+        "The download exceeded 60 seconds and was not saved.",
+        "下载超过 60 秒，没有保存。",
+        "下載超過 60 秒，沒有儲存。",
+    ],
+    "save-failed": [
+        "Saving failed. Nothing was added to the library.",
+        "保存失败，没有加入文档管理。",
+        "儲存失敗，沒有加入文件管理。",
+    ],
+};
+
+/** Browser right-click failure. Empty when the code is not one of the six. */
+export function companionPaperNotice(lang: string | undefined | null, code: string): string {
+    const row = PAPER_NOTICE[code];
+    if (!row) return "";
+    return companionText(lang, row[0], row[1], row[2]);
 }
 
 function fillFrom(pattern: string, values: string[]): string {

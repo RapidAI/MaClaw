@@ -955,10 +955,10 @@ func installTUISkillTransactional(app *TUIApp, effectiveSource, skillID, install
 	}
 	defer cleanupStage()
 
-	// SkillHub payloads may contain executable files.  Always materialise them
-	// under an isolated sibling directory and publish with one rename only after
-	// the registry pre-image has been durably captured by SkillCommitter.
-	if effectiveSource == "skillhub" {
+	// SkillHub and ClawHub payloads are folders. Materialise them under an
+	// isolated sibling directory and publish with one rename only after the
+	// registry pre-image has been durably captured by SkillCommitter.
+	if effectiveSource == "skillhub" || effectiveSource == "clawhub" {
 		root, rootErr := skill.PrimarySkillsDir()
 		if rootErr != nil {
 			return nil, nil, fmt.Errorf("解析 Skill 目录失败: %w", rootErr)
@@ -970,21 +970,23 @@ func installTUISkillTransactional(app *TUIApp, effectiveSource, skillID, install
 		if err != nil {
 			return nil, nil, fmt.Errorf("创建 Skill staging 目录失败: %w", err)
 		}
+	}
+	switch effectiveSource {
+	case "skillhub":
 		entry, err = client.DownloadSkillHubWithOptions(ctx, hubURL, skillID, skill.HubDownloadOptions{
 			HubURL: hubURL, SkillID: skillID, Source: "hub", TargetDir: stagingDir,
 		})
-	} else {
-		switch effectiveSource {
-		case "clawhub":
-			entry, err = client.DownloadClawHub(ctx, skillID)
-		case "github":
-			if strings.TrimSpace(installRef) == "" {
-				return nil, nil, fmt.Errorf("GitHub Skill 缺少 install_ref 参数")
-			}
-			entry, err = client.DownloadGitHub(ctx, installRef)
-		default:
-			return nil, nil, fmt.Errorf("不支持的 Skill 来源 %q", effectiveSource)
+	case "clawhub":
+		entry, err = client.DownloadClawHubWithOptions(ctx, skillID, skill.ClawHubDownloadOptions{
+			Source: "clawhub", TargetDir: stagingDir,
+		})
+	case "github":
+		if strings.TrimSpace(installRef) == "" {
+			return nil, nil, fmt.Errorf("GitHub Skill 缺少 install_ref 参数")
 		}
+		entry, err = client.DownloadGitHub(ctx, installRef)
+	default:
+		return nil, nil, fmt.Errorf("不支持的 Skill 来源 %q", effectiveSource)
 	}
 	if err != nil {
 		return nil, nil, err

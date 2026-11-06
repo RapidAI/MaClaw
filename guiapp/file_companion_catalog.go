@@ -22,9 +22,10 @@ import (
 // "remove" drops them from 文档管理. The source file on disk stays either way.
 
 const (
-	fileCompanionFolderCap      = 40
-	fileCompanionFolderNameCap  = 40
-	fileCompanionFolderIDPrefix = "fld_"
+	fileCompanionFolderCap           = 40
+	fileCompanionFolderNameCap       = 40
+	fileCompanionFolderIDPrefix      = "fld_"
+	fileCompanionFolderUncategorized = "none"
 )
 
 var fileCompanionCatalogMu sync.Mutex
@@ -36,8 +37,9 @@ type FileCompanionFolder struct {
 }
 
 // FileCompanionCatalog is the folder tree and the document placements.
-// Placements use item:<library id> and path:<library path key>. Rev moves on
-// every write so a stale list cannot cover a newer edit.
+// Placements use item:<library id> and path:<library path key>.
+// item:<id> = "none" means that row was moved to 未分类 and must not inherit
+// the path key. Rev moves on every write so a stale list cannot cover a newer edit.
 type FileCompanionCatalog struct {
 	Rev        int64                 `json:"rev"`
 	Folders    []FileCompanionFolder `json:"folders"`
@@ -51,17 +53,20 @@ func (a *App) fileCompanionCatalogPath() string {
 	return filepath.Join(a.GetDataDir(), "file-companion", "library-folders.json")
 }
 
-func (a *App) fileCompanionLibraryItems() []FileCompanionLibraryItem {
+func (a *App) fileCompanionLibraryItems() ([]FileCompanionLibraryItem, error) {
 	if a == nil {
-		return nil
+		return nil, errors.New("app unavailable")
 	}
 	fileCompanionLibraryMu.Lock()
 	defer fileCompanionLibraryMu.Unlock()
 	items, ok := a.readFileCompanionLibraryLocked()
-	if !ok || items == nil {
-		return []FileCompanionLibraryItem{}
+	if !ok {
+		return nil, errors.New("文档列表无法读取")
 	}
-	return items
+	if items == nil {
+		return []FileCompanionLibraryItem{}, nil
+	}
+	return items, nil
 }
 
 func fileCompanionFolderItemKey(id string) string {
@@ -99,6 +104,9 @@ func fileCompanionFolderNameError(name string, folders []FileCompanionFolder, ig
 	if strings.ContainsAny(cleaned, "\r\n\x00") {
 		return "", "请填写文件夹名称"
 	}
+	if fileCompanionFolderNameReserved(cleaned) {
+		return "", "全部和未分类不能用作文件夹名称"
+	}
 	for _, folder := range folders {
 		if folder.ID == ignoreID {
 			continue
@@ -108,6 +116,18 @@ func fileCompanionFolderNameError(name string, folders []FileCompanionFolder, ig
 		}
 	}
 	return cleaned, ""
+}
+
+// fileCompanionFolderNameReserved reports a name the folder tree already uses
+// for 全部 or 未分类. The English and Mongolian labels are reserved too, so a
+// folder cannot sit in the rail with the same caption as those two rows.
+func fileCompanionFolderNameReserved(name string) bool {
+	switch strings.ToLower(name) {
+	case "全部", "未分类", "all", "uncategorized", "бүгд", "ангилаагүй":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *App) readFileCompanionCatalogLocked() (FileCompanionCatalog, error) {
@@ -139,7 +159,8 @@ func normalizeFileCompanionCatalog(cat FileCompanionCatalog) FileCompanionCatalo
 	for _, folder := range cat.Folders {
 		folder.ID = strings.TrimSpace(folder.ID)
 		folder.Name = strings.TrimSpace(folder.Name)
-		if folder.ID == "" || folder.Name == "" || seen[folder.ID] {
+		// "none" is the uncategorized sentinel, never a folder id.
+		if folder.ID == "" || folder.ID == fileCompanionFolderUncategorized || folder.Name == "" || seen[folder.ID] {
 			continue
 		}
 		if utf8.RuneCountInString(folder.Name) > fileCompanionFolderNameCap {
@@ -155,7 +176,19 @@ func normalizeFileCompanionCatalog(cat FileCompanionCatalog) FileCompanionCatalo
 	for key, folderID := range cat.Placements {
 		key = strings.TrimSpace(key)
 		folderID = strings.TrimSpace(folderID)
-		if key == "" || !seen[folderID] {
+		if key == "" || folderID == "" {
+			continue
+		}
+		// An explicit 未分类 stays on the row. A path key is never "none":
+		// prune republishes it from a sibling that is still in a folder.
+		if strings.HasPrefix(key, "item:") && folderID == fileCompanionFolderUncategorized {
+			if strings.TrimPrefix(key, "item:") == "" {
+				continue
+			}
+			placements[key] = fileCompanionFolderUncategorized
+			continue
+		}
+		if !seen[folderID] {
 			continue
 		}
 		if !strings.HasPrefix(key, "item:") && !strings.HasPrefix(key, "path:") {
@@ -169,9 +202,10 @@ func normalizeFileCompanionCatalog(cat FileCompanionCatalog) FileCompanionCatalo
 }
 
 // pruneFileCompanionCatalog drops placements whose document is gone and
-// copies a path placement onto the library row that now owns that file.
-// An item placement wins over a path placement. The folder value is removed
-// with the folder, so a deleted category cannot come back through a path.
+// copies a path placement onto a library row that has no item placement.
+// An item placement wins. item:<id> = "none" is an explicit 未分类 and does
+// not inherit the path. The folder value is removed with the folder, so a
+// deleted category cannot come back through a path.
 func pruneFileCompanionCatalog(cat *FileCompanionCatalog, items []FileCompanionLibraryItem) bool {
 	before := len(cat.Folders) + len(cat.Placements)
 	next := normalizeFileCompanionCatalog(*cat)
@@ -180,12 +214,20 @@ func pruneFileCompanionCatalog(cat *FileCompanionCatalog, items []FileCompanionL
 		known[folder.ID] = true
 	}
 	byItem := map[string]string{}
+	cleared := map[string]bool{}
 	for key, folderID := range next.Placements {
-		if !known[folderID] || !strings.HasPrefix(key, "item:") {
+		if !strings.HasPrefix(key, "item:") {
 			continue
 		}
 		id := strings.TrimPrefix(key, "item:")
-		if id != "" {
+		if id == "" {
+			continue
+		}
+		if folderID == fileCompanionFolderUncategorized {
+			cleared[id] = true
+			continue
+		}
+		if known[folderID] {
 			byItem[id] = folderID
 		}
 	}
@@ -197,28 +239,56 @@ func pruneFileCompanionCatalog(cat *FileCompanionCatalog, items []FileCompanionL
 		pathFolder[key] = folderID
 	}
 	for _, item := range items {
-		if strings.TrimSpace(item.ID) == "" {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || cleared[id] {
 			continue
 		}
-		if _, set := byItem[item.ID]; set {
+		if _, set := byItem[id]; set {
 			continue
 		}
 		if key := fileCompanionFolderPathKey(item.Path); key != "" {
 			if folderID := pathFolder[key]; folderID != "" {
-				byItem[item.ID] = folderID
+				byItem[id] = folderID
 			}
+		}
+	}
+	// A path key is published when the placed rows of that file agree.
+	// An explicit 未分类 does not inherit it and does not hide it, so a
+	// replaced id of the placed row keeps the folder. A row with no
+	// placement at all still hides the path key: a paper restored beside
+	// a failed delete must not be pulled back into the folder.
+	barePath := map[string]bool{}
+	for _, item := range items {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || cleared[id] {
+			continue
+		}
+		key := fileCompanionFolderPathKey(item.Path)
+		if key == "" {
+			continue
+		}
+		if _, placed := byItem[id]; !placed {
+			barePath[key] = true
 		}
 	}
 	placements := map[string]string{}
 	conflict := map[string]bool{}
 	for _, item := range items {
-		folderID := byItem[item.ID]
-		if strings.TrimSpace(item.ID) == "" || folderID == "" || !known[folderID] {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
 			continue
 		}
-		placements[fileCompanionFolderItemKey(item.ID)] = folderID
+		if cleared[id] {
+			placements[fileCompanionFolderItemKey(id)] = fileCompanionFolderUncategorized
+			continue
+		}
+		folderID := byItem[id]
+		if folderID == "" || !known[folderID] {
+			continue
+		}
+		placements[fileCompanionFolderItemKey(id)] = folderID
 		key := fileCompanionFolderPathKey(item.Path)
-		if key == "" || conflict[key] {
+		if key == "" || conflict[key] || barePath[key] {
 			continue
 		}
 		if prev, ok := placements[key]; ok && prev != folderID {
@@ -254,7 +324,7 @@ func (a *App) writeFileCompanionCatalogLocked(cat FileCompanionCatalog) (FileCom
 	cat.Rev++
 	body, err := json.Marshal(cat)
 	if err != nil {
-		return FileCompanionCatalog{}, err
+		return FileCompanionCatalog{}, errors.New("文档类别无法保存")
 	}
 	if err := fileCompanionWriteAtomicFile(path, body, 0o600); err != nil {
 		return FileCompanionCatalog{}, errors.New("文档类别无法保存")
@@ -268,12 +338,17 @@ func (a *App) ListFileCompanionCatalog() (FileCompanionCatalog, error) {
 	if a == nil {
 		return empty, errors.New("app unavailable")
 	}
-	items := a.fileCompanionLibraryItems()
+	items, itemsErr := a.fileCompanionLibraryItems()
 	fileCompanionCatalogMu.Lock()
 	defer fileCompanionCatalogMu.Unlock()
 	cat, err := a.readFileCompanionCatalogLocked()
 	if err != nil {
 		return empty, err
+	}
+	// A failed library read is not an empty library. Pruning against it would
+	// drop every placement and save that.
+	if itemsErr != nil {
+		return cat, nil
 	}
 	if pruneFileCompanionCatalog(&cat, items) {
 		return a.writeFileCompanionCatalogLocked(cat)
@@ -302,7 +377,10 @@ func (a *App) mutateFileCompanionCatalog(items []FileCompanionLibraryItem, fn fu
 
 // CreateFileCompanionFolder adds one folder at the single level.
 func (a *App) CreateFileCompanionFolder(name string) (FileCompanionCatalog, error) {
-	items := a.fileCompanionLibraryItems()
+	items, err := a.fileCompanionLibraryItems()
+	if err != nil {
+		return FileCompanionCatalog{}, err
+	}
 	return a.mutateFileCompanionCatalog(items, func(cat *FileCompanionCatalog) error {
 		if len(cat.Folders) >= fileCompanionFolderCap {
 			return errors.New("文件夹数量已达上限")
@@ -323,7 +401,10 @@ func (a *App) CreateFileCompanionFolder(name string) (FileCompanionCatalog, erro
 // RenameFileCompanionFolder changes one folder's name. The id stays.
 func (a *App) RenameFileCompanionFolder(id, name string) (FileCompanionCatalog, error) {
 	id = strings.TrimSpace(id)
-	items := a.fileCompanionLibraryItems()
+	items, err := a.fileCompanionLibraryItems()
+	if err != nil {
+		return FileCompanionCatalog{}, err
+	}
 	return a.mutateFileCompanionCatalog(items, func(cat *FileCompanionCatalog) error {
 		cleaned, errText := fileCompanionFolderNameError(name, cat.Folders, id)
 		if errText != "" {
@@ -352,12 +433,20 @@ func fileCompanionFolderMembers(cat FileCompanionCatalog, items []FileCompanionL
 
 func fileCompanionItemFolder(cat FileCompanionCatalog, item FileCompanionLibraryItem) string {
 	if key := fileCompanionFolderItemKey(item.ID); key != "" {
-		if folderID := cat.Placements[key]; folderID != "" {
+		switch folderID := strings.TrimSpace(cat.Placements[key]); folderID {
+		case "":
+		case fileCompanionFolderUncategorized:
+			return ""
+		default:
 			return folderID
 		}
 	}
 	if key := fileCompanionFolderPathKey(item.Path); key != "" {
-		return cat.Placements[key]
+		folderID := strings.TrimSpace(cat.Placements[key])
+		if folderID == fileCompanionFolderUncategorized {
+			return ""
+		}
+		return folderID
 	}
 	return ""
 }
@@ -369,6 +458,36 @@ func fileCompanionCatalogHasFolder(cat FileCompanionCatalog, id string) bool {
 		}
 	}
 	return false
+}
+
+// fileCompanionKeepFailedFolderMembers leaves the folder in place and keeps
+// a placement only for rows whose delete failed. Every other placement for
+// this folder is dropped, including a path key that would otherwise pull a
+// restored local row back into the folder on the next list.
+func fileCompanionKeepFailedFolderMembers(cat *FileCompanionCatalog, items, failed []FileCompanionLibraryItem, folderID string) {
+	if cat.Placements == nil {
+		cat.Placements = map[string]string{}
+	}
+	for key, id := range cat.Placements {
+		if id == folderID {
+			delete(cat.Placements, key)
+		}
+	}
+	present := map[string]FileCompanionLibraryItem{}
+	for _, item := range items {
+		if id := strings.TrimSpace(item.ID); id != "" {
+			present[id] = item
+		}
+	}
+	for _, item := range failed {
+		current, ok := present[strings.TrimSpace(item.ID)]
+		if !ok {
+			continue
+		}
+		if key := fileCompanionFolderItemKey(current.ID); key != "" {
+			cat.Placements[key] = folderID
+		}
+	}
 }
 
 func dropFileCompanionFolder(cat *FileCompanionCatalog, id string) {
@@ -398,7 +517,10 @@ func (a *App) DeleteFileCompanionFolder(id, mode, targetID string) (FileCompanio
 	id = strings.TrimSpace(id)
 	mode = strings.TrimSpace(mode)
 	targetID = strings.TrimSpace(targetID)
-	items := a.fileCompanionLibraryItems()
+	items, itemsErr := a.fileCompanionLibraryItems()
+	if itemsErr != nil {
+		return empty, itemsErr
+	}
 	fileCompanionCatalogMu.Lock()
 	cat, err := a.readFileCompanionCatalogLocked()
 	fileCompanionCatalogMu.Unlock()
@@ -418,21 +540,39 @@ func (a *App) DeleteFileCompanionFolder(id, mode, targetID string) (FileCompanio
 			return empty, errors.New("请选择要合并到的文件夹")
 		}
 	}
+	// failed keeps the original rows whose delete did not succeed. A share
+	// cancel that puts the owner's file back uses a new local id, so that
+	// restored row is not a failure and must not keep the folder alive.
+	failed := make([]FileCompanionLibraryItem, 0)
 	var removeErr error
 	if mode == "remove" && len(members) > 0 {
 		for _, item := range members {
-			if err := a.deleteFileCompanionFolderMember(item); err != nil && removeErr == nil {
-				removeErr = err
+			if err := a.deleteFileCompanionFolderMember(item); err != nil {
+				if removeErr == nil {
+					removeErr = err
+				}
+				failed = append(failed, item)
 			}
 		}
-		items = a.fileCompanionLibraryItems()
+		var rereadErr error
+		items, rereadErr = a.fileCompanionLibraryItems()
+		if rereadErr != nil {
+			if removeErr == nil {
+				removeErr = rereadErr
+			}
+			return empty, removeErr
+		}
 	}
 	saved, err := a.mutateFileCompanionCatalog(items, func(cat *FileCompanionCatalog) error {
 		if !fileCompanionCatalogHasFolder(*cat, id) {
 			return errors.New("没有这个文件夹")
 		}
-		still := fileCompanionFolderMembers(*cat, items, id)
-		if len(still) > 0 && mode == "merge" {
+		if mode == "merge" {
+			still := fileCompanionFolderMembers(*cat, items, id)
+			if len(still) == 0 {
+				dropFileCompanionFolder(cat, id)
+				return nil
+			}
 			if targetID == "" || targetID == id || !fileCompanionCatalogHasFolder(*cat, targetID) {
 				return errors.New("请选择要合并到的文件夹")
 			}
@@ -442,12 +582,18 @@ func (a *App) DeleteFileCompanionFolder(id, mode, targetID string) (FileCompanio
 			dropFileCompanionFolder(cat, id)
 			return nil
 		}
-		if len(still) > 0 && mode != "remove" {
+		if mode == "remove" {
+			if len(failed) == 0 {
+				dropFileCompanionFolder(cat, id)
+				return nil
+			}
+			fileCompanionKeepFailedFolderMembers(cat, items, failed, id)
+			return nil
+		}
+		if len(fileCompanionFolderMembers(*cat, items, id)) > 0 {
 			return errors.New("文件夹里还有文档")
 		}
-		if len(still) == 0 {
-			dropFileCompanionFolder(cat, id)
-		}
+		dropFileCompanionFolder(cat, id)
 		return nil
 	})
 	if err != nil {
@@ -465,9 +611,12 @@ func fileCompanionPlaceItem(cat *FileCompanionCatalog, item FileCompanionLibrary
 	}
 	itemKey := fileCompanionFolderItemKey(item.ID)
 	pathKey := fileCompanionFolderPathKey(item.Path)
+	// Record 未分类 on this row and drop the path key. prune republishes
+	// the path key from a sibling that is still in a folder, without
+	// pulling this row back.
 	if folderID == "" {
 		if itemKey != "" {
-			delete(cat.Placements, itemKey)
+			cat.Placements[itemKey] = fileCompanionFolderUncategorized
 		}
 		if pathKey != "" {
 			delete(cat.Placements, pathKey)
@@ -503,20 +652,33 @@ func (a *App) MoveFileCompanionLibraryItem(itemID, path, folderID string) (FileC
 	if itemID == "" && path == "" {
 		return FileCompanionCatalog{}, errors.New("没有找到这个项目")
 	}
-	items := a.fileCompanionLibraryItems()
+	items, err := a.fileCompanionLibraryItems()
+	if err != nil {
+		return FileCompanionCatalog{}, err
+	}
 	return a.mutateFileCompanionCatalog(items, func(cat *FileCompanionCatalog) error {
 		if folderID != "" && !fileCompanionCatalogHasFolder(*cat, folderID) {
 			return errors.New("没有这个文件夹")
 		}
-		item := FileCompanionLibraryItem{ID: itemID, Path: path}
-		for _, current := range items {
-			if itemID != "" && current.ID == itemID {
-				item = current
-				break
+		// The id is the row the user moved. A sibling of the same file can sit
+		// earlier in the library and share the path; taking that sibling would
+		// record the move on the other card. The path is only the fallback
+		// when this id is no longer in the library.
+		item := FileCompanionLibraryItem{}
+		if itemID != "" {
+			for _, current := range items {
+				if current.ID == itemID {
+					item = current
+					break
+				}
 			}
-			if path != "" && fileCompanionSameLibraryPath(current.Path, path) {
-				item = current
-				break
+		}
+		if strings.TrimSpace(item.ID) == "" && path != "" {
+			for _, current := range items {
+				if fileCompanionSameLibraryPath(current.Path, path) {
+					item = current
+					break
+				}
 			}
 		}
 		if strings.TrimSpace(item.ID) == "" {

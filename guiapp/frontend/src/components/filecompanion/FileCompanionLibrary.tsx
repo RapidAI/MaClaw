@@ -92,6 +92,54 @@ export type CompanionShareNote = {
     decision?: string;
 };
 
+export function companionNoteKey(value: string | undefined): string {
+    return (value ?? "").trim();
+}
+
+export function companionNoteDecision(note: CompanionShareNote): string {
+    return (note.decision ?? "").trim().toLowerCase();
+}
+
+// pending counts reader notes the open list still marks 待审核: an explicit
+// pending decision, or none, with no host reply. explicitPending is the
+// library badge: only an explicit pending decision, so a note that never
+// entered review does not look like it is waiting.
+// total is discussions, not stored notes. A host answer names the reader
+// note it belongs to, so that question and its answer count once. A host
+// line with no reply counts on its own. An answer whose question has already
+// left the capped list still counts: it is the only record of that thread.
+export function companionDiscussionCounts(notes: CompanionShareNote[] | undefined): { total: number; pending: number; explicitPending: number; answered: Set<string> } {
+    const list = notes ?? [];
+    const ids = new Set<string>();
+    for (const note of list) {
+        const id = companionNoteKey(note.id);
+        if (id) ids.add(id);
+    }
+    const answered = new Set<string>();
+    for (const note of list) {
+        const replyTo = companionNoteKey(note.replyTo);
+        if (note.host && replyTo) answered.add(replyTo);
+    }
+    let total = 0;
+    let pending = 0;
+    let explicitPending = 0;
+    for (const note of list) {
+        const replyTo = companionNoteKey(note.replyTo);
+        if (!(note.host && replyTo && ids.has(replyTo))) total++;
+        if (note.host) continue;
+        const id = companionNoteKey(note.id);
+        if (!id || answered.has(id)) continue;
+        const decision = companionNoteDecision(note);
+        if (decision === "pending") {
+            pending++;
+            explicitPending++;
+            continue;
+        }
+        if (decision === "") pending++;
+    }
+    return { total, pending, explicitPending, answered };
+}
+
 export type CompanionShareBinding = {
     path: string;
     token: string;
@@ -553,7 +601,7 @@ function readRemovedHosts(raw: unknown, removed: string[]): Record<string, strin
 function readNote(raw: unknown): CompanionShareNote | null {
     if (!raw || typeof raw !== "object") return null;
     const record = raw as Record<string, unknown>;
-    const id = textOf(record, "id", "ID");
+    const id = textOf(record, "id", "ID").trim();
     const text = textOf(record, "text", "Text");
     if (!id || !text) return null;
     return {
@@ -562,8 +610,8 @@ function readNote(raw: unknown): CompanionShareNote | null {
         text,
         createdAt: textOf(record, "createdAt", "CreatedAt") || textOf(record, "created_at", "created_at"),
         host: boolOf(record, "host", "Host"),
-        replyTo: textOf(record, "replyTo", "ReplyTo") || textOf(record, "reply_to", "reply_to"),
-        decision: textOf(record, "decision", "Decision"),
+        replyTo: (textOf(record, "replyTo", "ReplyTo") || textOf(record, "reply_to", "reply_to")).trim(),
+        decision: textOf(record, "decision", "Decision").trim().toLowerCase(),
     };
 }
 
@@ -585,10 +633,24 @@ export type CompanionLibraryFolder = { id: string; name: string };
 
 const companionFolderNameCap = 40;
 
-export function companionFolderNameError(name: string): string {
+const companionReservedFolderNames = ["全部", "未分类", "all", "uncategorized", "бүгд", "ангилаагүй"];
+
+function companionReservedFolderName(name: string): boolean {
+    const folded = name.toLocaleLowerCase();
+    if (companionReservedFolderNames.some((reserved) => reserved.toLocaleLowerCase() === folded)) return true;
+    // The rail already shows these two captions in the active language.
+    return ["全部", "未分类"].some((key) => cs(key).toLocaleLowerCase() === folded);
+}
+
+export function companionFolderNameError(name: string, existing?: { id: string; name: string }[], ignoreID = ""): string {
     const cleaned = name.trim();
-    if (!cleaned) return cs("请填写文件夹名称");
+    if (!cleaned || /[\r\n\u0000]/.test(cleaned)) return cs("请填写文件夹名称");
     if ([...cleaned].length > companionFolderNameCap) return cs("文件夹名称过长");
+    if (companionReservedFolderName(cleaned)) return cs("全部和未分类不能用作文件夹名称");
+    const folded = cleaned.toLocaleLowerCase();
+    if (existing?.some((folder) => folder.id !== ignoreID && folder.name.trim().toLocaleLowerCase() === folded)) {
+        return cs("已有同名文件夹");
+    }
     return "";
 }
 
@@ -600,16 +662,41 @@ export function companionLibraryNameMatch(name: string, query: string): boolean 
     return name.toLocaleLowerCase().includes(needle);
 }
 
+// companionFolderUncategorized is the catalog sentinel for a row moved to
+// 未分类. Folder ids are fld_ plus hex, so this value cannot be a folder.
+const companionFolderUncategorized = "none";
+
+// companionFolderPathCandidates lists the spellings a catalog path key may
+// use. Go stores the Windows canonical path: backslashes and a lowercased
+// drive. The library row can still carry the other slash direction.
+function companionFolderPathCandidates(path: string): string[] {
+    const trimmed = path.trim();
+    if (!trimmed) return [];
+    const forward = trimmed.replace(/\\/g, "/");
+    const backward = forward.replace(/\//g, "\\");
+    const out = [trimmed, forward, backward];
+    const driveOrUnc = /^[a-zA-Z]:\//.test(forward) || forward.startsWith("//") || trimmed.startsWith("\\\\");
+    if (driveOrUnc) {
+        out.push(trimmed.toLowerCase(), forward.toLowerCase(), backward.toLowerCase());
+    }
+    return out;
+}
+
 // companionLibraryFolderID is the folder a row belongs to. The item key is
-// the row id. The path key keeps the folder when that row is replaced by a
-// share of the same file. An unknown value is uncategorized.
+// the row id. "none" is an explicit 未分类 and does not fall through to the
+// path key. The path key keeps the folder when that row is replaced by a
+// share of the same file.
 export function companionLibraryFolderID(item: { id: string; path: string }, placements: Record<string, string> | null | undefined): string {
     if (!placements) return "";
     const byItem = placements["item:" + item.id];
+    if (byItem === companionFolderUncategorized) return "";
     if (byItem) return byItem;
-    const key = companionSharePathKey(item.path || "");
-    if (!key) return "";
-    return placements["path:" + key] || "";
+    for (const key of companionFolderPathCandidates(item.path || "")) {
+        const folderID = placements["path:" + key];
+        if (!folderID || folderID === companionFolderUncategorized) continue;
+        return folderID;
+    }
+    return "";
 }
 
 export function readCompanionLibraryCatalog(raw: unknown): { rev: number; folders: CompanionLibraryFolder[]; placements: Record<string, string> } {
@@ -1050,7 +1137,16 @@ function useDialogFocus<T extends HTMLElement>(selector: string, ready = true) {
     }, []);
     useEffect(() => {
         if (!ready || focusedRef.current) return;
-        const node = ref.current?.querySelector<T>(selector);
+        const root = ref.current;
+        if (!root) return;
+        const active = document.activeElement;
+        // The list can finish after the user has started typing in this dialog.
+        // Leave that field focused.
+        if (active instanceof HTMLElement && active !== root && root.contains(active)) {
+            focusedRef.current = true;
+            return;
+        }
+        const node = root.querySelector<T>(selector);
         if (!node) return;
         node.focus();
         focusedRef.current = true;
@@ -1080,6 +1176,10 @@ function FolderDeletePrompt({
     const [mode, setMode] = useState<"merge" | "remove">(others.length > 0 ? "merge" : "remove");
     const [targetID, setTargetID] = useState(others[0]?.id ?? "");
     const mergeBlocked = mode === "merge" && (others.length === 0 || !targetID);
+    const cardRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        cardRef.current?.focus();
+    }, []);
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
             if (event.key !== "Escape" || busy) return;
@@ -1091,13 +1191,22 @@ function FolderDeletePrompt({
         return () => window.removeEventListener("keydown", onKey, true);
     }, [busy, onCancel]);
     return (
-        <div className="file-companion-folder-prompt" role="presentation">
+        <div
+            className="file-companion-folder-prompt"
+            role="presentation"
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !busy) onCancel();
+            }}
+        >
             <div
                 className="file-companion-folder-prompt-card"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="file-companion-folder-delete-title"
                 data-testid="file-companion-folder-delete"
+                tabIndex={-1}
+                ref={cardRef}
+                onMouseDown={(event) => event.stopPropagation()}
             >
                 <h3 id="file-companion-folder-delete-title">{cs("删除文件夹")}</h3>
                 <p>
@@ -1136,14 +1245,14 @@ function FolderDeletePrompt({
                     />
                     <span>{cs("删除这些文档")}</span>
                 </label>
-                <p className="file-companion-folder-prompt-note">{cs("本机文档会清除伴读数据。你的云端分享会取消，文档回到未分类。收到的分享会从列表移除。")}</p>
+                {mode === "remove" ? <p className="file-companion-folder-prompt-note">{cs("本机文档会清除伴读数据。你的云端分享会取消，文档回到未分类。收到的分享会从列表移除。")}</p> : null}
                 <div className="file-companion-folder-prompt-actions">
                     <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-folder-delete-cancel" disabled={busy} onClick={onCancel}>
                         {cs("取消")}
                     </button>
                     <button
                         type="button"
-                        className="file-companion-dialog-primary file-companion-folder-danger"
+                        className={mode === "remove" ? "file-companion-dialog-primary file-companion-folder-danger" : "file-companion-dialog-primary"}
                         data-testid="file-companion-folder-delete-confirm"
                         disabled={busy || mergeBlocked}
                         onClick={() => onConfirm(mode, mode === "merge" ? targetID : "")}
@@ -1231,6 +1340,10 @@ export function CompanionLibraryView({
     const folderPromptRef = useRef(false);
     folderPromptRef.current = pendingDelete !== null;
     const folderBusyRef = useRef(false);
+    // Set while a rename submit is in flight. Blur fires before the click that
+    // submits, and also when Enter leaves the field, so blur must not cancel
+    // a rename that is already being saved.
+    const renameHoldRef = useRef(false);
     const catalogRevRef = useRef(0);
     // showConfirm replaces a dialog that is already open and resolves the first
     // one as cancel. A second click before React disables the button would
@@ -1295,8 +1408,10 @@ export function CompanionLibraryView({
 
     const applyCatalog = useCallback((raw: unknown) => {
         const next = readCompanionLibraryCatalog(raw);
-        if (next.rev > 0 && next.rev < catalogRevRef.current) return;
-        catalogRevRef.current = Math.max(catalogRevRef.current, next.rev);
+        // A list that started before a create or a move can return rev 0.
+        // Any older rev, including 0, must not cover the catalog already on screen.
+        if (next.rev < catalogRevRef.current) return;
+        catalogRevRef.current = next.rev;
         setFolders(next.folders);
         setPlacements(next.placements);
     }, []);
@@ -1310,9 +1425,13 @@ export function CompanionLibraryView({
         }
     }, [applyCatalog]);
 
+    // A library poll can replace a row id without passing back through the
+    // folder file. List again so the server copies the path placement onto
+    // the row that now owns the file. The same ids do not ask twice.
+    const catalogItemKey = useMemo(() => items.map((item) => item.id).sort().join("\n"), [items]);
     useEffect(() => {
         void refreshCatalog();
-    }, [refreshCatalog]);
+    }, [refreshCatalog, catalogItemKey]);
 
     useEffect(() => {
         if (selectedFolder === "" || selectedFolder === "none") return;
@@ -1321,7 +1440,7 @@ export function CompanionLibraryView({
 
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
-            if (event.key !== "Escape" || dialogOpenRef.current || confirmOpenRef.current || folderPromptRef.current) return;
+            if (event.key !== "Escape" || event.defaultPrevented || dialogOpenRef.current || confirmOpenRef.current || folderPromptRef.current) return;
             event.preventDefault();
             onExit();
         };
@@ -1472,15 +1591,19 @@ export function CompanionLibraryView({
     };
 
     const createFolder = async () => {
-        const problem = companionFolderNameError(folderDraft);
+        const problem = companionFolderNameError(folderDraft, folders);
         if (problem) {
             showToast(problem, "error", 6000);
             return;
         }
         if (typeof CreateFileCompanionFolder !== "function" || !beginFolder()) return;
+        const known = new Set(folders.map((folder) => folder.id));
         try {
-            applyCatalog(await CreateFileCompanionFolder(folderDraft.trim()));
+            const saved = readCompanionLibraryCatalog(await CreateFileCompanionFolder(folderDraft.trim()));
+            applyCatalog(saved);
             setFolderDraft("");
+            const created = saved.folders.find((folder) => !known.has(folder.id));
+            if (created) setSelectedFolder(created.id);
             showToast(cs("已创建文件夹"), "success", 6000);
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
@@ -1490,38 +1613,57 @@ export function CompanionLibraryView({
     };
 
     const renameFolder = async (id: string) => {
-        const problem = companionFolderNameError(editingName);
-        if (problem) {
-            showToast(problem, "error", 6000);
-            return;
-        }
-        if (typeof RenameFileCompanionFolder !== "function" || !beginFolder()) return;
+        let started = false;
         try {
-            applyCatalog(await RenameFileCompanionFolder(id, editingName.trim()));
-            setEditingID("");
-            showToast(cs("已重命名文件夹"), "success", 6000);
-        } catch (err) {
-            showToast(libraryError(err), "error", 6000);
+            const cleaned = editingName.trim();
+            const current = folders.find((folder) => folder.id === id);
+            if (current && current.name === cleaned) {
+                setEditingID("");
+                return;
+            }
+            const problem = companionFolderNameError(editingName, folders, id);
+            if (problem) {
+                showToast(problem, "error", 6000);
+                return;
+            }
+            if (typeof RenameFileCompanionFolder !== "function" || !beginFolder()) return;
+            started = true;
+            try {
+                applyCatalog(await RenameFileCompanionFolder(id, cleaned));
+                setEditingID("");
+                showToast(cs("已重命名文件夹"), "success", 6000);
+            } catch (err) {
+                showToast(libraryError(err), "error", 6000);
+            }
         } finally {
-            endFolder();
+            if (started) endFolder();
+            renameHoldRef.current = false;
         }
     };
 
     const commitDeleteFolder = async (id: string, mode: "" | "merge" | "remove", targetID: string) => {
         if (typeof DeleteFileCompanionFolder !== "function" || !beginFolder()) return;
+        let removed = false;
         try {
             applyCatalog(await DeleteFileCompanionFolder(id, mode, targetID));
-            if (mode === "remove") await reload();
             if (selectedFolder === id) setSelectedFolder("");
             setPendingDelete(null);
             setEditingID("");
             showToast(cs("已删除文件夹"), "success", 6000);
+            removed = mode === "remove";
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
             await refreshCatalog();
-            if (mode === "remove") await reload();
+            // A partial remove can drop some rows before the folder stays.
+            removed = mode === "remove";
         } finally {
             endFolder();
+        }
+        if (!removed) return;
+        try {
+            await reload();
+        } catch (err) {
+            showToast(libraryError(err), "error", 6000);
         }
     };
 
@@ -1542,9 +1684,12 @@ export function CompanionLibraryView({
             );
         } finally {
             confirmOpenRef.current = false;
+        }
+        try {
+            if (ok) await commitDeleteFolder(folder.id, "", "");
+        } finally {
             deleteGate.current = false;
         }
-        if (ok) await commitDeleteFolder(folder.id, "", "");
     };
 
     const moveItem = async (item: CompanionLibraryItem, folderID: string) => {
@@ -1580,12 +1725,22 @@ export function CompanionLibraryView({
         };
         const scoped = items.filter(inFolder);
         const matched = scoped.filter((item) => companionLibraryNameMatch(item.name, nameQuery));
-        const countOf = (folderID: string) => items.filter((item) => {
+        const counts = new Map<string, number>();
+        for (const folder of folders) counts.set(folder.id, 0);
+        let uncategorized = 0;
+        for (const item of items) {
             const id = placedOf(item);
-            if (folderID === "") return true;
-            if (folderID === "none") return id === "";
-            return id === folderID;
-        }).length;
+            if (!id) {
+                uncategorized++;
+                continue;
+            }
+            counts.set(id, (counts.get(id) ?? 0) + 1);
+        }
+        const countOf = (folderID: string) => {
+            if (folderID === "") return items.length;
+            if (folderID === "none") return uncategorized;
+            return counts.get(folderID) ?? 0;
+        };
         return {
             placedOf,
             localItems: matched.filter((item) => item.source !== "cloud"),
@@ -1621,10 +1776,9 @@ export function CompanionLibraryView({
     const renderRow = (item: CompanionLibraryItem) => {
         const busy = rowBusy[item.id];
         const marks = item.path ? (markCounts.get(pdfMarkPathKey(item.path)) ?? 0) : 0;
-        const notes = item.source === "cloud" ? item.notes.length : 0;
-        const pendingReviews = item.source === "cloud" && item.host
-            ? item.notes.filter((note) => !note.host && (note.decision ?? "") === "pending").length
-            : 0;
+        const discussion = item.source === "cloud" ? companionDiscussionCounts(item.notes) : null;
+        const notes = discussion?.total ?? 0;
+        const pendingReviews = item.host ? (discussion?.explicitPending ?? 0) : 0;
         const meta = [
             item.source === "cloud"
                 ? (item.mine ? cs("我的分享") : (item.owner || cs("别人的分享")))
@@ -1862,7 +2016,7 @@ export function CompanionLibraryView({
                                     if (event.nativeEvent.isComposing && event.key === "Enter") event.preventDefault();
                                 }}
                             />
-                            <button type="submit" className="file-companion-dialog-primary" data-testid="file-companion-folder-add" disabled={folderBusy}>
+                            <button type="submit" className="file-companion-dialog-primary" data-testid="file-companion-folder-add" disabled={folderBusy || !folderDraft.trim()}>
                                 {cs("创建")}
                             </button>
                         </form>
@@ -1893,6 +2047,7 @@ export function CompanionLibraryView({
                                             className="file-companion-folder-rename"
                                             onSubmit={(event) => {
                                                 event.preventDefault();
+                                                renameHoldRef.current = true;
                                                 void renameFolder(folder.id);
                                             }}
                                         >
@@ -1904,10 +2059,19 @@ export function CompanionLibraryView({
                                                 disabled={folderBusy}
                                                 autoFocus
                                                 onChange={(event) => setEditingName(event.target.value)}
+                                                onBlur={() => {
+                                                    if (renameHoldRef.current) return;
+                                                    setEditingID("");
+                                                }}
                                                 onKeyDown={(event) => {
+                                                    if (event.nativeEvent.isComposing && event.key === "Enter") {
+                                                        event.preventDefault();
+                                                        return;
+                                                    }
                                                     if (event.nativeEvent.isComposing) return;
                                                     if (event.key === "Escape") {
                                                         event.preventDefault();
+                                                        event.stopPropagation();
                                                         setEditingID("");
                                                     }
                                                 }}
@@ -1929,16 +2093,26 @@ export function CompanionLibraryView({
                                         type="button"
                                         className="file-companion-folder-icon"
                                         data-testid={`file-companion-folder-rename-${folder.id}`}
-                                        aria-label={cs("重命名文件夹")}
-                                        title={cs("重命名文件夹")}
+                                        aria-label={editingID === folder.id ? cs("保存") : cs("重命名文件夹")}
+                                        title={editingID === folder.id ? cs("保存") : cs("重命名文件夹")}
                                         disabled={folderBusy}
+                                        onMouseDown={(event) => {
+                                            // Keep the field focused so blur does not cancel the name
+                                            // before this click can save it.
+                                            if (editingID === folder.id) event.preventDefault();
+                                        }}
                                         onClick={() => {
+                                            if (editingID === folder.id) {
+                                                renameHoldRef.current = true;
+                                                void renameFolder(folder.id);
+                                                return;
+                                            }
                                             setEditingID(folder.id);
                                             setEditingName(folder.name);
                                             setSelectedFolder(folder.id);
                                         }}
                                     >
-                                        {cs("重命名")}
+                                        {editingID === folder.id ? cs("保存") : cs("重命名")}
                                     </button>
                                     <button
                                         type="button"

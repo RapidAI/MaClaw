@@ -3467,14 +3467,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
 					if (clearedProjectTabIdsRef.current.has(tab.id)
 						|| (projectConversationHydrationGenerationByTabIdRef.current.get(tab.id) || 0) !== hydrationGeneration
 						|| !getTabs().some(openTab => openTab.id === tab.id && openTab.type === "project" && openTab.projectPath === tab.projectPath)) return;
-					const existingAfterSession = getTabState(tab.id);
-					// A user may have sent a new message while this request was in
-					// flight. Never merge an older backend snapshot over that newer
-					// local conversation.
-					if (hasRestorableProjectConversation(withoutProjectContextMessages(existingAfterSession?.history))) {
-						paintTranscriptIfViewEmpty(tab.id, existingAfterSession?.history);
-						return;
-					}
+					// A row saved while the session file was loading stays in the
+					// cache. Adopting still merges that tail after the file.
+					// Returning here used to leave the tail on screen and skip
+					// both the file and project memory.
 					const adopted = adoptBackendTranscript(tab.id, Array.isArray(session) ? session : [], transcriptGeneration);
 					if (adopted === null) return;
 					if (hasRestorableProjectConversation(withoutProjectContextMessages(adopted))) {
@@ -3487,11 +3483,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
 						|| (projectConversationHydrationGenerationByTabIdRef.current.get(tab.id) || 0) !== hydrationGeneration
 						|| !getTabs().some(openTab => openTab.id === tab.id && openTab.type === "project" && openTab.projectPath === tab.projectPath)) return;
 					const existing = getTabState(tab.id);
-					if (hasRestorableProjectConversation(withoutProjectContextMessages(existing?.history))) {
-						paintTranscriptIfViewEmpty(tab.id, existing?.history);
-						return;
-					}
-					const nextHistory = mergeChatMessages(withoutProjectContextMessages(existing?.history), restoredHistory);
+					const existingRows = withoutProjectContextMessages(existing?.history);
+					// A turn saved while project memory was loading stays after
+					// that memory. The checks above already left a transcript
+					// that was there before the read alone.
+					const nextHistory = hasRestorableProjectConversation(existingRows)
+						? mergeChatMessages(restoredHistory, existingRows)
+						: mergeChatMessages(existingRows, restoredHistory);
 					saveTabState(tab.id, {
 						...existing,
 						history: nextHistory,
@@ -4139,8 +4137,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         if (restored.length === 0) return;
                         if (!getTabs().some(openTab => openTab.id === tab.id && openTab.type === "project" && normalizeProjectSessionPath(openTab.projectPath) === target)) return;
                         const existing = getTabState(tab.id);
-                        if (hasRestorableProjectConversation(withoutProjectContextMessages(existing?.history))) return;
-                        const nextHistory = mergeChatMessages(withoutProjectContextMessages(existing?.history), restored);
+                        const existingRows = withoutProjectContextMessages(existing?.history);
+                        const nextHistory = hasRestorableProjectConversation(existingRows)
+                            ? mergeChatMessages(restored, existingRows)
+                            : mergeChatMessages(existingRows, restored);
                         saveTabState(tab.id, { ...existing, history: nextHistory });
                         if (activeTabIdRef.current === tab.id) setProjectTabMessages(nextHistory);
                     } catch (error) {
@@ -6050,15 +6050,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const continueIdleDrain = continueQueueDrainSessionKeysRef.current.has(activeSessionKey) && readyToDrainQueue;
         const armedIdleDrain = queueAutoDrainArmedSessionKeysRef.current.has(activeSessionKey) && readyToDrainQueue;
         const persistedAutoDrain = !!queue[0]?.autoDrain && readyToDrainQueue;
-        // An unresolved unfinished-task / recoverable-session card intercepts
-        // every new turn with the same resume/dismiss prompt instead of running
-        // it. Draining the type-ahead queue now would burn each queued command
-        // into an identical confirmation card, so hold the queue until the user
-        // resolves the card (resolution clears its actions).
+        // A card on a project session repeats its resume prompt for every
+        // drained line, so that queue waits. On the local page the line opens
+        // a task. /branch is an immediate command on this same session.
         const hasPendingSlotCard = displayMessages.some((msg: ChatMessage) =>
             (msg.unfinishedSlot?.actions?.length ?? 0) > 0
             || (msg.recoverableSession?.actions?.length ?? 0) > 0);
-        if (!hasPendingSlotCard && (becameIdle || returnedToChatIdle || continueIdleDrain || armedIdleDrain || persistedAutoDrain) && queue.length > 0 && !queueEditDraftActive) {
+        if ((isLocalTabActive || !hasPendingSlotCard) && (becameIdle || returnedToChatIdle || continueIdleDrain || armedIdleDrain || persistedAutoDrain) && queue.length > 0 && !queueEditDraftActive) {
             const entry = queue[0];
             if (firingEntryIdsRef.current.has(entry.id) || drainingEntryIdsRef.current.has(entry.id)) {
                 prevSubmitLockedRef.current = submitLocked;

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { companionCommandBubble, companionFill, companionNoteAlias, companionPaperAlias, cs, getCompanionUiLang, setCompanionUiLang } from "../../i18n/mnCompanion";
+import { companionCommandBubble, companionFill, companionNoteAlias, companionPaperAlias, companionPaperNotice, companionSay, cs, getCompanionUiLang, setCompanionUiLang } from "../../i18n/mnCompanion";
 import { normalizeLang } from "../../i18n/langSelect";
 import {
     ChooseFileCompanionFiles,
@@ -59,7 +59,7 @@ import {
 import { WindowFullscreen, WindowGetPosition, WindowGetSize, WindowHide, WindowSetSize, WindowUnfullscreen } from "../../../wailsjs/runtime";
 import { createWindowMaximizeRestoreSession } from "../../utils/windowRestoreGeometry";
 import { useToast } from "../Toast";
-import { companionHostShares, companionLibrarySnapshotKey, companionLibrarySync, companionMineShares, companionNotePost, companionNotesFrom, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionShareMarksBehind, companionShareDocumentCatchUp, companionWithdrawnNotice, sameCompanionMineShare, takeCompanionLibraryList, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
+import { companionDiscussionCounts, companionHostShares, companionLibrarySnapshotKey, companionLibrarySync, companionMineShares, companionNoteDecision, companionNoteKey, companionNotePost, companionNotesFrom, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionShareMarksBehind, companionShareDocumentCatchUp, companionWithdrawnNotice, sameCompanionMineShare, takeCompanionLibraryList, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
@@ -81,7 +81,8 @@ import { PaperResultCard } from "./PaperResultCard";
 import { CompanionFileCard, type CompanionFile } from "./CompanionFileCard";
 import { NoteResultCard } from "./NoteResultCard";
 import { FILE_COMPANION_OPEN_HINT, companionVideoNotePhrase, looksLikeArxivReference, looksLikeCompanionShare, noteStampAtLineStart, type NoteStampLine } from "./companionNoteSeek";
-import { windowDragHandleProps } from "../../utils/windowDrag";
+import { windowDragHandleProps, windowNoDragRegionProps } from "../../utils/windowDrag";
+import { AssistantTitleBarNotifications } from "../ai/AssistantTitleBarNotifications";
 import { CompanionAppearanceProvider, useCompanionAppearance } from "./useCompanionAppearance";
 import { companionProjectExportJSON, companionProjectMarksJSON, loadPdfBookmarks, PDF_BOOKMARKS_CHANGED_EVENT, savePdfBookmarks } from "./pdfBookmarks";
 import { loadPdfMarks, PDF_MARKS_CHANGED_EVENT, savePdfMarks } from "./pdfMarks";
@@ -474,6 +475,22 @@ function companionDocumentPaths(raw: unknown): string[] {
 
 function bootPaths(boot: { paths?: unknown; Paths?: unknown } | null | undefined): string[] {
     return companionDocumentPaths(boot?.paths ?? boot?.Paths);
+}
+
+function bootNotice(boot: { notice?: unknown; Notice?: unknown } | null | undefined): string {
+    const value = boot?.notice ?? boot?.Notice;
+    return typeof value === "string" ? value.trim() : "";
+}
+
+function noticeCodeFromEvent(payload: unknown): string {
+    const raw = Array.isArray(payload) ? payload[0] : payload;
+    if (typeof raw === "string") return raw.trim();
+    if (raw && typeof raw === "object") {
+        const body = raw as { notice?: unknown; code?: unknown };
+        const value = body.notice ?? body.code;
+        if (typeof value === "string") return value.trim();
+    }
+    return "";
 }
 
 function companionTabStaysInOpenSet(tab: { path: string; error?: string }): boolean {
@@ -1930,8 +1947,8 @@ export function companionMessageReview(messageText: string, notes: CompanionShar
         const body = note.text.trim();
         if (body !== text && !body.startsWith(`${text}\n\n选中的原文：`)) continue;
         used.add(note.id);
-        const answered = notes.some((other) => other.host && other.replyTo === note.id);
-        const decision = note.decision || "";
+        const answered = notes.some((other) => other.host && companionNoteKey(other.replyTo) === companionNoteKey(note.id));
+        const decision = companionNoteDecision(note);
         if (decision === "ignored") return { noteId: note.id, tone: "ignored", label: cs("主持人已忽略这条讨论") };
         if (decision === "approved" && !answered) return { noteId: note.id, tone: "approved", label: cs("已通过，等待主持人 Agent 回复") };
         if (answered) return null;
@@ -1940,9 +1957,21 @@ export function companionMessageReview(messageText: string, notes: CompanionShar
     return null;
 }
 
-function companionPendingReviewCount(notes: CompanionShareNote[] | undefined): number {
-    const list = notes ?? [];
-    return list.filter((note) => !note.host && ((note.decision ?? "") === "pending" || (note.decision ?? "") === "") && !list.some((other) => other.host && other.replyTo === note.id)).length;
+export { companionDiscussionCounts } from "./FileCompanionLibrary";
+
+// Folded, the title keeps the thread length and the queue is a separate label
+// so a narrow column cannot clip it. Open, the queue is named only for the
+// person who can decide it, and only while it is non-empty.
+export function companionDiscussionKicker(lang: string, total: number, pending: number, collapsed: boolean, reviewOn: boolean, hostReviewer: boolean): { title: string; pendingLabel: string } {
+    if (!collapsed) {
+        if (reviewOn && hostReviewer && pending > 0) {
+            return { title: companionFill(lang, "讨论 · 待审核 ${count}", { count: pending }), pendingLabel: "" };
+        }
+        return { title: companionSay(lang, "讨论"), pendingLabel: "" };
+    }
+    const title = companionFill(lang, "讨论 ${count}", { count: total });
+    if (!reviewOn) return { title, pendingLabel: "" };
+    return { title, pendingLabel: companionFill(lang, "待审核 ${count}", { count: pending }) };
 }
 
 function companionBoldMarkCount(line: string): number {
@@ -2343,6 +2372,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         };
     }, [languageBinding]);
     const [openMenu, setOpenMenu] = useState(false);
+    const [paperNoticeCode, setPaperNoticeCode] = useState("");
     // 独立界面 state: the window switches between the reading view, the
     // 文档管理 screen, and the 阅读群组 screen. 分享 opens over either.
     const [view, setView] = useState<CompanionView>("read");
@@ -3735,8 +3765,15 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             if (!bootSettledRef.current || !windowIsEmpty()) return;
             showOpenPanel();
         };
+        const onNotice = (payload: unknown) => {
+            const code = noticeCodeFromEvent(payload);
+            if (!companionPaperNotice(getCompanionUiLang(), code)) return;
+            setPaperNoticeCode(code);
+            setOpenMenu(false);
+        };
         runtime?.EventsOn?.("file-companion:open", onOpen);
         runtime?.EventsOn?.("file-companion:show", onShow);
+        runtime?.EventsOn?.("file-companion:notice", onNotice);
         runtime?.EventsOn?.("file-companion:preview-reload", onReload);
         runtime?.EventsOn?.("ai-assistant-progress", onProgress);
         runtime?.EventsOn?.("ai-assistant-token", onToken);
@@ -3874,7 +3911,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             // Ready returns paths queued after the boot read. Applying them
             // here, before the empty check, keeps the open panel from covering
             // a file the event would only deliver later.
-            const finishBoot = async () => {
+            const finishBoot = async (suppressOpen: boolean) => {
                 const delivered = readyPaths(await Promise.resolve(FileCompanionUIReady()).catch(() => undefined));
                 for (const path of delivered) {
                     if (cancelled) return;
@@ -3883,16 +3920,24 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 if (cancelled) return;
                 bootSettledRef.current = true;
                 setBootSettled(true);
-                askIfEmpty();
+                if (!suppressOpen) askIfEmpty();
             };
             try {
                 const boot = await bootPromise;
                 if (cancelled) return;
+                // A notice is a failed browser add. It does not open the 打开
+                // panel and it does not resume the previous session.
+                const notice = bootNotice(boot as { notice?: unknown; Notice?: unknown });
+                const suppressOpen = companionPaperNotice(getCompanionUiLang(), notice) !== "";
+                if (suppressOpen) {
+                    setPaperNoticeCode(notice);
+                    setOpenMenu(false);
+                }
                 // A launch with no documents is "show the companion". The files
                 // it had open last time are the session. The 打开 panel, not
                 // the system file dialog, runs only when that session is empty.
-                let paths = bootPaths(boot as { paths?: unknown; Paths?: unknown });
-                if (paths.length === 0) {
+                let paths = suppressOpen ? [] : bootPaths(boot as { paths?: unknown; Paths?: unknown });
+                if (!suppressOpen && paths.length === 0) {
                     paths = readyPaths(await Promise.resolve(FileCompanionResumePaths()).catch(() => undefined));
                 }
                 for (const path of paths) {
@@ -3900,16 +3945,17 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     await openPath(path, false);
                 }
                 if (cancelled) return;
-                await finishBoot();
+                await finishBoot(suppressOpen);
             } catch {
                 if (cancelled) return;
-                await finishBoot();
+                await finishBoot(false);
             }
         })();
         return () => {
             cancelled = true;
             runtime?.EventsOff?.("file-companion:open");
             runtime?.EventsOff?.("file-companion:show");
+            runtime?.EventsOff?.("file-companion:notice");
             runtime?.EventsOff?.("file-companion:preview-reload");
             runtime?.EventsOff?.("ai-assistant-progress");
             runtime?.EventsOff?.("ai-assistant-token");
@@ -4206,7 +4252,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // An imported snapshot has no share token, so a stored decision stays a
     // record and does not look like a review still in progress.
     const reviewOn = Boolean(activeTab?.shareToken) && (notesReview || (activeTab?.notes ?? []).some((note) => (note.decision ?? "") !== ""));
-    const pendingReviewCount = hostReviewer && reviewOn ? companionPendingReviewCount(activeTab?.notes) : 0;
+    const discussionNotes = activeTab?.notes;
+    const discussionCounts = useMemo(() => companionDiscussionCounts(discussionNotes), [discussionNotes]);
+    const discussionKicker = companionDiscussionKicker(uiLang, discussionCounts.total, discussionCounts.pending, annotationsCollapsed, reviewOn, hostReviewer);
     // Marks only apply to the document they were painted on.
     const chatMarks = chatMarksState.path === active ? chatMarksState.marks : NO_CHAT_MARKS;
     const chatMarksRef = useRef(chatMarks);
@@ -6174,9 +6222,15 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         content: activeTab.content,
         updatedAt: activeTab.previewEpoch,
     } : null, [activeTab?.name, activeTab?.path, activeTab?.content, activeTab?.previewEpoch]);
+    const paperNoticeText = companionPaperNotice(uiLang, paperNoticeCode);
 
     return (
         <div data-testid="file-companion-window" className="file-companion-window" data-view={view} data-reader-player={playerTab ? "true" : undefined} data-ai-theme={appearance.themeMode} data-ai-dark-scheme={appearance.themeMode === "dark" ? appearance.darkSchemeId : undefined} data-ai-light-scheme={appearance.themeMode === "light" ? appearance.lightSchemeId : undefined} style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+            {paperNoticeText ? (
+                <div data-testid="file-companion-paper-notice" role="status" style={{ margin: "8px 12px 0", padding: "8px 12px", borderRadius: 8, background: "var(--theme-warning-bg, #fff7ed)", color: "var(--theme-text, #1f2937)", fontSize: 13, lineHeight: 1.45 }}>
+                    {paperNoticeText}
+                </div>
+            ) : null}
             <div className={openMenu || chatExportDestOpen ? "file-companion-titlebar file-companion-titlebar--menu-open" : "file-companion-titlebar"} data-testid="file-companion-titlebar" {...windowDragHandleProps(true, { display: "flex", gap: 8, padding: 8, alignItems: "center", flexWrap: "nowrap" })}>
                 {chatExportDestOpen ? (
                     <div
@@ -6451,6 +6505,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     </button>
                 </div>
                 <div className="file-companion-titlebar-gap" data-testid="file-companion-titlebar-gap" />
+                {/* Same bell as the main window, in the slot before the host badge:
+                    host transfer, a newly shared document, and the other notices. */}
+                <div className="file-companion-titlebar-notifications" data-testid="file-companion-notifications" {...windowNoDragRegionProps()}>
+                    <AssistantTitleBarNotifications active inline={false} lang={uiLang} theme={appearance.assistantTheme} />
+                </div>
                 {activeTab ? (
                     <div className="file-companion-titlebar-actions" data-testid="file-companion-export">
                         {readHost ? (
@@ -6864,7 +6923,10 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         {annotationsOpen ? (
                             <div className="file-companion-annotations" data-testid="file-companion-annotations" data-collapsed={annotationsCollapsed ? "true" : "false"}>
                                 <div className="file-companion-annotations-head" onClick={toggleAnnotationsCollapsed}>
-                                    <p className="file-companion-annotations-kicker">{pendingReviewCount > 0 ? companionFill(uiLang, "讨论 · 待审核 ${count}", { count: pendingReviewCount }) : cs("讨论")}</p>
+                                    <p className="file-companion-annotations-kicker" data-testid="file-companion-annotations-kicker">{discussionKicker.title}</p>
+                                    {discussionKicker.pendingLabel ? (
+                                        <span className="file-companion-badge" data-tone={discussionCounts.pending > 0 ? "pending" : undefined} data-testid="file-companion-annotations-pending">{discussionKicker.pendingLabel}</span>
+                                    ) : null}
                                     <button
                                         type="button"
                                         className="file-companion-annotations-toggle"
@@ -6883,8 +6945,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 </div>
                                 <div id="file-companion-annotations-body" className="file-companion-annotations-body" data-testid="file-companion-annotations-body" hidden={annotationsCollapsed} ref={annotationBodyRef} onScroll={(event) => rememberAnnotationScroll(event.currentTarget.scrollTop)}>
                                 {activeTab.notes && activeTab.notes.length > 0 ? activeTab.notes.map((note) => {
-                                    const answered = activeTab.notes?.some((other) => other.host && other.replyTo === note.id) ?? false;
-                                    const decision = note.host ? "" : (note.decision ?? "");
+                                    const answered = discussionCounts.answered.has(companionNoteKey(note.id));
+                                    const decision = note.host ? "" : companionNoteDecision(note);
                                     const waitingForReview = !note.host && !answered && (decision === "pending" || decision === "");
                                     // The title-bar badge and this list can disagree when one file
                                     // belongs to more than one share. Either one means this

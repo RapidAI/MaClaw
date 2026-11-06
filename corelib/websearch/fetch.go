@@ -51,6 +51,9 @@ type FetchOptions struct {
 	DisableBrowserAuthFallback bool                // do not escalate anti-bot failures through the managed browser session
 	PublicNetworkOnly          bool                // only use direct public HTTP(S) targets; blocks private IPs and redirect SSRF
 	HubDownload                *HubDownloadChannel // when set, HTTP(S) fetch/download goes through MaClaw Hub /searchproxy/download
+	// RawBody keeps the UTF-8 body. The default HTML path runs extractReadableContent,
+	// which drops <head> (citation_pdf_url, link rel=alternate). SavePath ignores this.
+	RawBody bool
 }
 
 // FetchResult contains the fetched content.
@@ -334,7 +337,7 @@ func fetchHTTPWithClientCtx(parent context.Context, rawURL string, opts *FetchOp
 // cookies when a plain fetch is blocked.
 func fetchTextHTTP(ctx context.Context, rawURL string, opts *FetchOptions, client *http.Client) (*FetchResult, error) {
 	return runFetchChain(ctx, rawURL, "[fetch]", maxDownloadAttemptsPerLevel, opts, client, func(c *http.Client, extra map[string]string) *fetchAttempt {
-		return performTextFetch(ctx, rawURL, opts, c, extra, false)
+		return performTextFetch(ctx, rawURL, opts, c, extra, opts.RawBody)
 	})
 }
 

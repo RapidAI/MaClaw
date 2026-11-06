@@ -680,6 +680,7 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
             expect(result.current.getTabState("proj-guide-backend")?.history).toEqual([injection, realMessage]);
             expect(SaveProjectTabConversation).toHaveBeenCalledWith("proj-guide-backend", [injection, realMessage]);
         });
+        expect(LoadProjectConversationHistory).not.toHaveBeenCalled();
     });
 
     it("loads project memory when the startup session file is empty", async () => {
@@ -702,6 +703,87 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
             ]);
         });
         expect(LoadProjectConversationHistory).toHaveBeenCalledWith("D:/tasks/memory");
+    });
+
+    it("keeps project memory that is longer than the hot window", async () => {
+        const memory = Array.from({ length: 45 }, (_, index) => ({
+            role: index % 2 === 0 ? "user" : "assistant",
+            content: `memory-${index}`,
+        }));
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([
+            { id: "proj-long-memory", type: "project", title: "Long memory", projectPath: "D:/tasks/long-memory", lastActiveAt: 1, archived: false },
+        ] as any);
+        vi.mocked(LoadProjectTabConversation).mockResolvedValue(null as any);
+        vi.mocked(LoadProjectConversationHistory).mockResolvedValue(memory as any);
+
+        const { result } = renderHook(() => useAITabManager());
+
+        await waitFor(() => {
+            const history = (result.current.getTabState("proj-long-memory")?.history || []) as Array<{ content?: string }>;
+            expect(history).toHaveLength(45);
+            expect(history[0]?.content).toBe("memory-0");
+            expect(history[44]?.content).toBe("memory-44");
+        });
+        expect(SaveProjectTabConversation).not.toHaveBeenCalled();
+    });
+
+    it("loads project memory when the startup session file has no conversation", async () => {
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([
+            { id: "proj-receipts", type: "project", title: "Receipts", projectPath: "D:/tasks/receipts", lastActiveAt: 1, archived: false },
+        ] as any);
+        vi.mocked(LoadProjectTabConversation).mockResolvedValue([
+            { id: "receipt-1", role: "system", kind: "guideReceipt", content: "这条补充已接上当前任务", timestamp: 1 },
+            { id: "context-1", role: "system", kind: "taskContext", content: "任务上下文", timestamp: 2 },
+        ] as any);
+        vi.mocked(LoadProjectConversationHistory).mockResolvedValue([
+            { role: "user", content: "question kept in project memory" },
+            { role: "assistant", content: "answer kept in project memory" },
+        ] as any);
+
+        const { result } = renderHook(() => useAITabManager());
+
+        await waitFor(() => {
+            const history = (result.current.getTabState("proj-receipts")?.history || []) as Array<{ content?: string }>;
+            expect(history.map(message => message.content)).toEqual([
+                "question kept in project memory",
+                "answer kept in project memory",
+            ]);
+        });
+        expect(LoadProjectConversationHistory).toHaveBeenCalledWith("D:/tasks/receipts");
+    });
+
+    it("keeps a live row that lands while startup project memory is loading", async () => {
+        let resolveHistory!: (rows: Array<{ role: string; content: string }>) => void;
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([
+            { id: "proj-live-memory", type: "project", title: "Live memory", projectPath: "D:/tasks/live-memory", lastActiveAt: 1, archived: false },
+        ] as any);
+        vi.mocked(LoadProjectTabConversation).mockResolvedValue(null as any);
+        vi.mocked(LoadProjectConversationHistory).mockReturnValue(new Promise(resolve => {
+            resolveHistory = resolve;
+        }) as any);
+
+        const { result } = renderHook(() => useAITabManager());
+        await waitFor(() => expect(LoadProjectConversationHistory).toHaveBeenCalledWith("D:/tasks/live-memory"));
+        act(() => {
+            result.current.saveTabState("proj-live-memory", {
+                history: [{ id: "live", role: "user", content: "new question", timestamp: 5 }],
+            });
+        });
+        await act(async () => {
+            resolveHistory([
+                { role: "user", content: "stored question" },
+                { role: "assistant", content: "stored answer" },
+            ]);
+        });
+
+        await waitFor(() => {
+            const history = (result.current.getTabState("proj-live-memory")?.history || []) as Array<{ content?: string }>;
+            expect(history.map(message => message.content)).toEqual([
+                "stored question",
+                "stored answer",
+                "new question",
+            ]);
+        });
     });
 
     it("windows a shorter backend transcript without dropping an unflushed local tail", async () => {

@@ -485,6 +485,27 @@ func codingSpawnRemoteChildDirs(parent *RemoteCodingSubAgent, spec codingSpawnSp
 	return parent.workDir, parent.projectDir, nil
 }
 
+// remoteCodingSpawnCarryContext is the parent remote turn as the child quotes
+// it. The parent task context can already contain the previous measurement.
+// A recovery marker tells the child to recreate that cut.
+func remoteCodingSpawnCarryContext(taskContext, parentTask, spawnContext string) string {
+	const parentTaskMaxRunes = 800
+	var b strings.Builder
+	if taskContext = codingPromptChannelText(taskContext, codingSpawnParentReqMaxRunes); taskContext != "" {
+		b.WriteString("\n\n## Parent remote task context\n")
+		b.WriteString(taskContext)
+	}
+	if parentTask = codingPromptChannelText(parentTask, parentTaskMaxRunes); parentTask != "" {
+		b.WriteString("\n\n## Parent task\n")
+		b.WriteString(parentTask)
+	}
+	if spawnContext = codingPromptChannelText(spawnContext, codingSpawnContextMaxRunes); spawnContext != "" {
+		b.WriteString("\n\n## Spawn context\n")
+		b.WriteString(spawnContext)
+	}
+	return b.String()
+}
+
 func (parent *RemoteCodingSubAgent) runNestedRemoteCodingAgent(spec codingSpawnSpec, parentCB *remoteCodingCallbacks, onProgress func(string)) *RemoteCodingSubAgentResult {
 	if parent == nil {
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "parent remote coding subagent is nil"}
@@ -532,16 +553,12 @@ func (parent *RemoteCodingSubAgent) runNestedRemoteCodingAgent(spec codingSpawnS
 	child.SetCallbacks(nil, onProgress)
 	inheritRemoteTaskCommandAllowance(parent, child)
 
-	taskCtx := remoteCodingSpawnRolePromptHint(spec.Role)
-	if parentCB != nil && strings.TrimSpace(parentCB.taskContext) != "" {
-		taskCtx += "\n\n## Parent remote task context\n" + truncateRunesForSubAgent(parentCB.taskContext, 1500)
+	parentContext, parentTask := "", ""
+	if parentCB != nil {
+		parentContext = parentCB.taskContext
+		parentTask = parentCB.task
 	}
-	if parentCB != nil && strings.TrimSpace(parentCB.task) != "" {
-		taskCtx += "\n\n## Parent task\n" + truncateRunesForSubAgent(parentCB.task, 800)
-	}
-	if spec.Context != "" {
-		taskCtx += "\n\n## Spawn context\n" + truncateRunesForSubAgent(spec.Context, 2000)
-	}
+	taskCtx := remoteCodingSpawnRolePromptHint(spec.Role) + remoteCodingSpawnCarryContext(parentContext, parentTask, spec.Context)
 	if spec.Role == codingRoleWorker && len(spec.Files) > 0 {
 		taskCtx += "\n\n## Declared write-set\n" + strings.Join(spec.Files, "\n")
 	}

@@ -201,6 +201,133 @@ func TestHopPythonRejectsFractionalModulo(t *testing.T) {
 	}
 }
 
+func TestHopPythonBoolLiterals(t *testing.T) {
+	for _, expression := range []string{"true", "True", "TRUE"} {
+		value, err := evalExpression(context.Background(), expression, nil, nil)
+		if err != nil || value != true {
+			t.Fatalf("expression=%q value=%v err=%v", expression, value, err)
+		}
+	}
+	for _, expression := range []string{"false", "False", "FALSE"} {
+		value, err := evalExpression(context.Background(), expression, nil, nil)
+		if err != nil || value != false {
+			t.Fatalf("expression=%q value=%v err=%v", expression, value, err)
+		}
+	}
+	value, err := evalExpression(context.Background(), `report != ""`, map[string]VariableValue{
+		"report": {Value: "晴", Assigned: true},
+	}, nil)
+	if err != nil || value != true {
+		t.Fatalf("comparison value=%v err=%v", value, err)
+	}
+	value, err = evalExpression(context.Background(), "false and missing", nil, nil)
+	if err != nil || value != false {
+		t.Fatalf("skipped missing value=%v err=%v", value, err)
+	}
+	if _, err = evalExpression(context.Background(), "true and missing", nil, nil); err == nil || !strings.Contains(err.Error(), "undefined name missing") {
+		t.Fatalf("evaluated missing err=%v", err)
+	}
+	value, err = evalExpression(context.Background(), "true or missing", nil, nil)
+	if err != nil || value != true {
+		t.Fatalf("skipped or value=%v err=%v", value, err)
+	}
+	if _, err = evalExpression(context.Background(), "false or missing", nil, nil); err == nil || !strings.Contains(err.Error(), "undefined name missing") {
+		t.Fatalf("evaluated or err=%v", err)
+	}
+}
+
+func TestHopPythonCheckMissingInputFails(t *testing.T) {
+	ctx := context.Background()
+	engine := NewExecutionEngine(nil)
+	_, err := engine.Init(ctx, `# Spec: 判定
+Goal: 核验
+## Steps
+1. [check] 判定
+  + → accepted % bool
+  > `+"```hop_python"+`
+  > accepted = report != ""
+  > `+"```"+`
+2. [exit]
+`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := engine.Next(ctx)
+	if err != nil || next.Status != NextFailed || next.Failure == nil || !strings.Contains(next.Failure.Reason, "undefined name report") {
+		t.Fatalf("next=%+v err=%v", next, err)
+	}
+}
+
+func TestHopPythonCheckComparesWiredInput(t *testing.T) {
+	ctx := context.Background()
+	spec := func(value string) string {
+		return `# Spec: 判定
+Goal: 核验
+## Steps
+1. [act] 取数
+  + → report % text
+  > ` + "```hop_python" + `
+  > report = "` + value + `"
+  > ` + "```" + `
+2. [check] 非空
+  - ← report
+  + → accepted % bool
+  > ` + "```hop_python" + `
+  > accepted = report != ""
+  > ` + "```" + `
+3. [exit]
+`
+	}
+	passed := NewExecutionEngine(nil)
+	if _, err := passed.Init(ctx, spec("晴"), nil); err != nil {
+		t.Fatal(err)
+	}
+	next, err := passed.Next(ctx)
+	if err != nil || next.Status != NextCompleted {
+		t.Fatalf("next=%+v err=%v", next, err)
+	}
+	failed := NewExecutionEngine(nil)
+	if _, err := failed.Init(ctx, spec(""), nil); err != nil {
+		t.Fatal(err)
+	}
+	next, err = failed.Next(ctx)
+	if err != nil || next.Status != NextFailed || next.Failure == nil || !strings.Contains(next.Failure.Reason, "check failed") {
+		t.Fatalf("next=%+v err=%v", next, err)
+	}
+}
+
+func TestHopPythonCheckUsesBoolLiteral(t *testing.T) {
+	ctx := context.Background()
+	spec := func(literal string) string {
+		return `# Spec: 判定
+Goal: 核验
+## Steps
+1. [check] 判定
+  + → accepted % bool
+  > ` + "```hop_python" + `
+  > accepted = ` + literal + `
+  > ` + "```" + `
+2. [exit]
+`
+	}
+	passed := NewExecutionEngine(nil)
+	if _, err := passed.Init(ctx, spec("True"), nil); err != nil {
+		t.Fatal(err)
+	}
+	next, err := passed.Next(ctx)
+	if err != nil || next.Status != NextCompleted {
+		t.Fatalf("next=%+v err=%v", next, err)
+	}
+	failed := NewExecutionEngine(nil)
+	if _, err := failed.Init(ctx, spec("False"), nil); err != nil {
+		t.Fatal(err)
+	}
+	next, err = failed.Next(ctx)
+	if err != nil || next.Status != NextFailed || next.Failure == nil || !strings.Contains(next.Failure.Reason, "check failed") {
+		t.Fatalf("next=%+v err=%v", next, err)
+	}
+}
+
 func TestHopPythonBooleanOperatorsShortCircuitTools(t *testing.T) {
 	calls := 0
 	provider := ToolProviderFunc(func(context.Context, string, map[string]any) (any, error) {
@@ -222,5 +349,92 @@ func TestHopPythonBooleanOperatorsShortCircuitTools(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("short-circuited tools executed %d times", calls)
+	}
+}
+
+func TestHopPythonInlineCommentIsNotCode(t *testing.T) {
+	calls := 0
+	provider := ToolProviderFunc(func(_ context.Context, name string, args map[string]any) (any, error) {
+		calls++
+		if name != "web_search" || args["query"] != "北京天气" {
+			t.Fatalf("call = %s %+v", name, args)
+		}
+		return "晴", nil
+	})
+	engine := NewExecutionEngine(nil, WithToolProvider(provider))
+	ctx := context.Background()
+	_, err := engine.Init(ctx, `# Spec: 北京天气
+Goal: 查询天气
+Outputs:
+- report % text
+## Steps
+1. [act] 查询
+  + → report % text
+  > `+"```hop_python"+`
+  > report = web_search(query: "北京天气")  # 注释
+  > `+"```"+`
+2. [exit]
+`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := engine.Next(ctx)
+	if err != nil || next.Status != NextCompleted || next.Outputs["report"] != "晴" || calls != 1 {
+		t.Fatalf("next = %+v calls=%d err=%v", next, calls, err)
+	}
+
+	vars := map[string]VariableValue{}
+	if err := executeHopPython(ctx, "value = \"keep # hash\"  # drop\nlabel = \"a \\\" # b\"  # tail\n", vars, nil); err != nil {
+		t.Fatal(err)
+	}
+	if vars["value"].Value != "keep # hash" || vars["label"].Value != "a \" # b" {
+		t.Fatalf("value=%#v label=%#v", vars["value"].Value, vars["label"].Value)
+	}
+	vars = map[string]VariableValue{}
+	if err := executeHopPython(ctx, "if True:  # 分支\n    result = \"晴\"\n", vars, nil); err != nil {
+		t.Fatal(err)
+	}
+	if vars["result"].Value != "晴" {
+		t.Fatalf("result=%#v", vars["result"].Value)
+	}
+	vars = map[string]VariableValue{}
+	if err := executeHopPython(ctx, "\t# 仅注释\nvalue = 1\n", vars, nil); err != nil {
+		t.Fatal(err)
+	}
+	if vars["value"].Value != float64(1) {
+		t.Fatalf("value=%#v", vars["value"].Value)
+	}
+	if err := executeHopPython(ctx, "value = 1\t# 代码里的制表符\n", map[string]VariableValue{}, nil); err == nil || !strings.Contains(err.Error(), "HOP_PYTHON_TAB") {
+		t.Fatalf("tab err=%v", err)
+	}
+}
+
+func TestHopPythonRunsMatchesInterpreter(t *testing.T) {
+	if err := HopPythonRuns("report = web_search(query: \"北京天气\")  # 注释", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := HopPythonRuns("report = web_search(query: \"北京天气\") or \"晴\"", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := HopPythonRuns("raw = web_search(query: \"北京天气\")\nreport = raw", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := HopPythonRuns("report = web_search(query: city)", []string{"city"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := HopPythonRuns("report = web_search(query=\"北京天气\")", nil); err == nil || !strings.Contains(err.Error(), "unexpected character") {
+		t.Fatalf("equals err=%v", err)
+	}
+	if err := HopPythonRuns("report = web_search(\"北京天气\")", nil); err == nil || !strings.Contains(err.Error(), "named arguments") {
+		t.Fatalf("positional err=%v", err)
+	}
+	if err := HopPythonRuns("report = web_search(query: \"北京天气\",)", nil); err == nil {
+		t.Fatal("trailing comma was runnable")
+	}
+	if err := HopPythonRuns("report = web_search(query: city)", nil); err == nil || !strings.Contains(err.Error(), "undefined name city") {
+		t.Fatalf("city err=%v", err)
+	}
+	if err := HopPythonRuns("if True:\n    report = web_search(query: \"北京天气\")\nelse:\n    report = web_search(query=\"北京\")\n", nil); err == nil {
+		t.Fatal("else branch with keyword equals was runnable")
 	}
 }

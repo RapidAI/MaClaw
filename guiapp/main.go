@@ -59,6 +59,17 @@ func Main(v string) {
 	// --- Program log for programming tool output ---
 	programLogger.Init()
 
+	// Chrome launches this executable with chrome-extension:// and inherited
+	// stdio. Answer that one frame before the dictionary load or the window.
+	if isCompanionPaperHostArgv(args) {
+		os.Exit(runCompanionPaperHost(args))
+	}
+	// maclaw://companion-paper never downloads. Darwin still has to reach the
+	// document latch; Windows and Linux leave before the tray exists.
+	if goruntime.GOOS != "darwin" && companionPaperFromArgs(args) {
+		os.Exit(0)
+	}
+
 	// Start the gse dictionary load before the WebView is constructed. The load
 	// takes seconds on a slow disk and is needed by the first BM25 tokenization
 	// (tool routing, skill matching, knowledge recall); letting it overlap the
@@ -127,6 +138,7 @@ func Main(v string) {
 		TitleBar:             mac.TitleBarDefault(),
 		WebviewIsTransparent: false,
 		WindowIsTranslucent:  false,
+		OnUrlOpen:            app.darwinOnURLOpen,
 	}
 	// Native window background, visible before the WebView first-paints.
 	// Match the HTML boot splash (#f3f5f7), not the dark assistant chrome;
@@ -225,6 +237,9 @@ func Main(v string) {
 				}
 				if gift := creditGiftFromArgs(secondInstanceData.Args); gift.Code != "" {
 					app.setPendingCreditGift(gift)
+				}
+				if companionPaperFromArgs(secondInstanceData.Args) {
+					shouldShowWindow = false
 				}
 
 				if !shouldShowWindow {

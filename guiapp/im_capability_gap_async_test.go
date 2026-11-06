@@ -2,6 +2,8 @@ package guiapp
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -93,6 +95,41 @@ func TestSkipUnrunnableInstalledKeepsALaterRunnableHit(t *testing.T) {
 	kept := skipUnrunnableInstalled([]corelib.NLSkillEntry{shop}, results[:1])
 	if len(kept) != 1 || kept[0].Name != "域名测试" {
 		t.Fatalf("active install was skipped: %#v", kept)
+	}
+}
+
+func TestSkipUnrunnableInstalledReselectsAnEmptyDirectory(t *testing.T) {
+	empty := t.TempDir()
+	if err := os.WriteFile(filepath.Join(empty, ".maclaw_scan_status.db"), []byte("scan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withProgram := t.TempDir()
+	if err := os.WriteFile(filepath.Join(withProgram, "draw.py"), []byte("print(1)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withDoc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(withDoc, "SKILL.md"), []byte("# Drawing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	results := []SkillSearchResult{
+		{ID: "drawing", Name: "Drawing", Description: "draw"},
+		{ID: "server-status", Name: "Server Status Search", Description: "Searches server status and lists health checks."},
+	}
+	entry := corelib.NLSkillEntry{Name: "Drawing", Status: "needs_setup", SkillDir: empty, Triggers: []string{"drawing"}}
+	if got := skipUnrunnableInstalled([]corelib.NLSkillEntry{entry}, results); len(got) != 2 {
+		t.Fatalf("empty directory dropped the hit: %#v", got)
+	}
+	entry.SkillDir = filepath.Join(t.TempDir(), "gone")
+	if got := skipUnrunnableInstalled([]corelib.NLSkillEntry{entry}, results); len(got) != 2 {
+		t.Fatalf("missing directory dropped the hit: %#v", got)
+	}
+	entry.SkillDir = withProgram
+	if got := skipUnrunnableInstalled([]corelib.NLSkillEntry{entry}, results); len(got) != 1 || got[0].Name != "Server Status Search" {
+		t.Fatalf("script package was reselected: %#v", got)
+	}
+	entry.SkillDir = withDoc
+	if got := skipUnrunnableInstalled([]corelib.NLSkillEntry{entry}, results); len(got) != 1 || got[0].Name != "Server Status Search" {
+		t.Fatalf("documented package was reselected: %#v", got)
 	}
 }
 

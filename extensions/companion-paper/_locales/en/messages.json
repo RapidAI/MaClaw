@@ -1,0 +1,5 @@
+{
+  "extName": { "message": "Add to Companion" },
+  "extDescription": { "message": "Add the current PDF or paper to Companion and open it." },
+  "menuAdd": { "message": "Add to Companion" }
+}

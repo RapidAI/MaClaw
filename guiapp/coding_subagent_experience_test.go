@@ -770,6 +770,56 @@ func TestLocalCodingKnowledgePromptUsesPreviousFailureFallback(t *testing.T) {
 	}
 }
 
+func TestCodingKnowledgePromptQuoteDropsRecoveryMarker(t *testing.T) {
+	if codingKnowledgePromptItemText(codingSubAgentRecoveryMarker) != "" || codingKnowledgePromptItemText("  "+codingSubAgentRecoveryMarker) != "" {
+		t.Fatal("a marker-only experience must not be quoted")
+	}
+	long := strings.Repeat("测", 500) + "EXP_TAIL"
+	for _, remote := range []bool{false, true} {
+		sections := knowledgePromptSectionsForExperience(t, "bench numbers already measured", long, remote)
+		if !strings.Contains(sections, "bench numbers already measured") || !strings.Contains(sections, "测") {
+			t.Fatalf("remote=%v knowledge prompt dropped the experience head: %q", remote, sections)
+		}
+		if strings.Contains(sections, codingSubAgentRecoveryMarker) || strings.Contains(sections, "EXP_TAIL") {
+			t.Fatalf("remote=%v knowledge prompt asks to recover the cut: %q", remote, sections)
+		}
+	}
+	marked := "reuse the measured bench line" + codingSubAgentRecoveryMarker
+	sections := knowledgePromptSectionsForExperience(t, "reuse measured bench", marked, false)
+	if strings.Contains(sections, codingSubAgentRecoveryMarker) || !strings.Contains(sections, "reuse the measured bench line") {
+		t.Fatalf("stored marker stayed on the quoted experience: %q", sections)
+	}
+}
+
+func knowledgePromptSectionsForExperience(t *testing.T, title, content string, remote bool) string {
+	t.Helper()
+	store, err := knowledge.NewCodingKnowledgeStore(filepath.Join(t.TempDir(), "coding_knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewCodingKnowledgeStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.SaveExperience(context.Background(), knowledge.CodingExperience{
+		Title:            title,
+		Category:         knowledge.CodingCategoryPitfall,
+		Scope:            knowledge.CodingScopeUniversal,
+		TriggerCondition: title,
+		Content:          content,
+		Status:           knowledge.CodingStatusActive,
+	}); err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+	if remote {
+		return (&remoteCodingCallbacks{
+			agent: &RemoteCodingSubAgent{codingKB: store, projectDir: "/repo"},
+			task:  title,
+		}).buildRemoteKnowledgePromptSections()
+	}
+	return (&codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{codingKB: store, projectPath: "/repo"},
+		task:     &TaskItem{Title: title, Files: []string{"main.go"}},
+	}).buildKnowledgePromptSections()
+}
+
 func TestCodingExperienceKnowledgeTerminalStatus(t *testing.T) {
 	for _, status := range []codingruntime.TaskStatus{codingruntime.TaskCompleted, codingruntime.TaskFailed, codingruntime.TaskBlocked} {
 		if !codingExperienceKnowledgeTerminalStatus(status) {

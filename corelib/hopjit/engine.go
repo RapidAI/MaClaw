@@ -431,7 +431,7 @@ func (e *ExecutionEngine) stepReadyLocked(step hopspec.Step) *StepReady {
 	}
 	ready := &StepReady{
 		RunID: e.snapshot.RunID, Goal: e.snapshot.Spec.Goal, Constraints: append([]string(nil), e.snapshot.Spec.Constraints...),
-		StepID: step.ID, StepType: step.Type, Summary: step.Summary,
+		StepID: step.ID, StepType: step.Type, Summary: step.Summary, Free: step.Free(),
 		Inputs: inputs, Instruction: step.Instruction, Tools: append([]string(nil), step.Tools...), OutputSchema: append([]hopspec.VariableDecl(nil), step.Outputs...),
 		Recovered: e.recovered, IterationID: hopIterationID(*e.snapshot, step.ID),
 	}

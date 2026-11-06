@@ -72,6 +72,13 @@ const notificationCacheCapacity = 10
 type notificationCache struct {
 	mu    sync.RWMutex
 	items []ClientNotification
+	// readMark records ids this process has marked read and the Hub has not
+	// yet been allowed to show as unread again. A failed mark drops the id so
+	// the next pull can put it back. readGen changes on every mark and forget
+	// so a list copied for the bell can be discarded when a click lands after
+	// the copy.
+	readGen  uint64
+	readMark map[string]struct{}
 }
 
 func newNotificationCache() *notificationCache {
@@ -101,6 +108,8 @@ func (nc *notificationCache) Add(n *PushNotificationDTO) {
 	defer nc.mu.Unlock()
 
 	// Deduplicate — if same ID already exists, remove old entry first.
+	// A push is a new delivery of this id, so an older local read does not hide it.
+	nc.clearReadMarkLocked(cn.ID)
 	for i, item := range nc.items {
 		if item.ID == cn.ID {
 			nc.items = append(nc.items[:i], nc.items[i+1:]...)
@@ -142,6 +151,7 @@ func (nc *notificationCache) AddClient(cn ClientNotification) {
 func (nc *notificationCache) Remove(id string) {
 	nc.mu.Lock()
 	defer nc.mu.Unlock()
+	nc.clearReadMarkLocked(id)
 	for i, item := range nc.items {
 		if item.ID == id {
 			nc.items = append(nc.items[:i], nc.items[i+1:]...)
@@ -150,10 +160,12 @@ func (nc *notificationCache) Remove(id string) {
 	}
 }
 
-// MarkRead marks a single notification as read.
+// MarkRead marks a single notification as read and remembers the id. The
+// companion poll must not show that id as unread while the mark stands.
 func (nc *notificationCache) MarkRead(id string) {
 	nc.mu.Lock()
 	defer nc.mu.Unlock()
+	nc.noteReadLocked(id)
 	for i := range nc.items {
 		if nc.items[i].ID == id {
 			nc.items[i].IsRead = true
@@ -162,12 +174,62 @@ func (nc *notificationCache) MarkRead(id string) {
 	}
 }
 
-// MarkAllRead marks all cached notifications as read.
-func (nc *notificationCache) MarkAllRead() {
+// MarkAllRead marks all cached notifications as read. The returned ids are the
+// ones a failed Hub call should release.
+func (nc *notificationCache) MarkAllRead() []string {
 	nc.mu.Lock()
 	defer nc.mu.Unlock()
+	ids := make([]string, 0, len(nc.items))
 	for i := range nc.items {
 		nc.items[i].IsRead = true
+		if nc.items[i].ID == "" {
+			continue
+		}
+		nc.noteReadLocked(nc.items[i].ID)
+		ids = append(ids, nc.items[i].ID)
+	}
+	return ids
+}
+
+func (nc *notificationCache) noteReadLocked(id string) {
+	nc.readGen++
+	if id == "" {
+		return
+	}
+	if nc.readMark == nil {
+		nc.readMark = map[string]struct{}{}
+	}
+	nc.readMark[id] = struct{}{}
+}
+
+func (nc *notificationCache) clearReadMarkLocked(id string) {
+	if nc.readMark == nil {
+		return
+	}
+	if _, ok := nc.readMark[id]; !ok {
+		return
+	}
+	delete(nc.readMark, id)
+	nc.readGen++
+}
+
+// ForgetReadMarks releases ids after the Hub rejected the mark. The rows stay
+// read in the cache until a later pull says they are still unread.
+func (nc *notificationCache) ForgetReadMarks(ids []string) {
+	if nc == nil || len(ids) == 0 {
+		return
+	}
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+	if len(nc.readMark) == 0 {
+		return
+	}
+	for _, id := range ids {
+		if _, ok := nc.readMark[id]; !ok {
+			continue
+		}
+		delete(nc.readMark, id)
+		nc.readGen++
 	}
 }
 
@@ -207,6 +269,22 @@ func (nc *notificationCache) Replace(items []ClientNotification) {
 	nc.items = items
 }
 
+// snapshot copies every cached row, including ones already marked read.
+// A pull that drops those rows is a real change: the bell has to forget them.
+func (nc *notificationCache) snapshot() []ClientNotification {
+	if nc == nil {
+		return nil
+	}
+	nc.mu.RLock()
+	defer nc.mu.RUnlock()
+	if len(nc.items) == 0 {
+		return nil
+	}
+	out := make([]ClientNotification, len(nc.items))
+	copy(out, nc.items)
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // Wails Bindings — exposed as App methods for frontend consumption.
 // ---------------------------------------------------------------------------
@@ -237,8 +315,10 @@ func (a *App) MarkNotificationRead(notificationID string) error {
 		return fmt.Errorf("notification system not initialized")
 	}
 
-	// Optimistic local update.
+	// Optimistic local update. Publish it before the Hub call so a poll that
+	// already copied the unread list cannot be the last thing the bell applies.
 	a.notifCache.MarkRead(notificationID)
+	a.publishNotificationCache()
 
 	// Call Hub API.
 	err := a.doNotificationHubRequest(
@@ -249,8 +329,9 @@ func (a *App) MarkNotificationRead(notificationID string) error {
 		nil,
 	)
 	if err != nil {
-		// Rollback: The notification is still marked read locally for UX;
-		// next pull will reconcile. Log the error.
+		// The row stays read for now. Releasing the mark lets the next unread
+		// pull show it again when the Hub still has it.
+		a.notifCache.ForgetReadMarks([]string{notificationID})
 		a.log("[notification] MarkNotificationRead API failed: " + err.Error())
 		return err
 	}
@@ -263,8 +344,9 @@ func (a *App) MarkAllNotificationsRead() error {
 		return fmt.Errorf("notification system not initialized")
 	}
 
-	// Optimistic local update.
-	a.notifCache.MarkAllRead()
+	// Optimistic local update. Same generation ordering as a single mark.
+	marked := a.notifCache.MarkAllRead()
+	a.publishNotificationCache()
 
 	// Call Hub API.
 	err := a.doNotificationHubRequest(
@@ -275,19 +357,17 @@ func (a *App) MarkAllNotificationsRead() error {
 		nil,
 	)
 	if err != nil {
+		a.notifCache.ForgetReadMarks(marked)
 		a.log("[notification] MarkAllNotificationsRead API failed: " + err.Error())
 		return err
 	}
 	return nil
 }
 
-// PullUnreadNotifications fetches unread notifications from the Hub API and
-// replaces the local cache. Called on WebSocket reconnect (after auth.ok).
-func (a *App) PullUnreadNotifications() error {
-	if a == nil || a.notifCache == nil {
-		return fmt.Errorf("notification system not initialized")
-	}
-
+// fileCompanionUnreadNotifications reads GET /api/v1/notifications/unread.
+// The reconnect pull and the companion title-bar watch both go through it.
+// Tests replace the function; the default uses the machine token in config.
+var fileCompanionUnreadNotifications = func(a *App) ([]ClientNotification, error) {
 	var result []ClientNotification
 	err := a.doNotificationHubRequest(
 		context.Background(),
@@ -296,26 +376,124 @@ func (a *App) PullUnreadNotifications() error {
 		nil,
 		&result,
 	)
+	return result, err
+}
+
+// PullUnreadNotifications fetches unread notifications from the Hub API and
+// replaces the local cache. Called on WebSocket reconnect (after auth.ok).
+// A changed list also raises the system notices. The companion watch uses the
+// same fetch with announcements left off, so the two processes do not each
+// pop a balloon for one share.
+func (a *App) PullUnreadNotifications() error {
+	if a == nil || a.notifCache == nil {
+		return fmt.Errorf("notification system not initialized")
+	}
+
+	result, err := fileCompanionUnreadNotifications(a)
 	if err != nil {
 		a.log("[notification] PullUnreadNotifications API failed: " + err.Error())
 		return err
 	}
 
-	a.replaceUnreadNotifications(result)
+	a.applyUnreadNotifications(result, true)
 	return nil
 }
 
 func (a *App) replaceUnreadNotifications(items []ClientNotification) {
+	a.applyUnreadNotifications(items, true)
+}
+
+// applyUnreadNotifications stores a pulled list and tells the open bell.
+// announce is set on the reconnect pull, which is the path that reaches a
+// machine that was offline when it was sent. An unchanged list is left alone.
+// The event carries the cache generation taken with the stored list. The bell
+// drops an event whose generation is older, so a list copied before a click
+// cannot mark that row unread again.
+func (a *App) applyUnreadNotifications(items []ClientNotification, announce bool) {
 	if a == nil || a.notifCache == nil {
 		return
 	}
-	a.notifCache.Replace(items)
-	// Unread notifications pulled after connecting are how an invitation
-	// reaches a machine that was offline when it was sent.
-	a.announceCompanionGroupInviteNotices(items)
-	a.announceCompanionShareNotices(items)
-	a.announceCompanionHostTransferNotices(items)
-	emitNotificationFrontendEvent(a, "notification:sync", items)
+	stored, gen, changed := a.notifCache.replaceIfChanged(cappedNotificationList(items))
+	if !changed {
+		return
+	}
+	if announce {
+		a.announceCompanionGroupInviteNotices(stored)
+		a.announceCompanionShareNotices(stored)
+		a.announceCompanionHostTransferNotices(stored)
+	}
+	a.emitNotificationSync(stored, gen)
+}
+
+// publishNotificationCache tells the open bell what the cache holds now.
+func (a *App) publishNotificationCache() {
+	if a == nil || a.notifCache == nil {
+		return
+	}
+	items, gen := a.notifCache.snapshotWithGen()
+	a.emitNotificationSync(items, gen)
+}
+
+func (a *App) emitNotificationSync(items []ClientNotification, gen uint64) {
+	if items == nil {
+		items = []ClientNotification{}
+	}
+	emitNotificationFrontendEvent(a, "notification:sync", items, gen)
+}
+
+// replaceIfChanged stores items when they differ from the cache. The returned
+// generation is the one current at that store, so a later mark publishes a
+// higher one.
+func (nc *notificationCache) replaceIfChanged(items []ClientNotification) (stored []ClientNotification, gen uint64, changed bool) {
+	if nc == nil {
+		return nil, 0, false
+	}
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+	if notificationListsEqual(nc.items, items) {
+		return nil, nc.readGen, false
+	}
+	nc.items = copyNotifications(items)
+	return copyNotifications(nc.items), nc.readGen, true
+}
+
+// snapshotWithGen copies the cache and the generation under one lock.
+func (nc *notificationCache) snapshotWithGen() ([]ClientNotification, uint64) {
+	if nc == nil {
+		return []ClientNotification{}, 0
+	}
+	nc.mu.RLock()
+	defer nc.mu.RUnlock()
+	return copyNotifications(nc.items), nc.readGen
+}
+
+func copyNotifications(items []ClientNotification) []ClientNotification {
+	if len(items) == 0 {
+		return []ClientNotification{}
+	}
+	return append([]ClientNotification(nil), items...)
+}
+
+func cappedNotificationList(items []ClientNotification) []ClientNotification {
+	if len(items) == 0 {
+		return []ClientNotification{}
+	}
+	if len(items) > notificationCacheCapacity {
+		return append([]ClientNotification(nil), items[:notificationCacheCapacity]...)
+	}
+	return items
+}
+
+func notificationListsEqual(left, right []ClientNotification) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ---------------------------------------------------------------------------

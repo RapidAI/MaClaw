@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -125,6 +126,145 @@ func formatCodingAgentResultParagraph(result v2.TaskRunResult) string {
 		}
 		return codingExecText("Finished.", "Finished.", "Finished.")
 	}
+}
+
+// codingWorkbenchStickyCarry is what the next turn reads as the previous
+// delivery. The user already saw every finished step. Sticky memory used to
+// keep only the last executor Summary, so a later turn had to rediscover the
+// earlier steps from the tree. The carry is those step paragraphs, not the
+// chat wrapper around them (the read-only note, the finished-count line).
+// A single step whose visible paragraph is that summary stays unchanged.
+// The stored text has no recovery marker: the next prompt would treat the
+// marker as a missing measurement.
+func codingWorkbenchStickyCarry(results []v2.TaskRunResult, lastStep string) string {
+	lastStep = strings.TrimSpace(lastStep)
+	steps := codingWorkbenchCarrySteps(results)
+	if len(steps) == 0 {
+		return lastStep
+	}
+	if len(steps) == 1 {
+		one := steps[0]
+		strippedLast := strings.TrimSpace(strings.ReplaceAll(stripCodingAgentAuditSections(lastStep), codingSubAgentRecoveryMarker, ""))
+		if lastStep != "" && (one == lastStep || one == strippedLast) {
+			return lastStep
+		}
+		if utf8.RuneCountInString(one) <= codingSubAgentModelSummaryMaxRunes {
+			return one
+		}
+		// The verify line and the latest numbers sit at the end.
+		return truncateRunesV2Tail(one, codingSubAgentModelSummaryMaxRunes)
+	}
+	return codingFitStepCarry(steps, codingSubAgentModelSummaryMaxRunes)
+}
+
+func codingWorkbenchCarrySteps(results []v2.TaskRunResult) []string {
+	steps := make([]string, 0, len(results))
+	for _, result := range results {
+		// A skip notice is host bookkeeping. Keeping it as the protected tail
+		// pushes out the step that actually ran.
+		if result.Status == v2.TaskSkipped {
+			continue
+		}
+		paragraph := strings.TrimSpace(strings.ReplaceAll(formatCodingAgentResultParagraph(result), codingSubAgentRecoveryMarker, ""))
+		// The host limit sentence is not a delivery. Storing it alone replaces
+		// the previous turn's results with "send another message".
+		if paragraph == "" || paragraph == codingIterationLimitParagraph() {
+			continue
+		}
+		steps = append(steps, paragraph)
+	}
+	return steps
+}
+
+// codingFitStepCarry keeps the latest step whole inside the summary cap.
+// Earlier steps are packed from the newest backward, so a long first step
+// does not crowd out a later measurement. A step that only partly fits keeps
+// its ending. When the latest step itself exceeds the cap, its ending stays
+// and half the cap remains for the earlier steps. The cut is a hard rune
+// trim and does not add a recovery marker.
+func codingFitStepCarry(steps []string, max int) string {
+	if max <= 0 || len(steps) == 0 {
+		return ""
+	}
+	tail := steps[len(steps)-1]
+	if len(steps) == 1 {
+		return truncateRunesV2Tail(tail, max)
+	}
+	sep := "\n\n"
+	sepN := utf8.RuneCountInString(sep)
+	tailN := utf8.RuneCountInString(tail)
+	// A tail that fills the cap, or leaves no room for the separator, used to
+	// be stored alone. The earlier measurement then disappeared.
+	if tailN >= max || max-tailN-sepN < 1 {
+		return codingFitOversizedTail(steps, max)
+	}
+	budget := max - tailN - sepN
+	earlier := steps[:len(steps)-1]
+	picked := make([]string, len(earlier))
+	used := 0
+	for i := len(earlier) - 1; i >= 0; i-- {
+		step := earlier[i]
+		gap := 0
+		if used > 0 {
+			gap = sepN
+		}
+		need := gap + utf8.RuneCountInString(step)
+		if used+need <= budget {
+			picked[i] = step
+			used += need
+			continue
+		}
+		room := budget - used - gap
+		if room > 0 {
+			picked[i] = truncateRunesV2Tail(step, room)
+		}
+		break
+	}
+	var b strings.Builder
+	for _, part := range picked {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString(sep)
+		}
+		b.WriteString(part)
+	}
+	head := strings.TrimSpace(b.String())
+	if head == "" {
+		return tail
+	}
+	return head + sep + tail
+}
+
+// codingFitOversizedTail keeps the ending of a last step that does not fit
+// in the cap, and still leaves room for the earlier deliveries. Giving the
+// whole cap to that step would drop a measurement the next turn needs.
+func codingFitOversizedTail(steps []string, max int) string {
+	tail := steps[len(steps)-1]
+	sep := "\n\n"
+	sepN := utf8.RuneCountInString(sep)
+	older := codingFitStepCarry(steps[:len(steps)-1], max/2)
+	if older == "" {
+		return truncateRunesV2Tail(tail, max)
+	}
+	room := max - utf8.RuneCountInString(older) - sepN
+	if room < 1 {
+		return truncateRunesV2Tail(tail, max)
+	}
+	return older + sep + truncateRunesV2Tail(tail, room)
+}
+
+func truncateRunesV2Tail(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return strings.TrimSpace(s)
+	}
+	return strings.TrimSpace(string(runes[len(runes)-max:]))
 }
 
 func formatCodingWorkbenchUserAnswer(kind codingRequestKind, results []v2.TaskRunResult, cancelled bool) string {

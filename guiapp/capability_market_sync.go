@@ -1014,7 +1014,7 @@ func (a *App) installManagedExternalSkill(ctx context.Context, item HubCapabilit
 	var entry *corelib.NLSkillEntry
 	switch originSource {
 	case corelib.CapabilitySourceClawHub:
-		entry, err = cskill.DefaultHubClient().DownloadClawHub(ctx, skillID)
+		entry, err = cskill.DefaultHubClient().DownloadClawHubWithOptions(ctx, skillID, cskill.ClawHubDownloadOptions{TargetDir: stagingDir, Source: "clawhub"})
 	case corelib.CapabilitySourceGitHub:
 		installRef := stringFromMap(metadata, "install_ref")
 		if installRef == "" {

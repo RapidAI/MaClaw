@@ -1859,6 +1859,12 @@ type sharedAgentLoopCallbacks struct {
 	// it. It is host state, not a tool argument. Empty for every other turn,
 	// including an imported workflow that is not a host procedure.
 	hostProcedureDir string
+	// adoptedProcedureDir is the instruction package installed on this turn.
+	// clearSkillAdmission drops the matched local skill and would drop this
+	// pin with it. The next request follows this directory even when the
+	// skill name does not appear in the task text.
+	adoptedProcedureDir  string
+	adoptedProcedureName string
 	// admittedSkillSettled is this turn, not this model request. Publishing
 	// the next request clears the bindings and selects again; it must not
 	// clear this, or a skill the model already called is demanded again.
@@ -3462,6 +3468,7 @@ func (c *sharedAgentLoopCallbacks) SyncDirectoryToRenderedTools(tools []map[stri
 func (c *sharedAgentLoopCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
 	_ = userText
 	_ = isFirstTurn
+	c.ensureAdoptedProcedureDocs()
 	return c.systemPrompt
 }
 
@@ -5966,6 +5973,10 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 			defer end()
 		}
 	}
+	var installedSkill searchAndInstallSkillResult
+	if strings.TrimSpace(name) == "search_and_install_skill" {
+		execCtx = withSkillInstallResultSink(execCtx, &installedSkill)
+	}
 	// The procedure directory is host state for this call. It is not written
 	// into the model JSON: a hidden argument would be forgeable on every bash
 	// path that does not stamp, and the semantic shell adapter rejects extra
@@ -6026,6 +6037,22 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 		}
 	}
 	policyUserID := c.handler.workflowPolicyOwnerID(c.userID, c.loopCtx)
+	// A sibling named in the installed document is not a workspace file.
+	// Rewrite only a read or a list, and only when the path this tool will
+	// open is missing. The owner is injected only for an explicit runtime,
+	// so the existence check has to use that same owner or it would hide a
+	// file the tool still reads from the process workspace.
+	readOwner := ""
+	if loopContextHasExplicitRuntimeOwner(c.loopCtx) {
+		readOwner = policyUserID
+	}
+	rewritten, rejectProcedurePath := bindHostProcedureRelativeRead(c.handler, readOwner, c.hostProcedureDir, name, argsJSON)
+	if rejectProcedurePath {
+		// The tool has not opened anything. The trusted reader uses this same
+		// code, and a bare sentence would be recorded as following the procedure.
+		return semanticUnexecutedRejection(fmt.Errorf("trusted_file_read_path_rejected"))
+	}
+	argsJSON = rewritten
 	exec := c.handler.executeToolDetailedWithRuntimeContextAndContextTokens(
 		withMailboxOwner(withTrustedAuditPrincipal(execCtx, c.semanticPrincipalID()), c.userID),
 		policyUserID,
@@ -6048,6 +6075,9 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 	if modelDiscoveryExtensionName(name) {
 		c.extensionHostSeen = true
 		c.extensionHostOK = !exec.IsFailure()
+	}
+	if strings.TrimSpace(installedSkill.ProcedureDir) != "" && !exec.IsFailure() {
+		c.adoptInstalledProcedure(installedSkill.ProcedureDir, installedSkill.ProcedureName)
 	}
 	// A screenshot is an outbound artifact, not model context. Preserve it for
 	// the final gateway response and replace the base64 body with the same small
@@ -8645,7 +8675,17 @@ func (c *sharedAgentLoopCallbacks) executeTrustedFileRead(_ tool.PlannedSelectio
 		return semanticUnexecutedRejection(err)
 	}
 	// The procedure file is named by an absolute path outside the task
-	// workspace. The workspace jail still applies to every other path.
+	// workspace. A relative sibling is the same read when the workspace does
+	// not already have that name. The workspace jail still applies to every
+	// other path, and a workspace file of the same name stays the workspace file.
+	principal := c.semanticPrincipalID()
+	if abs, reject := hostProcedureTokenReadPath(c.hostProcedureDir, path); reject {
+		return semanticUnexecutedRejection(fmt.Errorf("trusted_file_read_path_rejected"))
+	} else if abs != "" {
+		path = abs
+	} else if abs := hostProcedureRelativeReadPath(c.hostProcedureDir, trustedPrincipalBoundWorkspace(c.handler, principal), path); abs != "" {
+		path = abs
+	}
 	var result string
 	if hostProcedureTreeContains(c.hostProcedureDir, path) {
 		result, err = readHostProcedureTree(c.hostProcedureDir, path, query, filePattern, startLine)

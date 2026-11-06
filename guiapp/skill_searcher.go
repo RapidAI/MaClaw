@@ -832,6 +832,7 @@ func skipUnrunnableInstalled(installed []corelib.NLSkillEntry, results []SkillSe
 
 func unrunnableInstalledMatch(installed []corelib.NLSkillEntry, result SkillSearchResult) bool {
 	matched := false
+	blocking := false
 	for i := range installed {
 		if !skillResultMatchesInstalled(&installed[i], result) {
 			continue
@@ -840,8 +841,14 @@ func unrunnableInstalledMatch(installed []corelib.NLSkillEntry, result SkillSear
 		if installedSkillIsRunnable(&installed[i]) {
 			return false
 		}
+		// An empty directory is not a failed program. The 2026-11-06 picture
+		// install committed only the scan database and was then marked
+		// needs_setup. Skipping that hit kept the empty folder forever.
+		if !installedSkillPackageMissing(&installed[i]) {
+			blocking = true
+		}
 	}
-	return matched
+	return matched && blocking
 }
 
 func skillResultMatchesInstalled(skill *corelib.NLSkillEntry, result SkillSearchResult) bool {

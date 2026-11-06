@@ -3391,6 +3391,7 @@ func (a *App) shutdown(ctx context.Context) {
 	// server run. The person saying stop is what posts cancel.
 	abandonDesktopSurface()
 	a.stopCompanionGroupInviteWatch()
+	a.stopFileCompanionNotificationWatch()
 	a.stopFileCompanionShareDiscussionWatch()
 	closeKnowledgeEmbeddingRefresh()
 	a.stopKnowledgeFolderWatch()

@@ -301,8 +301,8 @@ export function refreshCompanionGroupInvites() {
     void refreshInvites();
 }
 
-// Pending reading-group invites for the main-window notification bell.
-// The companion process cannot host this confirm, so the list is polled here.
+// Pending reading-group invites for the notification bell. The main window
+// and the companion title bar each mount this hook and poll their own list.
 export function useCompanionGroupInvites(active: boolean, lang = "zh") {
     const snapshot = useSyncExternalStore(subscribeStore, getSnapshot, getSnapshot);
     langRef.current = lang || "zh";

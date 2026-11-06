@@ -7,10 +7,9 @@ import (
 )
 
 // A document shared with this person or their reading group is delivered as a
-// Hub notification. The bell only exists on the assistant panel, so a reader
-// working elsewhere would miss it; raise the operating system's notice too.
-// Opening the notice in the bell offers 打开, which imports the share (if
-// needed) and opens it in the companion.
+// Hub notification. Both title bars show the bell. A hidden window still needs
+// the operating system's notice. Opening the notice in the bell offers 打开,
+// which imports the share (if needed) and opens it in the companion.
 //
 // The same notice arrives twice on a reconnect (a WebSocket push and the unread
 // pull). It is announced once per notification id while this process runs.

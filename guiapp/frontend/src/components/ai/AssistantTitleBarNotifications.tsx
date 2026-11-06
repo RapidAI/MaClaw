@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { EventsOn } from "../../../wailsjs/runtime";
+import { windowNoDragRegionProps } from "../../utils/windowDrag";
 import { localizeText } from "./aiAssistantI18n";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { NotificationBell } from "./NotificationBell";
@@ -146,6 +148,17 @@ export function AssistantTitleBarNotifications({
         return () => window.removeEventListener('maclaw:open-system-notifications', openSystemNotifications);
     }, [active, panelOpen, togglePanel]);
     useEffect(() => { if (active || !panelOpen) return; setSelectedNotification(null); togglePanel(); const focused = document.activeElement; if (focused instanceof HTMLElement && focused.closest('[data-testid="notification-panel"]')) focused.blur(); }, [active, panelOpen, togglePanel]);
+    const anchorRef = useRef<HTMLDivElement>(null);
+    // The PDF preview is its own document. A click on the page never reaches
+    // the listener on this document, so the panel stayed open over the file.
+    // The companion title bar already paints above that frame; the same scrim
+    // the 打开 menu uses is the hit target, and the existing outside-click
+    // listener closes the panel. The main window has no such frame.
+    const [companionBar, setCompanionBar] = useState<Element | null>(null);
+    useLayoutEffect(() => {
+        const next = panelOpen ? anchorRef.current?.closest(".file-companion-titlebar") ?? null : null;
+        setCompanionBar((current) => (current === next ? current : next));
+    }, [panelOpen]);
     const resolvedSelected = selectedNotification
         ? notificationsWithInvites.find((item) => item.id === selectedNotification.id)
             ?? (selectedNotification.groupInviteId ? null : selectedNotification)
@@ -174,7 +187,7 @@ export function AssistantTitleBarNotifications({
     }, [dismissUrgentToast, panelOpen, urgentToast]);
     return (
         <>
-            <div data-notification-anchor="true" className="atbn-anchor">
+            <div data-notification-anchor="true" className="atbn-anchor" ref={anchorRef}>
                 <NotificationBell
                     unreadCount={hubUnreadCount + inviteCount}
                     onClick={handleTogglePanel}
@@ -210,6 +223,16 @@ export function AssistantTitleBarNotifications({
                     lang={lang}
                 />
             )}
+            {companionBar
+                ? createPortal(
+                    <div
+                        className="file-companion-open-scrim"
+                        data-testid="file-companion-notification-scrim"
+                        {...windowNoDragRegionProps()}
+                    />,
+                    companionBar,
+                )
+                : null}
             {urgentToast && active && !panelOpen && (
                 <NotificationUrgentToast
                     notification={urgentToast}

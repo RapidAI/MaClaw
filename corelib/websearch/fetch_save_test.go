@@ -57,6 +57,42 @@ func TestFetchSavePathWritesUnderWorkdir(t *testing.T) {
 	}
 }
 
+func TestFetchRawBodyKeepsCitationMeta(t *testing.T) {
+	const page = `<html><head><meta name="citation_pdf_url" content="https://aclanthology.org/2024.acl-long.1.pdf">` +
+		`<link rel="alternate" type="application/pdf" href="https://aclanthology.org/2024.acl-long.1.pdf"></head>` +
+		`<body><p>Visible abstract paragraph.</p></body></html>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(page))
+	}))
+	t.Cleanup(srv.Close)
+
+	plain, err := FetchCtx(context.Background(), srv.URL, &FetchOptions{TimeoutS: 15, MaxBytes: 2 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plain.ContentType, "text/html") {
+		t.Fatalf("content-type=%q", plain.ContentType)
+	}
+	if strings.Contains(plain.Content, "citation_pdf_url") || strings.Contains(plain.Content, "rel=\"alternate\"") {
+		t.Fatalf("readable extract kept head tags: %q", plain.Content)
+	}
+	if !strings.Contains(plain.Content, "Visible abstract paragraph.") {
+		t.Fatalf("readable extract dropped the body: %q", plain.Content)
+	}
+
+	raw, err := FetchCtx(context.Background(), srv.URL, &FetchOptions{TimeoutS: 15, MaxBytes: 2 << 20, RawBody: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw.Content, `name="citation_pdf_url"`) || !strings.Contains(raw.Content, `rel="alternate"`) {
+		t.Fatalf("raw body lost citation tags: %q", raw.Content)
+	}
+	if !strings.Contains(raw.ContentType, "text/html") {
+		t.Fatalf("raw content-type=%q", raw.ContentType)
+	}
+}
+
 func TestFetchSavePathAllowsLargeMaxBytes(t *testing.T) {
 	// Caller may request up to 100MB for PDF downloads; text path stays at 10MB.
 	opts := &FetchOptions{SavePath: filepath.Join(t.TempDir(), "big.pdf"), MaxBytes: 50 * 1024 * 1024}
