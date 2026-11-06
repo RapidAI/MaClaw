@@ -7,5 +7,19 @@
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnF3d2Uql1vNymPqvFr+AYBmlXkqMo53mKoTp25src9oIUopJm29kNoYG0tGqNEJSaHluIV+fR7pigNPa8GehlY0Y5/yR8zew266Q8dVaizk12eXiu1LHj9bmFvs4XptTwFTnSwRf+D0LGOSFPBbNgaubbeO2/pIv+hz6dM2OSWR8NxXwCFBzOyjNeeDitFSZuPg2LNmnXknJYRSsj1xJljahNcm9cfYkak0FE/M/hOCqPlnF6NWOlXDFT5nFqN4ELV7XXkiea0FyRSBdhLE5+XsdYiVhx/1VIKMSvlQt4iU8UDMo9uQ+qE6JvI6ZFvPyNSfgtxVMlKJEZrM1MQgV5QIDAQAB",
   "permissions": ["contextMenus", "nativeMessaging"],
   "background": { "service_worker": "background.js" },
-  "action": { "default_title": "__MSG_menuAdd__" }
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "__MSG_menuAdd__",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  }
 }

@@ -597,6 +597,29 @@ func TestParseAcceptsFullwidthStepBrackets(t *testing.T) {
 	}
 }
 
+func TestParsePlainHopPythonLabel(t *testing.T) {
+	spec, errs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [act free] 搜索\n  - 工具: web_search\n  hop_python:\n  weather = web_search(\"北京天气\")\n  + → weather % str\n2. [check] 确认\n  + → accepted % bool\n3. [exit]\n")
+	if len(errs) != 0 || len(spec.Steps) != 3 || spec.Steps[0].Body != `weather = web_search("北京天气")` || len(spec.Steps[0].Tools) != 1 || len(spec.Steps[0].Outputs) != 1 || spec.Steps[0].Outputs[0].Name != "weather" {
+		t.Fatalf("plain body = %+v errs = %v", spec.Steps, errs)
+	}
+	indented, indentedErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [act] 搜索\n  hop_python:\n    weather = web_search(query: \"北京天气\")\n2. [exit]\n")
+	if len(indentedErrs) != 0 || len(indented.Steps) != 2 || indented.Steps[0].Body != `weather = web_search(query: "北京天气")` || indented.Steps[1].Type != StepExit {
+		t.Fatalf("indented body = %+v errs = %v", indented.Steps, indentedErrs)
+	}
+	nested, nestedErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [act] 搜索\n  hop_python:\n    if True:\n      weather = web_search(query: \"北京天气\")\n2. [exit]\n")
+	nestedBody := ""
+	if len(nested.Steps) > 0 {
+		nestedBody = nested.Steps[0].Body
+	}
+	if len(nestedErrs) != 0 || len(nested.Steps) != 2 || nestedBody != "if True:\n  weather = web_search(query: \"北京天气\")" || nested.Steps[1].Type != StepExit {
+		t.Fatalf("nested body = %q errs = %v", nestedBody, nestedErrs)
+	}
+	reason, reasonErrs := Parse("# Spec: 天气\nGoal: 查询\n## Steps\n1. [reason] 想\n  hop_python:\n  weather = web_search(\"北京天气\")\n2. [exit]\n")
+	if len(reasonErrs) != 0 || len(reason.Steps) != 2 || reason.Steps[0].Body != "" || reason.Steps[0].Type != StepReason {
+		t.Fatalf("reason body = %+v errs = %v", reason.Steps, reasonErrs)
+	}
+}
+
 func TestParseKeepsColonsInsideHopPython(t *testing.T) {
 	spec, errs := Parse("# Spec: py\nGoal: keep\n## Steps\n1. [act] 运行\n  > ```hop_python\n  > report = \"a:b：c\"\n  > ```\n")
 	if len(errs) != 0 {

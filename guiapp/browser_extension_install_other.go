@@ -10,6 +10,15 @@ import (
 
 func companionAppPath(string) string { return "" }
 
+func openCompanionExtensionsPageOS(exe, page string) error {
+	cmd := exec.Command(exe, "--new-window", page)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
+}
+
 func browserProcessRunningOS(image string) bool {
 	out, err := exec.Command("pgrep", "-x", image).Output()
 	return err == nil && strings.TrimSpace(string(out)) != ""

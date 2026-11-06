@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DialogProvider } from "../CustomDialog";
-import { CompanionLibraryView } from "./FileCompanionLibrary";
+import { CompanionLibraryView, CompanionPlaceDialog, companionLibraryDragType } from "./FileCompanionLibrary";
 
 const listLibrary = vi.fn();
 const listCatalog = vi.fn();
@@ -10,6 +10,8 @@ const createFolder = vi.fn();
 const renameFolder = vi.fn();
 const deleteFolder = vi.fn();
 const moveItem = vi.fn();
+const setDefault = vi.fn();
+const folderForPath = vi.fn();
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
     AddFileCompanionGroupMember: vi.fn(),
@@ -26,6 +28,8 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     RenameFileCompanionFolder: (...args: unknown[]) => renameFolder(...args),
     DeleteFileCompanionFolder: (...args: unknown[]) => deleteFolder(...args),
     MoveFileCompanionLibraryItem: (...args: unknown[]) => moveItem(...args),
+    SetFileCompanionDefaultFolder: (...args: unknown[]) => setDefault(...args),
+    FileCompanionFolderForPath: (...args: unknown[]) => folderForPath(...args),
     RemoveFileCompanionGroupMember: vi.fn(),
     ShareFileCompanionDocument: vi.fn(),
     ShowItemInFolder: vi.fn(),
@@ -73,6 +77,8 @@ afterEach(() => {
     renameFolder.mockReset();
     deleteFolder.mockReset();
     moveItem.mockReset();
+    setDefault.mockReset();
+    folderForPath.mockReset();
 });
 
 describe("companion library folders and file-name filter", () => {
@@ -290,4 +296,418 @@ describe("companion library folders and file-name filter", () => {
         await screen.findByTestId("file-companion-library-card-local:a");
         expect(document.activeElement).toBe(name);
     });
+
+    it("drops a document onto a folder and onto 未分类", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 2,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: { "item:local:a": "fld_paper" },
+        });
+        moveItem.mockResolvedValue({
+            rev: 3,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: { "item:local:a": "fld_paper", "item:local:b": "fld_paper" },
+        });
+        renderLibrary();
+        const card = await screen.findByTestId("file-companion-library-card-local:b");
+        const handle = screen.getByTestId("file-companion-library-drag-local:b");
+        const meta = screen.getByTestId("file-companion-library-meta-local:b");
+        expect(card.hasAttribute("draggable")).toBe(false);
+        expect(handle.getAttribute("draggable")).toBe("true");
+        expect(handle.getAttribute("title")).toBe("拖到左侧文件夹以分类");
+        expect(meta.getAttribute("draggable")).toBe("true");
+        expect(screen.getByTestId("file-companion-library-item-local:b").hasAttribute("draggable")).toBe(false);
+        const data = libraryDragTransfer();
+        card.getBoundingClientRect = () => ({ top: 100, left: 40, bottom: 160, right: 340, width: 300, height: 60, x: 40, y: 100, toJSON: () => ({}) });
+        const start = createEvent.dragStart(handle, { dataTransfer: data });
+        Object.defineProperty(start, "clientX", { configurable: true, value: 70 });
+        Object.defineProperty(start, "clientY", { configurable: true, value: 128 });
+        fireEvent(handle, start);
+        expect(data.imageX).toBe(30);
+        expect(data.imageY).toBe(28);
+        expect(card.style.contentVisibility).toBe("visible");
+        expect(document.querySelector(".file-companion-library-dialog")?.getAttribute("data-library-drag")).toBe("true");
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(data.getData(companionLibraryDragType)).toBe("local:b");
+        expect(card.getAttribute("data-dragging")).toBe("true");
+        expect(card.style.contentVisibility).toBe("visible");
+
+        const paper = folderRow("file-companion-folder-fld_paper");
+        fireEvent.dragOver(paper, { dataTransfer: data });
+        expect(paper.getAttribute("data-drop")).toBe("over");
+        fireEvent.drop(paper, { dataTransfer: data });
+        await waitFor(() => expect(moveItem).toHaveBeenCalledWith("local:b", "C:/notes/beta.md", "fld_paper"));
+        expect(paper.getAttribute("data-drop")).toBeNull();
+        expect(card.style.contentVisibility).toBe("");
+        expect(card.getAttribute("data-dragging")).toBeNull();
+        expect(document.querySelector(".file-companion-library-dialog")?.hasAttribute("data-library-drag")).toBe(false);
+
+        moveItem.mockClear();
+        moveItem.mockResolvedValue({
+            rev: 4,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: { "item:local:b": "fld_paper" },
+        });
+        const back = libraryDragTransfer();
+        const metaA = screen.getByTestId("file-companion-library-meta-local:a");
+        fireEvent.dragStart(metaA, { dataTransfer: back });
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(back.getData(companionLibraryDragType)).toBe("local:a");
+        expect(screen.getByTestId("file-companion-library-card-local:a").getAttribute("data-dragging")).toBe("true");
+        const none = folderRow("file-companion-folder-none");
+        fireEvent.dragOver(none, { dataTransfer: back });
+        expect(none.getAttribute("data-drop")).toBe("over");
+        fireEvent.drop(none, { dataTransfer: back });
+        await waitFor(() => expect(moveItem).toHaveBeenCalledWith("local:a", "C:/notes/alpha.md", ""));
+    });
+
+    it("does not drop onto 全部, the current folder, or the title", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 2,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: { "item:local:a": "fld_paper" },
+        });
+        renderLibrary();
+        await screen.findByTestId("file-companion-library-drag-local:a");
+        const data = libraryDragTransfer();
+        fireEvent.dragStart(screen.getByTestId("file-companion-library-drag-local:a"), { dataTransfer: data });
+        const paper = folderRow("file-companion-folder-fld_paper");
+        fireEvent.dragOver(paper, { dataTransfer: data });
+        expect(paper.getAttribute("data-drop")).toBeNull();
+        fireEvent.drop(paper, { dataTransfer: data });
+        expect(moveItem).not.toHaveBeenCalled();
+
+        const all = folderRow("file-companion-folder-all");
+        fireEvent.dragOver(all, { dataTransfer: data });
+        fireEvent.drop(all, { dataTransfer: data });
+        expect(all.getAttribute("data-drop")).toBeNull();
+        expect(moveItem).not.toHaveBeenCalled();
+
+        const blocked = libraryDragTransfer();
+        fireEvent.dragStart(screen.getByTestId("file-companion-library-item-local:b"), { dataTransfer: blocked });
+        fireEvent.dragStart(screen.getByTestId("file-companion-library-delete-local:b"), { dataTransfer: blocked });
+        expect(blocked.getData(companionLibraryDragType)).toBe("");
+        expect(screen.getByTestId("file-companion-library-card-local:b").getAttribute("data-dragging")).toBeNull();
+    });
+
+    it("does not paste a library drag into the search box or a new folder name", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 2,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: {},
+        });
+        renderLibrary();
+        const handle = await screen.findByTestId("file-companion-library-drag-local:b");
+        const data = libraryDragTransfer();
+        data.dropEffect = "copy";
+        fireEvent.dragStart(handle, { dataTransfer: data });
+        const filter = screen.getByTestId("file-companion-library-filter") as HTMLInputElement;
+        fireEvent.dragOver(filter, { dataTransfer: data });
+        expect(data.dropEffect).toBe("none");
+        const dropped = createEvent.drop(filter, { dataTransfer: data });
+        fireEvent(filter, dropped);
+        expect(dropped.defaultPrevented).toBe(true);
+        expect(filter.value).toBe("");
+        expect(moveItem).not.toHaveBeenCalled();
+        const name = screen.getByTestId("file-companion-folder-name") as HTMLInputElement;
+        const named = createEvent.drop(name, { dataTransfer: data });
+        fireEvent(name, named);
+        expect(named.defaultPrevented).toBe(true);
+        expect(name.value).toBe("");
+        expect(moveItem).not.toHaveBeenCalled();
+    });
+
+    it("hides the drag handle when there is no folder to drop on", async () => {
+        listCatalog.mockResolvedValue({ rev: 1, folders: [], placements: {} });
+        renderLibrary();
+        const card = await screen.findByTestId("file-companion-library-card-local:a");
+        expect(card.hasAttribute("draggable")).toBe(false);
+        expect(screen.queryByTestId("file-companion-library-drag-local:a")).toBeNull();
+        expect(screen.getByTestId("file-companion-library-meta-local:a").getAttribute("draggable")).not.toBe("true");
+    });
+
+    it("scrolls the folder rail when a drag sits on its edge", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 2,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: {},
+        });
+        renderLibrary();
+        const handle = await screen.findByTestId("file-companion-library-drag-local:b");
+        const data = libraryDragTransfer();
+        fireEvent.dragStart(handle, { dataTransfer: data });
+        const rail = screen.getByTestId("file-companion-library-folders");
+        vi.spyOn(rail, "scrollHeight", "get").mockReturnValue(400);
+        vi.spyOn(rail, "clientHeight", "get").mockReturnValue(100);
+        rail.getBoundingClientRect = () => ({ top: 0, bottom: 100, left: 0, right: 80, width: 80, height: 100, x: 0, y: 0, toJSON: () => ({}) });
+        rail.scrollTop = 20;
+        const paper = folderRow("file-companion-folder-fld_paper");
+        dragOverAt(paper, data, 90);
+        expect(rail.scrollTop).toBe(20);
+        dragOverAt(rail, data, 96);
+        expect(rail.scrollTop).toBe(28);
+        dragOverAt(rail, data, 4);
+        expect(rail.scrollTop).toBe(20);
+        fireEvent.dragEnd(handle);
+        await act(async () => {
+            await Promise.resolve();
+        });
+        rail.scrollTop = 20;
+        dragOverAt(rail, data, 96);
+        expect(rail.scrollTop).toBe(20);
+    });
+
+    it("files a document when dragend arrives before the drop", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 2,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: {},
+        });
+        moveItem.mockResolvedValue({
+            rev: 3,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: { "item:local:b": "fld_paper" },
+        });
+        renderLibrary();
+        const handle = await screen.findByTestId("file-companion-library-drag-local:b");
+        const card = screen.getByTestId("file-companion-library-card-local:b");
+        const data = libraryDragTransfer();
+        fireEvent.dragStart(handle, { dataTransfer: data });
+        expect(card.style.contentVisibility).toBe("visible");
+        fireEvent.dragEnd(handle);
+        expect(card.style.contentVisibility).toBe("");
+        fireEvent.drop(folderRow("file-companion-folder-fld_paper"), { dataTransfer: data });
+        await waitFor(() => expect(moveItem).toHaveBeenCalledWith("local:b", "C:/notes/beta.md", "fld_paper"));
+    });
+
+    it("marks a folder as the default category", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 2,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: {},
+        });
+        setDefault.mockResolvedValue({
+            rev: 3,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: {},
+            defaultId: "fld_paper",
+        });
+        renderLibrary();
+        await screen.findByTestId("file-companion-folder-fld_paper");
+        expect(screen.getByTestId("file-companion-folder-default-none").textContent).toBe("默认");
+        fireEvent.click(screen.getByTestId("file-companion-folder-default-fld_paper"));
+        await waitFor(() => expect(setDefault).toHaveBeenCalledWith("fld_paper"));
+        expect(screen.getByTestId("file-companion-folder-default-fld_paper").textContent).toBe("默认");
+        expect(screen.getByTestId("file-companion-folder-default-none").textContent).toBe("设为默认");
+    });
+
+    it("refreshes an open library after the place dialog moves a document", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 2,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: {},
+        });
+        moveItem.mockResolvedValue({
+            rev: 3,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: { "item:local:a": "fld_paper" },
+        });
+        renderLibrary();
+        fireEvent.click(await screen.findByTestId("file-companion-folder-fld_paper"));
+        expect(screen.queryByTestId("file-companion-library-card-local:a")).toBeNull();
+        listCatalog.mockResolvedValue({
+            rev: 3,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: { "item:local:a": "fld_paper" },
+        });
+        render(
+            <CompanionPlaceDialog path="C:/notes/alpha.md" onClose={() => undefined} />,
+        );
+        const paper = await screen.findByTestId("file-companion-place-fld_paper");
+        fireEvent.click(paper);
+        fireEvent.click(screen.getByTestId("file-companion-place-confirm"));
+        await waitFor(() => expect(moveItem).toHaveBeenCalledWith("", "C:/notes/alpha.md", "fld_paper"));
+        await screen.findByTestId("file-companion-library-card-local:a");
+    });
 });
+
+describe("CompanionPlaceDialog", () => {
+    it("preselects the default category and leaves the file uncategorized on cancel", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 2,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: {},
+            defaultId: "fld_paper",
+        });
+        const onClose = vi.fn();
+        render(<CompanionPlaceDialog path="C:/papers/2510.16079.pdf" onClose={onClose} />);
+        expect(await screen.findByTestId("file-companion-place-name")).toHaveProperty("textContent", "2510.16079.pdf");
+        await waitFor(() => expect((screen.getByTestId("file-companion-place-fld_paper") as HTMLInputElement).checked).toBe(true));
+        fireEvent.click(screen.getByTestId("file-companion-place-cancel"));
+        expect(onClose).toHaveBeenCalledOnce();
+        expect(moveItem).not.toHaveBeenCalled();
+    });
+
+    it("does not move the file until the folder list has loaded", async () => {
+        let release: (value: unknown) => void = () => undefined;
+        const gate = new Promise((resolve) => { release = resolve; });
+        listCatalog.mockReturnValue(gate);
+        render(<CompanionPlaceDialog path="C:/papers/2510.16079.pdf" onClose={() => undefined} />);
+        const confirm = screen.getByTestId("file-companion-place-confirm");
+        expect((confirm as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.queryByRole("radiogroup")).toBeNull();
+        fireEvent.click(confirm);
+        const form = confirm.closest("form");
+        if (!form) throw new Error("missing place form");
+        fireEvent.submit(form);
+        expect(moveItem).not.toHaveBeenCalled();
+        await act(async () => {
+            release({
+                rev: 2,
+                folders: [{ id: "fld_paper", name: "论文" }],
+                placements: {},
+                defaultId: "fld_paper",
+            });
+        });
+        await waitFor(() => expect((screen.getByTestId("file-companion-place-fld_paper") as HTMLInputElement).checked).toBe(true));
+        expect((screen.getByTestId("file-companion-place-confirm") as HTMLButtonElement).disabled).toBe(false);
+        expect(document.activeElement).toBe(screen.getByTestId("file-companion-place-fld_paper"));
+        screen.getByTestId("file-companion-place-confirm").focus();
+        fireEvent.keyDown(window, { key: "Tab" });
+        expect(document.activeElement).toBe(screen.getByRole("radio", { name: "未分类" }));
+        fireEvent.click(screen.getByTestId("file-companion-place-confirm"));
+        await waitFor(() => expect(moveItem).toHaveBeenCalledWith("", "C:/papers/2510.16079.pdf", "fld_paper"));
+    });
+
+    it("offers the folder the file is already in, not the default", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 4,
+            folders: [
+                { id: "fld_paper", name: "论文" },
+                { id: "fld_notes", name: "笔记" },
+            ],
+            placements: { "path:c:\\papers\\2510.16079.pdf": "fld_notes" },
+            defaultId: "fld_paper",
+        });
+        const onClose = vi.fn();
+        render(<CompanionPlaceDialog path="C:/papers/2510.16079.pdf" name="2510.16079.PDF" onClose={onClose} />);
+        expect(await screen.findByTestId("file-companion-place-name")).toHaveProperty("textContent", "2510.16079.PDF");
+        await waitFor(() => expect((screen.getByTestId("file-companion-place-fld_notes") as HTMLInputElement).checked).toBe(true));
+        expect((screen.getByTestId("file-companion-place-fld_paper") as HTMLInputElement).checked).toBe(false);
+        expect(screen.getByText("取消后这篇文档仍留在「笔记」。")).toBeTruthy();
+        fireEvent.click(screen.getByTestId("file-companion-place-cancel"));
+        expect(onClose).toHaveBeenCalledOnce();
+        expect(moveItem).not.toHaveBeenCalled();
+        cleanup();
+        render(<CompanionPlaceDialog path="C:/papers/2510.16079.pdf" onClose={() => undefined} />);
+        await waitFor(() => expect((screen.getByTestId("file-companion-place-fld_notes") as HTMLInputElement).checked).toBe(true));
+        fireEvent.click(screen.getByTestId("file-companion-place-confirm"));
+        await waitFor(() => expect(moveItem).toHaveBeenCalledWith("", "C:/papers/2510.16079.pdf", "fld_notes"));
+    });
+
+    it("does not inherit a sibling path key when this row is uncategorized", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 5,
+            folders: [
+                { id: "fld_paper", name: "论文" },
+                { id: "fld_notes", name: "笔记" },
+            ],
+            placements: { "path:c:\\papers\\2510.16079.pdf": "fld_notes" },
+            defaultId: "fld_paper",
+        });
+        folderForPath.mockResolvedValue("");
+        render(<CompanionPlaceDialog path="C:/papers/2510.16079.pdf" onClose={() => undefined} />);
+        await waitFor(() => expect((screen.getByTestId("file-companion-place-fld_paper") as HTMLInputElement).checked).toBe(true));
+        expect((screen.getByTestId("file-companion-place-fld_notes") as HTMLInputElement).checked).toBe(false);
+        expect(screen.getByText("取消后这篇文档留在未分类。")).toBeTruthy();
+        expect(folderForPath).toHaveBeenCalledWith("C:/papers/2510.16079.pdf");
+    });
+
+    it("does not file the document when the folder list cannot be read", async () => {
+        listCatalog.mockRejectedValue(new Error("文档列表无法读取"));
+        render(<CompanionPlaceDialog path="C:/papers/2510.16079.pdf" onClose={() => undefined} />);
+        expect(await screen.findByText("文档列表无法读取")).toBeTruthy();
+        expect(screen.queryByText("正在读取…")).toBeNull();
+        expect(screen.queryByRole("radiogroup")).toBeNull();
+        expect(screen.queryByText("取消后这篇文档留在未分类。")).toBeNull();
+        const confirm = screen.getByTestId("file-companion-place-confirm");
+        expect((confirm as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.click(confirm);
+        const form = confirm.closest("form");
+        if (!form) throw new Error("missing place form");
+        fireEvent.submit(form);
+        expect(moveItem).not.toHaveBeenCalled();
+    });
+
+    it("does not claim the file is uncategorized when its folder cannot be read", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 7,
+            folders: [
+                { id: "fld_paper", name: "论文" },
+                { id: "fld_notes", name: "笔记" },
+            ],
+            placements: { "path:c:\\papers\\2510.16079.pdf": "fld_notes" },
+            defaultId: "fld_paper",
+        });
+        folderForPath.mockRejectedValue(new Error("文档列表无法读取"));
+        render(<CompanionPlaceDialog path="C:/papers/2510.16079.pdf" onClose={() => undefined} />);
+        await waitFor(() => expect((screen.getByTestId("file-companion-place-fld_paper") as HTMLInputElement).checked).toBe(true));
+        expect((screen.getByTestId("file-companion-place-fld_notes") as HTMLInputElement).checked).toBe(false);
+        expect(screen.getByText("文档列表无法读取")).toBeTruthy();
+        expect(screen.queryByText("取消后这篇文档留在未分类。")).toBeNull();
+        expect(screen.queryByText("取消后这篇文档仍留在「笔记」。")).toBeNull();
+        expect((screen.getByTestId("file-companion-place-confirm") as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("offers the row folder when the path key is absent", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 6,
+            folders: [
+                { id: "fld_paper", name: "论文" },
+                { id: "fld_notes", name: "笔记" },
+            ],
+            placements: {},
+            defaultId: "fld_paper",
+        });
+        folderForPath.mockResolvedValue("fld_notes");
+        render(<CompanionPlaceDialog path="C:/papers/2510.16079.pdf" onClose={() => undefined} />);
+        await waitFor(() => expect((screen.getByTestId("file-companion-place-fld_notes") as HTMLInputElement).checked).toBe(true));
+        expect(screen.getByText("取消后这篇文档仍留在「笔记」。")).toBeTruthy();
+    });
+});
+
+function folderRow(testId: string): HTMLElement {
+    const node = screen.getByTestId(testId).closest("[role=treeitem]");
+    if (!(node instanceof HTMLElement)) throw new Error("missing folder row");
+    return node;
+}
+
+function dragOverAt(node: HTMLElement, data: ReturnType<typeof libraryDragTransfer>, clientY: number) {
+    const event = createEvent.dragOver(node, { clientY, dataTransfer: data });
+    Object.defineProperty(event, "clientY", { configurable: true, value: clientY });
+    fireEvent(node, event);
+}
+
+function libraryDragTransfer() {
+    const store = new Map<string, string>();
+    return {
+        effectAllowed: "all",
+        dropEffect: "none",
+        imageX: 0,
+        imageY: 0,
+        setData(type: string, value: string) {
+            store.set(type, value);
+        },
+        getData(type: string) {
+            return store.get(type) ?? "";
+        },
+        setDragImage(_image: unknown, x: number, y: number) {
+            this.imageX = x;
+            this.imageY = y;
+        },
+    };
+}

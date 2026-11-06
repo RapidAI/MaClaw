@@ -201,7 +201,7 @@ func TestAcquireCompanionPaperSavesPublicPDF(t *testing.T) {
 	if name != same {
 		t.Fatalf("canonical name %s != %s", name, same)
 	}
-	if len(execs) != 1 || execs[0][1] != "open-file" || !strings.HasSuffix(execs[0][2], name) {
+	if len(execs) != 1 || execs[0][1] != companionPaperOpenArg || !strings.HasSuffix(execs[0][2], name) {
 		t.Fatalf("exec=%#v", execs)
 	}
 	if !fileIsPDF(filepath.Join(dir, name)) {

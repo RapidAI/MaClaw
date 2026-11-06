@@ -414,7 +414,7 @@ func TestShowBrowserExtensionLoadOpensExtensionsPage(t *testing.T) {
 	if err := (&App{}).ShowBrowserExtensionLoad("edge"); err != nil {
 		t.Fatal(err)
 	}
-	if len(launched) != 2 || !strings.Contains(launched[0], "chrome://extensions") || !strings.Contains(launched[1], "edge://extensions") {
+	if len(launched) != 2 || !strings.HasSuffix(launched[0], " chrome://extensions/") || !strings.HasSuffix(launched[1], " edge://extensions/") {
 		t.Fatalf("launched=%v", launched)
 	}
 }

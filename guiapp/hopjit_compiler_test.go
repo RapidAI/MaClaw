@@ -591,6 +591,59 @@ func TestRepairMissingCheckVerdicts(t *testing.T) {
 	}
 }
 
+func TestRepairBoolCallVerdicts(t *testing.T) {
+	note := "# Spec: 笔记\nGoal: 整理笔记\nOutputs:\n- report % text\n## Steps\n1. [act] 整理\n  + → report % text\n2. [check] 核验\n  - ← report\n  + → accepted % bool(report)\n3. [exit]\n"
+	got := repairMissingCheckVerdicts(note)
+	parsed, errs := hopspec.Parse(got)
+	if len(errs) != 0 || len(parsed.Steps) < 2 || strings.TrimSpace(parsed.Steps[1].Body) != "accepted = bool(report)" || !stepHasBoolOutput(*parsed.Steps[1]) || strings.Contains(got, "verdict") || strings.Contains(got, "% bool(report)") || strings.Contains(got, "web_search") {
+		t.Fatalf("note spec=%s errs=%v", got, errs)
+	}
+	if again := repairMissingCheckVerdicts(got); again != got {
+		t.Fatalf("duplicated: %s", again)
+	}
+	if err := validateCompiledHopSpec(got); err != nil {
+		t.Fatal(err)
+	}
+	missingInput := "# Spec: 笔记\nGoal: 整理笔记\nOutputs:\n- report % text\n## Steps\n1. [act] 整理\n  + → report % text\n2. [check] 核验\n  + → accepted % bool(report)\n3. [exit]\n"
+	wired := repairMissingCheckVerdicts(missingInput)
+	wiredSpec, wiredErrs := hopspec.Parse(wired)
+	if len(wiredErrs) != 0 || len(wiredSpec.Steps) < 2 || strings.TrimSpace(wiredSpec.Steps[1].Body) != "accepted = bool(report)" || len(wiredSpec.Steps[1].Inputs) != 1 || wiredSpec.Steps[1].Inputs[0] != "report" || strings.Contains(wired, "verdict") || strings.Count(wired, "- ← report") != 1 {
+		t.Fatalf("wired spec=%s errs=%v", wired, wiredErrs)
+	}
+	unknown := "# Spec: 判定\nGoal: 核验\n## Steps\n1. [check] 核验\n  + → accepted % bool(missing)\n2. [exit]\n"
+	unknown = repairMissingCheckVerdicts(unknown)
+	if strings.Contains(unknown, "- ← missing") || strings.Contains(unknown, "hop_python") || !strings.Contains(unknown, "bool(missing)") || !strings.Contains(unknown, "+ → verdict % bool") {
+		t.Fatalf("unknown=%s", unknown)
+	}
+	bodied := "# Spec: 笔记\nGoal: 整理笔记\nOutputs:\n- report % text\n## Steps\n1. [act] 整理\n  + → report % text\n2. [check] 核验\n  + → accepted % bool(report)\n```hop_python\nnote = \"ok\"\n```\n3. [exit]\n"
+	if repairMissingCheckVerdicts(bodied) != bodied {
+		t.Fatal("a check that already has a body was rewritten")
+	}
+	mixed := "# Spec: 笔记\nGoal: 整理笔记\nOutputs:\n- report % text\n## Steps\n1. [act] 整理\n  + → report % text\n2. [check] 核验\n  - ← report\n  + → accepted % bool(report)\n  + → feedback % text\n3. [exit]\n"
+	mixedOnce := repairMissingCheckVerdicts(mixed)
+	if strings.Contains(mixedOnce, "hop_python") || !strings.Contains(mixedOnce, "bool(report)") || !strings.Contains(mixedOnce, "+ → verdict % bool") {
+		t.Fatalf("mixed=%s", mixedOnce)
+	}
+	tool := "# Spec: 笔记\nGoal: 整理笔记\n## Steps\n1. [check] 核验\n  + → accepted % bool(web_search(query: \"笔记\"))\n2. [exit]\n"
+	tool = repairMissingCheckVerdicts(tool)
+	if strings.Contains(tool, "hop_python") || strings.Contains(tool, "accepted = bool(web_search") {
+		t.Fatalf("tool=%s", tool)
+	}
+	confirm := "# Spec: 笔记\nGoal: 确认\nOutputs:\n- report % text\n## Steps\n1. [act] 整理\n  + → report % text\n2. [confirm] 确认\n  - ← report\n  + → accepted % bool(report)\n3. [exit]\n"
+	if strings.Contains(repairMissingCheckVerdicts(confirm), "hop_python") {
+		t.Fatal("confirm gained a body")
+	}
+	either := "# Spec: 北京天气\nGoal: 查询天气\nOutputs:\n- weather % text\n## Steps\n1. [act] 查询\n  - 工具: web_search\n  + → weather % text\n2. [check] 核验\n  - ← weather\n  + → accepted % bool(weather or \"\")\n3. [exit]\n"
+	either = prepareCompiledHopMarkdown(either, "北京天气")
+	eitherSpec, eitherErrs := hopspec.Parse(either)
+	if len(eitherErrs) != 0 || len(eitherSpec.Steps) < 2 || strings.TrimSpace(eitherSpec.Steps[1].Body) != `accepted = bool(weather or "")` || strings.Contains(either, "verdict") || strings.Count(either, "hop_python") != 1 {
+		t.Fatalf("either spec=%s errs=%v", either, eitherErrs)
+	}
+	if again := prepareCompiledHopMarkdown(either, "北京天气"); again != either {
+		t.Fatalf("either duplicated: %s", again)
+	}
+}
+
 func TestCompileHopSpecRepairsMissingCheckVerdict(t *testing.T) {
 	calls := 0
 	var systems []string
@@ -976,6 +1029,58 @@ func TestCompileHopSpecDropsFabricatedActFreeBody(t *testing.T) {
 	}
 	if err := liveLookupToolsRequired(spec, "北京天气"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRepairLiveLookupPublishesUndeclaredSpecOutput(t *testing.T) {
+	live := "# Spec\n\nGoal\n查询北京天气并返回文本结果。\n\nOutputs\n- weather: str\n\n## Steps\n1. [reason] 确定需要获取北京天气文本\n2. [act free] 搜索北京天气并写入结果\n  - 工具: web_search\n  hop_python:\n  weather = web_search(\"北京天气\")\n3. [check] 确认天气文本已取得\n  - ← weather\n  + → accepted % bool(weather)\n4. [exit]\n"
+	got := prepareCompiledHopMarkdown(live, "北京天气")
+	parsed, errs := hopspec.Parse(got)
+	if err := validateCompiledHopSpec(got); err != nil || len(errs) != 0 {
+		t.Fatalf("validate %v parse %v spec %s", err, errs, got)
+	}
+	if err := liveLookupToolsRequired(got, "北京天气"); err != nil {
+		t.Fatalf("lookup %v spec %s", err, got)
+	}
+	if len(parsed.Steps) < 3 || parsed.Steps[1].Type != hopspec.StepAct || strings.TrimSpace(parsed.Steps[1].Body) != "" || !hopTestStepOutputs(parsed.Steps[1], "weather") || len(parsed.Steps[1].Tools) != 1 || parsed.Steps[1].Tools[0] != "web_search" || !strings.Contains(parsed.Goal, "查询北京天气") || strings.Contains(got, `weather = web_search`) || parsed.Steps[2].Type != hopspec.StepCheck || strings.TrimSpace(parsed.Steps[2].Body) != "accepted = bool(weather)" || strings.Contains(got, "% bool(weather)") || strings.Contains(got, "verdict") {
+		t.Fatalf("published spec %s", got)
+	}
+	if again := prepareCompiledHopMarkdown(got, "北京天气"); again != got {
+		t.Fatalf("repair repeated: %s", again)
+	}
+	keyword := "# Spec: 北京天气\nGoal: 查询\nOutputs:\n- weather: str\n## Steps\n1. [act free] 搜索\n  - 工具: web_search\n  hop_python:\n    weather = web_search(query: \"北京天气\")\n2. [check] 确认\n  + → accepted % bool\n3. [exit]\n"
+	kept := prepareCompiledHopMarkdown(keyword, "北京天气")
+	keptSpec, keptErrs := hopspec.Parse(kept)
+	if len(keptErrs) != 0 || liveLookupToolsRequired(kept, "北京天气") != nil || len(keptSpec.Steps) < 1 || strings.TrimSpace(keptSpec.Steps[0].Body) == "" || !strings.Contains(keptSpec.Steps[0].Body, "web_search(query:") || !hopTestStepOutputs(keptSpec.Steps[0], "weather") {
+		t.Fatalf("keyword spec %s errs %v", kept, keptErrs)
+	}
+	blocked := "# Spec: 北京天气\nGoal: 查询\nOutputs:\n- weather: str\n## Steps\n1. [act] 记录\n  - 工具: write_file\n2. [exit]\n"
+	if repairLiveLookupTools(blocked, "北京天气") != blocked {
+		t.Fatal("write_file act received the spec output")
+	}
+	if err := liveLookupToolsRequired(blocked, "北京天气"); err == nil {
+		t.Fatal("unpublished output on a write_file act counted as retrieved")
+	}
+	notes := strings.ReplaceAll(live, "北京天气", "整理笔记")
+	notes = strings.ReplaceAll(notes, "天气", "笔记")
+	if repairLiveLookupTools(notes, "整理笔记") != notes {
+		t.Fatal("a note task published a search")
+	}
+	// The configured assistant writes the plain label before the tool line
+	// and never declares the spec output on the act.
+	shaped := "# Spec\n\nGoal: 查询北京天气并返回文本结果\n\nOutputs:\n- beijing_weather: str\n\n## Steps\n1. [reason] 确定要检索北京当前天气并整理成文本\n2. [act free] 检索北京天气并把文本结果赋给输出\nhop_python:\nbeijing_weather = web_search(\"北京天气\")\n- 工具: web_search\n3. [check] 确认已得到非空的北京天气文本\n- ← beijing_weather\n+ → accepted % bool(beijing_weather)\n4. [exit]\n"
+	calls := 0
+	caller := &guiHopJITCaller{invoke: func(context.Context, []interface{}, bool) (string, error) {
+		calls++
+		return shaped, nil
+	}}
+	compiled, err := compileHopSpec(context.Background(), "北京天气", caller)
+	if err != nil || calls != 1 || strings.Contains(compiled, `web_search("北京天气")`) || strings.Contains(compiled, "% bool(beijing_weather)") || strings.Contains(compiled, "verdict") {
+		t.Fatalf("calls=%d err=%v spec=%s", calls, err, compiled)
+	}
+	shapedSpec, shapedErrs := hopspec.Parse(compiled)
+	if len(shapedErrs) != 0 || len(shapedSpec.Steps) < 3 || shapedSpec.Steps[1].Type != hopspec.StepAct || strings.TrimSpace(shapedSpec.Steps[1].Body) != "" || !hopTestStepOutputs(shapedSpec.Steps[1], "beijing_weather") || len(shapedSpec.Steps[1].Tools) != 1 || shapedSpec.Steps[1].Tools[0] != "web_search" || !strings.Contains(shapedSpec.Goal, "查询北京天气") || shapedSpec.Steps[2].Type != hopspec.StepCheck || strings.TrimSpace(shapedSpec.Steps[2].Body) != "accepted = bool(beijing_weather)" {
+		t.Fatalf("shaped steps=%+v errs=%v spec=%s", shapedSpec.Steps, shapedErrs, compiled)
 	}
 }
 
@@ -1463,6 +1568,52 @@ func TestCompiledHopSpecAllowsActFreeBodyWithoutTools(t *testing.T) {
 	}
 }
 
+func TestRunHopTaskSkipsReasonWithoutOutputs(t *testing.T) {
+	calls := 0
+	caller := &guiHopJITCaller{invoke: func(_ context.Context, messages []interface{}, jsonResponse bool) (string, error) {
+		calls++
+		if calls == 1 {
+			if jsonResponse {
+				t.Fatal("compiler requested JSON")
+			}
+			return `# Spec: 笔记
+Goal: 整理笔记
+Outputs:
+- report % text
+## Steps
+1. [reason] 先确定范围
+2. [reason] 写出笔记
+  + → report % text
+3. [check] 核验
+  - ← report
+  + → accepted % bool
+4. [exit]
+`, nil
+		}
+		if !jsonResponse {
+			t.Fatal("step requested a tool turn")
+		}
+		for _, message := range messages {
+			fields, _ := message.(map[string]interface{})
+			content, _ := fields["content"].(string)
+			if strings.Contains(content, "当前步骤: 先确定范围") {
+				t.Fatal("reason without outputs called the model")
+			}
+		}
+		if calls == 2 {
+			return `{"report":"笔记"}`, nil
+		}
+		return `{"accepted":true}`, nil
+	}}
+	result, err := runHopTaskWithPersistence(context.Background(), hopjit.NewMemoryPersistence(), "整理笔记", caller)
+	if err != nil || result.Status != hopjit.NextCompleted || result.Outputs["report"] != "笔记" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if calls != 3 {
+		t.Fatalf("calls=%d", calls)
+	}
+}
+
 func TestRunHopTaskPlainActFillsJSON(t *testing.T) {
 	calls := 0
 	caller := &guiHopJITCaller{invoke: func(_ context.Context, _ []interface{}, jsonResponse bool) (string, error) {
@@ -1485,4 +1636,116 @@ func TestRunHopTaskPlainActFillsJSON(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("calls=%d", calls)
 	}
+}
+
+func TestRepairLookupCheckReceiptIgnoresARejectingModel(t *testing.T) {
+	spec := `# Spec: 北京天气
+## Goal
+查询北京当前天气，并给出可核对的文本结果。
+## Outputs
+- weather_text: str
+## Steps
+1. [reason] 确定需检索北京天气
+2. [act free] 检索北京天气并写入文本结果
+  - 工具: web_search
+  + → weather_text % str
+3. [check] 核对天气文本已取得
+  - ← weather_text
+  + → accepted % bool(weather_text)
+4. [exit]
+`
+	got := prepareCompiledHopMarkdown(spec, "北京天气")
+	if again := prepareCompiledHopMarkdown(got, "北京天气"); again != got {
+		t.Fatalf("receipt duplicated: %q", again)
+	}
+	parsed, errs := hopspec.Parse(got)
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	var body string
+	for _, step := range parsed.AllSteps() {
+		if step.Type == hopspec.StepCheck {
+			body = step.Body
+			break
+		}
+	}
+	if strings.TrimSpace(body) != "accepted = bool(weather_text)" || strings.Contains(got, "% bool(weather_text)") || strings.Contains(got, "verdict") || strings.Count(got, "hop_python") != 1 {
+		t.Fatalf("body=%q spec=%q", body, got)
+	}
+	note := "# Spec: 笔记\nGoal: 整理笔记\nOutputs:\n- report % text\n## Steps\n1. [reason] 整理\n  + → report % text\n2. [check] 核验\n  - ← report\n  + → accepted % bool\n3. [exit]\n"
+	if strings.Contains(prepareCompiledHopMarkdown(note, "整理笔记"), "hop_python") {
+		t.Fatal("a note check gained a receipt body")
+	}
+	kept := `# Spec: 北京天气
+## Goal
+查询天气
+## Outputs
+- weather_text: str
+## Steps
+1. [act] 检索
+  - 工具: web_search
+  + → weather_text % str
+2. [check] 否决
+  - ← weather_text
+  + → accepted % bool
+  ` + "```hop_python" + `
+  accepted = False
+  ` + "```" + `
+3. [exit]
+`
+	if body := prepareCompiledHopMarkdown(kept, "北京天气"); strings.Count(body, "hop_python") != 1 || !strings.Contains(body, "accepted = False") {
+		t.Fatalf("existing check body changed: %q", body)
+	}
+	unwired := `# Spec: 北京天气
+## Goal
+查询天气
+## Outputs
+- weather_text: str
+## Steps
+1. [act] 检索
+  - 工具: web_search
+  + → weather_text % str
+2. [check] 核对
+  + → accepted % bool
+3. [exit]
+`
+	wired := prepareCompiledHopMarkdown(unwired, "北京天气")
+	if !strings.Contains(wired, "- ← weather_text") || !strings.Contains(wired, `accepted = weather_text != ""`) {
+		t.Fatalf("missing input was not wired: %q", wired)
+	}
+
+	search := "找到 1 条结果: 北京天气预报 https://www.weather.com.cn/weather/101010100.shtml"
+	caller := &lookupReceiptCaller{text: search}
+	result, err := runHopSpecWithPersistence(context.Background(), hopjit.NewMemoryPersistence(), got, nil, caller)
+	if err != nil || result.Status != hopjit.NextCompleted || result.Outputs["weather_text"] != search || caller.checks != 0 || caller.acts != 1 {
+		t.Fatalf("result=%+v checks=%d acts=%d err=%v", result, caller.checks, caller.acts, err)
+	}
+	empty := &lookupReceiptCaller{}
+	failed, err := runHopSpecWithPersistence(context.Background(), hopjit.NewMemoryPersistence(), got, nil, empty)
+	if err != nil || failed.Status != hopjit.NextFailed || failed.Failure == nil || !strings.Contains(failed.Failure.Reason, "check failed") || empty.checks != 0 {
+		t.Fatalf("empty=%+v checks=%d err=%v", failed, empty.checks, err)
+	}
+}
+
+type lookupReceiptCaller struct {
+	text   string
+	checks int
+	acts   int
+}
+
+func (c *lookupReceiptCaller) ExecuteStep(_ context.Context, step hopjit.StepReady) (map[string]any, error) {
+	switch step.StepType {
+	case hopspec.StepCheck:
+		c.checks++
+		return map[string]any{"accepted": false, "verdict": false}, nil
+	case hopspec.StepAct:
+		c.acts++
+		return map[string]any{"weather_text": c.text}, nil
+	default:
+		return map[string]any{}, nil
+	}
+}
+
+func (c *lookupReceiptCaller) Replan(context.Context, hopjit.EngineSnapshot) (string, error) {
+	return "", nil
 }

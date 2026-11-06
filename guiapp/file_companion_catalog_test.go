@@ -507,3 +507,224 @@ func TestFileCompanionCatalogFolderCap(t *testing.T) {
 		t.Fatalf("cap err = %v", err)
 	}
 }
+
+func TestFileCompanionDefaultFolder(t *testing.T) {
+	home := t.TempDir()
+	app := &App{testHomeDir: home}
+	paper := filepath.Join(home, "paper.md")
+	if err := os.WriteFile(paper, []byte("alpha"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.rememberFileCompanionDocument(FileCompanionDocument{Path: paper, Name: "paper.md", Size: 5})
+	created, err := app.CreateFileCompanionFolder("论文")
+	if err != nil {
+		t.Fatal(err)
+	}
+	folderID := created.Folders[0].ID
+	set, err := app.SetFileCompanionDefaultFolder(folderID)
+	if err != nil || set.DefaultID != folderID {
+		t.Fatalf("set = %+v err=%v", set, err)
+	}
+	listed, err := app.ListFileCompanionCatalog()
+	if err != nil || listed.DefaultID != folderID {
+		t.Fatalf("listed default = %q err=%v", listed.DefaultID, err)
+	}
+	cleared, err := app.SetFileCompanionDefaultFolder("none")
+	if err != nil || cleared.DefaultID != "" {
+		t.Fatalf("clear = %+v err=%v", cleared, err)
+	}
+	again, err := app.SetFileCompanionDefaultFolder(folderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Placements) != 0 {
+		t.Fatalf("default placed the document: %+v", again.Placements)
+	}
+	moved, err := app.MoveFileCompanionLibraryItem("", paper, folderID)
+	if err != nil || moved.DefaultID != folderID {
+		t.Fatalf("move = %+v err=%v", moved, err)
+	}
+	if moved.Placements[fileCompanionFolderPathKey(paper)] != folderID {
+		t.Fatalf("path placement = %+v", moved.Placements)
+	}
+	back, err := app.MoveFileCompanionLibraryItem("", paper, "")
+	if err != nil || back.DefaultID != folderID {
+		t.Fatalf("uncategorize kept default = %+v err=%v", back, err)
+	}
+	if _, err := app.DeleteFileCompanionFolder(folderID, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	after, err := app.ListFileCompanionCatalog()
+	if err != nil || after.DefaultID != "" {
+		t.Fatalf("deleted default = %q err=%v", after.DefaultID, err)
+	}
+	if again.DefaultID != folderID {
+		t.Fatalf("before delete = %+v", again)
+	}
+	if _, err := app.SetFileCompanionDefaultFolder("fld_missing"); err == nil || err.Error() != "没有这个文件夹" {
+		t.Fatalf("missing err = %v", err)
+	}
+}
+
+func TestFileCompanionMoveUnknownPath(t *testing.T) {
+	home := t.TempDir()
+	app := &App{testHomeDir: home}
+	paper := filepath.Join(home, "paper.md")
+	if err := os.WriteFile(paper, []byte("alpha"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.rememberFileCompanionDocument(FileCompanionDocument{Path: paper, Name: "paper.md", Size: 5})
+	created, err := app.CreateFileCompanionFolder("论文")
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(home, "missing.pdf")
+	moved, err := app.MoveFileCompanionLibraryItem("", missing, created.Folders[0].ID)
+	if err == nil || err.Error() != "没有找到这个项目" {
+		t.Fatalf("missing = %+v err=%v", moved, err)
+	}
+	listed, err := app.ListFileCompanionCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Placements) != 0 {
+		t.Fatalf("placements = %+v", listed.Placements)
+	}
+}
+
+func TestFileCompanionFolderForPathUsesTheMoveTarget(t *testing.T) {
+	home := t.TempDir()
+	app := &App{testHomeDir: home}
+	paper := filepath.Join(home, "paper.md")
+	if err := os.WriteFile(paper, []byte("alpha"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.rememberFileCompanionDocument(FileCompanionDocument{Path: paper, Name: "paper.md", Size: 5})
+	created, err := app.CreateFileCompanionFolder("论文")
+	if err != nil {
+		t.Fatal(err)
+	}
+	folderID := created.Folders[0].ID
+	got, err := app.FileCompanionFolderForPath(paper)
+	if err != nil || got != "" {
+		t.Fatalf("new file = %q err=%v", got, err)
+	}
+	if _, err := app.MoveFileCompanionLibraryItem("", paper, folderID); err != nil {
+		t.Fatal(err)
+	}
+	before, err := app.ListFileCompanionCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = app.FileCompanionFolderForPath(paper)
+	if err != nil || got != folderID {
+		t.Fatalf("placed = %q err=%v", got, err)
+	}
+	after, err := app.ListFileCompanionCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Rev != before.Rev {
+		t.Fatalf("read wrote the catalog rev %d -> %d", before.Rev, after.Rev)
+	}
+	missing := filepath.Join(home, "missing.pdf")
+	got, err = app.FileCompanionFolderForPath(missing)
+	if err != nil || got != "" {
+		t.Fatalf("missing = %q err=%v", got, err)
+	}
+	listed := app.listFileCompanionLibraryStored()
+	if len(listed.Items) != 1 {
+		t.Fatalf("items = %d", len(listed.Items))
+	}
+	local := listed.Items[0]
+	cloud := local
+	cloud.ID = "cloud:same-file"
+	cloud.Source = "cloud"
+	if err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{local, cloud}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.MoveFileCompanionLibraryItem(local.ID, local.Path, ""); err != nil {
+		t.Fatal(err)
+	}
+	kept, err := app.ListFileCompanionCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.Placements[fileCompanionFolderPathKey(paper)] != folderID {
+		t.Fatalf("sibling path key = %+v", kept.Placements)
+	}
+	// The local row is explicit 未分类 and sits first, but the list hides it
+	// behind the cloud project. The dialog has to offer the card on screen.
+	shown := app.listFileCompanionLibraryStored()
+	if len(shown.Items) != 1 || shown.Items[0].ID != cloud.ID {
+		t.Fatalf("screen rows = %+v", shown.Items)
+	}
+	got, err = app.FileCompanionFolderForPath(paper)
+	if err != nil || got != folderID {
+		t.Fatalf("visible row = %q err=%v", got, err)
+	}
+	notes, err := app.CreateFileCompanionFolder("笔记")
+	if err != nil {
+		t.Fatal(err)
+	}
+	notesID := ""
+	for _, folder := range notes.Folders {
+		if folder.Name == "笔记" {
+			notesID = folder.ID
+		}
+	}
+	if notesID == "" {
+		t.Fatal("笔记 was not created")
+	}
+	moved, err := app.MoveFileCompanionLibraryItem("", paper, notesID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileCompanionItemFolder(moved, local) != "" {
+		t.Fatalf("hidden local moved to %q", fileCompanionItemFolder(moved, local))
+	}
+	if fileCompanionItemFolder(moved, cloud) != notesID {
+		t.Fatalf("visible row = %q", fileCompanionItemFolder(moved, cloud))
+	}
+	// The card on screen is now 未分类. The hidden local still has 论文, and
+	// that path key must not become the offer or the empty-id move.
+	if _, err := app.MoveFileCompanionLibraryItem(cloud.ID, cloud.Path, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.MoveFileCompanionLibraryItem(local.ID, local.Path, folderID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = app.FileCompanionFolderForPath(paper)
+	if err != nil || got != "" {
+		t.Fatalf("visible uncategorized inherited %q err=%v", got, err)
+	}
+	retargeted, err := app.MoveFileCompanionLibraryItem("", paper, notesID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileCompanionItemFolder(retargeted, cloud) != notesID {
+		t.Fatalf("empty-id move hit %q", fileCompanionItemFolder(retargeted, cloud))
+	}
+	if fileCompanionItemFolder(retargeted, local) != folderID {
+		t.Fatalf("hidden local left 论文: %q", fileCompanionItemFolder(retargeted, local))
+	}
+}
+
+func TestFileCompanionPlaceBootAsksOnce(t *testing.T) {
+	app := &App{}
+	app.seedFileCompanionPlace([]string{`C:\papers\2510.16079.pdf`})
+	boot := app.GetFileCompanionBoot()
+	if len(boot.Paths) != 1 || len(boot.Place) != 1 || boot.Place[0] != `C:\papers\2510.16079.pdf` {
+		t.Fatalf("boot = %+v", boot)
+	}
+	again := app.GetFileCompanionBoot()
+	if len(again.Paths) != 0 || len(again.Place) != 0 {
+		t.Fatalf("second boot = %+v", again)
+	}
+	plain := &App{}
+	plain.seedFileCompanionPaths([]string{`C:\papers\notes.md`})
+	opened := plain.GetFileCompanionBoot()
+	if len(opened.Place) != 0 || len(opened.Paths) != 1 {
+		t.Fatalf("open-file boot = %+v", opened)
+	}
+}

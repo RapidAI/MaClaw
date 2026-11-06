@@ -14,6 +14,9 @@ const (
 	desktopLaunchMain          = "main"
 	desktopLaunchFileCompanion = "file-companion"
 	fileCompanionOpenArg       = "open-file"
+	// companionPaperOpenArg opens the downloaded PDF and asks which 文档管理
+	// folder it belongs in. open-file does not ask.
+	companionPaperOpenArg = "companion-paper-open"
 )
 
 // desktopLaunch classifies one process argv. Mode is "main" or "file-companion".
@@ -28,6 +31,8 @@ type desktopLaunch struct {
 	Explicit    bool
 	// Notice is a companion-paper failure code. Paths stays empty.
 	Notice string
+	// Place is set only for a browser add. The companion asks for a folder.
+	Place bool
 }
 
 // fileCompanionLockID is the companion single-instance id. It appends a suffix
@@ -59,12 +64,13 @@ func classifyDesktopLaunchForOS(args []string, goos string) desktopLaunch {
 	// process. It is not a path, and it is not resolved against the working
 	// directory. CommandLineToArgvW has already removed quotes, so a
 	// relative path is a document, not another way to spell the mode.
-	if filtered[0] == fileCompanionOpenArg {
+	if filtered[0] == fileCompanionOpenArg || filtered[0] == companionPaperOpenArg {
 		return desktopLaunch{
 			Mode:     desktopLaunchFileCompanion,
 			LockID:   fileCompanionLockID(),
-			Paths:    pathsAfterOpenFile(user),
+			Paths:    pathsAfterLaunchMode(user, filtered[0]),
 			Explicit: true,
+			Place:    filtered[0] == companionPaperOpenArg,
 		}
 	}
 	if filtered[0] == companionPaperNoticeArg {
@@ -126,6 +132,10 @@ func filterDesktopLaunchNoise(user []string) []string {
 // -psn noise before the token is ignored; arguments after the token are
 // paths, not launch serials.
 func pathsAfterOpenFile(user []string) []string {
+	return pathsAfterLaunchMode(user, fileCompanionOpenArg)
+}
+
+func pathsAfterLaunchMode(user []string, mode string) []string {
 	seen := false
 	var paths []string
 	for _, arg := range user {
@@ -133,7 +143,7 @@ func pathsAfterOpenFile(user []string) []string {
 			if arg == "" || strings.HasPrefix(arg, "-psn") {
 				continue
 			}
-			if arg == fileCompanionOpenArg {
+			if arg == mode {
 				seen = true
 			}
 			continue

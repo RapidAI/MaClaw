@@ -103,6 +103,12 @@ type simpleLLMRequestOptions struct {
 	// and abort the read that was supposed to continue. Detach-and-return is
 	// for callers that will retry and adopt the same read.
 	AwaitResponse bool
+	// RouteDeadlineIsHeaderOnly means an owned route deadline on ctx bounds
+	// time-to-headers only. Once that deadline has fired, the body is still
+	// this caller's result. A cancel of the pre-timeout parent still aborts
+	// it. A context that did not record a route deadline is unchanged, so a
+	// shorter host deadline still aborts the whole call.
+	RouteDeadlineIsHeaderOnly bool
 	// AdoptInFlightPastCancel keeps waiting for an already-detached body after
 	// this caller's context ends. The late tree sets it: that goroutine is off
 	// the user-visible path, and returning at its own deadline drops a response
@@ -279,7 +285,7 @@ func doSimpleLLMRequestWithOptionsLegacy(ctx context.Context, cfg corelib.Maclaw
 		if opts.AwaitResponse {
 			// This caller is the consumer. Cancel the read and return the
 			// caller's error. A budget error would make it cancel again.
-			return finishAwaitedSimpleLLMRead(ctx, ch, lease, trace, scheduledCancel, scheduledCancel, ctx.Err())
+			return finishAwaitedSimpleLLMRead(ctx, ch, lease, trace, scheduledCancel, scheduledCancel, ctx.Err(), opts)
 		}
 		return finishLegacyBudgetFired(lease, scheduledCancel, timeout, ctx.Err())
 	case <-budgetC:
@@ -288,7 +294,7 @@ func doSimpleLLMRequestWithOptionsLegacy(ctx context.Context, cfg corelib.Maclaw
 			// the read stays up. scheduledCancel is idempotent and is the
 			// only context this variant owns.
 			lease.Release()
-			return finishAwaitedSimpleLLMRead(ctx, ch, nil, trace, scheduledCancel, scheduledCancel, nil)
+			return finishAwaitedSimpleLLMRead(ctx, ch, nil, trace, scheduledCancel, scheduledCancel, nil, opts)
 		}
 		return finishLegacyBudgetFired(lease, scheduledCancel, timeout, context.DeadlineExceeded)
 	}
@@ -437,13 +443,13 @@ func doSimpleLLMRequestForeground(ctx context.Context, cfg corelib.MaclawLLMConf
 		return r.resp, r.err
 	case <-ctx.Done():
 		if opts.AwaitResponse {
-			return finishAwaitedSimpleLLMRead(ctx, ch, lease, trace, scheduledCancel, detachCancel, ctx.Err())
+			return finishAwaitedSimpleLLMRead(ctx, ch, lease, trace, scheduledCancel, detachCancel, ctx.Err(), opts)
 		}
 		return beginDetachedSimpleLLMRead(ctx, cfg, messages, client, key, ch, lease, trace, scheduledCancel, detachCancel, timeout, ctx.Err(), opts)
 	case <-budgetC:
 		if opts.AwaitResponse {
 			lease.Release()
-			return finishAwaitedSimpleLLMRead(ctx, ch, nil, trace, scheduledCancel, detachCancel, nil)
+			return finishAwaitedSimpleLLMRead(ctx, ch, nil, trace, scheduledCancel, detachCancel, nil, opts)
 		}
 		return beginDetachedSimpleLLMRead(ctx, cfg, messages, client, key, ch, lease, trace, scheduledCancel, detachCancel, timeout, context.DeadlineExceeded, opts)
 	}
@@ -452,9 +458,16 @@ func doSimpleLLMRequestForeground(ctx context.Context, cfg corelib.MaclawLLMConf
 // finishAwaitedSimpleLLMRead waits for the in-flight body. A nil cause means
 // the scheduling budget already released the slot and the read must continue.
 // A non-nil cause is the caller's context ending: cancel the read and return
-// that error instead of detaching it.
-func finishAwaitedSimpleLLMRead(ctx context.Context, ch <-chan simpleLLMVariantResult, lease *llmSchedulerLease, trace llm.RequestTrace, scheduledCancel, detachCancel context.CancelFunc, cause error) (*llmSimpleResponse, error) {
+// that error instead of detaching it. An owned route deadline is not that
+// cause when the caller said the deadline is only time-to-headers.
+func finishAwaitedSimpleLLMRead(ctx context.Context, ch <-chan simpleLLMVariantResult, lease *llmSchedulerLease, trace llm.RequestTrace, scheduledCancel, detachCancel context.CancelFunc, cause error, opts simpleLLMRequestOptions) (*llmSimpleResponse, error) {
 	if cause != nil {
+		if keepBodyPastOwnedRouteDeadline(opts, ctx) {
+			if lease != nil {
+				lease.Release()
+			}
+			return waitSimpleLLMBodyPastRouteDeadline(ctx, ch, trace, scheduledCancel, detachCancel)
+		}
 		scheduledCancel()
 		detachCancel()
 		if lease != nil {
@@ -466,13 +479,72 @@ func finishAwaitedSimpleLLMRead(ctx context.Context, ch <-chan simpleLLMVariantR
 	case r := <-ch:
 		scheduledCancel()
 		detachCancel()
+		if lease != nil {
+			lease.Release()
+		}
 		globalLLMScheduler.ObserveResult(trace, r.err)
 		return r.resp, r.err
 	case <-ctx.Done():
+		if keepBodyPastOwnedRouteDeadline(opts, ctx) {
+			return waitSimpleLLMBodyPastRouteDeadline(ctx, ch, trace, scheduledCancel, detachCancel)
+		}
 		scheduledCancel()
 		detachCancel()
 		return nil, ctx.Err()
 	}
+}
+
+func keepBodyPastOwnedRouteDeadline(opts simpleLLMRequestOptions, ctx context.Context) bool {
+	return opts.AwaitResponse && opts.RouteDeadlineIsHeaderOnly && llm.OwnedRouteDeadlineReleased(ctx)
+}
+
+// waitSimpleLLMBodyPastRouteDeadline keeps reading after the route timer.
+// The pre-timeout parent still aborts the body. The route context itself is
+// already done, so it is not a stop signal.
+func waitSimpleLLMBodyPastRouteDeadline(ctx context.Context, ch <-chan simpleLLMVariantResult, trace llm.RequestTrace, scheduledCancel, detachCancel context.CancelFunc) (*llmSimpleResponse, error) {
+	var stopC <-chan struct{}
+	var stopErr error
+	if stop := routeStreamStop(ctx); stop != nil {
+		stopC = stop.Done()
+		stopErr = stop.Err()
+	}
+	select {
+	case r := <-ch:
+		scheduledCancel()
+		detachCancel()
+		globalLLMScheduler.ObserveResult(trace, r.err)
+		return r.resp, r.err
+	case <-stopC:
+		scheduledCancel()
+		detachCancel()
+		if stopErr == nil {
+			stop := routeStreamStop(ctx)
+			if stop != nil {
+				stopErr = stop.Err()
+			}
+		}
+		if stopErr == nil {
+			stopErr = context.Canceled
+		}
+		return nil, stopErr
+	}
+}
+
+// routeStreamStop is the cancel parent when it can still report a stop.
+// The route context is already DeadlineExceeded here, and a parent that is
+// that same deadline cannot report a later stop.
+func routeStreamStop(ctx context.Context) context.Context {
+	parent := llm.RouteStreamCancelParent(ctx)
+	if parent == nil || parent == ctx {
+		return nil
+	}
+	if parent.Err() == nil {
+		return parent
+	}
+	if llm.OwnedRouteDeadlineReleased(parent) {
+		return nil
+	}
+	return parent
 }
 
 // beginDetachedSimpleLLMRead switches an in-flight request to background

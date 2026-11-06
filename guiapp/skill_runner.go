@@ -506,6 +506,28 @@ func (r *SkillRunner) applyEffectiveSkillGlobalTimeoutSec(run *skillRun, skill *
 	return timeout
 }
 
+// skillRunContext is one skill run's deadline. Bash steps and the
+// between-steps select still stop when it fires. A model stream inside the
+// run treats the same deadline as a route timer: it cancels only before
+// response headers. parent is the run's cancel context, so a user stop still
+// aborts that stream after headers. An earlier deadline already on parent is
+// left in place and still aborts the body.
+func skillRunContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return ctx, cancel
+	}
+	parentDeadline, parentHasDeadline := parent.Deadline()
+	if parentHasDeadline && !deadline.Before(parentDeadline) {
+		return ctx, cancel
+	}
+	return llm.BindRouteStreamDeadline(ctx, deadline, parent), cancel
+}
+
 func isMaclawAppSkillRun(run *skillRun) bool {
 	if run == nil || len(run.runArgs) == 0 {
 		return false
@@ -1089,7 +1111,7 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 	finishStatus := "unknown"
 	defer func() { finishExecution(finishStatus) }()
 	globalTimeout := time.Duration(r.applyEffectiveSkillGlobalTimeoutSec(run, entry)) * time.Second
-	globalCtx, cancel := context.WithTimeout(ctx, globalTimeout)
+	globalCtx, cancel := skillRunContext(ctx, globalTimeout)
 	defer cancel()
 
 	baseArgs := cloneSkillRunArgs(run.runArgs)
@@ -3161,7 +3183,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	if skill.GlobalTimeout > 0 {
 		log.Printf("[skill-runner] using skill-level global timeout: %v", globalTimeout)
 	}
-	globalCtx, globalCancel := context.WithTimeout(ctx, globalTimeout)
+	globalCtx, globalCancel := skillRunContext(ctx, globalTimeout)
 	defer globalCancel()
 
 	defer func() {

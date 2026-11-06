@@ -15,6 +15,8 @@ import {
     RenameFileCompanionFolder,
     DeleteFileCompanionFolder,
     MoveFileCompanionLibraryItem,
+    SetFileCompanionDefaultFolder,
+    FileCompanionFolderForPath,
     RemoveFileCompanionGroupMember,
     ShareFileCompanionDocument,
     ShowItemInFolder,
@@ -666,6 +668,28 @@ export function companionLibraryNameMatch(name: string, query: string): boolean 
 // 未分类. Folder ids are fld_ plus hex, so this value cannot be a folder.
 const companionFolderUncategorized = "none";
 
+// companionLibraryDragType is the payload of a document card dragged onto a
+// folder. text/plain carries the same id with a prefix so an OS file drop,
+// which is also text, is not treated as a library row.
+export const companionLibraryDragType = "application/x-maclaw-library-item";
+const companionLibraryDragTextPrefix = "maclaw-library:";
+
+function companionDragItemID(transfer: DataTransfer | null): string {
+    if (!transfer) return "";
+    const typed = transfer.getData(companionLibraryDragType);
+    if (typed) return typed;
+    const plain = transfer.getData("text/plain");
+    return plain.startsWith(companionLibraryDragTextPrefix) ? plain.slice(companionLibraryDragTextPrefix.length) : "";
+}
+
+// A library drag is text/plain. A text field would otherwise insert that
+// payload. Fields inside a folder row are left to the row: the row files
+// the document, and the drop cancels the insert.
+function companionDragTextField(target: EventTarget | null): HTMLInputElement | HTMLTextAreaElement | null {
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return target;
+    return null;
+}
+
 // companionFolderPathCandidates lists the spellings a catalog path key may
 // use. Go stores the Windows canonical path: backslashes and a lowercased
 // drive. The library row can still carry the other slash direction.
@@ -699,7 +723,7 @@ export function companionLibraryFolderID(item: { id: string; path: string }, pla
     return "";
 }
 
-export function readCompanionLibraryCatalog(raw: unknown): { rev: number; folders: CompanionLibraryFolder[]; placements: Record<string, string> } {
+export function readCompanionLibraryCatalog(raw: unknown): { rev: number; folders: CompanionLibraryFolder[]; placements: Record<string, string>; defaultId: string } {
     const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
     const rev = numberOf(record, "rev", "Rev");
     const rawFolders = Array.isArray(record.folders) ? record.folders : Array.isArray(record.Folders) ? record.Folders : [];
@@ -719,7 +743,8 @@ export function readCompanionLibraryCatalog(raw: unknown): { rev: number; folder
             if (typeof value === "string" && value) placements[key] = value;
         }
     }
-    return { rev, folders, placements };
+    const defaultId = textOf(record, "defaultId", "DefaultID");
+    return { rev, folders, placements, defaultId: folders.some((folder) => folder.id === defaultId) ? defaultId : "" };
 }
 
 // companionInstalledSharePath is a file this machine accepted into the share
@@ -1268,8 +1293,13 @@ function FolderDeletePrompt({
 // CompanionLibraryView is the 文档管理 screen: every local document and every
 // accepted share is one 项目 card — the document, its annotations, and its
 // discussion travel together. A single level of folders groups those cards.
-// A file-name field narrows the list. Actions open a document for reading,
-// share it, sync the newest marks, or pack it as a companion project zip.
+// Drag a card by its type badge onto a folder, or onto 未分类, to categorize
+// it. The title stays a click. The move menu does the same thing from the
+// keyboard. A file-name field narrows the list.
+// Actions open a document for reading, share it, sync the newest marks, or
+// pack it as a companion project zip.
+const companionCatalogChangedEvent = "maclaw:file-companion-catalog";
+
 export function CompanionLibraryView({
     lang,
     activePath,
@@ -1316,6 +1346,7 @@ export function CompanionLibraryView({
     const [rowBusy, setRowBusy] = useState<Record<string, string>>({});
     const [folders, setFolders] = useState<CompanionLibraryFolder[]>([]);
     const [placements, setPlacements] = useState<Record<string, string>>({});
+    const [defaultFolderID, setDefaultFolderID] = useState("");
     // "" is every document. "none" is 未分类. Any other value is a folder id.
     const [selectedFolder, setSelectedFolder] = useState("");
     const [nameQuery, setNameQuery] = useState("");
@@ -1340,6 +1371,17 @@ export function CompanionLibraryView({
     const folderPromptRef = useRef(false);
     folderPromptRef.current = pendingDelete !== null;
     const folderBusyRef = useRef(false);
+    // Set in dragstart before React paints, so the first dragover can accept
+    // the drop. The folder is the class the card was in when the drag began.
+    const dragItemIDRef = useRef("");
+    const dragFolderRef = useRef("");
+    const dragCardRef = useRef<HTMLElement | null>(null);
+    const dropRowRef = useRef<HTMLElement | null>(null);
+    // Same-direction rail nudges are throttled. A direction change is not.
+    const dragScrollRef = useRef({ at: 0, dir: 0 });
+    // The dialog that owns the in-progress drag. Text fields and folder
+    // controls under it ignore the pointer until the drag ends.
+    const dragRootRef = useRef<HTMLElement | null>(null);
     // Set while a rename submit is in flight. Blur fires before the click that
     // submits, and also when Enter leaves the field, so blur must not cancel
     // a rename that is already being saved.
@@ -1414,6 +1456,7 @@ export function CompanionLibraryView({
         catalogRevRef.current = next.rev;
         setFolders(next.folders);
         setPlacements(next.placements);
+        setDefaultFolderID(next.defaultId);
     }, []);
 
     const refreshCatalog = useCallback(async () => {
@@ -1432,6 +1475,11 @@ export function CompanionLibraryView({
     useEffect(() => {
         void refreshCatalog();
     }, [refreshCatalog, catalogItemKey]);
+    useEffect(() => {
+        const onCatalog = () => { void refreshCatalog(); };
+        window.addEventListener(companionCatalogChangedEvent, onCatalog);
+        return () => window.removeEventListener(companionCatalogChangedEvent, onCatalog);
+    }, [refreshCatalog]);
 
     useEffect(() => {
         if (selectedFolder === "" || selectedFolder === "none") return;
@@ -1588,6 +1636,35 @@ export function CompanionLibraryView({
     const endFolder = () => {
         folderBusyRef.current = false;
         setFolderBusy(false);
+    };
+
+    const setDefaultFolder = async (folderID: string) => {
+        if (typeof SetFileCompanionDefaultFolder !== "function" || !beginFolder()) return;
+        try {
+            applyCatalog(await SetFileCompanionDefaultFolder(folderID));
+        } catch (err) {
+            showToast(libraryError(err), "error", 6000);
+        } finally {
+            endFolder();
+        }
+    };
+
+    const defaultButton = (folderID: string, testId: string) => {
+        const active = folderID === defaultFolderID;
+        return (
+            <button
+                type="button"
+                className="file-companion-folder-icon file-companion-folder-default"
+                data-testid={testId}
+                aria-pressed={active}
+                aria-label={active ? cs("默认") : cs("设为默认")}
+                title={active ? cs("默认") : cs("设为默认")}
+                disabled={folderBusy}
+                onClick={() => { if (!active) void setDefaultFolder(folderID); }}
+            >
+                {active ? cs("默认") : cs("设为默认")}
+            </button>
+        );
     };
 
     const createFolder = async () => {
@@ -1751,6 +1828,163 @@ export function CompanionLibraryView({
         };
     }, [items, folders, placements, selectedFolder, nameQuery]);
     const { localItems, cloudItems, shownCount, scopedCount, countOf, placedOf } = libraryView;
+
+    const endLibraryDrag = () => {
+        dragItemIDRef.current = "";
+        dragFolderRef.current = "";
+        dragScrollRef.current.at = 0;
+        dragScrollRef.current.dir = 0;
+        dropRowRef.current?.removeAttribute("data-drop");
+        dropRowRef.current = null;
+        const card = dragCardRef.current;
+        if (card) {
+            card.removeAttribute("data-dragging");
+            card.style.contentVisibility = "";
+        }
+        dragCardRef.current = null;
+        dragRootRef.current?.removeAttribute("data-library-drag");
+        dragRootRef.current = null;
+    };
+    // Unmount clears a drag that is still in flight. The ref follows the
+    // latest clearer, and that clearer only touches the drag refs.
+    const endLibraryDragRef = useRef(endLibraryDrag);
+    endLibraryDragRef.current = endLibraryDrag;
+    useEffect(() => () => endLibraryDragRef.current(), []);
+
+    // key is "none" for 未分类 or a folder id. 全部 is not a drop target.
+    // A card already in that class is refused so the row does not light up.
+    // Highlight is written on the row itself: a dragover must not re-render
+    // every document card.
+    const acceptFolderDrop = (key: string) => {
+        if (!key || !dragItemIDRef.current || folderBusyRef.current) return false;
+        const next = key === "none" ? "" : key;
+        if (next !== "" && !folders.some((folder) => folder.id === next)) return false;
+        return next !== dragFolderRef.current;
+    };
+
+    const paintDropRow = (row: HTMLElement | null) => {
+        if (dropRowRef.current === row) return;
+        dropRowRef.current?.removeAttribute("data-drop");
+        if (row) row.setAttribute("data-drop", "over");
+        dropRowRef.current = row;
+    };
+
+    const folderDrop = (key: string) => ({
+        onDragEnter: (event: React.DragEvent<HTMLDivElement>) => {
+            if (!acceptFolderDrop(key)) return;
+            event.preventDefault();
+            paintDropRow(event.currentTarget);
+        },
+        onDragOver: (event: React.DragEvent<HTMLDivElement>) => {
+            if (!acceptFolderDrop(key)) {
+                if (dropRowRef.current === event.currentTarget) paintDropRow(null);
+                return;
+            }
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            paintDropRow(event.currentTarget);
+        },
+        onDragLeave: (event: React.DragEvent<HTMLDivElement>) => {
+            const next = event.relatedTarget;
+            if (next instanceof Node && event.currentTarget.contains(next)) return;
+            if (dropRowRef.current === event.currentTarget) paintDropRow(null);
+        },
+        onDrop: (event: React.DragEvent<HTMLDivElement>) => {
+            // The payload survives dragend. A host that ends the drag before
+            // the drop still files the document.
+            const id = companionDragItemID(event.dataTransfer) || dragItemIDRef.current;
+            const next = key === "none" ? "" : key;
+            const item = id ? items.find((row) => row.id === id) : undefined;
+            const known = next === "" || folders.some((folder) => folder.id === next);
+            if (!item || !known || folderBusyRef.current || placedOf(item) === next) {
+                if (dropRowRef.current === event.currentTarget) paintDropRow(null);
+                return;
+            }
+            event.preventDefault();
+            endLibraryDrag();
+            void moveItem(item, next);
+        },
+    });
+
+    // The rail scrolls on its own. Only the outer strip moves, and a folder
+    // under the pointer stays put so the drop can land on it.
+    const onFolderRailDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+        if (!dragItemIDRef.current) return;
+        const rail = event.currentTarget;
+        if (rail.scrollHeight <= rail.clientHeight + 1) return;
+        const rect = rail.getBoundingClientRect();
+        const fromTop = event.clientY - rect.top;
+        const fromBottom = rect.bottom - event.clientY;
+        const edge = 18;
+        let dir = 0;
+        if (fromTop >= 0 && fromTop < edge) dir = -1;
+        else if (fromBottom >= 0 && fromBottom < edge) dir = 1;
+        if (!dir) return;
+        const overRow = event.target instanceof Element && !!event.target.closest(".file-companion-folder-row");
+        if (overRow && (dir < 0 ? fromTop > 8 : fromBottom > 8)) return;
+        const now = event.timeStamp || performance.now();
+        const prev = dragScrollRef.current;
+        if (prev.dir === dir && now - prev.at < 70) return;
+        dragScrollRef.current = { at: now, dir };
+        rail.scrollTop += dir * 8;
+    };
+    // Blink takes the drag-image bitmap when dragstart returns. The card stays
+    // painted through that snapshot. The fade waits until the next turn, and
+    // the inline visibility is cleared when the drag ends.
+    const beginLibraryDrag = (
+        event: React.DragEvent<HTMLElement>,
+        item: CompanionLibraryItem,
+        canDrag: boolean,
+    ) => {
+        if (!canDrag) {
+            event.preventDefault();
+            return;
+        }
+        // text/plain is the payload every webview accepts.
+        // The custom type is optional and is what drop reads first.
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", companionLibraryDragTextPrefix + item.id);
+        try {
+            event.dataTransfer.setData(companionLibraryDragType, item.id);
+        } catch {
+            // A host that rejects a custom type still has the prefixed text.
+        }
+        dragItemIDRef.current = item.id;
+        dragFolderRef.current = placedOf(item);
+        const card = event.currentTarget.closest(".file-companion-project");
+        if (!(card instanceof HTMLElement)) return;
+        const previous = dragCardRef.current;
+        if (previous && previous !== card) {
+            previous.removeAttribute("data-dragging");
+            previous.style.contentVisibility = "";
+        }
+        dragCardRef.current = card;
+        card.style.contentVisibility = "visible";
+        const root = event.currentTarget.closest(".file-companion-library-dialog");
+        if (root instanceof HTMLElement) {
+            dragRootRef.current = root;
+            root.setAttribute("data-library-drag", "true");
+        }
+        const rect = card.getBoundingClientRect();
+        const rawX = event.clientX - rect.left;
+        const rawY = event.clientY - rect.top;
+        const hotX = Number.isFinite(rawX) ? rawX : 16;
+        const hotY = Number.isFinite(rawY) ? rawY : 16;
+        try {
+            // The hotspot is where the pointer grabbed the card. A fixed
+            // corner makes the ghost jump up to the title.
+            event.dataTransfer.setDragImage(
+                card,
+                Math.max(0, Math.min(rect.width > 0 ? rect.width : hotX, hotX)),
+                Math.max(0, Math.min(rect.height > 0 ? rect.height : hotY, hotY)),
+            );
+        } catch {
+            // The dragged node stays the ghost.
+        }
+        queueMicrotask(() => {
+            if (dragCardRef.current === card) card.setAttribute("data-dragging", "true");
+        });
+    };
     // A local document that was already published has a cloud row beside it.
     // The local card must offer 修改 on that row instead of 分享, or the same
     // paper ends up with two links. An expired link is not live, so it does
@@ -1796,9 +2030,30 @@ export function CompanionLibraryView({
             ? (item.mine && !item.expired ? item : null)
             : (sharedByPath.get(companionSharePathKey(item.path)) ?? null);
         const alreadyShared = Boolean(shareRow) || (item.source === "cloud" && !item.expired);
+        const canDrag = folders.length > 0 && !busy && !folderBusy;
+        const kind = (
+            <span className="file-companion-project-kind" data-kind={kindOf(item.name)} aria-hidden="true">{kindLabel(item.name)}</span>
+        );
         return (
-            <div key={item.id} className="file-companion-project" data-testid={`file-companion-library-card-${item.id}`} data-open={isOpen ? "true" : undefined}>
-                <span className="file-companion-project-kind" data-kind={kindOf(item.name)} aria-hidden="true">{kindLabel(item.name)}</span>
+            <div
+                key={item.id}
+                className="file-companion-project"
+                data-testid={`file-companion-library-card-${item.id}`}
+                data-open={isOpen ? "true" : undefined}
+            >
+                {folders.length > 0 ? (
+                    <div
+                        className="file-companion-project-drag"
+                        data-testid={`file-companion-library-drag-${item.id}`}
+                        draggable={canDrag}
+                        title={cs("拖到左侧文件夹以分类")}
+                        onDragStart={(event) => beginLibraryDrag(event, item, canDrag)}
+                        onDragEnd={() => endLibraryDragRef.current()}
+                    >
+                        <span className="file-companion-project-grip" aria-hidden="true" />
+                        {kind}
+                    </div>
+                ) : kind}
                 <div className="file-companion-project-main">
                     <div className="file-companion-project-titleline">
                         <button
@@ -1819,7 +2074,14 @@ export function CompanionLibraryView({
                         {isOpen ? <span className="file-companion-badge" data-tone="active">{cs("打开中")}</span> : null}
                         {!item.path && item.source === "cloud" ? <span className="file-companion-badge" data-tone="pending">{cs("未导入")}</span> : null}
                     </div>
-                    <p className="file-companion-project-meta">
+                    <p
+                        className="file-companion-project-meta"
+                        data-testid={`file-companion-library-meta-${item.id}`}
+                        draggable={canDrag}
+                        title={canDrag ? cs("拖到左侧文件夹以分类") : undefined}
+                        onDragStart={(event) => beginLibraryDrag(event, item, canDrag)}
+                        onDragEnd={() => endLibraryDragRef.current()}
+                    >
                         <span className="file-companion-badge" data-tone="source">{item.source === "cloud" ? cs("云端") : cs("本机")}</span>
                         {item.source === "cloud" ? <span className="file-companion-badge">{audienceLabel(item.visibility)}</span> : null}
                         {item.source === "cloud" && item.host ? (
@@ -1958,7 +2220,23 @@ export function CompanionLibraryView({
     return (
         <div className="file-companion-dialog" data-testid="file-companion-library-panel" role="dialog" aria-modal="true" aria-labelledby="file-companion-library-title">
             <div className="file-companion-dialog-scrim" data-testid="file-companion-library-scrim" onMouseDown={() => { if (confirmOpenRef.current || folderPromptRef.current) return; onExit(); }} />
-            <div className="file-companion-dialog-card file-companion-library-dialog" ref={cardRef}>
+            <div
+                className="file-companion-dialog-card file-companion-library-dialog"
+                ref={cardRef}
+                onDragOver={(event) => {
+                    const field = companionDragTextField(event.target);
+                    if (!field || field.closest(".file-companion-folder-row")) return;
+                    if (!dragItemIDRef.current && !companionDragItemID(event.dataTransfer)) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "none";
+                }}
+                onDrop={(event) => {
+                    const field = companionDragTextField(event.target);
+                    if (!field) return;
+                    if (!dragItemIDRef.current && !companionDragItemID(event.dataTransfer)) return;
+                    event.preventDefault();
+                }}
+            >
                 <header className="file-companion-dialog-head">
                     <div className="file-companion-dialog-heading">
                         <h2 id="file-companion-library-title">{cs("文档管理")}</h2>
@@ -2025,6 +2303,7 @@ export function CompanionLibraryView({
                             role="tree"
                             aria-label={cs("文件夹")}
                             data-testid="file-companion-library-folders"
+                            onDragOver={onFolderRailDragOver}
                         >
                             <FolderTreeRow
                                 testId="file-companion-folder-all"
@@ -2039,9 +2318,11 @@ export function CompanionLibraryView({
                                 count={countOf("none")}
                                 selected={selectedFolder === "none"}
                                 onSelect={() => setSelectedFolder("none")}
+                                drop={folderDrop("none")}
+                                trail={defaultButton("", "file-companion-folder-default-none")}
                             />
                             {folders.map((folder) => (
-                                <div key={folder.id} className="file-companion-folder-row" role="treeitem" aria-selected={selectedFolder === folder.id} aria-level={1}>
+                                <div key={folder.id} className="file-companion-folder-row" role="treeitem" aria-selected={selectedFolder === folder.id} aria-level={1} {...folderDrop(folder.id)}>
                                     {editingID === folder.id ? (
                                         <form
                                             className="file-companion-folder-rename"
@@ -2089,6 +2370,7 @@ export function CompanionLibraryView({
                                         </button>
                                     )}
                                     <span className="file-companion-folder-count">{countOf(folder.id)}</span>
+                                    {defaultButton(folder.id, `file-companion-folder-default-${folder.id}`)}
                                     <button
                                         type="button"
                                         className="file-companion-folder-icon"
@@ -2213,19 +2495,238 @@ function FolderTreeRow({
     count,
     selected,
     onSelect,
+    drop,
+    trail,
 }: {
     testId: string;
     label: string;
     count: number;
     selected: boolean;
     onSelect: () => void;
+    trail?: React.ReactNode;
+    drop?: {
+        onDragEnter: (event: React.DragEvent<HTMLDivElement>) => void;
+        onDragOver: (event: React.DragEvent<HTMLDivElement>) => void;
+        onDragLeave: (event: React.DragEvent<HTMLDivElement>) => void;
+        onDrop: (event: React.DragEvent<HTMLDivElement>) => void;
+    };
 }) {
     return (
-        <div className="file-companion-folder-row" role="treeitem" aria-selected={selected} aria-level={1}>
+        <div className="file-companion-folder-row" role="treeitem" aria-selected={selected} aria-level={1} {...drop}>
             <button type="button" className="file-companion-folder-name" data-testid={testId} onClick={onSelect}>
                 <span>{label}</span>
             </button>
             <span className="file-companion-folder-count">{count}</span>
+            {trail}
+        </div>
+    );
+}
+
+function companionPlaceFileName(path: string): string {
+    const name = path.trim().replace(/\\/g, "/").split("/").pop() || "";
+    return name === "." || name === ".." ? "" : name;
+}
+
+// companionPlaceFolderID is the folder this file is already in. The catalog
+// publishes that on the path key. A later browser add must offer this folder,
+// so confirming does not move the file onto the default. No path key means
+// the file is still uncategorized, and the default is the offer.
+function companionPlaceFolderID(path: string, placements: Record<string, string> | null | undefined): string {
+    if (!placements) return "";
+    for (const key of companionFolderPathCandidates(path)) {
+        const folderID = placements["path:" + key];
+        if (!folderID || folderID === companionFolderUncategorized) continue;
+        return folderID;
+    }
+    return "";
+}
+
+export function CompanionPlaceDialog({ path, name = "", onClose }: { path: string; name?: string; onClose: () => void }) {
+    const [folders, setFolders] = useState<CompanionLibraryFolder[]>([]);
+    const [selected, setSelected] = useState("");
+    const [keptName, setKeptName] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [ready, setReady] = useState(false);
+    const [failed, setFailed] = useState(false);
+    const [known, setKnown] = useState(false);
+    const [notice, setNotice] = useState("");
+    const touchedRef = useRef(false);
+    const busyRef = useRef(false);
+    const rootRef = useRef<HTMLDivElement>(null);
+    const fileName = name.trim() || companionPlaceFileName(path);
+    useEffect(() => {
+        touchedRef.current = false;
+        busyRef.current = false;
+        setBusy(false);
+        setReady(false);
+        setFailed(false);
+        setKnown(false);
+        setNotice("");
+        setSelected("");
+        setKeptName("");
+        setFolders([]);
+        let dead = false;
+        void (async () => {
+            try {
+                const catalog = readCompanionLibraryCatalog(await ListFileCompanionCatalog());
+                if (dead || touchedRef.current) return;
+                // The path key can belong to a hidden row of the same file.
+                // The offer is the row an empty-id move changes. Explicit
+                // 未分类 does not inherit that path key. A failed read must
+                // not claim the file is uncategorized.
+                let current = companionPlaceFolderID(path, catalog.placements);
+                let know = true;
+                if (typeof FileCompanionFolderForPath === "function") {
+                    try {
+                        const folder = await FileCompanionFolderForPath(path);
+                        if (dead || touchedRef.current) return;
+                        if (typeof folder === "string") current = folder.trim();
+                    } catch (err) {
+                        if (!dead && !touchedRef.current) setNotice(libraryError(err));
+                        current = "";
+                        know = false;
+                    }
+                }
+                if (dead || touchedRef.current) return;
+                const kept = catalog.folders.find((folder) => folder.id === current);
+                setFolders(catalog.folders);
+                setSelected(kept ? kept.id : catalog.defaultId);
+                setKeptName(kept ? kept.name : "");
+                setKnown(know);
+            } catch (err) {
+                if (!dead && !touchedRef.current) {
+                    setNotice(libraryError(err));
+                    setFailed(true);
+                }
+            } finally {
+                if (!dead) setReady(true);
+            }
+        })();
+        return () => { dead = true; };
+    }, [path]);
+    useEffect(() => {
+        if (!ready) return;
+        const root = rootRef.current;
+        if (!root) return;
+        const active = document.activeElement;
+        if (active instanceof Node && root.contains(active) && active !== root) return;
+        const checked = root.querySelector<HTMLInputElement>('input[type="radio"]:checked:not([disabled])');
+        (checked ?? root.querySelector<HTMLButtonElement>("button:not([disabled])"))?.focus();
+    }, [ready]);
+    useEffect(() => {
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                if (busyRef.current) return;
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                onClose();
+                return;
+            }
+            if (event.key !== "Tab") return;
+            const root = rootRef.current;
+            if (!root) return;
+            const items = Array.from(root.querySelectorAll<HTMLElement>("input, button, textarea, select, a[href]")).filter((el) => !el.hasAttribute("disabled") && el.tabIndex !== -1);
+            if (items.length === 0) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                return;
+            }
+            const first = items[0];
+            const last = items[items.length - 1];
+            const active = document.activeElement;
+            if (event.shiftKey && (active === first || !root.contains(active))) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                last.focus();
+            } else if (!event.shiftKey && (active === last || !root.contains(active))) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                first.focus();
+            }
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+    }, [onClose]);
+    const choose = (folderID: string) => {
+        touchedRef.current = true;
+        setSelected(folderID);
+    };
+    const confirm = async () => {
+        if (!ready || failed || busyRef.current || typeof MoveFileCompanionLibraryItem !== "function") return;
+        touchedRef.current = true;
+        busyRef.current = true;
+        setBusy(true);
+        setNotice("");
+        try {
+            await MoveFileCompanionLibraryItem("", path, selected);
+            window.dispatchEvent(new Event(companionCatalogChangedEvent));
+            onClose();
+        } catch (err) {
+            setNotice(libraryError(err));
+            busyRef.current = false;
+            setBusy(false);
+        }
+    };
+    return (
+        <div ref={rootRef} className="file-companion-dialog file-companion-place" data-testid="file-companion-place" role="dialog" aria-modal="true" aria-labelledby="file-companion-place-title">
+            <div className="file-companion-dialog-scrim" data-testid="file-companion-place-scrim" onMouseDown={() => { if (!busyRef.current) onClose(); }} />
+            <form
+                className="file-companion-dialog-card"
+                onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!ready || failed || busyRef.current) return;
+                    void confirm();
+                }}
+            >
+                <header className="file-companion-dialog-head">
+                    <div className="file-companion-dialog-heading">
+                        <h2 id="file-companion-place-title">{cs("选择分类")}</h2>
+                        <p className="file-companion-dialog-sub">{cs("这篇文档放入哪个分类？")}</p>
+                        {fileName ? <p className="file-companion-dialog-doc" data-testid="file-companion-place-name">{fileName}</p> : null}
+                    </div>
+                </header>
+                <div className="file-companion-dialog-body">
+                    {ready && !failed ? (
+                        <div className="file-companion-dialog-section" role="radiogroup" aria-labelledby="file-companion-place-title">
+                            <label className="file-companion-folder-choice">
+                                <input type="radio" name="file-companion-place-folder" checked={selected === ""} disabled={busy} onChange={() => choose("")} />
+                                {cs("未分类")}
+                            </label>
+                            {folders.map((folder) => (
+                                <label key={folder.id} className="file-companion-folder-choice">
+                                    <input
+                                        type="radio"
+                                        name="file-companion-place-folder"
+                                        data-testid={`file-companion-place-${folder.id}`}
+                                        checked={selected === folder.id}
+                                        disabled={busy}
+                                        onChange={() => choose(folder.id)}
+                                    />
+                                    {folder.name}
+                                </label>
+                            ))}
+                        </div>
+                    ) : failed ? null : (
+                        <p className="file-companion-library-note" role="status">{cs("正在读取…")}</p>
+                    )}
+                    {ready && !failed && known ? (
+                        <p className="file-companion-library-note">
+                            {keptName
+                                ? companionFill(getCompanionUiLang(), "取消后这篇文档仍留在「${name}」。", { name: keptName })
+                                : cs("取消后这篇文档留在未分类。")}
+                        </p>
+                    ) : null}
+                    {notice ? <p className="file-companion-library-notice" role="status">{notice}</p> : null}
+                </div>
+                <footer className="file-companion-dialog-foot">
+                    <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-place-cancel" disabled={busy} onClick={onClose}>
+                        {cs("取消")}
+                    </button>
+                    <button type="submit" className="file-companion-dialog-primary" data-testid="file-companion-place-confirm" disabled={!ready || failed || busy}>
+                        {cs("确定")}
+                    </button>
+                </footer>
+            </form>
         </div>
     );
 }

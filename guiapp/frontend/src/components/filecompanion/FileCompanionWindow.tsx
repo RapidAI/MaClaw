@@ -45,6 +45,7 @@ import {
     GetBrandInfo,
     GetCurrentLanguage,
     GetFileCompanionBoot,
+    FileCompanionTakePlaces,
     ListFileCompanionLibrary,
     SetFileCompanionOpenSet,
     SetMainWindowScreenPosition,
@@ -59,7 +60,7 @@ import {
 import { WindowFullscreen, WindowGetPosition, WindowGetSize, WindowHide, WindowSetSize, WindowUnfullscreen } from "../../../wailsjs/runtime";
 import { createWindowMaximizeRestoreSession } from "../../utils/windowRestoreGeometry";
 import { useToast } from "../Toast";
-import { companionDiscussionCounts, companionHostShares, companionLibrarySnapshotKey, companionLibrarySync, companionMineShares, companionNoteDecision, companionNoteKey, companionNotePost, companionNotesFrom, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionShareMarksBehind, companionShareDocumentCatchUp, companionWithdrawnNotice, sameCompanionMineShare, takeCompanionLibraryList, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
+import { companionDiscussionCounts, companionHostShares, companionLibrarySnapshotKey, companionLibrarySync, companionMineShares, companionNoteDecision, companionNoteKey, companionNotePost, companionNotesFrom, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionShareMarksBehind, companionShareDocumentCatchUp, companionWithdrawnNotice, sameCompanionMineShare, takeCompanionLibraryList, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionPlaceDialog, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
@@ -476,6 +477,23 @@ function companionDocumentPaths(raw: unknown): string[] {
 function bootPaths(boot: { paths?: unknown; Paths?: unknown } | null | undefined): string[] {
     return companionDocumentPaths(boot?.paths ?? boot?.Paths);
 }
+
+function bootPlaces(boot: { place?: unknown; Place?: unknown } | null | undefined): string[] {
+    const value = boot?.place ?? boot?.Place;
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "") : [];
+}
+
+// placeKey folds the spellings one browser add uses for the same file.
+// The open call and the category request can arrive in either order, and
+// Windows paths differ by slash and drive-letter case.
+function placeKey(path: string): string {
+    return path.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+// A category request is paired with one open. serial 0 is the next open of
+// that file. A later open gets a new serial, so an older failure cannot
+// answer it.
+type PlaceWant = { gen: number; serial: number };
 
 function bootNotice(boot: { notice?: unknown; Notice?: unknown } | null | undefined): string {
     const value = boot?.notice ?? boot?.Notice;
@@ -2373,6 +2391,19 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     }, [languageBinding]);
     const [openMenu, setOpenMenu] = useState(false);
     const [paperNoticeCode, setPaperNoticeCode] = useState("");
+    const [placePath, setPlacePath] = useState("");
+    const placePathRef = useRef("");
+    const placeQueueRef = useRef<string[]>([]);
+    // A browser add asks for a category only after that file is in the library.
+    // The open and the request arrive as two events, in either order. A failed
+    // open drops its own request and does not block a later add of the same path.
+    const placeWantedRef = useRef(new Map<string, PlaceWant>());
+    const placeGenRef = useRef(new Map<string, number>());
+    const placeSettledRef = useRef(new Map<string, "ok" | "fail">());
+    const placeResolvedRef = useRef(new Map<string, string>());
+    const placeInflightRef = useRef(new Map<string, Set<number>>());
+    const placeDoneRef = useRef(new Map<string, number>());
+    const enqueuePlaceRef = useRef<(paths: string[]) => void>(() => undefined);
     // 独立界面 state: the window switches between the reading view, the
     // 文档管理 screen, and the 阅读群组 screen. 分享 opens over either.
     const [view, setView] = useState<CompanionView>("read");
@@ -3425,13 +3456,121 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         tabCommittedRef.current = false;
     }
 
+    const currentPlaceWant = (key: string): PlaceWant | undefined => {
+        const want = placeWantedRef.current.get(key);
+        if (!want || want.gen !== placeGenRef.current.get(key)) return undefined;
+        return want;
+    };
+    const trackPlaceOpen = (path: string, serial: number) => {
+        const key = placeKey(path);
+        if (!key) return;
+        let open = placeInflightRef.current.get(key);
+        if (!open) {
+            open = new Set();
+            placeInflightRef.current.set(key, open);
+        }
+        open.add(serial);
+        const want = currentPlaceWant(key);
+        if (want && want.serial === 0) placeWantedRef.current.set(key, { gen: want.gen, serial });
+    };
+    const untrackPlaceOpen = (path: string, serial: number) => {
+        const key = placeKey(path);
+        const open = key ? placeInflightRef.current.get(key) : undefined;
+        if (!open) return;
+        open.delete(serial);
+        if (open.size === 0) placeInflightRef.current.delete(key);
+    };
+    // The open that continues owns the category request. A finished open
+    // answers it now. An open that already failed does not leave the request
+    // waiting for a later, unrelated open.
+    const handOffPlace = (from: string, to: string, ownerSerial: number) => {
+        const source = placeKey(from);
+        const target = placeKey(to);
+        if (!source || !target) return;
+        const want = currentPlaceWant(source);
+        if (!want) return;
+        const inflight = placeInflightRef.current.get(target);
+        const ownerLive = ownerSerial > 0 && !!inflight?.has(ownerSerial);
+        if (!ownerLive && (inflight?.size ?? 0) === 0 && placeSettledRef.current.get(target) === "ok") {
+            placeWantedRef.current.delete(source);
+            const stored = placeResolvedRef.current.get(target) || to.trim();
+            if (stored) enqueuePlaceRef.current([stored]);
+            return;
+        }
+        if (!ownerLive && (inflight?.size ?? 0) === 0 && placeSettledRef.current.get(target) === "fail") {
+            placeWantedRef.current.delete(source);
+            return;
+        }
+        placeGenRef.current.set(target, want.gen);
+        placeWantedRef.current.set(target, { gen: want.gen, serial: ownerLive ? ownerSerial : 0 });
+        if (source !== target) placeWantedRef.current.delete(source);
+    };
+    // settlePlace runs when an open finishes. The category dialog is shown
+    // only for a request paired with this open, and only when the file was
+    // actually opened, which is when the library row exists.
+    const settlePlace = (requested: string, resolved: string, ok: boolean, serial: number) => {
+        const stored = (resolved || requested).trim();
+        const keys = Array.from(new Set([placeKey(requested), placeKey(stored)].filter((key) => key !== "")));
+        let show = false;
+        for (const key of keys) {
+            const done = placeDoneRef.current.get(key) ?? 0;
+            const fresh = serial === 0 ? done === 0 : serial >= done;
+            if (fresh && serial !== 0) placeDoneRef.current.set(key, serial);
+            if (fresh && (ok || (placeInflightRef.current.get(key)?.size ?? 0) === 0)) {
+                placeSettledRef.current.set(key, ok ? "ok" : "fail");
+                if (ok && stored) placeResolvedRef.current.set(key, stored);
+            }
+            const want = currentPlaceWant(key);
+            if (!want) continue;
+            if (want.serial !== serial && !(ok && want.serial === 0)) continue;
+            placeWantedRef.current.delete(key);
+            if (ok) show = true;
+        }
+        if (show && stored) enqueuePlaceRef.current([stored]);
+    };
+    // A browser add asks only after its own open has landed. An open that
+    // already succeeded can ask immediately, because the library row exists.
+    // An open that already failed is dropped, so it cannot attach itself to
+    // a later open from Explorer or a drop.
+    const requestPlace = (paths: string[]) => {
+        const ready: string[] = [];
+        const seen = new Set<string>();
+        for (const raw of paths) {
+            const path = raw.trim();
+            const key = placeKey(path);
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            const inflight = placeInflightRef.current.get(key)?.size ?? 0;
+            const settled = placeSettledRef.current.get(key);
+            if (settled === "ok" && inflight === 0) {
+                ready.push(placeResolvedRef.current.get(key) || path);
+                continue;
+            }
+            if (settled === "fail" && inflight === 0) continue;
+            const gen = (placeGenRef.current.get(key) ?? 0) + 1;
+            placeGenRef.current.set(key, gen);
+            let serial = 0;
+            const open = placeInflightRef.current.get(key);
+            if (open) {
+                for (const item of open) if (item > serial) serial = item;
+            }
+            placeWantedRef.current.set(key, { gen, serial });
+        }
+        if (ready.length > 0) enqueuePlaceRef.current(ready);
+    };
     const openPath = async (path: string, fromDrop: boolean, keepDirty = false, refresh = 0, focus = false) => {
         const trimmed = path.trim();
-        if (!trimmed || refuseWithdrawnShareRef.current(trimmed)) return;
+        if (!trimmed || refuseWithdrawnShareRef.current(trimmed)) {
+            if (trimmed) settlePlace(trimmed, trimmed, false, 0);
+            return;
+        }
         opensInFlight.current += 1;
+        const serial = openSerial.current + 1;
+        openSerial.current = serial;
+        let placeOutcome: "ok" | "fail" | "skip" = "skip";
+        let placeResolved = trimmed;
+        trackPlaceOpen(trimmed, serial);
         try {
-            const serial = openSerial.current + 1;
-            openSerial.current = serial;
             openEpoch.current.set(trimmed, serial);
             const epochsAtStart = new Map(saveEpoch.current);
             let doc: CompanionDoc = {};
@@ -3440,10 +3579,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             } catch (err) {
                 doc = { path: trimmed, error: bindingErrorText(err) || "打不开这个文件" };
             }
-            if (openEpoch.current.get(trimmed) !== serial) return;
+            if (openEpoch.current.get(trimmed) !== serial) {
+                handOffPlace(trimmed, trimmed, openEpoch.current.get(trimmed) ?? 0);
+                return;
+            }
             const error = field(doc, "error", "Error", "");
             if (fromDrop && isDirectoryError(error)) {
                 setDropMessage(cs("不支持打开文件夹"));
+                placeOutcome = "fail";
                 return;
             }
             const next = tabFromDoc(doc, trimmed);
@@ -3489,7 +3632,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 }
             }
             const resolved = next.path || trimmed;
-            if (refuseWithdrawnShareRef.current(resolved)) return;
+            if (refuseWithdrawnShareRef.current(resolved)) {
+                placeOutcome = "fail";
+                placeResolved = resolved;
+                return;
+            }
             // The library list may have fetched these marks before the file
             // was openable. Opening fetches again when that copy is still
             // behind, so the page does not wait for the next poll.
@@ -3499,12 +3646,16 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 pullShareMarksRef.current(resolved, marksRevision);
             }
             if (refresh < 1 && (saveEpoch.current.get(resolved) ?? 0) !== (epochsAtStart.get(resolved) ?? 0)) {
+                handOffPlace(trimmed, resolved, 0);
                 void openPath(resolved, fromDrop, keepDirty, 1, focus);
                 return;
             }
             if (next.path !== trimmed) {
                 const current = openEpoch.current.get(next.path) ?? 0;
-                if (current > serial) return;
+                if (current > serial) {
+                    handOffPlace(trimmed, next.path, current);
+                    return;
+                }
                 openEpoch.current.set(next.path, serial);
             }
             const existing = tabsRef.current.find((tab) => tab.path === next.path);
@@ -3560,8 +3711,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 if (!refuseWithdrawnShareRef.current(next.path)) return;
                 if (tabsRef.current.length === 0) tabCommittedRef.current = false;
             });
+            placeOutcome = next.error ? "fail" : "ok";
+            placeResolved = next.path || trimmed;
         } finally {
+            untrackPlaceOpen(trimmed, serial);
             opensInFlight.current -= 1;
+            if (placeOutcome !== "skip") settlePlace(trimmed, placeResolved, placeOutcome === "ok", serial);
         }
     };
 
@@ -3589,12 +3744,39 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         return () => { cancelled = true; };
     }, []);
 
+    const enqueuePlace = (paths: string[]) => {
+        let openNow = "";
+        for (const raw of paths) {
+            const path = raw.trim();
+            if (!path || path === placePathRef.current || placeQueueRef.current.includes(path)) continue;
+            if (!placePathRef.current && !openNow) {
+                openNow = path;
+                continue;
+            }
+            placeQueueRef.current.push(path);
+        }
+        if (openNow) {
+            placePathRef.current = openNow;
+            setPlacePath(openNow);
+        }
+    };
+    enqueuePlaceRef.current = enqueuePlace;
+    const finishPlace = () => {
+        const next = placeQueueRef.current.shift() || "";
+        placePathRef.current = next;
+        setPlacePath(next);
+    };
+
     useEffect(() => {
         let cancelled = false;
         const runtime = runtimeAPI();
         const onOpen = (payload: unknown) => {
             const list = Array.isArray(payload) ? payload.filter((item): item is string => typeof item === "string") : [];
             list.forEach((path) => { void openPath(path, false, false, 0, true); });
+        };
+        const onPlace = (payload: unknown) => {
+            const list = Array.isArray(payload) ? payload.filter((item): item is string => typeof item === "string") : [];
+            requestPlace(list);
         };
         const onReload = (payload: unknown) => {
             const body = eventBody(payload);
@@ -3772,6 +3954,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             setOpenMenu(false);
         };
         runtime?.EventsOn?.("file-companion:open", onOpen);
+        runtime?.EventsOn?.("file-companion:place", onPlace);
         runtime?.EventsOn?.("file-companion:show", onShow);
         runtime?.EventsOn?.("file-companion:notice", onNotice);
         runtime?.EventsOn?.("file-companion:preview-reload", onReload);
@@ -3918,6 +4101,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     await openPath(path, false, false, 0, true);
                 }
                 if (cancelled) return;
+                requestPlace(readyPaths(await Promise.resolve(FileCompanionTakePlaces()).catch(() => undefined)));
                 bootSettledRef.current = true;
                 setBootSettled(true);
                 if (!suppressOpen) askIfEmpty();
@@ -3932,6 +4116,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 if (suppressOpen) {
                     setPaperNoticeCode(notice);
                     setOpenMenu(false);
+                } else {
+                    requestPlace(bootPlaces(boot as { place?: unknown; Place?: unknown }));
                 }
                 // A launch with no documents is "show the companion". The files
                 // it had open last time are the session. The 打开 panel, not
@@ -3954,6 +4140,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         return () => {
             cancelled = true;
             runtime?.EventsOff?.("file-companion:open");
+            runtime?.EventsOff?.("file-companion:place");
             runtime?.EventsOff?.("file-companion:show");
             runtime?.EventsOff?.("file-companion:notice");
             runtime?.EventsOff?.("file-companion:preview-reload");
@@ -6226,6 +6413,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
 
     return (
         <div data-testid="file-companion-window" className="file-companion-window" data-view={view} data-reader-player={playerTab ? "true" : undefined} data-ai-theme={appearance.themeMode} data-ai-dark-scheme={appearance.themeMode === "dark" ? appearance.darkSchemeId : undefined} data-ai-light-scheme={appearance.themeMode === "light" ? appearance.lightSchemeId : undefined} style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+            {placePath ? <CompanionPlaceDialog path={placePath} name={(tabs.find((item) => item.path === placePath) ?? tabs.find((item) => companionSharePathKey(item.path) === companionSharePathKey(placePath)))?.name ?? ""} onClose={finishPlace} /> : null}
             {paperNoticeText ? (
                 <div data-testid="file-companion-paper-notice" role="status" style={{ margin: "8px 12px 0", padding: "8px 12px", borderRadius: 8, background: "var(--theme-warning-bg, #fff7ed)", color: "var(--theme-text, #1f2937)", fontSize: 13, lineHeight: 1.45 }}>
                     {paperNoticeText}

@@ -1932,8 +1932,11 @@ func resolveBashTimeout(args map[string]interface{}, command string) int {
 func resolveCraftToolTimeout(args map[string]interface{}, task string) int {
 	timeout := craftToolDefaultTimeout
 	explicit := false
-	if t, ok := args["timeout"].(float64); ok && t > 0 {
-		timeout = int(t)
+	// Skill YAML decodes a bare number into int. A JSON tool call uses
+	// float64. Both are the caller's script allowance. After the route
+	// deadline, that allowance is the cap still applied to the script.
+	if t, ok := cskill.SkillParamSeconds(args, "timeout"); ok && t > 0 {
+		timeout = t
 		explicit = true
 	}
 	if !explicit && looksLikePDFRelatedWork(task) {

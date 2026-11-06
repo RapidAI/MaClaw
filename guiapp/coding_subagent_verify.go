@@ -1301,23 +1301,25 @@ func (s *CodingSubAgent) runPostLoopVerification(
 }
 
 // runPostLoopVerifyFixCycle runs automatic verification after the main coding
-// loop completes. If verification fails, injects the error into the same
-// conversation and lets the model fix it (up to maxRounds times).
-//
-// Returns the updated LoopResult (iterations/toolCalls accumulated).
+// loop completes. If verification fails, a fresh model loop repairs the code
+// (up to maxRounds times). That loop does not reuse the main conversation.
+// Counts, text, and errors are merged onto result. The returned entries are
+// those model loops, in order. The host verification command is not one of
+// them.
 func (s *CodingSubAgent) runPostLoopVerifyFixCycle(
 	cb *codingSubAgentCallbacks,
 	result *agent.LoopResult,
 	verifyCmd string,
 	traj *TrajectoryRecorder,
 	taskFiles []string,
-) {
+) []agent.ConversationEntry {
+	var modelLoops []agent.ConversationEntry
 	for round := 0; round < subAgentMaxVerifyFixRounds; round++ {
 		if cb.ShouldStop() {
 			if result != nil && strings.TrimSpace(result.Error) == "" {
 				result.Error = "cancelled"
 			}
-			return
+			return modelLoops
 		}
 
 		log.Printf("[coding-subagent-verify] round %d/%d: running %q", round+1, subAgentMaxVerifyFixRounds, verifyCmd)
@@ -1348,7 +1350,7 @@ func (s *CodingSubAgent) runPostLoopVerifyFixCycle(
 			if s.onProgress != nil {
 				s.onProgress("验证通过")
 			}
-			return
+			return modelLoops
 		}
 
 		log.Printf("[coding-subagent-verify] round %d: verification FAILED, starting fix loop", round+1)
@@ -1363,10 +1365,12 @@ func (s *CodingSubAgent) runPostLoopVerifyFixCycle(
 			"验证命令 `%s` 执行失败。错误输出：\n```\n%s\n```\n\n请分析错误并修复代码使验证通过。只做最小必要修改。修复后不要重新运行验证命令（系统会自动运行）。",
 			verifyCmd, truncatedOutput)
 
-		// Run fix loop as a fresh RunLoop (shares system prompt + tools via cb)
+		// Run fix loop as a fresh RunLoop (shares system prompt + tools via cb).
+		// History stays nil: this loop does not replay the main conversation.
 		fixResult := agentruntime.RunAgentTurn(cb, fixPrompt, nil, s.httpClient)
 		// Append fix-loop turns into the same trajectory session.
 		appendSubAgentLoopResult(traj, fixResult, false)
+		modelLoops = codingAgentResumeAppendLoop(modelLoops, fixResult.HistoryDelta)
 
 		// Merge results
 		result.Iterations += fixResult.Iterations
@@ -1392,6 +1396,7 @@ func (s *CodingSubAgent) runPostLoopVerifyFixCycle(
 	if result != nil && strings.TrimSpace(result.Error) == "" {
 		result.Error = fmt.Sprintf("post-loop verification failed after %d rounds (%s)", subAgentMaxVerifyFixRounds, verifyCmd)
 	}
+	return modelLoops
 }
 
 // isSubAgentVerificationFailure checks if bash output indicates a verification failure.

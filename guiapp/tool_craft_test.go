@@ -534,8 +534,12 @@ func TestBuildCraftSuccessResultRegistersOneDurableSkillWhenEnabled(t *testing.T
 }
 
 func TestCraftScriptGenerationWaitsForTheModelBody(t *testing.T) {
-	if !craftScriptGenerationOptions().AwaitResponse {
+	opts := craftScriptGenerationOptions()
+	if !opts.AwaitResponse {
 		t.Fatal("script generation must keep the model body after the scheduling slot is released")
+	}
+	if !opts.RouteDeadlineIsHeaderOnly {
+		t.Fatal("script generation must treat an owned route deadline as time-to-headers")
 	}
 }
 

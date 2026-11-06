@@ -3,6 +3,7 @@ package guiapp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
@@ -275,8 +277,14 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 	if requestTimeout <= 0 {
 		requestTimeout = 60 * time.Second
 	}
+	// Client.Timeout covers connect, headers, and the whole body. A live SSE
+	// script generation has no wall-clock cap after headers; the same duration
+	// is time-to-first-byte on the transport. The nil-caller client is reused
+	// for one header budget so the keep-alive pool survives this call.
+	// Callers that pass their own client, including the chat client and
+	// httptest, keep it.
 	if client == nil {
-		client = &http.Client{Timeout: requestTimeout}
+		client = newCraftScriptHTTPClient(requestTimeout)
 	}
 
 	runtimes := detectAvailableScriptRuntimes()
@@ -303,9 +311,21 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 	if attempts > 3 {
 		attempts = 3
 	}
+	// Bind returns a new context and does not mutate this one. Generation,
+	// the attempt gate, scan, and execute share the returned context. A bind
+	// that stays inside generateScript leaves this ctx unowned, so the script
+	// is not lifted after the route deadline.
+	ctx = bindCraftScriptRouteDeadline(ctx)
 
 	var lastAttempt craftAttemptResult
 	for attempt := 1; attempt <= attempts; attempt++ {
+		// The caller context is the route budget for model calls. Once it has
+		// ended, another generation fails immediately and would replace the
+		// script, scan, or execution result already recorded.
+		if !craftAnotherGenerationAllowed(ctx, attempt) {
+			log.Printf("[craft_tool] caller context ended (%v); keeping attempt %d and not starting another script generation", ctx.Err(), attempt-1)
+			break
+		}
 		request.Language = request.RuntimeLanguage
 		if attempt == 1 {
 			sendProgress(fmt.Sprintf("正在分析任务并生成脚本（第 %d/%d 次）...", attempt, attempts))
@@ -364,22 +384,44 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 		}
 
 		sendProgress("Security scanning generated script before execution...")
-		if report, scanErr := scanCraftedScriptBeforeExecution(ctx, app, request.OriginalTask, script, request.Language, sendProgress); scanErr != nil {
+		var (
+			report     *cskill.ScanReport
+			scanErr    error
+			scriptPath string
+			saveErr    error
+			output     string
+			execErr    error
+		)
+		func() {
+			// The route deadline may already have fired while the model was
+			// still writing. Scan and the script keep the caller's stop, and
+			// the script keeps its own timeout. A live parent stays in place
+			// so the remaining skill time still caps the script.
+			scriptCtx, releaseScriptCtx := llm.ContinueAfterOwnedRouteDeadline(ctx)
+			defer releaseScriptCtx()
+			report, scanErr = scanCraftedScriptBeforeExecution(scriptCtx, app, request.OriginalTask, script, request.Language, sendProgress)
+			if scanErr != nil {
+				return
+			}
+			sendProgress("Saving generated script...")
+			scriptPath, saveErr = saveScript(script, request.Language, request.OriginalTask)
+			if saveErr != nil {
+				return
+			}
+			sendProgress(formatCraftExecutionProgress(request.Language, attempt, attempts, request.Timeout))
+			output, execErr = executeScriptWithContext(scriptCtx, scriptPath, request.Language, request.WorkingDir, request.Timeout, runtimes, request.ExtraEnv, request.MinimalEnv)
+		}()
+		if scanErr != nil {
 			lastAttempt = craftAttemptResult{Language: request.Language, Script: script, Attempts: attempt, VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: scanErr.Error()}
 			if app != nil {
 				app.emitSkillInstallProgress(generateSkillName(request.OriginalTask), "blocked", "Crafted script blocked before execution by security scan.", report)
 			}
 			break
 		}
-		sendProgress("Saving generated script...")
-		scriptPath, saveErr := saveScript(script, request.Language, request.OriginalTask)
 		if saveErr != nil {
 			lastAttempt = craftAttemptResult{Language: request.Language, Attempts: attempt, VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: saveErr.Error()}
 			break
 		}
-
-		sendProgress(formatCraftExecutionProgress(request.Language, attempt, attempts, request.Timeout))
-		output, execErr := executeScriptWithContext(ctx, scriptPath, request.Language, request.WorkingDir, request.Timeout, runtimes, request.ExtraEnv, request.MinimalEnv)
 		lastAttempt = craftAttemptResult{
 			ScriptPath: scriptPath,
 			Script:     script,
@@ -610,6 +652,7 @@ func generateScript(cfg corelib.MaclawLLMConfig, request craftToolRequest, runti
 var craftToolRetryInitialBackoff = 2 * time.Second
 
 func generateScriptWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig, request craftToolRequest, runtimes craftRuntimeAvailability, previous craftAttemptResult, client *http.Client) (string, error) {
+	ctx = bindCraftScriptRouteDeadline(ctx)
 	sysPrompt := buildCraftSystemPrompt(request, runtimes, previous)
 	userPrompt := buildCraftUserPrompt(request, previous)
 	messages := []interface{}{
@@ -636,10 +679,17 @@ func generateScriptWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig,
 			} else {
 				log.Printf("[craft_tool] HTTP 429 rate limit, retrying in %v (attempt %d/%d)", backoff, retry+1, maxRetries+1)
 			}
+			timer := time.NewTimer(backoff)
 			select {
-			case <-time.After(backoff):
+			case <-timer.C:
 			case <-ctx.Done():
-				return "", ctx.Err()
+				timer.Stop()
+				return "", craftAPIRetryStop(ctx, lastErr)
+			}
+			// The timer and the context can become ready together. Taking the
+			// timer must not send another request once the context has ended.
+			if stopErr := craftAPIRetryStop(ctx, lastErr); stopErr != nil {
+				return "", stopErr
 			}
 			backoff *= 2 // exponential backoff: 2s, 4s, 8s
 		}
@@ -681,12 +731,122 @@ func generateScriptWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig,
 	return "", fmt.Errorf("API 调用过于频繁 (HTTP 429)，已重试 %d 次仍失败。请稍后再试。原始错误: %v", maxRetries, lastErr)
 }
 
+// craftAPIRetryStop is the result of an API retry wait that must not send.
+// A nil result means the caller context is still live. An owned route
+// deadline leaves the rate-limit or transient error already in hand. A stop
+// or any other ended context returns that context error.
+func craftAPIRetryStop(ctx context.Context, lastErr error) error {
+	if ctx == nil || ctx.Err() == nil {
+		return nil
+	}
+	if lastErr != nil && llm.OwnedRouteDeadlineReleased(ctx) {
+		log.Printf("[craft_tool] route deadline fired during API retry; returning the error already in hand")
+		return lastErr
+	}
+	return ctx.Err()
+}
+
+// craftAnotherGenerationAllowed reports whether this attempt may call the
+// model. Attempt 1 always may: its error is the result. A later attempt needs
+// a live caller context. A spent route deadline, a host deadline, or a stop
+// cannot host a repair generation, and that call's error would discard the
+// attempt already recorded.
+func craftAnotherGenerationAllowed(ctx context.Context, attempt int) bool {
+	if attempt <= 1 || ctx == nil {
+		return true
+	}
+	return ctx.Err() == nil
+}
+
 // craftScriptGenerationOptions marks script generation as the consumer of the
 // model body. The scheduling budget only reserves a foreground slot. Returning
 // that budget error makes craft_tool finish and cancel the tool context, which
 // aborts the read. Callers that retry an identical payload detach instead.
 func craftScriptGenerationOptions() simpleLLMRequestOptions {
-	return simpleLLMRequestOptions{AwaitResponse: true}
+	return simpleLLMRequestOptions{AwaitResponse: true, RouteDeadlineIsHeaderOnly: true}
+}
+
+// bindCraftScriptRouteDeadline records a long caller deadline as a route
+// timer. The result is a new context; the caller must assign it. A deadline
+// already recorded by the skill runner is left alone so its pre-timeout
+// parent remains the stop signal. A remaining time under MinAgentTimeoutSec
+// stays a host cap and still aborts the body.
+func bindCraftScriptRouteDeadline(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	if _, owned := llm.OwnedRouteDeadline(ctx); owned {
+		return ctx
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) < time.Duration(corelib.MinAgentTimeoutSec)*time.Second {
+		return ctx
+	}
+	return llm.BindRouteStreamDeadline(ctx, deadline, llm.WithoutDeadlineCancel(ctx))
+}
+
+// craftScriptClient is the nil-caller HTTP client. ResponseHeaderTimeout is a
+// transport field, so this client cannot be the shared LLM transport. One
+// client per header budget keeps the idle pool for the next script generation.
+// A per-call clone would leave that pool with nothing to reuse it. A changed
+// budget replaces the client and closes the previous idle connections.
+var (
+	craftScriptClientMu sync.Mutex
+	craftScriptClient   *http.Client
+	craftScriptHeader   time.Duration
+)
+
+// newCraftScriptHTTPClient is the client used when craft_tool has no caller
+// client. Timeout stays 0: a positive Client.Timeout cancels the SSE body
+// even after the scheduling budget has released the slot. ResponseHeaderTimeout
+// is time-to-first-byte. Compression stays off so a stream is not buffered.
+func newCraftScriptHTTPClient(headerTimeout time.Duration) *http.Client {
+	craftScriptClientMu.Lock()
+	if craftScriptClient != nil && craftScriptHeader == headerTimeout {
+		client := craftScriptClient
+		craftScriptClientMu.Unlock()
+		return client
+	}
+	transport := cloneSharedLLMTransport()
+	transport.ResponseHeaderTimeout = headerTimeout
+	transport.DisableCompression = true
+	previous := craftScriptClient
+	client := &http.Client{Transport: transport}
+	craftScriptClient = client
+	craftScriptHeader = headerTimeout
+	craftScriptClientMu.Unlock()
+	if previous != nil {
+		previous.CloseIdleConnections()
+	}
+	return client
+}
+
+func resetCraftScriptHTTPClientForTest() {
+	craftScriptClientMu.Lock()
+	previous := craftScriptClient
+	craftScriptClient = nil
+	craftScriptHeader = 0
+	craftScriptClientMu.Unlock()
+	if previous != nil {
+		previous.CloseIdleConnections()
+	}
+}
+
+func cloneSharedLLMTransport() *http.Transport {
+	if base, ok := llm.SharedHTTPClient.Transport.(*http.Transport); ok && base != nil {
+		if cloned := base.Clone(); cloned != nil {
+			return cloned
+		}
+	}
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		DisableCompression:    true,
+	}
 }
 
 const craftTruncatedScriptMessage = "模型输出因长度上限被截断，脚本不完整，尚未执行。"
@@ -1571,12 +1731,33 @@ func executeScriptWithContext(parent context.Context, scriptPath, language, work
 		b.WriteString(stderr.String())
 	}
 	if runErr != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if scriptDeadlineExpired(parent, ctx, timeout) {
 			return b.String(), &craftScriptTimeoutError{seconds: timeout, err: runErr}
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return b.String(), fmt.Errorf("调用方时限已到，脚本已停止: %w", runErr)
 		}
 		return b.String(), runErr
 	}
 	return b.String(), nil
+}
+
+// scriptDeadlineExpired reports that the script's own timer stopped the
+// process. WithTimeout keeps a parent deadline that is sooner than the
+// script allowance, and that inherited deadline is not the script timer.
+func scriptDeadlineExpired(parent, script context.Context, timeoutSec int) bool {
+	if timeoutSec <= 0 || script == nil || !errors.Is(script.Err(), context.DeadlineExceeded) {
+		return false
+	}
+	scriptDeadline, ok := script.Deadline()
+	if !ok {
+		return false
+	}
+	parentDeadline, parentHas := parent.Deadline()
+	if parentHas && !scriptDeadline.Before(parentDeadline) {
+		return false
+	}
+	return true
 }
 
 // craftScriptTimeoutError is the script's own deadline, not a missing file

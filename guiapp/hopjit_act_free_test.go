@@ -74,9 +74,40 @@ func TestExecuteStepPlainActFillsJSON(t *testing.T) {
 		}
 		return `{"report":"晴"}`, nil
 	}}
-	got, err := caller.ExecuteStep(context.Background(), hopjit.StepReady{StepType: hopspec.StepAct, Summary: "查询"})
+	got, err := caller.ExecuteStep(context.Background(), hopjit.StepReady{
+		StepType: hopspec.StepAct, Summary: "查询",
+		OutputSchema: []hopspec.VariableDecl{{Name: "report", Type: "text"}},
+	})
 	if err != nil || got["report"] != "晴" {
 		t.Fatalf("got=%v err=%v", got, err)
+	}
+}
+
+func TestExecuteStepEmptySchemaSkipsModel(t *testing.T) {
+	caller := &guiHopJITCaller{invoke: func(context.Context, []interface{}, bool) (string, error) {
+		t.Fatal("empty output schema called the model")
+		return "", nil
+	}}
+	for _, stepType := range []hopspec.StepType{hopspec.StepReason, hopspec.StepAct, hopspec.StepCheck, hopspec.StepCommit} {
+		got, err := caller.ExecuteStep(context.Background(), hopjit.StepReady{StepType: stepType, Summary: "无输出"})
+		if err != nil || len(got) != 0 {
+			t.Fatalf("type=%s got=%v err=%v", stepType, got, err)
+		}
+	}
+	called := false
+	withOutput := &guiHopJITCaller{invoke: func(_ context.Context, _ []interface{}, jsonResponse bool) (string, error) {
+		called = true
+		if !jsonResponse {
+			t.Fatal("reason with an output did not ask for JSON")
+		}
+		return `{"report":"笔记"}`, nil
+	}}
+	got, err := withOutput.ExecuteStep(context.Background(), hopjit.StepReady{
+		StepType: hopspec.StepReason, Summary: "写出结果",
+		OutputSchema: []hopspec.VariableDecl{{Name: "report", Type: "text"}},
+	})
+	if err != nil || !called || got["report"] != "笔记" {
+		t.Fatalf("got=%v called=%v err=%v", got, called, err)
 	}
 }
 
@@ -745,6 +776,48 @@ func TestHopJITActFreeBindsToolIdentityPerCaller(t *testing.T) {
 		if len(owners) == 0 || owners[len(owners)-1] != identity.PolicyOwnerID {
 			t.Fatalf("tool owners=%v identity=%+v", owners, identity)
 		}
+	}
+}
+
+// The repaired 北京天气 act lists only builtin web_search and a string output.
+// Planning that registration must authorize the pinned query. The handler is
+// replaced so this test never opens a search connection.
+func TestHopJITActFreeBuiltinWebSearchAuthorizesThePinnedQuery(t *testing.T) {
+	registry := NewToolRegistry()
+	handler := &IMMessageHandler{registry: registry}
+	registerBuiltinTools(registry, handler)
+	var gotQuery string
+	handler.registry.mu.Lock()
+	registered := handler.registry.tools["web_search"]
+	if registered == nil || registered.Status != RegToolAvailable || len(registered.CapabilityProvisions) == 0 {
+		handler.registry.mu.Unlock()
+		t.Fatal("builtin web_search is not a governed tool")
+	}
+	registered.Handler = func(args map[string]interface{}) string {
+		gotQuery, _ = args["query"].(string)
+		return "北京今天晴"
+	}
+	handler.registry.mu.Unlock()
+	provider, definitions, err := handler.hopJITActFreeToolProvider(hopjit.StepReady{
+		StepID: "2", RunID: "run-weather", Summary: "检索北京天气",
+		Tools:        []string{"web_search"},
+		OutputSchema: []hopspec.VariableDecl{{Name: "beijing_weather", Type: "str"}},
+	}, hopJITExecutionIdentity{
+		PrincipalID: "desktop-user", PolicyOwnerID: "desktop-user", SessionID: "desktop-user", Platform: "desktop",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider == nil || len(definitions) != 1 {
+		t.Fatalf("provider=%v definitions=%d", provider != nil, len(definitions))
+	}
+	value, err := provider.Execute(context.Background(), "web_search", applyLookupSearchQuery("web_search", nil, "北京天气"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, _ := value.(string)
+	if gotQuery != "北京天气" || !strings.Contains(text, "晴") {
+		t.Fatalf("query=%q value=%v", gotQuery, value)
 	}
 }
 

@@ -125,7 +125,7 @@ func acceptCompanionPaper(raw string) string {
 }
 
 func deliverCompanionPaperOpen(path string) error {
-	argv, err := companionPaperCommand(fileCompanionOpenArg, path)
+	argv, err := companionPaperCommand(companionPaperOpenArg, path)
 	if err != nil {
 		return err
 	}

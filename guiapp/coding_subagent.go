@@ -700,6 +700,15 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		parentSessionID = s.loopCtx.ID
 		userID = strings.TrimSpace(s.loopCtx.UserID)
 	}
+	resumeCoding := s.nestDepth == 0 && !s.horizonPosture
+	var resume codingAgentResume
+	if resumeCoding {
+		resume = loadCodingAgentResume(userID, s.projectPath)
+		restoredSnaps := cb.installRestoredReadSnapshots(s.projectPath, resume.Snapshots)
+		if len(resume.History) > 0 || restoredSnaps > 0 {
+			log.Printf("[coding-env] restored coding agent state user=%s history=%d snapshots=%d", userID, len(resume.History), restoredSnaps)
+		}
+	}
 	sessionID := fmt.Sprintf("coding-subagent-T%d-%d", taskDisplayNumber(task), time.Now().UnixNano())
 	traj := startSubAgentTrajectory(
 		s.handler,
@@ -719,7 +728,19 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		defer flushSubAgentTrajectory(traj)
 	}
 
-	result := codingagent.Run(cb, userText, userContent, nil, s.httpClient, s.buildLoopHooks(cb))
+	var loopResult agent.LoopResult
+	// resumeDelta is the root loop plus any later model loops from this same
+	// turn. result is a copy, so appending onto result.HistoryDelta would not
+	// reach this defer.
+	var resumeDelta []agent.ConversationEntry
+	if resumeCoding {
+		defer func() {
+			recordCodingAgentResume(userID, s.projectPath, resumeDelta, cb.exportCodingReadSnapshots())
+		}()
+	}
+	loopResult = codingagent.Run(cb, userText, userContent, resume.History, s.httpClient, s.buildLoopHooks(cb))
+	resumeDelta = loopResult.HistoryDelta
+	result := loopResult
 	// Record main loop turns first; seal outcome after optional post-loop verify/fix.
 	appendSubAgentLoopResult(traj, result, false)
 
@@ -773,7 +794,9 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 					// is not this task, so don't spend a fix round on it.
 					log.Printf("[coding-subagent-verify] skip: %s", reason)
 				} else {
-					s.runPostLoopVerifyFixCycle(cb, &result, scoped, traj, taskFiles)
+					if extra := s.runPostLoopVerifyFixCycle(cb, &result, scoped, traj, taskFiles); resumeCoding && len(extra) > 0 {
+						resumeDelta = codingAgentResumeAppendLoop(resumeDelta, extra)
+					}
 				}
 			}
 		}

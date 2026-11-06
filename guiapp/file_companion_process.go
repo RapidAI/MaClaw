@@ -61,13 +61,17 @@ type fileCompanionRuntime struct {
 	uiReady   bool
 	bootTaken bool
 	pending   []string
-	notice    string
-	notices   []string
-	shows     int
-	seen      map[string]bool
-	emitted   [][]string
-	grants    map[string]*fileCompanionGrant
-	fileMu    map[string]*sync.Mutex
+	// place lists browser-add paths that still need a category dialog.
+	// A path leaves this list when boot, TakePlaces, or the place event
+	// delivers it, so the dialog is not shown twice.
+	place   []string
+	notice  string
+	notices []string
+	shows   int
+	seen    map[string]bool
+	emitted [][]string
+	grants  map[string]*fileCompanionGrant
+	fileMu  map[string]*sync.Mutex
 	// paperBuild serializes one session's paper PDF. The figures directory
 	// is that session's cache, so two builds must not clear it together.
 	// Each attempt still writes its own paper-stage directory.
@@ -232,6 +236,8 @@ type FileCompanionBoot struct {
 	Mode   string   `json:"mode,omitempty"`
 	Paths  []string `json:"paths,omitempty"`
 	Notice string   `json:"notice,omitempty"`
+	// Place is the subset of Paths that came from a browser add.
+	Place []string `json:"place,omitempty"`
 }
 
 func (a *App) isFileCompanionProcess() bool {
@@ -577,6 +583,14 @@ func (a *App) seedFileCompanionPaths(paths []string) {
 	a.enqueueFileCompanionPaths(paths)
 }
 
+func (a *App) seedFileCompanionPlace(paths []string) {
+	st := a.companionRuntime()
+	st.mu.Lock()
+	st.process = true
+	st.mu.Unlock()
+	a.enqueueFileCompanionOpen(paths, true)
+}
+
 func (a *App) seedFileCompanionNotice(code string) {
 	if !companionPaperNoticeCode(code) {
 		return
@@ -589,6 +603,10 @@ func (a *App) seedFileCompanionNotice(code string) {
 }
 
 func (a *App) enqueueFileCompanionPaths(paths []string) {
+	a.enqueueFileCompanionOpen(paths, false)
+}
+
+func (a *App) enqueueFileCompanionOpen(paths []string, place bool) {
 	if a == nil || len(paths) == 0 {
 		return
 	}
@@ -610,19 +628,67 @@ func (a *App) enqueueFileCompanionPaths(paths []string) {
 			}
 			st.seen[key] = true
 			st.pending = append(st.pending, path)
+			if place {
+				st.place = companionRememberPlace(st.place, path)
+			}
 			continue
 		}
 		st.seen[key] = true
 		fresh = append(fresh, path)
+		if place {
+			st.place = companionRememberPlace(st.place, path)
+		}
 	}
 	if len(fresh) > 0 {
 		copied := append([]string(nil), fresh...)
+		ask := takeCompanionPlace(&st.place, copied)
 		st.emitted = append(st.emitted, copied)
 		st.mu.Unlock()
 		a.emitEvent("file-companion:open", copied)
+		if len(ask) > 0 {
+			a.emitEvent("file-companion:place", ask)
+		}
 		return
 	}
 	st.mu.Unlock()
+}
+
+func companionRememberPlace(place []string, path string) []string {
+	if companionPlaceHas(place, path) {
+		return place
+	}
+	return append(place, path)
+}
+
+func companionPlaceHas(place []string, path string) bool {
+	key := fileCompanionDedupeKey(path)
+	for _, item := range place {
+		if fileCompanionDedupeKey(item) == key {
+			return true
+		}
+	}
+	return false
+}
+
+func takeCompanionPlace(place *[]string, paths []string) []string {
+	if place == nil || len(*place) == 0 || len(paths) == 0 {
+		return nil
+	}
+	want := map[string]bool{}
+	for _, path := range paths {
+		want[fileCompanionDedupeKey(path)] = true
+	}
+	var ask []string
+	kept := make([]string, 0, len(*place))
+	for _, item := range *place {
+		if want[fileCompanionDedupeKey(item)] {
+			ask = append(ask, item)
+			continue
+		}
+		kept = append(kept, item)
+	}
+	*place = kept
+	return ask
 }
 
 func fileCompanionDedupeKey(path string) string {
@@ -650,10 +716,29 @@ func (a *App) GetFileCompanionBoot() FileCompanionBoot {
 	}
 	st.bootTaken = true
 	boot.Paths = append([]string(nil), st.pending...)
+	boot.Place = takeCompanionPlace(&st.place, boot.Paths)
 	boot.Notice = st.notice
 	st.pending = nil
 	st.notice = ""
 	return boot
+}
+
+// FileCompanionTakePlaces returns browser-add paths queued after boot.
+// The caller shows the category dialog. Paths already returned by boot are
+// not included.
+func (a *App) FileCompanionTakePlaces() []string {
+	if a == nil {
+		return []string{}
+	}
+	st := a.companionRuntime()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	out := append([]string(nil), st.place...)
+	st.place = nil
+	if out == nil {
+		return []string{}
+	}
+	return out
 }
 
 // FileCompanionUIReady marks the window as subscribed and returns paths queued
@@ -712,7 +797,7 @@ func (a *App) onFileCompanionSecondInstance(data options.SecondInstanceData) {
 		paths = append(paths, doc)
 	}
 	logFileCompanion("second instance paths=%d", len(paths))
-	a.enqueueFileCompanionPaths(paths)
+	a.enqueueFileCompanionOpen(paths, launch.Place)
 	a.revealFileCompanionWindow()
 	if len(paths) == 0 {
 		a.notifyFileCompanionShow()
@@ -822,6 +907,8 @@ func applyDesktopLaunchOptions(app *App, opts *options.App, launch desktopLaunch
 	if launch.Mode == desktopLaunchFileCompanion {
 		if launch.Notice != "" {
 			app.seedFileCompanionNotice(launch.Notice)
+		} else if launch.Place {
+			app.seedFileCompanionPlace(launch.Paths)
 		} else {
 			app.seedFileCompanionPaths(launch.Paths)
 		}

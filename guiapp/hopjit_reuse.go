@@ -38,6 +38,11 @@ func (c *guiHopJITCaller) ExecuteStep(ctx context.Context, step hopjit.StepReady
 	if step.StepType == hopspec.StepAct && (len(step.Tools) > 0 || step.Free) {
 		return c.executeActFree(ctx, step)
 	}
+	// The contract is the declared outputs. An empty schema is already {}.
+	// A model key is UNDECLARED_OUTPUT and fails the step before later work.
+	if len(step.OutputSchema) == 0 {
+		return map[string]any{}, nil
+	}
 	messages := []interface{}{
 		map[string]interface{}{"role": "system", "content": "你在 HopJIT 中执行一个原子步骤。只返回 JSON 对象，键必须严格匹配输出声明，不要输出 Markdown 围栏或解释。"},
 		map[string]interface{}{"role": "user", "content": fmt.Sprintf("步骤类型: %s\n当前步骤: %s\n%s", step.StepType, step.Summary, step.Context.Render())},

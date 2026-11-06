@@ -1448,6 +1448,12 @@ func TestResolveCraftToolTimeout_PrefersPDFDefaultOnlyWhenNoExplicitTimeout(t *t
 	if got := resolveCraftToolTimeout(map[string]interface{}{"timeout": float64(999)}, "生成 PDF 综述文章并发给我"); got != craftToolMaxTimeout {
 		t.Fatalf("resolveCraftToolTimeout(clamped) = %d, want %d", got, craftToolMaxTimeout)
 	}
+	if got := resolveCraftToolTimeout(map[string]interface{}{"timeout": 180}, "抓取网页并保存为文本"); got != 180 {
+		t.Fatalf("resolveCraftToolTimeout(yaml int) = %d, want 180", got)
+	}
+	if got := resolveCraftToolTimeout(map[string]interface{}{"timeout": "120"}, "抓取网页并保存为文本"); got != 120 {
+		t.Fatalf("resolveCraftToolTimeout(string) = %d, want 120", got)
+	}
 }
 
 func TestToolGeneratePDFValidation_RejectsOversizedContent(t *testing.T) {

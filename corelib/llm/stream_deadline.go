@@ -42,6 +42,107 @@ func OwnedRouteDeadline(ctx context.Context) (time.Time, bool) {
 	return deadline, ok && !deadline.IsZero()
 }
 
+// OwnedRouteDeadlineReleased reports that ctx ended because its owned route
+// deadline fired. An earlier host deadline is not this timer.
+func OwnedRouteDeadlineReleased(ctx context.Context) bool {
+	if ctx == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return false
+	}
+	owned, ok := OwnedRouteDeadline(ctx)
+	if !ok {
+		return false
+	}
+	deadline, has := ctx.Deadline()
+	return has && !deadline.Before(owned)
+}
+
+// RouteStreamCancelParent returns the context recorded by
+// BindRouteStreamDeadline. It stays alive across the route deadline when the
+// caller passed the pre-timeout parent, so a later stop is still visible.
+func RouteStreamCancelParent(ctx context.Context) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	parent, _ := ctx.Value(streamCancelKey{}).(context.Context)
+	return parent
+}
+
+// WithoutDeadlineCancel returns a context canceled when parent is canceled,
+// except when parent ends on its own deadline. A route timer uses that
+// exception: wrappers around parent must not treat the deadline as a stop.
+// The watch runs once, so a stop that arrives after the deadline is not
+// observed. Callers that still hold the pre-timeout parent pass that parent
+// to BindRouteStreamDeadline instead.
+func WithoutDeadlineCancel(parent context.Context) context.Context {
+	if parent == nil {
+		return context.Background()
+	}
+	signal, cancel := context.WithCancel(context.WithoutCancel(parent))
+	context.AfterFunc(parent, func() {
+		if errors.Is(parent.Err(), context.DeadlineExceeded) {
+			return
+		}
+		cancel()
+	})
+	return signal
+}
+
+// ContinueAfterOwnedRouteDeadline returns a context for work that follows a
+// model call whose owned route deadline has already fired. The context is
+// canceled when the pre-timeout parent is canceled. A context that is still
+// live is returned unchanged, so a remaining host deadline still applies. A
+// deadline that was not an owned route deadline, and a cancel that is not
+// that deadline, stay in force. A cancel parent that has already ended on
+// this same route deadline is not watched: AfterFunc runs immediately on a
+// finished context and would cancel the context just detached from that deadline.
+func ContinueAfterOwnedRouteDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	noop := func() {}
+	if ctx == nil {
+		return context.Background(), noop
+	}
+	if !OwnedRouteDeadlineReleased(ctx) {
+		return ctx, noop
+	}
+	parent := RouteStreamCancelParent(ctx)
+	if parent == nil {
+		parent = context.Background()
+	}
+	live, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	if parentDoneIsStop(parent, ctx) {
+		cancel()
+		return live, cancel
+	}
+	if parent.Err() != nil {
+		return live, cancel
+	}
+	stop := context.AfterFunc(parent, func() { cancel() })
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			stop()
+			cancel()
+		})
+	}
+	return live, release
+}
+
+// parentDoneIsStop reports that parent already ended for a reason the script
+// must still honor. The route deadline itself is not a stop.
+func parentDoneIsStop(parent, route context.Context) bool {
+	if parent == nil || parent.Err() == nil {
+		return false
+	}
+	if !errors.Is(parent.Err(), context.DeadlineExceeded) {
+		return true
+	}
+	owned, ok := OwnedRouteDeadline(route)
+	deadline, has := parent.Deadline()
+	if ok && has && deadline.Equal(owned) {
+		return false
+	}
+	return true
+}
+
 // streamingRequestContext is the context for one SSE HTTP request.
 //
 // Before response headers, the call is canceled when the caller is canceled

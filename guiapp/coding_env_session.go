@@ -533,6 +533,7 @@ func (h *IMMessageHandler) clearStickyCodingWorkbenchMemory(userID string) {
 		// Keep a miss marker in the map: a cold load already in flight must not
 		// LoadOrStore the snapshot it read before this delete.
 		cancelStickyCodingDebouncedPersist(userID)
+		deleteCodingAgentResume(userID)
 		if deleteStickyCodingWorkbenchMemoryFromDisk(userID) {
 			h.stickyCodingWorkbenchMemory.Store(userID, stickyCodingMemoryMiss{})
 		} else {

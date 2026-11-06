@@ -44,6 +44,10 @@ type FileCompanionCatalog struct {
 	Rev        int64                 `json:"rev"`
 	Folders    []FileCompanionFolder `json:"folders"`
 	Placements map[string]string     `json:"placements"`
+	// DefaultID is the folder a browser add offers first. Empty means 未分类.
+	// It is not a placement: a new document stays uncategorized until the
+	// user confirms the dialog.
+	DefaultID string `json:"defaultId,omitempty"`
 }
 
 func (a *App) fileCompanionCatalogPath() string {
@@ -172,6 +176,10 @@ func normalizeFileCompanionCatalog(cat FileCompanionCatalog) FileCompanionCatalo
 			break
 		}
 	}
+	defaultID := strings.TrimSpace(cat.DefaultID)
+	if defaultID == fileCompanionFolderUncategorized || !seen[defaultID] {
+		defaultID = ""
+	}
 	placements := map[string]string{}
 	for key, folderID := range cat.Placements {
 		key = strings.TrimSpace(key)
@@ -198,6 +206,7 @@ func normalizeFileCompanionCatalog(cat FileCompanionCatalog) FileCompanionCatalo
 	}
 	cat.Folders = folders
 	cat.Placements = placements
+	cat.DefaultID = defaultID
 	return cat
 }
 
@@ -498,6 +507,9 @@ func dropFileCompanionFolder(cat *FileCompanionCatalog, id string) {
 		}
 	}
 	cat.Folders = kept
+	if cat.DefaultID == id {
+		cat.DefaultID = ""
+	}
 	for key, folderID := range cat.Placements {
 		if folderID == id {
 			delete(cat.Placements, key)
@@ -643,6 +655,26 @@ func (a *App) deleteFileCompanionFolderMember(item FileCompanionLibraryItem) err
 	return err
 }
 
+// SetFileCompanionDefaultFolder remembers which folder the browser-add
+// dialog offers first. An empty id or "none" means 未分类.
+func (a *App) SetFileCompanionDefaultFolder(folderID string) (FileCompanionCatalog, error) {
+	folderID = strings.TrimSpace(folderID)
+	if folderID == fileCompanionFolderUncategorized {
+		folderID = ""
+	}
+	items, err := a.fileCompanionLibraryItems()
+	if err != nil {
+		return FileCompanionCatalog{}, err
+	}
+	return a.mutateFileCompanionCatalog(items, func(cat *FileCompanionCatalog) error {
+		if folderID != "" && !fileCompanionCatalogHasFolder(*cat, folderID) {
+			return errors.New("没有这个文件夹")
+		}
+		cat.DefaultID = folderID
+		return nil
+	})
+}
+
 // MoveFileCompanionLibraryItem puts one document in a folder. An empty
 // folderID returns it to 未分类.
 func (a *App) MoveFileCompanionLibraryItem(itemID, path, folderID string) (FileCompanionCatalog, error) {
@@ -663,31 +695,75 @@ func (a *App) MoveFileCompanionLibraryItem(itemID, path, folderID string) (FileC
 		// The id is the row the user moved. A sibling of the same file can sit
 		// earlier in the library and share the path; taking that sibling would
 		// record the move on the other card. The path is only the fallback
-		// when this id is no longer in the library.
-		item := FileCompanionLibraryItem{}
-		if itemID != "" {
-			for _, current := range items {
-				if current.ID == itemID {
-					item = current
-					break
-				}
-			}
-		}
-		if strings.TrimSpace(item.ID) == "" && path != "" {
-			for _, current := range items {
-				if fileCompanionSameLibraryPath(current.Path, path) {
-					item = current
-					break
-				}
-			}
-		}
+		// when this id is no longer in the library, and it names the row the
+		// library list shows.
+		item := fileCompanionCatalogTarget(items, itemID, path)
+		// A path that is not a library row yet must not be stored. prune
+		// rebuilds placements from the rows it can see, so a path key written
+		// before rememberFileCompanionDocument is deleted by the next list.
 		if strings.TrimSpace(item.ID) == "" {
-			item.ID = itemID
-		}
-		if strings.TrimSpace(item.Path) == "" {
-			item.Path = path
+			return errors.New("没有找到这个项目")
 		}
 		fileCompanionPlaceItem(cat, item, folderID)
 		return nil
 	})
+}
+
+// fileCompanionCatalogTarget is the row Move records. The id wins, including
+// a row the list has hidden. The path is the document on screen. The library
+// list drops a local row when a cloud project owns that file, and it drops a
+// later local duplicate. An empty-id move from the category dialog changes
+// that visible row. An explicit 未分类 on it does not inherit a path key that
+// still belongs to a hidden sibling.
+func fileCompanionCatalogTarget(items []FileCompanionLibraryItem, itemID, path string) FileCompanionLibraryItem {
+	itemID = strings.TrimSpace(itemID)
+	path = strings.TrimSpace(path)
+	if itemID != "" {
+		for _, current := range items {
+			if current.ID == itemID {
+				return current
+			}
+		}
+	}
+	if path == "" {
+		return FileCompanionLibraryItem{}
+	}
+	visible, _ := foldFileCompanionPromotedLocals(items)
+	for _, current := range visible {
+		if fileCompanionSameLibraryPath(current.Path, path) {
+			return current
+		}
+	}
+	return FileCompanionLibraryItem{}
+}
+
+// FileCompanionFolderForPath is the folder an empty-id move of path would
+// change. Empty means that visible row is uncategorized, or the path is not
+// a row. An explicit 未分类 on the visible row does not inherit a hidden
+// sibling's path key. This read does not write the catalog and does not
+// apply the default.
+func (a *App) FileCompanionFolderForPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if a == nil {
+		return "", errors.New("app unavailable")
+	}
+	if path == "" {
+		return "", nil
+	}
+	items, err := a.fileCompanionLibraryItems()
+	if err != nil {
+		return "", err
+	}
+	fileCompanionCatalogMu.Lock()
+	defer fileCompanionCatalogMu.Unlock()
+	cat, err := a.readFileCompanionCatalogLocked()
+	if err != nil {
+		return "", err
+	}
+	pruneFileCompanionCatalog(&cat, items)
+	item := fileCompanionCatalogTarget(items, "", path)
+	if strings.TrimSpace(item.ID) == "" {
+		return "", nil
+	}
+	return fileCompanionItemFolder(cat, item), nil
 }

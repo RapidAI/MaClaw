@@ -31,6 +31,8 @@ func Parse(markdown string) (SpecAST, []error) {
 	var current *Step
 	section := ""
 	skipUntil := -1
+	var plainBody *Step
+	plainIndent := 0
 	addErr := func(code string, line int, message string) {
 		errs = append(errs, Diagnostic{Code: code, Line: line, Message: message})
 	}
@@ -51,6 +53,18 @@ func Parse(markdown string) (SpecAST, []error) {
 		}
 		if trimmed == "" {
 			continue
+		}
+		// A hop_python: label has no fence. The prompt forbids fences, so the
+		// following lines are the body until the next step, heading, or declaration.
+		if plainBody != nil {
+			if PlainHopPythonEnds(trimmed) {
+				finishPlainPython(plainBody)
+				plainBody = nil
+			} else {
+				appendPlainPythonLine(plainBody, raw, plainIndent)
+				plainBody.Source.LineEnd = lineNo
+				continue
+			}
 		}
 		if title, ok := specTitle(trimmed); ok {
 			spec.Title = title
@@ -137,6 +151,17 @@ func Parse(markdown string) (SpecAST, []error) {
 				step.Source.LineEnd = lineNo
 				continue
 			}
+			if current.Type == StepAct || current.Type == StepCheck || current.Type == StepCommit {
+				if inline, ok := PlainHopPythonLabel(trimmed); ok {
+					plainBody = current
+					plainIndent = leadingSpaceCount(raw)
+					if inline != "" {
+						appendPlainPythonLine(current, inline, 0)
+					}
+					current.Source.LineEnd = lineNo
+					continue
+				}
+			}
 		}
 		// One blockquote mark, then the same line. "> ## 目标" opens the goal.
 		// A quoted line inside an open step was kept above, so it stays instruction.
@@ -208,6 +233,9 @@ func Parse(markdown string) (SpecAST, []error) {
 			spec.Goal = appendGoalBody(spec.Goal, trimmed)
 		}
 	}
+	if plainBody != nil {
+		finishPlainPython(plainBody)
+	}
 	for step := range bodyOpen {
 		addErr("UNCLOSED_HOP_PYTHON", step.Source.LineStart, "hop_python fence is not closed")
 	}
@@ -215,6 +243,123 @@ func Parse(markdown string) (SpecAST, []error) {
 		addErr("MISSING_SPEC_TITLE", 0, "expected # Spec: <title>")
 	}
 	return spec, errs
+}
+
+// PlainHopPythonLabel reads a fence-less body label. "hop_python:" and
+// "- hop_python:" open the body. Text after the colon is the first line.
+// A YAML marker such as "hop_python: |" is only the label.
+func PlainHopPythonLabel(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	for _, prefix := range []string{"- ", "－ ", "* "} {
+		if strings.HasPrefix(trimmed, prefix) {
+			trimmed = strings.TrimSpace(trimmed[len(prefix):])
+			break
+		}
+	}
+	if rest, ok := oneBlockquote(trimmed); ok {
+		trimmed = rest
+	}
+	const key = "hop_python"
+	if len(trimmed) < len(key) || !strings.EqualFold(trimmed[:len(key)], key) {
+		return "", false
+	}
+	rest := strings.TrimSpace(trimmed[len(key):])
+	if rest == "" {
+		return "", true
+	}
+	for _, colon := range []string{":", "："} {
+		if !strings.HasPrefix(rest, colon) {
+			continue
+		}
+		inline := strings.TrimSpace(rest[len(colon):])
+		switch inline {
+		case "", "|", "|-", "|+":
+			return "", true
+		default:
+			return inline, true
+		}
+	}
+	return "", false
+}
+
+func plainPythonStops(line string) bool {
+	if SectionHeading(line) != "" {
+		return true
+	}
+	if _, ok := inputDeclValue(line); ok {
+		return true
+	}
+	if _, ok := toolDeclValue(line); ok {
+		return true
+	}
+	if _, ok := outputDeclValue(line); ok {
+		return true
+	}
+	return false
+}
+
+// PlainHopPythonEnds reports the line that closes a fence-less hop_python
+// body: the next step, a section heading, or an input, tool, or output line.
+func PlainHopPythonEnds(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if _, _, _, stepLine := matchStepLine(trimmed); stepLine {
+		return true
+	}
+	return plainPythonStops(trimmed)
+}
+
+// finishPlainPython shifts the body so its top statement is at column 0.
+// The engine rejects a top-level line that is still indented. Lines that
+// were indented further keep that relative indent.
+func finishPlainPython(step *Step) {
+	step.Body = dedentPlainPython(step.Body)
+}
+
+func dedentPlainPython(body string) string {
+	if body == "" {
+		return ""
+	}
+	lines := strings.Split(body, "\n")
+	min := -1
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if n := leadingSpaceCount(line); min < 0 || n < min {
+			min = n
+		}
+	}
+	if min <= 0 {
+		return body
+	}
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" || leadingSpaceCount(line) < min {
+			continue
+		}
+		lines[i] = line[min:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func leadingSpaceCount(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " "))
+}
+
+func appendPlainPythonLine(step *Step, raw string, baseIndent int) {
+	line := strings.TrimRight(raw, " \t")
+	spaces := leadingSpaceCount(line)
+	if baseIndent > 0 && spaces >= baseIndent {
+		line = line[baseIndent:]
+	} else if baseIndent > 0 {
+		line = strings.TrimSpace(line)
+	}
+	if strings.TrimSpace(line) == "" {
+		return
+	}
+	if step.Body != "" {
+		step.Body += "\n"
+	}
+	step.Body += line
 }
 
 func rawHopPythonEnd(lines []string, from int) int {

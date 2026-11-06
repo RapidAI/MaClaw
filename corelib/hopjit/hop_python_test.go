@@ -296,6 +296,53 @@ Goal: 核验
 	}
 }
 
+func TestHopPythonCheckBoolCall(t *testing.T) {
+	ctx := context.Background()
+	spec := func(value string) string {
+		return `# Spec: 判定
+Goal: 核验
+## Steps
+1. [act] 取数
+  + → report % text
+  > ` + "```hop_python" + `
+  > report = "` + value + `"
+  > ` + "```" + `
+2. [check] 非空
+  - ← report
+  + → accepted % bool
+  hop_python:
+  accepted = bool(report)
+3. [exit]
+`
+	}
+	passed := NewExecutionEngine(nil)
+	if _, err := passed.Init(ctx, spec("晴"), nil); err != nil {
+		t.Fatal(err)
+	}
+	next, err := passed.Next(ctx)
+	if err != nil || next.Status != NextCompleted {
+		t.Fatalf("next=%+v err=%v", next, err)
+	}
+	failed := NewExecutionEngine(nil)
+	if _, err := failed.Init(ctx, spec(""), nil); err != nil {
+		t.Fatal(err)
+	}
+	next, err = failed.Next(ctx)
+	if err != nil || next.Status != NextFailed || next.Failure == nil || !strings.Contains(next.Failure.Reason, "check failed") {
+		t.Fatalf("next=%+v err=%v", next, err)
+	}
+	sunny := map[string]VariableValue{"report": {Value: "晴", Assigned: true}}
+	value, err := evalExpression(ctx, `bool(report or "")`, sunny, nil)
+	if err != nil || value != true {
+		t.Fatalf("or value=%v err=%v", value, err)
+	}
+	empty := map[string]VariableValue{"report": {Value: "", Assigned: true}}
+	value, err = evalExpression(ctx, `bool(report or "")`, empty, nil)
+	if err != nil || value != false {
+		t.Fatalf("empty or value=%v err=%v", value, err)
+	}
+}
+
 func TestHopPythonCheckUsesBoolLiteral(t *testing.T) {
 	ctx := context.Background()
 	spec := func(literal string) string {

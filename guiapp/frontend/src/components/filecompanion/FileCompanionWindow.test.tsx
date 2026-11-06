@@ -132,6 +132,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     FileCompanionReplaceOffice: (...args: unknown[]) => replaceOffice(...args),
     ClearFileCompanionChat: (...args: unknown[]) => clearChat(...args),
     FileCompanionUIReady: (...args: unknown[]) => ready(...args),
+    FileCompanionTakePlaces: vi.fn(async () => []),
     ChooseFileCompanionFiles: (...args: unknown[]) => choose(...args),
     FileCompanionOpenArxiv: (...args: unknown[]) => openArxiv(...args),
     FileCompanionSearchArxiv: (...args: unknown[]) => searchArxiv(...args),
@@ -9199,6 +9200,71 @@ describe("FileCompanionWindow", () => {
         expect(playerLeft).not.toHaveBeenCalled();
         await openField("2510.16079");
         await waitFor(() => expect(openArxiv).toHaveBeenCalledWith("2510.16079"));
+    });
+
+    it("asks which category a browser add belongs in", async () => {
+        boot.mockResolvedValue({ paths: ["C:/papers/2510.16079.pdf"], place: ["C:/papers/2510.16079.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        installRuntime();
+        renderWindow();
+        expect(await screen.findByTestId("file-companion-place-name")).toHaveProperty("textContent", "2510.16079.pdf");
+        fireEvent.click(screen.getByTestId("file-companion-place-cancel"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-place")).toBeNull());
+        expect(open).toHaveBeenCalledWith("C:/papers/2510.16079.pdf");
+    });
+
+    it("waits to ask for a category until the file is in the library", async () => {
+        let release: (value: unknown) => void = () => undefined;
+        const gate = new Promise((resolve) => { release = resolve; });
+        boot.mockResolvedValue({ paths: ["C:/papers/2510.16079.pdf"], place: ["C:/papers/2510.16079.pdf"] });
+        open.mockImplementation(() => gate);
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(open).toHaveBeenCalledWith("C:/papers/2510.16079.pdf"));
+        expect(screen.queryByTestId("file-companion-place")).toBeNull();
+        await act(async () => { release(doc("C:/papers/2510.16079.pdf")); });
+        expect(await screen.findByTestId("file-companion-place-name")).toHaveProperty("textContent", "2510.16079.pdf");
+    });
+
+    it("asks after a browser add finishes opening, and not before", async () => {
+        let release: (value: unknown) => void = () => undefined;
+        const gate = new Promise((resolve) => { release = resolve; });
+        boot.mockResolvedValue({ paths: [], place: [] });
+        open.mockImplementation((path: string) => (path === "C:/papers/2510.16079.pdf" ? gate : Promise.resolve(doc(path))));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-choose");
+        act(() => {
+            runtime.emit("file-companion:open", ["C:/papers/2510.16079.pdf"]);
+            runtime.emit("file-companion:place", ["C:/papers/2510.16079.pdf"]);
+        });
+        await waitFor(() => expect(open).toHaveBeenCalledWith("C:/papers/2510.16079.pdf"));
+        expect(screen.queryByTestId("file-companion-place")).toBeNull();
+        await act(async () => { release(doc("C:/papers/2510.16079.pdf")); });
+        expect(await screen.findByTestId("file-companion-place-name")).toHaveProperty("textContent", "2510.16079.pdf");
+        fireEvent.click(screen.getByTestId("file-companion-place-cancel"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-place")).toBeNull());
+        act(() => { runtime.emit("file-companion:place", ["C:/papers/2510.16079.pdf"]); });
+        expect(await screen.findByTestId("file-companion-place-name")).toHaveProperty("textContent", "2510.16079.pdf");
+    });
+
+    it("does not ask for a category when the file cannot be opened", async () => {
+        boot.mockResolvedValue({ paths: ["C:/papers/missing.pdf"], place: ["C:/papers/missing.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path, { error: "file not found" }));
+        installRuntime();
+        renderWindow();
+        await waitFor(() => expect(open).toHaveBeenCalledWith("C:/papers/missing.pdf"));
+        await act(async () => { await open.mock.results[0]?.value; });
+        expect(screen.queryByTestId("file-companion-place")).toBeNull();
+    });
+
+    it("does not ask for a category when the file was not added from the browser", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        expect(screen.queryByTestId("file-companion-place")).toBeNull();
     });
 });
 

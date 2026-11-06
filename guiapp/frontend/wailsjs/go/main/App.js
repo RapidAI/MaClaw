@@ -1465,6 +1465,18 @@ export function MoveFileCompanionLibraryItem(arg1, arg2, arg3) {
   return window['go']['main']['App']['MoveFileCompanionLibraryItem'](arg1, arg2, arg3);
 }
 
+export function SetFileCompanionDefaultFolder(arg1) {
+  return window['go']['main']['App']['SetFileCompanionDefaultFolder'](arg1);
+}
+
+export function FileCompanionFolderForPath(arg1) {
+  return window['go']['main']['App']['FileCompanionFolderForPath'](arg1);
+}
+
+export function FileCompanionTakePlaces() {
+  return window['go']['main']['App']['FileCompanionTakePlaces']();
+}
+
 export function ShareFileCompanionDocument(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['ShareFileCompanionDocument'](arg1, arg2, arg3, arg4, arg5, arg6);
 }

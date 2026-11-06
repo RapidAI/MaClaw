@@ -17,6 +17,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     RenameFileCompanionFolder: vi.fn(),
     DeleteFileCompanionFolder: vi.fn(),
     MoveFileCompanionLibraryItem: vi.fn(),
+    SetFileCompanionDefaultFolder: vi.fn(),
     RemoveFileCompanionGroupMember: vi.fn(),
     ShareFileCompanionDocument: vi.fn(),
     ShowItemInFolder: vi.fn(),

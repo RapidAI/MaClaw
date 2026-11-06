@@ -189,6 +189,20 @@ func TestClassifyDesktopLaunchImplicitFilesAndDirectories(t *testing.T) {
 	}
 }
 
+func TestCompanionPaperOpenAsksForAFolder(t *testing.T) {
+	got := classifyDesktopLaunchForOS([]string{"MaClaw", companionPaperOpenArg, `C:\papers\2510.16079.pdf`}, "windows")
+	if got.Mode != desktopLaunchFileCompanion || !got.Explicit || !got.Place || got.Notice != "" {
+		t.Fatalf("place launch = %#v", got)
+	}
+	if len(got.Paths) != 1 || got.Paths[0] != `C:\papers\2510.16079.pdf` {
+		t.Fatalf("paths = %#v", got.Paths)
+	}
+	plain := classifyDesktopLaunchForOS([]string{"MaClaw", fileCompanionOpenArg, `C:\papers\2510.16079.pdf`}, "windows")
+	if plain.Place || plain.Mode != desktopLaunchFileCompanion {
+		t.Fatalf("open-file = %#v", plain)
+	}
+}
+
 func TestFileCompanionCanonicalPathFoldsWindowsCase(t *testing.T) {
 	if goruntime.GOOS != "windows" {
 		t.Skip("full-path case fold is Windows-only")

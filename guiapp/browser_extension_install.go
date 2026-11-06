@@ -783,6 +783,7 @@ func revealCompanionFolder(path string) error {
 // service worker can create the context menu. Explorer is not opened here:
 // its window is created on its own schedule and covers Developer mode and
 // Load unpacked. The folder path stays on the card, and Show folder selects it.
+// This does not install the extension.
 func (a *App) ShowBrowserExtensionLoad(browser string) error {
 	if browser != "chrome" && browser != "edge" {
 		return os.ErrInvalid
@@ -800,10 +801,10 @@ func (a *App) ShowBrowserExtensionLoad(browser string) error {
 
 func openCompanionExtensionsPage(layout companionBrowserLayout, browser string) error {
 	exe := layout.ChromeExe
-	page := "chrome://extensions"
+	page := "chrome://extensions/"
 	if browser == "edge" {
 		exe = layout.EdgeExe
-		page = "edge://extensions"
+		page = "edge://extensions/"
 	}
 	exe = strings.TrimSpace(exe)
 	if exe == "" {
@@ -812,14 +813,7 @@ func openCompanionExtensionsPage(layout companionBrowserLayout, browser string) 
 	if companionBrowserLaunchHook != nil {
 		return companionBrowserLaunchHook(exe, page)
 	}
-	cmd := exec.Command(exe, page)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	// The launcher often hands the URL to a running browser and exits.
-	// Reap that process so the handle does not stay open.
-	go func() { _ = cmd.Wait() }()
-	return nil
+	return openCompanionExtensionsPageOS(exe, page)
 }
 
 func deleteCompanionHKCU(browser string) error {

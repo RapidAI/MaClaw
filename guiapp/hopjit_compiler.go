@@ -89,7 +89,206 @@ func compileHopSpec(ctx context.Context, task string, caller *guiHopJITCaller) (
 
 func prepareCompiledHopMarkdown(markdown, task string) string {
 	normalized := normalizeCompiledHopMarkdown(markdown, task)
-	return repairLiveLookupTools(repairMissingCheckVerdicts(repairMissingGoal(normalized, task)), task)
+	repaired := repairLiveLookupTools(repairMissingCheckVerdicts(repairMissingGoal(normalized, task)), task)
+	return repairLookupCheckReceipts(repaired, task)
+}
+
+// repairLookupCheckReceipts makes a body-less lookup check the receipt of the
+// text it reads. The bool is true when each of those strings is non-empty.
+// hop_python evaluates that, so a later model turn cannot reject a search
+// result that already arrived. A check that already has a body, a check that
+// also writes text, and a task that is not a lookup stay unchanged. Confirm
+// and ask still wait for a person, so they are not given this body.
+func repairLookupCheckReceipts(markdown, task string) string {
+	if !hopLiveLookupTask(task) {
+		return markdown
+	}
+	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
+	spec, _ := hopspec.Parse(markdown)
+	lines := strings.Split(markdown, "\n")
+	types := map[string]string{}
+	specText := map[string]bool{}
+	for _, decl := range spec.Outputs {
+		if decl.Name == "" {
+			continue
+		}
+		types[decl.Name] = decl.Type
+		if receiptStringType(decl.Type) {
+			specText[decl.Name] = true
+		}
+	}
+	var written []string
+	seen := map[string]bool{}
+	var reps []hopSpanReplace
+	for _, step := range spec.AllSteps() {
+		if rep, ok := lookupCheckReceipt(lines, step, types, written, specText); ok {
+			reps = append(reps, rep)
+		}
+		for _, out := range step.Outputs {
+			if out.Name == "" || seen[out.Name] || !receiptStringType(out.Type) {
+				continue
+			}
+			seen[out.Name] = true
+			written = append(written, out.Name)
+			if _, ok := types[out.Name]; !ok {
+				types[out.Name] = out.Type
+			}
+		}
+	}
+	if len(reps) == 0 {
+		return markdown
+	}
+	return applyHopSpanReplacements(lines, reps)
+}
+
+func lookupCheckReceipt(lines []string, step hopspec.Step, types map[string]string, written []string, specText map[string]bool) (hopSpanReplace, bool) {
+	if step.Type != hopspec.StepCheck || strings.TrimSpace(step.Body) != "" {
+		return hopSpanReplace{}, false
+	}
+	if step.Source.LineEnd < step.Source.LineStart || step.Source.LineStart < 1 || step.Source.LineEnd > len(lines) {
+		return hopSpanReplace{}, false
+	}
+	if !checkOutputsAreVerdicts(step) {
+		return hopSpanReplace{}, false
+	}
+	names := receiptInputNames(step, types, written, specText)
+	if len(names) == 0 {
+		return hopSpanReplace{}, false
+	}
+	raw := append([]string{}, lines[step.Source.LineStart-1:step.Source.LineEnd]...)
+	have := map[string]bool{}
+	for _, name := range step.Inputs {
+		have[name] = true
+	}
+	for _, name := range names {
+		if have[name] {
+			continue
+		}
+		raw = append(raw, "  - ← "+name)
+		have[name] = true
+	}
+	for index, line := range raw {
+		raw[index] = canonicalVerdictOutputLine(line)
+	}
+	raw = append(raw, "  ```hop_python")
+	for _, out := range step.Outputs {
+		if !hopVerdictType(out.Type) || !hopPythonName(out.Name) {
+			continue
+		}
+		raw = append(raw, "  "+out.Name+" = "+receiptExpression(out, names))
+	}
+	raw = append(raw, "  ```")
+	return hopSpanReplace{start: step.Source.LineStart, end: step.Source.LineEnd, lines: raw}, true
+}
+
+func checkOutputsAreVerdicts(step hopspec.Step) bool {
+	if len(step.Outputs) == 0 {
+		return false
+	}
+	for _, out := range step.Outputs {
+		if out.Name == "" || !hopVerdictType(out.Type) || !hopPythonName(out.Name) {
+			return false
+		}
+	}
+	return true
+}
+
+func receiptInputNames(step hopspec.Step, types map[string]string, written []string, specText map[string]bool) []string {
+	var fromInputs []string
+	for _, name := range step.Inputs {
+		if hopPythonName(name) && receiptStringType(types[name]) {
+			fromInputs = append(fromInputs, name)
+		}
+	}
+	if len(step.Inputs) > 0 {
+		return fromInputs
+	}
+	var names []string
+	for _, name := range written {
+		if specText[name] && hopPythonName(name) && receiptStringType(types[name]) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func receiptExpression(out hopspec.VariableDecl, names []string) string {
+	if inner, ok := verdictCallInner(out.Type); ok && !strings.ContainsAny(inner, "()") {
+		inner = strings.TrimSpace(inner)
+		if hopPythonBoolExpression(inner) && receiptReadsAllowed(inner, names) {
+			return inner
+		}
+		if hopPythonName(inner) && receiptNameListed(names, inner) {
+			return inner + ` != ""`
+		}
+	}
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, name+` != ""`)
+	}
+	return strings.Join(parts, " and ")
+}
+
+func receiptReadsAllowed(expression string, names []string) bool {
+	for _, name := range hopPythonReadNames(stripHopPythonStrings(expression)) {
+		if hopPythonKeyword(name) || receiptNameListed(names, name) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func receiptNameListed(names []string, name string) bool {
+	for _, candidate := range names {
+		if candidate == name {
+			return true
+		}
+	}
+	return false
+}
+
+func receiptStringType(typ string) bool {
+	if hopVerdictType(typ) {
+		return false
+	}
+	return actFreeRetrievalStringType(typ)
+}
+
+func hopVerdictType(typ string) bool {
+	if _, ok := verdictCallInner(typ); ok {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(strings.TrimRight(strings.TrimSpace(typ), "。．.，,"))) {
+	case "bool", "boolean", "布尔", "真假":
+		return true
+	default:
+		return false
+	}
+}
+
+func verdictCallInner(typ string) (string, bool) {
+	typ = strings.TrimSpace(typ)
+	lower := strings.ToLower(typ)
+	if !strings.HasPrefix(lower, "bool(") || !strings.HasSuffix(typ, ")") || len(typ) <= len("bool()") {
+		return "", false
+	}
+	return typ[len("bool(") : len(typ)-1], true
+}
+
+func canonicalVerdictOutputLine(line string) string {
+	mark := strings.Index(line, "%")
+	if mark < 0 {
+		return line
+	}
+	typ := strings.TrimSpace(line[mark+1:])
+	if before, _, ok := strings.Cut(typ, "#"); ok {
+		typ = strings.TrimSpace(before)
+	}
+	if _, ok := verdictCallInner(typ); !ok {
+		return line
+	}
+	return strings.TrimRight(line[:mark], " ") + " % bool"
 }
 
 func compiledHopSpecError(spec, task string) error {
@@ -912,7 +1111,30 @@ func hostLookupMoves(spec hopspec.SpecAST, lines []string, repairable map[string
 			continue
 		}
 		writers := hostWritersOf(steps, name)
-		if len(writers) == 0 || hostBodyCallsRetrieval(writers) {
+		if len(writers) == 0 {
+			// The output is declared on the spec and no step publishes it.
+			// An exit line does not write it. The lookup act publishes it.
+			if stepPublishesName(steps, name) {
+				continue
+			}
+			dest, ok := lookupTextDestination(steps, hopspec.Step{Source: hopspec.SourceLocation{LineStart: 1 << 30}})
+			if !ok {
+				continue
+			}
+			decl := specOutputDecl(spec, name)
+			typ := decl.Type
+			if strings.TrimSpace(typ) == "" {
+				typ = "text"
+			}
+			moves[dest.ID] = append(moves[dest.ID], movedLookupOutput{
+				name: name,
+				decl: decl,
+				line: "  + → " + name + " % " + typ,
+			})
+			moving[name] = true
+			continue
+		}
+		if hostBodyCallsRetrieval(writers) {
 			continue
 		}
 		last := writers[0]
@@ -937,6 +1159,24 @@ func hostLookupMoves(spec hopspec.SpecAST, lines []string, repairable map[string
 		moving[name] = true
 	}
 	return moves, moving
+}
+
+func stepPublishesName(steps []hopspec.Step, name string) bool {
+	for _, step := range steps {
+		if stepWritesVariables(step) && stepWritesOutput(step, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func specOutputDecl(spec hopspec.SpecAST, name string) hopspec.VariableDecl {
+	for _, decl := range spec.Outputs {
+		if decl.Name == name {
+			return decl
+		}
+	}
+	return hopspec.VariableDecl{Name: name, Type: "text"}
 }
 
 func hostWritersOf(steps []hopspec.Step, name string) []hopspec.Step {
@@ -1333,6 +1573,7 @@ func missingCopyInputs(step hopspec.Step, prior map[string]string, names []strin
 func liveLookupActLines(raw []string, dropBody bool, inputs, tools []string) []string {
 	kept := make([]string, 0, len(raw)+len(inputs)+len(tools))
 	skipping := false
+	skippingPlain := false
 	for _, line := range raw {
 		if skipping {
 			if opener, closer := hopPythonFenceLine(line); closer && !opener {
@@ -1340,9 +1581,20 @@ func liveLookupActLines(raw []string, dropBody bool, inputs, tools []string) []s
 			}
 			continue
 		}
+		if skippingPlain {
+			if hopspec.PlainHopPythonEnds(line) {
+				skippingPlain = false
+			} else {
+				continue
+			}
+		}
 		if dropBody {
 			if opener, _ := hopPythonFenceLine(line); opener {
 				skipping = true
+				continue
+			}
+			if _, ok := hopspec.PlainHopPythonLabel(line); ok {
+				skippingPlain = true
 				continue
 			}
 		}
@@ -2229,16 +2481,306 @@ func insertHopLineAfter(markdown string, line int, text string) string {
 	return strings.Join(next, "\n")
 }
 
+// repairBoolCallVerdicts turns a body-less check output bool(expr) into the
+// engine's bool() call. The result is a bool, including when expr is a string
+// or an or/and that would otherwise keep the operand. A step that already
+// has a body, a confirm, a check that also writes text, an undeclared name,
+// or a tool call stays unchanged so the fresh-verdict path can still see it.
+func repairBoolCallVerdicts(markdown string) string {
+	spec, _ := hopspec.Parse(markdown)
+	steps := spec.AllSteps()
+	if len(steps) == 0 {
+		return markdown
+	}
+	lines := strings.Split(markdown, "\n")
+	declared := map[string]bool{}
+	types := map[string]string{}
+	for _, decl := range append(append([]hopspec.VariableDecl{}, spec.Inputs...), spec.Outputs...) {
+		if decl.Name == "" {
+			continue
+		}
+		declared[decl.Name] = true
+		types[decl.Name] = decl.Type
+	}
+	var reps []hopSpanReplace
+	for _, step := range steps {
+		if rep, ok := boolCallVerdictReplace(lines, step, declared, types); ok {
+			reps = append(reps, rep)
+		}
+		for _, out := range step.Outputs {
+			if out.Name == "" {
+				continue
+			}
+			declared[out.Name] = true
+			if _, exists := types[out.Name]; !exists {
+				types[out.Name] = out.Type
+			}
+		}
+	}
+	if len(reps) == 0 {
+		return markdown
+	}
+	return applyHopSpanReplacements(lines, reps)
+}
+
+func boolCallVerdictReplace(lines []string, step hopspec.Step, declared map[string]bool, types map[string]string) (hopSpanReplace, bool) {
+	if step.Type != hopspec.StepCheck || strings.TrimSpace(step.Body) != "" || len(step.Outputs) == 0 {
+		return hopSpanReplace{}, false
+	}
+	if step.Source.LineEnd < step.Source.LineStart || step.Source.LineStart < 1 || step.Source.LineEnd > len(lines) {
+		return hopSpanReplace{}, false
+	}
+	type boolAssignment struct {
+		name string
+		expr string
+	}
+	var assigns []boolAssignment
+	for _, out := range step.Outputs {
+		expr, ok := boolCallExpression(out.Type)
+		if !ok || !hopPythonName(out.Name) || !boolCallNameFree(out.Name, types) || !boolCallExprIsValue(expr) {
+			return hopSpanReplace{}, false
+		}
+		for _, name := range boolCallReads(expr) {
+			if !declared[name] || !hopPythonName(name) {
+				return hopSpanReplace{}, false
+			}
+		}
+		assigns = append(assigns, boolAssignment{name: out.Name, expr: expr})
+	}
+	have := map[string]bool{}
+	defined := map[string]bool{}
+	for _, name := range step.Inputs {
+		have[name] = true
+		defined[name] = true
+	}
+	var missing []string
+	statements := make([]string, 0, len(assigns))
+	for _, item := range assigns {
+		for _, name := range boolCallReads(item.expr) {
+			if !have[name] {
+				have[name] = true
+				missing = append(missing, name)
+			}
+			defined[name] = true
+		}
+		statements = append(statements, item.name+" = bool("+item.expr+")")
+	}
+	if err := hopjit.HopPythonRuns(strings.Join(statements, "\n"), boolCallDefined(defined)); err != nil {
+		return hopSpanReplace{}, false
+	}
+	raw := append([]string{}, lines[step.Source.LineStart-1:step.Source.LineEnd]...)
+	found := map[string]bool{}
+	for index, line := range raw {
+		name, ok := hopStepOutputName(line)
+		if !ok {
+			continue
+		}
+		next, ok := rewriteBoolCallOutputLine(line, name)
+		if !ok {
+			continue
+		}
+		raw[index] = next
+		found[name] = true
+	}
+	for _, item := range assigns {
+		if !found[item.name] {
+			return hopSpanReplace{}, false
+		}
+	}
+	for _, name := range missing {
+		raw = append(raw, "  - ← "+name)
+	}
+	raw = append(raw, "  hop_python:")
+	for _, statement := range statements {
+		raw = append(raw, "  "+statement)
+	}
+	return hopSpanReplace{start: step.Source.LineStart, end: step.Source.LineEnd, lines: raw}, true
+}
+
+func boolCallExpression(typ string) (string, bool) {
+	inner, ok := verdictCallInner(typ)
+	if !ok {
+		return "", false
+	}
+	expr := strings.TrimSpace(inner)
+	if expr == "" || strings.ContainsAny(expr, "\r\n") || !boolCallParensBalanced(expr) {
+		return "", false
+	}
+	return expr, true
+}
+
+func boolCallParensBalanced(expr string) bool {
+	depth := 0
+	var quote rune
+	escaped := false
+	for _, r := range expr {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+				continue
+			}
+			if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch r {
+		case '"', '\'':
+			quote = r
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return false
+			}
+		}
+	}
+	return quote == 0 && depth == 0
+}
+
+func boolCallNameFree(name string, types map[string]string) bool {
+	typ, ok := types[name]
+	if !ok || typ == "" || typ == "bool" || typ == "any" {
+		return true
+	}
+	_, call := boolCallExpression(typ)
+	return call
+}
+
+func boolCallExprIsValue(expr string) bool {
+	for _, name := range hopPythonCallNames(expr) {
+		if !boolCallPure(name) {
+			return false
+		}
+	}
+	return true
+}
+
+func boolCallPure(name string) bool {
+	switch name {
+	case "len", "sum", "int", "float", "str", "bool", "lower", "upper", "strip", "parse_json", "startswith", "endswith", "get":
+		return true
+	default:
+		return false
+	}
+}
+
+func boolCallReads(expr string) []string {
+	var reads []string
+	seen := map[string]bool{}
+	for _, name := range hopPythonReadNames(stripHopPythonStrings(expr)) {
+		if hopPythonKeyword(name) || seen[name] {
+			continue
+		}
+		seen[name] = true
+		reads = append(reads, name)
+	}
+	return reads
+}
+
+func boolCallDefined(names map[string]bool) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(names))
+	for name := range names {
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func hopPythonCallNames(expression string) []string {
+	text := stripHopPythonStrings(expression)
+	var names []string
+	runes := []rune(text)
+	for index := 0; index < len(runes); {
+		r := runes[index]
+		if !unicode.IsLetter(r) && r != '_' {
+			index++
+			continue
+		}
+		start := index
+		index++
+		for index < len(runes) && (unicode.IsLetter(runes[index]) || unicode.IsDigit(runes[index]) || runes[index] == '_') {
+			index++
+		}
+		if hopPythonAttribute(runes, start) {
+			continue
+		}
+		next := index
+		for next < len(runes) && unicode.IsSpace(runes[next]) {
+			next++
+		}
+		if next < len(runes) && runes[next] == '(' {
+			names = append(names, string(runes[start:index]))
+		}
+	}
+	return names
+}
+
+func rewriteBoolCallOutputLine(line, name string) (string, bool) {
+	got, ok := hopStepOutputName(line)
+	if !ok || got != name {
+		return line, false
+	}
+	value, ok := hopMarkedValue(strings.TrimSpace(line), []string{"+", "＋"}, []string{"→", "->"})
+	if !ok {
+		return line, false
+	}
+	payload, comment, hasComment := strings.Cut(value, "#")
+	sep := "%"
+	typ := ""
+	if _, after, found := strings.Cut(payload, "%"); found {
+		typ = strings.TrimSpace(after)
+	} else {
+		foundSep := false
+		for _, colon := range []string{":", "："} {
+			if _, after, found := strings.Cut(payload, colon); found {
+				sep = colon
+				typ = strings.TrimSpace(after)
+				foundSep = true
+				break
+			}
+		}
+		if !foundSep {
+			return line, false
+		}
+	}
+	if _, ok := boolCallExpression(typ); !ok {
+		return line, false
+	}
+	mark := strings.Index(line, sep)
+	if mark < 0 {
+		return line, false
+	}
+	rebuilt := strings.TrimRight(line[:mark], " \t") + " " + sep + " bool"
+	if hasComment && strings.TrimSpace(comment) != "" {
+		rebuilt += " # " + strings.TrimSpace(comment)
+	}
+	return rebuilt, true
+}
+
 // repairMissingCheckVerdicts gives a check or confirm the bool output the
-// validator requires. A step with no hop_python body gets a fresh name,
-// because the host fills that output. A body keeps the name it assigns to a
-// bool value: a literal, a comparison, is/is not, or not/and/or. Any other
-// body is left unchanged, so the missing verdict still fails validation and
-// the rewrite can see it. A body that reads an already declared variable gets
-// that input line when the step omitted it; the body only receives listed
-// inputs. A name declared by this repair is visible to later steps. Validate
-// still rejects a check whose only output is text.
+// validator requires. A check that writes bool(expr) is asking for that
+// call: the type becomes bool and the body assigns it, so a second verdict
+// is not added. Confirm is left alone, because a confirm body is rejected
+// and the step waits for a person. A step with no hop_python body gets a
+// fresh name, because the host fills that output. A body keeps the name it
+// assigns to a bool value: a literal, a comparison, is/is not, or not/and/or.
+// Any other body is left unchanged, so the missing verdict still fails
+// validation and the rewrite can see it. A body that reads an already
+// declared variable gets that input line when the step omitted it; the body
+// only receives listed inputs. A name declared by this repair is visible to
+// later steps. Validate still rejects a check whose only output is text.
 func repairMissingCheckVerdicts(markdown string) string {
+	markdown = repairBoolCallVerdicts(markdown)
 	spec, _ := hopspec.Parse(markdown)
 	steps := spec.AllSteps()
 	if len(steps) == 0 {

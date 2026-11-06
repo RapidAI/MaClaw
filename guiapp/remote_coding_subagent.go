@@ -756,6 +756,14 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 		parentSessionID = r.loopCtx.ID
 		userID = strings.TrimSpace(r.loopCtx.UserID)
 	}
+	resumeRemote := r.nestDepth == 0
+	var resume codingAgentResume
+	if resumeRemote {
+		resume = loadCodingAgentResume(userID, r.projectDir)
+		if len(resume.History) > 0 {
+			log.Printf("[coding-env] restored coding agent state user=%s history=%d snapshots=%d", userID, len(resume.History), 0)
+		}
+	}
 	sessionID := fmt.Sprintf("remote-coding-subagent-%d", time.Now().UnixNano())
 	traj := startSubAgentTrajectory(
 		r.handler,
@@ -772,7 +780,14 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 		defer flushSubAgentTrajectory(traj)
 	}
 	hooks := r.buildRemoteCodingLoopHooks(cb)
-	result := codingagent.Run(cb, userText, userContent, nil, r.httpClient, hooks)
+	var loopResult agent.LoopResult
+	if resumeRemote {
+		defer func() {
+			recordCodingAgentResume(userID, r.projectDir, loopResult.HistoryDelta, nil)
+		}()
+	}
+	loopResult = codingagent.Run(cb, userText, userContent, resume.History, r.httpClient, hooks)
+	result := loopResult
 	finishSubAgentTrajectory(traj, result)
 	if r.handler != nil {
 		accumulateLoopResultUsage(r.handler.app, r.cfg, result)
