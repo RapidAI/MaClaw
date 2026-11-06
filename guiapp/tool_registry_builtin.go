@@ -376,7 +376,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"max_attempts":       map[string]string{"type": "integer", "description": "最大自动修复尝试次数（默认 2，最大 3）"},
 			"save_as_skill":      map[string]string{"type": "boolean", "description": "执行成功后是否尝试注册为 Skill（默认 true，但一次性任务会更保守）"},
 			"skill_name":         map[string]string{"type": "string", "description": "Skill 名称（可选，自动生成）"},
-			"timeout":            map[string]string{"type": "integer", "description": "执行超时秒数（默认 60，最大 300）"},
+			"timeout":            map[string]string{"type": "integer", "description": "执行超时秒数（默认 90，最大 300）"},
 		}, []string{"task"},
 		func(ctx context.Context, args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return h.toolCraftToolWithContext(ctx, args, onProgress)

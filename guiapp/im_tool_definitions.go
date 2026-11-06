@@ -98,7 +98,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"max_attempts":       map[string]string{"type": "integer", "description": "最大自动修复尝试次数（默认 2，最大 3）"},
 				"save_as_skill":      map[string]string{"type": "boolean", "description": "执行成功后是否请求注册为 Skill（默认 true，但一次性任务会更保守；实际自动写入仍须在设置中显式启用 Skill 自进化且未触发环境 kill switch）"},
 				"skill_name":         map[string]string{"type": "string", "description": "Skill 名称（可选，自动生成）"},
-				"timeout":            map[string]string{"type": "integer", "description": "执行超时秒数（默认 60，最大 300）"},
+				"timeout":            map[string]string{"type": "integer", "description": "执行超时秒数（默认 90，最大 300）"},
 			}, []string{"task"}),
 		// --- 本机直接操作工具 ---
 		toolDefFromCore("bash", "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。禁止通过 bash 执行 ssh/scp/rsync 命令——请使用内置 ssh 工具。支持 background=true 后台执行长时间命令（翻译、编译、下载等），返回 task_id 后可用 async_wait 查询状态。",
