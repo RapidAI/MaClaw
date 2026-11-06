@@ -10,6 +10,7 @@ import { veStatusEventInfo } from "./veStatusEvent";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { archiveExpertTranscriptForProject, expertSessionKey, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { mergeProjectRoundHistory } from "./aiAssistantProjectTabState";
+import { loadRestoredProjectConversationHistory } from "./assistantPreviewState";
 import { splitConversationView } from "./conversationViewWindow";
 import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy } from "./codingTaskMode";
 import type { TaskManagementItem } from "../layout/SidebarTaskManagement";
@@ -312,6 +313,23 @@ export interface UseAITabManagerResult {
     tabLimitError: string | null;
     /** Clear the tab limit error */
     clearTabLimitError: () => void;
+    /**
+     * Bumps when the active task's session file settles into the tab cache.
+     * The open view paints from that cache when it is still empty.
+     */
+    landedTranscriptEpoch: number;
+    /**
+     * Merge a session-file transcript into the tab cache.
+     * Null means a clear won while the read was in flight.
+     */
+    adoptBackendTranscript: (tabId: string, conversation: unknown, generationAtRequest: number) => ChatMessage[] | null;
+    /** Generation to capture before an async session-file read. */
+    backendTranscriptGeneration: (tabId: string) => number;
+    /**
+     * Project memory for a path whose tab session file is missing.
+     * Callers that ask in the same turn share one read.
+     */
+    loadProjectMemoryFallback: (projectPath: string) => Promise<ChatMessage[]>;
 }
 
 const PROJECT_TABS_STORAGE_KEY = "ai_assistant_project_tabs";
@@ -359,6 +377,28 @@ function persistableProjectHistory(history: unknown[]): unknown[] {
             return kind !== "guideReceipt" && kind !== "guideRejection" && kind !== "taskContext";
         })
         .slice(-MAX_PERSISTED_HISTORY_PER_TAB);
+}
+
+function cacheHasConversation(history: unknown[] | undefined): boolean {
+    if (!Array.isArray(history)) return false;
+    return history.some(message => {
+        if (!message || typeof message !== "object") return false;
+        if ((message as { isProjectContext?: boolean }).isProjectContext) return false;
+        const role = (message as { role?: unknown }).role;
+        return role === "user" || role === "assistant";
+    });
+}
+
+/**
+ * The session file is this tab's conversation. Placeholder rows written while
+ * it was still missing yield, then the live view keeps the hot suffix.
+ */
+function mergedBackendTranscript(existingHistory: unknown[] | undefined, conversation: unknown[]): ChatMessage[] {
+    const history = persistableProjectHistory(Array.isArray(conversation) ? conversation : []);
+    const transcript = (history as ChatMessage[]).filter(entry => !!entry && typeof entry === "object");
+    const kept = ((Array.isArray(existingHistory) ? existingHistory : []) as ChatMessage[])
+        .filter(entry => !(typeof entry?.id === "string" && entry.id.startsWith("restored-")));
+    return splitConversationView(mergeProjectRoundHistory(kept, kept, transcript)).visible;
 }
 
 /** Persist project/expert tab conversation histories to localStorage. Debounced externally. */
@@ -796,17 +836,23 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return initial;
     });
     const [tabLimitError, setTabLimitError] = useState<string | null>(null);
+    const [landedTranscriptEpoch, setLandedTranscriptEpoch] = useState(0);
+    // Session files are read only after this render commits the merged tab list.
+    // Starting the read inside the index callback sees the pre-merge list, so a
+    // tab that exists only on the backend never loads until the user switches.
+    const [backendIndexSettled, setBackendIndexSettled] = useState(false);
 
     // On mount, call LoadProjectTabIndex() to restore Tab bar state from backend.
     // This provides more reliable persistence than localStorage alone (survives
     // localStorage clears, works across different browser contexts, etc.).
-    // Don't immediately load conversation history — that happens on-demand when
-    // a Tab is activated.
-    const backendIndexMergedRef = useRef(false);
     useEffect(() => {
         let cancelled = false;
         Promise.resolve().then(() => LoadProjectTabIndex()).then((entries: BackendTabIndexEntry[]) => {
-            if (cancelled || !entries || !Array.isArray(entries)) return;
+            if (cancelled) return;
+            if (!entries || !Array.isArray(entries)) {
+                setBackendIndexSettled(true);
+                return;
+            }
 
             const backendActiveProjectPaths = new Set(
                 entries
@@ -949,14 +995,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 persistVETabs(next.tabs, tabStatesRef.current);
                 return next;
             });
-            // After tab index merge is complete, hydrate histories from backend session files.
-            backendIndexMergedRef.current = true;
-            hydrateHistoriesFromBackend();
+            setBackendIndexSettled(true);
         }).catch(() => {
-            // Backend not available — still try to hydrate from session files for tabs we already have.
+            // Backend not available — still read session files for tabs we already have.
             if (cancelled) return;
-            backendIndexMergedRef.current = true;
-            hydrateHistoriesFromBackend();
+            setBackendIndexSettled(true);
         });
         return () => { cancelled = true; };
     }, []);
@@ -1055,6 +1098,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
 
     // Store tab states (history, scroll, input) keyed by tab ID
     const tabStatesRef = useRef<Map<string, AITabState>>(new Map());
+    const historyPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const dirtyTabIdsRef = useRef<Set<string>>(new Set());
+    // Incremented before a tab is cleared. A queued read or debounce captures
+    // its generation and must not write a pre-clear transcript afterwards.
+    const historyGenerationByTabIdRef = useRef<Map<string, number>>(new Map());
 
     // On mount, hydrate tabStatesRef with persisted conversation histories.
     const hydratedRef = useRef(false);
@@ -1118,7 +1166,63 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     // localStorage provides instant UI on startup; backend files fill in data
     // that may have been lost when the process was killed without flushing.
     // Triggered after LoadProjectTabIndex merge completes (event-driven, not timer).
+    // Any tab's session file can land in the same turn a click selects it,
+    // while activeTabId on the ref still names the previous tab. The panel
+    // paints only the tab that is actually on screen, and merges stored turns
+    // under a view that already holds the new row.
+    const noteActiveTranscriptLanded = useCallback((tabId: string) => {
+        if (!tabId) return;
+        setLandedTranscriptEpoch(epoch => epoch + 1);
+    }, []);
+
+    const backendTranscriptGeneration = useCallback((tabId: string) => {
+        return historyGenerationByTabIdRef.current.get(tabId) || 0;
+    }, []);
+
+    const adoptBackendTranscript = useCallback((tabId: string, conversation: unknown, generationAtRequest: number): ChatMessage[] | null => {
+        if ((historyGenerationByTabIdRef.current.get(tabId) || 0) !== generationAtRequest) return null;
+        if (!Array.isArray(conversation) || conversation.length === 0) {
+            if (cacheHasConversation(tabStatesRef.current.get(tabId)?.history)) noteActiveTranscriptLanded(tabId);
+            return [];
+        }
+        const existing = tabStatesRef.current.get(tabId);
+        const history = persistableProjectHistory(conversation);
+        if (history.length !== conversation.length) {
+            SaveProjectTabConversation(tabId, history).catch(() => {});
+        }
+        const merged = mergedBackendTranscript(existing?.history, conversation);
+        tabStatesRef.current.set(tabId, {
+            ...(existing || { scrollTop: 0, inputText: "" }),
+            history: merged,
+            lastActiveAt: Date.now(),
+        });
+        if (cacheHasConversation(merged)) noteActiveTranscriptLanded(tabId);
+        return merged;
+    }, [noteActiveTranscriptLanded]);
+
     const backendHydrationDoneRef = useRef(false);
+    // One project-memory read per path while it is in flight. A startup tab and
+    // a reopen that asks in the same turn must not consume two results.
+    const projectMemoryFallbackByPathRef = useRef<Map<string, Promise<ChatMessage[]>>>(new Map());
+    const loadProjectMemoryFallback = useCallback((projectPath: string): Promise<ChatMessage[]> => {
+        const key = normalizeProjectSessionPath(projectPath);
+        if (!key) return Promise.resolve([]);
+        const existing = projectMemoryFallbackByPathRef.current.get(key);
+        if (existing) return existing;
+        const job = loadRestoredProjectConversationHistory(key).catch(() => [] as ChatMessage[]);
+        projectMemoryFallbackByPathRef.current.set(key, job);
+        // Drop the shared read after this turn. A startup hydrate and the
+        // reopen that follows the empty session file ask a few tasks apart,
+        // and both must see one result. The next activation can read again.
+        void job.finally(() => {
+            window.setTimeout(() => {
+                if (projectMemoryFallbackByPathRef.current.get(key) === job) {
+                    projectMemoryFallbackByPathRef.current.delete(key);
+                }
+            }, 0);
+        });
+        return job;
+    }, []);
     const hydrateHistoriesFromBackend = useCallback(() => {
         if (backendHydrationDoneRef.current) return;
         backendHydrationDoneRef.current = true;
@@ -1128,42 +1232,31 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         const projectTabs = tabStateRef.current.tabs.filter(t => (t.type === "project" && !isACPMirrorTab(t)) || t.type === "expert");
         for (const tab of projectTabs) {
             const generationAtRequest = historyGenerationByTabIdRef.current.get(tab.id) || 0;
-            LoadProjectTabConversation(tab.id).then(conversation => {
+            LoadProjectTabConversation(tab.id).then(async (conversation) => {
+                const adopted = adoptBackendTranscript(tab.id, conversation, generationAtRequest);
+                if (adopted === null) return;
+                // The session file is authoritative when it has rows. An empty
+                // file is how a startup tab misses the project memory that a
+                // later reopen loads, so the first focus stays blank.
+                if (Array.isArray(conversation) && conversation.length > 0) return;
+                if (tab.type !== "project" || !tab.projectPath) return;
+                if (cacheHasConversation(tabStatesRef.current.get(tab.id)?.history)) return;
+                const restored = await loadProjectMemoryFallback(tab.projectPath);
                 if ((historyGenerationByTabIdRef.current.get(tab.id) || 0) !== generationAtRequest) return;
-                if (!conversation || !Array.isArray(conversation) || conversation.length === 0) return;
-                const existing = tabStatesRef.current.get(tab.id);
-                const history = persistableProjectHistory(conversation);
-                if (history.length !== conversation.length) {
-                    SaveProjectTabConversation(tab.id, history).catch(() => {});
+                if (!tabStateRef.current.tabs.some(open => open.id === tab.id && open.type === "project")) return;
+                if (cacheHasConversation(tabStatesRef.current.get(tab.id)?.history)) {
+                    noteActiveTranscriptLanded(tab.id);
+                    return;
                 }
-                // A windowed session file is shorter than the local tail even when it is newer.
-                // Merge by id, then keep only the hot suffix the live view mounts.
-                // The transcript is this tab's authoritative conversation. The
-                // panel's LoadProjectConversationHistory fallback writes
-                // `restored-*` placeholder rows to show something while it is
-                // still missing; once the real transcript lands those
-                // placeholders must yield instead of doubling every round
-                // (contract: full tab-session conversation over stripped
-                // project history).
-                // The transcript is this tab's authoritative conversation. The
-                // panel's LoadProjectConversationHistory fallback writes
-                // `restored-*` placeholder rows to show something while it is
-                // still missing; once the real transcript lands those
-                // placeholders must yield instead of doubling every round
-                // (contract: full tab-session conversation over stripped
-                // project history).
-                const transcript = (history as ChatMessage[]).filter(entry => !!entry && typeof entry === "object");
-                const existingHistory = ((Array.isArray(existing?.history) ? existing.history : []) as ChatMessage[])
-                    .filter(entry => !(typeof entry?.id === "string" && entry.id.startsWith("restored-")));
-                const merged = splitConversationView(mergeProjectRoundHistory(existingHistory, existingHistory, transcript)).visible;
-                tabStatesRef.current.set(tab.id, {
-                    ...(existing || { scrollTop: 0, inputText: "" }),
-                    history: merged,
-                    lastActiveAt: Date.now(),
-                });
+                if (restored.length === 0) return;
+                adoptBackendTranscript(tab.id, restored, generationAtRequest);
             }).catch(() => {});
         }
-    }, []);
+    }, [adoptBackendTranscript, loadProjectMemoryFallback, noteActiveTranscriptLanded]);
+    useEffect(() => {
+        if (!backendIndexSettled) return;
+        hydrateHistoriesFromBackend();
+    }, [backendIndexSettled, hydrateHistoriesFromBackend]);
 
     const activeTab = tabState.tabs.find(t => t.id === tabState.activeTabId) || tabState.tabs[0];
 
@@ -1598,12 +1691,6 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return tabStateRef.current.tabs.find(t => t.id === tabId) || newTab;
     }, [updateTabState]);
 
-    const historyPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const dirtyTabIdsRef = useRef<Set<string>>(new Set());
-    // Incremented before a tab is cleared. A queued debounce captures its
-    // generation and must not write a pre-clear transcript afterwards.
-    const historyGenerationByTabIdRef = useRef<Map<string, number>>(new Map());
-
     // Flush a tab's pending conversation to the backend session file
     // immediately. closeTab uses this so a tab closed inside the 500ms
     // debounce window does not lose its unflushed tail — the debounced flush
@@ -1868,11 +1955,17 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         if (!id) return;
         const tabId = expertTabId(id);
         LoadProjectTabConversation(tabId).then((conversation) => {
-            if (!Array.isArray(conversation) || conversation.length === 0) return;
             const existing = tabStatesRef.current.get(tabId);
             const existingHistory = Array.isArray(existing?.history) ? existing.history : [];
+            if (!Array.isArray(conversation) || conversation.length === 0) {
+                if (cacheHasConversation(existingHistory)) noteActiveTranscriptLanded(tabId);
+                return;
+            }
             // A tab the user already reopened and used wins over this snapshot.
-            if (existingHistory.length > 0) return;
+            if (existingHistory.length > 0) {
+                if (cacheHasConversation(existingHistory)) noteActiveTranscriptLanded(tabId);
+                return;
+            }
             const history = persistableProjectHistory(conversation);
             if (history.length === 0) return;
             tabStatesRef.current.set(tabId, {
@@ -1881,8 +1974,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 lastActiveAt: Date.now(),
             });
             persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
+            if (cacheHasConversation(history)) noteActiveTranscriptLanded(tabId);
         }).catch(() => {});
-    }, []);
+    }, [noteActiveTranscriptLanded]);
 
     // Sync open expert tabs with expert definition changes from the utilities page:
     // "maclaw:expert-deleted" discards tab + history; "maclaw:expert-updated" patches
@@ -2190,5 +2284,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         renameLocalTab,
         tabLimitError,
         clearTabLimitError,
+        landedTranscriptEpoch,
+        adoptBackendTranscript,
+        backendTranscriptGeneration,
+        loadProjectMemoryFallback,
     };
 }

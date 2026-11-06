@@ -2,6 +2,7 @@ package agentservice
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,14 +11,16 @@ import (
 
 type fakeHostWebFetcher struct {
 	rawURL    string
+	offset    int
 	principal Principal
 	result    string
 	err       error
 }
 
-func (f *fakeHostWebFetcher) FetchReviewedHostWeb(_ context.Context, principal Principal, rawURL string) (string, error) {
+func (f *fakeHostWebFetcher) FetchReviewedHostWeb(_ context.Context, principal Principal, rawURL string, offset int) (string, error) {
 	f.principal = principal
 	f.rawURL = rawURL
+	f.offset = offset
 	return f.result, f.err
 }
 
@@ -115,12 +118,40 @@ func TestProjectReviewedHostWebFetchRejectsChannelAndSaveFields(t *testing.T) {
 	fn, _ := definition["function"].(map[string]interface{})
 	params, _ := fn["parameters"].(map[string]interface{})
 	props, _ := params["properties"].(map[string]interface{})
-	if _, ok := props["url"]; !ok || len(props) != 1 {
+	if _, ok := props["url"]; !ok || len(props) != 2 {
 		t.Fatalf("web fetch schema=%#v", props)
 	}
-	for _, key := range []string{"channel", "destination", "group_name", "path", "save_path", "dest", "filename", "query"} {
+	offsetField, _ := props["offset"].(map[string]interface{})
+	if offsetField["type"] != "integer" {
+		t.Fatalf("offset cursor=%#v", offsetField)
+	}
+	for _, key := range []string{"channel", "destination", "group_name", "path", "save_path", "dest", "filename", "query", "max_chars"} {
 		if _, ok := props[key]; ok {
 			t.Fatalf("web fetch schema leaked %s", key)
 		}
+	}
+}
+
+func TestReviewedHostWebFetchPassesOffset(t *testing.T) {
+	fetcher := &fakeHostWebFetcher{result: "page"}
+	exec := executeReviewedHostWebFetch(fetcher)
+	out, err := exec(context.Background(), Principal{}, map[string]interface{}{
+		"url":    "https://example.com/catalog",
+		"offset": float64(16384),
+	})
+	if err != nil || out != "page" || fetcher.rawURL != "https://example.com/catalog" || fetcher.offset != 16384 {
+		t.Fatalf("out=%q err=%v url=%q offset=%d", out, err, fetcher.rawURL, fetcher.offset)
+	}
+	if _, err := exec(context.Background(), Principal{}, map[string]interface{}{
+		"url":    "https://example.com/catalog",
+		"offset": float64(-1),
+	}); err == nil || !strings.Contains(err.Error(), "host_web_fetch_arguments_rejected") {
+		t.Fatalf("negative offset err=%v", err)
+	}
+	if _, err := exec(context.Background(), Principal{}, map[string]interface{}{
+		"url":       "https://example.com/catalog",
+		"max_chars": float64(100),
+	}); err == nil || !strings.Contains(err.Error(), "host_web_fetch_arguments_rejected") {
+		t.Fatalf("max_chars err=%v", err)
 	}
 }

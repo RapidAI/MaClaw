@@ -832,7 +832,120 @@ describe('useTaskConfigWiring new-task wizard opening', () => {
             result.current.handleSendWithTaskConfig();
         });
         expect(handleSend).toHaveBeenCalledTimes(1);
+        expect(handleSend.mock.calls[0]).toEqual([]);
         expect(create).not.toHaveBeenCalled();
+    });
+
+    it('sends /hop from the new-task cover over another task and closes the cover', async () => {
+        const create = CreateTaskUnified as unknown as ReturnType<typeof vi.fn>;
+        create.mockClear();
+        const handleSend = vi.fn();
+        const clearGuideDraft = vi.fn();
+        const showComposerText = vi.fn();
+        const guide = { current: { value: '/hop run 北京天气', focus() {} } as HTMLTextAreaElement };
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+            isLocalTabActive: false,
+            activeTab: { id: 'task-2', type: 'project' },
+            inputValue: 'covered draft',
+            guideInputValue: '/hop run 北京天气',
+            guideInputRef: guide,
+            handleSend,
+            clearGuideDraft,
+            showComposerText,
+            getTabState: () => ({ history: [{ role: 'user', content: 'hi' }] }),
+        })));
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        expect(result.current.wizardOverlay).toBe(true);
+
+        act(() => {
+            result.current.handleSendWithTaskConfig();
+        });
+
+        expect(handleSend).toHaveBeenCalledTimes(1);
+        expect(handleSend).toHaveBeenCalledWith('/hop run 北京天气');
+        expect(create).not.toHaveBeenCalled();
+        expect(result.current.wizardOverlay).toBe(false);
+        expect(clearGuideDraft).toHaveBeenCalled();
+        expect(showComposerText).not.toHaveBeenCalled();
+    });
+
+    it('sends a fullwidth /hop from the cover without creating a task', async () => {
+        const create = CreateTaskUnified as unknown as ReturnType<typeof vi.fn>;
+        create.mockClear();
+        const handleSend = vi.fn();
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+            isLocalTabActive: false,
+            activeTab: { id: 'task-2', type: 'project' },
+            guideInputValue: '／hop run 北京天气',
+            handleSend,
+            getTabState: () => ({ history: [{ role: 'user', content: 'hi' }] }),
+        })));
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        act(() => {
+            result.current.handleSendWithTaskConfig();
+        });
+        expect(handleSend).toHaveBeenCalledWith('／hop run 北京天气');
+        expect(create).not.toHaveBeenCalled();
+        expect(result.current.wizardOverlay).toBe(false);
+    });
+
+    it('sends a slash welcome card from the cover without clearing the other composer', async () => {
+        const create = CreateTaskUnified as unknown as ReturnType<typeof vi.fn>;
+        create.mockClear();
+        const handleSend = vi.fn();
+        const handleWelcomePromptSend = vi.fn();
+        const clearComposerDraft = vi.fn();
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+            isLocalTabActive: false,
+            activeTab: { id: 'task-2', type: 'project' },
+            inputValue: 'covered draft',
+            handleSend,
+            handleWelcomePromptSend,
+            clearComposerDraft,
+            getTabState: () => ({ history: [{ role: 'user', content: 'hi' }] }),
+        })));
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await act(async () => {
+            await result.current.handleWelcomePromptSendWithTaskConfig('/hop run 北京天气');
+        });
+        expect(handleSend).toHaveBeenCalledWith('/hop run 北京天气');
+        expect(handleWelcomePromptSend).not.toHaveBeenCalled();
+        expect(clearComposerDraft).not.toHaveBeenCalled();
+        expect(create).not.toHaveBeenCalled();
+        expect(result.current.wizardOverlay).toBe(false);
+    });
+
+    it('returns to the covered local conversation after a slash command', async () => {
+        const handleSend = vi.fn();
+        const showComposerText = vi.fn();
+        const input = { current: { value: 'follow up', focus() {} } as HTMLTextAreaElement };
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+            isLocalTabActive: true,
+            assistantBusy: true,
+            inputRef: input,
+            inputValue: 'follow up',
+            handleSend,
+            showComposerText,
+            getTabState: () => ({ history: [{ role: 'user', content: 'hi' }] }),
+        })));
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        input.current.value = '/hop run 北京天气';
+        act(() => {
+            result.current.handleSendWithTaskConfig();
+        });
+        expect(handleSend).toHaveBeenCalledTimes(1);
+        expect(handleSend.mock.calls[0]).toEqual([]);
+        expect(result.current.wizardOverlay).toBe(false);
+        expect(showComposerText).toHaveBeenCalledWith('follow up');
     });
 
     it('opens the wizard over a running conversation without clearing it', async () => {

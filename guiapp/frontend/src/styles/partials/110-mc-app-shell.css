@@ -4635,7 +4635,8 @@ input.cwshare-url {
 }
 /* The pen sits over the top of this column. Padding stays outside the
    scrolling list, so a long list does not slide under the pen. Width is set
-   inline from the drag handle on the right edge. */
+   inline from the drag handle on the right edge. Folding leaves a strip as
+   wide as the fold button, so the page lays out beside the control. */
 .companion-pdf-bookmark-column {
   position: relative;
   flex: 0 0 156px;
@@ -4649,6 +4650,26 @@ input.cwshare-url {
   padding: 54px 8px 8px 10px;
   z-index: 7;
   --wails-draggable: no-drag;
+}
+.companion-pdf-bookmark-column[data-collapsed="true"] {
+  padding: 0;
+  overflow: visible;
+}
+.companion-pdf-bookmark-column[data-collapsed="true"]::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 1px;
+  background: var(--theme-border, #d5e0ef);
+}
+.companion-pdf-bookmark-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
 }
 .companion-pdf-bookmark-resize {
   position: absolute;
@@ -4683,6 +4704,49 @@ input.cwshare-url {
 }
 .companion-pdf-bookmark-resize:focus-visible {
   outline: none;
+}
+/* The fold control sits on the divider. Eight pixels of it cover the column
+   padding, so the chevron stays on the line without covering a chip. Folded,
+   it fills the strip (PDF_BOOKMARK_RAIL_FOLDED) and stays off the page. */
+.companion-pdf-bookmark-fold {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 24px;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-pill);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-secondary, #46586f);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.16);
+  cursor: pointer;
+  transform: translate(-8px, -50%);
+  --wails-draggable: no-drag;
+}
+.companion-pdf-bookmark-column[data-collapsed="true"] .companion-pdf-bookmark-fold {
+  left: 0;
+  width: 100%;
+  transform: translate(0, -50%);
+}
+.companion-pdf-bookmark-fold svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+.companion-pdf-bookmark-fold:hover,
+.companion-pdf-bookmark-fold:focus-visible {
+  border-color: var(--theme-primary, #2e75cb);
+  color: var(--theme-primary, #2e75cb);
+}
+.companion-pdf-bookmark-fold:focus-visible {
+  outline: 2px solid var(--theme-primary, #2e75cb);
+  outline-offset: 2px;
 }
 /* Two lists share the column: bookmarks on top, notes below. Each list has
    its own scroll box, so a long bookmark list cannot push the notes off the

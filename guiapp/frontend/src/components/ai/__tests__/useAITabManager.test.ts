@@ -12,7 +12,7 @@ import fc from "fast-check";
 import { useAITabManager } from "../useAITabManager";
 import type { AITab } from "../AITabTypes";
 import { normalizeProjectSessionPath } from "../aiAssistantPanelSessionUtils";
-import { ClearAIAssistantHistoryForSession, CloseAssistantTabSession, CreateProjectTabSession, LoadProjectTabConversation, LoadProjectTabIndex, SaveProjectTabConversation } from "../../../../wailsjs/go/main/App";
+import { ClearAIAssistantHistoryForSession, CloseAssistantTabSession, CreateProjectTabSession, LoadProjectConversationHistory, LoadProjectTabConversation, LoadProjectTabIndex, SaveProjectTabConversation } from "../../../../wailsjs/go/main/App";
 
 vi.mock("../../../../wailsjs/runtime", () => ({
     EventsOn: vi.fn(() => vi.fn()),
@@ -25,6 +25,7 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
     CreateProjectTabSession: vi.fn().mockResolvedValue(undefined),
     SaveProjectTabConversation: vi.fn().mockResolvedValue(undefined),
     LoadProjectTabConversation: vi.fn().mockResolvedValue([]),
+    LoadProjectConversationHistory: vi.fn().mockResolvedValue([]),
     ClearAIAssistantHistoryForSession: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -43,6 +44,7 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         vi.mocked(CloseAssistantTabSession).mockResolvedValue(undefined as any);
         vi.mocked(CreateProjectTabSession).mockResolvedValue("已打开项目");
         vi.mocked(LoadProjectTabConversation).mockResolvedValue([]);
+        vi.mocked(LoadProjectConversationHistory).mockResolvedValue([]);
         vi.mocked(SaveProjectTabConversation).mockResolvedValue(undefined as any);
     });
     /**
@@ -680,6 +682,28 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         });
     });
 
+    it("loads project memory when the startup session file is empty", async () => {
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([
+            { id: "proj-memory", type: "project", title: "Memory", projectPath: "D:/tasks/memory", lastActiveAt: 1, archived: false },
+        ] as any);
+        vi.mocked(LoadProjectTabConversation).mockResolvedValue(null as any);
+        vi.mocked(LoadProjectConversationHistory).mockResolvedValue([
+            { role: "user", content: "question retained by the task" },
+            { role: "assistant", content: "answer restored from project memory" },
+        ] as any);
+
+        const { result } = renderHook(() => useAITabManager());
+
+        await waitFor(() => {
+            const history = (result.current.getTabState("proj-memory")?.history || []) as Array<{ content?: string }>;
+            expect(history.map(message => message.content)).toEqual([
+                "question retained by the task",
+                "answer restored from project memory",
+            ]);
+        });
+        expect(LoadProjectConversationHistory).toHaveBeenCalledWith("D:/tasks/memory");
+    });
+
     it("windows a shorter backend transcript without dropping an unflushed local tail", async () => {
         const older = Array.from({ length: 45 }, (_, index) => ({
             id: `m${index}`,
@@ -937,6 +961,7 @@ describe("useAITabManager - orphan project tab reconcile", () => {
         vi.mocked(CloseAssistantTabSession).mockResolvedValue(undefined as any);
         vi.mocked(CreateProjectTabSession).mockResolvedValue("已打开项目");
         vi.mocked(LoadProjectTabConversation).mockResolvedValue([]);
+        vi.mocked(LoadProjectConversationHistory).mockResolvedValue([]);
         vi.mocked(SaveProjectTabConversation).mockResolvedValue(undefined as any);
     });
 

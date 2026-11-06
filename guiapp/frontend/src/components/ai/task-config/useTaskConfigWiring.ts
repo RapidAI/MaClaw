@@ -137,7 +137,7 @@ export interface TaskConfigWiringOptions {
      * Raw session messages are not a signal: other tabs' chats stay in that list.
      */
     activeChatVisible?: boolean;
-    handleSend: () => void;
+    handleSend: (command?: string) => void;
     handleWelcomePromptSend: (text: string, meta?: WelcomePromptSubmitMeta) => unknown;
     clearComposerDraft: (options?: { clearAttachments?: boolean; focus?: boolean }) => void;
     getTabs: () => Array<{ id: string; type?: string }>;
@@ -228,6 +228,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     wizardOverlayRef.current = wizardOverlay;
     /** Unsent composer captured when the welcome page covers a live turn. */
     const composerStashRef = useRef<{ text: string; attachments: unknown[]; selectedPaths: string[] } | null>(null);
+    const dismissWizardOverlayRef = useRef<() => void>(() => {});
 
     // Experts + workflows load once per panel mount; failures degrade to empty
     // lists (the bar itself tolerates missing sources). Experts re-load when
@@ -817,7 +818,16 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         // path. A prefix added by compose mode, such as /goal, still creates a task.
         const typedSlash = raw.startsWith("/") || raw.startsWith("／");
         if (typedSlash || isHistoryResetCommandText(text) || isBtwCommandText(text) || normalizeInstallCommandText(text)) {
-            handleSend();
+            // The cover's composer is not the conversation box. Pass that text,
+            // then close the cover so the command's reply is visible.
+            if (wizardOverlayRef.current && text) {
+                if (separateScreen) handleSend(text);
+                else handleSend();
+                dismissWizardOverlayRef.current();
+                clearGuideDraft?.();
+            } else {
+                handleSend();
+            }
             return;
         }
         const taskName = composeAction ? raw : undefined;
@@ -836,7 +846,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             }
             await startGuideTask(text, wizardActive, taskName, filePaths);
         })();
-    }, [collectGuideFilePaths, composeAction, guideInputRef, guideInputValue, handleSend, inputValue, isLocalTabActive, isNewTaskWizardTabActive, startGuideTask]);
+    }, [clearGuideDraft, collectGuideFilePaths, composeAction, guideInputRef, guideInputValue, handleSend, inputValue, isLocalTabActive, isNewTaskWizardTabActive, startGuideTask]);
 
     // Welcome card "send now" path uses the same task create, including files
     // already sitting on the composer.
@@ -855,7 +865,21 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         }
         const typedSlash = commandText.startsWith("/");
         if (typedSlash || isHistoryResetCommandText(composed) || isBtwCommandText(composed) || normalizeInstallCommandText(composed)) {
-            return handleWelcomePromptSend(typedSlash ? commandText : composed, meta);
+            const command = typedSlash ? commandText : composed;
+            // The cover over another tab must not clear that tab's composer.
+            // handleSend(command) sends only the card text.
+            if (wizardOverlayRef.current && !isLocalTabActive && command) {
+                handleSend(command);
+                dismissWizardOverlayRef.current();
+                clearGuideDraft?.();
+                return;
+            }
+            const pending = handleWelcomePromptSend(command, meta);
+            if (wizardOverlayRef.current && command) {
+                dismissWizardOverlayRef.current();
+                clearGuideDraft?.();
+            }
+            return pending;
         }
         const hasFiles = (await collectGuideFilePaths()).length > 0;
         if ((!isDraftDefault(draft) || wizardActive || isRunWindowScheduled(draft)) && (composed || (wizardActive && hasFiles))) {
@@ -863,7 +887,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             return;
         }
         return handleWelcomePromptSend(composed || text, meta);
-    }, [collectGuideFilePaths, composeAction, handleWelcomePromptSend, isNewTaskWizardTabActive, startGuideTask]);
+    }, [clearGuideDraft, collectGuideFilePaths, composeAction, handleSend, handleWelcomePromptSend, isLocalTabActive, isNewTaskWizardTabActive, startGuideTask]);
 
     // --- New-task wizard page opening (task-pane "新建任务" button) ---
     // Opening the screen does not switch tabs and does not unmount the
@@ -1018,6 +1042,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         replacePendingAttachments?.(covered.attachments);
         if (covered.selectedPaths.length) replaceSelectedFilePaths?.(covered.selectedPaths);
     }, [replacePendingAttachments, replaceSelectedFilePaths, retireLocalWizardFlag, showComposerText]);
+    dismissWizardOverlayRef.current = dismissWizardOverlay;
 
     const taskConfig = useMemo<TaskConfigPanelModel>(() => ({
         draft: taskConfigDraft,

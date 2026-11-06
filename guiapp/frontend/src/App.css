@@ -27266,11 +27266,10 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 /* The preview owns a second copy of the drawing. Hiding the chat copy skips
    laying out that SVG under an opaque full-screen layer. */
 .amd-figure-body.is-previewing > .amd-diagram { display: none; }
-/* The zoom is the root svg's width as a percentage of this box, so a zoomed-out
-   diagram is narrower than the column. Auto margins centre that narrower
-   drawing instead of leaving it pinned to the left edge. Once the zoom is past
-   100% the box is over-constrained, the auto margins resolve to 0, and the
-   overflow scrolls from the left as before. */
+/* The zoom is the root svg's width as a percentage of this box. Under 100%
+   the drawing is narrower than the column and these margins centre it. Past
+   100% the box overflows and the margins resolve to 0; the diagram element
+   then scrolls so the middle of the drawing stays in view. */
 .mc-conversation-body .amd-diagram > svg,
 .amd-diagram > svg { display: block; max-width: none; height: auto; margin-left: auto; margin-right: auto; }
 /* Double-click and the View button open the full-screen preview. The cursor
@@ -27288,9 +27287,17 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .amd-preview-close:focus-visible { outline: 2px solid var(--amd-preview-text); outline-offset: -2px; }
 .amd-preview-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--amd-preview-paper); cursor: grab; touch-action: none; user-select: none; }
 .amd-preview-stage.is-panning { cursor: grabbing; }
-.amd-preview-canvas { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; transform-origin: center center; }
-.amd-preview-canvas .amd-diagram { width: 100%; height: 100%; max-width: none; overflow: visible; contain: none; }
-.amd-preview-canvas .amd-diagram > svg { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
+.amd-preview-stage.is-panning .amd-preview-canvas { will-change: transform; }
+/* The canvas is the drawing at zoom 1, centred on the stage, and scale grows
+   it from that centre. Until the stage is measured it fills the stage.
+   min-width/min-height 0 lets the svg shrink to that box: a flex item's
+   automatic minimum is its intrinsic size, which would otherwise pin a wide
+   drawing to the left of the canvas. */
+.amd-preview-canvas { position: absolute; display: flex; align-items: center; justify-content: center; transform-origin: center center; }
+.amd-preview-canvas.is-unmeasured { inset: 0; }
+.amd-preview-canvas.is-fitted { left: 50%; top: 50%; }
+.amd-preview-canvas .amd-diagram { width: 100%; height: 100%; min-width: 0; min-height: 0; max-width: none; overflow: visible; contain: none; display: flex; align-items: center; justify-content: center; }
+.amd-preview-canvas .amd-diagram > svg { width: 100%; height: 100%; min-width: 0; min-height: 0; max-width: 100%; max-height: 100%; margin: auto; }
 .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-']:has(.amd-figure),
 [data-testid='file-companion-message-assistant']:has(.amd-figure) { width: 100%; }
 /* Mermaid nests its stylesheet under the svg id. A matching copy is written
@@ -34389,7 +34396,8 @@ input.cwshare-url {
 }
 /* The pen sits over the top of this column. Padding stays outside the
    scrolling list, so a long list does not slide under the pen. Width is set
-   inline from the drag handle on the right edge. */
+   inline from the drag handle on the right edge. Folding leaves a strip as
+   wide as the fold button, so the page lays out beside the control. */
 .companion-pdf-bookmark-column {
   position: relative;
   flex: 0 0 156px;
@@ -34403,6 +34411,26 @@ input.cwshare-url {
   padding: 54px 8px 8px 10px;
   z-index: 7;
   --wails-draggable: no-drag;
+}
+.companion-pdf-bookmark-column[data-collapsed="true"] {
+  padding: 0;
+  overflow: visible;
+}
+.companion-pdf-bookmark-column[data-collapsed="true"]::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 1px;
+  background: var(--theme-border, #d5e0ef);
+}
+.companion-pdf-bookmark-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
 }
 .companion-pdf-bookmark-resize {
   position: absolute;
@@ -34437,6 +34465,49 @@ input.cwshare-url {
 }
 .companion-pdf-bookmark-resize:focus-visible {
   outline: none;
+}
+/* The fold control sits on the divider. Eight pixels of it cover the column
+   padding, so the chevron stays on the line without covering a chip. Folded,
+   it fills the strip (PDF_BOOKMARK_RAIL_FOLDED) and stays off the page. */
+.companion-pdf-bookmark-fold {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 24px;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-pill);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-secondary, #46586f);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.16);
+  cursor: pointer;
+  transform: translate(-8px, -50%);
+  --wails-draggable: no-drag;
+}
+.companion-pdf-bookmark-column[data-collapsed="true"] .companion-pdf-bookmark-fold {
+  left: 0;
+  width: 100%;
+  transform: translate(0, -50%);
+}
+.companion-pdf-bookmark-fold svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+.companion-pdf-bookmark-fold:hover,
+.companion-pdf-bookmark-fold:focus-visible {
+  border-color: var(--theme-primary, #2e75cb);
+  color: var(--theme-primary, #2e75cb);
+}
+.companion-pdf-bookmark-fold:focus-visible {
+  outline: 2px solid var(--theme-primary, #2e75cb);
+  outline-offset: 2px;
 }
 /* Two lists share the column: bookmarks on top, notes below. Each list has
    its own scroll box, so a long bookmark list cannot push the notes off the

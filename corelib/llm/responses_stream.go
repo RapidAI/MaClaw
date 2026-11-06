@@ -292,7 +292,13 @@ func DoResponsesAPIRequestStreamWithOptions(
 				}
 			}
 
-		case "response.completed":
+		case "response.completed", "response.incomplete":
+			// Incomplete is the same final snapshot as completed, cut by the
+			// output cap. Read its text before marking length; a body that
+			// never sent deltas still has the partial program here.
+			if strings.TrimSpace(eventType) == "response.incomplete" {
+				finishReason = "length"
+			}
 			if eventUsage := ExtractResponsesAPIUsageFromEventPayload([]byte(payload)); eventUsage != nil {
 				usage = eventUsage
 			}
@@ -308,9 +314,6 @@ func DoResponsesAPIRequestStreamWithOptions(
 				}
 				items[outputIndex] = mergeResponsesStreamToolItem(items[outputIndex], item)
 			}
-			goto completed
-		case "response.incomplete":
-			finishReason = "length"
 			goto completed
 		case "response.failed", "error":
 			// Keep whatever text/reasoning/tool calls were accumulated before

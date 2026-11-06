@@ -617,6 +617,8 @@ export interface ChatMessage {
     sessionKey?: string;
     /** UI tab that initiated the round, used only for tab-local recovery/display. */
     tabId?: string;
+    /** Project-memory context row pinned by the loader. It stays out of transcript restore gates. */
+    isProjectContext?: boolean;
     timestamp: number;
     /** Workflow document link - phase ID for opening doc preview. */
     workflowPhaseID?: string;

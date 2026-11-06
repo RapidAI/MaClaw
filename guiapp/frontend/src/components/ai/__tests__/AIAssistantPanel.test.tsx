@@ -3456,6 +3456,58 @@ describe('AIAssistantPanel property tests', () => {
         expect(document.body.textContent || '').toContain('moved answer');
     });
 
+    it('shows a cached transcript for the task that is already open', async () => {
+        const projectPath = 'D:/tasks/already-open-cache';
+        localStorage.setItem('ai_assistant_active_tab_id', 'proj-open-cache');
+        localStorage.setItem('ai_assistant_project_tabs', JSON.stringify([{
+            id: 'proj-open-cache', type: 'project', title: 'Open cache', projectPath,
+        }]));
+        localStorage.setItem('ai_assistant_project_tab_histories', JSON.stringify({
+            'proj-open-cache': [
+                { id: 'u-cache', role: 'user', content: 'cached question', timestamp: 1 },
+                { id: 'a-cache', role: 'assistant', content: 'cached answer', timestamp: 2 },
+            ],
+        }));
+        loadProjectTabIndexMock.mockResolvedValue([{
+            id: 'proj-open-cache', type: 'project', title: 'Open cache', projectPath, archived: false,
+        }]);
+        loadProjectTabConversationMock.mockResolvedValue(null);
+
+        renderPanel({ state: { messages: [], sending: false, streaming: false, ready: true } });
+
+        await waitFor(() => expect(document.body.textContent || '').toContain('cached question'));
+        expect(document.body.textContent || '').toContain('cached answer');
+    });
+
+    it('shows a session transcript that arrives after the task tab is already open', async () => {
+        const projectPath = 'D:/tasks/late-session-transcript';
+        let releaseConversation: (rows: unknown) => void = () => {};
+        loadProjectTabConversationMock.mockImplementation(() => new Promise(resolve => {
+            releaseConversation = resolve;
+        }));
+        loadProjectConversationHistoryMock.mockResolvedValue([]);
+        localStorage.setItem('ai_assistant_active_tab_id', 'proj-late-session');
+        localStorage.setItem('ai_assistant_project_tabs', JSON.stringify([{
+            id: 'proj-late-session', type: 'project', title: 'Late session', projectPath,
+        }]));
+        loadProjectTabIndexMock.mockResolvedValue([{
+            id: 'proj-late-session', type: 'project', title: 'Late session', projectPath, archived: false,
+        }]);
+
+        renderPanel({ state: { messages: [], sending: false, streaming: false, ready: true } });
+
+        await waitFor(() => expect(loadProjectTabConversationMock).toHaveBeenCalled());
+        expect(document.body.textContent || '').not.toContain('session arrived late');
+        await act(async () => {
+            releaseConversation([
+                { id: 'u1', role: 'user', content: 'session arrived late', timestamp: 1 },
+                { id: 'a1', role: 'assistant', content: 'and the answer is here', timestamp: 2 },
+            ]);
+        });
+        await waitFor(() => expect(document.body.textContent || '').toContain('session arrived late'));
+        expect(document.body.textContent || '').toContain('and the answer is here');
+    });
+
     it('prefers full tab-session conversation over stripped project history', async () => {
         const projectPath = 'D:/tasks/yun-duan-full-transcript';
         loadProjectTabConversationMock.mockResolvedValue([
@@ -5605,9 +5657,10 @@ describe('AIAssistantPanel property tests', () => {
             resolveSend = resolve;
         }));
         const onHandled = vi.fn();
+        const projectSessionKey = 'desktop-user:D:/tasks/weather-auto';
         const localBefore = makeMsg({ role: 'user', content: 'local before auto-send' });
-        const projectUser = makeMsg({ role: 'user', content: 'weather query' });
-        const projectAssistant = makeMsg({ role: 'assistant', content: 'checking weather', requestId: 'req-weather' });
+        const projectUser = makeMsg({ role: 'user', content: 'weather query', sessionKey: projectSessionKey });
+        const projectAssistant = makeMsg({ role: 'assistant', content: 'checking weather', requestId: 'req-weather', sessionKey: projectSessionKey });
         const base = defaultPanelProps();
         const props = {
             ...base,

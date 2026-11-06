@@ -14,6 +14,7 @@ import (
 
 type responsesAPIResponse struct {
 	ID     string                   `json:"id"`
+	Status string                   `json:"status,omitempty"`
 	Output []responsesAPIOutputItem `json:"output"`
 	Usage  *Usage                   `json:"usage,omitempty"`
 }
@@ -155,6 +156,12 @@ func ParseNonStreamResponsesAPIBody(body []byte) (*Response, error) {
 	finishReason := "stop"
 	if len(msg.ToolCalls) > 0 {
 		finishReason = "tool_calls"
+	}
+	// status incomplete is the JSON form of the SSE response.incomplete event.
+	// A provider that answers stream=true with one JSON body must not look
+	// like a clean stop, or the caller will execute a cut-off program.
+	if strings.EqualFold(strings.TrimSpace(wire.Status), "incomplete") {
+		finishReason = "length"
 	}
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 

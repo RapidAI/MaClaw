@@ -600,7 +600,10 @@ const extractedFileLineLimits = [
   // Refreshed 6800 -> ... -> 7450 -> 7520 (2026-11-04): option-inquiry and
   // panel work pushed this to 7472 lines; headroom absorbs the in-flight work.
   // Re-tighten once it lands and extract the reply/card rendering.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7520],
+  // 7521 -> 7630 (2026-11-06): mermaid zoom centering, CompanionPdfReader and
+  // task-config wiring landed at 7601 lines; headroom absorbs the remainder,
+  // then extract the reader/taxonomy rendering.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7630],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],

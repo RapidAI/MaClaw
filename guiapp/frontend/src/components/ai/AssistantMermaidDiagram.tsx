@@ -148,6 +148,25 @@ export function scaleMermaidSvg(svg: string, zoom: number): string {
     return svg.slice(0, offset) + next + tail;
 }
 
+/**
+ * Scroll offset that puts the middle of the diagram in the viewport.
+ *
+ * The zoom is a percentage of the column. Past 100% that box overflows, and
+ * the leftover space is entirely on the right until the scroller moves.
+ * A zero client size means the box has not been laid out; writing a scroll
+ * then would stick a bogus offset once it appears.
+ */
+export function mermaidDiagramScrollOffset(scrollSize: number, clientSize: number): number {
+    if (!(clientSize > 0) || !Number.isFinite(scrollSize) || !Number.isFinite(clientSize)) return 0;
+    const overflow = scrollSize - clientSize;
+    return overflow > 0 ? overflow / 2 : 0;
+}
+
+/** True when the reader has not dragged the diagram away from the offset we placed. */
+export function mermaidDiagramScrollStillPlaced(current: number, placed: number): boolean {
+    return Number.isFinite(current) && Number.isFinite(placed) && Math.abs(current - placed) <= 1;
+}
+
 /** One arrow-key nudge in the full-screen preview, in CSS pixels. */
 export const MERMAID_PREVIEW_PAN_STEP = 48;
 
@@ -343,6 +362,28 @@ export function fitMermaidPreviewSvg(svg: string): string {
         root = root.replace(/<svg\b/, '<svg preserveAspectRatio="xMidYMid meet"');
     }
     return svg.slice(0, open.index) + root + svg.slice(open.index + open[0].length);
+}
+
+/**
+ * Centre the zoom-1 drawing in the stage.
+ *
+ * The canvas is that fitted box, and scale grows it from its own centre.
+ * A full-stage canvas with the drawing packed at the left would zoom the
+ * empty margin and leave the chart against the left edge.
+ */
+export function mermaidPreviewFrameStyle(width: number, height: number, pan: MermaidPan, zoom: number): React.CSSProperties {
+    const style: React.CSSProperties = {
+        transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+        transformOrigin: "center center",
+    };
+    if (!(width > 0) || !(height > 0)) return style;
+    style.width = width;
+    style.height = height;
+    style.left = "50%";
+    style.top = "50%";
+    style.marginLeft = -width / 2;
+    style.marginTop = -height / 2;
+    return style;
 }
 
 function mermaidZoomBarStyle(t: Theme): React.CSSProperties {
@@ -1100,6 +1141,9 @@ function MermaidDiagramPreview({ svg, theme, lang, onClose }: { svg: string; the
     const [zoom, setZoom] = React.useState(DEFAULT_MERMAID_ZOOM);
     const [pan, setPan] = React.useState({ x: 0, y: 0 });
     const [panning, setPanning] = React.useState(false);
+    // Zoom-1 size of the drawing once it meets inside the stage. Zero until
+    // the stage has a box; the canvas then fills the stage instead.
+    const [frame, setFrame] = React.useState({ width: 0, height: 0 });
     const dialogRef = React.useRef<HTMLDivElement>(null);
     const closeRef = React.useRef<HTMLButtonElement>(null);
     const stageRef = React.useRef<HTMLDivElement>(null);
@@ -1137,9 +1181,8 @@ function MermaidDiagramPreview({ svg, theme, lang, onClose }: { svg: string; the
         WebkitAppRegion: "no-drag",
         "--wails-draggable": "no-drag",
     }) as PreviewShellStyle, [theme.bg, theme.divider, theme.fieldBg, theme.text, theme.textMuted, theme.titleBarBg]);
-    const canvasStyle: React.CSSProperties = {
-        transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-    };
+    const canvasFitted = frame.width > 0 && frame.height > 0;
+    const canvasStyle = mermaidPreviewFrameStyle(frame.width, frame.height, pan, zoom);
     const diagramStyle = React.useMemo(() => ({
         color: theme.text,
         "--amd-ink": diagramTheme.primaryTextColor,
@@ -1215,8 +1258,16 @@ function MermaidDiagramPreview({ svg, theme, lang, onClose }: { svg: string; the
         const measure = () => {
             const box = stageBoxOf(node);
             const ink = mermaidPreviewInkSize(box.width, box.height, viewBoxRef.current.width, viewBoxRef.current.height);
-            stageSizeRef.current = { left: box.left, top: box.top, width: box.width, height: box.height, inkW: ink.width, inkH: ink.height };
-            const clamped = clampMermaidPreviewPan(panRef.current, zoomRef.current, box.width, box.height, ink.width, ink.height);
+            const nextFrame = { width: round2(ink.width), height: round2(ink.height) };
+            // The pan limit has to describe the box we actually place, or a
+            // drag can park the drawing a fraction past the rounded frame.
+            const inkW = nextFrame.width > 0 ? nextFrame.width : ink.width;
+            const inkH = nextFrame.height > 0 ? nextFrame.height : ink.height;
+            stageSizeRef.current = { left: box.left, top: box.top, width: box.width, height: box.height, inkW, inkH };
+            if (nextFrame.width > 0 && nextFrame.height > 0) {
+                setFrame((current) => (current.width === nextFrame.width && current.height === nextFrame.height ? current : nextFrame));
+            }
+            const clamped = clampMermaidPreviewPan(panRef.current, zoomRef.current, box.width, box.height, inkW, inkH);
             const drag = dragRef.current;
             if (drag) {
                 drag.panX = clamped.x;
@@ -1450,7 +1501,7 @@ function MermaidDiagramPreview({ svg, theme, lang, onClose }: { svg: string; the
                 onPointerCancel={onPointerCancel}
                 onLostPointerCapture={onPointerCancel}
             >
-                <div className="amd-preview-canvas" data-testid="assistant-mermaid-preview-canvas" style={canvasStyle}>
+                <div className={canvasFitted ? "amd-preview-canvas is-fitted" : "amd-preview-canvas is-unmeasured"} data-testid="assistant-mermaid-preview-canvas" style={canvasStyle}>
                     <div
                         className="amd-diagram"
                         role="img"
@@ -1481,6 +1532,7 @@ export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code:
     const [sourceOpen, setSourceOpen] = React.useState(false);
     const [note, setNote] = React.useState("");
     const workspaceRef = React.useRef<HTMLDivElement>(null);
+    const diagramRef = React.useRef<HTMLDivElement>(null);
     const moreRef = React.useRef<HTMLDivElement>(null);
     const menuPanelRef = React.useRef<HTMLDivElement>(null);
     const savingRef = React.useRef(false);
@@ -1488,6 +1540,35 @@ export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code:
     const mountedRef = React.useRef(true);
     const idRef = React.useRef(`assistant-mermaid-${Math.random().toString(36).slice(2, 10)}`);
     const zoomedSvg = React.useMemo(() => (svg ? scaleMermaidSvg(svg, zoom) : ""), [svg, zoom]);
+    React.useLayoutEffect(() => {
+        const node = diagramRef.current;
+        // The preview hides this copy. Measuring it then would write a 0
+        // scroll that sticks after the preview closes. Only the horizontal
+        // axis: the drawing is read from the top, and a scrollbar's few
+        // pixels of vertical overflow must not slide the title off screen.
+        if (!node || previewOpen) return;
+        const place = () => {
+            const left = mermaidDiagramScrollOffset(node.scrollWidth, node.clientWidth);
+            if (node.scrollLeft !== left) node.scrollLeft = left;
+            return left;
+        };
+        let placed = place();
+        if (typeof ResizeObserver !== "function") return;
+        let observer: ResizeObserver | null = null;
+        try {
+            observer = new ResizeObserver(() => {
+                // A column resize keeps a centred drawing centred. A scroll
+                // the reader set themselves survives the resize.
+                if (!mermaidDiagramScrollStillPlaced(node.scrollLeft, placed)) return;
+                placed = place();
+            });
+            observer.observe(node);
+        } catch {
+            observer?.disconnect();
+            return;
+        }
+        return () => observer?.disconnect();
+    }, [zoomedSvg, previewOpen]);
     const zoomGroupLabel = localizeText(lang, "Diagram zoom", "图表缩放", "圖表縮放");
     const zoomOutLabel = localizeText(lang, "Zoom out", "缩小图表", "縮小圖表");
     const zoomInLabel = localizeText(lang, "Zoom in", "放大图表", "放大圖表");
@@ -1738,6 +1819,7 @@ export function AssistantMermaidDiagram({ code, theme, lang: langProp }: { code:
                     {note ? <span role="status" className="amd-note">{note}</span> : null}
                     </div>
                     <div
+                        ref={diagramRef}
                         data-testid="assistant-mermaid-diagram"
                         role="img"
                         aria-label={diagramLabel}

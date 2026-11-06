@@ -249,11 +249,14 @@ func performHubProxyFetch(ctx context.Context, rawURL, logURL string, opts *Fetc
 	if strings.TrimSpace(opts.SavePath) != "" {
 		out = completeFileDownload(rawURL, logURL, opts, resp)
 	} else {
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, opts.MaxBytes))
+		body, clipped, readErr := readBoundedBody(resp.Body, opts.MaxBytes)
 		if readErr != nil {
 			return &fetchAttempt{err: fmt.Errorf("read body failed: %w", readErr), retryable: true}
 		}
 		out = completeTextFetch(rawURL, opts, resp, body, false)
+		if out != nil && out.result != nil {
+			out.result.ResponseClipped = clipped
+		}
 	}
 	if out != nil && out.result != nil {
 		// Keep the caller's target URL; the proxy request URL is an

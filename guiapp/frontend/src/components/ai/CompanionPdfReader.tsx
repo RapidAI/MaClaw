@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { PreviewTaskResultFile, TranslateFileCompanionSelection } from "../../../wailsjs/go/main/App";
 import { copyTextToClipboard } from "./AssistantReplyCopyButton";
 import type { CodePreviewTheme } from "./FileTabBar";
@@ -2666,6 +2666,8 @@ function pdfBookmarkPageLoading(root: HTMLElement, page: number): boolean {
 export const PDF_BOOKMARK_RAIL_DEFAULT = 156;
 export const PDF_BOOKMARK_RAIL_MIN = 96;
 export const PDF_BOOKMARK_RAIL_MAX = 480;
+/** Collapsed rail. Matches the fold button width in 110-mc-app-shell.css. */
+export const PDF_BOOKMARK_RAIL_FOLDED = 24;
 const PDF_BOOKMARK_RAIL_PDF_MIN = 240;
 const PDF_BOOKMARK_RAIL_STEP = 16;
 export const PDF_BOOKMARK_RAIL_STORAGE_KEY = "maclaw.companionPdf.bookmarkRailPx";
@@ -2746,6 +2748,10 @@ function PdfReaderRail({
     const [preferredWidth, setPreferredWidth] = useState(readPdfBookmarkRailWidth);
     const [stageWidth, setStageWidth] = useState(0);
     const [railDragging, setRailDragging] = useState(false);
+    // The divider starts open. Folding only hides this visit's list; the saved
+    // width comes back on the next expand.
+    const [railCollapsed, setRailCollapsed] = useState(false);
+    const columnId = useId();
     const preferredRef = useRef(preferredWidth);
     preferredRef.current = preferredWidth;
     const dragStopRef = useRef<(() => void) | null>(null);
@@ -2854,6 +2860,9 @@ function PdfReaderRail({
     }, [scrollerRef, focusRef, annotationFocusRef]);
 
     useEffect(() => {
+        // A folded list has no box. Leave the reveal key so opening it again
+        // does not pull a hand-scrolled list back to the current page.
+        if (railCollapsed) return;
         const rail = railRef.current;
         if (!rail) return;
         const focus = focusRef.current;
@@ -2878,11 +2887,12 @@ function PdfReaderRail({
             return;
         }
         if (chip && revealRailItem(rail, chip)) bookmarkRevealKey.current = key;
-    }, [readingPage, bookmarks, focusEpoch, focusRef]);
+    }, [readingPage, bookmarks, focusEpoch, focusRef, railCollapsed]);
 
     // The note list keeps its own current row for the same reasons: a note
     // that spans pages is current on each of them, and a jump names one note.
     useEffect(() => {
+        if (railCollapsed) return;
         const rail = notesRailRef.current;
         if (!rail) return;
         const focus = annotationFocusRef.current;
@@ -2905,9 +2915,12 @@ function PdfReaderRail({
             return;
         }
         if (chip && revealRailItem(rail, chip)) noteRevealKey.current = key;
-    }, [readingPage, annotations, focusEpoch, annotationFocusRef]);
+    }, [readingPage, annotations, focusEpoch, annotationFocusRef, railCollapsed]);
 
     const resizeLabel = pdfReaderText(lang, "Drag to resize the side list", "拖动调整侧栏宽度", "Хажуугийн жагсаалтын өргөнийг өөрчлөх");
+    const foldLabel = railCollapsed
+        ? pdfReaderText(lang, "Expand bookmarks and notes", "展开书签和批注", "Хавчуурга ба тэмдэглэлийг дэлгэх")
+        : pdfReaderText(lang, "Collapse bookmarks and notes", "折叠书签和批注", "Хавчуурга ба тэмдэглэлийг хураах");
     const railMax = clampPdfBookmarkRailWidth(PDF_BOOKMARK_RAIL_MAX, stageWidth);
 
     const startRailResize = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -2958,8 +2971,47 @@ function PdfReaderRail({
             ref={columnRef}
             className="companion-pdf-bookmark-column"
             data-testid="pdf-bookmark-column"
-            style={{ width: railWidth, flexBasis: railWidth }}
+            data-collapsed={railCollapsed ? "true" : "false"}
+            style={railCollapsed
+                ? { width: PDF_BOOKMARK_RAIL_FOLDED, flexBasis: PDF_BOOKMARK_RAIL_FOLDED }
+                : { width: railWidth, flexBasis: railWidth }}
+            onClick={(event) => {
+                // The folded strip is empty except for the button. A click on
+                // the strip opens the list; the button handles its own click.
+                if (!railCollapsed || event.target !== event.currentTarget) return;
+                setRailCollapsed(false);
+            }}
         >
+            <button
+                type="button"
+                className="companion-pdf-bookmark-fold"
+                data-testid="pdf-bookmark-fold"
+                aria-expanded={!railCollapsed}
+                aria-controls={columnId}
+                aria-label={foldLabel}
+                title={foldLabel}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                    event.stopPropagation();
+                    // The first click of a double-click already folds or opens.
+                    // The second click would undo it. The line beside the button
+                    // still resets the width.
+                    if (event.detail > 1) return;
+                    setRailCollapsed((collapsed) => !collapsed);
+                }}
+            >
+                <svg data-icon={railCollapsed ? "expand" : "collapse"} viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false">
+                    <path
+                        d={railCollapsed ? "M6 3.5 10.5 8 6 12.5" : "M10 3.5 5.5 8 10 12.5"}
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.6"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    />
+                </svg>
+            </button>
+            <div id={columnId} className="companion-pdf-bookmark-body" hidden={railCollapsed}>
             {bookmarks.length > 0 ? (
                 <section
                     className={annotations.length > 0
@@ -3065,6 +3117,8 @@ function PdfReaderRail({
                     </div>
                 </section>
             ) : null}
+            </div>
+            {railCollapsed ? null : (
             <div
                 role="separator"
                 aria-orientation="vertical"
@@ -3096,6 +3150,7 @@ function PdfReaderRail({
                     rememberRailWidth(next);
                 }}
             />
+            )}
         </div>
     );
 }

@@ -4261,11 +4261,10 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 /* The preview owns a second copy of the drawing. Hiding the chat copy skips
    laying out that SVG under an opaque full-screen layer. */
 .amd-figure-body.is-previewing > .amd-diagram { display: none; }
-/* The zoom is the root svg's width as a percentage of this box, so a zoomed-out
-   diagram is narrower than the column. Auto margins centre that narrower
-   drawing instead of leaving it pinned to the left edge. Once the zoom is past
-   100% the box is over-constrained, the auto margins resolve to 0, and the
-   overflow scrolls from the left as before. */
+/* The zoom is the root svg's width as a percentage of this box. Under 100%
+   the drawing is narrower than the column and these margins centre it. Past
+   100% the box overflows and the margins resolve to 0; the diagram element
+   then scrolls so the middle of the drawing stays in view. */
 .mc-conversation-body .amd-diagram > svg,
 .amd-diagram > svg { display: block; max-width: none; height: auto; margin-left: auto; margin-right: auto; }
 /* Double-click and the View button open the full-screen preview. The cursor
@@ -4283,9 +4282,17 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .amd-preview-close:focus-visible { outline: 2px solid var(--amd-preview-text); outline-offset: -2px; }
 .amd-preview-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--amd-preview-paper); cursor: grab; touch-action: none; user-select: none; }
 .amd-preview-stage.is-panning { cursor: grabbing; }
-.amd-preview-canvas { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; transform-origin: center center; }
-.amd-preview-canvas .amd-diagram { width: 100%; height: 100%; max-width: none; overflow: visible; contain: none; }
-.amd-preview-canvas .amd-diagram > svg { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; }
+.amd-preview-stage.is-panning .amd-preview-canvas { will-change: transform; }
+/* The canvas is the drawing at zoom 1, centred on the stage, and scale grows
+   it from that centre. Until the stage is measured it fills the stage.
+   min-width/min-height 0 lets the svg shrink to that box: a flex item's
+   automatic minimum is its intrinsic size, which would otherwise pin a wide
+   drawing to the left of the canvas. */
+.amd-preview-canvas { position: absolute; display: flex; align-items: center; justify-content: center; transform-origin: center center; }
+.amd-preview-canvas.is-unmeasured { inset: 0; }
+.amd-preview-canvas.is-fitted { left: 50%; top: 50%; }
+.amd-preview-canvas .amd-diagram { width: 100%; height: 100%; min-width: 0; min-height: 0; max-width: none; overflow: visible; contain: none; display: flex; align-items: center; justify-content: center; }
+.amd-preview-canvas .amd-diagram > svg { width: 100%; height: 100%; min-width: 0; min-height: 0; max-width: 100%; max-height: 100%; margin: auto; }
 .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-']:has(.amd-figure),
 [data-testid='file-companion-message-assistant']:has(.amd-figure) { width: 100%; }
 /* Mermaid nests its stylesheet under the svg id. A matching copy is written

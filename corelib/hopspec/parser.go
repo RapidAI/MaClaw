@@ -39,8 +39,8 @@ func Parse(markdown string) (SpecAST, []error) {
 		if trimmed == "" {
 			continue
 		}
-		if strings.HasPrefix(trimmed, "# Spec:") {
-			spec.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "# Spec:"))
+		if title, ok := specTitle(trimmed); ok {
+			spec.Title = title
 			continue
 		}
 		if match := stepLinePattern.FindStringSubmatch(trimmed); match != nil {
@@ -76,8 +76,8 @@ func Parse(markdown string) (SpecAST, []error) {
 				step.Source.LineEnd = lineNo
 				continue
 			}
-			if strings.HasPrefix(trimmed, "- 工具:") || strings.HasPrefix(trimmed, "- Tools:") {
-				_, value, _ := strings.Cut(trimmed, ":")
+			if strings.HasPrefix(trimmed, "- 工具:") || strings.HasPrefix(trimmed, "- 工具：") || strings.HasPrefix(trimmed, "- Tools:") {
+				_, value, _ := splitSectionColon(trimmed)
 				current.Tools = append(current.Tools, parseInputNames(value)...)
 				current.Source.LineEnd = lineNo
 				continue
@@ -87,7 +87,7 @@ func Parse(markdown string) (SpecAST, []error) {
 				decl := parseVariableDecl(value)
 				step := current
 				if step.Type == StepCall && step.Call != nil && !strings.Contains(value, "%") {
-					if caller, callee, ok := strings.Cut(value, ":"); ok {
+					if caller, callee, ok := splitSectionColon(value); ok {
 						step.Call.Outputs[strings.TrimSpace(caller)] = strings.TrimSpace(callee)
 						decl.Type = "any"
 					}
@@ -128,23 +128,45 @@ func Parse(markdown string) (SpecAST, []error) {
 			}
 		}
 		if strings.HasPrefix(trimmed, "##") {
-			section = canonicalSection(strings.TrimSpace(strings.TrimLeft(trimmed, "#")))
+			heading := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+			label, value := heading, ""
+			if key, rest, ok := splitSectionColon(heading); ok {
+				label, value = key, rest
+			}
+			section = canonicalSection(cleanSectionToken(strings.TrimRight(label, ":：")))
+			if value = cleanSectionToken(value); value != "" {
+				switch section {
+				case "id":
+					spec.ID = value
+				case "goal":
+					spec.Goal = value
+				}
+			}
 			current = nil
 			continue
 		}
-		if strings.HasSuffix(trimmed, ":") && !strings.HasPrefix(trimmed, "-") {
-			section = canonicalSection(strings.TrimSuffix(trimmed, ":"))
-			continue
-		}
-		if key, value, ok := strings.Cut(trimmed, ":"); ok && !strings.HasPrefix(trimmed, "-") {
-			switch canonicalSection(key) {
-			case "id":
-				spec.ID = strings.TrimSpace(value)
-			case "goal":
-				spec.Goal = strings.TrimSpace(value)
-			}
-			if canonicalSection(key) != "" {
+		// Section labels only. Step bodies and hop_python lines are consumed above.
+		if !strings.HasPrefix(trimmed, "-") {
+			if label, ok := bareSectionLabel(trimmed); ok {
+				section = canonicalSection(cleanSectionToken(label))
 				continue
+			}
+			if key, value, ok := splitSectionColon(trimmed); ok {
+				key = cleanSectionToken(key)
+				value = cleanSectionToken(value)
+				switch canonicalSection(key) {
+				case "id":
+					if value != "" {
+						spec.ID = value
+					}
+				case "goal":
+					if value != "" {
+						spec.Goal = value
+					}
+				}
+				if canonicalSection(key) != "" {
+					continue
+				}
 			}
 		}
 		if strings.HasPrefix(trimmed, "-") {
@@ -250,7 +272,7 @@ func parseCallSpec(descriptor string) *CallSpec {
 			if item == "" {
 				continue
 			}
-			if target, source, ok := strings.Cut(item, ":"); ok {
+			if target, source, ok := splitSectionColon(item); ok {
 				call.Inputs[strings.TrimSpace(target)] = strings.TrimSpace(source)
 			} else {
 				call.Inputs[item] = item
@@ -327,6 +349,52 @@ func canonicalStepType(value string) (StepType, bool) {
 	}
 }
 
+// cleanSectionToken drops markdown emphasis around a section label or value.
+// Emphasis can sit on either side of the colon, so stars and spaces are peeled
+// until the token is stable: "**目标：** 查询" yields 目标 and 查询.
+func cleanSectionToken(value string) string {
+	for {
+		next := strings.TrimSpace(strings.Trim(strings.TrimSpace(value), "*_"))
+		if next == value {
+			return value
+		}
+		value = next
+	}
+}
+
+func specTitle(line string) (string, bool) {
+	for _, prefix := range []string{"# Spec:", "# Spec："} {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix)), true
+		}
+	}
+	return "", false
+}
+
+func bareSectionLabel(line string) (string, bool) {
+	for _, colon := range []string{":", "："} {
+		if strings.HasSuffix(line, colon) {
+			return strings.TrimSpace(strings.TrimSuffix(line, colon)), true
+		}
+	}
+	return "", false
+}
+
+// splitSectionColon splits on the first ASCII or fullwidth colon.
+// A later colon, including one inside a value, stays in the value.
+func splitSectionColon(line string) (string, string, bool) {
+	ascii := strings.Index(line, ":")
+	wide := strings.Index(line, "：")
+	switch {
+	case ascii < 0 && wide < 0:
+		return "", "", false
+	case wide < 0 || (ascii >= 0 && ascii < wide):
+		return line[:ascii], line[ascii+1:], true
+	default:
+		return line[:wide], line[wide+len("："):], true
+	}
+}
+
 func canonicalSection(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "id", "标识":
@@ -375,7 +443,7 @@ func parseVariableDecl(value string) VariableDecl {
 	name, typ := value, ""
 	if before, after, ok := strings.Cut(value, "%"); ok {
 		name, typ = strings.TrimSpace(before), strings.TrimSpace(after)
-	} else if before, after, ok := strings.Cut(value, ":"); ok {
+	} else if before, after, ok := splitSectionColon(value); ok {
 		name, typ = strings.TrimSpace(before), strings.TrimSpace(after)
 	}
 	return VariableDecl{Name: name, Type: typ, Description: description}

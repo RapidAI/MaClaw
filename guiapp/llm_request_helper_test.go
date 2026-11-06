@@ -207,6 +207,40 @@ func TestDoSimpleLLMRequestUsesResponsesWireAPI(t *testing.T) {
 	if _, ok := gotBody["input"]; !ok {
 		t.Fatalf("responses input missing: %#v", gotBody)
 	}
+	if gotBody["stream"] != true {
+		t.Fatalf("stream = %#v, want true", gotBody["stream"])
+	}
+}
+
+func TestDoSimpleLLMRequestAssemblesResponsesSSE(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.output_text.delta\ndata: {\"delta\":\"hel\"}\n\n" +
+			"event: response.output_text.delta\ndata: {\"delta\":\"lo\"}\n\n" +
+			"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_sse\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	resp, err := doSimpleLLMRequest(context.Background(), corelib.MaclawLLMConfig{
+		URL:      server.URL,
+		Key:      "test-key",
+		Model:    "grok-4.7",
+		Protocol: "openai",
+		WireAPI:  "responses",
+	}, []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, server.Client(), 5*time.Second)
+	if err != nil {
+		t.Fatalf("doSimpleLLMRequest: %v", err)
+	}
+	if resp.Content != "hello" {
+		t.Fatalf("content = %q, want hello", resp.Content)
+	}
+	if gotBody["stream"] != true {
+		t.Fatalf("stream = %#v, want true", gotBody["stream"])
+	}
 }
 
 func TestDoSimpleLLMRequestWithOptionsCarriesStructuredOutputContract(t *testing.T) {
@@ -328,6 +362,9 @@ func TestDoSimpleLLMRequestWithOptionsMapsStructuredOutputForResponsesAPI(t *tes
 	format, _ := text["format"].(map[string]interface{})
 	if format["type"] != "json_schema" || format["name"] != "intent_tree_candidates" {
 		t.Fatalf("responses text format=%#v", text)
+	}
+	if gotBody["stream"] != true {
+		t.Fatalf("stream = %#v, want true", gotBody["stream"])
 	}
 }
 

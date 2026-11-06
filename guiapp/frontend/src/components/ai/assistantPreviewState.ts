@@ -1,4 +1,5 @@
 import { isTerminalClassCode, sanitizeAIAssistantStreamText, type ChatMessage } from "./useAIAssistant";
+import { mergeProjectRoundHistory, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
 import { changedPreviewFilePath, cloneCodePreviewState, type CodeFile, type CodePreviewUIState } from "./useCodePreviewState";
 import type { WorkflowUIState } from "./useWorkflowState";
 import type { AITab } from "./AITabTypes";
@@ -320,6 +321,78 @@ export function hasRestorableProjectConversation(history: unknown[] | undefined)
         const role = typeof (message as ChatMessage).role === "string" ? (message as ChatMessage).role : "";
         return role === "user" || role === "assistant";
     });
+}
+
+function chatRows(history: unknown[] | undefined): ChatMessage[] {
+    if (!Array.isArray(history)) return [];
+    return history.filter((message): message is ChatMessage => !!message && typeof message === "object");
+}
+
+function restoredPlaceholderId(id: unknown): boolean {
+    return typeof id === "string" && id.startsWith("restored-");
+}
+
+/** A user or assistant turn that came from the session file, not project-memory ids. */
+function ownTranscriptTurn(message: ChatMessage): boolean {
+    if (message.isProjectContext) return false;
+    if (message.role !== "user" && message.role !== "assistant") return false;
+    return !restoredPlaceholderId(message.id);
+}
+
+/**
+ * The open view is a snapshot. A stored turn the snapshot never painted has
+ * to survive a tab switch, including when the snapshot already holds the new
+ * live row. A restored-* id is a placeholder only when the stored transcript
+ * also brings a real turn the view has not shown. Project memory uses those
+ * ids as the conversation itself.
+ */
+export function retainStoredTranscript(visible: unknown[] | undefined, stored: unknown[] | undefined): ChatMessage[] {
+    const visibleList = chatRows(visible);
+    const storedList = chatRows(stored);
+    if (!hasRestorableProjectConversation(withoutProjectContextMessages(storedList))) return visibleList;
+    if (!hasRestorableProjectConversation(withoutProjectContextMessages(visibleList))) {
+        return mergeProjectRoundHistory(storedList, storedList, visibleList);
+    }
+    const visibleIds = new Set(visibleList.map(message => message.id).filter((id): id is string => typeof id === "string" && id.length > 0));
+    const storedIntroducesOwnTurn = storedList.some(message => {
+        if (!ownTranscriptTurn(message)) return false;
+        const id = message.id;
+        return !(typeof id === "string" && id.length > 0 && visibleIds.has(id));
+    });
+    const base = storedList.filter(message => {
+        const id = message.id;
+        return !(storedIntroducesOwnTurn && restoredPlaceholderId(id) && !visibleIds.has(id));
+    });
+    const storedIds = new Set(base.map(message => message.id).filter((id): id is string => typeof id === "string" && id.length > 0));
+    // A placeholder painted while the session file was missing must leave once
+    // that file arrives. A live row the cache does not have yet stays.
+    const visibleKept = visibleList.filter(message => {
+        const id = message.id;
+        return !(typeof id === "string" && id.startsWith("restored-") && !storedIds.has(id));
+    });
+    return mergeProjectRoundHistory(base, base, visibleKept);
+}
+
+/**
+ * A held stream is the live tail. It must not hide a restored transcript that
+ * landed underneath it. While the session is still sending, the live row keeps
+ * its own coding trail.
+ */
+export function projectTranscriptBase(saved: ChatMessage[] | undefined, held: ChatMessage[] | undefined, trustMissingTimeline = false): ChatMessage[] {
+    const savedList = Array.isArray(saved) ? saved : [];
+    const heldList = Array.isArray(held) ? held : [];
+    if (!hasRestorableProjectConversation(withoutProjectContextMessages(heldList))) return savedList;
+    if (!hasRestorableProjectConversation(withoutProjectContextMessages(savedList))) return heldList;
+    return mergeProjectRoundHistory(savedList, savedList, heldList, undefined, trustMissingTimeline);
+}
+
+/**
+ * Sending stopped, so the stream snapshot has to become the view.
+ * That snapshot is only the live tail when the session file arrived later.
+ * Committing it alone hides the restored turns until the next tab switch.
+ */
+export function commitHeldProjectTranscript(visible: unknown[] | undefined, stored: unknown[] | undefined, held: unknown[] | undefined): ChatMessage[] {
+    return projectTranscriptBase(retainStoredTranscript(visible, stored), chatRows(held));
 }
 
 /** The outcome stored with a reopened turn. A class code is incomplete. A sentence is not. */

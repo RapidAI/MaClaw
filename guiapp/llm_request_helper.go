@@ -712,51 +712,52 @@ func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 		msg := streamed.Choices[0].Message
 		return finishSimpleLLMText(msg.Content, msg.ReasoningContent, streamed.Choices[0].FinishReason), nil
 	}
+	// The chat client's ResponseHeaderTimeout is time-to-first-byte, not the
+	// length of a reasoning completion. A non-streaming body holds those
+	// headers until the model finishes, so a script that takes longer than
+	// that timeout is canceled with zero bytes. Streaming lets headers and
+	// tokens arrive first; after SSE headers the body is bounded by the idle
+	// timeout. A provider that answers stream=true with application/json is
+	// still parsed as one response.
 	requestBody := map[string]interface{}(nil)
 	if opts.ResponseFormat != nil {
 		requestBody = map[string]interface{}{"response_format": opts.ResponseFormat}
 	}
-	req, data, endpoint, err := llm.NewResponsesAPIRequest(ctx, cfg, messages, llm.ResponsesAPIRequestOptions{
-		Stream:                 false,
+	streamOpts := llm.ResponsesAPIRequestOptions{
+		Stream:                 true,
 		ExtraBody:              requestBody,
 		PreserveResponseFormat: opts.PreserveResponseFormat,
-	})
-	if err != nil {
-		return nil, err
 	}
-	traceFields := llm.RequestTraceLogFields(req.Context())
+	endpoint := llm.BuildResponsesEndpoint(cfg.URL)
+	traceFields := llm.RequestTraceLogFields(ctx)
 	upstreamModel := cfg.UpstreamModel()
 	log.Printf("[LLM] POST %s model=%s configured_model=%s wire_api=responses simple=true %s", endpoint, upstreamModel, cfg.Model, traceFields)
 
 	startedAt := time.Now()
-	httpResp, err := client.Do(req)
-	if err != nil {
-		log.Printf("[LLM] done %s model=%s configured_model=%s wire_api=responses simple=true status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
-		return nil, fmt.Errorf("[%s] %w", endpoint, err)
-	}
-	defer httpResp.Body.Close()
-
-	if httpResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(httpResp.Body, 4096))
-		log.Printf("[LLM] done %s model=%s configured_model=%s wire_api=responses simple=true status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, httpResp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
-		if httpResp.StatusCode == http.StatusInternalServerError {
-			return nil, dumpLLMContext(httpResp.StatusCode, classifyResponsesAPIHTTPError(httpResp.StatusCode, body, endpoint, upstreamModel, cfg.ProviderName), data, "")
+	parsed, streamErr := llm.DoResponsesAPIRequestStreamWithOptions(ctx, cfg, messages, nil, client, nil, nil, streamOpts)
+	if streamErr != nil {
+		var httpErr *llm.HTTPStatusError
+		if errors.As(streamErr, &httpErr) && httpErr != nil {
+			log.Printf("[LLM] done %s model=%s configured_model=%s wire_api=responses simple=true status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, httpErr.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(httpErr.Body), traceFields)
+			if httpErr.StatusCode == http.StatusInternalServerError {
+				_, requestBytes, buildErr := llm.BuildResponsesAPIRequestData(cfg, messages, streamOpts)
+				if buildErr != nil {
+					requestBytes = nil
+				}
+				return nil, dumpLLMContext(httpErr.StatusCode, classifyResponsesAPIHTTPError(httpErr.StatusCode, httpErr.Body, endpoint, upstreamModel, cfg.ProviderName), requestBytes, "")
+			}
+			if next, ok := llm.ConfigAfterThinkingRejection(cfg, httpErr); ok {
+				return doSimpleResponsesRequest(ctx, next, messages, client, timeout, requestOpts...)
+			}
+			return nil, &llmSimpleHTTPError{
+				status: httpErr.StatusCode,
+				msg:    classifyResponsesAPIHTTPError(httpErr.StatusCode, httpErr.Body, endpoint, upstreamModel, cfg.ProviderName),
+			}
 		}
-		httpErr := &llm.HTTPStatusError{StatusCode: httpResp.StatusCode, Body: append([]byte(nil), body...)}
-		if next, ok := llm.ConfigAfterThinkingRejection(cfg, httpErr); ok {
-			return doSimpleResponsesRequest(ctx, next, messages, client, timeout, requestOpts...)
-		}
-		return nil, &llmSimpleHTTPError{
-			status: httpResp.StatusCode,
-			msg:    classifyResponsesAPIHTTPError(httpResp.StatusCode, body, endpoint, upstreamModel, cfg.ProviderName),
-		}
+		log.Printf("[LLM] done %s model=%s configured_model=%s wire_api=responses simple=true status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), streamErr, traceFields)
+		return nil, fmt.Errorf("[%s] %w", endpoint, streamErr)
 	}
-
-	parsed, parseErr := llm.ParseNonStreamResponsesAPIResponse(httpResp)
-	log.Printf("[LLM] done %s model=%s configured_model=%s wire_api=responses simple=true status=%d elapsed=%s parse_err=%v %s", endpoint, upstreamModel, cfg.Model, httpResp.StatusCode, time.Since(startedAt).Round(time.Millisecond), parseErr, traceFields)
-	if parseErr != nil {
-		return nil, parseErr
-	}
+	log.Printf("[LLM] done %s model=%s configured_model=%s wire_api=responses simple=true status=%d elapsed=%s parse_err=%v %s", endpoint, upstreamModel, cfg.Model, http.StatusOK, time.Since(startedAt).Round(time.Millisecond), nil, traceFields)
 	if parsed == nil || len(parsed.Choices) == 0 {
 		return nil, fmt.Errorf("no response from model")
 	}

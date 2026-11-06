@@ -19,6 +19,13 @@ func reviewedHostWebFetchInvocationSchema() map[string]interface{} {
 		"type": "object",
 		"properties": map[string]interface{}{
 			"url": map[string]interface{}{"type": "string"},
+			// offset continues one host-sized page. max_chars stays off
+			// this schema. The result already names next_offset; without
+			// this field that instruction is uncallable.
+			"offset": map[string]interface{}{
+				"type":        "integer",
+				"description": "0-based character offset into the extracted text. Omit on the first read. When the result says next_offset=N, call again with offset=N. If the result also names url=, pass that url; otherwise repeat the url from this call. The page length is fixed.",
+			},
 		},
 		"required":             []string{"url"},
 		"additionalProperties": false,
@@ -32,7 +39,7 @@ func reviewedHostWebFetchContractDigest() string {
 // ProjectReviewedHostWebFetchProvider projects the host-owned single-URL
 // fetch. It is not a Skill/MCP discovery entry and must not import the GUI
 // web_fetch catalog or artifact.acquire.remote. The closed schema accepts
-// only url; save_path, channel, and destination are rejected.
+// url and an optional offset; save_path, channel, and destination are rejected.
 func ProjectReviewedHostWebFetchProvider(fetcher reviewedHostWebFetcher) (coretool.ProviderSpec, map[string]interface{}, hostOwnedRuntimeBinding, error) {
 	if fetcher == nil {
 		return coretool.ProviderSpec{}, nil, hostOwnedRuntimeBinding{}, fmt.Errorf("host web fetch is unavailable")
@@ -96,7 +103,7 @@ func executeReviewedHostWebFetch(fetcher reviewedHostWebFetcher) func(context.Co
 		if fetcher == nil {
 			return "", fmt.Errorf("host_web_fetch_unavailable")
 		}
-		if len(args) != 1 {
+		if len(args) == 0 || len(args) > 2 {
 			return "", fmt.Errorf("host_web_fetch_arguments_rejected")
 		}
 		rawURL, ok := args["url"].(string)
@@ -107,11 +114,24 @@ func executeReviewedHostWebFetch(fetcher reviewedHostWebFetcher) func(context.Co
 		if rawURL == "" {
 			return "", fmt.Errorf("host_web_fetch_url_required")
 		}
-		return fetcher.FetchReviewedHostWeb(ctx, principal, rawURL)
+		offset := 0
+		if rawOffset, exists := args["offset"]; exists {
+			parsed, ok := coretool.NonNegativeSchemaInteger(rawOffset)
+			if !ok {
+				return "", fmt.Errorf("host_web_fetch_arguments_rejected")
+			}
+			offset = parsed
+		}
+		for key := range args {
+			if key != "url" && key != "offset" {
+				return "", fmt.Errorf("host_web_fetch_arguments_rejected")
+			}
+		}
+		return fetcher.FetchReviewedHostWeb(ctx, principal, rawURL, offset)
 	}
 }
 
-func (c *coreAgentCallbacks) FetchReviewedHostWeb(ctx context.Context, principal Principal, rawURL string) (string, error) {
+func (c *coreAgentCallbacks) FetchReviewedHostWeb(ctx context.Context, principal Principal, rawURL string, offset int) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("host_web_fetch_unavailable")
 	}
@@ -130,5 +150,5 @@ func (c *coreAgentCallbacks) FetchReviewedHostWeb(ctx context.Context, principal
 		default:
 		}
 	}
-	return c.executeWebFetch(map[string]interface{}{"url": rawURL}), nil
+	return c.executeWebFetch(map[string]interface{}{"url": rawURL, "offset": offset}), nil
 }

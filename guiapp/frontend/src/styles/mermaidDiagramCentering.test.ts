@@ -8,7 +8,9 @@ const markdownCss = readFileSync(resolve(srcRoot, "styles/partials/90-im-channel
 
 function ruleBody(selector: string): string {
     const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = markdownCss.match(new RegExp(escaped + "\\s*\\{([^}]*)\\}"));
+    // The selector has to start a rule. A longer selector that merely ends
+    // with the same class (the panning will-change rule) is a different box.
+    const match = markdownCss.match(new RegExp("(?:^|[}\\n])\\s*" + escaped + "\\s*\\{([^}]*)\\}"));
     expect(match, selector).toBeTruthy();
     return match![1];
 }
@@ -29,6 +31,24 @@ describe("mermaid diagram centering", () => {
         // percentage's reference, so shrinking it would shrink the diagram again.
         expect(ruleBody(".amd-diagram")).toContain("max-width: 100%");
         expect(ruleBody(".amd-figure")).toContain("width: 100%");
+    });
+
+    it("centres the enlarged preview on the stage while zooming", () => {
+        // The canvas is the fitted drawing, placed at the stage centre. Scale
+        // grows that box from its own centre, so the chart does not sit on
+        // the left of a full-stage layer.
+        const canvas = ruleBody(".amd-preview-canvas");
+        expect(canvas).toContain("transform-origin: center center");
+        expect(canvas).not.toContain("inset:");
+        const fitted = ruleBody(".amd-preview-canvas.is-fitted");
+        expect(fitted).toContain("left: 50%");
+        expect(fitted).toContain("top: 50%");
+        expect(ruleBody(".amd-preview-canvas.is-unmeasured")).toContain("inset: 0");
+        const drawing = ruleBody(".amd-preview-canvas .amd-diagram");
+        expect(drawing).toContain("align-items: center");
+        expect(drawing).toContain("justify-content: center");
+        expect(drawing).toContain("min-width: 0");
+        expect(ruleBody(".amd-preview-canvas .amd-diagram > svg")).toContain("min-width: 0");
     });
 
     it("centres the document-preview diagram too", () => {

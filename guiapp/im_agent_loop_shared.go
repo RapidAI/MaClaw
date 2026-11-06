@@ -8701,12 +8701,12 @@ func (c *sharedAgentLoopCallbacks) executeTrustedWebFetch(_ tool.PlannedSelectio
 	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
 		return "[system rejected] canonical_web_fetch_arguments_invalid"
 	}
-	rawURL, err := semanticTrustedWebFetchArgsAllowed(args)
+	rawURL, offset, err := semanticTrustedWebFetchArgsAllowed(args)
 	if err != nil {
 		return semanticUnexecutedRejection(err)
 	}
 	publicNetworkOnly := c.loopCtx != nil && c.loopCtx.LansengerGroupPermissions != nil
-	result, err := c.handler.fetchTrustedWeb(c.semanticPrincipalID(), rawURL, publicNetworkOnly)
+	result, err := c.handler.fetchTrustedWeb(c.semanticPrincipalID(), rawURL, offset, publicNetworkOnly)
 	if err != nil {
 		return "[system rejected] " + err.Error()
 	}

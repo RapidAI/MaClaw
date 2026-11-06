@@ -533,6 +533,12 @@ func TestBuildCraftSuccessResultRegistersOneDurableSkillWhenEnabled(t *testing.T
 	}
 }
 
+func TestCraftScriptGenerationWaitsForTheModelBody(t *testing.T) {
+	if !craftScriptGenerationOptions().AwaitResponse {
+		t.Fatal("script generation must keep the model body after the scheduling slot is released")
+	}
+}
+
 func TestShouldRetryCraftAttempt(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -553,6 +559,11 @@ func TestShouldRetryCraftAttempt(t *testing.T) {
 		{name: "stop on codebase scale mismatch", attempt: craftAttemptResult{VerificationMessage: "this requires create_session for a repository-wide refactor"}, current: 1, max: 2, wantRetry: false},
 		{name: "stop on invalid working dir", request: craftToolRequest{WorkingDir: "/tmp/missing"}, attempt: craftAttemptResult{VerificationMessage: "working directory error: no such file or directory"}, current: 1, max: 2, wantRetry: false},
 		{name: "retry syntax error", attempt: craftAttemptResult{VerificationStatus: craftVerificationOutputSuspicious, VerificationMessage: "syntaxerror near line 2"}, current: 1, max: 2, wantRetry: true},
+		{name: "stop when suspicious output is an environment failure", attempt: craftAttemptResult{VerificationStatus: craftVerificationOutputSuspicious, VerificationMessage: "脚本输出包含明显错误信号，自动验收未通过。", Output: "dial tcp: connection refused"}, current: 1, max: 2, wantRetry: false},
+		{name: "retry when exit status hides a script traceback", attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: "exit status 1", Output: "Traceback: FileNotFoundError: no such file or directory: 'out.png'"}, current: 1, max: 2, wantRetry: true},
+		{name: "stop on script timeout", attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, ExecErr: &craftScriptTimeoutError{seconds: 90}, Output: "Traceback: syntaxerror"}, current: 1, max: 2, wantRetry: false},
+		{name: "stop when exit status output is an environment failure", attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: "exit status 1", Output: "dial tcp: connection refused"}, current: 1, max: 2, wantRetry: false},
+		{name: "retry a truncated script", attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: craftTruncatedScriptMessage, Script: "print("}, current: 1, max: 2, wantRetry: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -578,14 +589,27 @@ func TestClassifyCraftFailure(t *testing.T) {
 		{name: "permission issue", attempt: craftAttemptResult{VerificationMessage: "permission denied while writing file"}, wantCategory: craftFailureCategoryPermission, wantAdvice: "权限或认证问题"},
 		{name: "environment issue", attempt: craftAttemptResult{VerificationMessage: "dial tcp: lookup api.example.com: no such host"}, wantCategory: craftFailureCategoryEnvironment, wantAdvice: "运行环境或外部依赖问题"},
 		{name: "capability issue", attempt: craftAttemptResult{VerificationMessage: "this requires create_session for a repository-wide refactor"}, wantCategory: craftFailureCategoryCapability, wantAdvice: "超出单脚本自动化边界"},
-		{name: "script issue", attempt: craftAttemptResult{VerificationMessage: "Traceback: syntaxerror"}, wantCategory: craftFailureCategoryScript, wantAdvice: "脚本本身的可修复错误"},
-		{name: "artifact required fallback", request: craftToolRequest{VerificationMode: "artifact_required"}, attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: "unknown failure"}, wantCategory: craftFailureCategoryArtifact, wantAdvice: "要求生成可验证产物"},
+		{name: "script issue", attempt: craftAttemptResult{Script: "print(1)", ScriptPath: "/tmp/tool.py", VerificationMessage: "Traceback: syntaxerror"}, wantCategory: craftFailureCategoryScript, wantAdvice: "脚本本身的可修复错误"},
+		{name: "transport error is not a script defect", request: craftToolRequest{VerificationMode: "artifact_required"}, attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: "Responses API SSE stream read error: connection reset"}, wantCategory: craftFailureCategoryUnknown, wantAdvice: ""},
+		{name: "artifact required fallback", request: craftToolRequest{VerificationMode: "artifact_required"}, attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: "unknown failure", ScriptPath: "/tmp/tool.py"}, wantCategory: craftFailureCategoryArtifact, wantAdvice: "要求生成可验证产物"},
+		{name: "generation budget is not an artifact miss", request: craftToolRequest{VerificationMode: "artifact_required"}, attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: "simple LLM request reached its scheduling budget after 10m0s and was detached: context deadline exceeded"}, wantCategory: craftFailureCategoryUnknown, wantAdvice: ""},
+		{name: "script rejected before execution is not an artifact miss", request: craftToolRequest{VerificationMode: "artifact_required"}, attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: "generated script does not match the selected Python runtime: it contains JavaScript syntax; regenerate it as Python only", Script: "console.log(1)"}, wantCategory: craftFailureCategoryUnknown, wantAdvice: ""},
+		{name: "suspicious output keeps the script signal", request: craftToolRequest{VerificationMode: "artifact_required"}, attempt: craftAttemptResult{VerificationStatus: craftVerificationOutputSuspicious, VerificationMessage: "脚本输出包含明显错误信号，自动验收未通过。", Output: "Traceback: syntaxerror", ScriptPath: "/tmp/tool.py"}, wantCategory: craftFailureCategoryScript, wantAdvice: "脚本本身的可修复错误"},
+		{name: "exit status keeps a script traceback", request: craftToolRequest{VerificationMode: "artifact_required"}, attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: "exit status 1", Output: "Traceback: FileNotFoundError: no such file or directory: 'out.png'", ScriptPath: "/tmp/tool.py"}, wantCategory: craftFailureCategoryScript, wantAdvice: "脚本本身的可修复错误"},
+		{name: "script timeout is not an artifact miss", request: craftToolRequest{VerificationMode: "artifact_required"}, attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: (&craftScriptTimeoutError{seconds: 90}).Error(), ExecErr: &craftScriptTimeoutError{seconds: 90}, Output: "Traceback: syntaxerror", ScriptPath: "/tmp/tool.py"}, wantCategory: craftFailureCategoryUnknown, wantAdvice: ""},
+		{name: "truncated script is not an artifact miss", request: craftToolRequest{VerificationMode: "artifact_required"}, attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: craftTruncatedScriptMessage, Script: "print("}, wantCategory: craftFailureCategoryUnknown, wantAdvice: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			category, advice := classifyCraftFailure(tt.request, tt.attempt)
 			if category != tt.wantCategory {
 				t.Fatalf("category = %q, want %q", category, tt.wantCategory)
+			}
+			if tt.wantAdvice == "" {
+				if advice != "" {
+					t.Fatalf("advice = %q, want empty", advice)
+				}
+				return
 			}
 			if !strings.Contains(advice, tt.wantAdvice) {
 				t.Fatalf("advice = %q, want to contain %q", advice, tt.wantAdvice)
@@ -620,6 +644,93 @@ func TestBuildCraftFailureResultIncludesCategoryAndAdvice(t *testing.T) {
 	}
 	if !strings.Contains(artifactResult, "expected_artifact: /tmp/out.pdf") {
 		t.Fatalf("expected structured expected_artifact in result, got %s", artifactResult)
+	}
+
+	budgetResult := buildCraftFailureResult(craftToolRequest{VerificationMode: "artifact_required"}, craftAttemptResult{
+		Language:            "python",
+		VerificationStatus:  craftVerificationExecutionFailed,
+		VerificationMessage: "simple LLM request reached its scheduling budget after 10m0s and was detached: context deadline exceeded",
+		Attempts:            1,
+	}, "xAI-Grok", "https://api.x.ai/v1")
+	if strings.Contains(budgetResult, "可验证产物") || strings.Contains(budgetResult, "failure_category: artifact") {
+		t.Fatalf("generation failure was reported as a missing artifact: %s", budgetResult)
+	}
+	if !strings.Contains(budgetResult, "scheduling budget") {
+		t.Fatalf("generation error was dropped: %s", budgetResult)
+	}
+
+	rejectedResult := buildCraftFailureResult(craftToolRequest{VerificationMode: "artifact_required"}, craftAttemptResult{
+		Language:            "python",
+		VerificationStatus:  craftVerificationExecutionFailed,
+		VerificationMessage: "generated script does not match the selected Python runtime: it contains JavaScript syntax; regenerate it as Python only",
+		Script:              "console.log(1)",
+		Attempts:            1,
+	}, "", "")
+	if strings.Contains(rejectedResult, "可验证产物") || strings.Contains(rejectedResult, "failure_category: artifact") {
+		t.Fatalf("script rejected before execution was reported as a missing artifact: %s", rejectedResult)
+	}
+	if !strings.Contains(rejectedResult, "JavaScript syntax") {
+		t.Fatalf("language mismatch was dropped: %s", rejectedResult)
+	}
+
+	suspiciousResult := buildCraftFailureResult(craftToolRequest{VerificationMode: "artifact_required"}, craftAttemptResult{
+		Language:            "python",
+		VerificationStatus:  craftVerificationOutputSuspicious,
+		VerificationMessage: "脚本输出包含明显错误信号，自动验收未通过。",
+		Output:              "Traceback: syntaxerror",
+		ScriptPath:          "/tmp/tool.py",
+		Attempts:            1,
+	}, "", "")
+	if strings.Contains(suspiciousResult, "可验证产物") || strings.Contains(suspiciousResult, "failure_category: artifact") {
+		t.Fatalf("suspicious script output was reported as a missing artifact: %s", suspiciousResult)
+	}
+	if !strings.Contains(suspiciousResult, "脚本本身的可修复错误") {
+		t.Fatalf("script signal was dropped: %s", suspiciousResult)
+	}
+
+	exitResult := buildCraftFailureResult(craftToolRequest{VerificationMode: "artifact_required"}, craftAttemptResult{
+		Language:            "python",
+		VerificationStatus:  craftVerificationExecutionFailed,
+		VerificationMessage: "exit status 1",
+		Output:              "Traceback: FileNotFoundError: no such file or directory: 'out.png'",
+		ScriptPath:          "/tmp/tool.py",
+		Attempts:            1,
+	}, "", "")
+	if strings.Contains(exitResult, "可验证产物") || strings.Contains(exitResult, "failure_category: artifact") {
+		t.Fatalf("script traceback was reported as a missing artifact: %s", exitResult)
+	}
+	if !strings.Contains(exitResult, "脚本本身的可修复错误") {
+		t.Fatalf("traceback signal was dropped: %s", exitResult)
+	}
+
+	timeoutErr := &craftScriptTimeoutError{seconds: 90}
+	timeoutResult := buildCraftFailureResult(craftToolRequest{VerificationMode: "artifact_required"}, craftAttemptResult{
+		Language:            "python",
+		VerificationStatus:  craftVerificationExecutionFailed,
+		VerificationMessage: timeoutErr.Error(),
+		ExecErr:             timeoutErr,
+		Output:              "Traceback: syntaxerror",
+		ScriptPath:          "/tmp/tool.py",
+		Attempts:            1,
+	}, "", "")
+	if strings.Contains(timeoutResult, "可验证产物") || strings.Contains(timeoutResult, "failure_category: artifact") || strings.Contains(timeoutResult, "脚本本身的可修复错误") {
+		t.Fatalf("script timeout was classified from its traceback: %s", timeoutResult)
+	}
+	if !strings.Contains(timeoutResult, "超过时限") {
+		t.Fatalf("timeout was dropped: %s", timeoutResult)
+	}
+}
+
+func TestCraftScriptFinishTruncated(t *testing.T) {
+	for _, reason := range []string{"length", "LENGTH", "continuation"} {
+		if !craftScriptFinishTruncated(reason) {
+			t.Fatalf("finish reason %q is a finished program", reason)
+		}
+	}
+	for _, reason := range []string{"", "stop", "tool_calls", "content_filter"} {
+		if craftScriptFinishTruncated(reason) {
+			t.Fatalf("finish reason %q was treated as truncated", reason)
+		}
 	}
 }
 

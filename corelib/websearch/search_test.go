@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -643,15 +644,62 @@ func TestApplyContentWindowUsesRuneOffsets(t *testing.T) {
 }
 
 func TestApplyContentWindowFinishedReadEndsAtTotal(t *testing.T) {
-	full := &FetchResult{Content: "abcde"}
+	body := "abcde"
+	full := &FetchResult{Content: body}
 	applyContentWindow(full, 0, 0)
 	if full.Truncated || full.HasMore || full.NextOffset != 5 || full.TotalChars != 5 || full.Content != "abcde" {
 		t.Fatalf("full window = content %q truncated %t hasMore %t next %d total %d", full.Content, full.Truncated, full.HasMore, full.NextOffset, full.TotalChars)
+	}
+	if unsafe.StringData(full.Content) != unsafe.StringData(body) {
+		t.Fatal("full window copied the text")
 	}
 	last := &FetchResult{Content: "abcde"}
 	applyContentWindow(last, 3, 10)
 	if last.Content != "de" || last.Truncated || last.HasMore || last.NextOffset != 5 || last.TotalChars != 5 {
 		t.Fatalf("last window = content %q truncated %t hasMore %t next %d total %d", last.Content, last.Truncated, last.HasMore, last.NextOffset, last.TotalChars)
+	}
+	past := &FetchResult{Content: "abc"}
+	applyContentWindow(past, 9, 4)
+	if past.Content != "" || past.TotalChars != 3 || past.NextOffset != 3 || past.Truncated || past.HasMore {
+		t.Fatalf("past end = content %q truncated %t hasMore %t next %d total %d", past.Content, past.Truncated, past.HasMore, past.NextOffset, past.TotalChars)
+	}
+}
+
+func TestApplyContentWindowKeepsValidBytesAndReplacesInvalid(t *testing.T) {
+	body := "甲乙丙丁戊"
+	partial := &FetchResult{Content: body}
+	applyContentWindow(partial, 1, 2)
+	if partial.Content != "乙丙" || partial.TotalChars != 5 || partial.NextOffset != 3 || !partial.Truncated || !partial.HasMore {
+		t.Fatalf("partial = content %q total %d next %d truncated %t", partial.Content, partial.TotalChars, partial.NextOffset, partial.Truncated)
+	}
+	if unsafe.Pointer(unsafe.StringData(partial.Content)) != unsafe.Add(unsafe.Pointer(unsafe.StringData(body)), len("甲")) {
+		t.Fatal("partial window copied the text")
+	}
+
+	raw := "a\xffb\xffc"
+	invalid := &FetchResult{Content: raw}
+	applyContentWindow(invalid, 1, 2)
+	if invalid.Content != "\uFFFDb" || invalid.TotalChars != 5 || invalid.NextOffset != 3 || !invalid.Truncated || !invalid.HasMore {
+		t.Fatalf("invalid = content %q total %d next %d truncated %t hasMore %t", invalid.Content, invalid.TotalChars, invalid.NextOffset, invalid.Truncated, invalid.HasMore)
+	}
+	whole := &FetchResult{Content: raw}
+	applyContentWindow(whole, 0, 0)
+	if whole.Content != string([]rune(raw)) || whole.TotalChars != 5 || whole.NextOffset != 5 || whole.Truncated || whole.HasMore {
+		t.Fatalf("invalid full = content %q total %d next %d truncated %t", whole.Content, whole.TotalChars, whole.NextOffset, whole.Truncated)
+	}
+}
+
+func TestApplyFetchWindowingUsesTheSharedRuneWindow(t *testing.T) {
+	body := "甲乙丙丁戊"
+	result := &FetchResult{Content: body}
+	applyFetchWindowing(result, 1, 2)
+	if result.Content != "乙丙" || result.NextOffset != 3 || result.TotalChars != 5 || !result.HasMore {
+		t.Fatalf("%+v", result)
+	}
+	full := &FetchResult{Content: body}
+	applyFetchWindowing(full, 0, 0)
+	if full.Content != body || unsafe.StringData(full.Content) != unsafe.StringData(body) || full.NextOffset != 5 || full.HasMore {
+		t.Fatalf("full %+v", full)
 	}
 }
 
@@ -716,5 +764,30 @@ func TestFetchSupportsContentWindow(t *testing.T) {
 	}
 	if result.NextOffset != 6 {
 		t.Fatalf("NextOffset = %d", result.NextOffset)
+	}
+}
+
+func TestFetchMarksABodyPastTheByteCap(t *testing.T) {
+	const payload = "abcd中ef"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer server.Close()
+
+	exact, err := Fetch(server.URL, &FetchOptions{MaxBytes: int64(len(payload)), MaxChars: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exact.ResponseClipped || exact.Content != payload {
+		t.Fatalf("exact cap content=%q clipped=%t", exact.Content, exact.ResponseClipped)
+	}
+
+	longer, err := Fetch(server.URL, &FetchOptions{MaxBytes: 6, MaxChars: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !longer.ResponseClipped || longer.Content != "abcd" || longer.HasMore || longer.Truncated {
+		t.Fatalf("clipped content=%q clipped=%t hasMore=%t truncated=%t total=%d", longer.Content, longer.ResponseClipped, longer.HasMore, longer.Truncated, longer.TotalChars)
 	}
 }

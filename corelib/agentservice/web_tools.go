@@ -3,8 +3,10 @@ package agentservice
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
 
@@ -99,11 +101,39 @@ func (c *coreAgentCallbacks) executeWebFetch(args map[string]interface{}) string
 		return fmt.Sprintf("Error: fetch failed: %v", err)
 	}
 
-	start := offset
+	return projectHostWebFetchRequested(result, offset, rawURL)
+}
+
+// projectHostWebFetch renders one fetched page. A page that already fits
+// the tool-result budget keeps the requested offset in the Read line.
+// A wider UTF-8 page is cut so next_offset is the first rune that did
+// not fit, and the assembled text stays within that budget.
+func projectHostWebFetch(result *websearch.FetchResult, offset int) string {
+	return projectHostWebFetchRequested(result, offset, "")
+}
+
+func projectHostWebFetchRequested(result *websearch.FetchResult, offset int, requested string) string {
+	if result == nil {
+		return ""
+	}
+	text := formatHostWebFetch(result, offset, requested)
+	if len(text) <= agent.WebFetchMaxToolResult {
+		return text
+	}
+	page := *result
+	return websearch.FitFetchPage(&page, agent.WebFetchMaxToolResult, func(page *websearch.FetchResult) string {
+		return formatHostWebFetch(page, websearch.VisiblePageStart(page, offset), requested)
+	})
+}
+
+func formatHostWebFetch(result *websearch.FetchResult, start int, requested string) string {
+	if result == nil {
+		return ""
+	}
 	if start < 0 {
 		start = 0
 	}
-	end := start + len([]rune(result.Content))
+	end := start + utf8.RuneCountInString(result.Content)
 
 	var sb strings.Builder
 	sb.WriteString("Fetched web evidence. Cite the URL/title for any factual claim based on this content; if this page does not state the fact, say it is not confirmed by this source.\n")
@@ -117,6 +147,13 @@ func (c *coreAgentCallbacks) executeWebFetch(args map[string]interface{}) string
 	sb.WriteString(result.Content)
 	if result.HasMore {
 		sb.WriteString(fmt.Sprintf("\n\n--- Continuation ---\nhas_more: true\nnext_offset: %d\nPass offset=%d to continue reading.\n", result.NextOffset, result.NextOffset))
+		// Own line, after the sentence, so the address is not part of
+		// "to continue reading."
+		if continueURL := websearch.ContinueFetchURL(requested, result.URL); continueURL != "" {
+			sb.WriteString("url=" + continueURL + "\n")
+		}
+	} else if result.ResponseClipped {
+		sb.WriteString("\n" + websearch.ResponseClippedNote)
 	}
 	return sb.String()
 }

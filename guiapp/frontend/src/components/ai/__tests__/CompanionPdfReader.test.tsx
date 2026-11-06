@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { clampPdfBookmarkRailWidth, CompanionPdfReader, nextPdfBookmarkRailPreferred, PDF_BOOKMARK_RAIL_STORAGE_KEY } from "../CompanionPdfReader";
+import { clampPdfBookmarkRailWidth, CompanionPdfReader, nextPdfBookmarkRailPreferred, PDF_BOOKMARK_RAIL_FOLDED, PDF_BOOKMARK_RAIL_STORAGE_KEY } from "../CompanionPdfReader";
 import { hydratePdfMarks, loadPdfMarks, savePdfMarks } from "../../filecompanion/pdfMarks";
 import { hydratePdfDrawings, loadPdfDrawings, PDF_DRAWINGS_CHANGED_EVENT } from "../../filecompanion/pdfDrawings";
 import { hydratePdfBookmarks, loadPdfBookmarks, PDF_BOOKMARKS_CHANGED_EVENT } from "../../filecompanion/pdfBookmarks";
@@ -1793,6 +1793,77 @@ describe("companion pdf reader", () => {
         fireEvent.pointerUp(window, { pointerId: 1, clientX: 140 });
         expect(handle.getAttribute("data-dragging")).toBe("false");
         expect(column.style.width).toBe("196px");
+    });
+
+    it("folds the side list from the divider and restores the saved width", async () => {
+        localStorage.setItem(PDF_BOOKMARK_RAIL_STORAGE_KEY, "236");
+        pdfWithPages(1, "OnlyOne");
+        hydratePdfBookmarks({
+            "c:/docs/paper.pdf": [
+                { id: "a", page: 1, x: 0.2, y: 0.4, color: "yellow", name: "甲" },
+            ],
+        });
+        hydratePdfTranslations({
+            "c:/docs/paper.pdf": [
+                { id: "n1", kind: "annotation", name: "方法", text: "OnlyOne", translation: "批注", parts: [{ page: 1, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }] }] },
+            ],
+        });
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const fold = await screen.findByTestId("pdf-bookmark-fold");
+        const column = screen.getByTestId("pdf-bookmark-column");
+        const lists = column.querySelector(".companion-pdf-bookmark-body") as HTMLElement;
+        expect(column.getAttribute("data-collapsed")).toBe("false");
+        expect(column.style.width).toBe("236px");
+        expect(fold.getAttribute("aria-expanded")).toBe("true");
+        expect(fold.getAttribute("aria-label")).toBe("折叠书签和批注");
+        expect(fold.getAttribute("aria-controls")).toBe(lists.id);
+        expect(lists.contains(fold)).toBe(false);
+        expect(fold.querySelector("svg")?.getAttribute("data-icon")).toBe("collapse");
+        expect(screen.getByTestId("pdf-bookmark-rail").closest("[hidden]")).toBeNull();
+        expect(screen.getByTestId("pdf-note-rail").closest("[hidden]")).toBeNull();
+        expect(screen.getByTestId("pdf-bookmark-resize")).toBeTruthy();
+
+        fireEvent.pointerDown(fold, { button: 0, pointerId: 7, clientX: 100 });
+        expect(document.body.style.cursor).not.toBe("col-resize");
+        fireEvent.click(fold, { detail: 1 });
+        expect(column.getAttribute("data-collapsed")).toBe("true");
+        expect(column.style.width).toBe(`${PDF_BOOKMARK_RAIL_FOLDED}px`);
+        expect(column.style.flexBasis).toBe(`${PDF_BOOKMARK_RAIL_FOLDED}px`);
+        fireEvent.click(fold, { detail: 2 });
+        expect(column.getAttribute("data-collapsed")).toBe("true");
+        expect(column.style.width).toBe(`${PDF_BOOKMARK_RAIL_FOLDED}px`);
+        expect(fold.getAttribute("aria-expanded")).toBe("false");
+        expect(fold.getAttribute("aria-label")).toBe("展开书签和批注");
+        expect(fold.querySelector("svg")?.getAttribute("data-icon")).toBe("expand");
+        expect(screen.getByTestId("pdf-bookmark-rail").closest("[hidden]")).toBe(lists);
+        expect(screen.getByTestId("pdf-note-rail").closest("[hidden]")).toBe(lists);
+        expect(fold.closest("[hidden]")).toBeNull();
+        expect(screen.queryByTestId("pdf-bookmark-resize")).toBeNull();
+        expect(localStorage.getItem(PDF_BOOKMARK_RAIL_STORAGE_KEY)).toBe("236");
+
+        fireEvent.click(column);
+        expect(column.getAttribute("data-collapsed")).toBe("false");
+        expect(column.style.width).toBe("236px");
+        fireEvent.click(column);
+        expect(column.getAttribute("data-collapsed")).toBe("false");
+
+        fireEvent.click(fold, { detail: 1 });
+        expect(column.getAttribute("data-collapsed")).toBe("true");
+        fireEvent.click(fold, { detail: 1 });
+        expect(column.getAttribute("data-collapsed")).toBe("false");
+        expect(column.style.width).toBe("236px");
+        expect(screen.getByTestId("pdf-bookmark-resize")).toBeTruthy();
+        expect(screen.getByTestId("pdf-bookmark-rail").closest("[hidden]")).toBeNull();
+        expect(screen.getByTestId("pdf-bookmark-a").textContent).toContain("甲");
+        expect(screen.getByTestId("pdf-note-n1").textContent).toContain("方法");
+    });
+
+    it("leaves the divider control off when the side list is empty", async () => {
+        pdfWithPages(1, "OnlyOne");
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        await screen.findByText("OnlyOne");
+        expect(screen.queryByTestId("pdf-bookmark-fold")).toBeNull();
+        expect(screen.queryByTestId("pdf-bookmark-column")).toBeNull();
     });
 
     it("adds bookmarks in click order, jumps to the anchor, and renames or deletes from the bookmark menu", async () => {

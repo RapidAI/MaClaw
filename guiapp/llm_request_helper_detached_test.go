@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -143,6 +144,49 @@ func TestAwaitResponseKeepsTheBodyAfterTheSchedulingBudget(t *testing.T) {
 	}
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("upstream hits = %d, want 1", got)
+	}
+}
+
+// TestResponsesStreamAwaitResponseKeepsTheBodyAfterTheSchedulingBudget: a
+// streamed Responses body keeps going after the slot budget. Headers arrive
+// first; the rest of the script arrives later. The consumer must get that
+// script instead of a budget error that cancels the read.
+func TestResponsesStreamAwaitResponseKeepsTheBodyAfterTheSchedulingBudget(t *testing.T) {
+	resetDetachedSimpleLLMReadsForTest(t)
+	var gotStream bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return
+		}
+		gotStream = strings.Contains(string(body), `"stream":true`)
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		if _, err := w.Write([]byte("event: response.output_text.delta\ndata: {\"delta\":\"scr\"}\n\n")); err != nil {
+			return
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte("event: response.output_text.delta\ndata: {\"delta\":\"ipt\"}\n\n" +
+			"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"))
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "grok-4.7", Protocol: "openai", WireAPI: "responses"}
+	msgs := []interface{}{map[string]interface{}{"role": "user", "content": "write the craft script"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resp, err := doSimpleLLMRequestWithOptions(ctx, cfg, msgs, srv.Client(), 40*time.Millisecond, simpleLLMRequestOptions{AwaitResponse: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil || resp.Content != "script" {
+		t.Fatalf("resp = %+v", resp)
+	}
+	if !gotStream {
+		t.Fatal("responses request was not streamed")
 	}
 }
 

@@ -18,10 +18,12 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/botcatalog"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/botcatalog"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
@@ -3720,11 +3722,38 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 		return formatHostDownloadSaved(result.Content, saved, result.BytesRead, result.URL, rawURL)
 	}
 
-	start := offset
+	return projectLegacyWebFetchRequested(result, offset, rawURL)
+}
+
+// projectLegacyWebFetch keeps the existing text when the page fits. A wider
+// UTF-8 page is cut so the continuation cursor is the first rune that did
+// not fit and the assembled text stays inside the tool-result budget.
+func projectLegacyWebFetch(result *websearch.FetchResult, offset int) string {
+	return projectLegacyWebFetchRequested(result, offset, "")
+}
+
+func projectLegacyWebFetchRequested(result *websearch.FetchResult, offset int, requested string) string {
+	if result == nil {
+		return ""
+	}
+	text := formatLegacyWebFetch(result, offset, requested)
+	if len(text) <= agent.WebFetchMaxToolResult {
+		return text
+	}
+	page := *result
+	return websearch.FitFetchPage(&page, agent.WebFetchMaxToolResult, func(page *websearch.FetchResult) string {
+		return formatLegacyWebFetch(page, websearch.VisiblePageStart(page, offset), requested)
+	})
+}
+
+func formatLegacyWebFetch(result *websearch.FetchResult, start int, requested string) string {
+	if result == nil {
+		return ""
+	}
 	if start < 0 {
 		start = 0
 	}
-	end := start + len([]rune(result.Content))
+	end := start + utf8.RuneCountInString(result.Content)
 
 	var sb strings.Builder
 	if result.Title != "" {
@@ -3737,9 +3766,18 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 	sb.WriteString(result.Content)
 	if result.HasMore {
 		sb.WriteString(fmt.Sprintf("\n\n--- 完整性信号 ---\nhas_more: true\nnext_offset: %d\n继续读取时请传入 offset=%d\n", result.NextOffset, result.NextOffset))
+		if continueURL := websearch.ContinueFetchURL(requested, result.URL); continueURL != "" {
+			sb.WriteString("url=" + continueURL + "\n")
+		}
+	} else if result.ResponseClipped {
+		sb.WriteString("\n" + legacyWebFetchClippedNote)
 	}
 	return sb.String()
 }
+
+// legacyWebFetchClippedNote matches the desktop/Hub sentence, in the
+// legacy surface's language. A later preview keeps this exact line.
+const legacyWebFetchClippedNote = "响应在已获取的前缀之后仍有内容。以上文本不是整篇文档。"
 
 // toolDownloadFile downloads a URL into the session workbench directory.
 // Prefer this (or web_fetch with save_path) over installing ClawHub wget/curl skills.

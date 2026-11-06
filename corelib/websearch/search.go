@@ -1416,50 +1416,10 @@ func deriveTinyFishFetchURL(searchBaseURL string) string {
 }
 
 // applyFetchWindowing applies offset and maxChars windowing to a FetchResult.
+// TinyFish returns a full extract; the shared window slices it the same way
+// as a direct fetch, including a valid-UTF-8 page that keeps its bytes.
 func applyFetchWindowing(result *FetchResult, offset int, maxChars int) {
-	totalChars := len([]rune(result.Content))
-	result.TotalChars = totalChars
-
-	// Fast path: no windowing needed
-	if offset <= 0 && maxChars <= 0 {
-		result.Truncated = false
-		result.HasMore = false
-		result.NextOffset = totalChars
-		return
-	}
-
-	runes := []rune(result.Content)
-
-	// Apply offset
-	if offset > 0 {
-		if offset >= totalChars {
-			result.Content = ""
-			result.Truncated = false
-			result.HasMore = false
-			result.NextOffset = totalChars
-			return
-		}
-		runes = runes[offset:]
-	}
-
-	// Apply maxChars
-	if maxChars > 0 && len(runes) > maxChars {
-		runes = runes[:maxChars]
-		result.Content = string(runes)
-		result.Truncated = true
-		result.HasMore = true
-		result.NextOffset = offset + maxChars
-	} else if offset > 0 {
-		// Only convert back if we actually sliced
-		result.Content = string(runes)
-		result.Truncated = false
-		result.HasMore = false
-		result.NextOffset = totalChars
-	} else {
-		result.Truncated = false
-		result.HasMore = false
-		result.NextOffset = totalChars
-	}
+	applyContentWindow(result, offset, maxChars)
 }
 
 // FetchWithTinyFish uses TinyFish's fetch API to extract content from URLs.

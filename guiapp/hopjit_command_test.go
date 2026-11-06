@@ -120,6 +120,19 @@ func TestParseHopJITSpecRegistrationCommands(t *testing.T) {
 	}
 }
 
+func TestDirectHopSpecAcceptsFullwidthColon(t *testing.T) {
+	if !directHopSpec("# Spec：北京天气\nGoal: 查询") {
+		t.Fatal("fullwidth title was treated as a task")
+	}
+	if directHopSpec("北京天气") {
+		t.Fatal("plain task was treated as a spec")
+	}
+	spec, inputs, err := parseHopJITRunPayload("--inputs {\"city\":\"北京\"} -- # Spec：输入测试\nGoal：验证\n## Steps\n1. [exit]")
+	if err != nil || !strings.HasPrefix(spec, "# Spec：") || inputs["city"] != "北京" {
+		t.Fatalf("spec=%q inputs=%v err=%v", spec, inputs, err)
+	}
+}
+
 func TestParseHopJITRunPayloadWithInputs(t *testing.T) {
 	spec, inputs, err := parseHopJITRunPayload(`--inputs {"document":"包含 -- 分隔符的文本","count":2} -- # Spec: 输入测试
 Goal: 验证输入

@@ -106,7 +106,7 @@ import { PPTStyleChooser } from "./PPTStyleChooser";
 import { withConfirmedPPTStyle, type PPTStyleChoice } from "./pptStyleChoice";
 import { ExpertOptimizeEditorDialog } from "./ExpertOptimizeEditorDialog";
 import { useExpertOptimize } from "./useExpertOptimize";
-import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListPendingScopeApprovals, ListWorkflowTemplateSummaries, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
+import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListPendingScopeApprovals, ListWorkflowTemplateSummaries, LoadConfig, LoadProjectTabConversation, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { formatGoalSessionPlan, suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
 import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepStatusColor, codingStepStatusLabel, codingChecklistAllDone, codingPlanAwaitingStart, codingStepsClockFrom, codingStepsClockIsCurrent, codingStepsSnapshotRegresses, codingWorkbenchStepsFromPayload, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
@@ -137,7 +137,7 @@ import { useAssistantExternalChatEvents } from "./useAssistantExternalChatEvents
 import { useWorkflowStartingLabel } from "./useWorkflowStartingLabel";
 import { shareAssistantTask } from "./shareAssistantTask";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
-import { agentViewHiddenFieldValue, canShowAssistantCodingPreviewForTab, codePreviewEventsEnabled, codePreviewHasTaskResult, codePreviewModeFromState, commitRestoredCodePreview, expertTaskPreviewKey, hasRestorableProjectConversation, isWorkflowPhaseRunningStatus, isWorkflowPhaseTerminalStatus, loadRestoredProjectConversationHistory, normalizeRestoredProjectHistoryContent, normalizeWorkflowPhaseStatus, readStoredAssistantPreviewState, shouldApplyRestoredAssistantPreview, shouldReopenTaskResultPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, suppressWorkflowReviewActions, withCodePreviewVisibleIfContent, writeStoredAssistantPreviewState, type ConversationBranchPointLike, type StoredAssistantPreviewState } from "./assistantPreviewState";
+import { agentViewHiddenFieldValue, canShowAssistantCodingPreviewForTab, codePreviewEventsEnabled, codePreviewHasTaskResult, codePreviewModeFromState, commitRestoredCodePreview, expertTaskPreviewKey, hasRestorableProjectConversation, isWorkflowPhaseRunningStatus, isWorkflowPhaseTerminalStatus, normalizeRestoredProjectHistoryContent, normalizeWorkflowPhaseStatus, commitHeldProjectTranscript, projectTranscriptBase, readStoredAssistantPreviewState, retainStoredTranscript, shouldApplyRestoredAssistantPreview, shouldReopenTaskResultPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, suppressWorkflowReviewActions, withCodePreviewVisibleIfContent, writeStoredAssistantPreviewState, type ConversationBranchPointLike, type StoredAssistantPreviewState } from "./assistantPreviewState";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
 import { useAssistantPreviewOpenEvents } from "./useAssistantPreviewOpenEvents";
 import { chatImagePreviewIdentity, MarkdownImagePreviewProvider, safeRemoteImageURL } from "./markdownMedia";
@@ -843,7 +843,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const pending = (window as any).go?.main?.App?.ResolveSkillRecording?.("cancel", "", "");
         if (pending && typeof pending.catch === "function") pending.catch(() => {});
     }, []);
-    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, hydrateClosedExpertTabHistory, discardOrphanProjectTabs, clearTabConversation, stashProjectTabHistory, setLatexRelativePath, markSessionFloor, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError } = useAITabManager();
+    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, hydrateClosedExpertTabHistory, discardOrphanProjectTabs, clearTabConversation, stashProjectTabHistory, setLatexRelativePath, markSessionFloor, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError, landedTranscriptEpoch, adoptBackendTranscript, backendTranscriptGeneration, loadProjectMemoryFallback } = useAITabManager();
     const { requested: workbenchHomeRequested, dismiss: dismissWorkbenchHome } = useWorkbenchLandingMode(startOnWorkbenchHome, activeTab.id, activeTab.type);
     cloudTreeRefreshTabIdRef.current = activeTab.id;
     visibleCodingProjectRef.current = visibleCodingProject(activeTab);
@@ -2762,7 +2762,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (getActiveSessionKey() === activeSessionKey) setActiveSessionKey('');
         };
     }, [activeSessionKey]);
-    const [projectTabMessages, setProjectTabMessages] = useState<ChatMessage[]>([]);
+    const [projectTabMessages, setProjectTabMessages] = useState<ChatMessage[]>(() => {
+        if (activeTab.type !== "project" && activeTab.type !== "expert") return [];
+        const history = getTabState(activeTab.id)?.history;
+        return Array.isArray(history) ? history as ChatMessage[] : [];
+    });
     const projectTabLiveRef = useRef<ProjectTabLiveHistory>({ tabId: activeTab.id, messages: [] });
     projectTabLiveRef.current = noteProjectTabLiveHistory(
         projectTabLiveRef.current,
@@ -2814,6 +2818,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     } | null>(null);
     activeTabIdRef.current = activeTab.id;
     activeTabRef.current = activeTab;
+    const paintTranscriptIfViewEmpty = useCallback((tabId: string, stored: unknown[] | undefined) => {
+        if (!tabId || activeTabIdRef.current !== tabId) return;
+        setProjectTabMessages(prev => {
+            if (activeTabIdRef.current !== tabId) return prev;
+            const next = retainStoredTranscript(prev, stored);
+            return chatHistoriesEquivalent(prev, next) ? prev : next;
+        });
+    }, []);
     syncGoalChecklistRef.current = (payload: unknown) => {
         const content = formatGoalChecklistFromRecord(payload as Parameters<typeof formatGoalChecklistFromRecord>[0]);
         const goalUser = normalizeAssistantSessionKey(String((payload as { user_id?: string } | null)?.user_id || ""));
@@ -2965,6 +2977,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     if (incoming.length > 0) historyToSave = mergeProjectRoundHistory(historyToSave, historyToSave, incoming);
                 }
             }
+            // The view can be the empty snapshot, or only the new live row,
+            // from before the session file landed. Stored turns that snapshot
+            // never painted stay in the cache.
+            const storedHistory = (getTabState(prevTabId)?.history || []) as ChatMessage[];
+            const storedForSave = prevTab.type === "expert"
+                ? storedHistory.filter((message: ChatMessage) => messageAfterSessionFloor(message, sessionFloorFor(prevTab.id, prevTab.sessionFloorMs)))
+                : storedHistory;
+            historyToSave = retainStoredTranscript(historyToSave, storedForSave);
             saveTabState(prevTabId, {
                 history: historyToSave,
                 scrollTop,
@@ -3000,6 +3020,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         alignPreviewBodyFocusRef.current(codePreviewStateRef.current);
         prevActiveTabIdRef.current = currentTabId;
     }, [activeTab.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    // A session file can land after this task is already on screen. The switch
+    // effect only reads the cache when the active tab changes, so paint here.
+    useEffect(() => {
+        if (!landedTranscriptEpoch) return;
+        const tab = activeTabRef.current;
+        if (!tab || (tab.type !== "project" && tab.type !== "expert")) return;
+        paintTranscriptIfViewEmpty(tab.id, getTabState(tab.id)?.history);
+    }, [getTabState, landedTranscriptEpoch, paintTranscriptIfViewEmpty]);
     // Track which tab owns the agentView — when agentView is set, record the
     // current active tab as its owner. Only show agentView when owning tab is active.
     useEffect(() => {
@@ -3155,8 +3183,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             return messages.filter(messageIsLocalSession);
         }
-        const heldProject = projectStreamHistoryRef.current;
-        const projectHistory = heldProject?.tabId === activeTab.id ? heldProject.messages : projectTabMessages;
         // Global `sending` stays true while any session is busy. Only this
         // tab's session may hide a coding trail that the live row omitted.
         const thisSessionSending = assistantSessionIsSending({
@@ -3169,6 +3195,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 ? !!findProjectRoundForTab(activeTab.id, activeTab.projectPath)
                 : isExpertTabActive && projectTabRoundsRef.current.size === 0,
         });
+        const heldProject = projectStreamHistoryRef.current;
+        // A stream started before the session file landed only has the live
+        // row. Keep the restored turns under that row.
+        const projectHistory = projectTranscriptBase(
+            projectTabMessages,
+            heldProject?.tabId === activeTab.id ? heldProject.messages : undefined,
+            thisSessionSending,
+        );
         if (isExpertTabActive) {
             // Expert tab: tab-state history (welcome seed + persisted conversation)
             // merged with live session events keyed by desktop-user:expert:<id>.
@@ -3217,7 +3251,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }
     useEffect(() => {
         const heldProjectHistory = !sending ? projectStreamHistoryRef.current : null;
-        if (heldProjectHistory?.tabId === activeTab.id) setProjectTabMessages(heldProjectHistory.messages);
+        if (heldProjectHistory?.tabId === activeTab.id) {
+            const heldTabId = heldProjectHistory.tabId;
+            const floor = sessionFloorFor(heldTabId, activeTab.sessionFloorMs);
+            const expertTab = activeTab.type === "expert";
+            setProjectTabMessages(prev => {
+                if (activeTabIdRef.current !== heldTabId) return prev;
+                const stored = getTabState(heldTabId)?.history;
+                const next = commitHeldProjectTranscript(prev, stored, heldProjectHistory.messages);
+                const floored = expertTab ? next.filter((message) => messageAfterSessionFloor(message, floor)) : next;
+                return chatHistoriesEquivalent(prev, floored) ? prev : floored;
+            });
+        }
         if (!sending) projectStreamHistoryRef.current = null;
         const wasSending = prevSendingRef.current;
         prevSendingRef.current = sending;
@@ -3400,7 +3445,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
 		const restoreBackendConversationIfNeeded = (): Promise<void> => {
 			if (!tab?.projectPath || clearedProjectTabIdsRef.current.has(tab.id)) return Promise.resolve();
 			const initialState = getTabState(tab.id);
-			if (hasRestorableProjectConversation(withoutProjectContextMessages(initialState?.history))) return Promise.resolve();
+			if (hasRestorableProjectConversation(withoutProjectContextMessages(initialState?.history))) {
+				paintTranscriptIfViewEmpty(tab.id, initialState?.history);
+				return Promise.resolve();
+			}
 			const inFlightOrLoaded = projectConversationHydrationByTabIdRef.current.get(tab.id);
 			if (inFlightOrLoaded) return inFlightOrLoaded;
 			const hydrationGeneration = projectConversationHydrationGenerationByTabIdRef.current.get(tab.id) || 0;
@@ -3408,16 +3456,40 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
 			let restore!: Promise<void>;
 			restore = (async () => {
 				try {
-					const restoredHistory = await loadRestoredProjectConversationHistory(tab.projectPath!);
+					const transcriptGeneration = backendTranscriptGeneration(tab.id);
+					let session: unknown = null;
+					try {
+						session = await LoadProjectTabConversation(tab.id);
+					} catch (error) {
+						console.warn("[AIAssistantPanel] failed to load tab session transcript", { tabId: tab.id, projectPath: tab.projectPath, error });
+					}
+					if (clearedProjectTabIdsRef.current.has(tab.id)
+						|| (projectConversationHydrationGenerationByTabIdRef.current.get(tab.id) || 0) !== hydrationGeneration
+						|| !getTabs().some(openTab => openTab.id === tab.id && openTab.type === "project" && openTab.projectPath === tab.projectPath)) return;
+					const existingAfterSession = getTabState(tab.id);
+					// A user may have sent a new message while this request was in
+					// flight. Never merge an older backend snapshot over that newer
+					// local conversation.
+					if (hasRestorableProjectConversation(withoutProjectContextMessages(existingAfterSession?.history))) {
+						paintTranscriptIfViewEmpty(tab.id, existingAfterSession?.history);
+						return;
+					}
+					const adopted = adoptBackendTranscript(tab.id, Array.isArray(session) ? session : [], transcriptGeneration);
+					if (adopted === null) return;
+					if (hasRestorableProjectConversation(withoutProjectContextMessages(adopted))) {
+						paintTranscriptIfViewEmpty(tab.id, adopted);
+						return;
+					}
+					const restoredHistory = await loadProjectMemoryFallback(tab.projectPath!);
 					if (restoredHistory.length === 0
 						|| clearedProjectTabIdsRef.current.has(tab.id)
 						|| (projectConversationHydrationGenerationByTabIdRef.current.get(tab.id) || 0) !== hydrationGeneration
 						|| !getTabs().some(openTab => openTab.id === tab.id && openTab.type === "project" && openTab.projectPath === tab.projectPath)) return;
 					const existing = getTabState(tab.id);
-					// A user may have sent a new message while this request was in
-					// flight. Never merge an older backend snapshot over that newer
-					// local conversation.
-					if (hasRestorableProjectConversation(withoutProjectContextMessages(existing?.history))) return;
+					if (hasRestorableProjectConversation(withoutProjectContextMessages(existing?.history))) {
+						paintTranscriptIfViewEmpty(tab.id, existing?.history);
+						return;
+					}
 					const nextHistory = mergeChatMessages(withoutProjectContextMessages(existing?.history), restoredHistory);
 					saveTabState(tab.id, {
 						...existing,
@@ -3442,8 +3514,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
 		if (tab && tab.projectPath && tabExisted) {
 			// An activation request only focuses the already-open tab. Reloading
 			// its transcript here would clobber a conversation the user is
-			// actively reading.
-			if (openIntent === "activate") return tab;
+			// actively reading. An empty view still catches up from the cache.
+			if (openIntent === "activate") {
+				paintTranscriptIfViewEmpty(tab.id, getTabState(tab.id)?.history);
+				return tab;
+			}
 			void restoreBackendConversationIfNeeded();
 			return tab;
 		}
@@ -3477,7 +3552,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             })();
         }
         return tab;
-    }, [createProjectTab, finishProjectTabPreparing, getTabs, hasProjectTab, loadProjectContext, getTabState, saveTabState, setProjectTabPreparing]);
+    }, [adoptBackendTranscript, backendTranscriptGeneration, createProjectTab, finishProjectTabPreparing, getTabs, hasProjectTab, loadProjectContext, getTabState, loadProjectMemoryFallback, paintTranscriptIfViewEmpty, saveTabState, setProjectTabPreparing]);
 
     // Mode B: VS Code programming agent → open/activate matching project tab so
     // acp- foreground rounds land in the same workspace session as the agent.
@@ -3740,7 +3815,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const contextTabId = String(mergedOptions.tabId || '');
             const heldHistory = projectStreamHistoryRef.current;
             const contextHistory = contextTabId === liveActiveTab.id
-                ? (heldHistory?.tabId === contextTabId ? heldHistory.messages : projectTabMessages)
+                ? projectTranscriptBase(projectTabMessages, heldHistory?.tabId === contextTabId ? heldHistory.messages : undefined, true)
                 : ((getTabState(contextTabId)?.history || []) as ChatMessage[]);
             (mergedOptions as Record<string, unknown>).recentMessages = buildProjectTabRecentMessages(contextHistory);
             console.info("[AIAssistantPanel] send route project", {
@@ -3817,7 +3892,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const expertFloor = sessionFloorFor(String(expertTabId || ""), expertTab?.sessionFloorMs ?? (liveActiveTab.type === "expert" ? liveActiveTab.sessionFloorMs : undefined));
             const expertHeld = projectStreamHistoryRef.current;
             const expertHistory = (expertTabId === liveActiveTab.id
-                ? (expertHeld?.tabId === expertTabId ? expertHeld.messages : projectTabMessages)
+                ? projectTranscriptBase(projectTabMessages, expertHeld?.tabId === expertTabId ? expertHeld.messages : undefined, true)
                 : (((expertTabId ? getTabState(expertTabId)?.history : []) || []) as ChatMessage[])
             ).filter((message: ChatMessage) => messageAfterSessionFloor(message, expertFloor));
             (mergedOptions as Record<string, unknown>).recentMessages = buildProjectTabRecentMessages(expertHistory as ChatMessage[]);
@@ -3893,7 +3968,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const activateSwitchingTab = useCallback((tabId: string) => {
         dismissCoveredNewTaskRef.current?.(); releaseIdleTaskTabs(idleTaskSwitchRef.current, { nextTabId: tabId });
         activateTab(tabId);
-    }, [activateTab]);
+        // Already-open task: the click does not change tabs when this one is
+        // current, so the switch effect never re-reads a transcript that
+        // landed in the cache after the empty snapshot.
+        paintTranscriptIfViewEmpty(tabId, getTabState(tabId)?.history);
+    }, [activateTab, getTabState, paintTranscriptIfViewEmpty]);
     const createProjectTabFromSearch = useCallback((
         projectPath: string,
         taskTitle: string,
@@ -4045,7 +4124,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 projectConversationHydrationByTabIdRef.current.delete(tab.id);
                 void (async () => {
                     try {
-                        const restored = await loadRestoredProjectConversationHistory(target);
+                        const restored = await loadProjectMemoryFallback(target);
                         if (restored.length === 0) return;
                         if (!getTabs().some(openTab => openTab.id === tab.id && openTab.type === "project" && normalizeProjectSessionPath(openTab.projectPath) === target)) return;
                         const existing = getTabState(tab.id);
@@ -4063,7 +4142,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (typeof off === "function") off();
             else EventsOff(EVENT_PROJECT_TASK_HISTORY_UPDATED);
         };
-    }, [getTabState, getTabs, saveTabState]);
+    }, [getTabState, getTabs, loadProjectMemoryFallback, saveTabState]);
     // Keep the AI panel task switcher consistent with the sidebar task list:
     // any open project tab that NO task-list row claims (e.g. its delete/hide
     // event fired while the GUI was not listening) is reaped by the tab
@@ -5713,22 +5792,25 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const handlePPTStyleChoice = useCallback((choice: PPTStyleChoice | null) => {
         pptStyleChoiceRef.current = choice;
     }, []);
-    const handleSend = useCallback(async () => {
+    const handleSend = useCallback(async (source?: unknown) => {
         if (cloudShareReadOnlyRef.current) return;
         if (startOnWorkbenchHome && workbenchHomeRequested) dismissWorkbenchHome();
-        // Live mic session: do not send or queue — user must stop via the card.
         if (recordingActive) return;
-        const rawInputValue = inputRef.current?.value ?? inputValue;
+        const commanded = typeof source === "string" ? source.trim() : "";
+        const rawInputValue = commanded || (inputRef.current?.value ?? inputValue);
+        const sendAttachments = commanded ? [] as typeof pendingAttachments : pendingAttachments;
+        const sendPaths = commanded ? [] as string[] : selectedFilePaths;
+        const clearDraft: typeof clearComposerDraft = commanded ? () => undefined : clearComposerDraft;
         const text = applyComposeActionToText(rawInputValue, composeAction);
         const asPPTModelText = (value: string) => (
             activeTab.type === "expert" && activeTab.expertId === "builtin-pptx-maker"
                 ? withConfirmedPPTStyle(value, pptStyleChoiceRef.current)
                 : value
         );
-        if (isHistoryResetCommandText(text) && pendingAttachments.length === 0 && selectedFilePaths.length === 0) {
+        if (isHistoryResetCommandText(text) && sendAttachments.length === 0 && sendPaths.length === 0) {
             if (newConversationInFlightRef.current) return;
             newConversationInFlightRef.current = true;
-            clearComposerDraft({ clearAttachments: true });
+            clearDraft({ clearAttachments: true });
             void Promise.resolve(sendMessageForTab(text)).finally(() => {
                 newConversationInFlightRef.current = false;
             });
@@ -5745,9 +5827,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // bypass busy-state queuing, but a disconnected remote workbench must
         // not dispatch any tab-owned command until SSH reconnect succeeds.
         if (!codingTaskReadyForIntents && !queueEditDraftActive) {
-            if (!text && pendingAttachments.length === 0 && selectedFilePaths.length === 0) return;
-            const attachments: AttachmentInfo[] = [...pendingAttachments];
-            for (const fp of selectedFilePaths) {
+            if (!text && sendAttachments.length === 0 && sendPaths.length === 0) return;
+            const attachments: AttachmentInfo[] = [...sendAttachments];
+            for (const fp of sendPaths) {
                 const fileName = fp.split(/[/\\]/).pop() || fp;
                 const ext = "." + (fileName.split(".").pop() || "").toLowerCase();
                 attachments.push({ filePath: fp, isImage: isImageFilePath(fp), fileName, extension: ext });
@@ -5756,13 +5838,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             addEntry(asPPTModelText(text || rawInputValue), attachments, { autoDrain: true, steerWhenBusy: false });
             queueAutoDrainArmedSessionKeysRef.current.add(activeSessionKey);
             setComposeAction(null);
-            clearComposerDraft({ clearAttachments: true });
+            clearDraft({ clearAttachments: true });
             return;
         }
         if (isBtwCommandText(text) && sendBtwMessage) {
             sendInFlightRef.current = true;
             // Clear immediately — SendBtwQuery only resolves after the full side-query loop.
-            clearComposerDraft({ clearAttachments: true });
+            clearDraft({ clearAttachments: true });
             try {
                 const ok = await dispatchBtwText(text);
                 if (!ok) {
@@ -5784,12 +5866,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (sendInFlightRef.current) {
                 addEntry(installText, [], { autoDrain: true });
                 setComposeAction(null);
-                clearComposerDraft({ clearAttachments: true });
+                clearDraft({ clearAttachments: true });
                 return;
             }
             sendInFlightRef.current = true;
             setComposeAction(null);
-            clearComposerDraft({ clearAttachments: true });
+            clearDraft({ clearAttachments: true });
             userScrolledUpRef.current = false;
             try {
                 const sent = await sendMessageForTab(installText);
@@ -5804,10 +5886,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return;
         }
         if (submitLocked || queueEditDraftActive) {
-            if (!text && pendingAttachments.length === 0 && selectedFilePaths.length === 0) {
+            if (!text && sendAttachments.length === 0 && sendPaths.length === 0) {
                 if (queueEditDraftActive) {
                     setQueueEditDraftActive(false);
-                    clearComposerDraft({ clearAttachments: false });
+                    clearDraft({ clearAttachments: false });
                 }
                 return;
             }
@@ -5828,11 +5910,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 activeSessionIsStreaming,
                 cancelPending,
                 textLength: text.length,
-                attachmentCount: pendingAttachments.length + selectedFilePaths.length,
+                attachmentCount: sendAttachments.length + sendPaths.length,
                 composeAction: composeAction || undefined,
             });
-            const attachments: AttachmentInfo[] = [...pendingAttachments];
-            for (const fp of selectedFilePaths) {
+            const attachments: AttachmentInfo[] = [...sendAttachments];
+            for (const fp of sendPaths) {
                 const fileName = fp.split(/[/\\]/).pop() || fp;
                 const ext = "." + (fileName.split(".").pop() || "").toLowerCase();
                 attachments.push({ filePath: fp, isImage: isImageFilePath(fp), fileName, extension: ext });
@@ -5850,25 +5932,25 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 queueAutoDrainArmedSessionKeysRef.current.add(activeSessionKey);
             }
             setQueueEditDraftActive(false);
-            clearComposerDraft({ clearAttachments: true });
+            clearDraft({ clearAttachments: true });
             return;
         }
-        if (!text && selectedFilePaths.length === 0 && pendingAttachments.length === 0) return;
-        const allFilePaths: string[] = [...selectedFilePaths];
-        for (const att of pendingAttachments) {
+        if (!text && sendPaths.length === 0 && sendAttachments.length === 0) return;
+        const allFilePaths: string[] = [...sendPaths];
+        for (const att of sendAttachments) {
             if (att.filePath.trim()) allFilePaths.push(att.filePath.trim());
         }
         const displayAttachments = [
-            ...pendingAttachments.map(att => ({
+            ...sendAttachments.map(att => ({
                 filePath: att.filePath,
                 fileName: att.fileName,
                 extension: att.extension,
                 isImage: att.isImage,
             })),
-            ...selectedFilePaths.map(attachmentInfoFromFilePath),
+            ...sendPaths.map(attachmentInfoFromFilePath),
         ];
         sendInFlightRef.current = true;
-        clearComposerDraft({ clearAttachments: true });
+        clearDraft({ clearAttachments: true });
         userScrolledUpRef.current = false;
         try {
             const outgoing = allFilePaths.length > 0 ? buildOutgoingMessageMulti(asPPTModelText(text), allFilePaths) : asPPTModelText(text);
@@ -6247,14 +6329,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             ? {
                 project_path: activeTab.projectPath,
                 tabId: activeTab.id,
-                recentMessages: buildProjectTabRecentMessages(projectStreamHistoryRef.current?.tabId === activeTab.id ? projectStreamHistoryRef.current.messages : projectTabMessages),
+                recentMessages: buildProjectTabRecentMessages(projectTranscriptBase(projectTabMessages, projectStreamHistoryRef.current?.tabId === activeTab.id ? projectStreamHistoryRef.current.messages : undefined, true)),
             }
             : isExpertTabActive && activeTab.expertId
                 ? {
                     expert_id: activeTab.expertId,
                     tabId: activeTab.id,
                     ...(activeTab.projectPath ? { project_path: activeTab.projectPath } : {}),
-                    recentMessages: buildProjectTabRecentMessages(projectStreamHistoryRef.current?.tabId === activeTab.id ? projectStreamHistoryRef.current.messages : projectTabMessages),
+                    recentMessages: buildProjectTabRecentMessages(projectTranscriptBase(projectTabMessages, projectStreamHistoryRef.current?.tabId === activeTab.id ? projectStreamHistoryRef.current.messages : undefined, true)),
                 }
                 : undefined;
         // Preserve the single-argument callback contract for local actions;

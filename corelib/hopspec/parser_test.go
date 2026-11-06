@@ -202,6 +202,87 @@ Inputs:
 	}
 }
 
+func TestParseAcceptsFullwidthSpecColon(t *testing.T) {
+	spec, errs := Parse(`# Spec：北京天气
+Id：beijing-weather
+Goal：查询今天的天气
+输出：
+- report % text
+## 步骤
+1. [reason] 查询
+  + → report % text
+2. [check] 核验
+  - ← report
+  + → accepted % bool
+  + → feedback % text
+3. [exit]
+`)
+	if len(errs) != 0 {
+		t.Fatalf("Parse() errors = %v", errs)
+	}
+	if spec.Title != "北京天气" || spec.ID != "beijing-weather" || spec.Goal != "查询今天的天气" {
+		t.Fatalf("header = %+v", spec)
+	}
+	wideDecl, wideErrs := Parse("# Spec: 类型\nGoal: 全角类型\nOutputs:\n- report：text\n## Steps\n1. [act] 运行\n  - 工具：web_search, web_fetch\n  + → report：text\n2. [exit]\n")
+	if len(wideErrs) != 0 {
+		t.Fatalf("wide decl errors = %v", wideErrs)
+	}
+	if len(wideDecl.Outputs) != 1 || wideDecl.Outputs[0].Name != "report" || wideDecl.Outputs[0].Type != "text" {
+		t.Fatalf("wide outputs = %+v", wideDecl.Outputs)
+	}
+	if len(wideDecl.Steps) != 2 || len(wideDecl.Steps[0].Tools) != 2 || wideDecl.Steps[0].Tools[0] != "web_search" {
+		t.Fatalf("wide tools = %+v", wideDecl.Steps[0].Tools)
+	}
+	if wideDecl.Steps[0].Outputs[0].Name != "report" || wideDecl.Steps[0].Outputs[0].Type != "text" {
+		t.Fatalf("wide step output = %+v", wideDecl.Steps[0].Outputs)
+	}
+	if len(spec.Outputs) != 1 || spec.Outputs[0].Name != "report" {
+		t.Fatalf("outputs = %+v", spec.Outputs)
+	}
+	if errs := Validate(spec); len(errs) != 0 {
+		t.Fatalf("Validate() errors = %v", errs)
+	}
+	headed, headedErrs := Parse(`# Spec：标题
+Goal：查询
+## 输出：
+- report：text
+## 步骤：
+1. [call weather(city：query)] 查询
+  + → report：text
+2. [exit]
+`)
+	if len(headedErrs) != 0 {
+		t.Fatalf("headed errors = %v", headedErrs)
+	}
+	if len(headed.Outputs) != 1 || headed.Outputs[0].Name != "report" || headed.Outputs[0].Type != "text" {
+		t.Fatalf("headed outputs = %+v", headed.Outputs)
+	}
+	if headed.Steps[0].Call == nil || headed.Steps[0].Call.Callee != "weather" || headed.Steps[0].Call.Inputs["city"] != "query" {
+		t.Fatalf("call = %+v", headed.Steps[0].Call)
+	}
+	if headed.Steps[0].Call.Outputs["report"] != "text" {
+		t.Fatalf("call outputs = %+v", headed.Steps[0].Call.Outputs)
+	}
+	headedGoal, headedGoalErrs := Parse("# Spec: 天气\n## 目标：查询北京天气\n## 输出：\n- report：text\n## 步骤\n1. [reason] 查询\n  + → report：text\n2. [exit]\n")
+	if len(headedGoalErrs) != 0 || headedGoal.Goal != "查询北京天气" || len(headedGoal.Outputs) != 1 {
+		t.Fatalf("headed goal = %+v errs = %v", headedGoal, headedGoalErrs)
+	}
+	bold, boldErrs := Parse("# Spec: 天气\n**目标：** 查询北京天气\n## Steps\n1. [exit]\n")
+	if len(boldErrs) != 0 || bold.Goal != "查询北京天气" {
+		t.Fatalf("bold goal = %+v errs = %v", bold, boldErrs)
+	}
+}
+
+func TestParseKeepsColonsInsideHopPython(t *testing.T) {
+	spec, errs := Parse("# Spec: py\nGoal: keep\n## Steps\n1. [act] 运行\n  > ```hop_python\n  > report = \"a:b：c\"\n  > ```\n")
+	if len(errs) != 0 {
+		t.Fatalf("Parse() errors = %v", errs)
+	}
+	if len(spec.Steps) != 1 || spec.Steps[0].Body != `report = "a:b：c"` {
+		t.Fatalf("body = %q", spec.Steps[0].Body)
+	}
+}
+
 func diagnosticsContain(errs []error, code string) bool {
 	for _, err := range errs {
 		if strings.Contains(err.Error(), code) {

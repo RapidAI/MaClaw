@@ -338,6 +338,38 @@ func PositiveSchemaInteger(raw interface{}) (int, bool) {
 	}
 }
 
+// NonNegativeSchemaInteger reads one canonical integer that schema validation
+// has already accepted. Zero is a real cursor: the first page of a web fetch.
+// A fraction, a non-number, or a negative value is not an offset.
+func NonNegativeSchemaInteger(raw interface{}) (int, bool) {
+	const maxOffset = int64(1<<31 - 1)
+	switch n := raw.(type) {
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil || i < 0 || i > maxOffset {
+			return 0, false
+		}
+		return int(i), true
+	case float64:
+		if n < 0 || n > float64(maxOffset) || n != float64(int64(n)) {
+			return 0, false
+		}
+		return int(n), true
+	case int:
+		if n < 0 || int64(n) > maxOffset {
+			return 0, false
+		}
+		return n, true
+	case int64:
+		if n < 0 || n > maxOffset {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
 func decodeCanonicalJSON(data []byte) (interface{}, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()

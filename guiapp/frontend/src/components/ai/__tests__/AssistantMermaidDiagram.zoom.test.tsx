@@ -26,6 +26,9 @@ import {
     consumeMermaidWheel,
     fitMermaidPreviewSvg,
     getMermaidTheme,
+    mermaidDiagramScrollOffset,
+    mermaidDiagramScrollStillPlaced,
+    mermaidPreviewFrameStyle,
     MERMAID_PREVIEW_PAN_STEP,
     mermaidHairlineStroke,
     mermaidMenuOpensUpward,
@@ -209,6 +212,61 @@ describe("full-screen Mermaid preview", () => {
         preview.dispatchEvent(event);
         expect(event.defaultPrevented).toBe(true);
         expect(previewCanvas().style.transform).toBe("translate(0px, 0px) scale(1)");
+    });
+
+    it("keeps a zoomed preview drawing centred in the stage", async () => {
+        const original = HTMLElement.prototype.getBoundingClientRect;
+        HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+            if (this.dataset.testid === "assistant-mermaid-preview-stage") return new DOMRect(0, 0, 800, 200);
+            return original.call(this);
+        };
+        try {
+            await renderDiagram();
+            fireEvent.click(screen.getByTestId("assistant-mermaid-view"));
+            const canvas = previewCanvas();
+            // Stage 800×200, viewBox 200×100. The drawing meets at 400×200
+            // and that box is centred, including after a zoom step.
+            await waitFor(() => expect(canvas.style.width).toBe("400px"));
+            expect(canvas.style.height).toBe("200px");
+            expect(canvas.style.left).toBe("50%");
+            expect(canvas.style.top).toBe("50%");
+            expect(canvas.style.marginLeft).toBe("-200px");
+            expect(canvas.style.marginTop).toBe("-100px");
+            expect(canvas.className).toContain("is-fitted");
+
+            fireEvent.click(screen.getByTestId("assistant-mermaid-preview-zoom-in"));
+            expect(canvas.style.transform).toBe("translate(0px, 0px) scale(1.25)");
+            expect(canvas.style.left).toBe("50%");
+            expect(canvas.style.marginLeft).toBe("-200px");
+        } finally {
+            HTMLElement.prototype.getBoundingClientRect = original;
+        }
+    });
+
+    it("scrolls a zoomed-in chat diagram so its middle stays in view", async () => {
+        const diagram = await renderDiagram();
+        let scrollLeft = 0;
+        let scrollTop = 0;
+        Object.defineProperty(diagram, "scrollWidth", { configurable: true, get: () => 400 });
+        Object.defineProperty(diagram, "clientWidth", { configurable: true, get: () => 200 });
+        Object.defineProperty(diagram, "scrollHeight", { configurable: true, get: () => 300 });
+        Object.defineProperty(diagram, "clientHeight", { configurable: true, get: () => 100 });
+        Object.defineProperty(diagram, "scrollLeft", {
+            configurable: true,
+            get: () => scrollLeft,
+            set: (value: number) => { scrollLeft = value; },
+        });
+        Object.defineProperty(diagram, "scrollTop", {
+            configurable: true,
+            get: () => scrollTop,
+            set: (value: number) => { scrollTop = value; },
+        });
+
+        fireEvent.click(screen.getByTestId("assistant-mermaid-zoom-in"));
+        await waitFor(() => expect(scrollLeft).toBe(100));
+        // Vertical overflow is the drawing's own height. Centring it would
+        // hide the top of the chart behind the toolbar.
+        expect(scrollTop).toBe(0);
     });
 
     it("opens the same preview when the diagram is double-clicked", async () => {
@@ -421,6 +479,48 @@ describe("fitMermaidPreviewSvg", () => {
         const fitted = fitMermaidPreviewSvg('<svg preserveAspectRatio="none" width="10" height="10"></svg>');
         expect(fitted).toContain('preserveAspectRatio="xMidYMid meet"');
         expect(fitted).not.toContain('preserveAspectRatio="none"');
+    });
+});
+
+describe("mermaidDiagramScrollOffset", () => {
+    it("puts the middle of an overflowing diagram in view", () => {
+        expect(mermaidDiagramScrollOffset(400, 200)).toBe(100);
+        expect(mermaidDiagramScrollOffset(200, 200)).toBe(0);
+        expect(mermaidDiagramScrollOffset(80, 200)).toBe(0);
+        expect(mermaidDiagramScrollOffset(Number.NaN, 200)).toBe(0);
+        // An unlaid-out box reports a client size of 0. Half of its scroll
+        // width is not a centre, and writing it would stick.
+        expect(mermaidDiagramScrollOffset(400, 0)).toBe(0);
+    });
+
+    it("keeps a reader-moved scroll across a resize and follows one that is still centred", () => {
+        expect(mermaidDiagramScrollStillPlaced(100, 100)).toBe(true);
+        expect(mermaidDiagramScrollStillPlaced(100.5, 100)).toBe(true);
+        expect(mermaidDiagramScrollStillPlaced(40, 100)).toBe(false);
+        expect(mermaidDiagramScrollStillPlaced(Number.NaN, 100)).toBe(false);
+    });
+});
+
+describe("mermaidPreviewFrameStyle", () => {
+    it("centres the fitted drawing and keeps zoom on that centre", () => {
+        const fitted = mermaidPreviewFrameStyle(400, 200, { x: 0, y: 0 }, 1.25);
+        expect(fitted).toMatchObject({
+            width: 400,
+            height: 200,
+            left: "50%",
+            top: "50%",
+            marginLeft: -200,
+            marginTop: -100,
+            transform: "translate(0px, 0px) scale(1.25)",
+            transformOrigin: "center center",
+        });
+    });
+
+    it("fills the stage until the box has been measured", () => {
+        const pending = mermaidPreviewFrameStyle(0, 0, { x: 12, y: 0 }, 1);
+        expect(pending.width).toBeUndefined();
+        expect(pending.left).toBeUndefined();
+        expect(pending.transform).toBe("translate(12px, 0px) scale(1)");
     });
 });
 

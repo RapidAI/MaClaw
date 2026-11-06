@@ -30,7 +30,7 @@ type reviewedHostAuditReader interface {
 }
 
 type reviewedHostWebFetcher interface {
-	FetchReviewedHostWeb(ctx context.Context, principal Principal, rawURL string) (string, error)
+	FetchReviewedHostWeb(ctx context.Context, principal Principal, rawURL string, offset int) (string, error)
 }
 
 type reviewedHostWebSearcher interface {

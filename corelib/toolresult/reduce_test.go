@@ -188,6 +188,39 @@ func TestStructuredPreview_WebFetchIntegrity(t *testing.T) {
 	}
 }
 
+func TestStructuredPreview_WebFetchKeepsNextOffset(t *testing.T) {
+	body := strings.Repeat("中", 4000) + "\n... (total 8000 chars, showing 0-3999. Next: offset=4000)"
+	p := StructuredPreview("web_fetch", body, 500)
+	if len(p) > 500 {
+		t.Fatalf("len=%d", len(p))
+	}
+	if !strings.Contains(p, "Next: offset=4000") {
+		t.Fatalf("dropped cursor: %q", p)
+	}
+}
+
+func TestStructuredPreview_WebFetchKeepsClippedNote(t *testing.T) {
+	body := strings.Repeat("中", 4000) + "\nThe response continued past the fetched prefix. This text is not the whole document."
+	p := StructuredPreview("web_fetch", body, 400)
+	if len(p) > 400 {
+		t.Fatalf("len=%d", len(p))
+	}
+	if !strings.Contains(p, "continued past the fetched prefix") {
+		t.Fatalf("dropped clip note: %q", p)
+	}
+}
+
+func TestStructuredPreview_WebFetchKeepsContinuationBlock(t *testing.T) {
+	body := strings.Repeat("中", 4000) + "\n\n--- Continuation ---\nhas_more: true\nnext_offset: 4000\nPass offset=4000 to continue reading.\n"
+	p := StructuredPreview("web_fetch", body, 400)
+	if len(p) > 400 {
+		t.Fatalf("len=%d", len(p))
+	}
+	if !strings.Contains(p, "--- Continuation ---") || !strings.Contains(p, "Pass offset=4000") {
+		t.Fatalf("dropped continuation: %q", p)
+	}
+}
+
 func TestCompressionStats_Record(t *testing.T) {
 	ResetCompressionStats()
 	RecordProjection("bash", 10000, 1000, true)

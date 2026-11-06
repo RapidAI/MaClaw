@@ -65,6 +65,39 @@ type FetchResult struct {
 	TotalChars  int    `json:"total_chars"`
 	HasMore     bool   `json:"has_more"`
 	NextOffset  int    `json:"next_offset"`
+	// ResponseClipped is set when the body continued past MaxBytes. offset
+	// cannot read that suffix. The last character page says so.
+	ResponseClipped bool `json:"response_clipped,omitempty"`
+}
+
+// ResponseClippedNote is the last-page sentence for a clipped body.
+// Producers append it on one line. A later preview keeps that line.
+const ResponseClippedNote = "The response continued past the fetched prefix. This text is not the whole document."
+
+// continueFetchURLMax keeps a continuation hint inside the tool-result
+// budget. A longer request URL is omitted; the caller already has it.
+const continueFetchURLMax = 4096
+
+// TrimFetchURL drops surrounding space and line breaks. The desktop cache
+// key uses this string, and the continuation hint prints the same string.
+func TrimFetchURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.ReplaceAll(raw, "\r", "")
+	raw = strings.ReplaceAll(raw, "\n", "")
+	return strings.TrimSpace(raw)
+}
+
+// ContinueFetchURL is the caller's URL when a later page has to repeat it.
+// The printed page URL can be the address after a redirect. A later call
+// that uses only that address reads a different response. The result is
+// empty when the printed URL is already the caller's URL, or when the
+// caller URL is too long to put on the footer.
+func ContinueFetchURL(requested, pageURL string) string {
+	requested = TrimFetchURL(requested)
+	if requested == "" || requested == strings.TrimSpace(pageURL) || len(requested) > continueFetchURLMax {
+		return ""
+	}
+	return requested
 }
 
 // Fetch retrieves a URL and extracts readable text content.
@@ -348,7 +381,7 @@ func performTextFetch(ctx context.Context, rawURL string, opts *FetchOptions, cl
 		}
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, opts.MaxBytes))
+	body, clipped, err := readBoundedBody(resp.Body, opts.MaxBytes)
 	if err != nil {
 		return &fetchAttempt{err: fmt.Errorf("read body failed: %w", err), retryable: true}
 	}
@@ -364,7 +397,43 @@ func performTextFetch(ctx context.Context, rawURL string, opts *FetchOptions, cl
 		}
 	}
 
-	return completeTextFetch(rawURL, opts, resp, body, rawMode)
+	attempt := completeTextFetch(rawURL, opts, resp, body, rawMode)
+	if attempt != nil && attempt.result != nil {
+		attempt.result.ResponseClipped = clipped
+	}
+	return attempt
+}
+
+// readBoundedBody reads at most max bytes. clipped is true when the reader
+// still had another byte. A cut that splits a UTF-8 sequence drops that
+// incomplete tail so a valid document stays valid; a non-UTF-8 body loses
+// at most the last three bytes.
+func readBoundedBody(r io.Reader, max int64) ([]byte, bool, error) {
+	if max < 0 {
+		max = 0
+	}
+	body, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(body)) <= max {
+		return body, false, nil
+	}
+	return dropPartialTrailingRune(body[:max]), true, nil
+}
+
+func dropPartialTrailingRune(body []byte) []byte {
+	if len(body) == 0 || utf8.Valid(body) {
+		return body
+	}
+	start := len(body) - 1
+	for start > 0 && start > len(body)-utf8.UTFMax && !utf8.RuneStart(body[start]) {
+		start--
+	}
+	if !utf8.FullRune(body[start:]) {
+		return body[:start]
+	}
+	return body
 }
 
 func completeTextFetch(rawURL string, opts *FetchOptions, resp *http.Response, body []byte, rawMode bool) *fetchAttempt {
@@ -672,6 +741,82 @@ func applyContentWindow(result *FetchResult, offset, maxChars int) {
 	if offset < 0 {
 		offset = 0
 	}
+	// Valid text keeps its original bytes. A rune round-trip copies the
+	// whole extract, and the desktop cache stores that extract. Invalid
+	// UTF-8 still uses the rune replacement so each bad byte is one U+FFFD.
+	page, total, end, ok := sliceValidRuneWindow(result.Content, offset, maxChars)
+	if !ok {
+		applyContentWindowRunes(result, offset, maxChars)
+		return
+	}
+	result.Content = page
+	result.TotalChars = total
+	result.Truncated = end < total
+	result.HasMore = end < total
+	// A finished read ends at total. next_offset stays on that cursor so a
+	// completed page is distinguishable from a missing range.
+	result.NextOffset = end
+}
+
+// sliceValidRuneWindow returns runes [offset, offset+maxChars). maxChars <= 0
+// means the rest of the string. The page shares the original bytes. ok is
+// false when the string is not valid UTF-8; the caller then uses the rune
+// replacement window.
+func sliceValidRuneWindow(content string, offset, maxChars int) (page string, total, end int, ok bool) {
+	if offset < 0 {
+		offset = 0
+	}
+	i := 0
+	prefix := 0
+	for i < len(content) && prefix < offset {
+		if !advanceValidRune(content, &i) {
+			return "", 0, 0, false
+		}
+		prefix++
+	}
+	start := i
+	taken := 0
+	for i < len(content) && (maxChars <= 0 || taken < maxChars) {
+		if !advanceValidRune(content, &i) {
+			return "", 0, 0, false
+		}
+		taken++
+	}
+	pageEnd := i
+	tail := 0
+	for i < len(content) {
+		if !advanceValidRune(content, &i) {
+			return "", 0, 0, false
+		}
+		tail++
+	}
+	end = prefix + taken
+	total = end + tail
+	if offset == 0 && end == total {
+		return content, total, end, true
+	}
+	if taken == 0 {
+		return "", total, end, true
+	}
+	return content[start:pageEnd], total, end, true
+}
+
+func advanceValidRune(content string, i *int) bool {
+	r, size := utf8.DecodeRuneInString(content[*i:])
+	if size < 1 || (r == utf8.RuneError && size == 1) {
+		return false
+	}
+	*i += size
+	return true
+}
+
+func applyContentWindowRunes(result *FetchResult, offset, maxChars int) {
+	if result == nil {
+		return
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	runes := []rune(result.Content)
 	total := len(runes)
 	result.TotalChars = total
@@ -679,8 +824,8 @@ func applyContentWindow(result *FetchResult, offset, maxChars int) {
 		offset = total
 	}
 	end := total
-	if maxChars > 0 {
-		end = min(total, offset+maxChars)
+	if maxChars > 0 && offset < total && total-offset > maxChars {
+		end = offset + maxChars
 	}
 	if offset > 0 || end < total {
 		result.Content = string(runes[offset:end])
@@ -689,9 +834,129 @@ func applyContentWindow(result *FetchResult, offset, maxChars int) {
 	}
 	result.Truncated = end < total
 	result.HasMore = end < total
-	// A finished read ends at total. next_offset stays on that cursor so a
-	// completed page is distinguishable from a missing range.
 	result.NextOffset = end
+}
+
+// ClampFetchPage shortens Content to byteBudget on a UTF-8 boundary and
+// moves NextOffset to the first rune that did not fit. A 16384-rune page
+// is about 64KB of 4-byte text. The model-visible web_fetch result is
+// 32768 bytes, and a later head/tail cut would drop the middle while the
+// footer still named the end of the uncut window. TotalChars stays as the
+// fetch recorded it; a zero total is not invented.
+func ClampFetchPage(result *FetchResult, byteBudget int) {
+	if result == nil || byteBudget < 1 || len(result.Content) <= byteBudget {
+		return
+	}
+	shown := utf8.RuneCountInString(result.Content)
+	start := result.NextOffset - shown
+	if start < 0 || result.NextOffset < shown {
+		start = 0
+	}
+	keptBytes := 0
+	kept := 0
+	for i := 0; i < len(result.Content); {
+		_, size := utf8.DecodeRuneInString(result.Content[i:])
+		if size <= 0 {
+			break
+		}
+		if keptBytes+size > byteBudget {
+			break
+		}
+		keptBytes += size
+		kept++
+		i += size
+	}
+	if kept == 0 {
+		// One rune is wider than the budget. Keep it so the cursor still
+		// moves; the caller floors the budget above this for normal pages.
+		_, size := utf8.DecodeRuneInString(result.Content)
+		if size <= 0 || size >= len(result.Content) {
+			return
+		}
+		keptBytes = size
+		kept = 1
+	}
+	if keptBytes >= len(result.Content) {
+		return
+	}
+	result.Content = result.Content[:keptBytes]
+	result.NextOffset = start + kept
+	if result.TotalChars > 0 {
+		more := result.NextOffset < result.TotalChars
+		result.Truncated = more
+		result.HasMore = more
+	}
+}
+
+// VisiblePageStart is the rune offset of Content. When NextOffset is the
+// exclusive end of this slice, the start is that cursor minus the rune
+// count. A page that does not carry that cursor falls back to requested.
+func VisiblePageStart(result *FetchResult, requested int) int {
+	if requested < 0 {
+		requested = 0
+	}
+	if result == nil {
+		return requested
+	}
+	shown := utf8.RuneCountInString(result.Content)
+	if result.NextOffset < shown {
+		return requested
+	}
+	start := result.NextOffset - shown
+	if start < 0 {
+		return 0
+	}
+	return start
+}
+
+// FitFetchPage shrinks Content until format(result) is within byteBudget.
+// A page that already fits is returned unchanged. format must only read
+// the result. The returned text is the last format call.
+func FitFetchPage(result *FetchResult, byteBudget int, format func(*FetchResult) string) string {
+	if result == nil || format == nil {
+		return ""
+	}
+	if byteBudget < 1 {
+		return format(result)
+	}
+	const slack = 64
+	const floorBudget = 256
+	text := format(result)
+	if len(text) <= byteBudget {
+		return text
+	}
+	for i := 0; i < 8 && len(text) > byteBudget; i++ {
+		overflow := len(text) - byteBudget
+		budget := len(result.Content) - overflow - slack
+		if budget < floorBudget {
+			budget = floorBudget
+		}
+		if budget >= len(result.Content) {
+			budget = len(result.Content) / 2
+			if budget < 1 {
+				budget = 1
+			}
+		}
+		before := len(result.Content)
+		ClampFetchPage(result, budget)
+		if len(result.Content) >= before {
+			break
+		}
+		text = format(result)
+	}
+	for len(text) > byteBudget && len(result.Content) > 1 {
+		budget := len(result.Content) / 2
+		if budget < 1 {
+			budget = 1
+		}
+		before := len(result.Content)
+		ClampFetchPage(result, budget)
+		if len(result.Content) >= before {
+			break
+		}
+		text = format(result)
+	}
+	return text
 }
 
 // ---------------------------------------------------------------------------
@@ -873,8 +1138,9 @@ func fetchFTPCtx(parent context.Context, rawURL string, opts *FetchOptions) (*Fe
 		return nil, fmt.Errorf("FTP RETR failed (code %d)", code)
 	}
 
-	// Read data with size limit
-	body, err := io.ReadAll(io.LimitReader(dataConn, opts.MaxBytes))
+	// Read data with size limit. One extra byte distinguishes a finished
+	// file from a body the cap cut short.
+	body, clipped, err := readBoundedBody(dataConn, opts.MaxBytes)
 	dataConn.Close()
 	if err != nil {
 		if ctxErr := parent.Err(); ctxErr != nil {
@@ -890,13 +1156,18 @@ func fetchFTPCtx(parent context.Context, rawURL string, opts *FetchOptions) (*Fe
 	sendCmd("QUIT")
 
 	result := &FetchResult{
-		URL:         rawURL,
-		ContentType: "application/octet-stream (FTP)",
-		BytesRead:   len(body),
+		URL:             rawURL,
+		ContentType:     "application/octet-stream (FTP)",
+		BytesRead:       len(body),
+		ResponseClipped: clipped,
 	}
 
-	// Save to file if requested
+	// Save to file if requested. A clipped body would be a short file
+	// reported as the whole download.
 	if opts.SavePath != "" {
+		if clipped {
+			return nil, fmt.Errorf("file exceeds max_bytes limit (%d bytes)", opts.MaxBytes)
+		}
 		dir := filepath.Dir(opts.SavePath)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("create directory failed: %w", err)
@@ -1033,18 +1304,23 @@ func fetchWithChromeCtx(parent context.Context, rawURL string, opts *FetchOption
 		return nil, fmt.Errorf("Chrome start failed: %w", err)
 	}
 
-	body, readErr := io.ReadAll(io.LimitReader(stdoutPipe, opts.MaxBytes))
+	body, clipped, readErr := readBoundedBody(stdoutPipe, opts.MaxBytes)
+	// Stop reading at the cap, then discard the rest. Leaving those bytes
+	// in the pipe fills it, dump-dom blocks on write, and Wait never returns.
+	_, _ = io.Copy(io.Discard, stdoutPipe)
 	waitErr := cmd.Wait()
 	if ctxErr := parent.Err(); ctxErr != nil {
-		return nil, ctxErr
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, ctxErr
 	}
 	if readErr != nil {
 		return nil, fmt.Errorf("Chrome read output failed: %w", readErr)
 	}
-	if waitErr != nil {
+	// The prefix is already in hand. A timeout while discarding the rest
+	// still returns that prefix; ResponseClipped says the dump went on.
+	if ctxErr := ctx.Err(); ctxErr != nil && !clipped {
+		return nil, ctxErr
+	}
+	if waitErr != nil && !clipped {
 		return nil, fmt.Errorf("Chrome exited with error: %w", waitErr)
 	}
 	if len(body) == 0 {
@@ -1053,11 +1329,12 @@ func fetchWithChromeCtx(parent context.Context, rawURL string, opts *FetchOption
 
 	title, text := extractReadableContent(body)
 	result := &FetchResult{
-		URL:         rawURL,
-		Title:       title,
-		ContentType: "text/html (Chrome rendered)",
-		Content:     text,
-		BytesRead:   len(body),
+		URL:             rawURL,
+		Title:           title,
+		ContentType:     "text/html (Chrome rendered)",
+		Content:         text,
+		BytesRead:       len(body),
+		ResponseClipped: clipped,
 	}
 	applyContentWindow(result, opts.Offset, opts.MaxChars)
 	return result, nil

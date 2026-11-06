@@ -686,13 +686,14 @@ func shrinkWebSnippetEdges(s string, max int) string {
 	return utf8Prefix(s, head) + mark + utf8Suffix(s, tail)
 }
 
-// previewWebFetch prefers keeping trailing integrity markers when present.
+// previewWebFetch prefers keeping a trailing continuation cursor. The
+// producer fits a page to the tool-result budget; this still keeps the
+// cursor when a later, smaller limit cuts the page.
 func previewWebFetch(s string, limit int) string {
 	if len(s) <= limit {
 		return s
 	}
-	marker := "\n\n--- 完整性信号 ---\n"
-	idx := strings.LastIndex(s, marker)
+	idx := webFetchTrailerIndex(s)
 	if idx < 0 {
 		return previewHeadTail(s, limit, 0.66, 0.34)
 	}
@@ -717,6 +718,40 @@ func previewWebFetch(s string, limit int) string {
 		head = utf8Prefix(head, headBudget)
 	}
 	return head + sep + meta
+}
+
+// webFetchTrailerIndex is the start of the continuation block a later page
+// needs. Legacy fetches end with 完整性信号, the reviewed host ends with
+// Continuation, and the desktop page ends with Next: offset=.
+func webFetchTrailerIndex(s string) int {
+	best := -1
+	for _, marker := range []string{
+		"\n\n--- 完整性信号 ---\n",
+		"\n\n--- Continuation ---\n",
+	} {
+		if i := strings.LastIndex(s, marker); i > best {
+			best = i
+		}
+	}
+	// Last-page sentences from websearch.ResponseClippedNote and the legacy
+	// formatter. Keep the line only when it is the suffix, so a copy of the
+	// sentence inside the page is left in the body.
+	for _, marker := range []string{
+		"\nThe response continued past the fetched prefix. This text is not the whole document.",
+		"\n响应在已获取的前缀之后仍有内容。以上文本不是整篇文档。",
+	} {
+		if i := strings.LastIndex(s, marker); i > best && s[i:] == marker {
+			best = i
+		}
+	}
+	const desktopLead = "\n... (total "
+	if i := strings.LastIndex(s, desktopLead); i > best {
+		tail := s[i:]
+		if strings.Contains(tail, "Next: offset=") && strings.Count(tail, "\n") == 1 {
+			best = i
+		}
+	}
+	return best
 }
 
 func looksLikeJSON(s string) bool {

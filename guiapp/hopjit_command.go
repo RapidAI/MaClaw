@@ -85,7 +85,7 @@ func (h *IMMessageHandler) handleHopJITCommand(msg IMUserMessage, trimmed string
 			return &IMAgentResponse{Error: err.Error()}, true
 		}
 		var result hopjit.ReuseResult
-		if strings.HasPrefix(strings.TrimSpace(runPayload), "# Spec:") {
+		if directHopSpec(runPayload) {
 			result, err = h.app.runHopSpecWithIdentity(identity, runPayload, inputs)
 		} else {
 			result, err = h.app.runHopTaskWithIdentity(identity, runPayload)
@@ -147,6 +147,11 @@ func (h *IMMessageHandler) handleHopJITCommand(msg IMUserMessage, trimmed string
 	default:
 		return &IMAgentResponse{Text: hopJITUsage()}, true
 	}
+}
+
+func directHopSpec(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, "# Spec:") || strings.HasPrefix(trimmed, "# Spec：")
 }
 
 func parseHopJITCommand(text string) (string, string, bool) {
@@ -220,7 +225,7 @@ func parseHopJITRunPayload(payload string) (string, map[string]any, error) {
 		return "", nil, errors.New("HopJIT Inputs 后需要 -- 分隔符")
 	}
 	spec := strings.TrimSpace(remainder[2:])
-	if !strings.HasPrefix(spec, "# Spec:") {
+	if !directHopSpec(spec) {
 		return "", nil, errors.New("--inputs 仅用于直接运行 # Spec HopSpec")
 	}
 	return spec, inputs, nil

@@ -59,6 +59,34 @@ func TestParseNonStreamResponsesAPIBody_AcceptsThinkingPart(t *testing.T) {
 	}
 }
 
+func TestParseNonStreamResponsesAPIBody_IncompleteIsLength(t *testing.T) {
+	response, err := ParseNonStreamResponsesAPIBody([]byte(`{
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output":[{"type":"message","content":[{"type":"output_text","text":"print('hi'"}]}]
+    }`))
+	if err != nil {
+		t.Fatalf("ParseNonStreamResponsesAPIBody: %v", err)
+	}
+	if got := response.Choices[0].FinishReason; got != "length" {
+		t.Fatalf("finish reason = %q, want length", got)
+	}
+	if got := response.Choices[0].Message.Content; got != "print('hi'" {
+		t.Fatalf("content = %q", got)
+	}
+
+	completed, err := ParseNonStreamResponsesAPIBody([]byte(`{
+        "status": "completed",
+        "output":[{"type":"message","content":[{"type":"output_text","text":"print(1)"}]}]
+    }`))
+	if err != nil {
+		t.Fatalf("completed body: %v", err)
+	}
+	if got := completed.Choices[0].FinishReason; got != "stop" {
+		t.Fatalf("completed finish reason = %q, want stop", got)
+	}
+}
+
 func TestParseNonStreamResponsesAPIBody_SeparatesMultipleReasoningItems(t *testing.T) {
 	response, err := ParseNonStreamResponsesAPIBody([]byte(`{
         "output":[

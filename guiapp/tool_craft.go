@@ -313,6 +313,21 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 			sendProgress(fmt.Sprintf("首次执行未通过，正在基于错误信息修复脚本（第 %d/%d 次）...", attempt, attempts))
 		}
 		script, genErr := generateScriptWithContext(ctx, cfg, request, runtimes, lastAttempt, client)
+		if truncated, ok := genErr.(*craftTruncatedScriptError); ok && truncated != nil {
+			// Same pre-run rejection as a language mismatch: keep the partial
+			// text for the repair prompt, and do not save or execute it.
+			lastAttempt = craftAttemptResult{
+				Script:              truncated.script,
+				Language:            request.Language,
+				Attempts:            attempt,
+				VerificationStatus:  craftVerificationExecutionFailed,
+				VerificationMessage: truncated.Error(),
+			}
+			if !shouldRetryCraftAttempt(request, lastAttempt, attempt, attempts) {
+				break
+			}
+			continue
+		}
 		if genErr != nil {
 			lastAttempt = craftAttemptResult{Language: request.Language, Attempts: attempt, VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: genErr.Error()}
 			break
@@ -629,7 +644,7 @@ func generateScriptWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig,
 			backoff *= 2 // exponential backoff: 2s, 4s, 8s
 		}
 		isCode1234 = false // reset on each iteration
-		result, err := doSimpleLLMRequest(ctx, cfg, messages, client, requestTimeout)
+		result, err := doSimpleLLMRequestWithOptions(ctx, cfg, messages, client, requestTimeout, craftScriptGenerationOptions())
 		if err != nil {
 			errMsg := err.Error()
 			if classifyCraftAPIError(errMsg) == craftAPIErrorRateLimit {
@@ -644,10 +659,19 @@ func generateScriptWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig,
 			}
 			return "", err // non-retryable error, fail immediately
 		}
-		if result.Content == "" {
+		if result == nil {
 			return "", fmt.Errorf("LLM 未返回内容")
 		}
 		script := stripScriptCodeFences(result.Content)
+		// finish_reason length is the provider's own statement that the text
+		// stopped at the token cap, including when reasoning used the whole
+		// budget and the script text is empty. That is not a finished program.
+		if craftScriptFinishTruncated(result.FinishReason) {
+			return "", &craftTruncatedScriptError{script: script}
+		}
+		if strings.TrimSpace(script) == "" {
+			return "", fmt.Errorf("LLM 未返回内容")
+		}
 		return script, nil
 	}
 	// All retries exhausted
@@ -655,6 +679,39 @@ func generateScriptWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig,
 		return "", fmt.Errorf("智谱 API 服务端临时故障（code:1234），已重试 %d 次仍失败。请稍后再试。", maxRetries)
 	}
 	return "", fmt.Errorf("API 调用过于频繁 (HTTP 429)，已重试 %d 次仍失败。请稍后再试。原始错误: %v", maxRetries, lastErr)
+}
+
+// craftScriptGenerationOptions marks script generation as the consumer of the
+// model body. The scheduling budget only reserves a foreground slot. Returning
+// that budget error makes craft_tool finish and cancel the tool context, which
+// aborts the read. Callers that retry an identical payload detach instead.
+func craftScriptGenerationOptions() simpleLLMRequestOptions {
+	return simpleLLMRequestOptions{AwaitResponse: true}
+}
+
+const craftTruncatedScriptMessage = "模型输出因长度上限被截断，脚本不完整，尚未执行。"
+
+// craftTruncatedScriptError carries the partial text so a later repair prompt
+// can see it. The script has not been saved or run.
+type craftTruncatedScriptError struct {
+	script string
+}
+
+func (e *craftTruncatedScriptError) Error() string {
+	return craftTruncatedScriptMessage
+}
+
+// craftScriptFinishTruncated reports a finish reason that is not a finished
+// program. OpenAI's "length", Anthropic's max_tokens, and a Responses
+// response.incomplete are normalized to "length". Google's "continuation" is
+// an unfinished hop that still needs its continuation token.
+func craftScriptFinishTruncated(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "length", "continuation":
+		return true
+	default:
+		return false
+	}
 }
 
 func buildCraftSystemPrompt(request craftToolRequest, runtimes craftRuntimeAvailability, previous craftAttemptResult) string {
@@ -830,6 +887,9 @@ func shouldRetryCraftAttempt(request craftToolRequest, attempt craftAttemptResul
 	if currentAttempt >= maxAttempts {
 		return false
 	}
+	if _, timedOut := attempt.ExecErr.(*craftScriptTimeoutError); timedOut {
+		return false
+	}
 	if attempt.VerificationStatus == craftVerificationRuntimeMissing {
 		return false
 	}
@@ -843,14 +903,12 @@ func shouldRetryCraftAttempt(request craftToolRequest, attempt craftAttemptResul
 		}
 		return true
 	}
-	message := strings.ToLower(firstNonEmptyCraftText(attempt.VerificationMessage, errorText(attempt.ExecErr), attempt.Output))
-	if classifyCraftFailureSignal(message).DisallowsRetry() {
+	signal := craftAttemptFailureSignal(attempt)
+	if signal.DisallowsRetry() {
 		return false
 	}
-	if request.WorkingDir != "" {
-		if classifyCraftFailureSignal(message) == craftFailureSignalEnvironment {
-			return false
-		}
+	if request.WorkingDir != "" && signal == craftFailureSignalEnvironment {
+		return false
 	}
 	return true
 }
@@ -1025,9 +1083,14 @@ func classifyCraftFailure(request craftToolRequest, attempt craftAttemptResult) 
 	if attempt.VerificationStatus == craftVerificationRuntimeMissing {
 		return craftFailureCategoryEnvironment, "当前环境缺少可用脚本运行时，请安装 python/node/bash/powershell 或显式指定可用 language。"
 	}
+	// The script deadline is known at execution. Output may also contain a
+	// partial traceback; that does not mean the file is missing or that
+	// another immediate run will finish.
+	if _, timedOut := attempt.ExecErr.(*craftScriptTimeoutError); timedOut {
+		return craftFailureCategoryUnknown, ""
+	}
 
-	message := strings.ToLower(firstNonEmptyCraftText(attempt.VerificationMessage, errorText(attempt.ExecErr), attempt.Output))
-	switch classifyCraftFailureSignal(message) {
+	switch craftAttemptFailureSignal(attempt) {
 	case craftFailureSignalPermission:
 		return craftFailureCategoryPermission, "这是权限或认证问题，继续自动重试通常无效；请先补齐权限、凭据或登录态。"
 	case craftFailureSignalEnvironment:
@@ -1035,12 +1098,54 @@ func classifyCraftFailure(request craftToolRequest, attempt craftAttemptResult) 
 	case craftFailureSignalCapabilityBoundary:
 		return craftFailureCategoryCapability, "该任务超出单脚本自动化边界，应改走内部 CodingSubAgent 进行多步探索或代码库级修改。"
 	case craftFailureSignalScript:
-		return craftFailureCategoryScript, "这更像脚本本身的可修复错误，可以调整脚本内容、依赖导入或命令后再试。"
+		// "error:" is a script marker and also appears in transport failures
+		// such as "SSE stream read error:". A script string rejected before
+		// it is saved has nothing to repair from an execution.
+		if craftAttemptReachedExecution(attempt) {
+			return craftFailureCategoryScript, "这更像脚本本身的可修复错误，可以调整脚本内容、依赖导入或命令后再试。"
+		}
+	}
+	// Generation, transport, and pre-run rejection never executed a script.
+	// Calling that an artifact miss tells the model the file should already exist.
+	if !craftAttemptReachedExecution(attempt) {
+		return craftFailureCategoryUnknown, ""
 	}
 	if normalizeCraftVerificationModeKind(request.VerificationMode).RequiresArtifact() {
 		return craftFailureCategoryArtifact, "当前任务要求生成可验证产物，请确认脚本确实输出了目标文件。"
 	}
 	return craftFailureCategoryUnknown, "未能自动归类失败原因，请结合脚本输出与保存的脚本内容继续排查。"
+}
+
+// craftAttemptFailureSignal reads the process error first. "exit status 1" and
+// the output_suspicious summary have no marker; the script's own output does.
+// A traceback that quotes "no such file or directory" is still the script
+// failing. Environment and permission markers apply when the output has no
+// script marker, and a transport "error:" stays on the process message so the
+// execution gate can reject it.
+func craftAttemptFailureSignal(attempt craftAttemptResult) craftFailureSignalKind {
+	message := strings.ToLower(strings.TrimSpace(firstNonEmptyCraftText(attempt.VerificationMessage, errorText(attempt.ExecErr))))
+	if message != "" {
+		if signal := classifyCraftFailureSignal(message); signal != craftFailureSignalNone {
+			return signal
+		}
+	}
+	output := strings.ToLower(strings.TrimSpace(attempt.Output))
+	if output == "" {
+		return craftFailureSignalNone
+	}
+	if containsAnyCraftMarker(output, craftScriptFailureMarkers) {
+		return craftFailureSignalScript
+	}
+	return classifyCraftFailureSignal(output)
+}
+
+// craftAttemptReachedExecution reports whether a script was saved or run.
+// Source text alone is not execution: language mismatch and the security
+// scan set Script, then stop before save.
+func craftAttemptReachedExecution(attempt craftAttemptResult) bool {
+	return strings.TrimSpace(attempt.ScriptPath) != "" ||
+		attempt.ExecErr != nil ||
+		strings.TrimSpace(attempt.Output) != ""
 }
 
 func verifyCraftExecution(request craftToolRequest, attempt craftAttemptResult) craftAttemptResult {
@@ -1467,14 +1572,32 @@ func executeScriptWithContext(parent context.Context, scriptPath, language, work
 	}
 	if runErr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			if b.Len() > 0 {
-				b.WriteString("\n")
-			}
-			b.WriteString(fmt.Sprintf("[error] timeout after %ds", timeout))
+			return b.String(), &craftScriptTimeoutError{seconds: timeout, err: runErr}
 		}
 		return b.String(), runErr
 	}
 	return b.String(), nil
+}
+
+// craftScriptTimeoutError is the script's own deadline, not a missing file
+// and not an OS error string. Callers classify the type instead of the prose.
+type craftScriptTimeoutError struct {
+	seconds int
+	err     error
+}
+
+func (e *craftScriptTimeoutError) Error() string {
+	if e == nil || e.seconds <= 0 {
+		return "脚本执行超过时限，进程已停止。"
+	}
+	return fmt.Sprintf("脚本执行超过时限（%ds），进程已停止。", e.seconds)
+}
+
+func (e *craftScriptTimeoutError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
 }
 
 // craftMinimalEnviron keeps the variables a script runtime needs to start and

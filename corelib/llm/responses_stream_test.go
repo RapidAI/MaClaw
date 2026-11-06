@@ -343,6 +343,25 @@ func TestDoResponsesAPIRequestStreamAcceptsThinkingSummaryPart(t *testing.T) {
 	}
 }
 
+func TestDoResponsesAPIRequestStreamIncompleteSnapshotIsLength(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.incomplete\ndata: {\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"print('hi'\"}]}]}}\n\n")
+	}))
+	defer srv.Close()
+
+	response, err := DoResponsesAPIRequestStream(context.Background(), corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"}, nil, nil, srv.Client(), nil, nil)
+	if err != nil {
+		t.Fatalf("DoResponsesAPIRequestStream: %v", err)
+	}
+	if got := response.Choices[0].FinishReason; got != "length" {
+		t.Fatalf("finish reason = %q, want length", got)
+	}
+	if got := response.Choices[0].Message.Content; got != "print('hi'" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
 func TestResponsesStreamOutlivesRouteDeadlineAfterHeaders(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

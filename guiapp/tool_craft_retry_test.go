@@ -315,6 +315,67 @@ func TestGenerateScript_SuccessAfterRetry(t *testing.T) {
 	}
 }
 
+func TestGenerateScript_TruncatedFinishIsNotExecutable(t *testing.T) {
+	var requestCount int32
+	partial := "print('hi'"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message":       map[string]interface{}{"content": partial, "role": "assistant"},
+					"finish_reason": "length",
+				},
+			},
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", TimeoutSec: 5}
+	script, err := generateScript(cfg, craftToolRequest{Task: "test task", RuntimeLanguage: "python"}, craftRuntimeAvailability{Python: "/usr/bin/python"}, craftAttemptResult{}, srv.Client())
+	if script != "" {
+		t.Fatalf("truncated script was returned as executable: %q", script)
+	}
+	truncated, ok := err.(*craftTruncatedScriptError)
+	if !ok || truncated == nil {
+		t.Fatalf("error = %v", err)
+	}
+	if truncated.script != partial {
+		t.Fatalf("partial script = %q", truncated.script)
+	}
+	if err.Error() != craftTruncatedScriptMessage {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if atomic.LoadInt32(&requestCount) != 1 {
+		t.Fatalf("requests = %d, want 1", requestCount)
+	}
+}
+
+func TestGenerateScript_EmptyLengthFinishIsNotExecutable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"length"}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", TimeoutSec: 5}
+	script, err := generateScript(cfg, craftToolRequest{Task: "test task", RuntimeLanguage: "python"}, craftRuntimeAvailability{Python: "/usr/bin/python"}, craftAttemptResult{}, srv.Client())
+	if script != "" {
+		t.Fatalf("empty truncated script was returned as executable: %q", script)
+	}
+	truncated, ok := err.(*craftTruncatedScriptError)
+	if !ok || truncated == nil {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.TrimSpace(truncated.script) != "" {
+		t.Fatalf("partial script = %q", truncated.script)
+	}
+}
+
 // TestGenerateScript_Code1234WithoutWangluoCuowu_NoRetry verifies that
 // an error containing code:1234 but NOT containing "网络错误" is treated
 // as non-retryable. The retry predicate requires BOTH conditions.
