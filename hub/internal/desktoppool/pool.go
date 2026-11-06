@@ -60,6 +60,10 @@ const (
 	WakeProgress   = "progress"
 	WakeMessage    = "message"
 	WakeSchedule   = "schedule"
+
+	// Wake reasons for desktopd. Empty is refused by desktopd when starting.
+	WakeReasonBot   = "bot-desktop"
+	WakeReasonHuman = "human-wake"
 )
 
 // WakeError is the retryable tool error for a warm start that passed 25
@@ -69,6 +73,24 @@ type WakeError struct{}
 func (WakeError) Error() string    { return "桌面正在唤醒，再试一次。" }
 func (WakeError) Retryable() bool  { return true }
 func (WakeError) UserBubble() bool { return false }
+
+type wakeReasonKey struct{}
+
+// WithWakeReason labels OpenDesktop/Ensure as bot-desktop or human-wake.
+func WithWakeReason(ctx context.Context, reason string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, wakeReasonKey{}, reason)
+}
+
+func wakeReasonOf(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	reason, _ := ctx.Value(wakeReasonKey{}).(string)
+	return strings.TrimSpace(reason)
+}
 
 // IsDesktopWake reports a warm-start retry. Callers leave send_to_user empty.
 func IsDesktopWake(err error) bool {
@@ -536,13 +558,18 @@ func (p *Pool) OpenDesktop(ctx context.Context, tenantID, userID string) (Deskto
 		Display string `json:"display"`
 		Novnc   string `json:"novnc_url"`
 	}
+	reason := wakeReasonOf(ctx)
+	if reason == "" {
+		reason = WakeReasonBot
+	}
 	body := map[string]string{
-		"tenant_id": store.NormalizeTenantID(tenantID),
-		"user_id":   strings.TrimSpace(userID),
-		"image":     server.Image,
-		"memory":    server.Memory,
-		"cpus":      server.CPUs,
-		"shm_size":  server.ShmSize,
+		"tenant_id":   store.NormalizeTenantID(tenantID),
+		"user_id":     strings.TrimSpace(userID),
+		"image":       server.Image,
+		"memory":      server.Memory,
+		"cpus":        server.CPUs,
+		"shm_size":    server.ShmSize,
+		"wake_reason": reason,
 	}
 	if mode := p.effectiveProxyMode(ctx, tenantID, userID); mode != "" {
 		body["proxy_mode"] = mode
@@ -896,7 +923,11 @@ func (p *Pool) ensureOp(ctx context.Context, tenantID, userID, op string) error 
 	if !TurnWakes(op, false) {
 		return nil
 	}
-	return p.Ensure(ctx, tenantID, userID)
+	reason := wakeReasonOf(ctx)
+	if reason == "" {
+		reason = WakeReasonBot
+	}
+	return p.EnsureReason(ctx, tenantID, userID, reason)
 }
 
 // Ensure asks the assigned Docker service to start a stopped desktop before
@@ -904,19 +935,28 @@ func (p *Pool) ensureOp(ctx context.Context, tenantID, userID, op string) error 
 // still unfinished after 25 seconds returns WakeError. That error is not a
 // user bubble. A chat message and a schedule do not call this.
 func (p *Pool) Ensure(ctx context.Context, tenantID, userID string) error {
+	return p.EnsureReason(ctx, tenantID, userID, WakeReasonBot)
+}
+
+// EnsureReason is Ensure with an explicit desktopd wake_reason.
+func (p *Pool) EnsureReason(ctx context.Context, tenantID, userID, reason string) error {
 	server, err := p.resolve(ctx, tenantID, userID)
 	if err != nil {
 		return err
 	}
 	started := p.now()
 	client := &http.Client{Timeout: WarmStartBudget}
+	if strings.TrimSpace(reason) == "" {
+		reason = WakeReasonBot
+	}
 	body := map[string]string{
-		"tenant_id": store.NormalizeTenantID(tenantID),
-		"user_id":   strings.TrimSpace(userID),
-		"image":     server.Image,
-		"memory":    server.Memory,
-		"cpus":      server.CPUs,
-		"shm_size":  server.ShmSize,
+		"tenant_id":    store.NormalizeTenantID(tenantID),
+		"user_id":      strings.TrimSpace(userID),
+		"image":        server.Image,
+		"memory":       server.Memory,
+		"cpus":         server.CPUs,
+		"shm_size":     server.ShmSize,
+		"wake_reason":  reason,
 	}
 	var out struct {
 		Status string `json:"status"`

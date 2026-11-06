@@ -58,7 +58,7 @@ func newViewHoldService(t *testing.T) (*Service, *ctlDesktop) {
 	return svc, desk
 }
 
-func TestHoldDesktopViewSendsViewHoldWhenDemoSkillOn(t *testing.T) {
+func TestHoldDesktopViewNeverSendsViewHold(t *testing.T) {
 	t.Setenv(demoskill.EnvFlag, "1")
 	svc, desk := newViewHoldService(t)
 	ctx := context.Background()
@@ -67,14 +67,11 @@ func TestHoldDesktopViewSendsViewHoldWhenDemoSkillOn(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(desk.ops) != 1 || desk.ops[0] != desktop.CtlViewHold || desk.users[0] != desktop.BotDesktopUser("alice", "bot_iso") {
-		t.Fatalf("ops=%v users=%v (one throttled hold to the bot display)", desk.ops, desk.users)
+	if len(desk.ops) != 0 {
+		t.Fatalf("mere watch sent %v; viewing must not view_hold / pin idle", desk.ops)
 	}
 	if err := svc.ReleaseUserDesktopView(ctx, "tenant-v", "alice", "bot_iso"); err != nil {
 		t.Fatal(err)
-	}
-	if desk.ops[len(desk.ops)-1] != desktop.CtlViewRelease {
-		t.Fatalf("ops=%v want release", desk.ops)
 	}
 }
 

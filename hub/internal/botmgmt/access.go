@@ -1384,6 +1384,7 @@ func (s *Service) openDesktop(ctx context.Context, tenantID, userID, instanceID,
 	gate.Lock()
 	s.beginDesktopUse(tenantID, userID, instanceID)
 	s.releaseDesktopKeyboard(tenantID, userID, botID)
+	ctx = WithDesktopWakeReason(ctx, DesktopWakeBot)
 	novnc, err := s.Desktop.Open(ctx, tenantID, userID)
 	if err != nil {
 		s.endDesktopUse(tenantID, userID, instanceID)

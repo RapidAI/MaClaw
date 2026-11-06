@@ -1327,13 +1327,13 @@ describe('DesktopBotWorkspace', () => {
         expect(stage.className).not.toContain('is-fullscreen');
         expect(stage.querySelector('.desktop-bot-stage__bar')?.contains(expand)).toBe(false);
         expect(stage.querySelector('.desktop-bot-stage__frame')?.contains(expand)).toBe(true);
-        expect(stage.textContent).toContain('正在观看桌面。观看期间桌面保持开启。');
+        expect(stage.textContent).toContain('正在观看桌面。');
         expect(screen.queryByTestId('desktop-bot-exit-takeover')).toBeNull();
 
         fireEvent.click(expand);
         expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-fullscreen');
         expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-bot');
-        expect(screen.getByTestId('desktop-bot-stage').textContent).toContain('正在观看桌面。观看期间桌面保持开启。');
+        expect(screen.getByTestId('desktop-bot-stage').textContent).toContain('正在观看桌面。');
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('tabindex')).toBe('-1');
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('watch');

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -17,7 +18,7 @@ const (
 	Stage2Idle = 5 * time.Minute
 	// DesktopIdleDefault is the historical reaper timeout when operators want
 	// "sleep after use". 24h is too long for that promise; 20m matches the
-	// expected UX (viewer or in-progress desktop step still blocks sleep).
+	// expected UX (in-progress desktop step still blocks sleep; mere viewing does not).
 	DesktopIdleDefault = 20 * time.Minute
 	// WorkspaceIdleDefault keeps the headless bash/file workspace around
 	// longer than the GUI desktop. A short desktop sleep must not cull a
@@ -79,6 +80,44 @@ func ParseWorkspaceMaxIdle(raw string) (time.Duration, error) {
 // WarmStartError is the retryable tool error for a warm start that is still
 // unfinished after WarmStartBudget. It is not a sentence for the person.
 type WarmStartError struct{}
+
+
+// Allowed wake reasons for starting a stopped desktop. Anything else is
+// refused: health checks, listings, bash/file, background reconnects, and
+// leftover Ensure calls must not boot the GUI container.
+const (
+	WakeReasonBotDesktop = "bot-desktop"
+	WakeReasonHumanWake  = "human-wake"
+)
+
+// ErrWakeDenied is a start without bot-desktop or human-wake. The container
+// stays stopped. Callers show 桌面在休眠 and do not retry as a warm start.
+var ErrWakeDenied = errors.New("桌面在休眠。只有 bot 的桌面步骤，或人点「唤醒」，才会开机。")
+
+// AllowedWakeReason reports a start that Daniel's policy allows.
+func AllowedWakeReason(reason string) bool {
+	switch strings.TrimSpace(reason) {
+	case WakeReasonBotDesktop, WakeReasonHumanWake:
+		return true
+	default:
+		return false
+	}
+}
+
+// requireWakeToStart fails closed when a call would docker start or create a
+// desktop without an allowed reason. An already-running desktop does not call
+// this. The reason is logged so a leak can be found in the journal.
+func (s *Service) requireWakeToStart(spec Spec, action string) error {
+	if s == nil || !s.EnforceWakeReason {
+		return nil
+	}
+	if AllowedWakeReason(spec.WakeReason) {
+		log.Printf("[desktopd] wake reason=%s action=%s tenant=%s user=%s", strings.TrimSpace(spec.WakeReason), action, spec.TenantID, spec.UserID)
+		return nil
+	}
+	log.Printf("[desktopd] wake denied action=%s reason=%q tenant=%s user=%s", action, strings.TrimSpace(spec.WakeReason), spec.TenantID, spec.UserID)
+	return ErrWakeDenied
+}
 
 func (WarmStartError) Error() string    { return "桌面正在唤醒，再试一次。" }
 func (WarmStartError) Retryable() bool  { return true }
@@ -230,12 +269,18 @@ func (s *Service) ensureUnlocked(ctx context.Context, spec Spec) error {
 	// Package mounts (and other recreateReason checks) must apply on Ensure too:
 	// a plain docker start would keep an old container without shared apt roots.
 	if reason := s.recreateReason(current, spec); reason != "" {
+		if err := s.requireWakeToStart(spec, "ensure-recreate"); err != nil {
+			return err
+		}
 		if _, err := s.createUnlocked(ctx, spec); err != nil {
 			return err
 		}
 		return s.warmBudget(started)
 	}
 	if !current.Running {
+		if err := s.requireWakeToStart(spec, "ensure-start"); err != nil {
+			return err
+		}
 		if _, startErr := s.docker(ctx, "start", name); startErr != nil {
 			return startErr
 		}

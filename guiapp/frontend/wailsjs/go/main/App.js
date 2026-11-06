@@ -6278,6 +6278,9 @@ export function TokenBankWithdrawGift(arg1, arg2, arg3) {
 export function WatchDesktopBot(arg1, arg2) {
   return window['go']['main']['App']['WatchDesktopBot'](arg1, arg2);
 }
+export function WakeDesktopBot(arg1, arg2) {
+  return window['go']['main']['App']['WakeDesktopBot'](arg1, arg2);
+}
 
 export function GetDesktopBotScreen(arg1) {
   return window['go']['main']['App']['GetDesktopBotScreen'](arg1);

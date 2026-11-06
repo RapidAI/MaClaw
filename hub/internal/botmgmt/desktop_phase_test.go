@@ -136,14 +136,14 @@ func TestReleaseUserDesktopViewStopsOnlyAnIdleDesktop(t *testing.T) {
 	svc.Desktop = desk
 	ctx := context.Background()
 
-	if _, _, err := svc.HoldDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err != nil {
+	if _, _, err := svc.WakeDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.ReleaseUserDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err != nil || desk.stop != 1 {
 		t.Fatalf("idle release stop=%d err=%v", desk.stop, err)
 	}
 
-	if _, _, err := svc.HoldDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err != nil {
+	if _, _, err := svc.WakeDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err != nil {
 		t.Fatal(err)
 	}
 	svc.beginDesktopUse("tenant-a", "alice", "inst_alice")
@@ -155,7 +155,7 @@ func TestReleaseUserDesktopViewStopsOnlyAnIdleDesktop(t *testing.T) {
 		t.Fatalf("release after open stop=%d err=%v", desk.stop, err)
 	}
 
-	if _, _, err := svc.HoldDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err != nil {
+	if _, _, err := svc.WakeDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err != nil {
 		t.Fatal(err)
 	}
 	svc.noteDesktopHeld("tenant-a", "alice", "bot_alice")
@@ -167,7 +167,7 @@ func TestReleaseUserDesktopViewStopsOnlyAnIdleDesktop(t *testing.T) {
 		t.Fatalf("release after login stop=%d err=%v", desk.stop, err)
 	}
 
-	if _, _, err := svc.HoldDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err != nil {
+	if _, _, err := svc.WakeDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err != nil {
 		t.Fatal(err)
 	}
 	svc.keepDesktopWithoutKeyboard("tenant-a", "alice", "bot_alice")
@@ -176,7 +176,7 @@ func TestReleaseUserDesktopViewStopsOnlyAnIdleDesktop(t *testing.T) {
 	}
 	svc.clearDesktopHeld("tenant-a", "alice", "bot_alice")
 
-	if _, _, err := svc.HoldDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err != nil {
+	if _, _, err := svc.WakeDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err != nil {
 		t.Fatal(err)
 	}
 	svc.NoteDesktopAdminView("tenant-a", "alice")

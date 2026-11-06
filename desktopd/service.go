@@ -124,6 +124,10 @@ type Service struct {
 	// old path: those calls start the desktop. cmd/desktopd turns it on
 	// unless DESKTOPD_TOOL_WORKSPACE=off.
 	ToolWorkspace bool
+	// EnforceWakeReason requires bot-desktop or human-wake before docker
+	// start/create. cmd/desktopd turns it on. Hand-built tests leave it off
+	// so old fixtures still start; wake_reason_test turns it on.
+	EnforceWakeReason bool
 	// WorkspaceMaxIdle is how long a headless workspace may sit unused.
 	// Zero means WorkspaceIdleDefault. It is independent of the desktop
 	// reaper timeout so a 20m desktop sleep does not stop the workspace.
@@ -163,6 +167,10 @@ type Spec struct {
 	Memory  string
 	CPUs    string
 	ShmSize string
+	// WakeReason must be bot-desktop or human-wake whenever this call would
+	// docker start or create the GUI container. Empty leaves a stopped
+	// desktop asleep (Ensure no-ops when already running).
+	WakeReason string
 }
 
 // Desktop is one user's container on this Docker host.
@@ -205,6 +213,9 @@ func (s *Service) createUnlocked(ctx context.Context, spec Spec) (Desktop, error
 		return Desktop{}, err
 	}
 	if reason := s.recreateReason(current, spec); reason != "" {
+		if err := s.requireWakeToStart(spec, "create-recreate"); err != nil {
+			return Desktop{}, err
+		}
 		// The requested image must exist before anything is torn down: a
 		// missing or unpullable image has to leave the old desktop in place.
 		if err := s.installImage(ctx, spec.Image); err != nil {
@@ -240,6 +251,9 @@ func (s *Service) createUnlocked(ctx context.Context, spec Spec) (Desktop, error
 		return Desktop{}, err
 	}
 	if !current.Exists {
+		if err := s.requireWakeToStart(spec, "create-run"); err != nil {
+			return Desktop{}, err
+		}
 		if err := s.runContainer(ctx, name, spec, image); err != nil {
 			return Desktop{}, err
 		}
@@ -251,6 +265,9 @@ func (s *Service) createUnlocked(ctx context.Context, spec Spec) (Desktop, error
 			return Desktop{}, err
 		}
 		if !current.Running {
+			if err := s.requireWakeToStart(spec, "create-start"); err != nil {
+				return Desktop{}, err
+			}
 			if _, err := s.docker(ctx, "start", name); err != nil {
 				return Desktop{}, err
 			}

@@ -64,6 +64,10 @@ func (c botDesktopControl) Open(ctx context.Context, tenantID, userID string) (s
 	if c.pool == nil {
 		return "", desktoppool.ErrNotAssigned
 	}
+	// botmgmt.WithDesktopWakeReason carries human-wake or bot-desktop.
+	if reason := botmgmtDesktopWakeReason(ctx); reason != "" {
+		ctx = desktoppool.WithWakeReason(ctx, reason)
+	}
 	session, err := c.pool.OpenDesktop(ctx, tenantID, userID)
 	if err != nil {
 		return "", err

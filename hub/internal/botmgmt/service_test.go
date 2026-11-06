@@ -1947,7 +1947,7 @@ func botViewRecordJSON(t *testing.T) string {
 	return string(raw)
 }
 
-func TestHoldDesktopViewOpensAndKeepsTheDesktopUp(t *testing.T) {
+func TestHoldDesktopViewDoesNotStartOrPin(t *testing.T) {
 	settings := &memSettings{}
 	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
 		t.Fatal(err)
@@ -1961,75 +1961,67 @@ func TestHoldDesktopViewOpensAndKeepsTheDesktopUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if desk.open != 1 {
-		t.Fatalf("open=%d, want the hold to start the desktop", desk.open)
+	if desk.open != 0 {
+		t.Fatalf("open=%d, mere watch must not start the desktop", desk.open)
 	}
-	if !strings.HasPrefix(novnc, "/api/v1/desktop-handoff/") {
-		t.Fatalf("novnc=%q", novnc)
+	if novnc != "" || keyboard {
+		t.Fatalf("novnc=%q keyboard=%v, idle bot must look asleep", novnc, keyboard)
 	}
-	if keyboard {
-		t.Fatal("keyboard must not go to the person while nobody logged in")
-	}
-	// Polling again must not open the desktop a second time.
-	if _, _, err := svc.HoldDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err != nil || desk.open != 1 {
-		t.Fatalf("second hold opened=%d err=%v", desk.open, err)
-	}
-	// A run finishing now must leave the desktop up: the human is watching.
 	stopped, err := svc.StopDesktopIfIdle(ctx, "tenant-a", "alice", "inst_alice")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stopped || desk.stop != 0 {
-		t.Fatal("stop pulled the desktop out from under the open view")
-	}
-	// The hold expires on its own; the next idle stop goes through.
-	svc.Now = func() time.Time { return time.Now().Add(UserDesktopViewHold + time.Minute) }
-	stopped, err = svc.StopDesktopIfIdle(ctx, "tenant-a", "alice", "inst_alice")
-	if err != nil {
-		t.Fatal(err)
-	}
 	if !stopped || desk.stop != 1 {
-		t.Fatalf("stopped=%v stop=%d, the expired hold must not pin the desktop", stopped, desk.stop)
+		t.Fatalf("stopped=%v stop=%d, mere watch must not pin idle stop", stopped, desk.stop)
 	}
 }
 
-func TestHoldDesktopViewFinishesAfterThePollGivesUp(t *testing.T) {
+func TestWakeDesktopViewStartsAndPinsThenHoldAttaches(t *testing.T) {
 	settings := &memSettings{}
 	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
 		t.Fatal(err)
 	}
 	svc := NewService(settings)
 	desk := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
-	parent, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	desk.openFn = func(ctx context.Context) (string, error) {
-		cancel()
-		if err := ctx.Err(); err != nil {
-			return "", err
-		}
-		return desk.url, nil
-	}
 	svc.Desktop = desk
+	ctx := context.Background()
 
-	novnc, _, err := svc.HoldDesktopView(parent, "tenant-a", "alice", "bot_alice")
+	novnc, _, err := svc.WakeDesktopView(ctx, "tenant-a", "alice", "bot_alice")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if desk.open != 1 {
+		t.Fatalf("open=%d", desk.open)
 	}
 	if !strings.HasPrefix(novnc, "/api/v1/desktop-handoff/") {
 		t.Fatalf("novnc=%q", novnc)
 	}
-	// The poll that gave up already recorded the watch, so a run finishing
-	// now must not stop the desktop the person is still looking at.
-	stopped, err := svc.StopDesktopIfIdle(context.Background(), "tenant-a", "alice", "inst_alice")
+	again, _, err := svc.HoldDesktopView(ctx, "tenant-a", "alice", "bot_alice")
+	if err != nil || again == "" || desk.open != 1 {
+		t.Fatalf("hold after wake again=%q open=%d err=%v", again, desk.open, err)
+	}
+	stopped, err := svc.StopDesktopIfIdle(ctx, "tenant-a", "alice", "inst_alice")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stopped || desk.stop != 0 {
-		t.Fatal("a poll that gave up let the idle stop take the desktop")
+		t.Fatal("wake pin should block idle stop")
+	}
+	svc.Now = func() time.Time { return time.Now().Add(UserDesktopViewHold + time.Minute) }
+	asleep, _, err := svc.HoldDesktopView(ctx, "tenant-a", "alice", "bot_alice")
+	if err != nil || asleep != "" {
+		t.Fatalf("asleep=%q err=%v", asleep, err)
+	}
+	stopped, err = svc.StopDesktopIfIdle(ctx, "tenant-a", "alice", "inst_alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stopped || desk.stop != 1 {
+		t.Fatalf("stopped=%v stop=%d", stopped, desk.stop)
 	}
 }
 
-func TestHoldDesktopViewOpensOnceWhenPollsOverlap(t *testing.T) {
+func TestWakeDesktopViewOpensOnceWhenPollsOverlap(t *testing.T) {
 	settings := &memSettings{}
 	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
 		t.Fatal(err)
@@ -2052,7 +2044,7 @@ func TestHoldDesktopViewOpensOnceWhenPollsOverlap(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		go func() {
 			defer wg.Done()
-			_, _, err := svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
+			_, _, err := svc.WakeDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
 			errs <- err
 		}()
 	}
@@ -2069,7 +2061,7 @@ func TestHoldDesktopViewOpensOnceWhenPollsOverlap(t *testing.T) {
 	opened := desk.open
 	desk.mu.Unlock()
 	if opened != 1 {
-		t.Fatalf("open=%d, overlapping polls started more than one desktop", opened)
+		t.Fatalf("open=%d, overlapping wakes started more than one desktop", opened)
 	}
 }
 
@@ -2089,77 +2081,14 @@ func TestHoldDesktopViewDoesNotStartACanceledPoll(t *testing.T) {
 	cancel()
 
 	if _, _, err := svc.HoldDesktopView(ctx, "tenant-a", "alice", "bot_alice"); err == nil {
-		t.Fatal("canceled poll returned a picture")
+		t.Fatal("canceled poll returned ok")
 	}
-	stopped, err := svc.StopDesktopIfIdle(context.Background(), "tenant-a", "alice", "inst_alice")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !stopped || desk.stop != 1 || desk.open != 0 {
-		t.Fatalf("stopped=%v stop=%d open=%d, canceled poll pinned the desktop", stopped, desk.stop, desk.open)
+	if desk.open != 0 {
+		t.Fatalf("open=%d", desk.open)
 	}
 }
 
-func TestHoldDesktopViewStopsWhenThePanelClosesDuringOpen(t *testing.T) {
-	settings := &memSettings{}
-	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
-		t.Fatal(err)
-	}
-	svc := NewService(settings)
-	desk := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
-	entered := make(chan struct{})
-	var once sync.Once
-	var stoppedDuringOpen bool
-	desk.openFn = func(context.Context) (string, error) {
-		once.Do(func() { close(entered) })
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if !svc.userDesktopViewActive("tenant-a", "alice") {
-				desk.mu.Lock()
-				stoppedDuringOpen = desk.stop != 0
-				desk.mu.Unlock()
-				return desk.url, nil
-			}
-			time.Sleep(time.Millisecond)
-		}
-		return "", fmt.Errorf("panel close did not drop the watch")
-	}
-	svc.Desktop = desk
-
-	// Release takes the same gate as open, so it has to run beside open.
-	// Calling it on this goroutine would wait for a gate this goroutine holds.
-	releaseErr := make(chan error, 1)
-	go func() {
-		<-entered
-		releaseErr <- svc.ReleaseUserDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
-	}()
-
-	novnc, _, err := svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
-	relErr := <-releaseErr
-	if err != nil {
-		t.Fatal(err)
-	}
-	if relErr != nil {
-		t.Fatal(relErr)
-	}
-	if novnc != "" {
-		t.Fatalf("novnc=%q, closed panel still received a picture", novnc)
-	}
-	if stoppedDuringOpen {
-		t.Fatal("release stopped the desktop while open still held it")
-	}
-	desk.mu.Lock()
-	stopped := desk.stop
-	desk.mu.Unlock()
-	if stopped == 0 {
-		t.Fatal("desktop stayed up after the panel closed during open")
-	}
-	if svc.desktopViewURL("tenant-a", "alice") != "" {
-		t.Fatal("closed panel left a desktop picture published")
-	}
-}
-
-func TestHoldDesktopViewClosedEpochDoesNotPin(t *testing.T) {
+func TestWakeDesktopViewClosedEpochDoesNotPin(t *testing.T) {
 	settings := &memSettings{}
 	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
 		t.Fatal(err)
@@ -2168,196 +2097,23 @@ func TestHoldDesktopViewClosedEpochDoesNotPin(t *testing.T) {
 	desk := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
 	svc.Desktop = desk
 
-	opened, _, err := svc.HoldDesktopView(WithDesktopWatchEpoch(context.Background(), 1), "tenant-a", "alice", "bot_alice")
+	opened, _, err := svc.WakeDesktopView(WithDesktopWatchEpoch(context.Background(), 1), "tenant-a", "alice", "bot_alice")
 	if err != nil || !strings.HasPrefix(opened, "/api/v1/desktop-handoff/") {
 		t.Fatalf("open novnc=%q err=%v", opened, err)
 	}
 	if err := svc.ReleaseUserDesktopView(WithDesktopWatchEpoch(context.Background(), 1), "tenant-a", "alice", "bot_alice"); err != nil {
 		t.Fatal(err)
 	}
-	// The poll that belonged to the closed page must not start it again.
-	again, _, err := svc.HoldDesktopView(WithDesktopWatchEpoch(context.Background(), 1), "tenant-a", "alice", "bot_alice")
+	again, _, err := svc.WakeDesktopView(WithDesktopWatchEpoch(context.Background(), 1), "tenant-a", "alice", "bot_alice")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if again != "" || desk.open != 1 {
 		t.Fatalf("again=%q open=%d, closed generation pinned the desktop", again, desk.open)
 	}
-	// The page that opened next is a new generation and may start it.
-	reopened, _, err := svc.HoldDesktopView(WithDesktopWatchEpoch(context.Background(), 2), "tenant-a", "alice", "bot_alice")
+	reopened, _, err := svc.WakeDesktopView(WithDesktopWatchEpoch(context.Background(), 2), "tenant-a", "alice", "bot_alice")
 	if err != nil || !strings.HasPrefix(reopened, "/api/v1/desktop-handoff/") || desk.open != 2 {
 		t.Fatalf("reopen novnc=%q open=%d err=%v", reopened, desk.open, err)
-	}
-}
-
-func TestHoldDesktopViewOldReleaseDoesNotStopANewerWatch(t *testing.T) {
-	settings := &memSettings{}
-	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
-		t.Fatal(err)
-	}
-	svc := NewService(settings)
-	desk := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
-	entered := make(chan struct{})
-	released := make(chan struct{})
-	var once sync.Once
-	desk.openFn = func(context.Context) (string, error) {
-		once.Do(func() { close(entered) })
-		<-released
-		return desk.url, nil
-	}
-	svc.Desktop = desk
-
-	newer := make(chan string, 1)
-	newerErr := make(chan error, 1)
-	go func() {
-		<-entered
-		novnc, _, err := svc.HoldDesktopView(WithDesktopWatchEpoch(context.Background(), 2), "tenant-a", "alice", "bot_alice")
-		newer <- novnc
-		newerErr <- err
-	}()
-	releaseErr := make(chan error, 1)
-	go func() {
-		<-entered
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			svc.mu.Lock()
-			gen := svc.desktopWatchGen[desktopViewKey("tenant-a", "alice")]
-			svc.mu.Unlock()
-			if gen >= 2 {
-				releaseErr <- svc.ReleaseUserDesktopView(WithDesktopWatchEpoch(context.Background(), 1), "tenant-a", "alice", "bot_alice")
-				close(released)
-				return
-			}
-			time.Sleep(time.Millisecond)
-		}
-		releaseErr <- fmt.Errorf("newer watch did not note")
-		close(released)
-	}()
-
-	first, _, err := svc.HoldDesktopView(WithDesktopWatchEpoch(context.Background(), 1), "tenant-a", "alice", "bot_alice")
-	relErr := <-releaseErr
-	secondErr := <-newerErr
-	second := <-newer
-	if err != nil {
-		t.Fatal(err)
-	}
-	if relErr != nil {
-		t.Fatal(relErr)
-	}
-	if secondErr != nil {
-		t.Fatal(secondErr)
-	}
-	if !strings.HasPrefix(first, "/api/v1/desktop-handoff/") || !strings.HasPrefix(second, "/api/v1/desktop-handoff/") {
-		t.Fatalf("first=%q second=%q", first, second)
-	}
-	if desk.open != 1 || desk.stop != 0 {
-		t.Fatalf("open=%d stop=%d, old release restarted or stopped the new watch", desk.open, desk.stop)
-	}
-}
-
-func TestHoldDesktopViewNewerWatchDuringOpenIsNotStopped(t *testing.T) {
-	settings := &memSettings{}
-	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
-		t.Fatal(err)
-	}
-	svc := NewService(settings)
-	desk := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
-	entered := make(chan struct{})
-	var once sync.Once
-	desk.openFn = func(context.Context) (string, error) {
-		once.Do(func() { close(entered) })
-		// Wait for the newer poll's own generation. Watching for the hold to
-		// clear and come back missed it whenever the release and the reopen
-		// both landed inside one 1ms sleep (about half the runs).
-		deadline := time.Now().Add(2 * time.Second)
-		key := desktopViewKey("tenant-a", "alice")
-		for time.Now().Before(deadline) {
-			svc.mu.Lock()
-			gen := svc.desktopWatchGen[key]
-			svc.mu.Unlock()
-			if gen >= 2 && svc.userDesktopViewActive("tenant-a", "alice") {
-				return desk.url, nil
-			}
-			time.Sleep(time.Millisecond)
-		}
-		return "", fmt.Errorf("reopen did not note the watch")
-	}
-	svc.Desktop = desk
-
-	releaseErr := make(chan error, 1)
-	go func() {
-		<-entered
-		releaseErr <- svc.ReleaseUserDesktopView(WithDesktopWatchEpoch(context.Background(), 1), "tenant-a", "alice", "bot_alice")
-	}()
-	type holdResult struct {
-		novnc string
-		err   error
-	}
-	newer := make(chan holdResult, 1)
-	go func() {
-		<-entered
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if !svc.userDesktopViewActive("tenant-a", "alice") {
-				break
-			}
-			time.Sleep(time.Millisecond)
-		}
-		novnc, _, err := svc.HoldDesktopView(WithDesktopWatchEpoch(context.Background(), 2), "tenant-a", "alice", "bot_alice")
-		newer <- holdResult{novnc, err}
-	}()
-
-	first, _, err := svc.HoldDesktopView(WithDesktopWatchEpoch(context.Background(), 1), "tenant-a", "alice", "bot_alice")
-	relErr := <-releaseErr
-	second := <-newer
-	if err != nil {
-		t.Fatal(err)
-	}
-	if relErr != nil {
-		t.Fatal(relErr)
-	}
-	if second.err != nil {
-		t.Fatal(second.err)
-	}
-	if !strings.HasPrefix(first, "/api/v1/desktop-handoff/") || !strings.HasPrefix(second.novnc, "/api/v1/desktop-handoff/") {
-		t.Fatalf("first=%q second=%q", first, second.novnc)
-	}
-	desk.mu.Lock()
-	opened, stopped := desk.open, desk.stop
-	desk.mu.Unlock()
-	if opened != 1 || stopped != 0 {
-		t.Fatalf("open=%d stop=%d, release during reopen stopped the desktop", opened, stopped)
-	}
-}
-
-func TestHoldDesktopViewKeepsAHandoffWhenThePanelClosesDuringOpen(t *testing.T) {
-	settings := &memSettings{}
-	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
-		t.Fatal(err)
-	}
-	svc := NewService(settings)
-	desk := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
-	desk.openFn = func(context.Context) (string, error) {
-		svc.mu.Lock()
-		if svc.desktopHeld == nil {
-			svc.desktopHeld = map[string]string{}
-		}
-		svc.desktopHeld[desktopViewKey("tenant-a", "alice")] = "bot_alice"
-		delete(svc.desktopUserView, desktopViewKey("tenant-a", "alice"))
-		svc.mu.Unlock()
-		return desk.url, nil
-	}
-	svc.Desktop = desk
-
-	novnc, _, err := svc.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(novnc, "/api/v1/desktop-handoff/") {
-		t.Fatalf("novnc=%q", novnc)
-	}
-	if desk.stop != 0 {
-		t.Fatal("closing the watch stopped a desktop the bot had handed over")
 	}
 }
 
@@ -2369,8 +2125,6 @@ func TestHoldDesktopViewRefusesOtherPeopleAndDisabledUsers(t *testing.T) {
 	svc := NewService(settings)
 	svc.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
 
-	// A user whose grant lets them in still cannot point the hold at
-	// someone else's bot.
 	svc.CreateGrant(context.Background(), "tenant-a", Grant{Scope: ScopeUser, TargetID: "bob"})
 	if _, _, err := svc.HoldDesktopView(context.Background(), "tenant-a", "bob", "bot_alice"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("foreign bot err=%v", err)
@@ -2378,13 +2132,12 @@ func TestHoldDesktopViewRefusesOtherPeopleAndDisabledUsers(t *testing.T) {
 	if desk, ok := svc.Desktop.(*desktopCounter); !ok || desk.open != 0 {
 		t.Fatal("foreign hold opened the desktop")
 	}
-	// A user with no grant stays disabled and must not reach the desktop.
 	if _, _, err := svc.HoldDesktopView(context.Background(), "tenant-b", "alice", "bot_alice"); !errors.Is(err, ErrDisabled) {
 		t.Fatalf("disabled tenant err=%v", err)
 	}
 }
 
-func TestUserViewHoldSurvivesRestartButExpires(t *testing.T) {
+func TestUserWakeHoldSurvivesRestartButExpires(t *testing.T) {
 	settings := &memSettings{}
 	if err := settings.Set(context.Background(), storageKey("tenant-a"), botViewRecordJSON(t)); err != nil {
 		t.Fatal(err)
@@ -2392,11 +2145,10 @@ func TestUserViewHoldSurvivesRestartButExpires(t *testing.T) {
 	svc1 := NewService(settings)
 	svc1.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
 	svc1.Now = func() time.Time { return time.Now() }
-	if _, _, err := svc1.HoldDesktopView(context.Background(), "tenant-a", "alice", "bot_alice"); err != nil {
+	if _, _, err := svc1.WakeDesktopView(context.Background(), "tenant-a", "alice", "bot_alice"); err != nil {
 		t.Fatal(err)
 	}
 
-	// Hub restarts. The fresh process restores the fresh hold.
 	svc2 := NewService(settings)
 	desk2 := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
 	svc2.Desktop = desk2
@@ -2405,11 +2157,9 @@ func TestUserViewHoldSurvivesRestartButExpires(t *testing.T) {
 		t.Fatal(err)
 	}
 	if stopped || desk2.stop != 0 {
-		t.Fatal("restart forgot the user view hold")
+		t.Fatal("restart forgot the user wake hold")
 	}
 
-	// A persisted hold that was old when the process came up must not pin
-	// the desktop; the view expired long before the restart.
 	old := NewService(settings)
 	old.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
 	old.Now = func() time.Time { return time.Now().Add(time.Hour) }
@@ -2421,3 +2171,4 @@ func TestUserViewHoldSurvivesRestartButExpires(t *testing.T) {
 		t.Fatal("a stale restored hold still pins the desktop")
 	}
 }
+

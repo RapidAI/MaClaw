@@ -3898,8 +3898,8 @@ def activity_stamp(key):
 def print_idle(key):
     """One JSON line with how long this user's desktop has been idle.
 
-    ensure() still writes last_used. A CDP or noVNC connection touches the
-    activity file and counts here too. The idle limit is not changed.
+    ensure() still writes last_used. Bot CDP / human_input refresh activity;
+    mere noVNC/H.264 watching does not, so 正在观看 cannot block idle-sleep.
     """
     registry = load_registry()
     entry = (registry.get("users", {}) or {}).get(key) or {}
@@ -4075,10 +4075,17 @@ def gate_connection(client, listen_port, target_port, token):
         remote.sendall(head)
         watch = None
         if bot:
-            touch_bot_file(bot, "activity")
-            watch = BotTraffic(bot, sniff_input=listen_port == VNC_GATE_PORT)
+            if listen_port == VNC_GATE_PORT:
+                # VNC/H.264 watch: no activity stamp. Input still marks human_input.
+                watch = BotTraffic(bot, sniff_input=True)
+            else:
+                # Bot CDP is real desktop work — counts as activity.
+                touch_bot_file(bot, "activity")
+                watch = BotTraffic(bot, sniff_input=False)
         else:
-            note_gate_activity()
+            # Owner CDP / control paths still count; pure VNC watch does not.
+            if listen_port != VNC_GATE_PORT:
+                note_gate_activity()
         threading.Thread(target=pipe, args=(client, remote, watch), daemon=True).start()
         pipe(remote, client)
     except OSError:
@@ -5327,10 +5334,8 @@ class H264Viewer:
             while not self.closed.wait(0.5):
                 if self.takes_over:
                     touch_viewer_takeover(self.key)
-                if self.key and not self.owner:
-                    # A watched bot screen is in use: it must not idle-stop
-                    # under the viewer (noVNC marks this in BotTraffic).
-                    touch_bot_file(self.key, "activity")
+                # Watching alone must not refresh activity / block idle-sleep.
+                # human_input (real keys/pointer) still counts via handle().
                 self.screen.expire()
                 self.tick_lease()
         except OSError:
@@ -5432,21 +5437,13 @@ def serve_h264(client, head, owner_token):
 
 
 def h264_wake_bot(screen):
-    """A bot screen that stopped (idle) starts again when a person opens it,
-    so the player never streams a display that no longer exists (black)."""
-    display, key, owner = screen
-    if owner or not key or not is_bot_key(key) or desktop_running(key):
-        return screen
-    try:
-        with desktop_lock():
-            if not desktop_running(key):
-                print("bot display %s opened by a viewer, starting" % key, file=sys.stderr)
-                result = ensure_bot(key)
-                display = int(str(result.get("display") or ":%d" % display).lstrip(":"))
-        reap_children()
-    except (OSError, ValueError, SystemExit) as exc:
-        print("bot display %s: start for viewer failed: %s" % (key, exc), file=sys.stderr)
-    return display, key, owner
+    """Viewing must not start a stopped bot display.
+
+    Daniel 2026-11-06: 仅观看 / opening the player must not wake the desktop.
+    A stopped screen stays stopped; the GUI shows asleep until a bot step or
+    an explicit 唤醒 starts it.
+    """
+    return screen
 
 
 def stream_h264(client, key, screen, mse=False, want_input=False):
@@ -5455,7 +5452,7 @@ def stream_h264(client, key, screen, mse=False, want_input=False):
     client.settimeout(None)
     client.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                     "Sec-WebSocket-Accept: %s\r\n\r\n" % ws_accept_key(key)).encode("latin-1"))
-    note_gate_activity()
+    # Watching must not refresh idle. Only bot steps / human_input do.
     H264Viewer(client, display, screen_key, owner, mse=mse, fps=h264_fps(), want_input=want_input).run()
 
 
@@ -6169,7 +6166,8 @@ class BotTraffic:
         self.stage = 0
 
     def feed(self, data):
-        touch_bot_file(self.key, "activity")
+        # Viewing traffic must not reset idle. Input events below still mark
+        # human_input so a takeover yields correctly.
         if not self.sniff:
             return
         try:

@@ -7,11 +7,9 @@ import (
 	"time"
 )
 
-// UserDesktopViewHold is how long one open Bot 观看/接管 view keeps the user's
-// desktop up after the last command. The GUI refreshes it on every poll, so the
-// window only has to survive a poll hiccup, not a page close. Without it the
-// desktop stops the moment a run finishes and the live picture the human is
-// watching goes black — exactly the "VNC 闪一下就消失" defect.
+// UserDesktopViewHold is how long an explicit human 唤醒 session refreshes
+// the Hub-side pin after the last WakeDesktopView poll. Mere 观看 no longer
+// uses this: watching must not keep a sleeping desktop awake.
 const UserDesktopViewHold = 2 * time.Minute
 
 // desktopViewOpenTimeout is how long one watch may spend bringing the desktop
@@ -126,9 +124,10 @@ func (s *Service) userDesktopViewActiveLocked(key string) bool {
 	return true
 }
 
-// HoldDesktopView keeps this user's desktop up while a human is watching or
-// taking over from the Bot page, and returns the live noVNC page. It starts
-// the desktop when nothing is running, so 人类接管 works on an idle bot.
+// HoldDesktopView attaches to a desktop that is already up for a bot step or
+// an explicit human 唤醒 session. It never starts a stopped desktop, never
+// pins idle-sleep, and never sends view_hold. Daniel 2026-11-06: opening the
+// 电脑 tab / 仅观看 must show asleep when the bot is idle.
 // user_control stays true only when this bot already handed the keyboard to
 // the person for a login.
 func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID string) (string, bool, error) {
@@ -150,68 +149,97 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 	if index < 0 || rec.Bots[index].OwnerUserID != userID {
 		return "", false, ErrNotFound
 	}
-	// An isolated bot's picture, holds and stop are its own display's.
 	userID = desktopUserForBot(userID, rec.Bots[index])
-	// A poll that already gave up must not pin the desktop or start it. The
-	// start that is already running keeps its own deadline; this one does not
-	// begin another.
 	if ctx != nil && ctx.Err() != nil {
 		return "", false, fmt.Errorf("%w: %s", ErrSrv, ctx.Err().Error())
 	}
-	// The hold is recorded before the gate. A command that finishes while this
-	// poll is still opening has to see the person and leave the browser up.
-	// Recording it only after Open returns lets that stop win, and a poll that
-	// gives up never records it at all. A generation that has already been
-	// released belongs to a page that is gone, so it must not pin a new one.
+	_ = desktopWatchEpoch(ctx)
+	if !s.desktopViewLiveForWatch(tenantID, userID) {
+		return "", false, nil
+	}
+	novnc := s.desktopViewURL(tenantID, userID)
+	return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
+}
+
+// desktopViewLiveForWatch reports whether a 电脑-tab poll may show the live
+// picture. Mere remembered URLs after the bot went idle stay hidden so the
+// tab shows asleep; an explicit 唤醒 pin, a bot command still opening the
+// desktop, a login handoff, or an admin view may show it.
+func (s *Service) desktopViewLiveForWatch(tenantID, userID string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureDesktopHydrated(tenantID)
+	key := desktopViewKey(tenantID, userID)
+	if s.userDesktopViewActiveLocked(key) || s.adminDesktopViewActiveLocked(key) {
+		return true
+	}
+	if s.desktopOpening != nil && s.desktopOpening[key] > 0 {
+		return true
+	}
+	if s.desktopAwaiting[key] {
+		return true
+	}
+	if _, held := s.desktopHeld[key]; held {
+		return true
+	}
+	return false
+}
+
+// WakeDesktopView is the human 唤醒 control. It starts the desktop with
+// wake reason human-wake and returns the noVNC URL. Mere 电脑-tab polls must
+// call HoldDesktopView instead, which never starts.
+func (s *Service) WakeDesktopView(ctx context.Context, tenantID, userID, botID string) (string, bool, error) {
+	if s == nil || s.Desktop == nil {
+		return "", false, nil
+	}
+	enabled, err := s.Enabled(ctx, tenantID, userID)
+	if err != nil {
+		return "", false, err
+	}
+	if !enabled {
+		return "", false, ErrDisabled
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return "", false, err
+	}
+	index := indexOf(rec.Bots, botID)
+	if index < 0 || rec.Bots[index].OwnerUserID != userID {
+		return "", false, ErrNotFound
+	}
+	userID = desktopUserForBot(userID, rec.Bots[index])
+	if ctx != nil && ctx.Err() != nil {
+		return "", false, fmt.Errorf("%w: %s", ErrSrv, ctx.Err().Error())
+	}
 	epoch := desktopWatchEpoch(ctx)
 	if !s.noteDesktopUserView(tenantID, userID, epoch) {
 		return "", false, nil
 	}
-	if s.desktopViewURL(tenantID, userID) == "" {
-		gate := s.desktopUserGate(tenantID, userID)
-		gate.Lock()
-		defer gate.Unlock()
-		// Another poll may have published the picture while this one waited.
-		// A canceled waiter must not start a second desktop behind that poll.
-		// A release that won while this poll waited must not start one either.
-		if s.desktopViewURL(tenantID, userID) == "" {
-			if ctx != nil && ctx.Err() != nil {
-				return "", false, fmt.Errorf("%w: %s", ErrSrv, ctx.Err().Error())
-			}
-			if !s.desktopWatchStillCurrent(tenantID, userID, epoch) {
-				return "", false, nil
-			}
-			openCtx, cancel := desktopViewOpenContext(ctx)
-			defer cancel()
-			novnc, openErr := s.Desktop.Open(openCtx, tenantID, userID)
-			if openErr != nil {
-				return "", false, fmt.Errorf("%w: %s", ErrSrv, openErr.Error())
-			}
-			// The panel can close while the container is still starting.
-			// Publishing that picture, or leaving the desktop up, puts a
-			// browser on screen for a watch that has already been released.
-			instanceID := rec.Bots[index].InstanceID
-			if !s.userDesktopViewActive(tenantID, userID) && !s.desktopStopBlocked(tenantID, userID, instanceID) {
-				// Open may have used the whole start budget. The stop needs
-				// its own, or a slow start leaves the container up after the
-				// panel has already gone.
-				stopCtx, stopCancel := desktopViewOpenContext(context.Background())
-				defer stopCancel()
-				if stopErr := s.stopDesktop(stopCtx, tenantID, userID); stopErr != nil {
-					return "", false, fmt.Errorf("%w: %s", ErrSrv, stopErr.Error())
-				}
-				return "", false, nil
-			}
-			if novnc = strings.TrimSpace(novnc); novnc != "" {
-				s.rememberDesktopView(tenantID, userID, novnc)
-			}
-		}
+	gate := s.desktopUserGate(tenantID, userID)
+	gate.Lock()
+	defer gate.Unlock()
+	if novnc := s.desktopViewURL(tenantID, userID); novnc != "" {
+		return novnc, s.desktopKeyboardForBot(tenantID, userID, botID), nil
 	}
-	novnc := s.desktopViewURL(tenantID, userID)
-	if novnc != "" && botIsolated(rec.Bots[index]) {
-		s.sendDesktopViewHold(ctx, tenantID, userID)
+	if !s.desktopWatchStillCurrent(tenantID, userID, epoch) {
+		return "", false, nil
 	}
-	return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
+	openCtx, cancel := desktopViewOpenContext(ctx)
+	defer cancel()
+	openCtx = WithDesktopWakeReason(openCtx, DesktopWakeHuman)
+	novnc, openErr := s.Desktop.Open(openCtx, tenantID, userID)
+	if openErr != nil {
+		return "", false, fmt.Errorf("%w: %s", ErrSrv, openErr.Error())
+	}
+	if novnc = strings.TrimSpace(novnc); novnc != "" {
+		s.rememberDesktopView(tenantID, userID, novnc)
+	}
+	// No sendDesktopViewHold: 正在观看 must not block idle-sleep.
+	gated := s.desktopViewURL(tenantID, userID)
+	return gated, gated != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
 }
 
 // userDesktopViewActive reports whether this user's Bot page still holds the

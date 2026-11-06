@@ -51,7 +51,8 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			ShmSize  string `json:"shm_size"`
 			// ProxyMode is the Hub's effective mode for this user; it
 			// restores the mode after a host restart lost or never had it.
-			ProxyMode string `json:"proxy_mode"`
+			ProxyMode  string `json:"proxy_mode"`
+			WakeReason string `json:"wake_reason"`
 		}
 		if !decodeBody(w, r, &in) {
 			return
@@ -62,6 +63,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		desktop, err := svc.Create(r.Context(), Spec{
 			TenantID: in.TenantID, UserID: in.UserID, Image: in.Image,
 			Memory: in.Memory, CPUs: in.CPUs, ShmSize: in.ShmSize,
+			WakeReason: in.WakeReason,
 		})
 		if err != nil {
 			writeServiceErr(w, err)
@@ -83,7 +85,8 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			ShmSize  string `json:"shm_size"`
 			// ProxyMode is the Hub's effective mode for this user; it
 			// restores the mode after a host restart lost or never had it.
-			ProxyMode string `json:"proxy_mode"`
+			ProxyMode  string `json:"proxy_mode"`
+			WakeReason string `json:"wake_reason"`
 		}
 		if !decodeBody(w, r, &in) {
 			return
@@ -94,6 +97,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		session, err := svc.OpenSession(r.Context(), Spec{
 			TenantID: in.TenantID, UserID: in.UserID, Image: in.Image,
 			Memory: in.Memory, CPUs: in.CPUs, ShmSize: in.ShmSize,
+			WakeReason: in.WakeReason,
 		})
 		if err != nil {
 			writeServiceErr(w, err)
@@ -135,12 +139,13 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			return
 		}
 		var in struct {
-			TenantID string `json:"tenant_id"`
-			UserID   string `json:"user_id"`
-			Image    string `json:"image"`
-			Memory   string `json:"memory"`
-			CPUs     string `json:"cpus"`
-			ShmSize  string `json:"shm_size"`
+			TenantID   string `json:"tenant_id"`
+			UserID     string `json:"user_id"`
+			Image      string `json:"image"`
+			Memory     string `json:"memory"`
+			CPUs       string `json:"cpus"`
+			ShmSize    string `json:"shm_size"`
+			WakeReason string `json:"wake_reason"`
 		}
 		if !decodeBody(w, r, &in) {
 			return
@@ -148,6 +153,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		err := svc.Ensure(r.Context(), Spec{
 			TenantID: in.TenantID, UserID: in.UserID, Image: in.Image,
 			Memory: in.Memory, CPUs: in.CPUs, ShmSize: in.ShmSize,
+			WakeReason: in.WakeReason,
 		})
 		if err != nil {
 			writeServiceErr(w, err)
@@ -575,6 +581,12 @@ func writeServiceErr(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, ErrDesktopBusy) {
 		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if errors.Is(err, ErrWakeDenied) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"ok": false, "code": "DESKTOP_ASLEEP", "message": err.Error(), "error": err.Error(),
+		})
 		return
 	}
 	writeErr(w, http.StatusBadGateway, "docker request failed")

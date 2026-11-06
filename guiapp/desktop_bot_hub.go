@@ -155,6 +155,16 @@ type DesktopBotHandBack struct {
 // Hub-side view hold, so the desktop stays up while a human is watching or
 // taking over instead of going black the moment the last command finishes.
 func (a *App) WatchDesktopBot(botID string, epoch int) (*DesktopBotWatch, error) {
+	return a.watchOrWakeDesktopBot(botID, epoch, false)
+}
+
+// WakeDesktopBot is the human 唤醒 control. It starts a stopped desktop.
+// WatchDesktopBot only attaches when the desktop is already up for a bot step.
+func (a *App) WakeDesktopBot(botID string, epoch int) (*DesktopBotWatch, error) {
+	return a.watchOrWakeDesktopBot(botID, epoch, true)
+}
+
+func (a *App) watchOrWakeDesktopBot(botID string, epoch int, wake bool) (*DesktopBotWatch, error) {
 	botID = strings.TrimSpace(botID)
 	if botID == "" {
 		return nil, fmt.Errorf("bot id is required")
@@ -165,15 +175,19 @@ func (a *App) WatchDesktopBot(botID string, epoch int) (*DesktopBotWatch, error)
 		AttentionReason string `json:"attention_reason"`
 		DesktopMode     string `json:"desktop_mode"`
 	}
-	// The generation travels with every poll of this open panel. Hub ignores
-	// a release from the panel that was just closed when a newer one is up.
-	var body any
+	body := map[string]any{}
 	if epoch > 0 {
-		body = map[string]int64{"epoch": int64(epoch)}
+		body["epoch"] = int64(epoch)
 	}
-	// 60s matches the Hub watch-open budget. The poll used to give up at 15s
-	// and the panel showed a disconnect while the container was still starting.
-	err := a.desktopBotCallRetryingGateway(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop", body, &out, 60*time.Second)
+	if wake {
+		body["wake"] = true
+	}
+	var payload any
+	if len(body) > 0 {
+		payload = body
+	}
+	// 60s matches the Hub watch-open budget. Wake may cold-start the container.
+	err := a.desktopBotCallRetryingGateway(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop", payload, &out, 60*time.Second)
 	if err != nil {
 		return nil, err
 	}

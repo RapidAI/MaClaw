@@ -81,6 +81,7 @@ func main() {
 	}
 	svc.Stage2Sleep = stage2
 	svc.ToolWorkspace = !strings.EqualFold(strings.TrimSpace(os.Getenv("DESKTOPD_TOOL_WORKSPACE")), "off")
+	svc.EnforceWakeReason = true
 	workspaceIdle, err := desktopd.ParseWorkspaceMaxIdle(os.Getenv("DESKTOPD_WORKSPACE_MAX_IDLE"))
 	if err != nil {
 		log.Fatalf("[desktopd] %v", err)

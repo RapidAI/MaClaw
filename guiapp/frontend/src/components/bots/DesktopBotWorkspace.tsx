@@ -92,6 +92,7 @@ import {
     UnderstandDesktopBotTask,
     ClassifyDesktopWorkStop,
     WatchDesktopBot,
+    WakeDesktopBot,
 } from '../../../wailsjs/go/main/App';
 import { desktopBotAck, desktopBotLine, desktopBotStoppingLine, desktopBotVariedFallback, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
@@ -859,7 +860,9 @@ function copy(lang: string) {
             isolatedDesktop: 'Own desktop',
             isolatedDesktopHint: 'This bot uses its own virtual desktop. Off means it shares yours.',
             desktopModeFailed: 'The desktop mode was not changed.',
-            watching: 'Watching the desktop. It stays open while you watch.',
+            watching: 'Watching the desktop.',
+            desktopAsleep: 'Desktop is asleep. It wakes when the bot needs it, or when you click Wake.',
+            wakeDesktop: 'Wake',
             viewOnly: 'View only',
             takeControl: 'Take control',
             screenMode: 'Screen mode',
@@ -1073,7 +1076,9 @@ function copy(lang: string) {
             isolatedDesktop: '獨立桌面',
             isolatedDesktopHint: '這個 Bot 使用自己的虛擬桌面。關閉後改回共用你的桌面。',
             desktopModeFailed: '桌面模式沒有改成。',
-            watching: '正在觀看桌面。觀看期間桌面保持開啟。',
+            watching: '正在觀看桌面。',
+            desktopAsleep: '桌面在休眠。Bot 需要桌面步驟時會喚醒，或你點「喚醒」。',
+            wakeDesktop: '喚醒',
             viewOnly: '僅觀看',
             takeControl: '取得控制權',
             screenMode: '螢幕模式',
@@ -1285,7 +1290,9 @@ function copy(lang: string) {
         isolatedDesktop: '独立桌面',
         isolatedDesktopHint: '这个 bot 使用自己的虚拟桌面。关闭后改回共用你的桌面。',
         desktopModeFailed: '桌面模式没有改成。',
-        watching: '正在观看桌面。观看期间桌面保持开启。',
+        watching: '正在观看桌面。',
+        desktopAsleep: '桌面在休眠。Bot 需要桌面步骤时会唤醒，或你点「唤醒」。',
+        wakeDesktop: '唤醒',
         viewOnly: '仅观看',
         takeControl: '取得控制权',
         screenMode: '屏幕模式',
@@ -2315,6 +2322,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     }, []);
     const visibleShot = shotPreview && shotPreview.userId === userId && shotPreview.botId === selectedId ? shotPreview.src : '';
     const [retryByBot, setRetryByBot] = useState<Record<string, boolean>>({});
+    const [asleepByBot, setAsleepByBot] = useState<Record<string, boolean>>({});
     const [preferredListWidth, setPreferredListWidth] = useState(readListWidth);
     const [listContainerWidth, setListContainerWidth] = useState(0);
     const [listResizing, setListResizing] = useState(false);
@@ -2905,9 +2913,20 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 if (!alive) return;
                 const url = String(view?.novnc_url || '');
                 if (!url) {
-                    fail();
+                    // Asleep is the normal idle state. Do not start the desktop
+                    // and do not show a connection error — offer 唤醒 instead.
+                    watchMisses.current[botId] = 0;
+                    setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+                    setLiveDesktop(prev => {
+                        if (!(botId in prev)) return prev;
+                        const next = { ...prev };
+                        delete next[botId];
+                        return next;
+                    });
+                    setAsleepByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
                     return;
                 }
+                setAsleepByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
                 watchMisses.current[botId] = 0;
                 setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
                 const panel = panelsRef.current[botId];
@@ -6170,28 +6189,29 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
 
     const retryConnection = async (botId: string) => {
-        // The stage already has a generation. Minting another one makes the
-        // polls that are still using this one look stale, and the picture drops.
-        const epoch = watchEpochByBot.current[botId];
-        if (!epoch) return;
+        // Explicit human 唤醒. Watching / opening 电脑 must not start the desktop.
+        const epoch = watchEpochByBot.current[botId] || takeDesktopWatchEpoch();
+        watchEpochByBot.current[botId] = epoch;
+        stageEpoch.current = epoch;
         try {
-            const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string } | undefined;
-            // This retry belongs to the open that started it. The stage may
-            // have closed while the call was out; opening it again puts the
-            // picture back and keeps the desktop up.
+            const view = await WakeDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string } | undefined;
             if (stageEpoch.current !== epoch) return;
             const panel = panelsRef.current[botId];
             if (panel !== 'auto' && panel !== 'user') return;
             const url = String(view?.novnc_url || '');
-            if (!url) return;
+            if (!url) {
+                setAsleepByBot(prev => ({ ...prev, [botId]: true }));
+                return;
+            }
             setRetryByBot(prev => ({ ...prev, [botId]: false }));
+            setAsleepByBot(prev => ({ ...prev, [botId]: false }));
             syncLive(botId, { url, userControl: view?.user_control === true, attentionReason: String(view?.attention_reason || '') });
             openPanel(botId, 'user');
         } catch {
             if (stageEpoch.current !== epoch) return;
             const panel = panelsRef.current[botId];
             if (panel !== 'auto' && panel !== 'user') return;
-            setRetryByBot(prev => ({ ...prev, [botId]: true }));
+            setAsleepByBot(prev => ({ ...prev, [botId]: true }));
         }
     };
 
@@ -7161,10 +7181,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <div className="desktop-bot-screen" data-testid="desktop-bot-screen">
                                     <p>{text.noSharedDesktop}</p>
                                 </div>
-                            ) : retryForSelected ? (
+                            ) : (asleepByBot[selected.id] || retryForSelected) ? (
                                 <div className="desktop-bot-screen" data-testid="desktop-bot-screen">
-                                    <p>{text.desktopDown}</p>
-                                    <button type="button" data-testid="desktop-bot-retry" onClick={() => void retryConnection(selected.id)}>{text.retryConnect}</button>
+                                    <p data-testid="desktop-bot-asleep">{retryForSelected ? text.desktopDown : text.desktopAsleep}</p>
+                                    <button type="button" data-testid="desktop-bot-wake" onClick={() => void retryConnection(selected.id)}>{text.wakeDesktop}</button>
                                 </div>
                             ) : (
                                 <div className="desktop-bot-screen" data-testid="desktop-bot-screen">

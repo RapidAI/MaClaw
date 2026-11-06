@@ -573,9 +573,9 @@ func GetBotDesktopHandler(svc *botmgmt.Service, identity botAuthenticator) http.
 }
 
 // PostBotDesktopWatchHandler POST /api/v1/bots/{id}/desktop
-// Opens or holds this user's desktop while the owner watches it or takes
-// over from the Bot page. The hold expires shortly after the last poll, so
-// a closed page does not pin the desktop forever.
+// Empty body attaches when the desktop is already up for a bot step or an
+// explicit 唤醒 session; it never starts or pins idle-sleep. wake:true is
+// the human 唤醒 control.
 func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
@@ -586,7 +586,7 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator)
 			return
 		}
 		botID := r.PathValue("id")
-		release, epoch, ok := botWatchRelease(w, r)
+		release, wake, epoch, ok := botWatchRelease(w, r)
 		if !ok {
 			return
 		}
@@ -599,7 +599,14 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator)
 			writeJSON(w, http.StatusOK, map[string]any{"released": true})
 			return
 		}
-		novnc, userControl, err := svc.HoldDesktopView(ctx, principal.TenantID, principal.UserID, botID)
+		var novnc string
+		var userControl bool
+		var err error
+		if wake {
+			novnc, userControl, err = svc.WakeDesktopView(ctx, principal.TenantID, principal.UserID, botID)
+		} else {
+			novnc, userControl, err = svc.HoldDesktopView(ctx, principal.TenantID, principal.UserID, botID)
+		}
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")
 			return
@@ -613,33 +620,34 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator)
 	}
 }
 
-// botWatchRelease reads an optional {"release":true,"epoch":n}. An empty body
-// is a hold. EOF is not a bad request: the viewer poll posts no body.
-// Epoch identifies one open of the page. Zero means an older client.
-func botWatchRelease(w http.ResponseWriter, r *http.Request) (bool, int64, bool) {
+// botWatchRelease reads optional {"release":true,"wake":true,"epoch":n}.
+// Empty body is a hold that never starts a stopped desktop. wake:true is the
+// human 唤醒 control. Epoch identifies one open of the page.
+func botWatchRelease(w http.ResponseWriter, r *http.Request) (release, wake bool, epoch int64, ok bool) {
 	if r.Body == nil {
-		return false, 0, true
+		return false, false, 0, true
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
-		return false, 0, false
+		return false, false, 0, false
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
-		return false, 0, true
+		return false, false, 0, true
 	}
 	var in struct {
 		Release bool  `json:"release"`
+		Wake    bool  `json:"wake"`
 		Epoch   int64 `json:"epoch"`
 	}
 	if err := json.Unmarshal(raw, &in); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
-		return false, 0, false
+		return false, false, 0, false
 	}
 	if in.Epoch < 0 {
 		in.Epoch = 0
 	}
-	return in.Release, in.Epoch, true
+	return in.Release, in.Wake, in.Epoch, true
 }
 
 // GetDesktopHandoffHandler proxies noVNC through Hub. The token in the path
