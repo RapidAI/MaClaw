@@ -1,12 +1,14 @@
 package guiapp
 
-// im_online_extraction.go wires the Mem0-style online incremental extraction
-// pipeline into the GUI agent loop. The OnlineExtractor is triggered
-// asynchronously after each agent loop exit via saveConversationHistoryTimed.
+// im_online_extraction.go wires conversation turns into the durable online
+// extraction outbox after each agent loop exit.
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,92 +16,49 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
-// triggerOnlineExtraction asynchronously triggers the Mem0-style online
-// extraction pipeline after each agent loop exit. It converts the conversation
-// history to the format expected by OnlineExtractor and runs in a goroutine.
 func (h *IMMessageHandler) triggerOnlineExtraction(userID string, history []agent.ConversationEntry) {
-	if isIsolatedAssistantSessionUserID(userID) {
+	if isIsolatedAssistantSessionUserID(userID) || h.currentMemoryStore() == nil {
 		return
 	}
-	if h.memoryStore == nil {
+	oe := h.currentMemoryStore().OnlineExtractor()
+	if oe == nil || len(history) < 4 {
 		return
 	}
-
-	oe := h.memoryStore.OnlineExtractor()
-	if oe == nil {
-		return
-	}
-
-	// Only extract from conversations with enough substance.
-	if len(history) < 4 {
-		return
-	}
-
-	// Convert the last 10 entries to ConversationMessage format.
 	messages := convertHistoryToMessages(history, 10)
 	if len(messages) < 2 {
 		return
 	}
-
-	// Build a brief conversation summary from the first user message.
 	summary := extractConversationSummary(history)
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		result := oe.ExtractAndIntegrate(ctx, messages, summary, time.Now(), userID)
-		if result.Added > 0 || result.Updated > 0 || result.Deleted > 0 {
-			log.Printf("[online_extraction] user=%s extracted=%d added=%d updated=%d deleted=%d noop=%d errors=%d",
-				userID, result.ExtractedFacts, result.Added, result.Updated, result.Deleted, result.Noops, result.Errors)
-		}
-	}()
+	go h.enqueueOnlineExtraction(context.Background(), oe, userID, messages, summary, "")
 }
 
-// triggerOnlineExtractionDeferred is like triggerOnlineExtraction but waits
-// for the per-session loop mutex before starting the LLM call. This ensures the extraction
-// yields to any new user message that arrives before it begins, preventing
-// background LLM calls from competing with the main agent loop for API bandwidth.
 func (h *IMMessageHandler) triggerOnlineExtractionDeferred(userID string, history []agent.ConversationEntry) {
-	if isIsolatedAssistantSessionUserID(userID) {
+	if isIsolatedAssistantSessionUserID(userID) || h.currentMemoryStore() == nil {
 		return
 	}
-	if h.memoryStore == nil {
+	oe := h.currentMemoryStore().OnlineExtractor()
+	if oe == nil || len(history) < 4 {
 		return
 	}
-
-	oe := h.memoryStore.OnlineExtractor()
-	if oe == nil {
-		return
-	}
-
-	if len(history) < 4 {
-		return
-	}
-
 	messages := convertHistoryToMessages(history, 10)
 	if len(messages) < 2 {
 		return
 	}
-
 	summary := extractConversationSummary(history)
-
 	go func() {
-		// Wait until no agent loop is running for this user. If the user sends
-		// a new message before we acquire the lock, their agent loop runs first.
 		state := h.getSessionLoop(userID)
 		state.mu.Lock()
 		state.mu.Unlock()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		result := oe.ExtractAndIntegrate(ctx, messages, summary, time.Now(), userID)
-		if result.Added > 0 || result.Updated > 0 || result.Deleted > 0 {
-			log.Printf("[online_extraction] user=%s extracted=%d added=%d updated=%d deleted=%d noop=%d errors=%d",
-				userID, result.ExtractedFacts, result.Added, result.Updated, result.Deleted, result.Noops, result.Errors)
-		}
+		h.enqueueOnlineExtraction(context.Background(), oe, userID, messages, summary, "")
 	}()
+}
+
+func (h *IMMessageHandler) enqueueOnlineExtraction(ctx context.Context, extractor *memory.OnlineExtractor, userID string, messages []memory.ConversationMessage, summary, requestID string) {
+	writeContext := h.memoryWriteContextForUser(userID, "online_extraction")
+	writeContext.TurnID = strings.TrimSpace(requestID)
+	if err := extractor.EnqueueExtraction(ctx, messages, summary, time.Now(), userID, writeContext); err != nil {
+		log.Printf("[online_extraction_queue] enqueue failed user=%s request_id=%q err=%v", userID, requestID, err)
+	}
 }
 
 // convertHistoryToMessages converts the last N conversation entries to
@@ -111,7 +70,7 @@ func convertHistoryToMessages(history []agent.ConversationEntry, maxEntries int)
 	}
 
 	var messages []memory.ConversationMessage
-	for _, e := range history[start:] {
+	for i, e := range history[start:] {
 		role := e.Role
 		if role == "" {
 			continue
@@ -135,11 +94,21 @@ func convertHistoryToMessages(history []agent.ConversationEntry, maxEntries int)
 		}
 
 		messages = append(messages, memory.ConversationMessage{
+			ID:      extractionConversationMessageID(e, content, start+i),
 			Role:    role,
 			Content: content,
 		})
 	}
 	return messages
+}
+
+func extractionConversationMessageID(entry agent.ConversationEntry, content string, index int) string {
+	if id := strings.TrimSpace(entry.ID); id != "" {
+		return id
+	}
+	seed := strings.Join([]string{strconv.FormatInt(entry.Timestamp, 10), strconv.Itoa(index), entry.Role, content}, "\x00")
+	digest := sha256.Sum256([]byte(seed))
+	return "legacy-" + hex.EncodeToString(digest[:])
 }
 
 // extractConversationSummary builds a brief summary from the first and last
@@ -175,40 +144,23 @@ func extractConversationSummary(history []agent.ConversationEntry) string {
 	return truncate(first, 150) + "\n[...]\n" + truncate(last, 150)
 }
 
-// triggerOnlineExtractionWithContext is like triggerOnlineExtraction but uses
-// the provided context for cancellation. When the user sends a new message,
-// the context is cancelled, aborting the in-flight LLM call and freeing API
-// bandwidth for the new agent loop.
-func (h *IMMessageHandler) triggerOnlineExtractionWithContext(bgCtx context.Context, userID string, history []agent.ConversationEntry) {
-	if isIsolatedAssistantSessionUserID(userID) {
+// triggerOnlineExtractionWithContext enqueues the latest history snapshot.
+// Cancelling the foreground-scoped context no longer drops durable work.
+func (h *IMMessageHandler) triggerOnlineExtractionWithContext(bgCtx context.Context, userID string, history []agent.ConversationEntry, requestIDs ...string) {
+	if isIsolatedAssistantSessionUserID(userID) || h.currentMemoryStore() == nil {
 		return
 	}
-	if h.memoryStore == nil {
+	oe := h.currentMemoryStore().OnlineExtractor()
+	if oe == nil || len(history) < 4 {
 		return
 	}
-
-	oe := h.memoryStore.OnlineExtractor()
-	if oe == nil {
-		return
-	}
-
-	if len(history) < 4 {
-		return
-	}
-
 	messages := convertHistoryToMessages(history, 10)
 	if len(messages) < 2 {
 		return
 	}
-
-	summary := extractConversationSummary(history)
-
-	ctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
-	defer cancel()
-
-	result := oe.ExtractAndIntegrate(ctx, messages, summary, time.Now(), userID)
-	if result.Added > 0 || result.Updated > 0 || result.Deleted > 0 || result.Errors > 0 || ctx.Err() != nil {
-		log.Printf("[online_extraction] user=%s extracted=%d added=%d updated=%d deleted=%d noop=%d errors=%d cancelled=%v",
-			userID, result.ExtractedFacts, result.Added, result.Updated, result.Deleted, result.Noops, result.Errors, ctx.Err() != nil)
+	requestID := ""
+	if len(requestIDs) > 0 {
+		requestID = requestIDs[0]
 	}
+	h.enqueueOnlineExtraction(bgCtx, oe, userID, messages, extractConversationSummary(history), requestID)
 }

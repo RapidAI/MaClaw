@@ -42,6 +42,7 @@ func (s *Store) upsertEntryByID(entry Entry, mergeExistingTags func(existing, de
 		if err := s.insertEntryFromUpsert(entry); err != nil {
 			return UpsertResult{}, err
 		}
+		s.publishInsertedEntry(entry)
 		return UpsertResult{Created: true, EntryID: entry.ID}, nil
 	}
 	existing := s.SearchDirectByID(entry.ID)
@@ -60,6 +61,7 @@ func (s *Store) upsertEntryByID(entry Entry, mergeExistingTags func(existing, de
 		if err := s.insertEntryFromUpsert(entry); err != nil {
 			return UpsertResult{}, err
 		}
+		s.publishInsertedEntry(entry)
 		return UpsertResult{Created: true, EntryID: entry.ID}, nil
 	}
 	current := existing[0]
@@ -212,6 +214,7 @@ func (s *Store) UpsertEntryByTags(opts UpsertByTagsOptions) (UpsertResult, error
 	if err := s.insertEntryFromUpsert(entry); err != nil {
 		return UpsertResult{}, err
 	}
+	s.publishInsertedEntry(entry)
 	return UpsertResult{Created: true, EntryID: entry.ID}, nil
 }
 

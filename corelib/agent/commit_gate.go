@@ -4737,6 +4737,24 @@ func withIterationContractReminder(cb LoopCallbacks, conversation []interface{})
 	return appendOutboundSystemBlock(conversation, block)
 }
 
+// DirectoryHoldLifter rewrites a prior tools_search "do not call yet" page
+// for this outbound request only. tools is the slice about to be sent.
+// The stored tool result stays as written.
+type DirectoryHoldLifter interface {
+	LiftExpiredDirectoryHolds(conversation []interface{}, tools []map[string]interface{}) []interface{}
+}
+
+func liftExpiredDirectoryHolds(cb LoopCallbacks, conversation []interface{}, tools []map[string]interface{}) []interface{} {
+	lifter, ok := cb.(DirectoryHoldLifter)
+	if !ok || lifter == nil {
+		return conversation
+	}
+	if next := lifter.LiftExpiredDirectoryHolds(conversation, tools); next != nil {
+		return next
+	}
+	return conversation
+}
+
 func formatIterationContract(goal string, missing, locked []string) string {
 	missing = contractNames(missing)
 	locked = contractNames(locked)

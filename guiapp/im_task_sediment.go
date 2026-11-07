@@ -94,7 +94,7 @@ func (h *IMMessageHandler) sedimentTaskEntry(userID string, history []agent.Conv
 	if isIsolatedAssistantSessionUserID(userID) {
 		return
 	}
-	if h.memoryStore == nil || len(history) == 0 {
+	if h.currentMemoryStore() == nil || len(history) == 0 {
 		return
 	}
 
@@ -145,7 +145,7 @@ func (h *IMMessageHandler) sedimentTaskEntry(userID string, history []agent.Conv
 	if standalonePath != "" || projectTag != "" {
 		identityTagCount = 3
 	}
-	_, err := h.memoryStore.UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
+	_, err := h.currentMemoryStore().UpsertProjectKnowledge(memory.ProjectKnowledgeUpsertOptions{
 		Title:            title,
 		Content:          buf.String(),
 		Tags:             tags,

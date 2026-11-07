@@ -33,6 +33,8 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 }
 
 func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLoopCtx *LoopContext, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) (result *IMAgentResponse) {
+	releaseMemoryRuntime := h.acquireMemoryRuntimeForTurn()
+	defer releaseMemoryRuntime()
 	bindingScope, bindingErr := prepareAssistantBindingTurn(msg)
 	if bindingScope != nil {
 		// Continue the entire queued turn with its validated, immutable binding
@@ -236,9 +238,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// (e.g. confirmationApprovedText replaces "确认" with the full execution plan).
 	// Use CompactQueryForEmbedding so a 20k–40k document body does not dominate
 	// (or timeout) the embedding query — recall keys on intent + paths.
-	if h.memoryStore != nil && h.freshMailboxDraftID(msg.UserID, trimmed, preflight.EntriesBeforeClear) == "" {
+	if h.currentMemoryStore() != nil && h.freshMailboxDraftID(msg.UserID, trimmed, preflight.EntriesBeforeClear) == "" {
 		if query := semanticUserIntentText(msg.Text); query != "" {
-			h.memoryStore.WarmQueryEmbedding(agent.CompactQueryForEmbedding(query))
+			h.currentMemoryStore().WarmQueryEmbedding(agent.CompactQueryForEmbedding(query))
 		}
 	}
 	preflightDone := time.Since(msgReceivedAt)

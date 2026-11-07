@@ -220,8 +220,8 @@ func buildBtwSystemPrompt(h *IMMessageHandler, userID string) string {
 	}
 
 	var selfIdentity string
-	if h.memoryStore != nil {
-		selfIdentity = h.memoryStore.SelfIdentitySummaryForOwner(600, userID, isIsolatedAssistantSessionUserID(userID))
+	if h.currentMemoryStore() != nil {
+		selfIdentity = h.currentMemoryStore().SelfIdentitySummaryForOwner(600, userID, isIsolatedAssistantSessionUserID(userID))
 	}
 
 	if selfIdentity != "" {
@@ -234,12 +234,12 @@ func buildBtwSystemPrompt(h *IMMessageHandler, userID string) string {
 	b.WriteString(btwSuffix)
 
 	// --- User fact summary (who the user is, no management guide) ---
-	if h.memoryStore != nil {
+	if h.currentMemoryStore() != nil {
 		userID = strings.TrimSpace(userID)
 		factOpts := corememory.UserFactPromptOptions("\n## 用户信息")
 		factOpts.OwnerID = userID
 		factOpts.StrictOwner = isIsolatedAssistantSessionUserID(userID)
-		b.WriteString(h.memoryStore.UserFactSummaryForPrompt(factOpts))
+		b.WriteString(h.currentMemoryStore().UserFactSummaryForPrompt(factOpts))
 	}
 
 	return b.String()

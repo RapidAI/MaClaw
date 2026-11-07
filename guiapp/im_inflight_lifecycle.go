@@ -148,8 +148,8 @@ func (l *imInFlightLifecycle) Cleanup() {
 	// Destroy scroll session for this agent loop (Requirement 4.5).
 	// Recall sessions are keyed by the loop context id, which is not the
 	// per-turn recovery id.
-	if l.handler.memoryStore != nil {
-		if ss := l.handler.memoryStore.ScrollSessions(); ss != nil {
+	if l.handler.currentMemoryStore() != nil {
+		if ss := l.handler.currentMemoryStore().ScrollSessions(); ss != nil {
 			if id := strings.TrimSpace(l.loopID); id != "" {
 				ss.Destroy(id, l.userID)
 			}

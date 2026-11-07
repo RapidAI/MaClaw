@@ -36,7 +36,7 @@ func (h *IMMessageHandler) storeSessionFacts(userID string, overlay *agent.Sessi
 		return
 	}
 	if overlay != nil && overlay.Len() > 0 {
-		if needles := agent.MemoryRetractionNeedles(h.LoadMemoryRetractions()); len(needles) > 0 {
+		if needles := agent.MemoryRetractionNeedles(h.LoadMemoryRetractionsForUser(userID)); len(needles) > 0 {
 			agent.DropSessionFactsMatching(overlay, needles)
 		}
 	}
@@ -85,13 +85,13 @@ func (h *IMMessageHandler) syncVerifiedFactToStores(userID string, fact agent.Se
 }
 
 func (h *IMMessageHandler) syncVerifiedFactMemory(userID string, fact agent.SessionFact) {
-	if h == nil || h.memoryStore == nil || strings.TrimSpace(fact.Claim) == "" {
+	if h == nil || h.currentMemoryStore() == nil || strings.TrimSpace(fact.Claim) == "" {
 		return
 	}
 	ownerID := strings.TrimSpace(userID)
 	// The prompt snapshot stays pinned until the conversation ends. The store
 	// still records the fact for a later recall.
-	h.memoryStore.ApplyVerifiedFact(memory.VerifiedFact{
+	h.currentMemoryStore().ApplyVerifiedFact(memory.VerifiedFact{
 		Entity:      fact.Entity,
 		Predicate:   fact.Predicate,
 		Claim:       fact.Claim,
@@ -171,6 +171,7 @@ func (h *IMMessageHandler) admitSessionFact(userID string, loopCtx *LoopContext,
 }
 
 type memoryWarehouseChange struct {
+	OwnerID string
 	Needles []string
 	Items   []agent.MemoryRetractionItem
 }
@@ -179,38 +180,88 @@ func (h *IMMessageHandler) applyMemoryWarehouseChange(change memoryWarehouseChan
 	if h == nil {
 		return
 	}
-	h.admitMemoryRetractions(change.Items)
-	h.dropSessionFactsMatching(change.Needles)
-	h.redactLiveConversations(change.Needles)
+	h.admitMemoryRetractionsForOwner(change.OwnerID, change.Items)
+	if change.OwnerID == "" {
+		h.dropSessionFactsMatching(change.Needles)
+		h.redactLiveConversations(change.Needles)
+		return
+	}
+	h.dropSessionFactsMatchingForOwner(change.OwnerID, change.Needles)
+	h.redactLiveConversationsForOwner(change.OwnerID, change.Needles)
 }
 
 func (h *IMMessageHandler) admitMemoryRetractions(items []agent.MemoryRetractionItem) {
+	h.admitMemoryRetractionsForOwner("", items)
+}
+
+func (h *IMMessageHandler) admitMemoryRetractionsForOwner(ownerID string, items []agent.MemoryRetractionItem) {
 	if h == nil || len(items) == 0 {
 		return
 	}
+	ownerID = strings.TrimSpace(ownerID)
 	h.memoryRetractionMu.Lock()
 	defer h.memoryRetractionMu.Unlock()
 	for _, item := range items {
-		h.memoryRetractions = agent.AdmitMemoryRetraction(h.memoryRetractions, item)
+		if ownerID == "" {
+			h.memoryRetractions = agent.AdmitMemoryRetraction(h.memoryRetractions, item)
+			continue
+		}
+		current, _ := h.memoryRetractionsByOwner.Load(ownerID)
+		retraction, _ := current.(*agent.MemoryRetraction)
+		h.memoryRetractionsByOwner.Store(ownerID, agent.AdmitMemoryRetraction(retraction, item))
 	}
 	h.memoryRetractions = agent.CompactMemoryRetraction(h.memoryRetractions)
+	if ownerID != "" {
+		if current, ok := h.memoryRetractionsByOwner.Load(ownerID); ok {
+			retraction, _ := current.(*agent.MemoryRetraction)
+			h.memoryRetractionsByOwner.Store(ownerID, agent.CompactMemoryRetraction(retraction))
+		}
+	}
 }
 
 func (h *IMMessageHandler) LoadMemoryRetractions() *agent.MemoryRetraction {
+	return h.LoadMemoryRetractionsForUser("")
+}
+
+func (h *IMMessageHandler) LoadMemoryRetractionsForUser(userID string) *agent.MemoryRetraction {
 	if h == nil {
 		return nil
 	}
+	userID = strings.TrimSpace(userID)
 	h.memoryRetractionMu.Lock()
 	defer h.memoryRetractionMu.Unlock()
 	h.memoryRetractions = agent.CompactMemoryRetraction(h.memoryRetractions)
-	return agent.CloneMemoryRetraction(h.memoryRetractions)
+	combined := agent.CloneMemoryRetraction(h.memoryRetractions)
+	if userID == "" {
+		return combined
+	}
+	if raw, ok := h.memoryRetractionsByOwner.Load(userID); ok {
+		current, _ := raw.(*agent.MemoryRetraction)
+		current = agent.CompactMemoryRetraction(current)
+		h.memoryRetractionsByOwner.Store(userID, current)
+		if current != nil {
+			for _, item := range current.Items {
+				combined = agent.AdmitMemoryRetraction(combined, item)
+			}
+		}
+	}
+	return agent.CompactMemoryRetraction(combined)
 }
 
 func (h *IMMessageHandler) dropSessionFactsMatching(needles []string) {
+	h.dropSessionFactsMatchingForOwner("", needles)
+}
+
+func (h *IMMessageHandler) dropSessionFactsMatchingForOwner(ownerID string, needles []string) {
 	if h == nil || len(needles) == 0 {
 		return
 	}
+	ownerID = strings.TrimSpace(ownerID)
 	h.sessionFacts.Range(func(key, value any) bool {
+		keyOwner, _ := key.(string)
+		if ownerID != "" && keyOwner != ownerID {
+			return true
+		}
 		overlay, _ := value.(*agent.SessionFactOverlay)
 		agent.DropSessionFactsMatching(overlay, needles)
 		if overlay == nil || overlay.Len() == 0 {
@@ -224,7 +275,7 @@ func (h *IMMessageHandler) dropSessionFactsMatching(needles []string) {
 			return true
 		}
 		state.stateMu.Lock()
-		if state.loopCtx != nil {
+		if state.loopCtx != nil && (ownerID == "" || state.loopCtx.UserID == ownerID) {
 			agent.DropSessionFactsMatching(state.loopCtx.SessionFacts, needles)
 		}
 		state.stateMu.Unlock()
@@ -233,11 +284,19 @@ func (h *IMMessageHandler) dropSessionFactsMatching(needles []string) {
 }
 
 func (h *IMMessageHandler) redactLiveConversations(needles []string) {
+	h.redactLiveConversationsForOwner("", needles)
+}
+
+func (h *IMMessageHandler) redactLiveConversationsForOwner(ownerID string, needles []string) {
 	if h == nil || len(needles) == 0 {
 		return
 	}
+	ownerID = strings.TrimSpace(ownerID)
 	if h.memory != nil {
-		h.memory.RewriteAllSessions(func(_ string, entries []agent.ConversationEntry) []agent.ConversationEntry {
+		h.memory.RewriteAllSessions(func(sessionOwner string, entries []agent.ConversationEntry) []agent.ConversationEntry {
+			if ownerID != "" && sessionOwner != ownerID {
+				return nil
+			}
 			next, changed := agent.RedactConversationEntries(entries, needles)
 			if !changed {
 				return nil
@@ -246,7 +305,7 @@ func (h *IMMessageHandler) redactLiveConversations(needles []string) {
 		})
 	}
 	redactLoop := func(ctx *LoopContext) {
-		if ctx == nil {
+		if ctx == nil || (ownerID != "" && ctx.UserID != ownerID) {
 			return
 		}
 		if next, changed := agent.RedactConversationEntries(ctx.History, needles); changed {
@@ -277,11 +336,15 @@ func redactConversationMaps(conversation []interface{}, needles []string) []inte
 	return agent.RedactConversationMessages(conversation, needles)
 }
 
-func (h *IMMessageHandler) appendMemoryRetractionSection(b *strings.Builder) {
+func (h *IMMessageHandler) appendMemoryRetractionSection(b *strings.Builder, userIDs ...string) {
 	if h == nil || b == nil {
 		return
 	}
-	section := agent.RenderMemoryRetraction(h.LoadMemoryRetractions())
+	userID := ""
+	if len(userIDs) > 0 {
+		userID = userIDs[0]
+	}
+	section := agent.RenderMemoryRetraction(h.LoadMemoryRetractionsForUser(userID))
 	if section == "" {
 		return
 	}

@@ -158,6 +158,38 @@ func TestIMSemanticKnowledgeReadScopesStoreToPrincipal(t *testing.T) {
 	}
 }
 
+func TestIMSemanticKnowledgeReadKeepsStoredNoteTail(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := os.MkdirAll(filepath.Dir(app.knowledgeDBPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := app.openKnowledgeStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	note := "api2hostrecord " + strings.Repeat("server detail ", 40) + "TAILMARKER kept in the stored note"
+	if _, err := store.SaveText(context.Background(), knowledge.TextSaveRequest{
+		Text:    note,
+		OwnerID: desktopUserID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h := &IMMessageHandler{app: app}
+	recalled, err := h.readTrustedKnowledge(desktopUserID+`:`+`C:\tasks\api2`, "api2hostrecord")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(recalled, "TAILMARKER kept in the stored note") {
+		t.Fatalf("stored tail missing: %q", recalled)
+	}
+	if strings.Contains(recalled, "knowledge_search") || strings.Contains(recalled, "knowledge_context_pack") {
+		t.Fatalf("projection leaked a legacy name: %q", recalled)
+	}
+}
+
 func TestIMSemanticKnowledgeReadSharesDesktopTaskScope(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	if err := os.MkdirAll(filepath.Dir(app.knowledgeDBPath()), 0o755); err != nil {

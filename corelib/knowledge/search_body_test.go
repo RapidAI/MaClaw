@@ -214,6 +214,190 @@ func TestSearchLimitCountsDistinctBodies(t *testing.T) {
 	}
 }
 
+func TestSearchReplacesFTSSnippetWithStoredNodeText(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveSource(ctx, Source{ID: "src-stored", Kind: SourceKindText, URI: "manual://stored", Title: "API2", Status: StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	// Longer than the 32-token FTS highlight, still inside one chunk.
+	text := "api2hostrecord " + strings.Repeat("detail ", 40) + "TAILMARKER end of the stored note"
+	if err := store.SaveDocumentNode(ctx, DocumentNode{ID: "node-stored", SourceID: "src-stored", Type: "paragraph", Title: "API2", Text: text}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveCard(ctx, Card{
+		ID:       "card-stored",
+		SourceID: "src-stored",
+		NodeID:   "node-stored",
+		Title:    "API2",
+		Claim:    "api2hostrecord claimmarker ssh port stays on the hit",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := store.Search(ctx, SearchOptions{Query: "api2hostrecord", Limit: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %#v", results)
+	}
+	got := results[0]
+	if !strings.Contains(got.Snippet, "TAILMARKER end of the stored note") {
+		t.Fatalf("stored tail missing from snippet: %q", got.Snippet)
+	}
+	if strings.HasSuffix(strings.TrimSpace(got.Snippet), "...") {
+		t.Fatalf("FTS highlight kept: %q", got.Snippet)
+	}
+	evidence := SearchEvidenceText(got)
+	if !strings.Contains(evidence, "TAILMARKER") || !strings.Contains(evidence, "claimmarker ssh port stays on the hit") {
+		t.Fatalf("evidence = %q", evidence)
+	}
+}
+
+func TestSearchAttachesChunkNeighbors(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveSource(ctx, Source{ID: "src-neighbors", Kind: SourceKindText, URI: "manual://neighbors", Title: "API2", Status: StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	// Longer than the context-pack title cut. The model read must keep it whole.
+	parentTitle := strings.Repeat("甲", 200)
+	parent := DocumentNode{ID: "parent-neighbors", SourceID: "src-neighbors", Type: "section", Title: parentTitle, Text: ""}
+	if err := store.SaveDocumentNode(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	children := []DocumentNode{
+		{ID: "neighbor-0", SourceID: "src-neighbors", ParentID: parent.ID, Type: "paragraph", Offset: 0, Text: strings.Repeat("前段填充 ", 80) + "HEADMARKER starts the previous chunk."},
+		{ID: "neighbor-1", SourceID: "src-neighbors", ParentID: parent.ID, Type: "paragraph", Offset: 1, Text: "api2hostrecord lives in the first chunk."},
+		// A blank sibling sits between the hit and the next stored chunk.
+		{ID: "neighbor-gap", SourceID: "src-neighbors", ParentID: parent.ID, Type: "image", Offset: 2, Text: ""},
+		{ID: "neighbor-2", SourceID: "src-neighbors", ParentID: parent.ID, Type: "paragraph", Offset: 3, Text: strings.Repeat("邻块填充 ", 80) + "TAILMARKER is past the short neighbor window."},
+	}
+	for _, child := range children {
+		if err := store.SaveDocumentNode(ctx, child); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results, err := store.Search(ctx, SearchOptions{Query: "api2hostrecord", Limit: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 {
+		t.Fatal("no hit")
+	}
+	for _, result := range results {
+		if strings.Contains(result.Snippet, "[following]") || strings.Contains(result.Snippet, "[preceding]") {
+			t.Fatalf("header search gained neighbor markers: %q", result.Snippet)
+		}
+	}
+	expanded, err := store.AttachSearchNodeContext(ctx, "api2hostrecord", results)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, result := range expanded {
+		snippet := result.Snippet
+		head := strings.Index(snippet, "HEADMARKER starts the previous chunk.")
+		hit := strings.Index(snippet, "api2hostrecord lives in the first chunk.")
+		tail := strings.Index(snippet, "TAILMARKER is past the short neighbor window.")
+		if head < 0 || hit < 0 || tail < 0 || head > hit || hit > tail {
+			continue
+		}
+		if !strings.Contains(snippet, parentTitle) || strings.Contains(snippet, "...") {
+			t.Fatalf("stored record was cut: %q", snippet)
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Fatalf("chunk neighbor missing: %#v", expanded)
+	}
+}
+
+func TestSearchReadsEmptyChunkParentFromChildren(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveSource(ctx, Source{ID: "src-parent", Kind: SourceKindText, URI: "manual://parent", Title: "API2", Status: StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	parentTitle := "api2parenttitle " + strings.Repeat("甲", 200)
+	parent := DocumentNode{ID: "parent-empty", SourceID: "src-parent", Type: "section", Title: parentTitle, Text: ""}
+	if err := store.SaveDocumentNode(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	children := []DocumentNode{
+		{ID: "parent-child-0", SourceID: "src-parent", ParentID: parent.ID, Type: "paragraph", Offset: 0, Text: "HEADMARKER is the first stored chunk."},
+		{ID: "parent-child-gap", SourceID: "src-parent", ParentID: parent.ID, Type: "image", Offset: 1, Text: ""},
+		{ID: "parent-child-1", SourceID: "src-parent", ParentID: parent.ID, Type: "paragraph", Offset: 2, Text: "TAILMARKER is the next stored chunk."},
+	}
+	for _, child := range children {
+		if err := store.SaveDocumentNode(ctx, child); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results, err := store.Search(ctx, SearchOptions{Query: "api2parenttitle", Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 {
+		t.Fatal("no hit")
+	}
+	for _, result := range results {
+		if strings.Contains(result.Snippet, "[following]") || strings.Contains(result.Snippet, "[preceding]") {
+			t.Fatalf("header search gained neighbor markers: %q", result.Snippet)
+		}
+	}
+	expanded, err := store.AttachSearchNodeContext(ctx, "api2parenttitle", results)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, result := range expanded {
+		if result.NodeID != parent.ID {
+			continue
+		}
+		snippet := result.Snippet
+		head := strings.Index(snippet, "HEADMARKER is the first stored chunk.")
+		tail := strings.Index(snippet, "TAILMARKER is the next stored chunk.")
+		if head < 0 || tail < 0 || head > tail || !strings.Contains(snippet, parentTitle) || strings.Contains(snippet, "...") {
+			t.Fatalf("empty parent kept a cut highlight: %q", snippet)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatalf("empty parent missing: %#v", expanded)
+	}
+}
+
+func TestSearchEvidenceSkipsCutClaimAlreadyInBody(t *testing.T) {
+	body := "api2hostrecord\n\n" + strings.Repeat("主机记录保持完整 ", 40) + "TAILMARKER"
+	claim := truncateRunes(normalizeWhitespace(body), cardClaimRunes)
+	if !strings.HasSuffix(claim, "...") {
+		t.Fatalf("fixture claim was not cut: %q", claim)
+	}
+	evidence := SearchEvidenceText(SearchResult{ResultType: "node", Snippet: body, Claim: claim})
+	if strings.Contains(evidence, "...") || !strings.Contains(evidence, "TAILMARKER") {
+		t.Fatalf("cut claim repeated after the stored body: %q", evidence)
+	}
+	otherClaim := truncateRunes("独立结论 "+strings.Repeat("不在正文里 ", 40), cardClaimRunes)
+	other := SearchEvidenceText(SearchResult{ResultType: "node", Snippet: body, Claim: otherClaim})
+	if !strings.Contains(other, "独立结论") || strings.Contains(other, "...") {
+		t.Fatalf("claim outside the body = %q", other)
+	}
+}
+
 func TestSearchBodyTextWindowFollowsQueryMatch(t *testing.T) {
 	text := strings.Repeat("无关前缀", 150) + "关键证据在正文中部" + strings.Repeat("无关后缀", 150)
 	window := searchBodyTextWindow(text, "关键证据")

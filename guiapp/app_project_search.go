@@ -4717,9 +4717,8 @@ func (a *App) recoverManagedTaskRecordsFromDisk() int {
 	if a == nil {
 		return 0
 	}
-	// Snapshot the store once under its mutex: a data-dir switch stops and
-	// nils a.memoryStore concurrently, so re-reading the field after the slow
-	// per-directory loop flushes/upserts on a nil store and panics.
+	// Snapshot the store once under its mutex: a data-dir switch can otherwise
+	// nil the field during the slow per-directory recovery loop.
 	a.memoryStoreMu.Lock()
 	store := a.memoryStore
 	a.memoryStoreMu.Unlock()

@@ -169,7 +169,7 @@ func NewIMMessageHandlerStandalone(cfg StandaloneConfig) *IMMessageHandler {
 		h.sshMgr = cfg.SSHManager
 	}
 	if cfg.MemoryStore != nil {
-		h.memoryStore = cfg.MemoryStore
+		h.SetMemoryStore(cfg.MemoryStore)
 		// Note: sessionStartExtractor is NOT initialized here because
 		// h.app is nil in standalone/TUI mode. The extractor requires
 		// an LLM caller backed by App's config. TUI can add its own

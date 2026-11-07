@@ -883,9 +883,9 @@ func (h *IMMessageHandler) buildSituationReport(userID string) string {
 	// lost its directory. While this session still has that interrupted run,
 	// other outputs in the same folder are not its progress.
 	sharedSession := project == "" || isProcessDefaultWorkspacePath(project)
-	if h.memoryStore != nil && userID != "" && !(sharedSession && recoveryTitle != "") {
+	if h.currentMemoryStore() != nil && userID != "" && !(sharedSession && recoveryTitle != "") {
 		ctx.RecentArtifacts = situationRecentArtifactTitles(
-			h.memoryStore.EntriesSince(time.Now().Add(-24*time.Hour)),
+			h.currentMemoryStore().EntriesSince(time.Now().Add(-24*time.Hour)),
 			userID,
 		)
 	}

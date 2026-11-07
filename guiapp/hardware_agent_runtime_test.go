@@ -325,7 +325,7 @@ func TestHardwareAgentRuntimeOwnsPrivateMemoryPaths(t *testing.T) {
 	defer registry.stopAll()
 
 	wantPrefix := filepath.Join(app.GetDataDir(), "hardware_agents", safeFileToken("pet-a"))
-	if got := handler.memoryStore.Path(); filepath.Dir(filepath.Dir(got)) != wantPrefix {
+	if got := handler.currentMemoryStore().Path(); filepath.Dir(filepath.Dir(got)) != wantPrefix {
 		t.Fatalf("memory path = %q, want it under %q", got, wantPrefix)
 	}
 	if handler.client == nil || handler.taskClient == nil {

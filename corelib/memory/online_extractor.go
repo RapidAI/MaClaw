@@ -44,6 +44,7 @@ type OnlineExtractor struct {
 	lastExtract  time.Time
 	lastSuccess  time.Time // set only when at least one fact was applied (ADD/UPDATE/DELETE)
 	lastActivity time.Time // set whenever extraction runs (even if all NOOP)
+	queue        *onlineExtractionQueue
 }
 
 // NewOnlineExtractor creates an OnlineExtractor with a 3-minute cooldown.
@@ -71,6 +72,7 @@ func (oe *OnlineExtractor) SetLLM(llm LLMChatCaller) {
 	oe.mu.Lock()
 	oe.llm = llm
 	oe.mu.Unlock()
+	oe.extractionQueue().start()
 }
 
 // HasRecentSuccess returns true if the OnlineExtractor has successfully
@@ -120,8 +122,33 @@ func (oe *OnlineExtractor) ExtractAndIntegrate(
 	conversationSummary string,
 	referenceTime time.Time,
 	ownerID string,
+	writeContexts ...WriteContext,
+) *OnlineExtractionResult {
+	return oe.extractAndIntegrate(ctx, recentMessages, conversationSummary, referenceTime, ownerID, true, true, writeContexts...)
+}
+
+func (oe *OnlineExtractor) extractAndIntegrate(
+	ctx context.Context,
+	recentMessages []ConversationMessage,
+	conversationSummary string,
+	referenceTime time.Time,
+	ownerID string,
+	respectCooldown bool,
+	skipMemoryWriteGuard bool,
+	writeContexts ...WriteContext,
 ) *OnlineExtractionResult {
 	result := &OnlineExtractionResult{}
+	writeContext := WriteContext{OwnerID: ownerID, Source: "online_extraction"}
+	if len(writeContexts) > 0 {
+		writeContext = writeContexts[0]
+		if writeContext.OwnerID == "" {
+			writeContext.OwnerID = ownerID
+		}
+		if writeContext.Source == "" {
+			writeContext.Source = "online_extraction"
+		}
+	}
+	ownerID = writeContext.OwnerID
 
 	// Read LLM and check cooldown in a single lock acquisition.
 	oe.mu.Lock()
@@ -130,15 +157,16 @@ func (oe *OnlineExtractor) ExtractAndIntegrate(
 		oe.mu.Unlock()
 		return result
 	}
-	if !oe.lastExtract.IsZero() && time.Since(oe.lastExtract) < oe.cooldown {
+	if respectCooldown && !oe.lastExtract.IsZero() && time.Since(oe.lastExtract) < oe.cooldown {
 		oe.mu.Unlock()
 		return result
 	}
 	oe.lastExtract = time.Now()
 	oe.mu.Unlock()
 
-	// Mutual exclusion: skip if the agent already wrote memories in this turn.
-	if HasRecentMemoryWrites(recentMessages) {
+	// Queued extraction relies on message checkpoints and store dedup instead
+	// of discarding a whole batch after one explicit memory write.
+	if skipMemoryWriteGuard && HasRecentMemoryWrites(recentMessages) {
 		return result
 	}
 
@@ -180,7 +208,7 @@ func (oe *OnlineExtractor) ExtractAndIntegrate(
 			continue
 		}
 
-		op, err := oe.classifyAndApply(ctx, llmCaller, fact, ownerID)
+		op, err := oe.classifyAndApply(ctx, llmCaller, fact, writeContext)
 		if err != nil {
 			log.Printf("[online_extractor] classify/apply failed: %v", err)
 			result.Errors++
@@ -242,6 +270,7 @@ For each fact, provide:
 3. "entities": Entity-relation triples in the format ["entity:Name", "relation:relationship", "entity:Name2"]. Extract key entities (people, places, tools, projects) and their relationships. Use only canonical relationship names from this schema: ` + semanticRelationSchemaPrompt() + `
 4. "valid_at": ISO 8601 datetime if the fact has a specific start time (use the reference timestamp to resolve relative dates like "last week", "yesterday"). Leave empty if not applicable.
 5. "invalid_at": ISO 8601 datetime if the fact has a known end time. Leave empty if still true or unknown.
+6. "revalidated": true only when the current messages explicitly confirm that an existing fact is currently true again; otherwise false.
 
 Rules:
 - GROUP all facts about the same server/tool/project/person into ONE entry (e.g. hostname + port + services + credentials = ONE entry)
@@ -297,8 +326,9 @@ func (oe *OnlineExtractor) classifyAndApply(
 	ctx context.Context,
 	llmCaller LLMChatCaller,
 	fact ExtractedFact,
-	ownerID string,
+	writeContext WriteContext,
 ) (MemoryOperation, error) {
+	ownerID := writeContext.OwnerID
 	content := strings.TrimSpace(fact.Content)
 
 	// Build the entry for similarity search.
@@ -332,6 +362,7 @@ func (oe *OnlineExtractor) classifyAndApply(
 			InvalidAt: invalidAt,
 			OwnerID:   ownerID,
 		}
+		writeContext.apply(&entry)
 		if op, err := oe.saveGovernedExtractedEntry(entry); err != nil {
 			return "", fmt.Errorf("save new entry: %w", err)
 		} else {
@@ -360,6 +391,7 @@ func (oe *OnlineExtractor) classifyAndApply(
 			InvalidAt: invalidAt,
 			OwnerID:   ownerID,
 		}
+		writeContext.apply(&entry)
 		if op, err := oe.saveGovernedExtractedEntry(entry); err != nil {
 			return "", fmt.Errorf("save new entry: %w", err)
 		} else {
@@ -375,13 +407,15 @@ func (oe *OnlineExtractor) classifyAndApply(
 		updated.Content = classified.MergedText
 		updated.Tags = mergeTags(updated.Tags, tags)
 		updated.Entities = mergeStringSlice(updated.Entities, fact.ParsedEntities())
-		if validAt != nil {
-			updated.ValidAt = validAt
-		}
-		if invalidAt != nil {
-			updated.InvalidAt = invalidAt
-		}
-		if err := oe.store.UpdateEntriesByID([]Entry{updated}); err != nil {
+		TemporalPatch{
+			ValidAt:      validAt,
+			InvalidAt:    invalidAt,
+			SetValidAt:   fact.ValidAtPresent || strings.TrimSpace(fact.ValidAt) != "",
+			SetInvalidAt: fact.InvalidAtPresent || strings.TrimSpace(fact.InvalidAt) != "",
+			Revalidated:  fact.Revalidated,
+		}.apply(&updated)
+		writeContext.apply(&updated)
+		if err := oe.store.UpdateEntriesByIDWithOrigin([]Entry{updated}, "online_extraction"); err != nil {
 			return "", fmt.Errorf("update target: %w", err)
 		}
 		return OpUpdate, nil
@@ -414,7 +448,7 @@ func (oe *OnlineExtractor) classifyAndApply(
 			changed = true
 		}
 		if changed {
-			if err := oe.store.UpdateEntriesByID([]Entry{updated}); err != nil {
+			if err := oe.store.UpdateEntriesByIDWithOrigin([]Entry{updated}, "online_extraction"); err != nil {
 				return "", fmt.Errorf("supersede target: %w", err)
 			}
 		}
@@ -427,6 +461,7 @@ func (oe *OnlineExtractor) classifyAndApply(
 			InvalidAt: invalidAt,
 			OwnerID:   ownerID,
 		}
+		writeContext.apply(&entry)
 		if _, err := oe.saveGovernedExtractedEntry(entry); err != nil {
 			return "", fmt.Errorf("save contradicting fact: %w", err)
 		}

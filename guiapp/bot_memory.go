@@ -111,7 +111,6 @@ func (a *App) DeleteBotMemory(botID, id string) error {
 	return nil
 }
 
-
 // DeleteBotMemories bulk-deletes bot-scoped long-term memory entries.
 func (a *App) DeleteBotMemories(botID string, ids []string) (map[string]any, error) {
 	a.ensureInteractionInfra()

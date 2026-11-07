@@ -11,6 +11,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -1861,4 +1862,1307 @@ func semanticSurfacePlansTool(surface *semanticCallSurface, name string) bool {
 		}
 	}
 	return false
+}
+
+// LiftExpiredDirectoryHolds is the outbound copy of a tools_search page.
+// A hold such as "下一请求出现：generate_pdf。现在不要调用。" is true only for
+// the request that produced it. The closer names the next step; a later step
+// such as send_file is only in the "尚未列出" clause, and that clause is the
+// same hold once the wire list actually contains the name. tools is the slice
+// this request will send, which can be narrower than the callback's snapshot.
+// A name already called after that page loses the prohibition and is not
+// ordered again. A petition denial is the same request-scoped fact in another
+// tool result: the denied name, and any other name that sentence says is
+// still absent. The stored tool result is not rewritten.
+func (c *sharedAgentLoopCallbacks) LiftExpiredDirectoryHolds(conversation []interface{}, tools []map[string]interface{}) []interface{} {
+	if c == nil {
+		return nil
+	}
+	next, ok := liftExpiredToolsSearchHolds(conversation, semanticVisibleToolNames(tools))
+	if !ok {
+		return nil
+	}
+	return next
+}
+
+func liftExpiredToolsSearchHolds(conversation []interface{}, listed map[string]bool) ([]interface{}, bool) {
+	if len(conversation) == 0 || len(listed) == 0 {
+		return nil, false
+	}
+	// A hold page is the next-request closer or the planned-hold decision.
+	// The predecessor page ends in "现在调用 web_search" and never uses the
+	// closer, but its "不要直接调用这些名字" is the same stale prohibition
+	// once generate_pdf is on the wire list.
+	lastHold := -1
+	lastDenial := map[string]int{}
+	for i, item := range conversation {
+		content, ok := toolResultContent(item)
+		if !ok {
+			continue
+		}
+		if holdContent, hold := directoryHoldToolContent(item); hold && directoryHoldPage(holdContent) {
+			lastHold = i
+		}
+		if name, ok := rejectedCallName(content); ok {
+			lastDenial[name] = i
+		}
+	}
+	if lastHold < 0 && len(lastDenial) == 0 {
+		return nil, false
+	}
+	// A rejection names the tool that did not run. That call is not a
+	// completed use. Every other assistant call in the conversation is.
+	used := namesUsed(conversation)
+	// Only the latest hold page may order a call. Earlier pages lose a
+	// prohibition that the wire list has already lifted.
+	var out []interface{}
+	changed := false
+	for i, item := range conversation {
+		content, isTool := toolResultContent(item)
+		var next string
+		var ok bool
+		if isTool && strings.Contains(content, "tools_search results for ") && directoryHoldPage(content) {
+			// Calls after this page, plus the assistant message that produced it.
+			// web_search is usually in that message, before the result exists.
+			// A planned denial in that batch means the call did not run.
+			after := namesCalledSince(conversation, i)
+			issuing := issuingAssistantToolNames(conversation, i)
+			next, ok = rewriteExpiredToolsSearchHold(content, listed, after, issuing, i == lastHold)
+		}
+		if !ok && isTool {
+			if _, denial := plannedDenialToolName(content); denial {
+				next, ok = rewriteExpiredPlannedDenial(content, listed, namesCalledSince(conversation, i), used, lastHold, lastDenial, i)
+			} else if _, rejection := surfaceRejectionName(content); rejection {
+				next, ok = rewriteExpiredSurfaceRejection(content, listed, namesCalledSince(conversation, i), lastHold, lastDenial, i)
+			} else if _, rejected := argumentRejectionName(content); rejected {
+				next, ok = rewriteExpiredArgumentRejection(content, listed, namesCalledSince(conversation, i))
+			}
+		}
+		if !ok {
+			if changed {
+				out = append(out, item)
+			}
+			continue
+		}
+		if !changed {
+			out = make([]interface{}, 0, len(conversation))
+			out = append(out, conversation[:i]...)
+			changed = true
+		}
+		out = append(out, directoryHoldWithContent(item, next))
+	}
+	if !changed {
+		return nil, false
+	}
+	return out, true
+}
+
+// namesCalledSince is the set of tool names that ran after index. A
+// rejection in that call's batch means the call did not execute, so the
+// name stays uncalled and can still be ordered once it is listed. A
+// consumed-grant result stays a call: that name already ran. Any other
+// result counts as the call, because the tool message does not carry the
+// tool name.
+func namesCalledSince(conversation []interface{}, index int) map[string]bool {
+	var called map[string]bool
+	for i := index + 1; i < len(conversation); i++ {
+		names, assistant := assistantToolNames(conversation[i])
+		if !assistant {
+			continue
+		}
+		denied := rejectedNamesInBatch(conversation, i)
+		for _, name := range names {
+			if denied[name] {
+				continue
+			}
+			if called == nil {
+				called = map[string]bool{}
+			}
+			called[name] = true
+		}
+	}
+	return called
+}
+
+// rejectedNamesInBatch is the set of names whose result in this assistant
+// batch says the call did not execute. The result may sit before or after
+// the tools_search page from the same message.
+func rejectedNamesInBatch(conversation []interface{}, assistantAt int) map[string]bool {
+	var denied map[string]bool
+	for i := assistantAt + 1; i < len(conversation); i++ {
+		if _, assistant := assistantToolNames(conversation[i]); assistant {
+			break
+		}
+		content, isTool := toolResultContent(conversation[i])
+		if !isTool {
+			continue
+		}
+		name, ok := rejectedCallName(content)
+		if !ok {
+			continue
+		}
+		if denied == nil {
+			denied = map[string]bool{}
+		}
+		denied[name] = true
+	}
+	return denied
+}
+
+func messageToolNames(item interface{}) []string {
+	m, ok := item.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	role, _ := m["role"].(string)
+	if role != "assistant" {
+		return nil
+	}
+	return toolCallNames(m["tool_calls"])
+}
+
+func toolCallNames(raw interface{}) []string {
+	switch calls := raw.(type) {
+	case nil:
+		return nil
+	case []llm.ToolCall:
+		names := make([]string, 0, len(calls))
+		for _, call := range calls {
+			name := strings.TrimSpace(call.Function.Name)
+			if name != "" {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var loose []struct {
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if json.Unmarshal(data, &loose) != nil {
+		return nil
+	}
+	names := make([]string, 0, len(loose))
+	for _, call := range loose {
+		name := strings.TrimSpace(call.Function.Name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func toolResultContent(item interface{}) (string, bool) {
+	var role, content string
+	switch m := item.(type) {
+	case map[string]interface{}:
+		role, _ = m["role"].(string)
+		content, _ = m["content"].(string)
+	case map[string]string:
+		role = m["role"]
+		content = m["content"]
+	default:
+		return "", false
+	}
+	if role != "tool" {
+		return "", false
+	}
+	return content, true
+}
+
+func directoryHoldToolContent(item interface{}) (string, bool) {
+	content, ok := toolResultContent(item)
+	if !ok || !strings.Contains(content, "tools_search results for ") {
+		return "", false
+	}
+	return content, true
+}
+
+// plannedDenialToolName is the tool named by a petition denial that is true
+// only while that tool is absent from the request. The call that produced
+// the denial sits before this result, so it is not evidence the tool was used.
+func plannedDenialToolName(content string) (string, bool) {
+	const lead = "Error: tool \""
+	const mid = "\" is planned for this turn but "
+	if !strings.HasPrefix(content, lead) {
+		return "", false
+	}
+	rest := content[len(lead):]
+	end := strings.Index(rest, mid)
+	if end <= 0 {
+		return "", false
+	}
+	name := rest[:end]
+	if strings.Contains(name, "\n") || strings.Contains(name, "\"") {
+		return "", false
+	}
+	return name, true
+}
+
+// rejectedCallName is the tool whose result says this invocation did not
+// execute. A planned denial, an unrendered-surface denial, a repeat-wave
+// continuation, and an argument rejection are the same fact. A consumed-grant
+// result is not: that name already ran.
+func rejectedCallName(content string) (string, bool) {
+	if name, ok := plannedDenialToolName(content); ok {
+		return name, true
+	}
+	if name, ok := surfaceRejectionName(content); ok {
+		return name, true
+	}
+	return argumentRejectionName(content)
+}
+
+// argumentRejectionName is a call the loop refused before execution because
+// the arguments were not a JSON object. The sentence tells the model to
+// send the call again. That attempt is not a completed use.
+func argumentRejectionName(content string) (string, bool) {
+	const lead = "Error: tool call \""
+	const mid = "\" has invalid JSON object arguments. The tool was not executed."
+	if !strings.HasPrefix(content, lead) {
+		return "", false
+	}
+	rest := content[len(lead):]
+	end := strings.Index(rest, mid)
+	if end <= 0 {
+		return "", false
+	}
+	name := rest[:end]
+	if name == "" || strings.Contains(name, "\n") || strings.Contains(name, "\"") {
+		return "", false
+	}
+	return name, true
+}
+
+// surfaceRejectionName is a non-execution result that is not a planned
+// denial. The call stayed off this request, or it was deferred to the next
+// one. The name is the quoted tool at the start of the sentence.
+func surfaceRejectionName(content string) (string, bool) {
+	const lead = "Error: tool \""
+	if !strings.HasPrefix(content, lead) {
+		return "", false
+	}
+	rest := content[len(lead):]
+	for _, mid := range []string{
+		"\" was not available in this request's rendered tool surface.",
+		"\" is listed on the next request in this same reply.",
+	} {
+		end := strings.Index(rest, mid)
+		if end <= 0 {
+			continue
+		}
+		name := rest[:end]
+		if name == "" || strings.Contains(name, "\n") || strings.Contains(name, "\"") {
+			return "", false
+		}
+		return name, true
+	}
+	return "", false
+}
+
+// namesUsed is every assistant tool call that was not rejected. A successful
+// result does not name the tool, so a call with no rejection counts as use.
+// The rejected call stays unused, including when it is the only call in that
+// assistant message.
+func namesUsed(conversation []interface{}) map[string]bool {
+	used := map[string]bool{}
+	for i, item := range conversation {
+		names, assistant := assistantToolNames(item)
+		if !assistant {
+			continue
+		}
+		denied := rejectedNamesInBatch(conversation, i)
+		for _, name := range names {
+			if denied[name] {
+				continue
+			}
+			used[name] = true
+		}
+	}
+	return used
+}
+
+func assistantToolNames(item interface{}) ([]string, bool) {
+	m, ok := item.(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	role, _ := m["role"].(string)
+	if role != "assistant" {
+		return nil, false
+	}
+	return toolCallNames(m["tool_calls"]), true
+}
+
+// rewriteExpiredPlannedDenial drops "not listed yet" / "do not call it again
+// before it is listed" once the wire list contains the name. A denial whose
+// own name is still absent can still name another tool ("generate_pdf appears
+// on the next request", "Call web_search now"). Those clauses are the same
+// request-scoped fact. Only the latest denial of the rejected name, and only
+// when no later hold page is the action, orders a call. The denied call
+// itself is not a completed use.
+func rewriteExpiredPlannedDenial(content string, listed, after, used map[string]bool, lastHold int, lastDenial map[string]int, index int) (string, bool) {
+	name, ok := plannedDenialToolName(content)
+	if !ok {
+		return content, false
+	}
+	latest := index == lastDenial[name]
+	allowOrder := latest && (lastHold < 0 || index >= lastHold)
+	if listed[name] {
+		if allowOrder && !after[name] {
+			return fmt.Sprintf("Error: tool %q is listed on this request. Call it now.", name), true
+		}
+		return fmt.Sprintf("Error: tool %q is listed on this request.", name), true
+	}
+	// The held denial says "It appears on the next request" and names nobody.
+	// The subject's own quoted appear-clause is also left as stored. A later
+	// call that actually ran spends that promise. The call that produced this
+	// denial sits before it and is not in after.
+	if after[name] {
+		return fmt.Sprintf("Error: tool %q has already been called.", name), true
+	}
+	return projectUnlistedPlannedDenial(content, name, listed, used, allowOrder)
+}
+
+// rewriteExpiredSurfaceRejection lifts an unrendered-surface denial or a
+// repeat-wave continuation once that fact is false. The call did not run.
+// Only the latest rejection of the name orders it, and only when no later
+// hold page is the action. A name that later ran, and is absent from this
+// wire list, is already called. The stored result is left as it was.
+func rewriteExpiredSurfaceRejection(content string, listed, after map[string]bool, lastHold int, lastDenial map[string]int, index int) (string, bool) {
+	name, ok := surfaceRejectionName(content)
+	if !ok {
+		return content, false
+	}
+	latest := index == lastDenial[name]
+	allowOrder := latest && (lastHold < 0 || index >= lastHold)
+	if listed[name] {
+		if allowOrder && !after[name] {
+			return fmt.Sprintf("Error: tool %q is listed on this request. Call it now.", name), true
+		}
+		return fmt.Sprintf("Error: tool %q is listed on this request.", name), true
+	}
+	if after[name] {
+		return fmt.Sprintf("Error: tool %q has already been called.", name), true
+	}
+	return content, false
+}
+
+// rewriteExpiredArgumentRejection leaves the regenerate sentence while this
+// attempt is still the outstanding call. The sentence already says to send
+// the call again, and it is the only place the model is told the arguments
+// were rejected. A later call that actually ran spends that instruction.
+func rewriteExpiredArgumentRejection(content string, listed, after map[string]bool) (string, bool) {
+	name, ok := argumentRejectionName(content)
+	if !ok || !after[name] {
+		return content, false
+	}
+	if listed[name] {
+		return fmt.Sprintf("Error: tool %q is listed on this request.", name), true
+	}
+	return fmt.Sprintf("Error: tool %q has already been called.", name), true
+}
+
+// projectUnlistedPlannedDenial rewrites a denial that still correctly holds
+// its own name. Quoted "Call X now" and "X appears on the next request"
+// clauses move with the wire list. The subject's prohibition stays.
+func projectUnlistedPlannedDenial(content, subject string, listed, used map[string]bool, allowOrder bool) (string, bool) {
+	callNow := quotedNamesBefore(content, " now.")
+	appear := quotedNamesBefore(content, " appears on the next request")
+	if len(callNow) == 0 && len(appear) == 0 {
+		return content, false
+	}
+	var orderNow, listedOnly, stillNext []string
+	seen := map[string]bool{}
+	changed := false
+	for _, name := range callNow {
+		if name == subject || seen[name] {
+			continue
+		}
+		seen[name] = true
+		if used[name] || !listed[name] {
+			changed = true
+			continue
+		}
+		orderNow = append(orderNow, name)
+	}
+	for _, name := range appear {
+		if name == subject || seen[name] {
+			continue
+		}
+		seen[name] = true
+		if !listed[name] {
+			if used[name] {
+				changed = true
+				continue
+			}
+			stillNext = append(stillNext, name)
+			continue
+		}
+		changed = true
+		if used[name] || !allowOrder {
+			listedOnly = append(listedOnly, name)
+			continue
+		}
+		orderNow = append(orderNow, name)
+	}
+	if !changed {
+		return content, false
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Error: tool %q is planned for this turn but is not listed yet.", subject)
+	if len(orderNow) > 0 {
+		b.WriteString(" Call " + joinListedNames(orderNow) + " now.")
+	}
+	if len(listedOnly) > 0 {
+		b.WriteString(" " + joinListedNames(listedOnly) + " is listed on this request.")
+	}
+	if len(stillNext) > 0 {
+		b.WriteString(" " + joinListedNames(stillNext) + " appears on the next request; call it then.")
+	}
+	fmt.Fprintf(&b, " Call %q only after %q is listed.", subject, subject)
+	b.WriteString(" Do not tell the user the tool is missing and do not ask the user to re-authorize tools.")
+	next := b.String()
+	if next == content {
+		return content, false
+	}
+	return next, true
+}
+
+// quotedNamesBefore parses the joinListedNames list immediately before
+// marker. "Call a tool that is listed now" and "It appears on the next
+// request" name nobody, and stay unmatched.
+func quotedNamesBefore(text, marker string) []string {
+	at := strings.Index(text, marker)
+	if at < 0 {
+		return nil
+	}
+	return trailingQuotedNames(text[:at])
+}
+
+func trailingQuotedNames(head string) []string {
+	head = strings.TrimRight(head, " ")
+	var names []string
+	for strings.HasSuffix(head, `"`) {
+		head = head[:len(head)-1]
+		quote := strings.LastIndex(head, `"`)
+		if quote < 0 {
+			return nil
+		}
+		name := strings.TrimSpace(head[quote+1:])
+		if name == "" || strings.ContainsAny(name, "\"\n") {
+			return nil
+		}
+		names = append(names, name)
+		head = strings.TrimRight(head[:quote], " ")
+		switch {
+		case strings.HasSuffix(head, " and"):
+			head = strings.TrimRight(head[:len(head)-len(" and")], " ")
+		case strings.HasSuffix(head, ","):
+			head = strings.TrimRight(head[:len(head)-1], " ")
+		default:
+			head = ""
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	for i, j := 0, len(names)-1; i < j; i, j = i+1, j-1 {
+		names[i], names[j] = names[j], names[i]
+	}
+	return names
+}
+
+func directoryHoldWithContent(item interface{}, content string) interface{} {
+	switch m := item.(type) {
+	case map[string]interface{}:
+		cp := make(map[string]interface{}, len(m))
+		for k, v := range m {
+			cp[k] = v
+		}
+		cp["content"] = content
+		return cp
+	case map[string]string:
+		cp := make(map[string]string, len(m))
+		for k, v := range m {
+			cp[k] = v
+		}
+		cp["content"] = content
+		return cp
+	default:
+		return item
+	}
+}
+
+func directoryHoldPage(page string) bool {
+	if _, _, ok := directoryHoldCloser(page); ok {
+		return true
+	}
+	return len(plannedHoldClauses(page)) > 0
+}
+
+// issuingAssistantToolNames is the assistant message that requested this
+// tool result, minus calls that batch rejected. Those calls sit before the
+// result, so a scan that starts after the page never sees them. A rejection
+// anywhere in the batch is proof the name did not run, including when the
+// result is stored before this page. A consumed-grant result stays.
+func issuingAssistantToolNames(conversation []interface{}, index int) map[string]bool {
+	assistantAt := -1
+	var names []string
+	for i := index - 1; i >= 0; i-- {
+		found, ok := assistantToolNames(conversation[i])
+		if !ok {
+			continue
+		}
+		assistantAt = i
+		names = found
+		break
+	}
+	if assistantAt < 0 {
+		return nil
+	}
+	denied := rejectedNamesInBatch(conversation, assistantAt)
+	seen := map[string]bool{}
+	for _, name := range names {
+		if denied[name] {
+			continue
+		}
+		seen[name] = true
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	return seen
+}
+
+func rewriteExpiredToolsSearchHold(page string, listed, after, issuing map[string]bool, order bool) (string, bool) {
+	closerNames, closerPhrase, hasCloser := directoryHoldCloser(page)
+	orderNames, orderPhrase, hasOrderTail := tailCallLine(page)
+	holds := directoryHoldSubjectNames(page, closerNames)
+	if len(holds) == 0 && !hasCloser {
+		return page, false
+	}
+	holdSet := map[string]bool{}
+	for _, name := range holds {
+		holdSet[name] = true
+	}
+	// Predecessor orders ("现在调用 web_search") are not holds. A hold named
+	// in the same assistant message was rejected. An order there ran only
+	// when that batch did not deny it.
+	var keptOrders []string
+	seenOrder := map[string]bool{}
+	addOrder := func(name string) {
+		if name == "" || holdSet[name] || seenOrder[name] || !listed[name] {
+			return
+		}
+		if after[name] || issuing[name] {
+			return
+		}
+		seenOrder[name] = true
+		keptOrders = append(keptOrders, name)
+	}
+	for _, name := range decisionCallNames(page) {
+		addOrder(name)
+	}
+	for _, name := range orderNames {
+		addOrder(name)
+	}
+	var priorOrders []string
+	seenPrior := map[string]bool{}
+	notePrior := func(name string) {
+		if name == "" || holdSet[name] || seenPrior[name] {
+			return
+		}
+		seenPrior[name] = true
+		priorOrders = append(priorOrders, name)
+	}
+	for _, name := range decisionCallNames(page) {
+		notePrior(name)
+	}
+	for _, name := range orderNames {
+		notePrior(name)
+	}
+	// A hold called after this page is finished even when this request no
+	// longer lists it. The one-shot grant is spent, so "出现在下一请求" is
+	// false and keeps the model waiting on a tool that will not return.
+	// Say 已调用. The wire list is the only source of 已在当前工具列表.
+	// A hold in the issuing message was denied and is not finished.
+	called := map[string]bool{}
+	for name := range after {
+		called[name] = true
+	}
+	for name := range issuing {
+		if !holdSet[name] {
+			called[name] = true
+		}
+	}
+	listedHold := false
+	finishedHold := false
+	var callNow, released, still, finished []string
+	for _, name := range holds {
+		switch {
+		case listed[name] && order && !after[name]:
+			listedHold = true
+			callNow = append(callNow, name)
+		case listed[name]:
+			listedHold = true
+			released = append(released, name)
+		case after[name]:
+			finished = append(finished, name)
+			finishedHold = true
+		default:
+			still = append(still, name)
+		}
+	}
+	expiredOrder := len(keptOrders) != len(priorOrders)
+	if !listedHold && !expiredOrder && !finishedHold {
+		return page, false
+	}
+	original := page
+	if order {
+		callNow = append(keptOrders, callNow...)
+	}
+	// Drop a hold from 尚未列出 once it is on the wire list or already called.
+	// called matches after for holds: the issuing denial stays out.
+	drop := map[string]bool{}
+	for _, name := range holds {
+		if listed[name] || called[name] {
+			drop[name] = true
+		}
+	}
+	callSentence := ""
+	if order && len(callNow) > 0 {
+		callSentence = "立刻调用 " + strings.Join(callNow, "、") + "。"
+	} else if !order && len(keptOrders) > 0 {
+		callSentence = "现在调用 " + strings.Join(keptOrders, "、") + "。"
+	}
+	page = rewriteHeldDecisionLine(page, callSentence, drop, listed, called)
+	page = rewriteHeldDirectoryRows(page, callNow, released, finished)
+	// 先调用 in a row can name a predecessor the decision line already
+	// shortened away. Issuing names reach called only when that batch let
+	// them run. A planned denial keeps the lead.
+	page = relaxCalledPredecessorLeads(page, called)
+	// listed, not drop: a finished name absent from the wire list must not
+	// become 已在当前工具列表.
+	page = relaxListedAppearance(page, listed, called)
+	// A row ban with no name belongs to that row. Once another tool in the
+	// same bracket is listed or already called, the ban reads as forbidding
+	// that tool.
+	page = bindAnonymousRowBan(page, listed, called)
+	var tail string
+	if order {
+		if len(callNow) > 0 {
+			tail = "现在调用 " + strings.Join(callNow, "、") + "。"
+		}
+		if len(still) > 0 {
+			tail += "仍未列出、现在不要调用：" + strings.Join(still, "、") + "。"
+		}
+	} else if len(keptOrders) > 0 && hasOrderTail {
+		tail = "现在调用 " + strings.Join(keptOrders, "、") + "。"
+	}
+	switch {
+	case hasCloser:
+		// An older page drops the closer. Putting a predecessor order there
+		// would make that old page the action again.
+		if !order {
+			tail = ""
+		}
+		page = replaceLast(page, closerPhrase, tail)
+	case hasOrderTail:
+		page = replaceLast(page, orderPhrase, tail)
+	default:
+		page = replaceLast(page, semanticToolsSearchDeferredCloser, tail)
+	}
+	if page == original {
+		return page, false
+	}
+	return page, true
+}
+
+func decisionCallNames(page string) []string {
+	const mark = "本轮决定："
+	const lead = "现在调用 "
+	at := strings.LastIndex(page, mark)
+	if at < 0 {
+		return nil
+	}
+	rest := page[at+len(mark):]
+	if !strings.HasPrefix(rest, lead) {
+		return nil
+	}
+	rest = rest[len(lead):]
+	end := strings.Index(rest, "。")
+	if end < 0 || strings.Contains(rest[:end], "\n") {
+		return nil
+	}
+	return splitHoldNames(rest[:end])
+}
+
+func tailCallLine(page string) (names []string, phrase string, ok bool) {
+	trimmed := strings.TrimRight(page, "\n")
+	at := strings.LastIndex(trimmed, "\n")
+	line := trimmed
+	if at >= 0 {
+		line = trimmed[at+1:]
+	}
+	const lead = "现在调用 "
+	if !strings.HasPrefix(line, lead) || !strings.HasSuffix(line, "。") {
+		return nil, "", false
+	}
+	body := line[len(lead) : len(line)-len("。")]
+	if body == "" || strings.Contains(body, "。") {
+		return nil, "", false
+	}
+	names = splitHoldNames(body)
+	if len(names) == 0 {
+		return nil, "", false
+	}
+	return names, line, true
+}
+
+func splitHoldNames(body string) []string {
+	var names []string
+	for _, name := range strings.Split(body, "、") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func stripDecisionCallNow(head string) string {
+	const mark = "本轮决定："
+	const lead = "现在调用 "
+	at := strings.LastIndex(head, mark)
+	if at < 0 {
+		return head
+	}
+	tail := head[at+len(mark):]
+	if !strings.HasPrefix(tail, lead) {
+		return head
+	}
+	rest := tail[len(lead):]
+	end := strings.Index(rest, "。")
+	if end < 0 || strings.Contains(rest[:end], "\n") {
+		return head
+	}
+	return head[:at+len(mark)] + rest[end+len("。"):]
+}
+
+func directoryHoldCloser(page string) (names []string, phrase string, ok bool) {
+	const lead = "下一请求出现："
+	const tail = "。现在不要调用。"
+	at := strings.LastIndex(page, lead)
+	if at < 0 {
+		return nil, "", false
+	}
+	rest := page[at+len(lead):]
+	end := strings.Index(rest, tail)
+	if end < 0 || strings.Contains(rest[:end], "\n") {
+		return nil, "", false
+	}
+	for _, name := range strings.Split(rest[:end], "、") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil, "", false
+	}
+	return names, page[at : at+len(lead)+end+len(tail)], true
+}
+
+// directoryHoldSubjectNames is the closer plus every "尚未列出" clause name.
+// Clause order follows the closer, then the decision line.
+func directoryHoldSubjectNames(page string, closerNames []string) []string {
+	names := make([]string, 0, len(closerNames)+2)
+	seen := map[string]bool{}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	for _, name := range closerNames {
+		add(name)
+	}
+	for _, clause := range plannedHoldClauses(page) {
+		add(plannedHoldClauseName(clause))
+	}
+	return names
+}
+
+func plannedHoldClauses(page string) []string {
+	const prefix = "已计划但本请求尚未列出："
+	const banLead = "。不要直接调用这些名字"
+	at := strings.Index(page, prefix)
+	if at < 0 {
+		return nil
+	}
+	rest := page[at+len(prefix):]
+	banAt := strings.Index(rest, banLead)
+	if banAt < 0 {
+		return nil
+	}
+	return splitPlannedHoldClauses(rest[:banAt])
+}
+
+func replaceLast(page, phrase, replacement string) string {
+	at := strings.LastIndex(page, phrase)
+	if at < 0 {
+		return page
+	}
+	if replacement == "" && at > 0 && page[at-1] == '\n' {
+		return page[:at-1] + page[at+len(phrase):]
+	}
+	return page[:at] + replacement + page[at+len(phrase):]
+}
+
+func rewriteHeldDecisionLine(page, callSentence string, drop, listed, called map[string]bool) string {
+	const prefix = "已计划但本请求尚未列出："
+	const banLead = "。不要直接调用这些名字"
+	at := strings.Index(page, prefix)
+	if at < 0 {
+		return page
+	}
+	rest := page[at+len(prefix):]
+	banAt := strings.Index(rest, banLead)
+	if banAt < 0 {
+		return page
+	}
+	clauses := splitPlannedHoldClauses(rest[:banAt])
+	var kept []string
+	for _, clause := range clauses {
+		if drop[plannedHoldClauseName(clause)] {
+			continue
+		}
+		// A kept clause can still say a listed predecessor "出现在下一请求".
+		// That fact is false on this request and talks the model out of the
+		// call this request is ordering. The wire list is the authority, not
+		// only the names this page was holding.
+		kept = append(kept, relaxStaleNextRequestFact(clause, listed, called))
+	}
+	ban := rest[banAt:]
+	banEnd := strings.Index(ban[len(banLead):], "。")
+	if banEnd < 0 {
+		return page
+	}
+	originalBan := ban[:len(banLead)+banEnd+len("。")]
+	after := ban[len(originalBan):]
+	// "这些名字" used to cover every held clause. After a listed name is
+	// removed, name the clauses that are still held so the ban cannot be
+	// read as covering the name this request is supposed to call.
+	banSentence := originalBan
+	if len(kept) > 0 {
+		keptNames := make([]string, len(kept))
+		for i, clause := range kept {
+			keptNames[i] = plannedHoldClauseName(clause)
+		}
+		banSentence = "。不要直接调用 " + strings.Join(keptNames, "、") + originalBan[len(banLead):]
+	}
+	head := stripDecisionCallNow(page[:at])
+	if len(kept) == 0 {
+		if callSentence == "" {
+			head = strings.TrimSuffix(head, "本轮决定：")
+		}
+		return head + callSentence + after
+	}
+	return head + callSentence + prefix + strings.Join(kept, "；") + banSentence + after
+}
+
+func splitPlannedHoldClauses(body string) []string {
+	var clauses []string
+	depth := 0
+	start := 0
+	for i, r := range body {
+		switch r {
+		case '（':
+			depth++
+		case '）':
+			if depth > 0 {
+				depth--
+			}
+		case '；':
+			if depth == 0 {
+				if clause := strings.TrimSpace(body[start:i]); clause != "" {
+					clauses = append(clauses, clause)
+				}
+				start = i + len("；")
+			}
+		}
+	}
+	if clause := strings.TrimSpace(body[start:]); clause != "" {
+		clauses = append(clauses, clause)
+	}
+	return clauses
+}
+
+func plannedHoldClauseName(clause string) string {
+	name, _, _ := strings.Cut(clause, "（")
+	return strings.TrimSpace(name)
+}
+
+// relaxStaleNextRequestFact rewrites a predecessor fact inside a clause that
+// stays held. The clause's own name is not listed. A listed name must not
+// stay "absent until the next request", including when it shares a 、 list
+// with a name that is still absent. A name already called and absent from
+// this wire list is 已调用, not 已在当前工具列表. "后再调用" names nobody,
+// so a settled name does not keep it.
+func relaxStaleNextRequestFact(clause string, listed, called map[string]bool) string {
+	if clause == "" || (len(listed) == 0 && len(called) == 0) {
+		return clause
+	}
+	clause = relaxNextRequestSuffix(clause, "出现在下一请求后再调用", listed, called)
+	return relaxNextRequestSuffix(clause, "出现在下一请求", listed, called)
+}
+
+// relaxNextRequestSuffix rewrites the 、-separated names immediately before
+// one "出现在下一请求" suffix. A single-name replace only sees the name glued
+// to the suffix, so an earlier listed name stays absent and an earlier
+// unlisted name gets pulled into "已在当前工具列表".
+func relaxNextRequestSuffix(clause, suffix string, listed, called map[string]bool) string {
+	var b strings.Builder
+	rest := clause
+	for {
+		at := strings.Index(rest, suffix)
+		if at < 0 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		names, start, ok := namesBeforeSuffix(rest, at)
+		end := at + len(suffix)
+		if !ok || !anySettledHoldName(names, listed, called) {
+			b.WriteString(rest[:end])
+			rest = rest[end:]
+			continue
+		}
+		b.WriteString(rest[:start])
+		b.WriteString(joinNextRequestFacts(names, suffix, listed, called))
+		rest = rest[end:]
+	}
+}
+
+func anySettledHoldName(names []string, listed, called map[string]bool) bool {
+	for _, name := range names {
+		if listed[name] || called[name] {
+			return true
+		}
+	}
+	return false
+}
+
+func joinNextRequestFacts(names []string, suffix string, listed, called map[string]bool) string {
+	var parts []string
+	var pending []string
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+		parts = append(parts, strings.Join(pending, "、")+" "+suffix)
+		pending = nil
+	}
+	for _, name := range names {
+		switch {
+		case listed[name]:
+			flush()
+			parts = append(parts, name+" 已在当前工具列表")
+		case called[name]:
+			flush()
+			parts = append(parts, name+" 已调用")
+		default:
+			pending = append(pending, name)
+		}
+	}
+	flush()
+	return strings.Join(parts, "，")
+}
+
+// namesBeforeSuffix is the tool-name list that ends at at. Spaces around
+// the names and the 、 separators belong to the list. The separator before
+// the first name stays outside it.
+func namesBeforeSuffix(s string, at int) (names []string, start int, ok bool) {
+	i := at
+	for i > 0 && s[i-1] == ' ' {
+		i--
+	}
+	var rev []string
+	nameStart := i
+	for {
+		nameEnd := i
+		for i > 0 && isHoldNameByte(s[i-1]) {
+			i--
+		}
+		if i == nameEnd {
+			break
+		}
+		rev = append(rev, s[i:nameEnd])
+		nameStart = i
+		for i > 0 && s[i-1] == ' ' {
+			i--
+		}
+		if strings.HasSuffix(s[:i], "、") {
+			i -= len("、")
+			for i > 0 && s[i-1] == ' ' {
+				i--
+			}
+			continue
+		}
+		break
+	}
+	if len(rev) == 0 {
+		return nil, 0, false
+	}
+	for a, b := 0, len(rev)-1; a < b; a, b = a+1, b-1 {
+		rev[a], rev[b] = rev[b], rev[a]
+	}
+	return rev, nameStart, true
+}
+
+func isHoldNameByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
+}
+
+// relaxCalledPredecessorLeads rewrites "先调用 web_search、web_fetch" once
+// those calls have already been issued. A single-name replace leaves the
+// second name attached to a lead that was removed with the first.
+func relaxCalledPredecessorLeads(page string, called map[string]bool) string {
+	if page == "" || len(called) == 0 || !strings.Contains(page, "先调用 ") {
+		return page
+	}
+	return relaxDelimitedLead(page, "先调用 ", func(name string) (string, bool) {
+		if called[name] {
+			return name + " 已调用", false
+		}
+		return "", true
+	})
+}
+
+// relaxListedAppearance rewrites "之后会出现 generate_pdf" and "先等
+// generate_pdf" once that absence is false. A name on the wire list is
+// 已在当前工具列表. A name already called and absent from this wire list is
+// 已调用. Passing the drop set here would describe that spent name as listed.
+func relaxListedAppearance(page string, listed, called map[string]bool) string {
+	if page == "" || (len(listed) == 0 && len(called) == 0) {
+		return page
+	}
+	appear := func(name string) (string, bool) {
+		if listed[name] {
+			return name + " 已在当前工具列表", false
+		}
+		if called[name] {
+			return name + " 已调用", false
+		}
+		return "", true
+	}
+	if strings.Contains(page, "之后会出现 ") {
+		page = relaxDelimitedLead(page, "之后会出现 ", appear)
+	}
+	if strings.Contains(page, "先等 ") {
+		page = relaxDelimitedLead(page, "先等 ", appear)
+	}
+	return page
+}
+
+// relaxDelimitedLead rewrites one lead and the 、-separated tool names that
+// follow it. keep false removes that name from the lead; replacement is the
+// fact that takes its place. The bytes after the list, including 。， stay.
+func relaxDelimitedLead(page, lead string, mapName func(name string) (replacement string, keep bool)) string {
+	var b strings.Builder
+	rest := page
+	for {
+		at := strings.Index(rest, lead)
+		if at < 0 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		names, end, ok := parseHoldNameList(rest[at+len(lead):])
+		if !ok {
+			b.WriteString(rest[:at+len(lead)])
+			rest = rest[at+len(lead):]
+			continue
+		}
+		var kept, extra []string
+		changed := false
+		for _, name := range names {
+			replacement, keep := mapName(name)
+			if keep {
+				kept = append(kept, name)
+				continue
+			}
+			changed = true
+			if replacement != "" {
+				extra = append(extra, replacement)
+			}
+		}
+		span := at + len(lead) + end
+		if !changed {
+			b.WriteString(rest[:span])
+			rest = rest[span:]
+			continue
+		}
+		b.WriteString(rest[:at])
+		if len(extra) > 0 {
+			b.WriteString(strings.Join(extra, "，"))
+		}
+		if len(kept) > 0 {
+			if len(extra) > 0 {
+				b.WriteString("，")
+			}
+			b.WriteString(lead)
+			b.WriteString(strings.Join(kept, "、"))
+		}
+		rest = rest[span:]
+	}
+}
+
+func parseHoldNameList(s string) (names []string, end int, ok bool) {
+	i := 0
+	for {
+		for i < len(s) && s[i] == ' ' {
+			i++
+		}
+		start := i
+		for i < len(s) && isHoldNameByte(s[i]) {
+			i++
+		}
+		if i == start {
+			break
+		}
+		names = append(names, s[start:i])
+		for i < len(s) && s[i] == ' ' {
+			i++
+		}
+		if i < len(s) && strings.HasPrefix(s[i:], "、") {
+			i += len("、")
+			continue
+		}
+		break
+	}
+	if len(names) == 0 {
+		return nil, 0, false
+	}
+	return names, i, true
+}
+
+func rewriteHeldDirectoryRows(page string, callNow, released, finished []string) string {
+	status := map[string]string{}
+	for _, name := range callNow {
+		status[name] = "[已在当前工具列表，立刻调用。]"
+	}
+	for _, name := range released {
+		if _, ok := status[name]; ok {
+			continue
+		}
+		status[name] = "[已在当前工具列表。]"
+	}
+	// A listed name already won the row. 已调用 is only for a hold that ran
+	// and is absent from this wire list. The row matcher still requires
+	// 不要直接调用, so a spent-grant row stays as it was stored.
+	for _, name := range finished {
+		if _, ok := status[name]; ok {
+			continue
+		}
+		status[name] = "[已调用。]"
+	}
+	if len(status) == 0 {
+		return page
+	}
+	lines := strings.Split(page, "\n")
+	changed := false
+	for i, line := range lines {
+		next := rewriteHeldDirectoryRow(line, status)
+		if next != line {
+			lines[i] = next
+			changed = true
+		}
+	}
+	if !changed {
+		return page
+	}
+	return strings.Join(lines, "\n")
+}
+
+// bindAnonymousRowBan names the row when its "不要直接调用" has no subject
+// and the same bracket already names a different tool that is listed now
+// or already called. "generate_pdf 已调用" beside an unnamed ban reads as
+// forbidding that finished tool. The decision ban was given the same
+// treatment. A live page never reaches here: the hold is still true, and
+// the anonymous ban still means the row.
+func bindAnonymousRowBan(page string, listed, called map[string]bool) string {
+	if page == "" || (len(listed) == 0 && len(called) == 0) || !strings.Contains(page, "不要直接调用，也不要请愿") {
+		return page
+	}
+	lines := strings.Split(page, "\n")
+	changed := false
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "- ") || !strings.Contains(line, "不要直接调用，也不要请愿") {
+			continue
+		}
+		rest := strings.TrimPrefix(line, "- ")
+		name, detail, ok := strings.Cut(rest, " — ")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		if name == "" || !rowBracketMentionsOtherListed(detail, name, listed, called) {
+			continue
+		}
+		lines[i] = strings.Replace(line, "不要直接调用，也不要请愿", "不要直接调用 "+name+"，也不要请愿", 1)
+		changed = true
+	}
+	if !changed {
+		return page
+	}
+	return strings.Join(lines, "\n")
+}
+
+func rowBracketMentionsOtherListed(detail, row string, listed, called map[string]bool) bool {
+	scope := detail
+	if open := strings.LastIndex(detail, "["); open >= 0 {
+		scope = detail[open:]
+	}
+	for i := 0; i < len(scope); {
+		if !isHoldNameByte(scope[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(scope) && isHoldNameByte(scope[i]) {
+			i++
+		}
+		token := scope[start:i]
+		if token != row && (listed[token] || called[token]) {
+			return true
+		}
+	}
+	return false
+}
+
+func rewriteHeldDirectoryRow(line string, status map[string]string) string {
+	if !strings.HasPrefix(line, "- ") || !strings.Contains(line, "不要直接调用") {
+		return line
+	}
+	rest := strings.TrimPrefix(line, "- ")
+	name, _, ok := strings.Cut(rest, " — ")
+	if !ok {
+		return line
+	}
+	next, ok := status[strings.TrimSpace(name)]
+	if !ok {
+		return line
+	}
+	open := strings.LastIndex(line, "[")
+	if open < 0 {
+		return line
+	}
+	return line[:open] + next
 }

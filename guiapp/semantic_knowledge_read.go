@@ -111,6 +111,10 @@ func (h *IMMessageHandler) readTrustedKnowledge(principalID, query string) (stri
 		}
 		owned = append(owned, item)
 	}
+	owned, err = store.AttachSearchNodeContext(ctx, query, owned)
+	if err != nil {
+		return "", err
+	}
 	return semanticTrustedKnowledgeReadProjection(owned), nil
 }
 
@@ -143,7 +147,7 @@ func semanticTrustedKnowledgeReadProjection(results []knowledge.SearchResult) st
 			title = "knowledge hit"
 		}
 		fmt.Fprintf(&b, "%d. %s\n", i+1, title)
-		if body := strings.TrimSpace(knowledge.BestContentText(item)); body != "" && body != title {
+		if body := strings.TrimSpace(knowledge.SearchEvidenceText(item)); body != "" && body != title {
 			fmt.Fprintf(&b, "   %s\n", body)
 		}
 	}

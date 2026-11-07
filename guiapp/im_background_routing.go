@@ -121,7 +121,7 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 		// memory, unfinished task, trace evidence, or workflow contract.
 		systemPrompt = buildAssistantBindingPrompt(msg.AssistantBinding)
 	} else {
-		if h.memoryStore != nil {
+		if h.currentMemoryStore() != nil {
 			systemPrompt = h.buildSystemPromptWithMemory(promptMessage, len(history) == 0, loopCtx)
 		} else if fileCompanionTurnWithoutTools(msg.UserID, msg.Platform) {
 			// Same base prompt as buildSystemPrompt, but with this loop so the

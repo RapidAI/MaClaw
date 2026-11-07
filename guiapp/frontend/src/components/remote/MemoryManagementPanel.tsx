@@ -61,6 +61,7 @@ interface CompressResult {
 
 interface AutoCompressStatus {
     running: boolean;
+    enabled?: boolean;
     last_run?: string;
     last_error?: string;
 }
@@ -855,7 +856,8 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
         try {
             const s = await GetAutoCompressStatus();
             setServiceStatus(s as AutoCompressStatus);
-            setAutoEnabled(!!(s as AutoCompressStatus)?.running);
+            const status = s as AutoCompressStatus;
+            setAutoEnabled(!!(status?.enabled ?? status?.running));
         } catch { /* ignore */ }
     }, []);
 
@@ -898,6 +900,12 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
         EventsOn("memory:compressed", handler);
         return () => { EventsOff("memory:compressed"); };
     }, [loadBackups, loadStatus, onDataChanged]);
+
+    useEffect(() => {
+        const handler = () => { onDataChanged(); loadStatus(); };
+        EventsOn("memory:changed", handler);
+        return () => { EventsOff("memory:changed"); };
+    }, [loadStatus, onDataChanged]);
 
     // Clean up delayed refresh timer on unmount.
     const autoRefreshTimer = useRef<ReturnType<typeof setTimeout>>();

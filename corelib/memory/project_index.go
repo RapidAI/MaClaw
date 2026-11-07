@@ -932,9 +932,12 @@ func isGenericOutputPreviewLine(line string) bool {
 }
 
 // inferProjectPath extracts a project path from an entry's metadata.
-// Priority: SourceURL directory > Tags containing path-like values > empty.
+// Priority: Boundary > SourceURL directory > path-like tags > empty.
 func inferProjectPath(e *Entry) string {
-	// 1. SourceURL: if it looks like a file path, use its directory. For
+	if e != nil && e.Boundary != nil && strings.TrimSpace(e.Boundary.ProjectPath) != "" {
+		return strings.TrimSpace(e.Boundary.ProjectPath)
+	}
+	// SourceURL: if it looks like a file path, use its directory. For
 	// generated memory_refs files, prefer explicit project path tags below so
 	// the navigation scene points at the real project instead of the cache dir.
 	deferredSourceDir := ""
@@ -954,7 +957,7 @@ func inferProjectPath(e *Entry) string {
 		}
 	}
 
-	// 2. Tags: look for path-like tags.
+	// Tags: fall back to path-like values for legacy entries.
 	for _, tag := range e.Tags {
 		fwd := toForwardSlash(tag)
 		if looksLikeProjectPath(fwd) {

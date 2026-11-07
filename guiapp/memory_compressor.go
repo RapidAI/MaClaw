@@ -43,8 +43,13 @@ func (a *App) configureMemoryCompressor(compressor *MemoryCompressor) {
 	if a == nil || compressor == nil {
 		return
 	}
-	if appCfg, err := a.LoadConfig(); err == nil && appCfg.MemoryMaxBackups > 0 {
-		compressor.SetMaxBackups(appCfg.MemoryMaxBackups)
+	if appCfg, err := a.LoadConfig(); err == nil {
+		if appCfg.MemoryMaxBackups > 0 {
+			compressor.SetMaxBackups(appCfg.MemoryMaxBackups)
+		}
+		if pipeline := a.currentMemoryPipeline(); pipeline != nil {
+			pipeline.SetAutoCompressEnabled(appCfg.MemoryAutoCompress)
+		}
 	}
 }
 

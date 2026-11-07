@@ -42,9 +42,11 @@ type IMMessageHandler struct {
 	// delegates to the existing GUI-hosted turn implementation; subsequent
 	// phases can replace that implementation with corelib/agentruntime without
 	// changing Wails/IM call sites.
-	sharedRuntimeMu sync.Mutex
-	sharedRuntime   agentruntime.Runtime
-	memory          *agent.ConversationMemory
+	sharedRuntimeMu      sync.Mutex
+	sharedRuntime        agentruntime.Runtime
+	memory               *agent.ConversationMemory
+	memoryStoreMu        sync.RWMutex
+	memoryRuntimeBinding memoryRuntimeBinding
 	// sessionRounds queues the next session-agent wave after the iteration
 	// budget is spent and the task is still open.
 	sessionRounds sessionRoundState
@@ -621,8 +623,9 @@ type IMMessageHandler struct {
 	// memoryRetractions is the store-wide set of warehouse edits (delete/update
 	// from the memory-management UI) that live agent instances must honor even
 	// when the same facts still sit in conversation history.
-	memoryRetractionMu sync.Mutex
-	memoryRetractions  *agent.MemoryRetraction
+	memoryRetractionMu       sync.Mutex
+	memoryRetractions        *agent.MemoryRetraction
+	memoryRetractionsByOwner sync.Map // map[string]*agent.MemoryRetraction
 
 	// taskOrchestrator manages per-task execution during the coding
 	// workflow's Execution Phase. When active, it injects per-task system
@@ -1096,17 +1099,39 @@ func (h *IMMessageHandler) SetConfigManager(cm *ConfigManager) {
 
 // SetMemoryStore configures the long-term memory store.
 func (h *IMMessageHandler) SetMemoryStore(ms *memory.Store) {
+	if h == nil {
+		return
+	}
+	var sessionExtractor *memory.SessionStartExtractor
+	if ms != nil && h.app != nil {
+		llmAdapter := &sessionStartLLMCaller{app: h.app}
+		sessionExtractor = memory.NewSessionStartExtractor(ms, llmAdapter)
+	}
+	h.memoryStoreMu.Lock()
 	h.memoryStore = ms
+	h.sessionStartExtractor = sessionExtractor
+	h.memoryStoreMu.Unlock()
 	if h.adaptiveRetry != nil {
 		h.adaptiveRetry.SetMemoryStore(ms)
 	}
+}
 
-	// Initialize session-start memory extractor (Codex-inspired improvement #5).
-	// Uses the same LLM adapter pattern as ConversationArchiver.
-	if ms != nil && h.app != nil {
-		llmAdapter := &sessionStartLLMCaller{app: h.app}
-		h.sessionStartExtractor = memory.NewSessionStartExtractor(ms, llmAdapter)
+func (h *IMMessageHandler) currentMemoryStore() *memory.Store {
+	if h == nil {
+		return nil
 	}
+	h.memoryStoreMu.RLock()
+	defer h.memoryStoreMu.RUnlock()
+	return h.memoryStore
+}
+
+func (h *IMMessageHandler) sessionStartMemoryExtractor() *memory.SessionStartExtractor {
+	if h == nil {
+		return nil
+	}
+	h.memoryStoreMu.RLock()
+	defer h.memoryStoreMu.RUnlock()
+	return h.sessionStartExtractor
 }
 
 // SetConfirmationStore configures the pending confirmation store.
@@ -1185,7 +1210,7 @@ func (h *IMMessageHandler) SetHarnessProgressTracker(pt *HarnessProgressTracker)
 func (h *IMMessageHandler) SetAdaptiveRetry(ar *AdaptiveRetry) {
 	h.adaptiveRetry = ar
 	if h.adaptiveRetry != nil {
-		h.adaptiveRetry.SetMemoryStore(h.memoryStore)
+		h.adaptiveRetry.SetMemoryStore(h.currentMemoryStore())
 	}
 }
 

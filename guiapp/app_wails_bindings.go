@@ -1287,10 +1287,11 @@ func cloneSkillHubEvidenceForSearch(e *MaclawAppTestEvidence) *MaclawAppSearchEv
 // unfiltered view for migration and tests.
 func (a *App) ListMemories(category, keyword string) []memory.Entry {
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	store := a.currentSharedMemoryStore()
+	if store == nil {
 		return nil
 	}
-	return filterDesktopManageableMemories(a.memoryStore.List(memory.Category(category), keyword))
+	return filterDesktopManageableMemories(store.List(memory.Category(category), keyword))
 }
 
 func filterDesktopManageableMemories(entries []memory.Entry) []memory.Entry {
@@ -1334,12 +1335,11 @@ func (a *App) SaveMemory(content, category string, tags []string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	if err := a.memoryStore.SaveManualMemory(content, memory.Category(category), tags); err != nil {
+	if err := a.memoryStore.SaveManualMemoryWithContext(content, memory.Category(category), tags, a.memoryWriteContextForOwner(desktopUserID, "manual")); err != nil {
 		return err
 	}
-	// An addition needs no retraction: the pinned prefix never carried it.
-	// Recall caches drop so tool-level recall sees the entry immediately;
-	// the snapshot bytes pick it up at /new.
+	// An addition needs no retraction. Recall caches drop immediately, and the
+	// current fact/preference overlay reads the new entry on the next turn.
 	a.notifyMemoryWarehouseChanged(memoryWarehouseChange{})
 	return nil
 }
@@ -1509,14 +1509,8 @@ func (a *App) SetAutoCompress(enabled bool) error {
 	if maintenance == nil {
 		return fmt.Errorf("memory maintenance not initialized")
 	}
-	var compressorErr error
-	if enabled {
-		compressorErr = maintenance.StartCompressor()
-	} else {
-		compressorErr = maintenance.StopCompressor()
-	}
-	if compressorErr != nil {
-		return compressorErr
+	if pipeline := maintenance.Pipeline(); pipeline != nil {
+		pipeline.SetAutoCompressEnabled(enabled)
 	}
 	// Persist to config without rewriting a stale full snapshot.
 	return a.PatchConfig(func(cfg *corelib.AppConfig) {
@@ -1537,6 +1531,9 @@ func (a *App) GetAutoCompressStatus() MemoryCompressorStatus {
 	status, err := maintenance.CompressorStatus()
 	if err != nil {
 		return MemoryCompressorStatus{}
+	}
+	if cfg, configErr := a.LoadConfig(); configErr == nil {
+		status.Enabled = cfg.MemoryAutoCompress
 	}
 	return status
 }

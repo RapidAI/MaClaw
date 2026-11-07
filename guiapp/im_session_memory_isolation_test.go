@@ -29,7 +29,7 @@ func TestIsolatedAssistantSessionStaticMemoryExcludesSharedAndOtherOwners(t *tes
 	}
 
 	var out strings.Builder
-	(&IMMessageHandler{memoryStore: store}).generateStaticMemorySection(&out, true, projectOwner)
+	(&IMMessageHandler{memoryStore: store}).appendMemorySection(&out, true, projectOwner, lifecycle.EventContext{}, "hello")
 	got := out.String()
 	if !strings.Contains(got, "this session fact") {
 		t.Fatalf("isolated session should include its own user facts: %q", got)

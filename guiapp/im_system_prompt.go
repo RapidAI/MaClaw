@@ -76,7 +76,7 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 			carried = h.parentExecutionTools(msg.UserID)
 		}
 		systemPrompt = buildLightIMSystemPrompt(promptMsg, profile, carried, primary)
-	} else if h.memoryStore != nil {
+	} else if h.currentMemoryStore() != nil {
 		systemPrompt = h.buildSystemPromptWithMemory(promptMessage, len(history) == 0, loopCtx)
 	} else {
 		systemPrompt = h.buildSystemPromptBaseWithExperienceContext(false, lifecycle.EventContext{}, loopCtx, promptMessage)
@@ -313,9 +313,9 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 	// already routes true light turns through buildLightIMSystemPrompt; do not
 	// re-apply adaptive light here when a memory store is present, or first-turn
 	// / proactive recall sections disappear.
-	if loopCtx != nil && loopCtx.Runtime.Execution.IsLight() && h.memoryStore == nil {
+	if loopCtx != nil && loopCtx.Runtime.Execution.IsLight() && h.currentMemoryStore() == nil {
 		promptProfile = agent.PromptProfileLight
-	} else if h.memoryStore == nil && strings.TrimSpace(msg) != "" && !suppressV2CodingRules {
+	} else if h.currentMemoryStore() == nil && strings.TrimSpace(msg) != "" && !suppressV2CodingRules {
 		// Adaptive: short/simple turns use light prompt when memory is not wired.
 		var classified llm.ClassifyResult
 		promptProfile, classified = agent.ResolvePromptProfile(msg, llm.ClassifyHints{
@@ -387,7 +387,7 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 			// can draw a mermaid fence; see replyRendersDiagrams.
 			DiagramRenderingSupported: replyRendersDiagrams(diagramSurfaceOwnerID(h, loopCtx)),
 		},
-		MemoryStore:       h.memoryStore,
+		MemoryStore:       h.currentMemoryStore(),
 		MemoryOwnerID:     promptUserID,
 		MemoryStrictOwner: isIsolatedAssistantSessionUserID(promptUserID),
 		SkipMemoryRecall:  true, // GUI writes catalog + pull hint in appendGUIEpilogue; warehouse bodies stay in tools.
@@ -491,7 +491,7 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 			// the LLM from the current phase's FormData/instructions).
 			log.Printf("[prompt-bundle] V2 workflow agent loop: suppressing proactive recall for user=%q", promptUserID)
 			// Still inject static memory (user_fact) so LLM knows user preferences.
-			if h.memoryStore != nil && promptUserID != "" {
+			if h.currentMemoryStore() != nil && promptUserID != "" {
 				h.appendStaticMemoryOnly(b, promptUserID)
 			}
 			return
@@ -757,15 +757,10 @@ func (h *IMMessageHandler) buildNicknameInstruction() string {
 	return ""
 }
 
-// appendMemorySection appends a lightweight "## 用户记忆" section containing
-// the frozen snapshot: the owner's user_fact bodies and the memory guide.
-// The count catalog (category totals) is not part of the system prompt.
-//
-// The snapshot is generated once per conversation. A memory save does not
-// rebuild it. /new starts a new conversation and may refresh it. Replacing
-// the snapshot at summary time is a later change.
+// appendMemorySection combines the frozen recall guide with a current
+// owner-scoped fact/preference overlay. The count catalog is not injected.
 func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn bool, userID string, eventContext lifecycle.EventContext, userMessage ...string) {
-	if h.memoryStore == nil {
+	if h.currentMemoryStore() == nil {
 		return
 	}
 
@@ -784,6 +779,7 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 			log.Printf("[frozen_snapshot] generated and cached static memory snapshot for user %q (%d bytes)", userID, len(text))
 		}
 	}
+	h.appendCurrentMemoryFacts(b, userID)
 	_ = isFirstTurn // guide is always included in the session-stable snapshot
 	_ = userMessage
 	_ = eventContext
@@ -798,13 +794,14 @@ func (h *IMMessageHandler) appendStaticMemoryOnly(b *strings.Builder, userID str
 	if userID == "" {
 		userID = desktopUserID
 	}
-	if h.memoryStore != nil {
+	if h.currentMemoryStore() != nil {
 		if text, _ := h.loadOrBuildStaticMemorySnapshot(userID); text != "" {
 			b.WriteString(text)
 		}
 	}
+	h.appendCurrentMemoryFacts(b, userID)
 	h.appendSessionFactsSection(b, userID, nil)
-	h.appendMemoryRetractionSection(b)
+	h.appendMemoryRetractionSection(b, userID)
 }
 
 // loadOrBuildStaticMemorySnapshot returns the session-stable static memory
@@ -815,7 +812,7 @@ func (h *IMMessageHandler) appendStaticMemoryOnly(b *strings.Builder, userID str
 // with a singleflight channel stored in snapshotWarmInflight: one builder runs
 // generateStaticMemorySection, waiters block on close then read the cache.
 func (h *IMMessageHandler) loadOrBuildStaticMemorySnapshot(userID string) (text string, built bool) {
-	if h == nil || h.memoryStore == nil {
+	if h == nil || h.currentMemoryStore() == nil {
 		return "", false
 	}
 	userID = strings.TrimSpace(userID)
@@ -901,12 +898,10 @@ func (h *IMMessageHandler) cachedStaticMemorySnapshot(userID string) string {
 	return ""
 }
 
-// generateStaticMemorySection builds the frozen part of the memory section:
-// the current owner's user facts as they were when this conversation pinned
-// them, the recall hint, and the memory guide. A later save stays in the
-// store until the next conversation.
+// generateStaticMemorySection freezes only the recall hint and memory guide.
+// Facts and preferences are rendered separately by appendCurrentMemoryFacts.
 func (h *IMMessageHandler) generateStaticMemorySection(b *strings.Builder, isFirstTurn bool, userID string) {
-	if h.memoryStore == nil {
+	if h.currentMemoryStore() == nil {
 		return
 	}
 	userID = strings.TrimSpace(userID)
@@ -921,13 +916,7 @@ func (h *IMMessageHandler) generateStaticMemorySection(b *strings.Builder, isFir
 	// isFirstTurn must not change the snapshot bytes between two turns.
 	_ = isFirstTurn
 	opts := corememory.RecallHintAndGuidePromptOptions(!strictOwner, corememory.BuildIMMemoryGuidePrompt())
-	opts.UserFacts = corememory.UserFactSummaryPromptOptions{
-		Header:      "用户信息: ",
-		MaxRunes:    400,
-		OwnerID:     userID,
-		StrictOwner: strictOwner,
-	}
-	b.WriteString(h.memoryStore.StaticMemorySectionForPrompt(opts))
+	b.WriteString(h.currentMemoryStore().StaticMemorySectionForPrompt(opts))
 }
 
 func isLansengerGroupConversationUserID(userID string) bool {
@@ -951,7 +940,7 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string,
 }
 
 func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg string, strictProject bool, userID string, eventContext ...lifecycle.EventContext) {
-	if h.memoryStore == nil || msg == "" {
+	if h.currentMemoryStore() == nil || msg == "" {
 		return
 	}
 	_ = eventContext
@@ -984,7 +973,7 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 	opts.Recall.AllowArchivedExperience = isIsolatedAssistantSessionUserID(userID)
 	// CatalogOnly: index + pull hint only. Skip BM25/embedding and the 2.5s
 	// budgeted goroutine that used to dump warehouse bodies.
-	promptContext, _ := h.memoryStore.ProactiveContextForPrompt("", opts)
+	promptContext, _ := h.currentMemoryStore().ProactiveContextForPrompt("", opts)
 	b.WriteString(promptContext)
 }
 
@@ -992,9 +981,8 @@ func (h *IMMessageHandler) isCurrentMemoryPromptGeneration(userID string, genera
 	return h != nil && h.snapshotGeneration(userID) == generation
 }
 
-// RefreshMemorySnapshot drops the cached memory snapshot so the next build
-// reads the store. Call it when a conversation ends (/new), not when one
-// fact is saved. A fact saved mid-conversation stays out of the prefix.
+// RefreshMemorySnapshot drops the frozen recall guide for the next session.
+// Current facts and preferences do not depend on this invalidation.
 func (h *IMMessageHandler) RefreshMemorySnapshot(userID string) {
 	h.invalidateMemorySnapshot(userID, true)
 }
@@ -1082,7 +1070,7 @@ func (h *IMMessageHandler) RefreshAllMemorySnapshots() {
 // Concurrent warms (and races with first-message build) are coalesced inside
 // loadOrBuildStaticMemorySnapshot.
 func (h *IMMessageHandler) WarmFrozenMemorySnapshot(userID string) {
-	if h == nil || h.memoryStore == nil {
+	if h == nil || h.currentMemoryStore() == nil {
 		return
 	}
 	userID = strings.TrimSpace(userID)

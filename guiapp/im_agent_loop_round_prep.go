@@ -383,8 +383,8 @@ func (h *IMMessageHandler) compactAgentLoopConversation(ctx *LoopContext, userID
 		tools = h.checkpointToolsWithReader(tools)
 	}
 	var flush func() error
-	if h != nil && h.memoryStore != nil {
-		flush = h.memoryStore.Flush
+	if h != nil && h.currentMemoryStore() != nil {
+		flush = h.currentMemoryStore().Flush
 	}
 	checkpoint := agent.CheckpointConversation(conversation, agent.ContextCheckpointOptions{
 		ContextLimit:   effectiveTokenLimit,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -55,6 +56,7 @@ type Pipeline struct {
 	consolidator *Consolidator
 	profiler     *ProfileConsolidator
 	emitter      corelib.EventEmitter
+	autoCompress atomic.Bool
 
 	mu           sync.Mutex
 	runMu        sync.Mutex
@@ -71,12 +73,24 @@ type Pipeline struct {
 // The second and third positional parameters are deprecated (formerly Promoter
 // and Reflector) - use SetSynthesizer to wire the combined module.
 func NewPipeline(store *Store, compressor *Compressor, _ interface{}, _ interface{}, emitter corelib.EventEmitter) *Pipeline {
-	return &Pipeline{
+	pipeline := &Pipeline{
 		store:      store,
 		compressor: compressor,
 		experience: NewExperienceDistiller(),
 		emitter:    emitter,
 	}
+	pipeline.autoCompress.Store(true)
+	return pipeline
+}
+
+func (p *Pipeline) SetAutoCompressEnabled(enabled bool) {
+	if p != nil {
+		p.autoCompress.Store(enabled)
+	}
+}
+
+func (p *Pipeline) AutoCompressEnabled() bool {
+	return p != nil && p.autoCompress.Load()
 }
 
 // SetSynthesizer wires the combined Promoter+Reflector module.
@@ -174,7 +188,7 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 	}
 
 	// Step 2: Compress (dedup + LLM compress).
-	if p.compressor != nil && ctx.Err() == nil {
+	if p.compressor != nil && p.autoCompress.Load() && ctx.Err() == nil {
 		cr, err := p.compressor.Compress(ctx)
 		if err == nil {
 			result.Compress = cr

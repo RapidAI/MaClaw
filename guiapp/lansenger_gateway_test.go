@@ -607,7 +607,7 @@ func TestLansengerLocalHandlerWiresLongTermMemory(t *testing.T) {
 	if app.memoryStore == nil {
 		t.Fatal("local Lansenger handler did not initialize the long-term memory store")
 	}
-	if handler.memoryStore != app.memoryStore {
+	if handler.currentMemoryStore() != app.memoryStore {
 		t.Fatal("local Lansenger handler is not wired to the app long-term memory store")
 	}
 }

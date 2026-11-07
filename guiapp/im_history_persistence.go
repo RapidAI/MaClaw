@@ -17,7 +17,7 @@ import (
 )
 
 func (h *IMMessageHandler) extractSessionStartMemoryAsync(userID string, entries []agent.ConversationEntry) {
-	if h == nil || h.sessionStartExtractor == nil || len(entries) < 6 || isIsolatedAssistantSessionUserID(userID) {
+	if h == nil || h.sessionStartMemoryExtractor() == nil || len(entries) < 6 || isIsolatedAssistantSessionUserID(userID) {
 		return
 	}
 	msgs := make([]memory.ConversationMessage, 0, len(entries))
@@ -87,7 +87,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	var droppedTexts []droppedText
 	var memorySinkCollector func(string, []string)
 
-	if willCompact && h.memoryStore != nil && !isIsolatedAssistantSessionUserID(userID) {
+	if willCompact && h.currentMemoryStore() != nil && !isIsolatedAssistantSessionUserID(userID) {
 		memorySinkCollector = func(content string, tags []string) {
 			droppedTexts = append(droppedTexts, droppedText{Content: content, Tags: tags})
 		}
@@ -115,8 +115,8 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	// Index compacted entries for cross-page recall (Requirement 7).
 	// When entries are removed by trimming, index them in the PageIndex so
 	// the Recall Engine can still find file paths, decisions, etc.
-	if len(trimmed) < len(history) && h.memoryStore != nil && !isIsolatedAssistantSessionUserID(userID) {
-		if pi := h.memoryStore.PageIdx(); pi != nil {
+	if len(trimmed) < len(history) && h.currentMemoryStore() != nil && !isIsolatedAssistantSessionUserID(userID) {
+		if pi := h.currentMemoryStore().PageIdx(); pi != nil {
 			var removedEntries []memory.Entry
 			if agent.HandoffMemoAll() {
 				removedEntries = handoffPageAnchorEntries(trimmed)
@@ -179,10 +179,10 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 
 	// Process dropped texts asynchronously — file I/O + Store.mu writes
 	// happen off the critical path so they never block response return.
-	if len(droppedTexts) > 0 && h.memoryStore != nil {
+	if len(droppedTexts) > 0 && h.currentMemoryStore() != nil {
 		capturedUserID := userID
 		capturedTexts := droppedTexts
-		capturedStore := h.memoryStore
+		capturedStore := h.currentMemoryStore()
 		capturedApp := h.app
 		go func() {
 			// Overall timeout: if Store.mu is held by a long-running background
@@ -329,7 +329,7 @@ func (h *IMMessageHandler) schedulePostConversationProcessing(userID string, his
 }
 
 func (h *IMMessageHandler) schedulePostConversationProcessingWithRequestID(userID, requestID string, history []agent.ConversationEntry) {
-	if h == nil {
+	if h == nil || h.memoryRuntimeClosing() {
 		return
 	}
 	if h.app != nil && strings.TrimSpace(h.app.testHomeDir) != "" {
@@ -380,16 +380,20 @@ func (h *IMMessageHandler) runPostConversationProcessing(bgCtx context.Context, 
 		log.Printf("[post-conversation] skip shared-memory persistence for isolated session user=%s request_id=%q", userID, requestID)
 		return
 	}
+	stageStartedAt = time.Now()
+	h.triggerOnlineExtractionWithContext(bgCtx, userID, history, requestID)
+	log.Printf("[post-conversation] stage=online_extraction user=%s request_id=%q duration=%s cancelled=%v", userID, requestID, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
+
 	if h.app != nil && !h.app.waitForForegroundAgentIdle(bgCtx, "post-conversation-llm", userID) {
 		return
 	}
 
 	// Process pending semantic dedup pairs in the background. This can make LLM
 	// calls, so it uses the owner-scoped cancellable context.
-	if h.memoryStore != nil && h.memoryStore.PendingDedupCount() > 0 {
+	if h.currentMemoryStore() != nil && h.currentMemoryStore().PendingDedupCount() > 0 {
 		stageStartedAt = time.Now()
 		ctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
-		merged := h.memoryStore.ProcessPendingDedup(ctx)
+		merged := h.currentMemoryStore().ProcessPendingDedup(ctx)
 		cancel()
 		log.Printf("[post-conversation] stage=semantic_dedup user=%s request_id=%q merged=%d duration=%s cancelled=%v", userID, requestID, merged, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
 		if merged > 0 {
@@ -406,16 +410,11 @@ func (h *IMMessageHandler) runPostConversationProcessing(bgCtx context.Context, 
 		return
 	}
 
-	// Online incremental extraction uses the shared bgCtx and exits early if the
-	// user sends a new foreground message for the same owner.
-	stageStartedAt = time.Now()
-	h.triggerOnlineExtractionWithContext(bgCtx, userID, history)
-	log.Printf("[post-conversation] stage=online_extraction user=%s request_id=%q duration=%s cancelled=%v", userID, requestID, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
-
-	if len(deferredMessages) > 0 && bgCtx.Err() == nil && h.sessionStartExtractor != nil {
+	sessionExtractor := h.sessionStartMemoryExtractor()
+	if len(deferredMessages) > 0 && bgCtx.Err() == nil && sessionExtractor != nil {
 		stageStartedAt = time.Now()
 		extractCtx := llm.WithRequestTrace(bgCtx, llm.RequestTrace{Caller: "session-start-extraction", OwnerID: userID, RequestID: requestID})
-		h.sessionStartExtractor.MaybeExtract(extractCtx, userID, deferredMessages)
+		sessionExtractor.MaybeExtract(extractCtx, userID, deferredMessages)
 		log.Printf("[post-conversation] stage=session_start_extraction user=%s request_id=%q messages=%d duration=%s cancelled=%v", userID, requestID, len(deferredMessages), time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
 	}
 }

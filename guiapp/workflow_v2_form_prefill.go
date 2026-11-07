@@ -341,8 +341,8 @@ func (h *IMMessageHandler) buildRecallProvider(userID string) v2.RecallProvider 
 	}
 
 	var memStore *memory.Store
-	if h.memoryStore != nil {
-		memStore = h.memoryStore
+	if h.currentMemoryStore() != nil {
+		memStore = h.currentMemoryStore()
 	}
 
 	var ks knowledgeSearcher
@@ -425,7 +425,7 @@ var sedimentableFields = map[string]bool{
 //
 // Called asynchronously after successful form submission.
 func (h *IMMessageHandler) sedimentFormDataToMemory(userID, phaseID string, data map[string]interface{}, state *v2.WorkflowState) {
-	if h == nil || h.memoryStore == nil || len(data) == 0 {
+	if h == nil || h.currentMemoryStore() == nil || len(data) == 0 {
 		return
 	}
 
@@ -528,7 +528,7 @@ func (h *IMMessageHandler) sedimentFormDataToMemory(userID, phaseID string, data
 
 	// Use SaveWithContext to leverage substring dedup (#64) — if the user already
 	// has a memory entry with the same facts, it will be merged rather than duplicated.
-	if err := h.memoryStore.SaveWithContext(entry, "workflow form data: "+phaseID); err != nil {
+	if err := h.currentMemoryStore().SaveWithContext(entry, "workflow form data: "+phaseID); err != nil {
 		log.Printf("[workflow-v2-prefill] sediment form data failed: %v", err)
 	} else {
 		log.Printf("[workflow-v2-prefill] sedimented %d fields to memory for user=%s phase=%s",

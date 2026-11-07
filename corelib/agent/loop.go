@@ -2063,7 +2063,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		adoptRenderedSystemPrompt(cb, conversation, userText, isFirstTurn)
 		// The contract reminder is outbound only. conversation keeps the prompt the
 		// host built; the next iteration replaces this block instead of stacking it.
-		reqConversation = withIterationContractReminder(cb, reqConversation)
+		// outboundBase stays unlifted so a retry that rebuilds the tool list can
+		// lift against that list instead of the first attempt's wording.
+		outboundBase := withIterationContractReminder(cb, reqConversation)
+		reqConversation = liftExpiredDirectoryHolds(cb, outboundBase, tools)
 		// Input accounting is an audit of the request about to leave the host, not
 		// of the broad BuildTools compatibility inventory held before rendering.
 		// Request-local renderers may remove legacy entries or mint governed
@@ -2262,8 +2265,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				staticAttemptManifest = &lifecycle.manifest
 				tools = lifecycle.definitions
 				// The non-stream fallback is a new request, even though it reuses the
-				// same conversation. The tool rebuild may have rewritten the host
-				// directory; write that into this slice before telemetry and send.
+				// same conversation. Lift from the unlifted base so a rebuilt tool
+				// list is not stuck with the failed attempt's call order.
+				reqConversation = liftExpiredDirectoryHolds(cb, outboundBase, tools)
 				refreshOutboundSystemPrompt(cb, conversation, reqConversation, userText, isFirstTurn)
 				observeLoopInputBreakdown(cb, reqConversation, tools)
 				startAttempt()
@@ -2541,8 +2545,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				}
 				tools = frozenRetryTools
 				// Each outer retry is a separate model request and can receive a
-				// different request-local surface. Record exactly that surface,
-				// including a directory rewritten while its tools were rebuilt.
+				// different request-local surface. Lift from the unlifted base,
+				// then record the directory rewritten while its tools were rebuilt.
+				reqConversation = liftExpiredDirectoryHolds(cb, outboundBase, tools)
 				refreshOutboundSystemPrompt(cb, conversation, reqConversation, userText, isFirstTurn)
 				observeLoopInputBreakdown(cb, reqConversation, tools)
 				lifecycle, lifecycleErr := newToolSurfaceReceiptHTTPClientWithLifecycleEvents(httpClient, tools, invocationPolicy, ToolSurfacePlanEvidence{}, toolSurfaceLifecycleReceiptObserverFor(cb), eventObserver)

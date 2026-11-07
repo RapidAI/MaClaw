@@ -134,7 +134,7 @@ func (h *IMMessageHandler) administerTrustedMemory(principalID, content, query, 
 	if h.semanticTrustedMemory != nil {
 		return h.semanticTrustedMemory(principalID, content, query, id)
 	}
-	if h.memoryStore == nil {
+	if h.currentMemoryStore() == nil {
 		return "", fmt.Errorf("trusted_memory_unavailable")
 	}
 	content, query, id = strings.TrimSpace(content), strings.TrimSpace(query), strings.TrimSpace(id)
@@ -165,11 +165,12 @@ func (h *IMMessageHandler) administerTrustedMemory(principalID, content, query, 
 	default:
 		args["action"] = string(corememory.MemoryToolActionList)
 	}
-	out := corememory.HandleTool(h.memoryStore, args, corememory.ToolOptions{
-		ContextHint: h.buildMemoryContextHintForUser(principalID),
-		OwnerID:     principalID,
-		StrictOwner: true,
-		LoopID:      h.currentLoopIDForUser(principalID),
+	out := corememory.HandleTool(h.currentMemoryStore(), args, corememory.ToolOptions{
+		ContextHint:  h.buildMemoryContextHintForUser(principalID),
+		OwnerID:      principalID,
+		WriteContext: h.memoryWriteContextForUser(principalID, "semantic_tool"),
+		StrictOwner:  true,
+		LoopID:       h.currentLoopIDForUser(principalID),
 		AfterWrite: func() {
 			if h.app != nil {
 				h.app.triggerMemoryPipelineSoon(45 * time.Second)

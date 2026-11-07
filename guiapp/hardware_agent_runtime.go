@@ -285,7 +285,7 @@ func (r *hardwareAgentRuntimeRegistry) handler(clientID string) (*IMMessageHandl
 			}
 			store, err = r.app.newHardwareMemoryStore(clientID)
 			if err == nil {
-				h.SetMemoryStore(store)
+				h.SetPrivateMemoryStore(store)
 			}
 		}
 

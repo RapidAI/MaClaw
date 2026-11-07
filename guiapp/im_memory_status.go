@@ -17,14 +17,14 @@ func (h *IMMessageHandler) handleMemoryStatusCommand() *IMAgentResponse {
 }
 
 func (h *IMMessageHandler) handleMemoryStatusCommandWithLang(lang string) *IMAgentResponse {
-	store := h.memoryStore
+	store := h.currentMemoryStore()
 	if store == nil && h.app != nil {
 		if h.app.memoryStore == nil {
 			h.app.ensureMemoryStore()
 		}
 		store = h.app.memoryStore
 		if store != nil {
-			h.memoryStore = store
+			h.SetMemoryStore(store)
 		}
 	}
 	if store == nil {

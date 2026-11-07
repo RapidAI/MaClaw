@@ -9,6 +9,15 @@ import (
 
 const searchBodyWindowRunes = 360
 
+// searchBodyStoredNodeTokenBudget is one chunk plus the overlap the splitter
+// may leave on a child. estimateTokens counts about two runes per token.
+const searchBodyStoredNodeTokenBudget = targetTextNodeTokens + chunkOverlapTokens
+
+// searchBodyStoredNodeWindowRunes is the query-centered window for a stored
+// node larger than one chunk. It matches the whole-text budget so a node one
+// rune over that budget is not cut shorter than a node that still fits.
+const searchBodyStoredNodeWindowRunes = (searchBodyStoredNodeTokenBudget - 1) * 2
+
 // searchResultTypeBonus preserves the historical auto-route thresholds after
 // relevance scores stopped carrying type-specific adjustments.
 func searchResultTypeBonus(resultType string) float64 {
@@ -244,23 +253,17 @@ func (s *SQLiteStore) hydrateCollapsedBodyText(ctx context.Context, query string
 	for i := range results {
 		switch results[i].ResultType {
 		case "node":
+			// Filled before the limit so rerank can see a hit that arrived
+			// without text. The page replaces any highlight afterwards.
 			if strings.TrimSpace(results[i].Snippet) != "" || strings.TrimSpace(results[i].NodeID) == "" {
 				continue
 			}
-			if nodeStmt == nil {
-				var err error
-				nodeStmt, err = s.db.PrepareContext(ctx, `SELECT COALESCE(text, '') FROM document_nodes WHERE id = ?`)
+			text, ok, err := loadStoredNodeText(ctx, &nodeStmt, s, results[i].NodeID)
+			if err != nil || !ok || text == "" {
 				if err != nil {
 					return err
 				}
-			}
-			var text string
-			err := nodeStmt.QueryRowContext(ctx, results[i].NodeID).Scan(&text)
-			if err == sql.ErrNoRows {
 				continue
-			}
-			if err != nil {
-				return err
 			}
 			results[i].Snippet = searchBodyTextWindow(text, query)
 		case "table_row":
@@ -288,6 +291,86 @@ func (s *SQLiteStore) hydrateCollapsedBodyText(ctx context.Context, query string
 		}
 	}
 	return nil
+}
+
+func loadStoredNodeText(ctx context.Context, stmt **sql.Stmt, s *SQLiteStore, nodeID string) (string, bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" || s == nil || s.db == nil {
+		return "", false, nil
+	}
+	if *stmt == nil {
+		prepared, err := s.db.PrepareContext(ctx, `SELECT COALESCE(text, '') FROM document_nodes WHERE id = ?`)
+		if err != nil {
+			return "", false, err
+		}
+		*stmt = prepared
+	}
+	var text string
+	err := (*stmt).QueryRowContext(ctx, nodeID).Scan(&text)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimSpace(text), true, nil
+}
+
+// attachStoredNodeText replaces a page hit's highlight with the stored node.
+// A chunk that fits is returned whole. A larger unsplit node keeps a
+// query-centered window of the same budget. Empty chunk parents stay as they are.
+func (s *SQLiteStore) attachStoredNodeText(ctx context.Context, query string, results []SearchResult) error {
+	if s == nil || s.db == nil || len(results) == 0 {
+		return nil
+	}
+	var nodeStmt *sql.Stmt
+	defer func() {
+		if nodeStmt != nil {
+			nodeStmt.Close()
+		}
+	}()
+	for i := range results {
+		if results[i].ResultType != "node" {
+			continue
+		}
+		text, ok, err := loadStoredNodeText(ctx, &nodeStmt, s, results[i].NodeID)
+		if err != nil {
+			return err
+		}
+		if !ok || text == "" {
+			continue
+		}
+		results[i].Snippet = storedNodeExcerpt(text, query)
+	}
+	return nil
+}
+
+// storedNodeExcerpt is the stored node when it fits in one chunk, otherwise a
+// query-centered window of that same budget.
+func storedNodeExcerpt(text, query string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if estimateTokens(text) <= searchBodyStoredNodeTokenBudget {
+		return text
+	}
+	return searchBodyTextWindowLimit(text, query, searchBodyStoredNodeWindowRunes)
+}
+
+// AttachSearchNodeContext adds neighboring chunk text for a model-facing read.
+// A hit with no parent already carries its stored node from Search, so this
+// does not read it again. Header search does not call this, and the neighbor
+// text is the stored sibling rather than the short context-pack window.
+func (s *SQLiteStore) AttachSearchNodeContext(ctx context.Context, query string, results []SearchResult) ([]SearchResult, error) {
+	if s == nil || len(results) == 0 {
+		return results, nil
+	}
+	expanded, _, err := s.expandNodeContext(ctx, query, results, true)
+	if err != nil {
+		return nil, err
+	}
+	return expanded, nil
 }
 
 func searchBodyTextWindow(text, query string) string {

@@ -207,6 +207,54 @@ func TestProjectToolResultKeepsBoundedCJKDocumentPagesInline(t *testing.T) {
 	}
 }
 
+func TestProjectToolResultKeepsKnowledgePageInline(t *testing.T) {
+	// A stored CJK chunk is past the generic 4KB preview. Cutting it there
+	// inserts the truncation marker the model reads as a missing record.
+	page := "api2hostrecord\n" + strings.Repeat("文", 5_000) + "\nTAILMARKER end of the stored note"
+	if len(page) <= MaxToolResultLen || len(page) > KnowledgeReadMaxToolResult {
+		t.Fatalf("fixture len=%d, want between %d and %d", len(page), MaxToolResultLen, KnowledgeReadMaxToolResult)
+	}
+	for _, toolName := range []string{
+		"semantic_read_trusted_knowledge",
+		"knowledge_search",
+		"knowledge_context_pack",
+		"coding_knowledge_search",
+	} {
+		t.Run(toolName, func(t *testing.T) {
+			projection, err := ProjectToolResult(toolName, "owner", page)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if projection.Spilled || projection.Preview != page {
+				t.Fatalf("knowledge page was cut: spilled=%v preview=%d page=%d", projection.Spilled, len(projection.Preview), len(page))
+			}
+			if strings.Contains(projection.Preview, "已截断") {
+				t.Fatalf("complete page carries a truncation marker: %s", projection.Preview[max(0, len(projection.Preview)-80):])
+			}
+		})
+	}
+}
+
+func TestProjectToolResultStillSpillsLargeKnowledgePage(t *testing.T) {
+	page := strings.Repeat("文", 50_000)
+	if len(page) <= KnowledgeReadMaxToolResult {
+		t.Fatalf("fixture len=%d, want above %d", len(page), KnowledgeReadMaxToolResult)
+	}
+	projection, err := ProjectToolResult("semantic_read_trusted_knowledge", "owner", page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !projection.Spilled || projection.Handle == nil {
+		t.Fatalf("oversized knowledge page must still spill, projection=%+v", projection)
+	}
+	if len(projection.Preview) > KnowledgeReadMaxToolResult {
+		t.Fatalf("preview exceeds knowledge limit: %d > %d", len(projection.Preview), KnowledgeReadMaxToolResult)
+	}
+	if strings.Count(projection.Preview, "已截断") != 1 {
+		t.Fatalf("knowledge page was truncated more than once")
+	}
+}
+
 func TestProjectToolResultStillSpillsLargeOfficeDocument(t *testing.T) {
 	document := strings.Repeat("文", 40_000)
 	projection, err := ProjectToolResult("read_document", "session", document)

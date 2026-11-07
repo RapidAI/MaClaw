@@ -108,6 +108,9 @@ func (m *Maintenance) Stop() {
 	if m.pipeline != nil {
 		m.pipeline.Stop()
 	}
+	if m.onlineExtractor != nil {
+		m.onlineExtractor.Stop()
+	}
 	if m.compressor != nil {
 		m.compressor.Stop()
 	}

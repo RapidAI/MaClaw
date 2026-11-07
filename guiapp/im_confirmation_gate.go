@@ -523,9 +523,9 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 		// recall query later in this same handleIMMessageWithLoop call. Start
 		// embedding inference now so it completes during entry_context/serialization
 		// processing (~30ms+) before proactive recall needs the result.
-		if h.memoryStore != nil {
+		if h.currentMemoryStore() != nil {
 			if query := semanticUserIntentText(msg.Text); query != "" {
-				h.memoryStore.WarmQueryEmbedding(agent.CompactQueryForEmbedding(query))
+				h.currentMemoryStore().WarmQueryEmbedding(agent.CompactQueryForEmbedding(query))
 			}
 		}
 		result := pendingExecutionConfirmationResult{ConfirmedResume: true}

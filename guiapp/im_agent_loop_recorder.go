@@ -35,7 +35,7 @@ func (h *IMMessageHandler) prepareAgentLoopRecorderBundle(template *AdaptiveRetr
 		configTemplate = template
 	}
 	adaptiveRetry := NewAdaptiveRetryForLoop(configTemplate, recorder)
-	adaptiveRetry.SetMemoryStore(h.memoryStore)
+	adaptiveRetry.SetMemoryStore(h.currentMemoryStore())
 	loopRecorder := newAgentLoopRecorder(recorder)
 	return agentLoopRecorderBundle{
 		Recorder:             recorder,

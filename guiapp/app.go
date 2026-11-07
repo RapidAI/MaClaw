@@ -354,7 +354,9 @@ type App struct {
 	devinSaveMu              sync.Mutex                  // serializes Devin credential writes
 	// Smart session components
 	memoryStore          *memory.Store
-	memoryStoreMu        sync.Mutex
+	memoryStoreMu        sync.RWMutex
+	memRuntime           atomic.Pointer[memoryRuntimeState]
+	memRuntimeGeneration atomic.Uint64
 	sceneIndexCacheMu    sync.Mutex
 	sceneIndexCacheGen   uint64
 	sceneIndexCacheLimit int
@@ -646,7 +648,7 @@ type pendingBugReportUploadMetadata struct {
 	IncludedFiles int    `json:"included_files"`
 }
 
-func (a *App) ensureExperienceLifecycleSink() lifecycle.EventSink {
+func (a *App) ensureExperienceLifecycleSink(stores ...*memory.Store) lifecycle.EventSink {
 	if a == nil {
 		return lifecycle.NoopEventSink{}
 	}
@@ -659,17 +661,24 @@ func (a *App) ensureExperienceLifecycleSink() lifecycle.EventSink {
 	if a.usageTracker != nil {
 		a.usageTracker.SetExperienceEventSink(a.experienceSink)
 	}
-	if a.memoryStore != nil {
-		a.memoryStore.SetExperienceEventSink(a.experienceSink)
+	var store *memory.Store
+	if len(stores) > 0 {
+		store = stores[0]
+	} else {
+		store = a.currentSharedMemoryStore()
+	}
+	if store != nil {
+		store.SetExperienceEventSink(a.experienceSink)
 	}
 	return a.experienceSink
 }
 
 func (a *App) resolveExperienceProviderForAttribution() lifecycle.Provider {
-	if a == nil || a.memoryStore == nil {
+	store := a.currentSharedMemoryStore()
+	if store == nil {
 		return nil
 	}
-	providers := []lifecycle.Provider{memory.NewExperienceProvider(a.memoryStore)}
+	providers := []lifecycle.Provider{memory.NewExperienceProvider(store)}
 	if a.skillExecutor != nil {
 		// loadSkills uses configMu; do not hold skillExecutor.mu across it.
 		skills := a.skillExecutor.loadSkills()
@@ -1046,8 +1055,8 @@ func (a *App) scheduleWarmFrozenMemorySnapshot() {
 		return
 	}
 	// Wire memory store if handler was created before ensureMemoryStore finished.
-	if handler.memoryStore == nil && a.memoryStore != nil {
-		handler.memoryStore = a.memoryStore
+	if store := a.currentSharedMemoryStore(); handler.currentMemoryStore() == nil && store != nil {
+		handler.SetMemoryStore(store)
 	}
 	go handler.WarmFrozenMemorySnapshot(desktopUserID)
 }
@@ -1059,9 +1068,13 @@ func (a *App) scheduleWarmFrozenMemorySnapshot() {
 // next prompt build reads the replaced store. Handlers with private stores
 // (for example hardware runtimes) are excluded.
 func (a *App) refreshActiveAgentMemorySnapshots() {
-	a.notifyMemoryWarehouseChanged(memoryWarehouseChange{})
+	a.refreshAgentMemorySnapshotsForStore(a.currentSharedMemoryStore())
+}
+
+func (a *App) refreshAgentMemorySnapshotsForStore(store *memory.Store) {
+	a.notifyMemoryWarehouseChangedForStore(store, memoryWarehouseChange{})
 	for handler := range a.sharedMemoryStoreHandlers() {
-		if a.memoryStore != nil && handler.memoryStore != a.memoryStore {
+		if store != nil && handler.currentMemoryStore() != store {
 			continue
 		}
 		handler.InvalidateAllFrozenMemorySnapshots()
@@ -1091,7 +1104,8 @@ func warehouseChangeFromEntries(entries []memory.Entry, kind, replacement string
 }
 
 func (a *App) memoryEntriesByIDs(ids ...string) []memory.Entry {
-	if a == nil || a.memoryStore == nil {
+	store := a.currentSharedMemoryStore()
+	if store == nil {
 		return nil
 	}
 	var out []memory.Entry
@@ -1100,7 +1114,7 @@ func (a *App) memoryEntriesByIDs(ids ...string) []memory.Entry {
 		if id == "" {
 			continue
 		}
-		out = append(out, a.memoryStore.SearchDirectByID(id)...)
+		out = append(out, store.SearchDirectByID(id)...)
 	}
 	return out
 }
@@ -1153,19 +1167,20 @@ func (a *App) sharedMemoryStoreHandlers() map[*IMMessageHandler]struct{} {
 }
 
 func (a *App) notifyMemoryWarehouseChanged(change memoryWarehouseChange) {
+	a.notifyMemoryWarehouseChangedForStore(a.currentSharedMemoryStore(), change)
+}
+
+func (a *App) notifyMemoryWarehouseChangedForStore(store *memory.Store, change memoryWarehouseChange) {
 	if a == nil {
 		return
 	}
-	if a.memoryStore != nil {
-		a.memoryStore.InvalidateAllRecallCaches()
+	if store != nil {
+		store.InvalidateAllRecallCaches()
 	}
 	for handler := range a.sharedMemoryStoreHandlers() {
-		if a.memoryStore != nil && handler.memoryStore != a.memoryStore {
+		if store != nil && handler.currentMemoryStore() != store {
 			continue
 		}
-		// The prompt snapshot stays pinned for the open conversation. Recall
-		// caches were already dropped above, and a retraction can still be
-		// recorded for the warehouse. The snapshot bytes change at /new.
 		if len(change.Items) > 0 || len(change.Needles) > 0 {
 			handler.applyMemoryWarehouseChange(change)
 		}
@@ -1231,7 +1246,7 @@ func (a *App) ensureMemoryStore() {
 	var compressorToConfigure *MemoryCompressor
 	if ms != nil {
 		a.memoryStore = ms
-		a.ensureExperienceLifecycleSink()
+		a.ensureExperienceLifecycleSink(ms)
 
 		// Register ProjectIndex change callback. When any memory entry
 		// updates the project index, notify the frontend and debounce memory
@@ -1249,7 +1264,11 @@ func (a *App) ensureMemoryStore() {
 		// synthesizer, TiMem consolidators, recall gating, and online extraction.
 		maintenance := memory.NewMaintenance(ms, nil, guiMemoryEventEmitter{app: a})
 		maintenance.InstallRuntime()
+		if extractor := ms.OnlineExtractor(); extractor != nil {
+			extractor.SetQueuePauseChecker(func(string) bool { return a.activeForegroundAgentLoops() > 0 })
+		}
 		a.memoryMaintenance = maintenance
+		a.installMemoryRuntime(ms, maintenance, baseDir)
 		compressor := maintenance.Compressor()
 		// Defer configureMemoryCompressor until after memoryStoreMu is released:
 		// configure → LoadConfig → applyDataDirFromConfig may call
@@ -2975,13 +2994,6 @@ func (a *App) startup(ctx context.Context) {
 		a.refreshWorkstationMode(config)
 		a.maybeCleanToolCacheOnStartup(config)
 		a.maybePruneToolResultsOnStartup()
-		// Auto-start memory compression service if enabled in config.
-		if config.MemoryAutoCompress && a.memoryStore != nil {
-			_ = a.getOrCreateCompressor()
-			if a.memoryMaintenance != nil {
-				_ = a.memoryMaintenance.StartCompressor()
-			}
-		}
 		// Auto-start local MCP servers that are enabled for app launch.
 		a.autoStartLocalMCPServers(config.LocalMCPServers)
 		// Reconcile reviewed contracts, then observe every configured remote
@@ -6621,6 +6633,10 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 		_ = a.projectTabSessionPersist.Close()
 		a.projectTabSessionPersist = nil
 	}
+	retiredRuntime := a.detachMemoryRuntime()
+	for handler := range a.sharedMemoryStoreHandlers() {
+		handler.cancelAllBackgroundLLM("data_dir_change")
+	}
 	if a.memoryMaintenance != nil {
 		a.memoryMaintenance.Stop()
 		a.memoryMaintenance = nil
@@ -6634,11 +6650,15 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 	}
 	a.compressorMu.Unlock()
 	a.memoryStoreMu.Lock()
-	if a.memoryStore != nil {
-		a.memoryStore.Stop()
-		a.memoryStore = nil
-	}
+	legacyStore := a.memoryStore
+	a.memoryStore = nil
 	a.memoryStoreMu.Unlock()
+	if retiredRuntime == nil && legacyStore != nil {
+		retiredRuntime = newMemoryRuntimeState(legacyStore, nil, "", a.memRuntimeGeneration.Add(1))
+	}
+	if retiredRuntime != nil {
+		retiredRuntime.stopWhenIdle()
+	}
 	a.conversationArchiver = nil
 	a.sessionCheckpointer = nil
 	// The grant file lives under the data dir. Drop the table that was loaded

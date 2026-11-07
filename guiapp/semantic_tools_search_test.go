@@ -8,6 +8,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -855,6 +856,1289 @@ func TestSemanticToolsSearchRealWeatherPDFNamesLookupNotDelivery(t *testing.T) {
 	if generateRow == "" || !strings.Contains(generateRow, "可请愿") {
 		t.Fatalf("generate_pdf must stay petitionable: %s", generateRow)
 	}
+}
+
+func TestLiftExpiredToolsSearchHoldWhenNameIsListed(t *testing.T) {
+	const page = "tools_search results for \"生成北京天气PDF\":\n" +
+		"本轮决定：已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）；send_file（generate_pdf 出现在下一请求后再调用；send_file 要等它自己出现在列表）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- generate_pdf — Render Markdown into a PDF [已列入本轮计划。本响应的其它工具调用结束后，下一请求会出现。不要直接调用，也不要请愿。]\n" +
+		"- send_file — Attach the published file [已列入本轮计划，先等 generate_pdf。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	stored := map[string]interface{}{"role": "tool", "tool_call_id": "call-1", "content": page}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	cb := &sharedAgentLoopCallbacks{tools: []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+		{"type": "function", "function": map[string]interface{}{"name": "send_file"}},
+	}}
+	conv := []interface{}{stored, map[string]interface{}{"role": "user", "content": "生成pdf"}}
+	got := cb.LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("listed generate_pdf must lift the hold on the outbound copy")
+	}
+	if stored["content"] != page {
+		t.Fatal("stored tools_search result was rewritten")
+	}
+	content, _ := got[0].(map[string]interface{})["content"].(string)
+	if strings.Contains(content, "现在不要调用。") || strings.Contains(content, "尚未列出：generate_pdf") {
+		t.Fatalf("generate_pdf hold survived:\n%s", content)
+	}
+	if !strings.Contains(content, "立刻调用 generate_pdf。") || !strings.Contains(content, "现在调用 generate_pdf。") {
+		t.Fatalf("outbound page did not order the listed tool:\n%s", content)
+	}
+	if !strings.Contains(content, "[已在当前工具列表，立刻调用。]") {
+		t.Fatalf("generate_pdf row still forbids the call:\n%s", content)
+	}
+	if !strings.Contains(content, "尚未列出：send_file") || !strings.Contains(content, "不要直接调用 send_file") || !strings.Contains(content, "不要直接调用 send_file，也不要请愿。]") {
+		t.Fatalf("unlisted send_file must stay held:\n%s", content)
+	}
+	if strings.Contains(content, "这些名字") || strings.Contains(content, "不要直接调用，也不要请愿") || strings.Contains(content, "完成后再调用") {
+		t.Fatalf("the ban lost its subject, or generate_pdf picked up an unbound wait:\n%s", content)
+	}
+	if strings.Contains(content, "出现在下一请求") || strings.Contains(content, "先等 generate_pdf") || strings.Contains(content, "下一请求会出现") || !strings.Contains(content, "generate_pdf 已在当前工具列表") {
+		t.Fatalf("send_file clause still says generate_pdf appears on the next request:\n%s", content)
+	}
+	if _, ok := got[1].(map[string]interface{}); !ok {
+		t.Fatal("later messages were dropped")
+	}
+}
+
+// The stored Beijing weather page. generate_pdf is the only directory row;
+// send_file lives in the decision clause. Once generate_pdf is on the wire
+// list, that clause must not grow an unbound "后再调用".
+func TestLiftExpiredToolsSearchHoldLiftsBeijingPage(t *testing.T) {
+	const page = "tools_search results for \"生成北京天气PDF\":\n" +
+		"scope_id=semantic-scope:a5748ba1f335cd4d1141c5f1ff96d7e303e15272ccaae77a0dfa7214f3849c9a catalog_digest=catalog:sha256:93790b07e3b20e9e4a3a7b140432c2219e3af3797afe3f81ba9216716fef3a3d decision_id=decision:1d74fdb526559435b5f832d93863478f3e727317c5803864499cef5b52b209a8\n" +
+		"本轮决定：已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）；send_file（generate_pdf 出现在下一请求后再调用；send_file 要等它自己出现在列表）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- generate_pdf — Render Markdown into a PDF and publish an Artif… [已列入本轮计划。本响应的其它工具调用结束后，下一请求会出现。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	stored := map[string]interface{}{"role": "tool", "tool_call_id": "call-search", "content": page}
+	conv := []interface{}{
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []llm.ToolCall{{
+				Function: llm.ToolCallFunction{Name: "tools_search"},
+			}},
+		},
+		stored,
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("listed generate_pdf must lift the Beijing page")
+	}
+	if stored["content"] != page {
+		t.Fatal("stored tools_search result was rewritten")
+	}
+	content, _ := got[1].(map[string]interface{})["content"].(string)
+	for _, stale := range []string{
+		"尚未列出：generate_pdf",
+		"下一请求出现：generate_pdf",
+		"下一请求会出现",
+		"出现在下一请求",
+		"现在不要调用。",
+		"不要直接调用这些名字",
+		"完成后再调用",
+		"不要直接调用，也不要请愿",
+		"本响应的其它调用结束后",
+		"本响应的其它工具调用结束后",
+	} {
+		if strings.Contains(content, stale) {
+			t.Fatalf("Beijing page kept %q:\n%s", stale, content)
+		}
+	}
+	if !strings.Contains(content, "立刻调用 generate_pdf。") || !strings.Contains(content, "现在调用 generate_pdf。") {
+		t.Fatalf("Beijing page did not order generate_pdf:\n%s", content)
+	}
+	if !strings.Contains(content, "不要直接调用 send_file") || !strings.Contains(content, "send_file 要等它自己出现在列表") {
+		t.Fatalf("unlisted send_file lost its hold:\n%s", content)
+	}
+	if !strings.Contains(content, "- generate_pdf — Render Markdown into a PDF and publish an Artif… [已在当前工具列表，立刻调用。]") {
+		t.Fatalf("generate_pdf row still forbids the call:\n%s", content)
+	}
+}
+
+func TestLiftExpiredToolsSearchHoldLeavesUnlistedPage(t *testing.T) {
+	const page = "tools_search results for \"pdf\":\n下一请求出现：generate_pdf。现在不要调用。\n"
+	cb := &sharedAgentLoopCallbacks{tools: []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+	}}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	conv := []interface{}{map[string]interface{}{"role": "tool", "content": page}}
+	if got := cb.LiftExpiredDirectoryHolds(conv, wire); got != nil {
+		t.Fatalf("a name absent from the wire list must keep the hold, got %#v", got)
+	}
+}
+
+func TestLiftExpiredToolsSearchHoldDoesNotReorderACalledName(t *testing.T) {
+	const page = "tools_search results for \"pdf\":\n" +
+		"本轮决定：已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- generate_pdf — Render Markdown into a PDF [已列入本轮计划。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	conv := []interface{}{
+		map[string]interface{}{"role": "tool", "content": page},
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []interface{}{
+				map[string]interface{}{"function": map[string]interface{}{"name": "generate_pdf"}},
+			},
+		},
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("a listed name must still lose the expired prohibition")
+	}
+	content, _ := got[0].(map[string]interface{})["content"].(string)
+	if strings.Contains(content, "现在不要调用") || strings.Contains(content, "尚未列出：generate_pdf") || strings.Contains(content, "立刻调用") || strings.Contains(content, "现在调用") {
+		t.Fatalf("a name already called must not be ordered again:\n%s", content)
+	}
+	if !strings.Contains(content, "[已在当前工具列表。]") {
+		t.Fatalf("row still forbids the listed name:\n%s", content)
+	}
+	if conv[0].(map[string]interface{})["content"] != page {
+		t.Fatal("stored page was rewritten")
+	}
+}
+
+func TestLiftExpiredToolsSearchHoldOrdersOnlyTheLatestPage(t *testing.T) {
+	const older = "tools_search results for \"抓取网页\":\n" +
+		"本轮决定：已计划但本请求尚未列出：web_fetch（本响应的其它调用结束后出现在下一请求）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- web_fetch — Fetch one page [已列入本轮计划。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：web_fetch。现在不要调用。\n"
+	const latest = "tools_search results for \"pdf\":\n" +
+		"本轮决定：已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- generate_pdf — Render Markdown into a PDF [已列入本轮计划。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	conv := []interface{}{
+		map[string]interface{}{"role": "tool", "content": older},
+		map[string]interface{}{"role": "tool", "content": latest},
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "web_fetch"}},
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("listed names must lift")
+	}
+	oldText, _ := got[0].(map[string]interface{})["content"].(string)
+	newText, _ := got[1].(map[string]interface{})["content"].(string)
+	if strings.Contains(oldText, "现在调用") || strings.Contains(oldText, "立刻调用") || strings.Contains(oldText, "现在不要调用") {
+		t.Fatalf("an older hold must not become a new order:\n%s", oldText)
+	}
+	if !strings.Contains(oldText, "[已在当前工具列表。]") {
+		t.Fatalf("older listed row still forbids the call:\n%s", oldText)
+	}
+	if !strings.Contains(newText, "现在调用 generate_pdf。") || !strings.Contains(newText, "立刻调用 generate_pdf。") {
+		t.Fatalf("the latest hold must order the listed tool:\n%s", newText)
+	}
+}
+
+func TestLiftExpiredToolsSearchHoldOrdersAListedClauseName(t *testing.T) {
+	const page = "tools_search results for \"生成北京天气PDF\":\n" +
+		"本轮决定：已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）；send_file（generate_pdf 出现在下一请求后再调用；send_file 要等它自己出现在列表）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- generate_pdf — Render Markdown into a PDF [已列入本轮计划。不要直接调用，也不要请愿。]\n" +
+		"- send_file — Attach the published file [已列入本轮计划，先等 generate_pdf。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	stored := map[string]interface{}{"role": "tool", "tool_call_id": "call-1", "content": page}
+	conv := []interface{}{
+		stored,
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []llm.ToolCall{{
+				Function: llm.ToolCallFunction{Name: "generate_pdf"},
+			}},
+		},
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+		{"type": "function", "function": map[string]interface{}{"name": "send_file"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("a listed send_file clause must lift")
+	}
+	if stored["content"] != page {
+		t.Fatal("stored tools_search result was rewritten")
+	}
+	content, _ := got[0].(map[string]interface{})["content"].(string)
+	if !strings.Contains(content, "立刻调用 send_file。") || !strings.Contains(content, "现在调用 send_file。") {
+		t.Fatalf("listed send_file was not ordered:\n%s", content)
+	}
+	if strings.Contains(content, "立刻调用 generate_pdf") || strings.Contains(content, "现在调用 generate_pdf") || strings.Contains(content, "不要直接调用 send_file") || strings.Contains(content, "尚未列出：send_file") {
+		t.Fatalf("spent generate_pdf was reordered or send_file stayed held:\n%s", content)
+	}
+	if !strings.Contains(content, "- generate_pdf — Render Markdown into a PDF [已在当前工具列表。]") {
+		t.Fatalf("spent generate_pdf row still forbids the call:\n%s", content)
+	}
+	if !strings.Contains(content, "- send_file — Attach the published file [已在当前工具列表，立刻调用。]") {
+		t.Fatalf("send_file row still forbids the call:\n%s", content)
+	}
+}
+
+// The lookup page orders web_search and forbids generate_pdf in the same
+// decision. It does not end with the next-request closer. After web_search
+// has run and generate_pdf is on the wire list, that prohibition is stale.
+func TestLiftExpiredToolsSearchHoldAfterPredecessorRuns(t *testing.T) {
+	page := semanticToolsSearchWeatherPredecessorPage(t)
+	stored := map[string]interface{}{"role": "tool", "tool_call_id": "call-search", "content": page}
+	conv := []interface{}{
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []llm.ToolCall{
+				{Function: llm.ToolCallFunction{Name: "tools_search"}},
+				{Function: llm.ToolCallFunction{Name: "web_search"}},
+			},
+		},
+		stored,
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("listed generate_pdf must lift a predecessor page")
+	}
+	if stored["content"] != page {
+		t.Fatal("stored tools_search result was rewritten")
+	}
+	content, _ := got[1].(map[string]interface{})["content"].(string)
+	if !strings.Contains(content, "立刻调用 generate_pdf。") || !strings.Contains(content, "现在调用 generate_pdf。") {
+		t.Fatalf("predecessor page did not order generate_pdf:\n%s", content)
+	}
+	if strings.Contains(content, "现在调用 web_search") || strings.Contains(content, "立刻调用 web_search") || strings.Contains(content, "先调用 web_search") || strings.Contains(content, "这些名字") {
+		t.Fatalf("spent lookup stayed an order, or the ban still says 这些名字:\n%s", content)
+	}
+	if !strings.Contains(content, "不要直接调用 send_file") {
+		t.Fatalf("unlisted send_file lost its hold:\n%s", content)
+	}
+	if strings.Contains(content, "先调用 web_search") || strings.Contains(content, "之后会出现 generate_pdf") || strings.Contains(content, "下一请求会出现") || strings.Contains(content, "它出现在下一请求") || strings.Contains(content, "完成后再调用") {
+		t.Fatalf("predecessor row still describes generate_pdf as absent:\n%s", content)
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "- send_file — ") && strings.Contains(line, "不要直接调用，也不要请愿") {
+			t.Fatalf("send_file row ban does not name its subject:\n%s", line)
+		}
+	}
+}
+
+// web_search in the tools_search message is spent only when that batch let it
+// run. A planned denial in the same batch, before or after the page, leaves
+// the order in place.
+func TestLiftExpiredToolsSearchHoldKeepsADeniedIssuingOrder(t *testing.T) {
+	const page = "tools_search results for \"pdf\":\n" +
+		"本轮决定：现在调用 web_search。已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- send_file — Attach the published file [已列入本轮计划，先调用 web_search。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	denial := plannedToolNotYetListedMessage("web_search", nil)
+	lift := func(t *testing.T, conv []interface{}, wireNames []string) (string, bool) {
+		t.Helper()
+		wire := make([]map[string]interface{}, 0, len(wireNames)+1)
+		for _, name := range wireNames {
+			wire = append(wire, map[string]interface{}{
+				"type": "function", "function": map[string]interface{}{"name": name},
+			})
+		}
+		wire = append(wire, map[string]interface{}{
+			"type": "function", "function": map[string]interface{}{"name": "tools_search"},
+		})
+		got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+		if got == nil {
+			return "", false
+		}
+		for _, item := range conv {
+			content, ok := item.(map[string]interface{})["content"].(string)
+			if ok && strings.HasPrefix(content, "tools_search results") && content != page {
+				t.Fatal("stored tools_search result was rewritten")
+			}
+		}
+		for _, item := range got {
+			content, _ := item.(map[string]interface{})["content"].(string)
+			if strings.HasPrefix(content, "tools_search results") {
+				return content, true
+			}
+		}
+		t.Fatal("rewritten conversation dropped the tools_search page")
+		return "", false
+	}
+	issuing := func(calls ...string) map[string]interface{} {
+		toolCalls := make([]llm.ToolCall, 0, len(calls))
+		for _, name := range calls {
+			toolCalls = append(toolCalls, llm.ToolCall{Function: llm.ToolCallFunction{Name: name}})
+		}
+		return map[string]interface{}{"role": "assistant", "tool_calls": toolCalls}
+	}
+	pageMsg := map[string]interface{}{"role": "tool", "tool_call_id": "call-search", "content": page}
+	denialMsg := map[string]interface{}{"role": "tool", "tool_call_id": "call-search-web", "content": denial}
+
+	// The denial itself is stale once web_search is listed. The tools_search
+	// page already orders it, and that sentence must stay byte-identical.
+	afterPage, ok := lift(t, []interface{}{issuing("tools_search", "web_search"), pageMsg, denialMsg}, []string{"web_search"})
+	if !ok || afterPage != page {
+		t.Fatalf("a denied web_search after the page must keep the live order:\n%s", afterPage)
+	}
+	beforePage, ok := lift(t, []interface{}{issuing("web_search", "tools_search"), denialMsg, pageMsg}, []string{"web_search"})
+	if !ok || beforePage != page {
+		t.Fatalf("a denied web_search before the page must keep the live order:\n%s", beforePage)
+	}
+
+	listed, ok := lift(t, []interface{}{issuing("tools_search", "web_search"), pageMsg, denialMsg}, []string{"web_search", "generate_pdf"})
+	if !ok {
+		t.Fatal("listed generate_pdf must still lift the page when web_search was denied")
+	}
+	if !strings.Contains(listed, "立刻调用 web_search、generate_pdf。") || !strings.Contains(listed, "先调用 web_search") {
+		t.Fatalf("denied web_search lost its order or its lead:\n%s", listed)
+	}
+	if strings.Contains(listed, "web_search 已调用") {
+		t.Fatalf("denied web_search was described as already called:\n%s", listed)
+	}
+
+	spent, ok := lift(t, []interface{}{
+		issuing("tools_search", "web_search"),
+		pageMsg,
+		map[string]interface{}{"role": "tool", "tool_call_id": "call-web", "content": "北京今天晴"},
+	}, []string{"web_search"})
+	if !ok {
+		t.Fatal("an issuing web_search that returned a result is spent")
+	}
+	if strings.Contains(spent, "现在调用 web_search") || strings.Contains(spent, "立刻调用 web_search") || strings.Contains(spent, "先调用 web_search") {
+		t.Fatalf("spent web_search stayed an order:\n%s", spent)
+	}
+	if !strings.Contains(spent, "web_search 已调用") {
+		t.Fatalf("spent web_search lost its called fact:\n%s", spent)
+	}
+}
+
+// An unrendered denial and a repeat-wave continuation are the same fact as a
+// planned denial: the call did not run. Once the name is listed, the page
+// keeps its order and the notice itself says to call it. A consumed-grant
+// result records a prior success and still spends the order.
+func TestLiftExpiredSurfaceRejectionIsNotACall(t *testing.T) {
+	const page = "tools_search results for \"pdf\":\n" +
+		"本轮决定：现在调用 web_search。已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- send_file — Attach the published file [已列入本轮计划，先调用 web_search。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	unrendered := `Error: tool "web_search" was not available in this request's rendered tool surface. Do not retry "web_search" and do not ask the user to re-authorize tools; continue with the tools rendered in this request or answer from what you already have.`
+	repeatWave := `Error: tool "web_search" is listed on the next request in this same reply. Call it then. This turn is not finished, so do not ask the user to continue and do not ask them to re-authorize tools.`
+	consumed := `Error: tool "web_search" already ran successfully earlier in this turn. That result still stands (e.g. an artifact was already generated or delivered). If the name is listed, call it and continue the unfinished task. Do not tell the user that a quota or usage limit was used up, do not ask them to send another message, do not retry "web_search" when it is not listed, and do not report that action as failed, consumed, or undelivered.`
+	issuing := map[string]interface{}{
+		"role": "assistant",
+		"tool_calls": []llm.ToolCall{
+			{Function: llm.ToolCallFunction{Name: "tools_search"}},
+			{Function: llm.ToolCallFunction{Name: "web_search"}},
+		},
+	}
+	pageMsg := map[string]interface{}{"role": "tool", "tool_call_id": "call-search", "content": page}
+	lift := func(t *testing.T, notice string, wireNames []string, extra ...interface{}) (string, string) {
+		t.Helper()
+		noticeMsg := map[string]interface{}{"role": "tool", "tool_call_id": "call-web", "content": notice}
+		conv := []interface{}{issuing, pageMsg, noticeMsg}
+		conv = append(conv, extra...)
+		wire := make([]map[string]interface{}, 0, len(wireNames)+1)
+		for _, name := range wireNames {
+			wire = append(wire, map[string]interface{}{
+				"type": "function", "function": map[string]interface{}{"name": name},
+			})
+		}
+		wire = append(wire, map[string]interface{}{
+			"type": "function", "function": map[string]interface{}{"name": "tools_search"},
+		})
+		got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+		if pageMsg["content"] != page || noticeMsg["content"] != notice {
+			t.Fatal("stored tool result was rewritten")
+		}
+		if got == nil {
+			return "", ""
+		}
+		var pageText, noticeText string
+		for _, item := range got {
+			content, _ := item.(map[string]interface{})["content"].(string)
+			switch {
+			case strings.HasPrefix(content, "tools_search results"):
+				pageText = content
+			case strings.HasPrefix(content, "Error: tool \"web_search\""):
+				noticeText = content
+			}
+		}
+		return pageText, noticeText
+	}
+	const callNow = `Error: tool "web_search" is listed on this request. Call it now.`
+
+	pageText, noticeText := lift(t, unrendered, []string{"web_search"})
+	if pageText != page {
+		t.Fatalf("an unrendered web_search must keep the live order:\n%s", pageText)
+	}
+	if noticeText != callNow || strings.Contains(noticeText, "was not available") || strings.Contains(noticeText, "Do not retry") {
+		t.Fatalf("unrendered notice stayed next to the order:\n%s", noticeText)
+	}
+
+	pageText, noticeText = lift(t, repeatWave, []string{"web_search"})
+	if pageText != page {
+		t.Fatalf("a repeat-wave web_search must keep the live order:\n%s", pageText)
+	}
+	if noticeText != callNow || strings.Contains(noticeText, "on the next request") {
+		t.Fatalf("repeat-wave notice stayed next to the order:\n%s", noticeText)
+	}
+
+	pageText, noticeText = lift(t, consumed, []string{"web_search"})
+	if pageText == "" {
+		t.Fatal("a consumed-grant web_search is a completed call and must lift the page")
+	}
+	if strings.Contains(pageText, "现在调用 web_search") || strings.Contains(pageText, "立刻调用 web_search") || strings.Contains(pageText, "先调用 web_search") {
+		t.Fatalf("consumed-grant web_search stayed an order:\n%s", pageText)
+	}
+	if !strings.Contains(pageText, "web_search 已调用") {
+		t.Fatalf("consumed-grant web_search lost its called fact:\n%s", pageText)
+	}
+	if noticeText != consumed {
+		t.Fatalf("consumed-grant result was rewritten:\n%s", noticeText)
+	}
+
+	later := []interface{}{
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []llm.ToolCall{{
+				Function: llm.ToolCallFunction{Name: "web_search"},
+			}},
+		},
+		map[string]interface{}{"role": "tool", "tool_call_id": "call-web-2", "content": "北京今天晴"},
+	}
+	pageText, noticeText = lift(t, repeatWave, nil, later...)
+	if !strings.Contains(pageText, "web_search 已调用") {
+		t.Fatalf("a later web_search result must spend the order:\n%s", pageText)
+	}
+	if noticeText != `Error: tool "web_search" has already been called.` {
+		t.Fatalf("repeat-wave notice kept a next-request promise after the call ran:\n%s", noticeText)
+	}
+}
+
+// Invalid arguments never reach the tool. The result says to send the call
+// again, so the directory page must keep that order. The regenerate sentence
+// stays until a later call actually returns.
+func TestLiftExpiredArgumentRejectionIsNotACall(t *testing.T) {
+	const page = "tools_search results for \"pdf\":\n" +
+		"本轮决定：现在调用 web_search。已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- send_file — Attach the published file [已列入本轮计划，先调用 web_search。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	invalid := `Error: tool call "web_search" has invalid JSON object arguments. The tool was not executed. Regenerate the same tool call with complete valid JSON object arguments, including all required fields, and do not summarize or truncate file content.`
+	issuing := map[string]interface{}{
+		"role": "assistant",
+		"tool_calls": []llm.ToolCall{
+			{Function: llm.ToolCallFunction{Name: "tools_search"}},
+			{Function: llm.ToolCallFunction{Name: "web_search"}},
+		},
+	}
+	pageMsg := map[string]interface{}{"role": "tool", "tool_call_id": "call-search", "content": page}
+	lift := func(t *testing.T, wireNames []string, extra ...interface{}) (string, string) {
+		t.Helper()
+		noticeMsg := map[string]interface{}{"role": "tool", "tool_call_id": "call-web", "content": invalid}
+		conv := []interface{}{issuing, pageMsg, noticeMsg}
+		conv = append(conv, extra...)
+		wire := make([]map[string]interface{}, 0, len(wireNames)+1)
+		for _, name := range wireNames {
+			wire = append(wire, map[string]interface{}{
+				"type": "function", "function": map[string]interface{}{"name": name},
+			})
+		}
+		wire = append(wire, map[string]interface{}{
+			"type": "function", "function": map[string]interface{}{"name": "tools_search"},
+		})
+		got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+		if pageMsg["content"] != page || noticeMsg["content"] != invalid {
+			t.Fatal("stored tool result was rewritten")
+		}
+		if got == nil {
+			return "", ""
+		}
+		var pageText, noticeText string
+		for _, item := range got {
+			m, _ := item.(map[string]interface{})
+			content, _ := m["content"].(string)
+			switch m["tool_call_id"] {
+			case "call-search":
+				pageText = content
+			case "call-web":
+				noticeText = content
+			}
+		}
+		return pageText, noticeText
+	}
+	later := []interface{}{
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []llm.ToolCall{{
+				Function: llm.ToolCallFunction{Name: "web_search"},
+			}},
+		},
+		map[string]interface{}{"role": "tool", "tool_call_id": "call-web-2", "content": "北京今天晴"},
+	}
+
+	pageText, noticeText := lift(t, []string{"web_search"})
+	if pageText != "" && pageText != page {
+		t.Fatalf("invalid arguments spent the live order:\n%s", pageText)
+	}
+	if noticeText != "" && noticeText != invalid {
+		t.Fatalf("outstanding argument rejection was rewritten:\n%s", noticeText)
+	}
+
+	pageText, noticeText = lift(t, nil, later...)
+	if !strings.Contains(pageText, "web_search 已调用") || strings.Contains(pageText, "现在调用 web_search") {
+		t.Fatalf("a later web_search result must spend the order:\n%s", pageText)
+	}
+	if noticeText != `Error: tool "web_search" has already been called.` {
+		t.Fatalf("argument rejection still says to regenerate after the call ran:\n%s", noticeText)
+	}
+
+	pageText, noticeText = lift(t, []string{"web_search"}, later...)
+	if strings.Contains(pageText, "现在调用 web_search") || strings.Contains(pageText, "立刻调用 web_search") || strings.Contains(pageText, "先调用 web_search") {
+		t.Fatalf("a completed web_search stayed an order while it is listed:\n%s", pageText)
+	}
+	if !strings.Contains(pageText, "web_search 已调用") {
+		t.Fatalf("a completed web_search lost its called fact:\n%s", pageText)
+	}
+	if noticeText != `Error: tool "web_search" is listed on this request.` || strings.Contains(noticeText, "Call it now") || strings.Contains(noticeText, "was not executed") {
+		t.Fatalf("argument rejection still orders a call that already returned:\n%s", noticeText)
+	}
+}
+
+// The production held page, not a hand-built sentence. Search has already
+// committed and generate_pdf is withheld only until that batch ends. The next
+// request lists it.
+func TestLiftExpiredToolsSearchHoldLiftsRealHeldPage(t *testing.T) {
+	cb := semanticToolsSearchRegressionCallbacks(0)
+	cb.semanticHoldDependantIssue = true
+	cb.semanticSurface.completed = map[string]bool{"search": true}
+	cb.semanticSurface.plan.Selections = []tool.PlannedSelection{
+		{ID: "search", AdapterName: "web_search", FitProof: tool.FitProof{MatchedCapability: "information.search.web"}},
+		{ID: "pdf", AdapterName: "host_document_generate_file", FitProof: tool.FitProof{MatchedCapability: "document.generate.file"}, Requires: []string{"search"}},
+		{ID: "deliver", AdapterName: "semantic_deliver_current_file", FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"}, Requires: []string{"pdf"}},
+	}
+	cb.semanticSurface.grants["web_search"] = tool.InvocationGrant{SelectionID: "search", Token: "search-token", AdapterName: "web_search"}
+	page := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"pdf"}`)
+	stored := map[string]interface{}{"role": "tool", "tool_call_id": "call-search", "content": page}
+	conv := []interface{}{
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []llm.ToolCall{{
+				Function: llm.ToolCallFunction{Name: "tools_search"},
+			}},
+		},
+		stored,
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("listed generate_pdf must lift the real held page")
+	}
+	if stored["content"] != page {
+		t.Fatal("stored tools_search result was rewritten")
+	}
+	content, _ := got[1].(map[string]interface{})["content"].(string)
+	for _, stale := range []string{
+		"现在不要调用。",
+		"下一请求会出现",
+		"先等 generate_pdf",
+		"出现在下一请求",
+		"尚未列出：generate_pdf",
+		"不要直接调用这些名字",
+		"它出现在下一请求",
+		"完成后再调用",
+	} {
+		if strings.Contains(content, stale) {
+			t.Fatalf("real held page kept %q:\n%s", stale, content)
+		}
+	}
+	if !strings.Contains(content, "立刻调用 generate_pdf。") || !strings.Contains(content, "现在调用 generate_pdf。") {
+		t.Fatalf("real held page did not order generate_pdf:\n%s", content)
+	}
+	if !strings.Contains(content, "不要直接调用 send_file") {
+		t.Fatalf("unlisted send_file lost its hold:\n%s", content)
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "- ") && strings.Contains(line, "不要直接调用，也不要请愿") && strings.Contains(line, "generate_pdf") {
+			t.Fatalf("a row names listed generate_pdf and still has an unnamed ban:\n%s", line)
+		}
+	}
+}
+
+func TestLiftExpiredToolsSearchHoldRelaxesNameLists(t *testing.T) {
+	const page = "tools_search results for \"pdf\":\n" +
+		"本轮决定：现在调用 web_search。已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- send_file — Attach the published file [已列入本轮计划，先调用 web_search、web_fetch。之后会出现 generate_pdf、office。先等 generate_pdf。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	conv := []interface{}{
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []llm.ToolCall{
+				{Function: llm.ToolCallFunction{Name: "tools_search"}},
+				{Function: llm.ToolCallFunction{Name: "web_search"}},
+			},
+		},
+		map[string]interface{}{"role": "tool", "content": page},
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+		{"type": "function", "function": map[string]interface{}{"name": "web_fetch"}},
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("listed generate_pdf must lift the page")
+	}
+	content, _ := got[1].(map[string]interface{})["content"].(string)
+	if strings.Contains(content, "先调用 web_search") || strings.Contains(content, "先等 generate_pdf") || strings.Contains(content, "之后会出现 generate_pdf") {
+		t.Fatalf("spent or listed names stayed inside the lead:\n%s", content)
+	}
+	if !strings.Contains(content, "web_search 已调用，先调用 web_fetch") {
+		t.Fatalf("the unspent name lost its lead:\n%s", content)
+	}
+	if !strings.Contains(content, "generate_pdf 已在当前工具列表，之后会出现 office") {
+		t.Fatalf("unlisted office lost its wait, or listed generate_pdf stayed absent:\n%s", content)
+	}
+	if !strings.Contains(content, "立刻调用 generate_pdf。") {
+		t.Fatalf("hold was not ordered:\n%s", content)
+	}
+}
+
+// A 、 list before "出现在下一请求" is one fact. Rewriting only the name
+// glued to the suffix leaves an earlier listed name absent, and glues an
+// earlier unlisted name onto "已在当前工具列表".
+func TestLiftExpiredToolsSearchHoldRelaxesNextRequestNameList(t *testing.T) {
+	lift := func(t *testing.T, clause, closer string, called []string, wireNames []string) string {
+		t.Helper()
+		page := "tools_search results for \"pdf\":\n本轮决定：已计划但本请求尚未列出：" + clause + "。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n下一请求出现：" + closer + "。现在不要调用。\n"
+		calls := []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "tools_search"}}}
+		for _, name := range called {
+			calls = append(calls, llm.ToolCall{Function: llm.ToolCallFunction{Name: name}})
+		}
+		wire := make([]map[string]interface{}, 0, len(wireNames)+1)
+		for _, name := range wireNames {
+			wire = append(wire, map[string]interface{}{
+				"type": "function", "function": map[string]interface{}{"name": name},
+			})
+		}
+		wire = append(wire, map[string]interface{}{
+			"type": "function", "function": map[string]interface{}{"name": "tools_search"},
+		})
+		conv := []interface{}{
+			map[string]interface{}{"role": "assistant", "tool_calls": calls},
+			map[string]interface{}{"role": "tool", "content": page},
+		}
+		got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+		if got == nil {
+			t.Fatalf("listed closer %s must lift the page:\n%s", closer, page)
+		}
+		content, _ := got[1].(map[string]interface{})["content"].(string)
+		return content
+	}
+
+	laterOnly := semanticToolsSearchLaterClause("archive_file", predecessorNames{
+		nextRequest: []string{"generate_pdf", "office_export"},
+	}, false)
+	firstListed := lift(t, laterOnly, "generate_pdf", nil, []string{"generate_pdf"})
+	if !strings.Contains(firstListed, "generate_pdf 已在当前工具列表，office_export 出现在下一请求后再调用") {
+		t.Fatalf("listed generate_pdf stayed inside the next-request list:\n%s", firstListed)
+	}
+	if strings.Contains(firstListed, "generate_pdf、office_export") || strings.Contains(firstListed, "generate_pdf 出现在下一请求") || strings.Contains(firstListed, "office_export 已在当前工具列表") {
+		t.Fatalf("the next-request list was rewritten as one fact:\n%s", firstListed)
+	}
+	if !strings.Contains(firstListed, "不要直接调用 archive_file") || !strings.Contains(firstListed, "立刻调用 generate_pdf。") {
+		t.Fatalf("archive_file lost its hold, or generate_pdf was not ordered:\n%s", firstListed)
+	}
+
+	lastListed := lift(t, laterOnly, "office_export", nil, []string{"office_export"})
+	if !strings.Contains(lastListed, "generate_pdf 出现在下一请求后再调用，office_export 已在当前工具列表") {
+		t.Fatalf("unlisted generate_pdf was pulled into the listed fact:\n%s", lastListed)
+	}
+	if strings.Contains(lastListed, "generate_pdf 已在当前工具列表") || strings.Contains(lastListed, "立刻调用 generate_pdf") || strings.Contains(lastListed, "现在调用 generate_pdf") {
+		t.Fatalf("unlisted generate_pdf was described as listed or ordered:\n%s", lastListed)
+	}
+
+	withCall := semanticToolsSearchLaterClause("archive_file", predecessorNames{
+		callNow:     []string{"web_search", "web_fetch"},
+		nextRequest: []string{"generate_pdf", "office_export"},
+	}, false)
+	mixed := lift(t, withCall, "generate_pdf", []string{"web_search"}, []string{"web_search", "web_fetch", "generate_pdf"})
+	if !strings.Contains(mixed, "web_search 已调用，先调用 web_fetch；成功后 generate_pdf 已在当前工具列表，office_export 出现在下一请求。") {
+		t.Fatalf("call list and next-request list were not rewritten together:\n%s", mixed)
+	}
+	if strings.Contains(mixed, "generate_pdf、office_export 出现在下一请求") || strings.Contains(mixed, "先调用 web_search") {
+		t.Fatalf("spent or listed names stayed in the production clause:\n%s", mixed)
+	}
+}
+
+// After generate_pdf runs, the one-shot grant is spent and the next request
+// lists send_file without generate_pdf. The stored page still says
+// generate_pdf appears on the next request. That wait is false. A denied
+// call in the issuing message is not that run.
+func TestLiftExpiredToolsSearchHoldClearsCalledUnlistedAppearance(t *testing.T) {
+	const beijing = "tools_search results for \"生成北京天气PDF\":\n" +
+		"scope_id=semantic-scope:a5748ba1f335cd4d1141c5f1ff96d7e303e15272ccaae77a0dfa7214f3849c9a catalog_digest=catalog:sha256:93790b07e3b20e9e4a3a7b140432c2219e3af3797afe3f81ba9216716fef3a3d decision_id=decision:1d74fdb526559435b5f832d93863478f3e727317c5803864499cef5b52b209a8\n" +
+		"本轮决定：已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）；send_file（generate_pdf 出现在下一请求后再调用；send_file 要等它自己出现在列表）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- generate_pdf — Render Markdown into a PDF and publish an Artif… [已列入本轮计划。本响应的其它工具调用结束后，下一请求会出现。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	lift := func(t *testing.T, page string, before, after []string, wireNames []string) (string, bool) {
+		t.Helper()
+		issuing := []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "tools_search"}}}
+		for _, name := range before {
+			issuing = append(issuing, llm.ToolCall{Function: llm.ToolCallFunction{Name: name}})
+		}
+		stored := map[string]interface{}{"role": "tool", "tool_call_id": "call-search", "content": page}
+		conv := []interface{}{
+			map[string]interface{}{"role": "assistant", "tool_calls": issuing},
+			stored,
+		}
+		if len(after) > 0 {
+			calls := make([]llm.ToolCall, 0, len(after))
+			for _, name := range after {
+				calls = append(calls, llm.ToolCall{Function: llm.ToolCallFunction{Name: name}})
+			}
+			conv = append(conv, map[string]interface{}{
+				"role": "assistant", "tool_calls": calls,
+			})
+		}
+		wire := make([]map[string]interface{}, 0, len(wireNames)+1)
+		for _, name := range wireNames {
+			wire = append(wire, map[string]interface{}{
+				"type": "function", "function": map[string]interface{}{"name": name},
+			})
+		}
+		wire = append(wire, map[string]interface{}{
+			"type": "function", "function": map[string]interface{}{"name": "tools_search"},
+		})
+		got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+		if stored["content"] != page {
+			t.Fatal("stored tools_search result was rewritten")
+		}
+		if got == nil {
+			return "", false
+		}
+		content, _ := got[1].(map[string]interface{})["content"].(string)
+		return content, true
+	}
+
+	delivered, ok := lift(t, beijing, nil, []string{"generate_pdf"}, []string{"send_file"})
+	if !ok {
+		t.Fatal("a called generate_pdf must clear the appearance promise once send_file is listed")
+	}
+	for _, stale := range []string{
+		"出现在下一请求",
+		"下一请求会出现",
+		"尚未列出：generate_pdf",
+		"generate_pdf 已在当前工具列表",
+		"不要直接调用 send_file",
+		"下一请求出现：generate_pdf",
+	} {
+		if strings.Contains(delivered, stale) {
+			t.Fatalf("delivery request kept %q:\n%s", stale, delivered)
+		}
+	}
+	if !strings.Contains(delivered, "立刻调用 send_file。") || !strings.Contains(delivered, "现在调用 send_file。") {
+		t.Fatalf("listed send_file was not ordered:\n%s", delivered)
+	}
+	if !strings.Contains(delivered, "- generate_pdf — Render Markdown into a PDF and publish an Artif… [已调用。]") {
+		t.Fatalf("spent generate_pdf row still promises a later appearance:\n%s", delivered)
+	}
+
+	spent, ok := lift(t, beijing, nil, []string{"generate_pdf"}, nil)
+	if !ok {
+		t.Fatal("a called generate_pdf must clear the appearance promise even when send_file is still absent")
+	}
+	for _, stale := range []string{
+		"出现在下一请求",
+		"下一请求会出现",
+		"generate_pdf 已在当前工具列表",
+		"立刻调用",
+		"现在调用 ",
+	} {
+		if strings.Contains(spent, stale) {
+			t.Fatalf("spent generate_pdf stayed a future appearance:\n%s", spent)
+		}
+	}
+	if !strings.Contains(spent, "send_file（generate_pdf 已调用；send_file 要等它自己出现在列表）") {
+		t.Fatalf("send_file clause did not record that generate_pdf already ran:\n%s", spent)
+	}
+	if !strings.Contains(spent, "不要直接调用 send_file") || !strings.Contains(spent, "仍未列出、现在不要调用：send_file。") {
+		t.Fatalf("unlisted send_file lost its hold:\n%s", spent)
+	}
+	if !strings.Contains(spent, "- generate_pdf — Render Markdown into a PDF and publish an Artif… [已调用。]") {
+		t.Fatalf("spent generate_pdf row still promises a later appearance:\n%s", spent)
+	}
+
+	if _, ok := lift(t, beijing, []string{"generate_pdf"}, nil, nil); ok {
+		t.Fatal("a denied generate_pdf in the issuing message is not a finished call")
+	}
+	deniedListed, ok := lift(t, beijing, []string{"generate_pdf"}, nil, []string{"generate_pdf"})
+	if !ok || !strings.Contains(deniedListed, "立刻调用 generate_pdf。") || strings.Contains(deniedListed, "[已调用。]") {
+		t.Fatalf("a denied issuing call must still be ordered once it is listed:\n%s", deniedListed)
+	}
+
+	const rows = "tools_search results for \"生成北京天气PDF\":\n" +
+		"本轮决定：已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）；send_file（generate_pdf 出现在下一请求后再调用；send_file 要等它自己出现在列表）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- generate_pdf — Render Markdown into a PDF [已列入本轮计划。本响应的其它工具调用结束后，下一请求会出现。不要直接调用，也不要请愿。]\n" +
+		"- send_file — Attach the published file [已列入本轮计划，先等 generate_pdf。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	rowText, ok := lift(t, rows, nil, []string{"generate_pdf"}, nil)
+	if !ok {
+		t.Fatal("a called generate_pdf must retarget the send_file row ban")
+	}
+	if !strings.Contains(rowText, "- send_file — Attach the published file [已列入本轮计划，generate_pdf 已调用。不要直接调用 send_file，也不要请愿。]") {
+		t.Fatalf("send_file row still treats generate_pdf as absent, or the ban has no subject:\n%s", rowText)
+	}
+	if strings.Contains(rowText, "先等 generate_pdf") || strings.Contains(rowText, "generate_pdf 已在当前工具列表") || strings.Contains(rowText, "不要直接调用，也不要请愿") {
+		t.Fatalf("called generate_pdf was described as listed or the ban stayed anonymous:\n%s", rowText)
+	}
+
+	later := semanticToolsSearchLaterClause("archive_file", predecessorNames{
+		nextRequest: []string{"generate_pdf", "office_export"},
+	}, false)
+	listPage := "tools_search results for \"pdf\":\n本轮决定：已计划但本请求尚未列出：" + later + "。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n下一请求出现：generate_pdf。现在不要调用。\n"
+	listText, ok := lift(t, listPage, nil, []string{"generate_pdf"}, nil)
+	if !ok {
+		t.Fatal("a called name inside a next-request list must lift")
+	}
+	if !strings.Contains(listText, "generate_pdf 已调用，office_export 出现在下一请求后再调用") {
+		t.Fatalf("called generate_pdf stayed in the absent list, or office_export lost its wait:\n%s", listText)
+	}
+	if strings.Contains(listText, "generate_pdf 已在当前工具列表") || strings.Contains(listText, "office_export 已调用") || strings.Contains(listText, "generate_pdf、office_export") {
+		t.Fatalf("the next-request list was rewritten as one fact:\n%s", listText)
+	}
+}
+
+// A later assistant call whose tool result is a planned denial did not run.
+// Once generate_pdf is actually listed, that page still orders it. A result
+// that is not a denial is the call, and the held denial's "It appears" dies.
+func TestLiftExpiredDirectoryHoldSeparatesDeniedCallFromExecution(t *testing.T) {
+	const beijing = "tools_search results for \"生成北京天气PDF\":\n" +
+		"scope_id=semantic-scope:a5748ba1f335cd4d1141c5f1ff96d7e303e15272ccaae77a0dfa7214f3849c9a catalog_digest=catalog:sha256:93790b07e3b20e9e4a3a7b140432c2219e3af3797afe3f81ba9216716fef3a3d decision_id=decision:1d74fdb526559435b5f832d93863478f3e727317c5803864499cef5b52b209a8\n" +
+		"本轮决定：已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）；send_file（generate_pdf 出现在下一请求后再调用；send_file 要等它自己出现在列表）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- generate_pdf — Render Markdown into a PDF and publish an Artif… [已列入本轮计划。本响应的其它工具调用结束后，下一请求会出现。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	denied := plannedToolHeldForNextRequestMessage("generate_pdf")
+	conv := []interface{}{
+		map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "tools_search"}}},
+		},
+		map[string]interface{}{"role": "tool", "tool_call_id": "call-search", "content": beijing},
+		map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{{ID: "call-pdf", Function: llm.ToolCallFunction{Name: "generate_pdf"}}},
+		},
+		map[string]interface{}{"role": "tool", "tool_call_id": "call-pdf", "content": denied},
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("listed generate_pdf must be ordered when the later call was denied")
+	}
+	if conv[3].(map[string]interface{})["content"] != denied {
+		t.Fatal("stored denial was rewritten")
+	}
+	pageText, _ := got[1].(map[string]interface{})["content"].(string)
+	denialText, _ := got[3].(map[string]interface{})["content"].(string)
+	if !strings.Contains(pageText, "立刻调用 generate_pdf。") || !strings.Contains(pageText, "现在调用 generate_pdf。") {
+		t.Fatalf("denied generate_pdf was not ordered once listed:\n%s", pageText)
+	}
+	if strings.Contains(pageText, "[已调用。]") || strings.Contains(pageText, "generate_pdf 已调用") {
+		t.Fatalf("denied generate_pdf was described as already called:\n%s", pageText)
+	}
+	if !strings.Contains(denialText, `tool "generate_pdf" is listed on this request. Call it now.`) {
+		t.Fatalf("denied call was not ordered from the denial:\n%s", denialText)
+	}
+	if strings.Contains(denialText, "has already been called") || strings.Contains(denialText, "It appears") || strings.Contains(denialText, "before it is listed") {
+		t.Fatalf("denied call kept the appearance promise:\n%s", denialText)
+	}
+
+	executed := []interface{}{
+		map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "generate_pdf"}}},
+		},
+		map[string]interface{}{"role": "tool", "tool_call_id": "call-pdf", "content": denied},
+		map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{{ID: "call-pdf-2", Function: llm.ToolCallFunction{Name: "generate_pdf"}}},
+		},
+		map[string]interface{}{"role": "tool", "tool_call_id": "call-pdf-2", "content": "rendered the pdf"},
+	}
+	execWire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "send_file"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	execGot := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(executed, execWire)
+	if execGot == nil {
+		t.Fatal("a generate_pdf call that returned a result must clear the appearance promise")
+	}
+	if executed[1].(map[string]interface{})["content"] != denied {
+		t.Fatal("stored denial was rewritten")
+	}
+	cleared, _ := execGot[1].(map[string]interface{})["content"].(string)
+	if cleared != `Error: tool "generate_pdf" has already been called.` {
+		t.Fatalf("executed generate_pdf kept the next-request denial:\n%s", cleared)
+	}
+
+	rejectedAgain := plannedToolHeldForNextRequestMessage("generate_pdf")
+	stillHeld := []interface{}{
+		map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "generate_pdf"}}},
+		},
+		map[string]interface{}{"role": "tool", "content": denied},
+		map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "generate_pdf"}}},
+		},
+		map[string]interface{}{"role": "tool", "content": rejectedAgain},
+	}
+	holdWire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	if got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(stillHeld, holdWire); got != nil {
+		t.Fatalf("a later denied call must leave the appearance promise, got %#v", got)
+	}
+}
+
+func TestLiftExpiredPlannedDenialWhenNameIsListed(t *testing.T) {
+	denial := plannedToolHeldForNextRequestMessage("generate_pdf")
+	stored := map[string]interface{}{"role": "tool", "tool_call_id": "call-pdf", "content": denial}
+	conv := []interface{}{
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []llm.ToolCall{{
+				Function: llm.ToolCallFunction{Name: "generate_pdf"},
+			}},
+		},
+		stored,
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("a listed generate_pdf must lift the petition denial")
+	}
+	if stored["content"] != denial {
+		t.Fatal("stored denial was rewritten")
+	}
+	content, _ := got[1].(map[string]interface{})["content"].(string)
+	if !strings.Contains(content, `tool "generate_pdf" is listed on this request. Call it now.`) {
+		t.Fatalf("denial did not order the listed tool:\n%s", content)
+	}
+	if strings.Contains(content, "before it is listed") || strings.Contains(content, "not listed yet") || strings.Contains(content, "Do not call") {
+		t.Fatalf("expired prohibition survived:\n%s", content)
+	}
+}
+
+func TestLiftExpiredPlannedDenialBesideHoldPageDropsTheBan(t *testing.T) {
+	const page = "tools_search results for \"pdf\":\n" +
+		"本轮决定：已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- generate_pdf — Render Markdown into a PDF [已列入本轮计划。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	denial := plannedToolHeldForNextRequestMessage("generate_pdf")
+	storedDenial := map[string]interface{}{"role": "tool", "tool_call_id": "call-pdf", "content": denial}
+	conv := []interface{}{
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []llm.ToolCall{
+				{Function: llm.ToolCallFunction{Name: "generate_pdf"}},
+				{Function: llm.ToolCallFunction{Name: "tools_search"}},
+			},
+		},
+		storedDenial,
+		map[string]interface{}{"role": "tool", "tool_call_id": "call-search", "content": page},
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("listed generate_pdf must lift the page and the denial")
+	}
+	if storedDenial["content"] != denial {
+		t.Fatal("stored denial was rewritten")
+	}
+	denialText, _ := got[1].(map[string]interface{})["content"].(string)
+	pageText, _ := got[2].(map[string]interface{})["content"].(string)
+	if strings.Contains(denialText, "before it is listed") || strings.Contains(denialText, "Do not call") || strings.Contains(denialText, "Call it now") {
+		t.Fatalf("denial before the hold page must only drop the ban:\n%s", denialText)
+	}
+	if !strings.Contains(denialText, "is listed on this request") {
+		t.Fatalf("denial still describes generate_pdf as absent:\n%s", denialText)
+	}
+	if !strings.Contains(pageText, "立刻调用 generate_pdf。") || !strings.Contains(pageText, "现在调用 generate_pdf。") {
+		t.Fatalf("hold page did not order generate_pdf:\n%s", pageText)
+	}
+}
+
+func TestLiftExpiredPlannedDenialDoesNotReorderACalledName(t *testing.T) {
+	denial := plannedToolNotYetListedMessage("generate_pdf", nil)
+	conv := []interface{}{
+		map[string]interface{}{"role": "tool", "content": denial},
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []llm.ToolCall{{
+				Function: llm.ToolCallFunction{Name: "generate_pdf"},
+			}},
+		},
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("a listed name must still lose the expired prohibition")
+	}
+	content, _ := got[0].(map[string]interface{})["content"].(string)
+	if strings.Contains(content, "Call it now") || strings.Contains(content, "not listed yet") || strings.Contains(content, "call it then") {
+		t.Fatalf("a name already called must not be ordered again:\n%s", content)
+	}
+}
+
+// send_file was rejected while web_search was still the listed step. After
+// web_search has run and generate_pdf is on the wire list, that denial still
+// says to call web_search and that generate_pdf appears on the next request.
+func TestLiftExpiredPlannedDenialRelaxesListedPredecessor(t *testing.T) {
+	denial := plannedToolListedAfterEarlierStepsMessage("send_file", []string{"web_search"}, []string{"generate_pdf"})
+	stored := map[string]interface{}{"role": "tool", "tool_call_id": "call-send", "content": denial}
+	conv := []interface{}{
+		map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "send_file"}}},
+		},
+		stored,
+		map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "web_search"}}},
+		},
+		map[string]interface{}{"role": "tool", "tool_call_id": "call-search", "content": "北京今天晴"},
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("a listed generate_pdf inside a send_file denial must be lifted")
+	}
+	if stored["content"] != denial {
+		t.Fatal("stored denial was rewritten")
+	}
+	content, _ := got[1].(map[string]interface{})["content"].(string)
+	if strings.Contains(content, `Call "web_search" now`) || strings.Contains(content, "appears on the next request") {
+		t.Fatalf("spent lookup or the next-request claim survived:\n%s", content)
+	}
+	if !strings.Contains(content, `Call "generate_pdf" now.`) {
+		t.Fatalf("listed generate_pdf was not ordered:\n%s", content)
+	}
+	if !strings.Contains(content, `Call "send_file" only after "send_file" is listed.`) {
+		t.Fatalf("send_file lost its hold:\n%s", content)
+	}
+	if strings.Contains(content, "Do not call") {
+		t.Fatalf("a listed predecessor kept a call ban:\n%s", content)
+	}
+}
+
+func TestLiftExpiredPlannedDenialPredecessorBesideHoldPage(t *testing.T) {
+	const page = "tools_search results for \"pdf\":\n" +
+		"本轮决定：已计划但本请求尚未列出：generate_pdf（本响应的其它调用结束后出现在下一请求）。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n" +
+		"- generate_pdf — Render Markdown into a PDF [已列入本轮计划。不要直接调用，也不要请愿。]\n" +
+		"下一请求出现：generate_pdf。现在不要调用。\n"
+	denial := plannedToolListedAfterEarlierStepsMessage("send_file", []string{"web_search"}, []string{"generate_pdf"})
+	storedDenial := map[string]interface{}{"role": "tool", "tool_call_id": "call-send", "content": denial}
+	conv := []interface{}{
+		map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "web_search"}}},
+		},
+		map[string]interface{}{"role": "tool", "content": "北京今天晴"},
+		map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []llm.ToolCall{
+				{Function: llm.ToolCallFunction{Name: "send_file"}},
+				{Function: llm.ToolCallFunction{Name: "tools_search"}},
+			},
+		},
+		storedDenial,
+		map[string]interface{}{"role": "tool", "tool_call_id": "call-search", "content": page},
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "generate_pdf"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("listed generate_pdf must lift the denial and the hold page")
+	}
+	if storedDenial["content"] != denial {
+		t.Fatal("stored denial was rewritten")
+	}
+	denialText, _ := got[3].(map[string]interface{})["content"].(string)
+	pageText, _ := got[4].(map[string]interface{})["content"].(string)
+	if strings.Contains(denialText, "appears on the next request") || strings.Contains(denialText, `Call "generate_pdf" now`) || strings.Contains(denialText, `Call "web_search" now`) {
+		t.Fatalf("denial before the hold page must only correct the stale fact:\n%s", denialText)
+	}
+	if !strings.Contains(denialText, `"generate_pdf" is listed on this request.`) {
+		t.Fatalf("denial still describes generate_pdf as absent:\n%s", denialText)
+	}
+	if !strings.Contains(denialText, `Call "send_file" only after "send_file" is listed.`) {
+		t.Fatalf("send_file lost its hold:\n%s", denialText)
+	}
+	if !strings.Contains(pageText, "立刻调用 generate_pdf。") || !strings.Contains(pageText, "现在调用 generate_pdf。") {
+		t.Fatalf("hold page did not order generate_pdf:\n%s", pageText)
+	}
+}
+
+func TestLiftExpiredPlannedDenialDropsSpentPredecessorOnly(t *testing.T) {
+	denial := plannedToolListedAfterEarlierStepsMessage("send_file", []string{"web_search"}, []string{"generate_pdf"})
+	conv := []interface{}{
+		map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "send_file"}}},
+		},
+		map[string]interface{}{"role": "tool", "content": denial},
+		map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "web_search"}}},
+		},
+		map[string]interface{}{"role": "tool", "content": "北京今天晴"},
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("a spent web_search order must leave the denial")
+	}
+	content, _ := got[1].(map[string]interface{})["content"].(string)
+	if strings.Contains(content, `Call "web_search" now`) || strings.Contains(content, `Call "generate_pdf" now`) {
+		t.Fatalf("spent lookup was ordered again, or unlisted generate_pdf was ordered:\n%s", content)
+	}
+	if !strings.Contains(content, `"generate_pdf" appears on the next request`) {
+		t.Fatalf("unlisted generate_pdf lost its next-request fact:\n%s", content)
+	}
+	if !strings.Contains(content, `Call "send_file" only after "send_file" is listed.`) {
+		t.Fatalf("send_file lost its hold:\n%s", content)
+	}
+}
+
+func TestLiftExpiredPlannedDenialKeepsTheUnspentPredecessor(t *testing.T) {
+	denial := plannedToolNotYetListedMessage("generate_pdf", []string{"web_search", "web_fetch"})
+	conv := []interface{}{
+		map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "generate_pdf"}}},
+		},
+		map[string]interface{}{"role": "tool", "content": denial},
+		map[string]interface{}{
+			"role":       "assistant",
+			"tool_calls": []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "web_search"}}},
+		},
+		map[string]interface{}{"role": "tool", "content": "北京今天晴"},
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+		{"type": "function", "function": map[string]interface{}{"name": "web_fetch"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire)
+	if got == nil {
+		t.Fatal("a spent web_search beside a live web_fetch must leave the denial")
+	}
+	content, _ := got[1].(map[string]interface{})["content"].(string)
+	if strings.Contains(content, "web_search") || strings.Contains(content, `Call "generate_pdf" now`) {
+		t.Fatalf("spent lookup survived, or unlisted generate_pdf was ordered:\n%s", content)
+	}
+	if !strings.Contains(content, `Call "web_fetch" now.`) {
+		t.Fatalf("live web_fetch order was dropped:\n%s", content)
+	}
+	if !strings.Contains(content, `Call "generate_pdf" only after "generate_pdf" is listed.`) {
+		t.Fatalf("generate_pdf lost its hold:\n%s", content)
+	}
+}
+
+func TestLiftExpiredPlannedDenialLeavesLivePredecessorOrder(t *testing.T) {
+	denial := plannedToolListedAfterEarlierStepsMessage("send_file", []string{"web_search"}, []string{"generate_pdf"})
+	conv := []interface{}{
+		map[string]interface{}{"role": "tool", "content": denial},
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	if got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire); got != nil {
+		content, _ := got[0].(map[string]interface{})["content"].(string)
+		t.Fatalf("a live web_search order must stay while generate_pdf is unlisted:\n%s", content)
+	}
+}
+
+func TestLiftExpiredPlannedDenialLeavesUnlistedTool(t *testing.T) {
+	denial := plannedToolHeldForNextRequestMessage("generate_pdf")
+	conv := []interface{}{
+		map[string]interface{}{"role": "tool", "content": denial},
+		map[string]interface{}{"role": "tool", "content": `Error: tool "generate_pdf" failed to render.`},
+	}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	if got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire); got != nil {
+		t.Fatalf("an unlisted name and an unrelated error must stay, got %#v", got)
+	}
+}
+
+func TestLiftExpiredToolsSearchHoldLeavesLivePredecessorOrder(t *testing.T) {
+	page := semanticToolsSearchWeatherPredecessorPage(t)
+	conv := []interface{}{map[string]interface{}{"role": "tool", "content": page}}
+	wire := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+		{"type": "function", "function": map[string]interface{}{"name": "tools_search"}},
+	}
+	if got := (&sharedAgentLoopCallbacks{}).LiftExpiredDirectoryHolds(conv, wire); got != nil {
+		content, _ := got[0].(map[string]interface{})["content"].(string)
+		t.Fatalf("a live web_search order must stay until generate_pdf is listed or the lookup is spent:\n%s", content)
+	}
+}
+
+func semanticToolsSearchWeatherPredecessorPage(t *testing.T) string {
+	t.Helper()
+	cb := semanticToolsSearchRegressionCallbacks(0)
+	cb.semanticSurface.plan.Selections = []tool.PlannedSelection{
+		{ID: "search", AdapterName: "web_search", FitProof: tool.FitProof{MatchedCapability: "information.search.web"}},
+		{ID: "pdf", AdapterName: "host_document_generate_file", FitProof: tool.FitProof{MatchedCapability: "document.generate.file"}, Requires: []string{"search"}},
+		{ID: "deliver", AdapterName: "semantic_deliver_current_file", FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"}, Requires: []string{"pdf"}},
+	}
+	cb.semanticSurface.grants["web_search"] = tool.InvocationGrant{SelectionID: "search", Token: "search-token", AdapterName: "web_search"}
+	got := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"pdf"}`)
+	if !strings.Contains(got, "现在调用 web_search") || !strings.Contains(got, "不要直接调用这些名字") || !strings.Contains(got, "generate_pdf（") {
+		t.Fatalf("predecessor page shape changed:\n%s", got)
+	}
+	if _, _, ok := directoryHoldCloser(got); ok {
+		t.Fatalf("predecessor page used the next-request closer:\n%s", semanticToolsSearchLastLine(got))
+	}
+	return got
 }
 
 func semanticToolsSearchLastLine(page string) string {

@@ -408,6 +408,7 @@ type CompressResult struct {
 // CompressorStatus is returned by the status query.
 type CompressorStatus struct {
 	Running    bool            `json:"running"`
+	Enabled    bool            `json:"enabled"`
 	LastRun    string          `json:"last_run,omitempty"`
 	LastResult *CompressResult `json:"last_result,omitempty"`
 	LastError  string          `json:"last_error,omitempty"`
@@ -511,11 +512,14 @@ type OnlineExtractionResult struct {
 // ExtractedFact represents a single fact extracted from conversation by the
 // online extraction pipeline, with optional temporal and entity annotations.
 type ExtractedFact struct {
-	Content     string          `json:"content"`
-	Category    string          `json:"category"`             // "user_fact", "project_knowledge", "preference", "instruction"
-	RawEntities json.RawMessage `json:"entities,omitempty"`   // tolerates flat ["a","b"] and nested [["a","b"]]
-	ValidAt     string          `json:"valid_at,omitempty"`   // ISO 8601 datetime or empty
-	InvalidAt   string          `json:"invalid_at,omitempty"` // ISO 8601 datetime or empty
+	Content          string          `json:"content"`
+	Category         string          `json:"category"`             // "user_fact", "project_knowledge", "preference", "instruction"
+	RawEntities      json.RawMessage `json:"entities,omitempty"`   // tolerates flat ["a","b"] and nested [["a","b"]]
+	ValidAt          string          `json:"valid_at,omitempty"`   // ISO 8601 datetime or empty
+	InvalidAt        string          `json:"invalid_at,omitempty"` // ISO 8601 datetime or empty
+	Revalidated      bool            `json:"revalidated,omitempty"`
+	ValidAtPresent   bool            `json:"-"`
+	InvalidAtPresent bool            `json:"-"`
 }
 
 // ParsedEntities returns the entities as a flat []string, tolerating three

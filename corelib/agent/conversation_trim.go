@@ -937,6 +937,15 @@ const ToolsSearchMaxToolResult = 8192
 // A larger result still goes through the normal projector.
 const CodeNavigationMaxToolResult = 65536
 
+// KnowledgeReadMaxToolResult keeps one knowledge page inline. The reader
+// returns at most 8 hits, and each hit is the stored chunk plus the two
+// adjacent stored siblings. Each of those texts is at most 1558 runes,
+// which is one chunk plus overlap at about two runes per token. CJK text
+// is 3 bytes per rune. The extra 16KB covers titles, one claim, and the
+// list formatting. The generic 4KB preview cut this page, and the model
+// treated that cut as a missing record.
+const KnowledgeReadMaxToolResult = 8*3*1558*3 + 16*1024
+
 // MaxToolResultLen caps individual tool results to ~4KB before they enter
 // the conversation. This prevents a single verbose tool output (e.g. bash
 // stdout, large file read) from dominating the context window.
@@ -1107,6 +1116,8 @@ func toolResultPreviewLimitForContext(toolName string, contextTokens int) int {
 		return ToolsSearchMaxToolResult
 	case "code_navigation":
 		return CodeNavigationMaxToolResult
+	case "semantic_read_trusted_knowledge", "knowledge_search", "knowledge_context_pack", "coding_knowledge_search":
+		return KnowledgeReadMaxToolResult
 	default:
 		if strings.HasPrefix(name, "ssh") {
 			return TerminalMaxToolResult

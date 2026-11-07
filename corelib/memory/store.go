@@ -27,7 +27,7 @@ import (
 type Store struct {
 	mu                  sync.RWMutex
 	entries             []Entry
-	contentHashIdx      map[string]int // contentHashIndexKey(hash, owner) -> index; owners do not share a slot
+	contentHashIdx      map[string]int // content+owner+project identity -> index
 	path                string
 	dirty               bool
 	dirtyGen            uint64
@@ -53,6 +53,7 @@ type Store struct {
 	lastRecallTrace     RecallTrace                             // debug: latest RecallDynamic retrieval signals
 	recallTraceByOwner  map[string]RecallTrace                  // latest trace for each owner; empty owner is its own slot
 	eventSink           lifecycle.EventSink                     // shared experience lifecycle sink
+	mutationSubs        *mutationSubscriberSet
 
 	// --- Project index ---
 	projIndex     *ProjectIndex  // aggregated project metadata for search
@@ -125,6 +126,22 @@ func contentHashIndexKey(hash, ownerID string) string {
 	return hash + "\x00" + strings.TrimSpace(ownerID)
 }
 
+func contentHashIndexKeyForEntry(hash string, entry Entry) string {
+	key := contentHashIndexKey(hash, entry.OwnerID)
+	if key == "" {
+		return ""
+	}
+	projectScoped := entry.Scope == ScopeProject || (entry.Scope == "" && InferScope(entry.Category) == ScopeProject)
+	if !projectScoped {
+		return key
+	}
+	project := semanticNormalizeProjectPath(inferProjectPath(&entry))
+	if project == "" {
+		return key
+	}
+	return key + "\x00" + project
+}
+
 func memoryOwnersEqual(a, b string) bool {
 	return strings.TrimSpace(a) == strings.TrimSpace(b)
 }
@@ -143,7 +160,7 @@ func namedOwnerVisible(entryOwner, filterOwner string) bool {
 func (s *Store) rebuildContentHashIdx() {
 	idx := make(map[string]int, len(s.entries))
 	for i, e := range s.entries {
-		key := contentHashIndexKey(e.ContentHash, e.OwnerID)
+		key := contentHashIndexKeyForEntry(e.ContentHash, e)
 		if key == "" {
 			continue
 		}
@@ -155,10 +172,10 @@ func (s *Store) rebuildContentHashIdx() {
 	s.contentHashIdx = idx
 }
 
-// contentHashIdxAdd adds or updates a hash+owner index mapping. Must be called
-// with s.mu held. Identical content for a different owner keeps its own slot.
-func (s *Store) contentHashIdxAdd(hash, ownerID string, index int) {
-	key := contentHashIndexKey(hash, ownerID)
+// contentHashIdxAdd adds or updates a content+owner+project index mapping.
+// Must be called with s.mu held.
+func (s *Store) contentHashIdxAdd(entry Entry, index int) {
+	key := contentHashIndexKeyForEntry(entry.ContentHash, entry)
 	if key == "" {
 		return
 	}
@@ -182,27 +199,22 @@ func hashIndexShouldReplace(entries []Entry, prev, next int) bool {
 	return !(entries[prev].IsActive() && !entries[next].IsActive())
 }
 
-// lookupContentHashLocked returns the entry index for this exact owner and
-// content hash. A shared (empty) owner does not match a named owner.
-// Caller must hold s.mu.
-func (s *Store) lookupContentHashLocked(hash, ownerID string) int {
-	if s.contentHashIdx == nil {
+// lookupContentHashLocked returns an active entry with the same content,
+// owner, and project identity. Caller must hold s.mu.
+func (s *Store) lookupContentHashLocked(hash string, incoming Entry) int {
+	key := contentHashIndexKeyForEntry(hash, incoming)
+	if key == "" {
 		return -1
 	}
-	idx, ok := s.contentHashIdx[contentHashIndexKey(hash, ownerID)]
-	if !ok || idx < 0 || idx >= len(s.entries) {
-		return -1
-	}
-	existing := s.entries[idx]
-	if existing.ContentHash != hash || !memoryOwnersEqual(existing.OwnerID, ownerID) {
-		return -1
-	}
-	if existing.IsActive() {
-		return idx
+	if idx, ok := s.contentHashIdx[key]; ok && idx >= 0 && idx < len(s.entries) {
+		existing := s.entries[idx]
+		if existing.IsActive() && existing.ContentHash == hash && contentHashIndexKeyForEntry(hash, existing) == key {
+			return idx
+		}
 	}
 	for i := range s.entries {
 		other := s.entries[i]
-		if other.IsActive() && other.ContentHash == hash && memoryOwnersEqual(other.OwnerID, ownerID) {
+		if other.IsActive() && other.ContentHash == hash && contentHashIndexKeyForEntry(hash, other) == key {
 			return i
 		}
 	}
@@ -433,7 +445,7 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	// both miss the index and insert. An empty OwnerID matches only other empty
 	// owners; it does not absorb or update a named owner's entry.
 	s.mu.Lock()
-	if idx := s.lookupContentHashLocked(hash, entry.OwnerID); idx >= 0 {
+	if idx := s.lookupContentHashLocked(hash, entry); idx >= 0 {
 		updated := s.touchedDuplicateLocked(idx, entry, hash, now, false)
 		s.mu.Unlock()
 		if err := s.updateMetadataEntriesByID([]Entry{updated}); err != nil {
@@ -445,7 +457,7 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 		if !s.entries[i].IsActive() || s.entries[i].ContentHash != "" || s.entries[i].Content != entry.Content {
 			continue
 		}
-		if !memoryOwnersEqual(s.entries[i].OwnerID, entry.OwnerID) {
+		if !memoryOwnersEqual(s.entries[i].OwnerID, entry.OwnerID) || distinctProjectRecords(s.entries[i], entry) {
 			continue
 		}
 		updated := s.touchedDuplicateLocked(i, entry, hash, now, false)
@@ -476,6 +488,9 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	s.mu.Unlock()
 	if err != nil {
 		return err
+	}
+	if stored := s.SearchDirectByID(entry.ID); len(stored) == 1 {
+		s.publishMutation(nil, &stored[0], entry.SourceType)
 	}
 	if pendingEmbedding != nil {
 		s.updateEntryEmbeddingWhenReady(entry.ID, hash, embeddingGen, pendingEmbedding)
@@ -631,18 +646,22 @@ func (s *Store) Update(id string, content string, category Category, tags []stri
 // Validation is completed before any in-memory entry is changed. Backends that
 // implement BatchStorageBackend persist the batch in one transaction.
 func (s *Store) UpdateEntriesByID(entries []Entry) error {
-	return s.upsertEntriesByID(entries, true, false)
+	return s.upsertEntriesByID(entries, true, false, "")
+}
+
+func (s *Store) UpdateEntriesByIDWithOrigin(entries []Entry, origin string) error {
+	return s.upsertEntriesByID(entries, true, false, origin)
 }
 
 // UpsertEntriesByID creates or updates several ID-addressed entries as one
 // store-level batch. It is intended for governed state transitions where a new
 // audit entry and existing source entries must persist together.
 func (s *Store) UpsertEntriesByID(entries []Entry) error {
-	return s.upsertEntriesByID(entries, false, false)
+	return s.upsertEntriesByID(entries, false, false, "")
 }
 
 func (s *Store) updateMetadataEntriesByID(entries []Entry) error {
-	return s.upsertEntriesByID(entries, true, true)
+	return s.upsertEntriesByID(entries, true, true, "")
 }
 
 // UpdateEntriesAndDeleteIDs updates entries and removes other entries as one
@@ -699,6 +718,7 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 	indices := make([]int, 0, len(desiredByID))
 	updated := make([]Entry, 0, len(desiredByID))
 	updatedByID := make(map[string]int, len(desiredByID))
+	beforeByID := make(map[string]Entry, len(desiredByID)+len(deleteSet))
 	for _, id := range orderedIDs {
 		desired := desiredByID[id]
 		idx := s.findEntryIndexByIDLocked(id)
@@ -707,6 +727,7 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 			return fmt.Errorf("memory_store: entry %q not found", id)
 		}
 		current := s.entries[idx]
+		beforeByID[id] = current
 		if current.Content != desired.Content {
 			snap := VersionSnapshot{Content: current.Content, Timestamp: current.UpdatedAt}
 			versions := append([]VersionSnapshot(nil), current.Versions...)
@@ -722,10 +743,12 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 		updated = append(updated, current)
 	}
 	for _, id := range orderedDeletes {
-		if s.findEntryIndexByIDLocked(id) < 0 {
+		idx := s.findEntryIndexByIDLocked(id)
+		if idx < 0 {
 			s.mu.Unlock()
 			return fmt.Errorf("memory_store: entry %q not found", id)
 		}
+		beforeByID[id] = s.entries[idx]
 	}
 	for idx, current := range s.entries {
 		if _, deleting := deleteSet[current.ID]; deleting {
@@ -738,6 +761,7 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 		if !changed {
 			continue
 		}
+		beforeByID[current.ID] = current
 		updatedByID[cleaned.ID] = len(updated)
 		indices = append(indices, idx)
 		updated = append(updated, cleaned)
@@ -780,11 +804,30 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 	}
 	// Snapshot entries and release the write lock before the expensive rebuild.
 	s.scheduleAsyncRebuildLocked(false)
+	events := make([]MutationEvent, 0, len(updated)+len(orderedDeletes))
+	for _, after := range updated {
+		afterCopy := after
+		var before *Entry
+		if previous, ok := beforeByID[afterCopy.ID]; ok {
+			previousCopy := previous
+			before = &previousCopy
+		}
+		if event, ok := mutationEventFor(before, &afterCopy, afterCopy.SourceType); ok {
+			events = append(events, event)
+		}
+	}
+	for _, id := range orderedDeletes {
+		previous := beforeByID[id]
+		if event, ok := mutationEventFor(&previous, nil, previous.SourceType); ok {
+			events = append(events, event)
+		}
+	}
 	s.mu.Unlock()
+	s.publishMutations(events)
 	return nil
 }
 
-func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserveContent bool) error {
+func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserveContent bool, origin string) error {
 	if s == nil || len(entries) == 0 {
 		return nil
 	}
@@ -820,6 +863,7 @@ func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserv
 
 	indices := make([]int, 0, len(desiredByID))
 	updated := make([]Entry, 0, len(desiredByID))
+	beforeByID := make(map[string]Entry, len(desiredByID))
 	for _, id := range orderedIDs {
 		desired := desiredByID[id]
 		idx := -1
@@ -856,6 +900,7 @@ func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserv
 			continue
 		}
 		current := s.entries[idx]
+		beforeByID[id] = current
 		if current.Content != desired.Content {
 			snap := VersionSnapshot{Content: current.Content, Timestamp: current.UpdatedAt}
 			versions := append([]VersionSnapshot(nil), current.Versions...)
@@ -886,10 +931,10 @@ func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserv
 	for i, idx := range indices {
 		if idx < 0 {
 			s.entries = append(s.entries, updated[i])
-			s.contentHashIdxAdd(updated[i].ContentHash, updated[i].OwnerID, len(s.entries)-1)
+			s.contentHashIdxAdd(updated[i], len(s.entries)-1)
 		} else {
 			s.entries[idx] = updated[i]
-			s.contentHashIdxAdd(updated[i].ContentHash, updated[i].OwnerID, idx)
+			s.contentHashIdxAdd(updated[i], idx)
 		}
 	}
 	s.bumpEntriesGen()
@@ -900,7 +945,24 @@ func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserv
 	// This mirrors replaceEntriesAndRebuildAsync: readers see the new entries
 	// immediately but slightly-stale index scores until the rebuild completes.
 	s.scheduleAsyncRebuildLocked(false)
+	events := make([]MutationEvent, 0, len(updated))
+	for i, idx := range indices {
+		after := updated[i]
+		var before *Entry
+		if previous, ok := beforeByID[after.ID]; ok && idx >= 0 {
+			previousCopy := previous
+			before = &previousCopy
+		}
+		eventOrigin := after.SourceType
+		if origin != "" {
+			eventOrigin = origin
+		}
+		if event, ok := mutationEventFor(before, &after, eventOrigin); ok {
+			events = append(events, event)
+		}
+	}
 	s.mu.Unlock()
+	s.publishMutations(events)
 	return nil
 }
 
@@ -2425,7 +2487,7 @@ func (s *Store) recallScoredForScroll(query string, category Category, projectPa
 
 // RecallDynamicStrict performs project-isolated recall for Project Tab scenarios.
 // It delegates to RecallDynamic and then applies strict project filtering:
-//   - Include entries whose tags contain the given projectPath
+//   - Include entries whose Boundary or legacy tags match the given projectPath
 //   - Include entries with Scope != ScopeProject (universal knowledge: user_fact, preference, self_identity)
 //   - Exclude entries with Scope == ScopeProject whose tags do NOT contain the current projectPath
 //
@@ -2594,7 +2656,10 @@ func recallStrictProjectEntryAllowed(e Entry, projectLower string) bool {
 	if e.Scope != ScopeProject {
 		return true
 	}
-	// ScopeProject entry: must have a tag matching the current project path.
+	if e.Boundary != nil && strings.TrimSpace(e.Boundary.ProjectPath) != "" {
+		return semanticProjectPathMatches(e.Boundary.ProjectPath, projectLower)
+	}
+	// Legacy project entries without a structured boundary fall back to path tags.
 	for _, tag := range e.Tags {
 		tl := semanticNormalizeProjectPath(tag)
 		if !semanticLooksLikePath(tl) {
@@ -3541,7 +3606,7 @@ func (s *Store) ReviveArchivedEntries(ids []string) ([]Entry, error) {
 	if len(revived) == 0 {
 		return nil, nil
 	}
-	if err := s.upsertEntriesByID(revived, false, true); err != nil {
+	if err := s.upsertEntriesByID(revived, false, true, "archive_restore"); err != nil {
 		return nil, err
 	}
 	removed, err := s.archive.RemoveIDsDurable(removeIDs)
@@ -3656,6 +3721,7 @@ func (s *Store) RestoreEntriesSnapshot(entries []Entry) error {
 			}
 		}
 		s.mu.Unlock()
+		s.publishReset("backup_restore")
 		return nil
 	}
 
@@ -3671,6 +3737,7 @@ func (s *Store) RestoreEntriesSnapshot(entries []Entry) error {
 		s.mu.Unlock()
 		return fmt.Errorf("memory_store: flush restored snapshot: %w", err)
 	}
+	s.publishReset("backup_restore")
 	return nil
 }
 
@@ -3860,7 +3927,7 @@ func (s *Store) insertPreparedEntryLocked(entry Entry, hash string, now time.Tim
 	}
 
 	s.entries = append(s.entries, entry)
-	s.contentHashIdxAdd(entry.ContentHash, entry.OwnerID, len(s.entries)-1)
+	s.contentHashIdxAdd(entry, len(s.entries)-1)
 	s.bm25.addEntry(entry)
 	s.vecIndex.add(entry.ID, entry.Embedding)
 	s.autoLink(entry)
@@ -5303,6 +5370,9 @@ func (s *Store) findSubstringDuplicateForEntry(entry Entry) int {
 		// This prevents a project_knowledge entry from being merged into a
 		// user_fact entry (or vice versa) just because they share a substring.
 		if entry.Category != "" && MapToCanonical(s.entries[i].Category) != canonicalCat {
+			continue
+		}
+		if distinctProjectRecords(s.entries[i], entry) {
 			continue
 		}
 		if isDuplicateContentCandidate(lower, entry.Entities, s.entries[i]) {

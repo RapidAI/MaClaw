@@ -235,16 +235,17 @@ func TestCompressMemoriesImmediatelyInvalidatesAgentMemorySnapshot(t *testing.T)
 	if entries := store.List("", ""); len(entries) != 1 {
 		t.Fatalf("store after compression = %#v, want the single kept entry", entries)
 	}
-	// The rebuild reflects the store as it is now. Store.Save already merges
-	// substring duplicates at write time, so compression itself may not
-	// change the bytes here — the contract under test is that the frozen
-	// snapshot was dropped and a fresh build succeeds against the kept entry.
+	// Store.Save may already have merged the pair. The frozen guide must still
+	// be dropped, and the kept entry must remain visible in the current overlay.
 	fresh, built := handler.loadOrBuildStaticMemorySnapshot(desktopUserID)
 	if !built {
 		t.Fatal("snapshot was not rebuilt after compression")
 	}
-	if !strings.Contains(fresh, "supplementary wording") {
-		t.Fatalf("rebuilt snapshot lost the kept entry: %q", fresh)
+	var current strings.Builder
+	current.WriteString(fresh)
+	handler.appendCurrentMemoryFacts(&current, desktopUserID)
+	if !strings.Contains(current.String(), "supplementary wording") {
+		t.Fatalf("current prompt lost the kept entry: %q", current.String())
 	}
 }
 
@@ -301,16 +302,20 @@ func TestRestoreArchiveMemoryImmediatelyInvalidatesAgentMemorySnapshot(t *testin
 	if err := app.RestoreArchiveMemory(archived.ID); err != nil {
 		t.Fatalf("RestoreArchiveMemory() error = %v", err)
 	}
-	// Restore rewrote the store, so the pinned snapshot must end; the next
-	// build picks up the restored entry. The pre-restore body must not leak.
+	// Restore drops the frozen guide; the restored fact appears in the current
+	// overlay without depending on the old snapshot body.
 	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != "" {
 		t.Fatalf("archive restore kept a stale frozen snapshot: %q", got)
 	}
 	if entries := store.List("", ""); len(entries) != 1 || entries[0].Content != archived.Content {
 		t.Fatalf("store after archive restore = %#v, want restored entry", entries)
 	}
-	if fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID); !strings.Contains(fresh, archived.Content) {
-		t.Fatalf("rebuilt snapshot does not show the restored entry: %q", fresh)
+	fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID)
+	var current strings.Builder
+	current.WriteString(fresh)
+	handler.appendCurrentMemoryFacts(&current, desktopUserID)
+	if !strings.Contains(current.String(), archived.Content) {
+		t.Fatalf("current prompt does not show the restored entry: %q", current.String())
 	}
 }
 
@@ -337,16 +342,20 @@ func TestUserDataMigrationMemoryReplacementImmediatelyInvalidatesAgentMemorySnap
 	}}); err != nil {
 		t.Fatalf("replaceUserDataMigrationMemoryEntries() error = %v", err)
 	}
-	// Migration rewrote the store, so the pinned snapshot must end; the next
-	// build picks up the replacement. The pre-migration body must not leak.
+	// Migration drops the frozen guide; the replacement appears in the current
+	// overlay without depending on the old snapshot body.
 	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != "" {
 		t.Fatalf("migration kept a stale frozen snapshot: %q", got)
 	}
 	if entries := store.List("", ""); len(entries) != 1 || entries[0].Content != "memory after migration replacement" {
 		t.Fatalf("store after migration replacement = %#v, want replacement entry", entries)
 	}
-	if fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID); !strings.Contains(fresh, "memory after migration replacement") {
-		t.Fatalf("rebuilt snapshot does not show the replacement entry: %q", fresh)
+	fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID)
+	var current strings.Builder
+	current.WriteString(fresh)
+	handler.appendCurrentMemoryFacts(&current, desktopUserID)
+	if !strings.Contains(current.String(), "memory after migration replacement") {
+		t.Fatalf("current prompt does not show the replacement entry: %q", current.String())
 	}
 }
 
@@ -386,8 +395,13 @@ func TestDeleteMemoriesInvalidatesAllCachedAgentOwners(t *testing.T) {
 	}
 	for i, ownerID := range owners {
 		got := handler.cachedStaticMemorySnapshot(ownerID)
-		if got != before[ownerID] || !strings.Contains(got, contents[i]) {
-			t.Fatalf("delete rewrote the frozen snapshot for %q: %q", ownerID, got)
+		if got != before[ownerID] {
+			t.Fatalf("delete rewrote the frozen guide for %q: %q", ownerID, got)
+		}
+		var current strings.Builder
+		handler.appendCurrentMemoryFacts(&current, ownerID)
+		if strings.Contains(current.String(), contents[i]) {
+			t.Fatalf("deleted fact remains in current overlay for %q: %q", ownerID, current.String())
 		}
 	}
 }

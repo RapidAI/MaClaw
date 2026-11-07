@@ -40,12 +40,13 @@ const (
 // VerifiedFact is a tool-verified claim that should replace contradicting
 // warehouse entries for the same IP or host.
 type VerifiedFact struct {
-	Entity      string
-	Predicate   string
-	Claim       string
-	Evidence    string
-	Aliases     []string
-	StrictOwner bool
+	Entity       string
+	Predicate    string
+	Claim        string
+	Evidence     string
+	Aliases      []string
+	StrictOwner  bool
+	WriteContext WriteContext
 }
 
 // VerifiedFactSyncResult reports warehouse mutations for a verified claim.
@@ -83,6 +84,9 @@ func (s *Store) ApplyVerifiedFact(fact VerifiedFact, ownerID string) VerifiedFac
 		if !memoryEntryWritableBy(entry, ownerID, fact.StrictOwner) {
 			continue
 		}
+		if projectPath := strings.TrimSpace(fact.WriteContext.ProjectPath); projectPath != "" && !recallProjectEntryAllowed(entry, semanticNormalizeProjectPath(projectPath)) {
+			continue
+		}
 		stored := factclaim.Extract(entry.Content)
 		if contradictsAny(newer, stored) && factclaim.Isolated(newer, stored) {
 			contradicting = append(contradicting, entry.ID)
@@ -116,6 +120,11 @@ func (s *Store) ApplyVerifiedFact(fact VerifiedFact, ownerID string) VerifiedFac
 			SourceType: "verified_tool",
 			Status:     StatusActive,
 		}
+		writeContext := fact.WriteContext
+		if writeContext.OwnerID == "" {
+			writeContext.OwnerID = ownerID
+		}
+		writeContext.apply(&entry)
 		if err := s.Save(entry); err == nil {
 			out.Saved = true
 		}

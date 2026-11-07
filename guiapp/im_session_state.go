@@ -52,8 +52,8 @@ func (h *IMMessageHandler) clearPerUserSessionStateOpts(userID string, keepCodin
 	h.cancelWorkflowForUser(userID)
 
 	// Clear page index for cross-page recall (Requirement 7).
-	if h.memoryStore != nil {
-		if pi := h.memoryStore.PageIdx(); pi != nil {
+	if h.currentMemoryStore() != nil {
+		if pi := h.currentMemoryStore().PageIdx(); pi != nil {
 			pi.Clear(userID)
 		}
 	}

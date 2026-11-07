@@ -9,9 +9,10 @@ import (
 
 // ToolOptions carries host-specific context into the shared memory tool logic.
 type ToolOptions struct {
-	ProjectPath string
-	ContextHint string
-	OwnerID     string
+	ProjectPath  string
+	ContextHint  string
+	OwnerID      string
+	WriteContext WriteContext
 	// StrictOwner excludes legacy shared entries (OwnerID="") from recall.
 	// It is for isolated surfaces such as group conversations; the zero value
 	// preserves the desktop and private-chat shared-memory behavior.
@@ -404,6 +405,17 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 			entry.Tags = ExpandQuery(content).Entities
 		}
 		entry.Title = deriveToolMemoryTitle(content)
+		writeContext := opts.WriteContext
+		if writeContext.OwnerID == "" {
+			writeContext.OwnerID = opts.OwnerID
+		}
+		if writeContext.ProjectPath == "" {
+			writeContext.ProjectPath = opts.ProjectPath
+		}
+		if writeContext.Source == "" {
+			writeContext.Source = "tool"
+		}
+		writeContext.apply(&entry)
 		contextHint := firstNonEmptyMemoryToolString(opts.ContextHint, toolStringArg(args, "_context_hint"))
 		decision, err := store.SaveGovernedWithContext(entry, contextHint)
 		if err != nil {
@@ -413,7 +425,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 			return fmt.Sprintf("save memory failed: %s", err.Error())
 		}
 		if decision.Action != MemoryGovernanceQuarantine {
-			_ = store.ApplyVerifiedFact(VerifiedFact{Claim: content, StrictOwner: opts.StrictOwner}, opts.OwnerID)
+			_ = store.ApplyVerifiedFact(VerifiedFact{Claim: content, StrictOwner: opts.StrictOwner, WriteContext: writeContext}, opts.OwnerID)
 		}
 		invalidateToolRecallCaches(store, opts)
 		if opts.AfterWrite != nil {

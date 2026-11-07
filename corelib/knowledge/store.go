@@ -2965,6 +2965,12 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	if err := s.hydrateSearchResultNodeMetadata(ctx, results); err != nil {
 		return nil, err
 	}
+	// Only the page is rewritten. The candidate pool stays on its highlight so
+	// rerank order does not change, and header search does not gain the
+	// context-pack neighbor markers.
+	if err := s.attachStoredNodeText(ctx, opts.Query, results); err != nil {
+		return nil, err
+	}
 	if err := s.hydrateSearchResultSourceLabels(ctx, results); err != nil {
 		return nil, err
 	}

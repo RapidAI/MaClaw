@@ -508,7 +508,7 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 	// re-appends working state, session facts, and warehouse retractions.
 	h.appendSessionFactsSection(b, userID, loopCtx)
 	if len(history) > 0 {
-		h.appendMemoryRetractionSection(b)
+		h.appendMemoryRetractionSection(b, userID)
 	}
 
 	totalElapsed := time.Since(epilogueStart)

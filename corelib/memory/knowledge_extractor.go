@@ -13,8 +13,9 @@ import (
 
 // ConversationMessage represents a single message in a conversation history.
 type ConversationMessage struct {
-	Role    string `json:"role"`    // "user", "assistant", "tool", "system", etc.
-	Content string `json:"content"` // plain text content
+	ID      string `json:"id,omitempty"` // stable conversation-entry ID for extraction checkpoints
+	Role    string `json:"role"`         // "user", "assistant", "tool", "system", etc.
+	Content string `json:"content"`      // plain text content
 }
 
 // KnowledgeExtractor extracts knowledge points from conversation history

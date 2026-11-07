@@ -25,6 +25,14 @@
 //     GUI/TUI/server management paths. Manual creates intentionally remain
 //     distinct user actions while still going through corelib safety/indexing.
 //
+//   - WriteContext carries the host-authoritative owner, project, session, turn,
+//     and source. SaveWithWriteContext and SaveManualMemoryWithContext bind
+//     project-scoped writes through Entry.Boundary rather than retrieval tags.
+//
+//   - Store.SubscribeMutations publishes committed semantic changes for host
+//     cache invalidation and prompt/session reconciliation. Access-only touches
+//     do not emit semantic events.
+//
 // Maintenance-path guidance:
 //
 //   - StoreFactory helpers and Maintenance are the host-facing entry points for

@@ -2184,12 +2184,8 @@ func pdfDisplayFileName(title, fallback string) string {
 
 // toolMemory merges save/list/delete/recall memory operations into a single tool.
 func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
-	if h.memoryStore == nil {
+	if h.currentMemoryStore() == nil {
 		return "long-term memory is not initialized"
-	}
-	var projectPath string
-	if h.contextResolver != nil {
-		projectPath, _ = h.contextResolver.ResolveProject()
 	}
 	ownerID, explicitRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
 	if ownerID == "" && explicitRuntimeOwner {
@@ -2203,6 +2199,8 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 	if ownerID == "" {
 		ownerID = desktopUserID
 	}
+	writeContext := h.memoryWriteContextForUser(ownerID, "tool")
+	projectPath := writeContext.ProjectPath
 	action := normalizeMemoryToolAction(stringVal(args, "action"))
 	anchor, anchored := taskIdentityAnchorFromToolArgs(args)
 	if !anchored {
@@ -2218,10 +2216,11 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 	if anchored && taskAnchorBlocksMemoryRead(anchor, action, stringVal(args, "_user_text")) {
 		return "[system rejected] 当前任务已绑定目标。请先完成当前任务；只有用户在本轮明确要求使用长期记忆时，才能召回或浏览记忆。"
 	}
-	return corememory.HandleTool(h.memoryStore, args, corememory.ToolOptions{
-		ProjectPath: projectPath,
-		ContextHint: h.buildMemoryContextHintForUser(ownerID),
-		OwnerID:     ownerID,
+	return corememory.HandleTool(h.currentMemoryStore(), args, corememory.ToolOptions{
+		ProjectPath:  projectPath,
+		ContextHint:  h.buildMemoryContextHintForUser(ownerID),
+		OwnerID:      ownerID,
+		WriteContext: writeContext,
 		// Project, expert, and group conversations are isolated. A completed
 		// archived experience is the sole deliberate cross-session exception.
 		StrictOwner:             isIsolatedAssistantSessionUserID(ownerID) || h.isLansengerGroupMemoryOwner(ownerID),

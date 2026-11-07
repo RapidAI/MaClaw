@@ -224,67 +224,141 @@ func contextTextTokens(text string) map[string]struct{} {
 }
 
 // enrichContextPackNodes expands short FTS snippets from the original node and
-// adds ordered neighboring text for chunked hits.
+// adds ordered neighboring text for chunked hits. Neighbors stay on the short
+// context-pack window.
 func (s *SQLiteStore) enrichContextPackNodes(ctx context.Context, query string, results []SearchResult) ([]SearchResult, bool, error) {
+	return s.expandNodeContext(ctx, query, results, false)
+}
+
+type chunkSibling struct {
+	id   string
+	text string
+}
+
+type chunkFamily struct {
+	title    string
+	text     string
+	children []chunkSibling
+}
+
+// expandNodeContext attaches sibling chunks. fullNeighbors keeps each sibling
+// that fits in one chunk, so a model read does not see a short window ending
+// in "...". The context pack keeps its shorter neighbor window.
+func (s *SQLiteStore) expandNodeContext(ctx context.Context, query string, results []SearchResult, fullNeighbors bool) ([]SearchResult, bool, error) {
 	changed := false
+	siblings := make(map[string]chunkFamily)
 	for i := range results {
 		if results[i].ResultType != "node" || results[i].NodeID == "" {
 			continue
 		}
-		if results[i].ParentNodeID == "" {
-			var text string
-			if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(text, '') FROM document_nodes WHERE id = ?`, results[i].NodeID).Scan(&text); err != nil {
-				if err == sql.ErrNoRows {
-					continue
-				}
-				return nil, false, err
-			}
-			results[i].Snippet = searchBodyTextWindowLimit(text, query, contextPackNodeWindowRunes)
+		if fullNeighbors && (results[i].NodeType == NodeTypeImage || results[i].Source.Kind == SourceKindImage) {
 			continue
 		}
-		var parentTitle string
-		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(title, '') FROM document_nodes WHERE id = ?`, results[i].ParentNodeID).Scan(&parentTitle); err != nil && err != sql.ErrNoRows {
-			return nil, false, err
+		anchorID := results[i].ParentNodeID
+		if anchorID == "" {
+			if !fullNeighbors {
+				var text string
+				if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(text, '') FROM document_nodes WHERE id = ?`, results[i].NodeID).Scan(&text); err != nil {
+					if err == sql.ErrNoRows {
+						continue
+					}
+					return nil, false, err
+				}
+				// A chunk parent stores no text. Blanking the snippet would drop
+				// the highlight the search page kept.
+				if strings.TrimSpace(text) == "" {
+					continue
+				}
+				results[i].Snippet = searchBodyTextWindowLimit(text, query, contextPackNodeWindowRunes)
+				continue
+			}
+			// The hit is a section. Search indexed its title and left the empty
+			// body as a highlight. The stored record is the child chunks.
+			anchorID = results[i].NodeID
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(text, '') FROM document_nodes WHERE parent_id = ?
-			ORDER BY CAST(CASE WHEN json_valid(metadata_json) THEN COALESCE(json_extract(metadata_json, '$.chunk_index'), '0') ELSE '0' END AS INTEGER) ASC, offset ASC, id ASC`, results[i].ParentNodeID)
-		if err != nil {
-			return nil, false, err
-		}
-		type child struct{ id, text string }
-		var children []child
-		for rows.Next() {
-			var c child
-			if err := rows.Scan(&c.id, &c.text); err != nil {
-				_ = rows.Close()
+		loaded, ok := siblings[anchorID]
+		if !ok {
+			var err error
+			loaded, err = s.loadChunkSiblings(ctx, anchorID)
+			if err != nil {
 				return nil, false, err
 			}
-			children = append(children, c)
-		}
-		if err := rows.Close(); err != nil {
-			return nil, false, err
+			siblings[anchorID] = loaded
 		}
 		position := -1
-		for n, child := range children {
-			if child.id == results[i].NodeID {
-				position = n
-				break
+		if results[i].ParentNodeID == "" {
+			if strings.TrimSpace(loaded.text) != "" || !chunkChildrenHaveText(loaded.children) {
+				continue
+			}
+			position = matchingChunkChild(loaded.children, query)
+		} else {
+			for n, child := range loaded.children {
+				if child.id == results[i].NodeID {
+					position = n
+					break
+				}
 			}
 		}
 		if position < 0 {
 			continue
 		}
+		// An empty sibling, such as an image node stored beside a paragraph,
+		// is not evidence. Stopping on it would show a bare marker and hide
+		// the next stored chunk.
+		adjacent := func(step int) string {
+			for n := position + step; n >= 0 && n < len(loaded.children); n += step {
+				text := loaded.children[n].text
+				if fullNeighbors {
+					text = storedNodeExcerpt(text, query)
+				} else {
+					text = searchBodyTextWindow(text, query)
+				}
+				if text != "" {
+					return text
+				}
+			}
+			return ""
+		}
+		current := searchBodyTextWindowLimit(loaded.children[position].text, query, contextPackNodeWindowRunes)
+		if fullNeighbors {
+			current = storedNodeExcerpt(loaded.children[position].text, query)
+		}
+		if strings.TrimSpace(current) == "" && !fullNeighbors {
+			// The stored child has no text. Keep the highlight Search left.
+			// A model read does not copy that highlight: its FTS form ends in
+			// "...", which is the signal that the record was cut.
+			current = strings.TrimSpace(results[i].Snippet)
+		}
+		preceding := adjacent(-1)
+		following := adjacent(1)
+		if current == "" && preceding == "" && following == "" {
+			continue
+		}
 		parts := make([]string, 0, 4)
-		if parentTitle = strings.TrimSpace(parentTitle); parentTitle != "" {
-			title, _ := truncateContextText(parentTitle, 160)
-			parts = append(parts, title)
+		if parentTitle := strings.TrimSpace(loaded.title); parentTitle != "" {
+			var title string
+			if fullNeighbors {
+				title = storedNodeExcerpt(parentTitle, query)
+			} else {
+				title, _ = truncateContextText(parentTitle, 160)
+			}
+			if title != "" {
+				parts = append(parts, title)
+			}
 		}
-		parts = append(parts, searchBodyTextWindowLimit(children[position].text, query, contextPackNodeWindowRunes))
-		if position > 0 {
-			parts = append(parts, "[preceding] "+searchBodyTextWindow(children[position-1].text, query))
+		// The context pack keeps the hit first. A model read follows stored
+		// sibling order so the record is not rearranged around the hit.
+		if fullNeighbors && preceding != "" {
+			parts = append(parts, "[preceding] "+preceding)
 		}
-		if position+1 < len(children) {
-			parts = append(parts, "[following] "+searchBodyTextWindow(children[position+1].text, query))
+		if current != "" {
+			parts = append(parts, current)
+		}
+		if !fullNeighbors && preceding != "" {
+			parts = append(parts, "[preceding] "+preceding)
+		}
+		if following != "" {
+			parts = append(parts, "[following] "+following)
 		}
 		text := strings.TrimSpace(strings.Join(parts, "\n"))
 		if text != "" && text != results[i].Snippet {
@@ -293,6 +367,63 @@ func (s *SQLiteStore) enrichContextPackNodes(ctx context.Context, query string, 
 		}
 	}
 	return results, changed, nil
+}
+
+func (s *SQLiteStore) loadChunkSiblings(ctx context.Context, parentID string) (chunkFamily, error) {
+	var family chunkFamily
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(title, ''), COALESCE(text, '') FROM document_nodes WHERE id = ?`, parentID).Scan(&family.title, &family.text); err != nil && err != sql.ErrNoRows {
+		return chunkFamily{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(text, '') FROM document_nodes WHERE parent_id = ?
+		ORDER BY CAST(CASE WHEN json_valid(metadata_json) THEN COALESCE(json_extract(metadata_json, '$.chunk_index'), '0') ELSE '0' END AS INTEGER) ASC, offset ASC, id ASC`, parentID)
+	if err != nil {
+		return chunkFamily{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var child chunkSibling
+		if err := rows.Scan(&child.id, &child.text); err != nil {
+			return chunkFamily{}, err
+		}
+		family.children = append(family.children, child)
+	}
+	if err := rows.Err(); err != nil {
+		return chunkFamily{}, err
+	}
+	return family, nil
+}
+
+func chunkChildrenHaveText(children []chunkSibling) bool {
+	for _, child := range children {
+		if strings.TrimSpace(child.text) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// matchingChunkChild picks the stored child a section hit stands for. A child
+// that contains the query is the record the search found. Otherwise the first
+// stored child is the start of the section.
+func matchingChunkChild(children []chunkSibling, query string) int {
+	terms := extractQueryTermsForSnippet(query)
+	first := -1
+	for i, child := range children {
+		text := strings.TrimSpace(child.text)
+		if text == "" {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		lower := strings.ToLower(text)
+		for _, term := range terms {
+			if strings.Contains(lower, strings.ToLower(term)) {
+				return i
+			}
+		}
+	}
+	return first
 }
 
 func contextPackTitle(result SearchResult) string {
@@ -324,8 +455,14 @@ func contextPackTitle(result SearchResult) string {
 	return result.ResultType
 }
 
-func contextPackText(result SearchResult) string {
+// SearchEvidenceText is the stored body followed by one claim. Callers that
+// show a hit to a model use this so a highlight snippet is not the only text.
+func SearchEvidenceText(result SearchResult) string {
 	return strings.TrimSpace(strings.Join(nonEmptyStrings(searchBodyText(result), searchClaimLine(result)), "\n"))
+}
+
+func contextPackText(result SearchResult) string {
+	return SearchEvidenceText(result)
 }
 
 // searchBodyText is the node window or the table row. Claims stay out of it.
@@ -371,12 +508,38 @@ func searchClaimLine(result SearchResult) string {
 		candidates = append(candidates, title)
 	}
 	for _, candidate := range candidates {
-		if body != "" && strings.EqualFold(candidate, body) {
-			continue
+		if shown, ok := claimAnnotation(body, candidate); ok {
+			return shown
 		}
-		return candidate
 	}
 	return ""
+}
+
+// claimAnnotation is the card line that still adds information after the
+// stored body. Distill keeps a cut claim as a prefix plus "...". Exact
+// equality misses that prefix, and the marker then reads as a truncated
+// record. A cut whose text is already in the body is omitted. A cut that
+// adds other words keeps those words without the marker.
+func claimAnnotation(body, candidate string) (string, bool) {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return "", false
+	}
+	if body != "" && strings.EqualFold(candidate, body) {
+		return "", false
+	}
+	cut := strings.TrimSuffix(candidate, "...")
+	if cut == candidate {
+		return candidate, true
+	}
+	cut = strings.TrimSpace(cut)
+	if cut == "" {
+		return "", false
+	}
+	if body != "" && strings.Contains(strings.ToLower(normalizeWhitespace(body)), strings.ToLower(normalizeWhitespace(cut))) {
+		return "", false
+	}
+	return cut, true
 }
 
 func nonEmptyStrings(values ...string) []string {

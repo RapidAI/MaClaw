@@ -215,13 +215,13 @@ func (h *IMMessageHandler) archiveCurrentTask(userID string, history []agent.Con
 	h.taskArchive.Archive(task)
 
 	// Also save to long-term memory store if available.
-	if h.memoryStore != nil {
+	if h.currentMemoryStore() != nil {
 		if summary := buildQuickSummary(history); summary != "" {
 			tags := []string{"archived_task", task.ID, string(status)}
 			if projectPath != "" {
 				tags = append(tags, projectPath)
 			}
-			_, err := h.memoryStore.UpsertConversationSummary(memory.ConversationSummaryUpsertOptions{
+			_, err := h.currentMemoryStore().UpsertConversationSummary(memory.ConversationSummaryUpsertOptions{
 				Title:            task.Summary,
 				Content:          summary,
 				Tags:             tags,

@@ -116,6 +116,9 @@ func (s *Store) syncOnce() {
 	// wait for the async index rebuild below (outside s.mu).
 	rebuildDone := s.lastRebuildDone
 	s.mu.Unlock()
+	if merged > 0 || added > 0 || deleted > 0 {
+		s.publishReset("sync")
+	}
 
 	// Wait for the background index rebuild to finish before returning.
 	// syncOnce runs in its own goroutine (syncLoop ticker); blocking here is
