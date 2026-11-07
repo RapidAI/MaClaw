@@ -736,9 +736,18 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	if resumeCoding {
 		defer func() {
 			recordCodingAgentResume(userID, s.projectPath, resumeDelta, cb.exportCodingReadSnapshots())
+			if agent.HandoffMemoCoding() && len(resumeDelta) > 0 {
+				recordCodingAgentResumeMemo(userID, s.projectPath, codingMemoFromTurn(userText, cb.getFilesRead(), cb.getFilesModified(), cb.getFilesCreated(), cb.getCommandsRun()))
+			}
 		}()
 	}
-	loopResult = codingagent.Run(cb, userText, userContent, resume.History, s.httpClient, s.buildLoopHooks(cb))
+	if resumeCoding && agent.HandoffMemoCoding() {
+		if strip := codingResumeStatusStrip(resume); strip != "" && goalContinuationTaskUserMessage(task, reqCtx) == "" {
+			userText = appendCodingResumeStrip(userText, strip)
+			userContent = codingSubAgentUserContent(s, userText)
+		}
+	}
+	loopResult = codingagent.Run(cb, userText, userContent, codingModelHistory(resume), s.httpClient, s.buildLoopHooks(cb))
 	resumeDelta = loopResult.HistoryDelta
 	result := loopResult
 	// Record main loop turns first; seal outcome after optional post-loop verify/fix.
@@ -11529,7 +11538,11 @@ func formatCodingCompletedStepResult(index int, title, summary string) string {
 	// The step summary is already compactSubAgentModelSummary output. A paragraph
 	// cut keeps that formatter's recovery marker under the hard cap. Leaving it
 	// on this carry sends the next step back to the benchmark.
-	summary = codingPromptPreviousTurnSummary(summary)
+	if agent.HandoffMemoCoding() {
+		summary = agent.HandoffStripFromText(summary)
+	} else {
+		summary = codingPromptPreviousTurnSummary(summary)
+	}
 	if summary == "" {
 		return ""
 	}

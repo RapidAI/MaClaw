@@ -23,13 +23,19 @@ type fileCompanionLibraryFile struct {
 	Titles map[string]fileCompanionTitleRecord `json:"titles,omitempty"`
 }
 
+// fileCompanionTitleVersion bumps when the extractor can see a title it used
+// to miss. Records from an older version are read again even when the file
+// itself has not changed.
+const fileCompanionTitleVersion = 3
+
 // fileCompanionTitleRecord is one file's title at a size and mtime. An entry
 // with an empty title means the file was read and had nothing to show, so the
-// next list does not open it again until the file changes.
+// next list does not open it again until the file or the extractor changes.
 type fileCompanionTitleRecord struct {
-	Title string `json:"title,omitempty"`
-	Size  int64  `json:"size"`
-	Mod   int64  `json:"mod"`
+	Title   string `json:"title,omitempty"`
+	Size    int64  `json:"size"`
+	Mod     int64  `json:"mod"`
+	Version int    `json:"ver,omitempty"`
 }
 
 var fileCompanionTitleFillRunning atomic.Bool
@@ -168,7 +174,7 @@ func (a *App) fillFileCompanionLibraryTitles() bool {
 		if err != nil || info.IsDir() {
 			continue
 		}
-		if rec, known := stored.Titles[key]; known && rec.Size == info.Size() && rec.Mod == info.ModTime().UnixNano() {
+		if rec, known := stored.Titles[key]; known && rec.Size == info.Size() && rec.Mod == info.ModTime().UnixNano() && rec.Version == fileCompanionTitleVersion {
 			continue
 		}
 		seen[key] = pending{key: key, path: path}
@@ -183,7 +189,7 @@ func (a *App) fillFileCompanionLibraryTitles() bool {
 		if !readOK {
 			continue
 		}
-		updates[key] = fileCompanionTitleRecord{Title: title, Size: size, Mod: mod}
+		updates[key] = fileCompanionTitleRecord{Title: title, Size: size, Mod: mod, Version: fileCompanionTitleVersion}
 		paths[key] = job.path
 	}
 	if len(updates) == 0 {
@@ -707,20 +713,29 @@ func fileCompanionXMPTitle(data []byte) string {
 	if len(rest) > 4000 {
 		rest = rest[:4000]
 	}
-	li := bytes.Index(bytes.ToLower(rest), []byte("<rdf:li"))
-	if li < 0 {
-		return ""
+	lowerRest := bytes.ToLower(rest)
+	if li := bytes.Index(lowerRest, []byte("<rdf:li")); li >= 0 {
+		if title := xmpElementText(rest[li:], "</rdf:li"); title != "" {
+			return title
+		}
 	}
-	seg := rest[li:]
+	return xmpElementText(rest, "</dc:title")
+}
+
+func xmpElementText(seg []byte, closeTag string) string {
 	gt := bytes.IndexByte(seg, '>')
-	if gt < 0 {
+	if gt < 0 || gt > 200 {
 		return ""
 	}
-	end := bytes.Index(bytes.ToLower(seg[gt:]), []byte("</rdf:li"))
+	end := bytes.Index(bytes.ToLower(seg[gt:]), []byte(closeTag))
 	if end < 0 {
 		return ""
 	}
-	return fileCompanionCleanTitle(html.UnescapeString(string(seg[gt+1 : gt+end])))
+	raw := seg[gt+1 : gt+end]
+	if bytes.Contains(raw, []byte("<")) {
+		return ""
+	}
+	return fileCompanionCleanTitle(html.UnescapeString(string(raw)))
 }
 
 func fileCompanionHeadingTitle(path string) (string, bool) {
@@ -742,13 +757,23 @@ func fileCompanionHeadingTitle(path string) (string, bool) {
 			if title, ok := markdownFrontTitle(rest[:end]); ok {
 				return title, true
 			}
-			text = rest[end+1:]
-			if nl := strings.IndexByte(text, '\n'); nl >= 0 && strings.HasPrefix(strings.TrimLeft(text[:nl], "\r"), "---") {
-				text = text[nl+1:]
+			// A heading between two rules is not front matter. Skip the
+			// block only when it actually holds YAML keys, so the heading
+			// stays visible to the scan below.
+			if yamlFrontMatter(rest[:end]) {
+				text = rest[end+1:]
+				if nl := strings.IndexByte(text, '\n'); nl >= 0 && strings.HasPrefix(strings.TrimLeft(text[:nl], "\r"), "---") {
+					text = text[nl+1:]
+				}
 			}
 		}
 	}
+	return markdownBodyTitle(text), true
+}
+
+func markdownBodyTitle(text string) string {
 	inFence := false
+	prev := ""
 	for i, line := range strings.Split(text, "\n") {
 		if i > 80 {
 			break
@@ -756,24 +781,101 @@ func fileCompanionHeadingTitle(path string) (string, bool) {
 		trim := strings.TrimSpace(line)
 		if strings.HasPrefix(trim, "```") || strings.HasPrefix(trim, "~~~") {
 			inFence = !inFence
+			prev = ""
 			continue
 		}
-		if inFence || !strings.HasPrefix(trim, "#") {
+		if inFence {
 			continue
 		}
-		hashes := 0
-		for hashes < len(trim) && trim[hashes] == '#' {
-			hashes++
-		}
-		if hashes < 1 || hashes > 6 || hashes >= len(trim) {
+		if trim == "" {
+			prev = ""
 			continue
 		}
-		if trim[hashes] != ' ' && trim[hashes] != '\t' {
+		if title, ok := markdownATX(trim); ok {
+			if title != "" {
+				return title
+			}
+			prev = ""
 			continue
 		}
-		return stripMarkdownHeading(strings.TrimSpace(trim[hashes:])), true
+		if markdownSetext(trim, prev) {
+			return stripMarkdownHeading(prev)
+		}
+		prev = trim
 	}
-	return "", true
+	return ""
+}
+
+func markdownATX(trim string) (string, bool) {
+	if !strings.HasPrefix(trim, "#") {
+		return "", false
+	}
+	hashes := 0
+	for hashes < len(trim) && trim[hashes] == '#' {
+		hashes++
+	}
+	if hashes < 1 || hashes > 6 || hashes >= len(trim) {
+		return "", false
+	}
+	if trim[hashes] != ' ' && trim[hashes] != '\t' {
+		return "", false
+	}
+	return stripMarkdownHeading(strings.TrimSpace(trim[hashes:])), true
+}
+
+func markdownSetext(trim, prev string) bool {
+	if prev == "" || len(trim) < 3 {
+		return false
+	}
+	mark := trim[0]
+	if mark != '=' && mark != '-' {
+		return false
+	}
+	for i := 0; i < len(trim); i++ {
+		if trim[i] != mark {
+			return false
+		}
+	}
+	// '=' is a heading underline. A short '---' under a longer line is a
+	// rule; a dash underline counts only when it is at least as long as the
+	// line it sits under.
+	if mark == '-' && utf8.RuneCountInString(trim) < utf8.RuneCountInString(prev) {
+		return false
+	}
+	return true
+}
+
+func yamlFrontMatter(front string) bool {
+	keys := 0
+	for _, line := range strings.Split(front, "\n") {
+		if yamlIndented(line) {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "+ ") {
+			continue
+		}
+		if _, _, ok := markdownFrontKey(trimmed); !ok {
+			return false
+		}
+		keys++
+	}
+	return keys > 0
+}
+
+func markdownFrontKey(line string) (key, value string, ok bool) {
+	colon := strings.IndexByte(line, ':')
+	if colon <= 0 {
+		return "", "", false
+	}
+	key = strings.TrimSpace(line[:colon])
+	if key == "" || strings.ContainsAny(key, " \t") {
+		return "", "", false
+	}
+	return key, strings.TrimSpace(line[colon+1:]), true
 }
 
 // markdownFrontTitle reads a plain YAML title. An empty value and a block
@@ -783,10 +885,13 @@ func markdownFrontTitle(front string) (string, bool) {
 	lines := strings.Split(front, "\n")
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if len(trimmed) < 6 || !strings.EqualFold(trimmed[:6], "title:") {
+		key, value, ok := markdownFrontKey(trimmed)
+		if !ok || !strings.EqualFold(key, "title") {
 			continue
 		}
-		value := strings.TrimSpace(trimmed[6:])
+		if marker, marked := yamlBlockMarker(value); marked {
+			value = marker
+		}
 		switch value {
 		case ">", ">-", ">+", "|", "|-", "|+":
 			var parts []string
@@ -808,7 +913,7 @@ func markdownFrontTitle(front string) (string, bool) {
 			}
 			return joined, true
 		default:
-			plain := strings.Trim(value, `"'`)
+			plain := yamlPlainValue(value)
 			if strings.TrimSpace(plain) == "" {
 				return "", false
 			}
@@ -816,6 +921,38 @@ func markdownFrontTitle(front string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func yamlBlockMarker(value string) (string, bool) {
+	for _, marker := range []string{">-", ">+", "|-", "|+", ">", "|"} {
+		if value == marker || strings.HasPrefix(value, marker+" ") || strings.HasPrefix(value, marker+"#") {
+			return marker, true
+		}
+	}
+	return "", false
+}
+
+func yamlPlainValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if value[0] == '"' || value[0] == '\'' {
+		quote := value[0]
+		for i := 1; i < len(value); i++ {
+			if value[i] == '\\' && quote == '"' && i+1 < len(value) {
+				i++
+				continue
+			}
+			if value[i] == quote {
+				return value[1:i]
+			}
+		}
+	}
+	if i := strings.Index(value, " #"); i >= 0 {
+		value = strings.TrimSpace(value[:i])
+	}
+	return strings.Trim(value, `"'`)
 }
 
 func yamlIndented(line string) bool {
@@ -840,6 +977,12 @@ func stripMarkdownHeading(value string) string {
 		}
 		value = value[:open] + value[open+1:close] + value[close+2+paren+1:]
 	}
+	value = strings.TrimSpace(value)
+	if trimmed := strings.TrimRight(value, "#"); trimmed != value && trimmed != "" {
+		if last := trimmed[len(trimmed)-1]; last == ' ' || last == '\t' {
+			value = strings.TrimSpace(trimmed)
+		}
+	}
 	return strings.TrimSpace(strings.Trim(value, "*_`"))
 }
 
@@ -855,8 +998,7 @@ func fileCompanionHTMLTitle(path string) (string, bool) {
 		return "", false
 	}
 	data := buf[:n]
-	lower := bytes.ToLower(data)
-	idx := bytes.Index(lower, []byte("<title"))
+	idx := htmlTitleOpen(data)
 	if idx < 0 {
 		return "", true
 	}
@@ -865,11 +1007,51 @@ func fileCompanionHTMLTitle(path string) (string, bool) {
 	if gt < 0 || gt > 200 {
 		return "", true
 	}
-	end := bytes.Index(bytes.ToLower(seg[gt:]), []byte("</title"))
+	end := htmlTitleClose(seg[gt:])
 	if end < 0 {
 		return "", true
 	}
 	return html.UnescapeString(string(seg[gt+1 : gt+end])), true
+}
+
+func htmlTitleOpen(data []byte) int {
+	lower := bytes.ToLower(data)
+	from := 0
+	for from < len(lower) {
+		rel := bytes.Index(lower[from:], []byte("<title"))
+		if rel < 0 {
+			return -1
+		}
+		at := from + rel
+		next := at + len("<title")
+		if next >= len(data) || htmlTitleBoundary(data[next]) {
+			return at
+		}
+		from = next
+	}
+	return -1
+}
+
+func htmlTitleClose(seg []byte) int {
+	lower := bytes.ToLower(seg)
+	from := 0
+	for from < len(lower) {
+		rel := bytes.Index(lower[from:], []byte("</title"))
+		if rel < 0 {
+			return -1
+		}
+		at := from + rel
+		next := at + len("</title")
+		if next >= len(seg) || htmlTitleBoundary(seg[next]) {
+			return at
+		}
+		from = next
+	}
+	return -1
+}
+
+func htmlTitleBoundary(b byte) bool {
+	return b == '>' || b == '/' || b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
 
 func fileCompanionOfficeCoreTitle(path string) (string, bool) {
@@ -878,22 +1060,165 @@ func fileCompanionOfficeCoreTitle(path string) (string, bool) {
 		return "", false
 	}
 	defer reader.Close()
+	var core string
+	var document []byte
+	var failed bool
 	for _, file := range reader.File {
-		if !strings.EqualFold(filepath.ToSlash(file.Name), "docProps/core.xml") {
-			continue
+		name := strings.ToLower(filepath.ToSlash(file.Name))
+		switch name {
+		case "docprops/core.xml":
+			raw, err := readZipLimited(file, 64<<10)
+			if err != nil {
+				failed = true
+				continue
+			}
+			core = officeDCTitle(raw)
+		case "word/document.xml":
+			raw, err := readZipLimited(file, 64<<10)
+			if err != nil {
+				failed = true
+				continue
+			}
+			document = raw
 		}
-		body, err := file.Open()
-		if err != nil {
-			return "", false
-		}
-		raw, readErr := io.ReadAll(io.LimitReader(body, 64<<10))
-		body.Close()
-		if readErr != nil {
-			return "", false
-		}
-		return officeDCTitle(raw), true
+	}
+	if strings.TrimSpace(core) != "" {
+		return core, true
+	}
+	// Word leaves dc:title empty unless the author filled File > Info.
+	// The heading style, then a short first paragraph, is the title on the page.
+	if title := docxDocumentTitle(document); title != "" {
+		return title, true
+	}
+	if failed {
+		return "", false
 	}
 	return "", true
+}
+
+func readZipLimited(file *zip.File, limit int64) ([]byte, error) {
+	body, err := file.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+	return io.ReadAll(io.LimitReader(body, limit))
+}
+
+func docxDocumentTitle(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	if title := docxStyledParagraph(body, "Title"); title != "" {
+		return title
+	}
+	if title := docxStyledParagraph(body, "Heading1"); title != "" {
+		return title
+	}
+	text := docxFirstParagraph(body)
+	if utf8.RuneCountInString(text) > 120 {
+		return ""
+	}
+	return text
+}
+
+func docxStyledParagraph(body []byte, style string) string {
+	lower := bytes.ToLower(body)
+	needle := []byte(`w:val="` + strings.ToLower(style) + `"`)
+	from := 0
+	for from < len(lower) {
+		rel := bytes.Index(lower[from:], needle)
+		if rel < 0 {
+			break
+		}
+		at := from + rel
+		win := at - 80
+		if win < 0 {
+			win = 0
+		}
+		if !bytes.Contains(lower[win:at], []byte("w:pstyle")) {
+			from = at + len(needle)
+			continue
+		}
+		start := bytes.LastIndex(lower[:at], []byte("<w:p"))
+		if start < 0 {
+			from = at + len(needle)
+			continue
+		}
+		endRel := bytes.Index(lower[start:], []byte("</w:p>"))
+		if endRel < 0 {
+			return ""
+		}
+		if text := docxRunText(body[start : start+endRel]); text != "" {
+			return text
+		}
+		from = start + endRel + len("</w:p>")
+	}
+	return ""
+}
+
+func docxFirstParagraph(body []byte) string {
+	lower := bytes.ToLower(body)
+	from := 0
+	for from < len(lower) {
+		rel := bytes.Index(lower[from:], []byte("<w:p"))
+		if rel < 0 {
+			return ""
+		}
+		start := from + rel
+		next := start + len("<w:p")
+		if next < len(body) && body[next] != '>' && body[next] != ' ' && body[next] != '/' && body[next] != '\t' && body[next] != '\n' && body[next] != '\r' {
+			from = next
+			continue
+		}
+		endRel := bytes.Index(lower[start:], []byte("</w:p>"))
+		if endRel < 0 {
+			return ""
+		}
+		if text := docxRunText(body[start : start+endRel]); text != "" {
+			return text
+		}
+		from = start + endRel + len("</w:p>")
+	}
+	return ""
+}
+
+func docxRunText(block []byte) string {
+	var b strings.Builder
+	lower := bytes.ToLower(block)
+	from := 0
+	for from < len(lower) {
+		rel := bytes.Index(lower[from:], []byte("<w:t"))
+		if rel < 0 {
+			break
+		}
+		at := from + rel
+		next := at + len("<w:t")
+		if next < len(block) && block[next] != '>' && block[next] != ' ' && block[next] != '/' && block[next] != '\t' && block[next] != '\n' && block[next] != '\r' {
+			from = next
+			continue
+		}
+		seg := block[at:]
+		gt := bytes.IndexByte(seg, '>')
+		if gt <= 0 {
+			break
+		}
+		if seg[gt-1] == '/' {
+			from = at + gt + 1
+			continue
+		}
+		end := bytes.Index(bytes.ToLower(seg[gt:]), []byte("</w:t"))
+		if end < 0 {
+			break
+		}
+		b.WriteString(html.UnescapeString(string(seg[gt+1 : gt+end])))
+		nextFrom := at + gt + end + len("</w:t")
+		if nextFrom <= from {
+			break
+		}
+		from = nextFrom
+	}
+	return fileCompanionCleanTitle(b.String())
 }
 
 func officeDCTitle(body []byte) string {

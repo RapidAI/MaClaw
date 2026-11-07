@@ -26,17 +26,17 @@ func engineIDs(strategy corelib.WebSearchStrategy) []string {
 func TestDefaultWebSearchStrategyPresets(t *testing.T) {
 	mainland := DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
 	international := DefaultWebSearchStrategy(corelib.WebSearchPresetInternational)
-	if got := engineIDs(mainland); !reflect.DeepEqual(got, []string{"yuanbao", "bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}) {
+	if got := engineIDs(mainland); !reflect.DeepEqual(got, []string{"bing_cn", "baidu", "duckduckgo", "google", "yuanbao", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}) {
 		t.Fatalf("mainland order = %v", got)
 	}
-	if got := engineIDs(international); !reflect.DeepEqual(got, []string{"yuanbao", "google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}) {
+	if got := engineIDs(international); !reflect.DeepEqual(got, []string{"google", "duckduckgo", "bing_cn", "baidu", "yuanbao", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}) {
 		t.Fatalf("international order = %v", got)
 	}
 	for _, strategy := range []corelib.WebSearchStrategy{mainland, international} {
 		for _, engine := range strategy.Engines {
 			switch engine.ID {
 			case "yuanbao":
-				if !engine.Enabled || engine.APIKey != "" || engine.Transport != corelib.WebSearchTransportAPI || engine.BaseURL != defaultYuanbaoSearchURL {
+				if engine.Enabled || engine.APIKey != "" || engine.Transport != corelib.WebSearchTransportAPI || engine.BaseURL != defaultYuanbaoSearchURL {
 					t.Fatalf("yuanbao default = %#v", engine)
 				}
 			case "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub:
@@ -54,6 +54,25 @@ func TestDefaultWebSearchStrategyPresets(t *testing.T) {
 	}
 	if international.BrowserFallbackEngineID != "google" {
 		t.Fatalf("international fallback = %q, want google", international.BrowserFallbackEngineID)
+	}
+	assertOrderCoversCatalog(t, "mainland", mainlandWebSearchEngineOrder)
+	assertOrderCoversCatalog(t, "international", internationalWebSearchEngineOrder)
+}
+
+func assertOrderCoversCatalog(t *testing.T, name string, order []string) {
+	t.Helper()
+	seen := make(map[string]bool, len(order))
+	for _, id := range order {
+		if seen[id] {
+			t.Fatalf("%s order repeats %s", name, id)
+		}
+		seen[id] = true
+		if _, ok := builtinWebSearchEngines[id]; !ok {
+			t.Fatalf("%s order has no catalog entry for %s", name, id)
+		}
+	}
+	if len(seen) != len(builtinWebSearchEngines) {
+		t.Fatalf("%s order covers %d engines, catalog has %d", name, len(seen), len(builtinWebSearchEngines))
 	}
 }
 
@@ -1159,13 +1178,34 @@ func TestSearchWithStrategySecondBrowserGetsFreshBudgetAfterFirst(t *testing.T) 
 
 func TestNormalizeWebSearchStrategyAcceptsEnabledYuanbaoWithoutKey(t *testing.T) {
 	strategy := DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
+	found := false
+	for i := range strategy.Engines {
+		if strategy.Engines[i].ID != "yuanbao" {
+			continue
+		}
+		found = true
+		if strategy.Engines[i].Enabled {
+			t.Fatal("yuanbao starts enabled")
+		}
+		strategy.Engines[i].Enabled = true
+	}
+	if !found {
+		t.Fatal("mainland default is missing yuanbao")
+	}
 	normalized, err := NormalizeWebSearchStrategy(strategy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if normalized.Engines[0].ID != "yuanbao" || !normalized.Engines[0].Enabled || normalized.Engines[0].APIKey != "" {
-		t.Fatalf("yuanbao = %#v", normalized.Engines[0])
+	for _, engine := range normalized.Engines {
+		if engine.ID != "yuanbao" {
+			continue
+		}
+		if !engine.Enabled || engine.APIKey != "" {
+			t.Fatalf("yuanbao = %#v", engine)
+		}
+		return
 	}
+	t.Fatal("normalized strategy dropped yuanbao")
 }
 
 func preYuanbaoStrategy(preset string) corelib.WebSearchStrategy {
@@ -1187,7 +1227,8 @@ func preYuanbaoStrategy(preset string) corelib.WebSearchStrategy {
 func TestNormalizeWebSearchStrategyInsertsYuanbaoOnPreviouslyCompleteCatalog(t *testing.T) {
 	for _, preset := range []string{corelib.WebSearchPresetMainland, corelib.WebSearchPresetInternational} {
 		previous := preYuanbaoStrategy(preset)
-		wantNext := previous.Engines[0].ID
+		wantIndex := yuanbaoDefaultIndex(preset)
+		oldIDs := engineIDs(previous)
 		withMojeek := previous
 		withMojeek.Engines = append([]corelib.WebSearchEngineConfig{{
 			ID: "mojeek", Enabled: true, Priority: 0, Transport: corelib.WebSearchTransportHTTPHTML,
@@ -1197,15 +1238,24 @@ func TestNormalizeWebSearchStrategyInsertsYuanbaoOnPreviouslyCompleteCatalog(t *
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(normalized.Engines) != 10 || normalized.Engines[0].ID != "yuanbao" || !normalized.Engines[0].Enabled || normalized.Engines[0].APIKey != "" || normalized.Engines[0].BaseURL != defaultYuanbaoSearchURL {
-				t.Fatalf("preset %s insert = %#v", preset, normalized.Engines[0])
+			if len(normalized.Engines) != 10 {
+				t.Fatalf("preset %s engine count = %d", preset, len(normalized.Engines))
 			}
-			if normalized.Engines[1].ID != wantNext {
-				t.Fatalf("preset %s previous first = %s, want %s", preset, normalized.Engines[1].ID, wantNext)
+			idx := -1
+			var inserted corelib.WebSearchEngineConfig
+			for i, engine := range normalized.Engines {
+				if engine.ID == "yuanbao" {
+					idx = i
+					inserted = engine
+				}
 			}
-			oldIDs := engineIDs(preYuanbaoStrategy(preset))
-			if !reflect.DeepEqual(engineIDs(normalized)[1:], oldIDs) {
-				t.Fatalf("preset %s relative order = %v, want %v", preset, engineIDs(normalized)[1:], oldIDs)
+			if idx != wantIndex || inserted.Enabled || inserted.APIKey != "" || inserted.BaseURL != defaultYuanbaoSearchURL {
+				t.Fatalf("preset %s insert index %d = %#v, want index %d disabled", preset, idx, inserted, wantIndex)
+			}
+			ids := engineIDs(normalized)
+			without := append(append([]string{}, ids[:idx]...), ids[idx+1:]...)
+			if !reflect.DeepEqual(without, oldIDs) {
+				t.Fatalf("preset %s relative order = %v, want %v", preset, without, oldIDs)
 			}
 			for i, engine := range normalized.Engines {
 				if engine.Priority != i+1 {
@@ -1216,7 +1266,7 @@ func TestNormalizeWebSearchStrategyInsertsYuanbaoOnPreviouslyCompleteCatalog(t *
 			if err != nil {
 				t.Fatal(err)
 			}
-			if engineIDs(again)[0] != "yuanbao" || countEngineID(again, "yuanbao") != 1 {
+			if engineIDs(again)[wantIndex] != "yuanbao" || countEngineID(again, "yuanbao") != 1 {
 				t.Fatalf("second normalize = %v", engineIDs(again))
 			}
 			for i := range again.Engines {

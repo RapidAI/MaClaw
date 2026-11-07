@@ -752,6 +752,49 @@ func (r *userRepo) ListUsersByContact(ctx context.Context, contact string) ([]*s
 	return out, nil
 }
 
+// ListTenantIDsByEmail returns the distinct tenants that already own this
+// email, either as the account address or as an email identity. Account
+// addresses and identity values are stored NFC-lowercased, so equality hits
+// idx_users_email and idx_user_identities_type_value. The statement runs on
+// the read pool. Each read connection gets busy_timeout from the DSN, and a
+// new read transaction sees committed WAL rows. The single write connection
+// stays with the batcher; this point lookup does not queue behind it.
+func (r *userRepo) ListTenantIDsByEmail(ctx context.Context, email string) ([]string, error) {
+	email = normalizeEmailLikeAccount(email)
+	if r == nil || email == "" {
+		return nil, nil
+	}
+	db := r.readDB
+	if db == nil {
+		db = r.db
+	}
+	if db == nil {
+		return nil, errors.New("user store is closed")
+	}
+	rows, err := db.QueryContext(ctx, listTenantIDsByEmailSQL, email, email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var tenantID string
+		if err := rows.Scan(&tenantID); err != nil {
+			return nil, err
+		}
+		ids = append(ids, tenantID)
+	}
+	return ids, rows.Err()
+}
+
+const listTenantIDsByEmailSQL = `
+	SELECT tenant_id FROM users WHERE email = ?
+	UNION
+	SELECT u.tenant_id
+	FROM user_identities ui
+	JOIN users u ON u.id = ui.user_id AND u.tenant_id = ui.tenant_id
+	WHERE ui.type = 'email' AND ui.value = ?`
+
 func (r *userRepo) GetByTenantIdentity(ctx context.Context, tenantID, identityType, value string) (*store.User, error) {
 	identityType, value = normalizeUserIdentity(identityType, value)
 	if identityType == "" || value == "" {

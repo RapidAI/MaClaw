@@ -1837,6 +1837,113 @@ func TestSaveMaclawLLMProvidersKeepsOAuthConnectionTestWhenWireAPIFilled(t *test
 	}
 }
 
+func TestSaveMaclawLLMProvidersKeepsXAIConnectionTestWhenDefaultModelMigrates(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{
+				ID: "xai", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "oauth-token", Model: "grok-4.6",
+				AuthType: "oauth", Protocol: "openai", WireAPI: "responses", ConnectionTestPassed: true,
+			},
+			{ID: "other", Name: "Other", URL: "https://other.example/v1", Key: "other-key", Model: "other-model", IsCustom: true, ConnectionTestPassed: true},
+		},
+		MaclawLLMCurrentProvider: "Other",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	// The provider dialog loads the read-path default, then a save of any row
+	// writes that whole list. grok-4.6 on disk and grok-4.7 in the payload are
+	// the same managed default.
+	if err := app.SaveMaclawLLMProviders([]corelib.MaclawLLMProvider{
+		{
+			ID: "xai", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "oauth-token", Model: "grok-4.7",
+			AuthType: "oauth", Protocol: "openai", WireAPI: "responses", ConnectionTestPassed: true,
+		},
+		{ID: "other", Name: "Other", URL: "https://other.example/v1", Key: "other-key", Model: "other-model", IsCustom: true, ConnectionTestPassed: true},
+	}, "Other"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	grok, ok := findProviderByName(saved.MaclawLLMProviders, "xAI-Grok")
+	if !ok {
+		t.Fatalf("saved providers = %#v", saved.MaclawLLMProviders)
+	}
+	if grok.Model != "grok-4.7" || !grok.ConnectionTestPassed {
+		t.Fatalf("migrated xAI = %#v, want grok-4.7 and a kept connection test", grok)
+	}
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	listed := false
+	for _, provider := range state.Providers {
+		if provider.Name == "xAI-Grok" {
+			listed = true
+			if !containsStringFold(provider.Models, "grok-4.3") {
+				t.Fatalf("assignment catalog = %#v, missing seed id", provider.Models)
+			}
+		}
+	}
+	if !listed {
+		t.Fatalf("assignment providers = %#v, want tested xAI-Grok", state.Providers)
+	}
+
+	if err := app.SaveMaclawLLMProviders([]corelib.MaclawLLMProvider{
+		{
+			ID: "xai", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "oauth-token", Model: "grok-4.1-fast",
+			AuthType: "oauth", Protocol: "openai", WireAPI: "responses", ConnectionTestPassed: true,
+		},
+		{ID: "other", Name: "Other", URL: "https://other.example/v1", Key: "other-key", Model: "other-model", IsCustom: true, ConnectionTestPassed: true},
+	}, "Other"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders explicit model: %v", err)
+	}
+	saved, err = app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	grok, ok = findProviderByName(saved.MaclawLLMProviders, "xAI-Grok")
+	if !ok || grok.Model != "grok-4.1-fast" || grok.ConnectionTestPassed {
+		t.Fatalf("explicit model change = %#v, want grok-4.1-fast without a carried connection test", grok)
+	}
+}
+
+func TestSaveMaclawLLMProvidersClearsCustomXAIConnectionTestOnModelChange(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "custom-xai", Name: "xAI-Grok", IsCustom: true,
+			URL: "https://proxy.example/v1", Key: "sk-custom", Model: "grok-4.6",
+			AuthType: "api_key", Protocol: "openai", ConnectionTestPassed: true,
+		}},
+		MaclawLLMCurrentProvider: "xAI-Grok",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	if err := app.SaveMaclawLLMProviders([]corelib.MaclawLLMProvider{{
+		ID: "custom-xai", Name: "xAI-Grok", IsCustom: true,
+		URL: "https://proxy.example/v1", Key: "sk-custom", Model: "grok-4.7",
+		AuthType: "api_key", Protocol: "openai", ConnectionTestPassed: true,
+	}}, "xAI-Grok"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	grok, ok := findProviderByName(saved.MaclawLLMProviders, "xAI-Grok")
+	if !ok || !grok.IsCustom || grok.Model != "grok-4.7" || grok.ConnectionTestPassed {
+		t.Fatalf("custom xAI = %#v, want the edited model without a carried connection test", grok)
+	}
+}
+
 func TestSaveMaclawLLMProfilesRejectsUntestedProviderSelection(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -1925,7 +2032,7 @@ func TestMarkMaclawLLMProviderConnectionTestPassedAcceptsXAIReadTimeDefaults(t *
 	if err := app.markMaclawLLMProviderConnectionTestPassed("xAI-Grok", corelib.MaclawLLMConfig{
 		ProviderID: corelib.MaclawLLMLegacyProviderID("xAI-Grok"),
 		URL:        "https://api.x.ai/v1",
-		Model:      "grok-4.6",
+		Model:      "grok-4.7",
 		Protocol:   "openai",
 		WireAPI:    "responses",
 		AuthType:   "oauth",
@@ -2305,6 +2412,287 @@ func TestTestAndSaveMaclawLLMProvidersKeepsTestedModelAndCatalog(t *testing.T) {
 		if !containsStringFold(state.Providers[0].Models, want) {
 			t.Fatalf("assignment catalog = %#v, missing %q", state.Providers[0].Models, want)
 		}
+	}
+}
+
+func TestTestAndSaveMaclawLLMProvidersPersistsXAILiveCatalog(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"grok-4.7"},{"id":"grok-4.6"},{"id":"grok-test-extra"}]}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]}]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	store := oauth.NewFileCredentialStore(filepath.Join(tmpHome, "credentials.json"))
+	if err := store.Modify("xai-grok", func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		return &oauth.StoredCredential{
+			Type:           "oauth",
+			AccessToken:    "store-fresh",
+			RawAccessToken: "store-fresh",
+			RefreshToken:   "refresh-token",
+			ExpiresAt:      time.Now().Add(time.Hour).Unix(),
+		}, nil
+	}); err != nil {
+		t.Fatalf("store.Modify: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome, credentialStore: store}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "grok", Name: "xAI-Grok", URL: srv.URL, Key: "store-fresh", Model: "grok-4.7",
+			AuthType: "oauth", Protocol: "openai", WireAPI: "responses",
+		}},
+		MaclawLLMCurrentProvider: "xAI-Grok",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if _, err := app.TestAndSaveMaclawLLMProviders([]corelib.MaclawLLMProvider{{
+		ID: "grok", Name: "xAI-Grok", URL: srv.URL, Model: "grok-4.7",
+		AuthType: "oauth", Protocol: "openai", WireAPI: "responses",
+	}}, "xAI-Grok", "xAI-Grok"); err != nil {
+		t.Fatalf("TestAndSaveMaclawLLMProviders: %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	grok, ok := findProviderByName(saved.MaclawLLMProviders, "xAI-Grok")
+	if !ok {
+		t.Fatalf("saved providers missing xAI-Grok: %#v", saved.MaclawLLMProviders)
+	}
+	if grok.Model != "grok-4.7" {
+		t.Fatalf("saved model = %q, want tested grok-4.7", grok.Model)
+	}
+	if !grok.ConnectionTestPassed {
+		t.Fatal("xAI Test & Save did not mark the connection tested")
+	}
+	for _, want := range []string{"grok-4.7", "grok-4.6", "grok-test-extra"} {
+		if !containsStringFold(grok.Models, want) {
+			t.Fatalf("saved catalog = %#v, missing live id %q", grok.Models, want)
+		}
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	var summary MaclawLLMProfileProviderSummary
+	found := false
+	for _, provider := range state.Providers {
+		if provider.Name == "xAI-Grok" {
+			summary = provider
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("assignment providers = %#v, want xAI-Grok", state.Providers)
+	}
+	for _, want := range []string{"grok-4.7", "grok-4.6", "grok-test-extra", "grok-4.3"} {
+		if !containsStringFold(summary.Models, want) {
+			t.Fatalf("assignment catalog = %#v, missing %q", summary.Models, want)
+		}
+	}
+}
+
+func TestGetMaclawLLMProfilePanelStateBackfillsXAICatalogWithoutManualModels(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "grok", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "oauth-token",
+			Model: "grok-4.7", AuthType: "oauth", Protocol: "openai", WireAPI: "responses",
+			ConnectionTestPassed: true,
+		}},
+		MaclawLLMCurrentProvider: "xAI-Grok",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	loaded := app.GetMaclawLLMProviders()
+	provider, ok := findProviderByName(loaded.Providers, "xAI-Grok")
+	if !ok {
+		t.Fatalf("providers missing xAI-Grok: %#v", loaded.Providers)
+	}
+	if provider.Model != "grok-4.7" {
+		t.Fatalf("provider model = %q, want grok-4.7", provider.Model)
+	}
+	for _, want := range []string{"grok-4.7", "grok-4.6", "grok-4.3", "grok-4.1-fast"} {
+		if !containsStringFold(provider.Models, want) {
+			t.Fatalf("provider catalog = %#v, missing %q", provider.Models, want)
+		}
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	var summary MaclawLLMProfileProviderSummary
+	found := false
+	for _, item := range state.Providers {
+		if item.Name == "xAI-Grok" {
+			summary = item
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("assignment providers = %#v, want xAI-Grok", state.Providers)
+	}
+	if summary.Model != "grok-4.7" {
+		t.Fatalf("assignment model = %q, want grok-4.7", summary.Model)
+	}
+	for _, want := range []string{"grok-4.7", "grok-4.6", "grok-4.3", "grok-4.1-fast"} {
+		if !containsStringFold(summary.Models, want) {
+			t.Fatalf("assignment catalog = %#v, missing %q", summary.Models, want)
+		}
+	}
+}
+
+func TestGetMaclawLLMProvidersBackfillsCustomXAICatalog(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "custom-xai", Name: "xAI-Grok", IsCustom: true,
+			URL: "https://proxy.example/v1", Key: "sk-custom", Model: "grok-4.1-fast",
+			AuthType: "api_key", Protocol: "openai", ContextLength: 128000,
+			ConnectionTestPassed: true,
+		}},
+		MaclawLLMCurrentProvider: "xAI-Grok",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	loaded := app.GetMaclawLLMProviders()
+	provider, ok := findProviderByName(loaded.Providers, "xAI-Grok")
+	if !ok {
+		t.Fatalf("providers missing custom xAI-Grok: %#v", loaded.Providers)
+	}
+	if provider.URL != "https://proxy.example/v1" || provider.Model != "grok-4.1-fast" || provider.Key != "sk-custom" || provider.AuthType != "api_key" {
+		t.Fatalf("custom xAI connection was rewritten: %#v", provider)
+	}
+	for _, want := range []string{"grok-4.1-fast", "grok-4.7", "grok-4.3"} {
+		if !containsStringFold(provider.Models, want) {
+			t.Fatalf("custom xAI catalog = %#v, missing %q", provider.Models, want)
+		}
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	var summary MaclawLLMProfileProviderSummary
+	found := false
+	for _, item := range state.Providers {
+		if item.ID == "custom-xai" {
+			summary = item
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("assignment providers = %#v, want custom xAI", state.Providers)
+	}
+	if summary.Model != "grok-4.1-fast" || !containsStringFold(summary.Models, "grok-4.7") {
+		t.Fatalf("assignment custom xAI = %#v", summary)
+	}
+}
+
+func TestProfilePanelStateDoesNotReviveUnsavedPreset(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	store := oauth.NewFileCredentialStore(filepath.Join(tmpHome, "credentials.json"))
+	if err := store.Modify("openai", func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		return &oauth.StoredCredential{
+			Type:           "oauth",
+			AccessToken:    "openai-token",
+			RawAccessToken: "openai-token",
+			ExpiresAt:      time.Now().Add(time.Hour).Unix(),
+		}, nil
+	}); err != nil {
+		t.Fatalf("store.Modify: %v", err)
+	}
+	app := &App{testHomeDir: tmpHome, credentialStore: store}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "passed", Name: "Passed provider", URL: "https://passed.example/v1", Key: "key",
+			Model: "passed-model", ConnectionTestPassed: true,
+		}},
+		MaclawLLMCurrentProvider: "OpenAI",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: corelib.MaclawLLMLegacyProviderID("OpenAI"), Model: "gpt-5.4"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	names := map[string]bool{}
+	for _, provider := range state.Providers {
+		names[provider.Name] = true
+	}
+	if !names["Passed provider"] {
+		t.Fatalf("assignment providers = %#v, want the saved tested provider", state.Providers)
+	}
+	if names["OpenAI"] || names["xAI-Grok"] {
+		t.Fatalf("unsaved preset revived in assignment: %#v", state.Providers)
+	}
+}
+
+func TestProfilePanelStateDoesNotReplaceDroppedProvidersWithPresets(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	store := oauth.NewFileCredentialStore(filepath.Join(tmpHome, "credentials.json"))
+	if err := store.Modify("openai", func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		return &oauth.StoredCredential{
+			Type:           "oauth",
+			AccessToken:    "openai-token",
+			RawAccessToken: "openai-token",
+			ExpiresAt:      time.Now().Add(time.Hour).Unix(),
+		}, nil
+	}); err != nil {
+		t.Fatalf("store.Modify: %v", err)
+	}
+	app := &App{testHomeDir: tmpHome, credentialStore: store}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: "免费", Model: "free-model"}},
+		MaclawLLMCurrentProvider: "OpenAI",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "gone", Model: "free-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	if len(state.Providers) != 0 {
+		t.Fatalf("dropped providers were replaced with presets: %#v", state.Providers)
 	}
 }
 
@@ -5303,8 +5691,13 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if xaiGrok.URL != "https://api.x.ai/v1" {
 		t.Errorf("xAI-Grok URL = %q, want %q", xaiGrok.URL, "https://api.x.ai/v1")
 	}
-	if xaiGrok.Model != "grok-4.6" {
-		t.Errorf("xAI-Grok Model = %q, want %q", xaiGrok.Model, "grok-4.6")
+	if xaiGrok.Model != "grok-4.7" {
+		t.Errorf("xAI-Grok Model = %q, want %q", xaiGrok.Model, "grok-4.7")
+	}
+	for _, want := range []string{"grok-4.7", "grok-4.6", "grok-4.1-fast"} {
+		if !containsStringFold(xaiGrok.Models, want) {
+			t.Errorf("xAI-Grok Models = %#v, missing %q", xaiGrok.Models, want)
+		}
 	}
 	if xaiGrok.Protocol != "openai" {
 		t.Errorf("xAI-Grok Protocol = %q, want %q", xaiGrok.Protocol, "openai")
@@ -6022,8 +6415,8 @@ func TestGetMaclawLLMProviders_MigratesXAIGrokAPIKeyConfigToOAuth(t *testing.T) 
 	if provider.URL != "https://api.x.ai/v1" {
 		t.Fatalf("xAI-Grok URL = %q, want current endpoint", provider.URL)
 	}
-	if provider.Model != "grok-4.6" {
-		t.Fatalf("xAI-Grok Model = %q, want current default grok-4.6", provider.Model)
+	if provider.Model != "grok-4.7" {
+		t.Fatalf("xAI-Grok Model = %q, want current default grok-4.7", provider.Model)
 	}
 	if provider.Key != "" || provider.OAuthAccessToken != "" || provider.RefreshToken != "" || provider.TokenExpiresAt != 0 {
 		t.Fatalf("legacy xAI API credentials were retained: %+v", provider)
@@ -6051,7 +6444,7 @@ func TestNormalizeXAIProviderMigratesFormerGrokBuildDefault(t *testing.T) {
 		Name: "xAI-Grok", URL: "https://api.x.ai/v1", Model: "grok-build", ContextLength: 256000,
 		Protocol: "openai", AuthType: "oauth", WireAPI: "responses",
 	}, defaults)
-	if provider.Model != "grok-4.6" {
+	if provider.Model != "grok-4.7" {
 		t.Fatalf("legacy grok-build default was not migrated: %q", provider.Model)
 	}
 	if provider.ContextLength != 400000 {
@@ -6060,8 +6453,14 @@ func TestNormalizeXAIProviderMigratesFormerGrokBuildDefault(t *testing.T) {
 
 	provider.Model = "grok-4.5"
 	provider = normalizeXAIProvider(provider, defaults)
-	if provider.Model != "grok-4.6" {
+	if provider.Model != "grok-4.7" {
 		t.Fatalf("former grok-4.5 default was not migrated: %q", provider.Model)
+	}
+
+	provider.Model = "grok-4.6"
+	provider = normalizeXAIProvider(provider, defaults)
+	if provider.Model != "grok-4.7" {
+		t.Fatalf("former grok-4.6 default was not migrated: %q", provider.Model)
 	}
 
 	provider.Model = "grok-4.1-fast"

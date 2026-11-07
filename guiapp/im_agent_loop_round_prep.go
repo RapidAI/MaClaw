@@ -393,6 +393,17 @@ func (h *IMMessageHandler) compactAgentLoopConversation(ctx *LoopContext, userID
 		Tools:          tools,
 		BeforeCompress: flush,
 		DryRun:         mode == agent.ContextCheckpointShadow,
+		KeepUserEquals: confirmationOriginalTexts(h, userID),
+		Summarize: func(material string) string {
+			if !agent.HandoffMemoAll() {
+				return ""
+			}
+			fn := summarizer()
+			if fn == nil {
+				return ""
+			}
+			return fn(material)
+		},
 	})
 	if checkpoint.WouldApply && mode == agent.ContextCheckpointShadow {
 		log.Printf("[context-checkpoint] mode=shadow owner=%q before=%d after~=%d dropped=%d (no persistence)", sessionKey, checkpoint.BeforeTokens, checkpoint.AfterTokens, checkpoint.DroppedCount)
@@ -408,7 +419,7 @@ func (h *IMMessageHandler) compactAgentLoopConversation(ctx *LoopContext, userID
 	// so handing the original bytes to trim would leave them inline.
 	folded := checkpoint.Conversation
 	switch checkpoint.Reason {
-	case "below_threshold", "protected_window", "no_savings", "opaque_content", "nothing_to_drop":
+	case "below_threshold", "protected_window", "no_savings", "opaque_content", "nothing_to_drop", "pending_ask":
 		// below_threshold and protected_window already fit. no_savings means
 		// the checkpoint preview was larger than the prefix it would replace,
 		// so the spill did not shrink the prompt. opaque_content and

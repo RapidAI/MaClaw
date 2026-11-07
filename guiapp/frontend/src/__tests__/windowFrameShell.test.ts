@@ -37,6 +37,7 @@ describe('frameless window shell regression guards', () => {
             /#App\[data-windows-legacy-frameless="true"\]\s*\{[^}]*padding-right:\s*var\(--window-edge-safety-inset\);[^}]*padding-bottom:\s*var\(--window-edge-safety-inset\);[^}]*padding-left:\s*var\(--window-edge-safety-inset\);/s,
         );
         expect(app).toContain('data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined}');
+        expect(app).toContain('data-window-move-locked={windowMaximized || aiPanelMaximized ? "true" : undefined}');
         expect(app).toContain('const isLegacyWindowsFrameless = isWindowsHost && nativeRoundedResolved && !nativeRounded;');
         expect(app).toContain('const disableAutoUIScaleTransform = isWindowsHost;');
     });

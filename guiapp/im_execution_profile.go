@@ -255,6 +255,12 @@ func lengthFullExecutionProfile(msg IMUserMessage) (ExecutionProfile, bool) {
 
 const shortContinuationReason = "short continuation keeps parent execution tools"
 
+// deferredParentContinuationReason is the light profile the fast path returns
+// for a continuation cue. continuationKeepsParentExecution promotes it after
+// the restart check. The reason stays light until that promotion so a bound
+// recovery slot can still take the restarted-task profile.
+const deferredParentContinuationReason = "short continuation defers intent tree"
+
 // explicitSkillInvocationForProfile uses the same task text as skill
 // admission. A skill named only inside an attached document is not a request
 // to leave the lookup budget.
@@ -297,9 +303,18 @@ func (h *IMMessageHandler) continuationKeepsParentExecution(profile ExecutionPro
 	// "用这个" has to be short. A project-task search or page fetch is a
 	// lookup even when the question is longer than that: the 40-rune gate
 	// was dropping web_fetch and clearing bash on the next sentence.
+	// A cue the fast path already accepted is judged on continuationWording.
+	// The file-picker block is host text: counting it made "继续" plus a
+	// path miss this upgrade and drop the parent list. Any other light
+	// profile still uses the raw message, so a new short ACP line with an
+	// attachment does not inherit that list.
 	parentFull := h.parentExecutionIsFull(userID)
 	lookup := parentFull && projectTaskLookupContinuation(userID, semantic)
-	if !parentFull || (!shortContinuationText(text) && !lookup) {
+	shortText := text
+	if strings.TrimSpace(profile.Reason) == deferredParentContinuationReason {
+		shortText = continuationWording(text)
+	}
+	if !parentFull || (!shortContinuationText(shortText) && !lookup) {
 		return profile
 	}
 	if !lookup && !lightish {
@@ -405,8 +420,11 @@ func executionKeepsParentToolSurface(profile ExecutionProfile) bool {
 }
 
 // fastPathBeforeIntentTree skips tool selection for two turns whose wording
-// does not choose a new list: a pure social utterance, and a short
-// continuation of a full parent. Anything else is model discovery.
+// does not choose a new list: a pure social utterance, and a continuation
+// cue of a full parent. A short sentence that names new work is model
+// discovery. Length is not that cue: a 28-rune server update used to inherit
+// the previous knowledge_save_text list, and the directory that can load ssh
+// was already stripped from the carry.
 func (h *IMMessageHandler) fastPathBeforeIntentTree(msg IMUserMessage, structurallyForced bool, recentHistory []string) (ExecutionProfile, bool) {
 	if h == nil || structurallyForced {
 		return ExecutionProfile{}, false
@@ -419,13 +437,150 @@ func (h *IMMessageHandler) fastPathBeforeIntentTree(msg IMUserMessage, structura
 		log.Printf("[exec-router] social greeting skips intent tree text_len=%d", utf8.RuneCountInString(text))
 		return socialGreetingExecutionProfile(), true
 	}
-	if !shortContinuationText(text) || !h.parentExecutionIsFull(msg.UserID) {
+	if !parentContinuationDefersDiscovery(text) || !h.parentExecutionIsFull(msg.UserID) {
 		return ExecutionProfile{}, false
 	}
-	// A short follow-up keeps the parent tools. That decision is the open
+	// A continuation cue keeps the parent tools. That decision is the open
 	// task, not a new reading from the intent model.
-	log.Printf("[exec-router] short parent continuation skips intent tree text_len=%d", utf8.RuneCountInString(text))
+	log.Printf("[exec-router] parent continuation cue skips intent tree text_len=%d", utf8.RuneCountInString(text))
 	return deferredParentContinuationProfile(1), true
+}
+
+// parentContinuationDefersDiscovery reports an utterance that keeps the open
+// tool list. It asks to go on, or points at the open result, and does not
+// name the next piece of work. Courtesy and an acknowledgement peel off, but
+// by themselves they are not the ask: "帮我" and "好的" stay on the greeting
+// or discovery path. "好的，用这个" and "按这个做一下" still go on. A leftover
+// such as "配图版" or "更新服务器" names the work.
+func parentContinuationDefersDiscovery(text string) bool {
+	// The file-picker block is host text glued onto the turn. "继续" plus a
+	// path is still a cue. Judging the whole message made that path look
+	// like new work, and a long path also blew the 40-rune gate.
+	text = continuationWording(text)
+	if !shortContinuationText(text) {
+		return false
+	}
+	remaining := foldContinuationUtterance(text)
+	if remaining == "" {
+		return false
+	}
+	sawGoing := false
+	for remaining != "" {
+		if !sawGoing {
+			if next, ok := peelLongestPrefix(remaining, continuationCourtesyPrefixes); ok {
+				remaining = foldContinuationUtterance(next)
+				continue
+			}
+		}
+		if next, ok := peelLongestPrefix(remaining, continuationDeicticPrefixes); ok {
+			sawGoing = true
+			remaining = foldContinuationUtterance(next)
+			continue
+		}
+		if next, ok := peelLongestPrefix(remaining, continuationGoingPrefixes); ok {
+			sawGoing = true
+			remaining = foldContinuationUtterance(next)
+			continue
+		}
+		if sawGoing {
+			if next, ok := peelLongestPrefix(remaining, continuationResiduePrefixes); ok {
+				remaining = foldContinuationUtterance(next)
+				continue
+			}
+			// "继续，请" and "continue please" still go on. Courtesy after
+			// the cue is not a new task. "继续，请更新" still names the work.
+			if next, ok := peelLongestPrefix(remaining, continuationCourtesyPrefixes); ok {
+				remaining = foldContinuationUtterance(next)
+				continue
+			}
+		}
+		return false
+	}
+	return sawGoing
+}
+
+// continuationCourtesyPrefixes peel off before a continuation word.
+// An acknowledgement is the same kind of prefix: "好的，继续" goes on, and
+// "好的，更新服务器" still names the work. peelLongestPrefix chooses.
+var continuationCourtesyPrefixes = []string{
+	"请你", "請你", "麻烦你", "麻煩你", "麻烦", "麻煩", "帮我", "幫我",
+	"please", "pls", "请", "請",
+	"好的", "好呀", "收到", "okay", "ok",
+	"嗯嗯", "可以", "嗯", "行",
+}
+
+// continuationDeicticPrefixes point at the open result. "按这个做" has to
+// outrank "按这个". Words after the deictic are a new task unless they are
+// only a residue such as "一下".
+var continuationDeicticPrefixes = []string{
+	"按这个做", "用这个", "就这个", "就这样", "按这个",
+}
+
+// continuationGoingPrefixes ask to keep the open task. A leftover such as
+// "配图版" means the sentence named the work.
+var continuationGoingPrefixes = []string{
+	"继续一下", "繼續一下", "继续做", "繼續做", "再继续", "再繼續",
+	"然后继续", "然後繼續", "接着做", "接著做",
+	"keep going", "carry on", "go on",
+	"重试一下", "再试一次", "再试一下", "再说一下",
+	"继续", "繼續", "接着", "接著", "然后", "然後",
+	"continue", "重试", "再试", "再说",
+	"下一步", "往下",
+}
+
+// continuationResiduePrefixes are what is left after "go on" when the
+// speaker did not name new work: "接着说", "继续说一下", "继续往下".
+var continuationResiduePrefixes = []string{
+	"一下", "下去", "往下", "说", "讲", "聊",
+}
+
+func foldContinuationUtterance(text string) string {
+	folded := strings.ToLower(strings.TrimSpace(text))
+	// Punctuation comes off either end. Sentence particles come off the end
+	// only, and again after punctuation, so "继续吗？" and "继续了，说" still
+	// match. A leading 了 stays, so "了解" is not rewritten into "解".
+	particles := "吧啊呀呢了吗嘛"
+	punct := " \t。.!！?？~…，,、；;：:"
+	for {
+		next := strings.Trim(folded, punct)
+		next = strings.TrimRight(next, particles)
+		next = trimLeadingLooseParticle(next, particles, punct)
+		if next == folded {
+			return folded
+		}
+		folded = next
+	}
+}
+
+// trimLeadingLooseParticle drops one sentence particle that is not glued to
+// the next word. "了，说" loses the "了". "了解" does not.
+func trimLeadingLooseParticle(text, particles, punct string) string {
+	for _, r := range particles {
+		particle := string(r)
+		if !strings.HasPrefix(text, particle) {
+			continue
+		}
+		rest := text[len(particle):]
+		trimmed := strings.TrimLeft(rest, punct)
+		if trimmed == rest && trimmed != "" {
+			continue
+		}
+		return trimmed
+	}
+	return text
+}
+
+func peelLongestPrefix(text string, prefixes []string) (string, bool) {
+	best := ""
+	for _, prefix := range prefixes {
+		if prefix != "" && strings.HasPrefix(text, prefix) && len(prefix) > len(best) {
+			best = prefix
+		}
+	}
+	if best == "" {
+		return "", false
+	}
+	return strings.TrimSpace(text[len(best):]), true
 }
 
 func socialGreetingExecutionProfile() ExecutionProfile {
@@ -450,7 +605,7 @@ func deferredParentContinuationProfile(conf float64) ExecutionProfile {
 		TaskType:        "general",
 		PromptProfile:   "light",
 		Confidence:      conf,
-		Reason:          "short continuation defers intent tree",
+		Reason:          deferredParentContinuationReason,
 		ToolBudget:      8,
 		IterationBudget: 3,
 	}
@@ -1490,7 +1645,11 @@ func semanticCapabilityRequiresFullProfile(capability string) bool {
 var executionProfileLocalPathPattern = regexp.MustCompile(`(?i)([a-z]:[\\/]|\.{1,2}[\\/]|/[\w.-])`)
 
 func hasStructuralFullExecutionSignal(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
+	// The file-picker block is host text glued on after the user's words.
+	// A drive letter in that block is not a local-path task. Counting it
+	// forced a structural full profile and skipped the continuation cue,
+	// so "继续" plus a picked file dropped the parent tool list.
+	lower := strings.ToLower(strings.TrimSpace(continuationWording(text)))
 	if lower == "" {
 		return false
 	}

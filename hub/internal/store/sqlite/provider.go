@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -42,12 +43,15 @@ func NewProvider(cfg Config) (*Provider, error) {
 		return nil, err
 	}
 
-	writeDB, err := sql.Open("sqlite", cfg.DSN)
+	// Pragmas passed to db.Exec apply to one pooled connection. database/sql
+	// opens the rest later, and replaces every connection after
+	// ConnMaxLifetime. The driver applies _pragma on each new connection.
+	writeDB, err := sql.Open("sqlite", dsnWithConnectionPragmas(cfg.DSN, cfg, true))
 	if err != nil {
 		return nil, fmt.Errorf("open write db: %w", err)
 	}
 
-	readDB, err := sql.Open("sqlite", cfg.DSN)
+	readDB, err := sql.Open("sqlite", dsnWithConnectionPragmas(cfg.DSN, cfg, false))
 	if err != nil {
 		_ = writeDB.Close()
 		return nil, fmt.Errorf("open read db: %w", err)
@@ -142,6 +146,42 @@ func (p *Provider) startCheckpointer(interval time.Duration) {
 			}
 		}
 	}()
+}
+
+// dsnWithConnectionPragmas attaches the per-connection pragmas from cfg.
+// journal_mode stays out of this list: it is persistent, and setting it on a
+// read connection contends with an in-flight write. wal_autocheckpoint is
+// writer-only for the same reason. cache_size and mmap_size stay out so each
+// of the read connections does not reserve the writer's cache.
+func dsnWithConnectionPragmas(dsn string, cfg Config, writer bool) string {
+	if strings.TrimSpace(dsn) == "" {
+		return dsn
+	}
+	lower := strings.ToLower(dsn)
+	params := make([]string, 0, 5)
+	if cfg.BusyTimeoutMS > 0 && !strings.Contains(lower, "busy_timeout") {
+		params = append(params, fmt.Sprintf("_pragma=busy_timeout(%d)", cfg.BusyTimeoutMS))
+	}
+	if !strings.Contains(lower, "foreign_keys") {
+		params = append(params, "_pragma=foreign_keys(1)")
+	}
+	if !strings.Contains(lower, "synchronous") {
+		params = append(params, "_pragma=synchronous(NORMAL)")
+	}
+	if !strings.Contains(lower, "temp_store") {
+		params = append(params, "_pragma=temp_store(MEMORY)")
+	}
+	if writer && cfg.WAL && !strings.Contains(lower, "wal_autocheckpoint") {
+		params = append(params, "_pragma=wal_autocheckpoint(2000)")
+	}
+	if len(params) == 0 {
+		return dsn
+	}
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return dsn + sep + strings.Join(params, "&")
 }
 
 func applyPragmas(db *sql.DB, cfg Config, isWriter bool) error {

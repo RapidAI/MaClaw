@@ -1567,6 +1567,103 @@ func TestResolveTenantByEmailUsesConfiguredTenantDomains(t *testing.T) {
 	}
 }
 
+func TestResolveTenantByEmailUsesUnverifiedIdentityWithoutListingEveryUser(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	svc.SetTenantRepository(deps.store.Tenants)
+	now := time.Now().UTC()
+	if err := deps.store.Tenants.Create(context.Background(), &store.Tenant{
+		ID:               "tenant_qianxin",
+		Slug:             "tenant-qianxin",
+		Name:             "Qianxin",
+		Status:           "active",
+		PrimaryDomain:    "example.com",
+		SettingsJSON:     `{"email_domains":["example.com"]}`,
+		CreatedByAdminID: "test",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	if err := deps.store.Users.Create(context.Background(), &store.User{
+		ID: "user_alias", TenantID: "tenant_qianxin", Email: "Owner@Example.com", SN: "SN-ALIAS", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := deps.store.Users.UpsertIdentity(context.Background(), &store.UserIdentity{
+		ID: "user_alias_qianxin_email", TenantID: "tenant_qianxin", UserID: "user_alias", Type: "email", Value: "Zhulu@Qianxin.com", Verified: false, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert identity: %v", err)
+	}
+
+	tenantID, found, ambiguous, err := svc.ResolveTenantByEmail(context.Background(), "zhulu@qianxin.com")
+	if err != nil {
+		t.Fatalf("ResolveTenantByEmail: %v", err)
+	}
+	if tenantID != "tenant_qianxin" || !found || ambiguous {
+		t.Fatalf("identity route tenant=%q found=%v ambiguous=%v", tenantID, found, ambiguous)
+	}
+	accountTenant, accountFound, accountAmbiguous, err := svc.ResolveTenantByEmail(context.Background(), "OWNER@example.com")
+	if err != nil {
+		t.Fatalf("ResolveTenantByEmail account: %v", err)
+	}
+	if accountTenant != "tenant_qianxin" || !accountFound || accountAmbiguous {
+		t.Fatalf("account route tenant=%q found=%v ambiguous=%v", accountTenant, accountFound, accountAmbiguous)
+	}
+}
+
+type emailTenantLookupUsers struct {
+	store.UserRepository
+	ids       []string
+	err       error
+	listCalls int
+}
+
+func (u *emailTenantLookupUsers) ListTenantIDsByEmail(context.Context, string) ([]string, error) {
+	if u.err != nil {
+		return nil, u.err
+	}
+	return u.ids, nil
+}
+
+func (u *emailTenantLookupUsers) List(context.Context) ([]*store.User, error) {
+	u.listCalls++
+	return nil, errors.New("full user scan")
+}
+
+func TestResolveTenantByEmailDoesNotScanUsersWhenLookupExists(t *testing.T) {
+	users := &emailTenantLookupUsers{ids: []string{"tenant_qianxin"}}
+	svc := NewIdentityService(users, nil, nil, nil, nil, nil, nil, nil, "open", true, nil, "http://127.0.0.1:9399")
+
+	tenantID, found, ambiguous, err := svc.ResolveTenantByEmail(context.Background(), "Zhulu@Qianxin.com")
+	if err != nil {
+		t.Fatalf("ResolveTenantByEmail: %v", err)
+	}
+	if tenantID != "tenant_qianxin" || !found || ambiguous || users.listCalls != 0 {
+		t.Fatalf("tenant=%q found=%v ambiguous=%v listCalls=%d", tenantID, found, ambiguous, users.listCalls)
+	}
+
+	users.ids = nil
+	users.err = errors.New("db locked")
+	_, _, _, err = svc.ResolveTenantByEmail(context.Background(), "zhulu@qianxin.com")
+	if err == nil || !strings.Contains(err.Error(), "db locked") || users.listCalls != 0 {
+		t.Fatalf("err=%v listCalls=%d", err, users.listCalls)
+	}
+}
+
 func TestResolveTenantByEmailIgnoresInvalidConfiguredTenantDomains(t *testing.T) {
 	deps := newTestStore(t)
 	svc := NewIdentityService(

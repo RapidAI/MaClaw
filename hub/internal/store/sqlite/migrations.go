@@ -1533,6 +1533,8 @@ func RunMigrations(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_viewer_tokens_user_id ON viewer_tokens(user_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_login_tokens_expires_at ON login_tokens(expires_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities(tenant_id, user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_identities_type_value ON user_identities(type, value);`,
+		`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);`,
 	}
 	for _, stmt := range perfIndexes {
 		if _, err := db.Exec(stmt); err != nil {

@@ -97,7 +97,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	// Compaction: trim without LLM summarizer (fast, <1ms). Uses static
 	// placeholder for dropped entries. memorySinkCollector only collects
 	// texts into a slice (no I/O, no locks) — actual persistence is async.
-	trimmed := trimHistoryWithSummaryPrecomputed(history, nil, memorySinkCollector, dynamicLimit, dynamicTokenLimit, estimatedTokens)
+	trimmed := trimHistoryWithSummaryPrecomputed(history, nil, memorySinkCollector, dynamicLimit, dynamicTokenLimit, estimatedTokens, confirmationOriginalTexts(h, userID))
 	// A file-companion /clear or a synced transcript bumps a generation the
 	// live turn captured with the history it loaded. The loop still tries
 	// to save on the way out. That save must not put the previous chat back.
@@ -117,7 +117,12 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	// the Recall Engine can still find file paths, decisions, etc.
 	if len(trimmed) < len(history) && h.memoryStore != nil && !isIsolatedAssistantSessionUserID(userID) {
 		if pi := h.memoryStore.PageIdx(); pi != nil {
-			removedEntries := computeRemovedEntries(history, trimmed)
+			var removedEntries []memory.Entry
+			if agent.HandoffMemoAll() {
+				removedEntries = handoffPageAnchorEntries(trimmed)
+			} else {
+				removedEntries = computeRemovedEntries(history, trimmed)
+			}
 			if len(removedEntries) > 0 {
 				_ = pi.IndexCompactedPage(userID, removedEntries)
 			}
@@ -265,6 +270,29 @@ func (h *IMMessageHandler) scheduleCompactionHandoff(userID string, trimmed []ag
 		return
 	}
 	cfg := h.getMaclawLLMConfig()
+	if agent.HandoffMemoAll() {
+		if h.client == nil || strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+			h.memory.FinishHandoffCompaction(userID, compactionID)
+			return
+		}
+		client := h.client
+		store := h.memory
+		go func() {
+			summary := summarizeCompactionMaterial(cfg, client, source)
+			if summary == "" || compactionSummaryUnusable(summary, "") {
+				store.FinishHandoffCompaction(userID, compactionID)
+				return
+			}
+			parsed, ok := agent.ParseHandoffMemo(summary)
+			if !ok || !parsed.Usable() {
+				store.FinishHandoffCompaction(userID, compactionID)
+				return
+			}
+			log.Printf("[handoff-memo] async %s", parsed.LengthNote())
+			store.ReplaceCompactionPlaceholder(userID, compactionID, parsed.RenderBlock())
+		}()
+		return
+	}
 	if h.client == nil || strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		h.memory.ReplaceCompactionPlaceholder(userID, compactionID, "")
 		return

@@ -1886,6 +1886,113 @@ func TestShortContinuationPublishesCarriedToolsWithoutRanking(t *testing.T) {
 	}
 }
 
+func TestShortNewInstructionReentersModelDiscovery(t *testing.T) {
+	const userID = "desktop-user:api2"
+	const text = "更新api2服务器上的omnirouter 到最新版本。"
+	if n := utf8.RuneCountInString(text); n == 0 || n > 40 {
+		t.Fatalf("fixture must sit inside the old 40-rune gate, got %d", n)
+	}
+	if parentContinuationDefersDiscovery(text) {
+		t.Fatal("a server update names new work")
+	}
+	for _, cue := range []string{
+		"继续", "请继续", "请帮我继续", "接着说", "继续说一下", "继续往下", "往下说", "下一步",
+		"重试", "重试一下", "再说一下", "用这个", "用这个吧", "用这个继续", "请用这个",
+		"按这个做一下", "好的，用这个", "好的，继续", "继续吗", "继续吗？", "用这个吗",
+		"好的，继续吗", "继续了，说", "继续，请", "continue please",
+		"继续\n\n" + agent.FilePathPromptPrefix + "\nC:\\slides\\pic.png\n" + agent.AttachedImageReadHint,
+	} {
+		if !parentContinuationDefersDiscovery(cue) {
+			t.Fatalf("%q must keep the open list", cue)
+		}
+	}
+	for _, fresh := range []string{
+		"帮我", "请", "麻烦你", "please", "pls", "好的", "可以", "行",
+		"继续做配图版", "好的，继续做配图版", "用这个方案", "用这个方案吗", "下一步把服务升到最新",
+		"继续了解", "继续更新", "升级吗", "了继续",
+		"继续，请更新服务器", "continue please update the server",
+		text + "\n\n" + agent.FilePathPromptPrefix + "\nC:\\slides\\pic.png",
+		"帮我更新api2服务器上的omnirouter 到最新版本。",
+		"好的，更新api2服务器上的omnirouter 到最新版本。",
+	} {
+		if parentContinuationDefersDiscovery(fresh) {
+			t.Fatalf("%q names a new request or is only courtesy", fresh)
+		}
+	}
+	h := &IMMessageHandler{
+		registry: NewToolRegistry(),
+		unifiedClassifier: intent.New(intent.Config{LLMFunc: func(_, _ string) (string, error) {
+			t.Fatal("classifier ran")
+			return "", nil
+		}}),
+	}
+	registerBuiltinTools(h.registry, h)
+	h.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "knowledge_save_text"}},
+	})
+	if !h.parentExecutionIsFull(userID) {
+		t.Fatal("a knowledge write is still a parent carry for a real continuation")
+	}
+	for _, ack := range []string{"可以", "行", "好的吧", "可以吗", "好的吗"} {
+		ackProfile, ackSemantic := h.classifyIMExecutionProfileAndSemantic(IMUserMessage{Text: ack, UserID: userID}, false, false)
+		if ackSemantic != nil {
+			t.Fatalf("%q classified: semantic=%+v", ack, ackSemantic)
+		}
+		ackKept := h.continuationKeepsParentExecution(ackProfile, userID, ack, ackSemantic)
+		if ackKept.Reason != shortContinuationReason || !executionKeepsParentToolSurface(ackKept) {
+			t.Fatalf("%q profile=%+v", ack, ackKept)
+		}
+	}
+	fileCue := "继续\n\n" + agent.FilePathPromptPrefix + "\nC:\\slides\\pic.png\n" + agent.AttachedImageReadHint
+	if utf8.RuneCountInString(fileCue) <= 40 {
+		t.Fatalf("file cue must exceed the raw 40-rune gate, got %d", utf8.RuneCountInString(fileCue))
+	}
+	if hasStructuralFullExecutionSignal(fileCue) {
+		t.Fatal("a path inside the file-picker block is host text, not a structural signal")
+	}
+	typedPath := "看看 C:\\slides\\pic.png"
+	if !hasStructuralFullExecutionSignal(typedPath) {
+		t.Fatal("a path the user typed is still a structural signal")
+	}
+	freshWithFile := text + "\n\n" + agent.FilePathPromptPrefix + "\nC:\\slides\\pic.png"
+	for _, fresh := range []string{
+		text,
+		"好的，" + text,
+		"帮我" + text,
+		"继续吗",
+		fileCue,
+		freshWithFile,
+		typedPath,
+	} {
+		freshProfile, freshSemantic := h.classifyIMExecutionProfileAndSemantic(IMUserMessage{Text: fresh, UserID: userID}, false, false)
+		kept := h.continuationKeepsParentExecution(freshProfile, userID, fresh, freshSemantic)
+		if fresh == "继续吗" || fresh == fileCue {
+			if freshSemantic != nil || kept.Reason != shortContinuationReason || !executionKeepsParentToolSurface(kept) {
+				t.Fatalf("%q profile=%+v semantic=%+v", fresh, kept, freshSemantic)
+			}
+			continue
+		}
+		if freshSemantic == nil || !intent.ClassificationIsModelDiscovery(*freshSemantic) {
+			t.Fatalf("%q semantic=%+v profile=%+v", fresh, freshSemantic, freshProfile)
+		}
+		if kept.Reason != freshProfile.Reason || executionKeepsParentToolSurface(kept) || freshProfile.IsLight() {
+			t.Fatalf("%q inherited the knowledge-write surface: %+v", fresh, kept)
+		}
+	}
+	visible := modelDiscoveryVisibleTools(h, nil)
+	if !turnDirectoryHave(visible)["tools_search"] || turnDirectoryHave(visible)["knowledge_save_text"] {
+		t.Fatalf("discovery directory = %v", turnDirectoryNames(visible))
+	}
+	follow, followSemantic := h.classifyIMExecutionProfileAndSemantic(IMUserMessage{Text: "继续", UserID: userID}, false, false)
+	if followSemantic != nil {
+		t.Fatalf("继续 classified: semantic=%+v profile=%+v", followSemantic, follow)
+	}
+	upgraded := h.continuationKeepsParentExecution(follow, userID, "继续", followSemantic)
+	if upgraded.Reason != shortContinuationReason || !executionKeepsParentToolSurface(upgraded) {
+		t.Fatalf("继续 profile=%+v", upgraded)
+	}
+}
+
 func TestDiscoveryWorkToolCarrySurvivesShortFollowUp(t *testing.T) {
 	calls := 0
 	discovery := intent.ModelDiscoveryClassification()

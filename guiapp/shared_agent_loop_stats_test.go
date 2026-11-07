@@ -185,8 +185,28 @@ func TestGetSharedAgentLoopStatusIncludesTokenOptimizationTelemetry(t *testing.T
 	if st.ContextCheckpoints != agent.CurrentContextCheckpointStats() {
 		t.Fatalf("checkpoint stats differ: status=%+v current=%+v", st.ContextCheckpoints, agent.CurrentContextCheckpointStats())
 	}
+	if st.HandoffMemos != agent.CurrentHandoffMemoStats() {
+		t.Fatalf("handoff memo stats differ: status=%+v current=%+v", st.HandoffMemos, agent.CurrentHandoffMemoStats())
+	}
 	if st.ContextCheckpointMode != "shadow" {
 		t.Fatalf("checkpoint mode = %q, want shadow", st.ContextCheckpointMode)
+	}
+}
+
+func TestHandoffMemoDoctorNoteLengthsOnly(t *testing.T) {
+	if handoffMemoDoctorNote(agent.HandoffMemoStats{}) != "" {
+		t.Fatal("empty counters should stay off the doctor line")
+	}
+	note := handoffMemoDoctorNote(agent.HandoffMemoStats{Applied: 1, Fallback: 1, KeptExtraGroup: 2})
+	if !strings.Contains(note, "applied=1") || !strings.Contains(note, "fallback=1") || !strings.Contains(note, "extra=2") || !strings.Contains(note, "fallback_ratio_high") {
+		t.Fatalf("note=%q", note)
+	}
+	if strings.Contains(note, "progress body") {
+		t.Fatalf("note leaked a body: %q", note)
+	}
+	onlyFallback := handoffMemoDoctorNote(agent.HandoffMemoStats{Fallback: 1})
+	if !strings.Contains(onlyFallback, "fallback=1") || !strings.Contains(onlyFallback, "fallback_ratio_high") {
+		t.Fatalf("deterministic-only note=%q", onlyFallback)
 	}
 }
 

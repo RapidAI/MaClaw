@@ -1104,6 +1104,44 @@ func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
 	})
 }
 
+// FinishHandoffCompaction clears a pending summarizer source and leaves the
+// deterministic memo in place. An empty ReplaceCompactionPlaceholder must not
+// be used for this: that call is the placeholder-failure path.
+func (cm *ConversationMemory) FinishHandoffCompaction(userID, compactionID string) bool {
+	if cm == nil || strings.TrimSpace(compactionID) == "" {
+		return false
+	}
+	updated := false
+	cm.checkpointLockedMutation(func() {
+		cm.ensureSessionEntriesLoaded(userID)
+		sh := cm.shardNoWait(userID)
+		sh.mu.Lock()
+		s := sh.sessions[userID]
+		if s == nil {
+			sh.mu.Unlock()
+			return
+		}
+		for i := range s.entries {
+			if s.entries[i].CompactionID != compactionID {
+				continue
+			}
+			if strings.TrimSpace(s.entries[i].CompactionSource) == "" {
+				continue
+			}
+			s.entries[i].CompactionSource = ""
+			updated = true
+		}
+		if updated {
+			s.lastAccess = time.Now()
+		}
+		sh.mu.Unlock()
+		if updated {
+			cm.markSessionDirty(userID)
+		}
+	})
+	return updated
+}
+
 // ReplaceCompactionPlaceholder writes an async checkpoint summary onto the
 // separator entry with compactionID. An empty content clears the pending
 // source and leaves the placeholder text. Entries whose source is already

@@ -32,6 +32,14 @@ func TestFileCompanionPDFTitlePrefersTheInfoDictionary(t *testing.T) {
 	if got := fileCompanionPDFTitleFrom(noise).text; got != "Indirect Title" {
 		t.Fatalf("indirect after noise = %q", got)
 	}
+	plainXMP := []byte("<dc:title>Plain Paper</dc:title>")
+	if got := fileCompanionPDFTitleFrom(plainXMP).text; got != "Plain Paper" {
+		t.Fatalf("plain xmp = %q", got)
+	}
+	rdfXMP := []byte(`<dc:title><rdf:Alt><rdf:li xml:lang="x-default">XMP Paper</rdf:li></rdf:Alt></dc:title>`)
+	if got := fileCompanionPDFTitleFrom(rdfXMP).text; got != "XMP Paper" {
+		t.Fatalf("rdf xmp = %q", got)
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "paper.pdf")
 	var buf bytes.Buffer
@@ -108,8 +116,64 @@ func TestFileCompanionTextAndOfficeTitles(t *testing.T) {
 	if !ok || title != "After Fold" {
 		t.Fatalf("empty fold = %q ok %v", title, ok)
 	}
+	between := filepath.Join(dir, "between.md")
+	if err := os.WriteFile(between, []byte("---\n# Between Rules\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	title, _, _, ok = fileCompanionDocumentTitle(between)
+	if !ok || title != "Between Rules" {
+		t.Fatalf("between rules = %q ok %v", title, ok)
+	}
+	setext := filepath.Join(dir, "setext.md")
+	if err := os.WriteFile(setext, []byte("Setext Title\n==========\n# Later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	title, _, _, ok = fileCompanionDocumentTitle(setext)
+	if !ok || title != "Setext Title" {
+		t.Fatalf("setext = %q ok %v", title, ok)
+	}
+	dashed := filepath.Join(dir, "dashed.md")
+	if err := os.WriteFile(dashed, []byte("Dash Title\n----------\n# Later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	title, _, _, ok = fileCompanionDocumentTitle(dashed)
+	if !ok || title != "Dash Title" {
+		t.Fatalf("dash setext = %q ok %v", title, ok)
+	}
+	ruled := filepath.Join(dir, "ruled.md")
+	if err := os.WriteFile(ruled, []byte("This is a longer introduction\n---\n# Real Title\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	title, _, _, ok = fileCompanionDocumentTitle(ruled)
+	if !ok || title != "Real Title" {
+		t.Fatalf("rule = %q ok %v", title, ok)
+	}
+	spaced := filepath.Join(dir, "spaced.md")
+	if err := os.WriteFile(spaced, []byte("---\ntitle : \"Spaced Title\" # note\n---\n# Other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	title, _, _, ok = fileCompanionDocumentTitle(spaced)
+	if !ok || title != "Spaced Title" {
+		t.Fatalf("spaced title = %q ok %v", title, ok)
+	}
+	listed := filepath.Join(dir, "listed.md")
+	if err := os.WriteFile(listed, []byte("---\nauthor: Ada\ntags:\n  - a\n---\n# Listed Title\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	title, _, _, ok = fileCompanionDocumentTitle(listed)
+	if !ok || title != "Listed Title" {
+		t.Fatalf("front list = %q ok %v", title, ok)
+	}
+	closed := filepath.Join(dir, "closed.md")
+	if err := os.WriteFile(closed, []byte("# Visible #\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	title, _, _, ok = fileCompanionDocumentTitle(closed)
+	if !ok || title != "Visible" {
+		t.Fatalf("closed hashes = %q ok %v", title, ok)
+	}
 	page := filepath.Join(dir, "page.html")
-	if err := os.WriteFile(page, []byte("<html><title>Tom &amp; Jerry</title></html>"), 0o644); err != nil {
+	if err := os.WriteFile(page, []byte("<html><titleNot>Bad</titleNot><title>Tom &amp; Jerry</title></html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	title, _, _, ok = fileCompanionDocumentTitle(page)
@@ -121,6 +185,18 @@ func TestFileCompanionTextAndOfficeTitles(t *testing.T) {
 	title, _, _, ok = fileCompanionDocumentTitle(docx)
 	if !ok || title != "Office Title" {
 		t.Fatalf("docx = %q ok %v", title, ok)
+	}
+	styled := filepath.Join(dir, "styled.docx")
+	writeDocxTitle(t, styled, "", `<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>Styled </w:t><w:t>Paper</w:t></w:r></w:p><w:p><w:r><w:t>Body</w:t></w:r></w:p>`)
+	title, _, _, ok = fileCompanionDocumentTitle(styled)
+	if !ok || title != "Styled Paper" {
+		t.Fatalf("styled docx = %q ok %v", title, ok)
+	}
+	first := filepath.Join(dir, "first.docx")
+	writeDocxTitle(t, first, "", `<w:p><w:r><w:t>Short Title</w:t></w:r></w:p><w:p><w:r><w:t>Body</w:t></w:r></w:p>`)
+	title, _, _, ok = fileCompanionDocumentTitle(first)
+	if !ok || title != "Short Title" {
+		t.Fatalf("first paragraph = %q ok %v", title, ok)
 	}
 	other := filepath.Join(dir, "pic.png")
 	if err := os.WriteFile(other, []byte("not a title"), 0o644); err != nil {
@@ -170,6 +246,24 @@ func TestFileCompanionLibraryTitleSurvivesARewrite(t *testing.T) {
 	if app.fillFileCompanionLibraryTitles() {
 		t.Fatal("unchanged file was read again")
 	}
+	fileCompanionLibraryMu.Lock()
+	stored, ok := app.readFileCompanionLibraryFileLocked()
+	if !ok {
+		fileCompanionLibraryMu.Unlock()
+		t.Fatal("library missing")
+	}
+	key := fileCompanionTitleKey(path)
+	stale := stored.Titles[key]
+	stale.Version = 0
+	stored.Titles[key] = stale
+	err = app.writeFileCompanionLibraryFileLocked(stored.Items, stored.Titles, false)
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !app.fillFileCompanionLibraryTitles() {
+		t.Fatal("old extractor version was not read again")
+	}
 	if fileCompanionLibraryRev.Load() != rev {
 		t.Fatal("second fill wrote the library")
 	}
@@ -185,6 +279,34 @@ func TestFileCompanionLibraryTitleSurvivesARewrite(t *testing.T) {
 	}
 	if len(list.Items) != 1 || list.Items[0].Title != "Deep Work" || list.Items[0].Name != "notes.md" {
 		t.Fatalf("after rewrite = %#v", list.Items)
+	}
+}
+
+func writeDocxTitle(t *testing.T, path, core, paragraphs string) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	zw := zip.NewWriter(file)
+	entry, err := zw.Create("docProps/core.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte(`<?xml version="1.0"?><cp:coreProperties xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>` + core + `</dc:title></cp:coreProperties>`)); err != nil {
+		t.Fatal(err)
+	}
+	body, err := zw.Create("word/document.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	xml := `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` + paragraphs + `</w:body></w:document>`
+	if _, err := body.Write([]byte(xml)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

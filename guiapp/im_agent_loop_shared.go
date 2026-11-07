@@ -10643,6 +10643,7 @@ func (c *sharedAgentLoopCallbacks) trimCheckpointHistory() []agent.ConversationE
 	trimmed := trimHistoryWithSummaryPrecomputed(
 		c.checkpointHistory, nil, nil,
 		agent.MaxConversationTurns, agent.MaxMemoryTokenEstimate, 0,
+		confirmationOriginalTexts(c.handler, c.userID),
 	)
 	c.checkpointHistory = providerValidCheckpointHistory(trimmed)
 	return c.checkpointHistory
@@ -10657,6 +10658,15 @@ func providerValidCheckpointHistory(entries []agent.ConversationEntry) []agent.C
 		if !isCompactionSeparator(entry) {
 			out = append(out, entry)
 			continue
+		}
+		if agent.HandoffMemoAll() {
+			text, _ := entry.Content.(string)
+			if strings.Contains(text, "<handoff-memo>") {
+				entry.Role = "user"
+				entry.Content = text
+				out = append(out, entry)
+				continue
+			}
 		}
 		entry.Role = "user"
 		entry.Content = visibleCheckpointHandoff(entry)

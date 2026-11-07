@@ -65,6 +65,20 @@ export const knownProviderEndpoints: ProviderEndpoint[] = [
 
 
 
+// Chat models offered for xAI before a live /models response. Keep this aligned
+// with xAIGrokModelCatalog in guiapp/app_maclaw_llm.go.
+export const xaiGrokChatModelIds = [
+    "grok-4.7",
+    "grok-4.6",
+    "grok-4.5",
+    "grok-4.3",
+    "grok-4.20-0309-reasoning",
+    "grok-4.20-0309-non-reasoning",
+    "grok-4.20-multi-agent-0309",
+    "grok-4.1-fast",
+    "grok-build-0.1",
+] as const;
+
 // Recommended model IDs per provider (used for model name suggestions)
 export const recommendedModels: { [provider: string]: { id: string; note?: string }[] } = {
     "Google AI Studio": [
@@ -76,7 +90,7 @@ export const recommendedModels: { [provider: string]: { id: string; note?: strin
     "Doubao": [{ id: "doubao-seed-code-preview-latest" }],
     "MiniMax": [{ id: "MiniMax-M2.1" }],
     "DeepSeek": [{ id: "deepseek-chat" }],
-    "xAI-Grok": [{ id: "grok-4.6", note: "Default" }],
+    "xAI-Grok": xaiGrokChatModelIds.map(id => (id === "grok-4.7" ? { id, note: "Default" } : { id })),
     "XiaoMi": [{ id: "mimo-v2-flash" }],
     "摩尔线程": [{ id: "GLM-4.7" }],
     "快手": [{ id: "kat-coder-pro-v1" }],

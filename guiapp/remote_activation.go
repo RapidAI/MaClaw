@@ -778,6 +778,18 @@ func (a *App) GetRemoteRegistrationAuth(hubURL string, tenantID string) (RemoteR
 	return getRemoteRegistrationAuth(hubURL, tenantID, "")
 }
 
+// remoteRegistrationAuthRetryDelays spaces retries of a registration-auth
+// probe that already found a Hub. An immediate 500/502/503/504/429, or a
+// broken connection, can succeed on the next attempt. A permanent 400, such
+// as an ambiguous tenant, is not retried. A probe that runs until its own
+// deadline is not retried either: cancelling it and starting again abandons a
+// Hub lookup that may be about to finish.
+var remoteRegistrationAuthRetryDelays = []time.Duration{200 * time.Millisecond, 400 * time.Millisecond}
+
+// remoteRegistrationAuthAttemptTimeout is the budget for one probe. It matches
+// hubHTTPClient so a slow-but-live Hub can still answer. Tests shorten it.
+var remoteRegistrationAuthAttemptTimeout = 30 * time.Second
+
 func getRemoteRegistrationAuth(hubURL string, tenantID string, identity string) (RemoteRegistrationAuthResult, error) {
 	hubURL = strings.TrimSpace(hubURL)
 	if hubURL == "" {
@@ -802,9 +814,109 @@ func getRemoteRegistrationAuth(hubURL string, tenantID string, identity string) 
 			authURL = parsed.String()
 		}
 	}
-	resp, err := hubHTTPClient.Get(authURL)
+	attempts := 1 + len(remoteRegistrationAuthRetryDelays)
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(remoteRegistrationAuthRetryDelays[attempt-1])
+		}
+		result, err := getRemoteRegistrationAuthOnce(authURL, tenantID)
+		if err == nil || !remoteRegistrationAuthErrorRetryable(err) {
+			return result, err
+		}
+		lastErr = err
+		if attempt+1 < attempts {
+			log.Printf("[registration-route] auth probe retry hub=%s attempt=%d/%d err=%s", strings.TrimRight(hubURL, "/"), attempt+1, attempts, registrationAuthRetryLogLine(err))
+		}
+	}
+	return RemoteRegistrationAuthResult{}, lastErr
+}
+
+type retryableRegistrationAuthError struct {
+	err error
+}
+
+func (e retryableRegistrationAuthError) Error() string {
+	if e.err == nil {
+		return "load registration auth config failed"
+	}
+	return e.err.Error()
+}
+
+func (e retryableRegistrationAuthError) Unwrap() error { return e.err }
+
+func remoteRegistrationAuthErrorRetryable(err error) bool {
+	var retryable retryableRegistrationAuthError
+	return errors.As(err, &retryable)
+}
+
+func registrationAuthStatusRetryable(status int) bool {
+	switch status {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, http.StatusTooManyRequests:
+		return true
+	default:
+		return false
+	}
+}
+
+// registrationAuthTransportRetryable reports a connection failure that came
+// back immediately. A deadline, including hubHTTPClient.Timeout and this
+// probe's own context, is not a signal to start the same lookup again.
+func registrationAuthTransportRetryable(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return !netErr.Timeout()
+	}
+	return false
+}
+
+// registrationAuthRetryLogLine strips the email query from a transport error.
+// The client error embeds the request URL, and the desktop log already records
+// a redacted identity on the same line's callers.
+func registrationAuthRetryLogLine(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := err.Error()
+	const key = "email="
+	var b strings.Builder
+	for {
+		i := strings.Index(text, key)
+		if i < 0 {
+			b.WriteString(text)
+			return b.String()
+		}
+		b.WriteString(text[:i])
+		b.WriteString("email=***")
+		rest := text[i+len(key):]
+		end := len(rest)
+		for j, r := range rest {
+			if r == '&' || r == '"' || r == ' ' {
+				end = j
+				break
+			}
+		}
+		text = rest[end:]
+	}
+}
+
+func getRemoteRegistrationAuthOnce(authURL string, tenantID string) (RemoteRegistrationAuthResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), remoteRegistrationAuthAttemptTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, authURL, nil)
 	if err != nil {
 		return RemoteRegistrationAuthResult{}, fmt.Errorf("load registration auth config: %w", err)
+	}
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		wrapped := fmt.Errorf("load registration auth config: %w", err)
+		if registrationAuthTransportRetryable(err) {
+			return RemoteRegistrationAuthResult{}, retryableRegistrationAuthError{err: wrapped}
+		}
+		return RemoteRegistrationAuthResult{}, wrapped
 	}
 	defer resp.Body.Close()
 	// Older Hubs predate the public registration-auth endpoint. Their
@@ -822,10 +934,17 @@ func getRemoteRegistrationAuth(hubURL string, tenantID string, identity string) 
 	}
 	result := RemoteRegistrationAuthResult{EmailVerificationRequired: true}
 	if err := remote.DecodeHTTPJSONResponse(resp, &result, "registration auth config"); err != nil {
+		if registrationAuthStatusRetryable(resp.StatusCode) {
+			return RemoteRegistrationAuthResult{}, retryableRegistrationAuthError{err: err}
+		}
 		return RemoteRegistrationAuthResult{}, err
 	}
 	if resp.StatusCode >= 300 {
-		return RemoteRegistrationAuthResult{}, fmt.Errorf("load registration auth config failed: %s", resp.Status)
+		err := fmt.Errorf("load registration auth config failed: %s", resp.Status)
+		if registrationAuthStatusRetryable(resp.StatusCode) {
+			return RemoteRegistrationAuthResult{}, retryableRegistrationAuthError{err: err}
+		}
+		return RemoteRegistrationAuthResult{}, err
 	}
 	if strings.TrimSpace(result.Method) == "" {
 		return RemoteRegistrationAuthResult{}, fmt.Errorf("registration auth config missing method")
@@ -898,7 +1017,7 @@ func (a *App) resolveRemoteRegistrationTarget(identity string, invitationCode st
 func (a *App) resolveRemoteRegistrationTargetFromHub(identity, hubURL, hubID, tenantID string) (RemoteRegistrationTargetResult, error) {
 	auth, err := getRemoteRegistrationAuth(hubURL, tenantID, identity)
 	if err != nil {
-		log.Printf("[registration-route] auth probe failed identity=%s hub=%s hub_id=%s tenant=%s err=%v", remoteRegistrationIdentityLogValue(identity), strings.TrimRight(strings.TrimSpace(hubURL), "/"), strings.TrimSpace(hubID), strings.TrimSpace(tenantID), err)
+		log.Printf("[registration-route] auth probe failed identity=%s hub=%s hub_id=%s tenant=%s err=%s", remoteRegistrationIdentityLogValue(identity), strings.TrimRight(strings.TrimSpace(hubURL), "/"), strings.TrimSpace(hubID), strings.TrimSpace(tenantID), registrationAuthRetryLogLine(err))
 		return RemoteRegistrationTargetResult{}, err
 	}
 	resolvedTenantID := firstNonEmpty(auth.TenantID, tenantID)

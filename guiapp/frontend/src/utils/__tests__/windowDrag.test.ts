@@ -11,6 +11,7 @@ import {
     DRAG_THRESHOLD_PX,
     installWindowDragHandler,
     isWindowDragArmTarget,
+    isWindowDragLocked,
     resetWindowDragHandlerForTests,
     startNativeWindowDrag,
     windowDragHandleProps,
@@ -90,6 +91,21 @@ describe('startNativeWindowDrag', () => {
     it('falls back to BeginWindowDrag when WailsInvoke is missing', () => {
         startNativeWindowDrag();
         expect(beginWindowDrag).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not start a move while the shell is maximised or fullscreen', () => {
+        const app = document.createElement('div');
+        app.id = 'App';
+        app.setAttribute('data-window-move-locked', 'true');
+        document.body.appendChild(app);
+        try {
+            expect(isWindowDragLocked()).toBe(true);
+            startNativeWindowDrag();
+            expect(wailsInvoke).not.toHaveBeenCalled();
+            expect(beginWindowDrag).not.toHaveBeenCalled();
+        } finally {
+            app.remove();
+        }
     });
 });
 
@@ -227,6 +243,107 @@ describe('installWindowDragHandler', () => {
         });
         expect(wailsInvoke).not.toHaveBeenCalled();
         expect(beginWindowDrag).not.toHaveBeenCalled();
+    });
+
+    it('does not move a maximised shell, then moves again after restore', () => {
+        const app = document.createElement('div');
+        app.id = 'App';
+        app.setAttribute('data-window-move-locked', 'true');
+        document.body.appendChild(app);
+        try {
+            dispatchMouse('mousedown', {
+                button: 0,
+                detail: 1,
+                buttons: 1,
+                screenX: 80,
+                screenY: 8,
+                target: dragRegion,
+            });
+            dispatchMouse('mousemove', {
+                buttons: 1,
+                screenX: 80 + DRAG_THRESHOLD_PX + 12,
+                screenY: 8,
+            });
+            expect(wailsInvoke).not.toHaveBeenCalled();
+            expect(beginWindowDrag).not.toHaveBeenCalled();
+
+            app.removeAttribute('data-window-move-locked');
+            expect(isWindowDragLocked()).toBe(false);
+            dispatchMouse('mousedown', {
+                button: 0,
+                detail: 1,
+                buttons: 1,
+                screenX: 80,
+                screenY: 8,
+                target: dragRegion,
+            });
+            dispatchMouse('mousemove', {
+                buttons: 1,
+                screenX: 80 + DRAG_THRESHOLD_PX + 12,
+                screenY: 8,
+            });
+            expect(wailsInvoke).toHaveBeenCalledWith('drag');
+            expect(wailsInvoke).toHaveBeenCalledTimes(1);
+        } finally {
+            app.remove();
+        }
+    });
+
+    it('does not resume a press that started while fullscreen after the lock clears', () => {
+        const app = document.createElement('div');
+        app.id = 'App';
+        app.setAttribute('data-maximized', 'true');
+        document.body.appendChild(app);
+        try {
+            dispatchMouse('mousedown', {
+                button: 0,
+                detail: 1,
+                buttons: 1,
+                screenX: 80,
+                screenY: 8,
+                target: dragRegion,
+            });
+            app.removeAttribute('data-maximized');
+            dispatchMouse('mousemove', {
+                buttons: 1,
+                screenX: 80 + DRAG_THRESHOLD_PX + 20,
+                screenY: 8,
+            });
+            expect(wailsInvoke).not.toHaveBeenCalled();
+            expect(isWindowDragLocked()).toBe(false);
+        } finally {
+            app.remove();
+        }
+    });
+
+    it('treats data-maximized as a move lock', () => {
+        const app = document.createElement('div');
+        app.id = 'App';
+        app.setAttribute('data-maximized', 'true');
+        document.body.appendChild(app);
+        try {
+            expect(isWindowDragLocked()).toBe(true);
+        } finally {
+            app.remove();
+        }
+        expect(isWindowDragLocked()).toBe(false);
+    });
+
+    it('leaves double-click free to restore instead of starting a move', () => {
+        dispatchMouse('mousedown', {
+            button: 0,
+            detail: 2,
+            buttons: 1,
+            screenX: 40,
+            screenY: 4,
+            target: dragRegion,
+        });
+        dispatchMouse('mousemove', {
+            buttons: 1,
+            screenX: 40 + DRAG_THRESHOLD_PX + 8,
+            screenY: 4,
+        });
+        expect(wailsInvoke).not.toHaveBeenCalled();
     });
 
     it('cancels arm on mouseup before threshold', () => {

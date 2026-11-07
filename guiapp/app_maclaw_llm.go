@@ -607,7 +607,12 @@ func retainTrustedMaclawLLMProviderTestResults(providers, previous []corelib.Mac
 		if !found {
 			previousProvider, found = previousByName[strings.ToLower(strings.TrimSpace(providers[i].Name))]
 		}
-		providers[i].ConnectionTestPassed = found && previousProvider.ConnectionTestPassed && sameMaclawLLMProviderConnection(providers[i], previousProvider)
+		// The read path rewrites a former xAI default before the dialog saves
+		// the whole list. That rewrite is not an edited model, so it must not
+		// drop a connection test the user already passed.
+		left := maclawLLMProviderForXAIDefaultModelRetention(providers[i])
+		right := maclawLLMProviderForXAIDefaultModelRetention(previousProvider)
+		providers[i].ConnectionTestPassed = found && previousProvider.ConnectionTestPassed && sameMaclawLLMProviderConnection(left, right)
 	}
 	return providers
 }
@@ -622,9 +627,9 @@ func normalizeXAIProvider(provider, defaults corelib.MaclawLLMProvider) corelib.
 	provider.AuthType = defaults.AuthType
 	provider.Protocol = defaults.Protocol
 	provider.WireAPI = defaults.WireAPI
-	// Migrate former built-in defaults (grok-build, grok-4.5), plus API-key-era
-	// configurations, to the current OAuth default. Explicit OAuth model
-	// selections remain untouched.
+	// Migrate former built-in defaults (grok-build, grok-4.5, grok-4.6), plus
+	// API-key-era configurations, to the current OAuth default. Explicit OAuth
+	// model selections remain untouched.
 	if legacyAuth || legacyDefaultModel || strings.TrimSpace(provider.Model) == "" {
 		provider.Model = defaults.Model
 	}
@@ -644,10 +649,45 @@ func normalizeXAIProvider(provider, defaults corelib.MaclawLLMProvider) corelib.
 
 func isLegacyXAIDefaultModel(model string) bool {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "grok-build", "grok-4.5":
+	case "grok-build", "grok-4.5", "grok-4.6":
 		return true
 	default:
 		return false
+	}
+}
+
+const xAIGrokDefaultModel = "grok-4.7"
+
+// maclawLLMProviderForXAIDefaultModelRetention copies provider so a former
+// built-in Grok default compares equal to the current default. Explicit model
+// ids and custom slots stay as written: changing those still invalidates the
+// connection test.
+func maclawLLMProviderForXAIDefaultModelRetention(provider corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	if provider.IsCustom || strings.TrimSpace(provider.Name) != "xAI-Grok" {
+		return provider
+	}
+	model := strings.TrimSpace(provider.Model)
+	if model != "" && !isLegacyXAIDefaultModel(model) {
+		return provider
+	}
+	provider.Model = xAIGrokDefaultModel
+	return provider
+}
+
+// xAIGrokModelCatalog is the chat catalog shown in model assignment before a
+// live /models response is saved. Test & Save still merges the account's list
+// ahead of these ids.
+func xAIGrokModelCatalog() []string {
+	return []string{
+		xAIGrokDefaultModel,
+		"grok-4.6",
+		"grok-4.5",
+		"grok-4.3",
+		"grok-4.20-0309-reasoning",
+		"grok-4.20-0309-non-reasoning",
+		"grok-4.20-multi-agent-0309",
+		"grok-4.1-fast",
+		"grok-build-0.1",
 	}
 }
 
@@ -899,10 +939,11 @@ func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 		{Name: "GitHub Copilot", URL: "https://api.githubcopilot.com", Model: "claude-sonnet-4", AuthType: "oauth", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Qwen", URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen3.8-flash", Protocol: "openai", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
-		// xAI's Grok Build OAuth provider defaults to Grok 4.6 with a 400K context window.
+		// xAI's Grok Build OAuth provider defaults to Grok 4.7 with a 400K context window.
 		// The public xAI endpoint is OpenAI-compatible, so it uses the standard
-		// OpenAI request and model-discovery path.
-		{Name: "xAI-Grok", URL: "https://api.x.ai/v1", Model: "grok-4.6", Protocol: "openai", AuthType: "oauth", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
+		// OpenAI request and model-discovery path. Models is the assignment
+		// catalog until Test & Save merges the account's live /models list.
+		{Name: "xAI-Grok", URL: "https://api.x.ai/v1", Model: xAIGrokDefaultModel, Models: xAIGrokModelCatalog(), Protocol: "openai", AuthType: "oauth", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
 		defaultOpenCodeProvider(),
 		devinProvider(),
 		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: zhipuCodingDefaultModel, Protocol: "anthropic", AgentType: "claude code 2.0", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
@@ -1032,18 +1073,19 @@ func (a *App) maclawLLMProvidersFromConfig(cfg *corelib.AppConfig) struct {
 			providers[i] = corelib.NormalizeCodeGenSSOProvider(providers[i])
 			continue
 		}
+		// Preset catalogs stay selectable even when the row was saved from a
+		// custom slot (quick-fill) with only the default model id. URL and
+		// auth migration stay limited to the built-in row below.
+		if d, ok := defaultProvider[providers[i].Name]; ok && len(d.Models) > 0 {
+			merged := appendMissingModelIDs(providers[i].Models, d.Models)
+			if len(merged) != len(providers[i].Models) {
+				providers[i].Models = merged
+			}
+		}
 		// Keep preset provider URLs in sync (handles port changes etc.)
 		if !providers[i].IsCustom {
 			if u, ok := defaultURL[providers[i].Name]; ok {
 				providers[i].URL = u
-			}
-			// Official catalogs (星辰 flagship + lite) stay selectable when a
-			// TUI setup saved the provider with only the default model id.
-			if d, ok := defaultProvider[providers[i].Name]; ok && len(d.Models) > 0 {
-				merged := appendMissingModelIDs(providers[i].Models, d.Models)
-				if len(merged) != len(providers[i].Models) {
-					providers[i].Models = merged
-				}
 			}
 			if providers[i].Name == "Devin" {
 				providers[i].AuthType = "oauth"
@@ -2181,6 +2223,51 @@ func profileSupportsVisionForModel(providers []corelib.MaclawLLMProvider, provid
 	return ok && providerSupportsVisionForModel(provider, model)
 }
 
+// maclawLLMAssignmentProviders returns saved providers in saved order, using
+// the loader's normalized copy so official catalogs (xAI, 星辰) are visible
+// before anyone fetches /models. Presets the loader inserted are left out.
+func maclawLLMAssignmentProviders(saved, loaded []corelib.MaclawLLMProvider) []corelib.MaclawLLMProvider {
+	if len(saved) == 0 {
+		if len(loaded) == 0 {
+			return defaultMaclawLLMProviders()
+		}
+		return append([]corelib.MaclawLLMProvider(nil), loaded...)
+	}
+	used := make([]bool, len(loaded))
+	find := func(match func(corelib.MaclawLLMProvider) bool) (corelib.MaclawLLMProvider, bool) {
+		for i, provider := range loaded {
+			if used[i] || !match(provider) {
+				continue
+			}
+			used[i] = true
+			return provider, true
+		}
+		return corelib.MaclawLLMProvider{}, false
+	}
+	out := make([]corelib.MaclawLLMProvider, 0, len(saved))
+	for _, raw := range saved {
+		name := canonicalVolcengineTokenPlanProviderName(canonicalHubServiceProviderName(strings.TrimSpace(raw.Name)))
+		var provider corelib.MaclawLLMProvider
+		var ok bool
+		if id := strings.TrimSpace(raw.ID); id != "" {
+			// A durable ID that the loader dropped must not fall through to
+			// the name. That would bind the row to a different provider.
+			provider, ok = find(func(candidate corelib.MaclawLLMProvider) bool {
+				return strings.TrimSpace(candidate.ID) == id
+			})
+		} else if name != "" {
+			provider, ok = find(func(candidate corelib.MaclawLLMProvider) bool {
+				return corelib.MaclawLLMProviderNameEqual(candidate.Name, name)
+			})
+		}
+		if !ok {
+			continue
+		}
+		out = append(out, provider)
+	}
+	return out
+}
+
 // GetMaclawLLMProfilePanelState returns both persistent profile drafts and
 // their effective selections. It reads the configuration once and never
 // exposes provider URLs, API keys, OAuth tokens, or raw health diagnostics.
@@ -2190,10 +2277,11 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 		return MaclawLLMProfilePanelState{}, err
 	}
 	loaded := a.maclawLLMProvidersFromConfig(&cfg)
-	providers := normalizeMaclawLLMProviders(cfg.MaclawLLMProviders)
-	if len(providers) == 0 {
-		providers = defaultMaclawLLMProviders()
-	}
+	// Keep the user's saved rows, including read-time catalog backfill, but do
+	// not offer built-in presets that exist only because the loader inserts
+	// every default. An unsaved preset must not reappear just because it is
+	// still the current name or a profile still holds its legacy id.
+	providers := maclawLLMAssignmentProviders(cfg.MaclawLLMProviders, loaded.Providers)
 	profiles, err := effectiveMaclawLLMProfiles(cfg, providers, cfg.MaclawLLMCurrentProvider)
 	if err != nil {
 		return MaclawLLMProfilePanelState{}, err

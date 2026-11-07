@@ -291,7 +291,12 @@ describe("WebSearchConfigPanel", () => {
         fireEvent.click(screen.getByRole("button", { name: "保存策略" }));
         await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
         expect(screen.queryByRole("alert")).toBeNull();
-        expect(saveMock.mock.calls[0][0].engines.map((engine: { id: string }) => engine.id)[0]).toBe("yuanbao");
+        expect(saveMock.mock.calls[0][0].engines.map((engine: { id: string }) => engine.id)).toEqual([
+            "bing_cn", "baidu", "google", "yuanbao", "brave",
+        ]);
+        const savedYuanbao = saveMock.mock.calls[0][0].engines.find((engine: { id: string }) => engine.id === "yuanbao");
+        expect(savedYuanbao.enabled).toBe(true);
+        expect(savedYuanbao.api_key ?? "").toBe("");
     });
 
     it("clears a saved Yuanbao key and leaves the engine enabled", async () => {

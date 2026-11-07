@@ -269,6 +269,9 @@ func TrimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 	if len(msgs) <= 3 {
 		return msgs
 	}
+	if HandoffMemoAll() {
+		return trimConversationHandoff(msgs, msgBudget, summarizer)
+	}
 
 	// Strategy: keep msgs[0] (system prompt), drop oldest middle messages
 	// until we fit. We scan from index 1 forward, skipping the tail we want
@@ -536,6 +539,9 @@ func MakeSummarizer(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(s
 
 func TrimHistory(entries []ConversationEntry) []ConversationEntry {
 	entries = FoldComputerUseObserveEntries(entries)
+	if HandoffMemoAll() {
+		return trimHistoryWithMemo(entries)
+	}
 	if len(entries) <= MaxConversationTurns {
 		// Within turn limit — check token budget.
 		if EstimateConversationEntryTokens(entries) <= MaxMemoryTokenEstimate {
@@ -614,6 +620,9 @@ func TrimHistory(entries []ConversationEntry) []ConversationEntry {
 // prependHistoryHandoff keeps a deterministic note of what TrimHistory dropped.
 // Callers such as the WeChat gateway have no summarizer; the note is the checkpoint.
 func prependHistoryHandoff(dropped, kept []ConversationEntry) []ConversationEntry {
+	if HandoffMemoAll() {
+		return prependHandoffMemo(dropped, kept)
+	}
 	handoff := historyHandoffEntry(dropped)
 	if handoff.Content == "" {
 		return kept
@@ -657,6 +666,9 @@ func summaryAccepted(summary string) bool {
 }
 
 func historyHandoffEntry(dropped []ConversationEntry) ConversationEntry {
+	if HandoffMemoAll() {
+		return historyHandoffMemoEntry(dropped)
+	}
 	var users []string
 	var paths []string
 	seenUser := map[string]bool{}

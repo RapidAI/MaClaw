@@ -131,6 +131,9 @@ func AutoCompressConversation(
 	cfg corelib.MaclawLLMConfig,
 	httpClient *http.Client,
 ) []interface{} {
+	if HandoffMemoAll() {
+		return autoCompressWithHandoff(conversation, cfg, httpClient)
+	}
 	if len(conversation) <= 5 {
 		return conversation
 	}
@@ -169,6 +172,45 @@ func AutoCompressConversation(
 	return ContextMessagesToInterfaceSlice(result.Messages)
 }
 
+// autoCompressWithHandoff is the flag-all path. It still refuses a tool-call
+// loop: the memo builder keeps tool pairs, but this function is not the
+// mid-loop trim. A pending ask is left unchanged. The summary is one memo.
+func autoCompressWithHandoff(conversation []interface{}, cfg corelib.MaclawLLMConfig, httpClient *http.Client) []interface{} {
+	if len(conversation) <= 5 || conversationHasPendingAsk(conversation) || conversationHasToolLoop(conversation) {
+		return conversation
+	}
+	messages := InterfaceSliceToContextMessages(conversation)
+	if len(messages) == 0 {
+		return conversation
+	}
+	compressor := ctxcompress.NewCompressor(ctxcompress.CompressConfig{
+		ThresholdRatio:   0.80,
+		ProtectedTurns:   5,
+		MaxContextTokens: cfg.EffectiveContextTokens(),
+	}, MakeSummarizeCallback(cfg, httpClient))
+	if !compressor.ShouldCompress(messages) {
+		return conversation
+	}
+	summarize := func(text string) string {
+		out, err := MakeSummarizeCallback(cfg, httpClient)(text)
+		if err != nil {
+			return ""
+		}
+		return out
+	}
+	log.Printf("[auto-compress] handoff memo")
+	return trimConversationHandoff(conversation, cfg.EffectiveContextTokens(), summarize)
+}
+
+// ForceHandoffCompress replaces the covered prefix with one memo. Manual
+// /compress uses it. A tool-call loop and a pending ask are not rewritten.
+func ForceHandoffCompress(conversation []interface{}, msgBudget int, summarize func(string) string) []interface{} {
+	if conversationHasPendingAsk(conversation) || conversationHasToolLoop(conversation) {
+		return conversation
+	}
+	return trimConversationHandoff(conversation, msgBudget, summarize)
+}
+
 // MakeSummarizeCallback creates an LLM summarization callback for the compressor.
 func MakeSummarizeCallback(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(string) (string, error) {
 	return func(text string) (string, error) {
@@ -181,14 +223,15 @@ func MakeSummarizeCallback(cfg corelib.MaclawLLMConfig, httpClient *http.Client)
 			text = string(runes[:16000]) + "\n...(truncated)"
 		}
 
+		system, user := SummarizerPromptForMode(text, HandoffMemoAll())
 		messages := []interface{}{
 			map[string]string{
 				"role":    "system",
-				"content": "你是一个对话摘要助手。请将以下对话历史压缩为简洁的摘要，保留关键决策、工具调用结果、文件路径和代码片段。去除冗余的思考过程和重复的失败尝试。",
+				"content": system,
 			},
 			map[string]string{
 				"role":    "user",
-				"content": "请压缩以下对话历史:\n\n" + text,
+				"content": user,
 			},
 		}
 

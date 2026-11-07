@@ -896,7 +896,10 @@ func (f *Frontend) processMessage(message string, sender *edge.ICoreWebView2, ar
 	}
 
 	if message == "drag" {
-		if !f.mainWindow.IsFullScreen() {
+		// Caption drag restores a maximised window as soon as the pointer
+		// moves. Clamp can clear WS_MAXIMIZE while the outer rect still
+		// matches the work area; that frame stays put until an explicit restore.
+		if !f.mainWindow.captionDragBlocked() {
 			err := f.startDrag()
 			if err != nil {
 				f.logger.Error(err.Error())

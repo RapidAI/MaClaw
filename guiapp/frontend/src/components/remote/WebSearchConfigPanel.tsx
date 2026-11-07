@@ -45,9 +45,10 @@ type TestWebSearchEngineRequest = {
 const testWebSearchEngine = TestWebSearchEngine as unknown as (
 	request: TestWebSearchEngineRequest,
 ) => ReturnType<typeof TestWebSearchEngine>;
+// Keep aligned with mainlandWebSearchEngineOrder and internationalWebSearchEngineOrder.
 const PRESET_ORDER: Record<Exclude<Preset, "custom">, string[]> = {
-	mainland: ["yuanbao", "bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily", "maclaw_hub"],
-	international: ["yuanbao", "google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", "maclaw_hub"],
+	mainland: ["bing_cn", "baidu", "duckduckgo", "google", "yuanbao", "brave", "serper", "tinyfish", "tavily", "maclaw_hub"],
+	international: ["google", "duckduckgo", "bing_cn", "baidu", "yuanbao", "brave", "serper", "tinyfish", "tavily", "maclaw_hub"],
 };
 const ALLOW_ENABLED_WITHOUT_KEY = new Set(["yuanbao"]);
 const YUANBAO_API_KEY_URL = "https://console.cloud.tencent.com/wsapi/index?tab=apikey";

@@ -22,6 +22,7 @@ const codingAgentResumeFileName = ".coding_agent_state.json"
 type codingAgentResume struct {
 	History   []agent.ConversationEntry
 	Snapshots map[string]codingFileSnapshot
+	Memo      string
 }
 
 type codingAgentResumeDisk struct {
@@ -29,6 +30,7 @@ type codingAgentResumeDisk struct {
 	UpdatedAtUnix int64                       `json:"updated_at_unix"`
 	History       []agent.ConversationEntry   `json:"history,omitempty"`
 	Snapshots     []codingAgentResumeSnapDisk `json:"snapshots,omitempty"`
+	Memo          string                      `json:"memo,omitempty"`
 }
 
 type codingAgentResumeSnapDisk struct {
@@ -101,7 +103,76 @@ func loadCodingAgentResume(userID, projectPath string) codingAgentResume {
 	if len(snaps) == 0 {
 		snaps = nil
 	}
-	return codingAgentResume{History: history, Snapshots: snaps}
+	return codingAgentResume{History: history, Snapshots: snaps, Memo: disk.Memo}
+}
+
+// codingModelHistory is the transcript passed into codingagent.Run.
+// Flag coding/all retires that replay. Nested and horizon turns never load
+// a resume, so their history is already empty.
+func codingModelHistory(resume codingAgentResume) []agent.ConversationEntry {
+	if agent.HandoffMemoCoding() {
+		return nil
+	}
+	return resume.History
+}
+
+func codingHistoryAsMessages(entries []agent.ConversationEntry) []interface{} {
+	out := make([]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry.ToMessage())
+	}
+	return out
+}
+
+// codingResumeStatusStrip is what the next coding call sees instead of the
+// stored tool transcript. A missing memo is projected from that transcript.
+func codingResumeStatusStrip(resume codingAgentResume) string {
+	if strings.TrimSpace(resume.Memo) != "" {
+		if memo, ok := agent.ParseHandoffMemo(resume.Memo); ok {
+			return agent.FillHandoffMemo(agent.HandoffFill{Prior: memo, Strip: true}).Render()
+		}
+		return agent.HandoffStripFromText(resume.Memo)
+	}
+	if len(resume.History) == 0 {
+		return ""
+	}
+	projected := agent.MemoFromDroppedProjects(codingHistoryAsMessages(resume.History), agent.HandoffMemo{}, true)
+	if !projected.Usable() {
+		return ""
+	}
+	return projected.Render()
+}
+
+func appendCodingResumeStrip(userText, strip string) string {
+	strip = strings.TrimSpace(strip)
+	if strip == "" || strings.HasPrefix(strings.TrimSpace(userText), "[系统续接]") {
+		return userText
+	}
+	return strings.TrimRight(userText, "\n") + "\n\n" + codingCompletedStepResultPrefix + strip
+}
+
+func codingMemoFromTurn(taskText string, read, modified, created []string, commands []CodingSubAgentCommandResult) string {
+	handoff := make([]agent.HandoffCommand, 0, len(commands))
+	for _, cmd := range commands {
+		handoff = append(handoff, agent.HandoffCommand{
+			Tool:      "bash",
+			Path:      cmd.WorkingDir,
+			Command:   cmd.Command,
+			Succeeded: cmd.Succeeded,
+			Outcome:   cmd.Summary,
+		})
+	}
+	memo := agent.FillHandoffMemo(agent.HandoffFill{
+		UserTexts: []string{taskText},
+		Read:      read,
+		Modified:  modified,
+		Created:   created,
+		Commands:  handoff,
+	})
+	if !memo.Usable() {
+		return ""
+	}
+	return memo.RenderBlock()
 }
 
 // recordCodingAgentResume appends this loop to the task's agent transcript.
@@ -138,10 +209,15 @@ func recordCodingAgentResume(userID, projectPath string, delta []agent.Conversat
 		if len(storedSnaps) == 0 && sameProject && freshEnough {
 			storedSnaps = codingAgentResumeSnapMap(prior.Snapshots)
 		}
+		memo := ""
+		if sameProject && freshEnough {
+			memo = prior.Memo
+		}
 		disk := codingAgentResumeDisk{
 			ProjectPath:   projectPath,
 			UpdatedAtUnix: time.Now().Unix(),
 			History:       history,
+			Memo:          memo,
 		}
 		for key, snap := range storedSnaps {
 			key = canonicalCodingPath(key)
@@ -164,6 +240,43 @@ func recordCodingAgentResume(userID, projectPath string, delta []agent.Conversat
 			return
 		}
 		log.Printf("[coding-env] stored coding agent state user=%s history=%d snapshots=%d", userID, len(history), len(disk.Snapshots))
+	})
+}
+
+// recordCodingAgentResumeMemo stores a handoff memo without replacing the
+// transcript or the read snapshots. An empty memo does not rewrite the file.
+func recordCodingAgentResumeMemo(userID, projectPath, memo string) {
+	userID = strings.TrimSpace(userID)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	memo = strings.TrimSpace(memo)
+	if userID == "" || projectPath == "" || memo == "" {
+		return
+	}
+	path := codingAgentResumeStatePath(userID)
+	if path == "" {
+		return
+	}
+	withStickyCodingUserLock(userID, func() {
+		var prior codingAgentResumeDisk
+		if data, err := os.ReadFile(path); err == nil {
+			_ = json.Unmarshal(data, &prior)
+		}
+		sameProject := normalizeProjectSessionPath(prior.ProjectPath) == projectPath
+		freshEnough := prior.UpdatedAtUnix <= 0 || time.Since(time.Unix(prior.UpdatedAtUnix, 0)) <= stickyCodingMemoryMaxAge
+		if !sameProject || !freshEnough {
+			prior = codingAgentResumeDisk{ProjectPath: projectPath}
+		}
+		prior.ProjectPath = projectPath
+		prior.UpdatedAtUnix = time.Now().Unix()
+		prior.Memo = memo
+		data, err := json.Marshal(prior)
+		if err != nil {
+			log.Printf("[coding-env] encode coding agent memo failed user=%s err=%v", userID, err)
+			return
+		}
+		if err := atomicWriteFile(path, data); err != nil {
+			log.Printf("[coding-env] persist coding agent memo failed path=%s err=%v", path, err)
+		}
 	})
 }
 

@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -3412,7 +3413,11 @@ func formatRemotePlanStepCarrySummary(stepIndex int, title, status, sum string) 
 	}
 	body := strings.TrimSpace(sum)
 	if body != "" {
-		body = truncateRunesV2(body, 400)
+		if agent.HandoffMemoCoding() {
+			body = agent.PackRemotePlannedFromSummary(body)
+		} else {
+			body = truncateRunesV2(body, 400)
+		}
 	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf(

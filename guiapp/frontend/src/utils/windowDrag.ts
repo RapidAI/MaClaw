@@ -22,6 +22,11 @@ import { BeginWindowDrag } from '../../wailsjs/go/main/App';
 // Listeners attach to `window` in the bubble phase so stopPropagation() on
 // inner controls still blocks drag arming. Native controls and
 // [data-window-no-drag] regions are ignored even inside a drag region.
+//
+// A maximised or fullscreen shell must not start a move. Windows treats a
+// caption drag as "restore, then move", which leaves fullscreen. Double-click
+// on the title bar and the restore button leave that mode; dragging works
+// again only after the shell clears data-window-move-locked.
 
 export const DRAG_THRESHOLD_PX = 4;
 
@@ -54,6 +59,15 @@ export function windowDragHandleProps(enabled: boolean, style?: WindowDragStyle)
     };
 }
 
+/** True while the main shell is maximised or fullscreen. Title-bar drag stays disarmed. */
+export function isWindowDragLocked(): boolean {
+    if (typeof document === 'undefined') return false;
+    const app = document.getElementById('App');
+    if (!app) return false;
+    return app.getAttribute('data-window-move-locked') === 'true'
+        || app.getAttribute('data-maximized') === 'true';
+}
+
 export function windowNoDragRegionProps(style?: WindowDragStyle): {
     'data-window-no-drag': true;
     style: WindowDragStyle;
@@ -83,6 +97,8 @@ type WailsInvokeFn = (message: string) => void;
 
 /** Start native window move via Wails host path, with Go binding fallback. */
 export function startNativeWindowDrag(): void {
+    // Re-check at the call: a maximised frame must not receive HTCAPTION.
+    if (isWindowDragLocked()) return;
     try {
         const wailsInvoke = (window as unknown as { WailsInvoke?: WailsInvokeFn }).WailsInvoke;
         if (typeof wailsInvoke === 'function') {
@@ -106,7 +122,9 @@ export function installWindowDragHandler(): void {
             armed = false;
             return;
         }
-        if (!isWindowDragArmTarget(event.target)) {
+        // A press that starts in fullscreen must not become a move if the
+        // lock clears before the pointer crosses the threshold.
+        if (isWindowDragLocked() || !isWindowDragArmTarget(event.target)) {
             armed = false;
             return;
         }
@@ -128,6 +146,8 @@ export function installWindowDragHandler(): void {
         // Early 0–2px jitter must not consume the one-shot arm.
         if (dx + dy < DRAG_THRESHOLD_PX) return;
         armed = false; // one successful start per mousedown
+        // Fullscreen stays put. The same gesture after restore (lock cleared) moves.
+        if (isWindowDragLocked()) return;
         startNativeWindowDrag();
     });
 

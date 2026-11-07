@@ -543,7 +543,7 @@ var pureSocialGreetings = map[string]struct{}{
 	"你好": {}, "您好": {}, "嗨": {}, "哈喽": {}, "哈啰": {},
 	"hello": {}, "hi": {}, "hey": {}, "thanks": {}, "thank you": {},
 	"谢谢": {}, "谢谢你": {}, "感谢": {}, "在吗": {}, "在么": {}, "在不在": {},
-	"ok": {}, "okay": {}, "收到": {}, "好的": {}, "好呀": {},
+	"ok": {}, "okay": {}, "收到": {}, "好的": {}, "好呀": {}, "行": {}, "可以": {},
 	"早安": {}, "晚安": {}, "早上好": {}, "晚上好": {}, "下午好": {},
 	"good morning": {}, "good night": {}, "good evening": {},
 	"嗯": {}, "嗯嗯": {}, "哈哈": {},
@@ -554,6 +554,7 @@ var pureSocialGreetings = map[string]struct{}{
 // keep the parent tools. A greeting does not.
 var conversationalAcks = map[string]struct{}{
 	"ok": {}, "okay": {}, "收到": {}, "好的": {}, "好呀": {}, "嗯": {}, "嗯嗯": {},
+	"行": {}, "可以": {},
 }
 
 // IsPureSocialGreeting reports a short social utterance with no task in it.
@@ -583,7 +584,7 @@ func socialUtteranceBase(text string) (string, bool) {
 	if _, ok := pureSocialGreetings[lower]; ok {
 		return lower, true
 	}
-	for _, particle := range []string{"呀", "啊", "哇", "哦", "哟", "哈", "呢"} {
+	for _, particle := range []string{"呀", "啊", "哇", "哦", "哟", "哈", "呢", "吧", "了", "吗", "嘛"} {
 		if strings.HasSuffix(lower, particle) {
 			base := strings.TrimSuffix(lower, particle)
 			if _, ok := pureSocialGreetings[base]; ok {

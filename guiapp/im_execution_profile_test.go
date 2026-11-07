@@ -1674,6 +1674,24 @@ func TestShortContinuationKeepsParentExecutionTools(t *testing.T) {
 	if got := h.continuationKeepsParentExecution(light, userID, long, nil); !got.IsLight() {
 		t.Fatalf("a long message is not a short continuation, got %+v", got)
 	}
+	// The file block is host text. A cue the fast path already accepted
+	// still promotes. A light profile that did not come from that cue keeps
+	// the raw-message gate, so the attachment does not inherit the list.
+	cue := "继续\n\n" + agent.FilePathPromptPrefix + "\nC:\\slides\\pic.png\n" + agent.AttachedImageReadHint
+	if utf8.RuneCountInString(cue) <= 40 {
+		t.Fatalf("file cue must exceed the raw 40-rune gate, got %d", utf8.RuneCountInString(cue))
+	}
+	deferred := deferredParentContinuationProfile(1)
+	if got := h.continuationKeepsParentExecution(deferred, userID, cue, nil); got.Reason != shortContinuationReason || !executionKeepsParentToolSurface(got) {
+		t.Fatalf("a continuation cue plus a file block keeps the parent list, got %+v", got)
+	}
+	attached := "改短一点\n\n" + agent.FilePathPromptPrefix + "\nC:\\slides\\pic.png\n" + agent.AttachedImageReadHint
+	if utf8.RuneCountInString(attached) <= 40 {
+		t.Fatalf("attached edit must exceed the raw 40-rune gate, got %d", utf8.RuneCountInString(attached))
+	}
+	if got := h.continuationKeepsParentExecution(light, userID, attached, nil); !got.IsLight() {
+		t.Fatalf("a light profile that is not a continuation cue stays light when a file block blows the raw gate, got %+v", got)
+	}
 	full := fullExecutionProfile("already full")
 	if got := h.continuationKeepsParentExecution(full, userID, "用这个", nil); got.Reason != full.Reason {
 		t.Fatalf("a full profile must not be rewritten, got %+v", got)

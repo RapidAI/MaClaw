@@ -30,6 +30,9 @@ func (h *IMMessageHandler) handleCompressCommandWithLang(userID, lang string) *I
 
 	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client
+	if agent.HandoffMemoAll() {
+		return h.compressWithHandoffMemo(userID, lang, history, cfg, httpClient)
+	}
 
 	// Convert conversation entries to context.Message format.
 	messages := conversationToContextMessages(history)
@@ -60,6 +63,57 @@ func (h *IMMessageHandler) handleCompressCommandWithLang(userID, lang string) *I
 	}
 }
 
+func (h *IMMessageHandler) compressWithHandoffMemo(userID, lang string, history []agent.ConversationEntry, cfg corelib.MaclawLLMConfig, httpClient *http.Client) *IMAgentResponse {
+	msgs := make([]interface{}, 0, len(history))
+	for _, entry := range history {
+		msgs = append(msgs, entry.ToMessage())
+	}
+	if agent.ConversationHasPendingAsk(msgs) {
+		return &IMAgentResponse{Text: localizedIMCompressFailedMessage(lang, fmt.Errorf("pending question"))}
+	}
+	for _, msg := range msgs {
+		if agent.MsgRole(msg) == "tool" || agent.MsgHasToolCalls(msg) {
+			return &IMAgentResponse{Text: localizedIMCompressFailedMessage(lang, fmt.Errorf("tool loop"))}
+		}
+	}
+	summarize := func(text string) string {
+		out, err := makeSummarizeCallback(cfg, httpClient)(text)
+		if err != nil {
+			return ""
+		}
+		return out
+	}
+	compressed := agent.ForceHandoffCompress(msgs, cfg.EffectiveContextTokens(), summarize)
+	entries := loopMessagesToEntries(compressed)
+	h.memory.Save(userID, entries)
+	return &IMAgentResponse{Text: localizedIMCompressSuccessMessage(lang, "handoff")}
+}
+
+func loopMessagesToEntries(msgs []interface{}) []agent.ConversationEntry {
+	out := make([]agent.ConversationEntry, 0, len(msgs))
+	for _, msg := range msgs {
+		switch m := msg.(type) {
+		case agent.ConversationEntry:
+			out = append(out, m)
+		case map[string]string:
+			out = append(out, agent.ConversationEntry{Role: m["role"], Content: m["content"]})
+		case map[string]interface{}:
+			entry := agent.ConversationEntry{Content: m["content"]}
+			if role, ok := m["role"].(string); ok {
+				entry.Role = role
+			}
+			if id, ok := m["tool_call_id"].(string); ok {
+				entry.ToolCallID = id
+			}
+			if calls, ok := m["tool_calls"]; ok {
+				entry.ToolCalls = calls
+			}
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
 func localizedIMCompressNoHistoryMessage(lang string) string {
 	return pickUI(lang, "There is no conversation history to compress.", "当前没有可压缩的对话历史。", "目前沒有可壓縮的對話歷史。")
 }
@@ -85,14 +139,15 @@ func makeSummarizeCallback(cfg corelib.MaclawLLMConfig, httpClient *http.Client)
 			text = string(runes[:16000]) + "\n...(truncated)"
 		}
 
+		system, user := agent.SummarizerPromptForMode(text, agent.HandoffMemoAll())
 		messages := []interface{}{
 			map[string]string{
 				"role":    "system",
-				"content": "你是一个对话摘要助手。请将以下对话历史压缩为简洁的摘要，保留关键决策、工具调用结果、文件路径和代码片段。去除冗余的思考过程和重复的失败尝试。",
+				"content": system,
 			},
 			map[string]string{
 				"role":    "user",
-				"content": "请压缩以下对话历史:\n\n" + text,
+				"content": user,
 			},
 		}
 

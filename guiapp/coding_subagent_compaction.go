@@ -34,10 +34,17 @@ const (
 	// subAgentCompactionTriggerRatio: compact when tokens exceed this ratio of context window
 	subAgentCompactionTriggerRatio = 0.75
 
+	// subAgentHandoffTriggerRatio is the coding/all flag threshold.
+	subAgentHandoffTriggerRatio = 0.45
+
 	// subAgentCompactionRecencyWindow: keep last N complete assistant turns intact
 	subAgentCompactionRecencyWindow = 5
 
-	// subAgentMaxCompactionsPerTask: prevent infinite compaction loops
+	// subAgentHandoffRecencyWindow is the live tail when the handoff flag is on.
+	subAgentHandoffRecencyWindow = 2
+
+	// subAgentMaxCompactionsPerTask: prevent infinite compaction loops.
+	// The handoff flag replaces one block, so it does not use this cap.
 	subAgentMaxCompactionsPerTask = 3
 )
 
@@ -64,7 +71,13 @@ func NewSubAgentCompactor(contextWindow int, filesModifiedFn func() []string, fi
 
 // ShouldCompact checks if the conversation needs compaction based on token count.
 func (c *SubAgentCompactor) ShouldCompact(conversation []interface{}) bool {
-	if c == nil || c.compactionCount >= subAgentMaxCompactionsPerTask {
+	if c == nil {
+		return false
+	}
+	if agent.HandoffMemoCoding() && agent.ConversationHasPendingAsk(conversation) {
+		return false
+	}
+	if !agent.HandoffMemoCoding() && c.compactionCount >= subAgentMaxCompactionsPerTask {
 		return false
 	}
 	if c.contextWindow <= 0 {
@@ -72,7 +85,11 @@ func (c *SubAgentCompactor) ShouldCompact(conversation []interface{}) bool {
 	}
 
 	tokenEstimate := estimateConversationTokensForSubAgent(conversation)
-	threshold := int(float64(c.contextWindow) * subAgentCompactionTriggerRatio)
+	ratio := subAgentCompactionTriggerRatio
+	if agent.HandoffMemoCoding() {
+		ratio = subAgentHandoffTriggerRatio
+	}
+	threshold := int(float64(c.contextWindow) * ratio)
 	return tokenEstimate > threshold
 }
 
@@ -82,6 +99,9 @@ func (c *SubAgentCompactor) ShouldCompact(conversation []interface{}) bool {
 func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 	if c == nil || len(conversation) < 4 {
 		return conversation // too short to compact
+	}
+	if agent.HandoffMemoCoding() && agent.ConversationHasPendingAsk(conversation) {
+		return conversation
 	}
 	c.compactionCount++
 	log.Printf("[coding-subagent-compaction] triggering compaction #%d (conversation_len=%d)", c.compactionCount, len(conversation))
@@ -93,13 +113,18 @@ func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 
 	// Calculate recent window by counting assistant turns from the end.
 	// Each "turn" is: assistant message + N tool result messages.
-	// We want to keep the last subAgentCompactionRecencyWindow complete turns,
-	// then shrink by token budget and split a turn that still does not fit.
-	recentStart := findSubAgentRecencyWindowStart(conversation, subAgentCompactionRecencyWindow)
+	// Flag off keeps the last 5 turns, then shrinks to 30% of the window.
+	// Flag coding/all keeps the last 2, then shrinks to 15% (floor 1000).
+	turns := subAgentCompactionRecencyWindow
+	keepTokens := c.contextWindow * 3 / 10
+	if agent.HandoffMemoCoding() {
+		turns = subAgentHandoffRecencyWindow
+		keepTokens = c.contextWindow * 15 / 100
+	}
+	recentStart := findSubAgentRecencyWindowStart(conversation, turns)
 	if recentStart < 2 {
 		recentStart = 2
 	}
-	keepTokens := c.contextWindow * 3 / 10
 	if keepTokens < 1000 {
 		keepTokens = 1000
 	}
@@ -120,10 +145,38 @@ func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 		taskContent, _ = tm["content"].(string)
 	}
 	middleSection := conversation[2:recentStart]
-	summary := c.buildCompactionSummary(middleSection, taskContent)
+	var mergedContent string
+	if agent.HandoffMemoCoding() {
+		memo := c.memoFromAnchors(taskContent, middleSection)
+		if !memo.Usable() {
+			agent.NoteHandoffKeptExtraGroup()
+			moved := subAgentKeepOneExtraGroup(conversation, recentStart)
+			if moved < recentStart {
+				recentStart = moved
+				recentWindow = conversation[recentStart:]
+				if recentStart <= 2 {
+					log.Printf("[coding-subagent-compaction] memo %s kept_extra", memo.LengthNote())
+					return conversation
+				}
+				middleSection = conversation[2:recentStart]
+				memo = c.memoFromAnchors(taskContent, middleSection)
+			}
+		}
+		if memo.Usable() {
+			agent.NoteHandoffFallback()
+			mergedContent = agent.ReplaceHandoffBlock(taskContent, memo.Render())
+			log.Printf("[coding-subagent-compaction] memo %s", memo.LengthNote())
+		} else {
+			agent.NoteHandoffFallback()
+			mergedContent = taskContent
+			log.Printf("[coding-subagent-compaction] memo %s fallback", memo.LengthNote())
+		}
+	} else {
+		mergedContent = taskContent + "\n\n---\n\n" + c.buildCompactionSummary(middleSection, taskContent)
+	}
 	mergedTask := map[string]interface{}{
 		"role":    "user",
-		"content": taskContent + "\n\n---\n\n" + summary,
+		"content": mergedContent,
 	}
 
 	compacted := make([]interface{}, 0, 2+len(recentWindow))
@@ -135,6 +188,113 @@ func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 		len(conversation), len(compacted), len(middleSection))
 
 	return compacted
+}
+
+func (c *SubAgentCompactor) memoFromAnchors(taskContent string, middle []interface{}) agent.HandoffMemo {
+	prior, _ := agent.ParseHandoffMemo(taskContent)
+	var users []string
+	if text := strings.TrimSpace(agent.HandoffOutside(taskContent)); text != "" {
+		users = append(users, text)
+	}
+	for _, msg := range middle {
+		if subAgentMsgRole(msg) != "user" {
+			continue
+		}
+		m, ok := msg.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content, _ := m["content"].(string)
+		if strings.TrimSpace(content) != "" {
+			users = append(users, content)
+		}
+	}
+	var commands []agent.HandoffCommand
+	if c != nil && c.commandsRunFn != nil {
+		for _, cmd := range c.commandsRunFn() {
+			commands = append(commands, agent.HandoffCommand{
+				Tool:      "bash",
+				Path:      cmd.WorkingDir,
+				Command:   cmd.Command,
+				Succeeded: cmd.Succeeded,
+				Outcome:   cmd.Summary,
+			})
+		}
+	}
+	return agent.FillHandoffMemo(agent.HandoffFill{
+		UserTexts: users,
+		Read:      callStringList(c.filesReadFn),
+		Modified:  callStringList(c.filesModifiedFn),
+		Created:   callStringList(c.filesCreatedFn),
+		Commands:  commands,
+		Prior:     prior,
+	})
+}
+
+func (c *SubAgentCompactor) collapsePerRound(conversation []interface{}) []interface{} {
+	if c == nil || !agent.HandoffMemoPerRound() || len(conversation) < 4 {
+		return nil
+	}
+	if codingPerRoundBlocked(conversation) {
+		return conversation
+	}
+	hasTool := false
+	for _, msg := range conversation[2:] {
+		if subAgentMsgRole(msg) == "tool" {
+			hasTool = true
+			break
+		}
+	}
+	if !hasTool {
+		return nil
+	}
+	taskContent := ""
+	if task, ok := conversation[1].(map[string]interface{}); ok {
+		taskContent, _ = task["content"].(string)
+	}
+	memo := c.memoFromAnchors(taskContent, conversation[2:])
+	if !memo.Usable() {
+		agent.NoteHandoffKeptExtraGroup()
+		return conversation
+	}
+	agent.NoteHandoffFallback()
+	log.Printf("[coding-subagent-compaction] per-round memo %s", memo.LengthNote())
+	return []interface{}{
+		conversation[0],
+		map[string]interface{}{
+			"role":    "user",
+			"content": agent.ReplaceHandoffBlock(taskContent, memo.Render()),
+		},
+	}
+}
+
+func codingPerRoundBlocked(conversation []interface{}) bool {
+	if agent.ConversationHasPendingAsk(conversation) {
+		return true
+	}
+	for _, msg := range conversation {
+		if subAgentMsgRole(msg) != "user" {
+			continue
+		}
+		m, ok := msg.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content, _ := m["content"].(string)
+		if strings.HasPrefix(strings.TrimSpace(content), agent.SessionRoundPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func subAgentKeepOneExtraGroup(conversation []interface{}, recentStart int) int {
+	for i := recentStart - 1; i >= 2; i-- {
+		if subAgentMsgRole(conversation[i]) == "assistant" {
+			return i
+		}
+	}
+	return recentStart
 }
 
 // findSubAgentRecencyWindowStart finds the start index for keeping the last N
@@ -311,6 +471,11 @@ func (h *codingSubAgentHooks) TransformConversation(conversation []interface{}) 
 	}
 	if h != nil {
 		h.iteration++
+	}
+	if h != nil && h.compactor != nil && agent.HandoffMemoPerRound() {
+		if collapsed := h.compactor.collapsePerRound(out); collapsed != nil {
+			return collapsed
+		}
 	}
 	if h != nil && h.compactor != nil && h.compactor.ShouldCompact(out) {
 		if compacted := h.compactor.Compact(out); compacted != nil {

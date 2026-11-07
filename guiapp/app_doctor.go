@@ -201,6 +201,10 @@ func (a *App) RunDoctor() doctor.Report {
 			st.ContextCheckpoints.Applied, st.ContextCheckpoints.Attempted,
 			st.ContextCheckpoints.SavedTokens, st.ContextCheckpoints.Fallbacks)
 	}
+	if note := handoffMemoDoctorNote(st.HandoffMemos); note != "" {
+		detail["handoff_memo"] = st.HandoffMemos
+		msg += "; " + note
+	}
 	if st.CostSessionLine != "" || st.CostDailyLine != "" || st.CostFleetLine != "" || st.CostRouteLine != "" {
 		detail["cost_session_usd"] = st.CostSessionUSD
 		detail["cost_daily_usd"] = st.CostDailyUSD

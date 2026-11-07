@@ -549,6 +549,7 @@ func TestBuildRemoteCodingPlanStepTextHostNoteIsNotADeliverable(t *testing.T) {
 }
 
 func TestFormatRemotePlanStepCarrySummary(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "")
 	got := formatRemotePlanStepCarrySummary(1, "检查", "success", "全部完成 — 项目总结\n"+strings.Repeat("x", 500))
 	if !strings.Contains(got, "Prior plan step T1 (检查) status=success") {
 		t.Fatalf("header missing: %q", got)
@@ -563,6 +564,7 @@ func TestFormatRemotePlanStepCarrySummary(t *testing.T) {
 }
 
 func TestSetRemotePlanLastSummary(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "")
 	var mem stickyCodingWorkbenchMemory
 	setRemotePlanLastSummary(&mem, true, 1, "检查", "success", "全部完成 — 项目总结")
 	if !strings.Contains(mem.LastSummary, "Prior plan step T1") || !strings.Contains(mem.LastSummary, "CURRENT step fully") {

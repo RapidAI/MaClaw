@@ -1738,39 +1738,23 @@ func normalizePhoneIdentityValue(value string) string {
 	return b.String()
 }
 
+// tenantIDsByEmailLookup resolves every tenant that already owns an email
+// with one indexed query. Registration auth for a mail-domain tenant calls
+// this on every new signup. Listing every user and then every identity holds
+// the database long enough for the desktop probe to time out; a later click
+// succeeds only because the pages are warm.
+type tenantIDsByEmailLookup interface {
+	ListTenantIDsByEmail(ctx context.Context, email string) ([]string, error)
+}
+
 func (s *IdentityService) ResolveTenantByEmail(ctx context.Context, email string) (tenantID string, found bool, ambiguous bool, err error) {
 	email = normalizeEmail(email)
 	if email == "" {
 		return "", false, false, ErrInvalidEmail
 	}
-	items, err := s.users.List(ctx)
+	seen, err := s.tenantIDsForEmail(ctx, email)
 	if err != nil {
 		return "", false, false, err
-	}
-	seen := map[string]struct{}{}
-	for _, user := range items {
-		if user == nil {
-			continue
-		}
-		if strings.EqualFold(normalizeEmail(user.Email), email) {
-			id := normalizeTenantIDValue(user.TenantID)
-			seen[id] = struct{}{}
-			continue
-		}
-		identities, err := s.users.ListIdentitiesByUser(ctx, user.TenantID, user.ID)
-		if err != nil {
-			return "", false, false, err
-		}
-		for _, identity := range identities {
-			if identity == nil || !strings.EqualFold(strings.TrimSpace(identity.Type), "email") {
-				continue
-			}
-			if strings.EqualFold(normalizeEmail(identity.Value), email) {
-				id := normalizeTenantIDValue(user.TenantID)
-				seen[id] = struct{}{}
-				break
-			}
-		}
 	}
 	if len(seen) == 0 {
 		return s.resolveTenantByConfiguredDomain(ctx, email)
@@ -1787,6 +1771,55 @@ func (s *IdentityService) ResolveTenantByEmail(ctx context.Context, email string
 		return id, true, false, nil
 	}
 	return "", false, false, nil
+}
+
+func (s *IdentityService) tenantIDsForEmail(ctx context.Context, email string) (map[string]struct{}, error) {
+	if s == nil || s.users == nil {
+		return map[string]struct{}{}, nil
+	}
+	if lookup, ok := s.users.(tenantIDsByEmailLookup); ok {
+		ids, err := lookup.ListTenantIDsByEmail(ctx, email)
+		if err != nil {
+			return nil, err
+		}
+		seen := make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			seen[normalizeTenantIDValue(id)] = struct{}{}
+		}
+		return seen, nil
+	}
+	return s.scanTenantIDsForEmail(ctx, email)
+}
+
+func (s *IdentityService) scanTenantIDsForEmail(ctx context.Context, email string) (map[string]struct{}, error) {
+	items, err := s.users.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	for _, user := range items {
+		if user == nil {
+			continue
+		}
+		if strings.EqualFold(normalizeEmail(user.Email), email) {
+			seen[normalizeTenantIDValue(user.TenantID)] = struct{}{}
+			continue
+		}
+		identities, err := s.users.ListIdentitiesByUser(ctx, user.TenantID, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, identity := range identities {
+			if identity == nil || !strings.EqualFold(strings.TrimSpace(identity.Type), "email") {
+				continue
+			}
+			if strings.EqualFold(normalizeEmail(identity.Value), email) {
+				seen[normalizeTenantIDValue(user.TenantID)] = struct{}{}
+				break
+			}
+		}
+	}
+	return seen, nil
 }
 
 func (s *IdentityService) resolveExistingTenantAmbiguityByDomain(ctx context.Context, email string, tenantIDs map[string]struct{}) (string, bool, error) {

@@ -35,6 +35,14 @@ type ContextCheckpointOptions struct {
 	// DryRun evaluates checkpoint eligibility and savings without flushing,
 	// persisting a handle, or changing Conversation. Used by shadow rollout.
 	DryRun bool
+	// KeepUserEquals pins a user group whose text equals one of these strings.
+	// The host passes a pending confirmation's OriginalText. Empty leaves
+	// that pin unset. The match uses the text before any memo is joined.
+	KeepUserEquals []string
+	// Summarize fills the memo after the transcript is already over the
+	// threshold. It is not called for a short transcript, a dry run, or a
+	// span that already contains a memo. Nil keeps the deterministic memo.
+	Summarize func(string) string
 }
 
 type ContextCheckpointResult struct {
@@ -103,6 +111,10 @@ func CheckpointConversation(conversation []interface{}, opts ContextCheckpointOp
 		result.Reason = "insufficient_context"
 		return result
 	}
+	if HandoffMemoAll() && ConversationHasPendingAsk(conversation) {
+		result.Reason = "pending_ask"
+		return result
+	}
 	if !hasToolDefinition(opts.Tools, "read_tool_result") {
 		result.Reason = "reader_unavailable"
 		return result
@@ -114,6 +126,9 @@ func CheckpointConversation(conversation []interface{}, opts ContextCheckpointOp
 	threshold := opts.ThresholdPct
 	if threshold <= 0 || threshold > 100 {
 		threshold = defaultCheckpointThresholdPct
+		if HandoffMemoAll() {
+			threshold = HandoffChatThresholdPct()
+		}
 	}
 	// One pass per message. The keep decision and the savings check reuse
 	// these costs; measuring the tail again would re-encode every large
@@ -147,34 +162,44 @@ func CheckpointConversation(conversation []interface{}, opts ContextCheckpointOp
 	if len(msgTokens) > 0 {
 		systemTokens = msgTokens[0]
 	}
-	keepGroups = checkpointKeepCount(systemTokens, groupCosts, keepGroups, budget, previewLimit, result.BeforeTokens)
-	if keepGroups < 1 {
-		result.Reason = "protected_window"
-		return result
-	}
-	// A broken tool pair must not be sent inline: providers reject it.
-	// Drop that pair even when it sits inside the recent window, and keep
-	// the valid messages around it. Failing the whole checkpoint used to
-	// drop those messages into the omission line.
-	suffixStart := len(groups) - keepGroups
+	// Flag all replaces the default window. An explicit KeepGroups still
+	// uses checkpointKeepCount, including its shrink to the full budget.
+	memoWindow := HandoffMemoAll() && opts.KeepGroups <= 0
 	tail := conversation[1:]
 	drop := make([]bool, len(groups))
 	dropped := make([]interface{}, 0)
 	opaqueBlocked := false
-	for i, group := range groups {
-		msgs := tail[group.Start:group.End]
-		if i >= suffixStart && i < len(inlineOK) && inlineOK[i] {
-			continue
+	var handoffMemo HandoffMemo
+	handoffFromLLM := false
+	keptExtra := false
+	if memoWindow {
+		drop, dropped, handoffMemo, keptExtra, opaqueBlocked = planHandoffCheckpoint(tail, groups, inlineOK, groupCosts, budget, opts.KeepUserEquals)
+	} else {
+		keepGroups = checkpointKeepCount(systemTokens, groupCosts, keepGroups, budget, previewLimit, result.BeforeTokens)
+		if keepGroups < 1 {
+			result.Reason = "protected_window"
+			return result
 		}
-		// An image has to stay inline: the handle is text, and a spilled
-		// picture cannot be shown again. Text around that image can still
-		// be stored. Refusing the whole spill used to drop both.
-		if checkpointContainsOpaqueContent(msgs) {
-			opaqueBlocked = true
-			continue
+		// A broken tool pair must not be sent inline: providers reject it.
+		// Drop that pair even when it sits inside the recent window, and keep
+		// the valid messages around it. Failing the whole checkpoint used to
+		// drop those messages into the omission line.
+		suffixStart := len(groups) - keepGroups
+		for i, group := range groups {
+			msgs := tail[group.Start:group.End]
+			if i >= suffixStart && i < len(inlineOK) && inlineOK[i] {
+				continue
+			}
+			// An image has to stay inline: the handle is text, and a spilled
+			// picture cannot be shown again. Text around that image can still
+			// be stored. Refusing the whole spill used to drop both.
+			if checkpointContainsOpaqueContent(msgs) {
+				opaqueBlocked = true
+				continue
+			}
+			drop[i] = true
+			dropped = append(dropped, msgs...)
 		}
-		drop[i] = true
-		dropped = append(dropped, msgs...)
 	}
 	if len(dropped) == 0 {
 		if opaqueBlocked {
@@ -184,6 +209,19 @@ func CheckpointConversation(conversation []interface{}, opts ContextCheckpointOp
 		}
 		return result
 	}
+	if memoWindow && !opts.DryRun && opts.Summarize != nil {
+		if _, hadMemo := LastMemoInMessages(tail); !hadMemo {
+			if input := droppedMessagesForSummary(dropped); input != "" {
+				summary := opts.Summarize(input)
+				if summaryAccepted(summary) {
+					if parsed, ok := ParseHandoffMemo(summary); ok && parsed.Usable() {
+						handoffMemo = parsed
+						handoffFromLLM = true
+					}
+				}
+			}
+		}
+	}
 	globalContextCheckpoint.attempted.Add(1)
 	if !opts.DryRun && opts.BeforeCompress != nil {
 		if err := opts.BeforeCompress(); err != nil {
@@ -192,14 +230,19 @@ func CheckpointConversation(conversation []interface{}, opts ContextCheckpointOp
 			return result
 		}
 	}
-	preview := buildContextCheckpointPreview(dropped)
 	limit := previewLimit
-	// Project replaces a caller preview that exceeds its budget with a raw
-	// JSON dump. That drops the checkpoint instruction, so the model sees
-	// an unlabeled blob instead of "page this handle before guessing".
-	// Keep the head (instruction and goals) and the tail (older handles).
-	if reserve := 512; limit > reserve && len(preview) > limit-reserve {
-		preview = compactCheckpointText(preview, limit-reserve)
+	preview := ""
+	if memoWindow {
+		preview = FitHandoffPreview(handoffMemo, checkpointPreviewFitLimit(limit))
+	} else {
+		preview = buildContextCheckpointPreview(dropped)
+		// Project replaces a caller preview that exceeds its budget with a raw
+		// JSON dump. That drops the checkpoint instruction, so the model sees
+		// an unlabeled blob instead of "page this handle before guessing".
+		// Keep the head (instruction and goals) and the tail (older handles).
+		if reserve := 512; limit > reserve && len(preview) > limit-reserve {
+			preview = compactCheckpointText(preview, limit-reserve)
+		}
 	}
 	if opts.DryRun {
 		globalContextCheckpoint.shadowEvaluated.Add(1)
@@ -237,8 +280,41 @@ func CheckpointConversation(conversation []interface{}, opts ContextCheckpointOp
 		return result
 	}
 
-	previewMsg := map[string]string{"role": "user", "content": projection.Preview}
-	next := assembleCheckpointConversation(conversation, groups, drop, previewMsg["content"])
+	content := projection.Preview
+	if memoWindow {
+		handoffMemo.ShelfHandles = append(handoffMemo.ShelfHandles, ShelfHandle{
+			Kind: "checkpoint",
+			ID:   projection.Handle.ID,
+			Note: "context_checkpoint",
+		})
+		body := FitHandoffPreview(handoffMemo, checkpointPreviewFitLimit(limit))
+		footer := ""
+		if idx := strings.Index(projection.Preview, toolresult.HandleFooterMarker); idx >= 0 {
+			footer = projection.Preview[idx:]
+		}
+		content = body
+		if footer != "" && !strings.Contains(body, toolresult.HandleFooterMarker) {
+			content = body + footer
+		}
+	}
+	previewMsg := map[string]string{"role": "user", "content": content}
+	next := assembleCheckpointConversation(conversation, groups, drop, content)
+	if memoWindow {
+		if idx := indexOfExactContent(next, content); idx >= 0 {
+			next = FoldHandoffUser(next, idx, opts.KeepUserEquals)
+		}
+		primary := -1
+		for i, msg := range next {
+			text, ok := plainStringContent(msg)
+			if ok && strings.Contains(text, handoffOpen) && projection.Handle != nil && strings.Contains(text, projection.Handle.ID) {
+				primary = i
+				break
+			}
+		}
+		if primary >= 0 {
+			next = StripExtraHandoffMemos(next, primary)
+		}
+	}
 	result.AfterTokens = checkpointKeptTokens(systemTokens, groupCosts, drop, previewMsg)
 	if result.AfterTokens >= result.BeforeTokens {
 		// The just-created handle was never exposed in Conversation, so it is an
@@ -247,6 +323,9 @@ func CheckpointConversation(conversation []interface{}, opts ContextCheckpointOp
 		globalContextCheckpoint.fallbacks.Add(1)
 		result.Reason = "no_savings"
 		return result
+	}
+	if memoWindow {
+		NoteCoveredMemo(handoffMemo, handoffFromLLM, keptExtra)
 	}
 	result.Conversation = next
 	result.Applied = true
@@ -257,6 +336,116 @@ func CheckpointConversation(conversation []interface{}, opts ContextCheckpointOp
 	globalContextCheckpoint.applied.Add(1)
 	globalContextCheckpoint.saved.Add(int64(result.BeforeTokens - result.AfterTokens))
 	return result
+}
+
+func checkpointPreviewFitLimit(limit int) int {
+	if reserve := 512; limit > reserve {
+		return limit - reserve
+	}
+	if limit < 1 {
+		return defaultCheckpointPreviewLimit
+	}
+	return limit
+}
+
+// planHandoffCheckpoint chooses the flag-all window: a memo plus the newest
+// four groups inside the tail cap, plus pins. It does not widen the tail to
+// the full budget.
+func planHandoffCheckpoint(tail []interface{}, groups []EntryGroup, inlineOK []bool, groupCosts []int, budget int, keepEquals []string) (drop []bool, dropped []interface{}, memo HandoffMemo, keptExtra, opaqueBlocked bool) {
+	n := len(groups)
+	roles := make([]string, n)
+	texts := make([]string, n)
+	plain := make([]bool, n)
+	pinned := make([]bool, n)
+	for i, group := range groups {
+		if group.Start < 0 || group.End > len(tail) || group.Start >= group.End {
+			continue
+		}
+		msgs := tail[group.Start:group.End]
+		roles[i] = MsgRole(msgs[0])
+		if text, ok := plainStringContent(msgs[0]); ok && roles[i] == "user" {
+			texts[i] = text
+			plain[i] = true
+		}
+		if checkpointContainsOpaqueContent(msgs) {
+			pinned[i] = true
+			opaqueBlocked = true
+		}
+	}
+	for i, on := range HandoffPinnedGroupFlags(roles, texts, plain, keepEquals) {
+		if on {
+			pinned[i] = true
+		}
+	}
+	keep := SelectHandoffKeep(groupCosts, pinned, HandoffTailTokenCap(budget))
+	drop = make([]bool, n)
+	for i, group := range groups {
+		if group.Start < 0 || group.End > len(tail) || group.Start >= group.End {
+			continue
+		}
+		msgs := tail[group.Start:group.End]
+		if checkpointContainsOpaqueContent(msgs) {
+			continue
+		}
+		broken := i < len(inlineOK) && !inlineOK[i]
+		if broken && !pinned[i] {
+			drop[i] = true
+			continue
+		}
+		if !keep[i] {
+			drop[i] = true
+		}
+	}
+	dropped = collectCheckpointDropped(tail, groups, drop)
+	if len(dropped) == 0 {
+		return
+	}
+	prior, _ := LastMemoInMessages(tail)
+	memo = MemoFromDroppedProjects(dropped, prior, false)
+	preservePriorProgress(&memo, prior)
+	if memo.Usable() {
+		return
+	}
+	for i := n - 1; i >= 0; i-- {
+		if !drop[i] {
+			continue
+		}
+		group := groups[i]
+		if group.Start < 0 || group.End > len(tail) || group.Start >= group.End {
+			continue
+		}
+		msgs := tail[group.Start:group.End]
+		if checkpointContainsOpaqueContent(msgs) {
+			continue
+		}
+		if i < len(inlineOK) && !inlineOK[i] {
+			continue
+		}
+		drop[i] = false
+		keptExtra = true
+		break
+	}
+	if keptExtra {
+		dropped = collectCheckpointDropped(tail, groups, drop)
+		prior, _ = LastMemoInMessages(tail)
+		memo = MemoFromDroppedProjects(dropped, prior, false)
+		preservePriorProgress(&memo, prior)
+	}
+	return
+}
+
+func collectCheckpointDropped(tail []interface{}, groups []EntryGroup, drop []bool) []interface{} {
+	dropped := make([]interface{}, 0)
+	for i, group := range groups {
+		if i >= len(drop) || !drop[i] {
+			continue
+		}
+		if group.Start < 0 || group.End > len(tail) || group.Start >= group.End {
+			continue
+		}
+		dropped = append(dropped, tail[group.Start:group.End]...)
+	}
+	return dropped
 }
 
 // checkpointMessageTokens is one estimate per message, in conversation order.

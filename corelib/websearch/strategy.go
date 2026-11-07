@@ -91,22 +91,37 @@ type SearchResponse struct {
 	Degraded    bool            `json:"degraded"`
 }
 
+// Preset orders are the settings-panel defaults. Mainland starts with Bing,
+// Baidu, DuckDuckGo, Google, then Yuanbao. The frontend preset dropdown copies
+// these two slices and must be updated with them.
+var (
+	mainlandWebSearchEngineOrder = []string{
+		"bing_cn", "baidu", "duckduckgo", "google", "yuanbao",
+		"brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub,
+	}
+	internationalWebSearchEngineOrder = []string{
+		"google", "duckduckgo", "bing_cn", "baidu", "yuanbao",
+		"brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub,
+	}
+)
+
+func presetEngineOrder(preset string) []string {
+	if normalizePreset(preset) == corelib.WebSearchPresetInternational {
+		return internationalWebSearchEngineOrder
+	}
+	return mainlandWebSearchEngineOrder
+}
+
 func DefaultWebSearchStrategy(preset string) corelib.WebSearchStrategy {
 	preset = normalizePreset(preset)
-	var order []string
-	if preset == corelib.WebSearchPresetInternational {
-		order = []string{"yuanbao", "google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}
-	} else {
+	order := presetEngineOrder(preset)
+	if preset != corelib.WebSearchPresetInternational {
 		preset = corelib.WebSearchPresetMainland
-		order = []string{"yuanbao", "bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}
 	}
 	engines := make([]corelib.WebSearchEngineConfig, 0, len(order))
 	for i, id := range order {
 		meta := builtinWebSearchEngines[id]
 		enabled := !meta.NeedsKey && !meta.OptIn
-		if meta.AllowEnabledWithoutKey {
-			enabled = true
-		}
 		engines = append(engines, corelib.WebSearchEngineConfig{
 			ID: id, Enabled: enabled, Priority: i + 1,
 			Transport: meta.Transport, BaseURL: meta.BaseURL,
@@ -204,16 +219,13 @@ func NormalizeWebSearchStrategy(strategy corelib.WebSearchStrategy) (corelib.Web
 		}
 		out = append(out, engine)
 	}
-	if !seen["yuanbao"] && catalogCompleteExcept(seen, "yuanbao") {
-		meta := builtinWebSearchEngines["yuanbao"]
-		inserted := corelib.WebSearchEngineConfig{
-			ID: "yuanbao", Enabled: true,
-			Transport: meta.Transport, BaseURL: meta.BaseURL,
-		}
-		out = insertEngine(out, yuanbaoDefaultIndex(strategy.Preset), inserted)
-		seen["yuanbao"] = true
-	}
 	defaults := DefaultWebSearchStrategy(strategy.Preset)
+	if !seen["yuanbao"] && catalogCompleteExcept(seen, "yuanbao") {
+		if inserted, ok := engineByID(defaults.Engines, "yuanbao"); ok {
+			out = insertEngine(out, yuanbaoDefaultIndex(strategy.Preset), inserted)
+			seen["yuanbao"] = true
+		}
+	}
 	for _, engine := range defaults.Engines {
 		if !seen[engine.ID] {
 			// A partial explicit strategy is commonly used by provider tests and
@@ -243,12 +255,21 @@ func catalogCompleteExcept(seen map[string]bool, except string) bool {
 }
 
 func yuanbaoDefaultIndex(preset string) int {
-	for i, engine := range DefaultWebSearchStrategy(preset).Engines {
-		if engine.ID == "yuanbao" {
+	for i, id := range presetEngineOrder(preset) {
+		if id == "yuanbao" {
 			return i
 		}
 	}
 	return 0
+}
+
+func engineByID(engines []corelib.WebSearchEngineConfig, id string) (corelib.WebSearchEngineConfig, bool) {
+	for _, engine := range engines {
+		if engine.ID == id {
+			return engine, true
+		}
+	}
+	return corelib.WebSearchEngineConfig{}, false
 }
 
 func insertEngine(engines []corelib.WebSearchEngineConfig, index int, engine corelib.WebSearchEngineConfig) []corelib.WebSearchEngineConfig {

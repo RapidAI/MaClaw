@@ -737,29 +737,9 @@ func truncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 	return result
 }
 
-// compactionHandoffPrompt is the structured prompt for LLM-based conversation
-// compaction. Inspired by Codex CLI's "CONTEXT CHECKPOINT COMPACTION" design:
-// the summarizer writes a handoff document for the next LLM, not meeting minutes.
-//
-// Four required sections ensure stable, structured output regardless of
-// conversation content or language.
-const compactionHandoffPrompt = `你正在执行上下文检查点压缩（Context Checkpoint Compaction）。
-为将要继续此任务的另一个 LLM 生成一份交接摘要。
-
-必须包含以下四个部分:
-1. **当前进度**: 已完成的工作和已做的关键决策
-2. **重要上下文**: 约束条件、用户偏好、技术选型等
-3. **待完成工作**: 明确的下一步行动
-4. **关键数据**: 继续工作所需的文件路径、变量名、配置值等
-
-要求:
-- 简洁、结构化，使用 Markdown 列表
-- 直接引用关键短语而非转述（防止语义漂移）
-- 不要包含工具调用的原始输出（文件内容、命令输出等）
-- 聚焦于帮助下一个 LLM 无缝继续工作
-
-以下是需要压缩的对话内容:
-`
+// compactionHandoffPrompt is the flag-off name kept for readers. The live
+// prompt is agent.HandoffCompactionPrompt: one <handoff-memo> with task,
+// progress, files, next, dead_ends, and shelf_handles.
 
 // compactionRecoveryPrefix is prepended to the LLM-generated summary when
 // injecting it back into the conversation history. It tells the resuming LLM
@@ -785,18 +765,8 @@ const compactionPlaceholder = "[...中间的工具调用和执行细节已省略
 // A longer result was cut off and must not become the checkpoint.
 const compactionSummaryRuneCap = 5000
 
-const compactionUpdatePrompt = `你正在更新一份已有的上下文交接摘要。规则:
-- 保留上一份摘要中的目标、约束、关键决定和已完成项
-- 只并入新进展；已完成的事项从待完成移到当前进度
-- 保留精确的文件路径、函数名和报错
-- 仍使用这四个部分: 当前进度、重要上下文、待完成工作、关键数据
-
-上一份摘要:
-%s
-
-新增的对话材料:
-%s
-`
+// compactionUpdatePrompt is no longer a separate template. Updates go through
+// agent.HandoffCompactionPrompt, which asks for the whole six-heading memo.
 
 const (
 	compactionPreviousOpen  = "<previous-summary>\n"
@@ -836,13 +806,13 @@ func compactionPromptFor(material string) string {
 		if dropped != "" {
 			body = dropped
 		}
-		return compactionHandoffPrompt + body
+		return agent.HandoffCompactionPrompt("", body)
 	}
 	body := dropped
 	if body == "" {
 		body = material
 	}
-	return fmt.Sprintf(compactionUpdatePrompt, prev, body)
+	return agent.HandoffCompactionPrompt(prev, body)
 }
 
 func splitCompactionSource(material string) (prev, dropped string) {
@@ -1200,13 +1170,16 @@ func trimHistory(entries []agent.ConversationEntry) []agent.ConversationEntry {
 // limit, even if entry count is within maxEntries. This covers the case where
 // few entries have very large content (e.g., huge tool results).
 func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(string) string, memorySink func(string, []string), maxEntries int, maxTokens int) []agent.ConversationEntry {
-	return trimHistoryWithSummaryPrecomputed(entries, summarizer, memorySink, maxEntries, maxTokens, 0)
+	return trimHistoryWithSummaryPrecomputed(entries, summarizer, memorySink, maxEntries, maxTokens, 0, nil)
 }
 
 // trimHistoryWithSummaryPrecomputed is like trimHistoryWithSummary but accepts
 // a pre-computed token estimate to skip redundant estimation at the entrance.
 // Pass precomputedTokens=0 to compute it internally.
-func trimHistoryWithSummaryPrecomputed(entries []agent.ConversationEntry, summarizer func(string) string, memorySink func(string, []string), maxEntries int, maxTokens int, precomputedTokens int) []agent.ConversationEntry {
+func trimHistoryWithSummaryPrecomputed(entries []agent.ConversationEntry, summarizer func(string) string, memorySink func(string, []string), maxEntries int, maxTokens int, precomputedTokens int, keepEquals []string) []agent.ConversationEntry {
+	if agent.HandoffMemoAll() {
+		return trimHistoryWithHandoffMemo(entries, summarizer, maxEntries, maxTokens, precomputedTokens, keepEquals)
+	}
 	limit := agent.MaxConversationTurns
 	if maxEntries > 0 {
 		limit = maxEntries

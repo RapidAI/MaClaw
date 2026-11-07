@@ -66,6 +66,37 @@ describe('Maclaw provider quick-fill catalog', () => {
         expect(PROVIDER_LOGOS['腾讯云']).toBeTruthy();
     });
 
+    it('lists xAI-Grok on Grok 4.7 with a chat catalog before a manual fetch', () => {
+        const xai = KNOWN_OPENAI_ENDPOINTS.find(provider => provider.name === 'xAI-Grok');
+
+        expect(xai).toMatchObject({
+            url: 'https://api.x.ai/v1',
+            model: 'grok-4.7',
+            context_length: 400000,
+            auth_type: 'oauth',
+            wire_api: 'responses',
+            models: [
+                'grok-4.7',
+                'grok-4.6',
+                'grok-4.5',
+                'grok-4.3',
+                'grok-4.20-0309-reasoning',
+                'grok-4.20-0309-non-reasoning',
+                'grok-4.20-multi-agent-0309',
+                'grok-4.1-fast',
+                'grok-build-0.1',
+            ],
+        });
+        expect(quickFillModelCatalog(
+            { name: 'DeepSeek' },
+            xai!,
+        )).toEqual(xai!.models);
+        expect(providerModelChoices({
+            model: 'grok-4.7',
+            models: xai!.models,
+        }).map(model => model.id)).toContain('grok-4.1-fast');
+    });
+
     it('lists China Telecom Xingchen on the MaaS OpenAI chat base', () => {
         const xingchen = KNOWN_OPENAI_ENDPOINTS.find(provider => provider.name === '星辰大模型');
 

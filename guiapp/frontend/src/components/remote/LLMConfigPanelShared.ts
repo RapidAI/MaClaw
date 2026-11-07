@@ -5,6 +5,7 @@ import { normalizeLang } from "../../i18n/langSelect";
 import { mergeHubCreditGrants } from "../../utils/hubCredits";
 import { FetchProviderModels } from "../../../wailsjs/go/main/App";
 import { effectiveAgentType } from "./userAgent";
+import { xaiGrokChatModelIds } from "../../config/providerCatalog";
 
 export interface LLMProvider {
 	/** Stable backend identifier; provider name is display-only. */
@@ -142,7 +143,7 @@ export const KNOWN_OPENAI_ENDPOINTS: KnownOpenAIEndpoint[] = [
     { name: "MiniMax", url: "https://api.minimaxi.com/v1", model: "MiniMax-M2.7", context_length: 128000 },
     { name: "\u817e\u8baf\u4e91", url: "https://api.lkeap.cloud.tencent.com/coding/v3", model: "glm-5", context_length: 128000 },
     { name: "\u817e\u8bafTokenPlan", url: "https://tokenhub.tencentmaas.com/plan/v3", model: "auto", context_length: 128000, protocol: "openai" },
-    { name: "xAI-Grok", url: "https://api.x.ai/v1", model: "grok-4.6", context_length: 400000, auth_type: "oauth", wire_api: "responses" },
+    { name: "xAI-Grok", url: "https://api.x.ai/v1", model: xaiGrokChatModelIds[0], models: [...xaiGrokChatModelIds], context_length: 400000, auth_type: "oauth", wire_api: "responses" },
     { name: "OpenCode", url: "https://opencode.ai/zen/v1", model: "big-pickle", context_length: 128000, agent_type: "OpenCode" },
     { name: "Devin", url: "https://server.codeium.com", context_length: 128000 },
     { name: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "openai/gpt-4o", context_length: 128000 },

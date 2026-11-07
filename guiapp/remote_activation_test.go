@@ -190,6 +190,94 @@ func TestGetRemoteRegistrationAuthFallsBackToEmailWhenEndpointIsUnavailable(t *t
 	}
 }
 
+func TestGetRemoteRegistrationAuthRetriesTransientGatewayFailure(t *testing.T) {
+	original := remoteRegistrationAuthRetryDelays
+	remoteRegistrationAuthRetryDelays = []time.Duration{0, 0}
+	t.Cleanup(func() { remoteRegistrationAuthRetryDelays = original })
+
+	var calls int
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/registration-auth" {
+			t.Fatalf("unexpected hub path %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("email"); got != "zhulu@qianxin.com" {
+			t.Fatalf("email = %q", got)
+		}
+		calls++
+		if calls < 3 {
+			http.Error(w, "registration auth unavailable", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"method":"email","tenant_id":"tenant_qianxin","code_length":6,"code_ttl_minutes":5}`))
+	}))
+	defer hub.Close()
+
+	got, err := getRemoteRegistrationAuth(hub.URL, "", "zhulu@qianxin.com")
+	if err != nil {
+		t.Fatalf("GetRemoteRegistrationAuth() error = %v", err)
+	}
+	if calls != 3 || got.Method != "email" || got.TenantID != "tenant_qianxin" {
+		t.Fatalf("calls=%d result=%#v", calls, got)
+	}
+}
+
+func TestGetRemoteRegistrationAuthDoesNotRetryAmbiguousTenant(t *testing.T) {
+	original := remoteRegistrationAuthRetryDelays
+	remoteRegistrationAuthRetryDelays = []time.Duration{0, 0}
+	t.Cleanup(func() { remoteRegistrationAuthRetryDelays = original })
+
+	var calls int
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":"TENANT_AMBIGUOUS","message":"email is associated with multiple tenants; tenant_id is required"}`))
+	}))
+	defer hub.Close()
+
+	_, err := getRemoteRegistrationAuth(hub.URL, "", "zhulu@qianxin.com")
+	if err == nil || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("error = %v, want non-retryable 400", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
+
+func TestGetRemoteRegistrationAuthDoesNotRetryTimedOutProbe(t *testing.T) {
+	originalDelays := remoteRegistrationAuthRetryDelays
+	originalTimeout := remoteRegistrationAuthAttemptTimeout
+	remoteRegistrationAuthRetryDelays = []time.Duration{0, 0}
+	remoteRegistrationAuthAttemptTimeout = 150 * time.Millisecond
+	t.Cleanup(func() {
+		remoteRegistrationAuthRetryDelays = originalDelays
+		remoteRegistrationAuthAttemptTimeout = originalTimeout
+	})
+
+	var calls int
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		<-r.Context().Done()
+	}))
+	defer hub.Close()
+
+	_, err := getRemoteRegistrationAuth(hub.URL, "", "zhulu@qianxin.com")
+	if err == nil {
+		t.Fatal("expected timeout")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
+
+func TestRegistrationAuthRetryLogLineRedactsEmailQuery(t *testing.T) {
+	got := registrationAuthRetryLogLine(fmt.Errorf(`Get "https://hub.example/api/enroll/registration-auth?email=zhulu@qianxin.com&tenant_id=tenant_default": dial tcp`))
+	if strings.Contains(got, "zhulu@qianxin.com") || !strings.Contains(got, "email=***") || !strings.Contains(got, "tenant_id=tenant_default") {
+		t.Fatalf("log line = %s", got)
+	}
+}
+
 func TestGetRemoteRegistrationAuthIgnoresLegacyEmailQuotaMetadata(t *testing.T) {
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

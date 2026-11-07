@@ -100,6 +100,7 @@ type SharedAgentLoopStatus struct {
 	InputBreakdown        agent.LoopInputBreakdownStats `json:"input_breakdown,omitempty"`
 	ContextCheckpoints    agent.ContextCheckpointStats  `json:"context_checkpoints,omitempty"`
 	ContextCheckpointMode string                        `json:"context_checkpoint_mode,omitempty"`
+	HandoffMemos          agent.HandoffMemoStats        `json:"handoff_memo,omitempty"`
 	ToolResultStore       toolresult.StoreStats         `json:"tool_result_store,omitempty"`
 	// Cost tracker (process session / daily) when OpenHuman cost module is live.
 	CostSessionUSD  float64 `json:"cost_session_usd,omitempty"`
@@ -484,6 +485,7 @@ func (a *App) buildSharedAgentLoopStatus(cfg corelib.AppConfig) SharedAgentLoopS
 	st.ToolCompressByTool = cs.ByToolSaved
 	st.InputBreakdown = agent.CurrentLoopInputBreakdownStats()
 	st.ContextCheckpoints = agent.CurrentContextCheckpointStats()
+	st.HandoffMemos = agent.CurrentHandoffMemoStats()
 	st.ContextCheckpointMode = contextCheckpointStatusMode()
 	st.ToolResultStore = toolresult.GetStoreStats("")
 	st.CostBudgetUSD = cfg.DailyLLMBudgetUSD
@@ -518,6 +520,18 @@ func (a *App) buildSharedAgentLoopStatus(cfg corelib.AppConfig) SharedAgentLoopS
 		st.DenialPauseMessage = snap.PauseMessage
 	}
 	return st
+}
+
+func handoffMemoDoctorNote(stats agent.HandoffMemoStats) string {
+	if stats.Applied+stats.Fallback+stats.KeptExtraGroup == 0 {
+		return ""
+	}
+	note := fmt.Sprintf("handoff_memo applied=%d fallback=%d extra=%d", stats.Applied, stats.Fallback, stats.KeptExtraGroup)
+	total := stats.Applied + stats.Fallback
+	if total > 0 && float64(stats.Fallback)/float64(total) > 0.2 {
+		note += " fallback_ratio_high"
+	}
+	return note
 }
 
 // ClearDenialPause clears security denial auto-pause (Wails / operator recovery).

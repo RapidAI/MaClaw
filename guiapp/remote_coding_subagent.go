@@ -784,9 +784,19 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 	if resumeRemote {
 		defer func() {
 			recordCodingAgentResume(userID, r.projectDir, loopResult.HistoryDelta, nil)
+			if agent.HandoffMemoCoding() && len(loopResult.HistoryDelta) > 0 {
+				modified, created, read, _, _, commands, _ := cb.remoteAuditSnapshot()
+				recordCodingAgentResumeMemo(userID, r.projectDir, codingMemoFromTurn(userText, read, modified, created, commands))
+			}
 		}()
 	}
-	loopResult = codingagent.Run(cb, userText, userContent, resume.History, r.httpClient, hooks)
+	if resumeRemote && agent.HandoffMemoCoding() {
+		if strip := codingResumeStatusStrip(resume); strip != "" && !strings.HasPrefix(strings.TrimSpace(userText), "[系统续接]") {
+			userText = appendCodingResumeStrip(userText, strip)
+			userContent = remoteCodingUserContent(r, userText)
+		}
+	}
+	loopResult = codingagent.Run(cb, userText, userContent, codingModelHistory(resume), r.httpClient, hooks)
 	result := loopResult
 	finishSubAgentTrajectory(traj, result)
 	if r.handler != nil {

@@ -303,12 +303,12 @@ func TestDropStoredFactNudgeSuffix(t *testing.T) {
 }
 
 func TestIsPureSocialGreeting(t *testing.T) {
-	for _, text := range []string{"你好呀", "你好！", "您好", "hello", "thanks", "谢谢", "在吗", "ok", "收到", "好的"} {
+	for _, text := range []string{"你好呀", "你好！", "您好", "hello", "thanks", "谢谢", "在吗", "ok", "收到", "好的", "好的吧", "可以", "行"} {
 		if !IsPureSocialGreeting(text) {
 			t.Fatalf("%q must be a pure social greeting", text)
 		}
 	}
-	for _, text := range []string{"", "北京天气", "继续", "截图", "中国人，奇强", "你好，帮我连上那台机器", "帮我连上那台机器"} {
+	for _, text := range []string{"", "北京天气", "继续", "截图", "中国人，奇强", "你好，帮我连上那台机器", "帮我连上那台机器", "升级吗", "继续吗"} {
 		if IsPureSocialGreeting(text) {
 			t.Fatalf("%q must not be a pure social greeting", text)
 		}
@@ -318,7 +318,7 @@ func TestIsPureSocialGreeting(t *testing.T) {
 			t.Fatalf("%q must answer in place", text)
 		}
 	}
-	for _, text := range []string{"好的", "好的呀", "好呀", "ok", "收到", "嗯", "北京天气", "继续"} {
+	for _, text := range []string{"好的", "好的呀", "好的吧", "好的吗", "好呀", "ok", "收到", "嗯", "可以", "可以吗", "行", "北京天气", "继续", "升级吗"} {
 		if IsAnswerOnlySocialTurn(text) {
 			t.Fatalf("%q must stay on the open task", text)
 		}
