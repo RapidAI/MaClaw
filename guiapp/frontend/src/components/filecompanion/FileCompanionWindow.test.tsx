@@ -23,7 +23,7 @@ import { finishCompanionReply, splitCompanionStreamDelta } from "./companionReas
 import { companionPaperNotice } from "../../i18n/mnCompanion";
 import { ToastProvider } from "../Toast";
 import { DialogProvider } from "../CustomDialog";
-import { resetCompanionLibraryList } from "./FileCompanionLibrary";
+import { companionLibraryHideRow, resetCompanionLibraryList } from "./FileCompanionLibrary";
 import { loadPdfMarks, savePdfMarks, hydratePdfMarks } from "./pdfMarks";
 import { hydrateChatAnnotations, loadChatAnnotations, saveChatAnnotations } from "./chatAnnotations";
 import { hydrateChatMarks, loadChatMarks, saveChatMarks } from "./chatMarks";
@@ -91,7 +91,7 @@ const playerHide = vi.fn(async (..._args: any[]): Promise<any> => undefined);
 const discardWeb = vi.fn();
 const getBrandInfo = vi.fn();
 const clipboardWrite = vi.fn();
-type ListLibraryResult = { items: Array<Record<string, unknown>>; notice: string; updates?: Array<Record<string, unknown>>; removed?: string[]; removedHosts?: Record<string, string>; notesReply?: boolean; notesReview?: boolean; syncing?: boolean; catalog?: boolean; syncGen?: number };
+type ListLibraryResult = { items: Array<Record<string, unknown>>; notice: string; updates?: Array<Record<string, unknown>>; removed?: string[]; removedHosts?: Record<string, string>; notesReply?: boolean; notesReview?: boolean; syncing?: boolean; catalog?: boolean; syncGen?: number; libraryRev?: number };
 const listLibrary = vi.fn<(args: unknown[]) => Promise<ListLibraryResult>>(async () => ({ items: [], notice: "" }));
 const shareDocument = vi.fn(async () => ({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "a.md", visibility: "public", permanent: true }));
 const importShare = vi.fn(async (..._args: any[]): Promise<{ id: string; name: string; path: string; source: string; highlights?: string; chatMarks?: string; annotations?: string; drawings?: string }> => ({ id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", path: "C:/library/shared.pdf", source: "cloud" }));
@@ -2272,6 +2272,66 @@ describe("FileCompanionWindow", () => {
         const expiredMark = await screen.findByTestId(`file-companion-library-expired-mark-${token}`);
         expect(expiredMark.textContent).toContain("已过期");
         expect(screen.queryByTestId(`file-companion-library-edit-share-${token}`)).toBeNull();
+    });
+
+    it("reopens 文档管理 on a share imported again while it was closed", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const cloud = {
+            id: token,
+            token,
+            name: "old.pdf",
+            path: "C:/library/old.pdf",
+            source: "cloud",
+            owner: "other@example.com",
+            visibility: "public",
+            permanent: true,
+            mine: false,
+        };
+        listLibrary.mockResolvedValue({ items: [{ ...cloud }], notice: "", syncGen: 4, libraryRev: 2, syncing: false });
+        boot.mockResolvedValue({ paths: [] });
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-empty");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        expect((await screen.findByTestId(`file-companion-library-card-${token}`)).textContent).toContain("old.pdf");
+
+        // A later list while the screen is open is what the state snapshot keeps.
+        await act(async () => {
+            runtime.emit("file-companion:library", {
+                items: [{ ...cloud, name: "mid.pdf" }],
+                notice: "",
+                syncGen: 5,
+                libraryRev: 3,
+                syncing: false,
+            });
+        });
+        await waitFor(() => expect(screen.getByTestId(`file-companion-library-card-${token}`).textContent).toContain("mid.pdf"));
+        fireEvent.click(screen.getByTestId("file-companion-library-back"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-library-panel")).toBeNull());
+
+        // 取消分享 while the screen is closed, then the reader imports the link
+        // again. The disk read still in the refresh is older and must not win.
+        companionLibraryHideRow({ id: token, source: "cloud", token }, 6, 3);
+        await act(async () => {
+            runtime.emit("file-companion:library", {
+                items: [{ ...cloud, name: "brought-back.pdf" }],
+                notice: "",
+                syncGen: 7,
+                libraryRev: 8,
+                syncing: true,
+            });
+        });
+        listLibrary.mockResolvedValue({
+            items: [{ ...cloud, name: "mid.pdf" }],
+            notice: "",
+            syncGen: 4,
+            libraryRev: 2,
+            syncing: true,
+        });
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        expect((await screen.findByTestId(`file-companion-library-card-${token}`)).textContent).toContain("brought-back.pdf");
+        await act(async () => { await Promise.resolve(); });
+        expect(screen.getByTestId(`file-companion-library-card-${token}`).textContent).toContain("brought-back.pdf");
     });
 
     it("keeps the mounted reader out of unchanged library poll renders", async () => {
@@ -9336,7 +9396,7 @@ describe("companion titlebar keeps its controls out of the window drag region", 
         expect(source).toContain(".file-companion-window[data-view='library']:not([data-reader-player]) .file-companion-split-preview,");
         expect(source).toMatch(/\.file-companion-window\[data-view='groups'\]:not\(\[data-reader-player\]\) \.file-companion-split-preview\s*\{[^}]*visibility:\s*hidden/);
         expect(source).toMatch(/\.file-companion-project\s*\{[^}]*content-visibility:\s*auto/);
-        expect(source).toMatch(/\.file-companion-project\s*\{[^}]*contain-intrinsic-size:\s*auto 60px/);
+        expect(source).toMatch(/\.file-companion-project\s*\{[^}]*contain-intrinsic-size:\s*auto 78px/);
     });
 
     // jsdom never runs Wails' drop filter. OnFileDrop is registered with

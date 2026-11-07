@@ -236,6 +236,31 @@ function ScreenControlIcon() {
     );
 }
 
+// Line drawing of a sleeping computer. The screen stroke draws and fades;
+// the Z marks draw on and drift up. Clicking it wakes the desktop.
+// Z lengths are 52, 39, and 26 (3-4-5 strokes). The screen line is 68.
+// They sit to the right of the bezel so they do not cross it.
+function ComputerSleepScene() {
+    return (
+        <svg className="desktop-bot-sleep__art" viewBox="0 0 200 128" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+            <g className="desktop-bot-sleep__machine">
+                <rect x="36" y="48" width="104" height="52" rx="6" />
+                <path className="desktop-bot-sleep__breath" d="M54 74h68" />
+                <path className="desktop-bot-sleep__deck" d="M24 103H152L160 120H16z" />
+            </g>
+            <g className="desktop-bot-sleep__z desktop-bot-sleep__z--1">
+                <path d="M146 44h16l-16 12h16" />
+            </g>
+            <g className="desktop-bot-sleep__z desktop-bot-sleep__z--2">
+                <path d="M164 28h12l-12 9h12" />
+            </g>
+            <g className="desktop-bot-sleep__z desktop-bot-sleep__z--3">
+                <path d="M178 14h8l-8 6h8" />
+            </g>
+        </svg>
+    );
+}
+
 function CreditMark() {
     return (
         <svg className="desktop-bot-workspace__credit-mark" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false">
@@ -2524,7 +2549,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const storedSection = selected ? sectionByBot[selected.id] : undefined;
     const panelSection: PanelSection = storedSection === 'details' || storedSection === 'schedules' || storedSection === 'tasks' ? storedSection : 'computer';
     const retryForSelected = !!selected && retryByBot[selected.id] === true;
-    // Asleep: hide the whole screen (no video, no viewer chrome), show 休眠中 Zzz.
+    // Asleep: hide the whole screen (no video, no viewer chrome). The wake
+    // control is a line drawing of a sleeping computer.
     const selectedAsleep = !!selected && asleepByBot[selected.id] === true && !retryForSelected && (!screenPickNow || screenPickNow === selected.id || (screenPickNow === 'mine' && screenByBot[selected.id]?.mode !== 'isolated'));
     // Voluntary viewing stays view-only while this bot is using its desktop.
     // A handoff keeps the keyboard when this bot is not using it.
@@ -7098,8 +7124,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             {handBackError ? <p className="desktop-screen-switch__error" data-testid="desktop-bot-handback-error" role="status">{handBackError}</p> : null}
                             {selectedAsleep ? (
                                 <div className="desktop-bot-sleep" data-testid="desktop-bot-sleep">
-                                    {/* The Zzz text itself is the human 唤醒 control. */}
-                                    <button type="button" className="desktop-bot-sleep__text" data-testid="desktop-bot-wake" title={text.wakeDesktop} aria-label={'休眠中 Zzz · ' + text.wakeDesktop} onClick={() => void retryConnection(selected.id)}>休眠中 Zzz</button>
+                                    <button type="button" className="desktop-bot-sleep__wake" data-testid="desktop-bot-wake" title={text.wakeDesktop} aria-label={text.desktopAsleep} onClick={() => void retryConnection(selected.id)}>
+                                        <ComputerSleepScene />
+                                    </button>
                                 </div>
                             ) : !ownPictureDown && shownDesktopUrl ? (
                                 <div ref={stageRef} className={'desktop-bot-stage' + (stageInteractive ? ' is-user' : ' is-bot') + ((takeover || screenExpanded) ? ' is-fullscreen' : '')} data-testid="desktop-bot-stage">

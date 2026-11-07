@@ -35944,7 +35944,7 @@ body.companion-pdf-translation-dragging * {
   gap: 10px;
   box-sizing: border-box;
   content-visibility: auto;
-  contain-intrinsic-size: auto 78px;
+  contain-intrinsic-size: auto 97px;
   padding: 9px 10px;
   border: 1px solid var(--theme-border, #d5e0ef);
   border-radius: var(--radius-md);

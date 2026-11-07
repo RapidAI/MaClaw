@@ -3853,30 +3853,189 @@
 .bot-room-chat__form { display: flex; gap: 8px; align-items: flex-end; }
 .bot-room-chat__form textarea { flex: 1; resize: vertical; }
 
-/* Sleeping desktop: no screen, no bezel — just 休眠中 Zzz. */
+/* Sleeping desktop: a plain line drawing. No screen, no viewer chrome.
+   Dash lengths are user units of the longest stroke in that group
+   (Z marks 52, screen line 68). A length of 1 only shifts the stroke
+   by one unit, so the line stays dotted. */
 .desktop-bot-sleep {
     display: flex;
-    flex-direction: column;
+    flex: 1 1 auto;
     align-items: center;
     justify-content: center;
-    gap: 12px;
-    min-height: 220px;
-    padding: 32px 16px;
+    min-height: 180px;
+    padding: 20px 16px;
     background: transparent;
     border: none;
 }
-.desktop-bot-sleep__text {
+
+.desktop-bot-sleep__wake {
+    display: grid;
+    place-items: center;
+    box-sizing: border-box;
+    width: min(232px, 100%);
     margin: 0;
-    padding: 8px 16px;
-    font-size: 18px;
-    color: var(--text-secondary, #888);
-    letter-spacing: 0.04em;
-    background: none;
+    padding: 12px 16px;
     border: none;
+    border-radius: 12px;
+    background: none;
+    color: var(--theme-text-primary, #526277);
+    line-height: 0;
     cursor: pointer;
 }
-.desktop-bot-sleep__text:hover,
-.desktop-bot-sleep__text:focus-visible {
-    color: var(--text-primary, #333);
-    text-decoration: underline;
+
+.desktop-bot-sleep__wake:hover,
+.desktop-bot-sleep__wake:focus-visible {
+    color: var(--mc-accent, #2f6fbc);
+}
+
+.desktop-bot-sleep__wake:focus-visible {
+    outline: 2px solid var(--mc-accent, #2f6fbc);
+    outline-offset: 3px;
+}
+
+.desktop-bot-sleep__art {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 200 / 128;
+    overflow: visible;
+}
+
+.desktop-bot-sleep__z {
+    opacity: 0;
+    animation: desktop-bot-sleep-float 3.6s ease-in-out infinite;
+}
+
+/* Each Z uses its own path length. A shared dash of 52 makes the
+   shorter marks appear already drawn. */
+.desktop-bot-sleep__z path {
+    animation-duration: 3.6s;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+}
+
+.desktop-bot-sleep__z--1 path {
+    stroke-dasharray: 52;
+    stroke-dashoffset: 52;
+    animation-name: desktop-bot-sleep-draw-52;
+}
+
+.desktop-bot-sleep__z--2 {
+    animation-delay: 1.2s;
+}
+
+.desktop-bot-sleep__z--2 path {
+    stroke-dasharray: 39;
+    stroke-dashoffset: 39;
+    animation-name: desktop-bot-sleep-draw-39;
+    animation-delay: 1.2s;
+}
+
+.desktop-bot-sleep__z--3 {
+    animation-delay: 2.4s;
+}
+
+.desktop-bot-sleep__z--3 path {
+    stroke-dasharray: 26;
+    stroke-dashoffset: 26;
+    animation-name: desktop-bot-sleep-draw-26;
+    animation-delay: 2.4s;
+}
+
+.desktop-bot-sleep__breath {
+    stroke-dasharray: 68;
+    stroke-dashoffset: 68;
+    animation: desktop-bot-sleep-breath 7.2s ease-in-out infinite;
+}
+
+@keyframes desktop-bot-sleep-float {
+    0% {
+        opacity: 0;
+        transform: translate(0, 4px);
+    }
+    18% {
+        opacity: 0.9;
+    }
+    100% {
+        opacity: 0;
+        transform: translate(6px, -12px);
+    }
+}
+
+@keyframes desktop-bot-sleep-draw-52 {
+    0% {
+        stroke-dashoffset: 52;
+    }
+    40%,
+    100% {
+        stroke-dashoffset: 0;
+    }
+}
+
+@keyframes desktop-bot-sleep-draw-39 {
+    0% {
+        stroke-dashoffset: 39;
+    }
+    40%,
+    100% {
+        stroke-dashoffset: 0;
+    }
+}
+
+@keyframes desktop-bot-sleep-draw-26 {
+    0% {
+        stroke-dashoffset: 26;
+    }
+    40%,
+    100% {
+        stroke-dashoffset: 0;
+    }
+}
+
+@keyframes desktop-bot-sleep-breath {
+    0%,
+    100% {
+        stroke-dashoffset: 68;
+        opacity: 0.4;
+    }
+    46%,
+    58% {
+        stroke-dashoffset: 0;
+        opacity: 1;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .desktop-bot-sleep__z,
+    .desktop-bot-sleep__z--1 path,
+    .desktop-bot-sleep__z--2 path,
+    .desktop-bot-sleep__z--3 path,
+    .desktop-bot-sleep__breath {
+        animation: none;
+    }
+
+    .desktop-bot-sleep__z {
+        opacity: 0.8;
+        transform: none;
+    }
+
+    .desktop-bot-sleep__z--1 path,
+    .desktop-bot-sleep__z--2 path,
+    .desktop-bot-sleep__z--3 path,
+    .desktop-bot-sleep__breath {
+        stroke-dashoffset: 0;
+        opacity: 1;
+    }
+}
+
+@media (forced-colors: active) {
+    .desktop-bot-sleep__wake,
+    .desktop-bot-sleep__wake:hover,
+    .desktop-bot-sleep__wake:focus-visible {
+        color: CanvasText;
+    }
+
+    .desktop-bot-sleep__wake:focus-visible {
+        outline-color: CanvasText;
+    }
 }

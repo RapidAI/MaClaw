@@ -559,10 +559,10 @@ func (a *App) writeFileCompanionLibraryLocked(items []FileCompanionLibraryItem) 
 	if ok {
 		titles = prev.Titles
 	}
-	return a.writeFileCompanionLibraryFileLocked(items, titles)
+	return a.writeFileCompanionLibraryFileLocked(items, titles, true)
 }
 
-func (a *App) writeFileCompanionLibraryFileLocked(items []FileCompanionLibraryItem, titles map[string]fileCompanionTitleRecord) error {
+func (a *App) writeFileCompanionLibraryFileLocked(items []FileCompanionLibraryItem, titles map[string]fileCompanionTitleRecord, bumpRev bool) error {
 	path := a.fileCompanionLibraryPath()
 	if path == "" {
 		return errors.New("library path is empty")
@@ -578,7 +578,12 @@ func (a *App) writeFileCompanionLibraryFileLocked(items []FileCompanionLibraryIt
 	if err := fileCompanionWriteAtomicFile(path, body, 0o600); err != nil {
 		return err
 	}
-	fileCompanionLibraryRev.Add(1)
+	// A title-only write must not move the revision. The panel treats a newer
+	// revision as a row change and will paint that older generation over a
+	// hub catalog that is already on screen.
+	if bumpRev {
+		fileCompanionLibraryRev.Add(1)
+	}
 	return nil
 }
 

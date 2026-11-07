@@ -7239,7 +7239,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     onEditShare={(row) => { setImportDialogLink(""); setShareDialogRow(row); setShareDialogPath(row.path ?? ""); }}
                     onImportLink={(link) => { setImportDialogLink(link); setImportDialogOpen(true); }}
                     libraryDeleteGen={libraryDeleteGen}
-                    listedSnapshot={libraryListSnapshot ?? lastLibraryListRef.current}
+                    // The list last accepted, including one that arrived while
+                    // this screen was closed. The state snapshot is pushed only
+                    // while the screen is mounted, so preferring it reopened on
+                    // the pre-delete list and the removal tombstone hid a share
+                    // the reader had imported again.
+                    listedSnapshot={lastLibraryListRef.current ?? libraryListSnapshot}
                     onProjectDeleted={(path) => {
                         const key = companionSharePathKey(path);
                         if (!key) return;

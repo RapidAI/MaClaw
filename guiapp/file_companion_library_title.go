@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -109,9 +111,25 @@ func (a *App) startFileCompanionTitleFill() {
 		if !a.fillFileCompanionLibraryTitles() {
 			return
 		}
+		// The refresh stamps whatever titles are already stored, then emits,
+		// and only then clears its flag. A fill that writes in that gap used
+		// to drop its event, so the list on screen kept the pre-write rows
+		// until the next poll. Wait out the refresh that is already running.
+		// Its event has been sent once the flag drops. This publish uses the
+		// current generation, which the panel ignores while that refresh is
+		// still the list on screen, so it does not replace the hub catalog.
+		// Past the deadline the refresh is still downloading; it stamps on
+		// the way out and will see the titles this fill just stored.
+		deadline := time.Now().Add(30 * time.Second)
+		for fileCompanionLibrarySyncRunning.Load() && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if fileCompanionLibrarySyncRunning.Load() {
+			return
+		}
 		listed := FileCompanionLibraryList{
 			Syncing:     false,
-			SyncGen:     fileCompanionLibrarySyncGen.Add(1),
+			SyncGen:     fileCompanionLibrarySyncGen.Load(),
 			NotesReply:  a.fileCompanionNotesReply.Load(),
 			NotesReview: a.fileCompanionNotesReview.Load(),
 		}
@@ -196,7 +214,7 @@ func (a *App) fillFileCompanionLibraryTitles() bool {
 	if !changed {
 		return false
 	}
-	return a.writeFileCompanionLibraryFileLocked(current.Items, current.Titles) == nil
+	return a.writeFileCompanionLibraryFileLocked(current.Items, current.Titles, false) == nil
 }
 
 func fileCompanionCleanTitle(value string) string {
@@ -273,6 +291,11 @@ func fileCompanionReadHeadTail(path string, size int64, head, tail int64) ([]byt
 	return buf, nil
 }
 
+type pdfTitlePick struct {
+	text  string
+	score int
+}
+
 func fileCompanionPDFTitle(path string, size int64) (string, bool) {
 	const head = 64 << 10
 	const tail = 192 << 10
@@ -280,10 +303,24 @@ func fileCompanionPDFTitle(path string, size int64) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	return fileCompanionPDFTitleFrom(data), true
+	// A large file is not one buffer. Joining the head to the tail invents a
+	// /Title at the seam and lets a mark in the head borrow Info keys from
+	// the tail. The Info dictionary lives at the end, so a tie keeps the tail.
+	if size <= head+tail {
+		return fileCompanionPDFTitleFrom(data).text, true
+	}
+	if int64(len(data)) < head {
+		return fileCompanionPDFTitleFrom(data).text, true
+	}
+	headPick := fileCompanionPDFTitleFrom(data[:head])
+	tailPick := fileCompanionPDFTitleFrom(data[head:])
+	if tailPick.score > headPick.score || (tailPick.score == headPick.score && tailPick.text != "") {
+		return tailPick.text, true
+	}
+	return headPick.text, true
 }
 
-func fileCompanionPDFTitleFrom(data []byte) string {
+func fileCompanionPDFTitleFrom(data []byte) pdfTitlePick {
 	bestScore := 0
 	bestAt := -1
 	best := ""
@@ -301,10 +338,7 @@ func fileCompanionPDFTitleFrom(data []byte) string {
 		if next < len(data) && pdfNameByte(data[next]) {
 			continue
 		}
-		j := next
-		for j < len(data) && (data[j] == ' ' || data[j] == '\t' || data[j] == '\n' || data[j] == '\r') {
-			j++
-		}
+		j := skipPDFSpace(data, next)
 		if j >= len(data) {
 			continue
 		}
@@ -312,11 +346,14 @@ func fileCompanionPDFTitleFrom(data []byte) string {
 		var parsed bool
 		switch data[j] {
 		case '(':
-			text, parsed = pdfLiteralString(data, j)
+			text, _, parsed = pdfLiteralString(data, j)
+			if parsed {
+				text = pdfTextBytes([]byte(text))
+			}
 		case '<':
-			text, parsed = pdfHexString(data, j)
+			text, _, parsed = pdfHexString(data, j)
 		default:
-			continue
+			text, parsed = pdfIndirectTitle(data, j)
 		}
 		if !parsed {
 			continue
@@ -325,22 +362,10 @@ func fileCompanionPDFTitleFrom(data []byte) string {
 		if text == "" {
 			continue
 		}
-		score := 1
-		start := at - 800
-		if start < 0 {
-			start = 0
-		}
-		end := at + 800
-		if end > len(data) {
-			end = len(data)
-		}
-		window := data[start:end]
-		if bytes.Contains(window, []byte("/Producer")) || bytes.Contains(window, []byte("/Creator")) || bytes.Contains(window, []byte("/Author")) || bytes.Contains(window, []byte("/ModDate")) || bytes.Contains(window, []byte("/CreationDate")) || bytes.Contains(window, []byte("/Subject")) {
-			score += 10
-		}
-		if bytes.Contains(window, []byte("/Parent")) || bytes.Contains(window, []byte("/Dest")) || bytes.Contains(window, []byte("/Prev")) || bytes.Contains(window, []byte("/Next")) {
-			score -= 8
-		}
+		// Score only the dictionary that holds this /Title. A shared window
+		// gives an Info title and a later outline title the same score, and
+		// the later outline entry used to win.
+		score := pdfTitleDictScore(data, at)
 		if score < 1 {
 			continue
 		}
@@ -351,9 +376,100 @@ func fileCompanionPDFTitleFrom(data []byte) string {
 		}
 	}
 	if best != "" {
-		return best
+		return pdfTitlePick{text: best, score: bestScore}
 	}
-	return fileCompanionXMPTitle(data)
+	if xmp := fileCompanionXMPTitle(data); xmp != "" {
+		return pdfTitlePick{text: xmp, score: 1}
+	}
+	return pdfTitlePick{}
+}
+
+func skipPDFSpace(data []byte, j int) int {
+	for j < len(data) && (data[j] == ' ' || data[j] == '\t' || data[j] == '\n' || data[j] == '\r') {
+		j++
+	}
+	return j
+}
+
+// pdfIndirectTitle reads /Title N G R when that object is in the same slice.
+func pdfIndirectTitle(data []byte, at int) (string, bool) {
+	num, at, ok := pdfInt(data, at)
+	if !ok || num <= 0 {
+		return "", false
+	}
+	at = skipPDFSpace(data, at)
+	gen, at, ok := pdfInt(data, at)
+	if !ok || gen < 0 {
+		return "", false
+	}
+	at = skipPDFSpace(data, at)
+	if at >= len(data) || data[at] != 'R' || (at+1 < len(data) && pdfNameByte(data[at+1])) {
+		return "", false
+	}
+	return pdfObjectString(data, num, gen)
+}
+
+func pdfInt(data []byte, at int) (int, int, bool) {
+	if at >= len(data) || data[at] < '0' || data[at] > '9' {
+		return 0, at, false
+	}
+	n := 0
+	for at < len(data) && data[at] >= '0' && data[at] <= '9' {
+		n = n*10 + int(data[at]-'0')
+		if n > 9_999_999 {
+			return 0, at, false
+		}
+		at++
+	}
+	return n, at, true
+}
+
+func pdfObjectString(data []byte, num, gen int) (string, bool) {
+	needle := strconv.AppendInt(nil, int64(num), 10)
+	for from := 0; from < len(data); {
+		rel := bytes.Index(data[from:], needle)
+		if rel < 0 {
+			return "", false
+		}
+		at := from + rel
+		from = at + len(needle)
+		if at > 0 && data[at-1] >= '0' && data[at-1] <= '9' {
+			continue
+		}
+		j := skipPDFSpace(data, at+len(needle))
+		got, j, ok := pdfInt(data, j)
+		if !ok || got != gen {
+			continue
+		}
+		j = skipPDFSpace(data, j)
+		if j+3 > len(data) || string(data[j:j+3]) != "obj" || (j+3 < len(data) && pdfNameByte(data[j+3])) {
+			continue
+		}
+		j = skipPDFSpace(data, j+3)
+		if j >= len(data) {
+			return "", false
+		}
+		switch data[j] {
+		case '(':
+			text, _, ok := pdfLiteralString(data, j)
+			if !ok {
+				continue
+			}
+			return pdfTextBytes([]byte(text)), true
+		case '<':
+			if j+1 < len(data) && data[j+1] == '<' {
+				return "", false
+			}
+			text, _, ok := pdfHexString(data, j)
+			if !ok {
+				continue
+			}
+			return text, true
+		default:
+			continue
+		}
+	}
+	return "", false
 }
 
 func pdfNameByte(b byte) bool {
@@ -368,9 +484,9 @@ func pdfNameByte(b byte) bool {
 	}
 }
 
-func pdfLiteralString(data []byte, start int) (string, bool) {
+func pdfLiteralString(data []byte, start int) (string, int, bool) {
 	if start >= len(data) || data[start] != '(' {
-		return "", false
+		return "", start, false
 	}
 	var out strings.Builder
 	depth := 1
@@ -379,7 +495,7 @@ func pdfLiteralString(data []byte, start int) (string, bool) {
 		switch c {
 		case '\\':
 			if i+1 >= len(data) {
-				return "", false
+				return "", start, false
 			}
 			i++
 			n := data[i]
@@ -419,28 +535,29 @@ func pdfLiteralString(data []byte, start int) (string, bool) {
 		case ')':
 			depth--
 			if depth == 0 {
-				return out.String(), true
+				return out.String(), i + 1, true
 			}
 			out.WriteByte(c)
 		default:
 			out.WriteByte(c)
 		}
 	}
-	return "", false
+	return "", start, false
 }
 
-func pdfHexString(data []byte, start int) (string, bool) {
+func pdfHexString(data []byte, start int) (string, int, bool) {
 	if start >= len(data) || data[start] != '<' {
-		return "", false
+		return "", start, false
 	}
 	if start+1 < len(data) && data[start+1] == '<' {
-		return "", false
+		return "", start, false
 	}
 	end := bytes.IndexByte(data[start+1:], '>')
 	if end < 0 || end > 4096 {
-		return "", false
+		return "", start, false
 	}
 	raw := data[start+1 : start+1+end]
+	closeAt := start + 1 + end + 1
 	digits := make([]byte, 0, len(raw))
 	for _, c := range raw {
 		switch {
@@ -448,20 +565,104 @@ func pdfHexString(data []byte, start int) (string, bool) {
 			digits = append(digits, c)
 		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
 		default:
-			return "", false
+			return "", start, false
 		}
 	}
 	if len(digits) == 0 {
-		return "", true
+		return "", closeAt, true
 	}
 	if len(digits)%2 == 1 {
 		digits = append(digits, '0')
 	}
 	decoded := make([]byte, len(digits)/2)
 	if _, err := hex.Decode(decoded, digits); err != nil {
-		return "", false
+		return "", start, false
 	}
-	return pdfTextBytes(decoded), true
+	return pdfTextBytes(decoded), closeAt, true
+}
+
+// pdfTitleDictScore is 1, plus 10 when this dictionary looks like document
+// info, minus 8 when it looks like an outline entry. The scan stops at the
+// dictionary's own closing bracket, so a later outline does not borrow the
+// info keys and the info title does not inherit /Parent.
+func pdfTitleDictScore(data []byte, titleAt int) int {
+	i := titleAt + len("/Title")
+	end := i + 800
+	if end > len(data) {
+		end = len(data)
+	}
+	depth := 1
+	bonus := false
+	penalty := false
+	for i < end && depth > 0 {
+		switch data[i] {
+		case '(':
+			_, n, ok := pdfLiteralString(data, i)
+			if !ok || n <= i {
+				return pdfTitleScore(bonus, penalty)
+			}
+			i = n
+		case '<':
+			if i+1 < len(data) && data[i+1] == '<' {
+				depth++
+				i += 2
+				continue
+			}
+			_, n, ok := pdfHexString(data, i)
+			if !ok || n <= i {
+				return pdfTitleScore(bonus, penalty)
+			}
+			i = n
+		case '>':
+			if i+1 < len(data) && data[i+1] == '>' {
+				depth--
+				i += 2
+				continue
+			}
+			i++
+		case '/':
+			name, n := pdfDictName(data, i)
+			if n <= i {
+				i++
+				continue
+			}
+			switch name {
+			case "Producer", "Creator", "Author", "ModDate", "CreationDate", "Subject":
+				bonus = true
+			case "Parent", "Dest", "Prev", "Next":
+				penalty = true
+			}
+			i = n
+		default:
+			i++
+		}
+	}
+	return pdfTitleScore(bonus, penalty)
+}
+
+func pdfTitleScore(bonus, penalty bool) int {
+	score := 1
+	if bonus {
+		score += 10
+	}
+	if penalty {
+		score -= 8
+	}
+	return score
+}
+
+func pdfDictName(data []byte, at int) (string, int) {
+	if at >= len(data) || data[at] != '/' {
+		return "", at
+	}
+	i := at + 1
+	for i < len(data) && pdfNameByte(data[i]) {
+		i++
+	}
+	if i == at+1 {
+		return "", at
+	}
+	return string(data[at+1 : i]), i
 }
 
 func pdfTextBytes(decoded []byte) string {
@@ -537,21 +738,27 @@ func fileCompanionHeadingTitle(path string) (string, bool) {
 	if strings.HasPrefix(text, "---") {
 		rest := text[3:]
 		end := strings.Index(rest, "\n---")
-		if end > 0 {
-			for _, line := range strings.Split(rest[:end], "\n") {
-				line = strings.TrimSpace(line)
-				if len(line) >= 6 && strings.EqualFold(line[:6], "title:") {
-					return strings.Trim(strings.TrimSpace(line[6:]), `"'`), true
-				}
+		if end >= 0 {
+			if title, ok := markdownFrontTitle(rest[:end]); ok {
+				return title, true
+			}
+			text = rest[end+1:]
+			if nl := strings.IndexByte(text, '\n'); nl >= 0 && strings.HasPrefix(strings.TrimLeft(text[:nl], "\r"), "---") {
+				text = text[nl+1:]
 			}
 		}
 	}
+	inFence := false
 	for i, line := range strings.Split(text, "\n") {
-		if i > 40 {
+		if i > 80 {
 			break
 		}
 		trim := strings.TrimSpace(line)
-		if !strings.HasPrefix(trim, "#") {
+		if strings.HasPrefix(trim, "```") || strings.HasPrefix(trim, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || !strings.HasPrefix(trim, "#") {
 			continue
 		}
 		hashes := 0
@@ -564,9 +771,76 @@ func fileCompanionHeadingTitle(path string) (string, bool) {
 		if trim[hashes] != ' ' && trim[hashes] != '\t' {
 			continue
 		}
-		return strings.TrimSpace(trim[hashes:]), true
+		return stripMarkdownHeading(strings.TrimSpace(trim[hashes:])), true
 	}
 	return "", true
+}
+
+// markdownFrontTitle reads a plain YAML title. An empty value and a block
+// scalar marker are not titles by themselves: the folded lines are the
+// title, and when those lines are missing the body heading is.
+func markdownFrontTitle(front string) (string, bool) {
+	lines := strings.Split(front, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) < 6 || !strings.EqualFold(trimmed[:6], "title:") {
+			continue
+		}
+		value := strings.TrimSpace(trimmed[6:])
+		switch value {
+		case ">", ">-", ">+", "|", "|-", "|+":
+			var parts []string
+			for _, next := range lines[i+1:] {
+				if strings.TrimSpace(next) == "" {
+					if len(parts) > 0 {
+						break
+					}
+					continue
+				}
+				if !yamlIndented(next) {
+					break
+				}
+				parts = append(parts, strings.TrimSpace(next))
+			}
+			joined := strings.TrimSpace(strings.Join(parts, " "))
+			if joined == "" {
+				return "", false
+			}
+			return joined, true
+		default:
+			plain := strings.Trim(value, `"'`)
+			if strings.TrimSpace(plain) == "" {
+				return "", false
+			}
+			return plain, true
+		}
+	}
+	return "", false
+}
+
+func yamlIndented(line string) bool {
+	line = strings.TrimRight(line, "\r")
+	return strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")
+}
+
+func stripMarkdownHeading(value string) string {
+	for {
+		open := strings.Index(value, "[")
+		if open < 0 {
+			break
+		}
+		close := strings.Index(value[open:], "](")
+		if close < 0 {
+			break
+		}
+		close += open
+		paren := strings.Index(value[close+2:], ")")
+		if paren < 0 {
+			break
+		}
+		value = value[:open] + value[open+1:close] + value[close+2+paren+1:]
+	}
+	return strings.TrimSpace(strings.Trim(value, "*_`"))
 }
 
 func fileCompanionHTMLTitle(path string) (string, bool) {
