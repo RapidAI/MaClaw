@@ -3,7 +3,9 @@ package guiapp
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -39,23 +41,35 @@ func contentRetrievalUtterance(text string) bool {
 	return contentRetrievalLookupVerb(text) || contentRetrievalStoredCue(text)
 }
 
+// Phrases that arm the ladder. A query made only of these is the gate talking
+// to itself, not the subject the user asked about. Lookup and stored cues stay
+// separate: a knowledge-write utterance that merely mentions a host is not a lookup.
+var contentRetrievalLookupPhrases = []string{
+	"查一下", "是什么", "什么是",
+	"查询", "查查", "查找", "检索", "状态", "天气",
+	"look up", "status",
+}
+
+var contentRetrievalStoredPhrases = []string{
+	"服务器", "主机", "ssh",
+}
+
 func contentRetrievalLookupVerb(text string) bool {
-	for _, cue := range []string{"查询", "查一下", "查查", "查找", "检索", "是什么", "什么是", "状态", "天气"} {
-		if strings.Contains(text, cue) {
+	for _, cue := range contentRetrievalLookupPhrases {
+		if contentRetrievalContainsFold(text, cue) {
 			return true
 		}
 	}
-	lower := strings.ToLower(text)
-	return strings.Contains(lower, "look up") || strings.Contains(lower, "status")
+	return false
 }
 
 func contentRetrievalStoredCue(text string) bool {
-	for _, cue := range []string{"服务器", "主机"} {
-		if strings.Contains(text, cue) {
+	for _, cue := range contentRetrievalStoredPhrases {
+		if contentRetrievalContainsFold(text, cue) {
 			return true
 		}
 	}
-	return strings.Contains(strings.ToLower(text), "ssh")
+	return false
 }
 
 func contentRetrievalSuppliedURL(text string) bool {
@@ -330,20 +344,298 @@ func (c *sharedAgentLoopCallbacks) ContentRetrievalStopNudge() string {
 	return ""
 }
 
-// contentRetrievalConsultQuery is the text actually searched. A focused
-// extract of the user's words is kept. Any other model query, including a
-// one-character token, is replaced with the user text. Searching that token
-// and treating an empty hit as "the library has no fact" used to open ssh.
+// contentRetrievalConsultQuery is the text actually searched. The model query
+// is kept when it names the subject and does not still contain a phrase that
+// opened the ladder. Those phrases are not the fact. A short Han sentence
+// that still contains one is matched as an AND of every anchor, so 查一下
+// becomes a required 一下 and the card is reported missing. An empty hit
+// then opens ssh. The search uses the subject that remains.
 func contentRetrievalConsultQuery(userText, modelQuery string) string {
 	userText = strings.TrimSpace(userText)
 	modelQuery = strings.TrimSpace(modelQuery)
 	if userText == "" {
 		return modelQuery
 	}
-	if utf8.RuneCountInString(modelQuery) >= 2 && strings.Contains(strings.ToLower(userText), strings.ToLower(modelQuery)) {
-		return modelQuery
+	if !contentRetrievalNamesSubject(userText, modelQuery) {
+		return contentRetrievalFallbackQuery(userText)
+	}
+	if contentRetrievalContainsGatePhrase(modelQuery) {
+		// The gate phrase can be the only topic, as in ssh到那台主机. Stripping
+		// it would leave a particle and miss the card. The user text still
+		// contains that phrase, so it is the consultation.
+		if contentRetrievalFallbackQuery(userText) == userText && contentRetrievalHasASCIIIdent(userText) {
+			return userText
+		}
+		if subject := contentRetrievalSubjectQuery(modelQuery); subject != "" && contentRetrievalNamesSubject(userText, subject) {
+			return subject
+		}
+		return contentRetrievalFallbackQuery(userText)
+	}
+	return modelQuery
+}
+
+// contentRetrievalNamesSubject reports that modelQuery refers to this
+// request's subject. A cue fragment such as 一下 does not. An identifier
+// such as api2 must be carried whole.
+func contentRetrievalNamesSubject(userText, modelQuery string) bool {
+	if utf8.RuneCountInString(modelQuery) < 2 || !contentRetrievalContainsFold(userText, modelQuery) {
+		return false
+	}
+	if len(contentRetrievalSubjectSpans(modelQuery)) == 0 {
+		return false
+	}
+	digits, ascii, cjk := contentRetrievalClassifySpans(contentRetrievalSubjectSpans(userText))
+	if len(digits) > 0 {
+		return contentRetrievalContainsAnyFold(modelQuery, digits)
+	}
+	if len(ascii) > 0 {
+		return contentRetrievalContainsAnyFold(modelQuery, ascii)
+	}
+	if len(cjk) == 0 {
+		return true
+	}
+	for _, span := range cjk {
+		if contentRetrievalContainsFold(span, modelQuery) || contentRetrievalContainsFold(modelQuery, span) {
+			return true
+		}
+	}
+	return false
+}
+
+// contentRetrievalFallbackQuery is the consultation when the model did not
+// name the subject. A digit identifier (api2) is the query. A pure CJK
+// subject (北京) is the query. When the only ASCII token was itself a gate
+// phrase (ssh) and the leftover is not an identifier, the user text is
+// searched so that phrase stays in the query.
+func contentRetrievalFallbackQuery(userText string) string {
+	digits, ascii, _ := contentRetrievalClassifySpans(contentRetrievalSubjectSpans(userText))
+	if len(digits) > 0 {
+		return strings.Join(digits, " ")
+	}
+	if contentRetrievalHasASCIIIdent(userText) && len(ascii) == 0 {
+		return userText
+	}
+	if subject := contentRetrievalSubjectQuery(userText); subject != "" {
+		return subject
 	}
 	return userText
+}
+
+// contentRetrievalSubjectQuery is the subject with the ladder's own phrases
+// removed. It does not substitute the original sentence back in.
+func contentRetrievalSubjectQuery(text string) string {
+	digits, ascii, cjk := contentRetrievalClassifySpans(contentRetrievalSubjectSpans(text))
+	switch {
+	case len(digits) > 0:
+		return strings.Join(digits, " ")
+	case len(ascii) > 0:
+		return strings.Join(ascii, " ")
+	case len(cjk) > 0:
+		return strings.Join(cjk, " ")
+	default:
+		return ""
+	}
+}
+
+func contentRetrievalContainsGatePhrase(text string) bool {
+	for _, phrase := range contentRetrievalGatePhrases() {
+		if contentRetrievalASCIIPhrase(phrase) {
+			if contentRetrievalContainsBoundedFold(text, phrase) {
+				return true
+			}
+			continue
+		}
+		if contentRetrievalContainsFold(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func contentRetrievalGatePhrases() []string {
+	phrases := make([]string, 0, len(contentRetrievalLookupPhrases)+len(contentRetrievalStoredPhrases))
+	phrases = append(phrases, contentRetrievalLookupPhrases...)
+	phrases = append(phrases, contentRetrievalStoredPhrases...)
+	sort.SliceStable(phrases, func(i, j int) bool {
+		return utf8.RuneCountInString(phrases[i]) > utf8.RuneCountInString(phrases[j])
+	})
+	return phrases
+}
+
+func contentRetrievalStripGatePhrases(text string) string {
+	for _, phrase := range contentRetrievalGatePhrases() {
+		text = contentRetrievalReplaceFold(text, phrase, contentRetrievalASCIIPhrase(phrase))
+	}
+	return text
+}
+
+func contentRetrievalASCIIPhrase(phrase string) bool {
+	if phrase == "" {
+		return false
+	}
+	for _, r := range phrase {
+		if r > unicode.MaxASCII {
+			return false
+		}
+	}
+	return true
+}
+
+func contentRetrievalReplaceFold(text, phrase string, bounded bool) string {
+	want := []rune(phrase)
+	if len(want) == 0 {
+		return text
+	}
+	src := []rune(text)
+	var b strings.Builder
+	for i := 0; i < len(src); {
+		if i+len(want) <= len(src) && contentRetrievalRunesFoldEqual(src[i:i+len(want)], want) {
+			if !bounded || contentRetrievalASCIIBoundary(src, i, i+len(want)) {
+				b.WriteByte(' ')
+				i += len(want)
+				continue
+			}
+		}
+		b.WriteRune(src[i])
+		i++
+	}
+	return b.String()
+}
+
+func contentRetrievalContainsBoundedFold(text, phrase string) bool {
+	want := []rune(phrase)
+	if len(want) == 0 {
+		return false
+	}
+	src := []rune(text)
+	for i := 0; i+len(want) <= len(src); i++ {
+		if contentRetrievalRunesFoldEqual(src[i:i+len(want)], want) && contentRetrievalASCIIBoundary(src, i, i+len(want)) {
+			return true
+		}
+	}
+	return false
+}
+
+func contentRetrievalASCIIBoundary(src []rune, start, end int) bool {
+	if start > 0 && contentRetrievalASCIIIdentRune(src[start-1]) {
+		return false
+	}
+	if end < len(src) && contentRetrievalASCIIIdentRune(src[end]) {
+		return false
+	}
+	return true
+}
+
+func contentRetrievalASCIIIdentRune(r rune) bool {
+	return r <= unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r))
+}
+
+func contentRetrievalSubjectSpans(text string) []string {
+	var spans []string
+	var b strings.Builder
+	flush := func() {
+		span := b.String()
+		b.Reset()
+		if utf8.RuneCountInString(span) >= 2 {
+			spans = append(spans, span)
+		}
+	}
+	for _, r := range contentRetrievalStripGatePhrases(text) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return spans
+}
+
+func contentRetrievalClassifySpans(spans []string) (digits, ascii, cjk []string) {
+	for _, span := range spans {
+		switch contentRetrievalSpanClass(span) {
+		case "digit":
+			digits = append(digits, span)
+		case "ascii":
+			ascii = append(ascii, span)
+		case "cjk":
+			cjk = append(cjk, span)
+		}
+	}
+	return digits, ascii, cjk
+}
+
+func contentRetrievalSpanClass(span string) string {
+	digit := false
+	ascii := false
+	other := false
+	for _, r := range span {
+		switch {
+		case unicode.IsDigit(r):
+			digit = true
+		case r <= unicode.MaxASCII && unicode.IsLetter(r):
+			ascii = true
+		case unicode.IsLetter(r):
+			other = true
+		}
+	}
+	if digit {
+		return "digit"
+	}
+	if ascii && !other {
+		return "ascii"
+	}
+	if other {
+		return "cjk"
+	}
+	return ""
+}
+
+func contentRetrievalHasASCIIIdent(text string) bool {
+	for _, r := range text {
+		if contentRetrievalASCIIIdentRune(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func contentRetrievalContainsAnyFold(text string, parts []string) bool {
+	for _, part := range parts {
+		if contentRetrievalContainsFold(text, part) {
+			return true
+		}
+	}
+	return false
+}
+
+func contentRetrievalContainsFold(text, part string) bool {
+	if part == "" {
+		return false
+	}
+	src := []rune(text)
+	want := []rune(part)
+	if len(want) > len(src) {
+		return false
+	}
+	for i := 0; i+len(want) <= len(src); i++ {
+		if contentRetrievalRunesFoldEqual(src[i:i+len(want)], want) {
+			return true
+		}
+	}
+	return false
+}
+
+func contentRetrievalRunesFoldEqual(a, b []rune) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if unicode.ToLower(a[i]) != unicode.ToLower(b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func contentRetrievalQuery(argsJSON string) (string, error) {

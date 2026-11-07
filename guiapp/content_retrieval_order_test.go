@@ -151,7 +151,7 @@ func TestContentRetrievalCallAllowanceBlocksDispatchUntilKnowledge(t *testing.T)
 func TestContentRetrievalExecuteUsesHooks(t *testing.T) {
 	h := &IMMessageHandler{}
 	h.semanticTrustedMemoryRecall = func(userID, query string) (string, error) {
-		if userID != desktopUserID || query != "查询 api2服务器状态" {
+		if userID != desktopUserID || query != "api2" {
 			t.Fatalf("memory principal=%q query=%q", userID, query)
 		}
 		return "memory says old host", nil
@@ -313,14 +313,16 @@ func TestContentRetrievalJunkQuerySearchesTheUserText(t *testing.T) {
 	if _, handled := cb.executeContentRetrievalCall("memory_recall", `{"query":"."}`); !handled {
 		t.Fatal("memory call was not handled")
 	}
-	if memoryQuery != "查询 api2服务器状态" {
+	if memoryQuery != "api2" {
 		t.Fatalf("memory query=%q", memoryQuery)
 	}
-	if _, handled := cb.executeContentRetrievalCall("knowledge_search", `{"query":"a"}`); !handled {
-		t.Fatal("knowledge call was not handled")
-	}
-	if knowledgeQuery != "查询 api2服务器状态" {
-		t.Fatalf("knowledge query=%q", knowledgeQuery)
+	for _, cue := range []string{"a", "查询", "状态", "服务器状态"} {
+		if _, handled := cb.executeContentRetrievalCall("knowledge_search", `{"query":"`+cue+`"}`); !handled {
+			t.Fatalf("knowledge call %q was not handled", cue)
+		}
+		if knowledgeQuery != "api2" {
+			t.Fatalf("knowledge query for %q=%q", cue, knowledgeQuery)
+		}
 	}
 	focused := discoveryContentCallbacks("查询 api2服务器状态")
 	focused.handler = &IMMessageHandler{
@@ -335,6 +337,42 @@ func TestContentRetrievalJunkQuerySearchesTheUserText(t *testing.T) {
 	}
 	if knowledgeQuery != "api2" {
 		t.Fatalf("focused query=%q", knowledgeQuery)
+	}
+	if _, handled := focused.executeContentRetrievalCall("knowledge_search", `{"query":"api2服务器"}`); !handled {
+		t.Fatal("wider extract was not handled")
+	}
+	if knowledgeQuery != "api2" {
+		t.Fatalf("wider extract=%q", knowledgeQuery)
+	}
+}
+
+func TestContentRetrievalConsultQueryUsesTheSubject(t *testing.T) {
+	weather := "查一下北京天气"
+	for _, query := range []string{"天气", "查一下", "一下", "下北", "北京天气", weather} {
+		if got := contentRetrievalConsultQuery(weather, query); got != "北京" {
+			t.Fatalf("weather query %q searched %q", query, got)
+		}
+	}
+	if got := contentRetrievalConsultQuery(weather, "北京"); got != "北京" {
+		t.Fatalf("weather subject=%q", got)
+	}
+	if got := contentRetrievalConsultQuery("查一下北京和上海的天气", "北京"); got != "北京" {
+		t.Fatalf("one city=%q", got)
+	}
+	if got := contentRetrievalConsultQuery("查询 api2服务器状态", "查询 api2服务器状态"); got != "api2" {
+		t.Fatalf("full status utterance=%q", got)
+	}
+	if got := contentRetrievalConsultQuery("ssh到那台主机", "主机"); got != "ssh到那台主机" {
+		t.Fatalf("host cue query=%q", got)
+	}
+	if got := contentRetrievalConsultQuery("ssh到那台主机", "ssh到那台主机"); got != "ssh到那台主机" {
+		t.Fatalf("host utterance=%q", got)
+	}
+	if got := contentRetrievalConsultQuery("查询状态", "状态"); got != "查询状态" {
+		t.Fatalf("cue-only utterance=%q", got)
+	}
+	if got := contentRetrievalConsultQuery("查询 maclaw 状态", "状态"); got != "maclaw" {
+		t.Fatalf("name query=%q", got)
 	}
 }
 
