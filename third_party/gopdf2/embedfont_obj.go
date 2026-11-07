@@ -32,8 +32,8 @@ func (e *EmbedFontObj) write(w io.Writer, objID int) error {
 	fmt.Fprintf(w, "/Length1 %d\n", e.font.GetOriginalsize())
 	io.WriteString(w, ">>\n")
 	io.WriteString(w, "stream\n")
-	if e.protection() != nil {
-		tmp, err := rc4Cip(e.protection().objectkey(objID), b)
+	if e.getRoot().hasEncryption() {
+		tmp, err := e.getRoot().encryptObject(objID, b)
 		if err != nil {
 			return err
 		}

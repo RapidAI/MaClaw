@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 )
 
@@ -156,21 +155,16 @@ func extractTextFromPageWithParser(parser *rawPDFParser, pdfData []byte, pageInd
 	}, stream), nil
 }
 
-// formatAsText converts extracted text items to a plain text string.
+// formatAsText converts extracted text items to a plain text string, one
+// merged line of text per output line, in reading order.
 func formatAsText(texts []ExtractedText) string {
 	if len(texts) == 0 {
 		return ""
 	}
 	var sb strings.Builder
-	lastY := math.MaxFloat64
-	for _, t := range texts {
-		if math.Abs(t.Y-lastY) > 2 && lastY != math.MaxFloat64 {
-			sb.WriteByte('\n')
-		} else if sb.Len() > 0 && lastY != math.MaxFloat64 {
-			sb.WriteByte(' ')
-		}
-		sb.WriteString(t.Text)
-		lastY = t.Y
+	for _, ln := range GroupIntoTextLines(texts) {
+		sb.WriteString(ln.Text)
+		sb.WriteByte('\n')
 	}
 	return sb.String()
 }
@@ -239,27 +233,14 @@ func formatAsBlocks(texts []ExtractedText) []TextBlock {
 	return blocks
 }
 
-// formatAsWords extracts individual words with positions.
+// formatAsWords extracts individual words with positions. Words come from
+// the position-aware run merger, so each word carries its true X position
+// and advance width (previously every word in a run shared the run's X and
+// a 0.5 em-per-rune width estimate).
 func formatAsWords(texts []ExtractedText) []TextWord {
 	var words []TextWord
-	for _, t := range texts {
-		// Split text into individual words.
-		parts := strings.Fields(t.Text)
-		x := t.X
-		for _, part := range parts {
-			runeCount := len([]rune(part))
-			w := TextWord{
-				X:        x,
-				Y:        t.Y,
-				Width:    t.FontSize * float64(runeCount) * 0.5,
-				Height:   t.FontSize,
-				Text:     part,
-				FontName: t.FontName,
-				FontSize: t.FontSize,
-			}
-			words = append(words, w)
-			x += w.Width + t.FontSize*0.25 // approximate word spacing
-		}
+	for _, ln := range GroupIntoTextLines(texts) {
+		words = append(words, ln.Words...)
 	}
 	return words
 }
@@ -355,64 +336,12 @@ func formatAsJSON(texts []ExtractedText, pageIndex int, parser *rawPDFParser) (s
 	return string(data), nil
 }
 
-// groupIntoLines groups ExtractedText items into lines by Y coordinate.
+// groupIntoLines groups ExtractedText items into position-aware lines.
+// It delegates to GroupIntoTextLines, which merges fragmentary runs into
+// words with true positions/widths and orders lines in reading order
+// (column-aware on multi-column pages).
 func groupIntoLines(texts []ExtractedText) []TextLine {
-	if len(texts) == 0 {
-		return nil
-	}
-
-	// Sort by Y first for efficient grouping.
-	sorted := make([]ExtractedText, len(texts))
-	copy(sorted, texts)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Y < sorted[j].Y
-	})
-
-	type lineGroup struct {
-		y     float64
-		items []ExtractedText
-	}
-	var groups []lineGroup
-
-	// Since sorted by Y, we only need to compare with the last group.
-	for _, t := range sorted {
-		if len(groups) > 0 && math.Abs(groups[len(groups)-1].y-t.Y) < 2 {
-			groups[len(groups)-1].items = append(groups[len(groups)-1].items, t)
-		} else {
-			groups = append(groups, lineGroup{y: t.Y, items: []ExtractedText{t}})
-		}
-	}
-
-	lines := make([]TextLine, 0, len(groups))
-	for _, g := range groups {
-		// Sort items by X within each line.
-		sort.Slice(g.items, func(i, j int) bool {
-			return g.items[i].X < g.items[j].X
-		})
-
-		line := TextLine{Y: g.y}
-		var textParts []string
-		for _, item := range g.items {
-			words := strings.Fields(item.Text)
-			for _, word := range words {
-				runeCount := len([]rune(word))
-				line.Words = append(line.Words, TextWord{
-					X:        item.X,
-					Y:        item.Y,
-					Width:    item.FontSize * float64(runeCount) * 0.5,
-					Height:   item.FontSize,
-					Text:     word,
-					FontName: item.FontName,
-					FontSize: item.FontSize,
-				})
-			}
-			textParts = append(textParts, item.Text)
-		}
-		line.Text = strings.Join(textParts, " ")
-		lines = append(lines, line)
-	}
-
-	return lines
+	return GroupIntoTextLines(texts)
 }
 
 // htmlEscapeText escapes text for HTML content.

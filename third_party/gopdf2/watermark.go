@@ -32,19 +32,31 @@ type WatermarkOption struct {
 
 	// RepeatSpacingY is the vertical spacing between repeated watermarks. Default: 150.
 	RepeatSpacingY float64
+
+	// AngleSet forces Angle to be honored exactly (a plain Angle of 0 means
+	// no rotation). Without it, Angle 0 falls back to the 45° default.
+	AngleSet bool
+
+	// ColorSet forces Color to be honored exactly (a plain black Color is
+	// otherwise replaced by the light-gray default).
+	ColorSet bool
+
+	// OpacitySet forces Opacity to be honored exactly (a plain Opacity of 0
+	// — invisible — is otherwise replaced by the 0.3 default).
+	OpacitySet bool
 }
 
 func (o *WatermarkOption) defaults() {
 	if o.FontSize <= 0 {
 		o.FontSize = 48
 	}
-	if o.Angle == 0 {
+	if o.Angle == 0 && !o.AngleSet {
 		o.Angle = 45
 	}
-	if o.Color == [3]uint8{0, 0, 0} {
+	if o.Color == [3]uint8{0, 0, 0} && !o.ColorSet {
 		o.Color = [3]uint8{200, 200, 200}
 	}
-	if o.Opacity <= 0 {
+	if o.Opacity <= 0 && !o.OpacitySet {
 		o.Opacity = 0.3
 	}
 	if o.RepeatSpacingX <= 0 {

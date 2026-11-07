@@ -64,8 +64,8 @@ func (c *ContentObj) write(w io.Writer, objID int) error {
 		return err
 	}
 
-	if c.protection() != nil {
-		tmp, err := rc4Cip(c.protection().objectkey(objID), buff.Bytes())
+	if c.getRoot().hasEncryption() {
+		tmp, err := c.getRoot().encryptObject(objID, buff.Bytes())
 		if err != nil {
 			return err
 		}

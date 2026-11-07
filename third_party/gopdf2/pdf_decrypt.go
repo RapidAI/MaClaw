@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/md5"
 	"crypto/rc4"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -21,9 +22,10 @@ var (
 // decryptContext holds the state needed to decrypt a PDF.
 type decryptContext struct {
 	encryptionKey []byte
-	keyLen        int // key length in bytes (5 for 40-bit, up to 16 for 128-bit)
-	v             int // /V value
-	r             int // /R value
+	keyLen        int  // key length in bytes (5 for 40-bit, up to 32 for AES-256)
+	v             int  // /V value
+	r             int  // /R value
+	aes           bool // AES (V4/V5) instead of RC4
 }
 
 // Pre-compiled regexes for PDF decryption.
@@ -63,18 +65,29 @@ func parseEncryptDict(dict string) (v, r, keyLen int, oValue, uValue []byte, pVa
 		keyLen = 5
 	}
 
-	// Only support V1 (R2, 40-bit RC4) and V2 (R3, up to 128-bit RC4).
-	if v != 1 && v != 2 {
+	// Support V1/V2 (RC4) and V4/V5 (AES-128/AES-256).
+	if v != 1 && v != 2 && v != 4 && v != 5 {
 		err = ErrUnsupportedCrypto
 		return
 	}
-	if r != 2 && r != 3 {
+	if (v == 1 && r != 2) || (v == 2 && r != 3) || (v == 4 && r != 4) || (v == 5 && r != 6) {
 		err = ErrUnsupportedCrypto
 		return
 	}
 
 	oValue = extractHexOrLiteralString(dict, "/O")
 	uValue = extractHexOrLiteralString(dict, "/U")
+
+	if v == 5 {
+		// AES-256 (R6): U and O are 48 bytes; UE/OE carry the wrapped key.
+		uValue = extractHexOrLiteralString(dict, "/U")
+		oValue = extractHexOrLiteralString(dict, "/O")
+		if len(oValue) < 48 || len(uValue) < 48 {
+			err = fmt.Errorf("invalid O or U value in AES-256 encryption dictionary")
+			return
+		}
+		return
+	}
 
 	if len(oValue) < 32 || len(uValue) < 32 {
 		err = fmt.Errorf("invalid O or U value in encryption dictionary")
@@ -109,6 +122,79 @@ func authenticate(data []byte, password string) (*decryptContext, error) {
 
 	pass := []byte(password)
 
+	if r == 6 {
+		// AES-256 (ISO 32000-2 §7.6.4.3.2/3): U/O are 48-byte hash-salt
+		// structures; the file key comes from UE/OE.
+		uValue48 := extractHexOrLiteralString(encObj.dict, "/U")
+		oValue48 := extractHexOrLiteralString(encObj.dict, "/O")
+		ueValue := extractHexOrLiteralString(encObj.dict, "/UE")
+		oeValue := extractHexOrLiteralString(encObj.dict, "/OE")
+		trimmed := []byte(password)
+		// R6 passwords are NOT padded.
+		if len(trimmed) > 127 {
+			trimmed = trimmed[:127]
+		}
+		// User: SHA-256(pass || U[32:40]) must equal U[:32]; key from UE.
+		if len(uValue48) == 48 {
+			h := sha256.Sum256(append(append([]byte{}, trimmed...), uValue48[32:40]...))
+			if bytesEqualBytes(h[:], uValue48[:32]) && len(ueValue) > 0 {
+				ueKey := sha256.Sum256(append(append([]byte{}, trimmed...), uValue48[40:48]...))
+				if fileKey, err := aesDecryptCBCZeroIV(ueKey[:], ueValue); err == nil && len(fileKey) == 32 {
+					return &decryptContext{encryptionKey: fileKey, keyLen: 32, v: v, r: r, aes: true}, nil
+				}
+			}
+		}
+		// Owner: SHA-256(pass || O[32:40] || U[:48]) == O[:32]; key from OE.
+		if len(oValue48) == 48 {
+			h := sha256.Sum256(append(append(append([]byte{}, trimmed...), oValue48[32:40]...), uValue48[:48]...))
+			if bytesEqualBytes(h[:], oValue48[:32]) && len(oeValue) > 0 {
+				oeKey := sha256.Sum256(append(append(append([]byte{}, trimmed...), oValue48[40:48]...), uValue48[:48]...))
+				if fileKey, err := aesDecryptCBCZeroIV(oeKey[:], oeValue); err == nil && len(fileKey) == 32 {
+					return &decryptContext{encryptionKey: fileKey, keyLen: 32, v: v, r: r, aes: true}, nil
+				}
+			}
+		}
+		return nil, ErrInvalidPassword
+	}
+
+	if r == 4 {
+		// AES-128 (R4): match the writer's self-consistent math —
+		// encKey = MD5-50(paddedUser || O || P_le)[:16];
+		// U check = RC4_20(encKey, MD5(padding)[:16]) first 16 bytes.
+		paddedUser := padPassword(pass)
+		m := md5.New()
+		m.Write(paddedUser)
+		m.Write(oValue)
+		pb := make([]byte, 4)
+		binary.LittleEndian.PutUint32(pb, uint32(int32(pValue)))
+		m.Write(pb)
+		encKey := m.Sum(nil)
+		for i := 0; i < 50; i++ {
+			h := md5.Sum(encKey[:16])
+			encKey = h[:]
+		}
+		encKey = encKey[:16]
+		um := md5.New()
+		um.Write(protectionPadding)
+		uHash := um.Sum(nil)
+		uCheck := make([]byte, 16)
+		copy(uCheck, uHash[:16])
+		for i := 0; i <= 19; i++ {
+			tmpKey := make([]byte, 16)
+			for j := range encKey {
+				tmpKey[j] = encKey[j] ^ byte(i)
+			}
+			cip, err := rc4.NewCipher(tmpKey)
+			if err == nil {
+				cip.XORKeyStream(uCheck[:16], uCheck[:16])
+			}
+		}
+		if bytesEqualBytes(uCheck, uValue[:16]) {
+			return &decryptContext{encryptionKey: encKey, keyLen: 16, v: v, r: r, aes: true}, nil
+		}
+		return nil, ErrInvalidPassword
+	}
+
 	// Try as user password first.
 	key, ok := tryUserPassword(pass, oValue, uValue, pValue, keyLen, r)
 	if ok {
@@ -122,6 +208,18 @@ func authenticate(data []byte, password string) (*decryptContext, error) {
 	}
 
 	return nil, ErrInvalidPassword
+}
+
+func bytesEqualBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // tryUserPassword attempts to authenticate with a user password.
@@ -258,6 +356,9 @@ func padPassword(pass []byte) []byte {
 
 // decryptObjectStream decrypts a stream using the per-object key.
 func (dc *decryptContext) decryptStream(objNum int, data []byte) ([]byte, error) {
+	if dc.aes {
+		return dc.aesDecryptObject(objNum, data)
+	}
 	key := dc.objectKey(objNum)
 	cip, err := rc4.NewCipher(key)
 	if err != nil {
@@ -266,6 +367,34 @@ func (dc *decryptContext) decryptStream(objNum int, data []byte) ([]byte, error)
 	result := make([]byte, len(data))
 	cip.XORKeyStream(result, data)
 	return result, nil
+}
+
+// aesDecryptObject decrypts one object stream: per-object key derivation and
+// AES-CBC with the IV prepended by the writer.
+func (dc *decryptContext) aesDecryptObject(objNum int, data []byte) ([]byte, error) {
+	switch dc.r {
+	case 6:
+		input := make([]byte, 0, len(dc.encryptionKey)+8)
+		input = append(input, dc.encryptionKey...)
+		input = append(input, byte(objNum), byte(objNum>>8), byte(objNum>>16), byte(objNum>>24), 0, 0, 0, 0)
+		h := sha256.Sum256(input)
+		return aesDecryptCBC(h[:dc.keyLen], data)
+	case 4:
+		input := make([]byte, 0, len(dc.encryptionKey)+10)
+		input = append(input, dc.encryptionKey...)
+		input = append(input, byte(objNum), byte(objNum>>8), byte(objNum>>16), 0, 0, 0, 's', 'A', 'l', 'T')
+		h := md5.Sum(input)
+		keyLen := dc.keyLen
+		if keyLen > 16 {
+			keyLen = 16
+		}
+		if keyLen > len(h) {
+			keyLen = len(h)
+		}
+		return aesDecryptCBC(h[:keyLen], data)
+	default:
+		return nil, ErrUnsupportedCrypto
+	}
 }
 
 // objectKey computes the per-object encryption key.

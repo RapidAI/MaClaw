@@ -166,14 +166,9 @@ func (gp *GoPdf) InsertHTMLBox(x, y, w, h float64, htmlStr string, opt HTMLBoxOp
 func (gp *GoPdf) InsertHTMLPaginated(x, y, w float64, htmlStr string, opt HTMLBoxOption) (float64, error)
 ```
 
-Render HTML content into a rectangular area. `InsertHTMLBox` clips its flow at
-the box height, but a line still renders whenever its top edge starts inside
-the box — only a line that starts past the box bottom is dropped, so a tight
-strip (e.g. an 18pt brand line under restored `<p>` margins) keeps its first
-line. An inline `<img>` participates in the line height: the cursor advances by
-the whole bitmap, the overflow check and pagination compare against it, and
-later text is never drawn over the image. `InsertHTMLPaginated` flows content
-across pages automatically — when content would pass `opt.PageBottom` a new page is
+Render HTML content into a rectangular area. `InsertHTMLBox` clips at the
+box height (legacy behavior); `InsertHTMLPaginated` flows content across
+pages automatically — when content would pass `opt.PageBottom` a new page is
 added and rendering resumes at `opt.PageTop`, with optional repeated table
 headers (`opt.RepeatTableHeaders`) and an `opt.OnPageBreak` callback.
 
@@ -1052,26 +1047,15 @@ Extract text content from existing PDF files. These are package-level functions 
 - `ExtractAllPagesLines` — parses the PDF once and returns merged lines for every page (prefer over looping `ExtractPageLines`).
 - `MergeTextRuns` / `GroupIntoTextLines` — the underlying position-aware merging helpers.
 
-The extraction pipeline supports object streams (PDF 1.5+), **Form XObjects** (text nested in /Subtype /Form stamps/letterheads is extracted), predefined CMaps, /Differences glyph names, WinAnsi/MacRoman/PDFDoc encodings, legacy GBK/Big5/Shift-JIS/EUC encodings, glyph advances from /Widths and CID /W arrays, TJ kerning spaces, and PDF 2.0 UTF-16BE/UTF-8 text strings.
-
-**Positions & graphics state.** All positions are reported in page units (points), with
-`Y` measured **from the page top** (top-down page coordinates). The extractor honors the
-PDF graphics-state stack: a `cm` applied inside a `q`…`Q` group composes with the current
-matrix and `Q` restores it — text placed after an image drawn with `q <cm> /Im Do Q`
-keeps its own user-space position instead of inheriting the image matrix. Each run
-reported by `ExtractTextFromPage` sits at its origin; `MergeTextRuns` collapses
-per-glyph runs into whole strings.
-
-> Note: the legacy ledongthuc/pdf fallback (used only when the raw parser yields no
-> text) still reports `Y` bottom-up. Prefer the raw-parser results for position work.
+The extraction pipeline supports object streams (PDF 1.5+), **encrypted documents** (`ExtractTextFromPageWithPassword` / `ExtractTextFromAllPagesWithPassword`; RC4 R2/R3 and AES-128/256 R4/R6), **Form XObjects** (text nested in /Subtype /Form stamps/letterheads is extracted), predefined CMaps, /Differences glyph names, WinAnsi/MacRoman/PDFDoc encodings, legacy GBK/Big5/Shift-JIS/EUC encodings, glyph advances from /Widths and CID /W arrays, TJ kerning spaces, and PDF 2.0 UTF-16BE/UTF-8 text strings.
 
 ### ExtractedText
 
 ```go
 type ExtractedText struct {
     Text     string  // The extracted text string
-    X        float64 // Horizontal position (page units, x grows rightward)
-    Y        float64 // Baseline, measured from the page top (top-down coordinates)
+    X        float64 // Horizontal position
+    Y        float64 // Vertical position
     FontName string  // PDF font resource name (e.g. "LiberationSerif-Regular")
     FontSize float64 // Font size in points
     Width    float64 // Estimated advance width (set by MergeTextRuns; 0 when unknown)
@@ -1099,12 +1083,6 @@ func ExtractImagesFromAllPages(pdfData []byte) (map[int][]ExtractedImage, error)
 
 Extract image metadata and data from existing PDF files. These are package-level functions.
 
-Positions honor the same conventions as text extraction: `X`/`Y` place the image's
-top-left corner on the page, `Y` measured from the page top; `DisplayWidth`/`DisplayHeight`
-are the rendered size in page units. The image extractor keeps a full
-graphics-state stack, so `q`…`Q` groups and composed matrices are already applied
-to the placement.
-
 ### ExtractedImage
 
 ```go
@@ -1117,7 +1095,7 @@ type ExtractedImage struct {
     Filter           string  // Compression filter (e.g. "DCTDecode")
     Data             []byte  // Raw image data
     ObjNum           int     // PDF object number
-    X, Y             float64 // Top-left corner on the page (Y from the page top)
+    X, Y             float64 // Position on the page
     DisplayWidth     float64 // Rendered width on the page
     DisplayHeight    float64 // Rendered height on the page
 }

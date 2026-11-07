@@ -37,6 +37,7 @@ type Transparency struct {
 	BlendModeType  BlendModeType
 }
 
+// NewTransparency creates a Transparency value with the given alpha (0-1) and blend mode.
 func NewTransparency(alpha float64, blendModeType string) (Transparency, error) {
 	if alpha < 0.0 || alpha > 1.0 {
 		return Transparency{}, fmt.Errorf("alpha value is out of range (0.0 - 1.0): %.3f", alpha)

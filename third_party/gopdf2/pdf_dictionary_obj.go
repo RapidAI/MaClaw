@@ -25,12 +25,12 @@ var ErrNotSupportShortIndexYet = errors.New("not support none short index yet")
 // PdfDictionaryObj pdf dictionary object
 type PdfDictionaryObj struct {
 	PtrToSubsetFontObj *SubsetFontObj
-	//getRoot            func() *GoPdf
-	pdfProtection *PDFProtection
+	getRoot            func() *GoPdf
+	pdfProtection      *PDFProtection
 }
 
 func (p *PdfDictionaryObj) init(funcGetRoot func() *GoPdf) {
-	//p.getRoot = funcGetRoot
+	p.getRoot = funcGetRoot
 }
 
 func (p *PdfDictionaryObj) setProtection(pr *PDFProtection) {
@@ -64,8 +64,8 @@ func (p *PdfDictionaryObj) write(w io.Writer, objID int) error {
 	fmt.Fprintf(w, "/Length1 %d\n", len(b))
 	io.WriteString(w, ">>\n")
 	io.WriteString(w, "stream\n")
-	if p.protection() != nil {
-		tmp, err := rc4Cip(p.protection().objectkey(objID), zbuff.Bytes())
+	if p.getRoot().hasEncryption() {
+		tmp, err := p.getRoot().encryptObject(objID, zbuff.Bytes())
 		if err != nil {
 			return err
 		}

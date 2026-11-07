@@ -80,6 +80,7 @@ type GoPdf struct {
 	//pdf PProtection
 	pdfProtection   *PDFProtection
 	encryptionObjID int
+	aesEnc          *aesEncryptionObj // set by SetEncryption (AES methods)
 
 	// content streams only
 	compressLevel int
@@ -2338,6 +2339,23 @@ func (gp *GoPdf) PointsToUnitsVar(u ...*float64) {
 	pointsToUnitsVar(gp.config, u...)
 }
 
+// encryptObject applies the active encryption (AES or RC4) to an object's
+// bytes. Returns data unchanged when no encryption is configured.
+func (gp *GoPdf) encryptObject(objID int, data []byte) ([]byte, error) {
+	if gp.aesEnc != nil {
+		return gp.aesEnc.encryptObjectStream(objID, data)
+	}
+	if gp.pdfProtection != nil {
+		return rc4Cip(gp.pdfProtection.objectkey(objID), data)
+	}
+	return data, nil
+}
+
+// hasEncryption reports whether any encryption is configured.
+func (gp *GoPdf) hasEncryption() bool {
+	return gp.aesEnc != nil || gp.pdfProtection != nil
+}
+
 func (gp *GoPdf) isUseProtection() bool {
 	return gp.config.Protection.UseProtection
 }
@@ -2363,7 +2381,7 @@ func (gp *GoPdf) prepare() {
 		gp.addObj(encObj)
 	}
 
-	if gp.outlines.Count() > 0 {
+	if gp.outlines != nil && gp.outlines.Count() > 0 {
 		catalogObj := gp.pdfObjs[gp.indexOfCatalogObj].(*CatalogObj)
 		catalogObj.SetIndexObjOutlines(gp.indexOfOutlinesObj)
 	}
@@ -2485,7 +2503,7 @@ func (gp *GoPdf) xref(w io.Writer, xrefbyteoffset int64, linelens []int64, i int
 	io.WriteString(w, "<<\n")
 	fmt.Fprintf(w, "/Size %d\n", max+1)
 	io.WriteString(w, "/Root 1 0 R\n")
-	if gp.isUseProtection() {
+	if gp.isUseProtection() || gp.aesEnc != nil {
 		fmt.Fprintf(w, "/Encrypt %d 0 R\n", gp.encryptionObjID)
 		io.WriteString(w, "/ID [()()]\n")
 	}

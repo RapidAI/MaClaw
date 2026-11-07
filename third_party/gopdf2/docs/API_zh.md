@@ -166,7 +166,7 @@ func (gp *GoPdf) InsertHTMLBox(x, y, w, h float64, htmlStr string, opt HTMLBoxOp
 func (gp *GoPdf) InsertHTMLPaginated(x, y, w float64, htmlStr string, opt HTMLBoxOption) (float64, error)
 ```
 
-将 HTML 内容渲染到 PDF 页面的指定矩形区域内。`InsertHTMLBox` 在盒子高度处截断内容流，但只要一行的**顶部起点**在盒内就会正常绘制，只有起点越过盒底的行才会被丢弃——紧贴高度的盒子（如恢复默认 `<p>` 间距后的 18pt 品牌行）也能保住首行。inline `<img>` 参与行高：光标会跳过整幅位图，溢出检查与分页也都按图片高度比较，后续文字不会压在图片上。`InsertHTMLPaginated` 让内容自动跨页流动——内容超过 `opt.PageBottom` 时自动添加新页并从 `opt.PageTop` 继续渲染，支持表格表头跨页重复（`opt.RepeatTableHeaders`）与 `opt.OnPageBreak` 回调。
+将 HTML 内容渲染到 PDF 页面的指定矩形区域内。`InsertHTMLBox` 在盒子高度处截断内容（旧行为）；`InsertHTMLPaginated` 让内容自动跨页流动——内容超过 `opt.PageBottom` 时自动添加新页并从 `opt.PageTop` 继续渲染，支持表格表头跨页重复（`opt.RepeatTableHeaders`）与 `opt.OnPageBreak` 回调。
 
 **参数：** `x, y`（左上角坐标）、`w, h`（区域尺寸）、`htmlStr`（HTML 字符串）、`opt`（渲染选项）。
 
@@ -1042,20 +1042,15 @@ func GroupIntoTextLines(runs []ExtractedText) []TextLine
 - `ExtractAllPagesLines` — 解析一次 PDF 并返回每一页的合并行（优先于循环调用 `ExtractPageLines`）。
 - `MergeTextRuns` / `GroupIntoTextLines` — 底层的位置感知合并函数。
 
-提取管线支持对象流（PDF 1.5+）、**Form XObject**（`/Subtype /Form` 型印章/信头中的嵌套文本会被提取）、预定义 CMap、/Differences 字形名、WinAnsi/MacRoman/PDFDoc 编码、传统 GBK/Big5/Shift-JIS/EUC 编码、/Widths 与 CID /W 字形宽度、TJ 字距空格、以及 PDF 2.0 的 UTF-16BE/UTF-8 文本字符串。
-
-**坐标与图形状态。** 所有位置都按页面磅值单位返回，`Y` **从页面顶端量起**（自上而下坐标系）。提取器遵循 PDF 图形状态栈：`q`…`Q` 组内的 `cm` 与当前矩阵复合运算，`Q` 会恢复原矩阵——`q <cm> /Im Do Q` 绘制图片后放置的文本，位置保持其自身用户空间坐标，不会继承图片的变换矩阵。`ExtractTextFromPage` 返回的每一项位于其起点；`MergeTextRuns` 将逐字形碎片合并成完整字符串。
-
-> 注意：ledongthuc/pdf 兼容回退路径（仅在 raw 解析器无法产出文本时使用）返回的
-> `Y` 仍是自下而上的旧约定。涉及位置坐标时请以 raw 管线的结果为准。
+提取管线支持对象流（PDF 1.5+）、**加密文档**（`ExtractTextFromPageWithPassword` / `ExtractTextFromAllPagesWithPassword`；RC4 R2/R3 与 AES-128/256 R4/R6）、**Form XObject**（`/Subtype /Form` 型印章/信头中的嵌套文本会被提取）、预定义 CMap、/Differences 字形名、WinAnsi/MacRoman/PDFDoc 编码、传统 GBK/Big5/Shift-JIS/EUC 编码、/Widths 与 CID /W 字形宽度、TJ 字距空格、以及 PDF 2.0 的 UTF-16BE/UTF-8 文本字符串。
 
 ### ExtractedText
 
 ```go
 type ExtractedText struct {
     Text     string  // 提取的文本字符串
-    X        float64 // 水平位置（页面单位，向右增大）
-    Y        float64 // 行基线，从页面顶端量起（自上而下坐标）
+    X        float64 // 水平位置
+    Y        float64 // 垂直位置
     FontName string  // PDF 字体资源名称（如 "LiberationSerif-Regular"）
     FontSize float64 // 字号（磅）
     Width    float64 // 估算步进宽度（由 MergeTextRuns 设定；未知时为 0）
@@ -1083,8 +1078,6 @@ func ExtractImagesFromAllPages(pdfData []byte) (map[int][]ExtractedImage, error)
 
 从已有 PDF 文件中提取图片元数据和数据。这些是包级函数。
 
-位置约定与文本提取一致：`X`/`Y` 表示图片**左上角**在页面上的位置，`Y` 从页面顶端量起；`DisplayWidth`/`DisplayHeight` 为页面单位下的渲染尺寸。图片提取器维护完整图形状态栈，`q`…`Q` 分组与复合矩阵已经作用于放置坐标。
-
 ### ExtractedImage
 
 ```go
@@ -1097,7 +1090,7 @@ type ExtractedImage struct {
     Filter           string  // 压缩过滤器（如 "DCTDecode"）
     Data             []byte  // 原始图片数据
     ObjNum           int     // PDF 对象编号
-    X, Y             float64 // 页面左上角位置（Y 从页面顶端量起）
+    X, Y             float64 // 页面上的位置
     DisplayWidth     float64 // 页面上的渲染宽度
     DisplayHeight    float64 // 页面上的渲染高度
 }

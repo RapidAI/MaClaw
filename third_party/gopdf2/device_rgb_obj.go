@@ -15,6 +15,10 @@ func (d *DeviceRGBObj) init(funcGetRoot func() *GoPdf) {
 	d.getRoot = funcGetRoot
 }
 
+func (d *DeviceRGBObj) hasEncryption() bool {
+	return d.getRoot().hasEncryption()
+}
+
 func (d *DeviceRGBObj) protection() *PDFProtection {
 	return d.getRoot().protection()
 }
@@ -30,8 +34,8 @@ func (d *DeviceRGBObj) write(w io.Writer, objID int) error {
 	fmt.Fprintf(w, "/Length %d\n", len(d.data))
 	io.WriteString(w, ">>\n")
 	io.WriteString(w, "stream\n")
-	if d.protection() != nil {
-		tmp, err := rc4Cip(d.protection().objectkey(objID), d.data)
+	if d.hasEncryption() {
+		tmp, err := d.getRoot().encryptObject(objID, d.data)
 		if err != nil {
 			return err
 		}

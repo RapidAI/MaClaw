@@ -613,6 +613,12 @@ func (p *rawPDFParser) parsePages() {
 }
 
 func (p *rawPDFParser) collectPages(objNum int) {
+	p.collectPagesInherited(objNum, [4]float64{})
+}
+
+// collectPagesInherited walks the page tree, propagating inherited
+// attributes (MediaBox) from Pages nodes down to their Page leaves.
+func (p *rawPDFParser) collectPagesInherited(objNum int, inherited [4]float64) {
 	obj, ok := p.objects[objNum]
 	if !ok {
 		return
@@ -621,15 +627,22 @@ func (p *rawPDFParser) collectPages(objNum int) {
 	case "Page":
 		page := rawPDFPage{objNum: objNum}
 		page.mediaBox = extractMediaBox(obj.dict)
+		if page.mediaBox == [4]float64{0, 0, 612, 792} && inherited != [4]float64{} {
+			// page lacks its own MediaBox — inherit from the Pages tree
+			page.mediaBox = inherited
+		}
 		page.contents = extractContentRefs(obj.dict)
 		page.resources = p.extractResources(obj.dict, objNum)
 		p.pages = append(p.pages, page)
-		return
 	case "Pages":
-		// It's a /Pages node — recurse into /Kids
+		// It's a /Pages node — recurse into /Kids with its MediaBox
+		inheritedMedia := extractMediaBox(obj.dict)
+		if inheritedMedia == [4]float64{0, 0, 612, 792} && inherited != [4]float64{} {
+			inheritedMedia = inherited
+		}
 		kids := extractRefArray(obj.dict, "/Kids")
 		for _, kid := range kids {
-			p.collectPages(kid)
+			p.collectPagesInherited(kid, inheritedMedia)
 		}
 	}
 }
@@ -670,7 +683,8 @@ func isNameChar(c byte) bool {
 }
 
 // extractRef extracts a single "N 0 R" reference for a given key.
-// Uses string search + pre-compiled regex to avoid per-call compilation.
+// Also accepts array-wrapped values (e.g. /DescendantFonts [9 0 R]), taking
+// the first reference. Uses string search + pre-compiled regex.
 func extractRef(dict, key string) int {
 	idx := strings.Index(dict, key)
 	if idx < 0 {
@@ -678,10 +692,22 @@ func extractRef(dict, key string) int {
 	}
 	rest := dict[idx+len(key):]
 	rest = strings.TrimLeft(rest, " \t\r\n")
+	if strings.HasPrefix(rest, "[") {
+		// Array form: use the first reference inside the brackets.
+		end := strings.Index(rest, "]")
+		if end < 0 {
+			return 0
+		}
+		if m := reObjRef.FindStringSubmatch(rest[1:end]); m != nil {
+			n, _ := strconv.Atoi(m[1])
+			return n
+		}
+		return 0
+	}
 	m := reObjRef.FindStringSubmatch(rest)
 	if m != nil {
 		// Verify the match starts at the beginning (the ref follows the key directly)
-		if strings.HasPrefix(strings.TrimLeft(rest, " \t\r\n"), m[0]) {
+		if strings.HasPrefix(rest, m[0]) {
 			n, _ := strconv.Atoi(m[1])
 			return n
 		}

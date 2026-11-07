@@ -23,10 +23,11 @@ type ImageObj struct {
 	rawImgReader  *bytes.Reader
 	imginfo       imgInfo
 	pdfProtection *PDFProtection
-	//getRoot func() *GoPdf
+	getRoot       func() *GoPdf
 }
 
 func (i *ImageObj) init(funcGetRoot func() *GoPdf) {
+	i.getRoot = funcGetRoot
 
 }
 
@@ -60,8 +61,8 @@ func (i *ImageObj) write(w io.Writer, objID int) error {
 		return err
 	}
 
-	if i.protection() != nil {
-		tmp, err := rc4Cip(i.protection().objectkey(objID), data)
+	if i.getRoot().hasEncryption() {
+		tmp, err := i.getRoot().encryptObject(objID, data)
 		if err != nil {
 			return err
 		}

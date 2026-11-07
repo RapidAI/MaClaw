@@ -1,7 +1,7 @@
 ﻿# GoPDF2
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/VantageDataChat/GoPDF2.svg)](https://pkg.go.dev/github.com/VantageDataChat/GoPDF2)
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
 
 **[English](README.md) | [中文](README_zh.md)**
 

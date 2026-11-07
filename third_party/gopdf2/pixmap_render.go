@@ -1,10 +1,13 @@
 package gopdf
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/color"
+	"image/png"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -121,25 +124,128 @@ func max2(a, b float64) float64 {
 
 // renderContentStream interprets a PDF content stream and draws onto the image.
 func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, page rawPDFPage, scale, pageH float64) {
-	tokens := tokenize(stream)
+	tokens := tokenizeBytes(stream)
 
 	var stack []float64
 	strokeColor := color.RGBA{R: 0, G: 0, B: 0, A: 255}
 	fillColor := color.RGBA{R: 0, G: 0, B: 0, A: 255}
-	_ = fillColor
 
 	// Current transformation matrix
 	ctmA, ctmD := 1.0, 1.0
 	ctmE, ctmF := 0.0, 0.0
 
+	// text state
+	fontResources := resolveRenderFonts(parser, page)
+	ts := &renderTextState{
+		fill: fillColor,
+	}
+	inText := false
+
 	for i := 0; i < len(tokens); i++ {
-		tok := tokens[i]
+		tok := string(tokens[i])
 		if v, err := strconv.ParseFloat(tok, 64); err == nil {
 			stack = append(stack, v)
 			continue
 		}
 
 		switch tok {
+		case "BT":
+			inText = true
+			ts.tmX, ts.tmY = 0, 0
+			ts.tlmX, ts.tlmY = 0, 0
+		case "ET":
+			inText = false
+		case "Tf":
+			if err := renderTfOp(ts, fontResources, tokens, i, stack); err != nil {
+			}
+		case "Td":
+			if inText && len(stack) >= 2 {
+				ts.tlmX += stack[len(stack)-2]
+				ts.tlmY += stack[len(stack)-1]
+				ts.tmX, ts.tmY = ts.tlmX, ts.tlmY
+				stack = stack[:len(stack)-2]
+			}
+		case "TD":
+			if inText && len(stack) >= 2 {
+				ts.leading = -stack[len(stack)-1]
+				ts.tlmX += stack[len(stack)-2]
+				ts.tlmY += stack[len(stack)-1]
+				ts.tmX, ts.tmY = ts.tlmX, ts.tlmY
+				stack = stack[:len(stack)-2]
+			}
+		case "Tm":
+			if inText && len(stack) >= 6 {
+				ts.tmX = stack[len(stack)-2]
+				ts.tmY = stack[len(stack)-1]
+				ts.tlmX, ts.tlmY = ts.tmX, ts.tmY
+				stack = stack[:len(stack)-6]
+			}
+		case "T*":
+			// next text line at the current leading
+			if inText {
+				ts.tlmY -= ts.leading
+				ts.tmX, ts.tmY = ts.tlmX, ts.tlmY
+			}
+		case "'":
+			// next line + show
+			if inText {
+				ts.tlmY -= ts.leading
+				ts.tmX, ts.tmY = ts.tlmX, ts.tlmY
+				raw := renderTextOpBytes(tokens, i)
+				renderDrawText(img, ts, raw, pageH, scale, fontResources)
+			}
+		case "\"":
+			// set word/char spacing, next line + show
+			if inText && len(stack) >= 3 {
+				stack = stack[:len(stack)-3]
+			}
+			if inText {
+				ts.tlmY -= ts.leading
+				ts.tmX, ts.tmY = ts.tlmX, ts.tlmY
+				raw := renderTextOpBytes(tokens, i)
+				renderDrawText(img, ts, raw, pageH, scale, fontResources)
+			}
+		case "Tj":
+			if inText {
+				raw := renderTextOpBytes(tokens, i)
+				renderDrawText(img, ts, raw, pageH, scale, fontResources)
+			}
+		case "TJ":
+			if inText {
+				if start := findArrayStart(tokens, i); start >= 0 {
+					var run []byte
+					kern := 0.0
+					flushRun := func() {
+						if len(run) == 0 {
+							return
+						}
+						penX := ts.tmX + kern
+						penY := pageH - ts.tmY
+						drawTextRun(img, ts.font, run, ts.fontSize, penX*scale, penY*scale, ts.fill, ts.charSpacing*scale, ts.wordSpacing*scale)
+						run = run[:0]
+					}
+					for _, item := range tokens[start+1 : i] {
+						if isStringToken(item) {
+							// strip the <...> or (...) delimiters
+							inner := item[1 : len(item)-1]
+							if len(inner) > 0 && inner[0] == '<' {
+								continue
+							}
+							if item[0] == '<' {
+								run = append(run, hexBytes(trimPDFWS(inner))...)
+							} else {
+								run = append(run, []byte(unescapePDFString(string(inner)))...)
+							}
+						} else if v, err := strconv.ParseFloat(string(item), 64); err == nil {
+							// flush before the displacement so the next string
+							// starts at the shifted position
+							flushRun()
+							kern += -v / 1000.0 * ts.fontSize
+						}
+					}
+					flushRun()
+				}
+			}
 		case "cm":
 			if len(stack) >= 6 {
 				ma := stack[len(stack)-6]
@@ -172,7 +278,11 @@ func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, p
 				dw := math.Abs(x2-x1) * scale
 				dh := math.Abs(y2-y1) * scale
 				col := strokeColor
-				if i+1 < len(tokens) && (tokens[i+1] == "f" || tokens[i+1] == "f*" || tokens[i+1] == "B") {
+				next := ""
+				if i+1 < len(tokens) {
+					next = string(tokens[i+1])
+				}
+				if next == "f" || next == "f*" || next == "B" {
 					col = fillColor
 				}
 				drawRectOnImage(img, dx, dy, dw, dh, 1.0, col)
@@ -228,8 +338,8 @@ func renderContentStream(img *image.RGBA, stream []byte, parser *rawPDFParser, p
 
 		case "Do":
 			// Draw XObject (image)
-			if i >= 1 && strings.HasPrefix(tokens[i-1], "/") {
-				name := tokens[i-1]
+			if i >= 1 && strings.HasPrefix(string(tokens[i-1]), "/") {
+				name := string(tokens[i-1])
 				renderXObject(img, parser, page, name, ctmA, ctmD, ctmE, ctmF, scale, pageH)
 			}
 
@@ -312,6 +422,16 @@ func renderXObject(img *image.RGBA, parser *rawPDFParser, page rawPDFPage, name 
 	if !ok {
 		return
 	}
+	// Form XObjects may carry more text/graphics — render their stream
+	// recursively with the form's own font resources merged in.
+	if strings.Contains(obj.dict, "/Subtype /Form") || strings.Contains(obj.dict, "/Subtype/Form") {
+		if obj.stream != nil {
+			subPage := page
+			subPage.resources.fonts = pageFontsWithForm(parser, page.resources.fonts, obj.dict)
+			renderContentStream(img, obj.stream, parser, subPage, scale, pageH)
+		}
+		return
+	}
 	if !strings.Contains(obj.dict, "/Subtype /Image") &&
 		!strings.Contains(obj.dict, "/Subtype/Image") {
 		return
@@ -368,4 +488,64 @@ func renderXObject(img *image.RGBA, parser *rawPDFParser, page rawPDFPage, name 
 			}
 		}
 	}
+}
+
+// findArrayStart locates the opening bracket of the TJ array ending at opIdx.
+func findArrayStart(tokens [][]byte, opIdx int) int {
+	for j := opIdx - 1; j >= 0; j-- {
+		if bytes.Equal(tokens[j], []byte("[")) {
+			return j
+		}
+	}
+	return -1
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+// renderTfOp applies a Tf operator: /Name size Tf — the name may sit one or
+// several tokens back when intermediate numbers appear between operands.
+func renderTfOp(ts *renderTextState, fontResources map[string]*renderFont, tokens [][]byte, i int, stack []float64) error {
+	if len(fontResources) == 0 {
+		return nil
+	}
+	var name []byte
+	if i >= 1 && strings.HasPrefix(string(tokens[i-1]), "/") {
+		name = tokens[i-1]
+	} else if i >= 2 && strings.HasPrefix(string(tokens[i-2]), "/") {
+		name = tokens[i-2]
+	} else {
+		return nil
+	}
+	var size float64
+	if len(stack) >= 1 {
+		size = stack[len(stack)-1]
+	}
+	renderTf(ts, fontResources, name, size)
+	return nil
+}
+
+// RenderPageToFile renders a PDF page to a PNG file on disk.
+func RenderPageToFile(pdfPath string, pageIndex int, outPath string, opt RenderOption) error {
+	data, err := os.ReadFile(pdfPath)
+	if err != nil {
+		return err
+	}
+	img, err := RenderPageToImage(data, pageIndex, opt)
+	if err != nil {
+		return err
+	}
+	f, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return png.Encode(f, img)
 }

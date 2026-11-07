@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-11-07
 
 ### Fixed
 - **Text extraction hangs** on malformed content streams: `tokenize` no longer
@@ -20,18 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bleeds into all following text of a page
 - Filter chains (FlateDecode+PNG predictors, ASCIIHex, ASCII85) applied
   uniformly to content, CMap and object streams
-- **Text position after `q`/`Q` image groups** (`parseTextOperatorsCtx`): the
-  text extractor now keeps a graphics-state stack — `cm` inside a `q`…`Q`
-  group composes with the current matrix and `Q` restores it. Previously the
-  last image-paint `cm` leaked onto every later fragment, reporting
-  e.g. `X=14472 Y=-69847` for a fragment drawn at `(72, 700.47)`
-- **Inline `<img>` participates in the line height** (`renderTextLines`): a
-  600pt figure previously advanced the cursor by a single text line, so the
-  flow drew later text over the bitmap and box clipping silently dropped the
-  image when it no longer fit
-- **First line of a tight HTML box still draws**: the `!paginate` clip now
-  fires only when a line starts past the box bottom; the restored default
-  `<p>` margins no longer swallow the first line of an 18pt strip box
 
 ### Added
 - **Position-aware text extraction**: glyph advances from /Widths, /W (incl.
@@ -63,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Corpus-based extraction test suite (test/corpus, auto-skipped when absent)
   covering ISO 32000-2 samples, an arXiv paper, a 55-page formula booklet,
   GBK Chinese, Arabic CID fonts and ObjStm-based forms
+- File-path convenience wrappers: `ExtractTextFromFile`,
+  `ExtractPageLinesFromFile`, `RenderPageToFile`
+- Benchmark suite for regression tracking (text/HTML/table/formula creation,
+  extraction, SplitText, BuffWrite, font container)
 - `cmd/pdfprobe` and `cmd/pdfrender` diagnostic tools, `cmd/htmldemo` showcase
 
 ### Changed
@@ -88,6 +80,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Rowspan rows no longer orphaned across page breaks**: pages break between
   row groups (rows joined by a rowspan cell stay together); groups taller
   than a whole page fall back to row-level breaking
+- **IncrementalSave rewritten to spec**: the update now chains /Prev to the
+  original xref and covers the full object numbering (the previous output
+  lacked /Prev and pointed /Root at an unreachable catalog — poppler
+  reported a broken catalog); nil-outlines panic on non-Started instances
+  fixed; ComparePDF and ValidatePDFA verified working via tests
+- Removed the false "Linearization (web optimization)" claim (no such
+  implementation exists)
 - Default `<p>` spacing restored (paragraphs without CSS collapsed to a bare
   line-height gap)
 - **Data race** in the cached CJK decoders (lazy map write) — immutable
@@ -97,6 +96,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - table segment borders use each segment's actual header height
 - a { text-decoration: none } is honored; `rgba()` colors parse;
   `line-height` percentages parse; `*.class` selectors work
+- `WatermarkOption` gains `AngleSet`/`ColorSet`/`OpacitySet` flags — a
+  horizontal (0°), black, or fully transparent watermark can now be requested
+  explicitly (plain 0 values still select the historical defaults)
+- **RenderPageToImage now draws text glyphs**: embedded TrueType fonts
+  (FontFile2) are parsed with a minimal tolerant reader (head/maxp/loca/
+  glyf/cmap/hmtx), glyph outlines (simple + composite) are rasterized with
+  an even-odd scanline fill; the content-stream text state machine handles
+  BT/ET/Tf/Td/TD/Tm/T*/quote/Tj/TJ (with per-segment kern displacement)/rg/g;
+  Form XObject text is rendered recursively
+- **AES encryption made functional end-to-end**: `SetEncryption` previously
+  wrote an /Encrypt dictionary without encrypting any stream and without
+  referencing it from the trailer — output files were readable without a
+  password. Streams are now encrypted per object (AES-CBC with random IV,
+  R4/R6 key derivation), the trailer references /Encrypt, and password-aware
+  text extraction is available via
+  `ExtractTextFromPageWithPassword` / `ExtractTextFromAllPagesWithPassword`
+  (the built-in decryptor also gained AES-128/256 R4/R6 support)
+- **RC4 `SetEncryption` trailer fix**: `SetEncryption` with RC4 methods
+  now correctly sets the UseProtection flag so the trailer includes
+  /Encrypt and /ID (previously the /Encrypt reference was silently
+  omitted, making RC4-encrypted files readable without a password when
+  using `SetEncryption` instead of `Config.Protection`)
+- **OpenPDF password support extended to AES**: `OpenPDFOption.Password`
+  now works with AES-128/256 encrypted PDFs in addition to RC4
 - tokenizer no longer hangs on stray `)`/`>`; CMap bfrange 0xFFFF overflow
 
 ### Performance (review rounds)
@@ -139,7 +162,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Page labels, page layout, page mode
 - Incremental save for fast updates on large documents
 - Document cloning, scrubbing, garbage collection
-- Linearization (web optimization)
 - Content stream cleaning
 - Colorspace conversion
 - PDF/A validation (1a, 1b, 2a, 2b)

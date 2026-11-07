@@ -27,10 +27,10 @@ func (o annotObj) write(w io.Writer, objID int) error {
 }
 
 func (o annotObj) writeExternalLink(w io.Writer, l linkOption, objID int) error {
-	protection := o.GetRoot().protection()
+	encrypted := o.GetRoot().hasEncryption()
 	url := l.url
-	if protection != nil {
-		tmp, err := rc4Cip(protection.objectkey(objID), []byte(url))
+	if encrypted {
+		tmp, err := o.GetRoot().encryptObject(objID, []byte(url))
 		if err != nil {
 			return err
 		}

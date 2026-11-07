@@ -16,8 +16,8 @@ const (
 // SMask smask
 type SMask struct {
 	imgInfo
-	data []byte
-	//getRoot func() *GoPdf
+	data                          []byte
+	getRoot                       func() *GoPdf
 	pdfProtection                 *PDFProtection
 	Index                         int
 	TransparencyXObjectGroupIndex int
@@ -50,7 +50,9 @@ func GetCachedMask(opts SMaskOptions, gp *GoPdf) SMask {
 	return smask
 }
 
-func (s SMask) init(func() *GoPdf) {}
+func (s SMask) init(funcGetRoot func() *GoPdf) {
+	s.getRoot = funcGetRoot
+}
 
 func (s *SMask) setProtection(p *PDFProtection) {
 	s.pdfProtection = p
@@ -83,12 +85,18 @@ func (s SMask) write(w io.Writer, objID int) error {
 
 		fmt.Fprintf(w, "/Length %d\n>>\n", len(s.data)) // /Length 62303>>\n
 		io.WriteString(w, "stream\n")
-		if s.protection() != nil {
-			tmp, err := rc4Cip(s.protection().objectkey(objID), s.data)
+		if s.pdfProtection != nil || (s.getRoot != nil && s.getRoot().hasEncryption()) {
+			var data []byte
+			var err error
+			if s.getRoot != nil {
+				data, err = s.getRoot().encryptObject(objID, s.data)
+			} else {
+				data, err = rc4Cip(s.pdfProtection.objectkey(objID), s.data)
+			}
 			if err != nil {
 				return err
 			}
-			w.Write(tmp)
+			w.Write(data)
 			io.WriteString(w, "\n")
 		} else {
 			w.Write(s.data)

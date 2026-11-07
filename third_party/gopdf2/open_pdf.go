@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 // OpenPDFOption configures how an existing PDF is opened.
@@ -20,7 +21,7 @@ type OpenPDFOption struct {
 
 	// Password is the user or owner password for opening encrypted PDFs.
 	// If the PDF is encrypted and no password is provided, OpenPDF returns
-	// ErrEncryptedPDF. Supports RC4 encryption (V1/V2, R2/R3).
+	// ErrEncryptedPDF. Supports RC4 (V1/V2, R2/R3) for OpenPDF modification; AES extraction via WithPassword APIs.
 	Password string
 }
 
@@ -175,6 +176,128 @@ func (gp *GoPdf) openPDFFromData(data []byte, opt *OpenPDFOption) error {
 		gp.UseImportedTemplate(tpl, 0, 0, w, h)
 	}
 
+	// Import AcroForm form fields from the original document so
+	// GetFormFields and ModifyFormFieldValue work after OpenPDF.
+	importFormFieldsFromPDF(data, gp)
+
 	// Position on page 1 so the caller can start drawing immediately.
 	return gp.SetPage(1)
+}
+
+// importFormFieldsFromPDF parses AcroForm fields from the original PDF data
+// and registers them in the GoPdf instance so GetFormFields and
+// ModifyFormFieldValue work after OpenPDF.
+func importFormFieldsFromPDF(data []byte, gp *GoPdf) {
+	parser, err := newRawPDFParser(data)
+	if err != nil {
+		return
+	}
+	// find catalog → /AcroForm → /Fields
+	catalog, ok := parser.objects[parser.root]
+	if !ok {
+		return
+	}
+	acroRef := extractRef(catalog.dict, "/AcroForm")
+	if acroRef <= 0 {
+		return
+	}
+	acroObj, ok := parser.objects[acroRef]
+	if !ok {
+		return
+	}
+	// parse /Fields array
+	fieldsArr := extractRefArray(acroObj.dict, "/Fields")
+	for _, fieldRef := range fieldsArr {
+		fieldObj, ok := parser.objects[fieldRef]
+		if !ok {
+			continue
+		}
+		dict := fieldObj.dict
+		// field name (/T)
+		name := extractStringFromDict(dict, "/T")
+		if name == "" {
+			continue
+		}
+		// field value (/V)
+		value := extractStringFromDict(dict, "/V")
+		// field type (/FT)
+		ft := extractName(dict, "/FT")
+		var ftype FormFieldType
+		switch ft {
+		case "Tx":
+			ftype = FormFieldText
+		case "Btn":
+			ftype = FormFieldButton
+		case "Ch":
+			ftype = FormFieldChoice
+		default:
+			ftype = FormFieldText
+		}
+		// position (/Rect [x1 y1 x2 y2])
+		rect := extractNumberArray(dict, "/Rect")
+		var x, y, w, h float64
+		if len(rect) >= 4 {
+			x = rect[0]
+			y = rect[1]
+			w = rect[2] - rect[0]
+			h = rect[3] - rect[1]
+		}
+		// create GoPdf form field object
+		ff := formFieldObj{
+			field: FormField{
+				Name:     name,
+				Type:     ftype,
+				X:        x,
+				Y:        y,
+				W:        w,
+				H:        h,
+				Value:    value,
+				FontSize: 12,
+			},
+			pageRef: 1,
+		}
+		objIdx := gp.addObj(ff)
+		gp.formFields = append(gp.formFields, formFieldRef{
+			field:  ff.field,
+			objIdx: objIdx,
+		})
+	}
+}
+
+// extractStringFromDict extracts a string value for a key from a dict,
+// handling both literal strings (...) and hex strings <...>.
+func extractStringFromDict(dict, key string) string {
+	// Search for key followed by a delimiter to avoid matching /T as a
+	// prefix of /Type, /TR, etc.
+	searchKey := key + " "
+	idx := strings.Index(dict, searchKey)
+	if idx < 0 {
+		searchKey = key + "\n"
+		idx = strings.Index(dict, searchKey)
+		if idx < 0 {
+			return ""
+		}
+	}
+	rest := strings.TrimLeft(dict[idx+len(key):], " \t\r\n")
+	if strings.HasPrefix(rest, "(") {
+		end := strings.Index(rest, ")")
+		if end < 0 {
+			return ""
+		}
+		return rest[1:end]
+	}
+	if strings.HasPrefix(rest, "<") {
+		end := strings.Index(rest, ">")
+		if end < 0 {
+			return ""
+		}
+		hex := rest[1:end]
+		data := hexBytes([]byte(hex))
+		// decode as UTF-16BE if BOM present, else Latin-1
+		if len(data) >= 2 && data[0] == 0xFE && data[1] == 0xFF {
+			return decodeUTF16BE(data[2:])
+		}
+		return string(data)
+	}
+	return ""
 }

@@ -12,7 +12,7 @@ type PageObj struct { //impl IObj
 	ResourcesRelate string
 	pageOption      PageOption
 	LinkObjIds      []int
-	rotation        int // page display rotation (0, 90, 180, 270)
+	rotation        int  // page display rotation (0, 90, 180, 270)
 	cropBox         *Box // optional CropBox (visible area)
 	getRoot         func() *GoPdf
 }
@@ -75,10 +75,9 @@ func (p *PageObj) write(w io.Writer, objID int) error {
 }
 
 func (p *PageObj) writeExternalLink(w io.Writer, l linkOption, objID int) error {
-	protection := p.getRoot().protection()
 	url := l.url
-	if protection != nil {
-		tmp, err := rc4Cip(protection.objectkey(objID), []byte(url))
+	if p.getRoot().hasEncryption() {
+		tmp, err := p.getRoot().encryptObject(objID, []byte(url))
 		if err != nil {
 			return err
 		}

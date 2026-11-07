@@ -1,5 +1,6 @@
 package gopdf
 
+// Reverse reverses the order of runes in a string (used for Arabic text shaping).
 func Reverse(s string) string {
 	r := []rune(s)
 	for i, j := 0, len(r)-1; i < len(r)/2; i, j = i+1, j-1 {
@@ -83,6 +84,7 @@ func getCharShape(previousChar, currentChar, nextChar rune) rune {
 	return shape
 }
 
+// ToArabic converts Latin digits to Arabic-Indic digits in a string.
 func ToArabic(text string) string {
 	var nextHarf, previousHarf rune
 

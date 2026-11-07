@@ -6,8 +6,8 @@ require (
 	github.com/RapidAI/OfficeRead v0.0.0-20260809051355-9682f0878d08
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/VantageDataChat/GoExcel v0.0.0-20260626231344-644ce957794e
-	github.com/VantageDataChat/GoPDF2 v0.0.0-20261103011601-0d29802a4481
-	github.com/Vantagics/GoPPT v0.0.0-20261105003830-9be024ab38c9
+	github.com/VantageDataChat/GoPDF2 v0.0.0-20261107035633-bbd33747e5b9
+	github.com/Vantagics/GoPPT v0.0.0-20261107035927-beb3aba0f510
 	github.com/alexbrainman/odbc v0.0.0-20250601004241-49e6b2bc0cf0
 	github.com/braheezy/shine-mp3 v0.1.0
 	github.com/charmbracelet/bubbles v1.0.0

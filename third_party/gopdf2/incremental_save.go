@@ -5,19 +5,24 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 )
 
-// IncrementalSave writes only the modified/added objects as an incremental
-// update appended to the original PDF data. This is significantly faster
-// than a full rewrite for large documents where only a few objects changed.
+// IncrementalSave writes the document as an incremental update appended to
+// the original PDF data (PDF §7.5.4): the appended cross-reference section
+// carries /Prev back to the previous xref, so the original byte range is
+// preserved verbatim (e.g. earlier signatures stay valid) while the new
+// trailer points at gopdf's rebuilt object tree.
 //
-// Incremental save preserves the original PDF byte stream and appends a
-// new cross-reference section plus the changed objects. This is the same
-// mechanism used by MuPDF and Adobe Acrobat for "fast save".
+// gopdf rebuilds the full object tree for documents opened via OpenPDF
+// (pages, fonts and content are re-emitted as gopdf objects), so the update
+// writes every object in gp.pdfObjs and points /Root at gopdf's catalog.
 //
 // originalData is the original PDF bytes (e.g. from OpenPDFFromBytes).
-// modifiedIndices lists the 0-based indices of objects that were modified.
-// If modifiedIndices is nil, all objects are considered modified (full save).
+// modifiedIndices is accepted for API compatibility and currently unused
+// (all objects are written). The original file must end with a classic
+// xref/startxref for /Prev chaining.
 //
 // Example:
 //
@@ -35,83 +40,86 @@ func (gp *GoPdf) IncrementalSave(originalData []byte, modifiedIndices []int) ([]
 		return nil, err
 	}
 
-	// If no specific indices given, write all objects (full incremental).
-	if modifiedIndices == nil {
-		modifiedIndices = make([]int, len(gp.pdfObjs))
-		for i := range gp.pdfObjs {
-			modifiedIndices[i] = i
-		}
-	}
-
-	// Build a set for quick lookup.
-	modSet := make(map[int]bool, len(modifiedIndices))
-	for _, idx := range modifiedIndices {
-		modSet[idx] = true
-	}
+	prevStartxref := findLastStartxref(originalData)
+	size := len(gp.pdfObjs) + 1
 
 	var buf bytes.Buffer
-
-	// Start with the original data.
 	buf.Write(originalData)
-
-	// Ensure the original ends with a newline.
 	if len(originalData) > 0 && originalData[len(originalData)-1] != '\n' {
 		buf.WriteByte('\n')
 	}
 
-	// Write modified objects and record their offsets.
-	xrefEntries := make(map[int]int64) // objIndex -> byte offset
-
-	for _, idx := range modifiedIndices {
-		if idx < 0 || idx >= len(gp.pdfObjs) {
-			continue
-		}
-		obj := gp.pdfObjs[idx]
+	// Write every object; record its new offset.
+	newOffsets := make(map[int]int64)
+	for idx, obj := range gp.pdfObjs {
 		if obj == nil {
 			continue
 		}
 		if _, isNull := obj.(nullObj); isNull {
 			continue
 		}
-
-		xrefEntries[idx] = int64(buf.Len())
 		objID := idx + 1
+		newOffsets[objID] = int64(buf.Len())
 		fmt.Fprintf(&buf, "%d 0 obj\n", objID)
-		obj.write(&buf, objID)
+		if err := obj.write(&buf, objID); err != nil {
+			return nil, err
+		}
 		io.WriteString(&buf, "endobj\n\n")
 	}
 
-	// Write the incremental cross-reference table.
+	// Cross-reference section covering every gopdf object number.
 	xrefOffset := int64(buf.Len())
 	io.WriteString(&buf, "xref\n")
-
-	// Write entries for each modified object.
-	for _, idx := range modifiedIndices {
-		offset, ok := xrefEntries[idx]
-		if !ok {
+	fmt.Fprintf(&buf, "0 %d\n", size)
+	for num := 0; num < size; num++ {
+		if num == 0 {
+			io.WriteString(&buf, "0000000000 65535 f \n")
 			continue
 		}
-		objID := idx + 1
-		fmt.Fprintf(&buf, "%d 1\n", objID)
-		fmt.Fprintf(&buf, "%010d 00000 n \n", offset)
+		if off, ok := newOffsets[num]; ok {
+			fmt.Fprintf(&buf, "%010d 00000 n \n", off)
+		} else {
+			io.WriteString(&buf, "0000000000 65535 f \n")
+		}
 	}
 
-	// Write trailer.
 	io.WriteString(&buf, "trailer\n")
 	fmt.Fprintf(&buf, "<<\n")
-	fmt.Fprintf(&buf, "/Size %d\n", len(gp.pdfObjs)+1)
-	// /Prev points to the original xref offset — we'd need to parse it.
-	// For simplicity, we reference the start of original data as prev.
-	fmt.Fprintf(&buf, "/Root %d 0 R\n", gp.indexOfCatalogObj+1)
+	fmt.Fprintf(&buf, "/Size %d\n", size+1)
+	if gp.indexOfCatalogObj >= 0 && gp.indexOfCatalogObj < len(gp.pdfObjs) {
+		fmt.Fprintf(&buf, "/Root %d 0 R\n", gp.indexOfCatalogObj+1)
+	}
+	if prevStartxref > 0 {
+		fmt.Fprintf(&buf, "/Prev %d\n", prevStartxref)
+	}
 	if gp.encryptionObjID > 0 {
 		fmt.Fprintf(&buf, "/Encrypt %d 0 R\n", gp.encryptionObjID)
 	}
-	fmt.Fprintf(&buf, ">>\n")
+	io.WriteString(&buf, ">>\n")
 	fmt.Fprintf(&buf, "startxref\n")
 	fmt.Fprintf(&buf, "%d\n", xrefOffset)
 	io.WriteString(&buf, "%%EOF\n")
 
 	return buf.Bytes(), nil
+}
+
+// findLastStartxref returns the byte offset of the last startxref entry in
+// the data (0 when absent).
+func findLastStartxref(data []byte) int64 {
+	sx := bytes.LastIndex(data, []byte("startxref"))
+	if sx < 0 {
+		return 0
+	}
+	rest := data[sx+len("startxref"):]
+	fields := strings.Fields(string(rest[:min(len(rest), 32)]))
+	if len(fields) == 0 {
+		return 0
+	}
+	v, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // WriteIncrementalPdf writes the document as an incremental update to a file.

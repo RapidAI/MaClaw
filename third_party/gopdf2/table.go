@@ -35,6 +35,7 @@ type RowCell struct {
 	colspan      int       // Number of columns this cell spans (1 = default)
 }
 
+// NewRowCell creates a styled cell for use with AddStyledRow.
 func NewRowCell(content string, cellStyle CellStyle) RowCell {
 	return newStyledRowCell(content, true, cellStyle)
 }

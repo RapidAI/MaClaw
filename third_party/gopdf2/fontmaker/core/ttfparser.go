@@ -38,6 +38,7 @@ type TTFParser struct {
 	widths         []uint
 	chars          map[int]uint
 	postScriptName string
+	fontData       []byte
 
 	//os2
 	os2Version    uint
@@ -1034,4 +1035,327 @@ func (t *TTFParser) Read(fd *bytes.Reader, length int) ([]byte, error) {
 		return nil, errors.New("file out of length")
 	}
 	return buff, nil
+}
+
+// GlyphPoint is a single point of a glyph outline.
+// OnCurve marks on-curve points; off-curve points are quadratic control
+// points between their neighbors.
+type GlyphPoint struct {
+	X, Y    float64
+	OnCurve bool
+}
+
+// ParseGlyphOutline parses the outline of one glyph from the glyf table.
+// Returns one slice of points per contour (closed loops) and whether the
+// glyph is a composite (whose components are already resolved here when
+// the font data was parsed with a glyf-capable pass — simple fonts only
+// return their own contours).
+func (t *TTFParser) ParseGlyphOutline(fd *bytes.Reader, gid uint) ([][]GlyphPoint, error) {
+	table, ok := t.tables["glyf"]
+	if !ok {
+		return nil, ERROR_NO_UNICODE_ENCODING_FOUND
+	}
+	if int(gid) >= len(t.LocaTable) {
+		return nil, errors.New("glyph id out of range")
+	}
+	start := t.LocaTable[gid]
+	var end uint
+	if int(gid+1) < len(t.LocaTable) {
+		end = t.LocaTable[gid+1]
+	} else {
+		end = table.Length
+	}
+	if end <= start {
+		return nil, nil // empty glyph
+	}
+	if _, err := fd.Seek(int64(table.Offset)+int64(start), io.SeekStart); err != nil {
+		return nil, err
+	}
+	numberOfContours, err := t.ReadShort(fd)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := t.SkipInstr(fd, 8); err != nil {
+		return nil, err
+	}
+	if numberOfContours < 0 {
+		return t.parseCompositeGlyph(fd, int(-numberOfContours))
+	}
+	return t.parseSimpleGlyph(fd, int(numberOfContours))
+}
+
+// parseSimpleGlyph decodes a simple (non-composite) glyf entry.
+func (t *TTFParser) parseSimpleGlyph(fd *bytes.Reader, numberOfContours int) ([][]GlyphPoint, error) {
+	endPts := make([]uint16, numberOfContours)
+	for i := 0; i < numberOfContours; i++ {
+		v, err := t.ReadUShort(fd)
+		if err != nil {
+			return nil, err
+		}
+		endPts[i] = uint16(v)
+	}
+	instrLenV, err := t.ReadUShort(fd)
+	if err != nil {
+		return nil, err
+	}
+	instrLen := int(instrLenV)
+	if _, err := t.SkipInstr(fd, instrLen); err != nil {
+		return nil, err
+	}
+
+	numPoints := 0
+	if numberOfContours > 0 {
+		numPoints = int(endPts[numberOfContours-1]) + 1
+	}
+	if numPoints == 0 {
+		return nil, nil
+	}
+
+	// flags
+	flags := make([]byte, numPoints)
+	for i := 0; i < numPoints; {
+		fv, err := t.ReadUShort(fd)
+		if err != nil {
+			return nil, err
+		}
+		f := byte(fv)
+		flags[i] = f
+		i++
+		if f&0x08 != 0 { // REPEAT_FLAG
+			rep, err := t.ReadRawByte(fd)
+			if err != nil {
+				return nil, err
+			}
+			for j := 0; j < int(rep) && i < numPoints; j++ {
+				flags[i] = f
+				i++
+			}
+		}
+	}
+
+	// x coordinates (deltas)
+	xs := make([]float64, numPoints)
+	x := 0.0
+	for i := 0; i < numPoints; i++ {
+		f := flags[i]
+		if f&0x02 != 0 { // XSHORT
+			d, err := t.ReadRawByte(fd)
+			if err != nil {
+				return nil, err
+			}
+			if f&0x10 == 0 {
+				x -= float64(d)
+			} else {
+				x += float64(d)
+			}
+		} else if f&0x10 == 0 { // same as previous
+		} else {
+			d, err := t.ReadShort(fd)
+			if err != nil {
+				return nil, err
+			}
+			x += float64(d)
+		}
+		xs[i] = x
+	}
+
+	// y coordinates (deltas)
+	ys := make([]float64, numPoints)
+	y := 0.0
+	for i := 0; i < numPoints; i++ {
+		f := flags[i]
+		if f&0x04 != 0 { // YSHORT
+			d, err := t.ReadRawByte(fd)
+			if err != nil {
+				return nil, err
+			}
+			if f&0x20 == 0 {
+				y -= float64(d)
+			} else {
+				y += float64(d)
+			}
+		} else if f&0x20 == 0 {
+		} else {
+			d, err := t.ReadShort(fd)
+			if err != nil {
+				return nil, err
+			}
+			y += float64(d)
+		}
+		ys[i] = y
+	}
+
+	// split into contours
+	out := make([][]GlyphPoint, 0, numberOfContours)
+	startPt := 0
+	for _, ep := range endPts {
+		n := int(ep) + 1 - startPt
+		if n <= 0 {
+			startPt = int(ep) + 1
+			continue
+		}
+		contour := make([]GlyphPoint, 0, n)
+		for k := 0; k < n; k++ {
+			idx := startPt + k
+			contour = append(contour, GlyphPoint{X: xs[idx], Y: ys[idx], OnCurve: flags[idx]&0x01 != 0})
+		}
+		out = append(out, contour)
+		startPt = int(ep) + 1
+	}
+	return out, nil
+}
+
+// parseCompositeGlyph resolves composite glyphs by following their
+// components (translation and scale are supported; rotations are not).
+func (t *TTFParser) parseCompositeGlyph(fd *bytes.Reader, numContours int) ([][]GlyphPoint, error) {
+	const (
+		ARG_1_AND_2_ARE_WORDS    = 0x0001
+		WE_HAVE_A_SCALE          = 0x0008
+		MORE_COMPONENTS          = 0x0020
+		WE_HAVE_AN_X_AND_Y_SCALE = 0x0040
+		WE_HAVE_A_TWO_BY_TWO     = 0x0080
+	)
+	var out [][]GlyphPoint
+	for {
+		flags, err := t.ReadUShort(fd)
+		if err != nil {
+			return nil, err
+		}
+		gid, err := t.ReadUShort(fd)
+		if err != nil {
+			return nil, err
+		}
+		var dx, dy float64
+		if flags&ARG_1_AND_2_ARE_WORDS != 0 {
+			a, e1 := t.ReadShort(fd)
+			b, e2 := t.ReadShort(fd)
+			if e1 != nil || e2 != nil {
+				return nil, e1
+			}
+			dx, dy = float64(a), float64(b)
+		} else {
+			a, e1 := t.ReadRawByte(fd)
+			b, e2 := t.ReadRawByte(fd)
+			if e1 != nil || e2 != nil {
+				return nil, e1
+			}
+			// args are signed bytes
+			if a >= 128 {
+				dx = float64(int8(a))
+			} else {
+				dx = float64(a)
+			}
+			if b >= 128 {
+				dy = float64(int8(b))
+			} else {
+				dy = float64(b)
+			}
+		}
+		scale := 1.0
+		xs, ys := 1.0, 1.0
+		x01, x10 := 0.0, 0.0
+		if flags&WE_HAVE_A_SCALE != 0 {
+			v, err := t.ReadF2Dot14(fd)
+			if err != nil {
+				return nil, err
+			}
+			scale = v
+			xs, ys = scale, scale
+		} else if flags&WE_HAVE_AN_X_AND_Y_SCALE != 0 {
+			vx, err := t.ReadF2Dot14(fd)
+			if err != nil {
+				return nil, err
+			}
+			vy, err := t.ReadF2Dot14(fd)
+			if err != nil {
+				return nil, err
+			}
+			xs, ys = vx, vy
+		} else if flags&WE_HAVE_A_TWO_BY_TWO != 0 {
+			vx, e1 := t.ReadF2Dot14(fd)
+			v01, e2 := t.ReadF2Dot14(fd)
+			v10, e3 := t.ReadF2Dot14(fd)
+			vy, e4 := t.ReadF2Dot14(fd)
+			if e1 != nil || e2 != nil || e3 != nil || e4 != nil {
+				return nil, e1
+			}
+			xs, x01, x10, ys = vx, v01, v10, vy
+		}
+		sub, err := t.ParseGlyphOutline(fd, gid)
+		if err != nil {
+			return nil, err
+		}
+		for _, contour := range sub {
+			comp := make([]GlyphPoint, 0, len(contour))
+			for _, p := range contour {
+				nx := p.X*xs + p.Y*x10 + dx
+				ny := p.X*x01 + p.Y*ys + dy
+				comp = append(comp, GlyphPoint{X: nx, Y: ny, OnCurve: p.OnCurve})
+			}
+			out = append(out, comp)
+		}
+		if flags&MORE_COMPONENTS == 0 {
+			break
+		}
+	}
+	_ = numContours
+	return out, nil
+}
+
+// ReadF2Dot14 reads a 16.16-style fixed point number with 14 fractional bits.
+func (t *TTFParser) ReadF2Dot14(fd *bytes.Reader) (float64, error) {
+	raw, err := t.ReadUShort(fd)
+	if err != nil {
+		return 0, err
+	}
+	return float64(int16(raw)) / 16384.0, nil
+}
+
+// SkipInstr advances the reader by n bytes.
+func (t *TTFParser) SkipInstr(fd *bytes.Reader, n int) (int, error) {
+	got, err := fd.Seek(int64(n), io.SeekCurrent)
+	return int(got), err
+}
+
+// ReadRawByte reads a single byte.
+func (t *TTFParser) ReadRawByte(fd *bytes.Reader) (byte, error) {
+	var b [1]byte
+	n, err := fd.Read(b[:])
+	if err != nil || n == 0 {
+		return 0, io.EOF
+	}
+	return b[0], nil
+}
+
+// LookupChar maps a character code (from the font cmap) to a glyph index.
+func (t *TTFParser) LookupChar(code int) (uint, bool) {
+	g, ok := t.chars[code]
+	return g, ok
+}
+
+// LookupWidth returns the advance width of a glyph in font units.
+func (t *TTFParser) LookupWidth(gid uint) (uint, bool) {
+	if int(gid) < len(t.widths) {
+		return t.widths[gid], true
+	}
+	return 0, false
+}
+
+// DefaultWidth returns the default advance width (last hmtx entry).
+func (t *TTFParser) DefaultWidth() uint {
+	if n := len(t.widths); n > 0 {
+		return t.widths[n-1]
+	}
+	return 0
+}
+
+// ParseGlyphOutlineFromData parses the glyph outline using the parser's
+// internal copy of the font data (kept from the most recent ParseFontData).
+func (t *TTFParser) ParseGlyphOutlineFromData(gid uint) ([][]GlyphPoint, error) {
+	fontData := t.FontData()
+	if fontData == nil {
+		return nil, errors.New("no font data retained")
+	}
+	fd := bytes.NewReader(fontData)
+	return t.ParseGlyphOutline(fd, gid)
 }
