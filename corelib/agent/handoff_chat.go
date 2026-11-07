@@ -238,14 +238,21 @@ func MemoForCoveredSpan(scope, dropped []interface{}, summary string, summaryOK 
 }
 
 // FitHandoffPreview shrinks a memo until its block is within byteLimit.
-// Shelf handles, dead ends, and read paths go first. It does not insert a
-// recovery marker or a middle ellipsis.
+// Shelf handles, dead ends, and file paths go first. Progress padding goes
+// next, but an anchored measurement at the end stays while task and next
+// can still shrink. Cuts are sized to the overflow, not one rune at a time.
 func FitHandoffPreview(memo HandoffMemo, byteLimit int) string {
 	if byteLimit < len(handoffOpen)+len(handoffClose)+2 {
 		byteLimit = len(handoffOpen) + len(handoffClose) + 2
 	}
 	fitted := memo
-	for len(fitted.RenderBlock()) > byteLimit {
+	measurement := progressMeasurement(fitted.Progress)
+	for {
+		block := fitted.RenderBlock()
+		over := len(block) - byteLimit
+		if over <= 0 {
+			return block
+		}
 		switch {
 		case len(fitted.ShelfHandles) > 0:
 			fitted.ShelfHandles = fitted.ShelfHandles[1:]
@@ -257,20 +264,32 @@ func FitHandoffPreview(memo HandoffMemo, byteLimit int) string {
 			fitted.FilesModified = fitted.FilesModified[1:]
 		case len(fitted.FilesCreated) > 0:
 			fitted.FilesCreated = fitted.FilesCreated[1:]
-		case runeLen(fitted.Progress) > 1:
-			fitted.Progress = tailCut(fitted.Progress, runeLen(fitted.Progress)-1)
-		case runeLen(fitted.Task) > 1:
-			fitted.Task = tailCut(fitted.Task, runeLen(fitted.Task)-1)
-		case runeLen(fitted.Next) > 1:
-			fitted.Next = headCut(fitted.Next, runeLen(fitted.Next)-1)
 		default:
+			if next, ok := trimHeadBytes(fitted.Progress, measurement, over); ok {
+				fitted.Progress = next
+				continue
+			}
+			if next, ok := trimHeadBytes(fitted.Task, "", over); ok {
+				fitted.Task = next
+				continue
+			}
+			if next, ok := trimTailBytes(fitted.Next, over); ok {
+				fitted.Next = next
+				continue
+			}
+			// The byte budget cannot hold the whole measurement. Shave its
+			// head and keep the trailing number. Do not blank the field.
+			if next, ok := trimHeadBytes(fitted.Progress, "", over); ok {
+				fitted.Progress = next
+				measurement = progressMeasurement(fitted.Progress)
+				continue
+			}
 			fitted.Progress = ""
 			fitted.Task = ""
 			fitted.Next = ""
 			return fitted.RenderBlock()
 		}
 	}
-	return fitted.RenderBlock()
 }
 
 // MessageContainsOpaque reports an image block that must stay inline.
@@ -429,13 +448,30 @@ func trimHistoryWithMemo(entries []ConversationEntry) []ConversationEntry {
 		}
 		kept = append(kept, part...)
 	}
-	if len(dropped) == 0 || (len(kept) > 0 && kept[0].Role == "tool") {
+	// A plain orphan tool cannot lead the kept tail. A memo in front of it
+	// breaks tool pairing, and returning the tail alone drops the covered
+	// prefix. Fold those tools into the span. An opaque tool stays so an
+	// image block is not discarded; there is then no valid place for the
+	// memo, and the tail is returned as it was.
+	dropped, kept = coverLeadingOrphanTools(dropped, kept)
+	if len(dropped) == 0 || len(kept) == 0 || kept[0].Role == "tool" {
 		if len(kept) == 0 {
 			return entries
 		}
 		return kept
 	}
 	return prependHandoffMemo(dropped, kept)
+}
+
+// coverLeadingOrphanTools moves a leading run of non-opaque tool entries
+// from kept into dropped. Those entries are covered material, not a
+// transcript head. An image tool stays in kept.
+func coverLeadingOrphanTools(dropped, kept []ConversationEntry) ([]ConversationEntry, []ConversationEntry) {
+	for len(kept) > 0 && kept[0].Role == "tool" && !MessageContainsOpaque(kept[0].ToMessage()) {
+		dropped = append(dropped, kept[0])
+		kept = kept[1:]
+	}
+	return dropped, kept
 }
 
 func handoffHistoryDrop(entries []ConversationEntry, groups []EntryGroup) []bool {
@@ -506,6 +542,10 @@ func prependHandoffMemo(dropped, kept []ConversationEntry) []ConversationEntry {
 	keptExtra := false
 	if !memo.Usable() {
 		extra := newestEntryGroup(dropped)
+		// Restoring a plain orphan tool would put it back at the head.
+		if len(extra) > 0 && extra[0].Role == "tool" && !MessageContainsOpaque(extra[0].ToMessage()) {
+			extra = nil
+		}
 		if len(extra) > 0 && len(extra) < len(dropped) {
 			dropped = dropped[:len(dropped)-len(extra)]
 			kept = append(append([]ConversationEntry{}, extra...), kept...)
@@ -566,11 +606,36 @@ func newestEntryGroup(entries []ConversationEntry) []ConversationEntry {
 }
 
 func entriesToMessages(entries []ConversationEntry) []interface{} {
+	return MessagesForHandoff(entries)
+}
+
+// MessagesForHandoff is the memo-filler view of history. ToMessage stays the
+// model payload and does not carry the host tool outcome. This copy does,
+// so a covered span can tell a real failure from a body that merely says
+// "error".
+func MessagesForHandoff(entries []ConversationEntry) []interface{} {
 	msgs := make([]interface{}, len(entries))
 	for i, entry := range entries {
-		msgs[i] = entry.ToMessage()
+		msgs[i] = messageForHandoff(entry)
 	}
 	return msgs
+}
+
+func messageForHandoff(entry ConversationEntry) interface{} {
+	msg := entry.ToMessage()
+	typed, ok := msg.(map[string]interface{})
+	if !ok || entry.Role != "tool" {
+		return msg
+	}
+	if name := strings.TrimSpace(entry.ToolName); name != "" {
+		if existing, _ := typed["name"].(string); strings.TrimSpace(existing) == "" {
+			typed["name"] = name
+		}
+	}
+	if outcome := strings.TrimSpace(entry.ToolOutcome); outcome != "" {
+		typed["tool_outcome"] = outcome
+	}
+	return typed
 }
 
 // trimConversationHandoff replaces the covered prefix of a loop transcript

@@ -81,6 +81,37 @@ func TestCheckpointAllSummarizesOnceAfterThreshold(t *testing.T) {
 	}
 }
 
+func TestCheckpointAllSummaryKeepsPriorMeasurement(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
+	conversation := handoffChatFixture(8, 500)
+	conversation[1] = map[string]string{"role": "user", "content": longRecoveryHandoff()}
+	task := strings.Repeat("约束", 2000)
+	progress := strings.Repeat("噪声", 200)
+	result := CheckpointConversation(conversation, ContextCheckpointOptions{
+		ContextLimit: 6000,
+		SessionKey:   "sum-measure",
+		Tools:        []map[string]interface{}{tooldef.BuildToolDef("read_tool_result", "read", map[string]interface{}{"type": "object"})},
+		Root:         t.TempDir(),
+		Summarize: func(string) string {
+			return "<handoff-memo>\n## task\n" + task + "\n## progress\n" + progress + "\n</handoff-memo>"
+		},
+	})
+	if !result.Applied {
+		t.Fatalf("checkpoint did not apply: %+v", result)
+	}
+	body := checkpointVisibleText(result.Conversation)
+	parsed, ok := ParseHandoffMemo(body)
+	if !ok || strings.Count(parsed.Progress, "median 17.4") != 1 {
+		t.Fatalf("progress=%q", parsed.Progress)
+	}
+	if utf8.RuneCountInString(parsed.Task) > 600 {
+		t.Fatalf("task runes=%d", utf8.RuneCountInString(parsed.Task))
+	}
+	if utf8.RuneCountInString(parsed.Render()) > 5000 {
+		t.Fatalf("render runes=%d", utf8.RuneCountInString(parsed.Render()))
+	}
+}
+
 func TestCheckpointFlagOffIgnoresMemoSummarizer(t *testing.T) {
 	t.Setenv("MACLAW_HANDOFF_MEMO", "")
 	calls := 0
@@ -363,6 +394,37 @@ func TestTrimHistoryAllMergesConstraintIntoKeptMemo(t *testing.T) {
 	}
 }
 
+func TestTrimHistoryAllOrphanToolKeepsConstraint(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
+	const constraint = "keep the postgres constraint"
+	entries := make([]ConversationEntry, 0, 41)
+	entries = append(entries,
+		ConversationEntry{Role: "user", Content: constraint},
+		ConversationEntry{Role: "tool", Content: "orphan tool output"},
+	)
+	for i := 0; i < 39; i++ {
+		entries = append(entries, ConversationEntry{Role: "user", Content: "recent " + strings.Repeat("r", 20)})
+	}
+	trimmed := TrimHistory(entries)
+	if len(trimmed) == 0 || trimmed[0].Role == "tool" {
+		t.Fatalf("transcript starts with a tool, len=%d", len(trimmed))
+	}
+	text := entryVisibleText(trimmed)
+	if strings.Count(text, "<handoff-memo>") != 1 {
+		t.Fatalf("memo count:\n%s", text)
+	}
+	parsed, ok := ParseHandoffMemo(text)
+	if !ok || !strings.Contains(parsed.Task, constraint) {
+		t.Fatalf("task=%q", parsed.Task)
+	}
+	for _, entry := range trimmed {
+		body, _ := entry.Content.(string)
+		if entry.Role == "tool" || body == "orphan tool output" || body == constraint {
+			t.Fatalf("covered entry stayed raw: role=%s body=%s", entry.Role, body)
+		}
+	}
+}
+
 func TestTrimConversationAllMergesConstraintIntoKeptMemo(t *testing.T) {
 	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
 	const constraint = "keep the postgres constraint"
@@ -439,6 +501,62 @@ func TestTrimConversationAllKeepsRecoveryMeasurementOnce(t *testing.T) {
 	}
 	if againRunes, renderRunes := utf8.RuneCountInString(parsed.Progress), utf8.RuneCountInString(parsed.Render()); againRunes > firstProgress || againRunes > 1400 || renderRunes > 5000 {
 		t.Fatalf("progress grew %d -> %d render=%d", firstProgress, againRunes, renderRunes)
+	}
+}
+
+func TestFitHandoffPreviewKeepsAnchoredMeasurement(t *testing.T) {
+	measurement := "1. **当前进度**: median 17.4"
+	memo := HandoffMemo{
+		Task:     strings.Repeat("约束", 800),
+		Progress: strings.Repeat("later-section ", 100) + "\n" + measurement,
+		Next:     strings.Repeat("下一步", 80),
+	}
+	block := FitHandoffPreview(memo, 700)
+	if len(block) > 700 {
+		t.Fatalf("preview bytes=%d", len(block))
+	}
+	if strings.Count(block, "median 17.4") != 1 {
+		t.Fatalf("preview dropped the measurement: %s", block)
+	}
+	parsed, ok := ParseHandoffMemo(block)
+	if !ok || utf8.RuneCountInString(parsed.Progress) > 1400 || !strings.HasSuffix(strings.TrimSpace(parsed.Progress), measurement) {
+		t.Fatalf("progress=%q", parsed.Progress)
+	}
+}
+
+func TestFitHandoffPreviewShavesMeasurementFromHead(t *testing.T) {
+	measurement := "1. **当前进度**: median 17.4"
+	full := FitHandoffPreview(HandoffMemo{Progress: measurement}, 100000)
+	limit := len(full) - 12
+	if limit < len(handoffOpen)+len(handoffClose)+2 {
+		t.Fatal("fixture block is too small to shave")
+	}
+	block := FitHandoffPreview(HandoffMemo{Progress: measurement}, limit)
+	if len(block) > limit {
+		t.Fatalf("preview bytes=%d limit=%d", len(block), limit)
+	}
+	if !strings.Contains(block, "17.4") {
+		t.Fatalf("shave deleted the number: %s", block)
+	}
+}
+
+func TestFitHandoffPreviewKeepsNextHeadOnByteOverflow(t *testing.T) {
+	next := "下一步请继续核对"
+	memo := HandoffMemo{Progress: "median 17.4", Next: next}
+	full := FitHandoffPreview(memo, 100000)
+	limit := len(full) - 12
+	if limit < len(handoffOpen)+len(handoffClose)+2 {
+		t.Fatal("fixture block is too small")
+	}
+	block := FitHandoffPreview(memo, limit)
+	if len(block) > limit {
+		t.Fatalf("preview bytes=%d limit=%d", len(block), limit)
+	}
+	if !strings.Contains(block, "下一步") {
+		t.Fatalf("byte overflow wiped next: %s", block)
+	}
+	if !strings.Contains(block, "17.4") {
+		t.Fatalf("byte overflow dropped the measurement: %s", block)
 	}
 }
 

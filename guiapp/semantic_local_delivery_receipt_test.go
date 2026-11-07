@@ -325,6 +325,119 @@ func TestHostResolvedUnsettledExitRetiresRecoveryMarker(t *testing.T) {
 	}
 }
 
+func currentChannelAttachToolEntry() agent.ConversationEntry {
+	return agent.ConversationEntry{
+		Role:       "tool",
+		ToolName:   "send_file",
+		ToolCallID: "call-attach",
+		Content:    agent.CurrentChannelAttachResult("selection:chat"),
+	}
+}
+
+// The host attached the file and cleared the model-stream error. That turn
+// is settled. The crash marker has to leave with it, or the next message is
+// refused as an uncertain external send. The loop error itself stays on the
+// result the trajectory records.
+func TestHostSettledCurrentChannelAttachRetiresStreamFailureMarker(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	t.Cleanup(memory.Stop)
+	const userID = "desktop-user"
+	const runID = "run-letter"
+	if err := memory.PersistInFlightCheckpoint(userID, []agent.ConversationEntry{{Role: "user", Content: "写推荐信"}}, "分析", "", runID, agent.InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	turn := []agent.ConversationEntry{
+		{Role: "user", Content: "写推荐信"},
+		currentChannelAttachToolEntry(),
+	}
+	streamErr := "LLM call failed: Responses API stream failed: payload_len=285"
+	h := &IMMessageHandler{memory: memory}
+	cb := &sharedAgentLoopCallbacks{checkpointCommitted: true}
+	resp := &IMAgentResponse{LocalFilePath: `C:\letter.pdf`}
+	result := agent.LoopResult{Error: streamErr, HardExit: true}
+	if !sharedLoopHostSettledStaleModelError(result, resp, cb, turn) {
+		t.Fatal("a cleared stream failure after the chat attach did not settle")
+	}
+	completeSharedInFlightIfSettled(h, cb, userID, runID, result, resp, turn, turn)
+	if result.Error != streamErr {
+		t.Fatalf("settlement rewrote the loop error: %q", result.Error)
+	}
+	if task, project := memory.ConsumeInFlightTask(userID); task != "" || project != "" {
+		t.Fatalf("marker stayed task=%q project=%q", task, project)
+	}
+	if slot := h.recoverInterruptedTaskSlot(userID, turn); slot != nil {
+		t.Fatalf("settled turn opened a recovery slot: %#v", slot)
+	}
+	if respHint, handled := h.maybeReturnUnfinishedSlotHint(IMUserMessage{UserID: userID, Platform: "desktop", Lang: "zh", Text: "补充研究所"}, "补充研究所", false, explicitTaskSlotDecision{}, nil); handled || respHint != nil {
+		t.Fatalf("next message was refused: handled=%v resp=%#v", handled, respHint)
+	}
+}
+
+func TestStaleModelErrorKeepsMarkerWhenTheSendIsStillExternal(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	t.Cleanup(memory.Stop)
+	const userID = "desktop-user"
+	const runID = "run-im"
+	if err := memory.PersistInFlightCheckpoint(userID, []agent.ConversationEntry{{Role: "user", Content: "发到微信"}}, "发到微信", "", runID, agent.InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_to_im", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	turn := []agent.ConversationEntry{
+		currentChannelAttachToolEntry(),
+		{Role: "tool", ToolName: "send_to_im", Content: "sent"},
+	}
+	streamErr := "LLM call failed: Responses API stream failed: payload_len=285"
+	h := &IMMessageHandler{memory: memory}
+	cb := &sharedAgentLoopCallbacks{checkpointCommitted: true}
+	resp := &IMAgentResponse{LocalFilePath: `C:\letter.pdf`}
+	result := agent.LoopResult{Error: streamErr, HardExit: true}
+	if sharedLoopHostSettledStaleModelError(result, resp, cb, turn) {
+		t.Fatal("send_to_im was treated as a settled chat attach")
+	}
+	completeSharedInFlightIfSettled(h, cb, userID, runID, result, resp, turn, turn)
+	slot := h.recoverInterruptedTaskSlot(userID, turn)
+	if slot == nil || slot.LastToolName != "send_to_im" || slot.SideEffectState != "external_uncertain" {
+		t.Fatalf("external send marker = %#v", slot)
+	}
+	hint, handled := h.maybeReturnUnfinishedSlotHint(IMUserMessage{UserID: userID, Platform: "desktop", Lang: "zh", Text: "补充研究所"}, "补充研究所", false, explicitTaskSlotDecision{}, slot)
+	if !handled || hint == nil || hint.Error != "semantic_external_delivery_review_required" {
+		t.Fatalf("handled=%v hint=%#v", handled, hint)
+	}
+
+	stillShowing := &IMAgentResponse{LocalFilePath: `C:\letter.pdf`, Error: streamErr}
+	if sharedLoopHostSettledStaleModelError(result, stillShowing, cb, []agent.ConversationEntry{currentChannelAttachToolEntry()}) {
+		t.Fatal("a response that still shows the stream error settled the marker")
+	}
+	if sharedLoopHostSettledStaleModelError(result, &IMAgentResponse{Text: "done"}, cb, []agent.ConversationEntry{currentChannelAttachToolEntry()}) {
+		t.Fatal("a stream failure with no attached file settled the marker")
+	}
+	openShell, _ := newHopRunTestSurface(t)
+	open := &sharedAgentLoopCallbacks{semanticSurface: openShell, checkpointCommitted: true}
+	if !open.RequiredEffectUnsettled() {
+		t.Fatal("open shell fixture was already settled")
+	}
+	if sharedLoopHostSettledStaleModelError(result, resp, open, []agent.ConversationEntry{currentChannelAttachToolEntry()}) {
+		t.Fatal("an open required effect settled because a file was attached")
+	}
+	if sharedLoopHostSettledStaleModelError(agent.LoopResult{Error: agent.ErrNoProgress}, resp, cb, []agent.ConversationEntry{currentChannelAttachToolEntry()}) {
+		t.Fatal("no_progress was reclassified as a stale model error")
+	}
+	pending := &sharedAgentLoopCallbacks{checkpointCommitted: true, hasPendingToolBatch: true}
+	if sharedLoopHostSettledStaleModelError(result, resp, pending, []agent.ConversationEntry{currentChannelAttachToolEntry()}) {
+		t.Fatal("a pending tool batch settled because a file was attached")
+	}
+	blocked := &sharedAgentLoopCallbacks{checkpointCommitted: true, semanticDurabilityBlocked: true}
+	if sharedLoopHostSettledStaleModelError(result, resp, blocked, []agent.ConversationEntry{currentChannelAttachToolEntry()}) {
+		t.Fatal("a durability failure settled because a file was attached")
+	}
+	if !sharedLoopTurnSettled(agent.LoopResult{Error: agent.ErrNoProgress}, &IMAgentResponse{}, cb) {
+		t.Fatal("no_progress left the finished-work path")
+	}
+}
+
 // A local skill can write the presentation without calling the office or
 // current-channel adapters. The host then attaches that file and clears the
 // visible required_effect_unsettled error. The plan has to accept the same

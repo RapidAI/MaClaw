@@ -5,6 +5,35 @@ import (
 	"testing"
 )
 
+func TestCapProgressKeepsHeadNumberOnLongLine(t *testing.T) {
+	pad := strings.Repeat("later-section ", 120)
+	line := "1. **当前进度**: median 17.4 " + pad + " see item 9"
+	if runeLen(line) <= handoffProgressRunes {
+		t.Fatal("fixture is not longer than the progress cap")
+	}
+	got := capProgressKeepingMeasurement(line)
+	if runeLen(got) > handoffProgressRunes {
+		t.Fatalf("progress runes=%d", runeLen(got))
+	}
+	if !strings.Contains(got, "median 17.4") {
+		t.Fatalf("tail cut dropped the head measurement: %q", got)
+	}
+}
+
+func TestCapProgressDoesNotDuplicateTailMeasurement(t *testing.T) {
+	line := strings.Repeat("later-section ", 120) + " median 17.4"
+	if runeLen(line) <= handoffProgressRunes {
+		t.Fatal("fixture is not longer than the progress cap")
+	}
+	got := capProgressKeepingMeasurement(line)
+	if runeLen(got) > handoffProgressRunes {
+		t.Fatalf("progress runes=%d", runeLen(got))
+	}
+	if strings.Count(got, "17.4") != 1 {
+		t.Fatalf("measurement copied %d times: %q", strings.Count(got, "17.4"), got)
+	}
+}
+
 func TestFillHandoffMemoTailKeepsEndingNumbers(t *testing.T) {
 	measurement := strings.Repeat("噪声", 900) + " p50=12.5ms"
 	memo := FillHandoffMemo(HandoffFill{
@@ -285,10 +314,89 @@ func TestUserTextDoesNotCreateDeadEnd(t *testing.T) {
 	}
 	fromDrop := MemoFromDroppedProjects([]interface{}{
 		map[string]interface{}{"role": "user", "content": "不要重跑基准"},
-		map[string]interface{}{"role": "tool", "name": "bash", "content": "ok"},
+		map[string]interface{}{"role": "tool", "name": "bash", "content": "ok", "tool_outcome": "ok"},
 	}, HandoffMemo{}, false)
 	if len(fromDrop.DeadEnds) != 0 {
 		t.Fatalf("user sentence or a passing tool created a dead end: %+v", fromDrop.DeadEnds)
+	}
+	if !strings.Contains(fromDrop.Progress, "bash exit 0") {
+		t.Fatalf("structured success missing from progress: %q", fromDrop.Progress)
+	}
+}
+
+func TestMemoFromDroppedProjectsUsesStructuredOutcome(t *testing.T) {
+	// A body that mentions "error" is not a failure, and a body with no
+	// stored outcome is not a success. Only tool_outcome decides.
+	mentioned := MemoFromDroppedProjects([]interface{}{
+		map[string]interface{}{"role": "tool", "name": "bash", "content": "0 errors"},
+	}, HandoffMemo{}, false)
+	if len(mentioned.DeadEnds) != 0 {
+		t.Fatalf("body text became a dead end: %+v", mentioned.DeadEnds)
+	}
+	if strings.Contains(mentioned.Progress, "exit 0") {
+		t.Fatalf("missing outcome became a verify line: %q", mentioned.Progress)
+	}
+
+	failedText := MemoFromDroppedProjects([]interface{}{
+		map[string]interface{}{"role": "tool", "name": "bash", "content": "build failed"},
+	}, HandoffMemo{}, false)
+	if len(failedText.DeadEnds) != 0 || strings.Contains(failedText.Progress, "exit 0") {
+		t.Fatalf("unstructured body invented a result: progress=%q dead=%+v", failedText.Progress, failedText.DeadEnds)
+	}
+
+	read := MemoFromDroppedProjects([]interface{}{
+		map[string]interface{}{"role": "tool", "name": "read_file", "content": "package main"},
+	}, HandoffMemo{}, false)
+	if len(read.DeadEnds) != 0 || strings.Contains(read.Progress, "exit 0") {
+		t.Fatalf("file body became a verify line: progress=%q dead=%+v", read.Progress, read.DeadEnds)
+	}
+
+	failed := MemoFromDroppedProjects([]interface{}{
+		map[string]interface{}{"role": "tool", "name": "bash", "content": "0 errors", "tool_outcome": string(ToolExecutionOutcomeError)},
+	}, HandoffMemo{}, false)
+	if len(failed.DeadEnds) != 1 || failed.DeadEnds[0].Tool != "bash" {
+		t.Fatalf("structured error missing: %+v", failed.DeadEnds)
+	}
+	if strings.Contains(failed.Progress, "exit 0") {
+		t.Fatalf("failed tool became a verify line: %q", failed.Progress)
+	}
+
+	timedOut := MemoFromDroppedProjects([]interface{}{
+		map[string]interface{}{"role": "tool", "name": "bash", "content": "still running", "tool_outcome": string(ToolExecutionOutcomeTimeout)},
+	}, HandoffMemo{}, false)
+	if len(timedOut.DeadEnds) != 1 {
+		t.Fatalf("timeout missing from dead ends: %+v", timedOut.DeadEnds)
+	}
+
+	okBody := MemoFromDroppedProjects([]interface{}{
+		map[string]interface{}{"role": "tool", "name": "bash", "content": "0 errors\nall good", "tool_outcome": string(ToolExecutionOutcomeOK)},
+	}, HandoffMemo{}, false)
+	if len(okBody.DeadEnds) != 0 {
+		t.Fatalf("successful tool became a dead end: %+v", okBody.DeadEnds)
+	}
+	if !strings.Contains(okBody.Progress, "bash exit 0") {
+		t.Fatalf("structured success missing from progress: %q", okBody.Progress)
+	}
+
+	entry := ConversationEntry{
+		Role: "tool", Content: "0 errors", ToolName: "bash", ToolOutcome: string(ToolExecutionOutcomeError),
+	}
+	modelMsg, ok := entry.ToMessage().(map[string]interface{})
+	if !ok {
+		t.Fatal("ToMessage type")
+	}
+	if _, exists := modelMsg["tool_outcome"]; exists {
+		t.Fatal("ToMessage leaked tool_outcome")
+	}
+	if _, exists := modelMsg["name"]; exists {
+		t.Fatal("ToMessage leaked tool name")
+	}
+	fromHistory := MemoFromDroppedProjects(entriesToMessages([]ConversationEntry{entry}), HandoffMemo{}, false)
+	if len(fromHistory.DeadEnds) != 1 || fromHistory.DeadEnds[0].Tool != "bash" {
+		t.Fatalf("history outcome dropped: %+v progress=%q", fromHistory.DeadEnds, fromHistory.Progress)
+	}
+	if strings.Contains(fromHistory.Progress, "exit 0") {
+		t.Fatalf("history error became a verify line: %q", fromHistory.Progress)
 	}
 }
 

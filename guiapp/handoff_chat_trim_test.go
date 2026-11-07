@@ -68,6 +68,73 @@ func TestTrimHistoryAllReplacesWithOneMemo(t *testing.T) {
 	}
 }
 
+func TestTrimHistoryAllOrphanToolDoesNotLead(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
+	const constraint = "keep the postgres constraint"
+	entries := []agent.ConversationEntry{
+		{Role: "user", Content: constraint},
+		{Role: "tool", Content: "orphan tool output"},
+		{Role: "user", Content: "recent one"},
+		{Role: "user", Content: "recent two"},
+		{Role: "user", Content: "recent three"},
+	}
+	trimmed := trimHistoryWithSummary(entries, nil, nil, 4, 0)
+	text := trimmedEntryText(trimmed)
+	if strings.Count(text, "<handoff-memo>") != 1 || !strings.Contains(text, constraint) {
+		t.Fatalf("memo missing the constraint: %s", text)
+	}
+	if strings.Contains(text, "orphan tool output") {
+		t.Fatalf("orphan tool stayed raw: %s", text)
+	}
+	for i, entry := range trimmed {
+		if entry.Role != "tool" {
+			continue
+		}
+		if i == 0 || (trimmed[i-1].Role != "assistant" && trimmed[i-1].Role != "tool") {
+			t.Fatalf("orphan tool leads at %d", i)
+		}
+	}
+}
+
+func TestHandoffAsyncReplacementKeepsMeasurementAndCapsTask(t *testing.T) {
+	prior := agent.HandoffMemo{Task: "keep the postgres constraint", Progress: "median 17.4"}.RenderBlock()
+	summary := "<handoff-memo>\n## task\n" + strings.Repeat("约束", 2000) + "\n## progress\n" + strings.Repeat("噪声", 200) + "\n</handoff-memo>"
+	block, ok := handoffAsyncReplacement(prior, summary)
+	if !ok {
+		t.Fatal("usable summary was rejected")
+	}
+	parsed, ok := agent.ParseHandoffMemo(block)
+	if !ok || strings.Count(parsed.Progress, "median 17.4") != 1 {
+		t.Fatalf("progress=%q", parsed.Progress)
+	}
+	if taskRunes, renderRunes := utf8.RuneCountInString(parsed.Task), utf8.RuneCountInString(parsed.Render()); taskRunes > 600 || renderRunes > 5000 {
+		t.Fatalf("task=%d render=%d", taskRunes, renderRunes)
+	}
+	if _, ok := handoffAsyncReplacement(prior, "<handoff-memo>\n## task\n"+`{"tool_calls":[]}`+"\n</handoff-memo>"); ok {
+		t.Fatal("tool-call summary replaced the stored memo")
+	}
+}
+
+func TestEntriesToLoopMessagesKeepsStructuredOutcome(t *testing.T) {
+	entry := agent.ConversationEntry{
+		Role: "tool", Content: "0 errors", ToolName: "bash", ToolOutcome: "error",
+	}
+	model, ok := entry.ToMessage().(map[string]interface{})
+	if !ok {
+		t.Fatal("ToMessage type")
+	}
+	if _, exists := model["tool_outcome"]; exists {
+		t.Fatal("ToMessage leaked tool_outcome")
+	}
+	memo := agent.MemoFromDroppedProjects(entriesToLoopMessages([]agent.ConversationEntry{entry}), agent.HandoffMemo{}, false)
+	if len(memo.DeadEnds) != 1 || memo.DeadEnds[0].Tool != "bash" {
+		t.Fatalf("stored error dropped: %+v", memo.DeadEnds)
+	}
+	if strings.Contains(memo.Progress, "exit 0") {
+		t.Fatalf("stored error became a verify line: %q", memo.Progress)
+	}
+}
+
 func TestTrimHistoryAllKeepsProgressInKeptMemo(t *testing.T) {
 	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
 	const constraint = "keep the postgres constraint"

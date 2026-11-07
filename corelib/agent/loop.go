@@ -4747,9 +4747,11 @@ func preToolSideEffectState(calls []llm.ToolCall) string {
 
 // sideEffectStateForCommittedBatch is the post-result class. mailbox_send and
 // mailbox_delete leave the uncertain set once every paired result is a known
-// outcome. A missing result, an uncertain result, and an open confirmation
-// stay uncertain. im_message, send_file, send_to_im, and every other name
-// keep the name-based class.
+// outcome. A current-channel send_file whose result says the file is attached
+// to this chat is the same kind of known local outcome: it is not an external
+// send. A missing result, an uncertain result, an open confirmation, and a
+// send_file result that is not that commit stay uncertain. im_message,
+// send_to_im, and every other name keep the name-based class.
 func sideEffectStateForCommittedBatch(calls []llm.ToolCall, entries []ConversationEntry) string {
 	remaining := make([]llm.ToolCall, 0, len(calls))
 	for _, call := range calls {
@@ -4757,6 +4759,10 @@ func sideEffectStateForCommittedBatch(calls []llm.ToolCall, entries []Conversati
 		switch name {
 		case "mailbox_send", "mailbox_delete":
 			if MailboxMutationResultsKnown(name, entries) {
+				continue
+			}
+		case "send_file":
+			if currentChannelSendFileKnown(entries) {
 				continue
 			}
 		}
@@ -4771,6 +4777,8 @@ func sideEffectStateForCommittedBatch(calls []llm.ToolCall, entries []Conversati
 // committedCheckpointToolName names the effect that is still open after the
 // paired results. An unresolved mailbox mutation wins, then a channel send.
 // A mailbox call whose results are already known does not hide either of those.
+// A send_file that attached the file to this chat is not a channel send, so
+// it does not hide im_message or send_to_im.
 func committedCheckpointToolName(calls []llm.ToolCall, entries []ConversationEntry, executedLast string) string {
 	unresolvedMailbox := ""
 	channelSend := ""
@@ -4781,7 +4789,14 @@ func committedCheckpointToolName(calls []llm.ToolCall, entries []ConversationEnt
 			if unresolvedMailbox == "" && !MailboxMutationResultsKnown(name, entries) {
 				unresolvedMailbox = name
 			}
-		case "im_message", "send_file", "send_to_im":
+		case "send_file":
+			if currentChannelSendFileKnown(entries) {
+				continue
+			}
+			if channelSend == "" {
+				channelSend = name
+			}
+		case "im_message", "send_to_im":
 			if channelSend == "" {
 				channelSend = name
 			}

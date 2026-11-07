@@ -257,7 +257,7 @@ func (h *IMMessageHandler) scheduleCompactionHandoff(userID string, trimmed []ag
 	if h == nil || h.memory == nil {
 		return
 	}
-	var compactionID, source, fileBlock string
+	var compactionID, source, fileBlock, priorText string
 	for _, entry := range trimmed {
 		if entry.CompactionID == "" || strings.TrimSpace(entry.CompactionSource) == "" {
 			continue
@@ -265,6 +265,9 @@ func (h *IMMessageHandler) scheduleCompactionHandoff(userID string, trimmed []ag
 		compactionID = entry.CompactionID
 		source = entry.CompactionSource
 		fileBlock = entry.CompactionFiles
+		if text, ok := entry.Content.(string); ok {
+			priorText = text
+		}
 	}
 	if compactionID == "" {
 		return
@@ -279,17 +282,15 @@ func (h *IMMessageHandler) scheduleCompactionHandoff(userID string, trimmed []ag
 		store := h.memory
 		go func() {
 			summary := summarizeCompactionMaterial(cfg, client, source)
-			if summary == "" || compactionSummaryUnusable(summary, "") {
+			block, ok := handoffAsyncReplacement(priorText, summary)
+			if !ok {
 				store.FinishHandoffCompaction(userID, compactionID)
 				return
 			}
-			parsed, ok := agent.ParseHandoffMemo(summary)
-			if !ok || !parsed.Usable() {
-				store.FinishHandoffCompaction(userID, compactionID)
-				return
+			if parsed, parsedOK := agent.ParseHandoffMemo(block); parsedOK {
+				log.Printf("[handoff-memo] async %s", parsed.LengthNote())
 			}
-			log.Printf("[handoff-memo] async %s", parsed.LengthNote())
-			store.ReplaceCompactionPlaceholder(userID, compactionID, parsed.RenderBlock())
+			store.ReplaceCompactionPlaceholder(userID, compactionID, block)
 		}()
 		return
 	}

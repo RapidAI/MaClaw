@@ -964,7 +964,7 @@ func TestCurrentChannelSendFileIsNotAnExternalCommit(t *testing.T) {
 		t.Fatalf("description=%q", desc)
 	}
 	got := cb.ExecuteToolCall(deliveryName, `{}`, "call-send").Result
-	if !strings.Contains(got, "Delivery committed") || !strings.Contains(got, "This is not a send.") || strings.Contains(got, "Report the file as sent") {
+	if !agent.CurrentChannelAttachCommitted(got) || strings.Contains(got, "Report the file as sent") {
 		t.Fatalf("delivery result=%q", got)
 	}
 }
@@ -976,7 +976,7 @@ func TestCurrentChannelSendFilePathDeliversTheBoundFile(t *testing.T) {
 	if strings.Contains(got, "[system rejected]") || strings.Contains(got, "win.ini") || strings.Contains(got, "wechat") || strings.Contains(got, "forged") {
 		t.Fatalf("path-shaped attach must deliver the bound file: %q", got)
 	}
-	if !strings.Contains(got, "Delivery committed") || !strings.Contains(got, "This is not a send.") {
+	if !agent.CurrentChannelAttachCommitted(got) {
 		t.Fatalf("delivery result=%q", got)
 	}
 	if cb.semanticDeliveryFileMIME != "application/pdf" || strings.Contains(cb.semanticDeliveryFileName, "win.ini") || cb.semanticDeliveryFileName == "" {

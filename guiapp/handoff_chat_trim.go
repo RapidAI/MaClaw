@@ -93,11 +93,30 @@ func trimHistoryWithHandoffMemo(entries []agent.ConversationEntry, summarizer fu
 		}
 		drop[i] = true
 	}
+	// A plain orphan tool cannot lead the kept tail. Fold that run into the
+	// covered span. An opaque tool stays so an image block is not discarded.
+	for {
+		head := -1
+		for i := range groups {
+			if i < len(drop) && !drop[i] {
+				head = i
+				break
+			}
+		}
+		if head < 0 {
+			break
+		}
+		group := groups[head]
+		if group.Start < 0 || group.Start >= len(entries) || entries[group.Start].Role != "tool" || opaque[head] {
+			break
+		}
+		drop[head] = true
+	}
 	droppedEntries := collectEntryGroups(entries, groups, drop)
-	if len(droppedEntries) == 0 {
+	kept := collectEntryGroups(entries, groups, invertFlags(drop))
+	if len(droppedEntries) == 0 || len(kept) == 0 {
 		return entries
 	}
-	kept := collectEntryGroups(entries, groups, invertFlags(drop))
 	// A memo already in the kept tail is Prior for MemoForCoveredSpan. Returning
 	// the tail here would drop user constraints that only exist in the prefix.
 	summary := ""
@@ -117,6 +136,10 @@ func trimHistoryWithHandoffMemo(entries []agent.ConversationEntry, summarizer fu
 			if !drop[i] || opaque[i] {
 				continue
 			}
+			group := groups[i]
+			if group.Start >= 0 && group.Start < len(entries) && entries[group.Start].Role == "tool" {
+				continue
+			}
 			drop[i] = false
 			keptExtra = true
 			break
@@ -127,6 +150,9 @@ func trimHistoryWithHandoffMemo(entries []agent.ConversationEntry, summarizer fu
 	}
 	agent.NoteCoveredMemo(memo, fromLLM, keptExtra)
 	if !memo.Usable() {
+		if len(kept) == 0 {
+			return entries
+		}
 		return kept
 	}
 	for i := range kept {
@@ -158,6 +184,31 @@ func trimHistoryWithHandoffMemo(entries []agent.ConversationEntry, summarizer fu
 	return append([]agent.ConversationEntry{separator}, kept...)
 }
 
+// handoffAsyncReplacement merges a finished summary into the memo already
+// stored on the separator. The raw summary is not written: a measurement
+// that lives only in the stored memo would disappear, and a long task would
+// skip the field caps. ok is false when the summary cannot replace that memo.
+func handoffAsyncReplacement(priorText, summary string) (string, bool) {
+	if summary == "" || compactionSummaryUnusable(summary, "") {
+		return "", false
+	}
+	parsed, ok := agent.ParseHandoffMemo(summary)
+	if !ok || !parsed.Usable() {
+		return "", false
+	}
+	prior, priorOK := agent.ParseHandoffMemo(priorText)
+	if !priorOK {
+		if progress := agent.RecoveryHandoffProgress(priorText); progress != "" {
+			prior.Progress = progress
+		}
+	}
+	agent.PreservePriorProgress(&parsed, prior)
+	if !parsed.Usable() {
+		return "", false
+	}
+	return parsed.RenderBlock(), true
+}
+
 func collectEntryGroups(entries []agent.ConversationEntry, groups []agent.EntryGroup, want []bool) []agent.ConversationEntry {
 	var out []agent.ConversationEntry
 	for i, group := range groups {
@@ -181,11 +232,7 @@ func invertFlags(flags []bool) []bool {
 }
 
 func entriesToLoopMessages(entries []agent.ConversationEntry) []interface{} {
-	msgs := make([]interface{}, len(entries))
-	for i, entry := range entries {
-		msgs[i] = entry.ToMessage()
-	}
-	return msgs
+	return agent.MessagesForHandoff(entries)
 }
 
 // handoffPageAnchorEntries is what PageIndex receives under flag all:

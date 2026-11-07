@@ -1935,7 +1935,17 @@ func (cm *ConversationMemory) persistInFlightCheckpointLocked(userID string, ent
 		s.inFlightMailboxUncertainDropped = true
 	}
 	if !s.inFlightMailboxUncertainDropped && retireProvisionalMailboxLatch(lastTool, sideEffect, previousActive, currentActive) {
-		lastTool, sideEffect = remainingEffectAfterMailboxLatch(incomingTool, incomingEffect, lastTool, currentActive)
+		lastTool, sideEffect = remainingEffectAfterMailboxLatch(incomingTool, incomingEffect, lastTool, previousActive, currentActive)
+	}
+	// A current-channel send_file is latched external_uncertain before the
+	// call, the same way a mailbox send is. Once this checkpoint has the
+	// commit that attaches the file to this chat, that latch is stale. The
+	// sentence says this is not a send. im_message and send_to_im do not
+	// retire here. A send_file result that is not that commit stays latched.
+	// An older send_file that is still on the branch belongs to an earlier
+	// call and does not keep this one.
+	if !s.inFlightMailboxUncertainDropped && retireProvisionalCurrentChannelAttach(lastTool, sideEffect, previousActive, currentActive) {
+		lastTool, sideEffect = remainingEffectAfterMailboxLatch(incomingTool, incomingEffect, lastTool, previousActive, currentActive)
 	}
 	noteMailboxLatchBaseline(s, lastTool, sideEffect)
 	if sameRunSlot {
@@ -2604,6 +2614,23 @@ func retireProvisionalMailboxLatch(lastTool, sideEffect string, previous, curren
 	return mailboxLatchAdvanced(lastTool, previous, current)
 }
 
+// retireProvisionalCurrentChannelAttach is the same retirement for a
+// send_file latch. The pre-tool marker says external_uncertain because the
+// name can also be an external send. Once this checkpoint has a new result
+// that attaches the file to this chat, that latch is stale: the result says
+// this is not a send. im_message and send_to_im do not retire here. A
+// send_file result that is not that commit stays latched, and a known result
+// from an earlier call does not settle a send_file that has not reported.
+func retireProvisionalCurrentChannelAttach(lastTool, sideEffect string, previous, current []ConversationEntry) bool {
+	if !strings.EqualFold(strings.TrimSpace(lastTool), "send_file") {
+		return false
+	}
+	if !ExternalSendCheckpointEvidence(lastTool, sideEffect) {
+		return false
+	}
+	return currentChannelAttachAdvanced(previous, current)
+}
+
 // mailboxUncertainLeftActiveBranch reports a transport-uncertain result for
 // the latched mailbox tool that this save did not keep. That row may have
 // been a real SMTP or IMAP delivery. A confirmation card is not remembered:
@@ -2797,14 +2824,29 @@ func MailboxLatchSettled(toolName string, entries []ConversationEntry, baseline 
 	return mailboxToolResultCount(toolName, entries) > baseline
 }
 
-// remainingEffectAfterMailboxLatch replaces a resolved provisional mailbox
-// latch with the effect this checkpoint actually recorded. The stored latch
-// is not evidence once its own results are known.
-func remainingEffectAfterMailboxLatch(incomingTool, incomingEffect, latchedTool string, entries []ConversationEntry) (string, string) {
+// remainingEffectAfterMailboxLatch replaces a resolved provisional latch
+// with the effect this checkpoint actually recorded. The stored latch is
+// not evidence once its own new results are known. previous is the branch
+// before this save, so an older send_file row is not this call.
+func remainingEffectAfterMailboxLatch(incomingTool, incomingEffect, latchedTool string, previous, entries []ConversationEntry) (string, string) {
 	incomingTool = strings.TrimSpace(incomingTool)
 	incomingEffect = strings.TrimSpace(incomingEffect)
 	switch strings.ToLower(incomingTool) {
-	case "im_message", "send_file", "send_to_im":
+	case "send_file":
+		if currentChannelAttachAdvanced(previous, entries) {
+			switch incomingEffect {
+			case "", "none", "external_uncertain", "unknown":
+				// The file is already on this chat. Keeping the pre-tool
+				// latch would refuse the next message as an external send.
+				return incomingTool, "none"
+			}
+			return incomingTool, incomingEffect
+		}
+		if incomingEffect == "" || incomingEffect == "none" || incomingEffect == "local_committed" {
+			incomingEffect = "external_uncertain"
+		}
+		return incomingTool, incomingEffect
+	case "im_message", "send_to_im":
 		if incomingEffect == "" || incomingEffect == "none" || incomingEffect == "local_committed" {
 			incomingEffect = "external_uncertain"
 		}
@@ -2901,6 +2943,104 @@ func MailboxMutationResultsKnown(toolName string, entries []ConversationEntry) b
 		}
 	}
 	return saw
+}
+
+const currentChannelAttachLead = "Delivery committed to the current channel (delivery record "
+
+// CurrentChannelAttachResult is the send_file result for a file attached to
+// this chat. Hosts emit this sentence and nothing after it. The recovery
+// classifier accepts only this sentence, so a desktop IM confirmation or a
+// quoted fragment does not count as the commit.
+func CurrentChannelAttachResult(selectionID string) string {
+	return currentChannelAttachLead + selectionID + "). The file is attached to this chat. This is not a send. The step is complete. No further tool or confirmation step exists. Do not say the file was only prepared or is pending."
+}
+
+// CurrentChannelAttachCommitted reports that text is CurrentChannelAttachResult
+// for the selection id it names. A rejection or an unknown marker wins, so a
+// failure that quotes the commit sentence stays uncertain.
+func CurrentChannelAttachCommitted(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || strings.Contains(text, "[system rejected]") || strings.Contains(text, "[system unknown]") {
+		return false
+	}
+	rest, ok := strings.CutPrefix(text, currentChannelAttachLead)
+	if !ok {
+		return false
+	}
+	selection, _, ok := strings.Cut(rest, "). ")
+	if !ok || strings.ContainsAny(selection, "\r\n") {
+		return false
+	}
+	return text == CurrentChannelAttachResult(selection)
+}
+
+// currentChannelSendFileKnown reports that every send_file result in entries
+// is the current-channel commit. The committed-batch classifier passes this
+// batch only, so an older send on the conversation is not in entries. A
+// missing result is invisible. One result in this batch that is not the
+// commit keeps the batch uncertain: the desktop IM sender, a rejection, and
+// an empty result are still external sends.
+func currentChannelSendFileKnown(entries []ConversationEntry) bool {
+	rows := sendFileCheckpointResults(entries)
+	if len(rows) == 0 {
+		return false
+	}
+	for _, row := range rows {
+		if !row.known {
+			return false
+		}
+	}
+	return true
+}
+
+// currentChannelAttachAdvanced reports that this checkpoint placed a new
+// current-channel commit on the active branch. Only rows added by this save
+// have to be that commit. A send_file already stored when the latch was
+// taken belongs to an earlier call, including a desktop IM sender
+// confirmation that is still on the branch. Tool-call ids pair first; a row
+// with no id pairs by text. A non-commit that this save dropped is still an
+// external send and blocks retirement. A new row that is not the commit
+// blocks too.
+func currentChannelAttachAdvanced(previous, current []ConversationEntry) bool {
+	prev := sendFileCheckpointResults(previous)
+	cur := sendFileCheckpointResults(current)
+	pairedPrev, pairedCur := pairMailboxMutationResults(prev, cur)
+	for i := range prev {
+		if pairedPrev[i] || prev[i].known {
+			continue
+		}
+		return false
+	}
+	sawNew := false
+	for i := range cur {
+		if pairedCur[i] {
+			continue
+		}
+		if !cur[i].known {
+			return false
+		}
+		sawNew = true
+	}
+	return sawNew
+}
+
+func sendFileCheckpointResults(entries []ConversationEntry) []mailboxMutationResult {
+	out := make([]mailboxMutationResult, 0)
+	for _, entry := range entries {
+		if !strings.EqualFold(strings.TrimSpace(entry.Role), "tool") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(entry.ToolName), "send_file") {
+			continue
+		}
+		text := conversationContentText(entry.Content)
+		out = append(out, mailboxMutationResult{
+			id:      strings.TrimSpace(entry.ToolCallID),
+			content: text,
+			known:   CurrentChannelAttachCommitted(text),
+		})
+	}
+	return out
 }
 
 func recoveryModeForSideEffect(sideEffect string) string {

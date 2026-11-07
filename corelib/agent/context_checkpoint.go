@@ -214,8 +214,11 @@ func CheckpointConversation(conversation []interface{}, opts ContextCheckpointOp
 			if input := droppedMessagesForSummary(dropped); input != "" {
 				summary := opts.Summarize(input)
 				if summaryAccepted(summary) {
-					if parsed, ok := ParseHandoffMemo(summary); ok && parsed.Usable() {
-						handoffMemo = parsed
+					// Same fill as the other writers. Assigning the parsed
+					// summary directly dropped a measurement that lived only
+					// in the covered span and skipped the field caps.
+					if merged, fromLLM := MemoForCoveredSpan(tail, dropped, summary, true); fromLLM {
+						handoffMemo = merged
 						handoffFromLLM = true
 					}
 				}
@@ -416,6 +419,13 @@ func planHandoffCheckpoint(tail []interface{}, groups []EntryGroup, inlineOK []b
 		if checkpointContainsOpaqueContent(msgs) {
 			continue
 		}
+		// Keeping the newest covered group inline is a context courtesy, not a
+		// right to resurface covered material. A tool result inside the group
+		// carries the body this checkpoint exists to get out of the prompt, so
+		// such a group stays covered (same rule as coverLeadingOrphanTools).
+		if checkpointGroupHasToolBody(msgs) {
+			continue
+		}
 		if i < len(inlineOK) && !inlineOK[i] {
 			continue
 		}
@@ -428,6 +438,19 @@ func planHandoffCheckpoint(tail []interface{}, groups []EntryGroup, inlineOK []b
 		memo, _ = MemoForCoveredSpan(tail, dropped, "", false)
 	}
 	return
+}
+
+// checkpointGroupHasToolBody reports whether any message in the group is a
+// tool response with a non-empty body. Such groups cannot ride the keep-one
+// fallback: their content is exactly what the covered span must not return.
+func checkpointGroupHasToolBody(msgs []interface{}) bool {
+	for _, msg := range msgs {
+		role, content := ExtractRoleContent(msg)
+		if role == "tool" && strings.TrimSpace(content) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func collectCheckpointDropped(tail []interface{}, groups []EntryGroup, drop []bool) []interface{} {

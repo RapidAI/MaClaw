@@ -6858,6 +6858,72 @@ func TestCommittedMailboxSideEffectFollowsPairedResult(t *testing.T) {
 	}
 }
 
+func currentChannelAttachSentence(selection string) string {
+	return CurrentChannelAttachResult(selection)
+}
+
+func TestCommittedCurrentChannelSendFileIsNotAnExternalSend(t *testing.T) {
+	attached := []ConversationEntry{{Role: "tool", ToolName: "send_file", Content: currentChannelAttachSentence("selection:chat")}}
+	missing := []ConversationEntry(nil)
+	rejected := []ConversationEntry{{Role: "tool", ToolName: "send_file", Content: "[system rejected] " + currentChannelAttachSentence("selection:chat")}}
+	imSender := []ConversationEntry{{Role: "tool", ToolName: "send_file", Content: "Delivered the bound document through the desktop IM sender (delivery record selection:im). The file is also attached to this reply. This result is the delivery confirmation. Do not generate another document."}}
+	calls := []llm.ToolCall{{Function: llm.ToolCallFunction{Name: "send_file"}}}
+
+	if got := preToolSideEffectState(calls); got != "external_uncertain" {
+		t.Fatalf("pre-tool send_file = %q, want external_uncertain", got)
+	}
+	if got := sideEffectStateForToolBatch(calls); got != "external_uncertain" {
+		t.Fatalf("name-only send_file = %q, want external_uncertain", got)
+	}
+	if got := sideEffectStateForCommittedBatch(calls, attached); got != "none" {
+		t.Fatalf("current-channel attach = %q, want none", got)
+	}
+	if got := sideEffectStateForCommittedBatch(calls, missing); got != "external_uncertain" {
+		t.Fatalf("missing send_file result = %q", got)
+	}
+	if got := sideEffectStateForCommittedBatch(calls, rejected); got != "external_uncertain" {
+		t.Fatalf("rejected send_file = %q", got)
+	}
+	if got := sideEffectStateForCommittedBatch(calls, imSender); got != "external_uncertain" {
+		t.Fatalf("desktop IM sender = %q, want external_uncertain", got)
+	}
+
+	withBash := []llm.ToolCall{
+		{Function: llm.ToolCallFunction{Name: "send_file"}},
+		{Function: llm.ToolCallFunction{Name: "bash"}},
+	}
+	if got := sideEffectStateForCommittedBatch(withBash, attached); got != "local_committed" {
+		t.Fatalf("known send_file + bash = %q, want local_committed", got)
+	}
+	if got := committedCheckpointToolName(withBash, attached, "bash"); got != "bash" {
+		t.Fatalf("known send_file hid the local edit: %q", got)
+	}
+	withIM := []llm.ToolCall{
+		{Function: llm.ToolCallFunction{Name: "send_file"}},
+		{Function: llm.ToolCallFunction{Name: "im_message"}},
+	}
+	if got := sideEffectStateForCommittedBatch(withIM, attached); got != "external_uncertain" {
+		t.Fatalf("known send_file + im_message = %q", got)
+	}
+	if got := committedCheckpointToolName(withIM, attached, "send_file"); got != "im_message" {
+		t.Fatalf("known send_file hid im_message: %q", got)
+	}
+	if got := committedCheckpointToolName(withIM, imSender, "im_message"); got != "send_file" {
+		t.Fatalf("unresolved send_file hidden by im_message: %q", got)
+	}
+	mixed := append(append([]ConversationEntry{}, imSender...), attached...)
+	if got := sideEffectStateForCommittedBatch(calls, mixed); got != "external_uncertain" {
+		t.Fatalf("one batch that both attaches and sends = %q", got)
+	}
+	quoted := currentChannelAttachSentence("selection:chat") + " Tell the user it was sent."
+	if CurrentChannelAttachCommitted(quoted) {
+		t.Fatal("a sentence after the commit was accepted")
+	}
+	if !CurrentChannelAttachCommitted(currentChannelAttachSentence("selection:chat")) {
+		t.Fatal("the host sentence was not the commit")
+	}
+}
+
 func TestRunLoop_StripsRolePrefixFromFinalTextAndReasoning(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{

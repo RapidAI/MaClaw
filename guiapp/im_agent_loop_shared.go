@@ -842,8 +842,12 @@ func (h *IMMessageHandler) executeSharedTurn(
 	// left an uncertain server mutation. required_effect_unsettled still means
 	// the planned send did not complete, but the pre-tool marker would
 	// otherwise refuse the next message. Earlier turns' mailbox results do
-	// not settle this turn. im_message, send_file, and send_to_im stay on the
-	// review path.
+	// not settle this turn. im_message, send_to_im, and a send_file that did
+	// not attach to this chat stay on the review path.
+	// A model-stream failure the host already cleared, because this reply
+	// carries the file, is that same settlement. The marker is crash recovery
+	// for work that did not finish. It does not outlive a turn the host has
+	// already shown as delivered, and the trajectory keeps the stream error.
 	turnDelta := []agent.ConversationEntry(nil)
 	if len(outHistory) > len(history) {
 		turnDelta = outHistory[len(history):]
@@ -8063,7 +8067,7 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticAdapterCanonical(selectio
 		if desktopForward {
 			return "Delivered the bound document through the desktop IM sender (delivery record " + record.SelectionID + "). The file is also attached to this reply. This result is the delivery confirmation. Do not generate another document."
 		}
-		return "Delivery committed to the current channel (delivery record " + record.SelectionID + "). The file is attached to this chat. This is not a send. The step is complete. No further tool or confirmation step exists. Do not say the file was only prepared or is pending."
+		return agent.CurrentChannelAttachResult(record.SelectionID)
 	}
 	// Apply the Hub network gate to the trusted host adapters that perform
 	// silent network egress into the model context. The legacy tool path gates
@@ -9948,7 +9952,7 @@ func completeSharedInFlightIfSettled(h *IMMessageHandler, cb *sharedAgentLoopCal
 	if h == nil || h.memory == nil || cb == nil || !cb.checkpointCommitted {
 		return
 	}
-	if !(sharedLoopTurnSettled(loopResult, resp, cb) || sharedLoopMayCompleteMailboxMarker(loopResult, turnDelta, history)) {
+	if !(sharedLoopTurnSettled(loopResult, resp, cb) || sharedLoopMayCompleteMailboxMarker(loopResult, turnDelta, history) || sharedLoopHostSettledStaleModelError(loopResult, resp, cb, turnDelta)) {
 		return
 	}
 	if err := h.memory.CompleteInFlightCheckpointForRun(userID, runID); err != nil {
@@ -9966,6 +9970,9 @@ func completeSharedInFlightIfSettled(h *IMMessageHandler, cb *sharedAgentLoopCal
 // policy) and the plan no longer holds required work the turn never dispatched.
 // The marker must follow that same outcome; otherwise the settled turn is
 // recovered on the next message as an interrupted external send and refused.
+// A cleared model-stream failure is not this function. It needs this turn's
+// tool delta, and sharedLoopHostSettledStaleModelError decides it. The
+// trajectory is not rewritten to success.
 func sharedLoopTurnSettled(result agent.LoopResult, resp *IMAgentResponse, cb *sharedAgentLoopCallbacks) bool {
 	if sharedLoopCheckpointIsFinishedWork(result) {
 		return true
@@ -9974,6 +9981,62 @@ func sharedLoopTurnSettled(result agent.LoopResult, resp *IMAgentResponse, cb *s
 		result.Error == "required_effect_unsettled" &&
 		resp != nil && strings.TrimSpace(resp.Error) == "" &&
 		!cb.RequiredEffectUnsettled()
+}
+
+// sharedLoopHostSettledStaleModelError reports a turn the host has already
+// settled in the reply the user sees. The loop stopped on a model error, the
+// artifact-attach policy cleared that error because the file is on the
+// response, and the plan has no required effect left. Crash recovery must
+// match that settled turn. The marker stays when the response still shows
+// the error, when nothing was attached, when required work is open, or when
+// this turn's own tool delta still has an external send whose result is not
+// known. The trajectory keeps the model error.
+func sharedLoopHostSettledStaleModelError(result agent.LoopResult, resp *IMAgentResponse, cb *sharedAgentLoopCallbacks, turnDelta []agent.ConversationEntry) bool {
+	if result.AskUser != nil || result.RecordAudio != nil || resp == nil || cb == nil {
+		return false
+	}
+	// A pending batch has an assistant tool call without its result. Artifact
+	// projection refuses that state, so the host has not settled the reply.
+	// Completing the marker here would drop a send that has not reported.
+	if cb.hasPendingToolBatch || cb.semanticDurabilityBlocked {
+		return false
+	}
+	if strings.TrimSpace(resp.Error) != "" || cb.RequiredEffectUnsettled() {
+		return false
+	}
+	if !agentruntime.ShouldClearStaleErrorAfterArtifactAttach(result.Error) {
+		return false
+	}
+	if !hostResponseCarriesProjectedArtifact(resp) {
+		return false
+	}
+	return !turnLeavesExternalSendUnreviewed(turnDelta)
+}
+
+// turnLeavesExternalSendUnreviewed reports an external send in this turn's
+// delta whose result is still unknown. A current-channel send_file commit is
+// the file on this chat, so it does not keep the marker. An older turn's
+// tools are not in this delta and do not settle or block this decision.
+func turnLeavesExternalSendUnreviewed(entries []agent.ConversationEntry) bool {
+	for _, entry := range entries {
+		if !strings.EqualFold(strings.TrimSpace(entry.Role), "tool") {
+			continue
+		}
+		text := contentString(entry.Content)
+		switch strings.ToLower(strings.TrimSpace(entry.ToolName)) {
+		case "im_message", "send_to_im":
+			return true
+		case "send_file":
+			if !agent.CurrentChannelAttachCommitted(text) {
+				return true
+			}
+		case "mailbox_send", "mailbox_delete":
+			if !mailbox.ExternalMutationKnown(text) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // sharedLoopMayCompleteMailboxMarker is the mailbox half of turn-end cleanup.

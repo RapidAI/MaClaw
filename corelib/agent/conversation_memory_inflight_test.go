@@ -496,6 +496,171 @@ func TestResolvedMailboxLatchKeepsTheRemainingEffect(t *testing.T) {
 	}
 }
 
+func TestCurrentChannelAttachRetiresProvisionalSendFileLatch(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	attached := currentChannelAttachSentence("selection:chat")
+	imSender := "Delivered the bound document through the desktop IM sender (delivery record selection:im). The file is also attached to this reply. This result is the delivery confirmation. Do not generate another document."
+
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{{Role: "user", Content: "写推荐信"}}, "分析", "/project", "run-chat", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "写推荐信"},
+		{Role: "tool", Content: attached, ToolName: "send_file", ToolCallID: "call-attach"},
+	}, "分析", "/project", "run-chat", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered := cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "send_file" || recovered.SideEffectState != "none" || recovered.RecoveryMode != "resume_context" {
+		t.Fatalf("current-channel attach stayed an external send: %#v", recovered)
+	}
+
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "写推荐信"},
+		{Role: "tool", Content: attached, ToolName: "send_file", ToolCallID: "call-attach"},
+	}, "分析", "/project", "run-bash", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "none",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "写推荐信"},
+		{Role: "tool", Content: attached, ToolName: "send_file", ToolCallID: "call-attach"},
+		{Role: "tool", Content: "ok", ToolName: "bash"},
+	}, "分析", "/project", "run-bash", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "bash", SideEffectState: "local_committed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "bash" || recovered.SideEffectState != "local_committed" {
+		t.Fatalf("settled attach stuck the next local edit: %#v", recovered)
+	}
+
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{{Role: "user", Content: "发到微信"}}, "发到微信", "/project", "run-im", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发到微信"},
+		{Role: "tool", Content: imSender, ToolName: "send_file", ToolCallID: "call-im"},
+	}, "发到微信", "/project", "run-im", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "send_file", SideEffectState: "none",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "send_file" || recovered.SideEffectState != "external_uncertain" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("desktop IM sender was treated as a chat attach: %#v", recovered)
+	}
+
+	known := []ConversationEntry{
+		{Role: "user", Content: "写推荐信"},
+		{Role: "tool", Content: attached, ToolName: "send_file", ToolCallID: "call-old"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, known, "分析", "/project", "run-old", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.CompleteInFlightCheckpointForRun(userID, "run-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, known, "分析", "/project", "run-next", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	held := cm.ConsumeInFlightRecovery(userID)
+	if held.LastToolName != "send_file" || held.SideEffectState != "external_uncertain" || held.RecoveryMode != "requires_review" {
+		t.Fatalf("an older chat attach retired the next unreported send_file: %#v", held)
+	}
+}
+
+func TestOlderExternalSendFileDoesNotBlockCurrentChannelAttach(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	attached := currentChannelAttachSentence("selection:chat")
+	imSender := "Delivered the bound document through the desktop IM sender (delivery record selection:im). The file is also attached to this reply. This result is the delivery confirmation. Do not generate another document."
+	older := []ConversationEntry{
+		{Role: "user", Content: "发到微信"},
+		{Role: "tool", Content: imSender, ToolName: "send_file", ToolCallID: "call-im"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, older, "发到微信", "/project", "run-im", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.CompleteInFlightCheckpointForRun(userID, "run-im"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cm.PersistInFlightCheckpoint(userID, older, "分析", "/project", "run-next", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	withAttach := append(append([]ConversationEntry{}, older...), ConversationEntry{
+		Role: "tool", Content: attached, ToolName: "send_file", ToolCallID: "call-attach",
+	})
+	if err := cm.PersistInFlightCheckpoint(userID, withAttach, "分析", "/project", "run-next", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered := cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "send_file" || recovered.SideEffectState != "none" || recovered.RecoveryMode != "resume_context" {
+		t.Fatalf("older IM sender kept the new chat attach uncertain: %#v", recovered)
+	}
+
+	bothNew := []ConversationEntry{
+		{Role: "user", Content: "同时投递"},
+		{Role: "tool", Content: imSender, ToolName: "send_file", ToolCallID: "call-im-new"},
+		{Role: "tool", Content: attached, ToolName: "send_file", ToolCallID: "call-attach-new"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{{Role: "user", Content: "同时投递"}}, "同时投递", "/project", "run-both", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, bothNew, "同时投递", "/project", "run-both", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "send_file", SideEffectState: "none",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "send_file" || recovered.SideEffectState != "external_uncertain" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("a new IM sender was retired by a chat attach in the same save: %#v", recovered)
+	}
+
+	if err := cm.PersistInFlightCheckpoint(userID, older, "发到微信", "/project", "run-drop", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dropped := []ConversationEntry{
+		{Role: "user", Content: "分析"},
+		{Role: "tool", Content: attached, ToolName: "send_file", ToolCallID: "call-attach-only"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, dropped, "分析", "/project", "run-drop", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "send_file", SideEffectState: "none",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "send_file" || recovered.SideEffectState != "external_uncertain" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("dropping the IM sender retired the latch: %#v", recovered)
+	}
+}
+
 func TestHistorySaveRestoresOlderMailboxRowsWithoutSettlingTheLatch(t *testing.T) {
 	cm := NewConversationMemory()
 	defer cm.Stop()

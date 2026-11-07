@@ -2340,7 +2340,7 @@ func TestDiscoveryProducerWriteReleasesSendFile(t *testing.T) {
 				attachSharedLoopArtifacts(resp, cb)
 			} else {
 				delivered := cb.ExecuteToolCall("send_file", `{}`, "call-send-"+producer.name).Result
-				if !strings.Contains(delivered, "Delivery committed to the current channel") {
+				if !agent.CurrentChannelAttachCommitted(delivered) {
 					t.Fatalf("%s deliver=%q", producer.name, delivered)
 				}
 				if cb.semanticDeliveryFileData == "" || cb.semanticDeliveryFileMIME != producer.mime {

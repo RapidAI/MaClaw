@@ -689,7 +689,11 @@ func (m *HandoffMemo) capFieldsToSchema() {
 
 func (m *HandoffMemo) shrinkToRenderCap() {
 	measurement := progressMeasurement(m.Progress)
-	for runeLen(m.Render()) > handoffRenderRunes {
+	for {
+		over := runeLen(m.Render()) - handoffRenderRunes
+		if over <= 0 {
+			return
+		}
 		switch {
 		case len(m.ShelfHandles) > 0:
 			m.ShelfHandles = m.ShelfHandles[1:]
@@ -701,18 +705,32 @@ func (m *HandoffMemo) shrinkToRenderCap() {
 			m.FilesModified = m.FilesModified[1:]
 		case len(m.FilesCreated) > 0:
 			m.FilesCreated = m.FilesCreated[1:]
-		case runeLen(m.Next) > 1:
-			m.Next = headCut(m.Next, runeLen(m.Next)/2)
-		case runeLen(m.Task) > 1:
-			m.Task = tailCut(m.Task, runeLen(m.Task)/2)
-		case measurement != "" && strings.TrimSpace(m.Progress) != measurement:
-			m.Progress = measurement
-			if runeLen(m.Progress) > handoffProgressRunes {
-				m.Progress = capProgressKeepingMeasurement(m.Progress)
-			}
-		case measurement == "" && runeLen(m.Progress) > 1:
-			m.Progress = tailCut(m.Progress, runeLen(m.Progress)/2)
 		default:
+			if next, ok := trimHeadBytes(m.Progress, measurement, over); ok {
+				m.Progress = next
+				continue
+			}
+			if next, ok := trimHeadBytes(m.Task, "", over); ok {
+				m.Task = next
+				continue
+			}
+			if n := runeLen(m.Next); n > 1 {
+				keep := n - over
+				if keep < 1 {
+					keep = 1
+				}
+				if keep >= n {
+					keep = n - 1
+				}
+				m.Next = headCut(m.Next, keep)
+				continue
+			}
+			if measurement == "" {
+				if next, ok := trimHeadBytes(m.Progress, "", over); ok {
+					m.Progress = next
+					continue
+				}
+			}
 			return
 		}
 	}
@@ -1144,10 +1162,66 @@ func tailCut(s string, n int) string {
 	return string(runes[len(runes)-n:])
 }
 
+// trimHeadBytes drops at least overBytes from the head of s. A protected
+// suffix, including one leading newline, stays. ok is false when the
+// cuttable head is empty, so the caller can shrink another field.
+func trimHeadBytes(s, protectSuffix string, overBytes int) (string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" || overBytes <= 0 {
+		return s, false
+	}
+	runes := []rune(s)
+	protect := 0
+	if protectSuffix != "" && strings.HasSuffix(s, protectSuffix) {
+		protect = utf8.RuneCountInString(protectSuffix)
+		if protect < len(runes) && strings.HasSuffix(s, "\n"+protectSuffix) {
+			protect++
+		}
+	}
+	if protect > len(runes) {
+		protect = len(runes)
+	}
+	limit := len(runes) - protect
+	if limit <= 0 {
+		return s, false
+	}
+	saved := 0
+	drop := 0
+	for drop < limit && saved < overBytes {
+		saved += utf8.RuneLen(runes[drop])
+		drop++
+	}
+	if drop == 0 {
+		return s, false
+	}
+	return strings.TrimSpace(string(runes[drop:])), true
+}
+
+// trimTailBytes drops at least overBytes from the tail of s. Next keeps its
+// head, so a byte overflow must not be subtracted from the rune count: one
+// CJK rune is three bytes, and that mix used to clear the field.
+func trimTailBytes(s string, overBytes int) (string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" || overBytes <= 0 {
+		return s, false
+	}
+	runes := []rune(s)
+	saved := 0
+	end := len(runes)
+	for end > 0 && saved < overBytes {
+		end--
+		saved += utf8.RuneLen(runes[end])
+	}
+	if end == len(runes) {
+		return s, false
+	}
+	return strings.TrimSpace(string(runes[:end])), true
+}
+
 // progressMeasurement is the digit line a tail cut must keep. A numbered
 // section heading is not a measurement: the line still has to contain a
 // digit after that heading. The first such line is the one a tail cut
-// drops. A long line contributes the window around its last number.
+// drops. A long line contributes the window around its first number.
 func progressMeasurement(progress string) string {
 	line := firstSubstantiveDigitLine(progress)
 	if line == "" {
@@ -1206,26 +1280,32 @@ func stripLeadingEnumerator(line string) string {
 	return string(runes[j:])
 }
 
+// digitWindow keeps the first number on a long line, after a leading list
+// marker. A later incidental digit must not replace the head measurement
+// that a tail cut would drop. The window includes a little context before
+// the number so a label such as "median" stays attached.
 func digitWindow(line string) string {
-	runes := []rune(line)
-	last := -1
-	for i, r := range runes {
+	body := stripLeadingEnumerator(strings.TrimSpace(line))
+	rel := []rune(body)
+	first := -1
+	for i, r := range rel {
 		if r >= '0' && r <= '9' {
-			last = i
+			first = i
+			break
 		}
 	}
-	if last < 0 {
+	if first < 0 {
 		return ""
 	}
-	end := last + 1
-	for end < len(runes) && (runes[end] == '.' || (runes[end] >= '0' && runes[end] <= '9')) {
+	end := first + 1
+	for end < len(rel) && (rel[end] == '.' || (rel[end] >= '0' && rel[end] <= '9')) {
 		end++
 	}
-	start := last
+	start := first
 	for start > 0 && end-start < 80 {
 		start--
 	}
-	return strings.TrimSpace(string(runes[start:end]))
+	return strings.TrimSpace(string(rel[start:end]))
 }
 
 // capProgressKeepingMeasurement tail-cuts progress to the field cap after
@@ -1236,6 +1316,9 @@ func capProgressKeepingMeasurement(progress string) string {
 		return ""
 	}
 	measurement := progressMeasurement(progress)
+	if measurement != "" && runeLen(progress) <= handoffProgressRunes && strings.HasSuffix(progress, measurement) {
+		return progress
+	}
 	if measurement != "" {
 		var kept []string
 		for _, line := range strings.Split(progress, "\n") {
@@ -1247,7 +1330,9 @@ func capProgressKeepingMeasurement(progress string) string {
 		progress = strings.TrimSpace(strings.Join(kept, "\n"))
 		if progress == "" {
 			progress = measurement
-		} else {
+		} else if !strings.HasSuffix(progress, measurement) {
+			// The window is already the suffix of a long line. Appending
+			// it again leaves two copies after the tail cut.
 			progress += "\n" + measurement
 		}
 	}
@@ -1309,15 +1394,25 @@ func MemoFromDroppedProjects(msgs []interface{}, prior HandoffMemo, strip bool) 
 			}
 		}
 		if role == "tool" && content != "" {
-			name := ""
+			name, outcome := "", ""
 			if typed, ok := msg.(map[string]interface{}); ok {
 				name, _ = typed["name"].(string)
+				if strings.TrimSpace(name) == "" {
+					name, _ = typed["tool_name"].(string)
+				}
+				outcome, _ = typed["tool_outcome"].(string)
 			}
-			failed := strings.Contains(strings.ToLower(content), "error") || strings.Contains(content, "FAIL") || strings.HasPrefix(content, "exit status")
+			// Success and failure are the stored execution outcome. A body
+			// that says "error" or "exit status" is not that outcome, and a
+			// body with no outcome is neither a dead end nor "exit 0".
+			succeeded, known := structuredToolSucceeded(outcome)
+			if !known {
+				continue
+			}
 			commands = append(commands, HandoffCommand{
 				Tool:      name,
 				Command:   name,
-				Succeeded: !failed,
+				Succeeded: succeeded,
 				Outcome:   firstLine(content),
 			})
 		}
@@ -1330,6 +1425,19 @@ func MemoFromDroppedProjects(msgs []interface{}, prior HandoffMemo, strip bool) 
 		Prior:     prior,
 		Strip:     strip,
 	})
+}
+
+// structuredToolSucceeded reports the host execution outcome. Unknown values,
+// including an empty one, are not a success and not a failure.
+func structuredToolSucceeded(outcome string) (succeeded bool, known bool) {
+	switch ToolExecutionOutcome(strings.TrimSpace(outcome)) {
+	case ToolExecutionOutcomeOK:
+		return true, true
+	case ToolExecutionOutcomeError, ToolExecutionOutcomeTimeout:
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 var (

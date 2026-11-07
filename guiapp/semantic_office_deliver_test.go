@@ -115,7 +115,7 @@ func TestIMSemanticOfficeWritePublishesArtifactAndDeliverConsumes(t *testing.T) 
 		t.Fatalf("send_file grant missing after office write: grants=%v result=%q", grants, got)
 	}
 	delivered := cb.ExecuteToolCall(deliveryName, `{}`, "call-deliver").Result
-	if !strings.Contains(delivered, "Delivery committed to the current channel") {
+	if !agent.CurrentChannelAttachCommitted(delivered) {
 		t.Fatalf("deliver result=%q", delivered)
 	}
 	if cb.semanticDeliveryFileData == "" || cb.semanticDeliveryFileMIME != "application/vnd.openxmlformats-officedocument.presentationml.presentation" {
