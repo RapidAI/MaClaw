@@ -51,8 +51,8 @@ const papers = [
     { id: "local:b", name: "beta.md", path: "C:/notes/beta.md", source: "local", openedAt: "2026-10-25T00:00:00Z", size: 8 },
 ];
 
-function renderLibrary() {
-    listLibrary.mockResolvedValue({ items: papers, notice: "" });
+function renderLibrary(items: ReadonlyArray<Record<string, unknown>> = papers) {
+    listLibrary.mockResolvedValue({ items, notice: "" });
     return render(
         <DialogProvider>
             <CompanionLibraryView
@@ -93,6 +93,53 @@ describe("companion library folders and file-name filter", () => {
         expect(screen.getByTestId("file-companion-library-filter-count").textContent).toContain("1");
         fireEvent.click(screen.getByTestId("file-companion-library-filter-clear"));
         expect(screen.getByTestId("file-companion-library-card-local:b")).toBeTruthy();
+    });
+
+    it("filters the filename list to local or cloud projects", async () => {
+        listCatalog.mockResolvedValue({ rev: 1, folders: [], placements: {} });
+        renderLibrary([
+            ...papers,
+            { id: "cloud:c", name: "cloud.pdf", path: "C:/notes/cloud.pdf", source: "cloud", openedAt: "2026-10-25T00:00:00Z", size: 20 },
+        ]);
+        await screen.findByTestId("file-companion-library-card-local:a");
+        expect(screen.getByTestId("file-companion-library-card-cloud:c")).toBeTruthy();
+        expect(screen.getByTestId("file-companion-library-source-all").getAttribute("aria-pressed")).toBe("true");
+        expect(screen.getByTestId("file-companion-library-source-local").textContent).toBe("本地");
+        expect(screen.getByTestId("file-companion-library-source-cloud").textContent).toBe("云端");
+
+        fireEvent.click(screen.getByTestId("file-companion-library-source-local"));
+        expect(screen.getByTestId("file-companion-library-card-local:a")).toBeTruthy();
+        expect(screen.queryByTestId("file-companion-library-cloud")).toBeNull();
+        expect(screen.queryByTestId("file-companion-library-card-cloud:c")).toBeNull();
+
+        fireEvent.click(screen.getByTestId("file-companion-library-source-cloud"));
+        expect(screen.queryByTestId("file-companion-library-local")).toBeNull();
+        expect(screen.getByTestId("file-companion-library-card-cloud:c")).toBeTruthy();
+
+        fireEvent.change(screen.getByTestId("file-companion-library-filter"), { target: { value: "alpha" } });
+        expect(screen.getByTestId("file-companion-library-filter-empty").textContent).toContain("没有匹配的文件");
+
+        fireEvent.click(screen.getByTestId("file-companion-library-source-all"));
+        expect(screen.getByTestId("file-companion-library-card-local:a")).toBeTruthy();
+        expect(screen.queryByTestId("file-companion-library-card-cloud:c")).toBeNull();
+    });
+
+    it("does not call a folder empty when it only holds the other source", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 2,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: { "item:cloud:c": "fld_paper" },
+        });
+        renderLibrary([
+            ...papers,
+            { id: "cloud:c", name: "cloud.pdf", path: "C:/notes/cloud.pdf", source: "cloud", openedAt: "2026-10-25T00:00:00Z", size: 20 },
+        ]);
+        await screen.findByTestId("file-companion-folder-fld_paper");
+        fireEvent.click(screen.getByTestId("file-companion-folder-fld_paper"));
+        expect(screen.getByTestId("file-companion-library-card-cloud:c")).toBeTruthy();
+        fireEvent.click(screen.getByTestId("file-companion-library-source-local"));
+        expect(screen.getByTestId("file-companion-library-filter-empty").textContent).toContain("没有匹配的文件");
+        expect(screen.queryByText("这个文件夹里还没有文档")).toBeNull();
     });
 
     it("shows one folder level and the documents placed in it", async () => {
@@ -482,6 +529,22 @@ describe("companion library folders and file-name filter", () => {
         expect(card.style.contentVisibility).toBe("");
         fireEvent.drop(folderRow("file-companion-folder-fld_paper"), { dataTransfer: data });
         await waitFor(() => expect(moveItem).toHaveBeenCalledWith("local:b", "C:/notes/beta.md", "fld_paper"));
+    });
+
+    it("clears a library drag when dragend reaches the window", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 2,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: {},
+        });
+        renderLibrary();
+        const handle = await screen.findByTestId("file-companion-library-drag-local:b");
+        const card = screen.getByTestId("file-companion-library-card-local:b");
+        fireEvent.dragStart(handle, { dataTransfer: libraryDragTransfer() });
+        expect(card.style.contentVisibility).toBe("visible");
+        window.dispatchEvent(new Event("dragend"));
+        expect(card.style.contentVisibility).toBe("");
+        expect(document.querySelector(".file-companion-library-dialog")?.hasAttribute("data-library-drag")).toBe(false);
     });
 
     it("marks a folder as the default category", async () => {

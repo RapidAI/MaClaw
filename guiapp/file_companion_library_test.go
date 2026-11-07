@@ -382,6 +382,76 @@ func TestFileCompanionLibraryMarksExpiredShares(t *testing.T) {
 	}
 }
 
+func TestStampFileCompanionLibraryListDropsDeletedRowsAndKeepsExpiry(t *testing.T) {
+	home := t.TempDir()
+	app := &App{testHomeDir: home}
+	local := filepath.Join(home, "a.md")
+	if err := os.WriteFile(local, []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	const past = "cd_0123456789abcdef0123456789abcdef"
+	const gone = "cd_abcdef0123456789abcdef0123456789"
+	fileCompanionLibraryMu.Lock()
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{
+		{ID: past, Token: past, Name: "past.pdf", Source: "cloud", ExpiresAt: now.Add(-time.Hour).Format(time.RFC3339), OpenedAt: "2026-10-25T00:00:00Z"},
+		{ID: "local:a", Name: "a.md", Path: local, Source: "local", OpenedAt: "2026-10-25T00:00:00Z"},
+	})
+	if err == nil {
+		_, err = app.dismissFileCompanionShareReasonLocked(gone, true)
+	}
+	rev := fileCompanionLibraryRev.Load()
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := filepath.Join(home, "closed.pdf")
+	stamped := app.stampFileCompanionLibraryList(FileCompanionLibraryList{
+		Items: []FileCompanionLibraryItem{
+			{ID: past, Token: past, Name: "past.pdf", Source: "cloud", ExpiresAt: now.Add(-time.Hour).Format(time.RFC3339)},
+			{ID: "local:a", Name: "a.md", Path: local, Source: "local"},
+			{ID: "local:gone", Name: "gone.md", Path: filepath.Join(home, "gone.md"), Source: "local"},
+			{ID: gone, Token: gone, Name: "dismissed.pdf", Source: "cloud"},
+		},
+		Updates: []FileCompanionShareUpdate{
+			{Token: gone, Path: closed, Name: "dismissed.pdf"},
+			{Token: past, Path: local, Name: "past.pdf"},
+		},
+		Removed:      []string{local, closed},
+		RemovedHosts: map[string]string{local: "王老师", closed: "李老师"},
+		LibraryRev:   1,
+	})
+	if stamped.LibraryRev < rev {
+		t.Fatalf("stamped rev = %d, library rev = %d", stamped.LibraryRev, rev)
+	}
+	var sawPast, sawLocal bool
+	for _, item := range stamped.Items {
+		switch item.ID {
+		case past:
+			sawPast = true
+			if !item.Expired {
+				t.Fatal("expired share lost its flag when the event was stamped")
+			}
+		case "local:a":
+			sawLocal = true
+		default:
+			t.Fatalf("stamped list kept a deleted row: %+v", item)
+		}
+	}
+	if !sawPast || !sawLocal {
+		t.Fatalf("stamped rows = %+v", stamped.Items)
+	}
+	if len(stamped.Updates) != 1 || stamped.Updates[0].Token != past {
+		t.Fatalf("updates = %+v", stamped.Updates)
+	}
+	if len(stamped.Removed) != 1 || stamped.Removed[0] != closed {
+		t.Fatalf("removed = %+v", stamped.Removed)
+	}
+	if stamped.RemovedHosts[closed] != "李老师" || stamped.RemovedHosts[local] != "" {
+		t.Fatalf("removed hosts = %+v", stamped.RemovedHosts)
+	}
+}
+
 func TestFileCompanionDeleteShareCallsHubAndDropsCloudRow(t *testing.T) {
 	const token = "cd_0123456789abcdef0123456789abcdef"
 	var deleted bool
@@ -434,7 +504,7 @@ func TestFileCompanionDeleteShareCallsHubAndDropsCloudRow(t *testing.T) {
 		t.Fatalf("cloud row missing before delete: %#v", list.Items)
 	}
 
-	if err := app.DeleteFileCompanionShare(token); err != nil {
+	if _, err := app.DeleteFileCompanionShare(token); err != nil {
 		t.Fatal(err)
 	}
 	if !deleted {
@@ -449,7 +519,7 @@ func TestFileCompanionDeleteShareCallsHubAndDropsCloudRow(t *testing.T) {
 			t.Fatalf("cloud row survived delete: %#v", item)
 		}
 	}
-	if err := app.DeleteFileCompanionShare(token); err != nil {
+	if _, err := app.DeleteFileCompanionShare(token); err != nil {
 		t.Fatalf("missing link should be treated as deleted: %v", err)
 	}
 }
@@ -465,7 +535,7 @@ func TestFileCompanionDeleteShareReportsOldHub(t *testing.T) {
 			RemoteViewerToken: "viewer-token",
 		},
 	}
-	err := app.DeleteFileCompanionShare("cd_0123456789abcdef0123456789abcdef")
+	_, err := app.DeleteFileCompanionShare("cd_0123456789abcdef0123456789abcdef")
 	if err == nil || !strings.Contains(err.Error(), "云端还不支持删除分享，需要更新 Hub") {
 		t.Fatalf("old hub = %v", err)
 	}
@@ -3373,5 +3443,119 @@ func TestFetchFileCompanionShareMarksUsesTheOriginHub(t *testing.T) {
 	}
 	if got.Marks != marksBody || got.Revision != 6 {
 		t.Fatalf("marks = %q revision = %d", got.Marks, got.Revision)
+	}
+}
+
+func saveFileCompanionShareRefreshCheck(t *testing.T) {
+	t.Helper()
+	st := &fileCompanionShareRefreshCheck
+	st.mu.Lock()
+	saved := fileCompanionShareRefreshState{
+		hub:         st.hub,
+		seq:         st.seq,
+		remoteSeq:   st.remoteSeq,
+		lastFull:    st.lastFull,
+		fullDone:    st.fullDone,
+		unsupported: st.unsupported,
+		hadLogin:    st.hadLogin,
+	}
+	st.mu.Unlock()
+	t.Cleanup(func() {
+		st.mu.Lock()
+		st.hub = saved.hub
+		st.seq = saved.seq
+		st.remoteSeq = saved.remoteSeq
+		st.lastFull = saved.lastFull
+		st.fullDone = saved.fullDone
+		st.unsupported = saved.unsupported
+		st.hadLogin = saved.hadLogin
+		st.mu.Unlock()
+	})
+}
+
+func primeFileCompanionShareRefreshCheck(hub string, seq, remoteSeq uint64) {
+	st := &fileCompanionShareRefreshCheck
+	st.mu.Lock()
+	st.reset(hub)
+	st.fullDone = true
+	st.hadLogin = true
+	st.lastFull = time.Now()
+	st.seq = seq
+	st.remoteSeq = remoteSeq
+	st.mu.Unlock()
+}
+
+func TestFileCompanionShareRefreshQuietKeepsTheNotice(t *testing.T) {
+	saveFileCompanionShareRefreshCheck(t)
+	app := &App{}
+	const hub = "https://hub.example"
+	fileCompanionShareRefreshCheck.mu.Lock()
+	fileCompanionShareRefreshCheck.reset(hub)
+	fileCompanionShareRefreshCheck.mu.Unlock()
+	quiet, notice := app.fileCompanionShareRefreshQuiet(hub, "viewer", false)
+	if quiet || notice != "" {
+		t.Fatalf("first signed-out refresh quiet=%v notice=%q", quiet, notice)
+	}
+
+	primeFileCompanionShareRefreshCheck(hub, 0, 0)
+	quiet, notice = app.fileCompanionShareRefreshQuiet(hub, "viewer", false)
+	if !quiet || notice != fileCompanionLibraryLoginNotice {
+		t.Fatalf("signed-out quiet=%v notice=%q", quiet, notice)
+	}
+
+	changes := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/mobile/documents/shares/changes" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"seq":7,"remote_seq":3}`)
+	}))
+	defer changes.Close()
+	primeFileCompanionShareRefreshCheck(changes.URL, 7, 3)
+	quiet, notice = app.fileCompanionShareRefreshQuiet(changes.URL, "viewer", true)
+	if !quiet || notice != "" {
+		t.Fatalf("unchanged quiet=%v notice=%q", quiet, notice)
+	}
+	primeFileCompanionShareRefreshCheck(changes.URL, 6, 3)
+	quiet, notice = app.fileCompanionShareRefreshQuiet(changes.URL, "viewer", true)
+	if quiet || notice != "" {
+		t.Fatalf("changed sequence quiet=%v notice=%q", quiet, notice)
+	}
+
+	down := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	downURL := down.URL
+	down.Close()
+	primeFileCompanionShareRefreshCheck(downURL, 1, 0)
+	quiet, notice = app.fileCompanionShareRefreshQuiet(downURL, "viewer", true)
+	if !quiet || notice != fileCompanionLibraryOfflineNotice {
+		t.Fatalf("offline quiet=%v notice=%q", quiet, notice)
+	}
+
+	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"message":"请先登录 MaClaw Hub"}`)
+	}))
+	defer denied.Close()
+	primeFileCompanionShareRefreshCheck(denied.URL, 1, 0)
+	quiet, notice = app.fileCompanionShareRefreshQuiet(denied.URL, "viewer", true)
+	if !quiet || notice != "请先登录 MaClaw Hub" {
+		t.Fatalf("status quiet=%v notice=%q", quiet, notice)
+	}
+
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer old.Close()
+	primeFileCompanionShareRefreshCheck(old.URL, 1, 0)
+	quiet, notice = app.fileCompanionShareRefreshQuiet(old.URL, "viewer", true)
+	if quiet || notice != "" {
+		t.Fatalf("old hub quiet=%v notice=%q", quiet, notice)
+	}
+	fileCompanionShareRefreshCheck.mu.Lock()
+	unsupported := fileCompanionShareRefreshCheck.unsupported
+	fileCompanionShareRefreshCheck.mu.Unlock()
+	if !unsupported {
+		t.Fatal("old hub was not remembered")
 	}
 }

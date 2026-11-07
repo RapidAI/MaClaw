@@ -29,7 +29,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     FileCompanionExportProject: vi.fn(),
 }));
 
-import { companionFolderNameError, companionInstalledSharePath, companionLibraryFolderID, companionLibraryNameMatch, companionLibrarySync, companionShareDocumentCatchUp, companionShareMarksBehind, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionWithdrawnNotice } from "./FileCompanionLibrary";
+import { companionFolderNameError, companionInstalledSharePath, companionLibraryFolderID, companionLibraryHideRow, companionLibraryNameMatch, companionLibraryRowKey, companionLibrarySync, companionLibraryWithoutRemoved, companionShareDocumentCatchUp, companionShareMarksBehind, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionWithdrawnNotice, resetCompanionLibraryList, takeCompanionLibraryList } from "./FileCompanionLibrary";
 
 describe("companionInstalledSharePath", () => {
     it("recognizes a received copy by the share folder", () => {
@@ -173,5 +173,46 @@ describe("companion library folders", () => {
             { id: "local:a", path: "C:/notes/a.md" },
             { "item:local:a": "none", "path:c:\\notes\\a.md": "fld_path" },
         )).toBe("");
+    });
+});
+
+describe("takeCompanionLibraryList", () => {
+    const local = { id: "local:a", name: "a.pdf", source: "local" };
+    const cloud = { id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", source: "cloud", token: "cd_0123456789abcdef0123456789abcdef" };
+
+    it("paints a delete that shares the refresh generation", () => {
+        resetCompanionLibraryList();
+        expect(takeCompanionLibraryList({ items: [local, cloud], syncing: true, syncGen: 4, libraryRev: 2 })).toBe(true);
+        // The same generation is the disk read for this refresh. A second copy
+        // with nothing saved must not replace the one already on screen.
+        expect(takeCompanionLibraryList({ items: [local, cloud], syncing: true, syncGen: 4, libraryRev: 2 })).toBe(false);
+        // The reader confirmed 删除. The library revision moved; the card goes.
+        expect(takeCompanionLibraryList({ items: [cloud], syncing: true, syncGen: 4, libraryRev: 3 })).toBe(true);
+        // The hub index from before that delete has a newer sync generation and
+        // the old revision. It must not put the local project back.
+        expect(takeCompanionLibraryList({ items: [local, cloud], syncing: true, catalog: true, syncGen: 5, libraryRev: 2 })).toBe(false);
+        expect(takeCompanionLibraryList({ items: [cloud], syncing: false, syncGen: 6, libraryRev: 3 })).toBe(true);
+    });
+
+    it("a confirmed delete rejects the catalog that was already built", () => {
+        resetCompanionLibraryList();
+        expect(takeCompanionLibraryList({ items: [local, cloud], syncing: true, syncGen: 4, libraryRev: 2 })).toBe(true);
+        companionLibraryHideRow(local, 4, 2);
+        expect(takeCompanionLibraryList({ items: [local, cloud], syncing: true, catalog: true, syncGen: 5, libraryRev: 2 })).toBe(false);
+        expect(takeCompanionLibraryList({ items: [cloud], syncing: false, syncGen: 6, libraryRev: 4 })).toBe(true);
+    });
+});
+
+describe("companionLibraryWithoutRemoved", () => {
+    const local = { id: "local:a", source: "local", token: "" };
+    const cloud = { id: "cd_0123456789abcdef0123456789abcdef", source: "cloud", token: "cd_0123456789abcdef0123456789abcdef" };
+
+    it("hides a removed card until a later library save names it again", () => {
+        resetCompanionLibraryList();
+        companionLibraryHideRow(local, 4, 3);
+        expect(companionLibraryRowKey(local)).toBe("id:local:a");
+        expect(companionLibraryRowKey(cloud)).toBe(`cloud:${cloud.token}`);
+        expect(companionLibraryWithoutRemoved([local, cloud], 3).map((item) => item.id)).toEqual([cloud.id]);
+        expect(companionLibraryWithoutRemoved([local, cloud], 4).map((item) => item.id)).toEqual([local.id, cloud.id]);
     });
 });

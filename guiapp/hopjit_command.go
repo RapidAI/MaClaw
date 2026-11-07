@@ -326,18 +326,55 @@ func hopJITSnapshotResponse(snapshot hopjit.EngineSnapshot) *IMAgentResponse {
 		}
 	}
 	if snapshot.TerminalState == hopjit.TerminalCompleted {
-		outputs := map[string]any{}
-		for _, decl := range snapshot.Spec.Outputs {
-			if value, ok := snapshot.Variables[decl.Name]; ok && value.Assigned {
-				outputs[decl.Name] = value.Value
-			}
-		}
-		if len(outputs) > 0 {
-			encoded, _ := json.Marshal(outputs)
-			response.Text += "\n\n" + string(encoded)
+		if answer, ok := hopCompletedAnswer(snapshot); ok {
+			response.Text += "\n\n" + answer
+		} else if encoded, ok := hopCompletedOutputJSON(snapshot); ok {
+			response.Text += "\n\n" + encoded
 		}
 	}
 	return response
+}
+
+// hopCompletedAnswer is the user-facing text of a finished hop. A string
+// output is that answer. A bool or number stays in the JSON object.
+func hopCompletedAnswer(snapshot hopjit.EngineSnapshot) (string, bool) {
+	var texts []string
+	for _, decl := range snapshot.Spec.Outputs {
+		value, ok := snapshot.Variables[decl.Name]
+		if !ok || !value.Assigned || value.Value == nil {
+			continue
+		}
+		text, ok := value.Value.(string)
+		if !ok {
+			return "", false
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return "", false
+		}
+		texts = append(texts, text)
+	}
+	if len(texts) == 0 {
+		return "", false
+	}
+	return strings.Join(texts, "\n\n"), true
+}
+
+func hopCompletedOutputJSON(snapshot hopjit.EngineSnapshot) (string, bool) {
+	outputs := map[string]any{}
+	for _, decl := range snapshot.Spec.Outputs {
+		if value, ok := snapshot.Variables[decl.Name]; ok && value.Assigned {
+			outputs[decl.Name] = value.Value
+		}
+	}
+	if len(outputs) == 0 {
+		return "", false
+	}
+	encoded, err := json.Marshal(outputs)
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
 }
 
 func hopJITRunListResponse(snapshots []hopjit.EngineSnapshot, identity hopJITExecutionIdentity) *IMAgentResponse {

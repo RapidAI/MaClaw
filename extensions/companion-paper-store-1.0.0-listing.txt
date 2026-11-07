@@ -1,0 +1,28 @@
+添加到伴读 1.0.0 商店填写文案
+上传包：extensions/companion-paper-store-1.0.0.zip
+包内 manifest.json 没有 key。zip 根目录就是 manifest.json。
+Chrome 与 Edge 使用同一份 zip，各提交一次。
+
+单一用途
+把当前 PDF 或论文加入本机伴读的文档管理并打开。
+
+英文单一用途
+Add the current PDF or paper to Companion on this computer and open it.
+
+contextMenus
+在 PDF、论文页面和论文链接上显示右键菜单「添加到伴读」。菜单只出现在这些页面，用来把用户选中的文档交给本机伴读。不读取页面正文。
+
+英文 contextMenus
+Shows the “Add to Companion” context menu on PDF files, paper pages, and paper links. The menu is how the user sends the selected document to Companion on this computer. The extension does not read the page body.
+
+nativeMessaging
+只连接本机原生主机 com.maclaw.companion。该主机由伴读桌面程序安装。用户点击菜单时，向主机发送当前页面的 url 和 title，标题最长 200 字。扩展安装或浏览器启动时发送 hello、浏览器名称和版本 1.0.0。这些内容只到本机程序，扩展不把它们发到网站或开发者服务器。没有 host_permissions，没有 content script。
+
+英文 nativeMessaging
+Connects only to the local native host com.maclaw.companion, which the Companion desktop app installs. When the user clicks the menu, the extension sends that page’s url and title (title at most 200 characters) to this host. On install and browser startup it sends hello, the browser name, and version 1.0.0. Nothing is sent to a website or to the developer’s server. There are no host permissions and no content script.
+
+隐私与数据使用
+扩展不设远程服务器。用户点击「添加到伴读」后，页面地址和标题只通过原生消息发给本机伴读，由伴读下载文档并在本机打开。启动时的 hello 只用来告诉本机程序扩展已加载。不收集账号、密码、通讯录、位置、健康或支付信息，也不读取页面正文。
+
+英文隐私与数据使用
+The extension has no remote server. After the user clicks Add to Companion, the page URL and title go only to Companion on this computer through native messaging. Companion downloads the document and opens it locally. The startup hello only tells the local app that the extension is loaded. The extension does not collect accounts, passwords, contacts, location, health, or payment data, and it does not read the page body.

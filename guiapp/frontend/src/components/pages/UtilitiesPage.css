@@ -346,8 +346,16 @@
     margin-top: 12px;
 }
 
+.browser-ext__path-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 18rem;
+    min-width: 0;
+}
+
 .browser-ext__path {
-    flex: 1 1 16rem;
+    flex: 1 1 auto;
     min-width: 0;
     margin: 0;
     padding: 8px 10px;
@@ -357,6 +365,11 @@
     font-size: 0.8rem;
     line-height: 1.4;
     word-break: break-all;
+}
+
+.browser-ext__copy {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
 @media (min-width: 720px) {

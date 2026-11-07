@@ -1032,12 +1032,13 @@ function PdfSelectionMenu({
                     {annotationOpen ? (
                         <div data-testid="pdf-annotation-editor" style={{ display: "grid", gap: 6, padding: "8px", minWidth: 220 }}>
                             <textarea
+                                className="companion-pdf-menu-field"
                                 data-testid="pdf-annotation-input"
                                 value={annotationText}
                                 autoFocus
                                 rows={3}
                                 placeholder={tailText(lang, "Write a note…", "写批注…")}
-                                style={{ resize: "vertical", minHeight: 64, font: "inherit", padding: "6px 8px" }}
+                                aria-label={tailText(lang, "Write a note…", "写批注…")}
                                 onChange={(event) => {
                                     const next = capPdfAnnotationDraft(event.target.value);
                                     // At the budget, another character clips back to the same

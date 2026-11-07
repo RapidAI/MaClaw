@@ -63,6 +63,35 @@ func TestHopJITPauseResponseIncludesConfirmationActions(t *testing.T) {
 	}
 }
 
+func TestHopJITActFreeCompletedReplyShowsTheAnswer(t *testing.T) {
+	response := hopJITSnapshotResponse(hopjit.EngineSnapshot{
+		RunID:         "run-weather",
+		TerminalState: hopjit.TerminalCompleted,
+		Spec:          hopspec.SpecAST{Outputs: []hopspec.VariableDecl{{Name: "weather_text", Type: "str"}}},
+		Variables: map[string]hopjit.VariableValue{
+			"weather_text": {Assigned: true, Value: "北京今天阴转多云，最高14℃。"},
+		},
+	})
+	if strings.Contains(response.Text, "weather_text") || strings.Contains(response.Text, "{") || !strings.Contains(response.Text, "北京今天阴转多云，最高14℃。") {
+		t.Fatalf("text=%q", response.Text)
+	}
+	mixed := hopJITSnapshotResponse(hopjit.EngineSnapshot{
+		RunID:         "run-weather",
+		TerminalState: hopjit.TerminalCompleted,
+		Spec: hopspec.SpecAST{Outputs: []hopspec.VariableDecl{
+			{Name: "weather_text", Type: "str"},
+			{Name: "accepted", Type: "bool"},
+		}},
+		Variables: map[string]hopjit.VariableValue{
+			"weather_text": {Assigned: true, Value: "北京今天阴转多云，最高14℃。"},
+			"accepted":     {Assigned: true, Value: true},
+		},
+	})
+	if !strings.Contains(mixed.Text, "weather_text") || !strings.Contains(mixed.Text, "accepted") {
+		t.Fatalf("mixed=%q", mixed.Text)
+	}
+}
+
 func TestParseHopJITCommand(t *testing.T) {
 	action, payload, ok := parseHopJITCommand("/hop resume run-1 {\"answer\":\"继续\"}")
 	if !ok || action != "resume" {

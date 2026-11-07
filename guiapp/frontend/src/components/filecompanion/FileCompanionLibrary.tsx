@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { companionFill, cs, getCompanionUiLang, setCompanionUiLang } from "../../i18n/mnCompanion";
 import {
     AddFileCompanionGroupMember,
@@ -255,18 +255,20 @@ type ShareSpan = "forever" | "days" | "months";
 
 type LibraryToast = (text: string, kind: "success" | "error", durationMs: number) => void;
 
-function textOf(record: Record<string, unknown>, camel: string, pascal: string): string {
+function textOf(record: Record<string, unknown> | null | undefined, camel: string, pascal: string): string {
+    if (!record) return "";
     const value = record[camel] ?? record[pascal];
     return typeof value === "string" ? value : "";
 }
 
-function companionLibraryPaint(listed: unknown): { items: CompanionLibraryItem[]; notice: string; syncing: boolean } {
+function companionLibraryPaint(listed: unknown): { items: CompanionLibraryItem[]; notice: string; syncing: boolean; libraryRev: number } {
     const record = listed && typeof listed === "object" ? listed as Record<string, unknown> : {};
     const raw = Array.isArray(record.items) ? record.items : Array.isArray(record.Items) ? record.Items : [];
     return {
         items: raw.map(readItem).filter((item): item is CompanionLibraryItem => item !== null),
         notice: textOf(record, "notice", "Notice"),
         syncing: record.syncing === true || record.Syncing === true,
+        libraryRev: numberOf(record, "libraryRev", "LibraryRev"),
     };
 }
 
@@ -274,12 +276,14 @@ export function companionLibrarySnapshotKey(listed: unknown): string {
     return JSON.stringify(companionLibraryPaint(listed));
 }
 
-function boolOf(record: Record<string, unknown>, camel: string, pascal: string): boolean {
+function boolOf(record: Record<string, unknown> | null | undefined, camel: string, pascal: string): boolean {
+    if (!record) return false;
     const value = record[camel] ?? record[pascal];
     return value === true;
 }
 
-function numberOf(record: Record<string, unknown>, camel: string, pascal: string): number {
+function numberOf(record: Record<string, unknown> | null | undefined, camel: string, pascal: string): number {
+    if (!record) return 0;
     const value = record[camel] ?? record[pascal];
     return typeof value === "number" ? value : 0;
 }
@@ -530,8 +534,14 @@ function readUpdates(raw: unknown): CompanionShareUpdate[] {
 // hub index is a newer generation. The next refresh reuses the finished
 // list's generation for its own disk answer, so a file opened after that list
 // still appears; a late copy of the finished list must not cover it.
+// libraryRev is the exception: a delete saves the library while that refresh
+// is still copying, and the disk answer keeps the old generation on purpose.
+// The newer revision has to paint, or the card the reader just removed stays
+// up until the download finishes — and forever, when the refresh settles
+// without another event.
 let companionLibrarySeenGen = -1;
 let companionLibrarySeenSyncing = false;
+let companionLibrarySeenRev = 0;
 
 export function takeCompanionLibraryList(listed: unknown): boolean {
     const record = listed && typeof listed === "object" ? listed as Record<string, unknown> : null;
@@ -539,17 +549,157 @@ export function takeCompanionLibraryList(listed: unknown): boolean {
     const genRaw = record.syncGen ?? record.SyncGen;
     const gen = typeof genRaw === "number" ? genRaw : 0;
     const syncing = record.syncing === true || record.Syncing === true;
-    if (gen < companionLibrarySeenGen) return false;
-    // The snapshot already on screen is this refresh. Keep it.
-    if (gen === companionLibrarySeenGen && companionLibrarySeenSyncing) return false;
-    companionLibrarySeenGen = gen;
+    const rev = numberOf(record, "libraryRev", "LibraryRev");
+    if (companionLibrarySeenRev > 0 && rev < companionLibrarySeenRev) return false;
+    if (gen < companionLibrarySeenGen && !(rev > companionLibrarySeenRev)) return false;
+    // The snapshot already on screen is this refresh. Keep it, unless the
+    // library itself was saved again (a delete) after that snapshot was taken.
+    if (gen === companionLibrarySeenGen && companionLibrarySeenSyncing && !(rev > companionLibrarySeenRev)) return false;
+    if (gen > companionLibrarySeenGen) companionLibrarySeenGen = gen;
     companionLibrarySeenSyncing = syncing;
+    if (rev > companionLibrarySeenRev) companionLibrarySeenRev = rev;
     return true;
+}
+
+// Rows the reader just removed. A refresh snapshot that was already in flight
+// still names them and carries an older libraryRev; it must not put the card
+// back. A later save (opening the file, importing the link) has a newer
+// revision and the card returns.
+const companionLibraryRemovedRows = new Map<string, number>();
+
+export function companionLibraryRowKey(item: { id: string; source: string; token?: string }): string {
+    if (item.source === "cloud" && item.token) return `cloud:${item.token}`;
+    return `id:${item.id}`;
+}
+
+export function companionLibraryHideRow(item: { id: string; source: string; token?: string }, libraryRev: number, appliedRev: number) {
+    const at = libraryRev > appliedRev ? libraryRev : appliedRev + 1;
+    companionLibraryRemovedRows.set(companionLibraryRowKey(item), at);
+    // The delete response is the newest library. A catalog already built keeps
+    // the old revision and a newer sync generation; accepting it paints the
+    // card back into the window before this view can filter it.
+    if (libraryRev > companionLibrarySeenRev) companionLibrarySeenRev = libraryRev;
+    notifyCompanionLibraryRows();
+}
+
+// A 取消分享 puts the owner's file back in 本机项目. The list that carries that
+// row can be dropped while a refresh is still copying, so the card is shown
+// from the delete itself until a list at this revision names it.
+const companionLibraryRestoredRows = new Map<string, { item: CompanionLibraryItem; at: number }>();
+let companionLibraryRowEpochValue = 0;
+const companionLibraryRowListeners = new Set<() => void>();
+
+function notifyCompanionLibraryRows() {
+    companionLibraryRowEpochValue += 1;
+    companionLibraryRowListeners.forEach((listener) => listener());
+}
+
+export function subscribeCompanionLibraryRows(listener: () => void): () => void {
+    companionLibraryRowListeners.add(listener);
+    return () => { companionLibraryRowListeners.delete(listener); };
+}
+
+export function companionLibraryRowEpoch(): number {
+    return companionLibraryRowEpochValue;
+}
+
+export function companionLibraryShowRestored(item: CompanionLibraryItem, libraryRev: number, appliedRev: number) {
+    const at = libraryRev > appliedRev ? libraryRev : appliedRev + 1;
+    companionLibraryRestoredRows.set(item.id, { item, at });
+    notifyCompanionLibraryRows();
+}
+
+export function companionLibraryApplyLocalEdits<T extends { id: string; source: string; token?: string }>(items: T[], libraryRev: number): T[] {
+    let changed = false;
+    const kept: T[] = [];
+    for (const item of items) {
+        const deletedAt = companionLibraryRemovedRows.get(companionLibraryRowKey(item));
+        if (deletedAt != null && libraryRev < deletedAt) {
+            changed = true;
+            continue;
+        }
+        kept.push(item);
+    }
+    const extras: T[] = [];
+    for (const pending of companionLibraryRestoredRows.values()) {
+        if (libraryRev >= pending.at) continue;
+        if (kept.some((row) => row.id === pending.item.id)) continue;
+        extras.push(pending.item as T);
+        changed = true;
+    }
+    if (!changed) return items;
+    return extras.length > 0 ? [...extras, ...kept] : kept;
+}
+
+export function companionLibraryTakeRestored<T extends { id: string }>(items: T[], libraryRev: number): T[] {
+    if (companionLibraryRestoredRows.size === 0) return items;
+    const present = new Set(items.map((item) => item.id));
+    const extras: T[] = [];
+    for (const [id, pending] of [...companionLibraryRestoredRows]) {
+        if (present.has(id) || libraryRev >= pending.at) {
+            companionLibraryRestoredRows.delete(id);
+            continue;
+        }
+        extras.push(pending.item as T);
+    }
+    return extras.length > 0 ? [...extras, ...items] : items;
+}
+
+function companionRestoredLocalItem(raw: Record<string, unknown> | null | undefined, fallbackName: string): CompanionLibraryItem | null {
+    if (!boolOf(raw, "restored", "Restored")) return null;
+    const path = textOf(raw, "path", "Path");
+    const id = textOf(raw, "localId", "LocalID");
+    if (!path || !id) return null;
+    const name = textOf(raw, "name", "Name") || fallbackName;
+    return {
+        id,
+        name: name || cs("未命名文档"),
+        path,
+        source: "local",
+        openedAt: "",
+        owner: "",
+        shareUrl: "",
+        expiresAt: "",
+        visibility: "",
+        size: numberOf(raw, "size", "Size"),
+        permanent: false,
+        mine: false,
+        revision: 0,
+        target: "",
+        groupId: "",
+        expired: false,
+        highlights: "",
+        notes: [],
+        token: "",
+    };
+}
+
+export function companionLibraryWithoutRemoved<T extends { id: string; source: string; token?: string }>(items: T[], libraryRev: number): T[] {
+    if (companionLibraryRemovedRows.size === 0) return items;
+    const present = new Set<string>();
+    const keep: T[] = [];
+    for (const item of items) {
+        const key = companionLibraryRowKey(item);
+        present.add(key);
+        const deletedAt = companionLibraryRemovedRows.get(key);
+        if (deletedAt != null && libraryRev < deletedAt) continue;
+        if (deletedAt != null) companionLibraryRemovedRows.delete(key);
+        keep.push(item);
+    }
+    for (const [key, deletedAt] of [...companionLibraryRemovedRows]) {
+        if (libraryRev >= deletedAt && !present.has(key)) companionLibraryRemovedRows.delete(key);
+    }
+    return keep;
 }
 
 export function resetCompanionLibraryList(): void {
     companionLibrarySeenGen = -1;
     companionLibrarySeenSyncing = false;
+    companionLibrarySeenRev = 0;
+    companionLibraryRemovedRows.clear();
+    companionLibraryRestoredRows.clear();
+    companionLibraryRowEpochValue = 0;
+    companionLibraryRowListeners.forEach((listener) => listener());
 }
 
 export function companionLibrarySync(raw: unknown): { updates: CompanionShareUpdate[]; removed: string[]; removedHosts: Record<string, string> } {
@@ -1350,6 +1500,8 @@ export function CompanionLibraryView({
     // "" is every document. "none" is 未分类. Any other value is a folder id.
     const [selectedFolder, setSelectedFolder] = useState("");
     const [nameQuery, setNameQuery] = useState("");
+    // 所有 shows both rails. 本地 and 云端 keep one rail.
+    const [sourceFilter, setSourceFilter] = useState<"all" | "local" | "cloud">("all");
     const [folderDraft, setFolderDraft] = useState("");
     const [editingID, setEditingID] = useState("");
     const [editingName, setEditingName] = useState("");
@@ -1379,6 +1531,9 @@ export function CompanionLibraryView({
     const dropRowRef = useRef<HTMLElement | null>(null);
     // Same-direction rail nudges are throttled. A direction change is not.
     const dragScrollRef = useRef({ at: 0, dir: 0 });
+    // The rail's border box does not move when its content scrolls, so one
+    // measurement covers the gesture. "short" means the list already fits.
+    const dragRailBoxRef = useRef<{ top: number; bottom: number } | "short" | null>(null);
     // The dialog that owns the in-progress drag. Text fields and folder
     // controls under it ignore the pointer until the drag ends.
     const dragRootRef = useRef<HTMLElement | null>(null);
@@ -1396,14 +1551,23 @@ export function CompanionLibraryView({
     const appliedListRef = useRef<unknown>(listedSnapshot ?? null);
     const appliedSnapshotKeyRef = useRef(companionLibrarySnapshotKey(listedSnapshot));
     const paintedRef = useRef(listedSnapshot != null);
+    // The library revision last painted. A delete stamps its own revision so a
+    // refresh snapshot from before that save cannot bring the card back.
+    const appliedLibraryRevRef = useRef(0);
+    const libraryRowEpoch = useSyncExternalStore(subscribeCompanionLibraryRows, companionLibraryRowEpoch, companionLibraryRowEpoch);
+    useEffect(() => {
+        setItems((current) => companionLibraryApplyLocalEdits(current, appliedLibraryRevRef.current));
+    }, [libraryRowEpoch]);
 
     const applyList = useCallback((listed: unknown, alreadyTaken = false) => {
         if (!alreadyTaken && !takeCompanionLibraryList(listed)) return;
-        const snapshotKey = companionLibrarySnapshotKey(listed);
-        if (paintedRef.current && appliedSnapshotKeyRef.current === snapshotKey) return;
         const paint = companionLibraryPaint(listed);
+        const visible = companionLibraryTakeRestored(companionLibraryWithoutRemoved(paint.items, paint.libraryRev), paint.libraryRev);
+        if (paint.libraryRev > appliedLibraryRevRef.current) appliedLibraryRevRef.current = paint.libraryRev;
+        const snapshotKey = JSON.stringify(paint) + "\0" + visible.map((item) => item.id).join("\0");
+        if (paintedRef.current && appliedSnapshotKeyRef.current === snapshotKey) return;
         appliedSnapshotKeyRef.current = snapshotKey;
-        setItems(paint.items);
+        setItems(visible);
         setNotice(paint.notice);
         setSyncing(paint.syncing);
         paintedRef.current = true;
@@ -1582,14 +1746,32 @@ export function CompanionLibraryView({
                     // The owner's 移除 is the share control: revoke the link on
                     // the Hub. Participants' next refresh treats the missing
                     // token as deleted and withdraws the copy and open tab.
-                    await DeleteFileCompanionShare(item.token);
+                    const raw = await DeleteFileCompanionShare(item.token) as Record<string, unknown>;
                     if (libraryDeleteGen) libraryDeleteGen.current += 1;
+                    const rev = numberOf(raw, "libraryRev", "LibraryRev");
+                    const restoredLocal = companionRestoredLocalItem(raw, item.name);
+                    companionLibraryHideRow(item, rev, appliedLibraryRevRef.current);
+                    if (restoredLocal) companionLibraryShowRestored(restoredLocal, rev, appliedLibraryRevRef.current);
+                    appliedSnapshotKeyRef.current = "";
+                    setItems((current) => companionLibraryApplyLocalEdits(
+                        current.filter((row) => companionLibraryRowKey(row) !== companionLibraryRowKey(item)),
+                        appliedLibraryRevRef.current,
+                    ));
                     showToast(cs("已取消分享，参与者会移除并关闭该文档"), "success", 6000);
                 } else {
                     const raw = await DeleteFileCompanionProject(item.id, item.path) as Record<string, unknown>;
                     // Any list that started before this delete finished still has
                     // the project. Drop it. The reload below starts after the bump.
                     if (libraryDeleteGen) libraryDeleteGen.current += 1;
+                    const rev = numberOf(raw, "libraryRev", "LibraryRev");
+                    const restoredLocal = companionRestoredLocalItem(raw, item.name);
+                    companionLibraryHideRow(item, rev, appliedLibraryRevRef.current);
+                    if (restoredLocal) companionLibraryShowRestored(restoredLocal, rev, appliedLibraryRevRef.current);
+                    appliedSnapshotKeyRef.current = "";
+                    setItems((current) => companionLibraryApplyLocalEdits(
+                        current.filter((row) => companionLibraryRowKey(row) !== companionLibraryRowKey(item)),
+                        appliedLibraryRevRef.current,
+                    ));
                     const path = textOf(raw, "path", "Path") || item.path;
                     const cleared = boolOf(raw, "cleared", "Cleared");
                     const promoted = boolOf(raw, "promoted", "Promoted");
@@ -1800,8 +1982,24 @@ export function CompanionLibraryView({
             if (selectedFolder === "none") return id === "";
             return id === selectedFolder;
         };
-        const scoped = items.filter(inFolder);
-        const matched = scoped.filter((item) => companionLibraryNameMatch(item.name, nameQuery));
+        const inSource = (item: CompanionLibraryItem) => {
+            if (sourceFilter === "local") return item.source !== "cloud";
+            if (sourceFilter === "cloud") return item.source === "cloud";
+            return true;
+        };
+        const localItems: CompanionLibraryItem[] = [];
+        const cloudItems: CompanionLibraryItem[] = [];
+        let placedCount = 0;
+        let scopedCount = 0;
+        for (const item of items) {
+            if (!inFolder(item)) continue;
+            placedCount += 1;
+            if (!inSource(item)) continue;
+            scopedCount += 1;
+            if (!companionLibraryNameMatch(item.name, nameQuery)) continue;
+            if (item.source === "cloud") cloudItems.push(item);
+            else localItems.push(item);
+        }
         const counts = new Map<string, number>();
         for (const folder of folders) counts.set(folder.id, 0);
         let uncategorized = 0;
@@ -1820,20 +2018,25 @@ export function CompanionLibraryView({
         };
         return {
             placedOf,
-            localItems: matched.filter((item) => item.source !== "cloud"),
-            cloudItems: matched.filter((item) => item.source === "cloud"),
-            scopedCount: scoped.length,
-            shownCount: matched.length,
+            localItems,
+            cloudItems,
+            placedCount,
+            scopedCount,
+            shownCount: localItems.length + cloudItems.length,
             countOf,
         };
-    }, [items, folders, placements, selectedFolder, nameQuery]);
-    const { localItems, cloudItems, shownCount, scopedCount, countOf, placedOf } = libraryView;
+    }, [items, folders, placements, selectedFolder, nameQuery, sourceFilter]);
+    const { localItems, cloudItems, placedCount, shownCount, scopedCount, countOf, placedOf } = libraryView;
+    const nameNarrowed = narrowedLibrary(nameQuery, selectedFolder);
+    const hideLocal = sourceFilter === "cloud" || (nameNarrowed && localItems.length === 0);
+    const hideCloud = sourceFilter === "local" || (nameNarrowed && cloudItems.length === 0);
 
     const endLibraryDrag = () => {
         dragItemIDRef.current = "";
         dragFolderRef.current = "";
         dragScrollRef.current.at = 0;
         dragScrollRef.current.dir = 0;
+        dragRailBoxRef.current = null;
         dropRowRef.current?.removeAttribute("data-drop");
         dropRowRef.current = null;
         const card = dragCardRef.current;
@@ -1846,10 +2049,19 @@ export function CompanionLibraryView({
         dragRootRef.current = null;
     };
     // Unmount clears a drag that is still in flight. The ref follows the
-    // latest clearer, and that clearer only touches the drag refs.
+    // latest clearer, and that clearer only touches the drag refs. dragend
+    // on the window still runs when the source node is already gone, so the
+    // text fields do not stay click-through.
     const endLibraryDragRef = useRef(endLibraryDrag);
     endLibraryDragRef.current = endLibraryDrag;
-    useEffect(() => () => endLibraryDragRef.current(), []);
+    useEffect(() => {
+        const end = () => endLibraryDragRef.current();
+        window.addEventListener("dragend", end);
+        return () => {
+            window.removeEventListener("dragend", end);
+            end();
+        };
+    }, []);
 
     // key is "none" for 未分类 or a folder id. 全部 is not a drop target.
     // A card already in that class is refused so the row does not light up.
@@ -1911,10 +2123,19 @@ export function CompanionLibraryView({
     const onFolderRailDragOver = (event: React.DragEvent<HTMLDivElement>) => {
         if (!dragItemIDRef.current) return;
         const rail = event.currentTarget;
-        if (rail.scrollHeight <= rail.clientHeight + 1) return;
-        const rect = rail.getBoundingClientRect();
-        const fromTop = event.clientY - rect.top;
-        const fromBottom = rect.bottom - event.clientY;
+        let box = dragRailBoxRef.current;
+        if (!box) {
+            if (rail.scrollHeight <= rail.clientHeight + 1) {
+                dragRailBoxRef.current = "short";
+                return;
+            }
+            const rect = rail.getBoundingClientRect();
+            box = { top: rect.top, bottom: rect.bottom };
+            dragRailBoxRef.current = box;
+        }
+        if (box === "short") return;
+        const fromTop = event.clientY - box.top;
+        const fromBottom = box.bottom - event.clientY;
         const edge = 18;
         let dir = 0;
         if (fromTop >= 0 && fromTop < edge) dir = -1;
@@ -2078,7 +2299,6 @@ export function CompanionLibraryView({
                         className="file-companion-project-meta"
                         data-testid={`file-companion-library-meta-${item.id}`}
                         draggable={canDrag}
-                        title={canDrag ? cs("拖到左侧文件夹以分类") : undefined}
                         onDragStart={(event) => beginLibraryDrag(event, item, canDrag)}
                         onDragEnd={() => endLibraryDragRef.current()}
                     >
@@ -2431,6 +2651,11 @@ export function CompanionLibraryView({
                                     {cs("清除过滤")}
                                 </button>
                             ) : null}
+                            <div className="file-companion-segment file-companion-library-source" role="group" aria-label={cs("来源")}>
+                                <button type="button" aria-pressed={sourceFilter === "all"} data-testid="file-companion-library-source-all" onClick={() => setSourceFilter("all")}>{cs("所有")}</button>
+                                <button type="button" aria-pressed={sourceFilter === "local"} data-testid="file-companion-library-source-local" onClick={() => setSourceFilter("local")}>{cs("本地")}</button>
+                                <button type="button" aria-pressed={sourceFilter === "cloud"} data-testid="file-companion-library-source-cloud" onClick={() => setSourceFilter("cloud")}>{cs("云端")}</button>
+                            </div>
                         </div>
                         {nameQuery.trim() ? (
                             <p className="file-companion-library-filter-count" data-testid="file-companion-library-filter-count">
@@ -2440,17 +2665,13 @@ export function CompanionLibraryView({
                         {notice ? <p className="file-companion-library-notice" data-testid="file-companion-library-notice" role="status">{cs(notice)}</p> : null}
                         {loading ? <p className="file-companion-library-note">{cs("正在读取…")}</p> : null}
                         {syncing && !loading ? <p className="file-companion-library-note">{cs("正在同步云端分享")}</p> : null}
-                        {narrowedLibrary(nameQuery, selectedFolder) && localItems.length === 0 && cloudItems.length === 0 && !loading && !syncing ? (
+                        {hideLocal && hideCloud && !loading && !syncing ? (
                             <p className="file-companion-library-empty" data-testid="file-companion-library-filter-empty">
-                                {nameQuery.trim()
-                                    ? cs("没有匹配的文件")
-                                    : selectedFolder === "none"
-                                        ? cs("未分类里还没有文档")
-                                        : cs("这个文件夹里还没有文档")}
+                                {companionLibraryEmptyLabel(nameQuery, selectedFolder, sourceFilter, placedCount)}
                             </p>
                         ) : (
                             <>
-                                {narrowedLibrary(nameQuery, selectedFolder) && localItems.length === 0 ? null : (
+                                {hideLocal ? null : (
                                     <section className="file-companion-library-section" data-testid="file-companion-library-local" aria-label={cs("本机项目")}>
                                         <h3 className="file-companion-dialog-label">{cs("本机项目")}<span className="file-companion-dialog-optional">{localItems.length}</span></h3>
                                         {localItems.length === 0
@@ -2458,7 +2679,7 @@ export function CompanionLibraryView({
                                             : <div className="file-companion-project-list">{localItems.map(renderRow)}</div>}
                                     </section>
                                 )}
-                                {narrowedLibrary(nameQuery, selectedFolder) && cloudItems.length === 0 ? null : (
+                                {hideCloud ? null : (
                                     <section className="file-companion-library-section" data-testid="file-companion-library-cloud" aria-label={cs("云端项目")}>
                                         <h3 className="file-companion-dialog-label">{cs("云端项目")}<span className="file-companion-dialog-optional">{cloudItems.length}</span></h3>
                                         {cloudItems.length === 0
@@ -2487,6 +2708,14 @@ export function CompanionLibraryView({
 
 function narrowedLibrary(query: string, selectedFolder: string): boolean {
     return query.trim() !== "" || selectedFolder !== "";
+}
+
+// The combined empty line is only reached when the visible rails are gone.
+// A folder that still holds the other source is not empty.
+function companionLibraryEmptyLabel(query: string, selectedFolder: string, sourceFilter: "all" | "local" | "cloud", placedCount: number): string {
+    if (query.trim() || (sourceFilter !== "all" && placedCount > 0)) return cs("没有匹配的文件");
+    if (selectedFolder === "none") return cs("未分类里还没有文档");
+    return cs("这个文件夹里还没有文档");
 }
 
 function FolderTreeRow({
@@ -3428,7 +3657,11 @@ export function CompanionShareDialog({
         if (!ok) return;
         setShareBusy(true);
         try {
-            await DeleteFileCompanionShare(token);
+            const raw = await DeleteFileCompanionShare(token) as Record<string, unknown>;
+            const rev = numberOf(raw, "libraryRev", "LibraryRev");
+            const restoredLocal = companionRestoredLocalItem(raw, docName);
+            companionLibraryHideRow({ id: token, source: "cloud", token }, rev, 0);
+            if (restoredLocal) companionLibraryShowRestored(restoredLocal, rev, 0);
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
             setShareBusy(false);

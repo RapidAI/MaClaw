@@ -5016,7 +5016,7 @@ input.cwshare-url {
   border-radius: var(--radius-sm);
   background: var(--theme-surface, #fff);
   color: var(--theme-text-primary, #1c2834);
-  font: inherit;
+  font: 13px/1.4 "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 .companion-pdf-bookmark-editor input:focus {
   border-color: var(--theme-primary, #2e75cb);
@@ -5034,7 +5034,7 @@ input.cwshare-url {
   border-radius: var(--radius-sm);
   background: var(--theme-surface, #fff);
   color: var(--theme-text-primary, #24364e);
-  font: inherit;
+  font: 500 13px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
   cursor: pointer;
 }
 .companion-pdf-bookmark-editor-actions button:disabled {
@@ -5121,7 +5121,30 @@ mark.companion-preview-find[data-find-active="true"] {
   border-radius: var(--radius-lg);
   background: var(--theme-surface, #fff);
   box-shadow: var(--shadow-lg, 0 8px 28px -6px rgba(30, 58, 95, 0.18));
+  color: var(--theme-text-primary, #24364e);
+  font: 13px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif;
   --wails-draggable: no-drag;
+}
+/* Note fields use the menu's 13px face. A bare control would keep the document size. */
+.companion-pdf-menu-field {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 64px;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-primary, #24364e);
+  font: 13px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif;
+  resize: vertical;
+}
+.companion-pdf-menu-field:focus {
+  border-color: var(--theme-primary, #2e75cb);
+  outline: none;
+}
+.companion-pdf-menu button:not(.companion-pdf-menu-item, .companion-pdf-menu-color) {
+  font: 500 13px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 /* The selection is the reason the menu opened: show it, but keep it to one
    line so the menu stays compact and the actions keep a stable height. */
@@ -5470,7 +5493,9 @@ body.companion-pdf-translation-dragging * {
   background: var(--theme-surface-muted, #f4f7fb);
   box-shadow: inset 0 0 0 1px var(--theme-border, #d5e0ef);
   color: inherit;
-  font: inherit;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  font-weight: 400;
   line-height: inherit;
   resize: none;
   outline: none;
@@ -5900,7 +5925,7 @@ body.companion-pdf-translation-dragging * {
 /* The folder name is a button that fills the row, and the search box would
    accept the text/plain payload. While a document is in flight, those
    controls let the drop land on the row instead. */
-.file-companion-library-dialog[data-library-drag="true"] :is(input, textarea) {
+.file-companion-library-dialog[data-library-drag="true"] :is(input, textarea, select) {
   pointer-events: none;
 }
 .file-companion-library-dialog[data-library-drag="true"] .file-companion-folder-row :is(button, a, label) {
@@ -6035,19 +6060,29 @@ body.companion-pdf-translation-dragging * {
   top: 0;
   z-index: 1;
   display: flex;
+  align-items: center;
   gap: 6px;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   padding-bottom: 2px;
   background: var(--theme-surface, #ffffff);
 }
 .file-companion-library-filter .file-companion-dialog-input {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 0 1 220px;
+  width: 220px;
+  max-width: 100%;
+  min-width: 140px;
   height: 34px;
 }
 .file-companion-library-filter .file-companion-dialog-secondary {
   flex: 0 0 auto;
   height: 34px;
+}
+.file-companion-library-source {
+  flex: 0 0 auto;
+  margin-left: auto;
+  height: 34px;
+  align-items: center;
 }
 .file-companion-library-filter-count {
   margin: -6px 0 0;
@@ -6165,6 +6200,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-project-drag {
   display: inline-flex;
   align-items: center;
+  align-self: stretch;
   gap: 8px;
   flex: 0 0 auto;
   min-width: 0;

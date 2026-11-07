@@ -133,6 +133,22 @@ func TestExecuteStepActFreeWithoutToolsStaysOnActFree(t *testing.T) {
 	}
 }
 
+func TestHopJITActFreeAnswerUsesJSONCompletion(t *testing.T) {
+	var jsonMode bool
+	var system, user string
+	caller := &guiHopJITCaller{invoke: func(_ context.Context, messages []interface{}, jsonResponse bool) (string, error) {
+		jsonMode = jsonResponse
+		system, _ = messages[0].(map[string]interface{})["content"].(string)
+		user, _ = messages[1].(map[string]interface{})["content"].(string)
+		return `{"report":"今天多云，最高14℃"}`, nil
+	}}
+	callbacks := &hopJITActFreeCallbacks{answerFromEvidence: true, task: "北京天气"}
+	result := caller.actFreeRunner(context.Background(), callbacks)("任务: 北京天气\n检索证据:\n北京 多云", nil)
+	if result.Error != "" || !jsonMode || !strings.Contains(system, "不要调用工具") || !strings.Contains(user, "北京 多云") || !strings.Contains(result.Text, "今天多云") {
+		t.Fatalf("json=%v err=%q system=%q user=%q text=%q", jsonMode, result.Error, system, user, result.Text)
+	}
+}
+
 func TestHopJITActFreeMissingAppReturnsError(t *testing.T) {
 	caller := &guiHopJITCaller{handler: newHopJITActFreeTestHandler(t)}
 	_, err := caller.executeActFree(context.Background(), hopjit.StepReady{StepID: "1", Tools: []string{"read_file"}})
@@ -315,15 +331,17 @@ func TestHopJITActFreeBindsLookupTextToTheToolResult(t *testing.T) {
 	}
 
 	fromTask := &hopJITActFreeCallbacks{task: "北京天气", called: map[string]int{"web_search": 1}, retrieval: map[string]string{"web_search": "北京 多云"}}
+	var answerPrompt string
 	got, err = completeActFree(fromTask, hopjit.StepReady{
 		Tools:        []string{"web_search"},
 		Summary:      "整理",
 		OutputSchema: []hopspec.VariableDecl{{Name: "report", Type: "text"}},
-	}, func(string, []agent.ConversationEntry) agent.LoopResult {
-		return agent.LoopResult{Text: `{"report":"晴"}`}
+	}, func(prompt string, _ []agent.ConversationEntry) agent.LoopResult {
+		answerPrompt = prompt
+		return agent.LoopResult{Text: `{"report":"晴，最高14℃"}`}
 	})
-	if err != nil || got["report"] != "北京 多云" {
-		t.Fatalf("task got=%v err=%v", got, err)
+	if err != nil || got["report"] != "晴，最高14℃" || !strings.Contains(answerPrompt, "北京 多云") {
+		t.Fatalf("task got=%v err=%v prompt=%q", got, err, answerPrompt)
 	}
 
 	missing := &hopJITActFreeCallbacks{called: map[string]int{"web_search": 1}, retrieval: map[string]string{"web_search": "  "}}
@@ -367,15 +385,17 @@ func TestHopJITActFreeBindsLookupStringTypesAndKeepsEvidence(t *testing.T) {
 	}
 
 	prose := &hopJITActFreeCallbacks{called: map[string]int{"web_search": 1}, retrieval: map[string]string{"web_search": "北京 多云"}}
+	var prosePrompt string
 	got, err = completeActFree(prose, hopjit.StepReady{
 		Tools:        []string{"web_search"},
 		Summary:      "查询天气",
 		OutputSchema: []hopspec.VariableDecl{{Name: "report", Type: "markdown"}},
-	}, func(string, []agent.ConversationEntry) agent.LoopResult {
-		return agent.LoopResult{Text: "今天晴。"}
+	}, func(prompt string, _ []agent.ConversationEntry) agent.LoopResult {
+		prosePrompt = prompt
+		return agent.LoopResult{Text: `{"report":"今天多云"}`}
 	})
-	if err != nil || got["report"] != "北京 多云" {
-		t.Fatalf("prose got=%v err=%v", got, err)
+	if err != nil || got["report"] != "今天多云" || !strings.Contains(prosePrompt, "北京 多云") {
+		t.Fatalf("prose got=%v err=%v prompt=%q", got, err, prosePrompt)
 	}
 
 	needsJSON := &hopJITActFreeCallbacks{called: map[string]int{"web_search": 1}, retrieval: map[string]string{"web_search": "北京 多云"}}
@@ -440,6 +460,7 @@ func TestHopJITActFreeHostSearchesWhenTheModelSkipsTheCall(t *testing.T) {
 
 	proseSearches := 0
 	prosePrompts := 0
+	var prosePrompt string
 	prose := &hopJITActFreeCallbacks{lookupSearch: func(string) (string, error) {
 		proseSearches++
 		return "北京 多云", nil
@@ -448,15 +469,17 @@ func TestHopJITActFreeHostSearchesWhenTheModelSkipsTheCall(t *testing.T) {
 		Tools:        []string{"web_search"},
 		Summary:      "查询天气",
 		OutputSchema: []hopspec.VariableDecl{{Name: "report", Type: "text"}},
-	}, func(string, []agent.ConversationEntry) agent.LoopResult {
+	}, func(prompt string, _ []agent.ConversationEntry) agent.LoopResult {
 		prosePrompts++
-		return agent.LoopResult{Text: "今天晴。"}
+		prosePrompt = prompt
+		return agent.LoopResult{Text: `{"report":"今天多云，最高14℃"}`}
 	})
-	if err != nil || got["report"] != "北京 多云" || proseSearches != 1 || prosePrompts != 0 {
-		t.Fatalf("prose got=%v err=%v searches=%d prompts=%d", got, err, proseSearches, prosePrompts)
+	if err != nil || got["report"] != "今天多云，最高14℃" || proseSearches != 1 || prosePrompts != 1 || !strings.Contains(prosePrompt, "北京 多云") {
+		t.Fatalf("prose got=%v err=%v searches=%d prompts=%d prompt=%q", got, err, proseSearches, prosePrompts, prosePrompt)
 	}
 
 	plainPrompts := 0
+	var plainPrompt string
 	plain := &hopJITActFreeCallbacks{task: "北京天气", lookupSearch: func(string) (string, error) {
 		return "北京 多云", nil
 	}}
@@ -464,12 +487,61 @@ func TestHopJITActFreeHostSearchesWhenTheModelSkipsTheCall(t *testing.T) {
 		Tools:        []string{"web_search"},
 		Summary:      "整理",
 		OutputSchema: []hopspec.VariableDecl{{Name: "report"}, {Name: "detail", Type: "text。"}},
-	}, func(string, []agent.ConversationEntry) agent.LoopResult {
+	}, func(prompt string, _ []agent.ConversationEntry) agent.LoopResult {
 		plainPrompts++
-		return agent.LoopResult{Text: `{"report":"晴","detail":"晴"}`}
+		plainPrompt = prompt
+		return agent.LoopResult{Text: `{"report":"多云","detail":"最高14℃"}`}
 	})
-	if err != nil || got["report"] != "北京 多云" || got["detail"] != "北京 多云" || plainPrompts != 0 {
+	if err != nil || got["report"] != "多云" || got["detail"] != "最高14℃" || plainPrompts != 1 || !strings.Contains(plainPrompt, "北京 多云") {
 		t.Fatalf("plain got=%v err=%v prompts=%d", got, err, plainPrompts)
+	}
+
+	copies := 0
+	copied, err := completeActFree(&hopJITActFreeCallbacks{task: "北京天气", lookupSearch: func(string) (string, error) {
+		return "北京 多云", nil
+	}}, hopjit.StepReady{
+		Tools:        []string{"web_search"},
+		Summary:      "查询天气",
+		OutputSchema: []hopspec.VariableDecl{{Name: "report", Type: "text"}},
+	}, func(string, []agent.ConversationEntry) agent.LoopResult {
+		copies++
+		if copies == 1 {
+			return agent.LoopResult{Text: `{"report":"北京 多云"}`}
+		}
+		return agent.LoopResult{Text: `{"report":"今天多云，最高14℃"}`}
+	})
+	if err != nil || copied["report"] != "今天多云，最高14℃" || copies != 2 {
+		t.Fatalf("copy got=%v err=%v prompts=%d", copied, err, copies)
+	}
+
+	quotedPrompts := 0
+	quoted, err := completeActFree(&hopJITActFreeCallbacks{task: "北京天气", lookupSearch: func(string) (string, error) {
+		return "北京 多云", nil
+	}}, hopjit.StepReady{
+		Tools:        []string{"web_search"},
+		Summary:      "查询天气",
+		OutputSchema: []hopspec.VariableDecl{{Name: "report", Type: "text"}},
+	}, func(string, []agent.ConversationEntry) agent.LoopResult {
+		quotedPrompts++
+		return agent.LoopResult{Text: `{"report":"今天北京 多云，最高14℃"}`}
+	})
+	if err != nil || quoted["report"] != "今天北京 多云，最高14℃" || quotedPrompts != 1 {
+		t.Fatalf("quoted got=%v err=%v prompts=%d", quoted, err, quotedPrompts)
+	}
+
+	failures := 0
+	_, err = completeActFree(&hopJITActFreeCallbacks{task: "北京天气", lookupSearch: func(string) (string, error) {
+		return "北京 多云", nil
+	}}, hopjit.StepReady{
+		Tools:        []string{"web_search"},
+		Summary:      "查询天气",
+		OutputSchema: []hopspec.VariableDecl{{Name: "report", Type: "text"}},
+	}, func(string, []agent.ConversationEntry) agent.LoopResult {
+		failures++
+		return agent.LoopResult{Error: "llm unavailable"}
+	})
+	if err == nil || !strings.Contains(err.Error(), "llm unavailable") || failures != 1 {
+		t.Fatalf("failure err=%v prompts=%d", err, failures)
 	}
 
 	degrees := 0
@@ -522,6 +594,7 @@ func TestHopJITActFreeHostSearchesWhenTheModelSkipsTheCall(t *testing.T) {
 	}
 
 	misses := 0
+	missPrompts := 0
 	miss := &hopJITActFreeCallbacks{task: "北京天气", lookupSearch: func(string) (string, error) {
 		misses++
 		return "未找到相关结果", nil
@@ -531,10 +604,11 @@ func TestHopJITActFreeHostSearchesWhenTheModelSkipsTheCall(t *testing.T) {
 		Summary:      "整理",
 		OutputSchema: []hopspec.VariableDecl{{Name: "report", Type: "text"}},
 	}, func(string, []agent.ConversationEntry) agent.LoopResult {
+		missPrompts++
 		return agent.LoopResult{Text: `{"report":"晴"}`}
 	})
-	if err == nil || !strings.Contains(err.Error(), "no results") || misses != 1 {
-		t.Fatalf("miss err=%v searches=%d", err, misses)
+	if err == nil || !strings.Contains(err.Error(), "no results") || misses != 1 || missPrompts != 0 {
+		t.Fatalf("miss err=%v searches=%d prompts=%d", err, misses, missPrompts)
 	}
 }
 

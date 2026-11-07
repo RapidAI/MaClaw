@@ -271,13 +271,13 @@ export function CompanionChatMarkMenu({
                     {annotationOpen ? (
                         <div data-testid="chat-annotation-editor" style={{ display: "grid", gap: 6, padding: 8, minWidth: 220 }}>
                             <textarea
+                                className="companion-pdf-menu-field"
                                 data-testid="chat-annotation-input"
                                 value={annotationText}
                                 autoFocus
                                 rows={3}
                                 placeholder={say("写批注…")}
                                 aria-label={say("写批注…")}
-                                style={{ resize: "vertical", minHeight: 64, font: "inherit", padding: "6px 8px" }}
                                 onChange={(event) => {
                                     const next = capPdfAnnotationDraft(event.target.value);
                                     if (next !== event.target.value) event.target.value = next;

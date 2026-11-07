@@ -34,20 +34,42 @@ func (c *guiHopJITCaller) executeActFree(ctx context.Context, step hopjit.StepRe
 		ctx: ctx, cfg: c.app.GetMaclawLLMConfig(), tools: definitions, provider: provider,
 		task: c.task, lookupQuery: hopLookupQuery(c.task, step),
 	}
-	return completeActFree(callbacks, step, func(prompt string, history []agent.ConversationEntry) agent.LoopResult {
-		return agentruntime.RunAgentTurn(callbacks, prompt, history, nil)
-	})
+	return completeActFree(callbacks, step, c.actFreeRunner(ctx, callbacks))
 }
 
-// completeActFree accepts the tool agent's JSON. web_search on the whitelist
-// must succeed before that JSON is kept. web_fetch is required only when
-// web_search is absent. A lookup step whose outputs can all hold the search
-// text, and whose whitelist is only web_search, is the host search: the model
-// turn cannot change those outputs. Other steps get one correction turn.
-// Other tools stay optional.
-// On a weather, news, or price step, each string output is the tool result.
-// When every declared output is one of those types, prose still keeps that result.
-// If the model does not call web_search, the host runs that search once.
+// actFreeRunner sends a tool whitelist through the tool agent. The lookup
+// answer is a JSON completion: that turn has already searched and must not
+// be offered tools.
+func (c *guiHopJITCaller) actFreeRunner(ctx context.Context, callbacks *hopJITActFreeCallbacks) func(string, []agent.ConversationEntry) agent.LoopResult {
+	return func(prompt string, history []agent.ConversationEntry) agent.LoopResult {
+		if callbacks != nil && callbacks.answerFromEvidence {
+			text, err := c.call(ctx, hopLookupAnswerMessages(callbacks, prompt), true)
+			if err != nil {
+				return agent.LoopResult{Error: err.Error()}
+			}
+			return agent.LoopResult{Text: text}
+		}
+		return agentruntime.RunAgentTurn(callbacks, prompt, history, nil)
+	}
+}
+
+func hopLookupAnswerMessages(callbacks *hopJITActFreeCallbacks, prompt string) []interface{} {
+	system := "检索已经完成。你只根据给出的证据写出用户要的答案。只返回 JSON 对象，键必须严格匹配输出声明。不要粘贴检索列表，不要调用工具。"
+	if callbacks != nil {
+		system = callbacks.BuildSystemPrompt("", false)
+	}
+	return []interface{}{
+		map[string]interface{}{"role": "system", "content": system},
+		map[string]interface{}{"role": "user", "content": prompt},
+	}
+}
+
+// completeActFree runs a whitelisted act. A string-only web_search lookup
+// searches on the host, then one JSON completion writes the answer from that
+// evidence. The transcript is not stored. An empty search fails before the
+// model. Other whitelists use the tool agent. web_search must succeed before
+// its JSON is kept. web_fetch is required only when web_search is absent.
+// A failed or missed retrieval gets one correction turn.
 func completeActFree(callbacks *hopJITActFreeCallbacks, step hopjit.StepReady, run func(string, []agent.ConversationEntry) agent.LoopResult) (map[string]any, error) {
 	if actFreeHostOwnsLookup(callbacks, step) {
 		callbacks.ensureLookupSearch(step)
@@ -57,7 +79,15 @@ func completeActFree(callbacks *hopJITActFreeCallbacks, step hopjit.StepReady, r
 			}
 			return nil, fmt.Errorf("act free finished without calling web_search")
 		}
-		return bindActFreeRetrieval(callbacks, step, map[string]any{})
+		evidence := ""
+		if callbacks != nil {
+			evidence = hopLookupEvidence(callbacks.retrieval["web_search"])
+		}
+		if evidence == "" {
+			return nil, fmt.Errorf("act free finished without a web_search result")
+		}
+		// The search transcript is evidence. The declared text is the answer.
+		return completeLookupAnswer(callbacks, step, evidence, run)
 	}
 	result := run(hopJITActFreePrompt(step), nil)
 	if result.Error == "" && result.AskUser == nil && result.RecordAudio == nil {
@@ -137,8 +167,8 @@ func actFreeBindsRetrieval(callbacks *hopJITActFreeCallbacks, step hopjit.StepRe
 }
 
 // actFreeCanFinishWithoutJSON reports that this lookup step's declared outputs
-// are all string results. The tool result is the answer, so prose from the
-// model does not discard it. A bool, number, or list output still needs JSON.
+// are all string results. The host can search first and then ask for the answer.
+// A bool, number, or list output still needs the tool-agent JSON.
 func actFreeCanFinishWithoutJSON(callbacks *hopJITActFreeCallbacks, step hopjit.StepReady) bool {
 	if !actFreeBindsRetrieval(callbacks, step) || actFreeRequiredTool(step) == "" || len(actFreeRetrievalNames(step)) == 0 {
 		return false
@@ -162,6 +192,8 @@ func actFreeRetrievalNames(step hopjit.StepReady) []string {
 	return names
 }
 
+// actFreeHostOwnsLookup is a string-only web_search lookup. The host searches
+// once. A later JSON completion writes the answer from that evidence.
 func actFreeHostOwnsLookup(callbacks *hopJITActFreeCallbacks, step hopjit.StepReady) bool {
 	if callbacks == nil || !actFreeCanFinishWithoutJSON(callbacks, step) || len(step.Tools) == 0 {
 		return false
@@ -195,6 +227,129 @@ func hopLookupEvidence(text string) string {
 		return ""
 	}
 	return text
+}
+
+// hopLookupAnswerPrompt asks for the user-facing answer. The evidence stays
+// in the prompt and is not a valid value for a declared text output.
+func hopLookupAnswerPrompt(task string, step hopjit.StepReady, evidence string) string {
+	task = strings.TrimSpace(task)
+	if task == "" {
+		task = strings.TrimSpace(step.Goal)
+	}
+	if task == "" {
+		task = strings.TrimSpace(step.Summary)
+	}
+	var keys []string
+	for _, decl := range step.OutputSchema {
+		name := strings.TrimSpace(decl.Name)
+		if name == "" {
+			continue
+		}
+		typ := strings.TrimSpace(decl.Type)
+		if typ == "" {
+			typ = "text"
+		}
+		keys = append(keys, name+" % "+typ)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "任务: %s\n步骤: %s\n", task, strings.TrimSpace(step.Summary))
+	if instruction := strings.TrimSpace(step.Instruction); instruction != "" {
+		fmt.Fprintf(&b, "说明: %s\n", instruction)
+	}
+	fmt.Fprintf(&b, "检索证据:\n%s\n\n根据证据写出用户要的答案。不要粘贴检索列表，不要输出“找到 N 条结果”、标题或 URL。只返回 JSON 对象，键为: %s", evidence, strings.Join(keys, ", "))
+	return b.String()
+}
+
+func hopLookupAnswerCorrection() string {
+	return "上一份 JSON 是空的，或整段复制了检索证据。那不是给用户的答案。用证据中的事实写简短答案，只返回 JSON。"
+}
+
+func completeLookupAnswer(callbacks *hopJITActFreeCallbacks, step hopjit.StepReady, evidence string, run func(string, []agent.ConversationEntry) agent.LoopResult) (map[string]any, error) {
+	if callbacks != nil {
+		callbacks.answerFromEvidence = true
+	}
+	task := ""
+	if callbacks != nil {
+		task = callbacks.task
+	}
+	prompt := hopLookupAnswerPrompt(task, step, evidence)
+	result := run(prompt, nil)
+	if outputs, ok := hopLookupAnswerFromModel(step, evidence, result); ok {
+		return outputs, nil
+	}
+	if result.Error != "" {
+		return nil, errors.New(result.Error)
+	}
+	if result.AskUser != nil || result.RecordAudio != nil {
+		return nil, errors.New("interactive act free requires a HopJIT pause step")
+	}
+	result = run(prompt+"\n"+hopLookupAnswerCorrection(), nil)
+	if outputs, ok := hopLookupAnswerFromModel(step, evidence, result); ok {
+		return outputs, nil
+	}
+	if result.AskUser != nil || result.RecordAudio != nil {
+		return nil, errors.New("interactive act free requires a HopJIT pause step")
+	}
+	if result.Error != "" {
+		return nil, errors.New(result.Error)
+	}
+	return nil, errors.New("act free lookup answer was not written from the search evidence")
+}
+
+func hopLookupAnswerFromModel(step hopjit.StepReady, evidence string, result agent.LoopResult) (map[string]any, bool) {
+	if result.Error != "" || result.AskUser != nil || result.RecordAudio != nil {
+		return nil, false
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(stripHopJITCodeFence(result.Text)), &parsed); err != nil || parsed == nil {
+		return nil, false
+	}
+	outputs := map[string]any{}
+	for _, decl := range step.OutputSchema {
+		name := strings.TrimSpace(decl.Name)
+		if name == "" {
+			continue
+		}
+		value, ok := parsed[name]
+		if !ok {
+			return nil, false
+		}
+		if !actFreeRetrievalStringType(decl.Type) {
+			outputs[name] = value
+			continue
+		}
+		text, ok := value.(string)
+		if !ok {
+			return nil, false
+		}
+		text = strings.TrimSpace(text)
+		if text == "" || hopLookupAnswerCopiesEvidence(text, evidence) {
+			return nil, false
+		}
+		outputs[name] = text
+	}
+	if len(outputs) == 0 {
+		return nil, false
+	}
+	return outputs, true
+}
+
+// hopLookupAnswerCopiesEvidence rejects the transcript as the answer. A short
+// fact quoted inside a longer answer stays. A paste of the transcript, with
+// or without a short prefix, does not.
+func hopLookupAnswerCopiesEvidence(answer, evidence string) bool {
+	answer = strings.TrimSpace(answer)
+	evidence = strings.TrimSpace(evidence)
+	if answer == "" || evidence == "" {
+		return false
+	}
+	if answer == evidence {
+		return true
+	}
+	if !strings.Contains(answer, evidence) {
+		return false
+	}
+	return len([]rune(evidence))*5 >= len([]rune(answer))*4
 }
 
 func hopLookupSearchMiss(text string) bool {
@@ -289,24 +444,33 @@ func actFreeSearchFailureCorrection(name, message string) string {
 }
 
 type hopJITActFreeCallbacks struct {
-	ctx          context.Context
-	cfg          corelib.MaclawLLMConfig
-	tools        []map[string]interface{}
-	provider     *tool.HopJITPlanToolProvider
-	called       map[string]int
-	retrieval    map[string]string
-	toolErrors   map[string]string
-	lookupSearch func(string) (string, error)
-	task         string
-	lookupQuery  string
+	ctx                context.Context
+	cfg                corelib.MaclawLLMConfig
+	tools              []map[string]interface{}
+	provider           *tool.HopJITPlanToolProvider
+	called             map[string]int
+	retrieval          map[string]string
+	toolErrors         map[string]string
+	lookupSearch       func(string) (string, error)
+	task               string
+	lookupQuery        string
+	answerFromEvidence bool
 }
 
 func (c *hopJITActFreeCallbacks) GetLLMConfig() corelib.MaclawLLMConfig { return c.cfg }
 func (c *hopJITActFreeCallbacks) GetMaxIterations() int                 { return config.EffectiveMaxIterations(30) }
 func (c *hopJITActFreeCallbacks) BuildSystemPrompt(string, bool) string {
+	if c != nil && c.answerFromEvidence {
+		return "检索已经完成。你只根据给出的证据写出用户要的答案。只返回 JSON 对象，键必须严格匹配输出声明。不要粘贴检索列表，不要调用工具。"
+	}
 	return "你在 HopJIT 的 act free 步骤中工作。只能使用当前列出的工具。白名单里有 web_search 时必须先调用它。没有 web_search 但有 web_fetch 时必须先调用 web_fetch。完成任务后只返回符合声明的 JSON 输出，不要 Markdown 围栏。"
 }
-func (c *hopJITActFreeCallbacks) BuildTools(string) []map[string]interface{} { return c.tools }
+func (c *hopJITActFreeCallbacks) BuildTools(string) []map[string]interface{} {
+	if c != nil && c.answerFromEvidence {
+		return nil
+	}
+	return c.tools
+}
 func (c *hopJITActFreeCallbacks) calledTool(name string) bool {
 	return c != nil && c.called[name] > 0
 }

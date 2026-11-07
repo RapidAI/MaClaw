@@ -68,6 +68,9 @@ describe("companion Mongolian copy", () => {
         expect(companionSay("mn", "登录后可以查看云端分享")).toBe("Нэвтэрсний дараа үүлэн хуваалцалтыг харж болно");
         expect(companionSay("mn", "暂时无法连接云端，本机文档仍可查看")).toBe("Үүлэнтэй түр холбогдож чадсангүй. Энэ компьютерийн баримтыг харж болно.");
         expect(companionSay("mn", "拖到左侧文件夹以分类")).toBe("Зүүн хавтас руу чирж ангилна");
+        expect(companionSay("zh-Hans", "所有")).toBe("所有");
+        expect(companionSay("en", "本地")).toBe("Local");
+        expect(companionSay("mn", "来源")).toBe("Эх сурвалж");
         expect(companionSay("zh-Hans", "拖到左侧文件夹以分类")).toBe("拖到左侧文件夹以分类");
     });
 });

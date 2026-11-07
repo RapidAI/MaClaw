@@ -652,6 +652,7 @@ describe("companion pdf reader", () => {
             expect(screen.queryByTestId("pdf-annotation-input")).toBeNull();
             fireEvent.mouseDown(screen.getByTestId("pdf-annotate"));
             const editor = screen.getByTestId("pdf-annotation-input") as HTMLTextAreaElement;
+            expect(editor.classList.contains("companion-pdf-menu-field")).toBe(true);
             fireEvent.keyDown(editor, { key: "Escape" });
             expect(screen.queryByTestId("pdf-annotation-input")).toBeNull();
 

@@ -649,7 +649,8 @@ func fileCompanionPlaceItem(cat *FileCompanionCatalog, item FileCompanionLibrary
 // was cancelled comes back as a local row outside this folder.
 func (a *App) deleteFileCompanionFolderMember(item FileCompanionLibraryItem) error {
 	if item.Source == "cloud" && item.Mine && strings.TrimSpace(item.Token) != "" && !fileCompanionShareExpiredAt(item.ExpiresAt, time.Now().UTC()) {
-		return a.DeleteFileCompanionShare(item.Token)
+		_, err := a.DeleteFileCompanionShare(item.Token)
+		return err
 	}
 	_, err := a.DeleteFileCompanionProject(item.ID, item.Path)
 	return err

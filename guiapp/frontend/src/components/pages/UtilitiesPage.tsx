@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './UtilitiesPage.css';
-import { EventsOn, BrowserOpenURL } from '../../../wailsjs/runtime';
+import { EventsOn, BrowserOpenURL, ClipboardSetText } from '../../../wailsjs/runtime';
 import { EVENT_EXPERTS_CHANGED, EVENT_SURVEY_UPDATED } from '../../constants/events';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { useDialog } from '../CustomDialog';
@@ -478,7 +478,10 @@ export const UtilitiesPage = ({
     const [browserExtBusy, setBrowserExtBusy] = useState(false);
     const [browserExtRows, setBrowserExtRows] = useState<BrowserExtensionRow[]>([]);
     const [browserExtUnpacked, setBrowserExtUnpacked] = useState('');
+    const [browserExtPathCopied, setBrowserExtPathCopied] = useState(false);
     const [browserExtError, setBrowserExtError] = useState('');
+    const browserExtCopiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const browserExtCopyEpoch = useRef(0);
     const browserExtBusyRef = useRef(false);
     const [vscodeFeedback, setVscodeFeedback] = useState<LaunchFeedback | null>(null);
     const [vscodeInstallPrompt, setVscodeInstallPrompt] = useState<string | null>(null);
@@ -580,6 +583,8 @@ export const UtilitiesPage = ({
         mountedRef.current = true;
         return () => {
             mountedRef.current = false;
+            browserExtCopyEpoch.current += 1;
+            if (browserExtCopiedTimer.current) clearTimeout(browserExtCopiedTimer.current);
         };
     }, []);
 
@@ -1263,6 +1268,10 @@ export const UtilitiesPage = ({
         browserExtensionInstall: tailText(lang ?? "", 'Install', '安装', '安裝'),
         browserExtensionInstallAgain: tailText(lang ?? "", 'Install again', '重新安装', '重新安裝'),
         browserExtensionShowFolder: tailText(lang ?? "", 'Show folder', '打开文件夹', '打開資料夾'),
+        browserExtensionCopy: tailText(lang ?? "", 'Copy', '复制', '複製'),
+        browserExtensionCopied: tailText(lang ?? "", 'Copied', '已复制', '已複製'),
+        browserExtensionCopyPathTitle: tailText(lang ?? "", 'Copy the plugin folder', '复制插件目录', '複製外掛目錄'),
+        browserExtensionCopyFailed: tailText(lang ?? "", 'Could not copy the plugin folder', '无法复制插件目录', '無法複製外掛目錄'),
         browserExtensionOpenPage: tailText(lang ?? "", 'Open extensions page', '打开扩展页', '打開擴充功能頁'),
         browserExtensionLead: tailText(lang ?? "", 'Right-click Add to Companion in Chrome, Edge, or Safari. The paper is saved in Companion and opened in a tab.', '在 Chrome、Edge 或 Safari 里右键「添加到伴读」，论文会保存到伴读并在标签页打开。', '在 Chrome、Edge 或 Safari 裡右鍵「添加到伴讀」，論文會儲存到伴讀並在分頁開啟。'),
         virtualRepositoryDesc: tailText(lang ?? "", 'Organize Git, SVN, and local build-output directories in a portable virtual tree', '将 Git、SVN 与编译输出等本地目录组织成一棵可移植的虚拟目录树'),
@@ -2070,10 +2079,19 @@ export const UtilitiesPage = ({
         }
     };
 
+    const clearBrowserExtensionCopied = () => {
+        browserExtCopyEpoch.current += 1;
+        if (browserExtCopiedTimer.current) {
+            clearTimeout(browserExtCopiedTimer.current);
+            browserExtCopiedTimer.current = null;
+        }
+        setBrowserExtPathCopied(false);
+    };
     const applyBrowserExtensionRows = (result: { browsers?: BrowserExtensionRow[]; unpackedPath?: string } | null | undefined) => {
         const rows = Array.isArray(result?.browsers) ? result.browsers : [];
         setBrowserExtRows(rows.filter((row) => row && row.state !== 'absent' && row.browser));
         setBrowserExtUnpacked(typeof result?.unpackedPath === 'string' ? result.unpackedPath : '');
+        clearBrowserExtensionCopied();
     };
     const browserExtensionBridge = async () => {
         const bridge = (window as any)?.go?.main?.App;
@@ -2139,7 +2157,53 @@ export const UtilitiesPage = ({
             setBrowserExtError(String(e?.message || e));
         }
     };
-    const showUnpackedFolder = browserExtUnpacked !== '' && browserExtRows.some((row) => row.detail === 'load-unpacked');
+    // The card shows the unpacked plugin directory (…/companion-paper). Show
+    // folder highlights that folder inside its parent, so Explorer's address
+    // bar is the parent. Copy keeps the last segment and only drops a trailing
+    // separator.
+    const browserExtPluginDirectory = browserExtUnpacked.trim().replace(/[\\/]+$/, '');
+    const copyBrowserExtensionFolder = async () => {
+        const pluginDirectory = browserExtPluginDirectory;
+        if (!pluginDirectory) return;
+        // A newer click copies the same plugin directory. An older attempt must
+        // not paint 已复制 or the failure after that click has already finished.
+        browserExtCopyEpoch.current += 1;
+        const epoch = browserExtCopyEpoch.current;
+        if (browserExtCopiedTimer.current) {
+            clearTimeout(browserExtCopiedTimer.current);
+            browserExtCopiedTimer.current = null;
+        }
+        setBrowserExtError('');
+        let copied = false;
+        try {
+            copied = await ClipboardSetText(pluginDirectory) !== false;
+        } catch {
+            copied = false;
+        }
+        if (!mountedRef.current || epoch !== browserExtCopyEpoch.current) return;
+        if (!copied) {
+            try {
+                if (navigator.clipboard?.writeText) {
+                    await navigator.clipboard.writeText(pluginDirectory);
+                    copied = true;
+                }
+            } catch {
+                copied = false;
+            }
+        }
+        if (!mountedRef.current || epoch !== browserExtCopyEpoch.current) return;
+        if (!copied) {
+            setBrowserExtPathCopied(false);
+            setBrowserExtError(t.browserExtensionCopyFailed);
+            return;
+        }
+        setBrowserExtPathCopied(true);
+        if (browserExtCopiedTimer.current) clearTimeout(browserExtCopiedTimer.current);
+        browserExtCopiedTimer.current = setTimeout(() => {
+            if (mountedRef.current && epoch === browserExtCopyEpoch.current) setBrowserExtPathCopied(false);
+        }, 2000);
+    };
+    const showUnpackedFolder = browserExtPluginDirectory !== '' && browserExtRows.some((row) => row.detail === 'load-unpacked');
 
     if (view === 'browser-extension') {
         return (
@@ -2193,7 +2257,19 @@ export const UtilitiesPage = ({
                 </ul>
                 {showUnpackedFolder ? (
                     <div className="browser-ext__folder" data-testid="browser-extension-unpacked">
-                        <code className="browser-ext__path">{browserExtUnpacked}</code>
+                        <div className="browser-ext__path-line">
+                            <code className="browser-ext__path">{browserExtPluginDirectory}</code>
+                            <button
+                                type="button"
+                                className="utilities-btn utilities-btn--ghost browser-ext__copy"
+                                data-testid="browser-extension-copy-path"
+                                title={t.browserExtensionCopyPathTitle}
+                                aria-label={browserExtPathCopied ? t.browserExtensionCopied : t.browserExtensionCopyPathTitle}
+                                onClick={() => { void copyBrowserExtensionFolder(); }}
+                            >
+                                {browserExtPathCopied ? t.browserExtensionCopied : t.browserExtensionCopy}
+                            </button>
+                        </div>
                         <button
                             type="button"
                             className="utilities-btn utilities-btn--ghost"

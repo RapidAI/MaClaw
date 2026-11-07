@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,6 +58,129 @@ func newShareRevokeTestApp(t *testing.T, handler http.Handler) *App {
 			RemoteHubURL:      server.URL,
 			RemoteViewerToken: "viewer-token",
 		},
+	}
+}
+
+// A refresh that has already read the library must not write a 本机项目 or a
+// 云端项目 back after the reader confirms 删除 / 移除. The hub still lists the
+// received share; the dismissal is what keeps it out.
+func TestRefreshDoesNotRestoreAProjectDeletedWhileItRuns(t *testing.T) {
+	resetFileCompanionShareProbeCache()
+	const token = "cd_d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
+	prevInline := fileCompanionLibraryListInline
+	prevHook := fileCompanionLibraryCatalogHook
+	fileCompanionLibraryListInline = false
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var once sync.Once
+	var catalog FileCompanionLibraryList
+	fileCompanionLibraryCatalogHook = func(listed FileCompanionLibraryList) {
+		once.Do(func() {
+			catalog = listed
+			close(entered)
+		})
+		<-release
+	}
+	var closeRelease sync.Once
+	t.Cleanup(func() {
+		closeRelease.Do(func() { close(release) })
+		deadline := time.Now().Add(5 * time.Second)
+		for fileCompanionLibrarySyncRunning.Load() && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		fileCompanionLibraryListInline = prevInline
+		fileCompanionLibraryCatalogHook = prevHook
+	})
+	app := newShareRevokeTestApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/mobile/documents/shares" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"notes_reply":true,"mine":[],"received":[{"token":"` + token + `","name":"shared.pdf","owner":"mayong@qianxin.com","visibility":"public","permanent":true,"revision":2,"created_at":"2026-11-06T00:00:00Z"}],"server_time":"` + time.Now().UTC().Format(time.RFC3339) + `"}`))
+			return
+		}
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/import") {
+			w.Header().Set("X-Companion-Document-Name", "shared.pdf")
+			w.Header().Set("X-Companion-Document-Revision", "2")
+			_, _ = w.Write([]byte("%PDF-shared"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	local := filepath.Join(app.testHomeDir, "local.pdf")
+	if err := os.WriteFile(local, []byte("%PDF-local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downloaded, _ := seedReceivedShareCopy(t, app, token)
+	fileCompanionLibraryMu.Lock()
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{
+		{ID: "local:paper", Name: "local.pdf", Path: local, Source: "local", OpenedAt: "2026-11-06T00:00:00Z"},
+		{ID: token, Token: token, Name: "shared.pdf", Path: downloaded, Source: "cloud", Visibility: "public", Permanent: true, Revision: 1, OpenedAt: "2026-11-06T00:00:00Z"},
+	})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("hub index was not published")
+	}
+	sawLocal, sawCloud := false, false
+	for _, item := range catalog.Items {
+		if item.ID == "local:paper" {
+			sawLocal = true
+		}
+		if item.Token == token {
+			sawCloud = true
+		}
+	}
+	if !sawLocal || !sawCloud {
+		t.Fatalf("catalog before delete = %+v", catalog.Items)
+	}
+	if _, err := app.DeleteFileCompanionProject("local:paper", local); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := app.DeleteFileCompanionProject(token, downloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed.LibraryRev == 0 {
+		t.Fatal("delete did not report a library revision")
+	}
+	// The hub index was built before the deletes and is still waiting to be
+	// sent. The event has to read the library again, or that index puts both
+	// cards back with a newer sync generation.
+	stamped := app.stampFileCompanionLibraryList(catalog)
+	for _, item := range stamped.Items {
+		if item.ID == "local:paper" || item.Token == token {
+			t.Fatalf("stale catalog kept a deleted project: %+v", item)
+		}
+	}
+	if stamped.LibraryRev < removed.LibraryRev {
+		t.Fatalf("stamped rev = %d, delete rev = %d", stamped.LibraryRev, removed.LibraryRev)
+	}
+	closeRelease.Do(func() { close(release) })
+	deadline := time.Now().Add(5 * time.Second)
+	for fileCompanionLibrarySyncRunning.Load() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if fileCompanionLibrarySyncRunning.Load() {
+		t.Fatal("cloud refresh did not finish")
+	}
+	fileCompanionLibraryListInline = true
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range listed.Items {
+		if item.ID == "local:paper" || item.Token == token {
+			t.Fatalf("deleted project returned: %+v", item)
+		}
+	}
+	if _, err := os.Stat(local); err != nil {
+		t.Fatalf("local source file = %v", err)
 	}
 }
 
@@ -652,6 +776,66 @@ func TestListFileCompanionLibraryRestoresAProbeDismissedShareThatIsStillLive(t *
 	fileCompanionLibraryMu.Unlock()
 	if dismissed {
 		t.Fatal("a live share stayed dismissed after the hub listed it again")
+	}
+}
+
+func TestDeleteFileCompanionShareStaysGoneWhenTheHubListIsStale(t *testing.T) {
+	resetFileCompanionShareProbeCache()
+	const token = "cd_d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2"
+	app := newShareRevokeTestApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete && r.URL.Path == "/api/mobile/documents/shares/"+token {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		shareListHandler(token, true).ServeHTTP(w, r)
+	}))
+	source := filepath.Join(app.testHomeDir, "paper.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-own"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileCompanionLibraryMu.Lock()
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{{
+		ID: token, Token: token, Name: "paper.pdf", Path: source, Source: "cloud",
+		Mine: true, Visibility: "public", Permanent: true, Revision: 1,
+		OpenedAt: "2026-11-06T00:00:00Z",
+	}})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed, err := app.DeleteFileCompanionShare(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed.LibraryRev == 0 {
+		t.Fatal("delete did not report a library revision")
+	}
+	if !removed.Restored || removed.LocalID != fileCompanionLibraryLocalID(source) || removed.Name != "paper.pdf" {
+		t.Fatalf("cancel did not name the local project: %+v", removed)
+	}
+	// The hub list still names the share, the way a refresh does when it
+	// fetched before the delete. A probe dismissal would revive the row.
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawLocal bool
+	for _, item := range listed.Items {
+		if item.Token == token {
+			t.Fatalf("cancelled share returned: %+v", item)
+		}
+		if item.Source != "cloud" && fileCompanionSameLibraryPath(item.Path, source) {
+			sawLocal = true
+		}
+	}
+	if !sawLocal {
+		t.Fatalf("owner file missing: %+v", listed.Items)
+	}
+	fileCompanionLibraryMu.Lock()
+	tokens, user := app.readDismissedSharesLocked()
+	fileCompanionLibraryMu.Unlock()
+	if !tokens[token] || !user[token] {
+		t.Fatal("cancelled share was not kept as the reader's own dismissal")
 	}
 }
 
