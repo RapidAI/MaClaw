@@ -3,6 +3,7 @@ package guiapp
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
@@ -69,9 +70,10 @@ func TestTrimHistoryAllReplacesWithOneMemo(t *testing.T) {
 
 func TestTrimHistoryAllKeepsProgressInKeptMemo(t *testing.T) {
 	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
+	const constraint = "keep the postgres constraint"
 	entries := make([]agent.ConversationEntry, 0, 10)
 	for i := 0; i < 6; i++ {
-		entries = append(entries, agent.ConversationEntry{Role: "user", Content: "old work " + strings.Repeat("o", 80)})
+		entries = append(entries, agent.ConversationEntry{Role: "user", Content: constraint})
 	}
 	entries = append(entries, agent.ConversationEntry{Role: "user", Content: "<handoff-memo>\n## progress\nmedian 17.4\n</handoff-memo>"})
 	for i := 0; i < 3; i++ {
@@ -86,11 +88,60 @@ func TestTrimHistoryAllKeepsProgressInKeptMemo(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("summarizer ran over a kept memo, calls=%d", calls)
 	}
-	if !strings.Contains(text, "median 17.4") || strings.Contains(text, "wiped") || strings.Contains(text, "old work") {
-		t.Fatalf("kept progress was replaced: %s", text)
-	}
 	if strings.Count(text, "<handoff-memo>") != 1 {
 		t.Fatalf("memo count:\n%s", text)
+	}
+	parsed, ok := agent.ParseHandoffMemo(text)
+	if !ok || !strings.Contains(parsed.Task, constraint) || !strings.Contains(parsed.Progress, "median 17.4") || strings.Contains(text, "wiped") {
+		t.Fatalf("merged memo task=%q progress=%q text=%s", parsed.Task, parsed.Progress, text)
+	}
+	for _, entry := range trimmed {
+		body, _ := entry.Content.(string)
+		if body == constraint {
+			t.Fatal("covered constraint stayed as a raw user message")
+		}
+	}
+}
+
+func TestTrimHistoryAllKeepsRecoveryMeasurementOnce(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
+	if !strings.HasPrefix(compactionRecoveryPrefix, agent.CompactionRecoveryLead) {
+		t.Fatal("recovery lead drifted from the compaction prefix")
+	}
+	pad := strings.Repeat("later-section ", 120)
+	handoff := compactionRecoveryPrefix + "1. **当前进度**: median 17.4\n2. **重要上下文**: " + pad + "\n3. **待完成工作**: ship\n4. **关键数据**: keep-postgres\n"
+	if strings.Contains(handoff, "<handoff-memo>") || agent.RecoveryHandoffProgress(handoff) == "" || utf8.RuneCountInString(agent.RecoveryHandoffProgress(handoff)) <= 1400 {
+		t.Fatal("fixture is not a long four-section recovery handoff")
+	}
+	entries := []agent.ConversationEntry{{Role: "user", Content: handoff}}
+	for i := 0; i < 8; i++ {
+		entries = append(entries, agent.ConversationEntry{Role: "user", Content: "later work " + strings.Repeat("w", 40)})
+	}
+	calls := 0
+	trimmed := trimHistoryWithSummary(entries, func(string) string {
+		calls++
+		return "<handoff-memo>\n## task\nwiped\n</handoff-memo>"
+	}, nil, 4, 0)
+	text := trimmedEntryText(trimmed)
+	parsed, ok := agent.ParseHandoffMemo(text)
+	if calls != 1 || !ok || strings.Count(text, "<handoff-memo>") != 1 || strings.Count(parsed.Progress, "median 17.4") != 1 {
+		t.Fatalf("calls=%d progress=%q text=%s", calls, parsed.Progress, text)
+	}
+	if progressRunes, renderRunes := utf8.RuneCountInString(parsed.Progress), utf8.RuneCountInString(parsed.Render()); progressRunes > 1400 || renderRunes > 5000 {
+		t.Fatalf("progress=%d render=%d", progressRunes, renderRunes)
+	}
+	firstProgress := utf8.RuneCountInString(parsed.Progress)
+	trimmed = append(trimmed, agent.ConversationEntry{Role: "user", Content: "one more"}, agent.ConversationEntry{Role: "user", Content: "two more"})
+	second := trimHistoryWithSummary(trimmed, func(string) string {
+		calls++
+		return "<handoff-memo>\n## task\nwiped again\n</handoff-memo>"
+	}, nil, 4, 0)
+	parsed, ok = agent.ParseHandoffMemo(trimmedEntryText(second))
+	if calls != 1 || !ok || strings.Count(parsed.Progress, "median 17.4") != 1 || strings.Count(trimmedEntryText(second), "<handoff-memo>") != 1 {
+		t.Fatalf("second calls=%d progress=%q text=%s", calls, parsed.Progress, trimmedEntryText(second))
+	}
+	if againRunes, renderRunes := utf8.RuneCountInString(parsed.Progress), utf8.RuneCountInString(parsed.Render()); againRunes > firstProgress || againRunes > 1400 || renderRunes > 5000 {
+		t.Fatalf("progress grew %d -> %d render=%d", firstProgress, againRunes, renderRunes)
 	}
 }
 

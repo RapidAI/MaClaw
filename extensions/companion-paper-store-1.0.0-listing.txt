@@ -10,19 +10,19 @@ Chrome 与 Edge 使用同一份 zip，各提交一次。
 Add the current PDF or paper to Companion on this computer and open it.
 
 contextMenus
-在 PDF、论文页面和论文链接上显示右键菜单「添加到伴读」。菜单只出现在这些页面，用来把用户选中的文档交给本机伴读。不读取页面正文。
+在 PDF 和论文详情页上显示右键菜单「添加到伴读」。在其他 http、https 或本机文件页面上，只有右键点中的链接本身是 PDF 或论文时才显示。不读取页面正文。
 
 英文 contextMenus
-Shows the “Add to Companion” context menu on PDF files, paper pages, and paper links. The menu is how the user sends the selected document to Companion on this computer. The extension does not read the page body.
+Shows the “Add to Companion” context menu on PDF files and paper pages. On any other http, https, or local file page, the menu appears only when the link being right-clicked is itself a PDF or paper. The extension does not read the page body.
 
 nativeMessaging
-只连接本机原生主机 com.maclaw.companion。该主机由伴读桌面程序安装。用户点击菜单时，向主机发送当前页面的 url 和 title，标题最长 200 字。扩展安装或浏览器启动时发送 hello、浏览器名称和版本 1.0.0。这些内容只到本机程序，扩展不把它们发到网站或开发者服务器。没有 host_permissions，没有 content script。
+只连接本机原生主机 com.maclaw.companion，由伴读桌面程序安装。用户点击菜单时发送一个网址和最多 200 字的标题。网址按此顺序采用：是 PDF 或论文的链接、是 PDF 或论文的选中文字、与当前页不同的嵌入 PDF、当前论文页。若这些都不是，则采用 http(s) 链接、http(s) 选中文字，最后才是当前页地址。扩展安装或浏览器启动时另送 hello、浏览器名称和清单中的版本。内容只到本机程序，不发往网站或开发者服务器。没有 host_permissions，没有 content script。
 
 英文 nativeMessaging
-Connects only to the local native host com.maclaw.companion, which the Companion desktop app installs. When the user clicks the menu, the extension sends that page’s url and title (title at most 200 characters) to this host. On install and browser startup it sends hello, the browser name, and version 1.0.0. Nothing is sent to a website or to the developer’s server. There are no host permissions and no content script.
+Connects only to the local native host com.maclaw.companion, which the Companion desktop app installs. A menu click sends one address and a title of at most 200 characters. The address is chosen in this order: a PDF or paper link, selected text that is a PDF or paper URL, an embedded PDF that differs from the current page, then the current paper page. If none of those match, it uses an http(s) link, http(s) selected text, and finally the current page address. On install and browser startup it also sends hello, the browser name, and the version from the manifest. Nothing is sent to a website or to the developer’s server. There are no host permissions and no content script.
 
 隐私与数据使用
-扩展不设远程服务器。用户点击「添加到伴读」后，页面地址和标题只通过原生消息发给本机伴读，由伴读下载文档并在本机打开。启动时的 hello 只用来告诉本机程序扩展已加载。不收集账号、密码、通讯录、位置、健康或支付信息，也不读取页面正文。
+扩展没有远程服务器。用户点击「添加到伴读」后，按上面顺序选出的网址和标题只通过原生消息发给本机伴读，由伴读下载并在本机打开。启动时的 hello 只含浏览器名称和清单中的版本，用来告诉本机程序扩展已加载。不收集账号、密码、通讯录、位置、健康或支付信息，也不读取页面正文。
 
 英文隐私与数据使用
-The extension has no remote server. After the user clicks Add to Companion, the page URL and title go only to Companion on this computer through native messaging. Companion downloads the document and opens it locally. The startup hello only tells the local app that the extension is loaded. The extension does not collect accounts, passwords, contacts, location, health, or payment data, and it does not read the page body.
+The extension has no remote server. After the user clicks Add to Companion, the address chosen above and its title go only to Companion on this computer through native messaging. Companion downloads the document and opens it locally. The startup hello contains only the browser name and the manifest version, and only tells the local app that the extension is loaded. The extension does not collect accounts, passwords, contacts, location, health, or payment data, and it does not read the page body.

@@ -662,7 +662,33 @@ func shelfRunes(handles []ShelfHandle) int {
 	return n
 }
 
+// capFieldsToSchema applies the full-memo field caps before the render cap.
+// A parsed summary may be up to handoffRenderRunes, so one field can be
+// larger than its schema cap. Task keeps its newest tail. Progress keeps
+// its measurement. This does not clear progress.
+func (m *HandoffMemo) capFieldsToSchema() {
+	if m == nil {
+		return
+	}
+	m.Task = tailCut(strings.TrimSpace(m.Task), handoffTaskRunes)
+	if HandoffTextEmpty(m.Task) {
+		m.Task = ""
+	}
+	m.Progress = capProgressKeepingMeasurement(m.Progress)
+	m.FilesRead = capPaths(m.FilesRead, handoffReadMax, handoffPathRunes)
+	m.FilesModified = capPaths(m.FilesModified, handoffModifiedMax, handoffPathRunes)
+	m.FilesCreated = capPaths(m.FilesCreated, handoffCreatedMax, handoffPathRunes)
+	m.fitFileBudget(handoffFilesRunes)
+	m.Next = headCut(strings.TrimSpace(m.Next), handoffNextRunes)
+	if HandoffTextEmpty(m.Next) {
+		m.Next = ""
+	}
+	m.DeadEnds = capDeadEnds(m.DeadEnds, handoffDeadRunes, handoffDeadMax)
+	m.ShelfHandles = capHandles(m.ShelfHandles, handoffShelfRunes, handoffShelfMax)
+}
+
 func (m *HandoffMemo) shrinkToRenderCap() {
+	measurement := progressMeasurement(m.Progress)
 	for runeLen(m.Render()) > handoffRenderRunes {
 		switch {
 		case len(m.ShelfHandles) > 0:
@@ -671,15 +697,22 @@ func (m *HandoffMemo) shrinkToRenderCap() {
 			m.DeadEnds = m.DeadEnds[1:]
 		case len(m.FilesRead) > 0:
 			m.FilesRead = m.FilesRead[1:]
+		case len(m.FilesModified) > 0:
+			m.FilesModified = m.FilesModified[1:]
+		case len(m.FilesCreated) > 0:
+			m.FilesCreated = m.FilesCreated[1:]
+		case runeLen(m.Next) > 1:
+			m.Next = headCut(m.Next, runeLen(m.Next)/2)
+		case runeLen(m.Task) > 1:
+			m.Task = tailCut(m.Task, runeLen(m.Task)/2)
+		case measurement != "" && strings.TrimSpace(m.Progress) != measurement:
+			m.Progress = measurement
+			if runeLen(m.Progress) > handoffProgressRunes {
+				m.Progress = capProgressKeepingMeasurement(m.Progress)
+			}
+		case measurement == "" && runeLen(m.Progress) > 1:
+			m.Progress = tailCut(m.Progress, runeLen(m.Progress)/2)
 		default:
-			m.Progress = tailCut(m.Progress, handoffProgressRunes)
-			if runeLen(m.Render()) > handoffRenderRunes {
-				m.Progress = tailCut(m.Progress, runeLen(m.Progress)/2)
-			}
-			if runeLen(m.Render()) > handoffRenderRunes && m.Progress != "" {
-				m.Progress = ""
-				continue
-			}
 			return
 		}
 	}
@@ -1109,6 +1142,134 @@ func tailCut(s string, n int) string {
 		return s
 	}
 	return string(runes[len(runes)-n:])
+}
+
+// progressMeasurement is the digit line a tail cut must keep. A numbered
+// section heading is not a measurement: the line still has to contain a
+// digit after that heading. The first such line is the one a tail cut
+// drops. A long line contributes the window around its last number.
+func progressMeasurement(progress string) string {
+	line := firstSubstantiveDigitLine(progress)
+	if line == "" {
+		_, anchored, _, found := handoffSummaryAnchors(progress)
+		if !found {
+			return ""
+		}
+		line = strings.TrimSpace(anchored)
+	}
+	line = strings.TrimSpace(line)
+	if line == "" || isVerifyLine(line) {
+		return ""
+	}
+	if runeLen(line) <= 180 {
+		return line
+	}
+	return digitWindow(line)
+}
+
+// firstSubstantiveDigitLine returns the earliest non-verify line whose
+// digits are not only a leading list number such as "1." or "4、".
+func firstSubstantiveDigitLine(progress string) string {
+	for _, line := range strings.Split(progress, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == "" || isVerifyLine(trim) {
+			continue
+		}
+		if containsDigit(stripLeadingEnumerator(trim)) {
+			return trim
+		}
+	}
+	return ""
+}
+
+// stripLeadingEnumerator removes one leading "1." / "2)" / "3、" marker.
+// A decimal such as "17.4" is left intact.
+func stripLeadingEnumerator(line string) string {
+	runes := []rune(line)
+	i := 0
+	for i < len(runes) && runes[i] >= '0' && runes[i] <= '9' {
+		i++
+	}
+	if i == 0 || i >= len(runes) {
+		return line
+	}
+	if runes[i] != '.' && runes[i] != ')' && runes[i] != '、' {
+		return line
+	}
+	if runes[i] == '.' && i+1 < len(runes) && runes[i+1] >= '0' && runes[i+1] <= '9' {
+		return line
+	}
+	j := i + 1
+	for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t') {
+		j++
+	}
+	return string(runes[j:])
+}
+
+func digitWindow(line string) string {
+	runes := []rune(line)
+	last := -1
+	for i, r := range runes {
+		if r >= '0' && r <= '9' {
+			last = i
+		}
+	}
+	if last < 0 {
+		return ""
+	}
+	end := last + 1
+	for end < len(runes) && (runes[end] == '.' || (runes[end] >= '0' && runes[end] <= '9')) {
+		end++
+	}
+	start := last
+	for start > 0 && end-start < 80 {
+		start--
+	}
+	return strings.TrimSpace(string(runes[start:end]))
+}
+
+// capProgressKeepingMeasurement tail-cuts progress to the field cap after
+// moving the measurement to the end. The uncut body is not returned.
+func capProgressKeepingMeasurement(progress string) string {
+	progress = strings.TrimSpace(progress)
+	if progress == "" || HandoffTextEmpty(progress) {
+		return ""
+	}
+	measurement := progressMeasurement(progress)
+	if measurement != "" {
+		var kept []string
+		for _, line := range strings.Split(progress, "\n") {
+			if strings.TrimSpace(line) == measurement {
+				continue
+			}
+			kept = append(kept, line)
+		}
+		progress = strings.TrimSpace(strings.Join(kept, "\n"))
+		if progress == "" {
+			progress = measurement
+		} else {
+			progress += "\n" + measurement
+		}
+	}
+	if runeLen(progress) > handoffProgressRunes {
+		progress = tailCut(progress, handoffProgressRunes)
+	}
+	if measurement != "" && !strings.Contains(progress, measurement) {
+		meas := measurement
+		if runeLen(meas) > handoffProgressRunes {
+			meas = tailCut(meas, handoffProgressRunes)
+		}
+		room := handoffProgressRunes - runeLen(meas) - 1
+		if room < 1 {
+			progress = meas
+		} else {
+			progress = strings.TrimSpace(tailCut(progress, room) + "\n" + meas)
+		}
+		if runeLen(progress) > handoffProgressRunes {
+			progress = tailCut(progress, handoffProgressRunes)
+		}
+	}
+	return strings.TrimSpace(progress)
 }
 
 func runeLen(s string) int {

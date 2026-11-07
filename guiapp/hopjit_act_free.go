@@ -32,7 +32,7 @@ func (c *guiHopJITCaller) executeActFree(ctx context.Context, step hopjit.StepRe
 	}
 	callbacks := &hopJITActFreeCallbacks{
 		ctx: ctx, cfg: c.app.GetMaclawLLMConfig(), tools: definitions, provider: provider,
-		task: c.task, lookupQuery: hopLookupQuery(c.task, step),
+		task: c.task, lookupQuery: hopLookupQuery(c.task, step), now: time.Now(),
 	}
 	return completeActFree(callbacks, step, c.actFreeRunner(ctx, callbacks))
 }
@@ -53,8 +53,16 @@ func (c *guiHopJITCaller) actFreeRunner(ctx context.Context, callbacks *hopJITAc
 	}
 }
 
+func hopLookupAnswerSystemPrompt(now time.Time) string {
+	when := "证据里的「今天」「明天」「当前」按用户消息中的「现在」和各条结果的发布时间理解。"
+	if clock := hopLookupAnswerNowText(now); clock != "" {
+		when = "提问时刻是 " + clock + "。证据里的「今天」「明天」「当前」按这个时刻和各条结果的发布时间理解。"
+	}
+	return "检索已经完成。你只根据给出的证据写出用户要的答案。" + when + "只返回 JSON 对象，键必须严格匹配输出声明。不要粘贴检索列表，不要调用工具。"
+}
+
 func hopLookupAnswerMessages(callbacks *hopJITActFreeCallbacks, prompt string) []interface{} {
-	system := "检索已经完成。你只根据给出的证据写出用户要的答案。只返回 JSON 对象，键必须严格匹配输出声明。不要粘贴检索列表，不要调用工具。"
+	system := hopLookupAnswerSystemPrompt(time.Time{})
 	if callbacks != nil {
 		system = callbacks.BuildSystemPrompt("", false)
 	}
@@ -229,9 +237,11 @@ func hopLookupEvidence(text string) string {
 	return text
 }
 
-// hopLookupAnswerPrompt asks for the user-facing answer. The evidence stays
-// in the prompt and is not a valid value for a declared text output.
-func hopLookupAnswerPrompt(task string, step hopjit.StepReady, evidence string) string {
+// hopLookupAnswerPrompt asks for the user-facing answer. now is the host
+// clock for this act. Relative words in the evidence belong to each result's
+// own publish time. The evidence stays in the prompt and is not a valid value
+// for a declared text output.
+func hopLookupAnswerPrompt(task string, step hopjit.StepReady, evidence string, now time.Time) string {
 	task = strings.TrimSpace(task)
 	if task == "" {
 		task = strings.TrimSpace(step.Goal)
@@ -256,8 +266,24 @@ func hopLookupAnswerPrompt(task string, step hopjit.StepReady, evidence string) 
 	if instruction := strings.TrimSpace(step.Instruction); instruction != "" {
 		fmt.Fprintf(&b, "说明: %s\n", instruction)
 	}
-	fmt.Fprintf(&b, "检索证据:\n%s\n\n根据证据写出用户要的答案。不要粘贴检索列表，不要输出“找到 N 条结果”、标题或 URL。只返回 JSON 对象，键为: %s", evidence, strings.Join(keys, ", "))
+	clock := hopLookupAnswerNowText(now)
+	if clock != "" {
+		fmt.Fprintf(&b, "现在: %s\n", clock)
+	}
+	rule := "以「现在」为提问时刻。"
+	if clock != "" {
+		rule = "以「现在」" + clock + "为提问时刻。"
+	}
+	fmt.Fprintf(&b, "检索证据:\n%s\n\n%s证据里的「今天」「明天」「当前」按各条结果的发布时间换算到这个时刻。较早发布中的「当前」或「今天」不是现在。同一事实有多条说法时，采用发布时间更接近现在的那条。根据证据写出用户要的答案。不要粘贴检索列表，不要输出“找到 N 条结果”、标题或 URL。只返回 JSON 对象，键为: %s", evidence, rule, strings.Join(keys, ", "))
 	return b.String()
+}
+
+func hopLookupAnswerNowText(now time.Time) string {
+	if now.IsZero() {
+		return ""
+	}
+	weekday := [...]string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}[now.Weekday()]
+	return now.Format("2006-01-02 15:04") + " " + weekday
 }
 
 func hopLookupAnswerCorrection() string {
@@ -269,10 +295,16 @@ func completeLookupAnswer(callbacks *hopJITActFreeCallbacks, step hopjit.StepRea
 		callbacks.answerFromEvidence = true
 	}
 	task := ""
+	now := time.Now()
 	if callbacks != nil {
 		task = callbacks.task
+		if callbacks.now.IsZero() {
+			callbacks.now = now
+		} else {
+			now = callbacks.now
+		}
 	}
-	prompt := hopLookupAnswerPrompt(task, step, evidence)
+	prompt := hopLookupAnswerPrompt(task, step, evidence, now)
 	result := run(prompt, nil)
 	if outputs, ok := hopLookupAnswerFromModel(step, evidence, result); ok {
 		return outputs, nil
@@ -447,7 +479,7 @@ type hopJITActFreeCallbacks struct {
 	ctx                context.Context
 	cfg                corelib.MaclawLLMConfig
 	tools              []map[string]interface{}
-	provider           *tool.HopJITPlanToolProvider
+	provider           hopjit.ToolProvider
 	called             map[string]int
 	retrieval          map[string]string
 	toolErrors         map[string]string
@@ -455,13 +487,16 @@ type hopJITActFreeCallbacks struct {
 	task               string
 	lookupQuery        string
 	answerFromEvidence bool
+	// now is the host clock captured when this act starts. The lookup answer
+	// reads 今天, 明天, and 当前 against it.
+	now time.Time
 }
 
 func (c *hopJITActFreeCallbacks) GetLLMConfig() corelib.MaclawLLMConfig { return c.cfg }
 func (c *hopJITActFreeCallbacks) GetMaxIterations() int                 { return config.EffectiveMaxIterations(30) }
 func (c *hopJITActFreeCallbacks) BuildSystemPrompt(string, bool) string {
 	if c != nil && c.answerFromEvidence {
-		return "检索已经完成。你只根据给出的证据写出用户要的答案。只返回 JSON 对象，键必须严格匹配输出声明。不要粘贴检索列表，不要调用工具。"
+		return hopLookupAnswerSystemPrompt(c.now)
 	}
 	return "你在 HopJIT 的 act free 步骤中工作。只能使用当前列出的工具。白名单里有 web_search 时必须先调用它。没有 web_search 但有 web_fetch 时必须先调用 web_fetch。完成任务后只返回符合声明的 JSON 输出，不要 Markdown 围栏。"
 }
@@ -566,7 +601,7 @@ func (c *hopJITActFreeCallbacks) OnToolCall(string)   {}
 func (c *hopJITActFreeCallbacks) OnToolResult(string) {}
 func (c *hopJITActFreeCallbacks) ShouldStop() bool    { return c.ctx.Err() != nil }
 
-func (h *IMMessageHandler) hopJITActFreeToolProvider(step hopjit.StepReady, identity hopJITExecutionIdentity) (*tool.HopJITPlanToolProvider, []map[string]interface{}, error) {
+func (h *IMMessageHandler) hopJITActFreeToolProvider(step hopjit.StepReady, identity hopJITExecutionIdentity) (hopjit.ToolProvider, []map[string]interface{}, error) {
 	if h == nil || h.registry == nil {
 		return nil, nil, errors.New("HopJIT tool registry is unavailable")
 	}
@@ -593,103 +628,152 @@ func (h *IMMessageHandler) hopJITActFreeToolProvider(step hopjit.StepReady, iden
 	pins := make([]tool.ProviderPin, 0, len(step.Tools))
 	definitions := make([]map[string]interface{}, 0, len(step.Tools))
 	schemas := map[string]map[string]interface{}{}
+	direct := map[string]hopDirectTool{}
+	dynamicPlans := map[string]func(context.Context, tool.InvocationScope, tool.CanonicalRequest) tool.SelectionExecutionResult{}
 	for _, name := range step.Tools {
 		registered, ok := h.registry.Get(name)
-		if !ok || registered == nil || registered.Status != RegToolAvailable || len(registered.CapabilityProvisions) == 0 {
+		if ok && registered != nil {
+			// A registered tool without provisions is a control-plane gateway
+			// or a quarantined MCP alias. It must not fall through to a skill
+			// or an installed MCP tool of the same spelling.
+			if registered.Status != RegToolAvailable || len(registered.CapabilityProvisions) == 0 {
+				return nil, nil, fmt.Errorf("HopJIT tool is unavailable or ungoverned: %s", name)
+			}
+			definition := registeredToolToDef(*registered)
+			schema, err := semanticInvocationSchemaForRegisteredTool(*registered, definition)
+			if err != nil {
+				return nil, nil, err
+			}
+			authorization, err := tool.NewParameterAuthorization(schema)
+			if err != nil {
+				return nil, nil, err
+			}
+			providers = append(providers, tool.ProviderSpec{
+				AdapterName: registered.Name,
+				Binding: tool.ProviderBinding{
+					Kind: semanticProviderKind(*registered), ProviderID: semanticProviderID(*registered), ImplementationID: registered.Name,
+					SchemaDigest: tool.SchemaDigest(canonicalToolDefinitionBytes(definition)),
+				},
+				ParameterAuthorization: authorization,
+				Provides:               registered.CapabilityProvisions, Consumes: registered.SemanticConsumes, Produces: registered.SemanticProduces,
+				Effects: registered.SemanticEffects, Ready: true,
+			})
+			provision := registered.CapabilityProvisions[0]
+			needs = append(needs, tool.CapabilityNeed{ID: "hopjit:" + name, Capability: provision.Capability, Qualifiers: provision.Qualifiers, Required: true})
+			pins = append(pins, tool.ProviderPin{Capability: provision.Capability, Kind: semanticProviderKind(*registered), ProviderID: semanticProviderID(*registered), ImplementationID: registered.Name})
+			definitions = append(definitions, definition)
+			schemas[name] = schema
+			continue
+		}
+		binding, found, err := h.lookupHopDynamicTool(context.Background(), name)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !found {
 			return nil, nil, fmt.Errorf("HopJIT tool is unavailable or ungoverned: %s", name)
 		}
-		definition := registeredToolToDef(*registered)
-		schema, err := semanticInvocationSchemaForRegisteredTool(*registered, definition)
-		if err != nil {
-			return nil, nil, err
-		}
-		authorization, err := tool.NewParameterAuthorization(schema)
-		if err != nil {
-			return nil, nil, err
-		}
-		providers = append(providers, tool.ProviderSpec{
-			AdapterName: registered.Name,
-			Binding: tool.ProviderBinding{
-				Kind: semanticProviderKind(*registered), ProviderID: semanticProviderID(*registered), ImplementationID: registered.Name,
-				SchemaDigest: tool.SchemaDigest(canonicalToolDefinitionBytes(definition)),
-			},
-			ParameterAuthorization: authorization,
-			Provides:               registered.CapabilityProvisions, Consumes: registered.SemanticConsumes, Produces: registered.SemanticProduces,
-			Effects: registered.SemanticEffects, Ready: true,
-		})
-		provision := registered.CapabilityProvisions[0]
-		needs = append(needs, tool.CapabilityNeed{ID: "hopjit:" + name, Capability: provision.Capability, Qualifiers: provision.Qualifiers, Required: true})
-		pins = append(pins, tool.ProviderPin{Capability: provision.Capability, Kind: semanticProviderKind(*registered), ProviderID: semanticProviderID(*registered), ImplementationID: registered.Name})
-		definitions = append(definitions, definition)
-		schemas[name] = schema
-	}
-	snapshot, err := catalog.Publish(providers, time.Now().UTC())
-	if err != nil {
-		return nil, nil, err
-	}
-	plan, err := tool.NewToolPlanner(capabilityRegistry).Plan(tool.RouteRequest{
-		RootTaskID: rootTaskID, Snapshot: snapshot, Needs: needs, Pins: pins, Now: time.Now().UTC(),
-	})
-	if err != nil || len(plan.Unmet) > 0 {
-		return nil, nil, fmt.Errorf("HopJIT act free plan failed: %v %+v", err, plan.Unmet)
-	}
-	issuer, err := h.semanticInvocationIssuer()
-	if err != nil {
-		return nil, nil, err
-	}
-	var executions tool.PlanExecutionStore = tool.NewMemoryPlanExecutionStore()
-	if h.app != nil {
-		coordinator, err := h.app.semanticExecutionCoordinatorForApp()
-		if err != nil {
-			return nil, nil, err
-		}
-		executions = coordinator.Executions
-	}
-	executor, err := tool.NewPlanExecutor(issuer, executions)
-	if err != nil {
-		return nil, nil, err
-	}
-	turnID := step.StepID
-	if step.IterationID != "" {
-		turnID += "@" + step.IterationID
-	}
-	scope := tool.InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: identity.SessionID, TurnID: turnID, PrincipalID: identity.PrincipalID}
-	grants, err := issuer.IssueReady(plan, scope, time.Minute, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	grantByName := map[string]tool.InvocationGrant{}
-	for _, grant := range grants {
-		grantByName[grant.AdapterName] = grant
-	}
-	var resultStore tool.HopJITResultStore = h.hopJITResults
-	if resultStore == nil && h.app != nil {
-		resultStore = newFileHopJITResultStore(hopJITResultRoot(h.app.GetDataDir(), identity))
-	}
-	provider := &tool.HopJITPlanToolProvider{
-		Executor: executor, Scope: scope, Plan: plan, Grants: grantByName, Schemas: schemas,
-		ResultStore: resultStore, AllowResultRecovery: step.Recovered,
-		Invoke: func(ctx context.Context, selection tool.PlannedSelection, request tool.CanonicalRequest) tool.SelectionExecutionResult {
-			ctx = withTrustedAuditPrincipal(ctx, identity.PrincipalID)
-			result := h.executeToolDetailedWithRuntimeContext(ctx, identity.PolicyOwnerID, true, identity.Platform, selection.AdapterName, string(request.CanonicalJSON), step.Summary, nil)
-			switch result.Outcome {
-			case toolOutcomeSucceeded:
-				return tool.SelectionExecutionResult{Result: result.Text, Succeeded: true}
-			case toolOutcomeUncertain:
-				if result.FailureKind == toolFailureApprovalRequired || isRegisteredToolApprovalWaitText(result.Text) {
-					return tool.SelectionExecutionResult{Result: result.Text, Paused: true, ReasonCode: "hopjit_tool_approval_required"}
-				}
-				return tool.SelectionExecutionResult{Result: result.Text, Unknown: true, ReasonCode: "hopjit_tool_outcome_unknown"}
-			default:
-				reason := strings.TrimSpace(result.Text)
-				if reason == "" {
-					reason = "hopjit_tool_failed"
-				}
-				return tool.SelectionExecutionResult{Result: result.Text, ReasonCode: reason}
+		if len(binding.Provisions) > 0 {
+			if binding.Plan == nil {
+				return nil, nil, fmt.Errorf("HopJIT tool is unavailable or ungoverned: %s", name)
 			}
-		},
+			planned, err := hopPrepareDynamicPlan(capabilityRegistry, name, binding)
+			if err != nil {
+				return nil, nil, err
+			}
+			providers = append(providers, planned.provider)
+			needs = append(needs, planned.need)
+			pins = append(pins, planned.pin)
+			definitions = append(definitions, planned.definition)
+			schemas[name] = planned.schema
+			dynamicPlans[name] = binding.Plan
+			continue
+		}
+		if binding.Call == nil {
+			return nil, nil, fmt.Errorf("HopJIT tool is unavailable or ungoverned: %s", name)
+		}
+		schema, authorization, err := hopAuthorizeSchema(binding.Schema)
+		if err != nil {
+			return nil, nil, err
+		}
+		direct[name] = hopDirectTool{schema: schema, auth: authorization, call: binding.Call}
+		definitions = append(definitions, hopDynamicDefinition(name, binding.Description, schema))
 	}
-	return provider, definitions, nil
+	var plannedProvider *tool.HopJITPlanToolProvider
+	if len(providers) > 0 || len(direct) == 0 {
+		snapshot, err := catalog.Publish(providers, time.Now().UTC())
+		if err != nil {
+			return nil, nil, err
+		}
+		plan, err := tool.NewToolPlanner(capabilityRegistry).Plan(tool.RouteRequest{
+			RootTaskID: rootTaskID, Snapshot: snapshot, Needs: needs, Pins: pins, Now: time.Now().UTC(),
+		})
+		if err != nil || len(plan.Unmet) > 0 {
+			return nil, nil, fmt.Errorf("HopJIT act free plan failed: %v %+v", err, plan.Unmet)
+		}
+		issuer, err := h.semanticInvocationIssuer()
+		if err != nil {
+			return nil, nil, err
+		}
+		var executions tool.PlanExecutionStore = tool.NewMemoryPlanExecutionStore()
+		if h.app != nil {
+			coordinator, err := h.app.semanticExecutionCoordinatorForApp()
+			if err != nil {
+				return nil, nil, err
+			}
+			executions = coordinator.Executions
+		}
+		executor, err := tool.NewPlanExecutor(issuer, executions)
+		if err != nil {
+			return nil, nil, err
+		}
+		turnID := step.StepID
+		if step.IterationID != "" {
+			turnID += "@" + step.IterationID
+		}
+		scope := tool.InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: identity.SessionID, TurnID: turnID, PrincipalID: identity.PrincipalID}
+		grants, err := issuer.IssueReady(plan, scope, time.Minute, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		grantByName := map[string]tool.InvocationGrant{}
+		for _, grant := range grants {
+			grantByName[grant.AdapterName] = grant
+		}
+		var resultStore tool.HopJITResultStore = h.hopJITResults
+		if resultStore == nil && h.app != nil {
+			resultStore = newFileHopJITResultStore(hopJITResultRoot(h.app.GetDataDir(), identity))
+		}
+		plannedProvider = &tool.HopJITPlanToolProvider{
+			Executor: executor, Scope: scope, Plan: plan, Grants: grantByName, Schemas: schemas,
+			ResultStore: resultStore, AllowResultRecovery: step.Recovered,
+			Invoke: func(ctx context.Context, selection tool.PlannedSelection, request tool.CanonicalRequest) tool.SelectionExecutionResult {
+				if plan := dynamicPlans[selection.AdapterName]; plan != nil {
+					return plan(ctx, scope, request)
+				}
+				ctx = withTrustedAuditPrincipal(ctx, identity.PrincipalID)
+				result := h.executeToolDetailedWithRuntimeContext(ctx, identity.PolicyOwnerID, true, identity.Platform, selection.AdapterName, string(request.CanonicalJSON), step.Summary, nil)
+				switch result.Outcome {
+				case toolOutcomeSucceeded:
+					return tool.SelectionExecutionResult{Result: result.Text, Succeeded: true}
+				case toolOutcomeUncertain:
+					if result.FailureKind == toolFailureApprovalRequired || isRegisteredToolApprovalWaitText(result.Text) {
+						return tool.SelectionExecutionResult{Result: result.Text, Paused: true, ReasonCode: "hopjit_tool_approval_required"}
+					}
+					return tool.SelectionExecutionResult{Result: result.Text, Unknown: true, ReasonCode: "hopjit_tool_outcome_unknown"}
+				default:
+					reason := strings.TrimSpace(result.Text)
+					if reason == "" {
+						reason = "hopjit_tool_failed"
+					}
+					return tool.SelectionExecutionResult{Result: result.Text, ReasonCode: reason}
+				}
+			},
+		}
+	}
+	if len(direct) > 0 {
+		return &hopToolProvider{plan: plannedProvider, direct: direct}, definitions, nil
+	}
+	return plannedProvider, definitions, nil
 }
 
 func hopJITActFreePrompt(step hopjit.StepReady) string {

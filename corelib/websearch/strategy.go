@@ -91,9 +91,8 @@ type SearchResponse struct {
 	Degraded    bool            `json:"degraded"`
 }
 
-// Preset orders are the settings-panel defaults. Mainland starts with Bing,
-// Baidu, DuckDuckGo, Google, then Yuanbao. The frontend preset dropdown copies
-// these two slices and must be updated with them.
+// Settings panel PRESET_ORDER must match these slices. Mainland's first five
+// are Bing, Baidu, DuckDuckGo, Google, then Yuanbao.
 var (
 	mainlandWebSearchEngineOrder = []string{
 		"bing_cn", "baidu", "duckduckgo", "google", "yuanbao",
@@ -121,6 +120,7 @@ func DefaultWebSearchStrategy(preset string) corelib.WebSearchStrategy {
 	engines := make([]corelib.WebSearchEngineConfig, 0, len(order))
 	for i, id := range order {
 		meta := builtinWebSearchEngines[id]
+		// AllowEnabledWithoutKey permits a saved toggle. It does not enable the engine.
 		enabled := !meta.NeedsKey && !meta.OptIn
 		engines = append(engines, corelib.WebSearchEngineConfig{
 			ID: id, Enabled: enabled, Priority: i + 1,
@@ -221,8 +221,9 @@ func NormalizeWebSearchStrategy(strategy corelib.WebSearchStrategy) (corelib.Web
 	}
 	defaults := DefaultWebSearchStrategy(strategy.Preset)
 	if !seen["yuanbao"] && catalogCompleteExcept(seen, "yuanbao") {
-		if inserted, ok := engineByID(defaults.Engines, "yuanbao"); ok {
-			out = insertEngine(out, yuanbaoDefaultIndex(strategy.Preset), inserted)
+		index := yuanbaoDefaultIndex(strategy.Preset)
+		if index >= 0 && index < len(defaults.Engines) && defaults.Engines[index].ID == "yuanbao" {
+			out = insertEngine(out, index, defaults.Engines[index])
 			seen["yuanbao"] = true
 		}
 	}
@@ -260,16 +261,7 @@ func yuanbaoDefaultIndex(preset string) int {
 			return i
 		}
 	}
-	return 0
-}
-
-func engineByID(engines []corelib.WebSearchEngineConfig, id string) (corelib.WebSearchEngineConfig, bool) {
-	for _, engine := range engines {
-		if engine.ID == id {
-			return engine, true
-		}
-	}
-	return corelib.WebSearchEngineConfig{}, false
+	return -1
 }
 
 func insertEngine(engines []corelib.WebSearchEngineConfig, index int, engine corelib.WebSearchEngineConfig) []corelib.WebSearchEngineConfig {

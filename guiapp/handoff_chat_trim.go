@@ -98,9 +98,8 @@ func trimHistoryWithHandoffMemo(entries []agent.ConversationEntry, summarizer fu
 		return entries
 	}
 	kept := collectEntryGroups(entries, groups, invertFlags(drop))
-	if _, ok := agent.LastMemoInMessages(entriesToLoopMessages(kept)); ok {
-		return kept
-	}
+	// A memo already in the kept tail is Prior for MemoForCoveredSpan. Returning
+	// the tail here would drop user constraints that only exist in the prefix.
 	summary := ""
 	summaryOK := false
 	_, hadPrior := agent.LastMemoInMessages(entriesToLoopMessages(entries))

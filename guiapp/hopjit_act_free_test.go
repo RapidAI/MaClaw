@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -146,6 +147,43 @@ func TestHopJITActFreeAnswerUsesJSONCompletion(t *testing.T) {
 	result := caller.actFreeRunner(context.Background(), callbacks)("任务: 北京天气\n检索证据:\n北京 多云", nil)
 	if result.Error != "" || !jsonMode || !strings.Contains(system, "不要调用工具") || !strings.Contains(user, "北京 多云") || !strings.Contains(result.Text, "今天多云") {
 		t.Fatalf("json=%v err=%q system=%q user=%q text=%q", jsonMode, result.Error, system, user, result.Text)
+	}
+}
+
+func TestHopJITActFreeAnswerPromptCarriesTheHostClock(t *testing.T) {
+	now := time.Date(2026, 11, 7, 8, 56, 0, 0, time.FixedZone("CST", 8*3600))
+	step := hopjit.StepReady{
+		Summary:      "查询北京天气",
+		OutputSchema: []hopspec.VariableDecl{{Name: "weather_text", Type: "str"}},
+	}
+	evidence := "更新时间:2026-11-05 02:30 4°C 雾 今天 11/05 晴"
+	prompt := hopLookupAnswerPrompt("北京天气", step, evidence, now)
+	if strings.Count(prompt, "2026-11-07 08:56 星期六") != 2 || !strings.Contains(prompt, "发布时间") || !strings.Contains(prompt, evidence) {
+		t.Fatalf("prompt=%s", prompt)
+	}
+	if strings.Index(prompt, "现在:") > strings.Index(prompt, "检索证据:") || strings.LastIndex(prompt, "2026-11-07 08:56 星期六") < strings.Index(prompt, "检索证据:") {
+		t.Fatalf("clock is not both before and after the evidence: %s", prompt)
+	}
+	var seen string
+	callbacks := &hopJITActFreeCallbacks{task: "北京天气", now: now}
+	got, err := completeLookupAnswer(callbacks, step, evidence, func(prompt string, _ []agent.ConversationEntry) agent.LoopResult {
+		seen = prompt
+		return agent.LoopResult{Text: `{"weather_text":"11月7日小雨转雨夹雪，1到7℃"}`}
+	})
+	if err != nil || got["weather_text"] != "11月7日小雨转雨夹雪，1到7℃" || !strings.Contains(seen, "现在: 2026-11-07 08:56 星期六") || !callbacks.now.Equal(now) {
+		t.Fatalf("err=%v got=%v seen=%s now=%v", err, got, seen, callbacks.now)
+	}
+	system := callbacks.BuildSystemPrompt("", false)
+	if !strings.Contains(system, "提问时刻是 2026-11-07 08:56 星期六") || !strings.Contains(system, "不要调用工具") {
+		t.Fatalf("system=%s", system)
+	}
+	blank := &hopJITActFreeCallbacks{task: "北京天气"}
+	before := time.Now().Add(-2 * time.Second)
+	_, err = completeLookupAnswer(blank, step, evidence, func(string, []agent.ConversationEntry) agent.LoopResult {
+		return agent.LoopResult{Text: `{"weather_text":"11月7日小雨"}`}
+	})
+	if err != nil || blank.now.IsZero() || blank.now.Before(before) {
+		t.Fatalf("err=%v now=%v before=%v", err, blank.now, before)
 	}
 }
 
@@ -731,7 +769,11 @@ func TestHopJITActFreeAppUsesDurableExecutionRecords(t *testing.T) {
 	if _, err := provider.Execute(context.Background(), "read_file", map[string]any{"path": "input.md"}); err != nil {
 		t.Fatal(err)
 	}
-	record, err := coordinator.Executions.Execution(provider.Scope, provider.Plan.Selections[0].ID)
+	planned, ok := provider.(*tool.HopJITPlanToolProvider)
+	if !ok {
+		t.Fatalf("provider=%T", provider)
+	}
+	record, err := coordinator.Executions.Execution(planned.Scope, planned.Plan.Selections[0].ID)
 	if err != nil || record.State != tool.PlanExecutionSucceeded {
 		t.Fatalf("record=%+v err=%v", record, err)
 	}
@@ -841,8 +883,12 @@ func TestHopJITActFreeBindsToolIdentityPerCaller(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if provider.Scope.PrincipalID != identity.PrincipalID || provider.Scope.SessionID != identity.SessionID {
-			t.Fatalf("scope=%+v identity=%+v", provider.Scope, identity)
+		planned, ok := provider.(*tool.HopJITPlanToolProvider)
+		if !ok {
+			t.Fatalf("provider=%T", provider)
+		}
+		if planned.Scope.PrincipalID != identity.PrincipalID || planned.Scope.SessionID != identity.SessionID {
+			t.Fatalf("scope=%+v identity=%+v", planned.Scope, identity)
 		}
 		if _, err := provider.Execute(context.Background(), "read_file", map[string]any{"path": "input.md"}); err != nil {
 			t.Fatal(err)

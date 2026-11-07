@@ -400,9 +400,7 @@ func planHandoffCheckpoint(tail []interface{}, groups []EntryGroup, inlineOK []b
 	if len(dropped) == 0 {
 		return
 	}
-	prior, _ := LastMemoInMessages(tail)
-	memo = MemoFromDroppedProjects(dropped, prior, false)
-	preservePriorProgress(&memo, prior)
+	memo, _ = MemoForCoveredSpan(tail, dropped, "", false)
 	if memo.Usable() {
 		return
 	}
@@ -427,9 +425,7 @@ func planHandoffCheckpoint(tail []interface{}, groups []EntryGroup, inlineOK []b
 	}
 	if keptExtra {
 		dropped = collectCheckpointDropped(tail, groups, drop)
-		prior, _ = LastMemoInMessages(tail)
-		memo = MemoFromDroppedProjects(dropped, prior, false)
-		preservePriorProgress(&memo, prior)
+		memo, _ = MemoForCoveredSpan(tail, dropped, "", false)
 	}
 	return
 }

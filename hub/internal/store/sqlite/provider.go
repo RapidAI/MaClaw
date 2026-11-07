@@ -3,6 +3,7 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,9 +78,9 @@ func NewProvider(cfg Config) (*Provider, error) {
 	}
 
 	p := &Provider{
-		Write:    writeDB,
-		Read:     readDB,
-		batch:    newWriteBatcher(writeDB, cfg),
+		Write: writeDB,
+		Read:  readDB,
+		batch: newWriteBatcher(writeDB, cfg),
 		coalesce: NewWriteCoalescer(writeDB, WriteCoalescerConfig{
 			FlushIntervalMS: cfg.CoalesceFlushMS,
 			MaxBatchSize:    cfg.CoalesceMaxBatch,
@@ -153,25 +154,30 @@ func (p *Provider) startCheckpointer(interval time.Duration) {
 // read connection contends with an in-flight write. wal_autocheckpoint is
 // writer-only for the same reason. cache_size and mmap_size stay out so each
 // of the read connections does not reserve the writer's cache.
+//
+// An existing setting counts only when it is a _pragma value in the DSN query.
+// The driver ignores the query on a non-file path and applies _pragma after
+// open, including for file: URIs. A directory named synchronous must not
+// suppress PRAGMA synchronous.
 func dsnWithConnectionPragmas(dsn string, cfg Config, writer bool) string {
 	if strings.TrimSpace(dsn) == "" {
 		return dsn
 	}
-	lower := strings.ToLower(dsn)
+	existing := connectionPragmaSet(dsnQuery(dsn))
 	params := make([]string, 0, 5)
-	if cfg.BusyTimeoutMS > 0 && !strings.Contains(lower, "busy_timeout") {
+	if cfg.BusyTimeoutMS > 0 && !existing["busy_timeout"] {
 		params = append(params, fmt.Sprintf("_pragma=busy_timeout(%d)", cfg.BusyTimeoutMS))
 	}
-	if !strings.Contains(lower, "foreign_keys") {
+	if !existing["foreign_keys"] {
 		params = append(params, "_pragma=foreign_keys(1)")
 	}
-	if !strings.Contains(lower, "synchronous") {
+	if !existing["synchronous"] {
 		params = append(params, "_pragma=synchronous(NORMAL)")
 	}
-	if !strings.Contains(lower, "temp_store") {
+	if !existing["temp_store"] {
 		params = append(params, "_pragma=temp_store(MEMORY)")
 	}
-	if writer && cfg.WAL && !strings.Contains(lower, "wal_autocheckpoint") {
+	if writer && cfg.WAL && !existing["wal_autocheckpoint"] {
 		params = append(params, "_pragma=wal_autocheckpoint(2000)")
 	}
 	if len(params) == 0 {
@@ -182,6 +188,47 @@ func dsnWithConnectionPragmas(dsn string, cfg Config, writer bool) string {
 		sep = "&"
 	}
 	return dsn + sep + strings.Join(params, "&")
+}
+
+// dsnQuery is the part the sqlite driver parses as query parameters.
+// A "?" at index 0 is not a query: modernc only splits when pos >= 1.
+func dsnQuery(dsn string) string {
+	pos := strings.IndexRune(dsn, '?')
+	if pos < 1 {
+		return ""
+	}
+	return dsn[pos+1:]
+}
+
+func connectionPragmaSet(query string) map[string]bool {
+	set := make(map[string]bool)
+	if query == "" {
+		return set
+	}
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		lower := strings.ToLower(query)
+		for _, name := range []string{"busy_timeout", "foreign_keys", "synchronous", "temp_store", "wal_autocheckpoint"} {
+			if strings.Contains(lower, name) {
+				set[name] = true
+			}
+		}
+		return set
+	}
+	for _, raw := range values["_pragma"] {
+		if name := pragmaSettingName(raw); name != "" {
+			set[name] = true
+		}
+	}
+	return set
+}
+
+func pragmaSettingName(raw string) string {
+	name := strings.TrimSpace(strings.ToLower(raw))
+	if i := strings.IndexAny(name, "(= \t"); i >= 0 {
+		name = name[:i]
+	}
+	return name
 }
 
 func applyPragmas(db *sql.DB, cfg Config, isWriter bool) error {

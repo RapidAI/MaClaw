@@ -35,6 +35,9 @@ type IMMessageHandler struct {
 	app           *App
 	manager       *RemoteSessionManager
 	hopJITResults tool.HopJITResultStore
+	// hopDynamicLookup resolves a hop tool name that is not in the governed
+	// registry. Production leaves it nil. Tests install one binding.
+	hopDynamicLookup func(context.Context, string) (hopDynamicBinding, bool, error)
 	// sharedRuntime is the transport-neutral Runtime seam. During migration it
 	// delegates to the existing GUI-hosted turn implementation; subsequent
 	// phases can replace that implementation with corelib/agentruntime without

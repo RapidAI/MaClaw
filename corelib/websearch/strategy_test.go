@@ -7,7 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +61,51 @@ func TestDefaultWebSearchStrategyPresets(t *testing.T) {
 	}
 	assertOrderCoversCatalog(t, "mainland", mainlandWebSearchEngineOrder)
 	assertOrderCoversCatalog(t, "international", internationalWebSearchEngineOrder)
+}
+
+func TestFrontendPresetOrderMatchesBackend(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	sourcePath := filepath.Join(filepath.Dir(file), "..", "..", "guiapp", "frontend", "src", "components", "remote", "WebSearchConfigPanel.tsx")
+	source, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, preset := range []struct {
+		name  string
+		order []string
+	}{
+		{name: "mainland", order: mainlandWebSearchEngineOrder},
+		{name: "international", order: internationalWebSearchEngineOrder},
+	} {
+		match := regexp.MustCompile(preset.name + `: \[([^\]]+)\]`).FindStringSubmatch(text)
+		if match == nil {
+			t.Fatalf("frontend preset %s order not found", preset.name)
+		}
+		got := quotedEngineIDs(t, match[1])
+		if !reflect.DeepEqual(got, preset.order) {
+			t.Fatalf("frontend %s order = %v, backend = %v", preset.name, got, preset.order)
+		}
+	}
+}
+
+func quotedEngineIDs(t *testing.T, raw string) []string {
+	t.Helper()
+	var ids []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if len(part) < 2 || part[0] != '"' || part[len(part)-1] != '"' {
+			t.Fatalf("frontend engine id %q is not a quoted string", part)
+		}
+		ids = append(ids, part[1:len(part)-1])
+	}
+	return ids
 }
 
 func assertOrderCoversCatalog(t *testing.T, name string, order []string) {

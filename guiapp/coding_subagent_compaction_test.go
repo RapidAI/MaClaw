@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -179,6 +180,38 @@ func TestSubAgentCompactionHandoffMemoReplacesOneBlock(t *testing.T) {
 	}
 	if strings.Contains(finalBody, "old unclosed") {
 		t.Fatalf("unclosed body came back: %q", finalBody)
+	}
+}
+
+func TestSubAgentCompactionKeepsRecoveryMeasurementOnce(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
+	if !strings.HasPrefix(compactionRecoveryPrefix, agent.CompactionRecoveryLead) {
+		t.Fatal("recovery lead drifted from the compaction prefix")
+	}
+	pad := strings.Repeat("later-section ", 120)
+	task := compactionRecoveryPrefix + "1. **当前进度**: median 17.4\n2. **重要上下文**: " + pad + "\n3. **待完成工作**: ship\n4. **关键数据**: keep-postgres\n"
+	if strings.Contains(task, "<handoff-memo>") || utf8.RuneCountInString(agent.RecoveryHandoffProgress(task)) <= 1400 {
+		t.Fatal("fixture is not a long four-section recovery handoff")
+	}
+	compactor := NewSubAgentCompactor(8000, nil, nil, nil, nil)
+	first := compactor.Compact(codingCompactionTurns(task, 4))
+	body := taskContentOf(first)
+	memo, ok := agent.ParseHandoffMemo(body)
+	if !ok || strings.Count(body, "<handoff-memo>") != 1 || strings.Count(memo.Progress, "median 17.4") != 1 {
+		t.Fatalf("progress=%q body=%s", memo.Progress, body)
+	}
+	if progressRunes, renderRunes := utf8.RuneCountInString(memo.Progress), utf8.RuneCountInString(memo.Render()); progressRunes > 1400 || renderRunes > 5000 {
+		t.Fatalf("progress=%d render=%d", progressRunes, renderRunes)
+	}
+	firstProgress := utf8.RuneCountInString(memo.Progress)
+	second := compactor.Compact(insertCodingTurns(first, 2))
+	body = taskContentOf(second)
+	memo, ok = agent.ParseHandoffMemo(body)
+	if !ok || strings.Count(body, "<handoff-memo>") != 1 || strings.Count(memo.Progress, "median 17.4") != 1 {
+		t.Fatalf("second progress=%q body=%s", memo.Progress, body)
+	}
+	if againRunes, renderRunes := utf8.RuneCountInString(memo.Progress), utf8.RuneCountInString(memo.Render()); againRunes > firstProgress || againRunes > 1400 || renderRunes > 5000 {
+		t.Fatalf("progress grew %d -> %d render=%d", firstProgress, againRunes, renderRunes)
 	}
 }
 

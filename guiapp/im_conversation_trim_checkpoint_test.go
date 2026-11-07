@@ -85,16 +85,42 @@ func TestCompactionSummaryUnusableRejectsIncompleteOutput(t *testing.T) {
 }
 
 func TestCompactionPromptUpdatesPreviousSummary(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "")
 	material := buildCompactionSource("目标: 修好登录", "## 对话轮次\n\n用户: 继续")
 	prompt := compactionPromptFor(material)
-	if !strings.Contains(prompt, "保留上一份摘要") {
-		t.Fatal("update prompt was not selected")
+	if !strings.Contains(prompt, "保留上一份摘要") || !strings.Contains(prompt, "仍使用这四个部分") {
+		t.Fatalf("flag-off update prompt:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "目标: 修好登录") {
 		t.Fatal("previous summary was dropped from the update prompt")
 	}
-	if strings.Contains(compactionPromptFor("普通对话"), "保留上一份摘要") {
+	initial := compactionPromptFor("普通对话")
+	if strings.Contains(initial, "保留上一份摘要") {
 		t.Fatal("initial prompt should not use the update rules")
+	}
+	if !strings.Contains(initial, "当前进度") || strings.Contains(initial, "<handoff-memo>") {
+		t.Fatalf("flag-off initial prompt:\n%s", initial)
+	}
+	for _, section := range []string{"重要上下文", "待完成工作", "关键数据"} {
+		if !strings.Contains(initial, section) {
+			t.Fatalf("flag-off initial missing %s:\n%s", section, initial)
+		}
+	}
+
+	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
+	allInitial := compactionPromptFor("普通对话")
+	if !strings.Contains(allInitial, "<handoff-memo>") || !strings.Contains(allInitial, "## task") || !strings.Contains(allInitial, "## dead_ends") || strings.Contains(allInitial, "当前进度") {
+		t.Fatalf("flag-all initial prompt:\n%s", allInitial)
+	}
+	allUpdate := compactionPromptFor(material)
+	if !strings.Contains(allUpdate, "保留上一份摘要") || !strings.Contains(allUpdate, "<handoff-memo>") || strings.Contains(allUpdate, "仍使用这四个部分") || !strings.Contains(allUpdate, "目标: 修好登录") {
+		t.Fatalf("flag-all update prompt:\n%s", allUpdate)
+	}
+
+	t.Setenv("MACLAW_HANDOFF_MEMO", "coding")
+	coding := compactionPromptFor("普通对话")
+	if strings.Contains(coding, "<handoff-memo>") || !strings.Contains(coding, "当前进度") {
+		t.Fatalf("coding flag must keep the four sections:\n%s", coding)
 	}
 }
 

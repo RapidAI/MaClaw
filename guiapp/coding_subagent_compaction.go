@@ -191,7 +191,12 @@ func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 }
 
 func (c *SubAgentCompactor) memoFromAnchors(taskContent string, middle []interface{}) agent.HandoffMemo {
-	prior, _ := agent.ParseHandoffMemo(taskContent)
+	prior, ok := agent.ParseHandoffMemo(taskContent)
+	if !ok {
+		if progress := agent.RecoveryHandoffProgress(taskContent); progress != "" {
+			prior.Progress = progress
+		}
+	}
 	var users []string
 	if text := strings.TrimSpace(agent.HandoffOutside(taskContent)); text != "" {
 		users = append(users, text)
@@ -221,7 +226,7 @@ func (c *SubAgentCompactor) memoFromAnchors(taskContent string, middle []interfa
 			})
 		}
 	}
-	return agent.FillHandoffMemo(agent.HandoffFill{
+	memo := agent.FillHandoffMemo(agent.HandoffFill{
 		UserTexts: users,
 		Read:      callStringList(c.filesReadFn),
 		Modified:  callStringList(c.filesModifiedFn),
@@ -229,6 +234,8 @@ func (c *SubAgentCompactor) memoFromAnchors(taskContent string, middle []interfa
 		Commands:  commands,
 		Prior:     prior,
 	})
+	agent.PreservePriorProgress(&memo, prior)
+	return memo
 }
 
 func (c *SubAgentCompactor) collapsePerRound(conversation []interface{}) []interface{} {

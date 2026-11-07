@@ -1944,6 +1944,105 @@ func TestSaveMaclawLLMProvidersClearsCustomXAIConnectionTestOnModelChange(t *tes
 	}
 }
 
+func TestXAIProfileUsesCurrentDefaultWhenItStillMatchesStoredDefault(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "xai", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "oauth-token", Model: "grok-4.6",
+			AuthType: "oauth", Protocol: "openai", WireAPI: "responses", ConnectionTestPassed: true,
+		}},
+		MaclawLLMCurrentProvider: "xAI-Grok",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "xai", Model: "grok-4.6"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	if state.Profiles.Assistant.Model != "grok-4.7" || state.Assistant.Model != "grok-4.7" {
+		t.Fatalf("panel model = profile %q effective %q, want grok-4.7", state.Profiles.Assistant.Model, state.Assistant.Model)
+	}
+	resolved, err := app.ResolveMaclawLLMProfile(maclawLLMProfileAssistant)
+	if err != nil {
+		t.Fatalf("ResolveMaclawLLMProfile: %v", err)
+	}
+	if resolved.Model != "grok-4.7" {
+		t.Fatalf("resolved model = %q, want grok-4.7", resolved.Model)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if saved.MaclawLLMProfiles.Assistant.Model != "grok-4.6" || saved.MaclawLLMProviders[0].Model != "grok-4.6" {
+		t.Fatalf("read migrated disk = profile %q provider %q", saved.MaclawLLMProfiles.Assistant.Model, saved.MaclawLLMProviders[0].Model)
+	}
+
+	chosen := state.Profiles
+	chosen.Assistant.Model = "grok-4.6"
+	if err := app.SaveMaclawLLMProfiles(chosen, state.Revision); err != nil {
+		t.Fatalf("SaveMaclawLLMProfiles: %v", err)
+	}
+	saved, err = app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if saved.MaclawLLMProfiles.Assistant.Model != "grok-4.6" || saved.MaclawLLMProviders[0].Model != "grok-4.7" {
+		t.Fatalf("explicit grok-4.6 = profile %q provider %q", saved.MaclawLLMProfiles.Assistant.Model, saved.MaclawLLMProviders[0].Model)
+	}
+	state, err = app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState after save: %v", err)
+	}
+	if state.Profiles.Assistant.Model != "grok-4.6" {
+		t.Fatalf("reloaded assignment = %q, want explicit grok-4.6", state.Profiles.Assistant.Model)
+	}
+}
+
+func TestXAIProfileKeepsExplicitModelAndCustomSlot(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{
+				ID: "xai", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "oauth-token", Model: "grok-4.7",
+				AuthType: "oauth", Protocol: "openai", WireAPI: "responses", ConnectionTestPassed: true,
+			},
+			{
+				ID: "custom-xai", Name: "xAI-Grok", IsCustom: true,
+				URL: "https://proxy.example/v1", Key: "sk-custom", Model: "grok-4.6",
+				AuthType: "api_key", Protocol: "openai", ConnectionTestPassed: true,
+			},
+		},
+		MaclawLLMCurrentProvider: "xAI-Grok",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "xai", Model: "grok-4.1-fast"},
+			Coding:    corelib.MaclawLLMProfile{ProviderID: "custom-xai", Model: "grok-4.6"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	if state.Profiles.Assistant.Model != "grok-4.1-fast" || state.Profiles.Coding.Model != "grok-4.6" {
+		t.Fatalf("profiles = assistant %q coding %q", state.Profiles.Assistant.Model, state.Profiles.Coding.Model)
+	}
+}
+
 func TestSaveMaclawLLMProfilesRejectsUntestedProviderSelection(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

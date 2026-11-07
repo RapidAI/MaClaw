@@ -60,6 +60,7 @@ func compileHopSpec(ctx context.Context, task string, caller *guiHopJITCaller) (
 		return "", errors.New("HopJIT compiler caller is unavailable")
 	}
 	caller.task = task
+	named := caller.governedHopTools(ctx)
 	messages := []interface{}{
 		map[string]interface{}{"role": "system", "content": "把用户任务编译成 HopSpec v3 Markdown。只返回规约正文，不要代码围栏。必须包含 # Spec、Goal、Outputs、## Steps。每个步骤独占一行，类型放在方括号里，例如 1. [reason] 摘要、2. [act] 摘要、3. [check] 摘要、4. [exit]。优先使用 reason、带 hop_python body 的 act、check 和 exit。不得使用 commit。所有步骤编号连续，输出必须有类型，关键结果必须有 check。每个 check 和 confirm 必须单独写一行判定：  + → accepted % bool。要读取上一步的输出，在该步写：  - ← 名字。查询天气、新闻或价格时，在写出文本结果的那个 act 上写 [act free]，并单独一行  - 工具: web_search。工具行写在别的步骤上不算。hop_python 必须把该输出赋成 web_search 或 web_fetch 的结果。右边是这次调用，或是已经查到的变量。引号中的句子、引号中的句子 or 调用、以及只在某个分支里写出的字面量，都不算。没有工具白名单的 act free 不能执行。不调用工具的 act 不要写 free。不要声明需要调用方提供的 Inputs。"},
 		map[string]interface{}{"role": "user", "content": task},
@@ -68,8 +69,8 @@ func compileHopSpec(ctx context.Context, task string, caller *guiHopJITCaller) (
 	if err != nil {
 		return "", err
 	}
-	spec := prepareCompiledHopMarkdown(text, task)
-	if err := compiledHopSpecError(spec, task); err != nil {
+	spec := prepareCompiledHopMarkdownNamed(text, task, named)
+	if err := compiledHopSpecErrorNamed(spec, task, named); err != nil {
 		logHopCompileRejection("first", text, spec, err)
 		if !compiledHopSpecShouldRetry(err) {
 			return "", err
@@ -78,8 +79,8 @@ func compileHopSpec(ctx context.Context, task string, caller *guiHopJITCaller) (
 		if err != nil {
 			return "", err
 		}
-		spec = prepareCompiledHopMarkdown(text, task)
-		if err := compiledHopSpecError(spec, task); err != nil {
+		spec = prepareCompiledHopMarkdownNamed(text, task, named)
+		if err := compiledHopSpecErrorNamed(spec, task, named); err != nil {
 			logHopCompileRejection("rewrite", text, spec, err)
 			return "", err
 		}
@@ -88,9 +89,18 @@ func compileHopSpec(ctx context.Context, task string, caller *guiHopJITCaller) (
 }
 
 func prepareCompiledHopMarkdown(markdown, task string) string {
+	return prepareCompiledHopMarkdownNamed(markdown, task, nil)
+}
+
+func prepareCompiledHopMarkdownNamed(markdown, task string, tools []hopGovernedTool) string {
 	normalized := normalizeCompiledHopMarkdown(markdown, task)
-	repaired := repairLiveLookupTools(repairMissingCheckVerdicts(repairMissingGoal(normalized, task)), task)
-	return repairLookupCheckReceipts(repaired, task)
+	normalized = repairMissingCheckVerdicts(repairMissingGoal(normalized, task))
+	// The uniquely named skill or MCP tool is retrieval for this compile.
+	// Lookup repair and the later tool-line repair share that one name, so a
+	// hop_python assignment from the call is kept and is not replaced by web_search.
+	repaired := repairLiveLookupToolsNamed(normalized, task, hopUniqueRetrievalExtra(task, tools))
+	repaired = repairLookupCheckReceipts(repaired, task)
+	return repairNamedHopTools(repaired, task, tools)
 }
 
 // repairLookupCheckReceipts makes a body-less lookup check the receipt of the
@@ -292,10 +302,17 @@ func canonicalVerdictOutputLine(line string) string {
 }
 
 func compiledHopSpecError(spec, task string) error {
+	return compiledHopSpecErrorNamed(spec, task, nil)
+}
+
+func compiledHopSpecErrorNamed(spec, task string, tools []hopGovernedTool) error {
 	if err := validateCompiledHopSpec(spec); err != nil {
 		return err
 	}
-	return liveLookupToolsRequired(spec, task)
+	if err := liveLookupToolsRequiredNamed(spec, task, tools); err != nil {
+		return err
+	}
+	return namedHopToolUnattached(spec, task, tools)
 }
 
 func (c *guiHopJITCaller) compileText(ctx context.Context, messages []interface{}) (string, error) {
@@ -905,19 +922,27 @@ func hopSpecTitleFromTask(task string) string {
 // runs. With no text spec output, the lookup acts themselves are repaired
 // the same way.
 func repairLiveLookupTools(markdown, task string) string {
+	return repairLiveLookupToolsNamed(markdown, task, nil)
+}
+
+// repairLiveLookupToolsNamed is the same repair with one extra retrieval name.
+// Nil extra keeps the web_search and web_fetch vocabulary. The name is only
+// the uniquely matched skill or MCP tool: a body that assigns every text
+// output from that call stays, and the tool line is that name.
+func repairLiveLookupToolsNamed(markdown, task string, extra map[string]bool) string {
 	if !hopLiveLookupTask(task) {
 		return markdown
 	}
 	spec, _ := hopspec.Parse(markdown)
-	if liveLookupCovered(spec) {
+	if liveLookupCoveredNamed(spec, extra) {
 		return markdown
 	}
 	lines := strings.Split(strings.ReplaceAll(markdown, "\r\n", "\n"), "\n")
 	var reps []hopSpanReplace
 	if len(textOutputNames(spec)) > 0 {
-		reps = trackedLookupRepairs(spec, lines)
+		reps = trackedLookupRepairs(spec, lines, extra)
 	} else {
-		reps = untrackedLookupRepairs(spec, lines)
+		reps = untrackedLookupRepairs(spec, lines, extra)
 	}
 	if len(reps) == 0 {
 		return markdown
@@ -931,9 +956,9 @@ type hopSpanReplace struct {
 	lines []string
 }
 
-func trackedLookupRepairs(spec hopspec.SpecAST, lines []string) []hopSpanReplace {
+func trackedLookupRepairs(spec hopspec.SpecAST, lines []string, extra map[string]bool) []hopSpanReplace {
 	wanted := textOutputNames(spec)
-	final := retrievedNames(spec)
+	final := retrievedNamesNamed(spec, extra)
 	repairable := map[string]hopspec.Step{}
 	for _, step := range spec.AllSteps() {
 		if step.Type != hopspec.StepAct && step.Type != hopspec.StepReason {
@@ -949,7 +974,7 @@ func trackedLookupRepairs(spec hopspec.SpecAST, lines []string) []hopSpanReplace
 	for _, step := range repairable {
 		producers[step.ID] = true
 	}
-	moves, moving := hostLookupMoves(spec, lines, repairable, wanted, final)
+	moves, moving := hostLookupMoves(spec, lines, repairable, wanted, final, extra)
 	prior := map[string]string{}
 	var reps []hopSpanReplace
 	for _, step := range spec.AllSteps() {
@@ -960,23 +985,23 @@ func trackedLookupRepairs(spec hopspec.SpecAST, lines []string) []hopSpanReplace
 			if len(moves[step.ID]) > 0 && names == nil {
 				names = []string{}
 			}
-			if rep, virtual, ok := repairLookupAct(lines, step, prior, names, moves[step.ID]); ok {
+			if rep, virtual, ok := repairLookupAct(lines, step, prior, names, moves[step.ID], extra); ok {
 				reps = append(reps, rep)
-				prior = retrieveStep(prior, virtual)
+				prior = retrieveStepNamed(prior, virtual, extra)
 				continue
 			}
 		}
-		if rep, virtual, ok := stripRepeatedLookupOutputs(lines, step, prior, wanted, final, repairable, moving); ok {
+		if rep, virtual, ok := stripRepeatedLookupOutputs(lines, step, prior, wanted, final, repairable, moving, extra); ok {
 			reps = append(reps, rep)
-			prior = retrieveStep(prior, virtual)
+			prior = retrieveStepNamed(prior, virtual, extra)
 			continue
 		}
-		prior = retrieveStep(prior, step)
+		prior = retrieveStepNamed(prior, step, extra)
 	}
 	return reps
 }
 
-func untrackedLookupRepairs(spec hopspec.SpecAST, lines []string) []hopSpanReplace {
+func untrackedLookupRepairs(spec hopspec.SpecAST, lines []string, extra map[string]bool) []hopSpanReplace {
 	steps := spec.AllSteps()
 	matched := map[string]bool{}
 	var actCount int
@@ -984,7 +1009,7 @@ func untrackedLookupRepairs(spec hopspec.SpecAST, lines []string) []hopSpanRepla
 	var onlyLive bool
 	prior := map[string]string{}
 	for _, step := range steps {
-		prior = retrieveStep(prior, step)
+		prior = retrieveStepNamed(prior, step, extra)
 		if step.Type != hopspec.StepAct || step.Source.LineEnd < step.Source.LineStart || step.Source.LineStart < 1 {
 			continue
 		}
@@ -1002,13 +1027,13 @@ func untrackedLookupRepairs(spec hopspec.SpecAST, lines []string) []hopSpanRepla
 	var reps []hopSpanReplace
 	for _, step := range steps {
 		if matched[step.ID] {
-			if rep, virtual, ok := repairLookupAct(lines, step, prior, nil, nil); ok {
+			if rep, virtual, ok := repairLookupAct(lines, step, prior, nil, nil, extra); ok {
 				reps = append(reps, rep)
-				prior = retrieveStep(prior, virtual)
+				prior = retrieveStepNamed(prior, virtual, extra)
 				continue
 			}
 		}
-		prior = retrieveStep(prior, step)
+		prior = retrieveStepNamed(prior, step, extra)
 	}
 	return reps
 }
@@ -1017,11 +1042,11 @@ func untrackedLookupRepairs(spec hopspec.SpecAST, lines []string) []hopSpanRepla
 // confirm, or ask. Those steps publish every declared output from the host,
 // so a repeated name replaces the retrieval. A body that already republishes
 // the retrieved input stays. The bool verdict stays.
-func stripRepeatedLookupOutputs(lines []string, step hopspec.Step, prior map[string]string, wanted map[string]bool, final map[string]string, repairable map[string]hopspec.Step, moving map[string]bool) (hopSpanReplace, hopspec.Step, bool) {
+func stripRepeatedLookupOutputs(lines []string, step hopspec.Step, prior map[string]string, wanted map[string]bool, final map[string]string, repairable map[string]hopspec.Step, moving map[string]bool, extra map[string]bool) (hopSpanReplace, hopspec.Step, bool) {
 	if !hostFillsLookupText(step) || step.Source.LineEnd < step.Source.LineStart || step.Source.LineStart < 1 || step.Source.LineEnd > len(lines) {
 		return hopSpanReplace{}, step, false
 	}
-	keptLive := retrieveStep(prior, step)
+	keptLive := retrieveStepNamed(prior, step, extra)
 	names := map[string]bool{}
 	for _, out := range step.Outputs {
 		writer, ok := repairable[out.Name]
@@ -1094,11 +1119,12 @@ type movedLookupOutput struct {
 // hostLookupMoves moves an uncovered text output off the check, confirm, or
 // ask that is its only writer. The host would fill that step from the model
 // or a person. An earlier reason or act publishes it instead, and the act
-// repair lists web_search. A step that already lists another tool is skipped:
-// adding web_search there leaves the host search off. A body that calls
-// web_search or web_fetch stays, because removing the output would still run
-// that call. With no earlier owner, the name is left for one rewrite.
-func hostLookupMoves(spec hopspec.SpecAST, lines []string, repairable map[string]hopspec.Step, wanted map[string]bool, final map[string]string) (map[string][]movedLookupOutput, map[string]bool) {
+// repair lists the retrieval tool. A step that already lists another tool is
+// skipped: adding a second tool there leaves the host call off. A body that
+// calls web_search, web_fetch, or the one governed tool stays, because a
+// check still runs that call. With no earlier owner, the name is left for
+// one rewrite.
+func hostLookupMoves(spec hopspec.SpecAST, lines []string, repairable map[string]hopspec.Step, wanted map[string]bool, final map[string]string, extra map[string]bool) (map[string][]movedLookupOutput, map[string]bool) {
 	steps := spec.AllSteps()
 	moves := map[string][]movedLookupOutput{}
 	moving := map[string]bool{}
@@ -1134,7 +1160,7 @@ func hostLookupMoves(spec hopspec.SpecAST, lines []string, repairable map[string
 			moving[name] = true
 			continue
 		}
-		if hostBodyCallsRetrieval(writers) {
+		if hostBodyCallsRetrieval(writers, extra) {
 			continue
 		}
 		last := writers[0]
@@ -1201,9 +1227,13 @@ func stepWritesOutput(step hopspec.Step, name string) bool {
 	return false
 }
 
-func hostBodyCallsRetrieval(steps []hopspec.Step) bool {
+func hostBodyCallsRetrieval(steps []hopspec.Step, extra map[string]bool) bool {
+	name, named := hopSingleExtra(extra)
 	for _, step := range steps {
 		if hopPythonCalls(step.Body, "web_search") || hopPythonCalls(step.Body, "web_fetch") {
+			return true
+		}
+		if named && hopPythonCalls(step.Body, name) {
 			return true
 		}
 	}
@@ -1347,7 +1377,7 @@ func uncoveredOutputNames(step hopspec.Step, wanted map[string]bool, final map[s
 // A nil names list uses the act's text outputs, then every assignment in the body.
 // The returned step is the act after this edit, so a later copy in the same
 // pass can read the value this repair just retrieved.
-func repairLookupAct(lines []string, step hopspec.Step, prior map[string]string, names []string, moved []movedLookupOutput) (hopSpanReplace, hopspec.Step, bool) {
+func repairLookupAct(lines []string, step hopspec.Step, prior map[string]string, names []string, moved []movedLookupOutput, extra map[string]bool) (hopSpanReplace, hopspec.Step, bool) {
 	promote := step.Type == hopspec.StepReason
 	if (step.Type != hopspec.StepAct && !promote) || step.Source.LineEnd < step.Source.LineStart || step.Source.LineStart < 1 || step.Source.LineEnd > len(lines) {
 		return hopSpanReplace{}, step, false
@@ -1364,23 +1394,23 @@ func repairLookupAct(lines []string, step hopspec.Step, prior map[string]string,
 	var tools []string
 	switch {
 	case body != "":
-		if bound, ok := hopRetrieval(body, nil, names); ok {
-			tools = undeclaredCallTools(step, body, bound, names)
+		if bound, ok := hopRetrievalNamed(body, nil, names, extra); ok {
+			tools = undeclaredCallTools(step, body, bound, names, extra)
 			break
 		}
 		if missing, ok := missingCopyInputs(step, prior, names); ok {
 			inputs = missing
-			if bound, ok := hopRetrieval(body, prior, names); ok {
-				tools = undeclaredCallTools(step, body, bound, names)
+			if bound, ok := hopRetrievalNamed(body, prior, names, extra); ok {
+				tools = undeclaredCallTools(step, body, bound, names, extra)
 			}
 			break
 		}
 		dropBody = true
-		if tool := lookupToolToDeclare(step); tool != "" {
+		if tool := lookupToolToDeclare(step, extra); tool != "" {
 			tools = append(tools, tool)
 		}
 	default:
-		if tool := lookupToolToDeclare(step); tool != "" {
+		if tool := lookupToolToDeclare(step, extra); tool != "" {
 			tools = append(tools, tool)
 		}
 	}
@@ -1509,7 +1539,7 @@ func previewLookupStep(step hopspec.Step, dropBody bool, inputs, tools []string)
 	return step
 }
 
-func undeclaredCallTools(step hopspec.Step, body string, bound map[string]string, names []string) []string {
+func undeclaredCallTools(step hopspec.Step, body string, bound map[string]string, names []string, extra map[string]bool) []string {
 	called := map[string]bool{}
 	if hopPythonCalls(body, "web_search") {
 		called["web_search"] = true
@@ -1517,8 +1547,11 @@ func undeclaredCallTools(step hopspec.Step, body string, bound map[string]string
 	if hopPythonCalls(body, "web_fetch") {
 		called["web_fetch"] = true
 	}
+	if name, ok := hopSingleExtra(extra); ok && hopPythonCalls(body, name) {
+		called[name] = true
+	}
 	var tools []string
-	for _, tool := range retrievalTools(bound, names) {
+	for _, tool := range retrievalToolsNamed(bound, names, extra) {
 		if called[tool] && !hopStepListsTool(step, tool) {
 			tools = append(tools, tool)
 		}
@@ -1526,7 +1559,13 @@ func undeclaredCallTools(step hopspec.Step, body string, bound map[string]string
 	return tools
 }
 
-func lookupToolToDeclare(step hopspec.Step) string {
+func lookupToolToDeclare(step hopspec.Step, extra map[string]bool) string {
+	if name, ok := hopSingleExtra(extra); ok {
+		if hopStepListsTool(step, name) || hopStepListsTool(step, "web_search") || hopStepListsTool(step, "web_fetch") {
+			return ""
+		}
+		return name
+	}
 	if hopStepListsTool(step, "web_search") || hopStepListsTool(step, "web_fetch") {
 		return ""
 	}
@@ -1645,11 +1684,18 @@ func applyHopSpanReplacements(lines []string, reps []hopSpanReplace) string {
 // value. With no text spec output, every lookup act must publish a retrieved
 // value. When no act is a lookup, any retrieving act counts.
 func liveLookupCovered(spec hopspec.SpecAST) bool {
+	return liveLookupCoveredNamed(spec, nil)
+}
+
+func liveLookupCoveredNamed(spec hopspec.SpecAST, extra map[string]bool) bool {
 	wanted := textOutputNames(spec)
 	if len(wanted) == 0 {
-		return untrackedLookupCovered(spec)
+		return untrackedLookupCoveredNamed(spec, extra)
 	}
-	live := retrievedNames(spec)
+	live := map[string]string{}
+	for _, step := range spec.AllSteps() {
+		live = retrieveStepNamed(live, step, extra)
+	}
 	for name := range wanted {
 		if live[name] == "" {
 			return false
@@ -1659,15 +1705,19 @@ func liveLookupCovered(spec hopspec.SpecAST) bool {
 }
 
 func untrackedLookupCovered(spec hopspec.SpecAST) bool {
+	return untrackedLookupCoveredNamed(spec, nil)
+}
+
+func untrackedLookupCoveredNamed(spec hopspec.SpecAST, extra map[string]bool) bool {
 	var lookup, lookupLive int
 	var anyLive bool
 	prior := map[string]string{}
 	for _, step := range spec.AllSteps() {
-		prior = retrieveStep(prior, step)
+		prior = retrieveStepNamed(prior, step, extra)
 		if step.Type != hopspec.StepAct {
 			continue
 		}
-		live := actPublishesLive(step, prior)
+		live := actPublishesLive(step, prior) || hopActRetrievesExtra(step, extra)
 		if live {
 			anyLive = true
 		}
@@ -1708,9 +1758,13 @@ func actPublishesLive(step hopspec.Step, after map[string]string) bool {
 // retrieved. The left side of or is that value. A quoted sentence outside
 // the call is not.
 func retrievedNames(spec hopspec.SpecAST) map[string]string {
+	return retrievedNamesNamed(spec, nil)
+}
+
+func retrievedNamesNamed(spec hopspec.SpecAST, extra map[string]bool) map[string]string {
 	live := map[string]string{}
 	for _, step := range spec.AllSteps() {
-		live = retrieveStep(live, step)
+		live = retrieveStepNamed(live, step, extra)
 	}
 	return live
 }
@@ -1727,6 +1781,13 @@ func stepRunsHopPython(step hopspec.Step) bool {
 }
 
 func retrieveStep(live map[string]string, step hopspec.Step) map[string]string {
+	return retrieveStepNamed(live, step, nil)
+}
+
+// retrieveStepNamed is retrieveStep plus governed skill and MCP tool-line
+// names. A nil set is the web_search and web_fetch accounting. Aliases and
+// any other whitelist name stay out, so write_file does not count as retrieval.
+func retrieveStepNamed(live map[string]string, step hopspec.Step, extra map[string]bool) map[string]string {
 	next := cloneHopBind(live)
 	if !stepWritesVariables(step) {
 		return next
@@ -1740,6 +1801,8 @@ func retrieveStep(live map[string]string, step hopspec.Step) map[string]string {
 				tool = "web_search"
 			case hopStepListsTool(step, "web_fetch"):
 				tool = "web_fetch"
+			default:
+				tool = hopListedExtra(step, extra)
 			}
 		}
 		for _, out := range step.Outputs {
@@ -1760,7 +1823,7 @@ func retrieveStep(live map[string]string, step hopspec.Step) map[string]string {
 			incoming[in] = next[in]
 		}
 	}
-	bound := bodyRetrievalBindings(step.Body, incoming)
+	bound := bodyRetrievalBindings(step.Body, incoming, extra)
 	callsSearch := hopPythonCalls(step.Body, "web_search")
 	callsFetch := hopPythonCalls(step.Body, "web_fetch")
 	for _, out := range step.Outputs {
@@ -1768,7 +1831,7 @@ func retrieveStep(live map[string]string, step hopspec.Step) map[string]string {
 			continue
 		}
 		tool := bound[out.Name]
-		needsList := tool == "web_search" && callsSearch || tool == "web_fetch" && callsFetch
+		needsList := tool == "web_search" && callsSearch || tool == "web_fetch" && callsFetch || extra[tool] && hopPythonCalls(step.Body, tool)
 		if tool == "" || (needsList && !hopStepListsTool(step, tool)) {
 			delete(next, out.Name)
 			continue
@@ -1842,7 +1905,7 @@ func actRetrieves(step hopspec.Step, names []string) bool {
 	return true
 }
 
-func bodyRetrievalBindings(body string, incoming map[string]string) map[string]string {
+func bodyRetrievalBindings(body string, incoming map[string]string, extra map[string]bool) map[string]string {
 	// The step fails before it publishes when the interpreter cannot run the
 	// body. An input of the same name is not the value that body would write.
 	if err := hopjit.HopPythonRuns(body, hopDefinedNames(incoming)); err != nil {
@@ -1852,7 +1915,7 @@ func bodyRetrievalBindings(body string, incoming map[string]string) map[string]s
 	if !ok {
 		return map[string]string{}
 	}
-	return bindHopStatements(statements, incoming)
+	return bindHopStatements(statements, incoming, extra)
 }
 
 // hopRetrieval is the tool behind each assignment. An empty names list requires
@@ -1861,6 +1924,10 @@ func bodyRetrievalBindings(body string, incoming map[string]string) map[string]s
 // step already retrieved. The left side of or is the value hop_python keeps.
 // The interpreter must be able to evaluate the body with those names assigned.
 func hopRetrieval(body string, incoming map[string]string, names []string) (map[string]string, bool) {
+	return hopRetrievalNamed(body, incoming, names, nil)
+}
+
+func hopRetrievalNamed(body string, incoming map[string]string, names []string, extra map[string]bool) (map[string]string, bool) {
 	if err := hopjit.HopPythonRuns(body, hopDefinedNames(incoming)); err != nil {
 		return nil, false
 	}
@@ -1868,7 +1935,7 @@ func hopRetrieval(body string, incoming map[string]string, names []string) (map[
 	if !ok {
 		return nil, false
 	}
-	bound := bindHopStatements(statements, incoming)
+	bound := bindHopStatements(statements, incoming, extra)
 	targets := names
 	if len(targets) == 0 {
 		targets = hopBindTargets(statements)
@@ -1885,6 +1952,10 @@ func hopRetrieval(body string, incoming map[string]string, names []string) (map[
 }
 
 func retrievalTools(bound map[string]string, names []string) []string {
+	return retrievalToolsNamed(bound, names, nil)
+}
+
+func retrievalToolsNamed(bound map[string]string, names []string, extra map[string]bool) []string {
 	consider := names
 	if len(consider) == 0 {
 		consider = make([]string, 0, len(bound))
@@ -1894,15 +1965,21 @@ func retrievalTools(bound map[string]string, names []string) []string {
 	}
 	have := map[string]bool{}
 	for _, name := range consider {
-		if tool := bound[name]; tool == "web_search" || tool == "web_fetch" {
+		tool := bound[name]
+		if tool == "web_search" || tool == "web_fetch" || extra[tool] {
 			have[tool] = true
 		}
 	}
+	// web_search then web_fetch, then the one extra name. Nil extra emits
+	// only the two web tools, in that order.
 	var tools []string
 	for _, tool := range []string{"web_search", "web_fetch"} {
 		if have[tool] {
 			tools = append(tools, tool)
 		}
+	}
+	if name, ok := hopSingleExtra(extra); ok && have[name] {
+		tools = append(tools, name)
 	}
 	return tools
 }
@@ -2028,13 +2105,13 @@ func validHopBindChain(statements []*hopBindStmt) bool {
 	return true
 }
 
-func bindHopStatements(statements []*hopBindStmt, incoming map[string]string) map[string]string {
+func bindHopStatements(statements []*hopBindStmt, incoming map[string]string, extra map[string]bool) map[string]string {
 	bound := cloneHopBind(incoming)
 	for index := 0; index < len(statements); index++ {
 		statement := statements[index]
 		switch statement.kind {
 		case "assign":
-			bound[statement.target] = rhsRetrievalTool(statement.expression, bound)
+			bound[statement.target] = rhsRetrievalTool(statement.expression, bound, extra)
 		case "if":
 			chain := []*hopBindStmt{statement}
 			for index+1 < len(statements) {
@@ -2048,16 +2125,16 @@ func bindHopStatements(statements []*hopBindStmt, incoming map[string]string) ma
 					break
 				}
 			}
-			bound = mergeHopBindPaths(bound, chain)
+			bound = mergeHopBindPaths(bound, chain, extra)
 		}
 	}
 	return bound
 }
 
-func mergeHopBindPaths(before map[string]string, chain []*hopBindStmt) map[string]string {
+func mergeHopBindPaths(before map[string]string, chain []*hopBindStmt, extra map[string]bool) map[string]string {
 	paths := make([]map[string]string, 0, len(chain)+1)
 	for _, branch := range chain {
-		paths = append(paths, bindHopStatements(branch.children, before))
+		paths = append(paths, bindHopStatements(branch.children, before, extra))
 	}
 	if chain[len(chain)-1].kind != "else" {
 		paths = append(paths, cloneHopBind(before))
@@ -2111,15 +2188,15 @@ func cloneHopBind(incoming map[string]string) map[string]string {
 	return out
 }
 
-func rhsRetrievalTool(rhs string, bound map[string]string) string {
+func rhsRetrievalTool(rhs string, bound map[string]string, extra map[string]bool) string {
 	// or returns the left value when it is truthy and does not evaluate the right.
 	if left, _, ok := splitTopLevelHopOr(rhs); ok {
-		return plainRetrieval(strings.TrimSpace(left), bound)
+		return plainRetrieval(strings.TrimSpace(left), bound, extra)
 	}
-	return plainRetrieval(strings.TrimSpace(rhs), bound)
+	return plainRetrieval(strings.TrimSpace(rhs), bound, extra)
 }
 
-func plainRetrieval(rhs string, bound map[string]string) string {
+func plainRetrieval(rhs string, bound map[string]string, extra map[string]bool) string {
 	if hopPythonHasContentString(maskHopPythonCallArgs(rhs)) {
 		return ""
 	}
@@ -2128,6 +2205,9 @@ func plainRetrieval(rhs string, bound map[string]string) string {
 	}
 	if hopPythonCalls(rhs, "web_fetch") {
 		return "web_fetch"
+	}
+	if tool := hopCalledExtra(rhs, extra); tool != "" {
+		return tool
 	}
 	tool := ""
 	found := false
@@ -2455,11 +2535,15 @@ func hopLiveLookupTask(task string) bool {
 }
 
 func liveLookupToolsRequired(markdown, task string) error {
+	return liveLookupToolsRequiredNamed(markdown, task, nil)
+}
+
+func liveLookupToolsRequiredNamed(markdown, task string, tools []hopGovernedTool) error {
 	if !hopLiveLookupTask(task) {
 		return nil
 	}
 	spec, _ := hopspec.Parse(markdown)
-	if liveLookupCovered(spec) {
+	if liveLookupCoveredNamed(spec, hopGovernedNameSet(tools)) {
 		return nil
 	}
 	return errors.New("LIVE_LOOKUP_TOOLS_REQUIRED: the step that writes each text output must list web_search or web_fetch and, in hop_python, assign that output from the call. A tool line on another step does not count")
@@ -3173,4 +3257,540 @@ func validateCompiledHopSpec(markdown string) error {
 		}
 	}
 	return nil
+}
+
+// repairNamedHopTools attaches one governed skill or MCP tool when the task
+// names exactly that tool. The tool line goes on the act that writes the text.
+// A lookup repair that just listed web_search on that act loses that line.
+// The host does not invent arguments: a hop_python body stays only when it
+// assigns every text output from that call.
+func repairNamedHopTools(markdown, task string, tools []hopGovernedTool) string {
+	if len(tools) == 0 {
+		return markdown
+	}
+	chosen, ok := hopUniqueGovernedTool(task, tools)
+	if !ok || chosen.Name == "" {
+		return markdown
+	}
+	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
+	spec, _ := hopspec.Parse(markdown)
+	lines := strings.Split(markdown, "\n")
+	step, ok := namedHopDestination(spec, chosen.Name)
+	if !ok {
+		return moveNamedTextOntoOwner(lines, spec, chosen.Name)
+	}
+	rep, ok := repairNamedHopAct(lines, step, chosen.Name)
+	if !ok {
+		return markdown
+	}
+	return applyHopSpanReplacements(lines, []hopSpanReplace{rep})
+}
+
+// hopUniqueRetrievalExtra is the one tool-line spelling lookup repair may
+// treat as retrieval. A repeated name is not unique, so this stays nil and
+// the web_search path is unchanged.
+func hopUniqueRetrievalExtra(task string, tools []hopGovernedTool) map[string]bool {
+	chosen, ok := hopUniqueGovernedTool(task, tools)
+	if !ok || chosen.Name == "" {
+		return nil
+	}
+	return map[string]bool{chosen.Name: true}
+}
+
+func hopUniqueGovernedTool(task string, tools []hopGovernedTool) (hopGovernedTool, bool) {
+	counts := map[string]int{}
+	for _, item := range tools {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		counts[name]++
+	}
+	var matched []hopGovernedTool
+	seen := map[string]bool{}
+	for _, item := range tools {
+		name := strings.TrimSpace(item.Name)
+		if name == "" || seen[name] || counts[name] != 1 {
+			continue
+		}
+		if !hopTaskNamesTool(task, item) {
+			continue
+		}
+		seen[name] = true
+		item.Name = name
+		matched = append(matched, item)
+	}
+	if len(matched) != 1 {
+		return hopGovernedTool{}, false
+	}
+	return matched[0], true
+}
+
+func hopTaskNamesTool(task string, item hopGovernedTool) bool {
+	if hopTaskNames(task, item.Name) {
+		return true
+	}
+	for _, alias := range item.Aliases {
+		if hopTaskNames(task, alias) {
+			return true
+		}
+	}
+	return false
+}
+
+func hopTaskNames(task, name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || hopRuneLen(name) < 2 {
+		return false
+	}
+	if hopASCIIName(name) {
+		return hopASCIIToken(task, name)
+	}
+	return strings.Contains(task, name)
+}
+
+func hopRuneLen(value string) int {
+	count := 0
+	for range value {
+		count++
+	}
+	return count
+}
+
+func hopASCIIName(name string) bool {
+	for index := 0; index < len(name); index++ {
+		if name[index] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+func hopASCIIToken(task, name string) bool {
+	task = strings.ToLower(task)
+	name = strings.ToLower(name)
+	rest := task
+	for {
+		index := strings.Index(rest, name)
+		if index < 0 {
+			return false
+		}
+		before := index == 0 || !hopNameByte(rest[index-1])
+		afterAt := index + len(name)
+		after := afterAt >= len(rest) || !hopNameByte(rest[afterAt])
+		if before && after {
+			return true
+		}
+		rest = rest[index+1:]
+	}
+}
+
+func hopNameByte(value byte) bool {
+	return hopIdentByte(value) || value == '-'
+}
+
+func hopGovernedNameSet(tools []hopGovernedTool) map[string]bool {
+	if len(tools) == 0 {
+		return nil
+	}
+	names := map[string]bool{}
+	for _, item := range tools {
+		if name := strings.TrimSpace(item.Name); name != "" {
+			names[name] = true
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+func namedHopDestination(spec hopspec.SpecAST, name string) (hopspec.Step, bool) {
+	var listed hopspec.Step
+	var haveListed bool
+	for _, step := range spec.AllSteps() {
+		if step.Type == hopspec.StepAct && hopStepListsTool(step, name) {
+			if !haveListed || step.Source.LineStart >= listed.Source.LineStart {
+				listed = step
+				haveListed = true
+			}
+		}
+	}
+	if haveListed {
+		return listed, true
+	}
+	wanted := textOutputNames(spec)
+	var last hopspec.Step
+	var have bool
+	for _, step := range spec.AllSteps() {
+		if !namedStepCanOwn(step, name) || !namedStepWritesText(step, wanted) {
+			continue
+		}
+		if !have || step.Source.LineStart >= last.Source.LineStart {
+			last = step
+			have = true
+		}
+	}
+	return last, have
+}
+
+func namedStepCanOwn(step hopspec.Step, name string) bool {
+	if (step.Type != hopspec.StepReason && step.Type != hopspec.StepAct) || step.Source.LineEnd < step.Source.LineStart || step.Source.LineStart < 1 {
+		return false
+	}
+	for _, listed := range step.Tools {
+		if listed != "web_search" && listed != name {
+			return false
+		}
+	}
+	return true
+}
+
+func namedStepWritesText(step hopspec.Step, wanted map[string]bool) bool {
+	wrote := false
+	for _, out := range step.Outputs {
+		if out.Name == "" || out.Type == "bool" {
+			continue
+		}
+		if len(wanted) > 0 && !wanted[out.Name] {
+			continue
+		}
+		wrote = true
+		break
+	}
+	return wrote
+}
+
+func repairNamedHopAct(lines []string, step hopspec.Step, name string) (hopSpanReplace, bool) {
+	if step.Source.LineEnd < step.Source.LineStart || step.Source.LineStart < 1 || step.Source.LineEnd > len(lines) {
+		return hopSpanReplace{}, false
+	}
+	raw := lines[step.Source.LineStart-1 : step.Source.LineEnd]
+	dropBody := strings.TrimSpace(step.Body) != "" && !hopNamedBodyCovers(step.Body, name, stepTextOutputNames(step))
+	replaced := namedHopActLines(raw, dropBody, name)
+	if step.Type == hopspec.StepReason && len(replaced) > 0 {
+		replaced[0] = promoteReasonToAct(replaced[0])
+	}
+	if hopLinesEqual(raw, replaced) {
+		return hopSpanReplace{}, false
+	}
+	return hopSpanReplace{start: step.Source.LineStart, end: step.Source.LineEnd, lines: replaced}, true
+}
+
+func hopLinesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func namedHopActLines(raw []string, dropBody bool, name string) []string {
+	kept := make([]string, 0, len(raw)+1)
+	skipping := false
+	skippingPlain := false
+	hasName := false
+	for _, line := range raw {
+		if skipping {
+			if opener, closer := hopPythonFenceLine(line); closer && !opener {
+				skipping = false
+			}
+			continue
+		}
+		if skippingPlain {
+			if hopspec.PlainHopPythonEnds(line) {
+				skippingPlain = false
+			} else {
+				continue
+			}
+		}
+		if dropBody {
+			if opener, _ := hopPythonFenceLine(line); opener {
+				skipping = true
+				continue
+			}
+			if _, ok := hopspec.PlainHopPythonLabel(line); ok {
+				skippingPlain = true
+				continue
+			}
+		}
+		if listed, ok := hopDeclaredTool(line); ok {
+			if listed == "web_search" {
+				continue
+			}
+			if listed == name {
+				hasName = true
+			}
+		}
+		kept = append(kept, line)
+	}
+	if !hasName {
+		kept = append(kept, "  - 工具: "+name)
+	}
+	return kept
+}
+
+func hopDeclaredTool(line string) (string, bool) {
+	rest := ""
+	trimmed := strings.TrimSpace(line)
+	switch {
+	case strings.HasPrefix(trimmed, "-"):
+		rest = trimmed[len("-"):]
+	case strings.HasPrefix(trimmed, "－"):
+		rest = trimmed[len("－"):]
+	default:
+		return "", false
+	}
+	rest = strings.TrimSpace(rest)
+	for _, label := range []string{"工具", "Tools", "tools"} {
+		if !strings.HasPrefix(rest, label) {
+			continue
+		}
+		after := strings.TrimSpace(rest[len(label):])
+		if strings.HasPrefix(after, ":") {
+			return strings.TrimSpace(strings.TrimPrefix(after, ":")), true
+		}
+		if strings.HasPrefix(after, "：") {
+			return strings.TrimSpace(strings.TrimPrefix(after, "：")), true
+		}
+	}
+	return "", false
+}
+
+func hopNamedBodyCovers(body, name string, outputs []string) bool {
+	if strings.TrimSpace(body) == "" || strings.TrimSpace(name) == "" || len(outputs) == 0 {
+		return false
+	}
+	if err := hopjit.HopPythonRuns(body, nil); err != nil {
+		return false
+	}
+	statements, ok := parseHopBindBody(body)
+	if !ok {
+		return false
+	}
+	bound := bindHopStatements(statements, nil, map[string]bool{name: true})
+	for _, output := range outputs {
+		if bound[output] != name {
+			return false
+		}
+	}
+	return hopPythonCalls(body, name)
+}
+
+// moveNamedTextOntoOwner relocates a text output off the check, confirm, or
+// ask that is its only writer. An earlier reason or act publishes it and lists
+// the named tool. A reason becomes an act. No step is invented: with no
+// earlier owner the markdown stays, and compile fails so one rewrite can
+// move the write onto a reason or act.
+func moveNamedTextOntoOwner(lines []string, spec hopspec.SpecAST, name string) string {
+	wanted := textOutputNames(spec)
+	if len(wanted) == 0 || strings.TrimSpace(name) == "" {
+		return strings.Join(lines, "\n")
+	}
+	steps := spec.AllSteps()
+	moves := map[string][]movedLookupOutput{}
+	moving := map[string]bool{}
+	for _, decl := range spec.Outputs {
+		output := decl.Name
+		if !wanted[output] || moving[output] {
+			continue
+		}
+		writers := hostWritersOf(steps, output)
+		if len(writers) == 0 || hostBodyCallsRetrieval(writers, map[string]bool{name: true}) {
+			continue
+		}
+		last := writers[0]
+		for _, step := range writers[1:] {
+			if step.Source.LineStart >= last.Source.LineStart {
+				last = step
+			}
+		}
+		dest, ok := namedTextDestination(steps, last, name)
+		if !ok {
+			continue
+		}
+		item := movedLookupOutput{name: output, decl: outputDeclNamed(last, output)}
+		if line, ok := lookupOutputSourceLine(lines, last, output); ok {
+			item.line = line
+		} else if item.decl.Type != "" {
+			item.line = "  + → " + output + " % " + item.decl.Type
+		} else {
+			item.line = "  + → " + output + " % text"
+		}
+		moves[dest.ID] = append(moves[dest.ID], item)
+		moving[output] = true
+	}
+	if len(moving) == 0 {
+		return strings.Join(lines, "\n")
+	}
+	var reps []hopSpanReplace
+	for _, step := range steps {
+		if step.Source.LineEnd < step.Source.LineStart || step.Source.LineStart < 1 || step.Source.LineEnd > len(lines) {
+			continue
+		}
+		if items := moves[step.ID]; len(items) > 0 {
+			replaced := namedHopActLines(lines[step.Source.LineStart-1:step.Source.LineEnd], false, name)
+			replaced = appendMovedLookupLines(replaced, items)
+			if step.Type == hopspec.StepReason && len(replaced) > 0 {
+				replaced[0] = promoteReasonToAct(replaced[0])
+			}
+			reps = append(reps, hopSpanReplace{start: step.Source.LineStart, end: step.Source.LineEnd, lines: replaced})
+			continue
+		}
+		if !hostFillsLookupText(step) {
+			continue
+		}
+		if rep, ok := stripNamedMovedOutputs(lines, step, moving); ok {
+			reps = append(reps, rep)
+		}
+	}
+	if len(reps) == 0 {
+		return strings.Join(lines, "\n")
+	}
+	return applyHopSpanReplacements(lines, reps)
+}
+
+func namedTextDestination(steps []hopspec.Step, before hopspec.Step, name string) (hopspec.Step, bool) {
+	var last, lastText hopspec.Step
+	var have, haveText bool
+	for _, step := range steps {
+		if step.Source.LineStart < 1 || step.Source.LineStart >= before.Source.LineStart || !namedStepCanOwn(step, name) {
+			continue
+		}
+		if !have || step.Source.LineStart >= last.Source.LineStart {
+			last = step
+			have = true
+		}
+		if stepOutputsHoldText(step) && (!haveText || step.Source.LineStart >= lastText.Source.LineStart) {
+			lastText = step
+			haveText = true
+		}
+	}
+	if haveText {
+		return lastText, true
+	}
+	return last, have
+}
+
+func stripNamedMovedOutputs(lines []string, step hopspec.Step, moving map[string]bool) (hopSpanReplace, bool) {
+	raw := lines[step.Source.LineStart-1 : step.Source.LineEnd]
+	kept := make([]string, 0, len(raw))
+	skipping := false
+	removed := false
+	for _, line := range raw {
+		if skipping {
+			if opener, closer := hopPythonFenceLine(line); closer && !opener {
+				skipping = false
+			}
+			kept = append(kept, line)
+			continue
+		}
+		if opener, _ := hopPythonFenceLine(line); opener {
+			skipping = true
+			kept = append(kept, line)
+			continue
+		}
+		if output, ok := hopStepOutputName(line); ok && moving[output] {
+			removed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !removed {
+		return hopSpanReplace{}, false
+	}
+	return hopSpanReplace{start: step.Source.LineStart, end: step.Source.LineEnd, lines: kept}, true
+}
+
+// namedHopToolUnattached fails a non-lookup compile when the task names one
+// skill or MCP tool and no reason or act writes the text. Lookup tasks already
+// fail with LIVE_LOOKUP_TOOLS_REQUIRED. The error is not "commit is not
+// allowed", so the compiler rewrites once. A check is not promoted and no
+// step is invented.
+func namedHopToolUnattached(markdown, task string, tools []hopGovernedTool) error {
+	if hopLiveLookupTask(task) {
+		return nil
+	}
+	chosen, ok := hopUniqueGovernedTool(task, tools)
+	if !ok || chosen.Name == "" {
+		return nil
+	}
+	spec, _ := hopspec.Parse(markdown)
+	if len(textOutputNames(spec)) == 0 {
+		return nil
+	}
+	for _, step := range spec.AllSteps() {
+		if step.Type == hopspec.StepAct && hopStepListsTool(step, chosen.Name) {
+			return nil
+		}
+	}
+	return fmt.Errorf("NAMED_HOP_TOOL_UNATTACHED: the task names %s but no reason or act writes the text output. A check, confirm, or ask cannot call it", chosen.Name)
+}
+
+func hopSingleExtra(extra map[string]bool) (string, bool) {
+	if len(extra) != 1 {
+		return "", false
+	}
+	for name, ok := range extra {
+		if ok && strings.TrimSpace(name) != "" {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+func hopCalledExtra(rhs string, extra map[string]bool) string {
+	if len(extra) == 0 {
+		return ""
+	}
+	found := ""
+	for name := range extra {
+		if !hopPythonCalls(rhs, name) {
+			continue
+		}
+		if found != "" {
+			return ""
+		}
+		found = name
+	}
+	return found
+}
+
+func hopListedExtra(step hopspec.Step, extra map[string]bool) string {
+	if len(extra) == 0 {
+		return ""
+	}
+	found := ""
+	for _, name := range step.Tools {
+		if !extra[name] {
+			continue
+		}
+		if found != "" {
+			return ""
+		}
+		found = name
+	}
+	return found
+}
+
+func hopActRetrievesExtra(step hopspec.Step, extra map[string]bool) bool {
+	if step.Type != hopspec.StepAct || len(extra) == 0 {
+		return false
+	}
+	listed := hopListedExtra(step, extra)
+	if listed == "" {
+		return false
+	}
+	if strings.TrimSpace(step.Body) == "" {
+		return true
+	}
+	names := stepTextOutputNames(step)
+	if len(names) == 0 {
+		return hopjit.HopPythonRuns(step.Body, nil) == nil && hopPythonCalls(step.Body, listed) && !hopPythonHasContentString(maskHopPythonCallArgs(step.Body))
+	}
+	return hopNamedBodyCovers(step.Body, listed, names) && hopStepListsTool(step, listed)
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
@@ -332,6 +333,119 @@ func TestAutoCompressAllUsesMemoAndRefusesToolLoop(t *testing.T) {
 	if !strings.Contains(text, "<handoff-memo>") || strings.Contains(text, "[compressed]") {
 		t.Fatalf("auto compress result: %s", text)
 	}
+}
+
+func TestTrimHistoryAllMergesConstraintIntoKeptMemo(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
+	const constraint = "keep the postgres constraint"
+	entries := make([]ConversationEntry, 0, 90)
+	for i := 0; i < 50; i++ {
+		entries = append(entries, ConversationEntry{Role: "user", Content: constraint})
+	}
+	entries = append(entries, ConversationEntry{Role: "user", Content: "<handoff-memo>\n## progress\nmedian 17.4\n</handoff-memo>"})
+	for i := 0; i < 39; i++ {
+		entries = append(entries, ConversationEntry{Role: "user", Content: "recent " + strings.Repeat("r", 20)})
+	}
+	trimmed := TrimHistory(entries)
+	text := entryVisibleText(trimmed)
+	if strings.Count(text, "<handoff-memo>") != 1 {
+		t.Fatalf("memo count:\n%s", text)
+	}
+	parsed, ok := ParseHandoffMemo(text)
+	if !ok || !strings.Contains(parsed.Task, constraint) || !strings.Contains(parsed.Progress, "median 17.4") {
+		t.Fatalf("merged memo task=%q progress=%q", parsed.Task, parsed.Progress)
+	}
+	for _, entry := range trimmed {
+		body, _ := entry.Content.(string)
+		if body == constraint {
+			t.Fatal("covered constraint stayed as a raw user message")
+		}
+	}
+}
+
+func TestTrimConversationAllMergesConstraintIntoKeptMemo(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
+	const constraint = "keep the postgres constraint"
+	large := strings.Repeat("q", 3000) + " " + constraint
+	msgs := []interface{}{map[string]string{"role": "system", "content": "policy"}}
+	for i := 0; i < 6; i++ {
+		msgs = append(msgs, map[string]string{"role": "user", "content": large})
+	}
+	msgs = append(msgs, map[string]string{"role": "user", "content": "<handoff-memo>\n## progress\nmedian 17.4\n</handoff-memo>"})
+	for i := 0; i < 3; i++ {
+		msgs = append(msgs, map[string]string{"role": "user", "content": "recent " + strings.Repeat("r", 40)})
+	}
+	calls := 0
+	got := TrimConversation(msgs, 4000, 0, func(string) string {
+		calls++
+		return "<handoff-memo>\n## task\nwiped\n</handoff-memo>"
+	})
+	text := checkpointVisibleText(got)
+	if calls != 0 {
+		t.Fatalf("summarizer ran over a kept memo, calls=%d", calls)
+	}
+	if strings.Count(text, "<handoff-memo>") != 1 || strings.Contains(text, "wiped") || strings.Contains(text, strings.Repeat("q", 2000)) {
+		t.Fatalf("merged transcript:\n%s", text)
+	}
+	parsed, ok := ParseHandoffMemo(text)
+	if !ok || !strings.Contains(parsed.Task, constraint) || !strings.Contains(parsed.Progress, "median 17.4") {
+		t.Fatalf("merged memo task=%q progress=%q", parsed.Task, parsed.Progress)
+	}
+}
+
+func TestTrimConversationAllKeepsRecoveryMeasurementOnce(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
+	handoff := longRecoveryHandoff()
+	if RecoveryHandoffProgress(handoff) == "" || strings.Contains(handoff, "<handoff-memo>") || utf8.RuneCountInString(RecoveryHandoffProgress(handoff)) <= 1400 {
+		t.Fatal("fixture is not a long four-section recovery handoff")
+	}
+	msgs := []interface{}{
+		map[string]string{"role": "system", "content": "policy"},
+		map[string]string{"role": "user", "content": handoff},
+	}
+	for i := 0; i < 6; i++ {
+		msgs = append(msgs, map[string]string{"role": "user", "content": strings.Repeat("q", 3000)})
+	}
+	for i := 0; i < 3; i++ {
+		msgs = append(msgs, map[string]string{"role": "user", "content": "recent " + strings.Repeat("r", 40)})
+	}
+	longTask := strings.Repeat("约束", 2250)
+	summary := "<handoff-memo>\n## task\n" + longTask + "\n</handoff-memo>"
+	if taskRunes, summaryRunes := utf8.RuneCountInString(longTask), utf8.RuneCountInString(summary); taskRunes < 4500 || summaryRunes > 5000 {
+		t.Fatalf("summarizer fixture task=%d summary=%d", taskRunes, summaryRunes)
+	}
+	calls := 0
+	got := TrimConversation(msgs, 4000, 0, func(string) string {
+		calls++
+		return summary
+	})
+	text := checkpointVisibleText(got)
+	parsed, ok := ParseHandoffMemo(text)
+	if calls != 1 || !ok || strings.Count(text, "<handoff-memo>") != 1 || strings.Count(parsed.Progress, "median 17.4") != 1 {
+		t.Fatalf("calls=%d progress=%q text=%s", calls, parsed.Progress, text)
+	}
+	if taskRunes, progressRunes, renderRunes := utf8.RuneCountInString(parsed.Task), utf8.RuneCountInString(parsed.Progress), utf8.RuneCountInString(parsed.Render()); taskRunes > 600 || progressRunes > 1400 || renderRunes > 5000 {
+		t.Fatalf("task=%d progress=%d render=%d", taskRunes, progressRunes, renderRunes)
+	}
+	firstProgress := utf8.RuneCountInString(parsed.Progress)
+	again := append(got, map[string]string{"role": "user", "content": strings.Repeat("n", 3000)})
+	second := TrimConversation(again, 4000, 0, func(string) string {
+		calls++
+		return "<handoff-memo>\n## task\nwiped again\n</handoff-memo>"
+	})
+	parsed, ok = ParseHandoffMemo(checkpointVisibleText(second))
+	if calls != 1 || !ok || strings.Count(parsed.Progress, "median 17.4") != 1 || strings.Count(checkpointVisibleText(second), "<handoff-memo>") != 1 {
+		t.Fatalf("second calls=%d progress=%q", calls, parsed.Progress)
+	}
+	if againRunes, renderRunes := utf8.RuneCountInString(parsed.Progress), utf8.RuneCountInString(parsed.Render()); againRunes > firstProgress || againRunes > 1400 || renderRunes > 5000 {
+		t.Fatalf("progress grew %d -> %d render=%d", firstProgress, againRunes, renderRunes)
+	}
+}
+
+func longRecoveryHandoff() string {
+	pad := strings.Repeat("later-section ", 120)
+	body := "1. **当前进度**: median 17.4\n2. **重要上下文**: " + pad + "\n3. **待完成工作**: ship\n4. **关键数据**: keep-postgres\n"
+	return CompactionRecoveryLead + "\n\n以下是之前模型产出的交接摘要:\n\n" + body
 }
 
 func checkpointVisibleText(messages []interface{}) string {

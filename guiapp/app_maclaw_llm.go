@@ -662,6 +662,31 @@ const xAIGrokDefaultModel = "grok-4.7"
 // built-in Grok default compares equal to the current default. Explicit model
 // ids and custom slots stay as written: changing those still invalidates the
 // connection test.
+// advanceStoredXAIDefault records the current managed default on a built-in
+// xAI row whose stored model is still a former default. Assignment models are
+// left alone, so an explicit grok-4.6 selection can remain after this write.
+func xaiManagedDefaultMigration(provider corelib.MaclawLLMProvider, model string) bool {
+	if provider.IsCustom || strings.TrimSpace(provider.Name) != "xAI-Grok" {
+		return false
+	}
+	if strings.TrimSpace(model) != xAIGrokDefaultModel {
+		return false
+	}
+	return isLegacyXAIDefaultModel(provider.Model)
+}
+
+func advanceStoredXAIDefault(providers []corelib.MaclawLLMProvider) {
+	for i := range providers {
+		if providers[i].IsCustom || strings.TrimSpace(providers[i].Name) != "xAI-Grok" {
+			continue
+		}
+		if !isLegacyXAIDefaultModel(providers[i].Model) {
+			continue
+		}
+		providers[i].Model = xAIGrokDefaultModel
+	}
+}
+
 func maclawLLMProviderForXAIDefaultModelRetention(provider corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
 	if provider.IsCustom || strings.TrimSpace(provider.Name) != "xAI-Grok" {
 		return provider
@@ -1656,6 +1681,11 @@ func effectiveMaclawLLMProfiles(cfg corelib.AppConfig, providers []corelib.Macla
 		}
 		remapLegacyZhipuCodingProfileModels(&profiles, providers)
 		remapOpenCodeProfileModels(&profiles, providers)
+		// Chat uses the assignment, not the provider row. Migrate an assignment
+		// that still holds the same former xAI default the provider row holds.
+		// A later explicit choice, such as grok-4.6 after the stored default
+		// has moved to grok-4.7, stays.
+		remapLegacyXAIProfileModels(&profiles, cfg.MaclawLLMProviders)
 		return &profiles, nil
 	}
 	// Legacy configs retain name-based selection only until a controlled write.
@@ -1674,6 +1704,40 @@ func effectiveMaclawLLMProfiles(cfg corelib.AppConfig, providers []corelib.Macla
 		}
 	}
 	return nil, fmt.Errorf("legacy current provider %q not found", current)
+}
+
+// remapLegacyXAIProfileModels moves a built-in xAI assignment off a former
+// default when that assignment is still the provider row's stored model.
+// Raw provider rows are required: the loaded rows have already replaced
+// grok-4.6 with grok-4.7, which would hide the lockstep this recognizes.
+func remapLegacyXAIProfileModels(profiles *corelib.MaclawLLMProfiles, raw []corelib.MaclawLLMProvider) {
+	if profiles == nil {
+		return
+	}
+	remap := func(profile *corelib.MaclawLLMProfile) {
+		if profile == nil {
+			return
+		}
+		model := strings.TrimSpace(profile.Model)
+		if !isLegacyXAIDefaultModel(model) {
+			return
+		}
+		provider, ok := resolveMaclawLLMProviderByID(raw, profile.ProviderID)
+		if !ok || provider.IsCustom || strings.TrimSpace(provider.Name) != "xAI-Grok" {
+			return
+		}
+		if !strings.EqualFold(strings.TrimSpace(provider.Model), model) {
+			return
+		}
+		profile.Model = xAIGrokDefaultModel
+	}
+	remap(&profiles.Assistant)
+	if !profiles.Coding.InheritAssistant {
+		remap(&profiles.Coding)
+	}
+	if maclawLLMProfileAssigned(profiles.Caption) {
+		remap(&profiles.Caption)
+	}
 }
 
 func remapLegacyZhipuCodingProfileModels(profiles *corelib.MaclawLLMProfiles, providers []corelib.MaclawLLMProvider) {
@@ -2555,6 +2619,12 @@ func (a *App) probeUntestedAssignedProfileModels(profiles corelib.MaclawLLMProfi
 		if providerVisionTestStatus(provider, item.model) != "untested" {
 			continue
 		}
+		// Moving the stored former default to grok-4.7 is not a new model the
+		// user picked. A live vision probe would block that save when the
+		// account cannot be reached.
+		if xaiManagedDefaultMigration(provider, item.model) {
+			continue
+		}
 		resolved := a.materializeMaclawLLMProvider(provider)
 		resolved.Model = item.model
 		result, err := a.TestMaclawLLM(resolved)
@@ -2666,6 +2736,10 @@ func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision
 			validationErr = err
 			return false
 		}
+		// Projection copies the assistant model onto the provider row. A saved
+		// choice of grok-4.6 would otherwise match the stored default and be
+		// migrated again on the next read. Move the stored default forward.
+		advanceStoredXAIDefault(cfg.MaclawLLMProviders)
 		return true
 	})
 	if err != nil {

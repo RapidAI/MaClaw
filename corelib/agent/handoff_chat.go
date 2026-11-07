@@ -148,24 +148,71 @@ func NoteCoveredMemo(memo HandoffMemo, fromLLM, keptExtra bool) {
 	log.Printf("[handoff-memo] %s", memo.LengthNote())
 }
 
-// preservePriorProgress keeps a measurement that lives only in the covering
-// memo. A fill built from the older slice must not drop it.
-func preservePriorProgress(memo *HandoffMemo, prior HandoffMemo) {
+// CompactionRecoveryLead is the first line of the chat four-section handoff.
+// The deterministic trim note uses a different sentence and is not this lead.
+const CompactionRecoveryLead = "[上下文恢复] 之前的对话因长度限制被压缩为以下交接摘要。"
+
+const compactionRecoverySummaryMark = "以下是之前模型产出的交接摘要:"
+
+// RecoveryHandoffProgress is the old four-section body under the compaction
+// recovery prefix. A memo tag means the body was already kept once, so this
+// returns empty.
+func RecoveryHandoffProgress(text string) string {
+	if strings.Contains(text, handoffOpen) {
+		return ""
+	}
+	i := strings.Index(text, CompactionRecoveryLead)
+	if i < 0 {
+		return ""
+	}
+	body := text[i+len(CompactionRecoveryLead):]
+	if j := strings.Index(body, compactionRecoverySummaryMark); j >= 0 {
+		body = body[j+len(compactionRecoverySummaryMark):]
+	}
+	body = strings.TrimSpace(body)
+	if body == "" || !strings.Contains(body, "当前进度") {
+		return ""
+	}
+	return body
+}
+
+func recoveryHandoffProgressFrom(msgs []interface{}) string {
+	found := ""
+	for _, msg := range msgs {
+		_, content := ExtractRoleContent(msg)
+		if progress := RecoveryHandoffProgress(content); progress != "" {
+			found = progress
+		}
+	}
+	return found
+}
+
+// PreservePriorProgress keeps a measurement that lives only in the covering
+// memo. The retained progress is the capped tail, with the measurement at
+// the end. The uncut prior body is not prepended, and the render cap is
+// applied after the merge.
+func PreservePriorProgress(memo *HandoffMemo, prior HandoffMemo) {
 	if memo == nil {
 		return
 	}
-	progress := strings.TrimSpace(prior.Progress)
-	if progress == "" || HandoffTextEmpty(progress) {
-		return
+	measurement := progressMeasurement(prior.Progress)
+	if measurement == "" {
+		measurement = progressMeasurement(memo.Progress)
 	}
-	if strings.Contains(memo.Progress, progress) {
-		return
+	current := strings.TrimSpace(memo.Progress)
+	if measurement != "" && strings.Contains(current, measurement) && runeLen(current) <= handoffProgressRunes {
+		memo.Progress = current
+	} else {
+		memo.Progress = capProgressKeepingMeasurement(strings.TrimSpace(current + "\n" + prior.Progress))
 	}
-	if strings.TrimSpace(memo.Progress) == "" {
-		memo.Progress = progress
-		return
+	if HandoffTextEmpty(memo.Progress) {
+		memo.Progress = ""
 	}
-	memo.Progress = progress + "\n" + strings.TrimSpace(memo.Progress)
+	// A parsed summary can carry a field larger than its schema cap and still
+	// pass the 5000-rune summary check. Cap those fields before the render
+	// shrink, so the shrink does not have to erase progress to fit.
+	memo.capFieldsToSchema()
+	memo.shrinkToRenderCap()
 }
 
 // memoForCoveredSpan returns the memo for messages that are leaving context.
@@ -174,13 +221,19 @@ func preservePriorProgress(memo *HandoffMemo, prior HandoffMemo) {
 // the prior memo, including progress that is not in the dropped slice.
 func MemoForCoveredSpan(scope, dropped []interface{}, summary string, summaryOK bool) (HandoffMemo, bool) {
 	prior, hadPrior := LastMemoInMessages(scope)
+	if !hadPrior {
+		if progress := recoveryHandoffProgressFrom(scope); progress != "" {
+			prior.Progress = progress
+		}
+	}
 	if !hadPrior && summaryOK {
 		if parsed, ok := ParseHandoffMemo(summary); ok && parsed.Usable() {
+			PreservePriorProgress(&parsed, prior)
 			return parsed, true
 		}
 	}
 	memo := MemoFromDroppedProjects(dropped, prior, false)
-	preservePriorProgress(&memo, prior)
+	PreservePriorProgress(&memo, prior)
 	return memo, false
 }
 
@@ -448,11 +501,8 @@ func entryGroupPins(entries []ConversationEntry, groups []EntryGroup, keepEquals
 }
 
 func prependHandoffMemo(dropped, kept []ConversationEntry) []ConversationEntry {
-	if _, ok := LastMemoInMessages(entriesToMessages(kept)); ok {
-		return kept
-	}
-	msgs := entriesToMessages(dropped)
-	memo, fromLLM := MemoForCoveredSpan(append(entriesToMessages(kept), msgs...), msgs, "", false)
+	scope := append(entriesToMessages(dropped), entriesToMessages(kept)...)
+	memo, fromLLM := MemoForCoveredSpan(scope, entriesToMessages(dropped), "", false)
 	keptExtra := false
 	if !memo.Usable() {
 		extra := newestEntryGroup(dropped)
@@ -460,7 +510,8 @@ func prependHandoffMemo(dropped, kept []ConversationEntry) []ConversationEntry {
 			dropped = dropped[:len(dropped)-len(extra)]
 			kept = append(append([]ConversationEntry{}, extra...), kept...)
 			keptExtra = true
-			memo, fromLLM = MemoForCoveredSpan(append(entriesToMessages(kept), entriesToMessages(dropped)...), entriesToMessages(dropped), "", false)
+			scope = append(entriesToMessages(dropped), entriesToMessages(kept)...)
+			memo, fromLLM = MemoForCoveredSpan(scope, entriesToMessages(dropped), "", false)
 		} else if len(extra) > 0 && len(dropped) == len(extra) {
 			NoteCoveredMemo(memo, false, true)
 			return append(append([]ConversationEntry{}, extra...), kept...)
@@ -468,6 +519,14 @@ func prependHandoffMemo(dropped, kept []ConversationEntry) []ConversationEntry {
 	}
 	NoteCoveredMemo(memo, fromLLM, keptExtra)
 	if !memo.Usable() {
+		return kept
+	}
+	for i := range kept {
+		text, ok := kept[i].Content.(string)
+		if !ok || !strings.Contains(text, handoffOpen) {
+			continue
+		}
+		kept[i].Content = ReplaceHandoffBlock(text, memo.Render())
 		return kept
 	}
 	block := memo.RenderBlock()
@@ -584,9 +643,6 @@ func trimConversationHandoff(msgs []interface{}, msgBudget int, summarize func(s
 	if len(dropped) == 0 {
 		return msgs
 	}
-	if keptTailHasMemo(tail, groups, drop) {
-		return assembleUnchangedTail(msgs, systemCount, tail, groups, drop)
-	}
 	summary := ""
 	summaryOK := false
 	_, hadPrior := LastMemoInMessages(tail)
@@ -620,14 +676,30 @@ func trimConversationHandoff(msgs []interface{}, msgBudget int, summarize func(s
 	if memo.Usable() {
 		content = memo.RenderBlock()
 	}
+	hasKeptMemo := false
+	if content != "" {
+		for i, group := range groups {
+			if i < len(drop) && drop[i] {
+				continue
+			}
+			if group.Start < 0 || group.End > len(tail) || group.Start >= group.End {
+				continue
+			}
+			if _, ok := LastMemoInMessages(tail[group.Start:group.End]); ok {
+				hasKeptMemo = true
+				break
+			}
+		}
+	}
 	next := make([]interface{}, 0, len(msgs))
 	if systemCount == 1 {
 		next = append(next, msgs[0])
 	}
 	inserted := false
+	replaced := false
 	for i, group := range groups {
 		if i < len(drop) && drop[i] {
-			if !inserted && content != "" {
+			if !hasKeptMemo && !inserted && content != "" {
 				next = append(next, map[string]string{"role": "user", "content": content})
 				inserted = true
 			}
@@ -636,11 +708,25 @@ func trimConversationHandoff(msgs []interface{}, msgBudget int, summarize func(s
 		if group.Start < 0 || group.End > len(tail) || group.Start >= group.End {
 			continue
 		}
-		next = append(next, tail[group.Start:group.End]...)
+		part := tail[group.Start:group.End]
+		if hasKeptMemo && !replaced {
+			for _, msg := range part {
+				text, ok := plainStringContent(msg)
+				if !ok || !strings.Contains(text, handoffOpen) {
+					continue
+				}
+				setPlainContent(msg, ReplaceHandoffBlock(text, memo.Render()))
+				replaced = true
+				break
+			}
+		}
+		next = append(next, part...)
 	}
 	if content != "" {
-		if idx := indexOfExactContent(next, content); idx >= 0 {
-			next = FoldHandoffUser(next, idx, nil)
+		if !hasKeptMemo {
+			if idx := indexOfExactContent(next, content); idx >= 0 {
+				next = FoldHandoffUser(next, idx, nil)
+			}
 		}
 		primary := -1
 		for i, msg := range next {
@@ -653,38 +739,6 @@ func trimConversationHandoff(msgs []interface{}, msgBudget int, summarize func(s
 		if primary >= 0 {
 			next = StripExtraHandoffMemos(next, primary)
 		}
-	}
-	return next
-}
-
-func keptTailHasMemo(tail []interface{}, groups []EntryGroup, drop []bool) bool {
-	for i, group := range groups {
-		if i < len(drop) && drop[i] {
-			continue
-		}
-		if group.Start < 0 || group.End > len(tail) || group.Start >= group.End {
-			continue
-		}
-		if _, ok := LastMemoInMessages(tail[group.Start:group.End]); ok {
-			return true
-		}
-	}
-	return false
-}
-
-func assembleUnchangedTail(msgs []interface{}, systemCount int, tail []interface{}, groups []EntryGroup, drop []bool) []interface{} {
-	next := make([]interface{}, 0, len(msgs))
-	if systemCount == 1 && len(msgs) > 0 {
-		next = append(next, msgs[0])
-	}
-	for i, group := range groups {
-		if i < len(drop) && drop[i] {
-			continue
-		}
-		if group.Start < 0 || group.End > len(tail) || group.Start >= group.End {
-			continue
-		}
-		next = append(next, tail[group.Start:group.End]...)
 	}
 	return next
 }

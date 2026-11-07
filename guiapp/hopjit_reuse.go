@@ -24,12 +24,13 @@ type hopJITExecutionIdentity struct {
 }
 
 type guiHopJITCaller struct {
-	app      *App
-	handler  *IMMessageHandler
-	invoke   hopJITLLMInvoke
-	identity hopJITExecutionIdentity
-	specs    hopjit.SpecProvider
-	task     string
+	app           *App
+	handler       *IMMessageHandler
+	invoke        hopJITLLMInvoke
+	identity      hopJITExecutionIdentity
+	specs         hopjit.SpecProvider
+	task          string
+	governedTools []hopGovernedTool
 }
 
 func (c *guiHopJITCaller) ExecuteStep(ctx context.Context, step hopjit.StepReady) (map[string]any, error) {
