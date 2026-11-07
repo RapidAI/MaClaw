@@ -18,5 +18,6 @@ func TestMain(m *testing.M) {
 	// A list in production returns the stored library and refreshes the cloud
 	// in the background. Tests observe the refresh on the same call.
 	fileCompanionLibraryListInline = true
+	fileCompanionLibraryTitleFillAsync = false
 	os.Exit(m.Run())
 }

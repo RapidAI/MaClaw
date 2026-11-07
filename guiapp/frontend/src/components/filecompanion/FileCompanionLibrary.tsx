@@ -38,6 +38,8 @@ import { savePdfDrawings } from "./pdfDrawings";
 export type CompanionLibraryItem = {
     id: string;
     name: string;
+    // title is the document's own title. The filename stays in name.
+    title?: string;
     path: string;
     source: string;
     openedAt: string;
@@ -302,6 +304,18 @@ function companionHostFlag(record: Record<string, unknown>): boolean {
     return boolOf(record, "mine", "Mine");
 }
 
+// companionLibraryDocTitle is the one line under the filename. A title that
+// only repeats the filename, or its name without the extension, is hidden.
+export function companionLibraryDocTitle(item: { name: string; title?: string }): string {
+    const title = (item.title ?? "").trim().replace(/\s+/g, " ");
+    if (!title) return "";
+    const name = item.name.trim();
+    const stem = name.replace(/\.[^.\\/]+$/, "");
+    const same = (left: string, right: string) => left.localeCompare(right, undefined, { sensitivity: "accent" }) === 0;
+    if (same(title, name) || (stem !== "" && stem !== name && same(title, stem))) return "";
+    return title;
+}
+
 function libraryError(err: unknown): string {
     const raw = (err instanceof Error ? err.message : typeof err === "string" ? err : "").trim();
     return (raw && cs(raw)) || cs("操作失败");
@@ -316,6 +330,7 @@ function readItem(raw: unknown): CompanionLibraryItem | null {
     return {
         id,
         name: name || cs("未命名文档"),
+        title: textOf(record, "title", "Title"),
         path: textOf(record, "path", "Path"),
         source: textOf(record, "source", "Source") || "local",
         openedAt: textOf(record, "openedAt", "OpenedAt"),
@@ -572,8 +587,13 @@ export function companionLibraryRowKey(item: { id: string; source: string; token
     return `id:${item.id}`;
 }
 
+function companionLibraryEditAt(libraryRev: number, appliedRev: number): number {
+    const floor = appliedRev > companionLibrarySeenRev ? appliedRev : companionLibrarySeenRev;
+    return libraryRev > floor ? libraryRev : floor + 1;
+}
+
 export function companionLibraryHideRow(item: { id: string; source: string; token?: string }, libraryRev: number, appliedRev: number) {
-    const at = libraryRev > appliedRev ? libraryRev : appliedRev + 1;
+    const at = companionLibraryEditAt(libraryRev, appliedRev);
     companionLibraryRemovedRows.set(companionLibraryRowKey(item), at);
     // The delete response is the newest library. A catalog already built keeps
     // the old revision and a newer sync generation; accepting it paints the
@@ -604,8 +624,7 @@ export function companionLibraryRowEpoch(): number {
 }
 
 export function companionLibraryShowRestored(item: CompanionLibraryItem, libraryRev: number, appliedRev: number) {
-    const at = libraryRev > appliedRev ? libraryRev : appliedRev + 1;
-    companionLibraryRestoredRows.set(item.id, { item, at });
+    companionLibraryRestoredRows.set(item.id, { item, at: companionLibraryEditAt(libraryRev, appliedRev) });
     notifyCompanionLibraryRows();
 }
 
@@ -624,7 +643,10 @@ export function companionLibraryApplyLocalEdits<T extends { id: string; source: 
     for (const pending of companionLibraryRestoredRows.values()) {
         if (libraryRev >= pending.at) continue;
         if (kept.some((row) => row.id === pending.item.id)) continue;
-        extras.push(pending.item as T);
+        // The restored row is a full library item; the typed rows the caller
+        // passes are the same shape, so rebuild through unknown to satisfy the
+        // algorithmic constraint without widening every call site.
+        extras.push(pending.item as unknown as T);
         changed = true;
     }
     if (!changed) return items;
@@ -640,7 +662,7 @@ export function companionLibraryTakeRestored<T extends { id: string }>(items: T[
             companionLibraryRestoredRows.delete(id);
             continue;
         }
-        extras.push(pending.item as T);
+        extras.push(pending.item as unknown as T);
     }
     return extras.length > 0 ? [...extras, ...items] : items;
 }
@@ -1489,7 +1511,10 @@ export function CompanionLibraryView({
 }) {
     if (lang) setCompanionUiLang(lang);
     const seeded = useMemo(() => companionLibraryPaint(listedSnapshot), [listedSnapshot]);
-    const [items, setItems] = useState<CompanionLibraryItem[]>(seeded.items);
+    // The snapshot's revision is the one already on screen. Starting from 0
+    // made the mount pass treat every earlier 取消分享 as still in force and
+    // strip a share the reader had imported again.
+    const [items, setItems] = useState<CompanionLibraryItem[]>(() => companionLibraryApplyLocalEdits(seeded.items, seeded.libraryRev));
     const [notice, setNotice] = useState(seeded.notice);
     const [loading, setLoading] = useState(listedSnapshot == null);
     const [syncing, setSyncing] = useState(seeded.syncing);
@@ -1553,7 +1578,8 @@ export function CompanionLibraryView({
     const paintedRef = useRef(listedSnapshot != null);
     // The library revision last painted. A delete stamps its own revision so a
     // refresh snapshot from before that save cannot bring the card back.
-    const appliedLibraryRevRef = useRef(0);
+    // The opening snapshot counts: a later pass must not judge it as revision 0.
+    const appliedLibraryRevRef = useRef(seeded.libraryRev);
     const libraryRowEpoch = useSyncExternalStore(subscribeCompanionLibraryRows, companionLibraryRowEpoch, companionLibraryRowEpoch);
     useEffect(() => {
         setItems((current) => companionLibraryApplyLocalEdits(current, appliedLibraryRevRef.current));
@@ -1750,8 +1776,8 @@ export function CompanionLibraryView({
                     if (libraryDeleteGen) libraryDeleteGen.current += 1;
                     const rev = numberOf(raw, "libraryRev", "LibraryRev");
                     const restoredLocal = companionRestoredLocalItem(raw, item.name);
-                    companionLibraryHideRow(item, rev, appliedLibraryRevRef.current);
                     if (restoredLocal) companionLibraryShowRestored(restoredLocal, rev, appliedLibraryRevRef.current);
+                    companionLibraryHideRow(item, rev, appliedLibraryRevRef.current);
                     appliedSnapshotKeyRef.current = "";
                     setItems((current) => companionLibraryApplyLocalEdits(
                         current.filter((row) => companionLibraryRowKey(row) !== companionLibraryRowKey(item)),
@@ -1765,8 +1791,8 @@ export function CompanionLibraryView({
                     if (libraryDeleteGen) libraryDeleteGen.current += 1;
                     const rev = numberOf(raw, "libraryRev", "LibraryRev");
                     const restoredLocal = companionRestoredLocalItem(raw, item.name);
-                    companionLibraryHideRow(item, rev, appliedLibraryRevRef.current);
                     if (restoredLocal) companionLibraryShowRestored(restoredLocal, rev, appliedLibraryRevRef.current);
+                    companionLibraryHideRow(item, rev, appliedLibraryRevRef.current);
                     appliedSnapshotKeyRef.current = "";
                     setItems((current) => companionLibraryApplyLocalEdits(
                         current.filter((row) => companionLibraryRowKey(row) !== companionLibraryRowKey(item)),
@@ -2252,6 +2278,7 @@ export function CompanionLibraryView({
             : (sharedByPath.get(companionSharePathKey(item.path)) ?? null);
         const alreadyShared = Boolean(shareRow) || (item.source === "cloud" && !item.expired);
         const canDrag = folders.length > 0 && !busy && !folderBusy;
+        const docTitle = companionLibraryDocTitle(item);
         const kind = (
             <span className="file-companion-project-kind" data-kind={kindOf(item.name)} aria-hidden="true">{kindLabel(item.name)}</span>
         );
@@ -2295,6 +2322,15 @@ export function CompanionLibraryView({
                         {isOpen ? <span className="file-companion-badge" data-tone="active">{cs("打开中")}</span> : null}
                         {!item.path && item.source === "cloud" ? <span className="file-companion-badge" data-tone="pending">{cs("未导入")}</span> : null}
                     </div>
+                    {docTitle ? (
+                        <p
+                            className="file-companion-project-doctitle"
+                            data-testid={`file-companion-library-doctitle-${item.id}`}
+                            title={docTitle}
+                        >
+                            {docTitle}
+                        </p>
+                    ) : null}
                     <p
                         className="file-companion-project-meta"
                         data-testid={`file-companion-library-meta-${item.id}`}
@@ -3660,8 +3696,8 @@ export function CompanionShareDialog({
             const raw = await DeleteFileCompanionShare(token) as Record<string, unknown>;
             const rev = numberOf(raw, "libraryRev", "LibraryRev");
             const restoredLocal = companionRestoredLocalItem(raw, docName);
-            companionLibraryHideRow({ id: token, source: "cloud", token }, rev, 0);
             if (restoredLocal) companionLibraryShowRestored(restoredLocal, rev, 0);
+            companionLibraryHideRow({ id: token, source: "cloud", token }, rev, 0);
         } catch (err) {
             showToast(libraryError(err), "error", 6000);
             setShareBusy(false);

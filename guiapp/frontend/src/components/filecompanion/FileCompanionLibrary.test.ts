@@ -29,7 +29,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     FileCompanionExportProject: vi.fn(),
 }));
 
-import { companionFolderNameError, companionInstalledSharePath, companionLibraryFolderID, companionLibraryHideRow, companionLibraryNameMatch, companionLibraryRowKey, companionLibrarySync, companionLibraryWithoutRemoved, companionShareDocumentCatchUp, companionShareMarksBehind, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionWithdrawnNotice, resetCompanionLibraryList, takeCompanionLibraryList } from "./FileCompanionLibrary";
+import { companionFolderNameError, companionInstalledSharePath, companionLibraryApplyLocalEdits, companionLibraryFolderID, companionLibraryHideRow, companionLibraryNameMatch, companionLibraryRowKey, companionLibraryShowRestored, companionLibrarySync, companionLibraryWithoutRemoved, companionShareDocumentCatchUp, companionShareMarksBehind, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionWithdrawnNotice, resetCompanionLibraryList, takeCompanionLibraryList } from "./FileCompanionLibrary";
 
 describe("companionInstalledSharePath", () => {
     it("recognizes a received copy by the share folder", () => {
@@ -214,5 +214,44 @@ describe("companionLibraryWithoutRemoved", () => {
         expect(companionLibraryRowKey(cloud)).toBe(`cloud:${cloud.token}`);
         expect(companionLibraryWithoutRemoved([local, cloud], 3).map((item) => item.id)).toEqual([cloud.id]);
         expect(companionLibraryWithoutRemoved([local, cloud], 4).map((item) => item.id)).toEqual([local.id, cloud.id]);
+    });
+});
+
+describe("companionLibraryApplyLocalEdits", () => {
+    const cloud = {
+        id: "cd_0123456789abcdef0123456789abcdef",
+        name: "paper.pdf",
+        path: "D:/paper.pdf",
+        source: "cloud",
+        token: "cd_0123456789abcdef0123456789abcdef",
+        openedAt: "",
+        owner: "",
+        shareUrl: "",
+        expiresAt: "",
+        visibility: "",
+        size: 5,
+        permanent: true,
+        mine: true,
+        revision: 1,
+        target: "",
+        groupId: "",
+        expired: false,
+        highlights: "",
+        notes: [],
+    };
+
+    it("shows the owner's file while the refresh that would list it is still copying", () => {
+        resetCompanionLibraryList();
+        const local = { ...cloud, id: "local:paper", source: "local", token: "", mine: false, permanent: false };
+        companionLibraryShowRestored(local, 6, 5);
+        companionLibraryHideRow(cloud, 6, 5);
+        expect(companionLibraryApplyLocalEdits([cloud], 5).map((item) => item.id)).toEqual(["local:paper"]);
+        expect(companionLibraryApplyLocalEdits([local], 6).map((item) => item.id)).toEqual(["local:paper"]);
+    });
+
+    it("keeps a share a later save brought back", () => {
+        resetCompanionLibraryList();
+        companionLibraryHideRow(cloud, 6, 5);
+        expect(companionLibraryApplyLocalEdits([cloud], 8).map((item) => item.id)).toEqual([cloud.id]);
     });
 });

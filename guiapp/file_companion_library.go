@@ -207,8 +207,12 @@ func noteFileCompanionShareFullRefresh(hub string) {
 
 // FileCompanionLibraryItem is one row in 文档管理.
 type FileCompanionLibraryItem struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Title is the document's own title, read from the file. The card shows
+	// it under Name and keeps Name as the filename. Empty means this file
+	// had no title when it was last read.
+	Title    string `json:"title,omitempty"`
 	Path     string `json:"path,omitempty"`
 	Source   string `json:"source"`
 	OpenedAt string `json:"openedAt,omitempty"`
@@ -336,6 +340,10 @@ type FileCompanionLibraryList struct {
 // library first and refreshes in the background, because the refresh downloads
 // documents and the panel was waiting on 正在读取 until every download finished.
 var fileCompanionLibraryListInline bool
+
+// fileCompanionLibraryTitleFillAsync reads document titles off the list call.
+// Tests turn it off so a fill cannot write the library after the test returns.
+var fileCompanionLibraryTitleFillAsync = true
 
 var fileCompanionLibrarySyncRunning atomic.Bool
 
@@ -516,21 +524,8 @@ func fileCompanionLibraryLocalID(identity string) string {
 }
 
 func (a *App) readFileCompanionLibraryLocked() ([]FileCompanionLibraryItem, bool) {
-	path := a.fileCompanionLibraryPath()
-	if path == "" {
-		return nil, false
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []FileCompanionLibraryItem{}, true
-		}
-		return nil, false
-	}
-	var stored struct {
-		Items []FileCompanionLibraryItem `json:"items"`
-	}
-	if json.Unmarshal(raw, &stored) != nil {
+	stored, ok := a.readFileCompanionLibraryFileLocked()
+	if !ok {
 		return nil, false
 	}
 	if stored.Items == nil {
@@ -539,7 +534,35 @@ func (a *App) readFileCompanionLibraryLocked() ([]FileCompanionLibraryItem, bool
 	return stored.Items, true
 }
 
+func (a *App) readFileCompanionLibraryFileLocked() (fileCompanionLibraryFile, bool) {
+	path := a.fileCompanionLibraryPath()
+	if path == "" {
+		return fileCompanionLibraryFile{}, false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fileCompanionLibraryFile{}, true
+		}
+		return fileCompanionLibraryFile{}, false
+	}
+	var stored fileCompanionLibraryFile
+	if json.Unmarshal(raw, &stored) != nil {
+		return fileCompanionLibraryFile{}, false
+	}
+	return stored, true
+}
+
 func (a *App) writeFileCompanionLibraryLocked(items []FileCompanionLibraryItem) error {
+	prev, ok := a.readFileCompanionLibraryFileLocked()
+	var titles map[string]fileCompanionTitleRecord
+	if ok {
+		titles = prev.Titles
+	}
+	return a.writeFileCompanionLibraryFileLocked(items, titles)
+}
+
+func (a *App) writeFileCompanionLibraryFileLocked(items []FileCompanionLibraryItem, titles map[string]fileCompanionTitleRecord) error {
 	path := a.fileCompanionLibraryPath()
 	if path == "" {
 		return errors.New("library path is empty")
@@ -547,9 +570,8 @@ func (a *App) writeFileCompanionLibraryLocked(items []FileCompanionLibraryItem) 
 	if items == nil {
 		items = []FileCompanionLibraryItem{}
 	}
-	body, err := json.Marshal(struct {
-		Items []FileCompanionLibraryItem `json:"items"`
-	}{Items: items})
+	titles = pruneFileCompanionTitles(items, titles)
+	body, err := json.Marshal(fileCompanionLibraryFile{Items: items, Titles: titles})
 	if err != nil {
 		return err
 	}
@@ -599,6 +621,7 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 	if running || fileCompanionLibrarySyncRunning.Load() {
 		listed.Syncing = true
 	}
+	a.startFileCompanionTitleFill()
 	return listed, nil
 }
 
@@ -724,6 +747,7 @@ func (a *App) listFileCompanionLibraryStored() FileCompanionLibraryList {
 		items = []FileCompanionLibraryItem{}
 	}
 	fileCompanionMarkLibraryExpired(items, time.Now().UTC())
+	a.applyFileCompanionTitles(items)
 	return FileCompanionLibraryList{Items: items, NotesReply: a.fileCompanionNotesReply.Load(), NotesReview: a.fileCompanionNotesReview.Load(), LibraryRev: rev}
 }
 
@@ -931,6 +955,7 @@ func (a *App) listFileCompanionLibrary() (FileCompanionLibraryList, error) {
 	// Expiry is derived, never stored: a row read here may predate the current
 	// moment, and the UI needs to know it can publish the paper again.
 	fileCompanionMarkLibraryExpired(items, time.Now().UTC())
+	a.applyFileCompanionTitles(items)
 	return FileCompanionLibraryList{Items: items, Notice: notice, Updates: updates, Removed: removed, RemovedHosts: removedHosts, NotesReply: a.fileCompanionNotesReply.Load(), NotesReview: a.fileCompanionNotesReview.Load(), LibraryRev: libraryRev}, nil
 }
 
@@ -981,6 +1006,7 @@ func (a *App) stampFileCompanionLibraryList(listed FileCompanionLibraryList) Fil
 	// Expired is derived at send time. The rows just read from disk do not
 	// carry it, and a share that lapsed while the refresh ran has to say so.
 	fileCompanionMarkLibraryExpired(listed.Items, time.Now().UTC())
+	a.applyFileCompanionTitles(listed.Items)
 	return listed
 }
 
@@ -2670,11 +2696,13 @@ func (a *App) DeleteFileCompanionProject(id, path string) (FileCompanionProjectD
 		}
 		// The share was already removed and the file is a local project.
 		// Leave that row and its reading data in place.
-		if path != "" && fileCompanionShareTokenMatch.MatchString(id) && fileCompanionLocalOwnsPath(items, path) {
+		if path != "" && fileCompanionShareTokenMatch.MatchString(id) {
 			localID, name := fileCompanionLocalIdentity(items, path)
-			rev := fileCompanionLibraryRev.Load()
-			fileCompanionLibraryMu.Unlock()
-			return FileCompanionProjectDelete{ID: id, Path: path, Name: name, LocalID: localID, Restored: localID != "", LibraryRev: rev}, nil
+			if localID != "" {
+				rev := fileCompanionLibraryRev.Load()
+				fileCompanionLibraryMu.Unlock()
+				return FileCompanionProjectDelete{ID: id, Path: path, Name: name, LocalID: localID, Restored: true, LibraryRev: rev}, nil
+			}
 		}
 		// The row is already gone. Finish removing companion data when no
 		// project still uses the file, so a stale card can be deleted.

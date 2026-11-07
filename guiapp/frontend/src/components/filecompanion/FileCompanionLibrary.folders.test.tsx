@@ -2,7 +2,7 @@
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DialogProvider } from "../CustomDialog";
-import { CompanionLibraryView, CompanionPlaceDialog, companionLibraryDragType } from "./FileCompanionLibrary";
+import { CompanionLibraryView, CompanionPlaceDialog, companionLibraryDocTitle, companionLibraryDragType } from "./FileCompanionLibrary";
 
 const listLibrary = vi.fn();
 const listCatalog = vi.fn();
@@ -740,6 +740,25 @@ describe("CompanionPlaceDialog", () => {
         render(<CompanionPlaceDialog path="C:/papers/2510.16079.pdf" onClose={() => undefined} />);
         await waitFor(() => expect((screen.getByTestId("file-companion-place-fld_notes") as HTMLInputElement).checked).toBe(true));
         expect(screen.getByText("取消后这篇文档仍留在「笔记」。")).toBeTruthy();
+    });
+
+    it("shows the document title on one line under the filename", async () => {
+        listCatalog.mockResolvedValue({ rev: 1, folders: [], placements: {} });
+        const longTitle = "Attention Is All You Need and then a second sentence that the card must keep on a single line";
+        renderLibrary([
+            { ...papers[0], title: `${longTitle}\nmore` },
+            { ...papers[1], title: "beta.md" },
+            { id: "local:c", name: "gamma.pdf", path: "C:/notes/gamma.pdf", source: "local", openedAt: "2026-10-25T00:00:00Z", size: 4, title: "gamma" },
+        ]);
+        const line = await screen.findByTestId("file-companion-library-doctitle-local:a");
+        expect(line.textContent).toBe(`${longTitle} more`);
+        expect(line.tagName).toBe("P");
+        expect(line.getAttribute("draggable")).toBeNull();
+        expect(line.closest(".file-companion-project-meta")).toBeNull();
+        expect(screen.getByTestId("file-companion-library-item-local:a").textContent).toBe("alpha.md");
+        expect(screen.queryByTestId("file-companion-library-doctitle-local:b")).toBeNull();
+        expect(screen.queryByTestId("file-companion-library-doctitle-local:c")).toBeNull();
+        expect(companionLibraryDocTitle({ name: "alpha.md", title: longTitle })).toBe(longTitle);
     });
 });
 

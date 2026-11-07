@@ -6183,7 +6183,7 @@ body.companion-pdf-translation-dragging * {
   gap: 10px;
   box-sizing: border-box;
   content-visibility: auto;
-  contain-intrinsic-size: auto 60px;
+  contain-intrinsic-size: auto 78px;
   padding: 9px 10px;
   border: 1px solid var(--theme-border, #d5e0ef);
   border-radius: var(--radius-md);
@@ -6271,6 +6271,16 @@ body.companion-pdf-translation-dragging * {
 .file-companion-project-title:hover {
   color: var(--theme-primary, #2563eb);
   text-decoration: underline;
+}
+.file-companion-project-doctitle {
+  margin: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-secondary, #46586f);
+  font: 400 12px/1.35 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
 }
 .file-companion-project-meta {
   display: flex;
