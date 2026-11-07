@@ -137,6 +137,9 @@ type IMMessageHandler struct {
 	// semanticTrustedKnowledgeIngest is a host-owned test/runtime hook for
 	// managed knowledge ingest. It never reads action/title/labels/save_scope.
 	semanticTrustedKnowledgeIngest func(userID, text, url, path string) (string, error)
+	// semanticTrustedMemoryRecall is a host-owned test/runtime hook for the
+	// discovery content ladder. It never reads action soup.
+	semanticTrustedMemoryRecall func(userID, query string) (string, error)
 	// semanticTrustedKnowledgeRead is a host-owned test/runtime hook for
 	// managed knowledge retrieval. It never reads search_scope/source_ids soup.
 	semanticTrustedKnowledgeRead func(userID, query string) (string, error)

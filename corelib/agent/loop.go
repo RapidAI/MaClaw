@@ -823,6 +823,16 @@ type SkillObligationNudger interface {
 	SkillObligationPrompt() string
 }
 
+// ContentRetrievalStopGuard is an optional host callback. A tool-less stop is
+// not completion while this turn still owes a memory read and then a
+// knowledge read. The prompt names the missing step. Empty means this turn
+// is not that ladder, the open step was already reminded twice, or both
+// reads have finished. The loop allows four injections so two reminders for
+// memory cannot spend the knowledge reminder.
+type ContentRetrievalStopGuard interface {
+	ContentRetrievalStopNudge() string
+}
+
 // ErrChecklistUnsettled is the hard-exit code when the model stops with prose
 // while a checklist it published still has non-terminal items. A written
 // summary does not close that checklist. A nameless tool call that already
@@ -1533,6 +1543,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	malformedReprompts := 0
 	storedFactNudges := 0
 	skillObligationNudges := 0
+	contentRetrievalStopNudges := 0
 	// preNudgeAnswer is the user-facing reply written before the one-shot
 	// stored-fact nudge. A follow-up that only acknowledges that instruction
 	// must not replace it.
@@ -3379,6 +3390,24 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				if nudger, ok := cb.(SkillObligationNudger); ok {
 					if prompt := strings.TrimSpace(nudger.SkillObligationPrompt()); prompt != "" {
 						skillObligationNudges++
+						disposeSurface(ToolSurfaceResponseSettled)
+						conversation = append(conversation, map[string]interface{}{
+							"role":    "user",
+							"content": prompt,
+						})
+						historyDelta = append(historyDelta, HostUserEntry(prompt))
+						continue
+					}
+				}
+			}
+			// The content ladder hides craft_tool and ssh until both reads
+			// finish. That also removes the side-effecting tool the nudge
+			// below requires, so a prose stop would skip the stores. The
+			// host asks twice per missing step. Four is two steps.
+			if iteration+1 < maxIter && contentRetrievalStopNudges < 4 {
+				if guard, ok := cb.(ContentRetrievalStopGuard); ok {
+					if prompt := strings.TrimSpace(guard.ContentRetrievalStopNudge()); prompt != "" {
+						contentRetrievalStopNudges++
 						disposeSurface(ToolSurfaceResponseSettled)
 						conversation = append(conversation, map[string]interface{}{
 							"role":    "user",

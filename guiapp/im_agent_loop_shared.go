@@ -1769,6 +1769,17 @@ type sharedAgentLoopCallbacks struct {
 	loopCtx  *LoopContext
 	userID   string
 	userText string
+	// contentRetrievalMemoryDone and contentRetrievalKnowledgeDone record the
+	// discovery ladder for this turn. A call in the same batch sees the flag
+	// set by the earlier call. Checkpoint history is the copy used when the
+	// callback is rebuilt: only a completed consultation after the latest
+	// real user message counts, so an earlier turn cannot skip the ladder.
+	// The nudge counts are per step. Repeated prose before memory must not
+	// spend the reminder that knowledge_search still needs.
+	contentRetrievalMemoryDone      bool
+	contentRetrievalKnowledgeDone   bool
+	contentRetrievalMemoryNudges    int
+	contentRetrievalKnowledgeNudges int
 	// visualPreview holds the page or deck written by the current tool call.
 	// The next tool return reads it; the loop closes the browser when the turn ends.
 	visualPreview *visualPreviewState
@@ -2532,6 +2543,9 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
 	}
 	requested := name
 	name = c.semanticSurface.resolveFunctionName(name)
+	if handled, allowed, _ := c.contentRetrievalGate(name); handled {
+		return allowed
+	}
 	if c.foregroundHandoffOnly() {
 		return c.chatTaskHostTool(name)
 	}
@@ -2763,6 +2777,16 @@ func (c *sharedAgentLoopCallbacks) IsToolCallAllowed(name, argsJSON string) (boo
 	if c != nil && c.foregroundHandoffOnly() && !c.chatTaskHostTool(name) {
 		return false, c.chatTaskHandoffAdmissionMessage()
 	}
+	// The content ladder owns this call before host controls and discovery
+	// presets. Otherwise dispatch_background_task and craft_tool run first,
+	// and the turn never opens memory or the knowledge base.
+	resolved := strings.TrimSpace(name)
+	if c != nil && c.semanticSurface != nil {
+		resolved = c.semanticSurface.resolveFunctionName(name)
+	}
+	if handled, allowed, reason := c.contentRetrievalGate(resolved); handled {
+		return allowed, reason
+	}
 	if rejected := c.discoveryDispatchRejection(name); rejected != "" {
 		return false, strings.TrimPrefix(rejected, "[system rejected] ")
 	}
@@ -2772,10 +2796,6 @@ func (c *sharedAgentLoopCallbacks) IsToolCallAllowed(name, argsJSON string) (boo
 	// A host procedure admitted on a vision fallthrough has no semantic
 	// surface. Lookup substitutes still have to stay closed until that
 	// procedure runs; the nil-surface allow-all used to skip this check.
-	resolved := strings.TrimSpace(name)
-	if c != nil && c.semanticSurface != nil {
-		resolved = c.semanticSurface.resolveFunctionName(name)
-	}
 	if c != nil {
 		if blocked, reason := c.skillSubstituteBlocked(resolved); blocked {
 			return false, reason
@@ -3243,6 +3263,18 @@ func (c *sharedAgentLoopCallbacks) ToolDenialMessage(name string) string {
 	if c != nil && c.chatTaskHandoffAlreadySent() && strings.TrimSpace(name) == chatTaskToolDispatch {
 		return "Error: " + chatTaskAlreadyHandedOffMessage
 	}
+	// authorizeLoopTool asks IsToolAllowed before IsToolCallAllowed. A ladder
+	// block returns false from IsToolAllowed, so this is the text the model
+	// sees when it calls craft_tool or ssh before the two reads.
+	if c != nil {
+		resolved := strings.TrimSpace(name)
+		if c.semanticSurface != nil {
+			resolved = c.semanticSurface.resolveFunctionName(resolved)
+		}
+		if handled, allowed, reason := c.contentRetrievalGate(resolved); handled && !allowed && strings.TrimSpace(reason) != "" {
+			return "Error: " + reason
+		}
+	}
 	if msg := semanticUnissuedGeneratePDFDenial(c, name); msg != "" {
 		return msg
 	}
@@ -3562,6 +3594,7 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 		// admission already refuses every other name.
 		if semanticSurfaceIsModelDiscovery(c.semanticSurface) {
 			definitions = modelDiscoveryVisibleTools(c.handler, definitions)
+			definitions = appendContentRetrievalTools(c.userText, definitions)
 		}
 		definitions = c.withRequestControlTools(definitions)
 		c.setVisibleToolDefinitions(definitions)
@@ -3959,6 +3992,7 @@ func (c *sharedAgentLoopCallbacks) leaveLightProfileForUnsafePetition(parent too
 	}
 	intentText := semanticUserIntentText(c.userText)
 	c.systemPrompt = ensureTurnGrantPromptFence(c.systemPromptWithTaskAnchor(c.refreshedSystemPrompt(agent.CompactQueryForEmbedding(intentText))), turnGrantClassification(c.semanticSurface))
+	c.systemPrompt = ensureContentRetrievalOrderPrompt(c.systemPrompt, c.userText, semanticSurfaceIsModelDiscovery(c.semanticSurface))
 	c.petitionPromptReady = true
 	log.Printf("[semantic-routing] petition left the light prompt: plan has a selection the light authorizer would drop")
 }
@@ -6585,6 +6619,12 @@ func (c *sharedAgentLoopCallbacks) executeDiscoveryExtension(functionName, argsJ
 // turn's signed grant. In particular, it does not accept provider, skill, MCP
 // server, implementation, or selection identity from model arguments.
 func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON string) string {
+	if text, handled := c.executeContentRetrievalCall(functionName, argsJSON); handled {
+		return text
+	}
+	if handled, allowed, reason := c.contentRetrievalGate(functionName); handled && !allowed {
+		return "[system rejected] " + reason
+	}
 	if rejected := c.discoveryDispatchRejection(functionName); rejected != "" {
 		return rejected
 	}
@@ -6721,6 +6761,12 @@ func hostCallAcquireModelText(result tool.SelectionExecutionResult) string {
 }
 
 func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName, argsJSON, callID, surfaceEpoch string) string {
+	if text, handled := c.executeContentRetrievalCall(functionName, argsJSON); handled {
+		return text
+	}
+	if handled, allowed, reason := c.contentRetrievalGate(functionName); handled && !allowed {
+		return "[system rejected] " + reason
+	}
 	if rejected := c.discoveryDispatchRejection(functionName); rejected != "" {
 		return rejected
 	}
@@ -10943,6 +10989,7 @@ func (c *sharedAgentLoopCallbacks) RefreshAfterToolExecution(name string) bool {
 		if pending && c.handler != nil && !c.semanticLightLookup() {
 			intentText := semanticUserIntentText(c.userText)
 			c.systemPrompt = ensureTurnGrantPromptFence(c.systemPromptWithTaskAnchor(c.refreshedSystemPrompt(agent.CompactQueryForEmbedding(intentText))), turnGrantClassification(c.semanticSurface))
+			c.systemPrompt = ensureContentRetrievalOrderPrompt(c.systemPrompt, c.userText, semanticSurfaceIsModelDiscovery(c.semanticSurface))
 			c.projectSemanticDirectoryPrompt()
 		}
 		return true

@@ -627,7 +627,7 @@ func turnUsedAnyTool(history []ConversationEntry) bool {
 // StoredOperationalFactNudge tells the model to read stored facts before
 // asking the user, then continue with the tools already listed.
 func StoredOperationalFactNudge() string {
-	return "[系统] 先查记忆（memory），再查知识库（knowledge_search）。两边都没有，才向用户索要还缺的事实。只有一方有结果，或两边一致，直接用查到的内容继续原任务，不要再问用户。两边冲突时，只问用户确认哪一份。"
+	return "[系统] 先查记忆（memory），再查知识库（knowledge_search），两边都没有所需事实再用网络。记忆与知识库不一致时，以知识库为准，不要问用户选哪一份。只有一方有结果，或两边一致，直接用查到的内容继续原任务，不要再问用户。"
 }
 
 // retrievalToolsStillPending is true when this request still lists memory or

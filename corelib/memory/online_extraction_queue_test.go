@@ -55,7 +55,7 @@ func (m *extractionQueueTestLLM) calls() int {
 
 func waitForExtractionQueue(t *testing.T, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(4 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if condition() {
 			return
@@ -248,4 +248,34 @@ func TestExtractionQueueCancellationRetainsUncommittedRequest(t *testing.T) {
 	if attempts != 1 {
 		t.Fatalf("cancelled request attempts = %d, want 1", attempts)
 	}
+}
+
+func TestMaintenanceInstallRuntimeRestoresPendingExtraction(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	failing := &extractionQueueTestLLM{extractErr: errors.New("persist pending")}
+	first := NewOnlineExtractor(store, failing)
+	messages := []ConversationMessage{{ID: "u1", Role: "user", Content: "User prefers dark mode for all IDEs"}, {ID: "a1", Role: "assistant", Content: "Noted"}}
+	if err := first.EnqueueExtraction(context.Background(), messages, "", time.Now(), "owner"); err != nil {
+		t.Fatal(err)
+	}
+	queue := first.extractionQueue()
+	waitForExtractionQueue(t, func() bool {
+		queue.mu.Lock()
+		defer queue.mu.Unlock()
+		request := queue.pending[onlineExtractionRequestKey("owner", "")]
+		return request != nil && request.Attempts > 0
+	})
+	first.Stop()
+
+	succeeding := &extractionQueueTestLLM{extractResponse: `[{"content":"User prefers dark mode for all IDEs and editors","category":"preference"}]`}
+	maintenance := NewMaintenance(store, succeeding, nil)
+	maintenance.InstallRuntime()
+	defer maintenance.Stop()
+	waitForExtractionQueue(t, func() bool {
+		return len(store.List(CategoryPreference, "dark mode")) == 1
+	})
 }

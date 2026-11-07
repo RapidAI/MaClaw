@@ -5,10 +5,7 @@ package guiapp
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 
@@ -103,12 +100,7 @@ func convertHistoryToMessages(history []agent.ConversationEntry, maxEntries int)
 }
 
 func extractionConversationMessageID(entry agent.ConversationEntry, content string, index int) string {
-	if id := strings.TrimSpace(entry.ID); id != "" {
-		return id
-	}
-	seed := strings.Join([]string{strconv.FormatInt(entry.Timestamp, 10), strconv.Itoa(index), entry.Role, content}, "\x00")
-	digest := sha256.Sum256([]byte(seed))
-	return "legacy-" + hex.EncodeToString(digest[:])
+	return memory.ConversationMessageID(entry.ID, entry.Timestamp, index, entry.Role, content)
 }
 
 // extractConversationSummary builds a brief summary from the first and last

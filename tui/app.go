@@ -150,12 +150,10 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	}
 	experienceEvents := lifecycle.NewEventTrail(512)
 	experienceSink := &lifecycle.AttributingEventSink{Sink: experienceEvents, Provider: memory.NewExperienceProvider(memStore)}
+	var memoryMaintenance *memory.Maintenance
 	if memStore != nil {
 		memStore.SetExperienceEventSink(experienceSink)
-		// Async CompactForm backfill: new long entries get a compact form within
-		// seconds instead of waiting for the 6-hourly pipeline pass. The adapter
-		// resolves LLM credentials lazily from the shared config file.
-		memStore.SetCompactFormGenerator(memory.NewLLMCompactFormGenerator(&tuiEvolutionLLMAdapter{
+		evolutionLLM := &tuiEvolutionLLMAdapter{
 			loadCfg: func() corelib.AppConfig {
 				cfg, err := configStore.LoadConfig()
 				if err != nil {
@@ -163,7 +161,9 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 				}
 				return cfg
 			},
-		}))
+		}
+		memoryMaintenance = memory.NewMaintenance(memStore, evolutionLLM, nil)
+		memoryMaintenance.InstallRuntime()
 	}
 
 	// Initialize SSH manager.
@@ -414,6 +414,9 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		logger.Error("conversation memory flush failed: %v", err)
 	}
 	convMemory.Stop()
+	if memoryMaintenance != nil {
+		memoryMaintenance.Stop()
+	}
 	if memStore != nil {
 		memStore.Stop()
 	}
@@ -1979,12 +1982,8 @@ func (m *tuiModel) handleChatSend(text string, agentMode bool) tea.Cmd {
 					if len(msgs) < 2 {
 						return
 					}
-					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer cancel()
-					oeResult := oe.ExtractAndIntegrate(ctx, msgs, "", time.Now(), "tui-user")
-					if oeResult.Added > 0 || oeResult.Updated > 0 || oeResult.Deleted > 0 {
-						log.Printf("[online_extraction] tui: extracted=%d added=%d updated=%d deleted=%d",
-							oeResult.ExtractedFacts, oeResult.Added, oeResult.Updated, oeResult.Deleted)
+					if err := oe.EnqueueExtraction(context.Background(), msgs, "", time.Now(), "tui-user"); err != nil {
+						log.Printf("[online_extraction] tui enqueue failed: %v", err)
 					}
 				}()
 			}
@@ -4351,7 +4350,7 @@ func convertTUIHistoryToMessages(history []agent.ConversationEntry, maxEntries i
 	}
 
 	var messages []memory.ConversationMessage
-	for _, e := range history[start:] {
+	for i, e := range history[start:] {
 		role := e.Role
 		if role == "" {
 			continue
@@ -4365,6 +4364,7 @@ func convertTUIHistoryToMessages(history []agent.ConversationEntry, maxEntries i
 			content = string(runes[:2000]) + "\n[...truncated...]"
 		}
 		messages = append(messages, memory.ConversationMessage{
+			ID:      memory.ConversationMessageID(e.ID, e.Timestamp, start+i, role, content),
 			Role:    role,
 			Content: content,
 		})

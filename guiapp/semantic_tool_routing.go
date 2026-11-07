@@ -5656,10 +5656,10 @@ func validateSemanticPetitionExpansion(parent, child tool.ToolPlan, label intent
 // petitionExpandSemanticCallSurface publishes one child revision that adds the
 // petitioned label's rule template needs to the turn's plan. It reuses the
 // original trusted classification plus that single label — never model output,
-// tool arguments, or prompt text — and the expansion validator guarantees the
-// child plan is exactly the parent plan plus the label's template needs. A
-// missing provider or a restrictive policy fails the re-plan or the validator
-// and the petition is denied cleanly.
+// tool arguments, or prompt text. The expansion is normally a strict superset;
+// the shell route-correction path may instead remove the immediately preceding
+// petition's family only before that family has any execution record. A missing
+// provider, restrictive policy, or authority drift denies the petition cleanly.
 func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.Context, surface *semanticCallSurface, label intent.IntentLabel) (*semanticCallSurface, []map[string]interface{}, error) {
 	if surface == nil || surface.replan == nil || surface.routeState == nil || surface.issuer == nil || surface.executor == nil || surface.registry == nil {
 		return nil, nil, fmt.Errorf("semantic replan state is unavailable")
@@ -5668,7 +5668,11 @@ func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.
 		return nil, nil, err
 	}
 	input := *surface.replan
+	correction, correctsRoute := petitionRouteCorrectionFor(surface, label)
 	expanded := input.Classification
+	if correctsRoute {
+		expanded = correction.removeFromClassification(expanded)
+	}
 	if !classificationHasLabel(expanded, label) {
 		expanded.Secondary = append(append([]intent.IntentLabel(nil), expanded.Secondary...), label)
 	}
@@ -5689,6 +5693,9 @@ func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.
 	// planner did not apply.
 	keepBaseline := input.BaselineWorkspace || semanticPlanHasBaseline(surface.plan)
 	petitionedLabels := append(append([]intent.IntentLabel(nil), input.Petitioned...), label)
+	if correctsRoute {
+		petitionedLabels = correction.removeFromPetitioned(petitionedLabels)
+	}
 	planCtx := withSemanticPetitionedLabels(withSemanticPetitionedLabel(withSemanticSlimOffice(withSemanticPetitionBaseline(withSemanticPetitionExpansion(withSemanticArchetypeBundleKeyOverride(requestCtx, bundleKey)), keepBaseline), input.SlimOffice, input.ShortDocumentEdit), label), petitionedLabels)
 	planCtx = withSemanticPetitionParentFamilies(planCtx, surface.plan)
 	// The light execution layer denies document.generate.file so a lookup
@@ -5721,7 +5728,13 @@ func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.
 	// any authority the parent already signed. Copy those parent nodes back
 	// whole before the superset check, which otherwise rejects the whole expansion.
 	prepared.plan = agentservice.PreservePetitionParentAuthority(surface.plan, prepared.plan, imSemanticIntentRuleSet[label])
-	if err := validateSemanticPetitionExpansion(surface.plan, prepared.plan, label); err != nil {
+	if correctsRoute {
+		prepared.plan = correction.apply(prepared.plan)
+		if err := validateSemanticPetitionRouteCorrection(surface.plan, prepared.plan, label, correction); err != nil {
+			return nil, nil, err
+		}
+		log.Printf("[semantic-routing] petition route correction %s family=%s", petitionRouteCorrectionName(correction, label), correction.family)
+	} else if err := validateSemanticPetitionExpansion(surface.plan, prepared.plan, label); err != nil {
 		return nil, nil, err
 	}
 	// The child keeps the parent's failure-replan attempt budget: a petition is
@@ -5733,9 +5746,13 @@ func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.
 	if input.SlimOffice && semanticDocumentMutationLabel(label) {
 		childShortEdit = true
 	}
+	traceReason := "petition_expand:" + strings.TrimSpace(string(label))
+	if correctsRoute {
+		traceReason = "petition_route_correct:" + strings.TrimSpace(string(label))
+	}
 	return h.publishSemanticChildRevision(requestCtx, surface, prepared,
 		&semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: expanded, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts, BundleKey: bundleKey, SlimOffice: input.SlimOffice, ShortDocumentEdit: childShortEdit, BaselineWorkspace: keepBaseline, Petitioned: petitionedLabels},
-		"petition", "petition_expand:"+strings.TrimSpace(string(label)))
+		"petition", traceReason)
 }
 
 func validateSemanticReplanSubset(parent, child tool.ToolPlan) error {

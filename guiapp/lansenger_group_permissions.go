@@ -176,7 +176,7 @@ func lansengerKnowledgeSearchResults(raw json.RawMessage, count int) ([]json.Raw
 func lansengerGroupKnowledgePriorityPrompt() string {
 	return `
 ## 群聊信息来源优先级
-- 本轮必须按以下顺序作答：先用当前工具检索已授权记忆与知识库 → 网络。
+- 本轮必须按以下顺序作答：先记忆，再知识库，后网络。记忆与知识库不一致时，以知识库为准。
 - 当已授权知识库可用时，必须先调用当前工具列表中的知识库检索（文字或图片）；不要假设系统已注入知识库正文。
 - 知识库检索有相关结果时，基于其内容回复，不得改用 web_search 或 web_fetch 补充、替代或臆测。
 - 仅当已授权知识库检索没有相关结果时，网络才是兜底来源。`

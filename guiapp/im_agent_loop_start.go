@@ -219,6 +219,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 			}
 			if semanticSurfaceIsModelDiscovery(surface) {
 				tools = modelDiscoveryVisibleTools(h, nil)
+				tools = appendContentRetrievalTools(opts.UserText, tools)
 			} else {
 				tools = closedManagedSemanticDefinitionsKeeping(semanticTools, surface, lightPrompt, keepCarried)
 			}
@@ -337,6 +338,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	}
 	if semanticSurface != nil {
 		systemPrompt = ensureTurnGrantPromptFence(systemPrompt, turnGrantClassification(semanticSurface))
+		systemPrompt = ensureContentRetrievalOrderPrompt(systemPrompt, opts.UserText, semanticSurfaceIsModelDiscovery(semanticSurface))
 	}
 	if ctx != nil && ctx.semanticSessionCeilingSpent && !fileCompanionShareDiscussionUserID(opts.UserID) {
 		systemPrompt += "\n\n" + sessionCeilingTurnPrompt()

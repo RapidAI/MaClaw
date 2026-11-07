@@ -53,6 +53,7 @@ func (m *Maintenance) InstallRuntime() {
 	m.store.SetOnlineExtractor(m.onlineExtractor)
 	m.store.SetRecallGating(NewRecallGating(m.llm))
 	if m.llm != nil {
+		m.onlineExtractor.SetLLM(m.llm)
 		m.store.SetCompactFormGenerator(NewLLMCompactFormGenerator(m.llm))
 	}
 }

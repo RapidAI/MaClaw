@@ -251,7 +251,7 @@ func TestModelDiscoveryPetitionDeliversBodyAndNextFunction(t *testing.T) {
 	discovery := intent.ModelDiscoveryClassification()
 	stored := discovery
 	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
-		"desktop-user", "查一下", "desktop", "root-discovery-gaps", "turn-gaps", &stored,
+		"desktop-user", "看一下", "desktop", "root-discovery-gaps", "turn-gaps", &stored,
 	)
 	if err != nil || !handled || surface == nil || surface.replan == nil {
 		t.Fatalf("surface handled=%v err=%v", handled, err)
@@ -260,9 +260,9 @@ func TestModelDiscoveryPetitionDeliversBodyAndNextFunction(t *testing.T) {
 	loop.OfferChatTaskDispatch = true
 	cb := &sharedAgentLoopCallbacks{
 		handler: h, semanticSurface: surface, platform: "desktop", userID: "desktop-user",
-		userText: "查一下", loopCtx: loop, systemPrompt: "base-prompt",
+		userText: "看一下", loopCtx: loop, systemPrompt: "base-prompt",
 	}
-	first := cb.BuildToolsForModelRequest("查一下", 1)
+	first := cb.BuildToolsForModelRequest("看一下", 1)
 	assertDiscoveryFirstWave(t, first)
 	if !utf8.ValidString(cb.systemPrompt) || strings.Contains(cb.systemPrompt, "ENDMARKER") || !strings.Contains(cb.systemPrompt, "测") {
 		t.Fatalf("skill summary was not cut on a rune boundary:\n%s", cb.systemPrompt)
@@ -309,7 +309,7 @@ func TestModelDiscoveryPetitionDeliversBodyAndNextFunction(t *testing.T) {
 	if !granted {
 		t.Fatalf("write_file petition granted=%v message=%q", granted, message)
 	}
-	next := cb.BuildToolsForModelRequest("查一下", 2)
+	next := cb.BuildToolsForModelRequest("看一下", 2)
 	for _, name := range []string{mcpName, runAlias, "write_file"} {
 		if !turnDirectoryHave(next)[name] {
 			t.Fatalf("next request missing %s: %v", name, turnDirectoryNames(next))
@@ -2874,4 +2874,136 @@ func toolDefinitionHasSchema(defs []map[string]interface{}, name string) bool {
 		return ok && len(params) > 0
 	}
 	return false
+}
+
+func TestDiscoveryShellPetitionRouteCorrectionReplacesUnstartedLocal(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "清理", discovery)
+	cb.userText = "清理"
+	if granted, message := cb.PetitionToolCall("bash"); !granted {
+		t.Fatalf("bash petition granted=%v message=%q", granted, message)
+	}
+	if !planHasCapability(cb.semanticSurface.plan, tool.CapabilityShellExecuteLocal) {
+		t.Fatal("fixture must first admit the local shell route")
+	}
+	if granted, message := cb.PetitionToolCall("ssh"); !granted {
+		t.Fatalf("ssh route correction granted=%v message=%q", granted, message)
+	}
+	child := cb.semanticSurface
+	if planHasCapability(child.plan, tool.CapabilityShellExecuteLocal) {
+		t.Fatalf("unstarted local route survived the correction: %#v", child.plan.Selections)
+	}
+	if !planHasCapability(child.plan, tool.CapabilityShellExecuteRemoteHost) {
+		t.Fatalf("remote route missing after correction: %#v", child.plan.Selections)
+	}
+	published := turnDirectoryHave(cb.BuildToolsForModelRequest("清理", 2))
+	if published["bash"] || !published["ssh"] {
+		t.Fatalf("corrected model surface=%v, want ssh without bash", turnDirectoryNames(cb.BuildToolsForModelRequest("清理", 2)))
+	}
+	for _, label := range child.replan.Petitioned {
+		if label == intent.LabelShellCommand {
+			t.Fatalf("a later revision would resurrect local shell: %#v", child.replan.Petitioned)
+		}
+	}
+	for _, selection := range child.plan.Selections {
+		if selection.FitProof.MatchedCapability == tool.CapabilityShellExecuteRemoteHost && !selection.Optional {
+			child.completed[selection.ID] = true
+		}
+	}
+	snapshot := cb.hopRunSnapshot()
+	if snapshot.Remaining != 0 || cb.RequiredEffectUnsettled() {
+		t.Fatalf("completed remote route stayed unsettled: %#v", snapshot)
+	}
+	if final := finalizeHopRun(snapshot, agent.LoopResult{}); final.Status != "completed" {
+		t.Fatalf("final route status=%q remaining=%d", final.Status, final.Remaining)
+	}
+}
+
+func TestDiscoveryShellPetitionRouteCorrectionKeepsStartedLocal(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "清理", discovery)
+	cb.userText = "清理"
+	if granted, message := cb.PetitionToolCall("bash"); !granted {
+		t.Fatalf("bash petition granted=%v message=%q", granted, message)
+	}
+	parent := cb.semanticSurface
+	localID := ""
+	for _, selection := range parent.plan.Selections {
+		if selection.FitProof.MatchedCapability == tool.CapabilityShellExecuteLocal && !selection.Optional {
+			localID = selection.ID
+		}
+	}
+	if localID == "" {
+		t.Fatal("local route fixture has no required selection")
+	}
+	parent.hopEvidence = map[string]HopStepEvidence{
+		hopEvidenceKey(parent, localID): {State: tool.PlanExecutionRunning},
+	}
+	if granted, message := cb.PetitionToolCall("ssh"); !granted {
+		t.Fatalf("ssh expansion granted=%v message=%q", granted, message)
+	}
+	if !planHasCapability(cb.semanticSurface.plan, tool.CapabilityShellExecuteLocal) {
+		t.Fatal("a running local execution was removed by a later petition")
+	}
+}
+
+func TestSSHPetitionDoesNotReplaceClassifierOwnedLocalShell(t *testing.T) {
+	classification := intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: .98}
+	_, parent, cb := turnDirectoryPlannedSurface(t, "在本机清理", classification)
+	cb.userText = "在本机清理"
+	child, _, err := cb.handler.petitionExpandSemanticCallSurface(context.Background(), parent, intent.LabelSSH)
+	if err != nil || child == nil {
+		t.Fatalf("classifier-owned parent expansion child=%v err=%v", child, err)
+	}
+	if !planHasCapability(child.plan, tool.CapabilityShellExecuteLocal) {
+		t.Fatal("SSH petition removed a local obligation the classifier owned")
+	}
+}
+
+func TestDiscoveryShellPetitionRouteCorrectionReplacesUnstartedRemote(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "清理", discovery)
+	cb.userText = "清理"
+	if granted, message := cb.PetitionToolCall("ssh"); !granted {
+		t.Fatalf("ssh petition granted=%v message=%q", granted, message)
+	}
+	if granted, message := cb.PetitionToolCall("bash"); !granted {
+		t.Fatalf("bash route correction granted=%v message=%q", granted, message)
+	}
+	child := cb.semanticSurface
+	if planHasCapability(child.plan, tool.CapabilityShellExecuteRemoteHost) {
+		t.Fatalf("unstarted remote route survived the correction: %#v", child.plan.Selections)
+	}
+	if !planHasCapability(child.plan, tool.CapabilityShellExecuteLocal) {
+		t.Fatalf("local route missing after correction: %#v", child.plan.Selections)
+	}
+	for _, selection := range child.plan.Selections {
+		if selection.FitProof.MatchedCapability == tool.CapabilityShellExecuteLocal && !selection.Optional {
+			child.completed[selection.ID] = true
+		}
+	}
+	if snapshot := cb.hopRunSnapshot(); snapshot.Remaining != 0 || cb.RequiredEffectUnsettled() {
+		t.Fatalf("completed local route stayed unsettled: %#v", snapshot)
+	}
+}
+
+func TestPetitionRouteCorrectionKeepsDependentShell(t *testing.T) {
+	local := tool.PlannedSelection{
+		ID: "selection:local", NeedID: "need:shell.execute.local:test",
+		FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteLocal},
+	}
+	surface := &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			local,
+			{
+				ID: "selection:report", NeedID: "need:report", Requires: []string{local.ID},
+				FitProof: tool.FitProof{MatchedCapability: tool.CapabilityDocumentWriteOffice},
+			},
+		}},
+		replan:    &semanticReplanInput{Petitioned: []intent.IntentLabel{intent.LabelShellCommand}},
+		completed: map[string]bool{},
+	}
+	if _, ok := petitionRouteCorrectionFor(surface, intent.LabelSSH); ok {
+		t.Fatal("route correction removed a shell family another step requires")
+	}
 }

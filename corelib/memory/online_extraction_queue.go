@@ -2,12 +2,15 @@ package memory
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -189,6 +192,15 @@ func mergeExtractionMessages(existing, incoming []ConversationMessage) []Convers
 		out = append(out, message)
 	}
 	return out
+}
+
+func ConversationMessageID(existing string, timestamp int64, index int, role, content string) string {
+	if id := strings.TrimSpace(existing); id != "" {
+		return id
+	}
+	seed := strings.Join([]string{strconv.FormatInt(timestamp, 10), strconv.Itoa(index), role, content}, "\x00")
+	digest := sha256.Sum256([]byte(seed))
+	return "legacy-" + hex.EncodeToString(digest[:])
 }
 
 func extractionMessageID(message ConversationMessage, index int) string {

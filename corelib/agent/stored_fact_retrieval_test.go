@@ -351,7 +351,10 @@ func TestStoredOperationalFactNudgeOrdersMemoryThenKnowledge(t *testing.T) {
 	if mem < 0 || kb < 0 || mem > kb {
 		t.Fatalf("nudge must name memory before knowledge_search: %s", nudge)
 	}
-	if !strings.Contains(nudge, "冲突") || !strings.Contains(nudge, "直接用") {
-		t.Fatalf("nudge must use agreement and ask only on conflict: %s", nudge)
+	if !strings.Contains(nudge, "以知识库为准") || !strings.Contains(nudge, "直接用") {
+		t.Fatalf("nudge must keep the knowledge base on a conflict and use a single result: %s", nudge)
+	}
+	if strings.Contains(nudge, "向用户确认") {
+		t.Fatalf("nudge must not ask the user to pick a copy: %s", nudge)
 	}
 }

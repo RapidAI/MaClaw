@@ -323,12 +323,8 @@ func (g *tuiWeixinGateway) processMessage(userID, contextToken, text string) {
 				if len(msgs) < 2 {
 					return
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				oeResult := oe.ExtractAndIntegrate(ctx, msgs, "", time.Now(), historyKey)
-				if oeResult.Added > 0 || oeResult.Updated > 0 || oeResult.Deleted > 0 {
-					log.Printf("[tui-weixin] online_extraction: extracted=%d added=%d updated=%d deleted=%d",
-						oeResult.ExtractedFacts, oeResult.Added, oeResult.Updated, oeResult.Deleted)
+				if err := oe.EnqueueExtraction(context.Background(), msgs, "", time.Now(), historyKey); err != nil {
+					log.Printf("[tui-weixin] online_extraction enqueue failed: %v", err)
 				}
 			}()
 		}
