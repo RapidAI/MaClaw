@@ -95,15 +95,17 @@ func TestIMSemanticWebSearchExecutesQueryWithoutKeywordBranch(t *testing.T) {
 	if seenUser != "user-1" || seenQuery != "channels" {
 		t.Fatalf("dispatch user=%q query=%q", seenUser, seenQuery)
 	}
-	// The turn budget is five searches: repeat siblings re-execute under the
-	// same stable name, and the sixth call finds every grant consumed.
+	// The declared search family is continuable: repeat siblings re-execute
+	// under the same stable name, each success lists the next call, and the
+	// family carries no call-count ceiling (corelib/tool/semantic_repeat.go,
+	// design note 2026-10-09). The dead-loop guard lives in the agent loop.
 	for i := 2; i <= 5; i++ {
 		if again := cb.ExecuteTool(name, `{"query":"channels"}`); !strings.Contains(again, "Public web results") {
 			t.Fatalf("repeat search %d must re-execute through a sibling grant: %q", i, again)
 		}
 	}
-	if exhausted := cb.ExecuteTool(name, `{"query":"channels"}`); strings.Contains(exhausted, "Public web results") {
-		t.Fatalf("sixth search must be denied, budget exhausted: %q", exhausted)
+	if again := cb.ExecuteTool(name, `{"query":"channels"}`); !strings.Contains(again, "Public web results") {
+		t.Fatalf("continuable search family must keep executing past the first wave: %q", again)
 	}
 }
 
@@ -171,9 +173,13 @@ func TestIMSemanticLiveDataUsesHostSearchCurrentFreshness(t *testing.T) {
 	}
 }
 
-// A denial after a consumed grant must acknowledge the earlier success. The
-// generic policy denial reads as "the capability is unavailable this turn"
-// and made the production model discard 8 valid search results (2026-08-26).
+// The declared search family must never read as "the capability is
+// unavailable this turn". The generic policy denial made the production model
+// discard 8 valid search results (2026-08-26). Since design note 2026-10-09 a
+// continuable family has no call-count ceiling: each success lists the next
+// call, so admission stays open and the 2026-08-26-style denial that severs
+// valid evidence cannot fire. The consumed-grant acknowledgment wording for
+// families that really do end is pinned in corelib/agent/loop_consumed_grant_test.go.
 func TestIMSemanticWebSearchConsumedGrantDenialAcknowledgesSuccess(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelSearch)}
 	h.semanticTrustedWebSearch = func(userID, query string) (string, error) { return "results", nil }
@@ -191,10 +197,10 @@ func TestIMSemanticWebSearchConsumedGrantDenialAcknowledgesSuccess(t *testing.T)
 		}
 	}
 	allowed, reason := cb.IsToolCallAllowed("web_search", `{"query":"go"}`)
-	if allowed {
-		t.Fatal("exhausted search budget must deny the sixth call")
+	if !allowed {
+		t.Fatalf("continuable search family must stay listed past the first wave, denial=%q", reason)
 	}
-	if !strings.Contains(reason, "already ran successfully") || !strings.Contains(reason, "still stands") {
-		t.Fatalf("consumed-grant denial must acknowledge the earlier success: %q", reason)
+	if strings.Contains(reason, "already ran successfully") || strings.Contains(reason, "not available") {
+		t.Fatalf("a continuable family must never produce the consumed-grant or unavailable denial: %q", reason)
 	}
 }

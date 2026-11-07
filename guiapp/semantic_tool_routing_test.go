@@ -88,9 +88,11 @@ func TestIMSemanticWebNeedResolverIgnoresLegacyToolNames(t *testing.T) {
 		ToolNames: []string{"call_mcp_tool", "send_to_im", "reference_lookup"},
 	})
 	// The declared search family is one required invocation plus the archetype
-	// ceiling (4 optional siblings). Live data also plans the page-fetch
-	// family; reference search still leaves fetch latent.
-	if err != nil || !managed || countCapabilityNeeds(needs, "information.search.web") != 5 || countCapabilityNeeds(needs, tool.CapabilityInformationFetchWeb) != 5 {
+	// ceiling (4 optional siblings). Companions — including live_data's page
+	// fetch — stay out of the first wave and are petitionable from the
+	// directory (agentservice TestLiveDataBundlePlansPageFetch, design
+	// 2026-11-05: bundled companions hard-exited delivered office turns).
+	if err != nil || !managed || countCapabilityNeeds(needs, "information.search.web") != 5 || countCapabilityNeeds(needs, tool.CapabilityInformationFetchWeb) != 0 {
 		t.Fatalf("needs=%#v managed=%v err=%v", needs, managed, err)
 	}
 	if needs[0].Capability != "information.search.web" || needs[0].Qualifiers["freshness"] != "current" || strings.Contains(needs[0].ID, "mcp") {

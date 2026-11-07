@@ -129,9 +129,17 @@ var Baseline = map[Rule]map[string]Reason{
 		"corelib/agentservice/dynamic_semantic_routing.go:InvocationGrant": ReasonSemanticOwner,
 		// Empty sentinels on failure paths; no grant is authored at the site.
 		"corelib/tool/semantic_model_request_surface.go:InvocationGrant": ReasonZeroValueSentinel,
-		"corelib/tool/semantic_repeat.go:InvocationGrant":                ReasonZeroValueSentinel,
-		"guiapp/coding_durable_dynamic_surface.go:InvocationGrant":       ReasonZeroValueSentinel,
-		"guiapp/im_agent_loop_shared.go:InvocationGrant":                 ReasonZeroValueSentinel,
+		"corelib/tool/semantic_repeat.go:InvocationGrant":               ReasonZeroValueSentinel,
+		"guiapp/coding_durable_dynamic_surface.go:InvocationGrant":      ReasonZeroValueSentinel,
+		"guiapp/im_agent_loop_shared.go:InvocationGrant":                ReasonZeroValueSentinel,
+		// Nil-surface failure path of the retired-grant lookup; no grant is
+		// authored at the site.
+		"guiapp/semantic_turn_directory.go:InvocationGrant": ReasonZeroValueSentinel,
+		// HopJIT act-free step execution groups the grants the trusted issuer
+		// just minted (issuer.IssueReady) by adapter name for the planned
+		// executor; the map literal authors no grant identity. Deleted only if
+		// HopJIT stops passing issuer-minted grants through a local map.
+		"guiapp/hopjit_act_free.go:InvocationGrant": ReasonSemanticOwner,
 	},
 	RuleProviderNameCall: {
 		"corelib/agentservice/mcp_integration.go:CallTool": ReasonSemanticOwner,
@@ -194,6 +202,14 @@ var Baseline = map[Rule]map[string]Reason{
 		"tui/semantic_static_catalog.go:RoutingConstraint": ReasonTrustedFactProducer,
 	},
 	RuleToolSurfaceMutation: {
+		// The desktop execution host owns its own bash/file/upload surface:
+		// EnsureTools provisions that host's workspace before an op runs. It
+		// is op-time provisioning on a service the person drives, never a
+		// model-facing selection, and no provider is chosen by name here.
+		// Deleted only if desktopd stops provisioning tools at op time.
+		"desktopd/http.go:EnsureTools-REVERSED": ReasonSemanticOwner,
+		"desktopd/workspace.go:EnsureTools": ReasonSemanticOwner,
+
 		"guiapp/im_handler_wiring.go:routeTools":                 ReasonLegacyNameRouter,
 		"guiapp/im_handler_wiring.go:routeToolsForUser":          ReasonLegacyNameRouter,
 		"guiapp/im_agent_loop_tool_augment.go:routeToolsForUser": ReasonLegacyNameRouter,

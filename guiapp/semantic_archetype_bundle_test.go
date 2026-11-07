@@ -263,8 +263,11 @@ func TestProjectTaskSearchContinuationSurvivesSpentLookupCeiling(t *testing.T) {
 	}
 }
 
-// A current-fact turn plans the page read. Budget 1 keeps only the search
-// family and drops fetch; the live-data cap keeps both.
+// A current-fact turn plans the page read from the directory, not the cold
+// bundle: bundled companions hard-exited delivered office turns (design
+// 2026-11-05), so the page fetch stays latent and petitionable here. A
+// continuation that really needs the page (TestProjectTaskSearchContinuation*)
+// still publishes web_fetch through the lookup-continuation ctx.
 func TestLiveDataColdSurfacePublishesWebFetch(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
 	h.semanticTrustedWebSearch = func(_, query string) (string, error) { return "found: " + query, nil }
@@ -290,8 +293,8 @@ func TestLiveDataColdSurfacePublishesWebFetch(t *testing.T) {
 	if semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter) == "" {
 		t.Fatal("live data must still publish web_search")
 	}
-	if semanticGrantNameForAdapter(surface, semanticTrustedWebFetchAdapter) == "" {
-		t.Fatal("live data must publish web_fetch")
+	if semanticGrantNameForAdapter(surface, semanticTrustedWebFetchAdapter) != "" {
+		t.Fatal("the cold bundle must keep the page fetch latent (directory petition, design 2026-11-05)")
 	}
 	if semanticGrantNameForAdapter(surface, semanticTrustedShellAdapter) != "" {
 		t.Fatal("live data must not grow a shell")
