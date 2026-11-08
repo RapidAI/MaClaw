@@ -5541,7 +5541,7 @@ var semanticPetitionableCapabilities = map[string]tool.CapabilityID{
 	"schedule_dispatch":                  tool.CapabilityScheduleDispatchChannel,
 	"manage_config":                      tool.CapabilityConfigManageSelf,
 	"mis_data":                           tool.CapabilityBusinessDataMIS,
-	"database":                           tool.CapabilityBusinessDataMIS,
+	"database":                           tool.CapabilityBusinessDataDatabase,
 	"database_query":                     tool.CapabilityBusinessDataRead,
 	"mailbox_query":                      tool.CapabilityMessageReadMailbox,
 	// Mailbox mutations join the petition inventory because the planner can

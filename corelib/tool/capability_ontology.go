@@ -72,15 +72,12 @@ const (
 	CapabilityConfigManageSelf          CapabilityID = "config.manage.self"
 	CapabilitySecurityAuditRead         CapabilityID = "security.audit.read"
 	CapabilityTemplateManageSession     CapabilityID = "template.manage.session"
-	// CapabilityBusinessDataRead is the query half of the MIS integration.
-	//
-	// It is split from CapabilityBusinessDataMIS because one capability
-	// covering both meant a turn that only needed to look something up had to
-	// be granted the one that can also change it, and the restricted workflow
-	// states that deny mutation denied the lookup with it — a planning turn
-	// could not read the data it was planning against.
-	CapabilityBusinessDataRead CapabilityID = "business.data.read"
-	CapabilityBusinessDataMIS  CapabilityID = "business.data.mis"
+	// SQL data-source access and MIS form transactions are separate outcomes.
+	// Read is shared by both query projections; Database owns SQL profiles,
+	// connections and writes; MIS owns business-form operations.
+	CapabilityBusinessDataRead     CapabilityID = "business.data.read"
+	CapabilityBusinessDataMIS      CapabilityID = "business.data.mis"
+	CapabilityBusinessDataDatabase CapabilityID = "business.data.database"
 	// CapabilityRecordReadWorklog and CapabilityRecordUpdateWorklog are one
 	// external time-block work record, split so a lookup cannot receive the
 	// mutation and an append cannot be satisfied by the query tool.
@@ -348,6 +345,11 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 		{
 			ID: CapabilityBusinessDataMIS, Version: "v1", Owner: builtinCapabilityOntologyOwner,
 			Summary: "Operate business data through the MIS integration.",
+			Effects: []EffectClass{EffectSensitive},
+		},
+		{
+			ID: CapabilityBusinessDataDatabase, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Manage SQL data-source profiles and connections, and execute SQL changes.",
 			Effects: []EffectClass{EffectSensitive},
 		},
 		{

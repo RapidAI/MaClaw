@@ -103,9 +103,10 @@ func IMSemanticIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentCapabi
 			{Capability: coretool.CapabilityBusinessDataMIS, Required: true},
 		},
 		intent.LabelDatabase: {
-			// Sole required Read so petitions for business.data.read expand
-			// SQL inspect (database_query), not MIS forms. Writes stay on
-			// the unmanaged database tool or a later write-shaped label.
+			// SQL access has its own sensitive capability. Sharing the MIS
+			// capability made a database petition create an unrelated business-form
+			// obligation which could never be settled by a successful SQL query.
+			{Capability: coretool.CapabilityBusinessDataDatabase, Required: false, MaxInvocations: 8},
 			{Capability: coretool.CapabilityBusinessDataRead, Required: true, MaxInvocations: 8},
 		},
 		intent.LabelKnowledgeWrite: {

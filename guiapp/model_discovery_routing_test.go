@@ -108,10 +108,11 @@ func TestModelDiscoveryDatabasePetitionDoesNotMintMIS(t *testing.T) {
 	if !granted {
 		t.Fatalf("database petition granted=%v message=%q", granted, message)
 	}
+	surface = cb.semanticSurface
 	if planHasCapabilities(surface.plan, tool.CapabilityBusinessDataMIS) {
 		t.Fatalf("database petition minted an MIS obligation: %#v", surface.plan.Selections)
 	}
-	if !planHasCapabilities(surface.plan, tool.CapabilityID("business.data.database")) {
+	if !planHasCapabilities(surface.plan, tool.CapabilityBusinessDataDatabase) {
 		t.Fatalf("database petition lost its own capability: %#v", surface.plan.Selections)
 	}
 	for _, selection := range surface.plan.Selections {

@@ -1234,16 +1234,21 @@ func semanticToolsSearchConfirmationWaiting(entries []semanticToolsSearchEntry, 
 
 // semanticToolsSearchMaybeExpandScope widens the live plan when the current
 // user text already declared a missing petitionable capability — for example
-// the user said "用ssh访问" after a search-shaped turn. Discovery still does
-// not select tools from query wording alone.
+// the user said "用ssh访问" after a search-shaped turn. An explicit rejection
+// is a user constraint and cannot be overridden by the model's search query.
 func semanticToolsSearchMaybeExpandScope(cb *sharedAgentLoopCallbacks, query string) {
 	if cb == nil || cb.semanticSurface == nil {
 		return
 	}
-	if !semanticUserTextDeclaresSSH(cb.userText) && !semanticUserTextDeclaresSSH(query) {
+	userDeclaresSSH, userRejectsSSH := semanticUserTextSSHDirectives(cb.userText)
+	if userRejectsSSH {
 		return
 	}
-	if !semanticUserTextDeclaresSSH(cb.userText) && !semanticUserTextSupportsRemote(cb.userText) {
+	queryDeclaresSSH, _ := semanticUserTextSSHDirectives(query)
+	if !userDeclaresSSH && !queryDeclaresSSH {
+		return
+	}
+	if !userDeclaresSSH && !semanticUserTextSupportsRemote(cb.userText) {
 		return
 	}
 	if semanticPlanHasCapability(cb.semanticSurface.plan, tool.CapabilityShellExecuteRemoteHost) {
@@ -1263,16 +1268,55 @@ func semanticToolsSearchMaybeExpandScope(cb *sharedAgentLoopCallbacks, query str
 }
 
 func semanticUserTextDeclaresSSH(text string) bool {
+	declared, _ := semanticUserTextSSHDirectives(text)
+	return declared
+}
+
+func semanticUserTextSSHDirectives(text string) (declared, rejected bool) {
 	lower := strings.ToLower(strings.TrimSpace(text))
 	if lower == "" {
+		return false, false
+	}
+	for _, needle := range []string{"用ssh", "ssh访问", "ssh登录", "登录服务器", "ssh"} {
+		for start := 0; start < len(lower); {
+			at := strings.Index(lower[start:], needle)
+			if at < 0 {
+				break
+			}
+			at += start
+			start = at + len(needle)
+			if needle == "ssh" && ((at > 0 && isASCIILetterOrDigit(lower[at-1])) || (start < len(lower) && isASCIILetterOrDigit(lower[start]))) {
+				continue
+			}
+			if semanticSSHMentionNegated(lower, at) {
+				rejected = true
+			} else {
+				declared = true
+			}
+		}
+	}
+	return declared, rejected
+}
+
+func semanticSSHMentionNegated(lower string, at int) bool {
+	if at <= 0 || at > len(lower) {
 		return false
 	}
-	for _, needle := range []string{"用ssh", "ssh访问", "ssh登录", "登录服务器"} {
-		if strings.Contains(lower, needle) {
+	clause := lower[:at]
+	if boundary := strings.LastIndexAny(clause, "。！？；,.;!?\n"); boundary >= 0 {
+		clause = clause[boundary+1:]
+	}
+	for _, marker := range []string{"不要", "不用", "别用", "别改", "别通过", "别连接", "别登录", "禁止", "无需", "勿", "不可", "不能", "不许", "不使用", "不通过", "不采用", "不改用"} {
+		if strings.Contains(clause, marker) {
 			return true
 		}
 	}
-	return hasASCIIToken(lower, "ssh")
+	for _, marker := range []string{"do not", "don't", "dont", "never", "must not", "should not", "shouldn't", "not ", "no ", "without ", "avoid "} {
+		if strings.Contains(clause, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func semanticUserTextSupportsRemote(text string) bool {

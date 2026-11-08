@@ -122,7 +122,7 @@ var managedSchemaGateBaseline = map[string]map[string]string{
 		"dataset_id":         reasonReadOnlyLegacyFamily,
 		"record_id":          reasonReadOnlyLegacyFamily,
 	},
-	// The database tool is the legacy multiplexer for business.data.mis: the
+	// The database tool is the legacy multiplexer for business.data.database: the
 	// model names the profile/connection/job/favorite it already listed and
 	// hands over an open statements payload, exactly like mis_data. The host
 	// profile store authorizes the connection itself, so identifiers have no
@@ -284,7 +284,7 @@ func TestManagedCallSurfaceParameterAuthorizationIsComplete(t *testing.T) {
 func TestManagedSchemaGateLegacySurfaceDoesNotGrow(t *testing.T) {
 	const (
 		// mis_data contributes 6 and the database legacy multiplexer
-		// (corelib/database/tool.go, committed as the business.data.mis
+		// (corelib/database/tool.go, committed as the business.data.database
 		// provider) contributes 8: profile/connection/job/favorite
 		// identifiers, host/file_path locations, and the open statements
 		// payload including its params object. The ssh connect surface

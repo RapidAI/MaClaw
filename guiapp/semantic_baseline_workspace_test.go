@@ -309,6 +309,9 @@ func TestSemanticUserTextDeclaresSSHRequiresToken(t *testing.T) {
 	if !semanticUserTextDeclaresSSH("ssh into the box") {
 		t.Fatal("ssh token must count as an ssh access request")
 	}
+	if declared, rejected := semanticUserTextSSHDirectives("识别 SSH 配置后用ssh访问"); !declared || rejected {
+		t.Fatalf("ordinary wording was misread as a prohibition: declared=%v rejected=%v", declared, rejected)
+	}
 	for _, text := range []string{
 		"请继续使用 database 工具，不要改用 ssh。",
 		"keep using the database tool, do not fall back to ssh or bash mysql",
@@ -324,8 +327,22 @@ func TestSemanticToolsSearchDoesNotExpandNegatedSSH(t *testing.T) {
 	_, surface, cb := turnDirectoryPlannedSurface(t, "不要通过 ssh 连接服务器，只查数据库。", discovery)
 	cb.userText = "不要通过 ssh 连接服务器，只查数据库。"
 	semanticToolsSearchMaybeExpandScope(cb, "use ssh to inspect the remote server")
+	surface = cb.semanticSurface
 	if planHasCapabilities(surface.plan, tool.CapabilityShellExecuteRemoteHost) {
 		t.Fatalf("model query overrode the user's ssh prohibition: %#v", surface.plan.Selections)
+	}
+	if granted, _ := cb.PetitionToolCall("ssh"); granted {
+		t.Fatal("direct petition bypassed the user's ssh prohibition")
+	}
+}
+
+func TestSemanticToolsSearchExpandsDiscoverySSHWhenUserDeclaredIt(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "用ssh访问服务器并查看状态", discovery)
+	cb.userText = "用ssh访问服务器并查看状态"
+	semanticToolsSearchMaybeExpandScope(cb, "inspect the remote server")
+	if !planHasCapabilities(cb.semanticSurface.plan, tool.CapabilityShellExecuteRemoteHost) {
+		t.Fatal("positive ssh request lost its managed expansion")
 	}
 }
 

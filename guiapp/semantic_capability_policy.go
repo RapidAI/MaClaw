@@ -97,6 +97,7 @@ func imSemanticCapabilityPolicyAdapter() agentservice.StaticCapabilityPolicyAdap
 	sensitive := []tool.CapabilityID{
 		tool.CapabilityDocumentWriteOffice,
 		tool.CapabilityBusinessDataMIS,
+		tool.CapabilityBusinessDataDatabase,
 		tool.CapabilityKnowledgeIngestLocal,
 		tool.CapabilityFSWriteLocal,
 		tool.CapabilityFSDeleteLocal,
@@ -135,7 +136,7 @@ func imSemanticCapabilityPolicyAdapter() agentservice.StaticCapabilityPolicyAdap
 		// business.data.read and record.read.worklog are intentionally not
 		// denied: those EffectReadOnly projections survive mutation-deny
 		// states. record.update.worklog does not.
-		deny(string(v2.ToolPolicyDocOnly), tool.CapabilityBusinessDataMIS, tool.CapabilityKnowledgeIngestLocal,
+		deny(string(v2.ToolPolicyDocOnly), tool.CapabilityBusinessDataMIS, tool.CapabilityBusinessDataDatabase, tool.CapabilityKnowledgeIngestLocal,
 			tool.CapabilityFSWriteLocal, tool.CapabilityFSDeleteLocal, tool.CapabilityAudioCaptureMicrophone,
 			tool.CapabilityArtifactAcquireRemote, tool.CapabilityConfigManageSelf,
 			tool.CapabilityTaskTrackLocal, tool.CapabilityGoalManageLongRunning,

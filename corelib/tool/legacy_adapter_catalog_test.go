@@ -54,7 +54,7 @@ func TestDatabaseToolsHaveReviewedLegacyProvisions(t *testing.T) {
 		capability CapabilityID
 		effect     EffectClass
 	}{
-		{name: "database", capability: CapabilityID("business.data.database"), effect: EffectSensitive},
+		{name: "database", capability: CapabilityBusinessDataDatabase, effect: EffectSensitive},
 		{name: "database_query", capability: CapabilityBusinessDataRead, effect: EffectReadOnly},
 	}
 	for _, tc := range cases {

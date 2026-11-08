@@ -58,6 +58,7 @@ func TestBuiltinCapabilityOntologyCoversExpectedFamilies(t *testing.T) {
 		CapabilityTemplateManageSession:     EffectSensitive,
 		CapabilityBusinessDataRead:          EffectReadOnly,
 		CapabilityBusinessDataMIS:           EffectSensitive,
+		CapabilityBusinessDataDatabase:      EffectSensitive,
 		CapabilityRecordReadWorklog:         EffectReadOnly,
 		CapabilityRecordUpdateWorklog:       EffectExternalEffect,
 		CapabilityMessageReadMailbox:        EffectReadOnly,

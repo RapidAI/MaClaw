@@ -361,13 +361,13 @@ func semanticPolicyDenySet(t *testing.T, workflowPolicy string) map[tool.Capabil
 }
 
 func TestIMSemanticCapabilityPolicyAdapterRestrictedStates(t *testing.T) {
-	allSix := []tool.CapabilityID{
-		tool.CapabilityDocumentWriteOffice, tool.CapabilityBusinessDataMIS, tool.CapabilityKnowledgeIngestLocal,
+	restricted := []tool.CapabilityID{
+		tool.CapabilityDocumentWriteOffice, tool.CapabilityBusinessDataMIS, tool.CapabilityBusinessDataDatabase, tool.CapabilityKnowledgeIngestLocal,
 		tool.CapabilityShellExecuteRemoteHost, tool.CapabilityBrowserControlWeb, tool.CapabilityComputerControlDesktop,
 	}
 	for _, state := range []string{"ops_controlled", "planning", imSemanticPolicyStateBlocked} {
 		denied := semanticPolicyDenySet(t, state)
-		for _, capability := range allSix {
+		for _, capability := range restricted {
 			if !denied[capability] {
 				t.Fatalf("state %q must deny %s", state, capability)
 			}
@@ -377,7 +377,7 @@ func TestIMSemanticCapabilityPolicyAdapterRestrictedStates(t *testing.T) {
 	if docOnly[tool.CapabilityDocumentWriteOffice] {
 		t.Fatalf("doc_only must keep the office document outcome available")
 	}
-	for _, capability := range allSix[1:] {
+	for _, capability := range restricted[1:] {
 		if !docOnly[capability] {
 			t.Fatalf("doc_only must deny %s", capability)
 		}

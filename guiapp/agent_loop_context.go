@@ -1189,6 +1189,20 @@ func (c *LoopContext) IsCancelled() bool {
 	}
 }
 
+// IsDone reports whether runAgentLoop has exited. A normally finished or failed
+// loop is not cancelled, but its recovery marker is no longer owned by live work.
+func (c *LoopContext) IsDone() bool {
+	if c == nil || c.DoneC == nil {
+		return false
+	}
+	select {
+	case <-c.DoneC:
+		return true
+	default:
+		return false
+	}
+}
+
 // Context returns a context.Context that is cancelled when CancelC is closed.
 // This allows passing cancellation into HTTP requests and other context-aware APIs.
 // The returned cancel func MUST be called when the context is no longer needed

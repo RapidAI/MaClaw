@@ -20,7 +20,8 @@ func applyImplicitInFlightRecoveryDecision(msg IMUserMessage, trimmed string, sl
 }
 
 func shouldRecoverInFlightMarker(msg IMUserMessage, unfinishedSlot *agent.UnfinishedTaskSlot, currentLoopCtx *LoopContext) bool {
-	return unfinishedSlot == nil && !msg.IsBackground && (currentLoopCtx == nil || currentLoopCtx.IsCancelled())
+	return unfinishedSlot == nil && !msg.IsBackground &&
+		(currentLoopCtx == nil || currentLoopCtx.IsCancelled() || currentLoopCtx.IsDone())
 }
 
 func isInFlightRecoverySlot(slot *agent.UnfinishedTaskSlot) bool {

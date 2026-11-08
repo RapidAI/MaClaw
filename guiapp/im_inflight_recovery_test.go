@@ -821,6 +821,46 @@ func TestShouldRecoverInFlightMarkerAfterLoopDone(t *testing.T) {
 	}
 }
 
+func TestDoneLoopRecoveryHandsCheckpointToExplicitResume(t *testing.T) {
+	const userID = "desktop-user:done-recovery"
+	memory := agent.NewConversationMemory()
+	t.Cleanup(memory.Stop)
+	history := []agent.ConversationEntry{{Role: "user", Content: "查询数据库"}, {Role: "assistant", Content: "继续查询"}}
+	if err := memory.PersistInFlightCheckpoint(userID, history, "查询数据库", "D:/work/project", "run-old", agent.InFlightCheckpoint{
+		Sequence: 1, LastToolName: "database_query", SideEffectState: "none",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loop := NewLoopContext("chat", 3, nil)
+	loop.Done()
+	msg := IMUserMessage{UserID: userID, Text: "继续"}
+	if !shouldRecoverInFlightMarker(msg, nil, loop) {
+		t.Fatal("done loop did not release its checkpoint to recovery")
+	}
+	h := &IMMessageHandler{memory: memory}
+	slot := h.recoverInterruptedTaskSlot(userID, history)
+	if slot == nil {
+		t.Fatal("done loop checkpoint did not become a recovery slot")
+	}
+	msg.ResumeSlotID = slot.SlotID
+	msg.UIAction = true
+	trimmed := msg.Text
+	result := h.resolveIMEntryContext(imEntryContextOptions{
+		Message: &msg, Trimmed: &trimmed,
+		Decision:           resolveExplicitTaskSlotDecision(msg, slot),
+		EntriesBeforeClear: memory.Load(userID),
+		UnfinishedSlot:     memory.GetUnfinishedSlot(userID),
+	})
+	if result.Handled {
+		t.Fatalf("explicit resume was not accepted: %#v", result.Response)
+	}
+	if err := memory.PersistInFlightCheckpoint(userID, history, "查询数据库", "D:/work/project", "run-new", agent.InFlightCheckpoint{
+		Sequence: 1, LastToolName: "database_query", SideEffectState: "none",
+	}); err != nil {
+		t.Fatalf("resumed run could not persist its checkpoint: %v", err)
+	}
+}
+
 func TestShouldRecoverInFlightMarkerOnlyForForegroundWithoutSlot(t *testing.T) {
 	msg := IMUserMessage{UserID: "desktop-user", Text: "new request"}
 	if !shouldRecoverInFlightMarker(msg, nil, nil) {

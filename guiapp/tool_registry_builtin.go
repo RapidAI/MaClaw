@@ -861,11 +861,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			return h.toolDatabaseWithContext(ctx, args)
 		})
 	annotateSemanticTool(registry, "database", []tool.CapabilityProvision{{
-		Capability: tool.CapabilityBusinessDataMIS, Quality: 1,
+		Capability: tool.CapabilityBusinessDataDatabase, Quality: 1,
 	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	// Read-only projection of the same handler. Restricted workflow states
-	// deny business.data.mis, so a lookup must not have to be granted the
+	// deny business.data.database, so a lookup must not have to be granted the
 	// mutating capability. semanticManagedInvocationRefusal holds this
 	// adapter to inspect/query/read_table.
 	regCtxP("database_query", database.ToolDescriptionReadOnly(),
