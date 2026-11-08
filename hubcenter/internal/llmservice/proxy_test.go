@@ -3643,6 +3643,219 @@ func TestProxyProviderSSEInjectsEstimatedUsageBeforeDone(t *testing.T) {
 		t.Fatalf("stream output = %q, want estimated usage chunk before DONE", out)
 	}
 }
+
+func TestProxyProviderSSEKeepsSeparateEventsWithoutBlankLine(t *testing.T) {
+	var dst lockedResponseRecorder
+	result := &providerStreamResult{}
+	// Typhoon can omit both the blank line and data: [DONE]. Each data line
+	// is already one chunk. A clean EOF after finish_reason stop is success,
+	// and the gateway must not invent [DONE].
+	stream := "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"pong\"},\"finish_reason\":null}]}\n" +
+		"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n"
+	if err := proxyProviderSSE(strings.NewReader(stream), &dst, "logical-model", result, nil); err != nil {
+		t.Fatalf("proxyProviderSSE() error = %v", err)
+	}
+	out := dst.BodyString()
+	if !strings.Contains(out, `"content":"pong"`) || !strings.Contains(out, `"finish_reason":"stop"`) {
+		t.Fatalf("stream output = %q, want both chunks forwarded", out)
+	}
+	if strings.Contains(out, "[DONE]") {
+		t.Fatalf("stream output = %q, want no synthesized DONE", out)
+	}
+	if strings.Count(out, "data: ") != 2 && strings.Count(out, "data: ") != 3 {
+		t.Fatalf("stream output = %q, want one data line per chunk", out)
+	}
+	if !result.wroteBusinessStream || result.outputText != "pong" {
+		t.Fatalf("stream result = %+v, want the content chunk kept", result)
+	}
+}
+
+func TestProxyProviderSSEKeepsChunkBesideNonJSONData(t *testing.T) {
+	var dst lockedResponseRecorder
+	result := &providerStreamResult{}
+	// No blank line. [done] is not a JSON value and not data: [DONE], so the
+	// finished chunk must stay a payload of its own.
+	stream := "data: {\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}]}\n" +
+		"data: [done]\n"
+	if err := proxyProviderSSE(strings.NewReader(stream), &dst, "logical-model", result, nil); err != nil {
+		t.Fatalf("proxyProviderSSE() error = %v", err)
+	}
+	out := dst.BodyString()
+	if !result.wroteBusinessStream || result.outputText != "pong" {
+		t.Fatalf("stream result = %+v, want the chunk kept", result)
+	}
+	sawPong := false
+	for _, line := range strings.Split(out, "\n") {
+		payload := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:"))
+		if !strings.Contains(line, `"content":"pong"`) {
+			continue
+		}
+		if strings.Contains(payload, "[done]") {
+			t.Fatalf("stream output = %q, want [done] off the chunk", out)
+		}
+		var body map[string]any
+		if err := json.Unmarshal([]byte(payload), &body); err != nil {
+			t.Fatalf("pong line = %q: %v", line, err)
+		}
+		sawPong = true
+	}
+	if !sawPong {
+		t.Fatalf("stream output = %q, want a parseable pong chunk", out)
+	}
+}
+
+func TestProxyProviderSSEJoinsJSONValueSplitAcrossDataLines(t *testing.T) {
+	var dst lockedResponseRecorder
+	result := &providerStreamResult{}
+	// The middle line is itself JSON. The three lines are still one value.
+	stream := "data: {\"choices\":[\n" +
+		"data: {\"delta\":{\"content\":\"pong\"}}\n" +
+		"data: ]}\n\n"
+	if err := proxyProviderSSE(strings.NewReader(stream), &dst, "logical-model", result, nil); err != nil {
+		t.Fatalf("proxyProviderSSE() error = %v", err)
+	}
+	if result.outputText != "pong" {
+		t.Fatalf("stream result = %+v, want the joined chunk", result)
+	}
+	out := dst.BodyString()
+	sawJoined := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, `"content":"pong"`) && strings.Contains(line, `"choices"`) {
+			sawJoined = true
+		}
+	}
+	if !sawJoined {
+		t.Fatalf("stream output = %q, want one joined choices payload", out)
+	}
+}
+
+func TestProxyProviderSSEJoinsSplitJSONBeforeDone(t *testing.T) {
+	var dst lockedResponseRecorder
+	result := &providerStreamResult{}
+	// The marker shares the event when the blank line is missing. It must
+	// not stop the split JSON value from being one chunk.
+	stream := "data: {\"choices\":[\n" +
+		"data: {\"delta\":{\"content\":\"pong\"}}\n" +
+		"data: ]}\n" +
+		"data: [DONE]\n"
+	if err := proxyProviderSSE(strings.NewReader(stream), &dst, "logical-model", result, nil); err != nil {
+		t.Fatalf("proxyProviderSSE() error = %v", err)
+	}
+	if result.outputText != "pong" {
+		t.Fatalf("stream result = %+v, want the joined chunk", result)
+	}
+	out := dst.BodyString()
+	if strings.Count(out, "data: [DONE]") != 1 {
+		t.Fatalf("stream output = %q, want one DONE", out)
+	}
+	sawJoined := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, `"content":"pong"`) && strings.Contains(line, `"choices"`) {
+			if strings.Contains(line, "[DONE]") {
+				t.Fatalf("stream output = %q, want DONE off the chunk", out)
+			}
+			sawJoined = true
+		}
+	}
+	if !sawJoined {
+		t.Fatalf("stream output = %q, want one joined choices payload", out)
+	}
+}
+
+func TestProxyProviderSSEKeepsDoneAfterEmptyDataLine(t *testing.T) {
+	var dst lockedResponseRecorder
+	result := &providerStreamResult{}
+	stream := "data: {\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}\n" +
+		"data:\n" +
+		"data: [DONE]\n"
+	if err := proxyProviderSSE(strings.NewReader(stream), &dst, "logical-model", result, nil); err != nil {
+		t.Fatalf("proxyProviderSSE() error = %v", err)
+	}
+	out := dst.BodyString()
+	if !strings.Contains(out, `"content":"pong"`) || !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("stream output = %q, want the chunk and DONE", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, `"content":"pong"`) && strings.Contains(line, "[DONE]") {
+			t.Fatalf("stream output = %q, want DONE off the chunk", out)
+		}
+	}
+	if !result.wroteBusinessStream || result.outputText != "pong" {
+		t.Fatalf("stream result = %+v, want the chunk kept", result)
+	}
+}
+
+func TestProxyProviderSSEReadErrorAfterFinishReasonStaysAnError(t *testing.T) {
+	var dst lockedResponseRecorder
+	result := &providerStreamResult{}
+	src := &errorAfterReader{r: strings.NewReader(
+		"data: {\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}]}\n\n",
+	)}
+	err := proxyProviderSSE(src, &dst, "logical-model", result, nil)
+	if err == nil || !strings.Contains(err.Error(), "upstream stream interrupted") {
+		t.Fatalf("proxyProviderSSE() error = %v, want the read error", err)
+	}
+	if dst.BodyString() != "" || result.wroteBusinessStream {
+		t.Fatalf("cut stream leaked output=%q result=%+v", dst.BodyString(), result)
+	}
+}
+
+func TestStreamProviderRejectsFakeSSEAndAbnormalCut(t *testing.T) {
+	provider := &llmpool.ProviderConfig{ID: "typhoon", Name: "Typhoon", APIURL: "https://api.opentyphoon.ai/v1"}
+	request := map[string]any{"model": "typhoon", "messages": []any{map[string]any{"role": "user", "content": "ping"}}}
+	frame := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}]}\n\n")
+
+	t.Run("fake sse", func(t *testing.T) {
+		client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: io.NopCloser(strings.NewReader(
+					"{\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}\n" +
+						"{\"choices\":[{\"message\":{\"content\":\"data: [DONE]\"},\"finish_reason\":\"stop\"}]}\n",
+				)),
+			}, nil
+		})}
+		dst := newLockedResponseRecorder()
+		result, err := streamProviderToWriter(context.Background(), client, provider, request, "typhoon", "typhoon", dst)
+		if err == nil || err.Error() != "upstream stream ended before business data" {
+			t.Fatalf("err=%v result=%#v", err, result)
+		}
+		if dst.BodyString() != "" || result == nil || result.wroteBusinessStream {
+			t.Fatalf("fake sse leaked %q result=%+v", dst.BodyString(), result)
+		}
+	})
+
+	for _, tc := range []struct {
+		name  string
+		reads []scriptedRead
+		want  string
+	}{
+		{name: "unexpected eof", reads: []scriptedRead{{data: frame}, {err: io.ErrUnexpectedEOF}}, want: "unexpected EOF"},
+		{name: "read error", reads: []scriptedRead{{data: append([]byte(nil), frame...), err: errors.New("read failed")}}, want: "read failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					Header:        http.Header{"Content-Type": []string{"text/event-stream"}},
+					ContentLength: -1,
+					Body:          &scriptedBody{reads: append([]scriptedRead(nil), tc.reads...)},
+					Request:       req,
+				}, nil
+			})}
+			dst := newLockedResponseRecorder()
+			result, err := streamProviderToWriter(context.Background(), client, provider, request, "typhoon", "typhoon", dst)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("err=%v, want %s", err, tc.want)
+			}
+			if dst.BodyString() != "" || result == nil || result.wroteBusinessStream {
+				t.Fatalf("cut leaked %q result=%+v", dst.BodyString(), result)
+			}
+		})
+	}
+}
+
 func TestHandleProxyStreamRequestCanFailOverAfterEmptyStreamEnds(t *testing.T) {
 	var goodHits int
 	client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {

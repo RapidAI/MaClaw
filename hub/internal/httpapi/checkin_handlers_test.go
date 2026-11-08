@@ -545,3 +545,98 @@ func TestPostLLMServiceCheckinConcurrentGrantsOnce(t *testing.T) {
 		t.Fatalf("expected exactly 1 check-in grant, got %d", grants)
 	}
 }
+
+func TestCheckinGrantGroupIDsPaysOfficialGroupWhenAccountHasNoCredits(t *testing.T) {
+	reg := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{
+			{ID: llmservice.SystemFreeServiceGroupID, Name: "System Free", AccessPolicy: llmservice.AccessPolicyFree},
+			{ID: llmservice.MaClawOfficialServiceGroupID, Name: "Official", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+			{ID: "coding-pro", Name: "Coding Pro", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+		},
+		DefaultNewUserServiceGroups: []string{llmservice.SystemFreeServiceGroupID},
+	}
+	ids := checkinGrantGroupIDs(context.Background(), reg, nil, "new-user", "new@example.com")
+	if len(ids) != 1 || ids[0] != llmservice.MaClawOfficialServiceGroupID {
+		t.Fatalf("zero-credit check-in groups = %#v, want official only", ids)
+	}
+
+	now := time.Now().UTC()
+	reg.Grants = []llmservice.Grant{{
+		ID: "redeemed", UserID: "paid-user", Email: "paid@example.com", ServiceGroupID: "coding-pro", Source: "card",
+		StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), CreatedAt: now, CreditsTotal: 5,
+	}}
+	ids = checkinGrantGroupIDs(context.Background(), reg, nil, "paid-user", "paid@example.com")
+	if len(ids) != 1 || ids[0] != "coding-pro" {
+		t.Fatalf("existing metered wallet groups = %#v, want coding-pro only", ids)
+	}
+}
+
+func TestCheckinGrantGroupIDsUsesTheOnlyMeteredGroupWithoutOfficial(t *testing.T) {
+	reg := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{
+			{ID: llmservice.SystemFreeServiceGroupID, AccessPolicy: llmservice.AccessPolicyFree},
+			{ID: "coding-basic", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+		},
+		DefaultNewUserServiceGroups: []string{llmservice.SystemFreeServiceGroupID},
+	}
+	ids := checkinGrantGroupIDs(context.Background(), reg, nil, "new-user", "new@example.com")
+	if len(ids) != 1 || ids[0] != "coding-basic" {
+		t.Fatalf("single metered fallback = %#v", ids)
+	}
+
+	reg.ModelServiceGroups = append(reg.ModelServiceGroups, llmservice.ModelServiceGroup{ID: "coding-pro", AccessPolicy: llmservice.AccessPolicyGrantRequired})
+	if ids = checkinGrantGroupIDs(context.Background(), reg, nil, "new-user", "new@example.com"); ids != nil {
+		t.Fatalf("ambiguous premium groups = %#v, want none", ids)
+	}
+}
+
+func TestPostLLMServiceCheckinGrantsCreditsWhenAccountHasNone(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken := issueViewerTokenForTenant(t, identity, "tenant_checkin_empty", "empty@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	tenantSystem := scopedSystemSettingsForTenant("tenant_checkin_empty", system)
+	enableTestCheckin(t, system, "tenant_checkin_empty", 8)
+	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{
+			{ID: llmservice.SystemFreeServiceGroupID, Name: "System Free", AccessPolicy: llmservice.AccessPolicyFree},
+			{ID: llmservice.MaClawOfficialServiceGroupID, Name: "Official", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+			{ID: "coding-pro", Name: "Coding Pro", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+		},
+		DefaultNewUserServiceGroups: []string{llmservice.SystemFreeServiceGroupID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/service/checkin", nil)
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+	PostLLMServiceCheckinHandler(identity, system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("zero-credit check-in status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body hubCheckinResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Success || body.AlreadyCheckedIn || body.CreditsAwarded != 8 {
+		t.Fatalf("unexpected zero-credit check-in response: %+v", body)
+	}
+	reg, err := llmservice.LoadRegistry(ctx, tenantSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	granted := 0.0
+	for _, grant := range reg.Grants {
+		if grant.Source != checkinGrantSource {
+			continue
+		}
+		if grant.ServiceGroupID != llmservice.MaClawOfficialServiceGroupID {
+			t.Fatalf("check-in grant landed on %s", grant.ServiceGroupID)
+		}
+		granted += grant.CreditsTotal
+	}
+	if granted != 8 {
+		t.Fatalf("expected 8 official check-in credits, got %v", granted)
+	}
+}

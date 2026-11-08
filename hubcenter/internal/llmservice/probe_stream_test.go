@@ -161,6 +161,17 @@ func TestParseProbeStreamLiveFields(t *testing.T) {
 		"data: {\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":null}]}\n\n"+
 			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
 		true, "pong", "", 0, "", "")
+	// Typhoon's documented chunks: a role delta with a null reason, then an
+	// empty delta whose finish_reason is stop, and no data: [DONE]. A missing
+	// blank line must not hide that stop chunk.
+	check("typhoon stop without done", "openai",
+		"data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"pong\"},\"finish_reason\":null}]}\n"+
+			"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n",
+		true, "pong", "", 0, "", "")
+	check("typhoon tool_calls fragments", "openai",
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"ping\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n"+
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n",
+		true, "", "", 1, "ping", "{}")
 	check("finish_reason tool_calls closes", "openai",
 		"data: {\"choices\":[{\"delta\":{\"content\":\"hello\",\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"ping\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
 		true, "hello", "", 1, "ping", "{}")

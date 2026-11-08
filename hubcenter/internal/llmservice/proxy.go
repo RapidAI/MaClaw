@@ -2112,7 +2112,14 @@ func writeProxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel s
 			streamCompleted = true
 			return nil
 		}
-		if len(dataLines) > 1 {
+		// Multiple data lines are one payload only when they form one JSON
+		// value. A trailing data: [DONE] is not part of that value. A finished
+		// chunk beside an empty data line, a non-JSON payload, or another
+		// JSON value stays separate, so those neighbors are not glued into a
+		// body the client drops.
+		payloadLines, doneCount := splitTrailingSSEDone(dataLines)
+		payloadText := proxySSECombinedData(payloadLines)
+		if len(payloadLines) > 1 && json.Valid([]byte(payloadText)) {
 			for _, line := range event {
 				trimmed := strings.TrimSpace(line)
 				if strings.HasPrefix(trimmed, "data:") || strings.HasPrefix(trimmed, ":") {
@@ -2122,8 +2129,8 @@ func writeProxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel s
 					return err
 				}
 			}
-			forwardData := combinedData
-			if processed, err := proxyStreamProcessData([]byte(combinedData), eventType, responseModel, result, true); err != nil {
+			forwardData := payloadText
+			if processed, err := proxyStreamProcessData([]byte(payloadText), eventType, responseModel, result, true); err != nil {
 				event = event[:0]
 				return err
 			} else if processed != nil {
@@ -2136,6 +2143,16 @@ func writeProxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel s
 			result.wroteBusinessStream = true
 			dst.Flush()
 			event = event[:0]
+			if doneCount > 0 {
+				if err := proxyStreamWriteEstimatedUsageIfNeeded(dst, reqBody, result, responseModel); err != nil {
+					return err
+				}
+				if _, err := io.WriteString(dst, "data: [DONE]\n\n"); err != nil {
+					return err
+				}
+				dst.Flush()
+				streamCompleted = true
+			}
 			return nil
 		}
 		sawDone := false
@@ -2263,6 +2280,17 @@ func proxySSECombinedData(dataLines []string) string {
 		return dataLines[0]
 	}
 	return strings.Join(dataLines, "\n")
+}
+
+// splitTrailingSSEDone separates a suffix of data: [DONE] markers from the
+// payload lines. A marker in the middle stays in the payload so two events
+// are not joined across it.
+func splitTrailingSSEDone(lines []string) (payload []string, done int) {
+	end := len(lines)
+	for end > 0 && lines[end-1] == "[DONE]" {
+		end--
+	}
+	return lines[:end], len(lines) - end
 }
 
 func proxyStreamErrorFromData(eventType string, data []byte) error {

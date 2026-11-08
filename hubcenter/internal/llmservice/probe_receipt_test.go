@@ -199,7 +199,7 @@ func TestProbeStreamFinishReasonWithoutDone(t *testing.T) {
 		Protocol: "openai",
 	}
 	got = probeProviderChat(context.Background(), cut, cutProvider, ProviderChatTest{Model: "typhoon", Stream: true})
-	if got.Err == "" || strings.Contains(got.Err, "stream ended before the end marker") || !got.Stream || got.StreamEnd == nil || *got.StreamEnd {
+	if got.Err != "connection reset" || got.Reply != "" || len(got.Calls) != 0 || !got.Stream || got.StreamEnd == nil || *got.StreamEnd {
 		t.Fatalf("cut finish=%#v", got)
 	}
 }
@@ -211,8 +211,9 @@ type finishCutTransport struct{}
 
 func (finishCutTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
+		StatusCode:    http.StatusOK,
+		Header:        make(http.Header),
+		ContentLength: -1,
 		Body: &finishCutBody{rest: []byte(
 			"data: {\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}]}\n\n",
 		)},
@@ -234,6 +235,147 @@ func (b *finishCutBody) Read(p []byte) (int, error) {
 }
 
 func (b *finishCutBody) Close() error { return nil }
+
+// TestProbeRejectsAbnormalCutReadErrorAndFakeSSE locks the three ways a
+// buffered finish_reason must not become a successful stream. A chunked
+// close is an unexpected EOF. A read that returns bytes and an error
+// together is a read error. A body that only resembles SSE is not a stream.
+func TestProbeRejectsAbnormalCutReadErrorAndFakeSSE(t *testing.T) {
+	const framed = "data: {\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}]}\n\n"
+	provider := &llmpool.ProviderConfig{
+		APIURL: "http://upstream.example/v1", APIKey: "sk-live", Models: []string{"typhoon"},
+		Protocol: "openai",
+	}
+	assertCut := func(t *testing.T, reads []scriptedRead) {
+		t.Helper()
+		wantErr := reads[len(reads)-1].err.Error()
+		data, truncated, err := ReadProbeBody(&scriptedBody{reads: append([]scriptedRead(nil), reads...)})
+		if err == nil || err.Error() != wantErr || data != nil || truncated {
+			t.Fatalf("read=%q truncated=%v err=%v", data, truncated, err)
+		}
+		got := probeProviderChat(context.Background(), &http.Client{Transport: staticBodyTransport{reads: reads}}, provider, ProviderChatTest{Model: "typhoon", Stream: true})
+		if got.Err != wantErr || got.Reply != "" || len(got.Calls) != 0 || !got.Stream || got.StreamEnd == nil || *got.StreamEnd {
+			t.Fatalf("probe=%#v", got)
+		}
+	}
+	frame := []byte(framed)
+	t.Run("unexpected eof", func(t *testing.T) {
+		assertCut(t, []scriptedRead{{data: frame}, {err: io.ErrUnexpectedEOF}})
+	})
+	t.Run("read error with bytes", func(t *testing.T) {
+		assertCut(t, []scriptedRead{{data: frame, err: errors.New("read failed")}})
+	})
+	t.Run("partial line", func(t *testing.T) {
+		assertCut(t, []scriptedRead{{
+			data: []byte(`data: {"choices":[{"delta":{"content":"po"},"finish_reason":"sto`),
+			err:  errors.New("connection reset"),
+		}})
+	})
+
+	// A body that is not SSE stays on the missing-marker failure. Text is kept
+	// only when a real data line carried it. The marker string inside JSON,
+	// a comment, a lowercase [done], and an OpenAI event name are not ends.
+	fakes := []struct {
+		name  string
+		body  string
+		reply string
+	}{
+		{name: "json completion", body: `{"choices":[{"message":{"content":"pong"},"finish_reason":"stop"}]}`},
+		{name: "ndjson", body: "{\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}]}\n"},
+		{name: "pretty json", body: "{\n  \"choices\": [\n    {\"message\": {\"content\": \"pong\"}, \"finish_reason\": \"stop\"}\n  ]\n}\n"},
+		{name: "marker text inside json", body: `{"choices":[{"message":{"content":"data: [DONE]"},"finish_reason":"stop"}]}`},
+		{name: "comment marker", reply: "pong", body: ": data: [DONE]\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}\n\n"},
+		{name: "lowercase done", reply: "pong", body: "data: {\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}\n\ndata: [done]\n\n"},
+		{name: "openai event name", reply: "pong", body: "event: message_stop\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}\n\n"},
+	}
+	for _, tc := range fakes {
+		t.Run(tc.name, func(t *testing.T) {
+			body := tc.body
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, body)
+			}))
+			defer upstream.Close()
+			fakeProvider := &llmpool.ProviderConfig{
+				APIURL: upstream.URL + "/v1", APIKey: "sk-live", Models: []string{"typhoon"},
+				Protocol: "openai",
+			}
+			got := probeProviderChat(context.Background(), upstream.Client(), fakeProvider, ProviderChatTest{Model: "typhoon", Stream: true})
+			if got.Err != "stream ended before the end marker" || got.Reply != tc.reply || len(got.Calls) != 0 || !got.Stream || got.StreamEnd == nil || *got.StreamEnd {
+				t.Fatalf("fake=%#v", got)
+			}
+		})
+	}
+	// A later data: [DONE] is a real end. The raw JSON line before it is not
+	// a frame, so the reply stays empty and the probe is still a failure.
+	t.Run("json line then done", func(t *testing.T) {
+		const body = "{\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}]}\ndata: [DONE]\n"
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, body)
+		}))
+		defer upstream.Close()
+		fakeProvider := &llmpool.ProviderConfig{
+			APIURL: upstream.URL + "/v1", APIKey: "sk-live", Models: []string{"typhoon"},
+			Protocol: "openai",
+		}
+		got := probeProviderChat(context.Background(), upstream.Client(), fakeProvider, ProviderChatTest{Model: "typhoon", Stream: true})
+		if got.Err != "model returned no completion content" || got.Reply != "" || len(got.Calls) != 0 || !got.Stream || got.StreamEnd == nil || !*got.StreamEnd {
+			t.Fatalf("marker after raw json=%#v", got)
+		}
+	})
+}
+
+type scriptedRead struct {
+	data []byte
+	err  error
+}
+
+type scriptedBody struct {
+	reads []scriptedRead
+}
+
+func (b *scriptedBody) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	for len(b.reads) > 0 {
+		next := &b.reads[0]
+		if len(next.data) == 0 {
+			err := next.err
+			b.reads = b.reads[1:]
+			if err != nil {
+				return 0, err
+			}
+			continue
+		}
+		n := copy(p, next.data)
+		next.data = next.data[n:]
+		if len(next.data) > 0 {
+			return n, nil
+		}
+		err := next.err
+		b.reads = b.reads[1:]
+		return n, err
+	}
+	return 0, io.EOF
+}
+
+func (b *scriptedBody) Close() error { return nil }
+
+type staticBodyTransport struct {
+	reads []scriptedRead
+}
+
+func (s staticBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        make(http.Header),
+		ContentLength: -1,
+		Body:          &scriptedBody{reads: append([]scriptedRead(nil), s.reads...)},
+		Request:       req,
+	}, nil
+}
 
 func TestDecodeHopMemberTestLeavesUnknownReceiptFieldsUnset(t *testing.T) {
 	got := decodeHopMemberTest([]byte(`{"success":true,"reply":"pong","latency_ms":3}`), ProviderChatTestResult{Model: "typhoon"})

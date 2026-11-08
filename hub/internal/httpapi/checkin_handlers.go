@@ -374,30 +374,76 @@ func PostLLMServiceCheckinHandler(identity *auth.IdentityService, system store.S
 	}
 }
 
-// checkinGrantGroupIDs picks the check-in reward targets: the account's
-// currently effective service groups whose access policy is grant_required.
+// checkinGrantGroupIDs picks the check-in reward targets.
 //
+// An account that can already reach a grant_required group is paid there.
 // Free-policy groups (including the reserved system-free group and the builtin
 // no-permissions fallback, whose empty access policy normalizes to free) never
 // debit credits — rewards granted there would sit unspendable while inflating
-// the displayed wallet. Restricting to already-effective groups also keeps the
-// grant from widening the account's model access, matching the referral
-// reward flow which refuses non-metered service groups.
+// the displayed wallet.
+//
+// A new account with no credits only reaches those free routes, so the filter
+// above used to reject the check-in until a service redemption created the
+// first metered grant. The fallback opens a spendable wallet on the official
+// metered group, or on the hub's only other metered group. It does not run
+// once any metered group is already effective, so a later check-in does not
+// open extra premium groups.
 func checkinGrantGroupIDs(ctx context.Context, reg *llmservice.Registry, securitySvc *security.SecurityService, userID, email string) []string {
 	effective, err := llmservice.EffectiveServiceGroupIDsForUser(ctx, reg, securitySvc, userID, email)
 	if err != nil {
 		log.Printf("[checkin] effective service group resolution failed user_id=%s err=%v", userID, err)
 		return nil
 	}
-	ids := make([]string, 0, len(effective))
-	for _, id := range effective {
+	if ids := checkinMeteredGroupIDs(reg, effective); len(ids) > 0 {
+		return ids
+	}
+	return checkinFallbackGrantGroupIDs(reg)
+}
+
+func checkinMeteredGroupIDs(reg *llmservice.Registry, ids []string) []string {
+	if reg == nil {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
 		group := reg.FindModelServiceGroup(id)
 		if group == nil || llmservice.NormalizeAccessPolicy(group.AccessPolicy) != llmservice.AccessPolicyGrantRequired {
 			continue
 		}
-		ids = append(ids, id)
+		out = append(out, group.ID)
 	}
-	return ids
+	return out
+}
+
+// checkinFallbackGrantGroupIDs is the wallet for an account that has no
+// effective metered group. The official group is the spendable credit card.
+// A hub without that group can still pay the reward when it has exactly one
+// other metered group. Several premium groups and no official group stay
+// unresolved: guessing would open all of them.
+func checkinFallbackGrantGroupIDs(reg *llmservice.Registry) []string {
+	if reg == nil {
+		return nil
+	}
+	if group := reg.FindModelServiceGroup(llmservice.MaClawOfficialServiceGroupID); group != nil && llmservice.NormalizeAccessPolicy(group.AccessPolicy) == llmservice.AccessPolicyGrantRequired {
+		return []string{group.ID}
+	}
+	only := ""
+	for _, group := range reg.ModelServiceGroups {
+		if llmservice.NormalizeAccessPolicy(group.AccessPolicy) != llmservice.AccessPolicyGrantRequired {
+			continue
+		}
+		if llmservice.IsSystemFreeServiceGroup(group.ID) || llmservice.IsBuiltinModelServiceGroupID(group.ID) {
+			continue
+		}
+		if only != "" {
+			return nil
+		}
+		only = group.ID
+	}
+	if only == "" {
+		return nil
+	}
+	return []string{only}
 }
 
 // checkinLogEntry is one immutable check-in event in the tenant day log.

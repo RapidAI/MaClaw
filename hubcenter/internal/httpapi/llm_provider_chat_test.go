@@ -114,6 +114,75 @@ func TestAdminTestLLMProviderChatRequiresSuccessfulCompletion(t *testing.T) {
 	}
 }
 
+func TestLocalStreamProbeRejectsFakeSSEAndDropsFailedRead(t *testing.T) {
+	frame := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}]}\n\n")
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "unexpected eof", err: io.ErrUnexpectedEOF},
+		{name: "read error", err: errors.New("read failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, truncated, err := readLLMProviderTestResponse(&scriptedProbeBody{data: append([]byte(nil), frame...), err: tc.err, together: tc.name == "read error"})
+			if data != nil || truncated || err == nil || err.Error() != tc.err.Error() {
+				t.Fatalf("data=%q truncated=%v err=%v", data, truncated, err)
+			}
+		})
+	}
+
+	const fake = "{\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}\n{\"choices\":[{\"message\":{\"content\":\"data: [DONE]\"},\"finish_reason\":\"stop\"}]}\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, fake)
+	}))
+	defer upstream.Close()
+	got := runLLMProviderChatTestBody(context.Background(), corelib.MaclawLLMConfig{
+		URL:      upstream.URL + "/v1",
+		Key:      "sk-live",
+		Model:    "typhoon",
+		Protocol: "openai",
+	}, nil, nil, providerTestBudget{Stream: true})
+	if got.errMsg != "stream ended before the end marker" || got.reply != "" || !got.stream || got.streamEnd == nil || *got.streamEnd || len(got.calls) != 0 {
+		t.Fatalf("fake=%#v", got)
+	}
+}
+
+type scriptedProbeBody struct {
+	data     []byte
+	err      error
+	together bool
+	used     bool
+}
+
+func (b *scriptedProbeBody) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if b.used {
+		if b.err != nil {
+			return 0, b.err
+		}
+		return 0, io.EOF
+	}
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	if len(b.data) > 0 {
+		return n, nil
+	}
+	b.used = true
+	if n == 0 {
+		if b.err != nil {
+			return 0, b.err
+		}
+		return 0, io.EOF
+	}
+	if b.together {
+		return n, b.err
+	}
+	return n, nil
+}
+
 func TestLLMProviderTestRequestOmitsKimiLockedSampling(t *testing.T) {
 	req, err := newLLMProviderTestRequest(context.Background(), corelib.MaclawLLMConfig{
 		URL:      "https://api.kimi.com/coding/v1",
