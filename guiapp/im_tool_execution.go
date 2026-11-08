@@ -1459,7 +1459,7 @@ func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
 	case "bash",
 		"read_file", "read_tool_result", "write_file", "edit_file", "edit_lines", "list_directory", "Glob", "search_files", "send_file", "send_to_im", "archive",
 		"office",
-		"manage_skill", "run_skill", "install_skill_hub", "search_and_install_skill",
+		"manage_skill", "run_skill", "install_skill_hub", "search_and_install_skill", "craft_tool",
 		"memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations",
 		"group_discussion", "screenshot", "call_mcp_tool", "discover_tool", "session_search",
 		"browser", "browser_session_start", "browser_connect", "ssh", "tts", "asr":

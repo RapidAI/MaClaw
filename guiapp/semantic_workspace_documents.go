@@ -10,16 +10,12 @@ import (
 	"time"
 )
 
-// workspaceDocumentExts are the files the current-channel delivery already
-// treats as documents. A shell-produced PDF is the same kind of product as an
-// office write; it was previously invisible because delivery only consumed the
-// artifact a renderer had registered.
-var workspaceDocumentExts = map[string]bool{
-	".pdf":  true,
-	".pptx": true,
-	".docx": true,
-	".xlsx": true,
-}
+// A new workspace file becomes a 产出物 when the task-result preview can open
+// it. previewHTTPContentType is that list for PDF, Office Open XML, sheets,
+// pictures, audio, and video. Formats the same pane opens by another path
+// (slides, legacy office, web pages, markdown, plain text, csv, LaTeX) sit
+// here so a newly supported preview type does not need a second copy of the
+// mime table. Source, logs, and config stay off the card.
 
 // hostDeliveryCopyName matches the suffix uniqueLocalDeliveryPath adds when
 // the workspace already has the producer's real file: name_HHMMSS_mmm.ext.
@@ -34,7 +30,29 @@ type workspaceDocumentStamp struct {
 }
 
 func isWorkspaceDocumentName(name string) bool {
-	return workspaceDocumentExts[strings.ToLower(filepath.Ext(name))]
+	return workspaceDeliverableExt(strings.ToLower(filepath.Ext(strings.TrimSpace(name))))
+}
+
+// workspaceDeliverableExt is the single gate for the 产出物 card. A kind
+// previewHTTPContentType already serves is included automatically.
+func workspaceDeliverableExt(ext string) bool {
+	ext = strings.ToLower(strings.TrimSpace(ext))
+	if ext == "" {
+		return false
+	}
+	if kind, _ := previewHTTPContentType(ext); kind != "" {
+		return true
+	}
+	switch ext {
+	case ".pptx", ".ppt", ".pptm", ".pps", ".ppsx",
+		".doc", ".docm", ".dot", ".dotx", ".wps", ".wpt", ".odt", ".rtf",
+		".odp", ".dps", ".dpt",
+		".html", ".htm", ".md", ".markdown", ".txt", ".csv", ".tsv",
+		".tex", ".ltx", ".latex":
+		return true
+	default:
+		return false
+	}
 }
 
 func isHostDeliveryCopyName(name string) bool {
@@ -262,9 +280,9 @@ func (c *sharedAgentLoopCallbacks) attachProducedWorkspaceDocuments() {
 	produced := changedWorkspaceDocuments(c.workspaceDocBaseline, after)
 	// A remote fetch is not a document this turn produced. On a catalog miss
 	// the product is whatever search_and_install_skill or craft_tool made.
-	// The 2026-11-05 picture turn downloaded a book PDF while looking for a
-	// scan; the scan then published that PDF as the only artifact because
-	// images are not in workspaceDocumentExts.
+	// A picture written into the workspace is one of those files and becomes
+	// the card. A book downloaded while looking for an image tool stays off
+	// the card.
 	produced = c.dropResearchAcquisitions(produced)
 	c.deliveredPaths = c.dropResearchAcquisitions(c.deliveredPaths)
 	// A different baseline directory means files already in the child belong

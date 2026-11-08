@@ -96,6 +96,7 @@ func (h *IMMessageHandler) toolCraftToolWithContext(ctx context.Context, args ma
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	args = bindCraftWorkingDir(h, args)
 	output, err := executeCraftToolCoreWithContext(ctx, h.app, h.client, args, onProgress)
 	if err != nil && strings.TrimSpace(output) == "" {
 		return err.Error()
@@ -453,6 +454,30 @@ func formatCraftExecutionProgress(language string, attempt, attempts, timeout in
 		return fmt.Sprintf("正在执行脚本（%s，第 %d/%d 次，最长等待 %ds）...", language, attempt, attempts, timeout)
 	}
 	return fmt.Sprintf("正在执行脚本（%s，第 %d/%d 次）...", language, attempt, attempts)
+}
+
+// bindCraftWorkingDir runs the script in the same directory bash and office
+// use. An empty working_dir used to fall through to the desktop default
+// (~/.maclaw/workspace), so a picture landed outside the task folder and the
+// 产出物 scan never saw it. An explicit directory, including the companion
+// scratch dir, stays as given.
+func bindCraftWorkingDir(h *IMMessageHandler, args map[string]interface{}) map[string]interface{} {
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	ownerID := ""
+	if h != nil {
+		ownerID = h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrent(args)
+	}
+	if strings.TrimSpace(stringVal(args, "working_dir")) != "" || h == nil {
+		return args
+	}
+	dir := strings.TrimSpace(h.resolveToolWorkDirForOwner("", ownerID))
+	if dir == "" {
+		return args
+	}
+	args["working_dir"] = dir
+	return args
 }
 
 func buildCraftToolRequest(args map[string]interface{}, runtimes craftRuntimeAvailability) craftToolRequest {
@@ -1310,8 +1335,8 @@ func craftAttemptReachedExecution(attempt craftAttemptResult) bool {
 
 func verifyCraftExecution(request craftToolRequest, attempt craftAttemptResult) craftAttemptResult {
 	result := attempt
-	expectedArtifactPath := firstExpectedArtifact(request.ExpectedArtifacts)
-	reportedArtifactPath := detectCraftArtifactPath(attempt.Output)
+	expectedArtifactPath := resolveCraftArtifactPath(request.WorkingDir, firstExpectedArtifact(request.ExpectedArtifacts))
+	reportedArtifactPath := resolveCraftArtifactPath(request.WorkingDir, detectCraftArtifactPath(attempt.Output))
 	artifactPath := strings.TrimSpace(firstNonEmptyCraftText(expectedArtifactPath, reportedArtifactPath))
 	result.ArtifactPath = artifactPath
 	if attempt.ExecErr != nil {
@@ -1395,6 +1420,24 @@ func shouldAcceptStdoutOnlyCraftResult(request craftToolRequest, expectedArtifac
 		return false
 	}
 	return strings.TrimSpace(attempt.Output) != ""
+}
+
+// resolveCraftArtifactPath checks a relative name in the script directory.
+// os.Stat of that name otherwise uses the GUI process directory, which is
+// not where the script just wrote the file.
+func resolveCraftArtifactPath(workingDir, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	workingDir = strings.TrimSpace(workingDir)
+	if workingDir == "" {
+		return path
+	}
+	return filepath.Clean(filepath.Join(workingDir, path))
 }
 
 func firstExpectedArtifact(paths []string) string {

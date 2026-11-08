@@ -341,6 +341,64 @@ func TestNormalizeCraftToolArgs(t *testing.T) {
 	}
 }
 
+func TestVerifyCraftExecutionResolvesRelativeArtifactInWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	name := "mouse_teases_tiger.png"
+	body := []byte("png-bytes")
+	if err := os.WriteFile(filepath.Join(dir, name), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	verified := verifyCraftExecution(craftToolRequest{
+		WorkingDir:        dir,
+		ExpectedArtifacts: []string{name},
+		VerificationMode:  "artifact_required",
+	}, craftAttemptResult{Output: "Created: " + name + "\nSize: 9 bytes"})
+	if verified.VerificationStatus != craftVerificationPassed {
+		t.Fatalf("VerificationStatus = %q (%s), want passed", verified.VerificationStatus, verified.VerificationMessage)
+	}
+	if verified.ArtifactPath != filepath.Join(dir, name) {
+		t.Fatalf("ArtifactPath = %q, want the file in the script directory", verified.ArtifactPath)
+	}
+}
+
+func TestBindCraftWorkingDirUsesTaskWorkspace(t *testing.T) {
+	if !toolAcceptsRuntimePolicyOwnerArg("craft_tool") {
+		t.Fatal("craft_tool must receive the task owner so the script runs in that workspace")
+	}
+	app := newProjectSearchTestApp(t)
+	root := filepath.Join(app.GetDataDir(), "tasks", "pic-1")
+	ws := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner := projectSessionOwnerID(root)
+	h := &IMMessageHandler{app: app}
+	bound := bindCraftWorkingDir(h, map[string]interface{}{
+		registeredToolPolicyOwnerIDField: owner,
+		"task":                           "draw a picture",
+	})
+	if _, leaked := bound[registeredToolPolicyOwnerIDField]; leaked {
+		t.Fatal("runtime owner leaked into craft arguments")
+	}
+	got := strings.TrimSpace(stringVal(bound, "working_dir"))
+	want := h.resolveToolWorkDirForOwner("", owner)
+	if got == "" || got != want {
+		t.Fatalf("working_dir = %q, want %q", got, want)
+	}
+	if !strings.EqualFold(got, ws) && !strings.HasSuffix(strings.ToLower(filepath.ToSlash(got)), "/workspace") {
+		t.Fatalf("working_dir = %q, want the task workspace %q", got, ws)
+	}
+
+	explicit := filepath.Join(t.TempDir(), "scratch")
+	kept := bindCraftWorkingDir(h, map[string]interface{}{
+		registeredToolPolicyOwnerIDField: owner,
+		"working_dir":                    explicit,
+	})
+	if stringVal(kept, "working_dir") != explicit {
+		t.Fatalf("explicit working_dir = %q, want %q", stringVal(kept, "working_dir"), explicit)
+	}
+}
+
 func TestVerifyCraftExecution(t *testing.T) {
 	artifact := filepath.Join(t.TempDir(), "done.pdf")
 	if err := os.WriteFile(artifact, []byte("pdf"), 0o644); err != nil {

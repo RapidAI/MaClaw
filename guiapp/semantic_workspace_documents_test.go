@@ -42,6 +42,48 @@ func TestUnreadableWorkspaceIsNotAnEmptyBaseline(t *testing.T) {
 	}
 }
 
+func TestTaskWorkspaceDeliversNewImageLikeOffice(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".maclaw", "data", "tasks", "job", "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{workspaceDocRoot: root, workspaceDocBaseline: snapshotWorkspaceDocuments(root)}
+	png := filepath.Join(root, "mouse_teases_tiger.png")
+	if err := os.WriteFile(png, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "notes.py"), []byte("print(1)"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb.attachProducedWorkspaceDocuments()
+	if len(cb.deliveredPaths) != 1 || cb.deliveredPaths[0] != png {
+		t.Fatalf("delivered = %v, want the new picture", cb.deliveredPaths)
+	}
+}
+
+func TestWorkspaceDeliverableExtCoversPreviewFormats(t *testing.T) {
+	// These follow previewHTTPContentType. Dropping that call and keeping a
+	// hand-written picture list would still pass a lone .png check.
+	for _, ext := range []string{".pdf", ".docx", ".xlsx", ".xlsm", ".xls", ".ods", ".png", ".jpg", ".webp", ".gif", ".svg", ".heic", ".mp4", ".webm", ".mp3", ".wav", ".flac"} {
+		if !workspaceDeliverableExt(ext) {
+			t.Errorf("%s should follow the preview content type", ext)
+		}
+	}
+	for _, ext := range []string{".pptx", ".ppt", ".pptm", ".doc", ".odt", ".rtf", ".odp", ".html", ".htm", ".md", ".markdown", ".txt", ".csv", ".tsv", ".tex", ".ltx"} {
+		if !workspaceDeliverableExt(ext) {
+			t.Errorf("%s should be a deliverable the preview opens another way", ext)
+		}
+		if !isWorkspaceDocumentName("Report" + strings.ToUpper(ext)) {
+			t.Errorf("mixed-case %s should be a deliverable", ext)
+		}
+	}
+	for _, name := range []string{"notes.py", "main.go", "app.js", "run.log", "config.json", "data.yaml", "tool.exe", "scratch.tmp", "pack.zip", "book.epub", "Makefile", "README"} {
+		if isWorkspaceDocumentName(name) {
+			t.Errorf("%s should stay off the card", name)
+		}
+	}
+}
+
 func TestChangedWorkspaceDocumentsSeesNewPDFOnly(t *testing.T) {
 	root := t.TempDir()
 	before := snapshotWorkspaceDocuments(root)
