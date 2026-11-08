@@ -812,6 +812,15 @@ func TestShouldRecoverInFlightMarkerWaitsForActiveLoop(t *testing.T) {
 	}
 }
 
+func TestShouldRecoverInFlightMarkerAfterLoopDone(t *testing.T) {
+	msg := IMUserMessage{UserID: "desktop-user", Text: "new request"}
+	loop := NewLoopContext("chat", 3, nil)
+	loop.Done()
+	if !shouldRecoverInFlightMarker(msg, nil, loop) {
+		t.Fatal("a completed loop's checkpoint must enter recovery instead of blocking the next run")
+	}
+}
+
 func TestShouldRecoverInFlightMarkerOnlyForForegroundWithoutSlot(t *testing.T) {
 	msg := IMUserMessage{UserID: "desktop-user", Text: "new request"}
 	if !shouldRecoverInFlightMarker(msg, nil, nil) {

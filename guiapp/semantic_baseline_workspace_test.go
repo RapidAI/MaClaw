@@ -309,6 +309,24 @@ func TestSemanticUserTextDeclaresSSHRequiresToken(t *testing.T) {
 	if !semanticUserTextDeclaresSSH("ssh into the box") {
 		t.Fatal("ssh token must count as an ssh access request")
 	}
+	for _, text := range []string{
+		"请继续使用 database 工具，不要改用 ssh。",
+		"keep using the database tool, do not fall back to ssh or bash mysql",
+	} {
+		if semanticUserTextDeclaresSSH(text) {
+			t.Fatalf("negated ssh mention became a request: %q", text)
+		}
+	}
+}
+
+func TestSemanticToolsSearchDoesNotExpandNegatedSSH(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, surface, cb := turnDirectoryPlannedSurface(t, "不要通过 ssh 连接服务器，只查数据库。", discovery)
+	cb.userText = "不要通过 ssh 连接服务器，只查数据库。"
+	semanticToolsSearchMaybeExpandScope(cb, "use ssh to inspect the remote server")
+	if planHasCapabilities(surface.plan, tool.CapabilityShellExecuteRemoteHost) {
+		t.Fatalf("model query overrode the user's ssh prohibition: %#v", surface.plan.Selections)
+	}
 }
 
 func TestSemanticGroupPolicyOmitsBaselineShell(t *testing.T) {

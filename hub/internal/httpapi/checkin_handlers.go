@@ -188,8 +188,17 @@ type hubCheckinInfo struct {
 	CheckedInToday bool    `json:"checked_in_today"`
 }
 
-// checkinGrantMu serializes check-in grants per process so two concurrent
-// requests cannot both pass the last-check-in check.
+// checkinGrantMu serializes the per-user last-check-in marker and the tenant
+// day log. Both are read-modify-write records shared by every check-in.
+//
+// The mutex is process-wide. Do not hold it while resolving security groups,
+// while reloading the registry snapshot, or while waiting for serviceRegistryMu.
+// Billing holds that lock and never takes this one; a check-in blocked on the
+// registry would stall every other check-in, including the already-checked-in
+// fast path. The grant takes serviceRegistryMu first, reloads, then takes this
+// mutex and rechecks the marker. The save stays inside both locks so the grant
+// and the marker decision commit together. The registry lock is released before
+// the marker and the log, which only need this mutex.
 var checkinGrantMu sync.Mutex
 
 func checkinLastKey(userID string) string {
@@ -209,22 +218,62 @@ func checkinDayKeyFor(reg *llmservice.Registry, email string, now time.Time) str
 	return now.In(location).Format("2006-01-02")
 }
 
-func checkinLastDay(ctx context.Context, system store.SystemSettingsRepository, userID string) string {
+func checkinLastDay(ctx context.Context, system store.SystemSettingsRepository, userID string) (string, error) {
 	if system == nil {
-		return ""
+		return "", nil
 	}
 	raw, err := system.Get(ctx, checkinLastKey(userID))
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return strings.TrimSpace(raw)
+	return strings.TrimSpace(raw), nil
+}
+
+// checkinGrantCoversDay reports whether this account already has a check-in
+// grant for the viewer's local day. The day marker is only a fast path. The
+// grant is the record that was saved with the credits, so a lost marker must
+// not mint the reward again.
+func checkinGrantCoversDay(reg *llmservice.Registry, userID, email, day string) bool {
+	if reg == nil || day == "" {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	emailKey := strings.ToLower(strings.TrimSpace(email))
+	for i := range reg.Grants {
+		grant := &reg.Grants[i]
+		if !strings.EqualFold(strings.TrimSpace(grant.Source), checkinGrantSource) {
+			continue
+		}
+		grantUser := strings.TrimSpace(grant.UserID)
+		grantEmail := strings.ToLower(strings.TrimSpace(grant.Email))
+		matched := userID != "" && grantUser == userID
+		if !matched && emailKey != "" && grantEmail == emailKey {
+			matched = true
+		}
+		if !matched {
+			continue
+		}
+		if checkinDayKeyFor(reg, email, grant.CreatedAt) == day {
+			return true
+		}
+	}
+	return false
 }
 
 // checkinInfoForUser reports the tenant check-in policy and whether the user
-// already checked in on their current local day.
+// already checked in on their current local day. A marker read error falls
+// through to the grant record so the button still matches the wallet.
 func checkinInfoForUser(ctx context.Context, system store.SystemSettingsRepository, reg *llmservice.Registry, userID, email string) *hubCheckinInfo {
 	cfg := loadCheckinConfig(ctx, system)
-	checkedIn := cfg.Enabled && checkinLastDay(ctx, system, userID) == checkinDayKeyFor(reg, email, time.Now())
+	if !cfg.Enabled {
+		return cfg.viewerCheckinInfo(false)
+	}
+	today := checkinDayKeyFor(reg, email, time.Now())
+	last, err := checkinLastDay(ctx, system, userID)
+	checkedIn := err == nil && last == today
+	if !checkedIn && checkinGrantCoversDay(reg, userID, email, today) {
+		checkedIn = true
+	}
 	return cfg.viewerCheckinInfo(checkedIn)
 }
 
@@ -302,26 +351,113 @@ func PostLLMServiceCheckinHandler(identity *auth.IdentityService, system store.S
 			writeError(w, http.StatusBadRequest, "CHECKIN_DISABLED", "Check-in is not enabled")
 			return
 		}
-		checkinGrantMu.Lock()
-		defer checkinGrantMu.Unlock()
-
 		reg, err := llmservice.LoadRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
 		today := checkinDayKeyFor(reg, principal.Email, time.Now())
-		if checkinLastDay(ctx, system, principal.UserID) == today {
+
+		var checkinLocked bool
+		unlockCheckin := func() {
+			if checkinLocked {
+				checkinLocked = false
+				checkinGrantMu.Unlock()
+			}
+		}
+		defer unlockCheckin()
+		var registryLocked bool
+		unlockRegistry := func() {
+			if registryLocked {
+				registryLocked = false
+				llmservice.UnlockServiceRegistryMutation()
+			}
+		}
+		defer unlockRegistry()
+		lockCheckin := func() {
+			checkinGrantMu.Lock()
+			checkinLocked = true
+		}
+
+		// Already-checked-in reads only the day marker. The registry snapshot
+		// above is for the viewer's timezone and stays outside this mutex.
+		// A failed read is not "never checked in": minting on that guess
+		// would grant again whenever the marker store blips.
+		lockCheckin()
+		last, lastErr := checkinLastDay(ctx, system, principal.UserID)
+		if lastErr != nil {
+			unlockCheckin()
+			writeError(w, http.StatusInternalServerError, "CHECKIN_MARKER_FAILED", lastErr.Error())
+			return
+		}
+		if last == today {
+			unlockCheckin()
 			writeJSON(w, http.StatusOK, hubCheckinResponse{Success: true, AlreadyCheckedIn: true, Checkin: cfg.viewerCheckinInfo(true)})
 			return
 		}
+		unlockCheckin()
+
 		awarded := 0.0
 		if cfg.Credits > 0 {
-			groupIDs := checkinGrantGroupIDs(ctx, reg, securitySvc, principal.UserID, principal.Email)
+			// Security lookup and the reward decision use the snapshot above.
+			// Neither lock is held: the lookup hits the security store, and
+			// this mutex would stall every other check-in for that round trip.
+			groupIDs, groupErr := checkinGrantGroupIDs(ctx, reg, securitySvc, principal.UserID, principal.Email)
+			if groupErr != nil {
+				writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", groupErr.Error())
+				return
+			}
 			if len(groupIDs) == 0 {
 				writeError(w, http.StatusBadRequest, "CHECKIN_NO_SERVICE_GROUPS", "No metered LLM service groups are available for check-in rewards")
 				return
 			}
+
+			llmservice.LockServiceRegistryMutation()
+			registryLocked = true
+			fresh, loadErr := llmservice.LoadRegistry(ctx, system)
+			if loadErr != nil {
+				writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", loadErr.Error())
+				return
+			}
+			// The reload is the registry critical section. Take the check-in
+			// mutex only after it returns, so other viewers can still read
+			// their day marker while this snapshot is parsed.
+			lockCheckin()
+			// Commit against the timezone in the registry we are about to save.
+			// A stale snapshot can name a different local day than the marker.
+			today = checkinDayKeyFor(fresh, principal.Email, time.Now())
+			last, lastErr = checkinLastDay(ctx, system, principal.UserID)
+			if lastErr != nil {
+				unlockCheckin()
+				unlockRegistry()
+				writeError(w, http.StatusInternalServerError, "CHECKIN_MARKER_FAILED", lastErr.Error())
+				return
+			}
+			// The grant is authoritative. The marker can be missing when its
+			// write failed after the credits were saved.
+			if last == today || checkinGrantCoversDay(fresh, principal.UserID, principal.Email, today) {
+				unlockRegistry()
+				if last != today {
+					if err := system.Set(ctx, checkinLastKey(principal.UserID), today); err != nil {
+						log.Printf("[checkin] last-checkin marker repair failed user_id=%s err=%v", principal.UserID, err)
+					}
+				}
+				unlockCheckin()
+				writeJSON(w, http.StatusOK, hubCheckinResponse{Success: true, AlreadyCheckedIn: true, Checkin: cfg.viewerCheckinInfo(true)})
+				return
+			}
+			// Keep the targets chosen above when they still accept a reward.
+			// A group removed since that snapshot falls through to the same
+			// fallback used for an account with no spendable group.
+			groupIDs = checkinRewardGroupIDs(fresh, groupIDs)
+			if len(groupIDs) == 0 {
+				groupIDs = checkinFallbackRewardGroupIDs(fresh)
+			}
+			if len(groupIDs) == 0 {
+				writeError(w, http.StatusBadRequest, "CHECKIN_NO_SERVICE_GROUPS", "No metered LLM service groups are available for check-in rewards")
+				return
+			}
+			reg = fresh
 			shares := splitCheckinCredits(cfg.Credits, len(groupIDs))
 			now := time.Now().UTC()
 			expiresAt := now.AddDate(0, 0, cfg.DurationDays)
@@ -349,19 +485,31 @@ func PostLLMServiceCheckinHandler(identity *auth.IdentityService, system store.S
 				writeError(w, http.StatusInternalServerError, "CHECKIN_SAVE_FAILED", err.Error())
 				return
 			}
+			// The grant is durable. Marker and audit log live in other setting
+			// keys and only need the check-in mutex. Drop the registry lock
+			// before those writes so a billing save is not stuck behind them.
+			unlockRegistry()
+			commitCheckinDay(ctx, system, principal.UserID, principal.Email, today, awarded)
+			unlockCheckin()
 			invalidateLLMRuntimeCaches(system)
 			log.Printf("[checkin] granted credits user_id=%s email=%s tenant_id=%s credits=%.3f groups=%d duration_days=%d expires_at=%s",
 				principal.UserID, principal.Email, principal.TenantID, awarded, grantedGroups, cfg.DurationDays, expiresAt.Format(time.RFC3339))
+		} else {
+			lockCheckin()
+			last, lastErr = checkinLastDay(ctx, system, principal.UserID)
+			if lastErr != nil {
+				unlockCheckin()
+				writeError(w, http.StatusInternalServerError, "CHECKIN_MARKER_FAILED", lastErr.Error())
+				return
+			}
+			if last == today {
+				unlockCheckin()
+				writeJSON(w, http.StatusOK, hubCheckinResponse{Success: true, AlreadyCheckedIn: true, Checkin: cfg.viewerCheckinInfo(true)})
+				return
+			}
+			commitCheckinDay(ctx, system, principal.UserID, principal.Email, today, awarded)
+			unlockCheckin()
 		}
-		if err := system.Set(ctx, checkinLastKey(principal.UserID), today); err != nil {
-			log.Printf("[checkin] last-checkin marker save failed user_id=%s err=%v", principal.UserID, err)
-		}
-		appendCheckinLog(ctx, system, checkinLogEntry{
-			UserID:  principal.UserID,
-			Email:   principal.Email,
-			Credits: awarded,
-			At:      time.Now().UTC(),
-		})
 		response := hubCheckinResponse{
 			Success:        true,
 			CreditsAwarded: awarded,
@@ -376,63 +524,92 @@ func PostLLMServiceCheckinHandler(identity *auth.IdentityService, system store.S
 
 // checkinGrantGroupIDs picks the check-in reward targets.
 //
-// An account that can already reach a grant_required group is paid there.
-// Free-policy groups (including the reserved system-free group and the builtin
-// no-permissions fallback, whose empty access policy normalizes to free) never
-// debit credits — rewards granted there would sit unspendable while inflating
-// the displayed wallet.
-//
-// A new account with no credits only reaches those free routes, so the filter
-// above used to reject the check-in until a service redemption created the
-// first metered grant. The fallback opens a spendable wallet on the official
-// metered group, or on the hub's only other metered group. It does not run
-// once any metered group is already effective, so a later check-in does not
-// open extra premium groups.
-func checkinGrantGroupIDs(ctx context.Context, reg *llmservice.Registry, securitySvc *security.SecurityService, userID, email string) []string {
+// An account that can already reach a spendable grant_required group is paid
+// there. system-free and the builtin no-permission group never qualify: a
+// reward on either cannot be spent. A new account with no credits only reaches
+// those free routes, so this used to fail until a service redemption created
+// the first metered grant. The fallback opens one wallet on the official
+// group, or on the hub's only other spendable group. It does not run once any
+// spendable group is already effective, so a later check-in does not open
+// extra premium groups.
+func checkinGrantGroupIDs(ctx context.Context, reg *llmservice.Registry, securitySvc *security.SecurityService, userID, email string) ([]string, error) {
 	effective, err := llmservice.EffectiveServiceGroupIDsForUser(ctx, reg, securitySvc, userID, email)
 	if err != nil {
 		log.Printf("[checkin] effective service group resolution failed user_id=%s err=%v", userID, err)
-		return nil
+		return nil, err
 	}
-	if ids := checkinMeteredGroupIDs(reg, effective); len(ids) > 0 {
-		return ids
+	if ids := checkinRewardGroupIDs(reg, effective); len(ids) > 0 {
+		return ids, nil
 	}
-	return checkinFallbackGrantGroupIDs(reg)
+	return checkinFallbackRewardGroupIDs(reg), nil
 }
 
-func checkinMeteredGroupIDs(reg *llmservice.Registry, ids []string) []string {
+// commitCheckinDay writes the day marker and the audit row. The caller holds
+// checkinGrantMu. A failed marker is logged and does not fail the check-in:
+// the grant, when there is one, is already saved, and the next check-in
+// treats that grant as the day record.
+func commitCheckinDay(ctx context.Context, system store.SystemSettingsRepository, userID, email, today string, credits float64) {
+	if err := system.Set(ctx, checkinLastKey(userID), today); err != nil {
+		log.Printf("[checkin] last-checkin marker save failed user_id=%s err=%v", userID, err)
+	}
+	appendCheckinLog(ctx, system, checkinLogEntry{
+		UserID:  userID,
+		Email:   email,
+		Credits: credits,
+		At:      time.Now().UTC(),
+	})
+}
+
+// checkinGroupCanHoldReward reports whether a check-in credit grant on this
+// group can be spent. Free policy does not debit a wallet. system-free is
+// reserved for that free route. The builtin fallback group has its models
+// cleared on every registry normalize, so credits there are stranded.
+func checkinGroupCanHoldReward(group *llmservice.ModelServiceGroup) bool {
+	if group == nil {
+		return false
+	}
+	if llmservice.IsSystemFreeServiceGroup(group.ID) || llmservice.IsBuiltinModelServiceGroupID(group.ID) {
+		return false
+	}
+	return llmservice.NormalizeAccessPolicy(group.AccessPolicy) == llmservice.AccessPolicyGrantRequired
+}
+
+func checkinRewardGroupIDs(reg *llmservice.Registry, ids []string) []string {
 	if reg == nil {
 		return nil
 	}
 	out := make([]string, 0, len(ids))
+	seen := map[string]struct{}{}
 	for _, id := range ids {
 		group := reg.FindModelServiceGroup(id)
-		if group == nil || llmservice.NormalizeAccessPolicy(group.AccessPolicy) != llmservice.AccessPolicyGrantRequired {
+		if !checkinGroupCanHoldReward(group) {
 			continue
 		}
+		key := strings.ToLower(group.ID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
 		out = append(out, group.ID)
 	}
 	return out
 }
 
-// checkinFallbackGrantGroupIDs is the wallet for an account that has no
-// effective metered group. The official group is the spendable credit card.
-// A hub without that group can still pay the reward when it has exactly one
-// other metered group. Several premium groups and no official group stay
-// unresolved: guessing would open all of them.
-func checkinFallbackGrantGroupIDs(reg *llmservice.Registry) []string {
+// checkinFallbackRewardGroupIDs is the wallet for an account that has no
+// effective spendable group. The official group is that wallet. A hub without
+// it can still pay the reward when exactly one other group can hold it.
+// Several premium groups and no official group stay unresolved.
+func checkinFallbackRewardGroupIDs(reg *llmservice.Registry) []string {
 	if reg == nil {
 		return nil
 	}
-	if group := reg.FindModelServiceGroup(llmservice.MaClawOfficialServiceGroupID); group != nil && llmservice.NormalizeAccessPolicy(group.AccessPolicy) == llmservice.AccessPolicyGrantRequired {
+	if group := reg.FindModelServiceGroup(llmservice.MaClawOfficialServiceGroupID); checkinGroupCanHoldReward(group) {
 		return []string{group.ID}
 	}
 	only := ""
-	for _, group := range reg.ModelServiceGroups {
-		if llmservice.NormalizeAccessPolicy(group.AccessPolicy) != llmservice.AccessPolicyGrantRequired {
-			continue
-		}
-		if llmservice.IsSystemFreeServiceGroup(group.ID) || llmservice.IsBuiltinModelServiceGroupID(group.ID) {
+	for i := range reg.ModelServiceGroups {
+		group := &reg.ModelServiceGroups[i]
+		if !checkinGroupCanHoldReward(group) {
 			continue
 		}
 		if only != "" {

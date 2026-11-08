@@ -101,6 +101,29 @@ func TestModelDiscoveryFirstWaveIsTheThreeTools(t *testing.T) {
 	}
 }
 
+func TestModelDiscoveryDatabasePetitionDoesNotMintMIS(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, surface, cb := turnDirectoryPlannedSurface(t, "请继续使用 database 工具，不要改用 ssh。", discovery)
+	granted, message := cb.PetitionToolCall("database")
+	if !granted {
+		t.Fatalf("database petition granted=%v message=%q", granted, message)
+	}
+	if planHasCapabilities(surface.plan, tool.CapabilityBusinessDataMIS) {
+		t.Fatalf("database petition minted an MIS obligation: %#v", surface.plan.Selections)
+	}
+	if !planHasCapabilities(surface.plan, tool.CapabilityID("business.data.database")) {
+		t.Fatalf("database petition lost its own capability: %#v", surface.plan.Selections)
+	}
+	for _, selection := range surface.plan.Selections {
+		if selection.FitProof.MatchedCapability == tool.CapabilityBusinessDataRead {
+			surface.completed[selection.ID] = true
+		}
+	}
+	if snapshot := cb.hopRunSnapshot(); snapshot.Remaining != 0 || cb.RequiredEffectUnsettled() {
+		t.Fatalf("successful SQL read left unrelated obligations open: %#v", snapshot)
+	}
+}
+
 func TestDiscoveryEffectfulPetitionAfterLookupKeepsParentAuthority(t *testing.T) {
 	discovery := intent.ModelDiscoveryClassification()
 	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, discovery.Primary)}

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 func enableTestCheckin(t *testing.T, system *testLLMServiceSystemSettings, tenantID string, credits float64) {
@@ -502,8 +504,8 @@ func TestPostLLMServiceCheckinConcurrentGrantsOnce(t *testing.T) {
 		}()
 	}
 	close(start)
-	// The mutex must serialize every phase (including the marker write) so
-	// exactly one request awards and the rest see the idempotent reply.
+	// The day-marker write is serialized, so exactly one request awards and
+	// the rest see the idempotent reply.
 	totalAwarded := 0.0
 	winners := 0
 	for i := 0; i < racers; i++ {
@@ -555,7 +557,10 @@ func TestCheckinGrantGroupIDsPaysOfficialGroupWhenAccountHasNoCredits(t *testing
 		},
 		DefaultNewUserServiceGroups: []string{llmservice.SystemFreeServiceGroupID},
 	}
-	ids := checkinGrantGroupIDs(context.Background(), reg, nil, "new-user", "new@example.com")
+	ids, err := checkinGrantGroupIDs(context.Background(), reg, nil, "new-user", "new@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(ids) != 1 || ids[0] != llmservice.MaClawOfficialServiceGroupID {
 		t.Fatalf("zero-credit check-in groups = %#v, want official only", ids)
 	}
@@ -565,7 +570,10 @@ func TestCheckinGrantGroupIDsPaysOfficialGroupWhenAccountHasNoCredits(t *testing
 		ID: "redeemed", UserID: "paid-user", Email: "paid@example.com", ServiceGroupID: "coding-pro", Source: "card",
 		StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), CreatedAt: now, CreditsTotal: 5,
 	}}
-	ids = checkinGrantGroupIDs(context.Background(), reg, nil, "paid-user", "paid@example.com")
+	ids, err = checkinGrantGroupIDs(context.Background(), reg, nil, "paid-user", "paid@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(ids) != 1 || ids[0] != "coding-pro" {
 		t.Fatalf("existing metered wallet groups = %#v, want coding-pro only", ids)
 	}
@@ -579,14 +587,39 @@ func TestCheckinGrantGroupIDsUsesTheOnlyMeteredGroupWithoutOfficial(t *testing.T
 		},
 		DefaultNewUserServiceGroups: []string{llmservice.SystemFreeServiceGroupID},
 	}
-	ids := checkinGrantGroupIDs(context.Background(), reg, nil, "new-user", "new@example.com")
+	ids, err := checkinGrantGroupIDs(context.Background(), reg, nil, "new-user", "new@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(ids) != 1 || ids[0] != "coding-basic" {
 		t.Fatalf("single metered fallback = %#v", ids)
 	}
 
 	reg.ModelServiceGroups = append(reg.ModelServiceGroups, llmservice.ModelServiceGroup{ID: "coding-pro", AccessPolicy: llmservice.AccessPolicyGrantRequired})
-	if ids = checkinGrantGroupIDs(context.Background(), reg, nil, "new-user", "new@example.com"); ids != nil {
+	ids, err = checkinGrantGroupIDs(context.Background(), reg, nil, "new-user", "new@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids != nil {
 		t.Fatalf("ambiguous premium groups = %#v, want none", ids)
+	}
+}
+
+func TestCheckinGrantGroupIDsSkipsUnspendableGroups(t *testing.T) {
+	reg := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{
+			{ID: llmservice.SystemFreeServiceGroupID, AccessPolicy: llmservice.AccessPolicyGrantRequired},
+			{ID: llmservice.DefaultModelServiceGroupID, AccessPolicy: llmservice.AccessPolicyGrantRequired},
+			{ID: llmservice.MaClawOfficialServiceGroupID, AccessPolicy: llmservice.AccessPolicyGrantRequired},
+		},
+		DefaultNewUserServiceGroups: []string{llmservice.SystemFreeServiceGroupID, llmservice.DefaultModelServiceGroupID},
+	}
+	ids, err := checkinGrantGroupIDs(context.Background(), reg, nil, "new-user", "new@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != llmservice.MaClawOfficialServiceGroupID {
+		t.Fatalf("unspendable routes = %#v, want official", ids)
 	}
 }
 
@@ -622,6 +655,9 @@ func TestPostLLMServiceCheckinGrantsCreditsWhenAccountHasNone(t *testing.T) {
 	if !body.Success || body.AlreadyCheckedIn || body.CreditsAwarded != 8 {
 		t.Fatalf("unexpected zero-credit check-in response: %+v", body)
 	}
+	if body.ServiceStatus == nil || body.ServiceStatus.CreditsRemaining != 8 {
+		t.Fatalf("check-in status did not show the new balance: %+v", body.ServiceStatus)
+	}
 	reg, err := llmservice.LoadRegistry(ctx, tenantSystem)
 	if err != nil {
 		t.Fatal(err)
@@ -638,5 +674,181 @@ func TestPostLLMServiceCheckinGrantsCreditsWhenAccountHasNone(t *testing.T) {
 	}
 	if granted != 8 {
 		t.Fatalf("expected 8 official check-in credits, got %v", granted)
+	}
+}
+
+func TestCheckinGrantCoversDayUsesTheViewerLocalDay(t *testing.T) {
+	created := time.Date(2026, 6, 2, 16, 30, 0, 0, time.UTC)
+	reg := &llmservice.Registry{
+		UserBillingTimezones: map[string]string{"user@example.com": "Asia/Shanghai"},
+		Grants: []llmservice.Grant{{
+			UserID: "u1", Email: "user@example.com", Source: checkinGrantSource, CreatedAt: created,
+		}},
+	}
+	// 16:30 UTC is 00:30 the next calendar day in Shanghai.
+	if checkinGrantCoversDay(reg, "u1", "user@example.com", "2026-06-02") {
+		t.Fatal("grant covers the UTC day instead of the viewer day")
+	}
+	if !checkinGrantCoversDay(reg, "u1", "user@example.com", "2026-06-03") {
+		t.Fatal("grant does not cover the viewer local day")
+	}
+	reg.Grants[0].CreatedAt = created.AddDate(0, 0, -1)
+	if checkinGrantCoversDay(reg, "u1", "user@example.com", "2026-06-03") {
+		t.Fatal("previous local day still covers today")
+	}
+	reg.Grants[0].CreatedAt = created
+	reg.Grants[0].Source = "card"
+	if checkinGrantCoversDay(reg, "u1", "user@example.com", "2026-06-03") {
+		t.Fatal("a recharge grant counts as check-in")
+	}
+}
+
+func TestPostLLMServiceCheckinLostMarkerDoesNotGrantAgain(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	const tenantID = "tenant_checkin_lost_marker"
+	const email = "lost-marker@example.com"
+	viewerToken := issueViewerTokenForTenant(t, identity, tenantID, email)
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	tenantSystem := scopedSystemSettingsForTenant(tenantID, system)
+	enableTestCheckin(t, system, tenantID, 10)
+	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
+		ModelServiceGroups:    []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+		GlobalServiceGroupIDs: []string{"coding-basic"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	post := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/llm/service/checkin", nil)
+		req.Header.Set("Authorization", "Bearer "+viewerToken)
+		rec := httptest.NewRecorder()
+		PostLLMServiceCheckinHandler(identity, system, nil).ServeHTTP(rec, req)
+		return rec
+	}
+	rec := post()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first check-in status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	reg, err := llmservice.LoadRegistry(ctx, tenantSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := ""
+	grants := 0
+	for _, grant := range reg.Grants {
+		if grant.Source != checkinGrantSource {
+			continue
+		}
+		grants++
+		userID = grant.UserID
+	}
+	if grants != 1 || userID == "" {
+		t.Fatalf("expected one check-in grant with a user id, got %d id=%q", grants, userID)
+	}
+	if err := tenantSystem.Set(ctx, checkinLastKey(userID), ""); err != nil {
+		t.Fatal(err)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/llm/service/status", nil)
+	statusReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	statusRec := httptest.NewRecorder()
+	GetLLMServiceStatusHandler(identity, system, nil).ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+	var payload struct {
+		Checkin *hubCheckinInfo `json:"checkin"`
+	}
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Checkin == nil || !payload.Checkin.CheckedInToday {
+		t.Fatalf("status hid today's check-in after the marker was lost: %+v", payload.Checkin)
+	}
+
+	rec = post()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("repeat status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var second hubCheckinResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if !second.Success || !second.AlreadyCheckedIn || second.CreditsAwarded != 0 {
+		t.Fatalf("lost marker minted another reward: %+v", second)
+	}
+	reg, err = llmservice.LoadRegistry(ctx, tenantSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants = 0
+	for _, grant := range reg.Grants {
+		if grant.Source == checkinGrantSource {
+			grants++
+		}
+	}
+	if grants != 1 {
+		t.Fatalf("expected the original check-in grant only, got %d", grants)
+	}
+	restored, err := tenantSystem.Get(ctx, checkinLastKey(userID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored != checkinDayKeyFor(reg, email, time.Now()) {
+		t.Fatalf("marker repaired to %q", restored)
+	}
+	logKey := checkinLogKeyPrefix + time.Now().UTC().Format(checkinLogDayFormat)
+	logged := 0
+	for _, entry := range loadCheckinLogDay(ctx, tenantSystem, logKey) {
+		if entry.UserID == userID {
+			logged++
+		}
+	}
+	if logged != 1 {
+		t.Fatalf("marker repair appended another audit row, got %d", logged)
+	}
+}
+
+type checkinMarkerFailSettings struct {
+	store.SystemSettingsRepository
+}
+
+func (s checkinMarkerFailSettings) Get(ctx context.Context, key string) (string, error) {
+	if strings.Contains(key, checkinLastKeyPrefix) {
+		return "", errors.New("check-in marker unavailable")
+	}
+	return s.SystemSettingsRepository.Get(ctx, key)
+}
+
+func TestPostLLMServiceCheckinMarkerReadFailureDoesNotGrant(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	const tenantID = "tenant_checkin_marker_down"
+	viewerToken := issueViewerTokenForTenant(t, identity, tenantID, "marker-down@example.com")
+	ctx := context.Background()
+	base := newTestLLMServiceSystemSettings()
+	system := checkinMarkerFailSettings{SystemSettingsRepository: base}
+	tenantSystem := scopedSystemSettingsForTenant(tenantID, system)
+	enableTestCheckin(t, base, tenantID, 10)
+	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
+		ModelServiceGroups:    []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+		GlobalServiceGroupIDs: []string{"coding-basic"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/service/checkin", nil)
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+	PostLLMServiceCheckinHandler(identity, system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("marker read failure status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	reg, err := llmservice.LoadRegistry(ctx, tenantSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, grant := range reg.Grants {
+		if grant.Source == checkinGrantSource {
+			t.Fatalf("marker read failure still granted credits: %+v", grant)
+		}
 	}
 }
