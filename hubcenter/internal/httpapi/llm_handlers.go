@@ -1014,7 +1014,12 @@ func llmProviderTestReply(body []byte, protocol, wireAPI string) (string, error)
 			case "text":
 				text.WriteString(block.Text)
 			case "thinking":
-				thinking.WriteString(block.Thinking)
+				// The live parser keeps the text field when thinking is empty.
+				thought := block.Thinking
+				if thought == "" {
+					thought = block.Text
+				}
+				thinking.WriteString(thought)
 			}
 		}
 		if s := strings.TrimSpace(text.String()); s != "" {

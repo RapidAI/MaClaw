@@ -444,6 +444,17 @@ func TestAdminTestLLMProviderChatAnthropicThinkingFallback(t *testing.T) {
 	}
 }
 
+func TestLLMProviderTestReplyUsesAnthropicThinkingText(t *testing.T) {
+	reply, err := llmProviderTestReply([]byte(`{"content":[{"type":"thinking","text":"plan"}],"stop_reason":"end_turn"}`), "anthropic", "")
+	if err != nil || reply != "plan" {
+		t.Fatalf("text fallback reply=%q err=%v", reply, err)
+	}
+	reply, err = llmProviderTestReply([]byte(`{"content":[{"type":"thinking","thinking":"a","text":"b"}],"stop_reason":"end_turn"}`), "anthropic", "")
+	if err != nil || reply != "a" {
+		t.Fatalf("thinking field reply=%q err=%v", reply, err)
+	}
+}
+
 func TestAdminTestLLMProviderChatOpenAIReasoningFallback(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload struct {

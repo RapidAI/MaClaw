@@ -903,7 +903,7 @@ func probeProviderChatStream(ctx context.Context, client *http.Client, provider 
 	defer resp.Body.Close()
 	respBody, truncated, readErr := ReadProbeBody(resp.Body)
 	if readErr != nil {
-		return providerChatProbe{Err: readErr.Error(), LatencyMs: latencyMs, Output: output, Stream: true, StreamEnd: probeStreamEnd(true, false)}
+		return providerChatProbe{Err: providerProbeError(readErr, provider), LatencyMs: latencyMs, Output: output, Stream: true, StreamEnd: probeStreamEnd(true, false)}
 	}
 	if truncated {
 		return providerChatProbe{Err: "model response exceeds the 64 KiB availability-test limit", LatencyMs: latencyMs, Output: output, Stream: true, StreamEnd: probeStreamEnd(true, false)}

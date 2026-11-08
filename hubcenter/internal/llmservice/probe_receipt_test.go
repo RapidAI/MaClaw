@@ -3,6 +3,8 @@ package llmservice
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -174,6 +176,64 @@ func TestProbeProviderChatStreamReceipt(t *testing.T) {
 		t.Fatalf("quiet=%#v", quiet)
 	}
 }
+
+func TestProbeStreamFinishReasonWithoutDone(t *testing.T) {
+	const typhoon = "data: {\"choices\":[{\"delta\":{\"content\":\"hello\",\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"ping\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, typhoon)
+	}))
+	defer upstream.Close()
+	provider := &llmpool.ProviderConfig{
+		APIURL: upstream.URL + "/v1", APIKey: "sk-live", Models: []string{"typhoon"},
+		Protocol: "openai",
+	}
+	got := probeProviderChat(context.Background(), upstream.Client(), provider, ProviderChatTest{Model: "typhoon", Stream: true})
+	if got.Err != "" || got.Reply != "hello" || !got.Stream || got.StreamEnd == nil || !*got.StreamEnd || len(got.Calls) != 1 || got.Calls[0].Name != "ping" {
+		t.Fatalf("clean finish=%#v", got)
+	}
+
+	cut := &http.Client{Transport: finishCutTransport{}}
+	cutProvider := &llmpool.ProviderConfig{
+		APIURL: "http://upstream.example/v1", APIKey: "sk-live", Models: []string{"typhoon"},
+		Protocol: "openai",
+	}
+	got = probeProviderChat(context.Background(), cut, cutProvider, ProviderChatTest{Model: "typhoon", Stream: true})
+	if got.Err == "" || strings.Contains(got.Err, "stream ended before the end marker") || !got.Stream || got.StreamEnd == nil || *got.StreamEnd {
+		t.Fatalf("cut finish=%#v", got)
+	}
+}
+
+// finishCutTransport returns a 200 body that already contains a legal
+// finish_reason and then fails the read. That is a broken stream, not a
+// normal end.
+type finishCutTransport struct{}
+
+func (finishCutTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body: &finishCutBody{rest: []byte(
+			"data: {\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}]}\n\n",
+		)},
+		Request: req,
+	}, nil
+}
+
+type finishCutBody struct {
+	rest []byte
+}
+
+func (b *finishCutBody) Read(p []byte) (int, error) {
+	if len(b.rest) == 0 {
+		return 0, errors.New("connection reset")
+	}
+	n := copy(p, b.rest)
+	b.rest = b.rest[n:]
+	return n, nil
+}
+
+func (b *finishCutBody) Close() error { return nil }
 
 func TestDecodeHopMemberTestLeavesUnknownReceiptFieldsUnset(t *testing.T) {
 	got := decodeHopMemberTest([]byte(`{"success":true,"reply":"pong","latency_ms":3}`), ProviderChatTestResult{Model: "typhoon"})
