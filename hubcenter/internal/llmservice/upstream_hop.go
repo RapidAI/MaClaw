@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	corellm "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
 
@@ -57,6 +58,7 @@ type upstreamHopRequest struct {
 	ToolChoice          json.RawMessage `json:"tool_choice,omitempty"`
 	MaxTokens           *int64          `json:"max_tokens,omitempty"`
 	MaxCompletionTokens *int64          `json:"max_completion_tokens,omitempty"`
+	Stream              bool            `json:"stream,omitempty"`
 	// ReportTestResult asks the peer to return the probe body even when the
 	// upstream answers 429 or 5xx. An explicit node test is about that node;
 	// those statuses are the result, not a signal to try a different peer.
@@ -83,12 +85,15 @@ type upstreamHopProbeResponse struct {
 }
 
 type upstreamHopTestResponse struct {
-	Success   bool               `json:"success"`
-	Error     string             `json:"error,omitempty"`
-	Reply     string             `json:"reply,omitempty"`
-	Model     string             `json:"model,omitempty"`
-	LatencyMs int64              `json:"latency_ms"`
-	ToolCalls []ProviderToolCall `json:"tool_calls,omitempty"`
+	Success   bool                        `json:"success"`
+	Error     string                      `json:"error,omitempty"`
+	Reply     string                      `json:"reply,omitempty"`
+	Model     string                      `json:"model,omitempty"`
+	LatencyMs int64                       `json:"latency_ms"`
+	ToolCalls []ProviderToolCall          `json:"tool_calls,omitempty"`
+	Output    map[string]ProbeOutputField `json:"output,omitempty"`
+	Stream    bool                        `json:"stream,omitempty"`
+	StreamEnd *bool                       `json:"stream_end,omitempty"`
 }
 
 func egressProvider(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string) (*providerForwardResponse, error) {
@@ -587,27 +592,31 @@ func UpstreamHopHandler(cfg *ProxyConfig, authenticate func(*http.Request) error
 			if model == "" && len(provider.Models) > 0 {
 				model = provider.Models[0]
 			}
-			reply, errMsg, latencyMs, calls := testProviderChat(r.Context(), memberProbeHTTPClient(cfg, provider), provider, ProviderChatTest{
+			probed := probeProviderChat(r.Context(), memberProbeHTTPClient(cfg, provider), provider, ProviderChatTest{
 				Model:               model,
 				Tools:               req.Tools,
 				ToolChoice:          req.ToolChoice,
 				MaxTokens:           req.MaxTokens,
 				MaxCompletionTokens: req.MaxCompletionTokens,
+				Stream:              req.Stream,
 			})
 			if !req.ReportTestResult {
-				if code := hopRetryableTestStatus(errMsg); code > 0 {
-					writeJSONError(w, code, errMsg)
+				if code := hopRetryableTestStatus(probed.Err); code > 0 {
+					writeJSONError(w, code, probed.Err)
 					return
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(upstreamHopTestResponse{
-				Success:   errMsg == "",
-				Error:     errMsg,
-				Reply:     reply,
+				Success:   probed.Err == "",
+				Error:     probed.Err,
+				Reply:     probed.Reply,
 				Model:     model,
-				LatencyMs: latencyMs,
-				ToolCalls: calls,
+				LatencyMs: probed.LatencyMs,
+				ToolCalls: probed.Calls,
+				Output:    probed.Output,
+				Stream:    probed.Stream,
+				StreamEnd: probed.StreamEnd,
 			})
 		default:
 			writeJSONError(w, http.StatusBadRequest, "unknown hop kind")
@@ -780,12 +789,32 @@ func hopModelsEndpoint(apiURL, protocol string) (string, error) {
 }
 
 func testProviderChat(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, spec ProviderChatTest) (reply string, errMsg string, latencyMs int64, calls []ProviderToolCall) {
+	got := probeProviderChat(ctx, client, provider, spec)
+	return got.Reply, got.Err, got.LatencyMs, got.Calls
+}
+
+// providerChatProbe is the peer's member test, including the output budgets
+// on the request it built and, when stream was set, whether the end marker arrived.
+type providerChatProbe struct {
+	Reply     string
+	Err       string
+	LatencyMs int64
+	Calls     []ProviderToolCall
+	Output    map[string]ProbeOutputField
+	Stream    bool
+	StreamEnd *bool
+}
+
+func probeProviderChat(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, spec ProviderChatTest) providerChatProbe {
 	if provider == nil {
-		return "", "provider is required", 0, nil
+		return providerChatProbe{Err: "provider is required", Stream: spec.Stream, StreamEnd: probeStreamEnd(spec.Stream, false)}
 	}
 	model := strings.TrimSpace(spec.Model)
 	if model == "" {
-		return "", "model is required", 0, nil
+		return providerChatProbe{Err: "model is required", Stream: spec.Stream, StreamEnd: probeStreamEnd(spec.Stream, false)}
+	}
+	if spec.Stream {
+		return probeProviderChatStream(ctx, client, provider, spec, model)
 	}
 	prompt := "Reply with exactly: pong"
 	toolsSet := len(bytes.TrimSpace(spec.Tools)) > 0 && string(bytes.TrimSpace(spec.Tools)) != "null"
@@ -805,24 +834,200 @@ func testProviderChat(ctx context.Context, client *http.Client, provider *llmpoo
 	if parsed, ok := rawJSONValue(spec.ToolChoice); ok {
 		body["tool_choice"] = parsed
 	}
+	output := hopProbeOutput(provider, body, spec, toolsSet)
 	start := time.Now()
 	resp, err := forwardToProviderAttempts(ctx, client, provider, body, model, model, false)
-	latencyMs = time.Since(start).Milliseconds()
+	latencyMs := time.Since(start).Milliseconds()
 	if err != nil {
-		return "", providerProbeError(err, provider), latencyMs, nil
+		return providerChatProbe{Err: providerProbeError(err, provider), LatencyMs: latencyMs, Output: output}
 	}
 	if resp == nil {
-		return "", "empty response", latencyMs, nil
+		return providerChatProbe{Err: "empty response", LatencyMs: latencyMs, Output: output}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", hopTestHTTPError(resp.StatusCode, resp.Body), latencyMs, nil
+		return providerChatProbe{Err: hopTestHTTPError(resp.StatusCode, resp.Body), LatencyMs: latencyMs, Output: output}
 	}
-	reply, errMsg = hopTestReply(resp.Body)
-	calls = ParseProviderTestToolCalls(resp.Body)
+	reply, errMsg := hopTestReply(resp.Body)
+	calls := ParseProviderTestToolCalls(resp.Body)
 	if errMsg == "model returned no completion content" && len(calls) > 0 {
 		errMsg = ""
 	}
-	return reply, errMsg, latencyMs, calls
+	return providerChatProbe{Reply: reply, Err: errMsg, LatencyMs: latencyMs, Calls: calls, Output: output}
+}
+
+func probeStreamEnd(stream bool, end bool) *bool {
+	if !stream {
+		return nil
+	}
+	return &end
+}
+
+func probeProviderChatStream(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, spec ProviderChatTest, model string) providerChatProbe {
+	cfg := MemberProbeConfig(corelib.MaclawLLMConfig{
+		URL:        provider.APIURL,
+		Key:        strings.TrimSpace(provider.APIKey),
+		Model:      model,
+		Protocol:   corelib.NormalizeLLMProviderProtocol(provider.Protocol),
+		WireAPI:    corelib.NormalizeLLMProviderWireAPI(provider.WireAPI),
+		TimeoutSec: provider.UpstreamTimeoutSec,
+	}, provider)
+	toolsSet := len(bytes.TrimSpace(spec.Tools)) > 0 && string(bytes.TrimSpace(spec.Tools)) != "null"
+	var (
+		req  *http.Request
+		wire []byte
+		kind string
+		err  error
+	)
+	if corelib.IsOpenCodeURL(provider.APIURL) {
+		req, wire, kind, err = openCodeProbeStreamRequest(ctx, cfg, provider, spec, model)
+	} else {
+		kind = ProbeOutputKind(cfg)
+		req, wire, err = NewMemberProbeRequest(ctx, cfg, spec.Tools, spec.ToolChoice, MemberProbeBudget{
+			MaxTokens:           spec.MaxTokens,
+			MaxCompletionTokens: spec.MaxCompletionTokens,
+			OutputCap:           provider.MaxOutputTokensPerRequest,
+			Stream:              true,
+		})
+	}
+	output := ProjectProbeOutput(wire, ProbeOutputBaseline(kind, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields, spec.MaxTokens, spec.MaxCompletionTokens, toolsSet))
+	if err != nil {
+		return providerChatProbe{Err: err.Error(), Output: output, Stream: true, StreamEnd: probeStreamEnd(true, false)}
+	}
+	client = WrapMemberProbeClient(client, cfg)
+	start := time.Now()
+	resp, err := client.Do(req)
+	latencyMs := time.Since(start).Milliseconds()
+	if err != nil {
+		return providerChatProbe{Err: providerProbeError(err, provider), LatencyMs: latencyMs, Output: output, Stream: true, StreamEnd: probeStreamEnd(true, false)}
+	}
+	defer resp.Body.Close()
+	respBody, truncated, readErr := ReadProbeBody(resp.Body)
+	if readErr != nil {
+		return providerChatProbe{Err: readErr.Error(), LatencyMs: latencyMs, Output: output, Stream: true, StreamEnd: probeStreamEnd(true, false)}
+	}
+	if truncated {
+		return providerChatProbe{Err: "model response exceeds the 64 KiB availability-test limit", LatencyMs: latencyMs, Output: output, Stream: true, StreamEnd: probeStreamEnd(true, false)}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return providerChatProbe{Err: hopTestHTTPError(resp.StatusCode, respBody), LatencyMs: latencyMs, Output: output, Stream: true, StreamEnd: probeStreamEnd(true, false)}
+	}
+	parsed := ParseProbeStream(respBody, kind)
+	return providerChatProbe{
+		Reply: parsed.Reply, Err: parsed.Failure(), LatencyMs: latencyMs, Calls: parsed.Calls,
+		Output: output, Stream: true, StreamEnd: probeStreamEnd(true, parsed.End),
+	}
+}
+
+func openCodeProbeStreamRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, provider *llmpool.ProviderConfig, spec ProviderChatTest, model string) (*http.Request, []byte, string, error) {
+	toolsSet := len(bytes.TrimSpace(spec.Tools)) > 0 && string(bytes.TrimSpace(spec.Tools)) != "null"
+	prompt := "Reply with exactly: pong"
+	if toolsSet {
+		prompt = "Call one of the available tools now."
+	}
+	body := map[string]any{
+		"model":    model,
+		"stream":   true,
+		"messages": []any{map[string]any{"role": "user", "content": prompt}},
+	}
+	outputCap := provider.MaxOutputTokensPerRequest
+	if spec.MaxTokens != nil || spec.MaxCompletionTokens != nil || outputCap > 0 {
+		for key, value := range MemberProbeOutputBody(outputCap, spec.MaxTokens, spec.MaxCompletionTokens, toolsSet) {
+			body[key] = value
+		}
+	}
+	if parsed, ok := rawJSONValue(spec.Tools); ok {
+		body["tools"] = parsed
+	}
+	if parsed, ok := rawJSONValue(spec.ToolChoice); ok {
+		body["tool_choice"] = parsed
+	}
+	plan, planned, err := PlanOpenCodeProbe(provider, body, model)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if planned && plan.Responses {
+		messages, _ := body["messages"].([]any)
+		var tools []map[string]interface{}
+		switch raw := body["tools"].(type) {
+		case []map[string]interface{}:
+			tools = raw
+		case []any:
+			for _, item := range raw {
+				if tool, ok := item.(map[string]interface{}); ok {
+					tools = append(tools, tool)
+				}
+			}
+		}
+		req, data, _, err := corellm.NewResponsesAPIRequest(ctx, plan.Config, messages, corellm.ResponsesAPIRequestOptions{
+			Stream:     true,
+			Tools:      tools,
+			ToolChoice: body["tool_choice"],
+			ExtraBody:  corellm.OpenCodeResponsesBudgetExtra(body),
+		})
+		req, data, err = finishMemberProbeRequest(req, data, err, true)
+		return req, data, "responses", err
+	}
+	if !planned {
+		return nil, nil, "", fmt.Errorf("opencode probe was not planned")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, plan.Endpoint, bytes.NewReader(plan.Payload))
+	if err != nil {
+		return nil, nil, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if key := strings.TrimSpace(provider.APIKey); key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	if ua := cfg.UserAgent(); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	corelib.ApplyOpenCodeSessionHeader(req, cfg)
+	return req, plan.Payload, "openai", nil
+}
+
+// hopProbeOutput is the capped budget on a non-stream hop. That hop still
+// forwards an OpenAI-shaped body, including Google. Anthropic and Responses
+// keep the one field their converter sends.
+func hopProbeOutput(provider *llmpool.ProviderConfig, chat map[string]any, spec ProviderChatTest, toolsSet bool) map[string]ProbeOutputField {
+	cfg := WithMemberUpstreamOverrides(corelib.MaclawLLMConfig{
+		URL:      provider.APIURL,
+		Protocol: corelib.NormalizeLLMProviderProtocol(provider.Protocol),
+		WireAPI:  corelib.NormalizeLLMProviderWireAPI(provider.WireAPI),
+	}, provider)
+	kind := ProbeOutputKind(cfg)
+	if kind == "google" {
+		kind = "openai"
+	}
+	baseline := ProbeOutputBaseline(kind, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields, spec.MaxTokens, spec.MaxCompletionTokens, toolsSet)
+	wire := map[string]any{}
+	switch kind {
+	case "anthropic":
+		if value, ok := chat["max_tokens"]; ok {
+			wire["max_tokens"] = value
+		} else if value, ok := chat["max_completion_tokens"]; ok {
+			wire["max_tokens"] = value
+		}
+	case "responses":
+		if value, ok := chat["max_completion_tokens"]; ok {
+			wire["max_output_tokens"] = value
+		} else if value, ok := chat["max_tokens"]; ok {
+			wire["max_output_tokens"] = value
+		}
+	default:
+		for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+			if value, ok := chat[key]; ok {
+				wire[key] = value
+			}
+		}
+	}
+	corelib.FinishMemberUpstreamBody(cfg, wire)
+	raw, err := json.Marshal(wire)
+	if err != nil {
+		return nil
+	}
+	return ProjectProbeOutput(raw, baseline)
 }
 
 func rawJSONValue(raw json.RawMessage) (any, bool) {
@@ -1207,6 +1412,7 @@ type ProviderChatTest struct {
 	ToolChoice          json.RawMessage
 	MaxTokens           *int64
 	MaxCompletionTokens *int64
+	Stream              bool
 }
 
 // ProviderChatTestResult is the probe outcome, including the node that sent it.
@@ -1217,6 +1423,9 @@ type ProviderChatTestResult struct {
 	Model     string
 	Node      string
 	ToolCalls []ProviderToolCall
+	Output    map[string]ProbeOutputField
+	Stream    bool
+	StreamEnd *bool
 }
 
 // TestProviderChatWithScope tests locally when this node is in scope,
@@ -1267,11 +1476,14 @@ func TestProviderChat(ctx context.Context, cfg *ProxyConfig, provider *llmpool.P
 		result.Node = strings.TrimSpace(cfg.NodeID)
 	}
 	spec.Model = result.Model
-	reply, errMsg, latencyMs, calls := testProviderChat(ctx, memberProbeHTTPClient(cfg, provider), provider, spec)
-	result.Reply = reply
-	result.Err = errMsg
-	result.LatencyMs = latencyMs
-	result.ToolCalls = calls
+	probed := probeProviderChat(ctx, memberProbeHTTPClient(cfg, provider), provider, spec)
+	result.Reply = probed.Reply
+	result.Err = probed.Err
+	result.LatencyMs = probed.LatencyMs
+	result.ToolCalls = probed.Calls
+	result.Output = probed.Output
+	result.Stream = probed.Stream
+	result.StreamEnd = probed.StreamEnd
 	return result
 }
 
@@ -1284,6 +1496,7 @@ func hopMemberTest(ctx context.Context, cfg *ProxyConfig, provider *llmpool.Prov
 		ToolChoice:          spec.ToolChoice,
 		MaxTokens:           spec.MaxTokens,
 		MaxCompletionTokens: spec.MaxCompletionTokens,
+		Stream:              spec.Stream,
 		Provider:            hopProviderSnapshot(provider),
 		ReportTestResult:    strings.TrimSpace(spec.Node) != "",
 	})
@@ -1303,6 +1516,9 @@ func decodeHopMemberTest(body []byte, result ProviderChatTestResult) ProviderCha
 	result.LatencyMs = out.LatencyMs
 	result.Model = firstNonEmpty(out.Model, result.Model)
 	result.ToolCalls = out.ToolCalls
+	result.Output = out.Output
+	result.Stream = out.Stream
+	result.StreamEnd = out.StreamEnd
 	if !out.Success {
 		result.Err = strings.TrimSpace(out.Error)
 		if result.Err == "" {

@@ -387,6 +387,25 @@ func TestContentRetrievalJunkQuerySearchesTheUserText(t *testing.T) {
 	}
 }
 
+func TestContentRetrievalTwoCitiesAreBothSearched(t *testing.T) {
+	var got []string
+	cb := discoveryContentCallbacks("查一下北京，上海的天气")
+	cb.contentRetrievalMemoryDone = true
+	cb.handler = &IMMessageHandler{
+		semanticTrustedKnowledgeRead: func(_, query string) (string, error) {
+			got = append(got, query)
+			if query == "上海" {
+				return "上海晴", nil
+			}
+			return "No matching knowledge found.", nil
+		},
+	}
+	text, handled := cb.executeContentRetrievalCall("knowledge_search", `{"query":"天气"}`)
+	if !handled || !cb.contentRetrievalKnowledgeDone || strings.Join(got, ",") != "北京,上海" || !strings.Contains(text, "上海晴") || strings.Contains(text, "No matching knowledge found.") {
+		t.Fatalf("handled=%v done=%v queries=%v text=%q", handled, cb.contentRetrievalKnowledgeDone, got, text)
+	}
+}
+
 func TestContentRetrievalConsultQueryUsesTheSubject(t *testing.T) {
 	weather := "查一下北京天气"
 	for _, query := range []string{"天气", "查一下", "一下", "下北", "北京天气", weather} {
@@ -433,8 +452,43 @@ func TestContentRetrievalConsultQueryUsesTheSubject(t *testing.T) {
 	if got := contentRetrievalConsultQuery("look up api2.maclaw.top status", "api2.maclaw.top"); got != "api2" {
 		t.Fatalf("repeated hostname=%q", got)
 	}
-	if got := contentRetrievalConsultQuery("查一下北京，上海的天气", "天气"); got != "上海的" {
+	commaCities := "查一下北京，上海的天气"
+	if got := strings.Join(contentRetrievalConsultQueries(commaCities, "天气"), ","); got != "北京,上海" {
 		t.Fatalf("two cities=%q", got)
+	}
+	if got := strings.Join(contentRetrievalConsultQueries(commaCities, commaCities), ","); got != "北京,上海" {
+		t.Fatalf("original two-city sentence=%q", got)
+	}
+	if got := strings.Join(contentRetrievalConsultQueries(commaCities, "北京"), ","); got != "北京" {
+		t.Fatalf("one city of two=%q", got)
+	}
+	twoNames := "check the status of api2 and web1"
+	if got := strings.Join(contentRetrievalConsultQueries(twoNames, twoNames), ","); got != "api2,web1" {
+		t.Fatalf("two identifiers=%q", got)
+	}
+	if got := strings.Join(contentRetrievalConsultQueries(twoNames, "web1"), ","); got != "web1" {
+		t.Fatalf("one identifier=%q", got)
+	}
+	if got := strings.Join(contentRetrievalConsultQueries(both, both), ","); got != "api2,web1" {
+		t.Fatalf("two host sentence=%q", got)
+	}
+	if got := strings.Join(contentRetrievalConsultQueries("查一下北京和上海的天气", "和上"), ","); got != "北京,上海" {
+		t.Fatalf("interior slice=%q", got)
+	}
+	if got := strings.Join(contentRetrievalConsultQueries("查一下北京和上海的天气", "上海的"), ","); got != "上海" {
+		t.Fatalf("particle glued to the city=%q", got)
+	}
+	if got := strings.Join(contentRetrievalConsultQueries("查一下北京天气怎么样", "天气"), ","); got != "北京" {
+		t.Fatalf("question tail=%q", got)
+	}
+	if got := contentRetrievalConsultQuery("查一下北京天气怎么样", "怎么样"); got != "北京" {
+		t.Fatalf("question word completed the step: %q", got)
+	}
+	if got := strings.Join(contentRetrievalConsultQueries("查一下北京天气怎么样", "怎么样"), ","); got != "北京" {
+		t.Fatalf("question word as query=%q", got)
+	}
+	if got := strings.Join(contentRetrievalConsultQueries("ssh到那台主机", "主机"), ","); got != "ssh到那台主机" {
+		t.Fatalf("host sentence=%q", got)
 	}
 	if got := contentRetrievalConsultQuery("look up api2.maclaw.top status", "status"); got != "api2" {
 		t.Fatalf("domain label searched instead of the host id: %q", got)

@@ -705,7 +705,12 @@ func adminTestLLMProviderMember(svc *llmservice.Service, proxyCfg *llmservice.Pr
 			if ran == "" {
 				ran = localNode
 			}
-			writeProviderMemberTest(w, providerMemberTestResult{member: status, errMsg: "api_url and model are required", model: model, node: ran, secret: existing.APIKey, toolsRequested: spec.ToolsSet})
+			early := providerMemberTestResult{member: status, errMsg: "api_url and model are required", model: model, node: ran, secret: existing.APIKey, toolsRequested: spec.ToolsSet, stream: spec.Stream}
+			if spec.Stream {
+				end := false
+				early.streamEnd = &end
+			}
+			writeProviderMemberTest(w, early)
 			return
 		}
 		remote := node != "" && !strings.EqualFold(node, localNode)
@@ -722,11 +727,13 @@ func adminTestLLMProviderMember(svc *llmservice.Service, proxyCfg *llmservice.Pr
 				ToolChoice:          spec.ToolChoice,
 				MaxTokens:           spec.MaxTokens,
 				MaxCompletionTokens: spec.MaxCompletionTokens,
+				Stream:              spec.Stream,
 			})
 			writeProviderMemberTest(w, providerMemberTestResult{
 				success: probed.Err == "", errMsg: probed.Err, reply: probed.Reply, model: probed.Model,
 				node: firstNonEmpty(probed.Node, node), latencyMs: probed.LatencyMs, secret: existing.APIKey,
 				toolCalls: probed.ToolCalls, toolsRequested: spec.ToolsSet,
+				output: probed.Output, stream: probed.Stream, streamEnd: probed.StreamEnd,
 			})
 			return
 		}
@@ -741,18 +748,20 @@ func adminTestLLMProviderMember(svc *llmservice.Service, proxyCfg *llmservice.Pr
 		cfg = providerTestConfig(cfg, existing)
 		ctx, cancel := context.WithTimeout(r.Context(), llmProviderTestTimeout(cfg))
 		defer cancel()
-		reply, errMsg, latencyMs, calls := runLLMProviderChatTestBody(ctx, cfg, spec.Tools, spec.ToolChoice, providerTestBudget{
+		probedLocal := runLLMProviderChatTestBody(ctx, cfg, spec.Tools, spec.ToolChoice, providerTestBudget{
 			MaxTokens:           spec.MaxTokens,
 			MaxCompletionTokens: spec.MaxCompletionTokens,
 			OutputCap:           existing.MaxOutputTokensPerRequest,
+			Stream:              spec.Stream,
 		})
 		ran := node
 		if ran == "" {
 			ran = localNode
 		}
 		writeProviderMemberTest(w, providerMemberTestResult{
-			success: errMsg == "", errMsg: errMsg, reply: reply, model: model, node: ran,
-			latencyMs: latencyMs, secret: existing.APIKey, toolCalls: calls, toolsRequested: spec.ToolsSet,
+			success: probedLocal.errMsg == "", errMsg: probedLocal.errMsg, reply: probedLocal.reply, model: model, node: ran,
+			latencyMs: probedLocal.latencyMs, secret: existing.APIKey, toolCalls: probedLocal.calls, toolsRequested: spec.ToolsSet,
+			output: probedLocal.output, stream: probedLocal.stream, streamEnd: probedLocal.streamEnd,
 		})
 	}
 }
@@ -765,6 +774,7 @@ type providerMemberTestBody struct {
 	ToolsSet            bool
 	MaxTokens           *int64
 	MaxCompletionTokens *int64
+	Stream              bool
 }
 
 func readProviderMemberTestRequest(w http.ResponseWriter, r *http.Request) (providerMemberTestBody, error) {
@@ -825,6 +835,12 @@ func readProviderMemberTestRequest(w http.ResponseWriter, r *http.Request) (prov
 			} else {
 				spec.MaxCompletionTokens = &number
 			}
+		case "stream":
+			var flag bool
+			if err := json.Unmarshal(value, &flag); err != nil {
+				return providerMemberTestBody{}, errors.New("stream must be a boolean")
+			}
+			spec.Stream = flag
 		default:
 			return providerMemberTestBody{}, errors.New("unknown field " + key + "; this test uses the saved provider configuration")
 		}
@@ -895,6 +911,9 @@ type providerMemberTestResult struct {
 	secret         string
 	toolCalls      []llmservice.ProviderToolCall
 	toolsRequested bool
+	output         map[string]llmservice.ProbeOutputField
+	stream         bool
+	streamEnd      *bool
 }
 
 func writeProviderMemberTest(w http.ResponseWriter, result providerMemberTestResult) {
@@ -923,6 +942,17 @@ func writeProviderMemberTest(w http.ResponseWriter, result providerMemberTestRes
 			calls[i].Arguments = sanitizeProviderTestReply(calls[i].Arguments, result.secret)
 		}
 		payload["tool_calls"] = calls
+	}
+	if len(result.output) > 0 {
+		payload["output"] = result.output
+	}
+	if result.stream {
+		payload["stream"] = true
+		end := false
+		if result.streamEnd != nil {
+			end = *result.streamEnd
+		}
+		payload["stream_end"] = end
 	}
 	writeLLMAdminJSON(w, http.StatusOK, payload)
 }

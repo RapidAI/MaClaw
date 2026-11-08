@@ -19,8 +19,6 @@ import (
 	corecardstore "github.com/RapidAI/CodeClaw/corelib/cardstore"
 	corellm "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
-	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
-	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 )
@@ -585,39 +583,9 @@ func testLLMProviderChatStatus(ctx context.Context, svc *llmservice.Service, pro
 	return errMsg == "", errMsg, latencyMs
 }
 
-// providerTestConfig keeps a vendor account on that vendor's own request
-// shape. A static key keeps the provider's saved User-Agent when the vendor
-// config did not already choose one. Account logins still replace that header
-// in their own ApplyHeaders.
+// providerTestConfig is the vendor overlay shared with a remote stream probe.
 func providerTestConfig(cfg corelib.MaclawLLMConfig, provider *llmpool.ProviderConfig) corelib.MaclawLLMConfig {
-	if provider == nil {
-		return cfg
-	}
-	if wb, ok := llmservice.WorkBuddyMaclawConfig(provider, cfg.Model); ok {
-		wb.TimeoutSec = cfg.TimeoutSec
-		cfg = wb
-	}
-	if qd, ok := llmservice.QoderMaclawConfig(provider, cfg.Model); ok {
-		qd.TimeoutSec = cfg.TimeoutSec
-		cfg = qd
-	}
-	if tr, ok := llmservice.TraeMaclawConfig(provider, cfg.Model); ok {
-		tr.TimeoutSec = cfg.TimeoutSec
-		cfg = tr
-	}
-	if lb, ok := llmservice.LobsterAIMaclawConfig(provider, cfg.Model); ok {
-		lb.TimeoutSec = cfg.TimeoutSec
-		cfg = lb
-	}
-	if strings.TrimSpace(cfg.AgentType) == "" {
-		cfg.AgentType = llmservice.RequestAgentType(provider.AgentType)
-	}
-	// Only a Devin provider gets its name copied. The status check otherwise
-	// sees an empty name and misses a provider that is Devin by name alone.
-	if strings.TrimSpace(cfg.ProviderName) == "" && llmservice.IsDevinProvider(provider.Name, firstNonEmpty(provider.APIURL, cfg.URL)) {
-		cfg.ProviderName = strings.TrimSpace(provider.Name)
-	}
-	return llmservice.WithMemberUpstreamOverrides(cfg, provider)
+	return llmservice.MemberProbeConfig(cfg, provider)
 }
 
 // runLLMProviderChatTest executes one availability probe against cfg and
@@ -625,81 +593,97 @@ func providerTestConfig(cfg corelib.MaclawLLMConfig, provider *llmpool.ProviderC
 
 // providerTestBudget is the optional output the member probe asked to send.
 // Nil pointers keep the short probe default. OutputCap is the saved member
-// limit and is applied before the probe leaves this process.
+// limit and is applied before the probe leaves this process. Stream uses the
+// protocol's streaming wire and still returns one JSON receipt.
 type providerTestBudget struct {
 	MaxTokens           *int64
 	MaxCompletionTokens *int64
 	OutputCap           int64
+	Stream              bool
+}
+
+func (b providerTestBudget) member() llmservice.MemberProbeBudget {
+	return llmservice.MemberProbeBudget{
+		MaxTokens:           b.MaxTokens,
+		MaxCompletionTokens: b.MaxCompletionTokens,
+		OutputCap:           b.OutputCap,
+		Stream:              b.Stream,
+	}
+}
+
+// providerProbeResult is one member probe. output is the budgets on the
+// request that was built. streamEnd is set only when the caller asked for a stream.
+type providerProbeResult struct {
+	reply     string
+	errMsg    string
+	latencyMs int64
+	calls     []llmservice.ProviderToolCall
+	output    map[string]llmservice.ProbeOutputField
+	stream    bool
+	streamEnd *bool
 }
 
 func runLLMProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfig) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
-	return runLLMProviderChatTestBody(ctx, cfg, nil, nil, providerTestBudget{})
+	// The availability check is one real upstream call. The member cap is
+	// already on cfg. An empty budget used to hide it from the OpenCode probe,
+	// which then sent no output limit at all. The status check stays non-stream.
+	got := runLLMProviderChatTestBody(ctx, cfg, nil, nil, providerTestBudget{
+		OutputCap: cfg.MemberOutputTokenCap,
+	})
+	return got.reply, got.errMsg, got.latencyMs, got.calls
 }
 
-func runLLMProviderChatTestBody(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage, budget providerTestBudget) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
+func runLLMProviderChatTestBody(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage, budget providerTestBudget) providerProbeResult {
 	if corelib.IsOpenCodeURL(cfg.URL) {
 		return runOpenCodeProviderChatTest(ctx, cfg, tools, toolChoice, budget)
 	}
-	httpReq, err := newLLMProviderTestRequest(ctx, cfg, tools, toolChoice, budget)
+	httpReq, wire, err := llmservice.NewMemberProbeRequest(ctx, cfg, tools, toolChoice, budget.member())
 	if err != nil {
-		return "", err.Error(), 0, nil
+		return probeFailed(budget, err.Error(), 0, nil, "", nil)
 	}
+	output := projectProbeOutput(cfg, budget, tools, wire)
 	start := time.Now()
-	client := corelib.NewLLMEndpointHTTPClient(cfg)
-	if workbuddy.Matches(cfg) {
-		client = workbuddy.WrapClient(client)
-	}
-	// The vendor wrappers must be the same ones the chat forward path uses:
-	// Qoder signs with the provider's uid, and Trae stamps the device pair the
-	// refresh token was minted against. The bare wrappers fall back to a
-	// desktop credential store a server process does not have.
-	if llmservice.QoderMaclawConfigFromConfig(cfg) {
-		client = llmservice.QoderHTTPClient(client, cfg)
-	}
-	if llmservice.TraeMaclawConfigFromConfig(cfg) {
-		client = llmservice.TraeHTTPClient(client, cfg)
-	}
-	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
-		client = lobsterai.WrapClient(client)
-	}
-	client = llmservice.DevinHTTPClient(client, cfg.ProviderName, cfg.URL)
+	client := llmservice.WrapMemberProbeClient(corelib.NewLLMEndpointHTTPClient(cfg), cfg)
 	resp, err := client.Do(httpReq)
-	latencyMs = time.Since(start).Milliseconds()
+	latencyMs := time.Since(start).Milliseconds()
 	if err != nil {
-		return "", llmProviderTestRequestError(err, cfg), latencyMs, nil
+		return probeFailed(budget, llmProviderTestRequestError(err, cfg), latencyMs, output, "", nil)
 	}
 	defer resp.Body.Close()
 	respBody, truncated, err := readLLMProviderTestResponse(resp.Body)
 	if err != nil {
-		return "", llmProviderTestResponseReadError(err, cfg), latencyMs, nil
+		return probeFailed(budget, llmProviderTestResponseReadError(err, cfg), latencyMs, output, "", nil)
 	}
 	if truncated {
-		return "", "model response exceeds the 64 KiB availability-test limit", latencyMs, nil
+		return probeFailed(budget, "model response exceeds the 64 KiB availability-test limit", latencyMs, output, "", nil)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", llmProviderTestHTTPError(resp.StatusCode, respBody), latencyMs, nil
+		return probeFailed(budget, llmProviderTestHTTPError(resp.StatusCode, respBody), latencyMs, output, "", nil)
+	}
+	if budget.Stream {
+		return finishProbeStream(budget, latencyMs, output, llmservice.ParseProbeStream(respBody, llmservice.ProbeOutputKind(cfg)))
 	}
 	if errMsg := providerChatTestEnvelopeError(respBody); errMsg != "" {
-		return "", errMsg, latencyMs, nil
+		return probeFailed(budget, errMsg, latencyMs, output, "", nil)
 	}
 
 	// Parse the actual completion. A model is available only after it returns
 	// non-empty content to the short test prompt, or a tool call when tools were sent.
-	reply, err = llmProviderTestReply(respBody, cfg.Protocol, cfg.WireAPI)
+	reply, err := llmProviderTestReply(respBody, cfg.Protocol, cfg.WireAPI)
 	if err != nil {
-		return "", "invalid model response: " + err.Error(), latencyMs, nil
+		return probeFailed(budget, "invalid model response: "+err.Error(), latencyMs, output, "", nil)
 	}
-	calls = llmservice.ParseProviderTestToolCalls(respBody)
+	calls := llmservice.ParseProviderTestToolCalls(respBody)
 	if strings.TrimSpace(reply) == "" && len(calls) == 0 {
-		return "", "model returned no completion content", latencyMs, nil
+		return probeFailed(budget, "model returned no completion content", latencyMs, output, reply, calls)
 	}
-	return reply, "", latencyMs, calls
+	return probeOK(budget, reply, latencyMs, output, calls, nil)
 }
 
 // runOpenCodeProviderChatTest uses the proxy forwarder. Zen free models
 // answer with SSE, and one of them only accepts the Responses API; the
 // forwarder collects either shape into one chat JSON body.
-func runOpenCodeProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage, budget providerTestBudget) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
+func runOpenCodeProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage, budget providerTestBudget) providerProbeResult {
 	prompt := "Reply with exactly: pong"
 	toolsSet := len(bytes.TrimSpace(tools)) > 0 && string(bytes.TrimSpace(tools)) != "null"
 	if toolsSet {
@@ -709,11 +693,18 @@ func runOpenCodeProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfi
 		"model":    cfg.Model,
 		"messages": []any{map[string]any{"role": "user", "content": prompt}},
 	}
+	// The cap is whichever of the probe budget and the request config is set.
+	// The availability check puts it only on the config. Treating that as
+	// "no cap" sent the OpenCode probe with no output limit.
+	outputCap := budget.OutputCap
+	if outputCap <= 0 {
+		outputCap = cfg.MemberOutputTokenCap
+	}
 	// An omitted budget with no member cap used to leave max_tokens off the
 	// OpenCode body. Inject the short probe budget only when the caller set
 	// one, or when a positive cap has to bound that default.
-	if budget.MaxTokens != nil || budget.MaxCompletionTokens != nil || budget.OutputCap > 0 {
-		for key, value := range llmservice.MemberProbeOutputBody(budget.OutputCap, budget.MaxTokens, budget.MaxCompletionTokens, toolsSet) {
+	if budget.MaxTokens != nil || budget.MaxCompletionTokens != nil || outputCap > 0 {
+		for key, value := range llmservice.MemberProbeOutputBody(outputCap, budget.MaxTokens, budget.MaxCompletionTokens, toolsSet) {
 			body[key] = value
 		}
 	}
@@ -733,129 +724,182 @@ func runOpenCodeProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfi
 		ExtraBody:                 cfg.MemberExtraBody,
 		ExtraBodyPriority:         cfg.MemberExtraBodyPriority,
 		DropFields:                append([]string(nil), cfg.MemberDropFields...),
-		MaxOutputTokensPerRequest: budget.OutputCap,
+		MaxOutputTokensPerRequest: outputCap,
+	}
+	wire, endpoint, kind, wireErr := openCodeProbeWire(ctx, cfg, provider, body, budget.Stream)
+	var output map[string]llmservice.ProbeOutputField
+	if wireErr == nil {
+		output = projectProbeOutputKind(cfg, kind, budget, tools, wire)
+	}
+	if budget.Stream {
+		if wireErr != nil {
+			return probeFailed(budget, wireErr.Error(), 0, output, "", nil)
+		}
+		return runOpenCodeStreamProbe(ctx, cfg, endpoint, wire, kind, budget, output)
 	}
 	start := time.Now()
 	status, respBody, err := llmservice.ForwardProviderCompletion(ctx, corelib.NewLLMEndpointHTTPClient(cfg), provider, body, cfg.Model)
-	latencyMs = time.Since(start).Milliseconds()
+	latencyMs := time.Since(start).Milliseconds()
 	if err != nil {
-		return "", llmProviderTestRequestError(err, cfg), latencyMs, nil
+		return probeFailed(budget, llmProviderTestRequestError(err, cfg), latencyMs, output, "", nil)
 	}
 	if status < 200 || status >= 300 {
-		return "", llmProviderTestHTTPError(status, respBody), latencyMs, nil
+		return probeFailed(budget, llmProviderTestHTTPError(status, respBody), latencyMs, output, "", nil)
 	}
 	if len(respBody) > 64<<10 {
-		return "", "model response exceeds the 64 KiB availability-test limit", latencyMs, nil
+		return probeFailed(budget, "model response exceeds the 64 KiB availability-test limit", latencyMs, output, "", nil)
 	}
 	if errMsg := providerChatTestEnvelopeError(respBody); errMsg != "" {
-		return "", errMsg, latencyMs, nil
+		return probeFailed(budget, errMsg, latencyMs, output, "", nil)
 	}
-	reply, err = llmProviderTestReply(respBody, "openai", "chat")
+	reply, err := llmProviderTestReply(respBody, "openai", "chat")
 	if err != nil {
-		return "", "invalid model response: " + err.Error(), latencyMs, nil
+		return probeFailed(budget, "invalid model response: "+err.Error(), latencyMs, output, "", nil)
 	}
-	calls = llmservice.ParseProviderTestToolCalls(respBody)
+	calls := llmservice.ParseProviderTestToolCalls(respBody)
 	if strings.TrimSpace(reply) == "" && len(calls) == 0 {
-		return "", "model returned no completion content", latencyMs, nil
+		return probeFailed(budget, "model returned no completion content", latencyMs, output, reply, calls)
 	}
-	return reply, "", latencyMs, calls
+	return probeOK(budget, reply, latencyMs, output, calls, nil)
 }
 
 func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage, budget providerTestBudget) (*http.Request, error) {
-	prompt := "Reply with exactly: pong"
-	toolsSet := len(bytes.TrimSpace(tools)) > 0 && string(bytes.TrimSpace(tools)) != "null"
-	maxTokens := 64
-	if toolsSet {
-		prompt = "Call one of the available tools now."
-		maxTokens = 256
-	}
-	output := llmservice.MemberProbeOutputBody(budget.OutputCap, budget.MaxTokens, budget.MaxCompletionTokens, toolsSet)
-	// Match the live single-field converters. Anthropic reads max_tokens and
-	// falls back to max_completion_tokens. Responses and Google read
-	// max_completion_tokens and fall back to max_tokens.
-	order := []string{"max_completion_tokens", "max_tokens"}
-	if strings.EqualFold(cfg.Protocol, "anthropic") {
-		order = []string{"max_tokens", "max_completion_tokens"}
-	}
-	maxTokens = llmservice.MemberProbeFieldBudget(output, maxTokens, order...)
-	// The builders treat option 0 as "omitted, use the model default". A caller
-	// who sent 0 chose that budget. Leaving the flag unset raises it to 65536
-	// and the member cap then clamps the default instead of the caller's zero.
-	keepZero := maxTokens == 0
-	messages := []interface{}{map[string]string{"role": "user", "content": prompt}}
-	parsedTools, toolChoiceValue := providerTestToolValues(tools, toolChoice)
-	if cfg.IsGoogleProtocol() {
-		endpoint, body, err := corellm.BuildGoogleGenerateContentRequestData(cfg, messages, corellm.GoogleGenerateRequestOptions{
-			Tools:                   parsedTools,
-			ToolChoice:              toolChoiceValue,
-			ExplicitToolReplacement: len(parsedTools) > 0,
-			MaxOutputTokens:         maxTokens,
-			KeepZeroMaxOutputTokens: keepZero,
-		})
-		if err != nil {
-			return nil, err
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if key := strings.TrimSpace(cfg.Key); key != "" {
-			req.Header.Set("x-goog-api-key", key)
-		}
-		if ua := cfg.UserAgent(); ua != "" {
-			req.Header.Set("User-Agent", ua)
-		}
-		return req, nil
-	}
-	if cfg.Protocol == "anthropic" {
-		endpoint, body, err := corellm.BuildAnthropicMessagesRequestData(cfg, messages, corellm.AnthropicMessagesRequestOptions{
-			MaxTokens:         maxTokens,
-			KeepZeroMaxTokens: keepZero,
-		})
-		if err != nil {
-			return nil, err
-		}
-		body = injectProviderTestTools(body, parsedTools, toolChoiceValue, true, cfg.MemberDropFields)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if cfg.Key != "" {
-			req.Header.Set("x-api-key", cfg.Key)
-		}
-		req.Header.Set("anthropic-version", "2023-06-01")
-		if ua := cfg.UserAgent(); ua != "" {
-			req.Header.Set("User-Agent", ua)
-		}
-		corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
-		corelib.ApplyOpenCodeSessionHeader(req, cfg)
-		return req, nil
-	}
-	if cfg.IsResponsesAPI() {
-		req, _, _, err := corellm.NewResponsesAPIRequest(ctx, cfg, messages, corellm.ResponsesAPIRequestOptions{
-			Tools:      parsedTools,
-			ToolChoice: toolChoiceValue,
-			ExtraBody:  map[string]interface{}{"max_output_tokens": maxTokens},
-		})
-		return req, err
-	}
-	extra := map[string]interface{}{}
-	for key, value := range output {
-		extra[key] = value
-	}
-	// Kimi Code and K2/K3 reject every explicit temperature. The probe used to
-	// send 0 and the status check failed with HTTP 400 before the model ran.
-	if !corelib.KimiRequestOmitsSampling(cfg, cfg.Model) {
-		extra["temperature"] = 0
-	}
-	req, _, _, err := corellm.NewOpenAIChatRequest(ctx, cfg, messages, corellm.OpenAIChatRequestOptions{
-		Tools:      parsedTools,
-		ToolChoice: toolChoiceValue,
-		ExtraBody:  extra,
-	})
+	req, _, err := llmservice.NewMemberProbeRequest(ctx, cfg, tools, toolChoice, budget.member())
 	return req, err
+}
+
+func projectProbeOutput(cfg corelib.MaclawLLMConfig, budget providerTestBudget, tools json.RawMessage, wire []byte) map[string]llmservice.ProbeOutputField {
+	return projectProbeOutputKind(cfg, llmservice.ProbeOutputKind(cfg), budget, tools, wire)
+}
+
+func projectProbeOutputKind(cfg corelib.MaclawLLMConfig, kind string, budget providerTestBudget, tools json.RawMessage, wire []byte) map[string]llmservice.ProbeOutputField {
+	toolsSet := len(bytes.TrimSpace(tools)) > 0 && string(bytes.TrimSpace(tools)) != "null"
+	baseline := llmservice.ProbeOutputBaseline(kind, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields, budget.MaxTokens, budget.MaxCompletionTokens, toolsSet)
+	return llmservice.ProjectProbeOutput(wire, baseline)
+}
+
+func probeFailed(budget providerTestBudget, errMsg string, latencyMs int64, output map[string]llmservice.ProbeOutputField, reply string, calls []llmservice.ProviderToolCall) providerProbeResult {
+	result := providerProbeResult{reply: reply, errMsg: errMsg, latencyMs: latencyMs, calls: calls, output: output}
+	if budget.Stream {
+		result.stream = true
+		end := false
+		result.streamEnd = &end
+	}
+	return result
+}
+
+func probeOK(budget providerTestBudget, reply string, latencyMs int64, output map[string]llmservice.ProbeOutputField, calls []llmservice.ProviderToolCall, streamEnd *bool) providerProbeResult {
+	result := providerProbeResult{reply: reply, latencyMs: latencyMs, calls: calls, output: output}
+	if budget.Stream {
+		result.stream = true
+		if streamEnd == nil {
+			end := false
+			streamEnd = &end
+		}
+		result.streamEnd = streamEnd
+	}
+	return result
+}
+
+func finishProbeStream(budget providerTestBudget, latencyMs int64, output map[string]llmservice.ProbeOutputField, parsed llmservice.ProbeStream) providerProbeResult {
+	end := parsed.End
+	if errMsg := parsed.Failure(); errMsg != "" {
+		result := probeFailed(budget, errMsg, latencyMs, output, parsed.Reply, parsed.Calls)
+		result.streamEnd = &end
+		return result
+	}
+	return probeOK(budget, parsed.Reply, latencyMs, output, parsed.Calls, &end)
+}
+
+func openCodeProbeWire(ctx context.Context, cfg corelib.MaclawLLMConfig, provider *llmpool.ProviderConfig, body map[string]any, stream bool) (wire []byte, endpoint, kind string, err error) {
+	chat := make(map[string]any, len(body)+1)
+	for key, value := range body {
+		chat[key] = value
+	}
+	if stream {
+		chat["stream"] = true
+	}
+	plan, planned, err := llmservice.PlanOpenCodeProbe(provider, chat, cfg.Model)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if planned && plan.Responses {
+		messages, _ := chat["messages"].([]any)
+		var tools []map[string]interface{}
+		switch raw := chat["tools"].(type) {
+		case []map[string]interface{}:
+			tools = raw
+		case []any:
+			for _, item := range raw {
+				if tool, ok := item.(map[string]interface{}); ok {
+					tools = append(tools, tool)
+				}
+			}
+		}
+		var choice interface{}
+		if raw, ok := chat["tool_choice"]; ok {
+			choice = raw
+		}
+		req, data, _, buildErr := corellm.NewResponsesAPIRequest(ctx, plan.Config, messages, corellm.ResponsesAPIRequestOptions{
+			Stream:     stream,
+			Tools:      tools,
+			ToolChoice: choice,
+			ExtraBody:  corellm.OpenCodeResponsesBudgetExtra(chat),
+		})
+		if buildErr != nil {
+			return nil, "", "", buildErr
+		}
+		if req != nil && req.Body != nil {
+			_ = req.Body.Close()
+		}
+		if req == nil || req.URL == nil {
+			return nil, "", "", errors.New("responses probe request was not built")
+		}
+		return data, req.URL.String(), "responses", nil
+	}
+	if planned {
+		return plan.Payload, plan.Endpoint, "openai", nil
+	}
+	raw, err := json.Marshal(chat)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return raw, corellm.BuildOpenAIChatCompletionsEndpoint(cfg.URL), "openai", nil
+}
+
+func runOpenCodeStreamProbe(ctx context.Context, cfg corelib.MaclawLLMConfig, endpoint string, wire []byte, kind string, budget providerTestBudget, output map[string]llmservice.ProbeOutputField) providerProbeResult {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(wire))
+	if err != nil {
+		return probeFailed(budget, err.Error(), 0, output, "", nil)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if key := strings.TrimSpace(cfg.Key); key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	if ua := cfg.UserAgent(); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	corelib.ApplyOpenCodeSessionHeader(req, cfg)
+	start := time.Now()
+	resp, err := corelib.NewLLMEndpointHTTPClient(cfg).Do(req)
+	latencyMs := time.Since(start).Milliseconds()
+	if err != nil {
+		return probeFailed(budget, llmProviderTestRequestError(err, cfg), latencyMs, output, "", nil)
+	}
+	defer resp.Body.Close()
+	respBody, truncated, err := readLLMProviderTestResponse(resp.Body)
+	if err != nil {
+		return probeFailed(budget, llmProviderTestResponseReadError(err, cfg), latencyMs, output, "", nil)
+	}
+	if truncated {
+		return probeFailed(budget, "model response exceeds the 64 KiB availability-test limit", latencyMs, output, "", nil)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return probeFailed(budget, llmProviderTestHTTPError(resp.StatusCode, respBody), latencyMs, output, "", nil)
+	}
+	return finishProbeStream(budget, latencyMs, output, llmservice.ParseProbeStream(respBody, kind))
 }
 
 func providerTestToolValues(tools, toolChoice json.RawMessage) ([]map[string]interface{}, interface{}) {
@@ -878,114 +922,8 @@ func providerTestToolValues(tools, toolChoice json.RawMessage) ([]map[string]int
 	return parsed, choice
 }
 
-func anthropicProbeToolChoice(choice interface{}) interface{} {
-	switch value := choice.(type) {
-	case string:
-		switch strings.ToLower(strings.TrimSpace(value)) {
-		case "", "none":
-			return nil
-		case "auto":
-			return map[string]interface{}{"type": "auto"}
-		case "required", "any":
-			return map[string]interface{}{"type": "any"}
-		default:
-			name := strings.TrimSpace(value)
-			if name == "" {
-				return nil
-			}
-			return map[string]interface{}{"type": "tool", "name": name}
-		}
-	case map[string]interface{}:
-		if fn, ok := value["function"].(map[string]interface{}); ok {
-			if name, _ := fn["name"].(string); strings.TrimSpace(name) != "" {
-				return map[string]interface{}{"type": "tool", "name": strings.TrimSpace(name)}
-			}
-		}
-		switch strings.ToLower(strings.TrimSpace(fmt.Sprint(value["type"]))) {
-		case "auto":
-			return map[string]interface{}{"type": "auto"}
-		case "any", "required":
-			return map[string]interface{}{"type": "any"}
-		case "tool":
-			name, _ := value["name"].(string)
-			if strings.TrimSpace(name) == "" {
-				return nil
-			}
-			return map[string]interface{}{"type": "tool", "name": strings.TrimSpace(name)}
-		}
-	}
-	return nil
-}
-
 func injectProviderTestTools(body []byte, tools []map[string]interface{}, toolChoice interface{}, anthropic bool, drop []string) []byte {
-	if len(tools) == 0 {
-		return body
-	}
-	var doc map[string]interface{}
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return body
-	}
-	// Member drop_fields already ran. A tool probe must not put a listed key
-	// back, and a probe tool_choice is meaningless once tools stay dropped.
-	changed := false
-	if anthropic {
-		converted := make([]map[string]interface{}, 0, len(tools))
-		for _, tool := range tools {
-			fn, _ := tool["function"].(map[string]interface{})
-			if fn == nil {
-				converted = append(converted, tool)
-				continue
-			}
-			item := map[string]interface{}{"name": fn["name"]}
-			if desc, ok := fn["description"]; ok {
-				item["description"] = desc
-			}
-			if schema, ok := fn["parameters"]; ok {
-				item["input_schema"] = schema
-			} else {
-				item["input_schema"] = map[string]interface{}{"type": "object"}
-			}
-			converted = append(converted, item)
-		}
-		if !memberTestDropListed(drop, "tools") {
-			doc["tools"] = converted
-			changed = true
-		}
-		if changed {
-			if !memberTestDropListed(drop, "tool_choice") {
-				if choice := anthropicProbeToolChoice(toolChoice); choice != nil {
-					doc["tool_choice"] = choice
-				}
-			}
-		}
-	} else if !memberTestDropListed(drop, "tools") {
-		doc["tools"] = tools
-		changed = true
-		if toolChoice != nil && !memberTestDropListed(drop, "tool_choice") {
-			doc["tool_choice"] = toolChoice
-		}
-	}
-	if !changed {
-		return body
-	}
-	out, err := json.Marshal(doc)
-	if err != nil {
-		return body
-	}
-	return out
-}
-
-func memberTestDropListed(drop []string, field string) bool {
-	field = strings.TrimSpace(field)
-	if field == "" {
-		return false
-	}
-	for _, item := range drop {
-		if strings.TrimSpace(item) == field {
-			return true
-		}
-	}
-	return false
+	return llmservice.InjectMemberProbeTools(body, tools, toolChoice, anthropic, drop)
 }
 
 func llmProviderTestTimeout(cfg corelib.MaclawLLMConfig) time.Duration {

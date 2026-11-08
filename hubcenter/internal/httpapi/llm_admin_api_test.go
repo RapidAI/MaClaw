@@ -31,6 +31,9 @@ func TestLLMAdminAPIDocsArePublic(t *testing.T) {
 		"max_output_tokens_per_request",
 		"max_completion_tokens",
 		"两个字段各自截断",
+		"stream ended before the end marker",
+		"stream_end",
+		"回执不包含密钥",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("markdown missing upstream override doc %q", want)
@@ -67,6 +70,8 @@ func TestLLMAdminAPIDocsArePublic(t *testing.T) {
 		"The test body cannot override the first three",
 		"max_output_tokens_per_request",
 		"each field is capped on its own",
+		"stream_end",
+		"The receipt does not include the API key or the request body",
 		"At most 16 KiB",
 		"OpenAI-compatible chat, Anthropic-compatible, and Responses",
 	} {
@@ -607,6 +612,229 @@ func TestAdminTestProviderMemberOutputBudget(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("negative status=%d body=%s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestAdminTestProviderMemberStreamAndOutputReceipt(t *testing.T) {
+	const probeSSE = "data: {\"choices\":[{\"delta\":{\"content\":\"po\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"ng\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"ping\",\"arguments\":\"{}\"}}]}}]}\n\n" +
+		"data: [DONE]\n\n"
+	var mu sync.Mutex
+	var saw []map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+			return
+		}
+		mu.Lock()
+		saw = append(saw, payload)
+		mu.Unlock()
+		if payload["stream"] == true {
+			w.Header().Set("Content-Type", "text/event-stream")
+			if payload["max_tokens"] == float64(1) {
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"po\"}}]}\n\n"))
+				return
+			}
+			_, _ = w.Write([]byte(probeSSE))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer upstream.Close()
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	if err := svc.SaveRegistry(t.Context(), &llmservice.Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "pool-a-1", Name: "Typhoon", APIURL: upstream.URL + "/v1", APIKey: "sk-live", Models: []string{"typhoon"}, MaxOutputTokensPerRequest: 16384},
+			{ID: "pool-small", Name: "Small", APIURL: upstream.URL + "/v1", APIKey: "sk-live", Models: []string{"typhoon"}, MaxOutputTokensPerRequest: 32},
+			{ID: "pool-empty", Name: "Empty", APIKey: "sk-live", Models: []string{"typhoon"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := adminTestLLMProviderMember(svc, &llmservice.ProxyConfig{NodeID: "hc-1"})
+	type outField struct {
+		Value   int64 `json:"value"`
+		Clipped bool  `json:"clipped"`
+	}
+	post := func(id, body string) (int, map[string]json.RawMessage, map[string]any) {
+		t.Helper()
+		mu.Lock()
+		before := len(saw)
+		mu.Unlock()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/"+id+"/test", strings.NewReader(body))
+		req.SetPathValue("id", id)
+		h(rec, req)
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(rec.Body.Bytes(), &top); err != nil && rec.Code == http.StatusOK {
+			t.Fatalf("decode receipt: %v body=%s", err, rec.Body.String())
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		var wire map[string]any
+		if len(saw) == before+1 {
+			wire = saw[before]
+		}
+		return rec.Code, top, wire
+	}
+	outputOf := func(top map[string]json.RawMessage) map[string]outField {
+		t.Helper()
+		raw, ok := top["output"]
+		if !ok {
+			t.Fatalf("receipt missing output: %s", top)
+		}
+		if !strings.Contains(string(raw), `"clipped"`) {
+			t.Fatalf("clipped omitted: %s", raw)
+		}
+		var output map[string]outField
+		if err := json.Unmarshal(raw, &output); err != nil {
+			t.Fatal(err)
+		}
+		return output
+	}
+	tools := `{"max_tokens":128,"tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{}}}}],"stream":true}`
+	code, top, wire := post("pool-a-1", tools)
+	if code != http.StatusOK {
+		t.Fatalf("stream status=%d", code)
+	}
+	var success bool
+	_ = json.Unmarshal(top["success"], &success)
+	var reply string
+	_ = json.Unmarshal(top["reply"], &reply)
+	var streamEnd bool
+	if err := json.Unmarshal(top["stream_end"], &streamEnd); err != nil || !streamEnd {
+		t.Fatalf("stream_end=%s err=%v", top["stream_end"], err)
+	}
+	var calls []struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	if err := json.Unmarshal(top["tool_calls"], &calls); err != nil || len(calls) != 1 || calls[0].Name != "ping" || calls[0].Arguments != "{}" {
+		t.Fatalf("tool_calls=%s err=%v", top["tool_calls"], err)
+	}
+	if !success || reply != "pong" || string(top["stream"]) != "true" {
+		t.Fatalf("success=%v reply=%q stream=%s body keys failed", success, reply, top["stream"])
+	}
+	got := outputOf(top)
+	if got["max_tokens"].Value != 128 || got["max_tokens"].Clipped {
+		t.Fatalf("stream output=%#v", got["max_tokens"])
+	}
+	if _, ok := got["max_completion_tokens"]; ok {
+		t.Fatal("stream probe invented max_completion_tokens")
+	}
+	if wire["stream"] != true || wire["max_tokens"] != float64(128) {
+		t.Fatalf("upstream stream body=%#v", wire)
+	}
+	receipt := string(mustJSON(top))
+	for _, secret := range []string{"sk-live", `"messages"`, `"parameters"`, "Call one of the available tools"} {
+		if strings.Contains(receipt, secret) {
+			t.Fatalf("receipt contains %s: %s", secret, receipt)
+		}
+	}
+
+	code, top, _ = post("pool-a-1", `{"stream":true,"max_tokens":1}`)
+	if code != http.StatusOK {
+		t.Fatalf("truncated stream status=%d", code)
+	}
+	_ = json.Unmarshal(top["success"], &success)
+	var errMsg string
+	_ = json.Unmarshal(top["error"], &errMsg)
+	_ = json.Unmarshal(top["reply"], &reply)
+	if err := json.Unmarshal(top["stream_end"], &streamEnd); err != nil || streamEnd {
+		t.Fatalf("missing marker stream_end=%s", top["stream_end"])
+	}
+	if success || !strings.Contains(errMsg, "stream ended before the end marker") || reply != "po" {
+		t.Fatalf("success=%v error=%q reply=%q", success, errMsg, reply)
+	}
+	if got := outputOf(top)["max_tokens"]; got.Value != 1 || got.Clipped {
+		t.Fatalf("partial output=%#v", got)
+	}
+
+	code, top, wire = post("pool-a-1", `{"max_tokens":100000}`)
+	_ = json.Unmarshal(top["success"], &success)
+	if code != http.StatusOK || !success || wire["max_tokens"] != float64(16384) || wire["stream"] != false {
+		t.Fatalf("huge status=%d success=%v wire=%#v", code, success, wire)
+	}
+	if _, ok := top["stream"]; ok || top["stream_end"] != nil {
+		t.Fatal("non-stream receipt included stream fields")
+	}
+	if got := outputOf(top)["max_tokens"]; got.Value != 16384 || !got.Clipped {
+		t.Fatalf("huge output=%#v", got)
+	}
+	if _, ok := outputOf(top)["max_completion_tokens"]; ok {
+		t.Fatal("huge receipt invented max_completion_tokens")
+	}
+
+	_, top, wire = post("pool-a-1", `{"max_tokens":128}`)
+	if got := outputOf(top)["max_tokens"]; got.Value != 128 || got.Clipped || wire["max_tokens"] != float64(128) {
+		t.Fatalf("small output=%#v wire=%#v", got, wire["max_tokens"])
+	}
+	_, top, wire = post("pool-a-1", `{"max_tokens":100000,"max_completion_tokens":2000}`)
+	both := outputOf(top)
+	if both["max_tokens"].Value != 16384 || !both["max_tokens"].Clipped || both["max_completion_tokens"].Value != 2000 || both["max_completion_tokens"].Clipped {
+		t.Fatalf("both=%#v", both)
+	}
+	if wire["max_tokens"] != float64(16384) || wire["max_completion_tokens"] != float64(2000) {
+		t.Fatalf("both wire=%#v / %#v", wire["max_tokens"], wire["max_completion_tokens"])
+	}
+	_, top, wire = post("pool-a-1", `{}`)
+	if got := outputOf(top)["max_tokens"]; got.Value != 64 || got.Clipped || wire["max_tokens"] != float64(64) {
+		t.Fatalf("omitted cap above default output=%#v wire=%#v", got, wire["max_tokens"])
+	}
+	_, top, wire = post("pool-small", `{}`)
+	if got := outputOf(top)["max_tokens"]; got.Value != 32 || !got.Clipped || wire["max_tokens"] != float64(32) {
+		t.Fatalf("omitted cap below default output=%#v wire=%#v", got, wire["max_tokens"])
+	}
+	_, top, wire = post("pool-a-1", `{"max_tokens":0}`)
+	if got := outputOf(top)["max_tokens"]; got.Value != 0 || got.Clipped || wire["max_tokens"] != float64(0) {
+		t.Fatalf("explicit zero output=%#v wire=%#v", got, wire["max_tokens"])
+	}
+	_, top, wire = post("pool-a-1", `{"stream":false,"max_tokens":128}`)
+	if _, ok := top["stream"]; ok || top["stream_end"] != nil || wire["stream"] != false {
+		t.Fatalf("stream false leaked stream=%s end=%s wire=%#v", top["stream"], top["stream_end"], wire["stream"])
+	}
+
+	code, _, _ = post("pool-a-1", `{"stream":"yes"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("non-bool stream status=%d", code)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/pool-a-1/test", strings.NewReader(`{"stream":"yes"}`))
+	req.SetPathValue("id", "pool-a-1")
+	h(rec, req)
+	if !strings.Contains(rec.Body.String(), "stream must be a boolean") {
+		t.Fatalf("stream type body=%s", rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/pool-a-1/test", strings.NewReader(`{"api_key":"x"}`))
+	req.SetPathValue("id", "pool-a-1")
+	h(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unknown field api_key") {
+		t.Fatalf("unknown field status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	code, top, wire = post("pool-empty", `{"stream":true}`)
+	_ = json.Unmarshal(top["success"], &success)
+	_ = json.Unmarshal(top["error"], &errMsg)
+	if err := json.Unmarshal(top["stream_end"], &streamEnd); err != nil || streamEnd {
+		t.Fatalf("early stream_end=%s", top["stream_end"])
+	}
+	if code != http.StatusOK || success || !strings.Contains(errMsg, "api_url and model are required") || string(top["stream"]) != "true" || top["output"] != nil || wire != nil {
+		t.Fatalf("early status=%d success=%v error=%q stream=%s output=%s wire=%v", code, success, errMsg, top["stream"], top["output"], wire != nil)
+	}
+	if strings.Contains(string(mustJSON(top)), "sk-live") {
+		t.Fatal("early receipt contains the key")
+	}
+}
+
+func mustJSON(v any) []byte {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return []byte(err.Error())
+	}
+	return raw
 }
 
 func TestSanitizeProviderTestErrorDropsSecret(t *testing.T) {

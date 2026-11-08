@@ -1020,9 +1020,9 @@ func TestOpenCodeProbeOmitsBudgetWhenCallerAndCapAreUnset(t *testing.T) {
 		mu.Lock()
 		before := len(saw)
 		mu.Unlock()
-		_, errMsg, _, _ := runOpenCodeProviderChatTest(context.Background(), cfg, nil, nil, budget)
-		if errMsg != "" {
-			t.Fatalf("probe error: %s", errMsg)
+		probed := runOpenCodeProviderChatTest(context.Background(), cfg, nil, nil, budget)
+		if probed.errMsg != "" {
+			t.Fatalf("probe error: %s", probed.errMsg)
 		}
 		mu.Lock()
 		defer mu.Unlock()
@@ -1043,6 +1043,32 @@ func TestOpenCodeProbeOmitsBudgetWhenCallerAndCapAreUnset(t *testing.T) {
 	over := post(providerTestBudget{MaxTokens: &huge, OutputCap: 16384})
 	if over["max_tokens"] != float64(16384) {
 		t.Fatalf("over-cap probe = %#v", over["max_tokens"])
+	}
+	// The availability check stores the cap on the config and leaves the
+	// budget empty. That still has to bound the probe.
+	fromConfig := func(limit int64) map[string]any {
+		t.Helper()
+		cappedCfg := cfg
+		cappedCfg.MemberOutputTokenCap = limit
+		mu.Lock()
+		before := len(saw)
+		mu.Unlock()
+		probed := runOpenCodeProviderChatTest(context.Background(), cappedCfg, nil, nil, providerTestBudget{})
+		if probed.errMsg != "" {
+			t.Fatalf("probe error: %s", probed.errMsg)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(saw) != before+1 {
+			t.Fatalf("captured %d bodies", len(saw)-before)
+		}
+		return saw[before]
+	}
+	if got := fromConfig(16384)["max_tokens"]; got != float64(64) {
+		t.Fatalf("config cap probe = %#v, want 64", got)
+	}
+	if got := fromConfig(32)["max_tokens"]; got != float64(32) {
+		t.Fatalf("config cap below the probe default = %#v, want 32", got)
 	}
 }
 

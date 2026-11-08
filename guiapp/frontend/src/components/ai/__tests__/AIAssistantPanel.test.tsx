@@ -5807,6 +5807,72 @@ describe('AIAssistantPanel property tests', () => {
         expect(onHandled).toHaveBeenCalled();
     });
 
+    it('keeps an explicit new-task path when an old expert task is still active', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const projectPath = 'D:/tasks/new-task-explicit-route';
+        const oldExpertPath = 'D:/tasks/old-expert-task';
+        const expert = {
+            id: 'exp-old-task',
+            name: 'Old task expert',
+            description: '',
+            icon: '',
+            system_prompt: '',
+            tools: [],
+            skills: [],
+            builtin: false,
+            created_at: '',
+            updated_at: '',
+        };
+        const base = defaultPanelProps();
+        const props: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...base,
+            state: {
+                ...base.state,
+                sending: true,
+                sendingSessionKey: projectSessionKey(projectPath),
+            },
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender } = render(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={{ projectPath, taskTitle: 'New task', autoSend: false }}
+            onPendingProjectTabOpenHandled={vi.fn()}
+        />, { wrapper: DialogProvider });
+        await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy());
+        await waitFor(() => expect(screen.queryByTestId('project-tab-restore-progress')).toBeNull());
+        const projectTabId = document.querySelector('[data-testid^="ai-tab-proj-"]')!
+            .getAttribute('data-testid')!
+            .replace('ai-tab-', '');
+
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={null}
+            pendingExpertOpen={{ expert, projectPath: oldExpertPath }}
+            onPendingExpertOpenHandled={vi.fn()}
+        />);
+        await screen.findByTestId('ai-tab-expert-exp-old-task');
+        await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Old task expert"));
+        sendMessage.mockClear();
+
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingExpertOpen={null}
+            pendingProjectTabOpen={{
+                projectPath,
+                taskTitle: 'New task',
+                initialMessage: 'run only in the new task',
+                autoSend: true,
+                deliverInitialMessage: true,
+            }}
+            onPendingProjectTabOpenHandled={vi.fn()}
+        />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('run only in the new task', expect.anything()));
+        const options = sendMessage.mock.calls[0][1] as Record<string, unknown>;
+        expect(options).toMatchObject({ project_path: projectPath, tabId: projectTabId });
+        expect(options.expert_id).toBeUndefined();
+    });
+
     it('delivers a new-task message into an already-open task tab', async () => {
         const sendMessage = vi.fn().mockResolvedValue(true);
         const projectPath = 'D:/tasks/existing-remote';

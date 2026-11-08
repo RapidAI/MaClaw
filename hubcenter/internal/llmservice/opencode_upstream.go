@@ -198,6 +198,31 @@ func planOpenCodeStream(provider *llmpool.ProviderConfig, body map[string]any, u
 	return openCodeStreamPlan{cfg: cfg, endpoint: endpoint, payload: payload}, true, nil
 }
 
+// OpenCodeProbePlan is the request a member probe would send to OpenCode
+// after the same rewrite as a live stream. Responses-only models leave
+// Payload empty; the caller builds that body with Config.
+type OpenCodeProbePlan struct {
+	Config    corelib.MaclawLLMConfig
+	Endpoint  string
+	Payload   []byte
+	Responses bool
+}
+
+// PlanOpenCodeProbe prepares one OpenCode probe body. stream must already be
+// set on body when the probe is checking the streaming wire.
+func PlanOpenCodeProbe(provider *llmpool.ProviderConfig, body map[string]any, model string) (OpenCodeProbePlan, bool, error) {
+	plan, ok, err := planOpenCodeStream(provider, body, model)
+	if err != nil || !ok {
+		return OpenCodeProbePlan{}, ok, err
+	}
+	return OpenCodeProbePlan{
+		Config:    plan.cfg,
+		Endpoint:  plan.endpoint,
+		Payload:   plan.payload,
+		Responses: plan.responses,
+	}, true, nil
+}
+
 func streamOpenCodeResponses(ctx context.Context, client *http.Client, cfg corelib.MaclawLLMConfig, body map[string]any, responseModel string, dst ProxyStreamWriter) (*providerStreamResult, error) {
 	messages, _ := body["messages"].([]interface{})
 	resp, err := corellm.DoResponsesAPIRequestStreamWithOptions(ctx, cfg, messages, openCodeProxyTools(body["tools"]), client, nil, nil, corellm.ResponsesAPIRequestOptions{

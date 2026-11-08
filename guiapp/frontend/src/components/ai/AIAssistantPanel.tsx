@@ -3631,7 +3631,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             ? getTabs().find(t => t.type === "project" && t.projectPath === resolvedProjectPath)
             : undefined;
         const resolvedTabId = optionTabId || resolvedTab?.id || (liveActiveTab.type === "project" ? liveActiveTab.id : undefined);
-        const expertRouteOwnsSend = !projectTabOwnsThisExpertQueue && (!!queuedExpertId || (liveActiveTab.type === "expert" && !queuedProjectPath));
+        const activeExpertOwnsSend = liveActiveTab.type === "expert" && !queuedProjectPath && !optionProjectPath;
+        const expertRouteOwnsSend = !projectTabOwnsThisExpertQueue && (!!queuedExpertId || activeExpertOwnsSend);
         const isProjectSend = !!resolvedProjectPath && !expertRouteOwnsSend;
         const resolvedExpertId = queuedExpertId || (!forceLocalQueueRoute && liveActiveTab.type === "expert" ? liveActiveTab.expertId : undefined);
         // Reset commands must wipe the target session's transcript and durable

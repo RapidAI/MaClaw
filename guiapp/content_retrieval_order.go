@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
@@ -308,13 +309,13 @@ func (c *sharedAgentLoopCallbacks) runContentMemoryRecall(argsJSON string) strin
 	if principal == "" {
 		principal = desktopUserID
 	}
-	query = contentRetrievalConsultQuery(c.userText, query)
-	var text string
-	if c.handler.semanticTrustedMemoryRecall != nil {
-		text, err = c.handler.semanticTrustedMemoryRecall(principal, query)
-	} else {
-		text, err = c.handler.recallTrustedMemory(principal, query)
-	}
+	queries := contentRetrievalConsultQueries(c.userText, query)
+	text, err := c.contentRetrievalReadEach(queries, func(q string) (string, error) {
+		if c.handler.semanticTrustedMemoryRecall != nil {
+			return c.handler.semanticTrustedMemoryRecall(principal, q)
+		}
+		return c.handler.recallTrustedMemory(principal, q)
+	})
 	c.contentRetrievalMemoryDone = true
 	if err != nil {
 		return "[system rejected] " + err.Error() + contentRetrievalMemoryFooter
@@ -340,8 +341,10 @@ func (c *sharedAgentLoopCallbacks) runContentKnowledgeSearch(argsJSON string) st
 	if principal == "" {
 		principal = desktopUserID
 	}
-	query = contentRetrievalConsultQuery(c.userText, query)
-	text, err := c.handler.readTrustedKnowledge(principal, query)
+	queries := contentRetrievalConsultQueries(c.userText, query)
+	text, err := c.contentRetrievalReadEach(queries, func(q string) (string, error) {
+		return c.handler.readTrustedKnowledge(principal, q)
+	})
 	if err != nil {
 		// An error is not an empty library. Recording it as consulted used to
 		// open ssh and the network, which is the skip this ladder exists to stop.
@@ -353,6 +356,32 @@ func (c *sharedAgentLoopCallbacks) runContentKnowledgeSearch(argsJSON string) st
 		text = "No matching knowledge found."
 	}
 	return text + contentRetrievalKnowledgeFooter
+}
+
+// contentRetrievalReadEach searches every peer subject. One FTS query cannot
+// OR two short Han names: they become an AND, a card that has only one of
+// them is reported missing, and ssh opens. An empty hit is skipped. The
+// first store error stops the rest and stays incomplete for knowledge.
+func (c *sharedAgentLoopCallbacks) contentRetrievalReadEach(queries []string, read func(string) (string, error)) (string, error) {
+	if len(queries) == 0 {
+		return "", fmt.Errorf("query required")
+	}
+	var b strings.Builder
+	for _, query := range queries {
+		text, err := read(query)
+		if err != nil {
+			return "", err
+		}
+		text = strings.TrimSpace(text)
+		if text == "" || text == "No matching memory found." || text == "No matching knowledge found." {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(text)
+	}
+	return b.String(), nil
 }
 
 // ContentRetrievalStopNudge implements agent.ContentRetrievalStopGuard.
@@ -461,7 +490,203 @@ func contentRetrievalNamesSubject(userText, modelQuery string) bool {
 		return true
 	}
 	for _, span := range cjk {
-		if contentRetrievalContainsFold(span, modelQuery) || contentRetrievalContainsFold(modelQuery, span) {
+		if contentRetrievalContainsFold(modelQuery, span) {
+			return true
+		}
+		// 和上 sits inside 北京和上海, but it is not a word the segmenter cut.
+		// An interior slice must not complete the step.
+		if contentRetrievalContainsFold(span, modelQuery) && contentRetrievalHanToken(span, modelQuery) {
+			return true
+		}
+	}
+	return false
+}
+
+// contentRetrievalConsultQueries is every subject the read should search.
+// A narrowing that is one dictionary word, or one of several host identifiers,
+// stays that one. The original sentence contains every subject, so it counts
+// as naming them, and the longest span would drop the rest. Those subjects
+// are searched one by one. One hostname's labels stay a single subject.
+func contentRetrievalConsultQueries(userText, modelQuery string) []string {
+	if tok := contentRetrievalNamedHanToken(userText, modelQuery); tok != "" {
+		return []string{tok}
+	}
+	if tok := contentRetrievalNamedDigitIdent(userText, modelQuery); tok != "" {
+		return []string{tok}
+	}
+	if !contentRetrievalKeepsSentence(userText) {
+		digits, ascii, _ := contentRetrievalClassifySpans(contentRetrievalSubjectSpans(userText))
+		if len(digits) == 0 && len(ascii) == 0 {
+			if peers := contentRetrievalHanPeers(userText); len(peers) > 1 {
+				return peers
+			}
+		}
+		if contentRetrievalDottedHostQuery(userText) == "" {
+			if idents := contentRetrievalDigitIdents(userText); len(idents) > 1 {
+				return idents
+			}
+		}
+		// One Han word left in front of the cue. The longest span can still be
+		// the question word or a particle glued to the city.
+		if !contentRetrievalNamesSubject(userText, modelQuery) {
+			if peers := contentRetrievalHanPeers(userText); len(peers) == 1 {
+				if glued := contentRetrievalConsultQuery(userText, modelQuery); glued != peers[0] {
+					return peers
+				}
+			}
+		}
+	}
+	query := contentRetrievalConsultQuery(userText, modelQuery)
+	if peers := contentRetrievalHanPeers(query); len(peers) > 1 && query != strings.TrimSpace(userText) {
+		return peers
+	}
+	if query == "" {
+		return nil
+	}
+	return []string{query}
+}
+
+// contentRetrievalDigitIdents is every host-like token, such as api2 or web1.
+// Pieces of one dotted name are not listed separately. Pure numbers, including
+// a port or an address octet, are not identifiers.
+func contentRetrievalDigitIdents(text string) []string {
+	digits, _, _ := contentRetrievalClassifySpans(contentRetrievalSubjectSpans(text))
+	var idents []string
+	seen := map[string]struct{}{}
+	for _, span := range digits {
+		if !contentRetrievalAlphanumeric(span) {
+			continue
+		}
+		key := strings.ToLower(span)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		idents = append(idents, span)
+	}
+	return idents
+}
+
+// contentRetrievalNamedDigitIdent is the one identifier the model named.
+// The original sentence names every identifier, so that is not a narrowing.
+func contentRetrievalNamedDigitIdent(userText, modelQuery string) string {
+	if contentRetrievalDottedHostQuery(userText) != "" {
+		return ""
+	}
+	idents := contentRetrievalDigitIdents(userText)
+	if len(idents) < 2 {
+		return ""
+	}
+	spans := contentRetrievalSubjectSpans(modelQuery)
+	hit := ""
+	for _, id := range idents {
+		named := contentRetrievalRunesFoldEqual([]rune(strings.TrimSpace(modelQuery)), []rune(id))
+		if !named {
+			for _, span := range spans {
+				if contentRetrievalRunesFoldEqual([]rune(span), []rune(id)) {
+					named = true
+					break
+				}
+			}
+		}
+		if !named {
+			continue
+		}
+		if hit != "" {
+			return ""
+		}
+		hit = id
+	}
+	return hit
+}
+
+func contentRetrievalNamedHanToken(userText, modelQuery string) string {
+	peers := contentRetrievalHanPeers(userText)
+	modelQuery = strings.TrimSpace(modelQuery)
+	for _, peer := range peers {
+		if contentRetrievalRunesFoldEqual([]rune(peer), []rune(modelQuery)) {
+			return peer
+		}
+	}
+	toks := contentRetrievalHanPeers(modelQuery)
+	if len(toks) != 1 {
+		return ""
+	}
+	for _, peer := range peers {
+		if peer == toks[0] {
+			return peer
+		}
+	}
+	return ""
+}
+
+func contentRetrievalKeepsSentence(userText string) bool {
+	userText = strings.TrimSpace(userText)
+	digits, ascii, _ := contentRetrievalClassifySpans(contentRetrievalSubjectSpans(userText))
+	return len(digits) == 0 && len(ascii) == 0 && contentRetrievalHasASCIIIdent(userText)
+}
+
+// contentRetrievalBeforeTopicCue is the text in front of the fact being asked
+// for. 天气, 状态, 服务器, and 主机 name the kind of fact. They are also
+// removed before spans are cut, so a following word such as 怎么样 becomes
+// its own span and, being longer than the city, wins the longest-span rule.
+// The subject is the text in front of the rightmost cue.
+func contentRetrievalBeforeTopicCue(text string) string {
+	src := []rune(text)
+	best := -1
+	for _, cue := range []string{"天气", "状态", "服务器", "主机"} {
+		want := []rune(cue)
+		for i := 0; i+len(want) <= len(src); i++ {
+			if contentRetrievalRunesFoldEqual(src[i:i+len(want)], want) && i > best {
+				best = i
+			}
+		}
+	}
+	if best < 0 {
+		return text
+	}
+	return string(src[:best])
+}
+
+func contentRetrievalHanPeers(text string) []string {
+	var peers []string
+	seen := map[string]struct{}{}
+	for _, tok := range bm25.Segment(contentRetrievalStripGatePhrases(contentRetrievalBeforeTopicCue(text))) {
+		tok = strings.TrimSpace(tok)
+		if !contentRetrievalHanWord(tok) {
+			continue
+		}
+		if _, ok := seen[tok]; ok {
+			continue
+		}
+		seen[tok] = struct{}{}
+		peers = append(peers, tok)
+		if len(peers) == 8 {
+			break
+		}
+	}
+	return peers
+}
+
+func contentRetrievalHanWord(tok string) bool {
+	if utf8.RuneCountInString(tok) < 2 || contentRetrievalContainsGatePhrase(tok) {
+		return false
+	}
+	for _, r := range tok {
+		if r <= unicode.MaxASCII || !unicode.IsLetter(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func contentRetrievalHanToken(span, modelQuery string) bool {
+	modelQuery = strings.TrimSpace(modelQuery)
+	if modelQuery == "" {
+		return false
+	}
+	for _, tok := range bm25.Segment(span) {
+		if contentRetrievalRunesFoldEqual([]rune(strings.TrimSpace(tok)), []rune(modelQuery)) {
 			return true
 		}
 	}
@@ -749,6 +974,18 @@ func contentRetrievalASCIIIdentRune(r rune) bool {
 }
 
 func contentRetrievalSubjectSpans(text string) []string {
+	prefix := contentRetrievalBeforeTopicCue(text)
+	if prefix != text {
+		// Keep a subject that already stands in front of the cue. When the
+		// cue is the whole head, as in 查询状态, the tail is the text itself.
+		if spans := contentRetrievalSpanRuns(prefix); len(spans) > 0 {
+			return spans
+		}
+	}
+	return contentRetrievalSpanRuns(text)
+}
+
+func contentRetrievalSpanRuns(text string) []string {
 	var spans []string
 	var b strings.Builder
 	flush := func() {

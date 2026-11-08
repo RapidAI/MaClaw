@@ -2298,8 +2298,12 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   color: var(--theme-on-primary); font-weight: 600;
   box-shadow: 0 1px 3px color-mix(in srgb, var(--theme-primary) 32%, transparent);
 }
+/* Generic button:hover paints --mc-accent, the same blue as this fill.
+   --mc-accent-strong is --theme-primary-strong on #App, so the hover fill is flat. */
 .mc-task-artifact-item__actions .mc-artifact-btn--fill:hover:not(:disabled) {
-  background: linear-gradient(180deg, var(--theme-primary-strong), var(--mc-accent-strong, var(--theme-primary-strong)));
+  border-color: transparent;
+  background: var(--theme-primary-strong);
+  color: var(--theme-on-primary);
   box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-primary) 38%, transparent);
 }
 .mc-task-artifact-item__actions button:focus-visible { outline: 2px solid color-mix(in srgb, var(--mc-accent, #2e75cb) 45%, transparent); outline-offset: 1px; }
@@ -2338,7 +2342,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-task-artifacts__more:hover { color: var(--mc-accent, #2e75cb); border-color: color-mix(in srgb, var(--theme-primary) 40%, transparent); }
 .mc-task-result-card__actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .mc-task-result-card__actions button { min-height: 28px; padding: 0 10px; border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: var(--theme-surface); color: var(--theme-text-secondary); font-size: 11px; cursor: pointer; }
-.mc-task-result-card__actions button:hover { border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); color: var(--mc-accent, #2e75cb); background: var(--theme-primary-soft); }
+/* Skip the filled preview. Accent text here is the same blue as its fill. */
+.mc-task-result-card__actions button:hover:not(.mc-artifact-btn--fill) { border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); color: var(--mc-accent, #2e75cb); background: var(--theme-primary-soft); }
 #App[data-ai-theme='dark'] .mc-task-pane .sidebar-task-row.is-active { background: var(--theme-surface-muted) !important; }
 #App[data-ai-theme='dark'] .mc-execution-timeline { background: var(--theme-surface) !important; }
 #App[data-ai-theme='dark'] .mc-execution-step { color: var(--theme-text-primary) !important; }
@@ -2363,7 +2368,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 /* Scoped so they out-rank the generic dark action rule above. */
 #App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions button { border-color: var(--theme-border); background: transparent; color: var(--theme-text-secondary); }
-#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--theme-primary) 42%, var(--theme-border)); background: var(--theme-primary-soft); color: var(--theme-primary-strong); }
+#App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions button:hover:not(:disabled):not(.mc-artifact-btn--fill) { border-color: color-mix(in srgb, var(--theme-primary) 42%, var(--theme-border)); background: var(--theme-primary-soft); color: var(--theme-primary-strong); }
 #App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-task-upload--done,
 #App[data-ai-theme='dark'] .mc-task-artifacts .mc-task-artifact-item__actions .mc-task-upload--done:hover:not(:disabled) {
   color: var(--theme-success); background: transparent; border-color: var(--theme-border);
