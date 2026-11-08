@@ -560,8 +560,71 @@ func TestPreviewTaskResultFileImageToken(t *testing.T) {
 }
 
 func TestIsTaskResultOfficeExt(t *testing.T) {
-	if !isTaskResultOfficeExt(".docx") || !isTaskResultOfficeExt(".xlsx") || isTaskResultOfficeExt(".pptx") {
+	if !isTaskResultOfficeExt(".docx") || !isTaskResultOfficeExt(".xlsx") || isTaskResultOfficeExt(".pptx") || isTaskResultOfficeExt(".rtf") {
 		t.Fatal("office ext classification")
+	}
+}
+
+func TestPreviewTaskResultFileReadsRTFAsText(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.rtf")
+	body := []byte("{\\rtf1\\ansi hello rtf}")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "text" || got.Content != "hello rtf" {
+		t.Fatalf("rtf preview = %+v", got)
+	}
+}
+
+func TestRTFPreviewPlainTextKeepsBody(t *testing.T) {
+	got := rtfPreviewPlainText("{\\rtf1\\ansi{\\fonttbl{\\f0 Arial;}}hello\\par world \\u20320?}")
+	if got != "hello\nworld 你" {
+		t.Fatalf("rtf text = %q", got)
+	}
+	// Word writes Simplified Chinese as GBK bytes under \\ansicpg936.
+	if got := rtfPreviewPlainText("{\\rtf1\\ansi\\ansicpg936 \\'d6\\'d0\\'b9\\'fa}"); got != "中国" {
+		t.Fatalf("gbk text = %q", got)
+	}
+	if got := rtfPreviewPlainText("{\\rtf1\\ansi\\ansicpg65001 \\'e4\\'b8\\'ad}"); got != "中" {
+		t.Fatalf("utf8 text = %q", got)
+	}
+	if got := rtfPreviewPlainText("{\\rtf1 a\\cell b\\row c}"); got != "a\tb\nc" {
+		t.Fatalf("table text = %q", got)
+	}
+	if got := rtfPreviewPlainText("{\\rtf1 before\\bin4WXYZ after}"); got != "before after" {
+		t.Fatalf("bin text = %q", got)
+	}
+	// \uc is restored when its group ends. Leaving it at 0 would keep the '?' fallback.
+	if got := rtfPreviewPlainText("{\\rtf1\\uc1{\\uc0\\u65}X\\u66?}"); got != "AXB" {
+		t.Fatalf("uc scope = %q", got)
+	}
+	// Word writes an emoji as a UTF-16 surrogate pair, with a one-byte fallback each.
+	if got := rtfPreviewPlainText("{\\rtf1\\uc1\\u-10179?\\u-8704?}"); got != "😀" {
+		t.Fatalf("emoji = %q", got)
+	}
+	if plain := rtfPreviewPlainText("not rtf"); plain != "not rtf" {
+		t.Fatalf("plain = %q", plain)
+	}
+	// Word puts the font name in the font table and the body after it.
+	// The table must not leak into the preview, and \\u fallback after a
+	// delimiter space must not remain.
+	word := "{\\rtf1\\ansi\\ansicpg936\\uc1\\deff0{\\fonttbl{\\f0\\fnil\\fcharset134 \\'cb\\'ce\\'cc\\'e5;}}\\pard\\f0\\fs24 \\'d6\\'d0\\'ce\\'c4\\par}\n"
+	if got := rtfPreviewPlainText(word); got != "中文" {
+		t.Fatalf("word body = %q", got)
+	}
+	if got := rtfPreviewPlainText("{\\rtf1\\uc1\\u20013 ?}"); got != "中" {
+		t.Fatalf("spaced fallback = %q", got)
+	}
+	if got := rtfPreviewPlainText("{\\rtf1 hello\\emdash world\\ldblquote q\\rdblquote}"); got != "hello\u2014world\u201cq\u201d" {
+		t.Fatalf("punctuation = %q", got)
+	}
+	if got := rtfPreviewPlainText("{\\rtf1 well\\_known}"); got != "well-known" {
+		t.Fatalf("nbsp hyphen = %q", got)
 	}
 }
 

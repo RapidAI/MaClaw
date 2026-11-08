@@ -361,6 +361,43 @@ func TestVerifyCraftExecutionResolvesRelativeArtifactInWorkingDir(t *testing.T) 
 	}
 }
 
+func TestDetectCraftArtifactPathIgnoresPrefixCase(t *testing.T) {
+	got := detectCraftArtifactPath("ARTIFACT: \"C:\\out\\a.png\"\n")
+	if got != `C:\out\a.png` {
+		t.Fatalf("artifact path = %q", got)
+	}
+}
+
+func TestResolveCraftArtifactPathStaysInWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "out", "mouse_teases_tiger.png")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nested, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveCraftArtifactPath(dir, filepath.Join("out", "mouse_teases_tiger.png")); got != nested {
+		t.Fatalf("nested artifact = %q, want %q", got, nested)
+	}
+	outside := filepath.Join(filepath.Dir(dir), "outside.png")
+	if err := os.WriteFile(outside, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	escaped := filepath.Join("..", filepath.Base(outside))
+	if got := resolveCraftArtifactPath(dir, escaped); got != "" {
+		t.Fatalf("escaped artifact = %q, want empty", got)
+	}
+	verified := verifyCraftExecution(craftToolRequest{
+		WorkingDir:        dir,
+		ExpectedArtifacts: []string{escaped},
+		VerificationMode:  "artifact_required",
+	}, craftAttemptResult{Output: "Created: " + escaped})
+	if verified.VerificationStatus != craftVerificationArtifactMissing || verified.ArtifactPath != "" {
+		t.Fatalf("escaped verification = %q path %q, want missing and empty", verified.VerificationStatus, verified.ArtifactPath)
+	}
+}
+
 func TestBindCraftWorkingDirUsesTaskWorkspace(t *testing.T) {
 	if !toolAcceptsRuntimePolicyOwnerArg("craft_tool") {
 		t.Fatal("craft_tool must receive the task owner so the script runs in that workspace")
@@ -387,6 +424,14 @@ func TestBindCraftWorkingDirUsesTaskWorkspace(t *testing.T) {
 	}
 	if !strings.EqualFold(got, ws) && !strings.HasSuffix(strings.ToLower(filepath.ToSlash(got)), "/workspace") {
 		t.Fatalf("working_dir = %q, want the task workspace %q", got, ws)
+	}
+
+	dotted := bindCraftWorkingDir(h, map[string]interface{}{
+		registeredToolPolicyOwnerIDField: owner,
+		"working_dir":                    ".",
+	})
+	if stringVal(dotted, "working_dir") != want {
+		t.Fatalf("working_dir . = %q, want the task workspace %q", stringVal(dotted, "working_dir"), want)
 	}
 
 	explicit := filepath.Join(t.TempDir(), "scratch")

@@ -12,9 +12,17 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/encoding/korean"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/encoding/traditionalchinese"
 )
 
 // TaskResultPreview is the in-app preview payload for a generated assistant
@@ -107,6 +115,9 @@ func (a *App) PreviewTaskResultFile(filePath string) (*TaskResultPreview, error)
 		out.Language = "markdown"
 		out.Content = text
 		return out, nil
+	}
+	if ext == ".rtf" {
+		return previewTaskResultRTF(cleaned, out)
 	}
 
 	content, truncated, readErr := readCodingWorkbenchBrowserTextFile(cleaned)
@@ -401,9 +412,419 @@ func looksLikePDF(prefix []byte) bool {
 	return bytes.Contains(prefix, []byte("%PDF"))
 }
 
+// previewTaskResultRTF shows the words in an RTF file. The text reader keeps
+// the control words, and the office pane then renders those words as the
+// document. Bytes that are not UTF-8 still parse: Word stores characters as
+// \u escapes, which are ASCII.
+func previewTaskResultRTF(path string, out *TaskResultPreview) (*TaskResultPreview, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("无法预览该文件")
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, int64(codingWorkbenchBrowserMaxReadBytes)+1))
+	if err != nil {
+		return nil, fmt.Errorf("无法预览该文件")
+	}
+	truncated := len(raw) > codingWorkbenchBrowserMaxReadBytes
+	if truncated {
+		raw = raw[:codingWorkbenchBrowserMaxReadBytes]
+	}
+	text := strings.TrimSpace(rtfPreviewPlainText(string(raw)))
+	if text == "" {
+		return nil, fmt.Errorf("无法预览该文件")
+	}
+	if utf8.RuneCountInString(text) > codingWorkbenchBrowserMaxRunes {
+		text = string([]rune(text)[:codingWorkbenchBrowserMaxRunes])
+		truncated = true
+	}
+	out.Kind = "text"
+	out.Language = "plaintext"
+	out.Content = text
+	out.Truncated = truncated
+	return out, nil
+}
+
+// rtfPreviewPlainText returns the visible text of an RTF document. A file
+// that is not RTF is returned unchanged. An empty extract keeps the raw
+// text so a preview is not blanked.
+func rtfPreviewPlainText(raw string) string {
+	raw = strings.TrimPrefix(raw, "\uFEFF")
+	if !strings.HasPrefix(strings.TrimSpace(raw), "{\\rtf") {
+		return raw
+	}
+	text := strings.TrimSpace(extractRTFVisibleText(raw))
+	if text == "" {
+		return raw
+	}
+	return text
+}
+
+// rtfReader walks one RTF document. cp is the \ansicpg value: Word writes
+// Chinese as GBK bytes (936) inside \'hh escapes, not as Latin-1.
+// \uc and the code page are group-scoped. A group that changes them must
+// not leave the fallback-byte count changed for the rest of the file, or
+// every later \u character keeps its '?' substitute.
+type rtfReader struct {
+	s       string
+	b       strings.Builder
+	pending []byte
+	stack   []rtfGroupState
+	cp      int
+	ucSkip  int
+	depth   int
+	skipAt  int
+	high    rune
+}
+
+type rtfGroupState struct {
+	cp     int
+	ucSkip int
+}
+
+func extractRTFVisibleText(s string) string {
+	r := &rtfReader{s: strings.TrimPrefix(s, "\uFEFF"), cp: 1252, ucSkip: 1, skipAt: -1}
+	r.walk()
+	r.flush()
+	r.flushHigh()
+	return r.b.String()
+}
+
+func (r *rtfReader) skipping() bool {
+	return r.skipAt >= 0
+}
+
+func (r *rtfReader) walk() {
+	for i := 0; i < len(r.s); {
+		switch r.s[i] {
+		case '{':
+			r.flush()
+			r.stack = append(r.stack, rtfGroupState{cp: r.cp, ucSkip: r.ucSkip})
+			r.depth++
+			if r.skipAt < 0 && rtfGroupSkipped(r.s, i) {
+				r.skipAt = r.depth
+			}
+			i++
+		case '}':
+			r.flush()
+			if r.skipAt == r.depth {
+				r.skipAt = -1
+			}
+			if n := len(r.stack); n > 0 {
+				top := r.stack[n-1]
+				r.stack = r.stack[:n-1]
+				r.cp = top.cp
+				r.ucSkip = top.ucSkip
+			}
+			if r.depth > 0 {
+				r.depth--
+			}
+			i++
+		case '\\':
+			i = r.consumeControl(i)
+		case '\r', '\n':
+			i++
+		default:
+			if r.skipping() {
+				i++
+				continue
+			}
+			ch, size := utf8.DecodeRuneInString(r.s[i:])
+			if ch == utf8.RuneError && size == 1 {
+				r.pending = append(r.pending, r.s[i])
+				i++
+				continue
+			}
+			r.flush()
+			r.flushHigh()
+			r.b.WriteRune(ch)
+			i += size
+		}
+	}
+}
+
+func (r *rtfReader) writeEscapedByte(c byte) {
+	if r.skipping() {
+		return
+	}
+	r.pending = append(r.pending, c)
+	if !rtfCodePageMultibyte(r.cp) {
+		r.flush()
+	}
+}
+
+func (r *rtfReader) flush() {
+	if len(r.pending) == 0 {
+		return
+	}
+	buf := r.pending
+	r.pending = nil
+	if r.cp == 65001 {
+		r.b.WriteString(strings.ToValidUTF8(string(buf), ""))
+		return
+	}
+	decoded, _ := rtfCodePageEncoding(r.cp).NewDecoder().Bytes(buf)
+	if len(decoded) == 0 {
+		return
+	}
+	r.b.WriteString(strings.ToValidUTF8(string(decoded), ""))
+}
+
+func rtfGroupSkipped(s string, brace int) bool {
+	if brace+1 >= len(s) || s[brace+1] != '\\' {
+		return false
+	}
+	word, _, _, _ := readRTFControl(s, brace+1)
+	switch strings.ToLower(word) {
+	case "*", "fonttbl", "colortbl", "stylesheet", "info", "pict", "object",
+		"datastore", "themedata", "listtable", "listoverridetable", "revtbl",
+		"rsidtbl", "generator", "xmlnstbl":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *rtfReader) consumeControl(i int) int {
+	word, arg, hasArg, next := readRTFControl(r.s, i)
+	if next <= i {
+		return i + 1
+	}
+	switch word {
+	case "\\", "{", "}":
+		if !r.skipping() {
+			r.flush()
+			r.flushHigh()
+			r.b.WriteByte(word[0])
+		}
+	case "~":
+		if !r.skipping() {
+			r.flush()
+			r.flushHigh()
+			r.b.WriteByte(' ')
+		}
+	case "'":
+		if hasArg {
+			r.writeEscapedByte(byte(arg))
+		}
+	case "par", "line", "page", "row":
+		if !r.skipping() {
+			r.flush()
+			r.flushHigh()
+			r.b.WriteByte('\n')
+		}
+	case "tab", "cell":
+		if !r.skipping() {
+			r.flush()
+			r.flushHigh()
+			r.b.WriteByte('\t')
+		}
+	case "uc":
+		if hasArg && arg >= 0 && arg <= 16 {
+			r.ucSkip = arg
+		}
+	case "ansicpg":
+		if !r.skipping() && hasArg && arg > 0 {
+			r.flush()
+			r.cp = arg
+		}
+	case "bin":
+		r.flush()
+		if hasArg && arg > 0 {
+			end := next + arg
+			if end < next || end > len(r.s) {
+				end = len(r.s)
+			}
+			return end
+		}
+	case "u":
+		if !r.skipping() && hasArg {
+			r.flush()
+			r.writeUnicode(arg)
+		}
+		return skipRTFFallback(r.s, next, r.ucSkip)
+	}
+	if text, ok := rtfNamedChar(word); ok && !r.skipping() {
+		r.flush()
+		r.flushHigh()
+		r.b.WriteString(text)
+	}
+	return next
+}
+
+// rtfNamedChar is punctuation Word writes as a control word. The space after
+// the word is only a delimiter, so dropping the word glues the two sides together.
+func rtfNamedChar(word string) (string, bool) {
+	switch strings.ToLower(word) {
+	case "emdash":
+		return "\u2014", true
+	case "endash":
+		return "\u2013", true
+	case "lquote":
+		return "\u2018", true
+	case "rquote":
+		return "\u2019", true
+	case "ldblquote":
+		return "\u201c", true
+	case "rdblquote":
+		return "\u201d", true
+	case "bullet":
+		return "\u2022", true
+	case "_":
+		return "-", true
+	default:
+		return "", false
+	}
+}
+
+func (r *rtfReader) writeUnicode(arg int) {
+	if arg < 0 {
+		arg += 65536
+	}
+	ru := rune(arg)
+	if ru >= 0xD800 && ru <= 0xDBFF {
+		r.flushHigh()
+		r.high = ru
+		return
+	}
+	if r.high != 0 && ru >= 0xDC00 && ru <= 0xDFFF {
+		r.b.WriteRune(utf16.DecodeRune(r.high, ru))
+		r.high = 0
+		return
+	}
+	r.flushHigh()
+	if ru > utf8.MaxRune {
+		r.b.WriteRune('\uFFFD')
+		return
+	}
+	r.b.WriteRune(ru)
+}
+
+func (r *rtfReader) flushHigh() {
+	if r.high == 0 {
+		return
+	}
+	r.b.WriteRune('\uFFFD')
+	r.high = 0
+}
+
+func rtfCodePageMultibyte(cp int) bool {
+	switch cp {
+	case 936, 949, 950, 932, 54936, 65001:
+		return true
+	default:
+		return false
+	}
+}
+
+func rtfCodePageEncoding(cp int) encoding.Encoding {
+	switch cp {
+	case 936:
+		return simplifiedchinese.GBK
+	case 54936:
+		return simplifiedchinese.GB18030
+	case 950:
+		return traditionalchinese.Big5
+	case 932:
+		return japanese.ShiftJIS
+	case 949:
+		return korean.EUCKR
+	case 1250:
+		return charmap.Windows1250
+	case 1251:
+		return charmap.Windows1251
+	default:
+		return charmap.Windows1252
+	}
+}
+
+func readRTFControl(s string, i int) (word string, arg int, hasArg bool, next int) {
+	if i >= len(s) || s[i] != '\\' {
+		return "", 0, false, i
+	}
+	i++
+	if i >= len(s) {
+		return "", 0, false, i
+	}
+	switch s[i] {
+	case '\\', '{', '}', '~', '_', '-':
+		return string(s[i]), 0, false, i + 1
+	case '*':
+		return "*", 0, false, i + 1
+	case '\'':
+		if i+2 >= len(s) {
+			return "'", 0, false, len(s)
+		}
+		hi, ok1 := rtfHex(s[i+1])
+		lo, ok2 := rtfHex(s[i+2])
+		if !ok1 || !ok2 {
+			return "'", 0, false, i + 1
+		}
+		return "'", int(hi<<4 | lo), true, i + 3
+	}
+	start := i
+	for i < len(s) && ((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z')) {
+		i++
+	}
+	word = s[start:i]
+	if i < len(s) && (s[i] == '-' || (s[i] >= '0' && s[i] <= '9')) {
+		hasArg = true
+		sign := 1
+		if s[i] == '-' {
+			sign = -1
+			i++
+		}
+		n := 0
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			digit := int(s[i] - '0')
+			if n > (1<<27) || n*10+digit < n {
+				i++
+				continue
+			}
+			n = n*10 + digit
+			i++
+		}
+		arg = sign * n
+	}
+	if i < len(s) && s[i] == ' ' {
+		i++
+	}
+	return word, arg, hasArg, i
+}
+
+func rtfHex(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	default:
+		return 0, false
+	}
+}
+
+func skipRTFFallback(s string, i, n int) int {
+	for n > 0 && i < len(s) {
+		n--
+		if s[i] == '\\' && i+1 < len(s) && s[i+1] == '\'' {
+			_, _, _, next := readRTFControl(s, i)
+			if next > i {
+				i = next
+				continue
+			}
+		}
+		i++
+	}
+	return i
+}
+
+// isTaskResultOfficeExt selects the legacy text extract. .rtf is text, and
+// ExtractOfficeText has no rtf parser, so previewTaskResultRTF reads it.
 func isTaskResultOfficeExt(ext string) bool {
 	switch ext {
-	case ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".odt", ".ods", ".odp", ".rtf":
+	case ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".odt", ".ods", ".odp":
 		return true
 	default:
 		return false

@@ -469,7 +469,9 @@ func bindCraftWorkingDir(h *IMMessageHandler, args map[string]interface{}) map[s
 	if h != nil {
 		ownerID = h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrent(args)
 	}
-	if strings.TrimSpace(stringVal(args, "working_dir")) != "" || h == nil {
+	// "." is the process directory, not the task workspace. Treating it as
+	// explicit put the script back outside the folder the 产出物 scan reads.
+	if h == nil || !craftWorkingDirUnset(stringVal(args, "working_dir")) {
 		return args
 	}
 	dir := strings.TrimSpace(h.resolveToolWorkDirForOwner("", ownerID))
@@ -478,6 +480,10 @@ func bindCraftWorkingDir(h *IMMessageHandler, args map[string]interface{}) map[s
 	}
 	args["working_dir"] = dir
 	return args
+}
+
+func craftWorkingDirUnset(dir string) bool {
+	return filepath.Clean(strings.TrimSpace(dir)) == "."
 }
 
 func buildCraftToolRequest(args map[string]interface{}, runtimes craftRuntimeAvailability) craftToolRequest {
@@ -1424,7 +1430,8 @@ func shouldAcceptStdoutOnlyCraftResult(request craftToolRequest, expectedArtifac
 
 // resolveCraftArtifactPath checks a relative name in the script directory.
 // os.Stat of that name otherwise uses the GUI process directory, which is
-// not where the script just wrote the file.
+// not where the script just wrote the file. A relative path that leaves the
+// script directory is not that file.
 func resolveCraftArtifactPath(workingDir, path string) string {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -1437,7 +1444,13 @@ func resolveCraftArtifactPath(workingDir, path string) string {
 	if workingDir == "" {
 		return path
 	}
-	return filepath.Clean(filepath.Join(workingDir, path))
+	root := filepath.Clean(workingDir)
+	cleaned := filepath.Clean(filepath.Join(root, path))
+	rel, err := filepath.Rel(root, cleaned)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return cleaned
 }
 
 func firstExpectedArtifact(paths []string) string {
@@ -1448,14 +1461,15 @@ func firstExpectedArtifact(paths []string) string {
 }
 
 func detectCraftArtifactPath(text string) string {
+	const prefix = "artifact:"
 	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(strings.ToLower(trimmed), "artifact:") {
-			candidate := strings.TrimSpace(strings.TrimPrefix(trimmed, "artifact:"))
-			candidate = strings.TrimSpace(strings.TrimPrefix(candidate, "Artifact:"))
-			if candidate != "" {
-				return strings.Trim(candidate, "`\"'“”")
-			}
+		if len(trimmed) < len(prefix) || !strings.EqualFold(trimmed[:len(prefix)], prefix) {
+			continue
+		}
+		candidate := strings.Trim(strings.TrimSpace(trimmed[len(prefix):]), "`\"'“”")
+		if candidate != "" {
+			return candidate
 		}
 	}
 	return detectArtifactPathFromText(text)

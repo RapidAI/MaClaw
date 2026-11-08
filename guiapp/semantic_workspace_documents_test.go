@@ -69,7 +69,7 @@ func TestWorkspaceDeliverableExtCoversPreviewFormats(t *testing.T) {
 			t.Errorf("%s should follow the preview content type", ext)
 		}
 	}
-	for _, ext := range []string{".pptx", ".ppt", ".pptm", ".doc", ".odt", ".rtf", ".odp", ".html", ".htm", ".md", ".markdown", ".txt", ".csv", ".tsv", ".tex", ".ltx"} {
+	for _, ext := range []string{".pptx", ".doc", ".html", ".htm", ".md", ".markdown", ".txt", ".text", ".csv", ".tsv", ".rtf", ".tex", ".ltx", ".latex"} {
 		if !workspaceDeliverableExt(ext) {
 			t.Errorf("%s should be a deliverable the preview opens another way", ext)
 		}
@@ -77,7 +77,11 @@ func TestWorkspaceDeliverableExtCoversPreviewFormats(t *testing.T) {
 			t.Errorf("mixed-case %s should be a deliverable", ext)
 		}
 	}
-	for _, name := range []string{"notes.py", "main.go", "app.js", "run.log", "config.json", "data.yaml", "tool.exe", "scratch.tmp", "pack.zip", "book.epub", "Makefile", "README"} {
+	for _, name := range []string{
+		"notes.py", "main.go", "app.js", "run.log", "config.json", "data.yaml",
+		"tool.exe", "scratch.tmp", "pack.zip", "book.epub", "Makefile", "README",
+		"old.ppt", "deck.pptm", "合同.wps", "paper.odt", "slides.odp", "macro.docm",
+	} {
 		if isWorkspaceDocumentName(name) {
 			t.Errorf("%s should stay off the card", name)
 		}

@@ -10,12 +10,13 @@ import (
 	"time"
 )
 
-// A new workspace file becomes a 产出物 when the task-result preview can open
-// it. previewHTTPContentType is that list for PDF, Office Open XML, sheets,
-// pictures, audio, and video. Formats the same pane opens by another path
-// (slides, legacy office, web pages, markdown, plain text, csv, LaTeX) sit
-// here so a newly supported preview type does not need a second copy of the
-// mime table. Source, logs, and config stay off the card.
+// A new workspace file becomes a 产出物 when PreviewTaskResultFile can open
+// it. previewHTTPContentType covers PDF, Word Open XML, sheets, pictures,
+// audio, and video, so a newly served type joins the card on its own.
+// The switch is the other readers that function already has: the slide
+// renderer, legacy Word .doc, and text documents. Source, logs, and config
+// stay off the card. Old PowerPoint, WPS, and ODF containers have no reader
+// in that pane, so a card for them would only show a preview error.
 
 // hostDeliveryCopyName matches the suffix uniqueLocalDeliveryPath adds when
 // the workspace already has the producer's real file: name_HHMMSS_mmm.ext.
@@ -30,24 +31,24 @@ type workspaceDocumentStamp struct {
 }
 
 func isWorkspaceDocumentName(name string) bool {
-	return workspaceDeliverableExt(strings.ToLower(filepath.Ext(strings.TrimSpace(name))))
+	return workspaceDeliverableExt(filepath.Ext(strings.TrimSpace(name)))
 }
 
-// workspaceDeliverableExt is the single gate for the 产出物 card. A kind
-// previewHTTPContentType already serves is included automatically.
+// workspaceDeliverableExt is the single gate for the 产出物 card.
 func workspaceDeliverableExt(ext string) bool {
 	ext = strings.ToLower(strings.TrimSpace(ext))
 	if ext == "" {
 		return false
 	}
+	if ext == ".pptx" || ext == ".doc" {
+		return true
+	}
 	if kind, _ := previewHTTPContentType(ext); kind != "" {
 		return true
 	}
 	switch ext {
-	case ".pptx", ".ppt", ".pptm", ".pps", ".ppsx",
-		".doc", ".docm", ".dot", ".dotx", ".wps", ".wpt", ".odt", ".rtf",
-		".odp", ".dps", ".dpt",
-		".html", ".htm", ".md", ".markdown", ".txt", ".csv", ".tsv",
+	case ".html", ".htm", ".md", ".markdown", ".txt", ".text",
+		".csv", ".tsv", ".rtf",
 		".tex", ".ltx", ".latex":
 		return true
 	default:
