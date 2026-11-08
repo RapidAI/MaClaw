@@ -19,7 +19,7 @@ import (
 
 const contentRetrievalOrderMark = "【内容检索】"
 
-const contentRetrievalOrderPrompt = "\n【内容检索】先调用 memory_recall，再调用 knowledge_search。两边都没有所需事实时才用网络。记忆与知识库不一致时，以知识库为准，不要问用户选哪一份。不要用 craft_tool、本机文件或 ssh 代替这两次检索。用户给出的 URL 直接抓取该地址。\n"
+const contentRetrievalOrderPrompt = "\n【内容检索】仅当请求需要已有事实时，先调用 memory_recall，再调用 knowledge_search。两边都没有所需事实时才用网络。记忆与知识库不一致时，以知识库为准，不要问用户选哪一份。不要用 craft_tool、本机文件或 ssh 代替这两次检索。如果目标是保存新内容，不要先做这两次检索：调用 tools_search，在 needs 中只写要使用的知识库写入工具名，加载后直接保存。用户给出的 URL 直接抓取该地址。\n"
 
 const contentRetrievalNeedMemory = "内容检索先调用 memory_recall，query 用用户的原话。顺序是先记忆，再知识库，后网络。记忆与知识库不一致时，以知识库为准。不要用 craft_tool、本机文件、ssh 或网络代替。"
 
@@ -35,15 +35,11 @@ func contentRetrievalUtterance(text string) bool {
 	if text == "" || discoveryPictureCreationUtterance(text) || contentRetrievalSuppliedURL(text) {
 		return false
 	}
-	if contentRetrievalKnowledgeWrite(text) && !contentRetrievalLookupVerb(text) {
-		return false
-	}
 	return contentRetrievalLookupVerb(text) || contentRetrievalStoredCue(text)
 }
 
 // Phrases that arm the ladder. A query made only of these is the gate talking
-// to itself, not the subject the user asked about. Lookup and stored cues stay
-// separate: a knowledge-write utterance that merely mentions a host is not a lookup.
+// to itself, not the subject the user asked about.
 var contentRetrievalLookupPhrases = []string{
 	"查一下", "是什么", "什么是",
 	"查询", "查查", "查找", "检索", "状态", "天气",
@@ -77,17 +73,17 @@ func contentRetrievalSuppliedURL(text string) bool {
 	return strings.Contains(lower, "https://") || strings.Contains(lower, "http://")
 }
 
-func contentRetrievalKnowledgeWrite(text string) bool {
-	for _, cue := range []string{"存入知识库", "保存到知识库", "记入知识库", "写入知识库", "加入知识库"} {
-		if strings.Contains(text, cue) {
-			return true
-		}
-	}
-	return false
-}
-
 func contentRetrievalActive(surface *semanticCallSurface, userText string) bool {
 	return surface != nil && surface.replan != nil && intent.ClassificationIsModelDiscovery(surface.replan.Classification) && contentRetrievalUtterance(userText)
+}
+
+func contentRetrievalKnowledgeWriteTool(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "knowledge_save_text", "knowledge_save_url", "knowledge_save_urls", "knowledge_import_directory", "knowledge_import_files", "knowledge_import_snapshot", semanticTrustedKnowledgeIngestAdapter:
+		return true
+	default:
+		return false
+	}
 }
 
 func contentRetrievalExempt(name string) bool {
@@ -95,7 +91,7 @@ func contentRetrievalExempt(name string) bool {
 	case chatTaskToolSteer, chatTaskToolStop, chatTaskToolRequestInput, "current_datetime":
 		return true
 	default:
-		return false
+		return contentRetrievalKnowledgeWriteTool(name)
 	}
 }
 
@@ -125,6 +121,16 @@ func (c *sharedAgentLoopCallbacks) contentRetrievalOwned() bool {
 // ordinary grant rules decide ssh and the network. reason is empty when the
 // call may run.
 func (c *sharedAgentLoopCallbacks) contentRetrievalGate(name string) (handled bool, allowed bool, reason string) {
+	// tools_search is decided from its arguments. IsToolAllowed runs first and
+	// only sees the name, so blocking it here removes the tool and the
+	// knowledge-write load never reaches IsToolCallAllowed.
+	if strings.TrimSpace(name) == semanticToolsSearchName {
+		return false, false, ""
+	}
+	return c.contentRetrievalGateStep(name)
+}
+
+func (c *sharedAgentLoopCallbacks) contentRetrievalGateStep(name string) (handled bool, allowed bool, reason string) {
 	if !c.contentRetrievalOwned() || contentRetrievalExempt(name) {
 		return false, false, ""
 	}
@@ -146,6 +152,39 @@ func (c *sharedAgentLoopCallbacks) contentRetrievalGate(name string) (handled bo
 		}
 		return false, false, ""
 	}
+}
+
+// contentRetrievalGateCall lets discovery load exactly one knowledge-write
+// tool without interpreting the user's language. Other capability loads stay
+// behind the reads, including a write name batched with a network tool.
+func (c *sharedAgentLoopCallbacks) contentRetrievalGateCall(name, argsJSON string) (handled bool, allowed bool, reason string) {
+	if strings.TrimSpace(name) == semanticToolsSearchName {
+		if contentRetrievalKnowledgeWriteDiscovery(argsJSON) {
+			return false, false, ""
+		}
+		return c.contentRetrievalGateStep(name)
+	}
+	return c.contentRetrievalGateStep(name)
+}
+
+func contentRetrievalKnowledgeWriteDiscovery(argsJSON string) bool {
+	var args map[string]interface{}
+	if json.Unmarshal([]byte(argsJSON), &args) != nil || args == nil {
+		return false
+	}
+	needs, err := parseExactSearchNeeds(args["needs"])
+	if err != nil || len(needs) != 1 {
+		return false
+	}
+	for need := range needs {
+		name := strings.TrimSpace(string(need))
+		if !contentRetrievalKnowledgeWriteTool(name) {
+			return false
+		}
+		_, petitionable := semanticPetitionableCapabilities[name]
+		return petitionable
+	}
+	return false
 }
 
 func (c *sharedAgentLoopCallbacks) contentRetrievalProgress() (memory bool, knowledge bool) {
@@ -359,17 +398,27 @@ func contentRetrievalConsultQuery(userText, modelQuery string) string {
 	if !contentRetrievalNamesSubject(userText, modelQuery) {
 		return contentRetrievalFallbackQuery(userText)
 	}
-	if contentRetrievalContainsGatePhrase(modelQuery) {
-		// The gate phrase can be the only topic, as in ssh到那台主机. Stripping
-		// it would leave a particle and miss the card. The user text still
-		// contains that phrase, so it is the consultation.
-		if contentRetrievalFallbackQuery(userText) == userText && contentRetrievalHasASCIIIdent(userText) {
-			return userText
-		}
-		if subject := contentRetrievalSubjectQuery(modelQuery); subject != "" && contentRetrievalNamesSubject(userText, subject) {
+	// A port is not a gate phrase, but the lexical builder treats
+	// api2.maclaw.top:22 as one phrase and requires the port. The host
+	// identifier is the consultation.
+	if contentRetrievalContainsGatePhrase(modelQuery) || contentRetrievalHasHostPort(modelQuery) {
+		fallback := contentRetrievalFallbackQuery(userText)
+		subject := contentRetrievalSubjectQuery(modelQuery)
+		if subject != "" && contentRetrievalNamesSubject(userText, subject) {
+			// Stripping ssh/主机 leaves a particle such as 到那台. That is not
+			// the topic. The user text still contains the phrase, and FTS ORs
+			// it, so the user text is the consultation.
+			if fallback == userText && contentRetrievalHasASCIIIdent(userText) && !contentRetrievalHasASCIIIdent(subject) {
+				return userText
+			}
 			return subject
 		}
-		return contentRetrievalFallbackQuery(userText)
+		return fallback
+	}
+	// "the backup" still names backup, but the lexical builder ANDs the extra
+	// word. api2.maclaw.top likewise names api2. Search that subject.
+	if bare := contentRetrievalSubjectQuery(modelQuery); bare != "" && bare != modelQuery && contentRetrievalNamesSubject(userText, bare) {
+		return bare
 	}
 	return modelQuery
 }
@@ -384,12 +433,29 @@ func contentRetrievalNamesSubject(userText, modelQuery string) bool {
 	if len(contentRetrievalSubjectSpans(modelQuery)) == 0 {
 		return false
 	}
+	// One hostname's consultation is its identifier or the whole address.
+	// A port or a single octet still occurs in the user text, and treating
+	// it as the subject completes the step on the wrong card.
+	if host := contentRetrievalDottedHostQuery(userText); host != "" {
+		return contentRetrievalContainsFold(modelQuery, host)
+	}
 	digits, ascii, cjk := contentRetrievalClassifySpans(contentRetrievalSubjectSpans(userText))
 	if len(digits) > 0 {
+		idents := make([]string, 0, len(digits))
+		for _, span := range digits {
+			if contentRetrievalAlphanumeric(span) {
+				idents = append(idents, span)
+			}
+		}
+		if len(idents) > 0 {
+			return contentRetrievalContainsAnyFold(modelQuery, idents)
+		}
 		return contentRetrievalContainsAnyFold(modelQuery, digits)
 	}
 	if len(ascii) > 0 {
-		return contentRetrievalContainsAnyFold(modelQuery, ascii)
+		// "of" and "the" are spans too. Only the longest word is the subject,
+		// so a function word cannot complete the step.
+		return contentRetrievalContainsFold(modelQuery, contentRetrievalLongestSpan(ascii))
 	}
 	if len(cjk) == 0 {
 		return true
@@ -403,16 +469,16 @@ func contentRetrievalNamesSubject(userText, modelQuery string) bool {
 }
 
 // contentRetrievalFallbackQuery is the consultation when the model did not
-// name the subject. A digit identifier (api2) is the query. A pure CJK
-// subject (北京) is the query. When the only ASCII token was itself a gate
-// phrase (ssh) and the leftover is not an identifier, the user text is
-// searched so that phrase stays in the query.
+// name the subject. A single identifier (api2, 北京) is the query. Several
+// identifiers are not joined: the lexical builder ANDs whitespace-separated
+// tokens, so a card that has only one of them is reported missing and ssh
+// opens. A mixed sentence takes the OR path, so the user text is searched.
+// A single-script list uses its longest span. When the only ASCII token was
+// itself a gate phrase (ssh) and the leftover is not an identifier, the user
+// text is searched so that phrase stays in the query.
 func contentRetrievalFallbackQuery(userText string) string {
 	digits, ascii, _ := contentRetrievalClassifySpans(contentRetrievalSubjectSpans(userText))
-	if len(digits) > 0 {
-		return strings.Join(digits, " ")
-	}
-	if contentRetrievalHasASCIIIdent(userText) && len(ascii) == 0 {
+	if len(digits) == 0 && len(ascii) == 0 && contentRetrievalHasASCIIIdent(userText) {
 		return userText
 	}
 	if subject := contentRetrievalSubjectQuery(userText); subject != "" {
@@ -422,19 +488,171 @@ func contentRetrievalFallbackQuery(userText string) string {
 }
 
 // contentRetrievalSubjectQuery is the subject with the ladder's own phrases
-// removed. It does not substitute the original sentence back in.
+// removed. One span is returned as itself. One hostname is one subject even
+// when a Chinese sentence makes its labels look like several identifiers:
+// the label that mixes letters and digits is the identifier, and a hostname
+// with no such label is searched whole. Several separate identifiers in a
+// mixed sentence return the sentence, because that query ORs. Several spans
+// in one script return the longest digit identifier when one exists,
+// otherwise the longest span. The pieces of a hostname must not be ANDed.
 func contentRetrievalSubjectQuery(text string) string {
+	if host := contentRetrievalDottedHostQuery(text); host != "" {
+		return host
+	}
 	digits, ascii, cjk := contentRetrievalClassifySpans(contentRetrievalSubjectSpans(text))
-	switch {
-	case len(digits) > 0:
-		return strings.Join(digits, " ")
-	case len(ascii) > 0:
-		return strings.Join(ascii, " ")
-	case len(cjk) > 0:
-		return strings.Join(cjk, " ")
+	spans := cjk
+	if len(digits) > 0 || len(ascii) > 0 {
+		spans = append(append([]string{}, digits...), ascii...)
+	}
+	switch len(spans) {
+	case 0:
+		return ""
+	case 1:
+		return spans[0]
 	default:
+		if contentRetrievalMixedScript(text) {
+			return strings.TrimSpace(text)
+		}
+		if len(digits) > 0 {
+			return contentRetrievalLongestSpan(digits)
+		}
+		return contentRetrievalLongestSpan(spans)
+	}
+}
+
+// contentRetrievalDottedHostQuery collapses the labels of a single hostname.
+// A Chinese sentence is mixed, so api2, maclaw, and top would otherwise be
+// searched as the whole utterance and 状态 can fill the result. A second
+// hostname or any other subject leaves this empty and the caller keeps the
+// OR path.
+func contentRetrievalDottedHostQuery(text string) string {
+	hosts := contentRetrievalDottedHosts(contentRetrievalStripGatePhrases(text))
+	if len(hosts) != 1 {
 		return ""
 	}
+	pieces := strings.FieldsFunc(hosts[0], func(r rune) bool { return r == '.' })
+	if len(pieces) < 2 {
+		return ""
+	}
+	known := make(map[string]struct{}, len(pieces))
+	for _, piece := range pieces {
+		known[strings.ToLower(piece)] = struct{}{}
+	}
+	stripped := strings.ToLower(contentRetrievalStripGatePhrases(text))
+	hostKey := strings.ToLower(hosts[0])
+	for _, span := range contentRetrievalSubjectSpans(text) {
+		if _, ok := known[strings.ToLower(span)]; ok {
+			continue
+		}
+		// :22 is this host's port, not a second subject.
+		if contentRetrievalPureDigits(span) && strings.Contains(stripped, hostKey+":"+span) {
+			continue
+		}
+		return ""
+	}
+	var ident []string
+	for _, piece := range pieces {
+		if utf8.RuneCountInString(piece) >= 2 && contentRetrievalAlphanumeric(piece) {
+			ident = append(ident, piece)
+		}
+	}
+	if len(ident) > 0 {
+		return contentRetrievalLongestSpan(ident)
+	}
+	return hosts[0]
+}
+
+func contentRetrievalDottedHosts(text string) []string {
+	var hosts []string
+	var b strings.Builder
+	flush := func() {
+		token := strings.Trim(b.String(), ".")
+		b.Reset()
+		if strings.Count(token, ".") < 1 {
+			return
+		}
+		pieces := strings.FieldsFunc(token, func(r rune) bool { return r == '.' })
+		if len(pieces) >= 2 {
+			hosts = append(hosts, token)
+		}
+	}
+	for _, r := range text {
+		if contentRetrievalASCIIIdentRune(r) || r == '.' {
+			b.WriteRune(r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return hosts
+}
+
+func contentRetrievalAlphanumeric(text string) bool {
+	letter := false
+	digit := false
+	for _, r := range text {
+		switch {
+		case unicode.IsLetter(r):
+			letter = true
+		case unicode.IsDigit(r):
+			digit = true
+		}
+	}
+	return letter && digit
+}
+
+func contentRetrievalPureDigits(text string) bool {
+	if text == "" {
+		return false
+	}
+	for _, r := range text {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// contentRetrievalHasHostPort reports a single hostname with a :digits suffix.
+func contentRetrievalHasHostPort(text string) bool {
+	hosts := contentRetrievalDottedHosts(text)
+	if len(hosts) != 1 {
+		return false
+	}
+	lower := strings.ToLower(text)
+	needle := strings.ToLower(hosts[0]) + ":"
+	idx := strings.Index(lower, needle)
+	if idx < 0 || idx+len(needle) >= len(lower) {
+		return false
+	}
+	return unicode.IsDigit(rune(lower[idx+len(needle)]))
+}
+
+func contentRetrievalLongestSpan(spans []string) string {
+	best := ""
+	bestN := 0
+	for _, span := range spans {
+		n := utf8.RuneCountInString(span)
+		if n > bestN {
+			best = span
+			bestN = n
+		}
+	}
+	return best
+}
+
+func contentRetrievalMixedScript(text string) bool {
+	ascii := false
+	other := false
+	for _, r := range text {
+		switch {
+		case contentRetrievalASCIIIdentRune(r):
+			ascii = true
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			other = true
+		}
+	}
+	return ascii && other
 }
 
 func contentRetrievalContainsGatePhrase(text string) bool {

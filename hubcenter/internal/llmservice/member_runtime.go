@@ -841,6 +841,9 @@ func validateMemberPolicy(provider *llmpool.ProviderConfig) error {
 	if provider.RateLimitCooldownSec < 0 || provider.RateLimitCooldownSec > maxRateLimitCooldownSec {
 		return fmt.Errorf("rate_limit_cooldown_sec must be between 0 and %d", maxRateLimitCooldownSec)
 	}
+	if provider.MaxOutputTokensPerRequest < 0 {
+		return fmt.Errorf("max_output_tokens_per_request must be zero or greater")
+	}
 	if provider.ModelMap == nil {
 		return nil
 	}

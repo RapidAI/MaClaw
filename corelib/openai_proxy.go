@@ -897,8 +897,14 @@ func openaiToAnthropic(body map[string]interface{}, model string) map[string]int
 		"stream": false,
 	}
 
-	// Extract max_tokens from body, default to a larger budget for tool loops.
+	// Anthropic has one output field. A caller who set max_tokens keeps that
+	// value, including 0. When that name is absent, max_completion_tokens is
+	// the same budget under the newer OpenAI name and must not be replaced
+	// by the 4096/8192 default. The default remains only for a body that
+	// named neither budget.
 	if mt, ok := body["max_tokens"]; ok && mt != nil {
+		anthropicReq["max_tokens"] = mt
+	} else if mt, ok := body["max_completion_tokens"]; ok && mt != nil {
 		anthropicReq["max_tokens"] = mt
 	} else if len(openAICompatForwardSlice(body["tools"])) > 0 {
 		anthropicReq["max_tokens"] = 8192

@@ -64,7 +64,7 @@ func ForwardOpenCodeChat(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 	}
 	// Zen chat rewrites tools, stream, and the default output cap after the
 	// caller built the body. Member overrides run after that rewrite.
-	corelib.ApplyMemberUpstreamBody(body, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields)
+	corelib.FinishMemberUpstreamBody(cfg, body)
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, 0, err
@@ -99,7 +99,9 @@ func ForwardOpenCodeChat(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 }
 
 func forwardOpenCodeResponses(ctx context.Context, cfg corelib.MaclawLLMConfig, body map[string]interface{}, client *http.Client) ([]byte, int, error) {
-	resp, err := DoResponsesAPIRequestStream(ctx, cfg, openCodeForwardMessages(body["messages"]), openAIChatTools(body["tools"]), client, nil, nil)
+	resp, err := DoResponsesAPIRequestStreamWithOptions(ctx, cfg, openCodeForwardMessages(body["messages"]), openAIChatTools(body["tools"]), client, nil, nil, ResponsesAPIRequestOptions{
+		ExtraBody: OpenCodeResponsesBudgetExtra(body),
+	})
 	if err != nil {
 		var httpErr *HTTPStatusError
 		if errors.As(err, &httpErr) && httpErr != nil {
@@ -150,4 +152,24 @@ func openCodePartialResponse(resp *Response) ([]byte, bool) {
 func openCodeForwardMessages(raw interface{}) []interface{} {
 	messages, _ := raw.([]interface{})
 	return messages
+}
+
+// OpenCodeResponsesBudgetExtra copies the chat output budgets onto a
+// Responses request. Muse builds a new body and does not see the chat map.
+// Without these fields the builder injects 65536 and Zen then deletes that
+// default, so a member cap or a caller budget never reaches the wire.
+func OpenCodeResponsesBudgetExtra(body map[string]interface{}) map[string]interface{} {
+	if len(body) == 0 {
+		return nil
+	}
+	extra := make(map[string]interface{})
+	for _, key := range []string{"max_output_tokens", "max_completion_tokens", "max_tokens"} {
+		if value, ok := body[key]; ok {
+			extra[key] = value
+		}
+	}
+	if len(extra) == 0 {
+		return nil
+	}
+	return extra
 }

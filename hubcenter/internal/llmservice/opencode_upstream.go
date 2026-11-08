@@ -189,7 +189,7 @@ func planOpenCodeStream(provider *llmpool.ProviderConfig, body map[string]any, u
 	}
 	// Zen chat injects tools and may delete the default output cap. Apply
 	// member overrides after that rewrite so extra_body and drop_fields win.
-	corelib.ApplyMemberUpstreamBody(chat, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields)
+	corelib.FinishMemberUpstreamBody(cfg, chat)
 	payload, err := json.Marshal(chat)
 	if err != nil {
 		return openCodeStreamPlan{}, true, err
@@ -200,7 +200,9 @@ func planOpenCodeStream(provider *llmpool.ProviderConfig, body map[string]any, u
 
 func streamOpenCodeResponses(ctx context.Context, client *http.Client, cfg corelib.MaclawLLMConfig, body map[string]any, responseModel string, dst ProxyStreamWriter) (*providerStreamResult, error) {
 	messages, _ := body["messages"].([]interface{})
-	resp, err := corellm.DoResponsesAPIRequestStream(ctx, cfg, messages, openCodeProxyTools(body["tools"]), client, nil, nil)
+	resp, err := corellm.DoResponsesAPIRequestStreamWithOptions(ctx, cfg, messages, openCodeProxyTools(body["tools"]), client, nil, nil, corellm.ResponsesAPIRequestOptions{
+		ExtraBody: corellm.OpenCodeResponsesBudgetExtra(body),
+	})
 	if err != nil {
 		var httpErr *corellm.HTTPStatusError
 		if errors.As(err, &httpErr) && httpErr != nil {

@@ -380,6 +380,13 @@ func adminPatchLLMProviderMember(svc *llmservice.Service, bank *SkillMarketHandl
 				}
 				patch.DropFieldsSet = true
 				patch.DropFields = fields
+			case "max_output_tokens_per_request":
+				number, err := parseNonNegativeIntField(key, value)
+				if err != nil {
+					writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+				patch.MaxOutputTokensPerRequest = &number
 			case "dry_run":
 				if err := json.Unmarshal(value, &dryRun); err != nil {
 					writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "dry_run must be a boolean"})
@@ -512,7 +519,8 @@ func providerMemberPatchEmpty(patch llmservice.ProviderMemberPatch) bool {
 		!patch.ArrayIDSet &&
 		!patch.ExtraBodySet &&
 		!patch.ExtraBodyPrioritySet &&
-		!patch.DropFieldsSet
+		!patch.DropFieldsSet &&
+		patch.MaxOutputTokensPerRequest == nil
 }
 
 func parseMemberExtraBodyPatch(value json.RawMessage) (map[string]any, error) {
@@ -535,6 +543,9 @@ func memberUpstreamPatchPayload(id string, patch llmservice.ProviderMemberPatch,
 	payload := map[string]any{"status": "ok", "id": id}
 	if dryRun {
 		payload["dry_run"] = true
+	}
+	if patch.MaxOutputTokensPerRequest != nil {
+		payload["max_output_tokens_per_request"] = *patch.MaxOutputTokensPerRequest
 	}
 	if preview != nil {
 		payload["member"] = llmservice.MemberStatusView(*preview, time.Now())
@@ -705,10 +716,12 @@ func adminTestLLMProviderMember(svc *llmservice.Service, proxyCfg *llmservice.Pr
 			ctx, cancel := context.WithTimeout(r.Context(), llmservice.MemberProbeContextTimeout(existing))
 			defer cancel()
 			probed := llmservice.TestProviderChat(ctx, proxyCfg, existing, llmservice.ProviderChatTest{
-				Model:      model,
-				Node:       node,
-				Tools:      spec.Tools,
-				ToolChoice: spec.ToolChoice,
+				Model:               model,
+				Node:                node,
+				Tools:               spec.Tools,
+				ToolChoice:          spec.ToolChoice,
+				MaxTokens:           spec.MaxTokens,
+				MaxCompletionTokens: spec.MaxCompletionTokens,
 			})
 			writeProviderMemberTest(w, providerMemberTestResult{
 				success: probed.Err == "", errMsg: probed.Err, reply: probed.Reply, model: probed.Model,
@@ -728,7 +741,11 @@ func adminTestLLMProviderMember(svc *llmservice.Service, proxyCfg *llmservice.Pr
 		cfg = providerTestConfig(cfg, existing)
 		ctx, cancel := context.WithTimeout(r.Context(), llmProviderTestTimeout(cfg))
 		defer cancel()
-		reply, errMsg, latencyMs, calls := runLLMProviderChatTestBody(ctx, cfg, spec.Tools, spec.ToolChoice)
+		reply, errMsg, latencyMs, calls := runLLMProviderChatTestBody(ctx, cfg, spec.Tools, spec.ToolChoice, providerTestBudget{
+			MaxTokens:           spec.MaxTokens,
+			MaxCompletionTokens: spec.MaxCompletionTokens,
+			OutputCap:           existing.MaxOutputTokensPerRequest,
+		})
 		ran := node
 		if ran == "" {
 			ran = localNode
@@ -741,11 +758,13 @@ func adminTestLLMProviderMember(svc *llmservice.Service, proxyCfg *llmservice.Pr
 }
 
 type providerMemberTestBody struct {
-	Model      string
-	Node       string
-	Tools      json.RawMessage
-	ToolChoice json.RawMessage
-	ToolsSet   bool
+	Model               string
+	Node                string
+	Tools               json.RawMessage
+	ToolChoice          json.RawMessage
+	ToolsSet            bool
+	MaxTokens           *int64
+	MaxCompletionTokens *int64
 }
 
 func readProviderMemberTestRequest(w http.ResponseWriter, r *http.Request) (providerMemberTestBody, error) {
@@ -796,6 +815,16 @@ func readProviderMemberTestRequest(w http.ResponseWriter, r *http.Request) (prov
 				}
 			}
 			spec.ToolChoice = append(json.RawMessage(nil), value...)
+		case "max_tokens", "max_completion_tokens":
+			number, err := parseNonNegativeIntField(key, value)
+			if err != nil {
+				return providerMemberTestBody{}, err
+			}
+			if key == "max_tokens" {
+				spec.MaxTokens = &number
+			} else {
+				spec.MaxCompletionTokens = &number
+			}
 		default:
 			return providerMemberTestBody{}, errors.New("unknown field " + key + "; this test uses the saved provider configuration")
 		}
@@ -1050,6 +1079,14 @@ func parseCapabilityTagsField(raw json.RawMessage) ([]string, error) {
 		return nil, errors.New("capability_tags must be an array or a comma-separated string")
 	}
 	return llmservice.NormalizeCapabilityTags(tags)
+}
+
+func parseNonNegativeIntField(key string, raw json.RawMessage) (int64, error) {
+	number, err := jsonWholeInt(raw)
+	if err != nil || number < 0 {
+		return 0, errors.New(key + " must be a non-negative integer")
+	}
+	return int64(number), nil
 }
 
 func jsonWholeInt(raw json.RawMessage) (int, error) {

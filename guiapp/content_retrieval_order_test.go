@@ -31,24 +31,34 @@ func TestContentRetrievalUtterance(t *testing.T) {
 	if contentRetrievalUtterance("生成一张图片") {
 		t.Fatal("picture creation is not a content retrieval")
 	}
-	if contentRetrievalUtterance("api2服务器信息，将它存入知识库") {
-		t.Fatal("saving into the knowledge base is not a lookup")
-	}
 	if contentRetrievalUtterance("查一下 https://example.com/status") {
 		t.Fatal("a user-supplied URL is fetched directly")
 	}
 	if contentRetrievalUtterance("给张三发一封邮件") || contentRetrievalUtterance("看一下") {
 		t.Fatal("mail and a bare look are not content retrieval")
 	}
+	base := "api2服务器信息：api2.maclaw.top root [REDACTED]"
+	if contentRetrievalUtterance(base+"，保存进知识库") != contentRetrievalUtterance(base) {
+		t.Fatal("save wording must not change retrieval activation")
+	}
 }
 
 func TestContentRetrievalGateOrdersMemoryThenKnowledge(t *testing.T) {
 	cb := discoveryContentCallbacks("查询 api2服务器状态")
-	for _, name := range []string{"craft_tool", "tools_search", "web_search", "web_fetch", "ssh", "bash", "knowledge_search", chatTaskToolDispatch} {
+	for _, name := range []string{"craft_tool", "web_search", "web_fetch", "ssh", "bash", "knowledge_search", chatTaskToolDispatch} {
 		handled, allowed, reason := cb.contentRetrievalGate(name)
 		if !handled || allowed || !strings.Contains(reason, "memory_recall") {
 			t.Fatalf("%s before memory: handled=%v allowed=%v reason=%q", name, handled, allowed, reason)
 		}
+	}
+	if handled, _, _ := cb.contentRetrievalGate("tools_search"); handled {
+		t.Fatal("tools_search is decided from its arguments")
+	}
+	if !cb.IsToolAllowed("tools_search") {
+		t.Fatal("tools_search was removed before its arguments could be read")
+	}
+	if handled, allowed, reason := cb.contentRetrievalGateCall("tools_search", `{"needs":["ssh"]}`); !handled || allowed || !strings.Contains(reason, "memory_recall") {
+		t.Fatalf("ssh discovery: handled=%v allowed=%v reason=%q", handled, allowed, reason)
 	}
 	for _, name := range []string{chatTaskToolSteer, chatTaskToolStop, chatTaskToolRequestInput, "current_datetime"} {
 		if handled, _, _ := cb.contentRetrievalGate(name); handled {
@@ -74,6 +84,37 @@ func TestContentRetrievalGateOrdersMemoryThenKnowledge(t *testing.T) {
 	for _, name := range []string{"ssh", "web_search", "craft_tool", "tools_search", chatTaskToolDispatch} {
 		if handled, _, reason := cb.contentRetrievalGate(name); handled {
 			t.Fatalf("%s still owned after both stores: %s", name, reason)
+		}
+	}
+}
+
+func TestContentRetrievalKnowledgeWriteDiscoverySkipsReads(t *testing.T) {
+	for _, userText := range []string{
+		"api2服务器信息：api2.maclaw.top root [REDACTED]，保存进知识库",
+		"save the api2 server status into the knowledge base",
+	} {
+		cb := discoveryContentCallbacks(userText)
+		allowed, reason := cb.IsToolCallAllowed(semanticToolsSearchName, `{"needs":["knowledge_save_text"]}`)
+		if !allowed || reason != "" {
+			t.Fatalf("write discovery remained behind retrieval for %q: allowed=%v reason=%q", userText, allowed, reason)
+		}
+		for _, name := range []string{"knowledge_save_text", semanticTrustedKnowledgeIngestAdapter} {
+			if handled, _, reason := cb.contentRetrievalGateCall(name, `{"text":"note"}`); handled {
+				t.Fatalf("%s was held behind retrieval for %q: %q", name, userText, reason)
+			}
+		}
+	}
+	cb := discoveryContentCallbacks("查询 api2服务器状态")
+	for _, args := range []string{
+		`{"needs":["web_search"]}`,
+		`{"needs":["knowledge_save_text","web_search"]}`,
+		`{"needs":["knowledge_save_url"]}`,
+		`{"needs":["semantic_ingest_trusted_knowledge"]}`,
+		`{"needs":"knowledge_save_text"}`,
+		`{}`,
+	} {
+		if handled, allowed, reason := cb.contentRetrievalGateCall(semanticToolsSearchName, args); !handled || allowed || !strings.Contains(reason, "memory_recall") {
+			t.Fatalf("non-write discovery escaped retrieval: args=%s handled=%v allowed=%v reason=%q", args, handled, allowed, reason)
 		}
 	}
 }
@@ -374,6 +415,65 @@ func TestContentRetrievalConsultQueryUsesTheSubject(t *testing.T) {
 	if got := contentRetrievalConsultQuery("查询 maclaw 状态", "状态"); got != "maclaw" {
 		t.Fatalf("name query=%q", got)
 	}
+	both := "查询 api2 与 web1 的状态"
+	if got := contentRetrievalConsultQuery(both, "状态"); got != both {
+		t.Fatalf("two hosts were ANDed: %q", got)
+	}
+	if got := contentRetrievalConsultQuery(both, "web1"); got != "web1" {
+		t.Fatalf("one of two hosts=%q", got)
+	}
+	if got := contentRetrievalConsultQuery("check the status of the backup", "status"); got != "backup" {
+		t.Fatalf("english status query=%q", got)
+	}
+	for _, query := range []string{"of", "the", "of the", "the backup"} {
+		if got := contentRetrievalConsultQuery("check the status of the backup", query); got != "backup" {
+			t.Fatalf("english function word %q searched %q", query, got)
+		}
+	}
+	if got := contentRetrievalConsultQuery("look up api2.maclaw.top status", "api2.maclaw.top"); got != "api2" {
+		t.Fatalf("repeated hostname=%q", got)
+	}
+	if got := contentRetrievalConsultQuery("查一下北京，上海的天气", "天气"); got != "上海的" {
+		t.Fatalf("two cities=%q", got)
+	}
+	if got := contentRetrievalConsultQuery("look up api2.maclaw.top status", "status"); got != "api2" {
+		t.Fatalf("domain label searched instead of the host id: %q", got)
+	}
+	for _, query := range []string{"状态", "查询 api2.maclaw.top 状态"} {
+		if got := contentRetrievalConsultQuery("查询 api2.maclaw.top 状态", query); got != "api2" {
+			t.Fatalf("chinese host query %q searched %q", query, got)
+		}
+	}
+	if got := contentRetrievalConsultQuery("look up files.maclaw.top status", "status"); got != "files.maclaw.top" {
+		t.Fatalf("letter host=%q", got)
+	}
+	if got := contentRetrievalConsultQuery("查询 192.168.0.1 状态", "状态"); got != "192.168.0.1" {
+		t.Fatalf("address=%q", got)
+	}
+	twoDotted := "查询 api2.maclaw.top 与 web1.maclaw.top 的状态"
+	if got := contentRetrievalConsultQuery(twoDotted, "状态"); got != twoDotted {
+		t.Fatalf("two dotted hosts=%q", got)
+	}
+	ported := "查询 api2.maclaw.top:22 状态"
+	for _, query := range []string{"状态", "22", "api2.maclaw.top:22", ported} {
+		if got := contentRetrievalConsultQuery(ported, query); got != "api2" {
+			t.Fatalf("ported host query %q searched %q", query, got)
+		}
+	}
+	if got := contentRetrievalConsultQuery("look up api2.maclaw.top:22 status", "22"); got != "api2" {
+		t.Fatalf("english port=%q", got)
+	}
+	address := "查询 192.168.0.1 状态"
+	if got := contentRetrievalConsultQuery(address, "192"); got != "192.168.0.1" {
+		t.Fatalf("octet=%q", got)
+	}
+	if got := contentRetrievalConsultQuery("查询 192.168.0.1:22 状态", "22"); got != "192.168.0.1" {
+		t.Fatalf("address port=%q", got)
+	}
+	twoPorts := "查询 api2.maclaw.top:22 与 web1.maclaw.top:443 的状态"
+	if got := contentRetrievalConsultQuery(twoPorts, "22"); got != twoPorts {
+		t.Fatalf("two ported hosts=%q", got)
+	}
 }
 
 func TestContentRetrievalOrderPromptAndTools(t *testing.T) {
@@ -407,5 +507,8 @@ func TestContentRetrievalOrderPromptAndTools(t *testing.T) {
 	}
 	if len(appendContentRetrievalTools("给张三发一封邮件", nil)) != 0 {
 		t.Fatal("a non-lookup lists no retrieval tools")
+	}
+	if !strings.Contains(got, "保存新内容") || !strings.Contains(got, semanticToolsSearchName) {
+		t.Fatal("the retrieval prompt does not offer the tool-driven write path")
 	}
 }

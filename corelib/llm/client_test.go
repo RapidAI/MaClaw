@@ -323,6 +323,29 @@ func TestBuildAnthropicMessagesRequestDataHonorsMaxTokensOption(t *testing.T) {
 	}
 }
 
+func TestBuildAnthropicMessagesRequestDataKeepsExplicitZero(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{
+		URL:                  "https://anthropic.test",
+		Model:                "claude-test",
+		MemberOutputTokenCap: 16384,
+	}
+	_, body, err := BuildAnthropicMessagesRequestData(cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "ping"},
+	}, AnthropicMessagesRequestOptions{KeepZeroMaxTokens: true})
+	if err != nil {
+		t.Fatalf("BuildAnthropicMessagesRequestData: %v", err)
+	}
+	var req struct {
+		MaxTokens int `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if req.MaxTokens != 0 {
+		t.Fatalf("max_tokens = %d, want the caller's 0", req.MaxTokens)
+	}
+}
+
 func TestDoAnthropicRequestRetriesWhenThinkingOffIsRejected(t *testing.T) {
 	var calls int
 	var first, second map[string]interface{}

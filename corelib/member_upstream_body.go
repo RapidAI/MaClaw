@@ -162,7 +162,89 @@ func cloneMemberBodyValue(value any) any {
 }
 
 func (cfg MaclawLLMConfig) applyMemberUpstreamBody(body map[string]any) {
+	FinishMemberUpstreamBody(cfg, body)
+}
+
+// FinishMemberUpstreamBody merges extra_body, applies drop_fields, then caps
+// output fields that are still present. The cap does not put a field back
+// after drop_fields removed it, and it does not invent a field the merge
+// left absent. A cap of 0 leaves the merged body unchanged.
+func FinishMemberUpstreamBody(cfg MaclawLLMConfig, body map[string]any) {
 	ApplyMemberUpstreamBody(body, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields)
+	ClampMemberOutputFields(body, cfg.MemberOutputTokenCap)
+}
+
+// ClampMemberOutputFields lowers max_tokens, max_completion_tokens, and
+// max_output_tokens that are above cap. Each present field is judged alone.
+// A usable value at or below the cap keeps its original Go type, including
+// 0. A value above the cap, or a value that is not a non-negative number,
+// is replaced with the cap. Absent fields stay absent. cap <= 0 does nothing.
+func ClampMemberOutputFields(body map[string]any, cap int64) {
+	if body == nil || cap <= 0 {
+		return
+	}
+	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+		raw, ok := body[key]
+		if !ok {
+			continue
+		}
+		n, usable := OutputBudgetInt(raw)
+		if !usable || n < 0 || n > cap || outputBudgetExceeds(raw, cap) {
+			body[key] = cap
+		}
+	}
+}
+
+// OutputBudgetInt reads a whole output budget. A fractional float yields the
+// truncated integer and true so the caller can keep the original value when
+// that magnitude is still inside the cap. Negative, NaN, and overflow are
+// not usable.
+func OutputBudgetInt(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	case float32:
+		return outputBudgetFloat(float64(n))
+	case float64:
+		return outputBudgetFloat(n)
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return i, true
+		}
+		f, err := n.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return outputBudgetFloat(f)
+	default:
+		return 0, false
+	}
+}
+
+func outputBudgetFloat(n float64) (int64, bool) {
+	if math.IsNaN(n) || math.IsInf(n, 0) || n < 0 || n >= float64(math.MaxInt64) {
+		return 0, false
+	}
+	return int64(n), true
+}
+
+func outputBudgetExceeds(raw any, cap int64) bool {
+	limit := float64(cap)
+	switch n := raw.(type) {
+	case float32:
+		return float64(n) > limit
+	case float64:
+		return n > limit
+	case json.Number:
+		f, err := n.Float64()
+		return err == nil && f > limit
+	default:
+		return false
+	}
 }
 
 // MemberUpstreamOverrides copies the saved member override onto a request config.

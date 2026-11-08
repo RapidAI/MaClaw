@@ -174,6 +174,66 @@ func TestForwardAnthropicCompatFitsMemberMaxTokens(t *testing.T) {
 	}
 }
 
+func TestMemberExtraBodyCannotRaiseOutputCap(t *testing.T) {
+	body := map[string]interface{}{
+		"model": "typhoon",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+		"max_tokens":            128,
+		"max_completion_tokens": 64,
+	}
+	sanitizeOpenAICompatForwardBody(MaclawLLMConfig{
+		URL:   "https://api.example/v1",
+		Model: "typhoon",
+		MemberExtraBody: map[string]any{
+			"max_tokens":        float64(100000),
+			"max_output_tokens": float64(100000),
+		},
+		MemberOutputTokenCap: 16384,
+	}, body)
+	if body["max_tokens"] != int64(16384) || body["max_output_tokens"] != int64(16384) {
+		t.Fatalf("raised budgets = max %#v output %#v", body["max_tokens"], body["max_output_tokens"])
+	}
+	if body["max_completion_tokens"] != 64 {
+		t.Fatalf("under-cap sibling = %#v", body["max_completion_tokens"])
+	}
+
+	small := map[string]interface{}{
+		"model": "typhoon",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+		"max_tokens": 10000,
+	}
+	sanitizeOpenAICompatForwardBody(MaclawLLMConfig{
+		URL:                  "https://api.example/v1",
+		Model:                "typhoon",
+		MemberExtraBody:      map[string]any{"max_tokens": float64(128)},
+		MemberOutputTokenCap: 16384,
+	}, small)
+	if small["max_tokens"] != float64(128) {
+		t.Fatalf("smaller extra_body was rewritten: %#v", small["max_tokens"])
+	}
+
+	dropped := map[string]interface{}{
+		"model": "typhoon",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+		"max_tokens": 100000,
+	}
+	sanitizeOpenAICompatForwardBody(MaclawLLMConfig{
+		URL:                  "https://api.example/v1",
+		Model:                "typhoon",
+		MemberDropFields:     []string{"max_tokens"},
+		MemberOutputTokenCap: 16384,
+	}, dropped)
+	if _, ok := dropped["max_tokens"]; ok {
+		t.Fatalf("drop_fields was undone: %#v", dropped["max_tokens"])
+	}
+}
+
 func TestForwardAnthropicCompatKeepsCallerJSONThinkingBudget(t *testing.T) {
 	tests := []struct {
 		name   string

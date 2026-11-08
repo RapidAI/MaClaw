@@ -2,12 +2,13 @@ package llmservice
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
 
@@ -26,21 +27,23 @@ func (e *TokenBankRequestCapError) Error() string {
 	return fmt.Sprintf("token bank input exceeds the per-request cap (%d > %d)", e.Estimate, e.Limit)
 }
 
-// applyTokenBankRequestCaps enforces §3.1 for a token-bank member.
-// Input over the cap is an error. Output only lowers max_tokens or
-// max_completion_tokens, and only when the field is higher than the cap or
-// both fields are unset. A smaller caller value is left as it is.
+// applyTokenBankRequestCaps enforces the token-bank input cap and the member
+// output cap. Input over the cap is an error and applies only to a token-bank
+// member. Output applies to every member whose integrator set a positive
+// MaxOutputTokensPerRequest.
 func applyTokenBankRequestCaps(provider *llmpool.ProviderConfig, body map[string]any) error {
-	if provider == nil || body == nil || !IsTokenBankMemberID(provider.ID) {
+	if provider == nil || body == nil {
 		return nil
 	}
-	if cap := provider.MaxInputTokensPerRequest; cap > 0 {
-		estimate := estimateTokenBankInputTokens(body)
-		if estimate > cap {
-			return &TokenBankRequestCapError{Limit: cap, Estimate: estimate}
+	if IsTokenBankMemberID(provider.ID) {
+		if cap := provider.MaxInputTokensPerRequest; cap > 0 {
+			estimate := estimateTokenBankInputTokens(body)
+			if estimate > cap {
+				return &TokenBankRequestCapError{Limit: cap, Estimate: estimate}
+			}
 		}
 	}
-	applyTokenBankOutputCap(body, provider.MaxOutputTokensPerRequest)
+	ApplyMemberOutputCap(body, provider.MaxOutputTokensPerRequest)
 	return nil
 }
 
@@ -53,12 +56,14 @@ func enforceTokenBankRequestCaps(ctx context.Context, cfg *ProxyConfig, provider
 }
 
 // tokenBankCappedRequestBody copies the top-level map when this member's
-// output cap will write max_tokens. The proxy cache key is the caller's body.
-// Writing the cap onto that map stores the response under a different key
-// than the next identical request, so the owner is paid again. A later member
-// in the same attempt must also see the caller's max_tokens, not this one.
+// output cap will write max_tokens or max_completion_tokens. The proxy cache
+// key is the caller's body. Writing the cap onto that map stores the response
+// under a different key than the next identical request. A later member in
+// the same attempt must also see the caller's output fields, not this one.
+// The copy is for every member with a positive output cap, not only a token
+// bank id.
 func tokenBankCappedRequestBody(provider *llmpool.ProviderConfig, body map[string]any) map[string]any {
-	if provider == nil || body == nil || provider.MaxOutputTokensPerRequest <= 0 || !IsTokenBankMemberID(provider.ID) {
+	if provider == nil || body == nil || provider.MaxOutputTokensPerRequest <= 0 {
 		return body
 	}
 	copied := make(map[string]any, len(body)+1)
@@ -68,26 +73,78 @@ func tokenBankCappedRequestBody(provider *llmpool.ProviderConfig, body map[strin
 	return copied
 }
 
-func applyTokenBankOutputCap(body map[string]any, cap int64) {
+// ApplyMemberOutputCap lowers each present output budget to cap.
+// max_tokens, max_completion_tokens, and max_output_tokens are judged
+// separately. A usable value at or below the cap keeps its original Go type,
+// including 0. A value above the cap, or a value that is not a non-negative
+// number, is replaced with the cap. A field the caller did not send is not
+// invented, and a smaller sibling is not copied onto the other field.
+//
+// Newer OpenAI models read max_completion_tokens. Older models read
+// max_tokens. Responses reads max_output_tokens. A protocol that can send
+// only one number keeps the field that protocol reads: Anthropic uses
+// max_tokens, otherwise max_completion_tokens; Responses and Google use
+// max_completion_tokens, otherwise max_tokens. When none of the three fields
+// is present, max_tokens is set to the cap so an omitted chat budget cannot
+// exceed the member limit. cap <= 0 means the integrator did not set a limit.
+func ApplyMemberOutputCap(body map[string]any, cap int64) {
 	if body == nil || cap <= 0 {
 		return
 	}
 	_, hasMax := body["max_tokens"]
 	_, hasComp := body["max_completion_tokens"]
-	if !hasMax && !hasComp {
+	_, hasOut := body["max_output_tokens"]
+	if !hasMax && !hasComp && !hasOut {
 		body["max_tokens"] = cap
 		return
 	}
-	if hasMax {
-		if n, ok := tokenBankBodyInt(body["max_tokens"]); !ok || n > cap {
-			body["max_tokens"] = cap
-		}
+	corelib.ClampMemberOutputFields(body, cap)
+}
+
+// MemberProbeOutputBody is the output-limit object one member probe sends.
+// When the caller set neither field, max_tokens is the short probe default
+// (64, or 256 when tools are present). The member cap is then applied with
+// the same rule as a live forward, so an oversized probe is truncated and a
+// smaller probe value is kept.
+func MemberProbeOutputBody(cap int64, maxTokens, maxCompletion *int64, tools bool) map[string]any {
+	fallback := int64(64)
+	if tools {
+		fallback = 256
 	}
-	if hasComp {
-		if n, ok := tokenBankBodyInt(body["max_completion_tokens"]); !ok || n > cap {
-			body["max_completion_tokens"] = cap
-		}
+	body := map[string]any{}
+	if maxTokens != nil {
+		body["max_tokens"] = *maxTokens
 	}
+	if maxCompletion != nil {
+		body["max_completion_tokens"] = *maxCompletion
+	}
+	if len(body) == 0 {
+		body["max_tokens"] = fallback
+	}
+	ApplyMemberOutputCap(body, cap)
+	return body
+}
+
+// MemberProbeFieldBudget is the one output number a protocol probe sends.
+// keys is that protocol's preference. The first present non-negative value
+// wins, including 0, so a caller-chosen zero is not replaced by the other
+// field or by the short probe default. An unusable value is skipped.
+func MemberProbeFieldBudget(fields map[string]any, fallback int, keys ...string) int {
+	if len(keys) == 0 {
+		keys = []string{"max_completion_tokens", "max_tokens"}
+	}
+	for _, key := range keys {
+		raw, ok := fields[key]
+		if !ok {
+			continue
+		}
+		n, usable := tokenBankBodyInt(raw)
+		if !usable || n < 0 || n > int64(math.MaxInt) {
+			continue
+		}
+		return int(n)
+	}
+	return fallback
 }
 
 // estimateTokenBankInputTokens is ceil(total message text runes / 4).
@@ -141,22 +198,7 @@ func tokenBankVisionContentBlock(block map[string]any) bool {
 }
 
 func tokenBankBodyInt(v any) (int64, bool) {
-	switch n := v.(type) {
-	case int:
-		return int64(n), true
-	case int64:
-		return n, true
-	case float64:
-		if n < 0 {
-			return 0, false
-		}
-		return int64(n), true
-	case json.Number:
-		i, err := n.Int64()
-		return i, err == nil
-	default:
-		return 0, false
-	}
+	return corelib.OutputBudgetInt(v)
 }
 
 func tokenBankCapErr(err error) bool {

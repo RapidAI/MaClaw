@@ -20,6 +20,9 @@ type AnthropicMessagesRequestOptions struct {
 	Tools                   []map[string]interface{}
 	MaxTokens               int
 	ExplicitToolReplacement bool
+	// KeepZeroMaxTokens means MaxTokens 0 was chosen by the caller. Without
+	// it, 0 is an omitted option and the model default is used.
+	KeepZeroMaxTokens bool
 }
 
 func BuildAnthropicMessagesRequestBody(
@@ -30,8 +33,11 @@ func BuildAnthropicMessagesRequestBody(
 	messages = SanitizeOpenAICompatRequestMessages(messages, true)
 	converted := ConvertToAnthropicMessages(messages)
 	maxTokens := opts.MaxTokens
-	if maxTokens <= 0 {
-		// Use config-aware default: user setting > model-specific default > hardcoded fallback
+	if maxTokens <= 0 && !opts.KeepZeroMaxTokens {
+		// Use config-aware default: user setting > model-specific default > hardcoded fallback.
+		// An explicit 0 stays 0. Treating it as omitted would raise it to this
+		// default, and a member cap would then clamp that default instead of
+		// the caller's zero.
 		maxTokens = cfg.EffectiveMaxOutputTokens()
 	}
 	reqBody := map[string]interface{}{
@@ -69,9 +75,10 @@ func BuildAnthropicMessagesRequestBody(
 	}
 	corelib.ApplyReasoningControls(cfg, reqBody, corelib.ReasoningAPIAnthropic)
 	applyConfigTemperature(reqBody, cfg)
-	corelib.ApplyMemberUpstreamBody(reqBody, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields)
+	corelib.FinishMemberUpstreamBody(cfg, reqBody)
 	// The member may replace max_tokens with a JSON number after the hub
-	// wrote an int budget. Fit the body that will be sent.
+	// wrote an int budget. The output cap has already lowered an over-cap
+	// value. Fit the body that will be sent.
 	corelib.FitAnthropicThinkingBudget(reqBody)
 	return reqBody
 }

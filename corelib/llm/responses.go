@@ -166,7 +166,7 @@ func BuildResponsesAPIRequestData(
 
 	applyConfigTemperature(reqBody, cfg)
 	applyOpenCodeZenFreeResponses(cfg, reqBody)
-	corelib.ApplyMemberUpstreamBody(reqBody, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields)
+	corelib.FinishMemberUpstreamBody(cfg, reqBody)
 
 	body, err = json.Marshal(reqBody)
 	return endpoint, body, err

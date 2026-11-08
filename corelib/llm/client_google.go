@@ -46,6 +46,9 @@ type GoogleGenerateRequestOptions struct {
 	ParallelToolCalls       *bool
 	ResponseFormat          interface{}
 	MaxOutputTokens         int
+	// KeepZeroMaxOutputTokens means MaxOutputTokens 0 was chosen by the caller.
+	// Without it, 0 is an omitted option and the model default is used.
+	KeepZeroMaxOutputTokens bool
 }
 
 // GoogleModel is one generateContent model from the native models.list.
@@ -217,7 +220,9 @@ func BuildGoogleGenerateContentRequestBody(cfg corelib.MaclawLLMConfig, messages
 		body["toolConfig"] = toolConfig
 	}
 	maxTokens := opts.MaxOutputTokens
-	if maxTokens <= 0 {
+	if maxTokens <= 0 && !opts.KeepZeroMaxOutputTokens {
+		// An explicit 0 stays 0. The zero value of the option still means the
+		// caller omitted a budget and the model default applies.
 		maxTokens = cfg.EffectiveMaxOutputTokens()
 	}
 	generation := map[string]interface{}{"maxOutputTokens": maxTokens}
@@ -229,10 +234,11 @@ func BuildGoogleGenerateContentRequestBody(cfg corelib.MaclawLLMConfig, messages
 	}
 	corelib.ApplyGeminiGenerateContentThinking(cfg, generation)
 	body["generationConfig"] = generation
-	corelib.ApplyMemberUpstreamBody(body, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields)
+	corelib.FinishMemberUpstreamBody(cfg, body)
 	// Member extra_body can replace generationConfig after the value above was chosen.
-	// The hop cap is a property of the bytes we send, so it is applied last.
-	clampGoogleGenerationMaxOutputTokens(body, opts.Stream)
+	// The hop cap and the member output cap are properties of the bytes we send,
+	// so both are applied last. The tighter ceiling wins.
+	clampGoogleGenerationMaxOutputTokens(body, opts.Stream, cfg.MemberOutputTokenCap)
 	return body, nil
 }
 
@@ -240,7 +246,7 @@ func BuildGoogleGenerateContentRequestBody(cfg corelib.MaclawLLMConfig, messages
 // This client never sends continuationToken, so a larger ceiling cannot be resumed:
 // non-streaming REST rejects it, and streaming REST would end on CONTINUATION
 // while the configured total still had room.
-func clampGoogleGenerationMaxOutputTokens(body map[string]interface{}, stream bool) {
+func clampGoogleGenerationMaxOutputTokens(body map[string]interface{}, stream bool, memberCap int64) {
 	generation := toStringInterfaceMap(body["generationConfig"])
 	if generation == nil {
 		return
@@ -256,6 +262,9 @@ func clampGoogleGenerationMaxOutputTokens(body map[string]interface{}, stream bo
 	limit := googleNonStreamHopMaxOutputTokens
 	if stream {
 		limit = googleStreamHopMaxOutputTokens
+	}
+	if memberCap > 0 && memberCap < int64(limit) {
+		limit = int(memberCap)
 	}
 	if number > float64(limit) {
 		generation["maxOutputTokens"] = limit

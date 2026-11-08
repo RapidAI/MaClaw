@@ -623,15 +623,24 @@ func providerTestConfig(cfg corelib.MaclawLLMConfig, provider *llmpool.ProviderC
 // runLLMProviderChatTest executes one availability probe against cfg and
 // returns the model reply. A non-empty errMsg marks the provider unavailable.
 
-func runLLMProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfig) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
-	return runLLMProviderChatTestBody(ctx, cfg, nil, nil)
+// providerTestBudget is the optional output the member probe asked to send.
+// Nil pointers keep the short probe default. OutputCap is the saved member
+// limit and is applied before the probe leaves this process.
+type providerTestBudget struct {
+	MaxTokens           *int64
+	MaxCompletionTokens *int64
+	OutputCap           int64
 }
 
-func runLLMProviderChatTestBody(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
+func runLLMProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfig) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
+	return runLLMProviderChatTestBody(ctx, cfg, nil, nil, providerTestBudget{})
+}
+
+func runLLMProviderChatTestBody(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage, budget providerTestBudget) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
 	if corelib.IsOpenCodeURL(cfg.URL) {
-		return runOpenCodeProviderChatTest(ctx, cfg, tools, toolChoice)
+		return runOpenCodeProviderChatTest(ctx, cfg, tools, toolChoice, budget)
 	}
-	httpReq, err := newLLMProviderTestRequest(ctx, cfg, tools, toolChoice)
+	httpReq, err := newLLMProviderTestRequest(ctx, cfg, tools, toolChoice, budget)
 	if err != nil {
 		return "", err.Error(), 0, nil
 	}
@@ -690,14 +699,23 @@ func runLLMProviderChatTestBody(ctx context.Context, cfg corelib.MaclawLLMConfig
 // runOpenCodeProviderChatTest uses the proxy forwarder. Zen free models
 // answer with SSE, and one of them only accepts the Responses API; the
 // forwarder collects either shape into one chat JSON body.
-func runOpenCodeProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
+func runOpenCodeProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage, budget providerTestBudget) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
 	prompt := "Reply with exactly: pong"
-	if len(bytes.TrimSpace(tools)) > 0 && string(bytes.TrimSpace(tools)) != "null" {
+	toolsSet := len(bytes.TrimSpace(tools)) > 0 && string(bytes.TrimSpace(tools)) != "null"
+	if toolsSet {
 		prompt = "Call one of the available tools now."
 	}
 	body := map[string]any{
 		"model":    cfg.Model,
 		"messages": []any{map[string]any{"role": "user", "content": prompt}},
+	}
+	// An omitted budget with no member cap used to leave max_tokens off the
+	// OpenCode body. Inject the short probe budget only when the caller set
+	// one, or when a positive cap has to bound that default.
+	if budget.MaxTokens != nil || budget.MaxCompletionTokens != nil || budget.OutputCap > 0 {
+		for key, value := range llmservice.MemberProbeOutputBody(budget.OutputCap, budget.MaxTokens, budget.MaxCompletionTokens, toolsSet) {
+			body[key] = value
+		}
 	}
 	if parsed, choice := providerTestToolValues(tools, toolChoice); len(parsed) > 0 {
 		body["tools"] = parsed
@@ -706,15 +724,16 @@ func runOpenCodeProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfi
 		}
 	}
 	provider := &llmpool.ProviderConfig{
-		APIURL:             cfg.URL,
-		APIKey:             cfg.Key,
-		Protocol:           cfg.Protocol,
-		WireAPI:            cfg.WireAPI,
-		AgentType:          cfg.AgentType,
-		UpstreamTimeoutSec: cfg.TimeoutSec,
-		ExtraBody:          cfg.MemberExtraBody,
-		ExtraBodyPriority:  cfg.MemberExtraBodyPriority,
-		DropFields:         append([]string(nil), cfg.MemberDropFields...),
+		APIURL:                    cfg.URL,
+		APIKey:                    cfg.Key,
+		Protocol:                  cfg.Protocol,
+		WireAPI:                   cfg.WireAPI,
+		AgentType:                 cfg.AgentType,
+		UpstreamTimeoutSec:        cfg.TimeoutSec,
+		ExtraBody:                 cfg.MemberExtraBody,
+		ExtraBodyPriority:         cfg.MemberExtraBodyPriority,
+		DropFields:                append([]string(nil), cfg.MemberDropFields...),
+		MaxOutputTokensPerRequest: budget.OutputCap,
 	}
 	start := time.Now()
 	status, respBody, err := llmservice.ForwardProviderCompletion(ctx, corelib.NewLLMEndpointHTTPClient(cfg), provider, body, cfg.Model)
@@ -742,13 +761,27 @@ func runOpenCodeProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfi
 	return reply, "", latencyMs, calls
 }
 
-func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage) (*http.Request, error) {
+func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage, budget providerTestBudget) (*http.Request, error) {
 	prompt := "Reply with exactly: pong"
+	toolsSet := len(bytes.TrimSpace(tools)) > 0 && string(bytes.TrimSpace(tools)) != "null"
 	maxTokens := 64
-	if len(bytes.TrimSpace(tools)) > 0 && string(bytes.TrimSpace(tools)) != "null" {
+	if toolsSet {
 		prompt = "Call one of the available tools now."
 		maxTokens = 256
 	}
+	output := llmservice.MemberProbeOutputBody(budget.OutputCap, budget.MaxTokens, budget.MaxCompletionTokens, toolsSet)
+	// Match the live single-field converters. Anthropic reads max_tokens and
+	// falls back to max_completion_tokens. Responses and Google read
+	// max_completion_tokens and fall back to max_tokens.
+	order := []string{"max_completion_tokens", "max_tokens"}
+	if strings.EqualFold(cfg.Protocol, "anthropic") {
+		order = []string{"max_tokens", "max_completion_tokens"}
+	}
+	maxTokens = llmservice.MemberProbeFieldBudget(output, maxTokens, order...)
+	// The builders treat option 0 as "omitted, use the model default". A caller
+	// who sent 0 chose that budget. Leaving the flag unset raises it to 65536
+	// and the member cap then clamps the default instead of the caller's zero.
+	keepZero := maxTokens == 0
 	messages := []interface{}{map[string]string{"role": "user", "content": prompt}}
 	parsedTools, toolChoiceValue := providerTestToolValues(tools, toolChoice)
 	if cfg.IsGoogleProtocol() {
@@ -757,6 +790,7 @@ func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig,
 			ToolChoice:              toolChoiceValue,
 			ExplicitToolReplacement: len(parsedTools) > 0,
 			MaxOutputTokens:         maxTokens,
+			KeepZeroMaxOutputTokens: keepZero,
 		})
 		if err != nil {
 			return nil, err
@@ -775,7 +809,10 @@ func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig,
 		return req, nil
 	}
 	if cfg.Protocol == "anthropic" {
-		endpoint, body, err := corellm.BuildAnthropicMessagesRequestData(cfg, messages, corellm.AnthropicMessagesRequestOptions{MaxTokens: maxTokens})
+		endpoint, body, err := corellm.BuildAnthropicMessagesRequestData(cfg, messages, corellm.AnthropicMessagesRequestOptions{
+			MaxTokens:         maxTokens,
+			KeepZeroMaxTokens: keepZero,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -804,7 +841,10 @@ func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig,
 		})
 		return req, err
 	}
-	extra := map[string]interface{}{"max_tokens": maxTokens}
+	extra := map[string]interface{}{}
+	for key, value := range output {
+		extra[key] = value
+	}
 	// Kimi Code and K2/K3 reject every explicit temperature. The probe used to
 	// send 0 and the status check failed with HTTP 400 before the model ran.
 	if !corelib.KimiRequestOmitsSampling(cfg, cfg.Model) {

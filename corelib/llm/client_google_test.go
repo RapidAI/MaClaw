@@ -193,6 +193,9 @@ func TestGoogleMaxOutputTokensStaysWithinRESTHop(t *testing.T) {
 	if got := tokens(corelib.MaclawLLMConfig{Model: "gemini-3.8-flash"}, GoogleGenerateRequestOptions{Stream: true, MaxOutputTokens: 1000}); got != 1000 {
 		t.Fatalf("stream under hop = %#v", got)
 	}
+	if got := tokens(corelib.MaclawLLMConfig{Model: "gemini-3.8-flash", MemberOutputTokenCap: 16384}, GoogleGenerateRequestOptions{KeepZeroMaxOutputTokens: true}); got != 0 {
+		t.Fatalf("explicit zero = %#v, want 0", got)
+	}
 	raised := corelib.MaclawLLMConfig{
 		Model: "gemini-3.8-flash",
 		MemberExtraBody: map[string]any{
@@ -201,6 +204,11 @@ func TestGoogleMaxOutputTokensStaysWithinRESTHop(t *testing.T) {
 	}
 	if got := tokens(raised, GoogleGenerateRequestOptions{}); got != googleNonStreamHopMaxOutputTokens {
 		t.Fatalf("member extra above hop = %#v", got)
+	}
+	memberCapped := raised
+	memberCapped.MemberOutputTokenCap = 16384
+	if got := tokens(memberCapped, GoogleGenerateRequestOptions{}); got != 16384 {
+		t.Fatalf("member output cap = %#v", got)
 	}
 	kept := corelib.MaclawLLMConfig{
 		Model:                   "gemini-3.8-flash",

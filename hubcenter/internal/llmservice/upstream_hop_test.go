@@ -996,7 +996,7 @@ func TestMemberProbeFollowsUpstreamRedirect(t *testing.T) {
 	reply, errMsg, _, _ := testProviderChat(context.Background(), memberProbeHTTPClient(nil, nil), &llmpool.ProviderConfig{
 		ID:     "pool-a-1",
 		APIURL: redirect.URL + "/v1",
-	}, "llama", nil, nil)
+	}, ProviderChatTest{Model: "llama"})
 	if errMsg != "" || reply != "pong" || !hit {
 		t.Fatalf("reply=%q err=%q hit=%v", reply, errMsg, hit)
 	}

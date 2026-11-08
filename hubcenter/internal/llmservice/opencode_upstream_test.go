@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	corellm "github.com/RapidAI/CodeClaw/corelib/llm"
@@ -225,4 +226,140 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestPlanOpenCodeStreamKeepsMemberOutputCap(t *testing.T) {
+	cases := []struct {
+		name   string
+		cap    int64
+		sent   int
+		want   string
+		absent bool
+	}{
+		{name: "cap equal to the zen default stays", cap: 65536, sent: 65536, want: `"max_tokens":65536`},
+		{name: "stream default above the cap clamps", cap: 16384, sent: 65536, want: `"max_tokens":16384`},
+		{name: "caller default under a higher cap stays", cap: 100000, sent: 65536, want: `"max_tokens":65536`},
+		{name: "smaller caller budget stays", cap: 65536, sent: 128, want: `"max_tokens":128`},
+		{name: "no cap still drops the zen default", cap: 0, sent: 65536, absent: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, ok, err := planOpenCodeStream(&llmpool.ProviderConfig{
+				APIURL:                    "https://opencode.ai/zen/v1",
+				MaxOutputTokensPerRequest: tc.cap,
+			}, map[string]any{
+				"model":      "space-bunny-free",
+				"max_tokens": tc.sent,
+				"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+			}, "space-bunny-free")
+			if err != nil || !ok || plan.responses {
+				t.Fatalf("ok=%v responses=%v err=%v", ok, plan.responses, err)
+			}
+			payload := string(plan.payload)
+			if tc.absent {
+				if strings.Contains(payload, "max_tokens") {
+					t.Fatalf("zen default survived with no member cap: %s", payload)
+				}
+				return
+			}
+			if !strings.Contains(payload, tc.want) {
+				t.Fatalf("payload = %s, want %s", payload, tc.want)
+			}
+		})
+	}
+}
+
+func TestOpenCodeMuseKeepsMemberOutputCap(t *testing.T) {
+	cases := []struct {
+		name       string
+		cap        int64
+		maxTokens  *int
+		completion *int
+		want       string
+		absent     bool
+	}{
+		{name: "small caller budget", cap: 16384, maxTokens: intPtr(128), want: `"max_output_tokens":128`},
+		{name: "over cap", cap: 16384, maxTokens: intPtr(100000), want: `"max_output_tokens":16384`},
+		{name: "cap equal to the zen default", cap: 65536, maxTokens: intPtr(65536), want: `"max_output_tokens":65536`},
+		{name: "caller default under a higher cap", cap: 100000, maxTokens: intPtr(65536), want: `"max_output_tokens":65536`},
+		{name: "no cap still omits the zen default", cap: 0, maxTokens: intPtr(65536), absent: true},
+		{name: "no cap keeps a smaller caller budget", cap: 0, maxTokens: intPtr(128), want: `"max_output_tokens":128`},
+		{name: "omitted budget becomes the cap", cap: 16384, want: `"max_output_tokens":16384`},
+		{name: "omitted budget without a cap stays omitted", cap: 0, absent: true},
+		{name: "completion wins over max_tokens", cap: 16384, maxTokens: intPtr(100), completion: intPtr(50), want: `"max_output_tokens":50`},
+		{name: "completion alone is the budget", cap: 16384, completion: intPtr(2000), want: `"max_output_tokens":2000`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var saw []string
+			provider := &llmpool.ProviderConfig{
+				ID:                        "oc",
+				APIURL:                    "https://opencode.ai/zen/v1",
+				AgentType:                 "OpenCode",
+				MaxOutputTokensPerRequest: tc.cap,
+			}
+			client := openCodeTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				saw = append(saw, string(raw))
+				mu.Unlock()
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"delta\":\"pong\"}\n\nevent: response.completed\ndata: {\"response\":{\"id\":\"resp-1\"}}\n\n")
+			})
+			check := func(kind string) {
+				t.Helper()
+				mu.Lock()
+				defer mu.Unlock()
+				if len(saw) == 0 {
+					t.Fatalf("%s sent no body", kind)
+				}
+				got := saw[len(saw)-1]
+				if tc.absent {
+					if strings.Contains(got, "max_output_tokens") {
+						t.Fatalf("%s output budget = %s", kind, got)
+					}
+					return
+				}
+				if !strings.Contains(got, tc.want) {
+					t.Fatalf("%s body = %s, want %s", kind, got, tc.want)
+				}
+			}
+			body := map[string]any{
+				"model":    "muse-spark-1.2-contributor-free",
+				"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+			}
+			if tc.maxTokens != nil {
+				body["max_tokens"] = *tc.maxTokens
+			}
+			if tc.completion != nil {
+				body["max_completion_tokens"] = *tc.completion
+			}
+			resp, handled, err := tryForwardOpenCode(context.Background(), client, provider, body, "muse-spark-1.2-contributor-free", "alias", false)
+			if err != nil || !handled || resp == nil || resp.StatusCode != http.StatusOK {
+				t.Fatalf("forward handled=%v err=%v resp=%#v", handled, err, resp)
+			}
+			check("forward")
+
+			streamBody := map[string]any{
+				"model":    "muse-spark-1.2-contributor-free",
+				"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+			}
+			if tc.maxTokens != nil {
+				streamBody["max_tokens"] = *tc.maxTokens
+			}
+			if tc.completion != nil {
+				streamBody["max_completion_tokens"] = *tc.completion
+			}
+			streamed, err := streamOpenCodeResponses(context.Background(), client, openCodeMaclawConfig(provider, "muse-spark-1.2-contributor-free"), streamBody, "alias", httptest.NewRecorder())
+			if err != nil || streamed == nil || streamed.statusCode != http.StatusOK {
+				t.Fatalf("stream err=%v result=%#v", err, streamed)
+			}
+			check("stream")
+		})
+	}
+}
+
+func intPtr(n int) *int {
+	return &n
 }

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -120,7 +121,7 @@ func TestLLMProviderTestRequestOmitsKimiLockedSampling(t *testing.T) {
 		Model:    "kimi-for-coding",
 		Protocol: "openai",
 		WireAPI:  "chat",
-	}, nil, nil)
+	}, nil, nil, providerTestBudget{})
 	if err != nil {
 		t.Fatalf("newLLMProviderTestRequest() error = %v", err)
 	}
@@ -147,7 +148,7 @@ func TestLLMProviderTestRequestOmitsKimiLockedSampling(t *testing.T) {
 		Model:    "gpt-4o",
 		Protocol: "openai",
 		WireAPI:  "chat",
-	}, nil, nil)
+	}, nil, nil, providerTestBudget{})
 	if err != nil {
 		t.Fatalf("plain probe: %v", err)
 	}
@@ -160,13 +161,77 @@ func TestLLMProviderTestRequestOmitsKimiLockedSampling(t *testing.T) {
 	}
 }
 
+func TestLLMProviderTestRequestKeepsExplicitZeroBudget(t *testing.T) {
+	zero := int64(0)
+	cases := []struct {
+		name     string
+		cfg      corelib.MaclawLLMConfig
+		budget   providerTestBudget
+		path     []string
+		wantZero string
+	}{
+		{
+			name:     "anthropic max_tokens",
+			cfg:      corelib.MaclawLLMConfig{URL: "https://api.anthropic.com", Model: "claude-test", Protocol: "anthropic", MemberOutputTokenCap: 16384},
+			budget:   providerTestBudget{MaxTokens: &zero, OutputCap: 16384},
+			wantZero: "max_tokens",
+		},
+		{
+			name:     "anthropic completion only",
+			cfg:      corelib.MaclawLLMConfig{URL: "https://api.anthropic.com", Model: "claude-test", Protocol: "anthropic", MemberOutputTokenCap: 16384},
+			budget:   providerTestBudget{MaxCompletionTokens: &zero, OutputCap: 16384},
+			wantZero: "max_tokens",
+		},
+		{
+			name:     "google",
+			cfg:      corelib.MaclawLLMConfig{URL: "https://generativelanguage.googleapis.com/v1beta", Model: "gemini-3.8-flash", Protocol: "google", MemberOutputTokenCap: 16384},
+			budget:   providerTestBudget{MaxTokens: &zero, OutputCap: 16384},
+			path:     []string{"generationConfig"},
+			wantZero: "maxOutputTokens",
+		},
+		{
+			name:     "responses",
+			cfg:      corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-4o", Protocol: "openai", WireAPI: "responses", MemberOutputTokenCap: 16384},
+			budget:   providerTestBudget{MaxCompletionTokens: &zero, OutputCap: 16384},
+			wantZero: "max_output_tokens",
+		},
+		{
+			name:     "openai chat",
+			cfg:      corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-4o", Protocol: "openai", MemberOutputTokenCap: 16384},
+			budget:   providerTestBudget{MaxTokens: &zero, OutputCap: 16384},
+			wantZero: "max_tokens",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := newLLMProviderTestRequest(context.Background(), tc.cfg, nil, nil, tc.budget)
+			if err != nil {
+				t.Fatalf("newLLMProviderTestRequest() error = %v", err)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode test request: %v", err)
+			}
+			node := any(body)
+			for _, key := range tc.path {
+				next, _ := node.(map[string]any)
+				node = next[key]
+			}
+			got, _ := node.(map[string]any)
+			if got[tc.wantZero] != float64(0) {
+				t.Fatalf("%s = %#v, want 0", tc.wantZero, got[tc.wantZero])
+			}
+		})
+	}
+}
+
 func TestLLMProviderTestRequestUsesGoogleGenerateContent(t *testing.T) {
 	req, err := newLLMProviderTestRequest(context.Background(), corelib.MaclawLLMConfig{
 		URL:      "https://generativelanguage.googleapis.com/v1beta",
 		Key:      "test-key",
 		Model:    "gemini-3.8-flash",
 		Protocol: "google",
-	}, nil, nil)
+	}, nil, nil, providerTestBudget{})
 	if err != nil {
 		t.Fatalf("newLLMProviderTestRequest() error = %v", err)
 	}
@@ -225,7 +290,7 @@ func TestLLMProviderTestRequestOmitsThinkingForAMDDeepSeek(t *testing.T) {
 				Model:    model,
 				Protocol: "openai",
 				WireAPI:  "chat",
-			}, nil, nil)
+			}, nil, nil, providerTestBudget{})
 			if err != nil {
 				t.Fatalf("newLLMProviderTestRequest() error = %v", err)
 			}
@@ -931,6 +996,53 @@ func TestLLMProviderTestHTTPErrorIsUserFacingAndRedactsSecrets(t *testing.T) {
 	}
 	if !strings.Contains(got, "HTTP 401") {
 		t.Fatalf("unexpected error message %q", got)
+	}
+}
+
+func TestOpenCodeProbeOmitsBudgetWhenCallerAndCapAreUnset(t *testing.T) {
+	var mu sync.Mutex
+	var saw []map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		}
+		mu.Lock()
+		saw = append(saw, payload)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer upstream.Close()
+	cfg := corelib.MaclawLLMConfig{URL: upstream.URL + "/v1", Key: "sk-test", Model: "typhoon", Protocol: "openai"}
+	post := func(budget providerTestBudget) map[string]any {
+		t.Helper()
+		mu.Lock()
+		before := len(saw)
+		mu.Unlock()
+		_, errMsg, _, _ := runOpenCodeProviderChatTest(context.Background(), cfg, nil, nil, budget)
+		if errMsg != "" {
+			t.Fatalf("probe error: %s", errMsg)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(saw) != before+1 {
+			t.Fatalf("captured %d bodies", len(saw)-before)
+		}
+		return saw[before]
+	}
+	omitted := post(providerTestBudget{})
+	if _, ok := omitted["max_tokens"]; ok {
+		t.Fatalf("cap 0 probe injected max_tokens %#v", omitted["max_tokens"])
+	}
+	capped := post(providerTestBudget{OutputCap: 16384})
+	if capped["max_tokens"] != float64(64) {
+		t.Fatalf("capped omitted probe = %#v, want 64", capped["max_tokens"])
+	}
+	huge := int64(100000)
+	over := post(providerTestBudget{MaxTokens: &huge, OutputCap: 16384})
+	if over["max_tokens"] != float64(16384) {
+		t.Fatalf("over-cap probe = %#v", over["max_tokens"])
 	}
 }
 

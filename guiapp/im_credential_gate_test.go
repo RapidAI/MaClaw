@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // credentialGateTestHandler builds a minimal handler with a registered
@@ -300,6 +302,92 @@ func TestCredentialGateSemanticIngestSuspendsUntilApproved(t *testing.T) {
 	}
 	if rejection := <-done; rejection != "" {
 		t.Fatalf("semantic ingest must proceed after approval, got rejection %q", rejection)
+	}
+}
+
+func TestCredentialGateActionsSkipWorkStopClassification(t *testing.T) {
+	for _, action := range []confirmationAction{confirmationActionConfirm, confirmationActionCancel} {
+		t.Run(action.String(), func(t *testing.T) {
+			var called int32
+			h := credentialGateTestHandler(t, &called)
+			h.memory = agent.NewConversationMemory()
+			t.Cleanup(h.memory.Stop)
+			t.Cleanup(func() {
+				h.app.stopAndClearMemoryPipeline()
+				h.app.stopMemoryPipelineSchedule("test")
+				h.app.memoryStoreMu.Lock()
+				store := h.app.memoryStore
+				h.app.memoryStore = nil
+				h.app.memoryStoreMu.Unlock()
+				if store != nil {
+					store.Stop()
+				}
+			})
+			loop := NewLoopContext("chat", 3, nil)
+			publishDesktopChatLoop(h, loop, "save a sensitive note")
+			stopClassifications := 0
+			h.workStopClassifier = func(string) (string, error) {
+				stopClassifications++
+				return `{"intent":"stop"}`, nil
+			}
+
+			execCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan toolExecutionResult, 1)
+			go func() {
+				done <- h.executeToolDetailedWithRuntimeContext(execCtx, desktopUserID, false, "", "knowledge_save_text", credentialGateSecretArgs, "", nil)
+			}()
+			card := waitForCredentialCard(t, h, desktopUserID)
+			msg := IMUserMessage{
+				UserID:   desktopUserID,
+				Platform: desktopPlatform,
+				Text:     buildConfirmationActionCommand(action, card.ID),
+				UIAction: true,
+			}
+
+			resp := h.HandleIMMessageWithProgressAndStream(msg, nil, nil, nil, nil)
+			if resp == nil || resp.Error != "" {
+				t.Fatalf("confirmation response = %+v", resp)
+			}
+			if stopClassifications != 0 {
+				t.Fatalf("confirmation command reached work-stop classification %d times", stopClassifications)
+			}
+			if loop.IsCancelled() {
+				t.Fatal("card action cancelled the original task")
+			}
+			var result toolExecutionResult
+			select {
+			case result = <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("card action did not resolve the fenced write")
+			}
+			wantOutcome := toolOutcomeFailed
+			wantCalls := int32(0)
+			if action == confirmationActionConfirm {
+				wantOutcome = toolOutcomeSucceeded
+				wantCalls = 1
+			}
+			if result.Outcome != wantOutcome || atomic.LoadInt32(&called) != wantCalls {
+				t.Fatalf("action=%s result=%+v called=%d", action, result, called)
+			}
+			if action == confirmationActionCancel && result.FailureKind != toolFailurePolicyRejected {
+				t.Fatalf("cancel failure kind = %q", result.FailureKind)
+			}
+			if h.confirmationStore.get(desktopUserID) != nil {
+				t.Fatal("resolved credential card remained pending")
+			}
+
+			replay := h.HandleIMMessageWithProgressAndStream(msg, nil, nil, nil, nil)
+			if replay == nil || replay.Error != "" {
+				t.Fatalf("replayed card action response = %+v", replay)
+			}
+			if stopClassifications != 0 || loop.IsCancelled() {
+				t.Fatalf("replay interfered with the task: classifications=%d cancelled=%v", stopClassifications, loop.IsCancelled())
+			}
+			if got := atomic.LoadInt32(&called); got != wantCalls {
+				t.Fatalf("replayed action changed write count to %d, want %d", got, wantCalls)
+			}
+		})
 	}
 }
 

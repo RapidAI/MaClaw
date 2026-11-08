@@ -1144,11 +1144,13 @@ type MaclawLLMConfig struct {
 	// MemberExtraBody is merged into the upstream request after reasoning
 	// stamps. MemberExtraBodyPriority "" and "member" replace the same key.
 	// "downstream" keeps a key the caller already set. MemberDropFields names
-	// are removed after that merge. These ride on the request config only and
-	// are never written into a desktop config file.
+	// are removed after that merge. MemberOutputTokenCap is the member output
+	// ceiling applied again after that merge. 0 means unlimited. These ride
+	// on the request config only and are never written into a desktop config file.
 	MemberExtraBody         map[string]any `json:"-"`
 	MemberExtraBodyPriority string         `json:"-"`
 	MemberDropFields        []string       `json:"-"`
+	MemberOutputTokenCap    int64          `json:"-"`
 }
 
 // IsResponsesAPI reports whether this config targets the OpenAI Responses API.

@@ -14,25 +14,26 @@ import (
 )
 
 type LLMEndpointProvider struct {
-	ID                       string
-	Name                     string
-	APIURL                   string
-	APIKey                   string
-	Model                    string
-	Protocol                 string
-	WireAPI                  string
-	AgentType                string
-	UpstreamTimeoutSec       int
-	MaxConcurrency           int
-	MaxQueueWaiters          int
-	QueueTimeoutMS           int
-	CircuitBreakerThreshold  int
-	CircuitBreakerCooldownMS int
-	FailureBackoffBaseMS     int
-	FailureBackoffMaxMS      int
-	ExtraBody                map[string]any
-	ExtraBodyPriority        string
-	DropFields               []string
+	ID                        string
+	Name                      string
+	APIURL                    string
+	APIKey                    string
+	Model                     string
+	Protocol                  string
+	WireAPI                   string
+	AgentType                 string
+	UpstreamTimeoutSec        int
+	MaxConcurrency            int
+	MaxQueueWaiters           int
+	QueueTimeoutMS            int
+	CircuitBreakerThreshold   int
+	CircuitBreakerCooldownMS  int
+	FailureBackoffBaseMS      int
+	FailureBackoffMaxMS       int
+	ExtraBody                 map[string]any
+	ExtraBodyPriority         string
+	DropFields                []string
+	MaxOutputTokensPerRequest int64
 }
 
 type LLMEndpointForwardResult struct {
@@ -175,16 +176,17 @@ func ShouldRetryLLMUpstream(statusCode int, err error) bool {
 
 func (p LLMEndpointProvider) MaclawLLMConfig() MaclawLLMConfig {
 	return MaclawLLMConfig{
-		URL:        p.APIURL,
-		Key:        p.APIKey,
-		Model:      p.Model,
-		Protocol:   NormalizeLLMProviderProtocol(p.Protocol),
-		WireAPI:    NormalizeLLMProviderWireAPI(p.WireAPI),
+		URL:                     p.APIURL,
+		Key:                     p.APIKey,
+		Model:                   p.Model,
+		Protocol:                NormalizeLLMProviderProtocol(p.Protocol),
+		WireAPI:                 NormalizeLLMProviderWireAPI(p.WireAPI),
 		AgentType:               strings.TrimSpace(p.AgentType),
 		TimeoutSec:              p.UpstreamTimeoutSec,
 		MemberExtraBody:         p.ExtraBody,
 		MemberExtraBodyPriority: p.ExtraBodyPriority,
 		MemberDropFields:        append([]string(nil), p.DropFields...),
+		MemberOutputTokenCap:    p.MaxOutputTokensPerRequest,
 	}
 }
 

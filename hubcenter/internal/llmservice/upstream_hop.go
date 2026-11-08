@@ -48,13 +48,15 @@ type AccessNodeView struct {
 }
 
 type upstreamHopRequest struct {
-	Kind          string          `json:"kind"`
-	ProviderID    string          `json:"provider_id"`
-	UpstreamModel string          `json:"upstream_model,omitempty"`
-	ResponseModel string          `json:"response_model,omitempty"`
-	Model         string          `json:"model,omitempty"`
-	Tools         json.RawMessage `json:"tools,omitempty"`
-	ToolChoice    json.RawMessage `json:"tool_choice,omitempty"`
+	Kind                string          `json:"kind"`
+	ProviderID          string          `json:"provider_id"`
+	UpstreamModel       string          `json:"upstream_model,omitempty"`
+	ResponseModel       string          `json:"response_model,omitempty"`
+	Model               string          `json:"model,omitempty"`
+	Tools               json.RawMessage `json:"tools,omitempty"`
+	ToolChoice          json.RawMessage `json:"tool_choice,omitempty"`
+	MaxTokens           *int64          `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int64          `json:"max_completion_tokens,omitempty"`
 	// ReportTestResult asks the peer to return the probe body even when the
 	// upstream answers 429 or 5xx. An explicit node test is about that node;
 	// those statuses are the result, not a signal to try a different peer.
@@ -585,7 +587,13 @@ func UpstreamHopHandler(cfg *ProxyConfig, authenticate func(*http.Request) error
 			if model == "" && len(provider.Models) > 0 {
 				model = provider.Models[0]
 			}
-			reply, errMsg, latencyMs, calls := testProviderChat(r.Context(), memberProbeHTTPClient(cfg, provider), provider, model, req.Tools, req.ToolChoice)
+			reply, errMsg, latencyMs, calls := testProviderChat(r.Context(), memberProbeHTTPClient(cfg, provider), provider, ProviderChatTest{
+				Model:               model,
+				Tools:               req.Tools,
+				ToolChoice:          req.ToolChoice,
+				MaxTokens:           req.MaxTokens,
+				MaxCompletionTokens: req.MaxCompletionTokens,
+			})
 			if !req.ReportTestResult {
 				if code := hopRetryableTestStatus(errMsg); code > 0 {
 					writeJSONError(w, code, errMsg)
@@ -771,29 +779,30 @@ func hopModelsEndpoint(apiURL, protocol string) (string, error) {
 	return parsed.String(), nil
 }
 
-func testProviderChat(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, model string, tools, toolChoice json.RawMessage) (reply string, errMsg string, latencyMs int64, calls []ProviderToolCall) {
+func testProviderChat(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, spec ProviderChatTest) (reply string, errMsg string, latencyMs int64, calls []ProviderToolCall) {
 	if provider == nil {
 		return "", "provider is required", 0, nil
 	}
-	model = strings.TrimSpace(model)
+	model := strings.TrimSpace(spec.Model)
 	if model == "" {
 		return "", "model is required", 0, nil
 	}
 	prompt := "Reply with exactly: pong"
-	maxTokens := 64
-	if len(bytes.TrimSpace(tools)) > 0 && string(bytes.TrimSpace(tools)) != "null" {
+	toolsSet := len(bytes.TrimSpace(spec.Tools)) > 0 && string(bytes.TrimSpace(spec.Tools)) != "null"
+	if toolsSet {
 		prompt = "Call one of the available tools now."
-		maxTokens = 256
 	}
 	body := map[string]any{
-		"model":      model,
-		"messages":   []any{map[string]any{"role": "user", "content": prompt}},
-		"max_tokens": maxTokens,
+		"model":    model,
+		"messages": []any{map[string]any{"role": "user", "content": prompt}},
 	}
-	if parsed, ok := rawJSONValue(tools); ok {
+	for key, value := range MemberProbeOutputBody(provider.MaxOutputTokensPerRequest, spec.MaxTokens, spec.MaxCompletionTokens, toolsSet) {
+		body[key] = value
+	}
+	if parsed, ok := rawJSONValue(spec.Tools); ok {
 		body["tools"] = parsed
 	}
-	if parsed, ok := rawJSONValue(toolChoice); ok {
+	if parsed, ok := rawJSONValue(spec.ToolChoice); ok {
 		body["tool_choice"] = parsed
 	}
 	start := time.Now()
@@ -1188,12 +1197,16 @@ func ProbeProviderModelsWithScope(ctx context.Context, cfg *ProxyConfig, provide
 
 // ProviderChatTest is one saved-member probe. Node empty uses this node when
 // it is allowed, otherwise the first reachable allowed peer. Tools are sent
-// as OpenAI chat tools.
+// as OpenAI chat tools. MaxTokens and MaxCompletionTokens are optional output
+// budgets. Nil keeps the short probe default. A set value is sent through the
+// same member output cap as a live forward.
 type ProviderChatTest struct {
-	Model      string
-	Node       string
-	Tools      json.RawMessage
-	ToolChoice json.RawMessage
+	Model               string
+	Node                string
+	Tools               json.RawMessage
+	ToolChoice          json.RawMessage
+	MaxTokens           *int64
+	MaxCompletionTokens *int64
 }
 
 // ProviderChatTestResult is the probe outcome, including the node that sent it.
@@ -1253,7 +1266,8 @@ func TestProviderChat(ctx context.Context, cfg *ProxyConfig, provider *llmpool.P
 	if cfg != nil && result.Node == "" {
 		result.Node = strings.TrimSpace(cfg.NodeID)
 	}
-	reply, errMsg, latencyMs, calls := testProviderChat(ctx, memberProbeHTTPClient(cfg, provider), provider, result.Model, spec.Tools, spec.ToolChoice)
+	spec.Model = result.Model
+	reply, errMsg, latencyMs, calls := testProviderChat(ctx, memberProbeHTTPClient(cfg, provider), provider, spec)
 	result.Reply = reply
 	result.Err = errMsg
 	result.LatencyMs = latencyMs
@@ -1263,13 +1277,15 @@ func TestProviderChat(ctx context.Context, cfg *ProxyConfig, provider *llmpool.P
 
 func hopMemberTest(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, spec ProviderChatTest, nodeID string) ([]byte, error) {
 	payload, err := json.Marshal(upstreamHopRequest{
-		Kind:             upstreamHopKindTest,
-		ProviderID:       provider.ID,
-		Model:            spec.Model,
-		Tools:            spec.Tools,
-		ToolChoice:       spec.ToolChoice,
-		Provider:         hopProviderSnapshot(provider),
-		ReportTestResult: strings.TrimSpace(spec.Node) != "",
+		Kind:                upstreamHopKindTest,
+		ProviderID:          provider.ID,
+		Model:               spec.Model,
+		Tools:               spec.Tools,
+		ToolChoice:          spec.ToolChoice,
+		MaxTokens:           spec.MaxTokens,
+		MaxCompletionTokens: spec.MaxCompletionTokens,
+		Provider:            hopProviderSnapshot(provider),
+		ReportTestResult:    strings.TrimSpace(spec.Node) != "",
 	})
 	if err != nil {
 		return nil, err

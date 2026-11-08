@@ -588,6 +588,11 @@ func (h *IMMessageHandler) tryDesktopChatStopReply(msg IMUserMessage) (*IMAgentR
 	if h == nil || !h.desktopChatTurn(msg) {
 		return nil, false
 	}
+	// Confirmation buttons resolve the waiting call in preflight. Classifying
+	// their internal command as new prose can cancel that call before preflight.
+	if isConfirmationActionCommandText(msg.Text) {
+		return nil, false
+	}
 	// Goal and session-round continuations replay the open task inside a host
 	// prompt. The person did not type that line, so it is not a stop request.
 	if isGoalSystemContinuation(msg.Text) || isSessionRoundContinuation(msg.Text) {

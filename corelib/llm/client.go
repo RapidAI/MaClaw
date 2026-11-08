@@ -297,7 +297,7 @@ func buildOpenAIChatRequestBody(
 	// Temperature is applied after AMD rewrite. A leftover thinking object
 	// used to suppress it, and that object is then removed for this host.
 	applyConfigTemperature(reqBody, cfg)
-	corelib.ApplyMemberUpstreamBody(reqBody, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields)
+	corelib.FinishMemberUpstreamBody(cfg, reqBody)
 	return reqBody
 }
 
@@ -349,8 +349,11 @@ func applyOpenCodeZenFreeChat(cfg corelib.MaclawLLMConfig, body map[string]inter
 		}
 	}
 	// The verified Zen body has no output cap. The shared default is only an
-	// injected ceiling; a caller-supplied cap is left in place.
-	if cfg.MaxOutputTokens <= 0 {
+	// injected ceiling; a caller-supplied value other than that ceiling is
+	// left in place. A member output cap must also stay. This delete runs
+	// before FinishMemberUpstreamBody, so removing 65536 would drop the
+	// limit instead of letting the clamp keep it.
+	if cfg.MaxOutputTokens <= 0 && cfg.MemberOutputTokenCap <= 0 {
 		if n, ok := openAIChatInt(body["max_tokens"]); ok && n == cfg.EffectiveMaxOutputTokens() {
 			delete(body, "max_tokens")
 		}
@@ -375,7 +378,10 @@ func applyOpenCodeZenFreeResponses(cfg corelib.MaclawLLMConfig, body map[string]
 	// Leave tool_choice alone. Zen Responses rejects "none" and named choices,
 	// and the tool-surface receipt must see the choice the loop published.
 	omitOpenCodeZenAgentReasoning(cfg, body)
-	if cfg.MaxOutputTokens <= 0 {
+	// Same rule as the chat path: drop only the injected 65536 ceiling.
+	// A member output cap equal to that ceiling has to survive until
+	// FinishMemberUpstreamBody clamps the body.
+	if cfg.MaxOutputTokens <= 0 && cfg.MemberOutputTokenCap <= 0 {
 		if n, ok := openAIChatInt(body["max_output_tokens"]); ok && n == cfg.EffectiveMaxOutputTokens() {
 			delete(body, "max_output_tokens")
 		}

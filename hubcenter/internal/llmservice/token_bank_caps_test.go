@@ -2,10 +2,13 @@ package llmservice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
@@ -48,8 +51,9 @@ func TestTokenBankRequestCapsEstimateAndOutput(t *testing.T) {
 	if body["max_tokens"] != 10 {
 		t.Fatalf("max_tokens = %#v, want 10 left alone", body["max_tokens"])
 	}
-	if body["max_completion_tokens"] != int64(30) && body["max_completion_tokens"] != 30 {
-		t.Fatalf("max_completion_tokens = %#v, want 30", body["max_completion_tokens"])
+	// 80 is above the cap. The sibling 10 does not pull this field down.
+	if body["max_completion_tokens"] != int64(30) {
+		t.Fatalf("max_completion_tokens = %#v, want the cap 30", body["max_completion_tokens"])
 	}
 
 	over := map[string]any{"messages": []any{map[string]any{"content": "abcdefghi"}}}
@@ -72,8 +76,16 @@ func TestTokenBankRequestCapsEstimateAndOutput(t *testing.T) {
 	if err := applyTokenBankRequestCaps(plain, plainBody); err != nil {
 		t.Fatal(err)
 	}
-	if plainBody["max_tokens"] != 100 {
-		t.Fatalf("non-member max_tokens changed to %#v", plainBody["max_tokens"])
+	if plainBody["max_tokens"] != int64(1) {
+		t.Fatalf("member max_tokens = %#v, want the cap 1", plainBody["max_tokens"])
+	}
+	unlimited := &llmpool.ProviderConfig{ID: "openai"}
+	unlimitedBody := map[string]any{"max_tokens": 100}
+	if err := applyTokenBankRequestCaps(unlimited, unlimitedBody); err != nil {
+		t.Fatal(err)
+	}
+	if unlimitedBody["max_tokens"] != 100 {
+		t.Fatalf("unset cap changed max_tokens to %#v", unlimitedBody["max_tokens"])
 	}
 }
 
@@ -151,6 +163,278 @@ func TestTokenBankRequestCapNotesShareAndMapsTo400(t *testing.T) {
 	writeProxyRequestError(rec, err)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMemberOutputCapKeepsSmallerAndTruncates(t *testing.T) {
+	const cap int64 = 16384
+	huge := map[string]any{"max_tokens": 100000}
+	ApplyMemberOutputCap(huge, cap)
+	if huge["max_tokens"] != cap {
+		t.Fatalf("huge max_tokens = %#v, want %d", huge["max_tokens"], cap)
+	}
+	if _, ok := huge["max_completion_tokens"]; ok {
+		t.Fatal("a missing sibling was invented")
+	}
+
+	small := map[string]any{"max_completion_tokens": 128}
+	ApplyMemberOutputCap(small, cap)
+	if small["max_completion_tokens"] != 128 {
+		t.Fatalf("small max_completion_tokens = %#v, want 128", small["max_completion_tokens"])
+	}
+	if _, ok := small["max_tokens"]; ok {
+		t.Fatal("max_tokens was added beside a smaller max_completion_tokens")
+	}
+
+	// Each field is capped alone. 2000 is under the cap, so it stays, and it
+	// does not pull the other field down with it.
+	both := map[string]any{"max_tokens": 100000, "max_completion_tokens": float64(2000)}
+	ApplyMemberOutputCap(both, cap)
+	if both["max_tokens"] != cap || both["max_completion_tokens"] != float64(2000) {
+		t.Fatalf("both = max %#v completion %#v, want %d and 2000", both["max_tokens"], both["max_completion_tokens"], cap)
+	}
+	under := map[string]any{"max_tokens": 10000, "max_completion_tokens": 2000}
+	ApplyMemberOutputCap(under, cap)
+	if under["max_tokens"] != 10000 || under["max_completion_tokens"] != 2000 {
+		t.Fatalf("under-cap pair changed: %#v %#v", under["max_tokens"], under["max_completion_tokens"])
+	}
+	zero := map[string]any{"max_tokens": 0, "max_completion_tokens": 100}
+	ApplyMemberOutputCap(zero, cap)
+	if zero["max_tokens"] != 0 || zero["max_completion_tokens"] != 100 {
+		t.Fatalf("zero spread onto the sibling: %#v %#v", zero["max_tokens"], zero["max_completion_tokens"])
+	}
+	fraction := map[string]any{"max_tokens": 16384.9, "max_completion_tokens": 10.5}
+	ApplyMemberOutputCap(fraction, cap)
+	if fraction["max_tokens"] != cap || fraction["max_completion_tokens"] != 10.5 {
+		t.Fatalf("fraction = %#v %#v", fraction["max_tokens"], fraction["max_completion_tokens"])
+	}
+	bad := map[string]any{"max_tokens": "nope", "max_completion_tokens": 12}
+	ApplyMemberOutputCap(bad, cap)
+	if bad["max_tokens"] != cap || bad["max_completion_tokens"] != 12 {
+		t.Fatalf("bad sibling rewrote the other field: %#v %#v", bad["max_tokens"], bad["max_completion_tokens"])
+	}
+	responses := map[string]any{"max_output_tokens": 100000}
+	ApplyMemberOutputCap(responses, cap)
+	if responses["max_output_tokens"] != cap {
+		t.Fatalf("max_output_tokens = %#v", responses["max_output_tokens"])
+	}
+	if _, ok := responses["max_tokens"]; ok {
+		t.Fatal("max_output_tokens caused max_tokens to be invented")
+	}
+
+	overBoth := map[string]any{"max_tokens": 100000, "max_completion_tokens": 200000}
+	ApplyMemberOutputCap(overBoth, cap)
+	if overBoth["max_tokens"] != cap || overBoth["max_completion_tokens"] != cap {
+		t.Fatalf("over both = %#v / %#v, want %d", overBoth["max_tokens"], overBoth["max_completion_tokens"], cap)
+	}
+
+	omitted := map[string]any{"model": "typhoon"}
+	ApplyMemberOutputCap(omitted, cap)
+	if omitted["max_tokens"] != cap {
+		t.Fatalf("omitted max_tokens = %#v, want the cap", omitted["max_tokens"])
+	}
+	ApplyMemberOutputCap(omitted, 0)
+	if omitted["max_tokens"] != cap {
+		t.Fatal("a zero cap rewrote a body that was already capped")
+	}
+
+	caller := map[string]any{"max_tokens": 100000}
+	provider := &llmpool.ProviderConfig{ID: "typhoon", MaxOutputTokensPerRequest: cap}
+	copied := tokenBankCappedRequestBody(provider, caller)
+	if err := applyTokenBankRequestCaps(provider, copied); err != nil {
+		t.Fatal(err)
+	}
+	if caller["max_tokens"] != 100000 {
+		t.Fatalf("caller body changed to %#v", caller["max_tokens"])
+	}
+	if copied["max_tokens"] != cap {
+		t.Fatalf("copied max_tokens = %#v", copied["max_tokens"])
+	}
+}
+
+func TestMemberOutputCapOnForwardStreamAndTools(t *testing.T) {
+	var mu sync.Mutex
+	var saw []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		}
+		mu.Lock()
+		saw = append(saw, payload)
+		mu.Unlock()
+		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") || payload["stream"] == true {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"index\":0}]}\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+	provider := &llmpool.ProviderConfig{
+		ID:                        "typhoon",
+		Name:                      "Typhoon",
+		APIURL:                    srv.URL + "/v1",
+		APIKey:                    "sk-test",
+		Protocol:                  "openai",
+		MaxOutputTokensPerRequest: 16384,
+	}
+	tool := map[string]any{"type": "function", "function": map[string]any{"name": "ping"}}
+	cases := []struct {
+		name   string
+		stream bool
+		body   map[string]any
+		want   int64
+		comp   any
+	}{
+		{name: "stream huge with tools", stream: true, body: map[string]any{"max_tokens": 100000, "tools": []any{tool}}, want: 16384},
+		{name: "stream small", stream: true, body: map[string]any{"max_tokens": 128}, want: 128},
+		{name: "stream both", stream: true, body: map[string]any{"max_tokens": 100000, "max_completion_tokens": 2000}, want: 16384, comp: 2000},
+		{name: "stream omitted", stream: true, body: map[string]any{}, want: 16384},
+		{name: "forward huge", body: map[string]any{"max_tokens": 100000}, want: 16384},
+		{name: "forward omitted", body: map[string]any{}, want: 16384},
+		{name: "forward small completion", body: map[string]any{"max_completion_tokens": 64}, want: 0, comp: 64},
+		{name: "forward both over cap", body: map[string]any{"max_tokens": 90000, "max_completion_tokens": 80000}, want: 16384, comp: int64(16384)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{
+				"model":    "typhoon",
+				"messages": []any{map[string]any{"role": "user", "content": "ping"}},
+			}
+			for key, value := range tc.body {
+				body[key] = value
+			}
+			mu.Lock()
+			before := len(saw)
+			mu.Unlock()
+			if tc.stream {
+				dst := newLockedResponseRecorder()
+				streamed, err := streamProviderToWriter(context.Background(), srv.Client(), provider, body, "typhoon", "typhoon", dst)
+				if err != nil || streamed == nil || streamed.statusCode != http.StatusOK {
+					t.Fatalf("stream err=%v result=%#v body=%s", err, streamed, dst.BodyString())
+				}
+			} else {
+				resp, err := forwardToProvider(context.Background(), srv.Client(), provider, body, "typhoon", "typhoon")
+				if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+					t.Fatalf("forward err=%v resp=%#v", err, resp)
+				}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(saw) != before+1 {
+				t.Fatalf("captured %d bodies, want one new", len(saw)-before)
+			}
+			got := saw[before]
+			if tc.want > 0 {
+				n, ok := tokenBankBodyInt(got["max_tokens"])
+				if !ok || n != tc.want {
+					t.Fatalf("max_tokens = %#v, want %d", got["max_tokens"], tc.want)
+				}
+			} else if _, ok := got["max_tokens"]; ok {
+				t.Fatalf("max_tokens was invented: %#v", got["max_tokens"])
+			}
+			if tc.comp != nil {
+				if got["max_completion_tokens"] != tc.comp {
+					n, ok := tokenBankBodyInt(got["max_completion_tokens"])
+					want, wantOK := tokenBankBodyInt(tc.comp)
+					if !ok || !wantOK || n != want {
+						t.Fatalf("max_completion_tokens = %#v, want %#v", got["max_completion_tokens"], tc.comp)
+					}
+				}
+			}
+			if tc.body["tools"] != nil {
+				tools, _ := got["tools"].([]any)
+				if len(tools) != 1 {
+					t.Fatalf("tools = %#v", got["tools"])
+				}
+			}
+		})
+	}
+}
+
+func TestMemberOutputCapSurvivesExtraBody(t *testing.T) {
+	var saw map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&saw); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+	provider := &llmpool.ProviderConfig{
+		ID:                        "typhoon",
+		Name:                      "Typhoon",
+		APIURL:                    srv.URL + "/v1",
+		APIKey:                    "sk-test",
+		Protocol:                  "openai",
+		MaxOutputTokensPerRequest: 16384,
+		ExtraBody: map[string]any{
+			"max_tokens":            float64(100000),
+			"max_completion_tokens": float64(32),
+		},
+	}
+	body := map[string]any{
+		"model":      "typhoon",
+		"messages":   []any{map[string]any{"role": "user", "content": "ping"}},
+		"max_tokens": 128,
+	}
+	resp, err := forwardToProvider(context.Background(), srv.Client(), provider, body, "typhoon", "typhoon")
+	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("forward err=%v resp=%#v", err, resp)
+	}
+	n, ok := tokenBankBodyInt(saw["max_tokens"])
+	if !ok || n != 16384 {
+		t.Fatalf("max_tokens = %#v, want the cap after extra_body raised it", saw["max_tokens"])
+	}
+	completion, ok := tokenBankBodyInt(saw["max_completion_tokens"])
+	if !ok || completion != 32 {
+		t.Fatalf("max_completion_tokens = %#v, want the smaller extra_body value", saw["max_completion_tokens"])
+	}
+	if body["max_tokens"] != 128 {
+		t.Fatalf("caller body changed to %#v", body["max_tokens"])
+	}
+}
+
+func TestMemberProbeOutputBodyUsesCallerThenCap(t *testing.T) {
+	huge := int64(100000)
+	small := int64(32)
+	got := MemberProbeOutputBody(16384, &huge, nil, true)
+	if got["max_tokens"] != int64(16384) {
+		t.Fatalf("huge probe = %#v", got["max_tokens"])
+	}
+	got = MemberProbeOutputBody(16384, &small, nil, false)
+	if got["max_tokens"] != int64(32) {
+		t.Fatalf("small probe = %#v", got["max_tokens"])
+	}
+	completion := int64(2000)
+	got = MemberProbeOutputBody(16384, &huge, &completion, false)
+	if got["max_tokens"] != int64(16384) || got["max_completion_tokens"] != int64(2000) {
+		t.Fatalf("both probe = %#v", got)
+	}
+	if MemberProbeFieldBudget(got, 1, "max_completion_tokens", "max_tokens") != 2000 {
+		t.Fatal("Responses budget did not read max_completion_tokens")
+	}
+	if MemberProbeFieldBudget(got, 1, "max_tokens", "max_completion_tokens") != 16384 {
+		t.Fatal("Anthropic budget did not read max_tokens")
+	}
+	zeroFirst := map[string]any{"max_tokens": 0, "max_completion_tokens": int64(32)}
+	if MemberProbeFieldBudget(zeroFirst, 64, "max_tokens", "max_completion_tokens") != 0 {
+		t.Fatal("a caller-chosen 0 was replaced")
+	}
+	got = MemberProbeOutputBody(16384, nil, nil, false)
+	if got["max_tokens"] != int64(64) {
+		t.Fatalf("default probe = %#v, want 64", got["max_tokens"])
+	}
+	got = MemberProbeOutputBody(16384, nil, nil, true)
+	if got["max_tokens"] != int64(256) {
+		t.Fatalf("tool probe = %#v, want 256", got["max_tokens"])
+	}
+	if MemberProbeFieldBudget(got, 1, "max_tokens", "max_completion_tokens") != 256 {
+		t.Fatal("field budget did not read max_tokens")
 	}
 }
 

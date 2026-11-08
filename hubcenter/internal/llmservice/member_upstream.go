@@ -36,7 +36,9 @@ func WithMemberUpstreamOverrides(cfg corelib.MaclawLLMConfig, provider *llmpool.
 	if provider == nil {
 		return cfg
 	}
-	return corelib.MemberUpstreamOverrides(cfg, provider.ExtraBody, provider.ExtraBodyPriority, provider.DropFields)
+	cfg = corelib.MemberUpstreamOverrides(cfg, provider.ExtraBody, provider.ExtraBodyPriority, provider.DropFields)
+	cfg.MemberOutputTokenCap = provider.MaxOutputTokensPerRequest
+	return cfg
 }
 
 func cloneAnyMap(in map[string]any) map[string]any {

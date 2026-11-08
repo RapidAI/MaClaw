@@ -7,18 +7,18 @@ import "time"
 // ProviderConfig describes an LLM backend provider endpoint.
 // Used by both Hub (endpoint forwarding) and HubCenter (proxy dispatching).
 type ProviderConfig struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	APIURL         string   `json:"api_url"`
-	APIKey         string   `json:"api_key,omitempty"`
-	Paused         bool     `json:"paused,omitempty"`          // paused providers stay configured but are skipped by dispatch
-	Sequence       int      `json:"sequence"`                  // admin dispatch order; smaller numbers are tried first. Runtime health does not rewrite this. Always exported so admin cards can show and sort by it.
-	Protocol       string   `json:"protocol"`                  // "openai" / "anthropic"
-	WireAPI        string   `json:"wire_api,omitempty"`        // "" / "responses"
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	APIURL   string `json:"api_url"`
+	APIKey   string `json:"api_key,omitempty"`
+	Paused   bool   `json:"paused,omitempty"`   // paused providers stay configured but are skipped by dispatch
+	Sequence int    `json:"sequence"`           // admin dispatch order; smaller numbers are tried first. Runtime health does not rewrite this. Always exported so admin cards can show and sort by it.
+	Protocol string `json:"protocol"`           // "openai" / "anthropic"
+	WireAPI  string `json:"wire_api,omitempty"` // "" / "responses"
 	// AgentType is the User-Agent sent to this provider. Empty means openclaw.
 	// A known coding client (Claude Code, ZCode, Codex, OpenCode, …) or any
 	// custom string is stored as typed.
-	AgentType string `json:"agent_type,omitempty"`
+	AgentType      string   `json:"agent_type,omitempty"`
 	Models         []string `json:"models,omitempty"`          // supported models
 	CapabilityTags []string `json:"capability_tags,omitempty"` // e.g. "tools", "vision", "document"
 	Priority       int      `json:"priority,omitempty"`        // higher = preferred
@@ -33,9 +33,15 @@ type ProviderConfig struct {
 	// RateLimitCooldownSec is how long to skip this member after HTTP 429.
 	// 0 keeps the default 60 second pause.
 	RateLimitCooldownSec int `json:"rate_limit_cooldown_sec,omitempty"`
-	// MaxInputTokensPerRequest and MaxOutputTokensPerRequest cap a single
-	// Token Bank call. Zero means unlimited. The proxy enforces them only for
-	// token-bank member ids.
+	// MaxInputTokensPerRequest caps one Token Bank call. Zero means unlimited.
+	// The proxy enforces it only for token-bank member ids.
+	// MaxOutputTokensPerRequest caps max_tokens, max_completion_tokens, and
+	// max_output_tokens on every member before the request is forwarded.
+	// Zero means unlimited. The integrator sets the number. Each present
+	// field is capped on its own: a value above the cap is lowered to the
+	// cap, and a smaller value is kept. A field the caller did not send is
+	// not invented. When none of those fields is present, the proxy sets
+	// max_tokens to this cap.
 	MaxInputTokensPerRequest  int64 `json:"max_input_tokens_per_request,omitempty"`
 	MaxOutputTokensPerRequest int64 `json:"max_output_tokens_per_request,omitempty"`
 	// Token Bank snapshot. Published with the member so a call that is already
@@ -63,7 +69,7 @@ type ProviderConfig struct {
 	TokenBankShareWindow TokenBankShareWindow `json:"token_bank_share_window,omitzero"`
 	// ModelMap rewrites a public model name to this member's upstream model id.
 	// Example: {"free-llama-70b": "meta-llama/Llama-3.3-70B-Instruct"}.
-	ModelMap                 map[string]string        `json:"model_map,omitempty"`
+	ModelMap map[string]string `json:"model_map,omitempty"`
 	// ExtraBody is merged into the upstream request after reasoning stamps.
 	// Omit on update to keep the stored object. {} clears it.
 	ExtraBody map[string]any `json:"extra_body,omitempty"`

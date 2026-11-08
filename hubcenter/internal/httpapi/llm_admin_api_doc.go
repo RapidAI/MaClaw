@@ -176,6 +176,8 @@ dry_run 只在试跑时出现。
 
 enabled 为 false 时不再向该成员转发，密钥、配置和路由都保留。true 恢复转发。省略 enabled 则保持当前状态。清单和测试结果里的 enabled 就是这个状态。model_map 传 {} 会清空映射。allowed_node_ids 传 [] 会改回全部节点。allowed_nodes 和 allowed_node_ids 不要同时发送。capability_tags 传 [] 会清空标签。
 
+max_output_tokens_per_request 是这一名成员单次回复的输出上限，由接入者按服务商设置。0 表示不限制。转发前只截断超过上限的 max_tokens、max_completion_tokens 和已经出现的 max_output_tokens，已经更小的值保持原样。两个字段各自截断，互不改写：较新的模型读 max_completion_tokens，较旧的模型读 max_tokens。调用方没传的字段不会补上。两个都没传、也没有 max_output_tokens 时，转发会补上 max_tokens 等于上限，避免上游用自己的默认值超出成员上限。成员 extra_body 若把这些字段改大，合并之后仍会再截断一次。传 0 会取消已保存的上限。只能带一个数字的协议按它实际读取的字段探测：Anthropic 用 max_tokens，没有则用 max_completion_tokens；Responses 和 Google 用 max_completion_tokens，没有则用 max_tokens。
+
 换阵列和标档位用这两个字段：
 
 ` + "```" + `json
@@ -218,6 +220,7 @@ token_bank_mid / token_bank_high 三个平台阵列（见上一节）。两者�
 - model：可选。省略时用成员的第一个模型。名字会先走该成员的 model_map。
 - node：可选。指定从哪一台 HubCenter 节点向外发请求，例如 hc-2。节点名来自 GET /api/admin/llm/access-nodes。省略时，若当前节点在成员的可用范围内，就从当前节点发；否则转到一台允许且可达的节点。节点必须在集群名单里，并且落在该成员的 allowed_node_ids 内（空名单表示全部节点）。未知节点，或节点不在成员范围内，返回 400。指定了 node 时，上游的 429 或 5xx 记在这次探测结果里，不会改去试另一台节点。探测等待的是该成员自己的超时；从另一台节点发起时，额外留一小段时间把结果送回来。
 - tools：可选，OpenAI chat tools 数组，1 到 8 个。带上之后探测会要求模型调用工具，响应里的 tool_calls 是模型实际返回的调用。tool_choice 可选，必须和 tools 一起出现。
+- max_tokens、max_completion_tokens：可选，非负整数。探测会把这两个值交给和真实转发同一套输出上限。超过成员 max_output_tokens_per_request 的值会被截断，较小值保留。两个都传时，两个字段各自截断，较小的那个不会改写另一个。只能带一个数字时，Anthropic 用 max_tokens，没有则用 max_completion_tokens；Responses 和 Google 用 max_completion_tokens，没有则用 max_tokens。省略时探测仍用短回复（64，带 tools 时 256），再按已保存的上限截断。流式转发和带 tools 的请求使用同一条规则。
 - 不要在请求里带 api_url 或 api_key。地址和密钥只用库里的那一份。extra_body、extra_body_priority、drop_fields 也只用已保存的成员配置，测试请求不能临场覆盖。
 
 成员不存在返回 404。配置缺地址或缺模型时 HTTP 200，success 为 false，member 里仍是当前配置。上游失败同样是 HTTP 200、success 为 false，并带上 error 和 latency_ms。
@@ -315,7 +318,7 @@ curl -sS -X PATCH "$ORIGIN/api/admin/llm/providers/pool-a-1" \
 curl -sS "$ORIGIN/api/admin/llm/member-health?day=2026-09-30" -H "Authorization: Bearer hck_..."
 curl -sS -X POST "$ORIGIN/api/admin/llm/providers/pool-a-1/test" \
   -H "Authorization: Bearer hck_..." -H "Content-Type: application/json" \
-  -d '{"model":"free-llama-70b","node":"hc-2","tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{}}}}]}'
+  -d '{"model":"free-llama-70b","node":"hc-2","max_tokens":100000,"max_completion_tokens":2000,"tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{}}}}]}'
 curl -sS "$ORIGIN/api/admin/llm/token-bank/shares?status=paused" -H "Authorization: Bearer hck_..."
 curl -sS -X POST "$ORIGIN/api/admin/llm/token-bank/shares" \
   -H "Authorization: Bearer hck_..." -H "Content-Type: application/json" \
@@ -556,7 +559,7 @@ func llmAdminAPIOpenAPI() map[string]any {
 				"post": map[string]any{
 					"operationId": "testProviderMember",
 					"summary":     "Probe one saved member and return its current configuration status",
-					"description": "Uses the stored URL, key, extra_body, extra_body_priority, and drop_fields. The test body cannot override those three. Optional body fields are model, node, tools, and tool_choice. node selects which HubCenter node sends the probe. tools is an OpenAI tools array and the response includes tool_calls. Caller-supplied api_url or api_key is rejected. A failed probe is HTTP 200 with success false. A missing member is 404. The probe does not consume request quota or persisted health.",
+					"description": "Uses the stored URL, key, extra_body, extra_body_priority, drop_fields, and max_output_tokens_per_request. The test body cannot override the first three. Optional body fields are model, node, tools, tool_choice, max_tokens, and max_completion_tokens. node selects which HubCenter node sends the probe. tools is an OpenAI tools array and the response includes tool_calls. max_tokens and max_completion_tokens are non-negative integers sent through the same output cap as a live forward: values above the member cap are truncated, smaller values are kept, and each field is capped on its own. A one-field protocol uses the field it reads: Anthropic uses max_tokens, otherwise max_completion_tokens; Responses and Google use max_completion_tokens, otherwise max_tokens. Omitting them keeps the short probe budget (64, or 256 with tools) and still applies the cap. Streaming forwards and tool calls use that same cap. Caller-supplied api_url or api_key is rejected. A failed probe is HTTP 200 with success false. A missing member is 404. The probe does not consume request quota or persisted health.",
 					"security":    []any{map[string]any{"adminApiKey": []any{}}},
 					"parameters":  []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
 					"responses": map[string]any{
@@ -637,47 +640,49 @@ func llmAdminAPIOpenAPI() map[string]any {
 					"type":                 "object",
 					"additionalProperties": false,
 					"properties": map[string]any{
-						"enabled":                 map[string]any{"type": "boolean", "description": "false pauses dispatch. true resumes it. The stored key, configuration, and routes stay. Omit to keep the current state. Batch import rejects paused and enabled instead of changing this."},
-						"dispatch_weight":         map[string]any{"type": "integer", "description": "Share of array traffic. 0 and 1 are equal. 0 here clears a higher weight."},
-						"priority":                map[string]any{"type": "integer"},
-						"requests_per_minute":     map[string]any{"type": "integer"},
-						"requests_per_day":        map[string]any{"type": "integer"},
-						"rate_limit_cooldown_sec": map[string]any{"type": "integer", "description": "Seconds to skip this member after HTTP 429. 0 keeps 60 seconds."},
-						"model_map":               map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "An empty object clears the map."},
-						"allowed_node_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Empty array means every node. Do not send this together with allowed_nodes."},
-						"allowed_nodes":           map[string]any{"type": "string", "example": "hc-1, hc-2, hc-3", "description": "Comma-separated node ids. Folded into allowed_node_ids."},
-						"capability_tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "example": []string{"tools", "vision", "reasoning"}, "description": "A comma-separated string is also accepted. Empty array clears the tags. Omit to keep the stored tags."},
-						"array_id":                map[string]any{"type": "string", "description": "Move this member into an existing array. The member keeps its key, configuration, and models. For a Token Bank member, token_bank_low, token_bank_mid, and token_bank_high also store the settlement tier and retarget that model's routes. Do not send this together with token_bank_tier."},
-						"token_bank_tier":         map[string]any{"type": "string", "enum": []string{"low", "mid", "high"}, "description": "Mark a Token Bank model as low, mid, or high. Stores the tier and settlement multiplier (0.5, 1, 2) and moves routes that name this member's current array onto token_bank_low, token_bank_mid, or token_bank_high. A service group that uses only another tier stays there. Array credit multiplier stays 1.0. The id must be a Token Bank member. Do not send this together with array_id."},
-						"extra_body":              map[string]any{"type": "object", "description": "JSON object merged into the upstream request after reasoning stamps. Member values replace the same key unless extra_body_priority is downstream. {} or null clears the stored object. Omit to keep it. model, messages, and stream are rejected."},
-						"extra_body_priority":     map[string]any{"type": "string", "enum": []string{"member", "downstream"}, "description": "member (default) lets extra_body replace the same key. downstream keeps a key the request already has. Send member to switch back from downstream. An empty string keeps the stored priority."},
-						"drop_fields":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Top-level field names removed after extra_body is merged, including fields this hub added. [] or null clears the list. Omit to keep it. model, messages, and stream are rejected."},
-						"dry_run":                 map[string]any{"type": "boolean", "description": "Validate and return the member that would be stored. Nothing is written, including a Token Bank tier change."},
+						"enabled":                       map[string]any{"type": "boolean", "description": "false pauses dispatch. true resumes it. The stored key, configuration, and routes stay. Omit to keep the current state. Batch import rejects paused and enabled instead of changing this."},
+						"dispatch_weight":               map[string]any{"type": "integer", "description": "Share of array traffic. 0 and 1 are equal. 0 here clears a higher weight."},
+						"priority":                      map[string]any{"type": "integer"},
+						"requests_per_minute":           map[string]any{"type": "integer"},
+						"requests_per_day":              map[string]any{"type": "integer"},
+						"rate_limit_cooldown_sec":       map[string]any{"type": "integer", "description": "Seconds to skip this member after HTTP 429. 0 keeps 60 seconds."},
+						"model_map":                     map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "An empty object clears the map."},
+						"allowed_node_ids":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Empty array means every node. Do not send this together with allowed_nodes."},
+						"allowed_nodes":                 map[string]any{"type": "string", "example": "hc-1, hc-2, hc-3", "description": "Comma-separated node ids. Folded into allowed_node_ids."},
+						"capability_tags":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "example": []string{"tools", "vision", "reasoning"}, "description": "A comma-separated string is also accepted. Empty array clears the tags. Omit to keep the stored tags."},
+						"array_id":                      map[string]any{"type": "string", "description": "Move this member into an existing array. The member keeps its key, configuration, and models. For a Token Bank member, token_bank_low, token_bank_mid, and token_bank_high also store the settlement tier and retarget that model's routes. Do not send this together with token_bank_tier."},
+						"token_bank_tier":               map[string]any{"type": "string", "enum": []string{"low", "mid", "high"}, "description": "Mark a Token Bank model as low, mid, or high. Stores the tier and settlement multiplier (0.5, 1, 2) and moves routes that name this member's current array onto token_bank_low, token_bank_mid, or token_bank_high. A service group that uses only another tier stays there. Array credit multiplier stays 1.0. The id must be a Token Bank member. Do not send this together with array_id."},
+						"extra_body":                    map[string]any{"type": "object", "description": "JSON object merged into the upstream request after reasoning stamps. Member values replace the same key unless extra_body_priority is downstream. {} or null clears the stored object. Omit to keep it. model, messages, and stream are rejected."},
+						"extra_body_priority":           map[string]any{"type": "string", "enum": []string{"member", "downstream"}, "description": "member (default) lets extra_body replace the same key. downstream keeps a key the request already has. Send member to switch back from downstream. An empty string keeps the stored priority."},
+						"drop_fields":                   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Top-level field names removed after extra_body is merged, including fields this hub added. [] or null clears the list. Omit to keep it. model, messages, and stream are rejected."},
+						"max_output_tokens_per_request": map[string]any{"type": "integer", "minimum": 0, "description": "Member output cap set by the integrator. 0 means unlimited and clears a stored cap. Before forward, max_tokens, max_completion_tokens, and max_output_tokens above this cap are truncated and smaller values are kept. Each field is capped on its own. When none of them is present, forward sends max_tokens equal to this cap."},
+						"dry_run":                       map[string]any{"type": "boolean", "description": "Validate and return the member that would be stored. Nothing is written, including a Token Bank tier change."},
 					},
 				},
 				"ProviderMember": map[string]any{
 					"type":     "object",
 					"required": []string{"id", "name", "api_url"},
 					"properties": map[string]any{
-						"id":                      map[string]any{"type": "string"},
-						"name":                    map[string]any{"type": "string"},
-						"api_url":                 map[string]any{"type": "string"},
-						"api_key":                 map[string]any{"type": "string", "description": "Omit on update to keep the stored upstream key. Never returned by list."},
-						"protocol":                map[string]any{"type": "string", "enum": []string{"openai", "anthropic"}},
-						"models":                  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-						"dispatch_weight":         map[string]any{"type": "integer", "description": "Share of array traffic. 0 and 1 are equal."},
-						"priority":                map[string]any{"type": "integer"},
-						"requests_per_minute":     map[string]any{"type": "integer"},
-						"requests_per_day":        map[string]any{"type": "integer"},
-						"rate_limit_cooldown_sec": map[string]any{"type": "integer", "description": "Seconds to skip this member after HTTP 429. 0 keeps 60 seconds."},
-						"model_map":               map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
-						"allowed_node_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Empty means every node."},
-						"allowed_nodes":           map[string]any{"type": "string", "example": "hc-1, hc-2, hc-3", "description": "Comma-separated node ids. Folded into allowed_node_ids and not stored."},
-						"serve_windows":           map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/ServeWindow"}, "description": "When this provider may answer requests. Windows are a union: one match opens the provider, an empty list means always available. A dial gate only; it never changes the price."},
-						"capability_tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "example": []string{"tools", "vision", "reasoning"}, "description": "Member capability tags. A comma-separated string is also accepted. Empty array clears them. Omit to keep the stored tags. A service-group route tag list overrides these. When the route list is empty, dispatch adds these tags to the model tags, including when choosing a model inside one quality band."},
-						"extra_body":              map[string]any{"type": "object", "description": "JSON object merged into the upstream request after reasoning stamps. Nested objects merge. {} clears it. Omit on update to keep the stored object. model, messages, and stream are rejected. At most 16 KiB and 8 levels deep. Omitted from list responses when empty."},
-						"extra_body_priority":     map[string]any{"type": "string", "enum": []string{"member", "downstream"}, "description": "member (default) lets extra_body replace the same key. downstream keeps a key the request already has. Omit on update to keep the stored priority. A new member with this omitted uses member. List responses omit this field unless it is downstream; a missing priority means member."},
-						"drop_fields":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Top-level names removed after extra_body is merged, including fields this hub added such as thinking. [] clears the list. Omit on update to keep it. model, messages, and stream are rejected. At most 32 names. Omitted from list responses when empty."},
+						"id":                            map[string]any{"type": "string"},
+						"name":                          map[string]any{"type": "string"},
+						"api_url":                       map[string]any{"type": "string"},
+						"api_key":                       map[string]any{"type": "string", "description": "Omit on update to keep the stored upstream key. Never returned by list."},
+						"protocol":                      map[string]any{"type": "string", "enum": []string{"openai", "anthropic"}},
+						"models":                        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+						"dispatch_weight":               map[string]any{"type": "integer", "description": "Share of array traffic. 0 and 1 are equal."},
+						"priority":                      map[string]any{"type": "integer"},
+						"requests_per_minute":           map[string]any{"type": "integer"},
+						"requests_per_day":              map[string]any{"type": "integer"},
+						"rate_limit_cooldown_sec":       map[string]any{"type": "integer", "description": "Seconds to skip this member after HTTP 429. 0 keeps 60 seconds."},
+						"model_map":                     map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+						"allowed_node_ids":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Empty means every node."},
+						"allowed_nodes":                 map[string]any{"type": "string", "example": "hc-1, hc-2, hc-3", "description": "Comma-separated node ids. Folded into allowed_node_ids and not stored."},
+						"serve_windows":                 map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/ServeWindow"}, "description": "When this provider may answer requests. Windows are a union: one match opens the provider, an empty list means always available. A dial gate only; it never changes the price."},
+						"capability_tags":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "example": []string{"tools", "vision", "reasoning"}, "description": "Member capability tags. A comma-separated string is also accepted. Empty array clears them. Omit to keep the stored tags. A service-group route tag list overrides these. When the route list is empty, dispatch adds these tags to the model tags, including when choosing a model inside one quality band."},
+						"extra_body":                    map[string]any{"type": "object", "description": "JSON object merged into the upstream request after reasoning stamps. Nested objects merge. {} clears it. Omit on update to keep the stored object. model, messages, and stream are rejected. At most 16 KiB and 8 levels deep. Omitted from list responses when empty."},
+						"extra_body_priority":           map[string]any{"type": "string", "enum": []string{"member", "downstream"}, "description": "member (default) lets extra_body replace the same key. downstream keeps a key the request already has. Omit on update to keep the stored priority. A new member with this omitted uses member. List responses omit this field unless it is downstream; a missing priority means member."},
+						"drop_fields":                   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Top-level names removed after extra_body is merged, including fields this hub added such as thinking. [] clears the list. Omit on update to keep it. model, messages, and stream are rejected. At most 32 names. Omitted from list responses when empty."},
+						"max_output_tokens_per_request": map[string]any{"type": "integer", "minimum": 0, "description": "Member output cap. 0 means unlimited. Omit on update to keep the stored cap. The proxy truncates max_tokens, max_completion_tokens, and max_output_tokens that exceed it and keeps a smaller value. Each field is capped on its own."},
 					},
 				},
 				"ServeWindow": map[string]any{

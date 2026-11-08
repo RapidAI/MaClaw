@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
@@ -27,6 +28,9 @@ func TestLLMAdminAPIDocsArePublic(t *testing.T) {
 		"OpenAI 兼容 chat、Anthropic 兼容和 Responses",
 		"先合并 extra_body，再按 drop_fields 删除字段",
 		`"extra_body":{"reasoning_effort":"none"}`,
+		"max_output_tokens_per_request",
+		"max_completion_tokens",
+		"两个字段各自截断",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("markdown missing upstream override doc %q", want)
@@ -60,7 +64,9 @@ func TestLLMAdminAPIDocsArePublic(t *testing.T) {
 	for _, want := range []string{
 		"a missing priority means member",
 		"dry_run true validates",
-		"The test body cannot override those three",
+		"The test body cannot override the first three",
+		"max_output_tokens_per_request",
+		"each field is capped on its own",
 		"At most 16 KiB",
 		"OpenAI-compatible chat, Anthropic-compatible, and Responses",
 	} {
@@ -474,6 +480,132 @@ func TestAdminPatchAcceptsWholeNumberWeight(t *testing.T) {
 	h(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("fraction status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminPatchMemberOutputCap(t *testing.T) {
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	if err := svc.SaveRegistry(t.Context(), &llmservice.Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "a", Name: "A", APIURL: "https://a.example/v1", MaxOutputTokensPerRequest: 4096}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := adminPatchLLMProviderMember(svc, nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/api/admin/llm/providers/a", strings.NewReader(`{"max_output_tokens_per_request":16384}`))
+	req.SetPathValue("id", "a")
+	h(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"max_output_tokens_per_request":16384`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	reg, err := svc.LoadRegistry(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.Providers[0].MaxOutputTokensPerRequest != 16384 {
+		t.Fatalf("cap = %d", reg.Providers[0].MaxOutputTokensPerRequest)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPatch, "/api/admin/llm/providers/a", strings.NewReader(`{"max_output_tokens_per_request":0}`))
+	req.SetPathValue("id", "a")
+	h(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	reg, err = svc.LoadRegistry(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.Providers[0].MaxOutputTokensPerRequest != 0 {
+		t.Fatalf("cleared cap = %d", reg.Providers[0].MaxOutputTokensPerRequest)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPatch, "/api/admin/llm/providers/a", strings.NewReader(`{"max_output_tokens_per_request":-1}`))
+	req.SetPathValue("id", "a")
+	h(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("negative status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminTestProviderMemberOutputBudget(t *testing.T) {
+	var mu sync.Mutex
+	var saw []map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		}
+		mu.Lock()
+		saw = append(saw, payload)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong","tool_calls":[{"function":{"name":"ping","arguments":"{}"}}]}}]}`))
+	}))
+	defer upstream.Close()
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	if err := svc.SaveRegistry(t.Context(), &llmservice.Registry{
+		Providers: []llmpool.ProviderConfig{{
+			ID: "pool-a-1", Name: "Typhoon", APIURL: upstream.URL + "/v1", APIKey: "sk-live",
+			Models: []string{"typhoon"}, MaxOutputTokensPerRequest: 16384,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proxyCfg := &llmservice.ProxyConfig{NodeID: "hc-1"}
+	h := adminTestLLMProviderMember(svc, proxyCfg)
+	post := func(body string) map[string]any {
+		t.Helper()
+		mu.Lock()
+		before := len(saw)
+		mu.Unlock()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/pool-a-1/test", strings.NewReader(body))
+		req.SetPathValue("id", "pool-a-1")
+		h(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"success":true`) {
+			t.Fatalf("status=%d body=%s request=%s", rec.Code, rec.Body.String(), body)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(saw) != before+1 {
+			t.Fatalf("captured %d, want one new for %s", len(saw)-before, body)
+		}
+		return saw[before]
+	}
+	number := func(body map[string]any, key string) int64 {
+		t.Helper()
+		n, ok := body[key].(float64)
+		if !ok {
+			t.Fatalf("%s = %#v", key, body[key])
+		}
+		return int64(n)
+	}
+	huge := post(`{"max_tokens":100000}`)
+	if number(huge, "max_tokens") != 16384 {
+		t.Fatalf("huge = %#v", huge["max_tokens"])
+	}
+	if _, ok := huge["max_completion_tokens"]; ok {
+		t.Fatal("huge probe invented max_completion_tokens")
+	}
+	small := post(`{"max_tokens":128}`)
+	if number(small, "max_tokens") != 128 {
+		t.Fatalf("small = %#v", small["max_tokens"])
+	}
+	both := post(`{"max_tokens":100000,"max_completion_tokens":2000,"tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{}}}}]}`)
+	if number(both, "max_tokens") != 16384 || number(both, "max_completion_tokens") != 2000 {
+		t.Fatalf("both = %#v / %#v", both["max_tokens"], both["max_completion_tokens"])
+	}
+	tools, _ := both["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools = %#v", both["tools"])
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/pool-a-1/test", strings.NewReader(`{"max_tokens":-1}`))
+	req.SetPathValue("id", "pool-a-1")
+	h(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("negative status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

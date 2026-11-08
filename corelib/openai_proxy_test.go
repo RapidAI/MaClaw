@@ -2048,6 +2048,24 @@ func TestOpenAIToAnthropicUsesToolBudgetWhenMaxTokensMissing(t *testing.T) {
 	if req["max_tokens"] != float64(123) {
 		t.Fatalf("max_tokens override = %#v, want 123", req["max_tokens"])
 	}
+
+	req = openaiToAnthropic(map[string]interface{}{
+		"messages":              []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		"tools":                 []interface{}{map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": "run_command"}}},
+		"max_completion_tokens": float64(128),
+	}, "claude-compat")
+	if req["max_tokens"] != float64(128) {
+		t.Fatalf("max_completion_tokens fallback = %#v, want 128", req["max_tokens"])
+	}
+
+	req = openaiToAnthropic(map[string]interface{}{
+		"messages":              []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		"max_tokens":            float64(100),
+		"max_completion_tokens": float64(50),
+	}, "claude-compat")
+	if req["max_tokens"] != float64(100) {
+		t.Fatalf("anthropic kept the other field: %#v", req["max_tokens"])
+	}
 }
 
 func TestOpenAIToAnthropicKeepsJSONThinkingBudget(t *testing.T) {

@@ -2779,12 +2779,13 @@ func (c *sharedAgentLoopCallbacks) IsToolCallAllowed(name, argsJSON string) (boo
 	}
 	// The content ladder owns this call before host controls and discovery
 	// presets. Otherwise dispatch_background_task and craft_tool run first,
-	// and the turn never opens memory or the knowledge base.
+	// and the turn never opens memory or the knowledge base. A discovery call
+	// that loads only a knowledge writer is the language-independent exception.
 	resolved := strings.TrimSpace(name)
 	if c != nil && c.semanticSurface != nil {
 		resolved = c.semanticSurface.resolveFunctionName(name)
 	}
-	if handled, allowed, reason := c.contentRetrievalGate(resolved); handled {
+	if handled, allowed, reason := c.contentRetrievalGateCall(resolved, argsJSON); handled {
 		return allowed, reason
 	}
 	if rejected := c.discoveryDispatchRejection(name); rejected != "" {
@@ -6622,7 +6623,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON st
 	if text, handled := c.executeContentRetrievalCall(functionName, argsJSON); handled {
 		return text
 	}
-	if handled, allowed, reason := c.contentRetrievalGate(functionName); handled && !allowed {
+	if handled, allowed, reason := c.contentRetrievalGateCall(functionName, argsJSON); handled && !allowed {
 		return "[system rejected] " + reason
 	}
 	if rejected := c.discoveryDispatchRejection(functionName); rejected != "" {
@@ -6764,7 +6765,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName
 	if text, handled := c.executeContentRetrievalCall(functionName, argsJSON); handled {
 		return text
 	}
-	if handled, allowed, reason := c.contentRetrievalGate(functionName); handled && !allowed {
+	if handled, allowed, reason := c.contentRetrievalGateCall(functionName, argsJSON); handled && !allowed {
 		return "[system rejected] " + reason
 	}
 	if rejected := c.discoveryDispatchRejection(functionName); rejected != "" {

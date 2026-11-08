@@ -12,26 +12,27 @@ import (
 
 // ProviderArrayMemberView is one upstream with its key redacted.
 type ProviderArrayMemberView struct {
-	ID                   string            `json:"id"`
-	Name                 string            `json:"name"`
-	APIURL               string            `json:"api_url"`
-	Protocol             string            `json:"protocol,omitempty"`
-	Models               []string          `json:"models"`
-	Enabled              bool              `json:"enabled"`
-	APIKeyConfigured     bool              `json:"api_key_configured"`
-	APIKeyLast4          string            `json:"api_key_last4,omitempty"`
-	Priority             int               `json:"priority"`
-	DispatchWeight       int               `json:"dispatch_weight"`
-	RequestsPerMinute    int               `json:"requests_per_minute"`
-	RequestsPerDay       int               `json:"requests_per_day"`
-	RateLimitCooldownSec int               `json:"rate_limit_cooldown_sec"`
-	ModelMap             map[string]string `json:"model_map,omitempty"`
-	AllowedNodeIDs       []string          `json:"allowed_node_ids"`
-	CapabilityTags       []string          `json:"capability_tags"`
-	ExtraBody            map[string]any    `json:"extra_body,omitempty"`
-	ExtraBodyPriority    string            `json:"extra_body_priority,omitempty"`
-	DropFields           []string          `json:"drop_fields,omitempty"`
-	Health               MemberHealth      `json:"health"`
+	ID                        string            `json:"id"`
+	Name                      string            `json:"name"`
+	APIURL                    string            `json:"api_url"`
+	Protocol                  string            `json:"protocol,omitempty"`
+	Models                    []string          `json:"models"`
+	Enabled                   bool              `json:"enabled"`
+	APIKeyConfigured          bool              `json:"api_key_configured"`
+	APIKeyLast4               string            `json:"api_key_last4,omitempty"`
+	Priority                  int               `json:"priority"`
+	DispatchWeight            int               `json:"dispatch_weight"`
+	RequestsPerMinute         int               `json:"requests_per_minute"`
+	RequestsPerDay            int               `json:"requests_per_day"`
+	RateLimitCooldownSec      int               `json:"rate_limit_cooldown_sec"`
+	ModelMap                  map[string]string `json:"model_map,omitempty"`
+	AllowedNodeIDs            []string          `json:"allowed_node_ids"`
+	CapabilityTags            []string          `json:"capability_tags"`
+	ExtraBody                 map[string]any    `json:"extra_body,omitempty"`
+	ExtraBodyPriority         string            `json:"extra_body_priority,omitempty"`
+	DropFields                []string          `json:"drop_fields,omitempty"`
+	MaxOutputTokensPerRequest int64             `json:"max_output_tokens_per_request,omitempty"`
+	Health                    MemberHealth      `json:"health"`
 }
 
 // ProviderArrayView is one logical provider and the members that share it.
@@ -52,26 +53,27 @@ type ProviderArrayInventory struct {
 // ProviderMemberPatch updates one member. Nil fields are left unchanged.
 // ModelMapSet with a nil or empty ModelMap clears the mapping.
 type ProviderMemberPatch struct {
-	Enabled              *bool
-	DispatchWeight       *int
-	Priority             *int
-	RequestsPerMinute    *int
-	RequestsPerDay       *int
-	RateLimitCooldownSec *int
-	ModelMapSet          bool
-	ModelMap             map[string]string
-	AllowedNodeIDsSet    bool
-	AllowedNodeIDs       []string
-	CapabilityTagsSet    bool
-	CapabilityTags       []string
-	ArrayIDSet           bool
-	ArrayID              string
-	ExtraBodySet         bool
-	ExtraBody            map[string]any
-	ExtraBodyPrioritySet bool
-	ExtraBodyPriority    string
-	DropFieldsSet        bool
-	DropFields           []string
+	Enabled                   *bool
+	DispatchWeight            *int
+	Priority                  *int
+	RequestsPerMinute         *int
+	RequestsPerDay            *int
+	RateLimitCooldownSec      *int
+	ModelMapSet               bool
+	ModelMap                  map[string]string
+	AllowedNodeIDsSet         bool
+	AllowedNodeIDs            []string
+	CapabilityTagsSet         bool
+	CapabilityTags            []string
+	ArrayIDSet                bool
+	ArrayID                   string
+	ExtraBodySet              bool
+	ExtraBody                 map[string]any
+	ExtraBodyPrioritySet      bool
+	ExtraBodyPriority         string
+	DropFieldsSet             bool
+	DropFields                []string
+	MaxOutputTokensPerRequest *int64
 }
 
 // ListProviderArrayInventory returns arrays and members without upstream secrets.
@@ -134,26 +136,27 @@ func memberView(provider llmpool.ProviderConfig, now time.Time) ProviderArrayMem
 		tags = []string{}
 	}
 	return ProviderArrayMemberView{
-		ID:                   provider.ID,
-		Name:                 provider.Name,
-		APIURL:               provider.APIURL,
-		Protocol:             protocol,
-		Models:               models,
-		Enabled:              !provider.Paused,
-		APIKeyConfigured:     configured,
-		APIKeyLast4:          last4,
-		Priority:             provider.Priority,
-		DispatchWeight:       provider.DispatchWeight,
-		RequestsPerMinute:    provider.RequestsPerMinute,
-		RequestsPerDay:       provider.RequestsPerDay,
-		RateLimitCooldownSec: provider.RateLimitCooldownSec,
-		ModelMap:             cloneStringMap(provider.ModelMap),
-		AllowedNodeIDs:       nodes,
-		CapabilityTags:       tags,
-		ExtraBody:            cloneAnyMap(provider.ExtraBody),
-		ExtraBodyPriority:    provider.ExtraBodyPriority,
-		DropFields:           append([]string(nil), provider.DropFields...),
-		Health:               memberHealthSnapshot(&provider, now),
+		ID:                        provider.ID,
+		Name:                      provider.Name,
+		APIURL:                    provider.APIURL,
+		Protocol:                  protocol,
+		Models:                    models,
+		Enabled:                   !provider.Paused,
+		APIKeyConfigured:          configured,
+		APIKeyLast4:               last4,
+		Priority:                  provider.Priority,
+		DispatchWeight:            provider.DispatchWeight,
+		RequestsPerMinute:         provider.RequestsPerMinute,
+		RequestsPerDay:            provider.RequestsPerDay,
+		RateLimitCooldownSec:      provider.RateLimitCooldownSec,
+		ModelMap:                  cloneStringMap(provider.ModelMap),
+		AllowedNodeIDs:            nodes,
+		CapabilityTags:            tags,
+		ExtraBody:                 cloneAnyMap(provider.ExtraBody),
+		ExtraBodyPriority:         provider.ExtraBodyPriority,
+		DropFields:                append([]string(nil), provider.DropFields...),
+		MaxOutputTokensPerRequest: provider.MaxOutputTokensPerRequest,
+		Health:                    memberHealthSnapshot(&provider, now),
 	}
 }
 
@@ -273,6 +276,9 @@ func applyProviderMemberPatch(reg *Registry, provider llmpool.ProviderConfig, pa
 			provider.DropFields = append([]string(nil), patch.DropFields...)
 		}
 	}
+	if patch.MaxOutputTokensPerRequest != nil {
+		provider.MaxOutputTokensPerRequest = *patch.MaxOutputTokensPerRequest
+	}
 	if err := normalizeProviderUpstreamOverrides(&provider); err != nil {
 		return provider, err
 	}
@@ -294,6 +300,7 @@ func providerMemberPatchChanged(before, after llmpool.ProviderConfig) bool {
 		!stringSliceEqual(before.CapabilityTags, after.CapabilityTags) ||
 		!stringMapEqual(before.ModelMap, after.ModelMap) ||
 		!strings.EqualFold(strings.TrimSpace(before.ArrayID), strings.TrimSpace(after.ArrayID)) ||
+		before.MaxOutputTokensPerRequest != after.MaxOutputTokensPerRequest ||
 		!memberUpstreamOverridesEqual(before, after)
 }
 

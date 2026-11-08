@@ -1802,7 +1802,7 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	// before the request hits the actual LLM API.
 	// Devin Cascade already defaults an omitted budget to 128000. Writing 65536
 	// here would cut that budget and disagree with the non-stream path, which
-	// leaves the field unset. A token-bank output cap still applies below.
+	// leaves the field unset. A member output cap still applies below.
 	if !devinMatches(provider) {
 		if _, hasMax := reqBody["max_tokens"]; !hasMax {
 			if _, hasMaxComp := reqBody["max_completion_tokens"]; !hasMaxComp {
@@ -1829,7 +1829,14 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	corelib.AddAutoDeepSeekThinkingObject(upstreamCfg, reqBody)
 	corelib.FinishOpenAIChatReasoningControls(upstreamCfg, reqBody)
 	if provider != nil {
-		corelib.ApplyMemberUpstreamBody(reqBody, provider.ExtraBody, provider.ExtraBodyPriority, provider.DropFields)
+		// extra_body can replace a budget the cap already lowered. Clamp the
+		// fields that remain. A drop_fields entry can still remove one.
+		corelib.FinishMemberUpstreamBody(corelib.MaclawLLMConfig{
+			MemberExtraBody:         provider.ExtraBody,
+			MemberExtraBodyPriority: provider.ExtraBodyPriority,
+			MemberDropFields:        provider.DropFields,
+			MemberOutputTokenCap:    provider.MaxOutputTokensPerRequest,
+		}, reqBody)
 	}
 	openCodePlan, openCodePlanned, err := planOpenCodeStream(provider, reqBody, upstreamModel)
 	if err != nil {
@@ -4260,25 +4267,26 @@ func forwardToProviderAttempts(ctx context.Context, client *http.Client, provide
 		return resp, err
 	}
 	endpointProvider := corelib.LLMEndpointProvider{
-		ID:                       provider.ID,
-		Name:                     provider.Name,
-		APIURL:                   provider.APIURL,
-		APIKey:                   provider.APIKey,
-		Model:                    upstreamModel,
-		Protocol:                 provider.Protocol,
-		WireAPI:                  provider.WireAPI,
-		AgentType:                RequestAgentType(provider.AgentType),
-		UpstreamTimeoutSec:       provider.UpstreamTimeoutSec,
-		MaxConcurrency:           provider.MaxConcurrency,
-		MaxQueueWaiters:          provider.MaxQueueWaiters,
-		QueueTimeoutMS:           provider.QueueTimeoutMS,
-		CircuitBreakerThreshold:  provider.CircuitBreakerThreshold,
-		CircuitBreakerCooldownMS: provider.CircuitBreakerCooldownMS,
-		FailureBackoffBaseMS:     provider.FailureBackoffBaseMS,
-		FailureBackoffMaxMS:      provider.FailureBackoffMaxMS,
-		ExtraBody:                provider.ExtraBody,
-		ExtraBodyPriority:        provider.ExtraBodyPriority,
-		DropFields:               provider.DropFields,
+		ID:                        provider.ID,
+		Name:                      provider.Name,
+		APIURL:                    provider.APIURL,
+		APIKey:                    provider.APIKey,
+		Model:                     upstreamModel,
+		Protocol:                  provider.Protocol,
+		WireAPI:                   provider.WireAPI,
+		AgentType:                 RequestAgentType(provider.AgentType),
+		UpstreamTimeoutSec:        provider.UpstreamTimeoutSec,
+		MaxConcurrency:            provider.MaxConcurrency,
+		MaxQueueWaiters:           provider.MaxQueueWaiters,
+		QueueTimeoutMS:            provider.QueueTimeoutMS,
+		CircuitBreakerThreshold:   provider.CircuitBreakerThreshold,
+		CircuitBreakerCooldownMS:  provider.CircuitBreakerCooldownMS,
+		FailureBackoffBaseMS:      provider.FailureBackoffBaseMS,
+		FailureBackoffMaxMS:       provider.FailureBackoffMaxMS,
+		ExtraBody:                 provider.ExtraBody,
+		ExtraBodyPriority:         provider.ExtraBodyPriority,
+		DropFields:                provider.DropFields,
+		MaxOutputTokensPerRequest: provider.MaxOutputTokensPerRequest,
 	}
 	var respBody []byte
 	var statusCode int
