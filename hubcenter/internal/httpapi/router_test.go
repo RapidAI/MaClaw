@@ -133,7 +133,7 @@ func TestRouterServesDeveloperCommunity(t *testing.T) {
 		t.Fatalf("developer status = %d, want %d", rec.Code, http.StatusOK)
 	}
 	body := rec.Body.String()
-	for _, marker := range []string{"MaClaw 开发者社区", "Skill / Suite 开发", "第三方接入协议", "/capabilitymarket", "/skillmarket/user", "langButton", "navigator.language"} {
+	for _, marker := range []string{"MaClaw 开发者社区", "Skill / Suite 开发", "第三方接入协议", "/capabilitymarket", "/skillmarket/user", `data-hub-lang="en"`, `data-hub-lang="zh"`, `data-hub-lang="mn"`, "navigator.language"} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("developer page missing marker %q", marker)
 		}
@@ -141,8 +141,13 @@ func TestRouterServesDeveloperCommunity(t *testing.T) {
 
 	docsRec := httptest.NewRecorder()
 	svc.handler.ServeHTTP(docsRec, httptest.NewRequest(http.MethodGet, "/developer/docs/", nil))
-	if docsRec.Code != http.StatusOK || !strings.Contains(docsRec.Body.String(), "MaClaw 开发文档") || !strings.Contains(docsRec.Body.String(), "/skillmarket/user") || !strings.Contains(docsRec.Body.String(), "Switch to English") {
+	if docsRec.Code != http.StatusOK || !strings.Contains(docsRec.Body.String(), "MaClaw 开发文档") || !strings.Contains(docsRec.Body.String(), "/skillmarket/user") {
 		t.Fatalf("developer docs status=%d body missing docs title", docsRec.Code)
+	}
+	for _, lang := range []string{"en", "zh", "mn"} {
+		if marker := `data-hub-lang="` + lang + `"`; !strings.Contains(docsRec.Body.String(), marker) {
+			t.Fatalf("developer docs missing language button %q", marker)
+		}
 	}
 
 	marketRec := httptest.NewRecorder()

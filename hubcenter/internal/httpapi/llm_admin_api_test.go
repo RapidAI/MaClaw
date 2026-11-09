@@ -155,7 +155,9 @@ func TestAdminTestProviderMemberReportsSavedStatus(t *testing.T) {
 	if rec.Code != http.StatusOK || strings.Contains(body, "sk-live-secret-ABCD") {
 		t.Fatalf("status=%d body=%s", rec.Code, body)
 	}
-	for _, want := range []string{`"success":false`, `"model":"llama-3.3-70b"`, `"api_key_last4":"ABCD"`, `"enabled":false`, `"id":"pool-a-1"`} {
+	// free-llama-70b is in the member's model list, so the probe dials it as
+	// saved. The model map only rewrites names outside that list.
+	for _, want := range []string{`"success":false`, `"model":"free-llama-70b"`, `"api_key_last4":"ABCD"`, `"enabled":false`, `"id":"pool-a-1"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %s: %s", want, body)
 		}
