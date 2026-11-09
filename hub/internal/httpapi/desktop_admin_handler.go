@@ -463,6 +463,10 @@ func PostDesktopSessionHandler(pool *desktoppool.Pool, bots *botmgmt.Service) ht
 		if bots != nil {
 			bots.NoteDesktopView(in.TenantID, in.UserID, session.Novnc)
 		}
+		// This is a bot step's wake (MaClawSrv opens a session only for a
+		// screen step). Its browser work then goes straight over CDP, so this
+		// is the step the 电脑 tab learns the run is on the screen from.
+		pool.NoteBotGUIUse(in.TenantID, in.UserID, session.Novnc)
 		writeJSON(w, http.StatusOK, map[string]string{"cdp_url": session.CDP, "display": session.Display})
 	}
 }
@@ -684,6 +688,7 @@ func PostDesktopAppHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			writeDesktopError(w, err)
 			return
 		}
+		pool.NoteBotGUIUse(in.TenantID, in.UserID, "")
 		writeJSON(w, http.StatusOK, map[string]string{"output": output})
 	}
 }
@@ -715,6 +720,7 @@ func PostDesktopOpenHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			writeDesktopError(w, err)
 			return
 		}
+		pool.NoteBotGUIUse(in.TenantID, in.UserID, "")
 		writeJSON(w, http.StatusOK, map[string]string{"output": output})
 	}
 }
@@ -864,6 +870,7 @@ func PostDesktopScreenshotHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			writeDesktopError(w, err)
 			return
 		}
+		pool.NoteBotGUIUse(in.TenantID, in.UserID, "")
 		body := map[string]any{
 			"mime":          shot.MIME,
 			"image_base64":  base64.StdEncoding.EncodeToString(shot.Data),
@@ -912,6 +919,7 @@ func PostDesktopCtlHandler(pool *desktoppool.Pool, bots ...*botmgmt.Service) htt
 			writeDesktopError(w, err)
 			return
 		}
+		pool.NoteBotGUIUse(in.TenantID, in.UserID, "")
 		for _, b := range bots {
 			b.NoteDesktopCtl(in.TenantID, in.UserID, in.Request)
 		}

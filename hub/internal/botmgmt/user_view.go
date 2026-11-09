@@ -149,17 +149,20 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 	if index < 0 || rec.Bots[index].OwnerUserID != userID {
 		return "", false, ErrNotFound
 	}
+	owner := userID
 	userID = desktopUserForBot(userID, rec.Bots[index])
 	if ctx != nil && ctx.Err() != nil {
 		return "", false, fmt.Errorf("%w: %s", ErrSrv, ctx.Err().Error())
 	}
 	_ = desktopWatchEpoch(ctx)
 	if !s.desktopViewLiveForWatch(tenantID, userID) {
-		// A bot step that drives the screen goes through the worker's
-		// desktop tool route, not through a Hub command open, so the
-		// counters above do not see it. That step is the bot really using
-		// the desktop: show its picture without starting or pinning anything.
-		raw, ok := s.botDesktopInUse(tenantID, userID)
+		// A bot step that drives the screen (its session wake, an app,
+		// open, ctl or screenshot call, or the worker's tool route) is not a
+		// Hub command open, so the counters above do not see it. That is
+		// the bot really using the desktop, and so is the run it belongs to
+		// while it is still going: show its picture without starting or
+		// pinning anything.
+		raw, ok := s.botDesktopInUse(tenantID, owner, userID, rec.Bots)
 		if !ok {
 			return "", false, nil
 		}
@@ -184,9 +187,17 @@ type DesktopActivity interface {
 // to asleep. It is not a hold: the desktop's own idle sleep is unchanged.
 const BotDesktopInUseWindow = 2 * time.Minute
 
-// botDesktopInUse reports whether a bot step used this desktop's screen
-// within BotDesktopInUseWindow, and the raw noVNC page that step returned.
-func (s *Service) botDesktopInUse(tenantID, userID string) (string, bool) {
+// botDesktopInUse reports whether a bot is using this desktop's screen, and
+// the raw noVNC page its desktop step returned. That is a desktop-screen step
+// within BotDesktopInUseWindow, or a bot run that is still going and touched
+// this screen after it started. The second covers one long operation (a
+// browser publish or upload driven straight over CDP, which Hub never sees
+// step by step): the run's wake is the only step Hub sees, and the run is
+// still on it until it ends. A run that is done, failed or was cancelled, or
+// that the watcher has not been able to read within the window (MaClawSrv
+// gone), does not count. A run that never touched the screen (chat, research,
+// shell or file work) does not count either.
+func (s *Service) botDesktopInUse(tenantID, ownerID, userID string, bots []Bot) (string, bool) {
 	if s == nil || s.Desktop == nil {
 		return "", false
 	}
@@ -199,10 +210,49 @@ func (s *Service) botDesktopInUse(tenantID, userID string) (string, bool) {
 		return "", false
 	}
 	age := s.now().Sub(at)
-	if age < 0 || age > BotDesktopInUseWindow {
+	if age < 0 {
 		return "", false
 	}
-	return raw, true
+	if age <= BotDesktopInUseWindow || s.desktopRunOnScreenSince(tenantID, ownerID, userID, bots, at) {
+		return raw, true
+	}
+	return "", false
+}
+
+// desktopRunOnScreenSince reports a run on this desktop that is still going,
+// was read as going within BotDesktopInUseWindow, and had started by the time
+// of the screen step at, so that step was this run's.
+func (s *Service) desktopRunOnScreenSince(tenantID, ownerID, desktopUser string, bots []Bot, at time.Time) bool {
+	if s == nil || at.IsZero() {
+		return false
+	}
+	now := s.now()
+	prefix := strings.TrimSpace(tenantID) + "\x00" + strings.TrimSpace(ownerID) + "\x00"
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureDesktopHydrated(tenantID)
+	for key, state := range s.desktopAdmits {
+		if state == nil || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		state.mu.Lock()
+		live := !state.done && strings.TrimSpace(state.runID) != "" &&
+			!state.started.IsZero() && !state.started.After(at) &&
+			!state.seen.IsZero() && now.Sub(state.seen) <= BotDesktopInUseWindow
+		botID := state.botID
+		state.mu.Unlock()
+		if !live {
+			continue
+		}
+		user := ownerID
+		if i := indexOf(bots, botID); i >= 0 {
+			user = desktopUserForBot(ownerID, bots[i])
+		}
+		if user == desktopUser {
+			return true
+		}
+	}
+	return false
 }
 
 // desktopViewLiveForWatch reports whether a 电脑-tab poll may show the live

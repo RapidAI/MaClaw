@@ -50,6 +50,11 @@ type desktopAdmitState struct {
 	// persisted: a restart learns it again from the next run read. Empty
 	// means the run has not named a step.
 	activity string
+	// seen is the last time the watcher read this run as still going. Not
+	// persisted. A run nobody has been able to read for a while is not taken
+	// as driving the desktop (see botDesktopInUse), so a dead MaClawSrv does
+	// not keep the 电脑 tab live.
+	seen time.Time
 	// progress is the last PROGRESS.md copy the run published. A later read
 	// with empty sections keeps this copy.
 	progressWhere string
@@ -521,6 +526,7 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 		if err != nil || !desktopRunTerminal(view.Status) {
 			if err == nil {
 				firstTerminal = time.Time{}
+				s.noteDesktopRunSeen(state)
 				s.rememberDesktopRunActivity(state, view.Activity)
 				s.rememberDesktopRunProgress(state, view)
 				writePoll("status:"+view.Status, nil,
@@ -643,6 +649,17 @@ func (s *Service) rememberDesktopRunProgress(state *desktopAdmitState, view desk
 	state.progressWhere = where
 	state.progressNext = next
 	state.progressOpen = open
+	state.mu.Unlock()
+}
+
+// noteDesktopRunSeen records that the watcher just read this run as still going.
+func (s *Service) noteDesktopRunSeen(state *desktopAdmitState) {
+	if state == nil {
+		return
+	}
+	now := s.now()
+	state.mu.Lock()
+	state.seen = now
 	state.mu.Unlock()
 }
 

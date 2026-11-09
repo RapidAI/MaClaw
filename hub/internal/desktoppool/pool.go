@@ -509,6 +509,8 @@ func (p *Pool) CreateDesktop(ctx context.Context, tenantID, userID string) (Desk
 
 // StopDesktop asks the assigned Docker service to stop that user's desktop.
 func (p *Pool) StopDesktop(ctx context.Context, tenantID, userID string) (Desktop, error) {
+	// Whatever asked for the stop, no bot is on this screen any more.
+	p.ForgetBotGUIUse(tenantID, userID)
 	server, err := p.resolve(ctx, tenantID, userID)
 	if err != nil {
 		return Desktop{}, err
