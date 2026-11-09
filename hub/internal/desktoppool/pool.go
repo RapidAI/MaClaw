@@ -227,6 +227,12 @@ type Pool struct {
 	Now       func() time.Time
 
 	mu sync.Mutex
+
+	// useMu guards botUse, the in-memory record of bot desktop-screen steps
+	// (see bot_use.go). It is separate from mu so a slow settings load does
+	// not hold up a 电脑-tab poll.
+	useMu  sync.Mutex
+	botUse map[string]botGUIUse
 }
 
 func New(system store.SystemSettingsRepository, directory Directory) *Pool {

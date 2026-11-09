@@ -155,10 +155,54 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 	}
 	_ = desktopWatchEpoch(ctx)
 	if !s.desktopViewLiveForWatch(tenantID, userID) {
-		return "", false, nil
+		// A bot step that drives the screen goes through the worker's
+		// desktop tool route, not through a Hub command open, so the
+		// counters above do not see it. That step is the bot really using
+		// the desktop: show its picture without starting or pinning anything.
+		raw, ok := s.botDesktopInUse(tenantID, userID)
+		if !ok {
+			return "", false, nil
+		}
+		if s.desktopViewURL(tenantID, userID) == "" && raw != "" {
+			s.rememberDesktopView(tenantID, userID, raw)
+		}
 	}
 	novnc := s.desktopViewURL(tenantID, userID)
 	return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
+}
+
+// DesktopActivity is the optional read of the last bot desktop-screen step
+// (a browser session, screenshot, app or open call by a bot run) and the
+// noVNC page it returned. It never reaches the desktop.
+type DesktopActivity interface {
+	BotDesktopUse(tenantID, userID string) (time.Time, string)
+}
+
+// BotDesktopInUseWindow is how long after the last bot desktop-screen step
+// the 电脑 tab keeps showing the live picture. A bot thinking between steps
+// stays visible; a bot that has moved on to chat or headless work goes back
+// to asleep. It is not a hold: the desktop's own idle sleep is unchanged.
+const BotDesktopInUseWindow = 2 * time.Minute
+
+// botDesktopInUse reports whether a bot step used this desktop's screen
+// within BotDesktopInUseWindow, and the raw noVNC page that step returned.
+func (s *Service) botDesktopInUse(tenantID, userID string) (string, bool) {
+	if s == nil || s.Desktop == nil {
+		return "", false
+	}
+	activity, ok := s.Desktop.(DesktopActivity)
+	if !ok || activity == nil {
+		return "", false
+	}
+	at, raw := activity.BotDesktopUse(tenantID, userID)
+	if at.IsZero() {
+		return "", false
+	}
+	age := s.now().Sub(at)
+	if age < 0 || age > BotDesktopInUseWindow {
+		return "", false
+	}
+	return raw, true
 }
 
 // desktopViewLiveForWatch reports whether a 电脑-tab poll may show the live

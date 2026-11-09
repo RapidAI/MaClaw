@@ -888,6 +888,36 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-sleep')).toBeNull();
     });
 
+    it('follows the real desktop state on an open 电脑 panel: asleep, live while the bot drives it, asleep again, without waking', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: '', user_control: false });
+        wakeBot.mockClear();
+        vi.useFakeTimers();
+        try {
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.click(screen.getByText('值班'));
+            fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            expect(screen.getByTestId('desktop-bot-sleep')).toBeTruthy();
+            // A bot step starts using the desktop: the next read-only poll shows it.
+            const live = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+            watchBot.mockResolvedValue({ novnc_url: live, user_control: false });
+            await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+            expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+            expect(screen.queryByTestId('desktop-bot-sleep')).toBeNull();
+            // The bot moved on: back to the sleeping drawing, no stale picture.
+            watchBot.mockResolvedValue({ novnc_url: '', user_control: false });
+            await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+            expect(screen.getByTestId('desktop-bot-sleep')).toBeTruthy();
+            expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+            // Watching never asked for a wake.
+            expect(wakeBot).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('warns in the chat when the account credits are too low to finish a task', async () => {
         getHubCredits.mockResolvedValue({ active: true, credits_total: 100, credits_used: 80, credits_remaining: 20 });
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);

@@ -129,6 +129,7 @@ func PostDesktopToolHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			return
 		}
 		text, attachmentID, err := dispatchDesktopTool(r.Context(), pool, call)
+		noteDesktopToolUse(pool, call, err)
 		if err != nil {
 			writeDesktopError(w, err)
 			return
@@ -140,6 +141,28 @@ func PostDesktopToolHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			"volumes":       "desktops,home,opt,usr-local",
 			"replaced":      false,
 		})
+	}
+}
+
+// noteDesktopToolUse records a bot step that drove the desktop screen
+// (screenshot, app, open, and the supervisor ops such as click, type and
+// navigate), so the 电脑 tab can show the live picture while the bot is
+// really using it. bash, file, http and install run headless and do not
+// count. A stop drops the record. A failed step records nothing. The
+// session route records itself with the page it returned.
+func noteDesktopToolUse(pool *desktoppool.Pool, call desktopToolCall, err error) {
+	if pool == nil || err != nil {
+		return
+	}
+	route, routeErr := desktopToolRoute(call.Action)
+	if routeErr != nil {
+		return
+	}
+	switch route {
+	case "screenshot", "app", "open", "ctl":
+		pool.NoteBotGUIUse(call.Tenant, call.User, "")
+	case "stop":
+		pool.ForgetBotGUIUse(call.Tenant, call.User)
 	}
 }
 
@@ -191,6 +214,9 @@ func dispatchDesktopTool(ctx context.Context, pool *desktoppool.Pool, call deskt
 		if err != nil {
 			return "", "", err
 		}
+		// The worker gets only display and cdp_url; the noVNC page stays in
+		// Hub for the 电脑 tab of this bot step.
+		pool.NoteBotGUIUse(call.Tenant, call.User, session.Novnc)
 		raw, err := json.Marshal(map[string]string{"display": session.Display, "cdp_url": session.CDP})
 		return string(raw), "", err
 	case "stop":

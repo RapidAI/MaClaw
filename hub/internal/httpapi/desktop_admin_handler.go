@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
@@ -92,10 +93,20 @@ func (c botDesktopControl) Ctl(ctx context.Context, tenantID, userID string, req
 	return c.pool.Ctl(ctx, tenantID, userID, "", request)
 }
 
+// BotDesktopUse is the last bot desktop-screen step for this desktop user
+// and the noVNC page it returned (botmgmt.DesktopActivity).
+func (c botDesktopControl) BotDesktopUse(tenantID, userID string) (time.Time, string) {
+	if c.pool == nil {
+		return time.Time{}, ""
+	}
+	return c.pool.BotGUIUse(tenantID, userID)
+}
+
 func (c botDesktopControl) Stop(ctx context.Context, tenantID, userID string) error {
 	if c.pool == nil {
 		return nil
 	}
+	c.pool.ForgetBotGUIUse(tenantID, userID)
 	_, err := c.pool.StopDesktop(ctx, tenantID, userID)
 	return err
 }
