@@ -2929,6 +2929,65 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-confirm')).toBeNull();
     });
 
+    it('hears back inside the first-reply budget when the reading is slow, then works without a second ack', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 1', description: '共用桌面', instance_id: 'inst_1' }]);
+        const ask = '去 dailypapers 找最新热门论文，做图文摘要发到 CSDN';
+        let finishReading: (value: unknown) => void = () => undefined;
+        understandTask.mockImplementation(() => new Promise(resolve => { finishReading = resolve; }));
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-slow', deferred: true, session_key: 'alice:bot_1' });
+        vi.useFakeTimers();
+        try {
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            fireEvent.click(screen.getByText('Bot 1'));
+            fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: ask } });
+            fireEvent.click(screen.getByTestId('desktop-bot-send'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(3900); });
+            expect(screen.queryByText('收到，正在看。')).toBeNull();
+            await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+            // The receipt claims no understanding, and the work has not been held for it.
+            expect(screen.getAllByText('收到，正在看。')).toHaveLength(1);
+            expect(sendTask).not.toHaveBeenCalled();
+            await act(async () => {
+                finishReading({ told: '我去 dailypapers 挑今天最热的论文，做成图文摘要后发到你的 CSDN。', instruction: `指令:execute:${ask}`, pace: 'direct' });
+                await vi.advanceTimersByTimeAsync(50);
+            });
+            expect(sendTask).toHaveBeenCalledWith('bot_1', `指令:execute:${ask}`, 'execute');
+            await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+            // One first reply only: the late sentence and the written line do not follow it.
+            expect(screen.queryByText('我去 dailypapers 挑今天最热的论文，做成图文摘要后发到你的 CSDN。')).toBeNull();
+            expect(screen.queryByText('好，这就去办。')).toBeNull();
+            expect(screen.getAllByText('收到，正在看。')).toHaveLength(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('says the reading\'s own understanding when it is back in time and adds no receipt', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 1', description: '共用桌面', instance_id: 'inst_1' }]);
+        const ask = '去 dailypapers 找最新热门论文，做图文摘要发到 CSDN';
+        const told = '我去 dailypapers 挑今天最热的论文，做成图文摘要后发到你的 CSDN。';
+        understandTask.mockResolvedValue({ told, instruction: `指令:execute:${ask}`, pace: 'direct' });
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-fast', deferred: true, session_key: 'alice:bot_1' });
+        vi.useFakeTimers();
+        try {
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            fireEvent.click(screen.getByText('Bot 1'));
+            fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: ask } });
+            fireEvent.click(screen.getByTestId('desktop-bot-send'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+            expect(screen.getByText(told)).toBeTruthy();
+            expect(sendTask).toHaveBeenCalledWith('bot_1', `指令:execute:${ask}`, 'execute');
+            await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+            expect(screen.queryByText('收到，正在看。')).toBeNull();
+            expect(screen.queryByText('好，这就去办。')).toBeNull();
+            expect(understandTask).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('asks once when a fact is missing and does not start the work', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 1', description: '共用桌面', instance_id: 'inst_1' }]);
         understandTask.mockImplementation(async () => ({

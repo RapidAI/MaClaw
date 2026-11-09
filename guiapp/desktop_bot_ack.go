@@ -38,6 +38,10 @@ type DesktopBotAckRequest struct {
 	// Recent is the last few chat lines ("你: ..." / "我: ..."), oldest
 	// first, so the sentence fits the conversation and does not repeat it.
 	Recent []string `json:"recent,omitempty"`
+	// BudgetMs is what is left of the first reply's end-to-end budget,
+	// counted by the GUI from the moment the command arrived (the reading
+	// already spent the rest). Zero means the default budget.
+	BudgetMs int `json:"budget_ms,omitempty"`
 }
 
 // DesktopBotStatus is the one structured state payload behind every
@@ -93,7 +97,7 @@ func (a *App) WriteDesktopBotAck(req DesktopBotAckRequest) (string, error) {
 	// A first reply that shows the job was understood is only worth showing
 	// near the start of the work. Past this budget the attempts stop and the
 	// GUI shows its neutral line; the work itself never waited on this.
-	if budget := desktopBotFirstReplyBudget; budget > 0 && desktopBotFirstReplyKind(req.Kind) {
+	if budget := desktopBotFirstReplyBudgetFor(req); budget > 0 {
 		var cancel context.CancelFunc
 		parent, cancel = context.WithTimeout(parent, budget)
 		defer cancel()
@@ -102,8 +106,27 @@ func (a *App) WriteDesktopBotAck(req DesktopBotAckRequest) (string, error) {
 }
 
 // desktopBotFirstReplyBudget bounds every attempt together for a job's first
-// reply (accept, supplement, files). Each attempt keeps its own timeout too.
-var desktopBotFirstReplyBudget = 20 * time.Second
+// reply (accept, supplement, files). It is the same end-to-end number the GUI
+// counts from the command's arrival (DESKTOP_BOT_FIRST_ACK_BUDGET_MS): a
+// first reply is feedback, so it is only worth a few seconds. Each attempt's
+// own timeout is cut to what is left of it.
+var desktopBotFirstReplyBudget = 4 * time.Second
+
+// desktopBotFirstReplyBudgetFor is the budget for this request: zero for
+// lines that are not a first reply, otherwise the default or the smaller
+// remainder the GUI sent.
+func desktopBotFirstReplyBudgetFor(req DesktopBotAckRequest) time.Duration {
+	if !desktopBotFirstReplyKind(req.Kind) {
+		return 0
+	}
+	budget := desktopBotFirstReplyBudget
+	if req.BudgetMs > 0 {
+		if left := time.Duration(req.BudgetMs) * time.Millisecond; budget <= 0 || left < budget {
+			budget = left
+		}
+	}
+	return budget
+}
 
 func desktopBotFirstReplyKind(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
@@ -127,11 +150,22 @@ func (a *App) writeDesktopBotAck(parent context.Context, req DesktopBotAckReques
 		if quotaOut && !attempt.hub {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(parent, time.Duration(attempt.timeoutSec+2)*time.Second)
+		// An attempt never asks the client for more time than the caller
+		// has left, so a short budget is not overrun by one long attempt.
+		timeoutSec := attempt.timeoutSec
+		if deadline, ok := parent.Deadline(); ok {
+			if left := int(time.Until(deadline) / time.Second); left < timeoutSec {
+				timeoutSec = left
+			}
+			if timeoutSec < 1 {
+				timeoutSec = 1
+			}
+		}
+		ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutSec+2)*time.Second)
 		raw, err := desktopBotUnderstandLLM(ctx, a, desktopBotUnderstandRequest{
 			systemPrompt: desktopBotAckSystem + desktopBotStyleParts(),
 			userPrompt:   user,
-			timeoutSec:   attempt.timeoutSec,
+			timeoutSec:   timeoutSec,
 			fallback:     attempt.fallback,
 			hub:          attempt.hub,
 			tag:          "desktop-bot-ack",

@@ -104,15 +104,23 @@ func TestDesktopBotFollowUpCarriesTheRunningJob(t *testing.T) {
 	}
 }
 
-// A model that never answers cannot hold the first reply open: all attempts
-// together stop at the budget and the GUI shows its neutral line.
+// A model that never answers cannot hold the first reply open. This runs on
+// the production default, not a test-only budget: every attempt together
+// stops at desktopBotFirstReplyBudget (a few seconds), and no attempt asks
+// the client for more than what is left.
 func TestWriteDesktopBotAckFirstReplyIsBounded(t *testing.T) {
-	prev, prevBudget := desktopBotUnderstandLLM, desktopBotFirstReplyBudget
-	t.Cleanup(func() { desktopBotUnderstandLLM, desktopBotFirstReplyBudget = prev, prevBudget })
-	desktopBotFirstReplyBudget = 300 * time.Millisecond
+	if desktopBotFirstReplyBudget <= 0 || desktopBotFirstReplyBudget > 5*time.Second {
+		t.Fatalf("first reply default budget %s is not immediate feedback", desktopBotFirstReplyBudget)
+	}
+	prev := desktopBotUnderstandLLM
+	t.Cleanup(func() { desktopBotUnderstandLLM = prev })
 	var calls int32
-	desktopBotUnderstandLLM = func(ctx context.Context, _ *App, _ desktopBotUnderstandRequest) (string, error) {
+	var maxTimeout int32
+	desktopBotUnderstandLLM = func(ctx context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
 		atomic.AddInt32(&calls, 1)
+		if int32(req.timeoutSec) > atomic.LoadInt32(&maxTimeout) {
+			atomic.StoreInt32(&maxTimeout, int32(req.timeoutSec))
+		}
 		<-ctx.Done()
 		return "", ctx.Err()
 	}
@@ -121,15 +129,42 @@ func TestWriteDesktopBotAckFirstReplyIsBounded(t *testing.T) {
 	if err == nil || line != "" {
 		t.Fatalf("a hung model produced a line: %q %v", line, err)
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("first reply waited %s past its budget", elapsed)
+	if elapsed := time.Since(start); elapsed > desktopBotFirstReplyBudget+500*time.Millisecond {
+		t.Fatalf("first reply waited %s past its %s budget", elapsed, desktopBotFirstReplyBudget)
 	}
 	if n := atomic.LoadInt32(&calls); n < 1 || n > int32(len(desktopBotAckAttempts)) {
 		t.Fatalf("attempts = %d", n)
 	}
+	if got := time.Duration(atomic.LoadInt32(&maxTimeout)) * time.Second; got > desktopBotFirstReplyBudget {
+		t.Fatalf("an attempt asked for %s, more than the %s budget", got, desktopBotFirstReplyBudget)
+	}
 	// Other kinds keep their own per-attempt timeouts only.
 	if desktopBotFirstReplyKind("stopping") || !desktopBotFirstReplyKind("accept") {
 		t.Fatal("first-reply budget applies to the wrong kinds")
+	}
+}
+
+// The reading already spent part of the end-to-end budget. The GUI sends what
+// is left, and the writer stops there instead of starting a fresh budget.
+func TestWriteDesktopBotAckHonoursTheRemainingBudget(t *testing.T) {
+	prev := desktopBotUnderstandLLM
+	t.Cleanup(func() { desktopBotUnderstandLLM = prev })
+	desktopBotUnderstandLLM = func(ctx context.Context, _ *App, _ desktopBotUnderstandRequest) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	start := time.Now()
+	if _, err := (&App{}).WriteDesktopBotAck(DesktopBotAckRequest{Kind: "accept", Message: "整理周报", Lang: "zh-Hans", BudgetMs: 300}); err == nil {
+		t.Fatal("hung model returned no error")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("remaining 300ms budget waited %s", elapsed)
+	}
+	if got := desktopBotFirstReplyBudgetFor(DesktopBotAckRequest{Kind: "accept", BudgetMs: 60_000}); got != desktopBotFirstReplyBudget {
+		t.Fatalf("a larger remainder must not extend the default: %s", got)
+	}
+	if got := desktopBotFirstReplyBudgetFor(DesktopBotAckRequest{Kind: "stopping", BudgetMs: 300}); got != 0 {
+		t.Fatalf("non-first-reply kinds have no first-reply budget: %s", got)
 	}
 }
 

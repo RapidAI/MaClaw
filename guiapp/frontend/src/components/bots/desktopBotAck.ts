@@ -29,6 +29,9 @@ export interface DesktopBotAckContext {
     fallback?: boolean;
     status?: DesktopBotStatusPayload;
     recent?: string[];
+    // What is left of the first reply's end-to-end budget (see
+    // DESKTOP_BOT_FIRST_ACK_BUDGET_MS); the Go writer stops there too.
+    budget_ms?: number;
 }
 
 export type DesktopBotAckWriter = (ctx: DesktopBotAckContext) => Promise<string>;
@@ -43,16 +46,45 @@ export function desktopBotNeutralAck(ctx: Pick<DesktopBotAckContext, 'kind' | 'l
     return files ? '收到。' : '好，我先做着。';
 }
 
+// DESKTOP_BOT_FIRST_ACK_BUDGET_MS is how long, from the moment a command
+// arrives, the person may wait for the bot's first reply. The reading that
+// the work needs anyway usually brings the model's own understanding inside
+// it (no extra call). When it does not, one neutral receipt goes out at this
+// mark and the work carries on; nothing written later competes with it.
+export const DESKTOP_BOT_FIRST_ACK_BUDGET_MS = 4000;
+
+// The receipt said when the reading is still running at the budget. It
+// claims nothing about the task: the reading may yet turn it into a question
+// or an answer.
+export function desktopBotReceiptAck(lang: string): string {
+    const code = normalizeLang(lang);
+    if (code === 'en') return 'Got it, reading it now.';
+    if (code === 'mn') return 'Ойлголоо, одоо уншиж байна.';
+    if (code === 'zh-Hant') return '收到，正在看。';
+    return '收到，正在看。';
+}
+
 // desktopBotAck never rejects. The work has already started; this only
-// decides which sentence follows it.
-export async function desktopBotAck(ctx: DesktopBotAckContext, write: DesktopBotAckWriter = WriteDesktopBotAck): Promise<string> {
-    try {
-        const line = String(await write(ctx) || '').trim();
-        if (line) return line;
-    } catch {
-        // falls through to the neutral line
-    }
-    return desktopBotNeutralAck(ctx);
+// decides which sentence follows it. budgetMs, when given, is the most it
+// may wait: past it the neutral line is returned and a late answer dropped.
+export async function desktopBotAck(ctx: DesktopBotAckContext, write: DesktopBotAckWriter = WriteDesktopBotAck, budgetMs?: number): Promise<string> {
+    if (budgetMs !== undefined && budgetMs <= 0) return desktopBotNeutralAck(ctx);
+    const attempt = (async () => {
+        try {
+            const line = String(await write(budgetMs !== undefined ? { ...ctx, budget_ms: Math.ceil(budgetMs) } : ctx) || '').trim();
+            if (line) return line;
+        } catch {
+            // falls through to the neutral line
+        }
+        return '';
+    })();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const line = budgetMs === undefined ? await attempt : await Promise.race([
+        attempt,
+        new Promise<string>(resolve => { timer = setTimeout(() => resolve(''), budgetMs); }),
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
+    return line || desktopBotNeutralAck(ctx);
 }
 
 // The minimal line used only when every model attempt for a still-stopping

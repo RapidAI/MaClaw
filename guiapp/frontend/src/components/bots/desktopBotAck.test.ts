@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../wailsjs/go/main/App', () => ({ WriteDesktopBotAck: vi.fn() }));
 
-import { desktopBotAck, desktopBotLine, desktopBotNeutralAck, desktopBotStoppingLine } from './desktopBotAck';
+import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, desktopBotAck, desktopBotLine, desktopBotNeutralAck, desktopBotReceiptAck, desktopBotStoppingLine, type DesktopBotAckContext } from './desktopBotAck';
 
 describe('desktopBotAck', () => {
     it('uses the model line', async () => {
@@ -37,5 +37,33 @@ describe('desktopBotLine', () => {
         await expect(desktopBotLine('stopped', { lang: 'zh-Hans', running_task: '小红书' }, '停了。', write)).resolves.toBe('停好了，小红书那件不做了。');
         expect(write).toHaveBeenCalledWith(expect.objectContaining({ kind: 'stopped', running_task: '小红书' }));
         await expect(desktopBotLine('idle', { lang: 'zh-Hans' }, '没在做事。', vi.fn().mockRejectedValue(new Error('x')))).resolves.toBe('没在做事。');
+    });
+});
+
+describe('desktopBotAck first-reply budget', () => {
+    it('drops a writer that outlives the remaining budget and says the neutral line on time', async () => {
+        vi.useFakeTimers();
+        try {
+            let seen: DesktopBotAckContext | undefined;
+            const hung = (ctx: DesktopBotAckContext) => { seen = ctx; return new Promise<string>(() => undefined); };
+            let line = '';
+            void desktopBotAck({ kind: 'accept', message: '整理周报', lang: 'zh-Hans' }, hung, 1500).then(v => { line = v; });
+            await vi.advanceTimersByTimeAsync(1400);
+            expect(line).toBe('');
+            await vi.advanceTimersByTimeAsync(200);
+            expect(line).toBe('好，我先做着。');
+            expect(seen?.budget_ms).toBe(1500);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('makes no call once the budget is spent, and keeps a model line that is on time', async () => {
+        const write = vi.fn(async () => '我把销售表理成本周周报，发给老王。');
+        expect(await desktopBotAck({ kind: 'accept', message: 'x', lang: 'zh-Hans' }, write, 0)).toBe('好，我先做着。');
+        expect(write).not.toHaveBeenCalled();
+        expect(await desktopBotAck({ kind: 'accept', message: 'x', lang: 'zh-Hans' }, write, 4000)).toBe('我把销售表理成本周周报，发给老王。');
+        expect(DESKTOP_BOT_FIRST_ACK_BUDGET_MS).toBeLessThanOrEqual(5000);
+        expect(desktopBotReceiptAck('zh-Hans')).toBe('收到，正在看。');
     });
 });
