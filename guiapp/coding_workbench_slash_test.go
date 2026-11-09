@@ -8,6 +8,32 @@ import (
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
+func TestCodingPlanApprovalWaitsForLiveReview(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	t.Cleanup(func() { h.planReviewLive.Delete(userID) })
+	tasks := []*v2.TaskItem{
+		{Index: 1, Title: "inspect", Description: "inspect code"},
+		{Index: 2, Title: "implement", Description: "implement fix", DependsOn: []int{1}},
+	}
+	h.storeStickyPendingCodingPlan(userID, "fix the issue", "### T1: inspect\n### T2: implement", tasks)
+	h.planReviewLive.Store(userID, int64(1))
+
+	resp := h.executeApprovedCodingPlan(userID, "", h.getStickyCodingWorkbenchMemory(userID), IMUserMessage{}, nil, nil)
+	if resp == nil || !strings.Contains(resp.Text, "重新评审") {
+		t.Fatalf("live review did not hold approval: %#v", resp)
+	}
+	if _, ok := h.loadStickyPendingCodingPlan(userID); !ok {
+		t.Fatal("held approval consumed the pending plan")
+	}
+	if approved := h.getStickyCodingWorkbenchMemory(userID).ApprovedPlanJSON; approved != "" {
+		t.Fatal("held approval promoted the previous plan")
+	}
+	if !h.codingPlanReviewIsLive(userID) {
+		t.Fatal("held approval cancelled the review")
+	}
+}
+
 func TestCodingPlanExecutionPreservesPendingPlanWhenTargetUnavailable(t *testing.T) {
 	cases := []struct {
 		name string

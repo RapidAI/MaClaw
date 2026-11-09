@@ -246,20 +246,13 @@ func (h *IMMessageHandler) storeStickyPendingCodingPlanAt(userID, userText, mark
 	})
 }
 
-func (h *IMMessageHandler) loadStickyPendingCodingPlan(userID string) (codingWorkbenchPendingPlan, bool) {
-	if h == nil {
-		return codingWorkbenchPendingPlan{}, false
-	}
-	mem := h.getStickyCodingWorkbenchMemory(userID)
+func decodeStickyPendingCodingPlan(mem stickyCodingWorkbenchMemory) (codingWorkbenchPendingPlan, bool) {
 	raw := strings.TrimSpace(mem.PendingPlanJSON)
 	if raw == "" {
 		return codingWorkbenchPendingPlan{}, false
 	}
 	var pending codingWorkbenchPendingPlan
-	if err := json.Unmarshal([]byte(raw), &pending); err != nil {
-		return codingWorkbenchPendingPlan{}, false
-	}
-	if len(pending.Tasks) == 0 {
+	if err := json.Unmarshal([]byte(raw), &pending); err != nil || len(pending.Tasks) == 0 {
 		return codingWorkbenchPendingPlan{}, false
 	}
 	if strings.TrimSpace(pending.Markdown) == "" {
@@ -269,6 +262,13 @@ func (h *IMMessageHandler) loadStickyPendingCodingPlan(userID string) (codingWor
 		pending.UserText = strings.TrimSpace(mem.PendingPlanUserText)
 	}
 	return pending, true
+}
+
+func (h *IMMessageHandler) loadStickyPendingCodingPlan(userID string) (codingWorkbenchPendingPlan, bool) {
+	if h == nil {
+		return codingWorkbenchPendingPlan{}, false
+	}
+	return decodeStickyPendingCodingPlan(h.getStickyCodingWorkbenchMemory(userID))
 }
 
 func (h *IMMessageHandler) clearStickyPendingCodingPlan(userID string) {
@@ -390,27 +390,42 @@ func (h *IMMessageHandler) takeStickyApprovedCodingPlan(userID string) (codingWo
 }
 
 func (h *IMMessageHandler) promotePendingToApprovedCodingPlan(userID string) (codingWorkbenchPendingPlan, bool) {
-	pending, ok := h.loadStickyPendingCodingPlan(userID)
-	if !ok {
+	if h == nil {
 		return codingWorkbenchPendingPlan{}, false
 	}
-	// Accept this snapshot. A review still writing must not publish another
-	// plan after the user has started this one.
-	h.supersedeCodingPlanReview(userID)
-	raw, err := json.Marshal(pending)
-	if err != nil {
+	userID = stickyCodingMemoryKey(userID)
+	if userID == "" || h.codingPlanReviewIsLive(userID) {
 		return codingWorkbenchPendingPlan{}, false
 	}
+	var pending codingWorkbenchPendingPlan
+	ok := false
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
-		mem.ApprovedPlanJSON = string(raw)
+		// Review startup takes this same lock. Checking and promoting here keeps
+		// a new review from slipping between validation and approval.
+		if _, reviewing := h.planReviewLive.Load(userID); reviewing {
+			return
+		}
+		candidate, valid := decodeStickyPendingCodingPlan(*mem)
+		if !valid {
+			return
+		}
+		approved, err := json.Marshal(candidate)
+		if err != nil {
+			return
+		}
+		mem.PlanReviewSeq++
+		mem.PlanReviewRunning = false
+		mem.ApprovedPlanJSON = string(approved)
 		mem.PendingPlanJSON = ""
 		mem.PendingPlanMarkdown = ""
 		mem.PendingPlanUserText = ""
 		mem.PlanDialogue = false
 		mem.PlanDialogueBrief = ""
 		mem.PlanDialogueNotes = ""
+		pending = candidate
+		ok = true
 	})
-	return pending, true
+	return pending, ok
 }
 
 // restoreApprovedCodingPlanAsPending moves an approved-but-not-yet-run plan
@@ -726,7 +741,7 @@ func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
 			"step_statuses":           codingWorkbenchStepsSnapshot(mem.StepStatuses),
 			"execution_plan":          strings.TrimSpace(mem.ExecutionPlan),
 			"requirement_restatement": strings.TrimSpace(mem.RequirementRestatement),
-			"pending_approval":        strings.TrimSpace(mem.PendingPlanJSON) != "",
+			"pending_approval":        h.codingPlanHasPendingApproval(userID, mem),
 			"plan_dialogue":           mem.PlanDialogue,
 			"steps_revision":          mem.StepsEmitSeq,
 		}

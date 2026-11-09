@@ -8286,6 +8286,95 @@ describe('AIAssistantPanel property tests', () => {
         expect(queryByTestId('coding-control-chip-pending')).toBeNull();
     });
 
+    it('hides the stale plan gate while requirements are reviewed again', async () => {
+        const projectPath = 'D:/tasks/revised-coding-plan-review';
+        const oldSteps = [
+            { index: 1, title: '设计网页版贪吃蛇', status: 'pending' },
+            { index: 2, title: '实现并验证网页版', status: 'pending' },
+        ];
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 1,
+            pending_approval: true,
+            plan_dialogue: true,
+            requirement_restatement: '先设计网页版，确认后再开发。',
+            step_statuses: oldSteps,
+        });
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: '贪吃蛇',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-approve')).toBeTruthy());
+
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        const responseHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'ai-assistant-response')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(stepsHandler).toEqual(expect.any(Function));
+        expect(responseHandler).toEqual(expect.any(Function));
+
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                pending_approval: false,
+                plan_dialogue: true,
+                requirement_restatement: '正在把 C++ 要求重新写进方案。',
+                step_statuses: oldSteps,
+            });
+        });
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-skip')).toBeNull();
+        expect(queryByTestId('coding-agent-plan-reject')).toBeNull();
+        expect(getByTestId('coding-agent-plan-checklist')).toBeTruthy();
+        expect(getByTestId('coding-agent-plan-step-1').getAttribute('data-status')).toBe('pending');
+
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            pending_approval: false,
+            plan_dialogue: true,
+            requirement_restatement: '正在把 C++ 要求重新写进方案。',
+            step_statuses: oldSteps,
+        });
+        const callsBefore = getCodingWorkbenchStatusMock.mock.calls.length;
+        act(() => { responseHandler?.({}); });
+        await waitFor(() => expect(getCodingWorkbenchStatusMock.mock.calls.length).toBe(callsBefore + 1));
+        await act(async () => { await Promise.resolve(); });
+        expect(queryByTestId('coding-agent-plan-approve')).toBeNull();
+
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                pending_approval: true,
+                plan_dialogue: true,
+                requirement_restatement: '已加入 C++ 要求，复审通过。',
+                step_statuses: [
+                    { index: 1, title: '设计 C++ 版贪吃蛇', status: 'pending' },
+                    { index: 2, title: '实现并验证 C++ 版', status: 'pending' },
+                ],
+            });
+        });
+        expect(getByTestId('coding-agent-plan-approve')).toBeTruthy();
+        expect(getByTestId('coding-agent-plan-skip')).toBeTruthy();
+        expect(getByTestId('coding-agent-plan-reject')).toBeTruthy();
+        expect(getByTestId('coding-agent-plan-step-1').textContent || '').toContain('C++');
+    });
+
     it('keeps a confirmed plan when a late status poll still says it is pending', async () => {
         const projectPath = 'D:/tasks/confirmed-plan-late-poll';
         getCodingWorkbenchStatusMock.mockResolvedValue({

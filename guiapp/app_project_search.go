@@ -3102,7 +3102,7 @@ func (a *App) codingWorkbenchStatusFromHandler(projectPath string, handler *IMMe
 	st.ExecutionPlan = strings.TrimSpace(mem.ExecutionPlan)
 	st.RequirementRestatement = strings.TrimSpace(mem.RequirementRestatement)
 	st.PlanMode = normalizeCodingPlanMode(mem.PlanMode)
-	st.PendingApproval = strings.TrimSpace(mem.PendingPlanJSON) != ""
+	st.PendingApproval = handler.codingPlanHasPendingApproval(userID, mem)
 	st.PlanDialogue = mem.PlanDialogue
 	if len(mem.StepStatuses) > 0 {
 		// Project notes at the exit boundary, like the live event does: a legacy

@@ -3,6 +3,7 @@ package guiapp
 import (
 	"strings"
 	"testing"
+	"time"
 
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -353,7 +354,7 @@ func TestSystemContinuationDoesNotStartWhileAPlanIsWaiting(t *testing.T) {
 	}
 }
 
-func TestRejectAndApproveInvalidateTheInFlightReview(t *testing.T) {
+func TestRejectCancelsReviewAndApproveWaitsForReview(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := stickyTestUserID(t)
 	tasks := []*v2.TaskItem{
@@ -396,8 +397,21 @@ func TestRejectAndApproveInvalidateTheInFlightReview(t *testing.T) {
 		m.PlanReviewRunning = true
 	})
 	h.planReviewLive.Store(userID, int64(8))
+	if _, ok := h.promotePendingToApprovedCodingPlan(userID); ok {
+		t.Fatal("approve promoted the previous plan while its revision was live")
+	}
+	if !h.codingPlanReviewIsLive(userID) {
+		t.Fatal("held approval cancelled the review")
+	}
+	if _, ok := h.loadStickyPendingCodingPlan(userID); !ok {
+		t.Fatal("held approval consumed the pending plan")
+	}
+	h.planReviewLive.Delete(userID)
+	h.updateStickyCodingWorkbenchMemory(userID, func(m *stickyCodingWorkbenchMemory) {
+		m.PlanReviewRunning = false
+	})
 	if _, ok := h.promotePendingToApprovedCodingPlan(userID); !ok {
-		t.Fatal("approve did not take the plan")
+		t.Fatal("approve did not take the published plan")
 	}
 	late = h.commitCodingPlanDraft(userID, "登录页", tasks, "late", 8, nil)
 	if late == nil || !strings.Contains(late.Text, "取代") {
@@ -457,6 +471,180 @@ func TestBackgroundPlanReviewReachesTheChat(t *testing.T) {
 	}
 	if !h.codingPlanReviewIsLive(userID) {
 		t.Fatal("the cancelled publish removed the newer review")
+	}
+}
+
+func TestPlanReviewHidesStaleApprovalUntilRevisionPublishes(t *testing.T) {
+	app := &App{}
+	manager := NewRemoteSessionManager(app)
+	h := &IMMessageHandler{app: app, manager: manager}
+	projectPath := t.TempDir()
+	userID := projectSessionOwnerID(projectPath)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	goal := "先设计再开发贪吃蛇"
+	oldTasks := []*v2.TaskItem{
+		{Title: "设计网页版", Description: "确认页面结构"},
+		{Title: "实现网页版", Description: "编写页面和逻辑"},
+	}
+	h.storeStickyPendingCodingPlan(userID, goal, "旧方案", oldTasks)
+	h.setStickyCodingStepStatuses(userID, codingWorkbenchStepsFromTasks(oldTasks, codingStepPending))
+	if st := app.codingWorkbenchStatusFromHandler(projectPath, h); !st.PendingApproval {
+		t.Fatal("the initial draft should await approval")
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	resp := h.startCodingPlanReview(userID, projectPath, nil, func(seq int64, _ func(string)) *IMAgentResponse {
+		close(started)
+		<-release
+		return h.commitCodingPlanDraft(userID, goal, []*v2.TaskItem{
+			{Title: "设计 C++ 版", Description: "确认窗口和渲染结构"},
+			{Title: "实现 C++ 版", Description: "编写游戏逻辑并验证"},
+		}, "已加入 C++ 要求", seq, nil)
+	})
+	if resp == nil {
+		t.Fatal("review did not start")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background review did not begin")
+	}
+	st := app.codingWorkbenchStatusFromHandler(projectPath, h)
+	if st.PendingApproval {
+		t.Fatal("the superseded draft must not await approval during revision")
+	}
+	if len(st.StepStatuses) != len(oldTasks) {
+		t.Fatalf("revision should keep the current steps visible: %+v", st.StepStatuses)
+	}
+
+	close(release)
+	released = true
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		st = app.codingWorkbenchStatusFromHandler(projectPath, h)
+		if st.PendingApproval && !h.getStickyCodingWorkbenchMemory(userID).PlanReviewRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("published revision did not restore approval: %+v", st)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	pending, ok := h.loadStickyPendingCodingPlan(userID)
+	if !ok || !strings.Contains(pending.Markdown, "实现 C++ 版") {
+		t.Fatalf("approval was restored for the wrong plan: %+v ok=%v", pending, ok)
+	}
+}
+
+func TestPendingApprovalUsesLiveReviewAfterRestart(t *testing.T) {
+	app := &App{}
+	h := &IMMessageHandler{}
+	projectPath := t.TempDir()
+	userID := projectSessionOwnerID(projectPath)
+	t.Cleanup(func() {
+		h.planReviewLive.Delete(userID)
+		h.clearStickyCodingWorkbenchMemory(userID)
+	})
+	h.storeStickyPendingCodingPlan(userID, "build", "plan", []*v2.TaskItem{
+		{Title: "inspect", Description: "inspect code"},
+		{Title: "implement", Description: "implement fix"},
+	})
+	h.updateStickyCodingWorkbenchMemory(userID, func(m *stickyCodingWorkbenchMemory) {
+		m.PlanReviewRunning = true
+	})
+	if st := app.codingWorkbenchStatusFromHandler(projectPath, h); !st.PendingApproval {
+		t.Fatal("a persisted running flag without a live review must not hide approval after restart")
+	}
+	h.planReviewLive.Store(userID, int64(1))
+	if st := app.codingWorkbenchStatusFromHandler(projectPath, h); st.PendingApproval {
+		t.Fatal("a live review must hide the previous approval")
+	}
+}
+
+func TestPlanReviewLiveStateUsesCanonicalSessionKey(t *testing.T) {
+	app := &App{}
+	h := &IMMessageHandler{}
+	projectPath := t.TempDir()
+	canonicalUserID := projectSessionOwnerID(projectPath)
+	rawUserID := canonicalUserID + "/."
+	if got := stickyCodingMemoryKey(rawUserID); got != canonicalUserID {
+		t.Fatalf("test session key is not non-canonical: got %q want %q", got, canonicalUserID)
+	}
+	t.Cleanup(func() {
+		h.planReviewLive.Delete(canonicalUserID)
+		h.clearStickyCodingWorkbenchMemory(rawUserID)
+	})
+	h.storeStickyPendingCodingPlan(rawUserID, "build", "plan", []*v2.TaskItem{
+		{Title: "inspect", Description: "inspect code"},
+		{Title: "implement", Description: "implement fix"},
+	})
+	if st := app.codingWorkbenchStatusFromHandler(projectPath, h); !st.PendingApproval {
+		t.Fatal("the initial draft should await approval")
+	}
+	if seq := h.beginCodingPlanReview(rawUserID); seq == 0 {
+		t.Fatal("review did not start")
+	}
+	if st := app.codingWorkbenchStatusFromHandler(projectPath, h); st.PendingApproval {
+		t.Fatal("canonical status lookup missed the live review started with a raw session key")
+	}
+	if _, ok := h.promotePendingToApprovedCodingPlan(rawUserID); ok {
+		t.Fatal("approval missed the live review started with a raw session key")
+	}
+	h.supersedeCodingPlanReview(rawUserID)
+	if st := app.codingWorkbenchStatusFromHandler(projectPath, h); !st.PendingApproval {
+		t.Fatal("superseding with the raw session key did not restore approval")
+	}
+}
+
+func TestPlanReviewInFlightDoesNotConfirmPreviousPlan(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	t.Cleanup(func() { h.planReviewLive.Delete(userID) })
+	tasks := []*v2.TaskItem{
+		{Title: "设计网页版", Description: "确认页面结构"},
+		{Title: "实现网页版", Description: "编写页面和逻辑"},
+	}
+	if resp := h.commitCodingPlanDraft(userID, "先设计再开发贪吃蛇", tasks, "旧方案", 0, nil); resp == nil {
+		t.Fatal("plan was not stored")
+	}
+	h.updateStickyCodingWorkbenchMemory(userID, func(m *stickyCodingWorkbenchMemory) {
+		m.PlanReviewSeq = 1
+		m.PlanReviewRunning = true
+		m.PlanDialogue = true
+	})
+	h.planReviewLive.Store(userID, int64(1))
+
+	next, stop := h.prepareCodingPlanDialogue(userID, "开始", "D:/repo", true, nil, nil)
+	if next != "开始" || stop == nil || !strings.Contains(stop.Text, "后台评审") {
+		t.Fatalf("confirmation did not wait for the live review: next=%q stop=%#v", next, stop)
+	}
+	if _, ok := h.loadStickyPendingCodingPlan(userID); !ok {
+		t.Fatal("held confirmation consumed the pending plan")
+	}
+	if approved := h.getStickyCodingWorkbenchMemory(userID).ApprovedPlanJSON; approved != "" {
+		t.Fatal("held confirmation promoted the previous plan")
+	}
+	if !h.codingPlanReviewIsLive(userID) {
+		t.Fatal("held confirmation cancelled the review")
+	}
+
+	h.planReviewLive.Delete(userID)
+	h.updateStickyCodingWorkbenchMemory(userID, func(m *stickyCodingWorkbenchMemory) {
+		m.PlanReviewRunning = false
+	})
+	_, stop = h.prepareCodingPlanDialogue(userID, "开始", "D:/repo", true, nil, nil)
+	if stop != nil {
+		t.Fatalf("published plan should confirm normally: %#v", stop)
+	}
+	if approved := h.getStickyCodingWorkbenchMemory(userID).ApprovedPlanJSON; approved == "" {
+		t.Fatal("published plan was not promoted")
 	}
 }
 

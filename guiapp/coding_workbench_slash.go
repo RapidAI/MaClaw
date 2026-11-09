@@ -180,6 +180,9 @@ func (h *IMMessageHandler) executeApprovedCodingPlan(
 	onProgress func(string),
 	onToken func(string),
 ) *IMAgentResponse {
+	if h.codingPlanReviewIsLive(userID) {
+		return &IMAgentResponse{Text: "规划正在重新评审，请等待新方案发布后再确认。确认前不会改文件。"}
+	}
 	// Validate the current execution context before consuming the pending plan.
 	// A disconnected SSH session or missing local workspace is recoverable; the
 	// user should be able to reconnect/fix the path and press Start again rather

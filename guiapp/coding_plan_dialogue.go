@@ -81,8 +81,7 @@ func (h *IMMessageHandler) prepareCodingPlanDialogue(
 				onProgress("已跳过规划，按原目标直接执行")
 			}
 			return goal, nil
-		case codingPlanDialogueConfirms(userText) && hasPending:
-			h.supersedeCodingPlanReview(userID)
+		case codingPlanDialogueConfirms(userText) && hasPending && !reviewLive:
 			if _, ok := h.promotePendingToApprovedCodingPlan(userID); ok {
 				log.Printf("[coding-plan] dialogue confirmed user=%s", userID)
 				if onProgress != nil {
@@ -184,11 +183,20 @@ func (h *IMMessageHandler) supersedeCodingPlanReview(userID string) {
 	if h == nil || strings.TrimSpace(userID) == "" {
 		return
 	}
+	userID = stickyCodingMemoryKey(userID)
 	h.planReviewLive.Delete(userID)
 	h.updateStickyCodingWorkbenchMemory(userID, func(m *stickyCodingWorkbenchMemory) {
 		m.PlanReviewSeq++
 		m.PlanReviewRunning = false
 	})
+}
+
+// codingPlanHasPendingApproval keeps a stored plan available as revision input
+// without presenting that superseded draft as confirmable while review runs.
+// The live registry, not the persisted running flag, distinguishes a real
+// background review from state left behind by an application restart.
+func (h *IMMessageHandler) codingPlanHasPendingApproval(userID string, mem stickyCodingWorkbenchMemory) bool {
+	return strings.TrimSpace(mem.PendingPlanJSON) != "" && !h.codingPlanReviewIsLive(userID)
 }
 
 // codingPlanAwaitingUser is true while a plan is still being written or
@@ -213,6 +221,10 @@ func (h *IMMessageHandler) codingPlanReviewIsLive(userID string) bool {
 	if h == nil {
 		return false
 	}
+	userID = stickyCodingMemoryKey(userID)
+	if userID == "" {
+		return false
+	}
 	_, ok := h.planReviewLive.Load(userID)
 	return ok
 }
@@ -222,6 +234,10 @@ func (h *IMMessageHandler) codingPlanReviewWait(onToken func(string)) *IMAgentRe
 }
 
 func (h *IMMessageHandler) beginCodingPlanReview(userID string) int64 {
+	userID = stickyCodingMemoryKey(userID)
+	if h == nil || userID == "" {
+		return 0
+	}
 	var seq int64
 	h.updateStickyCodingWorkbenchMemory(userID, func(m *stickyCodingWorkbenchMemory) {
 		m.PlanReviewSeq++
@@ -271,6 +287,7 @@ func (h *IMMessageHandler) startCodingPlanReview(userID, projectPath string, onT
 		h.supersedeCodingPlanReview(userID)
 		return work(0, onToken)
 	}
+	h.emitCodingWorkbenchStepsUpdate(userID)
 	go func() {
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -287,6 +304,10 @@ func (h *IMMessageHandler) startCodingPlanReview(userID, projectPath string, onT
 
 func (h *IMMessageHandler) publishCodingPlanReview(userID, sessionID string, seq int64, resp *IMAgentResponse) {
 	if h == nil || h.manager == nil {
+		return
+	}
+	userID = stickyCodingMemoryKey(userID)
+	if userID == "" {
 		return
 	}
 	// Drop the running flag before the live entry. Clearing live first lets the
@@ -345,6 +366,10 @@ func (h *IMMessageHandler) failCodingPlanReview(userID, sessionID string, seq in
 	if h == nil {
 		return
 	}
+	userID = stickyCodingMemoryKey(userID)
+	if userID == "" {
+		return
+	}
 	kept := h.updateIfCodingPlanReview(userID, seq, func(m *stickyCodingWorkbenchMemory) {
 		m.PlanReviewRunning = false
 	})
@@ -370,6 +395,7 @@ func (h *IMMessageHandler) failCodingPlanReview(userID, sessionID string, seq in
 			s.Summary.ProgressSummary = "评审中断"
 		})
 	}
+	h.emitCodingWorkbenchStepsUpdate(userID)
 	emitCodingPlanReviewChat(h, userID, text)
 }
 
