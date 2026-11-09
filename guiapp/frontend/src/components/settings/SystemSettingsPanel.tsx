@@ -5,7 +5,7 @@ import { localizeText } from '../../i18n';
 import { SystemDiagnosticsTable } from './SystemDiagnosticsTable';
 import { DataDirectorySection } from './DataDirectorySection';
 import { SystemTimeoutField } from './SystemTimeoutField';
-import { ToolCacheMaintenanceSection } from './ToolCacheMaintenanceSection';
+import { SystemCleanupSection } from './SystemCleanupSection';
 import { buildSystemDiagnostics } from './systemSettingsDiagnostics';
 
 type AudioDeviceOption = {
@@ -160,7 +160,7 @@ export const SystemSettingsPanel = ({ config, setConfig, lang, audioDevices, sav
             </section>
 
             <DataDirectorySection config={config} setConfig={(c) => setConfig(c)} lang={lang} showToastMessage={showToastMessage} />
-            <ToolCacheMaintenanceSection config={config} setConfig={(c) => setConfig(c)} lang={lang} showToastMessage={showToastMessage} />
+            <SystemCleanupSection config={config} setConfig={(c) => setConfig(c)} lang={lang} showToastMessage={showToastMessage} />
 
             <section className="system-settings-card system-settings-card--diagnostics">
                 <h4>

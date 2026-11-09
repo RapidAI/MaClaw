@@ -534,6 +534,419 @@ func TestSelfReviewInsertsBeforeNamedStep(t *testing.T) {
 	}
 }
 
+func TestSelfReviewRepeatsUntilClean(t *testing.T) {
+	tasks := []*v2.TaskItem{{Title: "实现移动"}, {Title: "构建并验证"}}
+	calls := 0
+	var second []string
+	next, note, passed := reviewCodingPlanUntilClean("做一个贪吃蛇", tasks, 3, func(current []*v2.TaskItem) (string, bool) {
+		calls++
+		if calls == 2 {
+			for _, task := range current {
+				second = append(second, task.Title)
+			}
+		}
+		switch calls {
+		case 1:
+			return `{"ok":false,"issues":[{"op":"insert","target":"构建并验证","change":"图形界面"}]}`, true
+		case 2:
+			return `{"ok":false,"issues":[{"op":"update","target":"图形界面","change":"用本地窗口画出棋盘"}]}`, true
+		default:
+			return `{"ok":true}`, true
+		}
+	})
+	if calls != 3 {
+		t.Fatalf("reviews=%d, want a fresh review after each fix", calls)
+	}
+	if len(second) != 3 || second[1] != "图形界面" {
+		t.Fatalf("follow-up review did not see the revised plan: %#v", second)
+	}
+	if len(next) != 3 || next[1].Title != "图形界面" || !strings.Contains(next[1].Description, "用本地窗口画出棋盘") {
+		t.Fatalf("revised plan: %#v", next)
+	}
+	if !passed || !strings.Contains(note, "复审已通过") {
+		t.Fatalf("passed=%v note=%q", passed, note)
+	}
+}
+
+func TestSelfReviewStopsWhenFirstReviewIsClean(t *testing.T) {
+	tasks := []*v2.TaskItem{{Title: "实现移动"}, {Title: "构建并验证"}}
+	calls := 0
+	next, note, passed := reviewCodingPlanUntilClean("做一个贪吃蛇", tasks, 3, func(current []*v2.TaskItem) (string, bool) {
+		calls++
+		return `{"ok":true}`, true
+	})
+	if calls != 1 || !passed || note != "" || len(next) != 2 {
+		t.Fatalf("calls=%d passed=%v note=%q steps=%d", calls, passed, note, len(next))
+	}
+}
+
+func TestSelfReviewStopsWhenIssueDoesNotChangePlan(t *testing.T) {
+	tasks := []*v2.TaskItem{{Title: "实现移动"}, {Title: "构建并验证"}}
+	calls := 0
+	next, note, passed := reviewCodingPlanUntilClean("做一个贪吃蛇", tasks, 3, func(current []*v2.TaskItem) (string, bool) {
+		calls++
+		return `{"ok":false,"issues":[{"op":"delete","target":"不存在的步骤","change":""}]}`, true
+	})
+	if calls != 1 || passed || note != "" || !codingPlanTasksSame(tasks, next) {
+		t.Fatalf("calls=%d passed=%v note=%q same=%v", calls, passed, note, codingPlanTasksSame(tasks, next))
+	}
+}
+
+func TestSelfReviewCapsRoundsWithoutClaimingPass(t *testing.T) {
+	tasks := []*v2.TaskItem{{Title: "实现移动"}, {Title: "构建并验证"}}
+	calls := 0
+	var judged []string
+	next, note, passed := reviewCodingPlanUntilClean("做一个贪吃蛇", tasks, 2, func(current []*v2.TaskItem) (string, bool) {
+		calls++
+		if calls == 2 {
+			for _, task := range current {
+				if task != nil {
+					judged = append(judged, task.Title)
+				}
+			}
+		}
+		if calls == 1 {
+			return `{"ok":false,"issues":[{"op":"insert","target":"构建并验证","change":"补充步骤一"}]}`, true
+		}
+		return `{"ok":false,"issues":[{"op":"insert","target":"构建并验证","change":"补充步骤二"}]}`, true
+	})
+	if calls != 2 {
+		t.Fatalf("reviews=%d, want the round cap", calls)
+	}
+	if len(next) != 3 || next[1].Title != "补充步骤一" {
+		t.Fatalf("last unreviewed insert must not reach the user: %#v", next)
+	}
+	if len(judged) != 3 || judged[1] != "补充步骤一" {
+		t.Fatalf("last review did not judge the fixed plan: %#v", judged)
+	}
+	if passed || strings.Contains(note, "已通过") || !strings.Contains(note, "自动评审改过这版") {
+		t.Fatalf("passed=%v note=%q", passed, note)
+	}
+}
+
+func TestSelfReviewDoesNotPassABareRejection(t *testing.T) {
+	tasks := []*v2.TaskItem{{Title: "实现移动"}, {Title: "构建并验证"}}
+	calls := 0
+	next, note, passed := reviewCodingPlanUntilClean("做一个贪吃蛇", tasks, 3, func(current []*v2.TaskItem) (string, bool) {
+		calls++
+		if calls == 1 {
+			return `{"ok":false,"issues":[{"op":"insert","target":"构建并验证","change":"图形界面"}]}`, true
+		}
+		return `{"ok":false}`, true
+	})
+	if calls != 2 || passed || strings.Contains(note, "已通过") {
+		t.Fatalf("calls=%d passed=%v note=%q", calls, passed, note)
+	}
+	if len(next) != 3 || next[1].Title != "图形界面" {
+		t.Fatalf("rejection should keep the reviewed fix: %#v", next)
+	}
+}
+
+func TestSelfReviewDoesNotRepeatTheSameFix(t *testing.T) {
+	tasks := []*v2.TaskItem{{Title: "实现移动", Description: "移动"}, {Title: "构建并验证"}}
+	calls := 0
+	next, _, passed := reviewCodingPlanUntilClean("做一个贪吃蛇", tasks, 3, func(current []*v2.TaskItem) (string, bool) {
+		calls++
+		return `{"ok":false,"issues":[{"op":"update","target":"实现移动","change":"增加边界判断"}]}`, true
+	})
+	if calls != 2 || passed {
+		t.Fatalf("calls=%d passed=%v", calls, passed)
+	}
+	if next[0] == nil || strings.Count(next[0].Description, "增加边界判断") != 1 {
+		t.Fatalf("description = %q", next[0].Description)
+	}
+}
+
+func TestSelfReviewDoesNotGrowPastTheStepCap(t *testing.T) {
+	tasks := make([]*v2.TaskItem, codingWorkbenchPlanMaxTasks)
+	for i := range tasks {
+		tasks[i] = &v2.TaskItem{Title: "步骤" + string(rune('A'+i))}
+	}
+	calls := 0
+	next, _, passed := reviewCodingPlanUntilClean("做一个贪吃蛇", tasks, 3, func(current []*v2.TaskItem) (string, bool) {
+		calls++
+		return `{"ok":false,"issues":[{"op":"insert","target":"步骤A","change":"再加一步"}]}`, true
+	})
+	if calls != 1 || passed || len(next) != codingWorkbenchPlanMaxTasks {
+		t.Fatalf("calls=%d passed=%v steps=%d", calls, passed, len(next))
+	}
+}
+
+func TestSelfReviewTargetMustNameTheStep(t *testing.T) {
+	tasks := []*v2.TaskItem{{Title: "实现移动"}, {Title: "构建并验证"}}
+	if _, _, applied := applyCodingPlanReviewIssue(tasks, codingPlanReviewIssue{Op: "update", Target: "验证", Change: "改掉构建"}); applied {
+		t.Fatal("a title fragment must not update a different step")
+	}
+	next, _, applied := applyCodingPlanReviewIssue(tasks, codingPlanReviewIssue{Op: "update", Target: "请调整构建并验证这一步", Change: "补上运行命令"})
+	if !applied || next[1] == nil || !strings.Contains(next[1].Description, "补上运行命令") {
+		t.Fatalf("a target that contains the step title should update it: applied=%v %#v", applied, next)
+	}
+}
+
+func TestSelfReviewInsertWithoutTargetStaysBeforeVerify(t *testing.T) {
+	tasks := []*v2.TaskItem{{Title: "实现移动"}, {Title: "构建并验证"}}
+	next, _, applied := applyCodingPlanReviewIssue(tasks, codingPlanReviewIssue{Op: "insert", Target: "", Change: "图形界面"})
+	if !applied || len(next) != 3 || next[1].Title != "图形界面" || next[2].Title != "构建并验证" {
+		t.Fatalf("unnamed insert landed after verification: %#v", next)
+	}
+}
+
+func TestSelfReviewKeepsFilesAndDepsForTheNextPass(t *testing.T) {
+	tasks := []*v2.TaskItem{
+		{Title: "实现移动", Description: "写移动", Files: []string{"move.go"}},
+		{Title: "构建并验证", Description: "编译", Files: []string{"main.go"}},
+	}
+	sawFiles := false
+	sawDep := false
+	next, _, passed := reviewCodingPlanUntilClean("做一个贪吃蛇", tasks, 3, func(current []*v2.TaskItem) (string, bool) {
+		if len(current) == 3 {
+			for _, task := range current {
+				if task == nil {
+					continue
+				}
+				if len(task.Files) > 0 {
+					sawFiles = true
+				}
+				if len(task.DependsOn) > 0 {
+					sawDep = true
+				}
+			}
+			return `{"ok":true}`, true
+		}
+		return `{"ok":false,"issues":[{"op":"insert","target":"构建并验证","change":"图形界面"}]}`, true
+	})
+	if !passed || !sawFiles || !sawDep || len(next) != 3 {
+		t.Fatalf("passed=%v files=%v deps=%v steps=%d", passed, sawFiles, sawDep, len(next))
+	}
+	if len(next[0].Files) != 1 || next[0].Files[0] != "move.go" {
+		t.Fatalf("files = %#v", next[0].Files)
+	}
+}
+
+func TestSelfReviewJudgesTheCappedPlan(t *testing.T) {
+	tasks := make([]*v2.TaskItem, codingWorkbenchPlanMaxTasks+1)
+	for i := range tasks {
+		tasks[i] = &v2.TaskItem{Title: "步骤" + string(rune('A'+i))}
+	}
+	seen := 0
+	next, _, passed := reviewCodingPlanUntilClean("做一个贪吃蛇", tasks, 3, func(current []*v2.TaskItem) (string, bool) {
+		seen = len(current)
+		return `{"ok":true}`, true
+	})
+	if !passed || seen != codingWorkbenchPlanMaxTasks || len(next) != codingWorkbenchPlanMaxTasks {
+		t.Fatalf("passed=%v seen=%d kept=%d", passed, seen, len(next))
+	}
+	if next[len(next)-1].Title == tasks[len(tasks)-1].Title {
+		t.Fatal("the step past the cap was still in the confirmed plan")
+	}
+}
+
+func TestSelfReviewParsesTrailingNoteAndAliasOps(t *testing.T) {
+	okReview, issues, parsed := parseCodingPlanSelfReview("```json\n{\"ok\":true}\n```\n备注 {先不改}")
+	if !parsed || !okReview || len(issues) != 0 {
+		t.Fatalf("trailing note hid a clean review: ok=%v issues=%d parsed=%v", okReview, len(issues), parsed)
+	}
+	tasks := []*v2.TaskItem{{Title: "实现移动"}, {Title: "构建并验证"}}
+	_, issues, parsed = parseCodingPlanSelfReview(`{"ok":false,"issues":[{"action":"add","title":"构建并验证","description":"图形界面"}]}`)
+	if !parsed || len(issues) != 1 || issues[0].Op != "insert" || issues[0].Change != "图形界面" {
+		t.Fatalf("alias issue = %#v parsed=%v", issues, parsed)
+	}
+	next, _, applied := applyCodingPlanReviewIssue(tasks, issues[0])
+	if !applied || len(next) != 3 || next[1].Title != "图形界面" || next[2].Title != "构建并验证" {
+		t.Fatalf("alias insert did not land: %#v", next)
+	}
+}
+
+func TestSelfReviewTargetAcceptsStepNumber(t *testing.T) {
+	tasks := []*v2.TaskItem{{Title: "实现移动"}, {Title: "构建并验证"}}
+	next, _, applied := applyCodingPlanReviewIssue(tasks, codingPlanReviewIssue{Op: "update", Target: "T2", Change: "补上运行命令"})
+	if !applied || next[1] == nil || !strings.Contains(next[1].Description, "补上运行命令") || strings.Contains(next[0].Description, "补上运行命令") {
+		t.Fatalf("T2 did not update the second step: %#v", next)
+	}
+	next, _, applied = applyCodingPlanReviewIssue(tasks, codingPlanReviewIssue{Op: "update", Target: "第1步", Change: "先读输入"})
+	if !applied || next[0] == nil || !strings.Contains(next[0].Description, "先读输入") {
+		t.Fatalf("第1步 did not update the first step: %#v", next)
+	}
+}
+
+func TestSelfReviewAcceptsStringVerdictAndOneIssue(t *testing.T) {
+	okReview, issues, parsed := parseCodingPlanSelfReview(`{"ok":"false","issues":{"action":"add","title":"构建并验证","description":"图形界面"}}`)
+	if !parsed || okReview || len(issues) != 1 || issues[0].Op != "insert" {
+		t.Fatalf("string verdict = ok=%v issues=%#v parsed=%v", okReview, issues, parsed)
+	}
+	okReview, issues, parsed = parseCodingPlanSelfReview(`{"ok":"yes","issues":[{}]}`)
+	if !parsed || !okReview || len(issues) != 0 {
+		t.Fatalf("empty issue blocked a pass: ok=%v issues=%d parsed=%v", okReview, len(issues), parsed)
+	}
+}
+
+func TestSelfReviewUpdateStaysOnTheConfirmedCard(t *testing.T) {
+	long := strings.Repeat("长", 300)
+	tasks := []*v2.TaskItem{
+		{Title: "实现移动", Description: long},
+		{Title: "构建并验证", Description: "编译"},
+	}
+	saw := false
+	next, note, passed := reviewCodingPlanUntilClean("做一个贪吃蛇", tasks, 3, func(current []*v2.TaskItem) (string, bool) {
+		if strings.Contains(formatCodingPlanStepsMarkdown(current), "补上边界") {
+			saw = true
+			return `{"ok":true}`, true
+		}
+		return `{"ok":false,"issues":[{"op":"update","target":"实现移动","change":"补上边界"}]}`, true
+	})
+	if !passed || !saw || !strings.Contains(note, "复审已通过") {
+		t.Fatalf("passed=%v saw=%v note=%q", passed, saw, note)
+	}
+	card := formatCodingPlanStepsMarkdown(codingPlanForReview("做一个贪吃蛇", next))
+	if !strings.Contains(card, "补上边界") {
+		t.Fatal("confirmed card hid the review fix")
+	}
+	short := []*v2.TaskItem{{Title: "实现移动", Description: "写移动"}, {Title: "构建并验证"}}
+	updated, _, applied := applyCodingPlanReviewIssue(short, codingPlanReviewIssue{Op: "update", Target: "实现移动", Change: "补上边界"})
+	if !applied || updated[0] == nil || !strings.HasSuffix(strings.TrimSpace(updated[0].Description), "补上边界") || !strings.Contains(updated[0].Description, "写移动") {
+		t.Fatalf("short update should still append: %#v", updated)
+	}
+}
+
+func TestSelfReviewIgnoresPunctuationOnlyRepeat(t *testing.T) {
+	tasks := []*v2.TaskItem{{Title: "实现移动", Description: "增加边界判断。"}, {Title: "构建并验证"}}
+	_, _, applied := applyCodingPlanReviewIssue(tasks, codingPlanReviewIssue{Op: "update", Target: "实现移动", Change: "增加边界判断"})
+	if applied {
+		t.Fatal("punctuation-only repeat was appended again")
+	}
+}
+
+func TestSelfReviewStepNumbersStayOnTheOriginalStep(t *testing.T) {
+	tasks := []*v2.TaskItem{{Title: "实现移动"}, {Title: "构建并验证"}}
+	okReview, issues, parsed := parseCodingPlanSelfReview(`{"ok":false,"issues":[{"op":"insert","target":"T2","change":"图形界面"},{"op":"update","target":"T2","change":"补上运行命令"}]}`)
+	if !parsed || okReview || len(issues) != 2 {
+		t.Fatalf("parsed=%v ok=%v issues=%d", parsed, okReview, len(issues))
+	}
+	next := applyCodingPlanReviewIssues(tasks, issues)
+	if len(next) != 3 || next[1].Title != "图形界面" || next[2].Title != "构建并验证" {
+		t.Fatalf("insert shifted the numbered step: %#v", next)
+	}
+	if strings.Contains(next[1].Description, "补上运行命令") || !strings.Contains(next[2].Description, "补上运行命令") {
+		t.Fatalf("T2 update landed on the inserted step: %#v", next)
+	}
+}
+
+func TestSelfReviewSkipsUnrelatedBrace(t *testing.T) {
+	okReview, issues, parsed := parseCodingPlanSelfReview(`先看 {草稿} {"ok":"yes","issues":[{}]}`)
+	if !parsed || !okReview || len(issues) != 0 {
+		t.Fatalf("an earlier brace hid the review: ok=%v issues=%d parsed=%v", okReview, len(issues), parsed)
+	}
+}
+
+func TestSelfReviewUpdateKeepsCustomDependency(t *testing.T) {
+	tasks := []*v2.TaskItem{
+		{Title: "读取接口", Description: "找入口", Files: []string{"a.go"}},
+		{Title: "实现移动", Description: "写逻辑", Files: []string{"b.go"}, DependsOn: []int{1}},
+		{Title: "构建并验证", Description: "编译", Files: []string{"main.go"}, DependsOn: []int{1}},
+	}
+	next, _, applied := applyCodingPlanReviewIssue(tasks, codingPlanReviewIssue{Op: "update", Target: "实现移动", Change: "补上边界"})
+	if !applied || len(next) != 3 || !strings.Contains(next[1].Description, "补上边界") {
+		t.Fatalf("update = %#v", next)
+	}
+	if len(next[2].DependsOn) != 1 || next[2].DependsOn[0] != 1 {
+		t.Fatalf("custom dependency changed: %#v", next[2].DependsOn)
+	}
+	if len(next[0].Files) != 1 || next[0].Files[0] != "a.go" || len(next[1].Files) != 1 || next[1].Files[0] != "b.go" {
+		t.Fatalf("files changed: %#v %#v", next[0].Files, next[1].Files)
+	}
+	tasks[2].DependsOn = []int{2}
+	inserted, _, applied := applyCodingPlanReviewIssue(tasks, codingPlanReviewIssue{Op: "insert", Target: "实现移动", Change: "图形界面"})
+	if !applied || len(inserted) != 4 || inserted[3] == nil || len(inserted[3].DependsOn) != 1 || inserted[3].DependsOn[0] != 3 {
+		got := []int(nil)
+		if len(inserted) == 4 && inserted[3] != nil {
+			got = inserted[3].DependsOn
+		}
+		t.Fatalf("insert did not move the later dependency: %#v", got)
+	}
+}
+
+func TestCodingPlanReviewMarkdownKeepsEveryStep(t *testing.T) {
+	tasks := make([]*v2.TaskItem, codingWorkbenchPlanMaxTasks)
+	for i := range tasks {
+		tasks[i] = &v2.TaskItem{
+			Index:       i + 1,
+			Title:       "步骤" + string(rune('A'+i)),
+			Description: strings.Repeat("长", 500) + "\n\n## Overall request\n做一个很长的目标",
+			Files:       []string{strings.Repeat("f", 300) + ".go"},
+			DependsOn:   []int{1},
+		}
+	}
+	tasks[0].DependsOn = nil
+	md := formatCodingPlanStepsMarkdown(tasks)
+	if strings.Contains(md, "Overall request") || strings.Contains(md, "做一个很长的目标") {
+		t.Fatal("review markdown included the injected goal footer")
+	}
+	for i := range tasks {
+		marker := "### T" + string(rune('1'+i)) + ": 步骤" + string(rune('A'+i))
+		if !strings.Contains(md, marker) {
+			t.Fatalf("review markdown dropped %s\n%s", marker, md)
+		}
+	}
+	if !strings.Contains(md, "依赖: T1") {
+		t.Fatal("review markdown dropped a dependency")
+	}
+	if strings.Count(md, "长") != len(tasks)*300 {
+		t.Fatalf("review shortened the description the user confirms: %d", strings.Count(md, "长"))
+	}
+	longName := tasks[0].Files[0]
+	tasks[1].Files = []string{"a.go", "b.go", "c.go", "d.go", "e.go", "f.go", "g.go", "h.go", "i.go"}
+	md = formatCodingPlanStepsMarkdown(tasks)
+	if !strings.Contains(md, longName) {
+		t.Fatal("review markdown shortened a file the confirm card shows in full")
+	}
+	for _, name := range tasks[1].Files {
+		if !strings.Contains(md, name) {
+			t.Fatalf("review markdown dropped %s", name)
+		}
+	}
+}
+
+func TestCommitStoresThePlanTheReviewJudged(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	goal := "先规划再开发登录页"
+	tasks := []*v2.TaskItem{
+		{Title: "探查接口", Description: "阅读现有登录入口"},
+		{Title: "阅读调用方", Description: "定位登录调用"},
+		{Title: "实现登录", Description: "接上表单"},
+	}
+	judged := codingPlanForReview(goal, tasks)
+	if resp := h.commitCodingPlanDraft(userID, goal, tasks, "note", 0, nil); resp == nil {
+		t.Fatal("plan was not stored")
+	}
+	pending, ok := h.loadStickyPendingCodingPlan(userID)
+	if !ok {
+		t.Fatal("pending plan missing")
+	}
+	want := formatCodingWorkbenchPlanMarkdown(goal, judged)
+	if pending.Markdown != want {
+		t.Fatalf("confirmed plan differs from the reviewed plan\nconfirmed:\n%s\nreviewed:\n%s", pending.Markdown, want)
+	}
+	if len(pending.Tasks) != 3 || len(pending.Tasks[1].DependsOn) != 0 {
+		t.Fatalf("explore step was chained again: %#v", pending.Tasks[1])
+	}
+	if len(pending.Tasks[2].DependsOn) != 1 || pending.Tasks[2].DependsOn[0] != 2 {
+		t.Fatalf("implement deps = %v", pending.Tasks[2].DependsOn)
+	}
+}
+
+func TestSelfReviewStopsWhenCancelled(t *testing.T) {
+	tasks := []*v2.TaskItem{{Title: "实现移动"}, {Title: "构建并验证"}}
+	calls := 0
+	next, note, passed := reviewCodingPlanUntilClean("做一个贪吃蛇", tasks, 3, func(current []*v2.TaskItem) (string, bool) {
+		calls++
+		return "", false
+	})
+	if calls != 1 || passed || note != "" || !codingPlanTasksSame(tasks, next) {
+		t.Fatalf("calls=%d passed=%v note=%q", calls, passed, note)
+	}
+}
+
 func TestSkipFlagDoesNotReopenPlanning(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := stickyTestUserID(t)

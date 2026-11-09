@@ -75,7 +75,10 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	if resp := h.rejectCancelledTaskTurn(msg); resp != nil {
 		// This turn never reaches post-loop. A fenced user stop pauses here,
 		// so the bar does not stay on "running" with the clock still going.
+		// The reply is ordinary text. Settlement has to see the stop itself,
+		// or the resumed slot becomes a finished task after the grace period.
 		h.finishCancelledGoalTurn(msg.UserID, resp, nil)
+		h.abandonResumedUnfinishedSlot(msg.UserID, nil)
 		return resp
 	}
 	// Dedicated local/remote coding is already an armed workbench. Do not
@@ -201,6 +204,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		hist, _ := drainHistory()
 		if resp := h.preLoopCancelResponse(msg, loopCtx, hist, msg.Text); resp != nil {
 			h.finishCancelledGoalTurn(msg.UserID, resp, loopCtx)
+			// This return is before abortIfCancelled exists. The slot was
+			// already bound, and the pause has to stay recoverable.
+			h.settleResumedUnfinishedSlot(msg.UserID, loopCtx, resp)
 			return resp
 		}
 	}
@@ -211,8 +217,11 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		hist, _ := drainHistory()
 		if resp := h.preLoopCancelResponse(msg, loopCtx, hist, msg.Text); resp != nil {
 			h.finishCancelledGoalTurn(msg.UserID, resp, loopCtx)
+			h.settleResumedUnfinishedSlot(msg.UserID, loopCtx, resp)
 			return resp
 		}
+		// A newer turn now owns this session. Leave its resume slot for that
+		// turn to settle.
 		return &IMAgentResponse{Error: "semantic_turn_replaced", ResponseSource: "ingress_replacement"}
 	}
 	bindLoopResumeWorkingState(loopCtx, opts.ResumeWorkingState, opts.AskUserContext)
@@ -265,7 +274,10 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		if resp != nil {
 			// Coding workbench and the other pre-loop returns skip post-loop.
 			// The user stop still has to pause the goal, or the clock keeps running.
+			// The resume slot was already bound. Leaving it resumed made the
+			// task list call the pause a finished task once the grace elapsed.
 			h.finishCancelledGoalTurn(msg.UserID, resp, loopCtx)
+			h.settleResumedUnfinishedSlot(msg.UserID, loopCtx, resp)
 		}
 		return resp
 	}
@@ -503,6 +515,10 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 				return abort
 			}
 			imPerfLog("im_pre_loop", execStart, requestID, msg.UserID, "gates", gatesDone, "history_load", historyElapsed, "loop_ctx", loopCtxElapsed, "system_prompt", 0, "history_len", len(history), "prompt_len", 0, "exec_layer", loopCtx.Runtime.Execution.Layer, "exec_task", loopCtx.Runtime.Execution.TaskType)
+			// Direct execution never reaches post-loop. A finished answer has
+			// to drop the resume slot now, or the row stays 已中断 until the
+			// grace period ends.
+			h.settleResumedUnfinishedSlot(msg.UserID, loopCtx, resp)
 			return resp
 		}
 	}
@@ -518,6 +534,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		if _, blocked := h.unarmedRemoteCodingDesktopTurn(msg.UserID); blocked {
 			if !opts.WorkflowAgentLoop {
 				if resp, blocked := h.finishUnarmedRemoteCodingTurn(msg, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume); blocked {
+					// Reconnect text is not a finished task. Leaving the slot
+					// resumed made the row 已完成 once the grace elapsed.
+					h.abandonResumedUnfinishedSlot(msg.UserID, loopCtx)
 					return resp
 				}
 			} else {
@@ -619,6 +638,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	// workbench still must not enter the desktop agent loop.
 	if !opts.WorkflowDocPhase {
 		if resp, blocked := h.finishUnarmedRemoteCodingTurn(msg, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume); blocked {
+			h.abandonResumedUnfinishedSlot(msg.UserID, loopCtx)
 			return resp
 		}
 	}
@@ -789,6 +809,11 @@ func (h *IMMessageHandler) codingSessionIsRemote(userID string, mem stickyCoding
 		return true
 	}
 	if h == nil || h.app == nil {
+		return false
+	}
+	// A remote coding tag on the document belongs to the programming tab.
+	// An expert session is remote only when its own sticky kind says so.
+	if expertIDFromUserID(userID) != "" {
 		return false
 	}
 	identity := projectPathFromSessionOwnerID(userID)

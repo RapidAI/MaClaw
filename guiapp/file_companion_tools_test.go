@@ -867,7 +867,7 @@ func TestFileCompanionPromptDescribesPDFTools(t *testing.T) {
 	if !strings.Contains(pdf, fileCompanionToolRenderPage) || !strings.Contains(pdf, "图N") || !strings.Contains(pdf, "裁出") || !strings.Contains(pdf, "full=true") || !strings.Contains(pdf, fileCompanionToolRestore) {
 		t.Fatalf("pdf prompt lost the tool contract:\n%s", pdf)
 	}
-	if !strings.Contains(pdf, fileCompanionToolGenerate) || !strings.Contains(pdf, "markdown") || !strings.Contains(pdf, fileCompanionToolReadDocument) || !strings.Contains(pdf, fileCompanionToolCraft) || !strings.Contains(pdf, fileCompanionToolWebSearch) || !strings.Contains(pdf, fileCompanionToolWebFetch) {
+	if !strings.Contains(pdf, fileCompanionToolGenerate) || !strings.Contains(pdf, "markdown") || !strings.Contains(pdf, fileCompanionToolReadDocument) || !strings.Contains(pdf, fileCompanionToolCraft) || !strings.Contains(pdf, fileCompanionToolWebSearch) || !strings.Contains(pdf, fileCompanionToolWebFetch) || !strings.Contains(pdf, "公开论文") {
 		t.Fatalf("pdf prompt lost the writer contract:\n%s", pdf)
 	}
 	if !strings.Contains(pdf, "不要声称已经生成或发送了 PDF") {

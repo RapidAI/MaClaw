@@ -1362,6 +1362,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const pp = normPath(String(payload?.project_path || payload?.projectPath || ""));
             const eventUser = normalizeAssistantSessionKey(String(payload?.user_id || payload?.userId || ""));
             const activeSession = normalizeAssistantSessionKey(pureCodingSessionKeyRef.current);
+            // An expert task keeps its own workbench. Its document path can
+            // match this project, and that snapshot is not this coding tab.
+            if (isExpertSessionKey(eventUser)) return;
             // Path wins when both are present: a task-suffixed user id can
             // differ from the project session key while still naming this project.
             if (pp && expected && pp !== expected) return;

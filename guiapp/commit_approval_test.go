@@ -456,6 +456,100 @@ func TestScopeApprovalCallbacksSkipUnderFullControl(t *testing.T) {
 	}
 }
 
+func TestShellConfirmOpensOnlyInUserConfirmMode(t *testing.T) {
+	handler := &IMMessageHandler{}
+	shell := ScopeApprovalRequest{
+		ToolName:    "bash",
+		Path:        "git reset --hard HEAD",
+		ProjectPath: "D:/repo",
+		Kind:        localHighRiskApprovalKind,
+	}
+	open := func(userID, mode string) ScopeApprovalCallback {
+		t.Helper()
+		handler.setStickyCodingSessionPermissionMode(userID, mode, "local", "D:/repo")
+		loopCtx := &LoopContext{UserID: userID, CancelC: make(chan struct{})}
+		t.Cleanup(func() { closeLoopCtx(loopCtx) })
+		return buildSubAgentScopeApprovalCallback(handler, loopCtx, nil)
+	}
+	before := atomic.LoadUint64(&scopeApprovalIDCounter)
+	if got := open(stickyTestUserID(t), "workspace")(shell); got != ScopeApprovalAllowOnce {
+		t.Fatalf("workspace shell decision=%q", got)
+	}
+	if got := open(stickyTestUserID(t), "full")(shell); got != ScopeApprovalAllowOnce {
+		t.Fatalf("full shell decision=%q", got)
+	}
+	remoteUser := stickyTestUserID(t)
+	handler.setStickyCodingSessionPermissionMode(remoteUser, "workspace", "remote", "D:/repo")
+	remoteCtx := &LoopContext{UserID: remoteUser, CancelC: make(chan struct{})}
+	t.Cleanup(func() { closeLoopCtx(remoteCtx) })
+	if got := buildRemoteHighRiskApprovalCallback(handler, remoteCtx, nil, false)(ScopeApprovalRequest{
+		ToolName:    "ssh_bash",
+		Path:        "rm -rf build",
+		ProjectPath: "/srv/app",
+		Kind:        remoteHighRiskApprovalKind,
+	}); got != ScopeApprovalAllowOnce {
+		t.Fatalf("workspace remote shell decision=%q", got)
+	}
+	if after := atomic.LoadUint64(&scopeApprovalIDCounter); after != before {
+		t.Fatalf("non-request modes opened %d shell confirms", after-before)
+	}
+
+	wsUser := stickyTestUserID(t)
+	handler.setStickyCodingSessionPermissionMode(wsUser, "workspace", "local", "D:/repo")
+	wsCtx := &LoopContext{UserID: wsUser, CancelC: make(chan struct{})}
+	t.Cleanup(func() { closeLoopCtx(wsCtx) })
+	pathBefore := atomic.LoadUint64(&scopeApprovalIDCounter)
+	pathDone := make(chan ScopeApprovalDecision, 1)
+	go func() {
+		pathDone <- buildSubAgentScopeApprovalCallback(handler, wsCtx, nil)(ScopeApprovalRequest{
+			ToolName:    "read_file",
+			Path:        filepath.Join(t.TempDir(), "outside.txt"),
+			ProjectPath: "D:/repo",
+		})
+	}()
+	waitForScopeApprovalCard(t, pathBefore)
+	closeLoopCtx(wsCtx)
+	select {
+	case got := <-pathDone:
+		if got != ScopeApprovalDeny {
+			t.Fatalf("workspace path decision=%q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("workspace path confirm did not return after cancel")
+	}
+
+	reqUser := stickyTestUserID(t)
+	handler.setStickyCodingSessionPermissionMode(reqUser, "request", "local", "D:/repo")
+	reqCtx := &LoopContext{UserID: reqUser, CancelC: make(chan struct{})}
+	t.Cleanup(func() { closeLoopCtx(reqCtx) })
+	reqBefore := atomic.LoadUint64(&scopeApprovalIDCounter)
+	reqDone := make(chan ScopeApprovalDecision, 1)
+	go func() {
+		reqDone <- buildSubAgentScopeApprovalCallback(handler, reqCtx, nil)(shell)
+	}()
+	waitForScopeApprovalCard(t, reqBefore)
+	closeLoopCtx(reqCtx)
+	select {
+	case got := <-reqDone:
+		if got != ScopeApprovalDeny {
+			t.Fatalf("request shell decision=%q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("request shell confirm did not return after cancel")
+	}
+}
+
+func waitForScopeApprovalCard(t *testing.T, before uint64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadUint64(&scopeApprovalIDCounter) == before {
+		if time.Now().After(deadline) {
+			t.Fatal("expected a confirmation dialog")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestCommitFullControlSkipWritesAuditEntry(t *testing.T) {
 	tmpHome := t.TempDir()
 	app := &App{testHomeDir: tmpHome}

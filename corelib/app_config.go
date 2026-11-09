@@ -123,15 +123,19 @@ type AppConfig struct {
 	// single-bot Lansenger installations. New reply-cache policies live on each
 	// LansengerBotProfile; runtime code must not use this application-wide value
 	// after the profile migration has completed.
-	AnswerCache              AnswerCacheConfig          `json:"answer_cache,omitempty"`
-	ToolCacheMaintenance     ToolCacheMaintenanceConfig `json:"tool_cache_maintenance,omitempty"`
-	WebSearchProviders       []WebSearchProvider        `json:"web_search_providers,omitempty"`
-	WebSearchCurrentProvider string                     `json:"web_search_current_provider,omitempty"`
-	WebSearchStrategy        WebSearchStrategy          `json:"web_search_strategy,omitempty"`
-	MaclawAgentMaxIterations int                        `json:"maclaw_agent_max_iterations,omitempty"`
-	MaclawLLMThinkingMode    string                     `json:"maclaw_llm_thinking_mode,omitempty"` // global: "" = auto, or low | high | max | none
-	SubAgentConcurrency      int                        `json:"subagent_concurrency,omitempty"`
-	SubAgentFullAccess       bool                       `json:"subagent_full_access,omitempty"`
+	AnswerCache          AnswerCacheConfig          `json:"answer_cache,omitempty"`
+	ToolCacheMaintenance ToolCacheMaintenanceConfig `json:"tool_cache_maintenance,omitempty"`
+	// SystemCleanup is the settings-page cleanup of regenerable temp files.
+	// Tool update packages are one category; the older tool-cache scheduler is
+	// not a second user-facing policy.
+	SystemCleanup            SystemCleanupConfig `json:"system_cleanup,omitempty"`
+	WebSearchProviders       []WebSearchProvider `json:"web_search_providers,omitempty"`
+	WebSearchCurrentProvider string              `json:"web_search_current_provider,omitempty"`
+	WebSearchStrategy        WebSearchStrategy   `json:"web_search_strategy,omitempty"`
+	MaclawAgentMaxIterations int                 `json:"maclaw_agent_max_iterations,omitempty"`
+	MaclawLLMThinkingMode    string              `json:"maclaw_llm_thinking_mode,omitempty"` // global: "" = auto, or low | high | max | none
+	SubAgentConcurrency      int                 `json:"subagent_concurrency,omitempty"`
+	SubAgentFullAccess       bool                `json:"subagent_full_access,omitempty"`
 	// MaClaw Role configuration
 	MaclawRoleName        string `json:"maclaw_role_name,omitempty"`
 	MaclawRoleDescription string `json:"maclaw_role_description,omitempty"`
@@ -981,6 +985,54 @@ func (c ToolCacheMaintenanceConfig) WithDefaults() ToolCacheMaintenanceConfig {
 	return c
 }
 
+const (
+	DefaultSystemCleanupIntervalDays = 7
+	DefaultSystemCleanupMaxBytes     = 1024 * 1024 * 1024
+	MinSystemCleanupIntervalDays     = 1
+	MaxSystemCleanupIntervalDays     = 365
+	MaxSystemCleanupMaxBytes         = 1024 * 1024 * 1024 * 1024
+)
+
+// SystemCleanupConfig is the merged temp-file and tool-package cleanup policy.
+// Enabled defaults on. IntervalDays defaults to a week. MaxBytes defaults to
+// 1 GiB and is an extra trigger: a scheduled run still happens when the
+// interval elapses, and an earlier run happens once the selected files are
+// larger than MaxBytes.
+type SystemCleanupConfig struct {
+	Enabled            bool     `json:"enabled"`
+	IntervalDays       int      `json:"interval_days,omitempty"`
+	MaxBytes           int64    `json:"max_bytes,omitempty"`
+	DisabledCategories []string `json:"disabled_categories,omitempty"`
+	LastCleanupAt      string   `json:"last_cleanup_at,omitempty"`
+}
+
+func DefaultSystemCleanupConfig() SystemCleanupConfig {
+	return SystemCleanupConfig{
+		Enabled:      true,
+		IntervalDays: DefaultSystemCleanupIntervalDays,
+		MaxBytes:     DefaultSystemCleanupMaxBytes,
+	}
+}
+
+func (c SystemCleanupConfig) WithDefaults() SystemCleanupConfig {
+	if c.IntervalDays <= 0 {
+		c.IntervalDays = DefaultSystemCleanupIntervalDays
+	}
+	if c.IntervalDays < MinSystemCleanupIntervalDays {
+		c.IntervalDays = MinSystemCleanupIntervalDays
+	}
+	if c.IntervalDays > MaxSystemCleanupIntervalDays {
+		c.IntervalDays = MaxSystemCleanupIntervalDays
+	}
+	if c.MaxBytes <= 0 {
+		c.MaxBytes = DefaultSystemCleanupMaxBytes
+	}
+	if c.MaxBytes > MaxSystemCleanupMaxBytes {
+		c.MaxBytes = MaxSystemCleanupMaxBytes
+	}
+	return c
+}
+
 func DefaultLLMPromptCacheConfig() LLMPromptCacheConfig {
 	return LLMPromptCacheConfig{
 		Enabled:                      false,
@@ -1557,6 +1609,7 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 	c.LLMPromptCache = c.LLMPromptCache.WithDefaults()
 	c.AnswerCache = c.AnswerCache.WithDefaults()
 	c.ToolCacheMaintenance = c.ToolCacheMaintenance.WithDefaults()
+	c.SystemCleanup = c.SystemCleanup.WithDefaults()
 	c.CapabilityMarketPolicy = c.CapabilityMarketPolicy.WithDefaults()
 	return nil
 }
@@ -1643,6 +1696,7 @@ func AppConfigDefaults() AppConfig {
 		LLMPromptCache:       DefaultLLMPromptCacheConfig(),
 		AnswerCache:          DefaultAnswerCacheConfig(),
 		ToolCacheMaintenance: DefaultToolCacheMaintenanceConfig(),
+		SystemCleanup:        DefaultSystemCleanupConfig(),
 		Projects:             defaultProjects(),
 		CurrentProject:       "default",
 	}

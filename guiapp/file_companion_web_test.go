@@ -1,12 +1,15 @@
 package guiapp
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/websearch"
+	gopdf2 "github.com/VantageDataChat/GoPDF2"
 )
 
 func TestFileCompanionHostKeepsWritersParticipantNotesDoNot(t *testing.T) {
@@ -151,4 +154,164 @@ func TestFileCompanionGenerateWorksForMarkdown(t *testing.T) {
 	if files := app.fileCompanionTurnFiles(userID); len(files) != 1 {
 		t.Fatalf("turn files = %d, want 1", len(files))
 	}
+}
+
+func TestFileCompanionWebFetchDownloadsAndReadsAPaper(t *testing.T) {
+	const page = "https://example.org/papers/attention.pdf"
+	const sentence = "Attention is all you need"
+	paper := companionTestTextPDF(t, sentence)
+	dir := t.TempDir()
+	fetches := 0
+	restorePaperHooks(t, dir, func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		if !opts.PublicNetworkOnly || opts.HubDownload != nil {
+			t.Fatalf("paper fetch opts=%+v", opts)
+		}
+		if opts.SavePath == "" {
+			return &websearch.FetchResult{URL: rawURL, ContentType: "text/html", Content: "<html><body>notes</body></html>"}, nil
+		}
+		fetches++
+		if rawURL != page {
+			t.Fatalf("fetched %s", rawURL)
+		}
+		if err := os.WriteFile(opts.SavePath, paper, 0o644); err != nil {
+			return nil, err
+		}
+		return &websearch.FetchResult{URL: rawURL, SavedTo: opts.SavePath, ContentType: "application/pdf"}, nil
+	})
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	st := app.companionRuntime()
+	st.mu.Lock()
+	st.uiReady = true
+	st.mu.Unlock()
+	_, doc := seedCompanionTestFile(t, app, "notes.md", "# 笔记\n")
+	h := &IMMessageHandler{app: app}
+	userID := "file-companion:" + doc.SessionID
+	stolen := filepath.Join(t.TempDir(), "stolen.pdf")
+	first, ok := h.executeFileCompanionHostTool(userID, fileCompanionToolWebFetch, `{"url":"`+page+`","save_path":"`+filepath.ToSlash(stolen)+`","max_chars":20}`)
+	if !ok || !strings.Contains(first, "已下载论文并在伴读中打开") || strings.Contains(first, "save_path") || strings.Contains(first, "read_document(") {
+		t.Fatalf("first read = %q ok=%v", first, ok)
+	}
+	if !strings.Contains(first, "# continue: web_fetch(") || !strings.Contains(first, "offset=") {
+		t.Fatalf("continuation was not pointed at web_fetch:\n%s", first)
+	}
+	if _, err := os.Stat(stolen); !os.IsNotExist(err) {
+		t.Fatalf("caller save_path was written: %v", err)
+	}
+	saved := filepath.Join(dir, companionPaperFileName(canonicalPaperURL(page)))
+	if !fileIsPDF(saved) || !app.fileCompanionGranted(saved) {
+		t.Fatalf("paper was not opened from %s", saved)
+	}
+	st.mu.Lock()
+	opened := len(st.emitted)
+	st.mu.Unlock()
+	if opened != 1 {
+		t.Fatalf("open events = %d", opened)
+	}
+	openedPath, openErr := app.fileCompanionOpenDocument(userID)
+	if openErr != nil || !strings.HasSuffix(openedPath, "notes.md") {
+		t.Fatalf("session moved to %s (%v)", openedPath, openErr)
+	}
+	second, ok := h.executeFileCompanionHostTool(userID, fileCompanionToolWebFetch, `{"url":"`+page+`","offset":20}`)
+	if !ok || fetches != 1 || !strings.Contains(first, "Attention") || !strings.Contains(second, "all you need") {
+		t.Fatalf("second read fetches=%d ok=%v text=%q", fetches, ok, second)
+	}
+	st.mu.Lock()
+	opened = len(st.emitted)
+	st.mu.Unlock()
+	if opened != 1 {
+		t.Fatalf("continuation opened the paper again: %d", opened)
+	}
+	plain, pageOK, handled := h.fileCompanionFetchPaper("https://example.org/notes", nil)
+	if !handled || !pageOK || !strings.Contains(plain, "notes") || fetches != 1 {
+		t.Fatalf("html page refetched or dropped: %q ok=%v handled=%v fetches=%d", plain, pageOK, handled, fetches)
+	}
+}
+
+func TestFileCompanionWebFetchRefusesAFakePaperAndAParticipantDownload(t *testing.T) {
+	dir := t.TempDir()
+	fetches := 0
+	restorePaperHooks(t, dir, func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		fetches++
+		if opts.SavePath == "" {
+			return &websearch.FetchResult{URL: rawURL, ContentType: "text/html", Content: "<html>no pdf</html>"}, nil
+		}
+		if err := os.WriteFile(opts.SavePath, []byte("not a pdf"), 0o644); err != nil {
+			return nil, err
+		}
+		return &websearch.FetchResult{URL: rawURL, SavedTo: opts.SavePath, ContentType: "application/pdf"}, nil
+	})
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	_, doc := seedCompanionTestFile(t, app, "notes.md", "# 笔记\n")
+	h := &IMMessageHandler{app: app}
+	hostID := "file-companion:" + doc.SessionID
+	fake, ok := h.executeFileCompanionHostTool(hostID, fileCompanionToolWebFetch, `{"url":"https://example.org/not-paper.pdf"}`)
+	if ok || !strings.Contains(fake, "不是 PDF") || fetches == 0 {
+		t.Fatalf("fake pdf = %q ok=%v fetches=%d", fake, ok, fetches)
+	}
+	noteID := "file-companion:" + fileCompanionShareDiscussionSessionID("cd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if _, err := app.ensureFileCompanionShareDiscussionDocument(strings.TrimPrefix(noteID, "file-companion:"), doc.Path); err != nil {
+		t.Fatal(err)
+	}
+	before := fetches
+	denied, ok := h.executeFileCompanionHostTool(noteID, fileCompanionToolWebFetch, `{"url":"https://example.org/secret.pdf"}`)
+	if ok || fetches != before || !strings.Contains(denied, "不能下载") {
+		t.Fatalf("participant download = %q ok=%v fetches=%d", denied, ok, fetches)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".pdf") && fileIsPDF(filepath.Join(dir, entry.Name())) {
+			t.Fatalf("a paper file was kept: %s", entry.Name())
+		}
+	}
+	desc := ""
+	var props map[string]interface{}
+	for _, tool := range fileCompanionWebToolDefinitions() {
+		fn, _ := tool["function"].(map[string]interface{})
+		if fn["name"] != fileCompanionToolWebFetch {
+			continue
+		}
+		desc, _ = fn["description"].(string)
+		params, _ := fn["parameters"].(map[string]interface{})
+		props, _ = params["properties"].(map[string]interface{})
+	}
+	if !strings.Contains(desc, "论文下载") || !strings.Contains(desc, "不能传 save_path") {
+		t.Fatalf("tool description = %q", desc)
+	}
+	if _, exists := props["save_path"]; exists {
+		t.Fatal("web_fetch advertises save_path")
+	}
+}
+
+func companionTestTextPDF(t *testing.T, sentence string) []byte {
+	t.Helper()
+	font, err := os.ReadFile(filepath.Join("..", "third_party", "gopdf2", "test", "res", "LiberationSerif-Regular.ttf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdf := gopdf2.GoPdf{}
+	pdf.Start(gopdf2.Config{PageSize: *gopdf2.PageSizeA4})
+	if err := pdf.AddTTFFontData("body", font); err != nil {
+		t.Fatal(err)
+	}
+	pdf.AddPage()
+	if err := pdf.SetFont("body", "", 14); err != nil {
+		t.Fatal(err)
+	}
+	pdf.SetXY(72, 72)
+	if err := pdf.Cell(nil, sentence); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pdf.GetBytesPdfReturnErr()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) == 0 {
+		t.Fatal("empty pdf")
+	}
+	return raw
 }

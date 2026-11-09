@@ -1895,6 +1895,13 @@ type sharedAgentLoopCallbacks struct {
 	// governed MIS candidate, the legacy ssh rescue on surface-less turns,
 	// continuation readers, and vision-fallthrough petitions.
 	legacyPetitionTools map[string]bool
+	// sqlDataReads counts query/read_table payloads that returned rows this
+	// turn. sqlReadCoveredPlan is the plan those reads have already been
+	// applied to. A later petition publishes a child plan and drops the
+	// in-memory bit, so the count is applied again there. One read must not
+	// close a second required business.data.read on the next snapshot.
+	sqlDataReads       int
+	sqlReadCoveredPlan string
 	// legacyContinuationReaders marks the subset of legacyPetitionTools that
 	// were installed to page a truncated auto_extract or a spilled tool
 	// result. Only those overlay entries render the narrowed reader contract
@@ -3792,14 +3799,14 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 		// lookup while the host issues the card. Leaving light here would turn
 		// a premature send_file into a full agent.
 		granted, message := c.exposeAlreadyPlannedPetition(name, capability)
-		if granted && c.semanticGrantNamed(name) {
+		// A live grant under another name is this planned read. Overlaying
+		// database_query runs the SQL outside that selection, so the required
+		// business.data.read stays pending after the workbook is delivered.
+		if granted {
 			return true, message
 		}
 		if overlayGranted, overlayMessage := c.grantLegacySQLDatabasePetition(name); overlayGranted {
 			return true, overlayMessage
-		}
-		if granted {
-			return true, message
 		}
 		log.Printf("[semantic-routing] tool petition %q already planned, not yet exposable", name)
 		if msg := c.plannedSuccessorDenial(name, capability); msg != "" {
@@ -3892,7 +3899,7 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	// (a weather card's renderer) do not count: this petition did not add them.
 	c.leaveLightProfileForUnsafePetition(surface.plan)
 	c.projectSemanticDirectoryPrompt()
-	if legacySQLDatabaseToolName(name) && !c.semanticGrantNamed(name) {
+	if legacySQLDatabaseToolName(name) && !c.semanticGrantNamed(name) && semanticLiveGrantNameForCapability(c.semanticSurface, capability) == "" {
 		if granted, message := c.grantLegacySQLDatabasePetition(name); granted {
 			return true, message
 		}
@@ -5062,6 +5069,7 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 		}
 	}
 	result = attachPendingComputerUseModelImage(result)
+	c.noteLegacySQLDataRead(name, argsJSON, result)
 	return c.finishVisualPreview(name, argsJSON, result)
 }
 
@@ -10394,6 +10402,13 @@ func classifySharedLoopToolResult(name, text string) agent.ToolExecutionResult {
 	}
 	if isRegisteredToolApprovalWaitText(text) {
 		return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeError}
+	}
+	// A query payload is one JSON line. The generic classifier treats "失败:"
+	// anywhere on that line as a failed tool, so a cell burns the no-progress
+	// stop. A returned row count is a successful read. Adapter rejections
+	// never carry one, and an approval wait was already handled above.
+	if legacySQLDatabaseToolName(name) && legacySQLReadBodySucceeded(text) {
+		return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeOK}
 	}
 	return agentruntime.ToolTextResult(text)
 }

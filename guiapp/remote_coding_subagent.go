@@ -307,7 +307,7 @@ func (r *RemoteCodingSubAgent) SetCallbacks(onToken func(string), onProgress fun
 }
 
 // loopUserCommandsAutoAllowed is true when this loop's task should run
-// commands without another prompt: input-box 完全控制, or 询问 plus 以后允许.
+// commands without another prompt: 完全控制, 工作区信任, or 用户确认 plus 以后允许.
 func (r *RemoteCodingSubAgent) loopUserCommandsAutoAllowed() bool {
 	if r == nil || r.handler == nil {
 		return false
@@ -2490,11 +2490,7 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 		}
 	}
 	if c != nil && c.agent != nil && c.agent.highRiskApproval != nil && c.agent.highRiskApproval.highRiskApproved() {
-		if c.agent.highRiskApproval.pathApproved() {
-			prompt += "\n当前权限：完全控制。用户明确要求的项目内高危命令将由宿主自动放行；仍须调用工具发起该命令，不要只回复拒绝。\n"
-		} else {
-			prompt += "\n当前任务已选择以后允许。本任务内高危命令将由宿主自动放行，不要再要求用户确认；仍须调用工具发起该命令。\n"
-		}
+		prompt += codingShellGrantPrompt(c.agent.handler, c.agent.taskPermissionOwnerID(), true, c.agent.highRiskApproval.pathApproved())
 	}
 	if c != nil && !c.remoteQualityGateEnabled() {
 		prompt = relaxCodingPromptForDisabledQualityGate(prompt)
@@ -4121,6 +4117,11 @@ func buildRemoteHighRiskApprovalCallbackOwned(handler *IMMessageHandler, loopCtx
 			recordScopeApprovalAudit(handler, "", req, ScopeApprovalFullAccess, "full_control")
 			return ScopeApprovalAllowOnce
 		}
+		// Shell/bash only. 工作区信任 and 以后允许 skip the dialog here too.
+		if shellApprovalAutoAllowed(handler, scopeApprovalOwner(loopCtx, stickyOwner), req) {
+			recordScopeApprovalAudit(handler, "", req, ScopeApprovalAllowOnce, shellApprovalSkipSource(handler, scopeApprovalOwner(loopCtx, stickyOwner)))
+			return ScopeApprovalAllowOnce
+		}
 		if onProgress != nil {
 			onProgress(remoteScopeApprovalProgressMessage(req))
 		}
@@ -4366,8 +4367,9 @@ func (c *remoteCodingCallbacks) guardRemoteShellCommand(command, workDir string)
 }
 
 // checkTaskModeGuard asks before running a command that a task-mode guardrail
-// turned down. 完全控制 and a prior 以后允许 skip the prompt the same way
-// check does. 本次放行 stays one command; 以后允许 covers the rest of this task.
+// turned down. 完全控制, 工作区信任, and a prior 以后允许 skip the prompt the
+// same way check does. 本次放行 stays one command; 以后允许 covers the rest of
+// this task. 用户确认 is the only tier that still asks.
 func (s *remoteHighRiskApprovalState) checkTaskModeGuard(command, workingDir, rejection string) string {
 	if s == nil {
 		return rejection
@@ -5823,7 +5825,7 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 9. 路径可以是相对路径（相对于项目目录）或绝对路径
 10. ssh_read_file 默认只返回前 200 行；继续读取时用返回提示里的 offset 分片查看
 11. 长时间训练命令会自动作为后台任务运行，返回 task_id；必须用 ssh_check_task 跟进直到得到明确状态/exit_code
-12. 如确实需要运行被安全策略拦截的 ssh_bash 命令，等待用户确认；用户可选择本次放行或以后允许。以后允许后，当前任务内同类命令不再询问，直接放行；输入区已是完全控制时，宿主会直接放行，不要再提示用户去点确认。当前任务原文明确要求清空/删除项目目录内文件，或明确要求改写 Git 工作区时，必须调用 ssh_bash 发起该命令，不要只回复文字拒绝。
+12. 如确实需要运行被安全策略拦截的 ssh_bash 命令，只在输入区是「用户确认」时等待用户确认；用户可选择本次放行或以后允许。以后允许后，当前任务内同类命令不再询问，直接放行；输入区已是完全控制或工作区信任时，宿主会直接放行，不要再提示用户去点确认。当前任务原文明确要求清空/删除项目目录内文件，或明确要求改写 Git 工作区时，必须调用 ssh_bash 发起该命令，不要只回复文字拒绝。
 13. 最终回复用工程师口吻：先给结果，再点名改过的路径和实际跑过的验证事实。不要写质量审计/探索状态/验证状态/验证结果/涉及文件/执行报告标题，没有真实风险时不要写 remaining risk。
 
 ## 严禁行为
@@ -5831,7 +5833,7 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 - 不要修改 /etc、/usr 等系统目录
 - 不要在未读取文件的情况下盲目覆盖
 - 不要擅自用 ssh_bash 执行 git reset/checkout/restore/switch/merge/rebase/stash/add/commit/apply/clean -f 等会改写工作区或历史的命令
-- 不要用 ssh_bash 执行 rm -r/rm -rf、shell 重定向写文件、sed -i、perl -pi、touch/mkdir/cp/mv、脚本内写文件等绕过审计的文件改写。若当前任务原文明确要求清空或删除项目目录内文件，必须调用 ssh_bash（working_dir 限定在项目目录）；宿主会请求确认，或在完全控制下自动放行。禁止只回复文字拒绝。
+- 不要用 ssh_bash 执行 rm -r/rm -rf、shell 重定向写文件、sed -i、perl -pi、touch/mkdir/cp/mv、脚本内写文件等绕过审计的文件改写。若当前任务原文明确要求清空或删除项目目录内文件，必须调用 ssh_bash（working_dir 限定在项目目录）；宿主只在「用户确认」下请求确认，「完全控制」和「工作区信任」自动放行。禁止只回复文字拒绝。
 `)
 	if taskContext != "" {
 		sb.WriteString("\n## 任务上下文\n\n")

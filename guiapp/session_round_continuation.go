@@ -281,17 +281,19 @@ func (h *IMMessageHandler) sessionRoundWaveCurrent(userID string, gen, epoch uin
 	return h.sessionRounds.gens[userID] == gen && h.sessionRounds.epochs[userID] == epoch
 }
 
-func (h *IMMessageHandler) bindPendingMaxRoundsSlot(userID string) {
+func (h *IMMessageHandler) bindPendingMaxRoundsSlot(userID string) bool {
 	if h == nil || h.memory == nil {
-		return
+		return false
 	}
 	slot := h.memory.GetUnfinishedSlot(userID)
 	if slot == nil || slot.Status != agent.UnfinishedTaskSlotStatusMaxRoundsReached {
-		return
+		return false
 	}
 	if !h.memory.BindUnfinishedSlot(userID, slot.SlotID) {
 		log.Printf("[session-round] pending slot was not bound user=%s slot=%s", userID, slot.SlotID)
+		return false
 	}
+	return true
 }
 
 func (h *IMMessageHandler) runSessionRoundContinuation(msg IMUserMessage, task string, gen, epoch uint64) {
@@ -302,11 +304,16 @@ func (h *IMMessageHandler) runSessionRoundContinuation(msg IMUserMessage, task s
 		log.Printf("[session-round] wave superseded before start user=%s", msg.UserID)
 		return
 	}
-	h.bindPendingMaxRoundsSlot(msg.UserID)
+	boundResume := h.bindPendingMaxRoundsSlot(msg.UserID)
 	// Stop can land while the slot is being bound. Recheck before the round
 	// is announced, and before the completion defer can emit an error pill.
 	if !h.sessionRoundWaveCurrent(msg.UserID, gen, epoch) {
 		log.Printf("[session-round] wave superseded before start user=%s", msg.UserID)
+		// This call just marked the slot resumed. The wave will not run, so
+		// the row has to stay recoverable. An older resume is left alone.
+		if boundResume {
+			h.settleResumedUnfinishedSlot(msg.UserID, nil, &IMAgentResponse{Error: "session round superseded"})
+		}
 		return
 	}
 	h.emitSessionRoundStarted(msg.RequestID, msg.UserID, msg.Text, sessionRoundContinuationDisplay(task))

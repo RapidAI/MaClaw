@@ -240,7 +240,7 @@ export function AssistantPermissionModeMenu({ active: panelActive = true, lang, 
                 value: "workspace" as const,
                 icon: "folder" as const,
                 label: localizeText(lang, "Workspace", "工作区信任", "工作區信任"),
-                hint: localizeText(lang, "Trust project paths; still prompt for high-risk shell", "信任项目路径；高危 shell 仍需确认", "信任專案路徑；高危 shell 仍需確認"),
+                hint: localizeText(lang, "Trust paths and shell; call confirmation still asks", "信任路径和 shell；调用确认仍会弹出", "信任路徑和 shell；調用確認仍會彈出"),
             }]
             : []),
         {

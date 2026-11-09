@@ -11,6 +11,10 @@ const (
 	codingSubAgentGuardrailCategoryDelete       CodingSubAgentGuardrailCategory = "delete"
 	codingSubAgentGuardrailCategoryShellWrite   CodingSubAgentGuardrailCategory = "shell_write"
 	codingSubAgentGuardrailCategoryCommand      CodingSubAgentGuardrailCategory = "command"
+	// tool_redirect is a refused bash ssh/scp/sftp/rsync. The call stays
+	// rejected so the model uses the builtin ssh tool. It is not a safety
+	// block and does not fail the task.
+	codingSubAgentGuardrailCategoryToolRedirect CodingSubAgentGuardrailCategory = "tool_redirect"
 	codingSubAgentGuardrailCategoryHost         CodingSubAgentGuardrailCategory = "host"
 	codingSubAgentGuardrailCategoryScope        CodingSubAgentGuardrailCategory = "scope"
 )

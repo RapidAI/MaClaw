@@ -2025,6 +2025,26 @@ export namespace corelib {
 	        this.last_cleanup_at = source["last_cleanup_at"];
 	    }
 	}
+	export class SystemCleanupConfig {
+	    enabled: boolean;
+	    interval_days?: number;
+	    max_bytes?: number;
+	    disabled_categories?: string[];
+	    last_cleanup_at?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SystemCleanupConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.interval_days = source["interval_days"];
+	        this.max_bytes = source["max_bytes"];
+	        this.disabled_categories = source["disabled_categories"];
+	        this.last_cleanup_at = source["last_cleanup_at"];
+	    }
+	}
 	export class LLMPromptCacheConfig {
 	    enabled: boolean;
 	    openai_enabled?: boolean;
@@ -2319,6 +2339,7 @@ export namespace corelib {
 	    office_read_fallback?: boolean;
 	    office_read_emit_markdown?: boolean;
 	    tool_cache_maintenance?: ToolCacheMaintenanceConfig;
+	    system_cleanup?: SystemCleanupConfig;
 	    web_search_providers?: WebSearchProvider[];
 	    web_search_current_provider?: string;
 	    web_search_strategy?: WebSearchStrategy;
@@ -2620,6 +2641,7 @@ export namespace corelib {
 	        this.office_read_fallback = source["office_read_fallback"];
 	        this.office_read_emit_markdown = source["office_read_emit_markdown"];
 	        this.tool_cache_maintenance = this.convertValues(source["tool_cache_maintenance"], ToolCacheMaintenanceConfig);
+	        this.system_cleanup = this.convertValues(source["system_cleanup"], SystemCleanupConfig);
 	        this.web_search_providers = this.convertValues(source["web_search_providers"], WebSearchProvider);
 	        this.web_search_current_provider = source["web_search_current_provider"];
 	        this.web_search_strategy = this.convertValues(source["web_search_strategy"], WebSearchStrategy);
@@ -17972,6 +17994,78 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+	export class SystemCleanupCategoryStatus {
+	    id: string;
+	    size_bytes: number;
+	    size_approximate?: boolean;
+	    selected: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SystemCleanupCategoryStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.size_bytes = source["size_bytes"];
+	        this.size_approximate = source["size_approximate"];
+	        this.selected = source["selected"];
+	    }
+	}
+	export class SystemCleanupStatus {
+	    auto_enabled: boolean;
+	    interval_days: number;
+	    max_bytes: number;
+	    last_cleanup_at?: string;
+	    total_bytes: number;
+	    total_approximate?: boolean;
+	    categories?: SystemCleanupCategoryStatus[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SystemCleanupStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.auto_enabled = source["auto_enabled"];
+	        this.interval_days = source["interval_days"];
+	        this.max_bytes = source["max_bytes"];
+	        this.last_cleanup_at = source["last_cleanup_at"];
+	        this.total_bytes = source["total_bytes"];
+	        this.total_approximate = source["total_approximate"];
+	        this.categories = Array.isArray(source["categories"])
+	            ? source["categories"].map((item: any) => new SystemCleanupCategoryStatus(item))
+	            : undefined;
+	    }
+	}
+	export class SystemCleanupResult {
+	    freed_bytes: number;
+	    removed_count: number;
+	    skipped_recent?: number;
+	    skipped_busy?: number;
+	    skipped: boolean;
+	    reason?: string;
+	    last_cleanup_at?: string;
+	    incomplete?: boolean;
+	    errors?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SystemCleanupResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.freed_bytes = source["freed_bytes"];
+	        this.removed_count = source["removed_count"];
+	        this.skipped_recent = source["skipped_recent"];
+	        this.skipped_busy = source["skipped_busy"];
+	        this.skipped = source["skipped"];
+	        this.reason = source["reason"];
+	        this.last_cleanup_at = source["last_cleanup_at"];
+	        this.incomplete = source["incomplete"];
+	        this.errors = source["errors"];
+	    }
 	}
 	export class ToolCacheCleanupResult {
 	    path: string;

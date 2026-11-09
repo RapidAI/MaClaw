@@ -595,17 +595,30 @@ func TestSemanticToolCallPetitionGrantsLiveSQLDatabaseWhenMISExpansionFails(t *t
 	})
 	cb.userText = "查看 rapidbi库"
 	granted, message := cb.PetitionToolCall("database")
-	if !granted || !strings.Contains(message, "database") {
+	if !granted {
 		t.Fatalf("database petition on a search turn must be admitted: granted=%v message=%q", granted, message)
 	}
-	if !cb.legacyPetitionAllows("database") && !cb.IsToolAllowed("database") {
+	// A grant already on the surface is the planned read. Naming that grant
+	// is the admission. Overlaying the public name would run the SQL outside
+	// the selection and leave business.data.read pending after the file exists.
+	live := semanticLiveGrantNameForCapability(cb.semanticSurface, tool.CapabilityBusinessDataDatabase)
+	if live == "" {
+		live = semanticLiveGrantNameForCapability(cb.semanticSurface, tool.CapabilityBusinessDataRead)
+	}
+	if !strings.Contains(message, "database") && (live == "" || !strings.Contains(message, live)) {
+		t.Fatalf("database petition on a search turn must be admitted: granted=%v message=%q live=%q", granted, message, live)
+	}
+	if !cb.legacyPetitionAllows("database") && !cb.IsToolAllowed("database") && (live == "" || !cb.IsToolAllowed(live)) {
 		t.Fatal("petitioned database must be callable via overlay or semantic grant")
 	}
 	found := false
 	for _, def := range cb.BuildToolsForModelRequest(cb.userText, 1) {
-		switch extractToolName(def) {
-		case "database", "database_query", "mis_data":
-			found = true
+		name := extractToolName(def)
+		switch name {
+		case "database", "database_query", "mis_data", live:
+			if name != "" {
+				found = true
+			}
 		}
 	}
 	if !found {

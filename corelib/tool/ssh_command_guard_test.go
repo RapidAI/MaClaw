@@ -1,6 +1,23 @@
 package tool
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestIsRawSSHCommandRejection(t *testing.T) {
+	rejection, ok := RejectRawSSHCommand("ssh root@example.com")
+	if !ok || !IsRawSSHCommandRejection(rejection) {
+		t.Fatalf("full rejection = %q ok=%v", rejection, ok)
+	}
+	head, _, _ := strings.Cut(rejection, ". ")
+	if !IsRawSSHCommandRejection(head + " …") {
+		t.Fatal("leading sentence must still match a shortened summary")
+	}
+	if IsRawSSHCommandRejection("blocked destructive git command") {
+		t.Fatal("git rejection must not look like an ssh redirect")
+	}
+}
 
 func TestRejectRawSSHCommand(t *testing.T) {
 	tests := []struct {

@@ -1534,7 +1534,7 @@ export const mnInline: Record<string, string> = {
     'Ask': 'Асуух',
     'Prompt for out-of-scope paths and high-risk shell': 'Хамрах хүрээнээс гадуурх зам болон өндөр эрсдэлтэй shell-д асуух',
     'Workspace': 'Ажлын талбар',
-    'Trust project paths; still prompt for high-risk shell': 'Төслийн замд итгэх; өндөр эрсдэлтэй shell-д хэвээр асуух',
+    'Trust paths and shell; call confirmation still asks': 'Зам болон shell-д итгэх; дуудлагын баталгаа асуусаар байна',
     'Full control': 'Бүрэн удирдлага',
     'Skip path, high-risk, and call-confirmation prompts (persisted)': 'Зам, өндөр эрсдэл, дуудлагын баталгааны асуултыг алгасах (хадгалагдана)',
     'Skip path and high-risk prompts (persisted)': 'Зам болон өндөр эрсдэлийн асуултыг алгасах (хадгалагдана)',

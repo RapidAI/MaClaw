@@ -685,7 +685,7 @@ func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
 	if h == nil || h.app == nil {
 		return
 	}
-	userID = strings.TrimSpace(userID)
+	userID = stickyCodingMemoryKey(userID)
 	if userID == "" {
 		return
 	}
@@ -695,6 +695,8 @@ func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
 	// plan could arrive after confirmation and reopen the gate.
 	// A miss marker means this session was cleared. Do not replace it with
 	// an empty struct: that would write the workbench file back.
+	// The map key is the project tab. A :task: caller has to use that key
+	// or the checklist write lands and this push never sees it.
 	withStickyCodingUserLock(userID, func() {
 		raw, ok := h.stickyCodingWorkbenchMemory.Load(userID)
 		if !ok {
@@ -707,9 +709,16 @@ func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
 		mem.StepsEmitSeq++
 		h.stickyCodingWorkbenchMemory.Store(userID, mem)
 		scheduleStickyCodingDebouncedPersist(userID, mem)
-		projectPath := projectPathFromSessionOwnerID(userID)
-		if projectPath == "" {
-			projectPath = strings.TrimSpace(mem.ProjectPath)
+		// Expert workbench events are a different session. The checklist treats
+		// project_path as the coding tab, and an expert document can sit in
+		// that same directory. Leave the path off so the snapshot cannot
+		// replace the programming agent's live plan.
+		projectPath := ""
+		if expertIDFromUserID(userID) == "" {
+			projectPath = projectPathFromSessionOwnerID(userID)
+			if projectPath == "" {
+				projectPath = strings.TrimSpace(mem.ProjectPath)
+			}
 		}
 		payload = map[string]interface{}{
 			"user_id":                 userID,

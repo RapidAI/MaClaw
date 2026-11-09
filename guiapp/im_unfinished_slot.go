@@ -176,6 +176,91 @@ func (h *IMMessageHandler) recoverInterruptedTaskSlot(userID string, entries []a
 	return slot
 }
 
+// resumedSlotSettleGrace is how long a just-bound resume stays visible as
+// interrupted. Bind happens at the start of the turn, before the loop is
+// marked running, and a pause in that gap never reaches turn settlement.
+const resumedSlotSettleGrace = 2 * time.Minute
+
+// resumedSlotNeedsReview reports a resumed slot the task list and turn
+// settlement must leave alone. A coding recovery still needs its probe, and
+// an unreviewed external send is not permission to continue.
+func resumedSlotNeedsReview(slot *agent.UnfinishedTaskSlot) bool {
+	if slot == nil {
+		return false
+	}
+	if strings.TrimSpace(slot.RuntimeTaskID) != "" {
+		return true
+	}
+	return unreviewedExternalDeliverySlot(slot)
+}
+
+// resumedUnfinishedTurnSettled reports a turn that finished on its own.
+// A hard exit, an error, or a user stop is the continuation that did not
+// finish, and that same continuation has to stay visible as interrupted.
+func resumedUnfinishedTurnSettled(loopCtx *LoopContext, resp *IMAgentResponse) bool {
+	if resp == nil || strings.TrimSpace(resp.Error) != "" || resp.HardExit || resp.userStopped {
+		return false
+	}
+	// User stop sets UserCancelled. A pre-loop pause and a parent cancel only
+	// close the loop. Both are unfinished continuations.
+	return loopCtx == nil || (!loopCtx.UserCancelled() && !loopCtx.IsCancelled())
+}
+
+// slotResumedOnThisTurn reports a bind that belongs to the loop now ending.
+// Bind runs just before the loop is marked started. A resumed slot from an
+// earlier turn is older than that, and a later failure must not put it back
+// on 已中断.
+func slotResumedOnThisTurn(slot *agent.UnfinishedTaskSlot, loopCtx *LoopContext) bool {
+	if slot == nil || slot.BoundAt.IsZero() {
+		return false
+	}
+	if loopCtx == nil || loopCtx.StartedAt.IsZero() {
+		return time.Since(slot.BoundAt) < resumedSlotSettleGrace
+	}
+	return !slot.BoundAt.Before(loopCtx.StartedAt.Add(-resumedSlotSettleGrace))
+}
+
+// settleResumedUnfinishedSlot retires the continuation the user already
+// accepted. A clean finish drops the slot so the task list can show the
+// finished outcome, including a resume that finished before this process
+// learned to retire it. A turn that stops short puts only the slot it just
+// bound back to interrupted. A coding recovery review and an unreviewed
+// external send are not this slot.
+func (h *IMMessageHandler) settleResumedUnfinishedSlot(userID string, loopCtx *LoopContext, resp *IMAgentResponse) {
+	if h == nil || h.memory == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	slot := h.memory.GetUnfinishedSlot(userID)
+	// The list predicate also keeps a just-bound resume visible. Settlement
+	// still has to retire that slot when the turn ends.
+	if slot == nil || slot.Status != agent.UnfinishedTaskSlotStatusResumed || resumedSlotNeedsReview(slot) {
+		return
+	}
+	if resumedUnfinishedTurnSettled(loopCtx, resp) {
+		h.memory.CompleteUnfinishedSlot(userID, slot.SlotID)
+		log.Printf("[UnfinishedSlot] completed resumed slot after successful turn user=%s slot=%s", userID, slot.SlotID)
+		return
+	}
+	if !slotResumedOnThisTurn(slot, loopCtx) {
+		return
+	}
+	slot.Status = agent.UnfinishedTaskSlotStatusInterrupted
+	h.memory.UpsertUnfinishedSlot(userID, slot)
+	h.memory.ClearActiveSlot(userID)
+	log.Printf("[UnfinishedSlot] reopened resumed slot after unfinished turn user=%s slot=%s", userID, slot.SlotID)
+}
+
+// abandonResumedUnfinishedSlot records that this turn stopped before the work
+// finished. The sentence shown to the user can be ordinary text, and reading
+// that text would retire the slot as a completed continuation.
+func (h *IMMessageHandler) abandonResumedUnfinishedSlot(userID string, loopCtx *LoopContext) {
+	h.settleResumedUnfinishedSlot(userID, loopCtx, &IMAgentResponse{userStopped: true})
+}
+
 // releaseSettledMailboxReviewSlot drops a mailbox latch whose saved results
 // are already known. History stays. A confirmation card is not a delivery.
 // An uncertain result, a missing result, a dropped transport-uncertain row,

@@ -433,7 +433,7 @@ func (a *App) recordCompanionEvent(name, data string) {
 // on purpose: the PDF prompt already explains page tools and pdf_generate,
 // and repeating that contract made the model follow the shorter copy.
 func fileCompanionWebLookupPrompt() string {
-	return "文献比对用 web_search 和 web_fetch：前者检索公开网页，后者打开结果里的 http 或 https 链接阅读正文。query 只放题名、作者或短检索词，不要粘贴正文。这两个工具只读公开网络，不能下载文件，不能访问内网，也不能使用浏览器登录态。没有检索到就说明没核实到，不要把未核实的背景知识写成检索结果。"
+	return "文献比对用 web_search 和 web_fetch：前者检索公开网页，后者打开结果里的 http 或 https 链接。query 只放题名、作者或短检索词，不要粘贴正文。公开论文（arXiv、直接 PDF、论文落地页）由 web_fetch 经论文下载保存到文档管理并打开，返回值里是论文正文；还没读完就用同一 url 的 offset 续读。不能指定保存路径，不能下载论文以外的文件，不能访问内网，也不能使用浏览器登录态。没有检索到就说明没核实到，不要把未核实的背景知识写成检索结果。"
 }
 
 // fileCompanionSharedToolPrompt introduces the one tool list on documents

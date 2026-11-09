@@ -32,6 +32,17 @@ const broadBrowserKillRejection = "[system rejected] Broad Chrome/Edge process k
 const browserSideEffectHTTPRejection = "[system rejected] Direct authenticated browser-side HTTP side effects through bash are disabled. Use the browser tool with the logged-in page only, then verify once before retrying."
 const shellBrowserAutomationRejection = "[system rejected] Shell Playwright/Puppeteer/Selenium/CDP/screenshot browser automation is disabled. Use the stable browser tool/session mechanism so one managed profile preserves login/cookies and avoids duplicate tabs/processes."
 
+// IsRawSSHCommandRejection reports the bash ssh/scp/sftp/rsync redirect text.
+// A shortened summary still matches the leading sentence.
+func IsRawSSHCommandRejection(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	head, _, _ := strings.Cut(rawSSHCommandRejection, ". ")
+	return strings.Contains(text, head)
+}
+
 // RejectRawSSHCommand rejects shell commands that try to bypass the builtin ssh tool.
 func RejectRawSSHCommand(command string) (string, bool) {
 	command = strings.TrimSpace(command)

@@ -21,7 +21,7 @@ import (
 var stickyCodingUserMu sync.Map // userID -> *sync.Mutex
 
 func withStickyCodingUserLock(userID string, fn func()) {
-	userID = strings.TrimSpace(userID)
+	userID = stickyCodingMemoryKey(userID)
 	if userID == "" || fn == nil {
 		if fn != nil {
 			fn()
@@ -60,7 +60,8 @@ type stickyCodingWorkbenchMemory struct {
 	UpdatedAtUnix          int64    `json:"updated_at_unix,omitempty"`
 	// SessionFullAccess is session-scoped path full-access for pure coding
 	// workbenches (create-task). It does not write subagent_full_access to
-	// config; high-risk bash still follows SessionHighRiskAccess / global grant.
+	// config. Workspace trust and full control both skip shell/bash prompts;
+	// 用户确认 still asks unless this tab already has 以后允许.
 	SessionFullAccess bool `json:"session_full_access,omitempty"`
 	// SessionHighRiskAccess allows high-risk bash without prompts for this
 	// coding session only (separate from path trust).
@@ -250,8 +251,60 @@ func (m stickyCodingWorkbenchMemory) prevOutputs() []string {
 	return out
 }
 
-func stickyCodingMemoryFilePath(userID string) string {
+// stickyCodingMemoryKey is the cache identity of one coding workbench.
+// The button stores the mode on projectSessionOwnerID. A running turn is often
+// desktop-user:<path>:task:<id>, and the workbench file already drops that
+// suffix. Keeping a second cache entry made 完全控制 invisible: the dialog
+// kept reading the turn's old 请求授权 snapshot.
+func stickyCodingMemoryKey(userID string) string {
 	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return ""
+	}
+	// An expert task id also resolves to a directory, but that directory is the
+	// document, not this coding tab. Folding it onto the project owner made
+	// /new on the expert wipe the coding tab's live 完全控制 record, so the
+	// next shell command asked again. Spellings of one expert task still share
+	// one cache: a backslash path and the canonical slash path were two
+	// records, and the shell gate read the empty one.
+	if id := expertIDFromUserID(userID); id != "" {
+		if path := projectPathFromExpertTaskUserID(userID); path != "" {
+			if canonical := expertTaskSessionUserID(id, path); canonical != "" {
+				return canonical
+			}
+		}
+		if canonical := expertSessionUserID(id); canonical != "" {
+			return canonical
+		}
+		return userID
+	}
+	path := projectPathFromSessionOwnerID(userID)
+	if path == "" {
+		return userID
+	}
+	canonical := projectSessionOwnerID(path)
+	if canonical == "" || canonical == desktopUserID {
+		return userID
+	}
+	return canonical
+}
+
+func stickyCodingMemoryFilePath(userID string) string {
+	raw := strings.TrimSpace(userID)
+	if raw == "" {
+		return ""
+	}
+	// The project file belongs to the coding tab. An expert task resolves to
+	// the same directory, and sharing the file let expert /new delete the
+	// tab's 完全控制. The resume file sits beside the workbench file, so this
+	// has to be its own directory; a shared folder would make every expert
+	// task overwrite one .coding_agent_state.json.
+	if expertIDFromUserID(raw) != "" {
+		sum := sha1.Sum([]byte(stickyCodingMemoryKey(raw)))
+		dir := filepath.Join(corelib.MaclawBaseDir(), "data", "coding_workbench", "expert-"+hex.EncodeToString(sum[:]))
+		return filepath.Join(dir, stickyCodingMemoryFileName)
+	}
+	userID = stickyCodingMemoryKey(raw)
 	if userID == "" {
 		return ""
 	}
@@ -323,7 +376,13 @@ func deleteStickyCodingWorkbenchMemoryFromDisk(userID string) bool {
 		return true
 	}
 	err := os.Remove(path)
-	return err == nil || os.IsNotExist(err)
+	ok := err == nil || os.IsNotExist(err)
+	// Expert workbench files live in a private directory. Drop it once the
+	// workbench file and the resume beside it are gone.
+	if ok && expertIDFromUserID(strings.TrimSpace(userID)) != "" {
+		_ = os.Remove(filepath.Dir(path))
+	}
+	return ok
 }
 
 // stickyCodingMemoryMiss remembers that this user has no workbench file.
@@ -336,7 +395,7 @@ func (h *IMMessageHandler) getStickyCodingWorkbenchMemory(userID string) stickyC
 	if h == nil {
 		return stickyCodingWorkbenchMemory{}
 	}
-	userID = strings.TrimSpace(userID)
+	userID = stickyCodingMemoryKey(userID)
 	if userID == "" {
 		return stickyCodingWorkbenchMemory{}
 	}
@@ -371,7 +430,7 @@ func (h *IMMessageHandler) storeStickyCodingWorkbenchMemory(userID string, mem s
 	if h == nil {
 		return
 	}
-	userID = strings.TrimSpace(userID)
+	userID = stickyCodingMemoryKey(userID)
 	if userID == "" {
 		return
 	}
@@ -399,7 +458,7 @@ func (h *IMMessageHandler) updateStickyCodingWorkbenchMemoryOpts(userID string, 
 	if h == nil || fn == nil {
 		return
 	}
-	userID = strings.TrimSpace(userID)
+	userID = stickyCodingMemoryKey(userID)
 	if userID == "" {
 		return
 	}
@@ -515,7 +574,7 @@ func (h *IMMessageHandler) clearStickyCodingWorkbenchMemory(userID string) {
 	if h == nil {
 		return
 	}
-	userID = strings.TrimSpace(userID)
+	userID = stickyCodingMemoryKey(userID)
 	if userID == "" {
 		return
 	}
@@ -581,7 +640,7 @@ func (h *IMMessageHandler) FlushStickyCodingWorkbenchMemory(userID string) {
 	if h == nil {
 		return
 	}
-	userID = strings.TrimSpace(userID)
+	userID = stickyCodingMemoryKey(userID)
 	if userID == "" {
 		return
 	}
@@ -879,10 +938,10 @@ func (h *IMMessageHandler) markStickyCodingSessionHighRiskAccess(userID string) 
 	})
 }
 
-// stickyCommandGrantForMode reports whether high-risk commands stay auto-allowed
-// after applying an input-box mode. 完全控制 always allows them. 工作区信任 keeps
-// an existing 以后允许, including a repeat workspace write. 请求授权 and stepping
-// down from 完全控制 drop it.
+// stickyCommandGrantForMode reports whether the 以后允许 flag stays on after an
+// input-box change. 完全控制 sets it. 工作区信任 keeps an existing 以后允许,
+// including a repeat workspace write, but does not need the flag: the mode
+// itself skips shell prompts. 请求授权 and stepping down from 完全控制 drop it.
 func stickyCommandGrantForMode(mode, prevMode string, alreadyGranted bool) bool {
 	if mode == "full" {
 		return true
@@ -891,8 +950,19 @@ func stickyCommandGrantForMode(mode, prevMode string, alreadyGranted bool) bool 
 	return mode == "workspace" && alreadyGranted && prevMode != "full"
 }
 
+// stickyCodingMemoryForPermission reads the workbench the permission button
+// writes. getStickyCodingWorkbenchMemory already folds a :task: turn onto that
+// same record, so a mode change is visible on the next command.
+func (h *IMMessageHandler) stickyCodingMemoryForPermission(userID string) stickyCodingWorkbenchMemory {
+	if h == nil {
+		return stickyCodingWorkbenchMemory{}
+	}
+	return h.getStickyCodingWorkbenchMemory(userID)
+}
+
 // taskCommandsAutoAllowed reports whether this task tab should run guarded
-// commands without another prompt: input-box 完全控制, or 以后允许 on this tab.
+// shell commands without another prompt. 完全控制 and 工作区信任 never ask.
+// 用户确认 asks, unless this tab already chose 以后允许.
 func (h *IMMessageHandler) taskCommandsAutoAllowed(userID string) bool {
 	if h == nil {
 		return false
@@ -901,12 +971,37 @@ func (h *IMMessageHandler) taskCommandsAutoAllowed(userID string) bool {
 	if userID == "" {
 		return false
 	}
-	mem := h.getStickyCodingWorkbenchMemory(userID)
+	mem := h.stickyCodingMemoryForPermission(userID)
 	if mem.SessionHighRiskAccess {
 		return true
 	}
 	global := h.app != nil && h.app.isSubAgentFullAccessGranted()
-	return codingWorkbenchPermissionModeFromMemory(mem, global) == "full"
+	switch codingWorkbenchPermissionModeFromMemory(mem, global) {
+	case "full", "workspace":
+		return true
+	default:
+		return false
+	}
+}
+
+// codingShellGrantPrompt tells the model the host will run a guarded shell
+// command without a dialog. Empty when this turn still has to ask.
+func codingShellGrantPrompt(handler *IMMessageHandler, owner string, highRisk, path bool) string {
+	if !highRisk {
+		return ""
+	}
+	mode := ""
+	if handler != nil && strings.TrimSpace(owner) != "" {
+		global := handler.app != nil && handler.app.isSubAgentFullAccessGranted()
+		mode = handler.codingWorkbenchPermissionMode(owner, global)
+	}
+	if mode == "workspace" {
+		return "\n当前权限：工作区信任。用户明确要求的项目内高危命令将由宿主自动放行，不会弹出确认；仍须调用工具发起该命令，不要只回复拒绝。\n"
+	}
+	if path {
+		return "\n当前权限：完全控制。用户明确要求的项目内高危命令将由宿主自动放行；仍须调用工具发起该命令，不要只回复拒绝。\n"
+	}
+	return "\n当前任务已选择以后允许。本任务内高危命令将由宿主自动放行，不要再要求用户确认；仍须调用工具发起该命令。\n"
 }
 
 // setStickyCodingSessionPermissionMode records the user's input-box choice and
@@ -1046,7 +1141,7 @@ func (h *IMMessageHandler) applyStickyCodingPermissions(userID string, sa *Codin
 	if h == nil || sa == nil || sa.scopeApproval == nil {
 		return
 	}
-	mem := h.getStickyCodingWorkbenchMemory(userID)
+	mem := h.stickyCodingMemoryForPermission(userID)
 	// Explicit "请求授权" ignores path-full sticky flags (menu posture).
 	// High-risk dialog grants still stick so the user is not re-prompted for the
 	// same class of bash after an allow-full high-risk decision.
@@ -1061,11 +1156,12 @@ func (h *IMMessageHandler) applyStickyCodingPermissions(userID string, sa *Codin
 		}
 		return
 	}
-	// Path trust only — does not auto-allow high-risk bash.
+	// Path trust and shell auto-allow. Workspace trust skips shell prompts
+	// even when the 以后允许 flag is off.
 	if mem.SessionFullAccess {
 		sa.scopeApproval.grantFullAccess()
 	}
-	if mem.SessionHighRiskAccess {
+	if mem.SessionHighRiskAccess || codingWorkbenchPermissionModeFromMemory(mem, false) == "workspace" {
 		sa.scopeApproval.grantHighRiskFullAccess()
 	}
 	for _, dir := range mem.ApprovedDirs {
@@ -1128,7 +1224,7 @@ func (h *IMMessageHandler) bindStickyRemoteCodingContext(userID string, remoteCt
 // Path trust stays "workspace". Command 以后允许 does not change this tier.
 // "request" keeps prompts until the user allows a command for this task.
 func (h *IMMessageHandler) codingWorkbenchPermissionMode(userID string, globalFullAccess bool) string {
-	return codingWorkbenchPermissionModeFromMemory(h.getStickyCodingWorkbenchMemory(userID), globalFullAccess)
+	return codingWorkbenchPermissionModeFromMemory(h.stickyCodingMemoryForPermission(userID), globalFullAccess)
 }
 
 func codingWorkbenchPermissionModeFromMemory(mem stickyCodingWorkbenchMemory, globalFullAccess bool) string {
@@ -1180,7 +1276,7 @@ func (h *IMMessageHandler) applyStickyRemoteCodingPermissions(userID string, sta
 	if h == nil || state == nil {
 		return
 	}
-	mem := h.getStickyCodingWorkbenchMemory(userID)
+	mem := h.stickyCodingMemoryForPermission(userID)
 	if stickyCodingPermissionIsRequest(mem.SessionPermissionMode) {
 		for _, dir := range mem.ApprovedDirs {
 			if strings.TrimSpace(dir) != "" {
@@ -1195,7 +1291,7 @@ func (h *IMMessageHandler) applyStickyRemoteCodingPermissions(userID string, sta
 	if mem.SessionFullAccess {
 		state.grantPathFullAccess()
 	}
-	if mem.SessionHighRiskAccess {
+	if mem.SessionHighRiskAccess || codingWorkbenchPermissionModeFromMemory(mem, false) == "workspace" {
 		state.grantHighRiskFullAccess()
 	}
 	for _, dir := range mem.ApprovedDirs {
@@ -1327,6 +1423,16 @@ func (h *IMMessageHandler) codingWorkbenchSurvivesConversationBoundary(userID st
 		return false
 	}
 	userID = strings.TrimSpace(userID)
+	// The document row is the programming tab's. An expert /new follows only
+	// an arm stored on the expert session, so a shared folder cannot keep or
+	// drop the coding tab's 完全控制.
+	if expertIDFromUserID(userID) != "" {
+		if h.hasPendingTemplateSubAgentExecution(userID) {
+			return true
+		}
+		kind := strings.TrimSpace(h.getStickyCodingWorkbenchMemory(userID).Kind)
+		return kind == "local" || kind == "remote"
+	}
 	projectPath := projectPathFromSessionOwnerID(userID)
 	if projectPath == "" {
 		return false
@@ -1361,6 +1467,12 @@ func (h *IMMessageHandler) isPureCodingWorkbenchSession(userID string) bool {
 	kind := strings.TrimSpace(mem.Kind)
 	if kind == "local" || kind == "remote" {
 		return true
+	}
+	// The document directory's coding_dev tag belongs to the programming
+	// tab. An expert chat with no arm of its own is not that tab, and its
+	// shell gate must not read an empty 请求授权 record in its place.
+	if expertIDFromUserID(userID) != "" {
+		return false
 	}
 	// coding_dev / remote_coding_dev tabs must stay on the workbench even
 	// when pending and sticky Kind were both dropped (restart, race).
@@ -1430,6 +1542,16 @@ func (h *IMMessageHandler) ensurePureCodingArmedForIncomingMessage(userID string
 	}
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
+		return
+	}
+	// An expert message names a document, not the coding tab. An ordinary
+	// document row used to clear that expert's 完全控制 before the next
+	// shell command. A coding_dev row rewrote the programming agent's
+	// workbench through the same directory.
+	if expertIDFromUserID(userID) != "" {
+		if !h.hasPendingTemplateSubAgentExecution(userID) {
+			h.ensurePureCodingArmedForGoalContinuation(userID)
+		}
 		return
 	}
 	// A visible ordinary row is not a coding workbench. Drop a leftover arm

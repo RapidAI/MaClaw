@@ -392,6 +392,8 @@ var emitCodingPlanReviewChat = func(h *IMMessageHandler, userID, text string) {
 	})
 }
 
+const codingPlanSelfReviewMaxRounds = 3
+
 const codingPlanSelfReviewSystemPrompt = `You review one coding plan before the user sees it. Return JSON only.
 
 Schema: {"ok":true} when the plan is specific enough to build.
@@ -399,15 +401,125 @@ Or {"ok":false,"issues":[{"op":"insert|update|delete","target":"an existing step
 
 Judge the plan, not isolated words. Write change in the same language as the goal.
 Delete only a step the plan itself makes redundant. Do not drop a step the goal still needs.
+The host applies your issues and reviews that updated plan again. Return {"ok":true} only when nothing important is still missing. Do not repeat an issue the current plan already states.
 Do not claim files were changed. No markdown.`
 
-func (h *IMMessageHandler) selfReviewCodingPlan(goal, projectPath string, tasks []*v2.TaskItem) ([]*v2.TaskItem, string) {
-	raw := h.callCodingPlanSelfReview(goal, projectPath, tasks)
-	okReview, issues, parsed := parseCodingPlanSelfReview(raw)
-	if !parsed || okReview || len(issues) == 0 {
+func (h *IMMessageHandler) codingPlanSelfReviewConfigured() bool {
+	if h == nil {
+		return false
+	}
+	cfg := h.getCodingLightweightLLMConfig()
+	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+		cfg = h.getCodingLLMConfig()
+	}
+	return strings.TrimSpace(cfg.URL) != "" && strings.TrimSpace(cfg.Model) != ""
+}
+
+func (h *IMMessageHandler) selfReviewCodingPlan(userID, goal, projectPath string, tasks []*v2.TaskItem, reviewSeq int64) ([]*v2.TaskItem, string) {
+	if !h.codingPlanSelfReviewConfigured() {
 		return tasks, ""
 	}
+	rounds := 0
+	reviewed, note, passed := reviewCodingPlanUntilClean(goal, tasks, codingPlanSelfReviewMaxRounds, func(current []*v2.TaskItem) (string, bool) {
+		if reviewSeq != 0 && h.getStickyCodingWorkbenchMemory(userID).PlanReviewSeq != reviewSeq {
+			return "", false
+		}
+		rounds++
+		return h.callCodingPlanSelfReview(goal, projectPath, current), true
+	})
+	if rounds > 1 {
+		log.Printf("[coding-plan] self-review rounds=%d steps=%d passed=%t", rounds, len(reviewed), passed)
+	}
+	return reviewed, note
+}
+
+// reviewCodingPlanUntilClean reviews a plan, applies concrete issues, and
+// reviews that updated plan again. The plan it returns is one a review just
+// judged. A pass is {"ok":true} with no issues. review's false stop means the
+// caller was cancelled. The loop also stops when a verdict cannot be parsed,
+// a round does not change the plan, or applying another fix would leave no
+// round to review it.
+func reviewCodingPlanUntilClean(goal string, tasks []*v2.TaskItem, maxRounds int, review func([]*v2.TaskItem) (string, bool)) ([]*v2.TaskItem, string, bool) {
+	if maxRounds < 1 {
+		maxRounds = 1
+	}
+	if review == nil || len(tasks) == 0 {
+		return tasks, "", false
+	}
+	// Confirm stores at most this many steps. Review that copy, so a passing
+	// verdict cannot refer to a step the user never sees.
+	if len(tasks) > codingWorkbenchPlanMaxTasks {
+		tasks = append([]*v2.TaskItem(nil), tasks[:codingWorkbenchPlanMaxTasks]...)
+	}
+	current := tasks
+	revised := false
+	for round := 0; round < maxRounds; round++ {
+		// Review the finalized plan the user will confirm. The stored copy stays
+		// unchanged until a fix actually lands.
+		judged := codingPlanForReview(goal, current)
+		if len(judged) == 0 {
+			return codingPlanSelfReviewStop(goal, current, revised)
+		}
+		raw, ok := review(judged)
+		if !ok {
+			return codingPlanSelfReviewStop(goal, current, revised)
+		}
+		okReview, issues, parsed := parseCodingPlanSelfReview(raw)
+		if !parsed {
+			return codingPlanSelfReviewStop(goal, current, revised)
+		}
+		if okReview && len(issues) == 0 {
+			if revised {
+				return current, codingPlanSelfReviewPassedNote(goal), true
+			}
+			return current, "", true
+		}
+		// The document the user confirms has to be this reviewed copy. A fix
+		// applied on the last round would never be reviewed.
+		if len(issues) == 0 || round+1 >= maxRounds {
+			return codingPlanSelfReviewStop(goal, current, revised)
+		}
+		next := applyCodingPlanReviewIssues(judged, issues)
+		if codingPlanTasksSame(judged, next) {
+			return codingPlanSelfReviewStop(goal, current, revised)
+		}
+		current = next
+		revised = true
+	}
+	return codingPlanSelfReviewStop(goal, current, revised)
+}
+
+func codingPlanForReview(goal string, tasks []*v2.TaskItem) []*v2.TaskItem {
+	tasks = finalizeCodingWorkbenchTasks(tasks, goal)
+	return softenExploreOnlyPlanDeps(tasks)
+}
+
+func codingPlanSelfReviewStop(goal string, tasks []*v2.TaskItem, revised bool) ([]*v2.TaskItem, string, bool) {
+	if revised {
+		return tasks, codingPlanSelfReviewChangedNote(goal), false
+	}
+	return tasks, "", false
+}
+
+func codingPlanSelfReviewChangedNote(goal string) string {
+	if codingPlanDialogueMostlyASCII(goal) {
+		return "Automatic review changed this draft."
+	}
+	return "自动评审改过这版。"
+}
+
+func codingPlanSelfReviewPassedNote(goal string) string {
+	if codingPlanDialogueMostlyASCII(goal) {
+		return "Automatic review changed this draft, and the follow-up review passed."
+	}
+	return "自动评审改过这版，复审已通过。"
+}
+
+func applyCodingPlanReviewIssues(tasks []*v2.TaskItem, issues []codingPlanReviewIssue) []*v2.TaskItem {
 	next := cloneCodingWorkbenchTasks(tasks)
+	// T2 means the step that is T2 now. Later issues in this batch must keep
+	// that step after an insert shifts the numbers.
+	issues = bindCodingPlanReviewTargets(tasks, issues)
 	rejected := map[string]bool{}
 	for _, issue := range issues {
 		updated, dropped, applied := applyCodingPlanReviewIssue(next, issue)
@@ -419,10 +531,7 @@ func (h *IMMessageHandler) selfReviewCodingPlan(goal, projectPath string, tasks 
 		}
 		next = updated
 	}
-	if codingPlanTasksSame(tasks, next) {
-		return tasks, ""
-	}
-	return next, "自动评审改过这版。"
+	return next
 }
 
 func (h *IMMessageHandler) callCodingPlanSelfReview(goal, projectPath string, tasks []*v2.TaskItem) string {
@@ -440,91 +549,335 @@ func (h *IMMessageHandler) callCodingPlanSelfReview(goal, projectPath string, ta
 	b.WriteString("Goal:\n")
 	b.WriteString(truncateRunesV2(goal, 2000))
 	b.WriteString("\n\nPlan:\n")
-	for _, task := range tasks {
-		if task == nil {
-			continue
-		}
-		b.WriteString("- ")
-		b.WriteString(strings.TrimSpace(task.Title))
-		if body := codingPlanStepBody(task.Description); body != "" {
-			b.WriteString(": ")
-			b.WriteString(truncateRunesV2(body, 240))
-		}
-		b.WriteString("\n")
-	}
+	b.WriteString(formatCodingPlanStepsMarkdown(tasks))
 	if p := strings.TrimSpace(projectPath); p != "" {
-		b.WriteString("\nProject path: ")
+		b.WriteString("\n\nProject path: ")
 		b.WriteString(p)
 	}
 	return h.callLightweightLLMOnce(cfg, codingPlanSelfReviewSystemPrompt, b.String(), 20)
 }
 
-func parseCodingPlanSelfReview(raw string) (okReview bool, issues []codingPlanReviewIssue, parsed bool) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return false, nil, false
+func codingPlanHasTitle(tasks []*v2.TaskItem, title string) bool {
+	want := codingPlanDialogueCompact(title)
+	if want == "" {
+		return false
 	}
-	if i := strings.Index(raw, "{"); i >= 0 {
-		if j := strings.LastIndex(raw, "}"); j > i {
-			raw = raw[i : j+1]
+	for _, task := range tasks {
+		if task != nil && codingPlanDialogueCompact(task.Title) == want {
+			return true
 		}
 	}
-	var payload struct {
-		OK     bool                    `json:"ok"`
-		Issues []codingPlanReviewIssue `json:"issues"`
+	return false
+}
+
+func codingPlanTextAlreadyStates(body, change string) bool {
+	change = strings.TrimSpace(change)
+	if change == "" {
+		return false
 	}
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return false, nil, false
+	want := codingPlanDialogueCompact(change)
+	if want == "" {
+		return false
 	}
-	return payload.OK, payload.Issues, true
+	if codingPlanDialogueCompact(body) == want {
+		return true
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if codingPlanDialogueCompact(line) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// codingPlanReviewChangeVisible reports whether the confirm card shows change.
+// The card and the review prompt share planStepDescriptionForDisplay, which
+// keeps 300 runes. A fix past that cut is not part of the plan the user confirms.
+func codingPlanReviewChangeVisible(title, body, change string) bool {
+	want := codingPlanDialogueCompact(change)
+	if want == "" {
+		return false
+	}
+	shown := planStepDescriptionForDisplay(body, title)
+	if shown == "" {
+		shown = strings.TrimSpace(title)
+	}
+	got := codingPlanDialogueCompact(shown)
+	if got == "" {
+		return false
+	}
+	if strings.Contains(got, want) {
+		return true
+	}
+	// The change is longer than the card. The card is then the start of it.
+	return strings.HasPrefix(want, got)
+}
+
+func parseCodingPlanSelfReview(raw string) (okReview bool, issues []codingPlanReviewIssue, parsed bool) {
+	raw = strings.TrimSpace(raw)
+	for raw != "" {
+		i := strings.Index(raw, "{")
+		if i < 0 {
+			return false, nil, false
+		}
+		dec := json.NewDecoder(strings.NewReader(raw[i:]))
+		var payload struct {
+			OK     codingPlanReviewBool `json:"ok"`
+			Issues json.RawMessage      `json:"issues"`
+		}
+		if err := dec.Decode(&payload); err != nil {
+			raw = raw[i+1:]
+			continue
+		}
+		off := int(dec.InputOffset())
+		if off < 0 || off > len(raw[i:]) || !codingPlanReviewFragment(raw[i:i+off]) {
+			raw = raw[i+1:]
+			continue
+		}
+		decoded, ok := decodeCodingPlanReviewIssues(payload.Issues)
+		if !ok {
+			raw = raw[i+1:]
+			continue
+		}
+		issues = make([]codingPlanReviewIssue, 0, len(decoded))
+		for _, issue := range decoded {
+			norm := issue.normalized()
+			if norm.Op == "" && norm.Target == "" && norm.Change == "" {
+				continue
+			}
+			issues = append(issues, norm)
+		}
+		return bool(payload.OK), issues, true
+	}
+	return false, nil, false
+}
+
+func codingPlanReviewFragment(fragment string) bool {
+	compact := strings.ToLower(fragment)
+	return strings.Contains(compact, `"ok"`) || strings.Contains(compact, `"issues"`) || strings.Contains(compact, `"action"`) || strings.Contains(compact, `"op"`)
+}
+
+// codingPlanReviewBool accepts the JSON boolean and the string forms models
+// actually return. An unknown value stays false so the issues can still apply.
+type codingPlanReviewBool bool
+
+func (b *codingPlanReviewBool) UnmarshalJSON(data []byte) error {
+	switch strings.ToLower(strings.Trim(strings.TrimSpace(string(data)), `"`)) {
+	case "true", "yes", "ok", "pass", "1":
+		*b = true
+	default:
+		*b = false
+	}
+	return nil
+}
+
+func decodeCodingPlanReviewIssues(raw json.RawMessage) ([]codingPlanReviewIssue, bool) {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return nil, true
+	}
+	switch text[0] {
+	case '[':
+		var list []codingPlanReviewIssue
+		if err := json.Unmarshal([]byte(text), &list); err != nil {
+			return nil, false
+		}
+		return list, true
+	case '{':
+		var one codingPlanReviewIssue
+		if err := json.Unmarshal([]byte(text), &one); err != nil {
+			return nil, false
+		}
+		return []codingPlanReviewIssue{one}, true
+	default:
+		return nil, false
+	}
 }
 
 type codingPlanReviewIssue struct {
-	Op     string `json:"op"`
-	Target string `json:"target"`
-	Change string `json:"change"`
+	Op          string `json:"op"`
+	Action      string `json:"action"`
+	Target      string `json:"target"`
+	Title       string `json:"title"`
+	Step        string `json:"step"`
+	Change      string `json:"change"`
+	Description string `json:"description"`
+	Text        string `json:"text"`
+}
+
+func (issue codingPlanReviewIssue) normalized() codingPlanReviewIssue {
+	op := strings.ToLower(strings.TrimSpace(issue.Op))
+	if op == "" {
+		op = strings.ToLower(strings.TrimSpace(issue.Action))
+	}
+	switch op {
+	case "add", "create", "append":
+		op = "insert"
+	case "edit", "modify", "change", "revise":
+		op = "update"
+	case "remove", "drop":
+		op = "delete"
+	}
+	target := strings.TrimSpace(issue.Target)
+	if target == "" {
+		target = strings.TrimSpace(issue.Title)
+	}
+	if target == "" {
+		target = strings.TrimSpace(issue.Step)
+	}
+	change := strings.TrimSpace(issue.Change)
+	if change == "" {
+		change = strings.TrimSpace(issue.Description)
+	}
+	if change == "" {
+		change = strings.TrimSpace(issue.Text)
+	}
+	return codingPlanReviewIssue{Op: op, Target: target, Change: change}
 }
 
 func applyCodingPlanReviewIssue(tasks []*v2.TaskItem, issue codingPlanReviewIssue) ([]*v2.TaskItem, string, bool) {
-	op := strings.ToLower(strings.TrimSpace(issue.Op))
+	issue = issue.normalized()
+	op := issue.Op
 	switch op {
 	case "delete":
 		idx := codingPlanStepByTarget(tasks, issue.Target)
 		if idx < 0 || tasks[idx] == nil {
 			return nil, "", false
 		}
-		title := strings.TrimSpace(tasks[idx].Title)
-		next, _, ok := applyCodingPlanOp(tasks, "delete", idx+1, nil)
-		return next, title, ok
+		return codingPlanDeleteReviewStep(tasks, idx+1)
 	case "update":
 		idx := codingPlanStepByTarget(tasks, issue.Target)
 		change := strings.TrimSpace(issue.Change)
 		if idx < 0 || tasks[idx] == nil || change == "" {
 			return nil, "", false
 		}
-		body := strings.TrimSpace(codingPlanStepBody(tasks[idx].Description) + "\n" + change)
-		next, _, ok := applyCodingPlanOp(tasks, "update", idx+1, &v2.TaskItem{
-			Title:       tasks[idx].Title,
-			Description: body,
-		})
+		bodyNow := codingPlanStepBody(tasks[idx].Description)
+		if codingPlanTextAlreadyStates(bodyNow, change) {
+			return nil, "", false
+		}
+		title := ""
+		if tasks[idx] != nil {
+			title = tasks[idx].Title
+		}
+		// Append when the confirm card will show it. A long step is cut at
+		// 300 runes, so an append past that cut would execute unseen.
+		body := strings.TrimSpace(bodyNow + "\n" + change)
+		if !codingPlanReviewChangeVisible(title, body, change) {
+			body = strings.TrimSpace(change + "\n" + bodyNow)
+		}
+		if !codingPlanReviewChangeVisible(title, body, change) {
+			return nil, "", false
+		}
+		next, ok := codingPlanUpdateReviewStep(tasks, idx+1, body)
 		return next, "", ok
 	case "insert":
 		change := strings.TrimSpace(issue.Change)
-		if change == "" {
+		if change == "" || len(tasks) >= codingWorkbenchPlanMaxTasks {
 			return nil, "", false
 		}
-		index := len(tasks) + 1
+		title := truncateRunesV2(change, 24)
+		if codingPlanHasTitle(tasks, title) {
+			return nil, "", false
+		}
+		// An unnamed insert goes ahead of trailing verify steps. Appending it
+		// would put new work after the plan already says it is done.
+		index := 0
 		if idx := codingPlanStepByTarget(tasks, issue.Target); idx >= 0 {
 			index = idx + 1
 		}
-		next, _, ok := applyCodingPlanOp(tasks, "insert", index, &v2.TaskItem{
-			Title:       truncateRunesV2(change, 24),
+		next, ok := codingPlanInsertReviewStep(tasks, index, &v2.TaskItem{
+			Title:       title,
 			Description: change,
 		})
 		return next, "", ok
 	default:
 		return nil, "", false
 	}
+}
+
+func codingPlanRenumber(tasks []*v2.TaskItem) {
+	for i, task := range tasks {
+		if task != nil {
+			task.Index = i + 1
+		}
+	}
+}
+
+func codingPlanUpdateReviewStep(tasks []*v2.TaskItem, index int, body string) ([]*v2.TaskItem, bool) {
+	idx := index - 1
+	if idx < 0 || idx >= len(tasks) || tasks[idx] == nil || strings.TrimSpace(body) == "" {
+		return nil, false
+	}
+	cloned := cloneCodingWorkbenchTasks(tasks)
+	cloned[idx].Description = strings.TrimSpace(body)
+	codingPlanRenumber(cloned)
+	return cloned, true
+}
+
+func codingPlanInsertReviewStep(tasks []*v2.TaskItem, index int, step *v2.TaskItem) ([]*v2.TaskItem, bool) {
+	if step == nil || len(tasks) >= codingWorkbenchPlanMaxTasks {
+		return nil, false
+	}
+	if strings.TrimSpace(step.Title) == "" && strings.TrimSpace(step.Description) == "" {
+		return nil, false
+	}
+	cloned := cloneCodingWorkbenchTasks(tasks)
+	idx := index - 1
+	if idx < 0 || idx > len(cloned) {
+		idx = codingPlanInsertAt(cloned)
+	}
+	// Existing deps name steps by their old numbers. A step inserted at p
+	// shifts every later number up by one.
+	p := idx + 1
+	for _, task := range cloned {
+		if task == nil {
+			continue
+		}
+		for i, dep := range task.DependsOn {
+			if dep >= p {
+				task.DependsOn[i] = dep + 1
+			}
+		}
+	}
+	cloned = append(cloned, nil)
+	copy(cloned[idx+1:], cloned[idx:])
+	cloned[idx] = &v2.TaskItem{
+		Title:       strings.TrimSpace(step.Title),
+		Description: strings.TrimSpace(step.Description),
+		Files:       append([]string(nil), step.Files...),
+	}
+	codingPlanRenumber(cloned)
+	return cloned, true
+}
+
+func codingPlanDeleteReviewStep(tasks []*v2.TaskItem, index int) ([]*v2.TaskItem, string, bool) {
+	idx := index - 1
+	if idx < 0 || idx >= len(tasks) || tasks[idx] == nil || len(tasks) <= codingWorkbenchPlanMinTasks {
+		return nil, "", false
+	}
+	title := strings.TrimSpace(tasks[idx].Title)
+	cloned := cloneCodingWorkbenchTasks(tasks)
+	cloned = append(cloned[:idx], cloned[idx+1:]...)
+	removed := idx + 1
+	for _, task := range cloned {
+		if task == nil || len(task.DependsOn) == 0 {
+			continue
+		}
+		kept := make([]int, 0, len(task.DependsOn))
+		for _, dep := range task.DependsOn {
+			switch {
+			case dep == removed:
+				continue
+			case dep > removed:
+				kept = append(kept, dep-1)
+			default:
+				kept = append(kept, dep)
+			}
+		}
+		task.DependsOn = kept
+	}
+	codingPlanRenumber(cloned)
+	return cloned, title, true
 }
 
 func codingPlanStepByTarget(tasks []*v2.TaskItem, target string) int {
@@ -547,7 +900,9 @@ func codingPlanStepByTarget(tasks []*v2.TaskItem, target string) int {
 			exact = i
 			break
 		}
-		if !strings.Contains(title, want) && !(utf8.RuneCountInString(title) >= 4 && strings.Contains(want, title)) {
+		// A target may wrap the step title with extra words. A fragment of
+		// the title must not edit a different step.
+		if utf8.RuneCountInString(title) < 4 || !strings.Contains(want, title) {
 			continue
 		}
 		n := utf8.RuneCountInString(title)
@@ -559,7 +914,78 @@ func codingPlanStepByTarget(tasks []*v2.TaskItem, target string) int {
 	if exact >= 0 {
 		return exact
 	}
-	return best
+	if best >= 0 {
+		return best
+	}
+	// The plan the model reviews is numbered T1, T2. A bare number is only
+	// used when it does not name a step title.
+	if n := codingPlanTargetStepNumber(target); n >= 1 && n <= len(tasks) && tasks[n-1] != nil {
+		return n - 1
+	}
+	return -1
+}
+
+func bindCodingPlanReviewTargets(tasks []*v2.TaskItem, issues []codingPlanReviewIssue) []codingPlanReviewIssue {
+	if len(issues) == 0 {
+		return issues
+	}
+	out := make([]codingPlanReviewIssue, len(issues))
+	for i, issue := range issues {
+		issue = issue.normalized()
+		if codingPlanTargetIsBareNumber(issue.Target) {
+			if n := codingPlanTargetStepNumber(issue.Target); n >= 1 && n <= len(tasks) && tasks[n-1] != nil {
+				if title := strings.TrimSpace(tasks[n-1].Title); title != "" {
+					issue.Target = title
+				}
+			}
+		}
+		out[i] = issue
+	}
+	return out
+}
+
+func codingPlanTargetIsBareNumber(target string) bool {
+	if codingPlanTargetStepNumber(target) < 1 {
+		return false
+	}
+	s := strings.TrimSpace(target)
+	switch {
+	case strings.HasPrefix(s, "第"):
+		s = strings.TrimPrefix(s, "第")
+	case strings.HasPrefix(s, "T"), strings.HasPrefix(s, "t"):
+		s = s[1:]
+	default:
+		return false
+	}
+	i := 0
+	s = strings.TrimSpace(s)
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	rest := strings.Trim(strings.TrimSpace(s[i:]), ":：.。")
+	switch strings.ToLower(strings.TrimSpace(rest)) {
+	case "", "步", "step":
+		return true
+	default:
+		return false
+	}
+}
+
+func codingPlanTargetStepNumber(target string) int {
+	s := strings.TrimSpace(target)
+	switch {
+	case strings.HasPrefix(s, "第"):
+		s = strings.TrimPrefix(s, "第")
+	case strings.HasPrefix(s, "T"), strings.HasPrefix(s, "t"):
+		s = s[1:]
+	default:
+		return 0
+	}
+	n, ok := codingPlanLeadingStepNumber(strings.TrimSpace(s))
+	if !ok || n < 1 {
+		return 0
+	}
+	return n
 }
 
 func codingPlanKeepsTitlesExcept(original, proposed []*v2.TaskItem, alreadyDropped map[string]bool, dropped string) bool {
@@ -654,7 +1080,7 @@ func (h *IMMessageHandler) runCodingPlanDialogueTurn(userID, userText, projectPa
 			return h.codingPlanDialogueResponse(onToken, codingPlanReviewSupersededText, nil)
 		}
 	}
-	tasks, reviewNote := h.selfReviewCodingPlan(goal, projectPath, tasks)
+	tasks, reviewNote := h.selfReviewCodingPlan(userID, goal, projectPath, tasks, reviewSeq)
 	if reviewNote != "" {
 		reply = strings.TrimSpace(reviewNote + "\n" + reply)
 	}
@@ -794,7 +1220,7 @@ func (h *IMMessageHandler) reviseStickyPendingCodingPlan(userID, userText, proje
 	if len(tasks) < codingWorkbenchPlanMinTasks {
 		tasks, reply = patchCodingPlan(pending.Tasks, userText)
 	}
-	tasks, reviewNote := h.selfReviewCodingPlan(brief, projectPath, tasks)
+	tasks, reviewNote := h.selfReviewCodingPlan(userID, brief, projectPath, tasks, reviewSeq)
 	if reviewNote != "" {
 		reply = strings.TrimSpace(reviewNote + "\n" + reply)
 	}
@@ -811,6 +1237,10 @@ func (h *IMMessageHandler) reviseStickyPendingCodingPlan(userID, userText, proje
 // look like a new task.
 func (h *IMMessageHandler) commitCodingPlanDraft(userID, brief string, tasks []*v2.TaskItem, note string, reviewSeq int64, onToken func(string)) *IMAgentResponse {
 	tasks = finalizeCodingWorkbenchTasks(tasks, brief)
+	// Review judges this softened dependency graph. Finalizing again would
+	// chain explore steps the review had already cleared, and the user would
+	// confirm a different plan.
+	tasks = softenExploreOnlyPlanDeps(tasks)
 	for _, task := range tasks {
 		if task != nil {
 			task.Description = codingPlanStepBody(task.Description)

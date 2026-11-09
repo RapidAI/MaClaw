@@ -1,6 +1,7 @@
 package websearch
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -90,6 +91,30 @@ func TestFetchRawBodyKeepsCitationMeta(t *testing.T) {
 	}
 	if !strings.Contains(raw.ContentType, "text/html") {
 		t.Fatalf("raw content-type=%q", raw.ContentType)
+	}
+}
+
+func TestFetchRawBodyKeepsPDFBytes(t *testing.T) {
+	payload := append([]byte("%PDF-1.4\n"), 0xFF, 0xFE, 0x00, 0x80, '\n')
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(srv.Close)
+
+	raw, err := FetchCtx(context.Background(), srv.URL, &FetchOptions{TimeoutS: 15, MaxBytes: 2 << 20, RawBody: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal([]byte(raw.Content), payload) {
+		t.Fatalf("raw pdf changed: %d bytes", len(raw.Content))
+	}
+	plain, err := FetchCtx(context.Background(), srv.URL, &FetchOptions{TimeoutS: 15, MaxBytes: 2 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plain.Content, "二进制") {
+		t.Fatalf("text fetch of a pdf = %q", plain.Content)
 	}
 }
 

@@ -2,6 +2,11 @@
  * In-file find (Ctrl+F) for CodePreviewPanel.
  */
 import { describe, it, expect, vi } from 'vitest';
+
+vi.mock('../../../../wailsjs/go/main/App', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../../../wailsjs/go/main/App')>();
+    return { ...actual, PreviewTaskResultFile: vi.fn(async () => ({})) };
+});
 import { fireEvent, render, screen } from '@testing-library/react';
 import {
     CodePreviewPanel,
@@ -131,6 +136,27 @@ describe('findMatchLineIndexes / cycleMatchIndex / parseGoToLineInput', () => {
             />,
         );
         expect(screen.getByTestId('code-preview-line-count').textContent).toMatch(/1/);
+    });
+
+    it('does not report the empty text buffer as a line of a workbook', () => {
+        render(
+            <CodePreviewPanel
+                files={makeFiles({
+                    filePath: 'D:/t/employees.xlsx',
+                    fileName: 'employees.xlsx',
+                    absPath: 'D:/t/employees.xlsx',
+                    content: '',
+                    language: 'xlsx',
+                })}
+                activeFilePath="D:/t/employees.xlsx"
+                onSelectFile={vi.fn()}
+                onClose={vi.fn()}
+                theme={lightCodePreviewTheme}
+                lang="zh-Hans"
+            />,
+        );
+        expect(screen.getByTestId('code-preview-readonly-badge').textContent).toContain('只读');
+        expect(screen.queryByTestId('code-preview-line-count')).toBeNull();
     });
 
     it('handles Ctrl+Tab / Ctrl+W from panel focus (not only tab bar)', () => {

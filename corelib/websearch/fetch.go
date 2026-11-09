@@ -342,9 +342,8 @@ func fetchTextHTTP(ctx context.Context, rawURL string, opts *FetchOptions, clien
 }
 
 // performTextFetch executes a single GET and extracts readable content.
-// In rawMode it returns the raw (UTF-8-normalized) body without readable-text
-// extraction — used by the HTML search endpoints that parse the page
-// structure themselves.
+// In rawMode an HTML or text body is returned without readable-text extraction.
+// A binary body keeps its original bytes: encoding conversion would damage a PDF.
 func performTextFetch(ctx context.Context, rawURL string, opts *FetchOptions, client *http.Client, extra map[string]string, rawMode bool) *fetchAttempt {
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
@@ -451,6 +450,13 @@ func completeTextFetch(rawURL string, opts *FetchOptions, resp *http.Response, b
 		BytesRead:   len(body),
 	}
 
+	// A raw binary body is stored unchanged. ensureUTF8 and the text window
+	// replace bytes that are not UTF-8, which turns a PDF into a different file.
+	if rawMode && !isHTMLContent(ct) && !isTextContent(ct) {
+		result.Content = string(body)
+		return &fetchAttempt{result: result}
+	}
+
 	// Detect and convert encoding
 	body = ensureUTF8(body, ct)
 
@@ -554,6 +560,26 @@ func charsetToEncoding(charset string) encoding.Encoding {
 // ---------------------------------------------------------------------------
 // HTML content extraction (Readability-lite)
 // ---------------------------------------------------------------------------
+
+// ReadablePage is the title and text a normal fetch would show for this body.
+// HTML is reduced to its title and main text. binary is true when the body
+// is not text; text is then the short binary notice, not the raw bytes.
+func ReadablePage(contentType string, body []byte) (title, text string, binary bool) {
+	body = ensureUTF8(body, contentType)
+	if isHTMLContent(contentType) {
+		title, text = extractReadableContent(body)
+		return title, text, false
+	}
+	if isTextContent(contentType) {
+		return "", string(body), false
+	}
+	return "", fmt.Sprintf("[二进制内容: %s, %d 字节。如需下载请使用 save_path 参数]", contentType, len(body)), true
+}
+
+// ApplyContentWindow keeps the same rune window a text fetch applies.
+func ApplyContentWindow(result *FetchResult, offset, maxChars int) {
+	applyContentWindow(result, offset, maxChars)
+}
 
 // extractReadableContent extracts title and main text from HTML.
 func extractReadableContent(body []byte) (title, text string) {

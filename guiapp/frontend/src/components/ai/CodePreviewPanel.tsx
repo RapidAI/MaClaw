@@ -1984,7 +1984,7 @@ export function CodePreviewPanel({
                             </span>
                         )
                     ) : null}
-                    {totalLines > 0 && (
+                    {totalLines > 0 && !isVisualDocumentPreview(activeFile) && (
                         <span data-testid="code-preview-line-count" className="cpp-badge-dim">
                             {totalLines} {tailText(lang, 'lines', '行')}
                         </span>

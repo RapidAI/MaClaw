@@ -10,12 +10,27 @@ type XLSXModule = typeof import("xlsx");
 const MAX_PREVIEW_ROWS = 500;
 const MAX_PREVIEW_COLS = 64;
 
+/**
+ * Column width is measured in `ch` (the advance of "0"). A notes paragraph
+ * wraps at the cap; a short value stays one line. The pane must not decide
+ * this — see `columnWidthsCh`.
+ */
+const MAX_COLUMN_CH = 48;
+const MIN_COLUMN_CH = 3;
+/**
+ * Cell padding is `1ch` on each side. One extra `ch` covers the 1px border
+ * and glyphs a little wider than "0", so the longest line does not wrap.
+ */
+const COLUMN_PAD_CH = 3;
+
 export type SheetGrid = {
     rows: string[][];
     /** Merge start → span; covered cells are skipped while rendering. */
     spans: Map<string, { rowSpan: number; colSpan: number }>;
     covered: Set<string>;
     colCount: number;
+    /** Content width of each visible column, in `ch`, already padded and capped. */
+    colWidths: number[];
     /** Rows/cols requested from the sheet after clamping to the caps. */
     shownRows: number;
     shownCols: number;
@@ -29,7 +44,102 @@ export type ParsedWorkbook = {
 };
 
 function emptySheetGrid(): SheetGrid {
-    return { rows: [], spans: new Map(), covered: new Set(), colCount: 0, shownRows: 0, shownCols: 0, truncatedRows: 0, truncatedCols: 0 };
+    return { rows: [], spans: new Map(), covered: new Set(), colCount: 0, colWidths: [], shownRows: 0, shownCols: 0, truncatedRows: 0, truncatedCols: 0 };
+}
+
+/**
+ * Width in `ch`. The grid is monospace, so a Latin glyph is one column.
+ * East-Asian wide and fullwidth glyphs are two.
+ */
+function charUnits(cp: number): number {
+    if (
+        (cp >= 0x1100 && cp <= 0x115f)
+        || (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f)
+        || (cp >= 0xac00 && cp <= 0xd7a3)
+        || (cp >= 0xf900 && cp <= 0xfaff)
+        || (cp >= 0xfe10 && cp <= 0xfe19)
+        || (cp >= 0xfe30 && cp <= 0xfe6f)
+        || (cp >= 0xff00 && cp <= 0xff60)
+        || (cp >= 0xffe0 && cp <= 0xffe6)
+        || (cp >= 0x1f300 && cp <= 0x1faff)
+        || (cp >= 0x20000 && cp <= 0x3fffd)
+    ) return 2;
+    return 1;
+}
+
+/** Longest visual line. Newlines are real breaks; they do not add width. */
+export function textColumnCh(text: string): number {
+    const value = String(text ?? "");
+    let max = 0;
+    let width = 0;
+    for (let i = 0; i < value.length;) {
+        const cp = value.codePointAt(i) ?? 0;
+        if (cp === 10 || cp === 13) {
+            if (width > max) max = width;
+            width = 0;
+            i += cp === 13 && value.charCodeAt(i + 1) === 10 ? 2 : 1;
+            continue;
+        }
+        width += charUnits(cp);
+        i += cp > 0xffff ? 2 : 1;
+    }
+    return width > max ? width : max;
+}
+
+function clampColumnCh(textCh: number): number {
+    return Math.min(MAX_COLUMN_CH, Math.max(MIN_COLUMN_CH, textCh + COLUMN_PAD_CH));
+}
+
+/**
+ * A column at the cap holds a paragraph that must wrap. Anything narrower
+ * was measured to fit its longest line, so the cell must not wrap — a wrap
+ * there is the pane crushing the column back to one glyph.
+ */
+export function columnWrapsText(widthCh: number): boolean {
+    return widthCh >= MAX_COLUMN_CH;
+}
+
+/**
+ * Width of each column from its own text.
+ *
+ * Automatic table layout sizes a `width: auto` table to the scrollport. With
+ * `overflow-wrap: anywhere` every glyph is a wrap opportunity, so each
+ * column's min-content width is one character and the pane crushes the sheet
+ * into vertical stacks. Column width is data: the longest line in that
+ * column (a merged cell shares its text across the span), capped so a notes
+ * paragraph wraps inside the column. The table is then that wide and the
+ * grid scrolls. Widths are in `ch`, so the grid must be monospace.
+ */
+export function columnWidthsCh(
+    rows: string[][],
+    spans: Map<string, { rowSpan: number; colSpan: number }>,
+    covered?: Set<string>,
+): number[] {
+    const colCount = rows.reduce((count, row) => Math.max(count, row.length), 0);
+    const textWidths = new Array<number>(colCount).fill(0);
+    const hasCovered = !!covered && covered.size > 0;
+    for (let r = 0; r < rows.length; r += 1) {
+        const row = rows[r];
+        for (let c = 0; c < row.length; c += 1) {
+            const cell = row[c];
+            // Covered cells repeat the merge origin. Measuring them again
+            // makes one column as wide as the whole merged title.
+            if (!cell || (hasCovered && covered.has(`${r}:${c}`))) continue;
+            const span = spans.get(`${r}:${c}`);
+            const spanCols = span && span.colSpan > 1 ? span.colSpan : 1;
+            const units = textColumnCh(cell);
+            if (spanCols === 1) {
+                if (units > textWidths[c]) textWidths[c] = units;
+                continue;
+            }
+            const share = Math.ceil(units / spanCols);
+            const end = Math.min(colCount, c + spanCols);
+            for (let i = c; i < end; i += 1) {
+                if (share > textWidths[i]) textWidths[i] = share;
+            }
+        }
+    }
+    return textWidths.map(clampColumnCh);
 }
 
 function declaredSheetRange(XLSX: XLSXModule, sheet: import("xlsx").WorkSheet | undefined): import("xlsx").Range | null {
@@ -170,7 +280,7 @@ export function readPreviewWorkbook(XLSX: XLSXModule, bytes: Uint8Array): import
  * row/col spans on their top-left cell.
  */
 export function buildSheetGrid(XLSX: XLSXModule, sheet: import("xlsx").WorkSheet): SheetGrid {
-    const empty: SheetGrid = { rows: [], spans: new Map(), covered: new Set(), colCount: 0, shownRows: 0, shownCols: 0, truncatedRows: 0, truncatedCols: 0 };
+    const empty: SheetGrid = { rows: [], spans: new Map(), covered: new Set(), colCount: 0, colWidths: [], shownRows: 0, shownCols: 0, truncatedRows: 0, truncatedCols: 0 };
     if (!sheet || !sheet["!ref"]) return empty;
     const fullRef = sheet["!fullref"];
     const declared = XLSX.utils.decode_range(typeof fullRef === "string" && fullRef ? fullRef : sheet["!ref"]);
@@ -250,6 +360,7 @@ export function buildSheetGrid(XLSX: XLSXModule, sheet: import("xlsx").WorkSheet
         spans,
         covered,
         colCount,
+        colWidths: columnWidthsCh(rows, spans, covered),
         // Truncation counts what the caps cut off the declared range, not the
         // trailing blanks trimmed above — those are merely empty, not hidden
         // content.
@@ -309,6 +420,7 @@ export type WireSheetGrid = {
     spans: Array<[string, { rowSpan: number; colSpan: number }]>;
     covered: string[];
     colCount: number;
+    colWidths?: number[];
     shownRows: number;
     shownCols: number;
     truncatedRows: number;
@@ -322,6 +434,7 @@ export function wireSheetGrid(grid: SheetGrid): WireSheetGrid {
         spans: Array.from(grid.spans.entries()),
         covered: Array.from(grid.covered),
         colCount: grid.colCount,
+        colWidths: grid.colWidths,
         shownRows: grid.shownRows,
         shownCols: grid.shownCols,
         truncatedRows: grid.truncatedRows,
@@ -341,11 +454,20 @@ export function sheetGridFromWire(wire: WireSheetGrid): SheetGrid {
     const rows = Array.isArray(wire.rows)
         ? wire.rows.map((row) => (Array.isArray(row) ? row.map((cell) => String(cell ?? "")) : []))
         : [];
+    const colCount = Number(wire.colCount) || rows.reduce((count, row) => Math.max(count, row.length), 0);
+    const covered = new Set((wire.covered || []).map((key) => String(key)));
+    const wiredWidths = Array.isArray(wire.colWidths) ? wire.colWidths.map((width) => Number(width) || 0) : [];
+    // A zero is a missing measurement. A width past the cap is not a column
+    // this renderer produced. Either one would crush or blow out the sheet,
+    // so measure the text again.
+    const widthsOk = wiredWidths.length === colCount
+        && wiredWidths.every((width) => width >= MIN_COLUMN_CH && width <= MAX_COLUMN_CH);
     return {
         rows,
         spans,
-        covered: new Set((wire.covered || []).map((key) => String(key))),
-        colCount: Number(wire.colCount) || 0,
+        covered,
+        colCount,
+        colWidths: widthsOk ? wiredWidths : columnWidthsCh(rows, spans, covered),
         shownRows: Number(wire.shownRows) || 0,
         shownCols: Number(wire.shownCols) || 0,
         truncatedRows: Number(wire.truncatedRows) || 0,

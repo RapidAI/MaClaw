@@ -2937,6 +2937,7 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	}
 
 	// Prefer steps already written by the user (numbered / T1 list) — no LLM needed.
+	modelPlan := false
 	if userPlan := extractUserProvidedCodingPlan(requestText); len(userPlan) >= codingWorkbenchPlanMinTasks {
 		tasks = userPlan
 		log.Printf("[coding-plan] using user-provided steps user=%s steps=%d", userID, len(tasks))
@@ -2950,6 +2951,7 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 			onProgress("复杂编程任务：正在自动规划步骤…")
 		}
 		_, tasks = h.planCodingWorkbenchTasks(userID, requestText, projectPath, sessionMem)
+		modelPlan = len(tasks) >= codingWorkbenchPlanMinTasks
 		if len(tasks) < codingWorkbenchPlanMinTasks && codingRequestLooksModeratelyComplex(requestText) {
 			tasks = defaultModerateCodingPlan(requestText, sessionMem.RequirementRestatement)
 			log.Printf("[coding-plan] host fallback moderate plan user=%s steps=%d", userID, len(tasks))
@@ -2967,6 +2969,24 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	tasks = softenExploreOnlyPlanDeps(tasks)
 	if len(tasks) < codingWorkbenchPlanMinTasks {
 		return fallbackSingle("finalize dropped below min steps")
+	}
+	// Only a model-written plan is reviewed again before the user confirms it.
+	// User-written steps and the host's own fallback stay as they are: the
+	// fallback exists to avoid another model wait. Each fix is reviewed on
+	// the next round, so the copy shown to the user is one a review judged.
+	if modelPlan && h.codingPlanSelfReviewConfigured() && (planMode == codingPlanModeAuto || planMode == codingPlanModeApprove) {
+		if onProgress != nil {
+			onProgress("正在复审规划，通过后再交给你确认")
+		}
+		reviewed, _ := h.selfReviewCodingPlan(userID, goalText, projectPath, tasks, 0)
+		reviewed = finalizeCodingWorkbenchTasks(reviewed, goalText)
+		reviewed = softenExploreOnlyPlanDeps(reviewed)
+		if len(reviewed) > codingWorkbenchPlanMaxTasks {
+			reviewed = reviewed[:codingWorkbenchPlanMaxTasks]
+		}
+		if len(reviewed) >= codingWorkbenchPlanMinTasks {
+			tasks = reviewed
+		}
 	}
 	// Always rebuild markdown after finalize so indices/deps match execution.
 	planMarkdown = formatCodingWorkbenchPlanMarkdown(goalText, tasks)
@@ -3408,6 +3428,16 @@ func formatCodingWorkbenchPlanMarkdown(userText string, tasks []*v2.TaskItem) st
 	b.WriteString("**目标**: ")
 	b.WriteString(truncateRunesV2(strings.TrimSpace(userText), 200))
 	b.WriteString("\n\n")
+	b.WriteString(formatCodingPlanStepsMarkdown(tasks))
+	return strings.TrimSpace(b.String())
+}
+
+// formatCodingPlanStepsMarkdown is the step list both the confirm card and
+// the self-review prompt use. A separate review formatter drifted: it cut
+// descriptions and file names the card still showed, so a pass could approve
+// text the user then confirmed unseen.
+func formatCodingPlanStepsMarkdown(tasks []*v2.TaskItem) string {
+	var b strings.Builder
 	for _, t := range tasks {
 		if t == nil {
 			continue

@@ -1,7 +1,9 @@
 package guiapp
 
 import (
+	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -45,7 +47,7 @@ func fileCompanionWebToolDefinitions() []map[string]interface{} {
 			"type": "function",
 			"function": map[string]interface{}{
 				"name":        fileCompanionToolWebFetch,
-				"description": "打开 web_search 返回的一条公开 http 或 https 链接，提取正文，用于核对论文页面、摘要或相关工作。适用于当前打开的任何文档。不能下载文件，不能传 save_path、cookie 或请求头，不能渲染 JS，不能访问内网。长页面用 offset 续读。",
+				"description": "打开一条公开 http 或 https 链接。论文地址（arXiv、直接 PDF、论文落地页）会经论文下载保存到文档管理并打开，同时返回正文；普通网页只提取正文。不能传 save_path、cookie 或请求头，不能渲染 JS，不能访问内网，不能下载论文以外的文件。长文用 offset 续读。",
 				"parameters": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -151,10 +153,22 @@ func fileCompanionWebFetchArgs(args map[string]interface{}) (map[string]interfac
 	return narrowed, ""
 }
 
-func (h *IMMessageHandler) fileCompanionWebFetch(args map[string]interface{}) (string, bool) {
+func (h *IMMessageHandler) fileCompanionWebFetch(userID string, args map[string]interface{}) (string, bool) {
 	narrowed, errText := fileCompanionWebFetchArgs(args)
 	if errText != "" {
 		return errText, false
+	}
+	rawURL, _ := narrowed["url"].(string)
+	// A participant note is untrusted. An explicit paper URL would become a
+	// file on the host, so it is refused before any download. An HTML page
+	// stays on the text fetch below.
+	if fileCompanionShareDiscussionUserID(userID) && fileCompanionExplicitPaperURL(rawURL) {
+		return "这个链接是论文 PDF。参与者批注不能下载文件。请改打开无需登录的 HTML 摘要页。", false
+	}
+	if h != nil && h.app != nil && !fileCompanionShareDiscussionUserID(userID) {
+		if text, ok, handled := h.fileCompanionFetchPaper(rawURL, args); handled {
+			return text, ok
+		}
 	}
 	text := h.toolWebFetch(narrowed)
 	text = fileCompanionPresentWebFetch(text)
@@ -164,9 +178,212 @@ func (h *IMMessageHandler) fileCompanionWebFetch(args map[string]interface{}) (s
 	return text, true
 }
 
+// fileCompanionExplicitPaperURL reports a URL that is itself the paper, not
+// an HTML page that might link one. A failed download of this URL is the
+// answer. An HTML landing page can still fall through to its text.
+func fileCompanionExplicitPaperURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if arxivIDFromInput(raw) != "" || paperURLPathPDF(raw) {
+		return true
+	}
+	request := paperRequestURL(raw)
+	for _, candidate := range paperWhitelistCandidates(raw) {
+		if candidate == raw || candidate == request {
+			return true
+		}
+	}
+	return false
+}
+
+// fileCompanionFetchPaper runs the browser paper pipeline for the host chat.
+// A page the probe already downloaded is returned from that body. handled is
+// false only when the probe has nothing to read, so the text fetch can run.
+func (h *IMMessageHandler) fileCompanionFetchPaper(rawURL string, args map[string]interface{}) (string, bool, bool) {
+	parent := context.Background()
+	if h != nil {
+		ctx, cancel := h.imToolContext()
+		defer cancel()
+		parent = ctx
+	}
+	// One public fetch uses the same 60s budget as a later text fetch. A second
+	// request after this probe times out cannot wait any longer.
+	path, code, page, probeErr := resolveCompanionPaperWithin(parent, rawURL, companionPaperPDFTimeoutS)
+	if code != "" && parent.Err() == context.Canceled {
+		return "下载已取消。", false, true
+	}
+	switch code {
+	case "":
+		text, ok := h.fileCompanionPresentAcquiredPaper(rawURL, path, args)
+		return text, ok, true
+	case companionPaperCodeNoPDF:
+		if text, ok, presented := h.fileCompanionPresentProbedPage(rawURL, page, args); presented {
+			return text, ok, true
+		}
+		// The probe already stored this response. Fetching it again cannot
+		// produce a body the first response did not have.
+		if page != nil {
+			return "这个链接没有可提取的正文。伴读不能下载文件。请改打开 HTML 摘要页，或用 web_search 换一条结果。", false, true
+		}
+		return "", false, false
+	default:
+		if fileCompanionExplicitPaperURL(rawURL) {
+			return fileCompanionPaperFailure(code), false, true
+		}
+		// The probe already downloaded this page. A failed PDF candidate must
+		// not throw that body away and request the URL again.
+		if text, ok, presented := h.fileCompanionPresentProbedPage(rawURL, page, args); presented {
+			return fileCompanionPaperFailure(code) + "\n\n" + text, ok, true
+		}
+		if code == companionPaperCodeTimeout && !fileCompanionExplicitPaperURL(rawURL) {
+			return "页面获取超过 60 秒，没有读到正文。", false, true
+		}
+		if code == companionPaperCodeBadScheme || code == companionPaperCodeTooBig || code == companionPaperCodeTimeout {
+			return fileCompanionPaperFailure(code), false, true
+		}
+		// The probe already failed this URL. A second text fetch would wait
+		// on the same public request again.
+		if probeErr != nil {
+			return "抓取失败: " + probeErr.Error(), false, true
+		}
+		return "", false, false
+	}
+}
+
+// fileCompanionPaperFailure is the sentence the companion window already shows
+// for the same code. The agent and the window must not disagree.
+func fileCompanionPaperFailure(code string) string {
+	switch code {
+	case companionPaperCodeBadScheme:
+		return "只接受公网上的 http 和 https 链接，没有加入文档管理。"
+	case companionPaperCodeNotPDF:
+		return "下载到的内容不是 PDF，没有加入文档管理。"
+	case companionPaperCodeTooBig:
+		return "PDF 超过 25 MiB，没有保存。"
+	case companionPaperCodeTimeout:
+		return "下载超过 60 秒，没有保存。"
+	default:
+		return "保存失败，没有加入文档管理。"
+	}
+}
+
+func fileCompanionPaperReadMaxChars(args map[string]interface{}) int {
+	n := intArg(args, "max_chars", fileCompanionReadDocumentMaxChars)
+	if n <= 0 || n > fileCompanionReadDocumentMaxChars {
+		return fileCompanionReadDocumentMaxChars
+	}
+	return n
+}
+
+// fileCompanionPresentAcquiredPaper opens the PDF the paper pipeline saved and
+// reads it with the same reader the open document uses. The current turn stays
+// on the document that was already open; continuation uses web_fetch offset,
+// which finds the saved file and does not download it again.
+func (h *IMMessageHandler) fileCompanionPresentAcquiredPaper(rawURL, path string, args map[string]interface{}) (string, bool) {
+	if h == nil || h.app == nil {
+		return "论文已下载，但伴读宿主不可用，正文还没有打开。", false
+	}
+	canonical := path
+	name := filepath.Base(path)
+	if _, granted, err := h.app.fileCompanionGrant(path); err == nil && granted != "" {
+		canonical = granted
+		name = filepath.Base(granted)
+	} else {
+		doc, openErr := h.app.FileCompanionOpen(path)
+		if openErr != nil || strings.TrimSpace(doc.Error) != "" {
+			reason := ""
+			if openErr != nil {
+				reason = openErr.Error()
+			} else {
+				reason = doc.Error
+			}
+			return "论文已下载，但没有打开：" + reason, false
+		}
+		if strings.TrimSpace(doc.Path) != "" {
+			h.app.enqueueFileCompanionOpen([]string{doc.Path}, false)
+			canonical = doc.Path
+		}
+		if strings.TrimSpace(doc.Name) != "" {
+			name = doc.Name
+		}
+	}
+	body, readOK := h.fileCompanionReadDocument(canonical, map[string]interface{}{
+		"offset":    intArg(args, "offset", 0),
+		"max_chars": fileCompanionPaperReadMaxChars(args),
+	})
+	var b strings.Builder
+	fmt.Fprintf(&b, "已下载论文并在伴读中打开：%s\n来源：%s\n", name, rawURL)
+	if !readOK {
+		b.WriteString("正文没有读出来。这份论文是新打开的文档；当前对话里的 read_document 和 pdf_read_pages 仍只读原来那一份。\n\n")
+		b.WriteString(body)
+		if strings.Contains(body, "扫描页") {
+			b.WriteString("\n请到刚打开的论文里再读扫描页。")
+		}
+		return b.String(), true
+	}
+	b.WriteString("正文如下。还没读完时，按 continue 里的 web_fetch 续读。这份论文是新打开的文档；当前对话里的 read_document 和 pdf_read_pages 仍只读原来那一份。\n\n")
+	b.WriteString(fileCompanionPaperContinue(body, rawURL))
+	return b.String(), true
+}
+
+// fileCompanionPaperContinue points a further read at web_fetch. The document
+// reader's own continue line names read_document, which in this turn still
+// means the document that was already open.
+func fileCompanionPaperContinue(body, rawURL string) string {
+	inBody := false
+	var b strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		trim := strings.TrimSpace(line)
+		if !inBody && trim == "" {
+			inBody = true
+			b.WriteByte('\n')
+			continue
+		}
+		if !inBody && strings.HasPrefix(trim, "# continue: read_document(") {
+			offset := fileCompanionHeaderValue(trim, "offset=")
+			maxChars := fileCompanionHeaderValue(trim, "max_chars=")
+			fmt.Fprintf(&b, "# continue: web_fetch(url=%q, offset=%s, max_chars=%s)\n", rawURL, offset, maxChars)
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// fileCompanionPresentProbedPage turns the paper probe's body into the same
+// text a web_fetch would return. presented is false when there is no body.
+func (h *IMMessageHandler) fileCompanionPresentProbedPage(rawURL string, page *websearch.FetchResult, args map[string]interface{}) (string, bool, bool) {
+	if page == nil || strings.TrimSpace(page.Content) == "" || paperContentTypePDF(page.ContentType) {
+		return "", false, false
+	}
+	title, text, _ := websearch.ReadablePage(page.ContentType, []byte(page.Content))
+	view := *page
+	view.Title = title
+	view.Content = text
+	if strings.TrimSpace(view.URL) == "" {
+		view.URL = rawURL
+	}
+	offset := intArg(args, "offset", 0)
+	if offset < 0 {
+		offset = 0
+	}
+	maxChars := intArg(args, "max_chars", fileCompanionWebFetchMaxChars)
+	if maxChars <= 0 || maxChars > fileCompanionWebFetchMaxChars {
+		maxChars = fileCompanionWebFetchMaxChars
+	}
+	websearch.ApplyContentWindow(&view, offset, maxChars)
+	shown := fileCompanionPresentWebFetch(projectLegacyWebFetchRequested(&view, offset, rawURL))
+	if strings.TrimSpace(shown) == "" {
+		return "", false, false
+	}
+	failed := strings.HasPrefix(shown, "抓取失败") || strings.HasPrefix(shown, "缺少 url")
+	return shown, !failed, true
+}
+
 // fileCompanionPresentWebFetch rewrites the fetch layer's download advice.
-// Companion web_fetch cannot take save_path, so a PDF or other binary reply
-// must not tell the model to call a parameter it does not have.
+// A paper PDF never reaches this function: the host chat saves it through the
+// paper pipeline. What remains is a non-paper binary, which still cannot take
+// save_path.
 func fileCompanionPresentWebFetch(text string) string {
 	text = strings.ReplaceAll(text, "蓝信群聊的公开网络权限不允许使用浏览器、会话或 Cookie，请改用无需登录的公开来源", "伴读只能打开公开页面，不能使用浏览器或登录态。请改用无需登录的 HTML 页面")
 	if strings.HasPrefix(strings.TrimSpace(text), "抓取失败") && (strings.Contains(text, "download_file") || strings.Contains(text, "via_browser") || strings.Contains(text, "browser 工具")) {

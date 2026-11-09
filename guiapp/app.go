@@ -117,6 +117,9 @@ type App struct {
 	// fsnotify watcher uses this to suppress redundant config-updated events
 	// triggered by our own writes (debounce window: 500ms).
 	configLastInternalWrite atomic.Int64
+	// systemCleanupLoopStarted is set when the hourly temp-file cleanup loop
+	// is launched. Startup can be retried; only one loop should run.
+	systemCleanupLoopStarted atomic.Bool
 	// watchedConfigStoragePath is the storage path currently registered with the
 	// fsnotify watcher. The storage can switch from config.json to config.db
 	// when the legacy migration lands after startup, so the watcher must be
@@ -2992,7 +2995,7 @@ func (a *App) startup(ctx context.Context) {
 		}
 		a.refreshPowerOptimizationStateFromConfig(config)
 		a.refreshWorkstationMode(config)
-		a.maybeCleanToolCacheOnStartup(config)
+		a.maybeStartSystemCleanup()
 		a.maybePruneToolResultsOnStartup()
 		// Auto-start local MCP servers that are enabled for app launch.
 		a.autoStartLocalMCPServers(config.LocalMCPServers)
@@ -3417,7 +3420,8 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.skillExecutor != nil {
 		a.skillExecutor.waitForStatusOverlayPersistenceWithin(200 * time.Millisecond)
 	}
-	a.maybeCleanToolCacheOnExit()
+	// System cleanup runs on its own timer. Exit is too short: tray quit kills
+	// the process before a scan can finish.
 	// Clean up workstation mode (restore lock screen policy, etc.)
 	a.setWorkstationMode(false, 0)
 	if a.localMCPManager != nil {
@@ -8217,6 +8221,19 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		}
 		return out, nil
 	}
+	systemCleanupField := func(key string, value interface{}, base corelib.SystemCleanupConfig) (corelib.SystemCleanupConfig, error) {
+		data, err := json.Marshal(value)
+		if err != nil {
+			return corelib.SystemCleanupConfig{}, fmt.Errorf("config field %q must be object: %w", key, err)
+		}
+		cfg := base.WithDefaults()
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return corelib.SystemCleanupConfig{}, fmt.Errorf("config field %q must be object: %w", key, err)
+		}
+		cfg = cfg.WithDefaults()
+		cfg.DisabledCategories = filterSystemCleanupCategories(cfg.DisabledCategories)
+		return cfg, nil
+	}
 	toolCacheMaintenanceField := func(key string, value interface{}, base corelib.ToolCacheMaintenanceConfig) (corelib.ToolCacheMaintenanceConfig, error) {
 		data, err := json.Marshal(value)
 		if err != nil {
@@ -8561,6 +8578,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.ToolCacheMaintenance = v
+		case "system_cleanup":
+			v, err := systemCleanupField(key, value, cfg.SystemCleanup)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SystemCleanup = v
 		case "qqbot_enabled":
 			v, err := boolField(key, value)
 			if err != nil {

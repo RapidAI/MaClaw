@@ -239,6 +239,8 @@ export function ClampMaximizedWindowToWorkArea():Promise<void>;
 
 export function CleanToolCacheNow():Promise<main.ToolCacheCleanupResult>;
 
+export function CleanSystemCleanupNow():Promise<main.SystemCleanupResult>;
+
 export function CleanupSkillArtifactRegistry(arg1:number,arg2:boolean):Promise<Record<string, number>>;
 
 export function CleanupStaleNLSkills():Promise<Array<string>>;
@@ -1279,6 +1281,8 @@ export function SetThirdPartyHardwareDeviceAlias(arg1:string,arg2:string):Promis
 export function SetHardwareAllowCustomPets(arg1:boolean):Promise<void>;
 
 export function GetToolCacheStatus():Promise<main.ToolCacheStatus>;
+
+export function GetSystemCleanupStatus():Promise<main.SystemCleanupStatus>;
 
 export function GetToolDefGenerator():Promise<main.ToolDefinitionGenerator>;
 

@@ -603,7 +603,9 @@ const extractedFileLineLimits = [
   // 7521 -> 7630 (2026-11-06): mermaid zoom centering, CompanionPdfReader and
   // task-config wiring landed at 7601 lines; headroom absorbs the remainder,
   // then extract the reader/taxonomy rendering.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7630],
+  // 7630 -> 7640 (2026-11-08): task-config send wiring and cleanup drawer
+  // landed at 7631 lines.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7640],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],

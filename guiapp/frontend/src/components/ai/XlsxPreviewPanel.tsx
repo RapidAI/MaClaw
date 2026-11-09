@@ -3,7 +3,7 @@ import { PreviewTaskResultFile } from "../../../wailsjs/go/main/App";
 import type { CodePreviewTheme } from "./FileTabBar";
 import { MarkdownPreview } from "./CodePreviewMarkdown";
 import { isTaskResultPdfPreviewURL, localizeTaskResultPreviewError, type TaskResultPreviewPayload } from "./taskResultPreview";
-import { previewWorkbookGrids, readPreviewWorkbook, releasePreviewWorkbook, type ParsedWorkbook } from "./xlsxPreviewParse";
+import { columnWrapsText, previewWorkbookGrids, readPreviewWorkbook, releasePreviewWorkbook, type ParsedWorkbook } from "./xlsxPreviewParse";
 import { isPreviewAbortError, readPreviewBody } from "./previewBytes";
 import { PREVIEW_BAR_DELAY_MS, PREVIEW_HEAVY_PARSE_BYTES, PreviewLoadingStatus, yieldPreviewPaint, type PreviewProgress } from "./PreviewProgressBar";
 import { tailText } from "../../i18n/mnTail"
@@ -217,7 +217,11 @@ export function XlsxPreviewPanel({ absPath, theme, lang, fallbackContent = "" }:
         display: "flex",
         flexDirection: "column",
         height: "100%",
+        width: "100%",
         minHeight: 0,
+        // The sheet is wider than the pane. Without this the column flex item
+        // grows to the table and the ancestor clips it instead of scrolling.
+        minWidth: 0,
         background: theme.bg,
         color: theme.text,
         boxSizing: "border-box",
@@ -255,6 +259,35 @@ export function XlsxPreviewPanel({ absPath, theme, lang, fallbackContent = "" }:
     const noticeBits: string[] = [];
     if (grid.truncatedRows > 0) noticeBits.push(tailText(lang, `first ${grid.shownRows} rows`, `仅显示前 ${grid.shownRows} 行`));
     if (grid.truncatedCols > 0) noticeBits.push(tailText(lang, `first ${grid.shownCols} columns`, `仅显示前 ${grid.shownCols} 列`));
+    const tableCh = grid.colWidths.reduce((sum, width) => sum + width, 0);
+    // One style object per role. A 500×64 sheet must not allocate a style per cell.
+    const textCell: CSSProperties = {
+        borderRight: `1px solid ${theme.border}`,
+        borderBottom: `1px solid ${theme.border}`,
+        padding: "4px 1ch",
+        boxSizing: "border-box",
+        // Fits on one line. `pre` keeps a real newline without offering a
+        // wrap point, so a squeezed column cannot stack the glyphs.
+        whiteSpace: "pre",
+        verticalAlign: "top",
+        textAlign: "left",
+        fontVariantNumeric: "tabular-nums",
+        wordBreak: "normal",
+        overflowWrap: "normal",
+    };
+    const wrapCell: CSSProperties = {
+        ...textCell,
+        whiteSpace: "pre-wrap",
+        // Only past the column cap. `anywhere` would make the min-content
+        // width one glyph and hand column sizing back to the pane.
+        overflowWrap: "break-word",
+    };
+    const numberCell: CSSProperties = { ...textCell, textAlign: "right" };
+    const wrapNumberCell: CSSProperties = { ...wrapCell, textAlign: "right" };
+    const headerCell: CSSProperties = { ...textCell, position: "sticky", top: 0, background: theme.lineNumBg, zIndex: 1 };
+    const headerWrapCell: CSSProperties = { ...wrapCell, position: "sticky", top: 0, background: theme.lineNumBg, zIndex: 1 };
+    const headerNumberCell: CSSProperties = { ...headerCell, textAlign: "right" };
+    const headerWrapNumberCell: CSSProperties = { ...headerWrapCell, textAlign: "right" };
     return (
         <div data-testid="xlsx-preview-panel" style={fill}>
             {parsed!.names.length > 1 ? (
@@ -306,11 +339,31 @@ export function XlsxPreviewPanel({ absPath, theme, lang, fallbackContent = "" }:
                     {tailText(lang, `Sheet "${sheetName}" has no content`, `「${sheetName}」没有可显示的内容`)}
                 </div>
             ) : (
-                <div ref={gridScrollRef} data-testid="xlsx-preview-grid" className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+                <div ref={gridScrollRef} data-testid="xlsx-preview-grid" className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: "auto" }}>
                     <table
                         data-testid="xlsx-preview-table"
-                        style={{ borderCollapse: "separate", borderSpacing: 0, fontSize: 12.5, tableLayout: "auto" }}
+                        style={{
+                            borderCollapse: "separate",
+                            borderSpacing: 0,
+                            fontSize: 12.5,
+                            // Widths are in `ch`. A proportional font makes "m"
+                            // wider than "0", and the longest line wraps.
+                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                            // Fixed to the content widths below. `auto` would size
+                            // the table to this scrollport and crush the columns.
+                            // min-width keeps a max-width:100% ancestor from
+                            // scaling those columns back down to the pane.
+                            tableLayout: "fixed",
+                            width: tableCh > 0 ? `${tableCh}ch` : "max-content",
+                            minWidth: tableCh > 0 ? `${tableCh}ch` : "max-content",
+                            maxWidth: "none",
+                        }}
                     >
+                        <colgroup>
+                            {grid.colWidths.map((width, index) => (
+                                <col key={index} data-testid="xlsx-preview-col" style={{ width: `${width}ch` }} />
+                            ))}
+                        </colgroup>
                         <tbody>
                             {grid.rows.map((row, r) => (
                                 <tr key={r}>
@@ -318,23 +371,19 @@ export function XlsxPreviewPanel({ absPath, theme, lang, fallbackContent = "" }:
                                         const key = `${r}:${c}`;
                                         if (grid.covered.has(key)) return null;
                                         const span = grid.spans.get(key);
-                                        const style: CSSProperties = {
-                                            borderRight: `1px solid ${theme.border}`,
-                                            borderBottom: `1px solid ${theme.border}`,
-                                            padding: "4px 8px",
-                                            whiteSpace: "pre-wrap",
-                                            verticalAlign: "top",
-                                            textAlign: isNumericCell(cell) ? "right" : "left",
-                                            fontVariantNumeric: "tabular-nums",
-                                            maxWidth: 360,
-                                            overflowWrap: "anywhere",
-                                        };
-                                        if (r === 0) {
-                                            style.position = "sticky";
-                                            style.top = 0;
-                                            style.background = theme.lineNumBg;
-                                            style.zIndex = 1;
+                                        const spanCols = span && span.colSpan > 1 ? span.colSpan : 1;
+                                        let wrap = false;
+                                        const spanEnd = Math.min(grid.colWidths.length, c + spanCols);
+                                        for (let i = c; i < spanEnd; i += 1) {
+                                            if (columnWrapsText(grid.colWidths[i])) {
+                                                wrap = true;
+                                                break;
+                                            }
                                         }
+                                        const numeric = isNumericCell(cell);
+                                        const style = r === 0
+                                            ? (numeric ? (wrap ? headerWrapNumberCell : headerNumberCell) : (wrap ? headerWrapCell : headerCell))
+                                            : (numeric ? (wrap ? wrapNumberCell : numberCell) : (wrap ? wrapCell : textCell));
                                         return (
                                             <td
                                                 key={c}

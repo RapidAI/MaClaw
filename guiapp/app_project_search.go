@@ -2855,7 +2855,7 @@ func (a *App) PrepareLocalCodingEnvironment(projectPath, executionDir string) er
 	handler.pendingV2SubAgentExecution.Store(userID, true)
 	handler.pendingTemplateCodingProjectPath.Store(userID, execDir)
 	handler.workflowAgentLoopMarker.Store(userID, true)
-	// Create-task pure coding: default workspace trust (path auto-allow; high-risk still prompts).
+	// Create-task pure coding: default workspace trust (path and shell auto-allow).
 	// Does not persist subagent_full_access to config.
 	handler.setStickyCodingSessionPermissionMode(userID, "workspace", "local", execDir)
 	// If input-box already has global full control, upgrade sticky to full.
@@ -5227,7 +5227,7 @@ func (a *App) applyTaskListWorkflow(result *ProjectSearchResult, workflowPath st
 	// a paused attempt live, so this comparison still runs for it.
 	if !projectWorkflowSnapshotActive(result.ActiveWorkflow) {
 		if memory := a.currentConversationMemory(); memory != nil {
-			if slot := memory.GetUnfinishedSlot(projectSessionOwnerID(result.ProjectPath)); unfinishedSlotSupersedes(slot, result.ActiveWorkflow) {
+			if slot := memory.GetUnfinishedSlot(projectSessionOwnerID(result.ProjectPath)); unfinishedSlotSupersedes(slot, result.ActiveWorkflow) && unfinishedSlotKeepsTaskInterrupted(slot) {
 				result.ActiveWorkflow = &ProjectWorkflowState{
 					ID: slot.SlotID, Type: "agent_recovery", Phase: "interrupted",
 					Status:      "interrupted",
@@ -5647,6 +5647,22 @@ func terminalWorkflowIsNewer(candidate, base *ProjectWorkflowState) bool {
 		return false
 	}
 	return candidate.UpdatedAt.After(base.UpdatedAt)
+}
+
+// unfinishedSlotKeepsTaskInterrupted reports a recovery slot the task list
+// should still show as interrupted. A resume that just bound is not finished:
+// the loop may not be marked running yet, and a pause in that gap does not
+// settle the slot. An older resume is a continuation that already ended, so
+// painting it as interrupted leaves a finished task on 已中断. A coding-runtime
+// review and an unreviewed external send stay interrupted either way.
+func unfinishedSlotKeepsTaskInterrupted(slot *agent.UnfinishedTaskSlot) bool {
+	if slot == nil || slot.Status == agent.UnfinishedTaskSlotStatusCompleted {
+		return false
+	}
+	if slot.Status != agent.UnfinishedTaskSlotStatusResumed || resumedSlotNeedsReview(slot) {
+		return true
+	}
+	return slot.BoundAt.IsZero() || time.Since(slot.BoundAt) < resumedSlotSettleGrace
 }
 
 // unfinishedSlotSupersedes reports that the recovery slot is the later fact.
@@ -7878,6 +7894,11 @@ func (a *App) projectPathIsLocalCodingWorkbench(projectPath string) bool {
 func (a *App) isDesktopCodingWorkbenchSession(userID, projectPath string) bool {
 	if a == nil {
 		return false
+	}
+	// An expert task can live in a coding project directory. That tag is the
+	// programming tab. The expert is a workbench only when its own session is.
+	if expertIDFromUserID(userID) != "" {
+		return a.imHandler != nil && a.imHandler.isPureCodingWorkbenchSession(userID)
 	}
 	if a.imHandler != nil && a.imHandler.isPureCodingWorkbenchSession(userID) {
 		return true

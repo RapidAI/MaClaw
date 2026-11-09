@@ -1,7 +1,7 @@
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { XlsxPreviewPanel, buildSheetGrid, isXlsxFileName, previewWorkbookGrids, readPreviewWorkbook, releasePreviewWorkbook } from "../XlsxPreviewPanel";
-import { sheetGridFromWire, wireSheetGrid } from "../xlsxPreviewParse";
+import { columnWidthsCh, sheetGridFromWire, wireSheetGrid } from "../xlsxPreviewParse";
 import { PREVIEW_BAR_DELAY_MS } from "../PreviewProgressBar";
 import type { CodePreviewTheme } from "../FileTabBar";
 import { PreviewTaskResultFile } from "../../../../wailsjs/go/main/App";
@@ -101,6 +101,59 @@ describe("buildSheetGrid", () => {
         expect(grid.colCount).toBe(0);
     });
 
+    it("sizes each column from its text and caps a paragraph", async () => {
+        const XLSX = await import("xlsx");
+        const note = "Anne has a BA degree in English from St. Lawrence College. She is fluent in French and German.";
+        const ws = XLSX.utils.aoa_to_sheet([
+            ["employeeid", "lastname", "notes"],
+            ["2", "Fuller", note],
+            ["5", "Buchanan", "507 - 20th Ave. E.\nApt. 2A"],
+        ]);
+        const grid = buildSheetGrid(XLSX, ws);
+        // Longest line, plus 1ch of padding on each side and 1ch of slack.
+        // Not one glyph, and not the sum of a wrapped paragraph.
+        expect(grid.colWidths).toEqual([13, 11, 48]);
+        expect(note.length).toBeGreaterThan(48);
+    });
+
+    it("counts a wide character as two columns and shares a merged title", async () => {
+        const XLSX = await import("xlsx");
+        const ws = XLSX.utils.aoa_to_sheet([
+            ["发放明细", "", "金额"],
+            ["马勇", "", "1200"],
+        ]);
+        ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }];
+        const grid = buildSheetGrid(XLSX, ws);
+        // 发放明细 is 8 units over 2 columns (4 each); 马勇 is 4. Both clamp
+        // with padding to 7. 金额 is 4 units + padding.
+        expect(grid.colWidths).toEqual([7, 7, 7]);
+    });
+
+    it("measures a monospace line and ignores a covered duplicate", () => {
+        const spans = new Map([["0:0", { rowSpan: 1, colSpan: 2 }]]);
+        const covered = new Set(["0:1"]);
+        // TITLE is 5. Shared across the merge that is 3 each, plus padding 3.
+        expect(columnWidthsCh([["TITLE", "TITLE"]], spans, covered)).toEqual([6, 6]);
+        // Without the covered set the duplicate is a column of its own: 5 + 3.
+        expect(columnWidthsCh([["TITLE", "TITLE"]], spans)[1]).toBe(8);
+        // A newline ends the line. The column is the longer line, not the sum.
+        expect(columnWidthsCh([["507 - 20th Ave. E.\r\nApt. 2A"]], new Map())[0]).toBe(21);
+        // Monospace: "M" is one column, a CJK character is two.
+        expect(columnWidthsCh([["MMM"]], new Map())[0]).toBe(6);
+        expect(columnWidthsCh([["马"]], new Map())[0]).toBe(5);
+    });
+
+    it("rebuilds a column whose wired width is missing", async () => {
+        const XLSX = await import("xlsx");
+        const ws = XLSX.utils.aoa_to_sheet([["employeeid", "lastname"]]);
+        const grid = buildSheetGrid(XLSX, ws);
+        const wire = wireSheetGrid(grid);
+        wire.colWidths = [0, 0];
+        expect(sheetGridFromWire(wire).colWidths).toEqual(grid.colWidths);
+        wire.colWidths = [13, 10_000];
+        expect(sheetGridFromWire(wire).colWidths).toEqual(grid.colWidths);
+    });
+
     it("keeps merged cells as spans and skips covered cells", async () => {
         const XLSX = await import("xlsx");
         const ws = XLSX.utils.aoa_to_sheet([["A", "B", "C"], ["x", "", "z"]]);
@@ -118,6 +171,7 @@ describe("buildSheetGrid", () => {
         const grid = buildSheetGrid(XLSX, ws);
         const restored = sheetGridFromWire(wireSheetGrid(grid));
         expect(restored.rows).toEqual(grid.rows);
+        expect(restored.colWidths).toEqual(grid.colWidths);
         expect(restored.spans.get("0:0")).toEqual({ rowSpan: 1, colSpan: 2 });
         expect(restored.covered.has("0:1")).toBe(true);
         expect(restored.shownCols).toBe(grid.shownCols);
@@ -379,6 +433,37 @@ describe("XlsxPreviewPanel", () => {
         expect(queryByTestId("xlsx-preview-error")).toBeNull();
     });
 
+    it("lays the sheet out at the content width instead of the pane", async () => {
+        const bytes = await workbookBytes((XLSX, wb) => {
+            const note = "Anne has a BA degree in English from St. Lawrence College. She is fluent in French and German.";
+            XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["employeeid", "notes"], ["2", note]]), "employees");
+        });
+        mockPreviewWithBytes(bytes);
+        const { getByTestId, getAllByTestId } = render(
+            <XlsxPreviewPanel absPath="D:/t/book.xlsx" theme={theme} lang="zh-Hans" />,
+        );
+        await waitFor(() => expect(getByTestId("xlsx-preview-table")).toBeTruthy());
+        const table = getByTestId("xlsx-preview-table") as HTMLTableElement;
+        const cols = getAllByTestId("xlsx-preview-col");
+        // employeeid is 10 plus padding; the notes paragraph is capped at 48.
+        expect(cols.map((col) => col.style.width)).toEqual(["13ch", "48ch"]);
+        expect(table.style.tableLayout).toBe("fixed");
+        expect(table.style.width).toBe("61ch");
+        expect(table.style.minWidth).toBe("61ch");
+        expect(table.style.maxWidth).toBe("none");
+        expect(table.style.fontFamily).toContain("monospace");
+        const cells = table.querySelectorAll("td");
+        const id = cells[0] as HTMLElement;
+        const note = cells[3] as HTMLElement;
+        // The id column fits, so it cannot wrap. The notes column is capped.
+        expect(id.style.whiteSpace).toBe("pre");
+        expect(id.style.overflowWrap).toBe("normal");
+        expect(note.style.whiteSpace).toBe("pre-wrap");
+        expect(note.style.overflowWrap).toBe("break-word");
+        expect(note.style.wordBreak).toBe("normal");
+        expect(getByTestId("xlsx-preview-grid").style.minWidth).toBe("0px");
+    });
+
     it("keeps the open sheet when the language or the extract text changes", async () => {
         const bytes = await workbookBytes((XLSX, wb) => {
             const sheet = XLSX.utils.aoa_to_sheet(Array.from({ length: 600 }, (_, r) => [`r${r}`]));
@@ -417,6 +502,8 @@ describe("XlsxPreviewPanel", () => {
         expect(cells[0].style.textAlign).toBe("right");
         expect(cells[1].style.textAlign).toBe("left");
         expect(cells[2].style.textAlign).toBe("right");
+        expect(cells[0].style.whiteSpace).toBe("pre");
+        expect(cells[0].style.overflowWrap).toBe("normal");
         expect(cells[3].style.textAlign).toBe("left");
     });
 

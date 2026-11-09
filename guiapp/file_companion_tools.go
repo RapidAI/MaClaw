@@ -25,7 +25,10 @@ import (
 // read_document reads that one file for Word, Excel, PowerPoint, PDF, text,
 // EPUB and the other formats the office reader already knows. PDF page tools
 // explain themselves when the file is not a PDF; web_search and web_fetch,
-// and pdf_generate, apply to every type. Tool arguments carry no path on
+// and pdf_generate, apply to every type. A public paper URL is downloaded by
+// the same paper pipeline the browser uses, opened in the library, and read
+// with the document reader. web_fetch still cannot choose a save path or
+// download anything that is not that paper. Tool arguments carry no path on
 // purpose. pdf_restore writes a new selectable PDF under the session results
 // directory and does not modify the open file. pdf_generate writes a new PDF
 // of the model's own answer under the same directory.
@@ -50,9 +53,11 @@ const (
 	// document. The host chat can use it when the readers cannot see the
 	// structure. A participant note cannot: the script runs on the host.
 	fileCompanionToolCraft = "craft_tool"
-	// Public literature lookup. Same names the rest of the agent uses, narrowed
-	// at execution so a companion turn cannot save a file, open the browser
-	// profile, or reach a private host.
+	// Public literature lookup. Same names the rest of the agent uses.
+	// web_fetch of a public paper downloads through the paper pipeline and
+	// reads the saved PDF. It still cannot choose a path, open the browser
+	// profile, or reach a private host. A share-discussion note stays
+	// read-only and cannot download.
 	fileCompanionToolWebSearch = "web_search"
 	fileCompanionToolWebFetch  = "web_fetch"
 
@@ -397,7 +402,7 @@ func (h *IMMessageHandler) runFileCompanionHostTool(userID, name, argsJSON strin
 	case fileCompanionToolWebSearch:
 		return h.fileCompanionWebSearch(args)
 	case fileCompanionToolWebFetch:
-		return h.fileCompanionWebFetch(args)
+		return h.fileCompanionWebFetch(userID, args)
 	case fileCompanionToolGenerate:
 		return h.app.fileCompanionToolGenerate(userID, canonical, args)
 	case fileCompanionToolReadDocument:
@@ -455,7 +460,7 @@ func fileCompanionToolProgressText(name, argsJSON string) string {
 	case fileCompanionToolWebSearch:
 		return "正在检索公开网页…"
 	case fileCompanionToolWebFetch:
-		return "正在打开公开网页…"
+		return "正在获取公开页面或论文…"
 	}
 	return "正在处理文档…"
 }

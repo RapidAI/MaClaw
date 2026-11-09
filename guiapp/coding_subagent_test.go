@@ -30,6 +30,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func TestCodingSubAgentStartFailuresReturnCompleteResult(t *testing.T) {
@@ -9233,6 +9234,9 @@ func TestClassifyCodingGuardrail(t *testing.T) {
 		category string
 	}{
 		{name: "git", tool: "bash", command: "git reset --hard HEAD", category: "git"},
+		{name: "raw_ssh", tool: "bash", command: "ssh -o BatchMode=yes -p 99 znsoft@home.rapidai.tech true", category: "tool_redirect"},
+		{name: "raw_ssh_result", tool: "bash", result: "[system rejected] Raw ssh/scp/sftp/remote-rsync command execution through bash is disabled for SSH/server operations.", category: "tool_redirect"},
+		{name: "ssh_hiding_git", tool: "bash", command: "ssh host git reset --hard", category: "tool_redirect"},
 		{name: "delete", tool: "bash", command: "Remove-Item -Recurse .\\build", category: "delete"},
 		{name: "shell_write", tool: "bash", command: "Set-Content src\\a.go x", category: "shell_write"},
 		{name: "scope", tool: "read_file", path: "..\\outside.go", result: "outside project", category: "scope"},
@@ -13571,6 +13575,112 @@ func TestApplySubAgentGuardrailOutcomeFailsPassedTask(t *testing.T) {
 	status, errMsg = applySubAgentGuardrailOutcome(TaskExecPassed, "", repeated)
 	if status != TaskExecFailed || !strings.Contains(errMsg, "1 guardrail block") || strings.Contains(errMsg, "3 guardrail block") {
 		t.Fatalf("repeated identical blocks should count once, got status=%s err=%q", status, errMsg)
+	}
+}
+
+func TestCodingBashSSHRedirectIsNotAFailedCommand(t *testing.T) {
+	project := t.TempDir()
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	sshResult := cb.executeToolWithOutcome("bash", `{"command":"ssh -o BatchMode=yes -p 99 znsoft@home.rapidai.tech true"}`)
+	if sshResult.Outcome != codingToolOutcomeBlocked || !tool.IsRawSSHCommandRejection(sshResult.Text) {
+		t.Fatalf("bash ssh = %#v", sshResult)
+	}
+	if cmds := cb.getCommandsRun(); len(cmds) != 0 {
+		t.Fatalf("ssh redirect must not be stored as a failed command, got %#v", cmds)
+	}
+	violations := cb.getGuardrailViolations()
+	if len(violations) != 1 || violations[0].Category != codingSubAgentGuardrailCategoryToolRedirect {
+		t.Fatalf("ssh guardrail = %#v", violations)
+	}
+	if got := guardrailViolationSummaryPriority(violations[0]); got >= guardrailViolationSummaryPriority(CodingSubAgentGuardrailViolation{Category: codingSubAgentGuardrailCategoryCommand}) {
+		t.Fatalf("ssh redirect priority %d must stay below a real command block", got)
+	}
+	status, errMsg := applySubAgentGuardrailOutcome(TaskExecPassed, "", guardrailViolationsForTaskOutcome(violations, true))
+	if status != TaskExecPassed || errMsg != "" {
+		t.Fatalf("ssh redirect changed a passed task: status=%s err=%q", status, errMsg)
+	}
+
+	cb = &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	gitResult := cb.executeToolWithOutcome("bash", `{"command":"git reset --hard HEAD"}`)
+	if gitResult.Outcome != codingToolOutcomeBlocked {
+		t.Fatalf("git reset = %#v", gitResult)
+	}
+	if cmds := cb.getCommandsRun(); len(cmds) != 1 || cmds[0].Succeeded {
+		t.Fatalf("destructive git must stay a failed command, got %#v", cmds)
+	}
+	status, errMsg = applySubAgentGuardrailOutcome(TaskExecPassed, "", guardrailViolationsForTaskOutcome(cb.getGuardrailViolations(), true))
+	if status != TaskExecFailed || !strings.Contains(errMsg, "git reset") {
+		t.Fatalf("destructive git must still fail the task, status=%s err=%q", status, errMsg)
+	}
+
+	cb = &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	nested := cb.executeToolWithOutcome("ssh", `{"action":"exec","session_id":"s1","command":"ssh other-host uptime"}`)
+	if nested.Outcome != codingToolOutcomeBlocked || !tool.IsRawSSHCommandRejection(nested.Text) {
+		t.Fatalf("nested ssh = %#v", nested)
+	}
+	status, errMsg = applySubAgentGuardrailOutcome(TaskExecPassed, "", guardrailViolationsForTaskOutcome(cb.getGuardrailViolations(), true))
+	if status != TaskExecPassed || errMsg != "" {
+		t.Fatalf("nested ssh redirect changed a passed task: status=%s err=%q", status, errMsg)
+	}
+
+	cb = &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	remoteGit := cb.executeToolWithOutcome("ssh", `{"action":"exec","session_id":"s1","command":"git reset --hard HEAD"}`)
+	if remoteGit.Outcome != codingToolOutcomeBlocked || !strings.Contains(remoteGit.Text, "高风险") {
+		t.Fatalf("remote git reset = %#v", remoteGit)
+	}
+	status, errMsg = applySubAgentGuardrailOutcome(TaskExecPassed, "", guardrailViolationsForTaskOutcome(cb.getGuardrailViolations(), true))
+	if status != TaskExecFailed || !strings.Contains(errMsg, "git reset") {
+		t.Fatalf("remote git reset must still fail the task, status=%s err=%q", status, errMsg)
+	}
+}
+
+func TestRawSSHRedirectDoesNotFailDeliveredCodingTask(t *testing.T) {
+	sshCommand := "ssh -o BatchMode=yes -o ConnectTimeout=6 -p 99 znsoft@home.rapidai.tech true"
+	rejection, rejected := tool.RejectRawSSHCommand(sshCommand)
+	if !rejected {
+		t.Fatal("diagnostic ssh command must stay rejected")
+	}
+	redirect := CodingSubAgentGuardrailViolation{
+		Tool:     "bash",
+		Category: classifyCodingGuardrailCategory("bash", "", sshCommand, rejection),
+		Command:  sshCommand,
+		Summary:  rejection,
+	}
+	if redirect.Category != codingSubAgentGuardrailCategoryToolRedirect {
+		t.Fatalf("raw ssh category = %q", redirect.Category)
+	}
+	for _, gateOn := range []bool{false, true} {
+		kept := guardrailViolationsForTaskOutcome([]CodingSubAgentGuardrailViolation{redirect}, gateOn)
+		status, errMsg := applySubAgentGuardrailOutcome(TaskExecPassed, "", kept)
+		if status != TaskExecPassed || errMsg != "" {
+			t.Fatalf("raw ssh redirect must not fail a passed task (gate=%v), status=%s err=%q", gateOn, status, errMsg)
+		}
+	}
+	// A rejection recorded before the category existed still carries the same text.
+	legacy := redirect
+	legacy.Category = codingSubAgentGuardrailCategoryCommand
+	if kept := guardrailViolationsForTaskOutcome([]CodingSubAgentGuardrailViolation{legacy}, true); len(kept) != 0 {
+		t.Fatalf("legacy command-category ssh rejection must leave the task outcome, kept %#v", kept)
+	}
+	commands := []CodingSubAgentCommandResult{
+		{Command: "python chk_tables.py", Succeeded: true, Summary: "total bad rows: 0"},
+		{Command: sshCommand, Succeeded: false, Summary: rejection},
+	}
+	quality, summary, count := summarizeSubAgentQuality("explored", "passed", true, []string{"README.md"}, nil, commands, 0, []CodingSubAgentGuardrailViolation{redirect}, nil)
+	if quality != codingSubAgentQualityPassed || count != 0 || strings.Contains(summary, "guardrail") {
+		t.Fatalf("quality must ignore a raw-ssh redirect, got %q %q %d", quality, summary, count)
+	}
+
+	labeledGit := CodingSubAgentGuardrailViolation{Tool: "bash", Category: codingSubAgentGuardrailCategoryGit, Command: "ssh host git reset --hard", Summary: "blocked destructive git command"}
+	if kept := guardrailViolationsForTaskOutcome([]CodingSubAgentGuardrailViolation{labeledGit}, true); len(kept) != 1 || kept[0].Category != codingSubAgentGuardrailCategoryGit {
+		t.Fatalf("a git label must stay even when the command text contains ssh, kept %#v", kept)
+	}
+
+	safety := CodingSubAgentGuardrailViolation{Tool: "bash", Category: codingSubAgentGuardrailCategoryGit, Command: "git reset --hard", Summary: "blocked destructive git command"}
+	kept := guardrailViolationsForTaskOutcome([]CodingSubAgentGuardrailViolation{redirect, safety}, true)
+	status, errMsg := applySubAgentGuardrailOutcome(TaskExecPassed, "", kept)
+	if status != TaskExecFailed || !strings.Contains(errMsg, "blocked destructive git command") || strings.Contains(errMsg, "Raw ssh") {
+		t.Fatalf("destructive git must still fail after the ssh redirect is dropped, status=%s err=%q", status, errMsg)
 	}
 }
 

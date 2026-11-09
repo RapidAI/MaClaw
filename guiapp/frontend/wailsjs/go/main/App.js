@@ -474,6 +474,10 @@ export function CleanToolCacheNow() {
   return window['go']['main']['App']['CleanToolCacheNow']();
 }
 
+export function CleanSystemCleanupNow() {
+  return window['go']['main']['App']['CleanSystemCleanupNow']();
+}
+
 export function CleanupSkillArtifactRegistry(arg1, arg2) {
   return window['go']['main']['App']['CleanupSkillArtifactRegistry'](arg1, arg2);
 }
@@ -2551,6 +2555,10 @@ export function SetHardwareAllowCustomPets(arg1) {
 
 export function GetToolCacheStatus() {
   return window['go']['main']['App']['GetToolCacheStatus']();
+}
+
+export function GetSystemCleanupStatus() {
+  return window['go']['main']['App']['GetSystemCleanupStatus']();
 }
 
 export function GetToolDefGenerator() {

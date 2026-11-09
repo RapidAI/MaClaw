@@ -8921,6 +8921,17 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('AVX-512');
         act(() => {
             stepsHandler?.({
+                project_path: projectB,
+                user_id: `desktop-user:expert:book-writer:task:${projectB}`,
+                requirement_restatement: '专家任务的正文。',
+                step_statuses: [{ index: 1, title: '写书', status: 'running', updated_unix: 130 }],
+                steps_revision: 9,
+            });
+        });
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('AVX-512');
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').not.toContain('专家任务');
+        act(() => {
+            stepsHandler?.({
                 user_id: projectSessionKey(projectA),
                 requirement_restatement: buddy,
                 step_statuses: [{ index: 1, title: '排查黑屏', status: 'running', updated_unix: 900 }],

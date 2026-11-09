@@ -314,8 +314,8 @@ func TestSetStickyCodingSessionPermissionMode(t *testing.T) {
 		return ScopeApprovalDeny
 	}, false)
 	h.applyStickyCodingPermissions(user3b, sa3)
-	if !sa3.scopeApproval.fullAccess || sa3.scopeApproval.highRiskFullAccess {
-		t.Fatal("escalated workspace should grant path full only")
+	if !sa3.scopeApproval.fullAccess || !sa3.scopeApproval.highRiskFullAccess {
+		t.Fatal("escalated workspace should grant path full and shell auto-allow")
 	}
 	// Command 以后允许 keeps the current tier and still auto-allows commands.
 	user4 := stickyTestUserID(t)
@@ -699,9 +699,12 @@ func TestApplyStickyPermissionsSplitsPathAndHighRisk(t *testing.T) {
 	if msg := sa.scopeApproval.check("read_file", filepath.Join(filepath.Dir(project), "out.go"), project); msg != "" {
 		t.Fatalf("path trust should allow outside path, got %q", msg)
 	}
-	// High-risk still blocked without session high-risk grant.
-	if sa.scopeApproval.highRiskApproved() {
-		t.Fatal("workspace path trust must not auto-allow high-risk bash")
+	// Workspace trust skips shell prompts without becoming 完全控制.
+	if !sa.scopeApproval.highRiskApproved() {
+		t.Fatal("workspace trust must auto-allow high-risk bash")
+	}
+	if h.codingWorkbenchPermissionMode(userID, false) != "workspace" {
+		t.Fatal("workspace trust must not be reported as full control")
 	}
 
 	h.markStickyCodingSessionHighRiskAccess(userID)
@@ -795,8 +798,11 @@ func TestTaskCommandAllowanceStaysOnTheTaskTab(t *testing.T) {
 	}
 	h.setStickyCodingSessionPermissionMode(kept, "full", "", "")
 	h.setStickyCodingSessionPermissionMode(kept, "workspace", "", "")
-	if h.taskCommandsAutoAllowed(kept) || h.codingWorkbenchPermissionMode(kept, false) != "workspace" {
-		t.Fatal("leaving 完全控制 for 工作区信任 must ask for commands again")
+	if !h.taskCommandsAutoAllowed(kept) || h.codingWorkbenchPermissionMode(kept, false) != "workspace" {
+		t.Fatal("leaving 完全控制 for 工作区信任 must keep shell commands auto-allowed")
+	}
+	if h.getStickyCodingWorkbenchMemory(kept).SessionHighRiskAccess {
+		t.Fatal("leaving 完全控制 must drop the 以后允许 flag; workspace trust does not need it")
 	}
 	h.markStickyCodingSessionHighRiskAccess(userID)
 	h.clearStickyCodingWorkbenchMemory(userID)
@@ -817,6 +823,88 @@ func TestTaskCommandAllowanceStaysOnTheTaskTab(t *testing.T) {
 	(&codingSubAgentCallbacks{subagent: fullChild}).refreshTaskCommandAllowance()
 	if !fullChild.scopeApproval.highRiskApproved() {
 		t.Fatal("full control must skip the first command prompt")
+	}
+}
+
+func TestShellGrantFollowsTheProjectTabNotTheTaskSuffix(t *testing.T) {
+	h := &IMMessageHandler{}
+	dir := t.TempDir()
+	tab := projectSessionOwnerID(dir)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(tab) })
+	turn := tab + ":task:running"
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(turn) })
+
+	h.setStickyCodingSessionPermissionMode(tab, "full", "local", dir)
+	if !h.taskCommandsAutoAllowed(turn) || h.codingWorkbenchPermissionMode(turn, false) != "full" {
+		t.Fatalf("task turn missed 完全控制: allowed=%v mode=%s", h.taskCommandsAutoAllowed(turn), h.codingWorkbenchPermissionMode(turn, false))
+	}
+	h.setStickyCodingSessionPermissionMode(tab, "workspace", "", "")
+	child := &CodingSubAgent{
+		handler:           h,
+		permissionOwnerID: turn,
+		scopeApproval:     newScopeApprovalState(nil, false),
+	}
+	(&codingSubAgentCallbacks{subagent: child}).refreshTaskCommandAllowance()
+	if mode := h.codingWorkbenchPermissionMode(turn, false); !child.scopeApproval.highRiskApproved() || mode != "workspace" {
+		t.Fatalf("工作区信任 on the project tab must skip shell confirm for the running turn: allowed=%v mode=%s highRisk=%v tab=%+v", h.taskCommandsAutoAllowed(turn), mode, child.scopeApproval.highRiskApproved(), h.getStickyCodingWorkbenchMemory(tab))
+	}
+	h.setStickyCodingSessionPermissionMode(turn, "request", "local", dir)
+	(&codingSubAgentCallbacks{subagent: child}).refreshTaskCommandAllowance()
+	if h.taskCommandsAutoAllowed(turn) || child.scopeApproval.highRiskApproved() || h.codingWorkbenchPermissionMode(turn, false) != "request" {
+		t.Fatal("explicit 请求授权 on the turn must still ask")
+	}
+}
+
+func TestExpertSessionDoesNotReplaceCodingTabPermission(t *testing.T) {
+	h := &IMMessageHandler{}
+	dir := t.TempDir()
+	tab := projectSessionOwnerID(dir)
+	expert := expertTaskSessionUserID("book-writer", dir)
+	t.Cleanup(func() {
+		h.clearStickyCodingWorkbenchMemory(tab)
+		h.clearStickyCodingWorkbenchMemory(expert)
+	})
+	if stickyCodingMemoryKey(expert) == stickyCodingMemoryKey(tab) || stickyCodingMemoryFilePath(expert) == stickyCodingMemoryFilePath(tab) {
+		t.Fatal("expert task must keep its own workbench cache and file")
+	}
+	other := expertTaskSessionUserID("book-writer", t.TempDir())
+	if codingAgentResumeStatePath(expert) == codingAgentResumeStatePath(tab) || codingAgentResumeStatePath(expert) == codingAgentResumeStatePath(other) {
+		t.Fatal("expert resume must not share the coding tab or another expert task")
+	}
+	slash := "desktop-user:" + filepath.ToSlash(dir)
+	if stickyCodingMemoryKey(slash) != stickyCodingMemoryKey(tab) || stickyCodingMemoryKey(tab+":task:running") != stickyCodingMemoryKey(tab) {
+		t.Fatal("slash form and the running turn must follow the coding tab")
+	}
+	rawExpert := "desktop-user:expert:book-writer:task:" + dir
+	if stickyCodingMemoryKey(rawExpert) != expert || stickyCodingMemoryFilePath(rawExpert) != stickyCodingMemoryFilePath(expert) || codingAgentResumeStatePath(rawExpert) != codingAgentResumeStatePath(expert) {
+		t.Fatalf("expert task spellings diverged key=%s file=%s", stickyCodingMemoryKey(rawExpert), stickyCodingMemoryFilePath(rawExpert))
+	}
+	h.setStickyCodingSessionPermissionMode(tab, "full", "local", dir)
+	h.setStickyCodingSessionPermissionMode(expert, "request", "local", dir)
+	if h.codingWorkbenchPermissionMode(tab, false) != "full" || !h.taskCommandsAutoAllowed(slash) {
+		t.Fatal("expert 请求授权 must not replace the coding tab's 完全控制")
+	}
+	if mode := h.codingWorkbenchPermissionMode(expert, false); mode == "full" {
+		t.Fatalf("expert session picked up the coding tab mode %s", mode)
+	}
+	if h.taskCommandsAutoAllowed(rawExpert) {
+		t.Fatal("backslash spelling of an expert 请求授权 task must still ask")
+	}
+	h.setStickyCodingSessionPermissionMode(rawExpert, "full", "local", dir)
+	if !h.taskCommandsAutoAllowed(expert) || h.codingWorkbenchPermissionMode(tab, false) != "full" {
+		t.Fatal("expert 完全控制 on one spelling must cover that task without replacing the coding tab")
+	}
+	expertDir := filepath.Dir(stickyCodingMemoryFilePath(expert))
+	h.clearStickyCodingWorkbenchMemory(rawExpert)
+	if h.codingWorkbenchPermissionMode(tab, false) != "full" || !h.taskCommandsAutoAllowed(tab) {
+		t.Fatal("clearing the expert session must keep the coding tab's 完全控制")
+	}
+	if _, err := os.Stat(expertDir); !os.IsNotExist(err) {
+		t.Fatalf("expert workbench directory should be removed, err=%v", err)
+	}
+	data, err := os.ReadFile(stickyCodingMemoryFilePath(tab))
+	if err != nil || !strings.Contains(string(data), `"session_permission_mode":"full"`) {
+		t.Fatalf("expert clear removed the coding workbench file: err=%v data=%s", err, data)
 	}
 }
 
@@ -1262,6 +1350,81 @@ func TestIncomingMessageDropsPollutedCodingArmBeforeRearm(t *testing.T) {
 	mem := h.getStickyCodingWorkbenchMemory(remoteUser)
 	if mem.Kind != "remote" || mem.RemoteSessionID != "ssh-live" {
 		t.Fatalf("remote workbench must survive incoming ensure, got %+v", mem)
+	}
+}
+
+func TestExpertIncomingMessageKeepsShellGrantOffTheCodingTab(t *testing.T) {
+	app, h := newCodingBoundaryTestHandler(t)
+	coding := app.CreateTaskWithMode("Coding tab", "", "coding_dev")
+	if coding.ProjectPath == "" {
+		t.Fatal("failed to create coding task")
+	}
+	tab := projectSessionOwnerID(coding.ProjectPath)
+	ordinary := app.CreateTask("Paper task", "")
+	if ordinary.ProjectPath == "" {
+		t.Fatal("failed to create ordinary task")
+	}
+	remote := app.CreateTaskWithMode("Remote tab", "", "remote_coding")
+	if remote.ProjectPath == "" {
+		t.Fatal("failed to create remote coding task")
+	}
+	remoteTab := projectSessionOwnerID(remote.ProjectPath)
+	onCodingDir := expertTaskSessionUserID("book-writer", coding.ProjectPath)
+	onPaper := expertTaskSessionUserID("book-writer", ordinary.ProjectPath)
+	onRemote := expertTaskSessionUserID("book-writer", remote.ProjectPath)
+	t.Cleanup(func() {
+		h.clearStickyCodingWorkbenchMemory(tab)
+		h.clearStickyCodingWorkbenchMemory(remoteTab)
+		h.clearStickyCodingWorkbenchMemory(onCodingDir)
+		h.clearStickyCodingWorkbenchMemory(onPaper)
+		h.clearStickyCodingWorkbenchMemory(onRemote)
+	})
+	h.setStickyCodingSessionPermissionMode(tab, "full", "local", coding.ProjectPath)
+	h.setStickyCodingSessionPermissionMode(remoteTab, "full", "remote", remote.ProjectPath)
+	h.setStickyCodingSessionPermissionMode(onCodingDir, "full", "", coding.ProjectPath)
+	h.setStickyCodingSessionPermissionMode(onPaper, "full", "", ordinary.ProjectPath)
+	h.setStickyCodingSessionPermissionMode(onRemote, "full", "", remote.ProjectPath)
+
+	h.ensurePureCodingArmedForIncomingMessage(onCodingDir)
+	h.ensurePureCodingArmedForIncomingMessage(onPaper)
+	h.ensurePureCodingArmedForIncomingMessage(onRemote)
+
+	if h.codingWorkbenchPermissionMode(tab, false) != "full" || !h.taskCommandsAutoAllowed(tab) {
+		t.Fatal("expert message must keep the coding tab's 完全控制")
+	}
+	if !h.isPureCodingWorkbenchSession(tab) {
+		t.Fatal("coding tab must stay a workbench")
+	}
+	if h.isPureCodingWorkbenchSession(onCodingDir) || h.isPureCodingWorkbenchSession(onPaper) {
+		t.Fatal("expert chat must not become the coding workbench")
+	}
+	if !h.taskCommandsAutoAllowed(onCodingDir) || !h.taskCommandsAutoAllowed(onPaper) || !h.taskCommandsAutoAllowed(onRemote) {
+		t.Fatal("next expert message must keep that task's 完全控制")
+	}
+	if app.isDesktopCodingWorkbenchSession(onCodingDir, coding.ProjectPath) || app.isDesktopCodingWorkbenchSession(onRemote, remote.ProjectPath) {
+		t.Fatal("expert chat must not inherit the directory's coding tag")
+	}
+	if !app.isDesktopCodingWorkbenchSession(tab, coding.ProjectPath) {
+		t.Fatal("coding tab must stay a desktop coding session")
+	}
+	if h.codingSessionIsRemote(onRemote, h.getStickyCodingWorkbenchMemory(onRemote)) {
+		t.Fatal("expert chat must not inherit a remote coding tag from the directory")
+	}
+	if !h.codingSessionIsRemote(remoteTab, h.getStickyCodingWorkbenchMemory(remoteTab)) {
+		t.Fatal("remote coding tab must stay remote")
+	}
+	if h.codingWorkbenchSurvivesConversationBoundary(onCodingDir) || h.codingWorkbenchSurvivesConversationBoundary(onRemote) {
+		t.Fatal("expert /new must not keep a workbench it did not arm")
+	}
+	if !h.codingWorkbenchSurvivesConversationBoundary(tab) {
+		t.Fatal("coding tab workbench must survive /new")
+	}
+	h.resetConversationResidue(onCodingDir)
+	if h.codingWorkbenchPermissionMode(tab, false) != "full" || !h.taskCommandsAutoAllowed(tab) {
+		t.Fatal("expert /new must keep the coding tab's 完全控制")
+	}
+	if h.taskCommandsAutoAllowed(onCodingDir) {
+		t.Fatal("expert /new clears a grant that was not its own coding arm")
 	}
 }
 

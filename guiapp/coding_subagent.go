@@ -1830,11 +1830,7 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 	}
 
 	if c != nil && c.subagent != nil && c.subagent.scopeApproval != nil && c.subagent.scopeApproval.highRiskApproved() {
-		if c.subagent.scopeApproval.pathFullAccessGranted() {
-			prompt += "\n当前权限：完全控制。用户明确要求的项目内高危命令将由宿主自动放行；仍须调用工具发起该命令，不要只回复拒绝。\n"
-		} else {
-			prompt += "\n当前任务已选择以后允许。本任务内高危命令将由宿主自动放行，不要再要求用户确认；仍须调用工具发起该命令。\n"
-		}
+		prompt += codingShellGrantPrompt(c.subagent.handler, c.subagent.taskPermissionOwnerID(), true, c.subagent.scopeApproval.pathFullAccessGranted())
 	}
 	if c != nil && !c.codingQualityGateOn() {
 		prompt = relaxCodingPromptForDisabledQualityGate(prompt)
@@ -2927,7 +2923,11 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		if command, _ := bashArgs["command"].(string); command != "" {
 			workingDir, _ := bashArgs["working_dir"].(string)
 			if msg := c.guardCodingShellCommand(command, workingDir); msg != "" {
-				c.trackCommandResult(bashArgs, msg, false)
+				// A routing redirect did not run. A failed-command record would
+				// make the command summary treat "use the ssh tool" as a failed run.
+				if !tool.IsRawSSHCommandRejection(msg) {
+					c.trackCommandResult(bashArgs, msg, false)
+				}
 				return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
@@ -7311,6 +7311,9 @@ func compactGuardrailSummary(result string) string {
 }
 
 func classifyCodingGuardrailCategory(toolName, path, command, result string) CodingSubAgentGuardrailCategory {
+	if codingGuardrailResultIsToolRedirect(command, result) {
+		return codingSubAgentGuardrailCategoryToolRedirect
+	}
 	normalizedCommand := strings.ToLower(strings.Join(strings.Fields(command), " "))
 	if classifyCodingSubAgentTool(toolName) == codingSubAgentToolBash {
 		switch {
@@ -7340,6 +7343,33 @@ func classifyCodingGuardrailCategory(toolName, path, command, result string) Cod
 	return codingSubAgentGuardrailCategoryPolicy
 }
 
+// codingGuardrailResultIsToolRedirect reports a bash ssh/scp/sftp/rsync that
+// was refused so the model uses the builtin ssh tool. The same rejection text
+// is recognized when the command field was not the raw line.
+func codingGuardrailResultIsToolRedirect(command, result string) bool {
+	if _, rejected := tool.RejectRawSSHCommand(command); rejected {
+		return true
+	}
+	return tool.IsRawSSHCommandRejection(result)
+}
+
+func codingGuardrailIsToolRedirect(violation CodingSubAgentGuardrailViolation) bool {
+	switch violation.Category {
+	case codingSubAgentGuardrailCategoryGit,
+		codingSubAgentGuardrailCategoryDelete,
+		codingSubAgentGuardrailCategoryShellWrite,
+		codingSubAgentGuardrailCategoryScope,
+		codingSubAgentGuardrailCategoryHost,
+		codingSubAgentGuardrailCategoryReadSnapshot:
+		// A safety or scope label stays even when the command text also mentions ssh.
+		return false
+	case codingSubAgentGuardrailCategoryToolRedirect:
+		return true
+	default:
+		return codingGuardrailResultIsToolRedirect(violation.Command, violation.Summary)
+	}
+}
+
 // codingGuardrailResultIsReadSnapshot reports a recoverable edit rejection.
 // The tool told the model to read the current source and retry. For an indexed
 // file that source is the code_navigation node body. Nothing was written, so
@@ -7358,23 +7388,30 @@ func codingGuardrailResultIsReadSnapshot(result string) bool {
 	}
 }
 
-// guardrailViolationsForTaskOutcome drops read-snapshot rejections when the
-// quality gate is off. The tool call stays rejected so the model can read and
-// retry. Destructive git, recursive delete, shell writes, scope, and host
-// blocks still fail the task.
+// guardrailViolationsForTaskOutcome decides which recorded rejections can fail
+// a task. A tool redirect stays on the tool result so the model can call ssh;
+// it is not a failed deliverable, with the quality gate on or off. Read-snapshot
+// rejections drop only while the gate is off. Destructive git, recursive delete,
+// shell writes, scope, and host blocks still fail the task.
 func guardrailViolationsForTaskOutcome(violations []CodingSubAgentGuardrailViolation, qualityGateOn bool) []CodingSubAgentGuardrailViolation {
-	if qualityGateOn || len(violations) == 0 {
+	if len(violations) == 0 {
 		return violations
 	}
 	out := make([]CodingSubAgentGuardrailViolation, 0, len(violations))
 	for _, violation := range violations {
-		if violation.Category == codingSubAgentGuardrailCategoryReadSnapshot {
+		if codingGuardrailIsToolRedirect(violation) {
+			continue
+		}
+		if !qualityGateOn && violation.Category == codingSubAgentGuardrailCategoryReadSnapshot {
 			continue
 		}
 		out = append(out, violation)
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	if len(out) == len(violations) {
+		return violations
 	}
 	return out
 }
@@ -7746,6 +7783,7 @@ func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAge
 	var warnings []string
 	postEditCommandsWithBlocked := filterPostEditSubAgentCommands(commands, lastEditSeq)
 	unresolvedGuardrails := unresolvedSubAgentGuardrailViolations(guardrails, postEditCommandsWithBlocked)
+	unresolvedGuardrails = guardrailViolationsForTaskOutcome(unresolvedGuardrails, true)
 	if blockCount := guardrailBlockCount(unresolvedGuardrails); blockCount > 0 {
 		failed = append(failed, fmt.Sprintf("%d guardrail block(s)", blockCount))
 	}
@@ -18591,7 +18629,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 4. 只在用户明确要求或仓库已有流程要求时，才追加 TEST_REPORT.md；不要默认制造报告文件。
 
 ## 禁止行为
-- 禁止擅自执行破坏性删除、清理或 Git 工作区/索引/历史改写命令，例如 git reset --hard、git checkout --、git checkout .、git restore、git switch、git merge/rebase/stash、git add/commit/apply/cherry-pick/revert/rm/mv/update-index/read-tree、git clean -f、rm -rf、Remove-Item -Recurse、rmdir /s、del /s。若当前任务原文明确要求清空或删除项目路径内的文件，或明确要求改写 Git 工作区，必须调用 bash（working_dir 设为项目路径）；宿主会弹出确认，或在「完全控制」下自动放行。禁止只回复文字拒绝而不调用工具。
+- 禁止擅自执行破坏性删除、清理或 Git 工作区/索引/历史改写命令，例如 git reset --hard、git checkout --、git checkout .、git restore、git switch、git merge/rebase/stash、git add/commit/apply/cherry-pick/revert/rm/mv/update-index/read-tree、git clean -f、rm -rf、Remove-Item -Recurse、rmdir /s、del /s。若当前任务原文明确要求清空或删除项目路径内的文件，或明确要求改写 Git 工作区，必须调用 bash（working_dir 设为项目路径）；宿主只在「用户确认」下弹出确认，「完全控制」和「工作区信任」自动放行。禁止只回复文字拒绝而不调用工具。
 - 禁止对 git status/diff/log 自检使用 2>/dev/null 或 >/dev/null 掩盖错误输出。
 - 禁止不读文件就直接修改；禁止无关重构、无关格式化、依赖 churn 或 speculative feature work。
 - 遇到无法解决的问题，说明具体原因，不要反复重试相同的失败操作。编译失败先改命令再重跑。

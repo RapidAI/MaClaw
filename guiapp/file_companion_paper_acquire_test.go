@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -285,6 +286,259 @@ func TestAcquireCompanionPaperSkipsLoopbackCitation(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 0 {
 		t.Fatalf("files=%v", namesOf(entries))
+	}
+}
+
+func TestResolveCompanionPaperKeepsACompleteProbedPDF(t *testing.T) {
+	dir := t.TempDir()
+	hits := 0
+	payload := string(append([]byte("%PDF-1.4\nprobed "), 0xFF, 0xFE))
+	restorePaperHooks(t, dir, func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		hits++
+		if strings.TrimSpace(opts.SavePath) != "" {
+			t.Fatal("complete pdf was downloaded again")
+		}
+		return &websearch.FetchResult{URL: rawURL, ContentType: "application/pdf", Content: payload}, nil
+	})
+	path, code, page := resolveCompanionPaperPage("https://example.org/noext")
+	saved, readErr := os.ReadFile(path)
+	if code != "" || page != nil || hits != 1 || readErr != nil || !bytes.Equal(saved, []byte(payload)) {
+		t.Fatalf("path=%s code=%s page=%v hits=%d err=%v bytes=%d", path, code, page != nil, hits, readErr, len(saved))
+	}
+	again, code, page := resolveCompanionPaperPage("https://example.org/noext")
+	if code != "" || page != nil || again != path || hits != 1 {
+		t.Fatalf("again=%s code=%s hits=%d", again, code, hits)
+	}
+}
+
+func TestResolveCompanionPaperKeepsAnOctetStreamPDF(t *testing.T) {
+	dir := t.TempDir()
+	hits := 0
+	payload := string(append([]byte("%PDF-1.4\noctet "), 0xFF, 0xFE))
+	restorePaperHooks(t, dir, func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		hits++
+		if strings.TrimSpace(opts.SavePath) != "" {
+			t.Fatal("complete octet-stream pdf was downloaded again")
+		}
+		kind := "application/octet-stream"
+		if strings.Contains(rawURL, "/html") {
+			kind = "text/html; charset=utf-8"
+		}
+		return &websearch.FetchResult{URL: rawURL, ContentType: kind, Content: payload}, nil
+	})
+	path, code, page := resolveCompanionPaperPage("https://cdn.example.org/paper")
+	saved, readErr := os.ReadFile(path)
+	if code != "" || page != nil || hits != 1 || readErr != nil || !bytes.Equal(saved, []byte(payload)) {
+		t.Fatalf("path=%s code=%s page=%v hits=%d err=%v", path, code, page != nil, hits, readErr)
+	}
+	again, code, page := resolveCompanionPaperPage("https://cdn.example.org/paper")
+	if code != "" || page != nil || again != path || hits != 1 {
+		t.Fatalf("again=%s code=%s hits=%d", again, code, hits)
+	}
+	htmlPath, code, page := resolveCompanionPaperPage("https://cdn.example.org/html")
+	if htmlPath != "" || code == "" || page == nil || !strings.Contains(page.Content, "%PDF-") || hits != 2 {
+		t.Fatalf("html path=%s code=%s page=%v hits=%d", htmlPath, code, page != nil, hits)
+	}
+}
+
+func TestResolveCompanionPaperRedownloadsAClippedOctetStreamPDF(t *testing.T) {
+	dir := t.TempDir()
+	hits := 0
+	restorePaperHooks(t, dir, func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		hits++
+		if strings.TrimSpace(opts.SavePath) == "" {
+			return &websearch.FetchResult{URL: rawURL, ContentType: "application/octet-stream", Content: "%PDF-1.4 clipped", ResponseClipped: true}, nil
+		}
+		if err := os.WriteFile(opts.SavePath, []byte("%PDF-1.4 full"), 0o644); err != nil {
+			return nil, err
+		}
+		return &websearch.FetchResult{URL: rawURL, SavedTo: opts.SavePath, ContentType: "application/octet-stream"}, nil
+	})
+	path, code, page := resolveCompanionPaperPage("https://cdn.example.org/paper")
+	if code != "" || page != nil || hits != 2 || !fileIsPDF(path) {
+		t.Fatalf("path=%s code=%s hits=%d", path, code, hits)
+	}
+}
+
+func TestResolveCompanionPaperTimeoutStillFetchesWhitelistPDF(t *testing.T) {
+	dir := t.TempDir()
+	hits := 0
+	pageURL := "https://www.biorxiv.org/content/10.1101/2020.01.01.123456"
+	restorePaperHooks(t, dir, func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		hits++
+		if strings.TrimSpace(opts.SavePath) == "" {
+			return nil, context.DeadlineExceeded
+		}
+		if !strings.Contains(rawURL, ".full.pdf") {
+			t.Fatalf("candidate=%s", rawURL)
+		}
+		if err := os.WriteFile(opts.SavePath, []byte("%PDF-1.4 whitelist"), 0o644); err != nil {
+			return nil, err
+		}
+		return &websearch.FetchResult{URL: rawURL, SavedTo: opts.SavePath, ContentType: "application/pdf"}, nil
+	})
+	path, code, page := resolveCompanionPaperPage(pageURL)
+	if code != "" || page != nil || hits != 2 || !fileIsPDF(path) {
+		t.Fatalf("path=%s code=%s hits=%d", path, code, hits)
+	}
+	if !strings.HasSuffix(path, companionPaperFileName(canonicalPaperURL(pageURL))) {
+		t.Fatalf("path=%s", path)
+	}
+	again, code, page := resolveCompanionPaperPage(pageURL)
+	if code != "" || page != nil || again != path || hits != 2 {
+		t.Fatalf("again=%s code=%s hits=%d", again, code, hits)
+	}
+}
+
+func TestResolveCompanionPaperTimeoutDoesNotRefetchAPage(t *testing.T) {
+	dir := t.TempDir()
+	hits := 0
+	restorePaperHooks(t, dir, func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		hits++
+		return nil, context.DeadlineExceeded
+	})
+	path, code, page := resolveCompanionPaperPage("https://example.org/blog")
+	if path != "" || page != nil || code != companionPaperCodeTimeout || hits != 1 {
+		t.Fatalf("path=%s code=%s hits=%d", path, code, hits)
+	}
+	text, ok, handled := (&IMMessageHandler{}).fileCompanionFetchPaper("https://example.org/blog", nil)
+	if !handled || ok || hits != 2 || !strings.Contains(text, "没有读到正文") || strings.Contains(text, "没有保存") {
+		t.Fatalf("page timeout = %q ok=%v handled=%v hits=%d", text, ok, handled, hits)
+	}
+	pdfText, pdfOK, pdfHandled := (&IMMessageHandler{}).fileCompanionFetchPaper("https://example.org/paper.pdf", nil)
+	if !pdfHandled || pdfOK || !strings.Contains(pdfText, "没有保存") {
+		t.Fatalf("pdf timeout = %q ok=%v handled=%v", pdfText, pdfOK, pdfHandled)
+	}
+}
+
+func TestResolveCompanionPaperUsesTheFinalPageForPDFLinks(t *testing.T) {
+	dir := t.TempDir()
+	const landing = "https://doi.org/10.1000/xyz"
+	const wantPDF = "https://publisher.example.org/article/view/download.pdf"
+	restorePaperHooks(t, dir, func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		if strings.TrimSpace(opts.SavePath) == "" {
+			body := `<html><meta name="citation_pdf_url" content="download.pdf"></html>`
+			return &websearch.FetchResult{URL: "https://publisher.example.org/article/view/1", ContentType: "text/html", Content: body}, nil
+		}
+		if rawURL != wantPDF {
+			t.Fatalf("candidate=%s", rawURL)
+		}
+		if err := os.WriteFile(opts.SavePath, []byte("%PDF-1.4 redirected"), 0o644); err != nil {
+			return nil, err
+		}
+		return &websearch.FetchResult{URL: rawURL, SavedTo: opts.SavePath, ContentType: "application/pdf"}, nil
+	})
+	path, code, page := resolveCompanionPaperPage(landing)
+	if code != "" || page != nil || !fileIsPDF(path) {
+		t.Fatalf("path=%s code=%s", path, code)
+	}
+	if !strings.HasSuffix(path, companionPaperFileName(canonicalPaperURL(landing))) {
+		t.Fatalf("path=%s", path)
+	}
+}
+
+func TestResolveCompanionPaperHTTPErrorDoesNotRefetchThePage(t *testing.T) {
+	dir := t.TempDir()
+	hits := 0
+	restorePaperHooks(t, dir, func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		hits++
+		if strings.TrimSpace(opts.SavePath) == "" {
+			return nil, errors.New("HTTP 404: Not Found")
+		}
+		if !strings.Contains(rawURL, ".full.pdf") {
+			t.Fatalf("candidate=%s", rawURL)
+		}
+		if err := os.WriteFile(opts.SavePath, []byte("%PDF-1.4 after 404"), 0o644); err != nil {
+			return nil, err
+		}
+		return &websearch.FetchResult{URL: rawURL, SavedTo: opts.SavePath, ContentType: "application/pdf"}, nil
+	})
+	pageURL := "https://www.biorxiv.org/content/10.1101/2020.01.01.123456"
+	path, code, page := resolveCompanionPaperPage(pageURL)
+	if code != "" || page != nil || hits != 2 || !fileIsPDF(path) {
+		t.Fatalf("path=%s code=%s hits=%d", path, code, hits)
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	text, ok := (&IMMessageHandler{app: app}).fileCompanionWebFetch("file-companion:host", map[string]interface{}{
+		"url": "https://example.org/missing",
+	})
+	if ok || hits != 3 || !strings.Contains(text, "抓取失败") || !strings.Contains(text, "HTTP 404") {
+		t.Fatalf("missing page = %q ok=%v hits=%d", text, ok, hits)
+	}
+}
+
+func TestResolveCompanionPaperTriesTheNextCandidateAfterAFailure(t *testing.T) {
+	dir := t.TempDir()
+	var downloaded []string
+	restorePaperHooks(t, dir, func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		if strings.TrimSpace(opts.SavePath) == "" {
+			body := `<html><meta name="citation_pdf_url" content="https://cdn.example.org/missing.pdf"><link rel="alternate" type="application/pdf" href="https://cdn.example.org/real.pdf"></html>`
+			return &websearch.FetchResult{URL: rawURL, ContentType: "text/html", Content: body}, nil
+		}
+		downloaded = append(downloaded, rawURL)
+		if strings.Contains(rawURL, "missing.pdf") {
+			return nil, errors.New("HTTP 404: Not Found")
+		}
+		if !strings.Contains(rawURL, "real.pdf") {
+			t.Fatalf("candidate=%s", rawURL)
+		}
+		if err := os.WriteFile(opts.SavePath, []byte("%PDF-1.4 next"), 0o644); err != nil {
+			return nil, err
+		}
+		return &websearch.FetchResult{URL: rawURL, SavedTo: opts.SavePath, ContentType: "application/pdf"}, nil
+	})
+	pageURL := "https://example.org/abs/1"
+	path, code, page := resolveCompanionPaperPage(pageURL)
+	if code != "" || page != nil || !fileIsPDF(path) || len(downloaded) != 2 {
+		t.Fatalf("path=%s code=%s downloaded=%v", path, code, downloaded)
+	}
+	if !strings.HasSuffix(path, companionPaperFileName(canonicalPaperURL(pageURL))) {
+		t.Fatalf("path=%s", path)
+	}
+}
+
+func TestResolveCompanionPaperDoesNotDownloadTheProbedURLAgain(t *testing.T) {
+	dir := t.TempDir()
+	hits := 0
+	restorePaperHooks(t, dir, func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		hits++
+		if strings.TrimSpace(opts.SavePath) != "" {
+			t.Fatalf("probed url downloaded again: %s", rawURL)
+		}
+		if strings.Contains(rawURL, "openreview.net") {
+			return nil, errors.New("HTTP 404: Not Found")
+		}
+		return &websearch.FetchResult{URL: rawURL, ContentType: "text/html", Content: "   "}, nil
+	})
+	path, code, page, err := resolveCompanionPaperWithin(context.Background(), "https://openreview.net/pdf?id=abcDEF123", companionPaperHTMLTimeoutS)
+	if path != "" || page != nil || code != companionPaperCodeSaveFailed || hits != 1 || err == nil || !strings.Contains(err.Error(), "HTTP 404") {
+		t.Fatalf("path=%s code=%s hits=%d err=%v", path, code, hits, err)
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	text, ok := (&IMMessageHandler{app: app}).fileCompanionWebFetch("file-companion:host", map[string]interface{}{
+		"url": "https://example.org/empty",
+	})
+	if ok || hits != 2 || !strings.Contains(text, "没有可提取的正文") {
+		t.Fatalf("empty page = %q ok=%v hits=%d", text, ok, hits)
+	}
+}
+
+func TestResolveCompanionPaperRedownloadsAClippedPDF(t *testing.T) {
+	dir := t.TempDir()
+	hits := 0
+	restorePaperHooks(t, dir, func(ctx context.Context, rawURL string, opts *websearch.FetchOptions) (*websearch.FetchResult, error) {
+		hits++
+		if strings.TrimSpace(opts.SavePath) == "" {
+			return &websearch.FetchResult{URL: rawURL, ContentType: "application/pdf", Content: "%PDF-1.4 clipped", ResponseClipped: true}, nil
+		}
+		if err := os.WriteFile(opts.SavePath, []byte("%PDF-1.4 full"), 0o644); err != nil {
+			return nil, err
+		}
+		return &websearch.FetchResult{URL: rawURL, SavedTo: opts.SavePath, ContentType: "application/pdf"}, nil
+	})
+	path, code, page := resolveCompanionPaperPage("https://example.org/noext")
+	if code != "" || page != nil || hits != 2 || !fileIsPDF(path) {
+		t.Fatalf("path=%s code=%s hits=%d", path, code, hits)
 	}
 }
 

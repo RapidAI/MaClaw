@@ -208,6 +208,75 @@ func TestStaleTabWithRecoveryWorkIsRetained(t *testing.T) {
 	}
 }
 
+func TestResumedSlotDoesNotKeepFinishedTaskInterrupted(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	app.aiConversationMemory = memory
+
+	const projectPath = "D:/work/task"
+	owner := projectSessionOwnerID(projectPath)
+	memory.UpsertUnfinishedSlot(owner, &agent.UnfinishedTaskSlot{
+		SlotID: "resume-1", Status: agent.UnfinishedTaskSlotStatusInterrupted,
+		LastToolName: "database_query",
+	})
+	if !memory.BindUnfinishedSlot(owner, "resume-1") {
+		t.Fatal("resume bind failed")
+	}
+
+	// Bind is the start of the turn, before the session is marked running.
+	// The row stays recoverable until that turn has had time to finish.
+	starting := &ProjectSearchResult{ProjectPath: projectPath, HasOutput: true}
+	app.applyTaskListWorkflow(starting, projectPath, nil, nil, nil, nil, nil)
+	if starting.ActiveWorkflow == nil || starting.ActiveWorkflow.Status != "interrupted" {
+		t.Fatalf("a resume that just started was filed as finished: %#v", starting.ActiveWorkflow)
+	}
+
+	liveRow := &ProjectSearchResult{ProjectPath: projectPath, HasOutput: true}
+	live := map[string]struct{}{normalizeRecentTaskPathKey(projectPath): {}}
+	app.applyTaskListWorkflow(liveRow, projectPath, nil, nil, nil, nil, live)
+	if liveRow.ActiveWorkflow == nil || liveRow.ActiveWorkflow.Status != string(codingruntime.TaskRunning) {
+		t.Fatalf("live continuation status = %#v, want running", liveRow.ActiveWorkflow)
+	}
+
+	slot := memory.GetUnfinishedSlot(owner)
+	if slot == nil {
+		t.Fatal("resume slot missing")
+	}
+	slot.BoundAt = time.Now().Add(-time.Hour)
+	memory.UpsertUnfinishedSlot(owner, slot)
+	idle := &ProjectSearchResult{ProjectPath: projectPath, HasOutput: true}
+	app.applyTaskListWorkflow(idle, projectPath, nil, nil, nil, nil, nil)
+	if idle.ActiveWorkflow != nil {
+		t.Fatalf("finished continuation stayed interrupted: %#v", idle.ActiveWorkflow)
+	}
+}
+
+func TestResumedReviewSlotKeepsTaskInterrupted(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	app.aiConversationMemory = memory
+
+	const projectPath = "D:/work/task"
+	owner := projectSessionOwnerID(projectPath)
+	memory.UpsertUnfinishedSlot(owner, &agent.UnfinishedTaskSlot{
+		SlotID: "mail-1", Status: agent.UnfinishedTaskSlotStatusInterrupted,
+		RecoveryMode: "requires_review", LastToolName: "im_message", SideEffectState: "external_uncertain",
+	})
+	if !memory.BindUnfinishedSlot(owner, "mail-1") {
+		t.Fatal("resume bind failed")
+	}
+
+	row := &ProjectSearchResult{ProjectPath: projectPath, HasOutput: true}
+	app.applyTaskListWorkflow(row, projectPath, nil, nil, nil, nil, nil)
+	if row.ActiveWorkflow == nil || row.ActiveWorkflow.Status != "interrupted" {
+		t.Fatalf("unreviewed send status = %#v, want interrupted", row.ActiveWorkflow)
+	}
+}
+
 func TestCodingWorkbenchTTLRetentionState(t *testing.T) {
 	if !codingWorkbenchHasUnfinishedWork(stickyCodingWorkbenchMemory{
 		StepStatuses: []codingWorkbenchStepStatus{{Status: "passed"}, {Status: "pending"}},

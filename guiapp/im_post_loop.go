@@ -39,6 +39,10 @@ func (h *IMMessageHandler) finalizeIMAgentLoopResponse(msg IMUserMessage, loopCt
 	h.maybeAttachVoiceSummary(resp, msg.Platform, isVoiceInputMessage(msg))
 	h.settleSessionGovernedTaskAfterLoop(msg, loopCtx, resp)
 	h.settleSemanticSessionResidue(msg, loopCtx, resp)
+	// The task list reads a leftover recovery slot as interrupted. A turn
+	// that already finished has to retire that slot before the response is
+	// emitted, or the next list refresh puts the finished task back on 已中断.
+	h.settleResumedUnfinishedSlot(msg.UserID, loopCtx, resp)
 	return resp
 }
 

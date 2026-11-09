@@ -265,6 +265,13 @@ func arxivPaperFolderNameFor(displayName string) string {
 // companion subfolder, otherwise the home directory. The folder is created
 // on first use.
 func (a *App) arxivPaperDir() (string, error) {
+	return a.arxivPaperDirAt(true)
+}
+
+// arxivPaperDirAt resolves the paper folder. create is false when a lookup
+// only wants to know whether a paper is already there; that path must not
+// create the folder just because a page was fetched.
+func (a *App) arxivPaperDirAt(create bool) (string, error) {
 	if arxivPaperDirHook != nil {
 		return arxivPaperDirHook()
 	}
@@ -291,6 +298,14 @@ func (a *App) arxivPaperDir() (string, error) {
 			return "", errors.New("找不到下载文件夹，无法保存论文")
 		}
 		base = home
+	}
+	if !create {
+		dir := filepath.Join(base, arxivPaperFolderName())
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			return "", errors.New("论文目录不存在")
+		}
+		return dir, nil
 	}
 	return arxivPaperDirUnder(base)
 }
@@ -336,6 +351,9 @@ func fileIsPDF(path string) bool {
 // PublicNetworkOnly so the fetch cannot enter the Hub or a private network.
 type arxivOpenOptions struct {
 	PublicNetworkOnly bool
+	// Context cancels the public download when the caller is cancelled.
+	// Nil uses the existing parent.
+	Context context.Context
 }
 
 // FileCompanionOpenArxiv downloads one arXiv paper and returns its local path.
@@ -422,6 +440,9 @@ func (a *App) openArxivPaper(input string, openOpts arxivOpenOptions) (string, e
 	}
 	if openOpts.PublicNetworkOnly {
 		parent = context.Background()
+		if openOpts.Context != nil {
+			parent = openOpts.Context
+		}
 		fetchTimeout = time.Duration(companionPaperPDFTimeoutS) * time.Second
 		opts.MaxBytes = companionPaperPDFMaxBytes
 		opts.TimeoutS = companionPaperPDFTimeoutS

@@ -338,8 +338,9 @@ func (s *scopeApprovalState) checkHighRisk(toolName, command, projectPath, worki
 }
 
 // checkTaskModeGuard asks before running a command that a task-mode guardrail
-// turned down. 完全控制 and a prior 以后允许 skip the prompt the same way
-// checkHighRisk does. 本次放行 stays one command; 以后允许 covers the rest of this task.
+// turned down. 完全控制, 工作区信任, and a prior 以后允许 skip the prompt the
+// same way checkHighRisk does. 本次放行 stays one command; 以后允许 covers the
+// rest of this task. 用户确认 is the only tier that still asks.
 func (s *scopeApprovalState) checkTaskModeGuard(toolName, command, projectPath, workingDir, rejection string) (result string) {
 	if s == nil {
 		return rejection
@@ -639,6 +640,43 @@ func nestedTaskCommandApprovalCallback(handler *IMMessageHandler, loopCtx *LoopC
 	}
 }
 
+// scopeApprovalIsShellCommand is the bash / ssh_bash confirmation. A workspace
+// wipe uses the same high-risk kind with a different tool name and still asks
+// under 工作区信任.
+func scopeApprovalIsShellCommand(req ScopeApprovalRequest) bool {
+	switch req.Kind {
+	case localHighRiskApprovalKind, remoteHighRiskApprovalKind:
+	default:
+		return false
+	}
+	switch req.ToolName {
+	case "bash", "ssh", remoteSSHBashToolName:
+		return true
+	default:
+		return false
+	}
+}
+
+// shellApprovalAutoAllowed is the live shell gate. 完全控制 is handled by the
+// caller; this covers 工作区信任 and a 用户确认 tab that already chose 以后允许.
+func shellApprovalAutoAllowed(handler *IMMessageHandler, owner string, req ScopeApprovalRequest) bool {
+	if handler == nil || !scopeApprovalIsShellCommand(req) {
+		return false
+	}
+	return handler.taskCommandsAutoAllowed(owner)
+}
+
+func shellApprovalSkipSource(handler *IMMessageHandler, owner string) string {
+	if handler == nil {
+		return "command_grant"
+	}
+	global := handler.app != nil && handler.app.isSubAgentFullAccessGranted()
+	if handler.codingWorkbenchPermissionMode(owner, global) == "workspace" {
+		return "workspace"
+	}
+	return "command_grant"
+}
+
 // buildSubAgentScopeApprovalCallback asks the user before an out-of-scope path
 // or a guarded command, and waits for the response, cancellation, or timeout.
 func buildSubAgentScopeApprovalCallback(handler *IMMessageHandler, loopCtx *LoopContext, onProgress func(string)) ScopeApprovalCallback {
@@ -656,6 +694,12 @@ func buildSubAgentScopeApprovalCallbackOwned(handler *IMMessageHandler, loopCtx 
 		// stop asking as soon as the user switches to 完全控制.
 		if codingTaskFullControlGranted(handler, scopeApprovalOwner(loopCtx, stickyOwner)) {
 			recordScopeApprovalAudit(handler, "", req, ScopeApprovalFullAccess, "full_control")
+			return ScopeApprovalAllowOnce
+		}
+		// Shell/bash only. 工作区信任 and 以后允许 skip the dialog; a workspace
+		// wipe still asks unless the tab is 完全控制.
+		if shellApprovalAutoAllowed(handler, scopeApprovalOwner(loopCtx, stickyOwner), req) {
+			recordScopeApprovalAudit(handler, "", req, ScopeApprovalAllowOnce, shellApprovalSkipSource(handler, scopeApprovalOwner(loopCtx, stickyOwner)))
 			return ScopeApprovalAllowOnce
 		}
 

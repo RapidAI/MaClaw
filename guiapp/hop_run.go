@@ -79,6 +79,8 @@ func (c *sharedAgentLoopCallbacks) hopRunSnapshot() *HopRunSnapshot {
 		return nil
 	}
 	surface := c.semanticSurface
+	// Reapply this turn's SQL reads onto the plan that is current now.
+	c.settleOpenBusinessDataRead()
 	// A recorded plan's Optional bit is the obligation. Rebuilding the
 	// classification map here only repeated work the planner already finished.
 	var optional map[string]bool

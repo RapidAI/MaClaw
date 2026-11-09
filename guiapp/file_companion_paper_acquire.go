@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -183,74 +184,169 @@ func logCompanionPaper(raw, result string) {
 }
 
 func resolveCompanionPaper(raw string) (string, string) {
+	path, code, _ := resolveCompanionPaperPage(raw)
+	return path, code
+}
+
+// resolveCompanionPaperPage is resolveCompanionPaper plus the page already
+// fetched while looking for a PDF. The caller reads that page when no PDF is
+// saved, instead of requesting the same URL again.
+func resolveCompanionPaperPage(raw string) (string, string, *websearch.FetchResult) {
+	path, code, page, _ := resolveCompanionPaperWithin(context.Background(), raw, companionPaperHTMLTimeoutS)
+	return path, code, page
+}
+
+// resolveCompanionPaperWithin is the paper resolver bound to a caller context.
+// htmlTimeoutS is the landing-page probe. A PDF already saved for this URL is
+// returned before any request. The browser keeps the short probe; the agent
+// passes the public-network budget and its tool context. The error is the page
+// probe's own failure, kept so the caller can show it without fetching again.
+func resolveCompanionPaperWithin(parent context.Context, raw string, htmlTimeoutS int) (string, string, *websearch.FetchResult, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if htmlTimeoutS <= 0 {
+		htmlTimeoutS = companionPaperHTMLTimeoutS
+	}
 	if arxivIDFromInput(raw) != "" {
-		path, err := (&App{}).openArxivPaper(raw, arxivOpenOptions{PublicNetworkOnly: true})
+		path, err := (&App{}).openArxivPaper(raw, arxivOpenOptions{PublicNetworkOnly: true, Context: parent})
 		if err != nil {
-			return "", companionPaperCodeFromErr(err)
+			return "", companionPaperCodeFromErr(err), nil, err
 		}
 		if !fileIsPDF(path) {
-			return "", companionPaperCodeNotPDF
+			return "", companionPaperCodeNotPDF, nil, nil
 		}
-		return path, ""
+		return path, "", nil, nil
+	}
+	if path, ok := existingCompanionPaper(raw); ok {
+		return path, "", nil, nil
 	}
 	if paperURLPathPDF(raw) {
-		return savePublicPaper(raw, raw)
+		path, code := savePublicPaper(parent, raw, raw)
+		return path, code, nil, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(companionPaperHTMLTimeoutS)*time.Second)
+	ctx, cancel := context.WithTimeout(parent, time.Duration(htmlTimeoutS)*time.Second)
 	defer cancel()
 	result, err := paperFetch(ctx, paperRequestURL(raw), &websearch.FetchOptions{
-		TimeoutS: companionPaperHTMLTimeoutS,
+		TimeoutS: htmlTimeoutS,
 		MaxBytes: companionPaperHTMLMaxBytes,
 		RawBody:  true,
 	})
 	if err != nil {
 		code := companionPaperCodeFromErr(err)
-		if code == companionPaperCodeTimeout || code == companionPaperCodeTooBig || code == companionPaperCodeBadScheme {
-			return "", code
+		// A cancelled caller must not start the PDF candidate after the page.
+		if parent.Err() != nil || code == companionPaperCodeBadScheme {
+			return "", code, nil, err
 		}
-		result = nil
+		// The landing page failed. A whitelist PDF is another URL, so it still
+		// gets one download. With no candidate the original failure stands,
+		// and the caller does not request this page again.
+		path, candCode := fetchPaperCandidates(parent, raw, paperWhitelistCandidates(raw), raw)
+		if path != "" {
+			return path, "", nil, nil
+		}
+		if candCode != "" && candCode != companionPaperCodeNoPDF {
+			return "", candCode, nil, err
+		}
+		return "", code, nil, err
 	}
-	if result != nil && paperContentTypePDF(result.ContentType) {
+	if result != nil && probeDeliversPDF(result) {
 		page := strings.TrimSpace(result.URL)
 		if page == "" {
 			page = raw
 		}
-		return savePublicPaper(raw, page)
+		// The probe already holds a complete PDF. Write those bytes. A clipped
+		// response is only a prefix, so the full download still runs.
+		if path, code := writeProbedPDF(raw, result); code == "" {
+			return path, "", nil, nil
+		}
+		path, code := savePublicPaper(parent, raw, page)
+		return path, code, nil, nil
+	}
+	linkBase := raw
+	if result != nil && strings.TrimSpace(result.URL) != "" {
+		linkBase = strings.TrimSpace(result.URL)
 	}
 	var candidates []string
 	if result != nil && paperContentTypeHTML(result.ContentType) {
-		candidates = append(candidates, paperHTMLPDFLinks(raw, result.Content)...)
+		// Relative PDF links belong to the page after redirects, not the URL
+		// the user typed.
+		candidates = append(candidates, paperHTMLPDFLinks(linkBase, result.Content)...)
 	}
 	candidates = append(candidates, paperWhitelistCandidates(raw)...)
-	return fetchPaperCandidates(raw, candidates)
+	if linkBase != raw {
+		candidates = append(candidates, paperWhitelistCandidates(linkBase)...)
+	}
+	path, code := fetchPaperCandidates(parent, raw, candidates, raw, linkBase)
+	if path != "" {
+		return path, "", nil, nil
+	}
+	// The HTML is already in hand. The caller reads it when the PDF did not save.
+	return "", code, result, nil
 }
 
-func fetchPaperCandidates(page string, candidates []string) (string, string) {
+func existingCompanionPaper(raw string) (string, bool) {
+	dir, err := (&App{}).arxivPaperDirAt(false)
+	if err != nil {
+		return "", false
+	}
+	target := filepath.Join(dir, companionPaperFileName(canonicalPaperURL(raw)))
+	if !fileIsPDF(target) {
+		return "", false
+	}
+	return target, true
+}
+
+func fetchPaperCandidates(parent context.Context, page string, candidates []string, probed ...string) (string, string) {
+	// probed URLs already came back as a page or an error. Downloading them
+	// again cannot turn that response into a different PDF.
 	seen := map[string]bool{}
+	for _, raw := range probed {
+		if req := paperRequestURL(strings.TrimSpace(raw)); req != "" {
+			seen[req] = true
+		}
+	}
 	bad := 0
 	tried := 0
+	failure := ""
 	for _, candidate := range candidates {
 		candidate = strings.TrimSpace(candidate)
-		if candidate == "" || seen[candidate] {
+		key := paperRequestURL(candidate)
+		if candidate == "" || key == "" || seen[key] {
 			continue
 		}
-		seen[candidate] = true
+		seen[key] = true
 		if _, err := websearch.ValidatePublicHTTPURL(candidate); err != nil {
 			bad++
 			continue
+		}
+		if parent != nil && parent.Err() != nil {
+			if failure == "" {
+				failure = companionPaperCodeFromErr(parent.Err())
+			}
+			break
 		}
 		if tried >= companionPaperMaxFetches {
 			break
 		}
 		tried++
-		path, code := savePublicPaper(page, candidate)
+		path, code := savePublicPaper(parent, page, candidate)
 		if code == "" {
 			return path, ""
 		}
+		if parent != nil && parent.Err() != nil {
+			return "", companionPaperCodeFromErr(parent.Err())
+		}
+		// One dead citation must not hide the next PDF, including a whitelist URL.
 		if code == companionPaperCodeNotPDF {
 			continue
 		}
-		return "", code
+		if failure == "" {
+			failure = code
+		}
+	}
+	if failure != "" {
+		return "", failure
 	}
 	if tried == 0 && bad > 0 {
 		return "", companionPaperCodeBadScheme
@@ -258,7 +354,115 @@ func fetchPaperCandidates(page string, candidates []string) (string, string) {
 	return "", companionPaperCodeNoPDF
 }
 
-func savePublicPaper(page, pdfURL string) (string, string) {
+// writeProbedPDF stores a PDF the probe already downloaded in full.
+// A clipped body or a missing PDF header returns not-pdf so the caller can
+// download the file itself.
+func writeProbedPDF(page string, result *websearch.FetchResult) (string, string) {
+	body := probedPDFBytes(result)
+	if body == nil {
+		return "", companionPaperCodeNotPDF
+	}
+	dir, err := (&App{}).arxivPaperDir()
+	if err != nil {
+		return "", companionPaperCodeSaveFailed
+	}
+	target := filepath.Join(dir, companionPaperFileName(canonicalPaperURL(page)))
+	if fileIsPDF(target) {
+		return target, ""
+	}
+	stageFile, err := os.CreateTemp(dir, companionPaperFileName(canonicalPaperURL(page))+".*.part")
+	if err != nil {
+		return "", companionPaperCodeSaveFailed
+	}
+	staged := stageFile.Name()
+	if _, err := stageFile.Write(body); err != nil {
+		_ = stageFile.Close()
+		_ = os.Remove(staged)
+		return "", companionPaperCodeSaveFailed
+	}
+	if err := stageFile.Close(); err != nil {
+		_ = os.Remove(staged)
+		return "", companionPaperCodeSaveFailed
+	}
+	if !fileIsPDF(staged) {
+		_ = os.Remove(staged)
+		return "", companionPaperCodeNotPDF
+	}
+	if err := arxivRename(staged, target); err != nil {
+		if fileIsPDF(target) {
+			_ = os.Remove(staged)
+			return target, ""
+		}
+		_ = os.Remove(staged)
+		return "", companionPaperCodeSaveFailed
+	}
+	return target, ""
+}
+
+func probedPDFBytes(result *websearch.FetchResult) []byte {
+	if result == nil || result.ResponseClipped || !probeDeliversPDF(result) {
+		return nil
+	}
+	body := []byte(result.Content)
+	if !probedPDFHeader(body) {
+		return nil
+	}
+	return body
+}
+
+// probeDeliversPDF reports a body the probe can save as a paper. application/pdf
+// is enough to try. Other non-text types are papers only when the bytes start
+// with a PDF header, which is how a CDN serves a PDF without a .pdf name.
+// HTML and other text are never sniffed: a page may mention "%PDF-" in prose.
+func probeDeliversPDF(result *websearch.FetchResult) bool {
+	if result == nil {
+		return false
+	}
+	if paperContentTypePDF(result.ContentType) {
+		return true
+	}
+	if paperContentTypeReadable(result.ContentType) {
+		return false
+	}
+	body := bytes.TrimLeft([]byte(result.Content), " \t\r\n")
+	if bytes.HasPrefix(body, []byte("<")) {
+		return false
+	}
+	return probedPDFHeader([]byte(result.Content))
+}
+
+func probedPDFHeader(body []byte) bool {
+	n := len(body)
+	if n > arxivPDFHeaderScan {
+		n = arxivPDFHeaderScan
+	}
+	return n > 0 && bytes.Contains(body[:n], []byte("%PDF-"))
+}
+
+func paperContentTypeReadable(contentType string) bool {
+	if paperContentTypeHTML(contentType) {
+		return true
+	}
+	media := paperMediaType(contentType)
+	if strings.HasPrefix(media, "text/") {
+		return true
+	}
+	switch {
+	case strings.Contains(media, "json"),
+		strings.Contains(media, "xml"),
+		strings.Contains(media, "javascript"),
+		strings.Contains(media, "yaml"),
+		strings.Contains(media, "csv"):
+		return true
+	default:
+		return false
+	}
+}
+
+func savePublicPaper(parent context.Context, page, pdfURL string) (string, string) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	dir, err := (&App{}).arxivPaperDir()
 	if err != nil {
 		return "", companionPaperCodeSaveFailed
@@ -279,7 +483,7 @@ func savePublicPaper(page, pdfURL string) (string, string) {
 			_ = os.Remove(staged)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(companionPaperPDFTimeoutS)*time.Second)
+	ctx, cancel := context.WithTimeout(parent, time.Duration(companionPaperPDFTimeoutS)*time.Second)
 	defer cancel()
 	result, err := paperFetch(ctx, paperRequestURL(pdfURL), &websearch.FetchOptions{
 		SavePath: staged,
