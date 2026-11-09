@@ -133,6 +133,22 @@ func (a *App) fetchFileCompanionShareChanges(hub, viewer string) (uint64, uint64
 	return payload.Seq, payload.RemoteSeq, nil
 }
 
+// fileCompanionShareRefreshProbeOnly classifies the round before it starts.
+// A known, fresh Hub state only needs the small changes request. A first login,
+// an old Hub, or a stale snapshot goes straight to the full refresh phase.
+func fileCompanionShareRefreshProbeOnly(hub string, loginOK bool) bool {
+	st := &fileCompanionShareRefreshCheck
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.hub != hub || !st.fullDone || st.unsupported {
+		return false
+	}
+	if !loginOK {
+		return true
+	}
+	return st.hadLogin && time.Since(st.lastFull) <= fileCompanionShareRefreshFullInterval
+}
+
 // fileCompanionShareRefreshQuiet reports whether the next library refresh can
 // skip the Hub round trip. A matching changes sequence skips it and returns
 // an empty notice. Once a full refresh has already run, a signed-out reader
@@ -350,6 +366,17 @@ var fileCompanionLibraryListInline bool
 var fileCompanionLibraryTitleFillAsync = true
 
 var fileCompanionLibrarySyncRunning atomic.Bool
+
+const (
+	fileCompanionLibrarySyncIdle uint32 = iota
+	fileCompanionLibrarySyncProbe
+	fileCompanionLibrarySyncRefresh
+)
+
+// A change probe is not a visible content refresh. The phase is separate from
+// SyncRunning so polling can check the Hub without making the library repaint
+// loading and syncing affordances before the stored rows are shown again.
+var fileCompanionLibrarySyncPhase atomic.Uint32
 
 var fileCompanionLibrarySyncGen atomic.Uint64
 
@@ -623,7 +650,8 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 	// The hub index published during the read is newer and stays on screen
 	// even when this answer is applied first.
 	started := a.startFileCompanionLibrarySync()
-	running := started || fileCompanionLibrarySyncRunning.Load()
+	phase := fileCompanionLibrarySyncPhase.Load()
+	running := started || phase != fileCompanionLibrarySyncIdle
 	var gen uint64
 	if running {
 		gen = fileCompanionLibrarySyncEpoch.Load()
@@ -632,7 +660,9 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 	}
 	listed := a.listFileCompanionLibraryStored()
 	listed.SyncGen = gen
-	if running || fileCompanionLibrarySyncRunning.Load() {
+	// A probe only answers whether the content needs refreshing. It must not
+	// present the stored rows as a visible sync in progress.
+	if fileCompanionLibrarySyncPhase.Load() == fileCompanionLibrarySyncRefresh {
 		listed.Syncing = true
 	}
 	a.startFileCompanionTitleFill()
@@ -678,18 +708,26 @@ func (a *App) startFileCompanionLibrarySync() bool {
 	if a == nil || fileCompanionLibraryListInline {
 		return false
 	}
-	if !fileCompanionLibrarySyncRunning.CompareAndSwap(false, true) {
+	hub, viewer, loginErr := a.fileCompanionHubLogin()
+	phase := uint32(fileCompanionLibrarySyncRefresh)
+	if fileCompanionShareRefreshProbeOnly(hub, loginErr == nil) {
+		phase = fileCompanionLibrarySyncProbe
+	}
+	if !fileCompanionLibrarySyncPhase.CompareAndSwap(fileCompanionLibrarySyncIdle, phase) {
 		return false
 	}
+	fileCompanionLibrarySyncRunning.Store(true)
 	// Disk answers keep this generation until the refresh publishes the hub
 	// index and, later, the finished list.
 	fileCompanionLibrarySyncEpoch.Store(fileCompanionLibrarySyncGen.Load())
 	go func() {
-		defer fileCompanionLibrarySyncRunning.Store(false)
+		defer func() {
+			fileCompanionLibrarySyncRunning.Store(false)
+			fileCompanionLibrarySyncPhase.Store(fileCompanionLibrarySyncIdle)
+		}()
 		// The fast poll ticks every few seconds while a share is open. When
 		// the Hub reports no change since the last full refresh, skip the
-		// whole round trip: no list, no probes, no downloads.
-		hub, viewer, loginErr := a.fileCompanionHubLogin()
+		// share list, revocation probes, and downloads.
 		if quiet, notice := a.fileCompanionShareRefreshQuiet(hub, viewer, loginErr == nil); quiet {
 			// The hub list is not worth fetching: nothing changed, the reader
 			// is signed out, or the hub cannot be reached. Settle the panel on
@@ -709,6 +747,7 @@ func (a *App) startFileCompanionLibrarySync() bool {
 			a.emitEvent("file-companion:library", a.stampFileCompanionLibraryList(listed))
 			return
 		}
+		fileCompanionLibrarySyncPhase.Store(fileCompanionLibrarySyncRefresh)
 		listed, err := a.listFileCompanionLibrary()
 		if err != nil {
 			return

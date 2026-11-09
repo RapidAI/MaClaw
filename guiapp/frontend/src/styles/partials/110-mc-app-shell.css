@@ -6164,6 +6164,43 @@ body.companion-pdf-translation-dragging * {
   overflow: auto;
   list-style: none;
 }
+.file-companion-share-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+.file-companion-share-list > li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm, 6px);
+}
+.file-companion-share-link-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.file-companion-share-link-url {
+  overflow: hidden;
+  color: var(--theme-text-muted, #64748b);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+.file-companion-share-link-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
 .file-companion-folder-danger {
   border-color: var(--theme-danger, #dc2626);
   background: var(--theme-danger, #dc2626);

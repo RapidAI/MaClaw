@@ -1275,6 +1275,31 @@ function liveOwnedShares(path: string, list: CompanionLibraryItem[]): CompanionL
     return list.filter((row) => liveOwnedShare(row) && companionSharePathKey(row.path) === key);
 }
 
+type CompanionLibraryProject = { item: CompanionLibraryItem; shares: CompanionLibraryItem[] };
+
+// A document is one project even when it has several live links. Keep the
+// first row as the card identity and attach the other links to that card.
+export function companionLibraryProjects(items: CompanionLibraryItem[]): CompanionLibraryProject[] {
+    const projects: CompanionLibraryProject[] = [];
+    const ownedByPath = new Map<string, CompanionLibraryProject>();
+    for (const item of items) {
+        if (liveOwnedShare(item)) {
+            const key = companionSharePathKey(item.path);
+            const existing = ownedByPath.get(key);
+            if (existing) {
+                existing.shares.push(item);
+                continue;
+            }
+            const project = { item, shares: [item] };
+            ownedByPath.set(key, project);
+            projects.push(project);
+            continue;
+        }
+        projects.push({ item, shares: [] });
+    }
+    return projects;
+}
+
 // companionContactKey folds an address the way the hub does for the duplicate
 // check: mail is lower-case, a phone is its digits. Two writings of the same
 // person are one audience.
@@ -1312,6 +1337,26 @@ function shareChoiceLabel(item: { visibility: string; target: string; groupId: s
         ? (item.expiresAt ? companionFill(getCompanionUiLang(), "已过期 · ${date}", { date: item.expiresAt.slice(0, 10) }) : cs("已过期"))
         : (!item.expiresAt || item.permanent ? cs("永久") : companionFill(getCompanionUiLang(), "至 ${date}", { date: item.expiresAt.slice(0, 10) }));
     return `${who} · ${when}`;
+}
+
+function companionShareRowForEdit(item: CompanionLibraryItem): CompanionShareRow {
+    return {
+        path: item.path,
+        token: item.token,
+        mine: true,
+        admin: true,
+        host: item.host !== false,
+        hostLabel: item.hostLabel || "",
+        pendingHost: Boolean(item.pendingHost),
+        pendingHostLabel: item.pendingHostLabel || "",
+        owner: item.owner || "",
+        name: item.name,
+        visibility: item.visibility,
+        expiresAt: item.expiresAt,
+        shareUrl: item.shareUrl,
+        target: item.target,
+        groupId: item.groupId,
+    };
 }
 
 function fmtSize(size: number): string {
@@ -1541,6 +1586,62 @@ function FolderDeletePrompt({
     );
 }
 
+function ShareListPrompt({
+    name,
+    shares,
+    groupNames,
+    showToast,
+    onClose,
+    onEdit,
+}: {
+    name: string;
+    shares: CompanionLibraryItem[];
+    groupNames: Record<string, string>;
+    showToast: LibraryToast;
+    onClose: () => void;
+    onEdit: (row: CompanionShareRow) => void;
+}) {
+    const cardRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        cardRef.current?.focus();
+    }, []);
+    useEffect(() => {
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key !== "Escape") return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            onClose();
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+    }, [onClose]);
+    return (
+        <div className="file-companion-folder-prompt" role="presentation" data-testid="file-companion-view-shares-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+            <div className="file-companion-folder-prompt-card" role="dialog" aria-modal="true" aria-labelledby="file-companion-view-shares-title" data-testid="file-companion-view-shares" tabIndex={-1} ref={cardRef} onMouseDown={(event) => event.stopPropagation()}>
+                <h3 id="file-companion-view-shares-title">{cs("查看分享")}</h3>
+                <p>{companionFill(getCompanionUiLang(), "“${name}”有 ${count} 份分享。", { name, count: shares.length })}</p>
+                <ul className="file-companion-share-list">
+                    {shares.map((share) => (
+                        <li key={share.token} data-testid={`file-companion-view-share-${share.token}`}>
+                            <div className="file-companion-share-link-main">
+                                <span>{shareChoiceLabel(share, groupNames)}</span>
+                                <small className="file-companion-share-link-url" data-testid={`file-companion-view-share-url-${share.token || share.id}`}>{share.shareUrl}</small>
+                            </div>
+                            <div className="file-companion-share-link-actions">
+                                <button type="button" className="file-companion-dialog-secondary" data-testid={`file-companion-view-share-copy-${share.token}`} onClick={() => { void copyText(share.shareUrl, showToast); }}>{cs("复制分享链接")}</button>
+                                {share.mine && !share.expired ? <button type="button" className="file-companion-dialog-secondary" data-testid={`file-companion-library-edit-share-${share.token}`} onClick={() => onEdit(companionShareRowForEdit(share))}>{cs("修改")}</button> : null}
+                            </div>
+                        </li>
+                    ))}
+                </ul>
+                <div className="file-companion-folder-prompt-actions">
+                    <button type="button" className="file-companion-dialog-primary" data-testid="file-companion-view-shares-close" onClick={onClose}>{cs("关闭")}</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ShareRevokePrompt lists every live share of one document. The row that was
 // clicked starts selected, so removing that one link is still one confirmation.
 // 移除全部 retires every link of the document.
@@ -1749,8 +1850,9 @@ export function CompanionLibraryView({
     const [pendingDelete, setPendingDelete] = useState<(CompanionLibraryFolder & { count: number }) | null>(null);
     const [folderBusy, setFolderBusy] = useState(false);
     const [revokePrompt, setRevokePrompt] = useState<{ name: string; shares: CompanionLibraryItem[]; initialToken: string } | null>(null);
+    const [viewShares, setViewShares] = useState<{ name: string; shares: CompanionLibraryItem[] } | null>(null);
     const [revokeBusy, setRevokeBusy] = useState(false);
-    const [revokeGroupNames, setRevokeGroupNames] = useState<Record<string, string>>({});
+    const [shareGroupNames, setShareGroupNames] = useState<Record<string, string>>({});
     const revokeBusyRef = useRef(false);
     const { showConfirm } = useDialog();
     const updatedRef = useRef(onShareUpdated);
@@ -1766,7 +1868,7 @@ export function CompanionLibraryView({
     const confirmOpenRef = useRef(false);
     // The folder-delete choice owns Escape the same way the confirm dialog does.
     const folderPromptRef = useRef(false);
-    folderPromptRef.current = pendingDelete !== null || revokePrompt !== null;
+    folderPromptRef.current = pendingDelete !== null || revokePrompt !== null || viewShares !== null;
     const folderBusyRef = useRef(false);
     // Set in dragstart before React paints, so the first dragover can accept
     // the drop. The folder is the class the card was in when the drag began.
@@ -1909,17 +2011,17 @@ export function CompanionLibraryView({
     }, [onExit]);
 
     useEffect(() => {
-        if (!revokePrompt) return;
+        if (!revokePrompt && !viewShares) return;
         let dead = false;
         if (typeof ListFileCompanionGroups !== "function") return;
-        ListFileCompanionGroups().then((raw) => {
+        Promise.resolve(ListFileCompanionGroups()).then((raw) => {
             if (dead) return;
             const names: Record<string, string> = {};
             for (const group of readGroups(raw)) names[group.id] = group.name;
-            setRevokeGroupNames(names);
+            setShareGroupNames(names);
         }).catch(() => undefined);
         return () => { dead = true; };
-    }, [revokePrompt]);
+    }, [revokePrompt, viewShares]);
 
     const beginRow = (id: string, kind: string) => {
         setRowBusy((current) => (current[id] ? current : { ...current, [id]: kind }));
@@ -2300,6 +2402,7 @@ export function CompanionLibraryView({
         }
     };
 
+    const projectItems = useMemo(() => companionLibraryProjects(items), [items]);
     const libraryView = useMemo(() => {
         const known = new Set(folders.map((folder) => folder.id));
         const placedOf = (item: CompanionLibraryItem) => {
@@ -2317,24 +2420,25 @@ export function CompanionLibraryView({
             if (sourceFilter === "cloud") return item.source === "cloud";
             return true;
         };
-        const localItems: CompanionLibraryItem[] = [];
-        const cloudItems: CompanionLibraryItem[] = [];
+        const localItems: CompanionLibraryProject[] = [];
+        const cloudItems: CompanionLibraryProject[] = [];
         let placedCount = 0;
         let scopedCount = 0;
-        for (const item of items) {
+        for (const project of projectItems) {
+            const item = project.item;
             if (!inFolder(item)) continue;
             placedCount += 1;
             if (!inSource(item)) continue;
             scopedCount += 1;
             if (!companionLibraryNameMatch(item.name, nameQuery)) continue;
-            if (item.source === "cloud") cloudItems.push(item);
-            else localItems.push(item);
+            if (item.source === "cloud") cloudItems.push(project);
+            else localItems.push(project);
         }
         const counts = new Map<string, number>();
         for (const folder of folders) counts.set(folder.id, 0);
         let uncategorized = 0;
-        for (const item of items) {
-            const id = placedOf(item);
+        for (const project of projectItems) {
+            const id = placedOf(project.item);
             if (!id) {
                 uncategorized++;
                 continue;
@@ -2342,7 +2446,7 @@ export function CompanionLibraryView({
             counts.set(id, (counts.get(id) ?? 0) + 1);
         }
         const countOf = (folderID: string) => {
-            if (folderID === "") return items.length;
+            if (folderID === "") return projectItems.length;
             if (folderID === "none") return uncategorized;
             return counts.get(folderID) ?? 0;
         };
@@ -2355,7 +2459,7 @@ export function CompanionLibraryView({
             shownCount: localItems.length + cloudItems.length,
             countOf,
         };
-    }, [items, folders, placements, selectedFolder, nameQuery, sourceFilter]);
+    }, [projectItems, folders, placements, selectedFolder, nameQuery, sourceFilter]);
     const { localItems, cloudItems, placedCount, shownCount, scopedCount, countOf, placedOf } = libraryView;
     const nameNarrowed = narrowedLibrary(nameQuery, selectedFolder);
     const hideLocal = sourceFilter === "cloud" || (nameNarrowed && localItems.length === 0);
@@ -2560,16 +2664,16 @@ export function CompanionLibraryView({
     // only thing on screen is 导入分享.
     const cardRef = useDialogFocus<HTMLDivElement>(".file-companion-project-title", !loading);
 
-    const renderRow = (item: CompanionLibraryItem) => {
-        const busy = rowBusy[item.id];
+    const renderRow = ({ item, shares }: CompanionLibraryProject) => {
+        const busy = [item, ...shares].map((row) => rowBusy[row.id]).find(Boolean) ?? "";
+        const cardShares = item.source === "cloud" ? (shares.length > 0 ? shares : [item]) : [];
         const marks = item.path ? (markCounts.get(pdfMarkPathKey(item.path)) ?? 0) : 0;
-        const discussion = item.source === "cloud" ? companionDiscussionCounts(item.notes) : null;
-        const notes = discussion?.total ?? 0;
-        const pendingReviews = item.host ? (discussion?.explicitPending ?? 0) : 0;
+        const discussions = cardShares.map((share) => companionDiscussionCounts(share.notes));
+        const notes = discussions.reduce((sum, discussion) => sum + discussion.total, 0);
+        const pendingReviews = cardShares.reduce((sum, share, index) => sum + (share.host ? discussions[index].explicitPending : 0), 0);
+        const hosted = cardShares.some((share) => share.host);
         const meta = [
-            item.source === "cloud"
-                ? (item.mine ? cs("我的分享") : (item.owner || cs("别人的分享")))
-                : cs("本机"),
+            item.source === "cloud" ? "" : cs("本机"),
             fmtSize(item.size),
             // A cloud row's openedAt is when the share was created, so the
             // card says 分享于 instead of 打开于.
@@ -2590,6 +2694,7 @@ export function CompanionLibraryView({
             (item.source === "cloud" && item.mine && !item.expired)
             || (item.source !== "cloud" && ownedShares.length > 0)
         );
+        const viewableShares = (item.source === "cloud" ? cardShares : ownedShares).filter((share) => !share.expired && share.shareUrl !== "");
         const canDrag = folders.length > 0 && !busy && !folderBusy;
         const docTitle = companionLibraryDocTitle(item);
         const kind = (
@@ -2670,17 +2775,17 @@ export function CompanionLibraryView({
                         data-testid={`file-companion-library-meta-${item.id}`}
                     >
                         <span className="file-companion-badge" data-tone="source">{item.source === "cloud" ? cs("云端") : cs("本机")}</span>
-                        {item.source === "cloud" ? <span className="file-companion-badge">{audienceLabel(item.visibility)}</span> : null}
-                        {item.source === "cloud" && item.host ? (
+                        {cardShares.length > 0 ? cardShares.map((share) => (
+                            <span className="file-companion-badge" key={share.token || share.id}>{audienceLabel(share.visibility)} · {whenLabel(share)}</span>
+                        )) : <span className="file-companion-badge">{whenLabel(item)}</span>}
+                        {hosted ? (
                             <span className="file-companion-badge" data-tone="active">{cs("主持人")}</span>
                         ) : null}
-                        <span className="file-companion-badge">{whenLabel(item)}</span>
                         {marks > 0 ? <span className="file-companion-badge" data-tone="mark">{companionFill(getCompanionUiLang(), "标注 ${count}", { count: marks })}</span> : null}
                         {notes > 0 ? <span className="file-companion-badge" data-tone="note">{companionFill(getCompanionUiLang(), "讨论 ${count}", { count: notes })}</span> : null}
                         {pendingReviews > 0 ? <span className="file-companion-badge" data-tone="pending" data-testid={`file-companion-library-pending-${item.id}`}>{companionFill(getCompanionUiLang(), "待审核 ${count}", { count: pendingReviews })}</span> : null}
                         <span className="file-companion-project-facts">{meta}</span>
                     </p>
-                    {item.shareUrl && !item.expired ? <small className="file-companion-project-url" data-testid={`file-companion-library-url-${item.id}`}>{item.shareUrl}</small> : null}
                 </div>
                 <div className="file-companion-project-actions">
                     {folders.length > 0 ? (
@@ -2739,35 +2844,31 @@ export function CompanionLibraryView({
                             {cs("添加分享")}
                         </button>
                     ) : null}
-                    {item.source === "cloud" && shareRow ? (
+                    {viewableShares.length > 0 ? (
+                        <button
+                            type="button"
+                            className="file-companion-project-action"
+                            data-testid={`file-companion-library-view-shares-${item.id}`}
+                            disabled={Boolean(busy)}
+                            title={cs("查看分享 — 查看、复制或修改这份文档的分享链接")}
+                            onClick={() => setViewShares({ name: item.name, shares: viewableShares })}
+                        >
+                            {cs("查看分享")}
+                        </button>
+                    ) : null}
+                    {item.source === "cloud" && shareRow && ownedShares.length <= 1 ? (
                         <button
                             type="button"
                             className="file-companion-project-action"
                             data-testid={`file-companion-library-edit-share-${item.id}`}
                             disabled={Boolean(busy)}
                             title={cs("修改分享 — 调整分享范围、有效期，链接不变")}
-                            onClick={() => onEditShare({
-                                path: shareRow.path,
-                                token: shareRow.token,
-                                mine: true,
-                                admin: true,
-                                host: shareRow.host !== false,
-                                hostLabel: shareRow.hostLabel || "",
-                                pendingHost: Boolean(shareRow.pendingHost),
-                                pendingHostLabel: shareRow.pendingHostLabel || "",
-                                owner: shareRow.owner || "",
-                                name: shareRow.name,
-                                visibility: shareRow.visibility,
-                                expiresAt: shareRow.expiresAt,
-                                shareUrl: shareRow.shareUrl,
-                                target: shareRow.target,
-                                groupId: shareRow.groupId,
-                            })}
+                            onClick={() => onEditShare(companionShareRowForEdit(shareRow))}
                         >
                             {cs("修改")}
                         </button>
                     ) : null}
-                    {item.path && item.source === "cloud" && item.host ? (
+                    {item.path && item.source === "cloud" && hosted ? (
                         <button
                             type="button"
                             className="file-companion-project-action"
@@ -2786,7 +2887,7 @@ export function CompanionLibraryView({
                             data-testid={`file-companion-library-export-${item.id}`}
                             disabled={Boolean(busy)}
                             title={cs("导出项目 — 打包文档、高亮、批注和讨论为 zip")}
-                            onClick={() => { void exportRow(item); }}
+                            onClick={() => { void exportRow({ ...item, notes: cardShares.flatMap((share) => share.notes) }); }}
                         >
                             {busy === "export" ? cs("导出中…") : cs("导出")}
                         </button>
@@ -2818,6 +2919,8 @@ export function CompanionLibraryView({
         );
     };
 
+    const waitingForInitialSync = syncing && items.length === 0;
+
     return (
         <div className="file-companion-dialog" data-testid="file-companion-library-panel" role="dialog" aria-modal="true" aria-labelledby="file-companion-library-title">
             <div className="file-companion-dialog-scrim" data-testid="file-companion-library-scrim" onMouseDown={() => { if (confirmOpenRef.current || folderPromptRef.current) return; onExit(); }} />
@@ -2842,9 +2945,9 @@ export function CompanionLibraryView({
                     <div className="file-companion-dialog-heading">
                         <h2 id="file-companion-library-title">{cs("文档管理")}</h2>
                         <p className="file-companion-dialog-sub">
-                            {items.length > 0
-                                ? companionFill(getCompanionUiLang(), "每个项目包含文档、高亮和讨论，共 ${count} 个", { count: items.length })
-                                : loading || syncing
+                            {projectItems.length > 0
+                                ? companionFill(getCompanionUiLang(), "每个项目包含文档、高亮和讨论，共 ${count} 个", { count: projectItems.length })
+                                : loading || waitingForInitialSync
                                     ? cs("每个项目包含文档、高亮和讨论")
                                     : cs("每个项目包含文档、高亮和讨论，还没有项目")}
                         </p>
@@ -3045,8 +3148,8 @@ export function CompanionLibraryView({
                         ) : null}
                         {notice ? <p className="file-companion-library-notice" data-testid="file-companion-library-notice" role="status">{cs(notice)}</p> : null}
                         {loading ? <p className="file-companion-library-note">{cs("正在读取…")}</p> : null}
-                        {syncing && !loading ? <p className="file-companion-library-note">{cs("正在同步云端分享")}</p> : null}
-                        {hideLocal && hideCloud && !loading && !syncing ? (
+                        {waitingForInitialSync && !loading ? <p className="file-companion-library-note">{cs("正在同步云端分享")}</p> : null}
+                        {hideLocal && hideCloud && !loading && !waitingForInitialSync ? (
                             <p className="file-companion-library-empty" data-testid="file-companion-library-filter-empty">
                                 {companionLibraryEmptyLabel(nameQuery, selectedFolder, sourceFilter, placedCount)}
                             </p>
@@ -3056,7 +3159,7 @@ export function CompanionLibraryView({
                                     <section className="file-companion-library-section" data-testid="file-companion-library-local" aria-label={cs("本机项目")}>
                                         <h3 className="file-companion-dialog-label">{cs("本机项目")}<span className="file-companion-dialog-optional">{localItems.length}</span></h3>
                                         {localItems.length === 0
-                                            ? (loading || syncing ? null : <p className="file-companion-library-empty">{cs("还没有本机项目 — 打开或导入一个文档开始")}</p>)
+                                            ? (loading || waitingForInitialSync ? null : <p className="file-companion-library-empty">{cs("还没有本机项目 — 打开或导入一个文档开始")}</p>)
                                             : <div className="file-companion-project-list">{localItems.map(renderRow)}</div>}
                                     </section>
                                 )}
@@ -3064,7 +3167,7 @@ export function CompanionLibraryView({
                                     <section className="file-companion-library-section" data-testid="file-companion-library-cloud" aria-label={cs("云端项目")}>
                                         <h3 className="file-companion-dialog-label">{cs("云端项目")}<span className="file-companion-dialog-optional">{cloudItems.length}</span></h3>
                                         {cloudItems.length === 0
-                                            ? (loading || syncing ? null : <p className="file-companion-library-empty">{cs("还没有云端项目 — 分享后会出现在这里")}</p>)
+                                            ? (loading || waitingForInitialSync ? null : <p className="file-companion-library-empty">{cs("还没有云端项目 — 分享后会出现在这里")}</p>)
                                             : <div className="file-companion-project-list">{cloudItems.map(renderRow)}</div>}
                                     </section>
                                 )}
@@ -3072,12 +3175,25 @@ export function CompanionLibraryView({
                         )}
                     </div>
                 </div>
+                {viewShares ? (
+                    <ShareListPrompt
+                        name={viewShares.name}
+                        shares={viewShares.shares}
+                        groupNames={shareGroupNames}
+                        showToast={showToast}
+                        onClose={() => setViewShares(null)}
+                        onEdit={(row) => {
+                            setViewShares(null);
+                            onEditShare(row);
+                        }}
+                    />
+                ) : null}
                 {revokePrompt ? (
                     <ShareRevokePrompt
                         name={revokePrompt.name}
                         shares={revokePrompt.shares}
                         initialToken={revokePrompt.initialToken}
-                        groupNames={revokeGroupNames}
+                        groupNames={shareGroupNames}
                         busy={revokeBusy}
                         onCancel={() => { if (!revokeBusy) setRevokePrompt(null); }}
                         onConfirm={(tokens, all) => { void revokeChosen(tokens, all); }}

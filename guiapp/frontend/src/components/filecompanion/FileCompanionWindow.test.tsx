@@ -2028,7 +2028,10 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(screen.getByTestId("file-companion-library-local").textContent).toContain("a.md"));
         expect(screen.getByTestId("file-companion-library-cloud").textContent).toContain("shared.pdf");
         expect(screen.queryByTestId("file-companion-library-notice")).toBeNull();
-        expect(screen.getByTestId("file-companion-library-cloud").textContent).toContain("https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef");
+        expect(screen.getByTestId("file-companion-library-cloud").textContent).not.toContain("https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef");
+        fireEvent.click(screen.getByTestId("file-companion-library-view-shares-cd_0123456789abcdef0123456789abcdef"));
+        expect(screen.getByTestId("file-companion-view-share-url-cd_0123456789abcdef0123456789abcdef").textContent).toBe("https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef");
+        fireEvent.click(screen.getByTestId("file-companion-view-shares-close"));
         // 分享 is its own popup, opened from the row or the title bar.
         fireEvent.click(screen.getByTestId("file-companion-library-share-action-local:a"));
         await screen.findByTestId("file-companion-share-dialog");
@@ -2285,6 +2288,7 @@ describe("FileCompanionWindow", () => {
                     visibility: "group",
                     groupId: group,
                     permanent: true,
+                    shareUrl: `https://hub.example/hub/documents/shares/${groupToken}`,
                     mine: true,
                     openedAt: "2026-10-25T00:00:00Z",
                 },
@@ -2298,6 +2302,7 @@ describe("FileCompanionWindow", () => {
                     visibility: "person",
                     target: "friend@example.com",
                     permanent: true,
+                    shareUrl: `https://hub.example/hub/documents/shares/${personToken}`,
                     mine: true,
                     openedAt: "2026-10-26T00:00:00Z",
                 },
@@ -2310,6 +2315,17 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-library"));
         await screen.findByTestId("file-companion-library-panel");
 
+        const project = screen.getByTestId(`file-companion-library-card-${groupToken}`);
+        expect(project.textContent).toContain("群组");
+        expect(project.textContent).toContain("指定的人");
+        expect(project.textContent).not.toContain("我的分享");
+        expect(project.textContent).not.toContain("https://");
+        expect(screen.queryByTestId(`file-companion-library-card-${personToken}`)).toBeNull();
+        expect(screen.getByTestId("file-companion-library-cloud").querySelectorAll(".file-companion-project")).toHaveLength(1);
+        expect(screen.getByRole("heading", { name: "文档管理" }).parentElement?.textContent).toContain("共 1 个");
+        fireEvent.click(screen.getByTestId(`file-companion-library-view-shares-${groupToken}`));
+        expect(screen.getByTestId(`file-companion-view-share-url-${groupToken}`).textContent).toContain(groupToken);
+        expect(screen.getByTestId(`file-companion-view-share-url-${personToken}`).textContent).toContain(personToken);
         fireEvent.click(screen.getByTestId(`file-companion-library-edit-share-${personToken}`));
         const dialog = await screen.findByTestId("file-companion-share-dialog");
         expect(within(dialog).getByRole("heading", { name: "修改分享" })).toBeTruthy();
@@ -2340,6 +2356,7 @@ describe("FileCompanionWindow", () => {
                     visibility: "group",
                     groupId: group,
                     permanent: true,
+                    shareUrl: `https://hub.example/hub/documents/shares/${groupToken}`,
                     mine: true,
                     openedAt: "2026-10-25T00:00:00Z",
                 },
@@ -2353,6 +2370,7 @@ describe("FileCompanionWindow", () => {
                     visibility: "person",
                     target: "friend@example.com",
                     permanent: true,
+                    shareUrl: `https://hub.example/hub/documents/shares/${personToken}`,
                     mine: true,
                     openedAt: "2026-10-26T00:00:00Z",
                 },
@@ -2366,6 +2384,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-library"));
         await screen.findByTestId("file-companion-library-panel");
 
+        fireEvent.click(screen.getByTestId(`file-companion-library-view-shares-${groupToken}`));
         fireEvent.click(screen.getByTestId(`file-companion-library-edit-share-${personToken}`));
         const dialog = await screen.findByTestId("file-companion-share-dialog");
         const hint = within(dialog).getByTestId("file-companion-share-existing");
@@ -2476,7 +2495,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByTestId("file-companion-tab-a.pdf");
         fireEvent.click(screen.getByTestId("file-companion-library"));
-        fireEvent.click(await screen.findByTestId(`file-companion-library-delete-${personToken}`));
+        fireEvent.click(await screen.findByTestId(`file-companion-library-delete-${groupToken}`));
         const picker = await screen.findByTestId("file-companion-revoke-shares");
         fireEvent.click(within(picker).getByTestId("file-companion-revoke-all"));
         await waitFor(() => expect(deleteShare).toHaveBeenCalledWith(groupToken));

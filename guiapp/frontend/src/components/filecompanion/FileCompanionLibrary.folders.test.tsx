@@ -761,6 +761,34 @@ describe("CompanionPlaceDialog", () => {
         expect(companionLibraryDocTitle({ name: "alpha.md", title: longTitle })).toBe(longTitle);
     });
 
+    it("does not add or remove layout messages when a background sync settles", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const item = { id: token, token, name: "shared.pdf", path: "C:/notes/shared.pdf", source: "cloud", shareUrl: `https://hub.example/s/${token}`, mine: true, permanent: true };
+        const view = (listedSnapshot: unknown) => (
+            <DialogProvider>
+                <CompanionLibraryView
+                    lang="zh-Hans"
+                    activePath=""
+                    showToast={() => undefined}
+                    onOpen={() => undefined}
+                    onExit={() => undefined}
+                    onShareProject={() => undefined}
+                    onEditShare={() => undefined}
+                    onImportLink={() => undefined}
+                    listedSnapshot={listedSnapshot}
+                />
+            </DialogProvider>
+        );
+        const { rerender } = render(view({ items: [item], notice: "", syncing: true, syncGen: 1 }));
+        const card = await screen.findByTestId(`file-companion-library-card-${token}`);
+        const localEmpty = screen.getByText("还没有本机项目 — 打开或导入一个文档开始");
+        expect(screen.queryByText("正在同步云端分享")).toBeNull();
+        rerender(view({ items: [item], notice: "", syncing: false, syncGen: 2 }));
+        expect(screen.getByTestId(`file-companion-library-card-${token}`)).toBe(card);
+        expect(screen.getByText("还没有本机项目 — 打开或导入一个文档开始")).toBe(localEmpty);
+        expect(screen.queryByText("正在同步云端分享")).toBeNull();
+    });
+
     it("opens a document from the card surface and leaves action controls alone", async () => {
         listCatalog.mockResolvedValue({
             rev: 1,
@@ -813,19 +841,20 @@ describe("CompanionPlaceDialog", () => {
         expect(onShareProject).toHaveBeenCalledWith("C:/notes/alpha.md");
         expect(onOpen).not.toHaveBeenCalled();
 
-        const url = screen.getByTestId("file-companion-library-url-cloud:live");
-        fireEvent.mouseDown(url, { button: 0, clientX: 4, clientY: 4 });
-        fireEvent.click(url, { button: 0, clientX: 40, clientY: 4, detail: 1 });
+        expect(screen.queryByTestId("file-companion-library-url-cloud:live")).toBeNull();
+        fireEvent.click(screen.getByTestId("file-companion-library-view-shares-cloud:live"));
+        const url = screen.getByTestId("file-companion-view-share-url-cloud:live");
+        expect(url.textContent).toBe("https://hub.example/s/live");
+        fireEvent.click(url);
         expect(onOpen).not.toHaveBeenCalled();
-        fireEvent.mouseDown(url, { button: 0, clientX: 4, clientY: 4 });
-        fireEvent.click(url, { button: 0, clientX: 6, clientY: 5, detail: 1 });
+        fireEvent.click(screen.getByTestId("file-companion-view-shares-close"));
         fireEvent.click(screen.getByTestId("file-companion-library-doctitle-cloud:live"));
-        expect(onOpen).toHaveBeenCalledTimes(2);
+        expect(onOpen).toHaveBeenCalledTimes(1);
         expect(onOpen).toHaveBeenCalledWith("C:/notes/live.pdf");
 
         fireEvent.click(screen.getByTestId("file-companion-library-meta-cloud:pending"));
         expect(onImportLink).toHaveBeenCalledWith("https://hub.example/s/1");
-        expect(onOpen).toHaveBeenCalledTimes(2);
+        expect(onOpen).toHaveBeenCalledTimes(1);
     });
 });
 
