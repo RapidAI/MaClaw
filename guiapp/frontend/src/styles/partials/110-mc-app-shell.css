@@ -5855,9 +5855,9 @@ body.companion-pdf-translation-dragging * {
   gap: 8px;
   --wails-draggable: no-drag;
 }
-/* 文档管理: a dialog whose rows read as one line each — kind badge, title and
-   facts, then a fixed action cluster. Actions are real buttons with room for
-   their label, never the 26px icon square used for 复制. */
+/* 文档管理: each card pairs document details with a compact action cluster.
+   Actions are real buttons with room for their label, never the 26px icon
+   square used for 复制. */
 /* Two classes so the width wins over the single-class dialog shell that is
    emitted later in the sheet. */
 .file-companion-dialog-card.file-companion-library-dialog {
@@ -6193,6 +6193,7 @@ body.companion-pdf-translation-dragging * {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  container-type: inline-size;
 }
 .file-companion-project {
   display: flex;
@@ -6272,7 +6273,7 @@ body.companion-pdf-translation-dragging * {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
 }
 .file-companion-project-titleline {
@@ -6375,30 +6376,46 @@ body.companion-pdf-translation-dragging * {
 .file-companion-project-actions {
   display: flex;
   align-items: center;
+  align-content: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 4px;
-  flex: 0 0 auto;
+  flex: 1 1 0;
+  min-width: 0;
   cursor: default;
+}
+.file-companion-project-actions > * {
+  flex: 0 1 calc(25% - 3px);
+  min-width: 0;
 }
 /* A cloud row is already a share. The mark says so. 添加分享 makes another
    link for a different person or group; 修改 edits the link on this row. */
 .file-companion-project-shared {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
   height: 26px;
-  padding: 0 9px;
+  padding: 0 6px;
+  overflow: hidden;
   border-radius: var(--radius-sm, 6px);
   background: color-mix(in srgb, var(--theme-primary, #2563eb) 9%, transparent);
   color: var(--theme-primary, #2563eb);
   font: 600 11.5px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
   white-space: nowrap;
 }
+.file-companion-project-shared > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .file-companion-project-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   height: 26px;
-  padding: 0 9px;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   border: 1px solid var(--theme-border, #d5e0ef);
   border-radius: var(--radius-sm, 6px);
   background: var(--theme-surface, #ffffff);
@@ -6429,13 +6446,19 @@ body.companion-pdf-translation-dragging * {
   font-size: 12px;
   color: var(--theme-text-muted, #64748b);
 }
-@media (max-width: 560px) {
+@container (max-width: 600px) {
   .file-companion-project {
     flex-wrap: wrap;
   }
+  .file-companion-project-main {
+    flex: 1 1 auto;
+  }
   .file-companion-project-actions {
+    flex-basis: 100%;
     width: 100%;
-    justify-content: flex-end;
+  }
+  .file-companion-project-actions > * {
+    flex: 0 1 auto;
   }
 }
 /* 分享 and 导入 popups share the password dialog's shell. */
