@@ -1,4 +1,4 @@
-import { useCallback, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { imageCountsForHistoryMatches } from "./promptHistory";
 import { AssistantAttachmentsStrip } from "./AssistantAttachmentsStrip";
 import { AssistantInputActionsLeft, AssistantInputActionsRight } from "./AssistantInputActions";
@@ -82,6 +82,10 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
         [autocompleteOpen, cancelPending, flushBottom, inline, inputOverlay, isExpandedInput, ready, t],
     );
 
+    useEffect(() => {
+        resizeInput(textareaRef.current ?? undefined);
+    }, [inputValue, resizeInput, textareaRef]);
+
     return (
         <div data-testid={inputBarTestId} className="ai-composer" style={inputBarStyle} onDragOver={handleDragOver} onDrop={handleDrop}>
             <AssistantAttachmentsStrip
@@ -125,8 +129,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                     value={inputValue}
                     onChange={(e) => {
                         rememberHistoryEdit(e.target.value);
-                        updateInputValue(e.target.value);
-                        resizeInput();
+                        updateInputValue(e.target.value, { deferParent: true });
                     }}
                     onPaste={handlePaste}
                     onClick={handleTextareaClick}

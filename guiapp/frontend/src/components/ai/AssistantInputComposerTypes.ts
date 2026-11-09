@@ -72,7 +72,7 @@ export interface AssistantInputComposerProps {
     recallHistory: (direction: "up" | "down") => boolean;
     rememberHistoryEdit: (value: string) => void;
     removeSelectedFile?: (filePath: string) => void;
-    resizeInput: () => void;
+    resizeInput: (target?: HTMLTextAreaElement) => void;
     selectedFilePaths: string[];
     setPendingAttachments: Dispatch<SetStateAction<AttachmentInfo[]>>;
     showBusySpinner: boolean;
@@ -97,6 +97,6 @@ export interface AssistantInputComposerProps {
     toolbarEndContent?: ReactNode;
     /** Extra content rendered in the footer toolbar row, after the 📎/🎤 actions and before the hint/send group (e.g. the welcome-page TaskConfigBar). */
     toolbarAddon?: ReactNode;
-    updateInputValue: (value: string) => void;
+    updateInputValue: (value: string, options?: { deferParent?: boolean }) => void;
     voiceInput: UseVoiceInputResult;
 }

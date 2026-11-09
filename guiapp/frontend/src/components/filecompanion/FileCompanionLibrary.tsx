@@ -157,6 +157,9 @@ export type CompanionShareBinding = {
     // zip, so a downloaded host copy must not upload until this revision is
     // on disk.
     documentRevision: number;
+    // chatRevision is the host transcript sequence. An open share fetches
+    // that blob when it moves, instead of the project zip.
+    chatRevision: number;
 };
 
 export type CompanionShareUpdate = {
@@ -191,6 +194,9 @@ export type CompanionShareUpdate = {
     // keepReaderMarks leaves highlights, notes, drawings, and bookmarks as
     // they are. The transcript in messages still applies.
     keepReaderMarks?: boolean;
+    // preservePreview keeps the open document mounted. A chat-only update
+    // replaces the transcript and must not reload the paper.
+    preservePreview?: boolean;
 };
 
 // CompanionShareRow is the share a library row carries: who can see it and how
@@ -939,6 +945,21 @@ export function companionShouldPullShareMarks(row: { mine: boolean; path: string
     return companionInstalledSharePath(row.path);
 }
 
+// companionShouldPullShareChat is the same seat rule for the host transcript.
+// The authoring paper already has the lines. A participant, and the host's
+// downloaded copy on another machine, follow chat_revision.
+export function companionShouldPullShareChat(row: { mine: boolean; path: string; chatRevision: number }): boolean {
+    return companionShouldPullShareMarks({ mine: row.mine, path: row.path, marksRevision: row.chatRevision });
+}
+
+// companionShareChatBehind reports that a downloaded host copy must not upload
+// its transcript yet. The local chat is older than the blob already published.
+export function companionShareChatBehind(path: string, listed: number, applied: number): boolean {
+    if (!companionInstalledSharePath(path)) return false;
+    if (!(listed > 0)) return false;
+    return applied < listed;
+}
+
 // companionZipKeepsAppliedMarks reports that a project zip must not replace
 // highlights already shown. The zip is the document revision, and a marks
 // fetch can land first with a newer revision while that download is still
@@ -1045,6 +1066,7 @@ export function companionShareNotes(raw: unknown): CompanionShareBinding[] {
             revision: numberOf(row, "notesRevision", "NotesRevision"),
             marksRevision: numberOf(row, "marksRevision", "MarksRevision"),
             documentRevision: numberOf(row, "revision", "Revision"),
+            chatRevision: numberOf(row, "chatRevision", "ChatRevision"),
         });
     }
     return out;
@@ -1062,10 +1084,10 @@ function readRemoved(raw: unknown): string[] {
     return out;
 }
 
-// companionMineShares reads the cloud rows this person created. A document
-// that already has one of these must not be shared a second time from the
-// title bar; the button edits the share it already has. An expired link is
-// not a live share: the paper may be published again.
+// companionMineShares reads the cloud rows this person created. The title bar
+// edits the first live share of a file. Another audience is a new link, added
+// from 文档管理 or from 添加分享 in that edit dialog. An expired link is not a
+// live share: the paper may be published again.
 export function companionMineShares(raw: unknown): CompanionShareRow[] {
     if (!raw || typeof raw !== "object") return [];
     const record = raw as Record<string, unknown>;
@@ -1226,13 +1248,70 @@ function whenLabel(item: CompanionLibraryItem): string {
 
 // sharedMarkTitle is the hover text on the 已分享 mark: the share's own range
 // and expiry when this row carries them, and where 修改 lives otherwise.
-function sharedMarkTitle(item: CompanionLibraryItem, row: CompanionLibraryItem | null): string {
+// Several live shares of the same paper say so, because 添加分享 and 取消分享
+// then apply to more than the row under the pointer.
+function sharedMarkTitle(item: CompanionLibraryItem, row: CompanionLibraryItem | null, ownedCount = 0): string {
+    if (item.mine && ownedCount > 1) {
+        return companionFill(getCompanionUiLang(), "已分享 ${count} 份 — 可以再添加分享。取消时可以选择某一份或全部移除。", { count: ownedCount });
+    }
     if (row) {
         const range = audienceLabel(row.visibility || item.visibility);
         const when = whenLabel(row);
         return item.mine ? companionFill(getCompanionUiLang(), "已分享 — ${range}，${when}", { range, when }) : companionFill(getCompanionUiLang(), "收到的分享 — ${range}，${when}", { range, when });
     }
     return cs("已分享 — 到云端项目里可以修改分享范围和有效期");
+}
+
+// liveOwnedShare is one link this person still publishes. An expired link, or a
+// row with no local file, does not count: it cannot be grouped with the paper.
+function liveOwnedShare(row: CompanionLibraryItem): boolean {
+    return row.source === "cloud" && row.mine && !row.expired && row.token !== "" && companionSharePathKey(row.path) !== "";
+}
+
+// liveOwnedShares is every live link this person still publishes for one file.
+function liveOwnedShares(path: string, list: CompanionLibraryItem[]): CompanionLibraryItem[] {
+    const key = companionSharePathKey(path);
+    if (!key) return [];
+    return list.filter((row) => liveOwnedShare(row) && companionSharePathKey(row.path) === key);
+}
+
+// companionContactKey folds an address the way the hub does for the duplicate
+// check: mail is lower-case, a phone is its digits. Two writings of the same
+// person are one audience.
+function companionContactKey(value: string): string {
+    const text = value.trim().toLowerCase();
+    if (!text) return "";
+    if (text.includes("@")) return text;
+    let digits = "";
+    for (const ch of text) {
+        if (ch >= "0" && ch <= "9") digits += ch;
+    }
+    return digits || text;
+}
+
+// companionShareScopeKey is the audience half of a share. A second link with
+// the same key is the same share: public and private are each one, a person
+// is their address, and a group is its id. The password is not part of it.
+export function companionShareScopeKey(visibility: string, target: string, groupId: string): string {
+    if (visibility === "group") return "group:" + (groupId || target).trim();
+    if (visibility === "person") return "person:" + companionContactKey(target);
+    return visibility.trim();
+}
+
+// shareChoiceLabel is one line in the remove picker: who the link is for, and
+// how long it lasts. A person is named by the address; a group by its name
+// when the library has already loaded that group.
+function shareChoiceLabel(item: { visibility: string; target: string; groupId: string; expiresAt: string; expired?: boolean; permanent?: boolean }, groupNames: Record<string, string>): string {
+    let who = audienceLabel(item.visibility);
+    if (item.visibility === "person" && item.target.trim()) who = `${who} · ${item.target.trim()}`;
+    if (item.visibility === "group") {
+        const name = groupNames[item.groupId] || groupNames[item.target];
+        if (name) who = `${who} · ${name}`;
+    }
+    const when = item.expired
+        ? (item.expiresAt ? companionFill(getCompanionUiLang(), "已过期 · ${date}", { date: item.expiresAt.slice(0, 10) }) : cs("已过期"))
+        : (!item.expiresAt || item.permanent ? cs("永久") : companionFill(getCompanionUiLang(), "至 ${date}", { date: item.expiresAt.slice(0, 10) }));
+    return `${who} · ${when}`;
 }
 
 function fmtSize(size: number): string {
@@ -1462,12 +1541,149 @@ function FolderDeletePrompt({
     );
 }
 
+// ShareRevokePrompt lists every live share of one document. The row that was
+// clicked starts selected, so removing that one link is still one confirmation.
+// 移除全部 retires every link of the document.
+function ShareRevokePrompt({
+    name,
+    shares,
+    initialToken,
+    groupNames,
+    busy,
+    onCancel,
+    onConfirm,
+}: {
+    name: string;
+    shares: CompanionLibraryItem[];
+    initialToken: string;
+    groupNames: Record<string, string>;
+    busy: boolean;
+    onCancel: () => void;
+    onConfirm: (tokens: string[], all: boolean) => void;
+}) {
+    const [picked, setPicked] = useState<Record<string, boolean>>(() => {
+        const next: Record<string, boolean> = {};
+        for (const share of shares) next[share.token] = share.token === initialToken;
+        if (!Object.values(next).some(Boolean) && shares[0]) next[shares[0].token] = true;
+        return next;
+    });
+    const cardRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        cardRef.current?.focus();
+    }, []);
+    useEffect(() => {
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key !== "Escape" || busy) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            onCancel();
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+    }, [busy, onCancel]);
+    const selected = shares.filter((share) => picked[share.token]).map((share) => share.token);
+    return (
+        <div
+            className="file-companion-folder-prompt"
+            role="presentation"
+            data-testid="file-companion-revoke-scrim"
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !busy) onCancel();
+            }}
+        >
+            <div
+                className="file-companion-folder-prompt-card"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="file-companion-revoke-title"
+                data-testid="file-companion-revoke-shares"
+                tabIndex={-1}
+                ref={cardRef}
+                onMouseDown={(event) => event.stopPropagation()}
+            >
+                <h3 id="file-companion-revoke-title">{cs("取消分享")}</h3>
+                <p>
+                    {companionFill(getCompanionUiLang(), "“${name}”有 ${count} 份分享。勾选要移除的分享，或一次移除全部。", { name, count: shares.length })}
+                </p>
+                <ul className="file-companion-revoke-list">
+                    {shares.map((share) => (
+                        <li key={share.token}>
+                            <label className="file-companion-folder-choice">
+                                <input
+                                    type="checkbox"
+                                    data-testid={`file-companion-revoke-share-${share.token}`}
+                                    checked={picked[share.token] === true}
+                                    disabled={busy}
+                                    onChange={(event) => {
+                                        const on = event.target.checked;
+                                        setPicked((current) => ({ ...current, [share.token]: on }));
+                                    }}
+                                />
+                                <span>{shareChoiceLabel(share, groupNames)}</span>
+                            </label>
+                        </li>
+                    ))}
+                </ul>
+                <p className="file-companion-folder-prompt-note">
+                    {cs("移除后，对应的参与者会失去访问。全部移除后，没有其他分享时，这份文档会回到本机项目，阅读记录会保留。")}
+                </p>
+                <div className="file-companion-folder-prompt-actions">
+                    <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-revoke-cancel" disabled={busy} onClick={onCancel}>
+                        {cs("取消")}
+                    </button>
+                    <button
+                        type="button"
+                        className="file-companion-dialog-danger"
+                        data-testid="file-companion-revoke-selected"
+                        disabled={busy || selected.length === 0}
+                        onClick={() => onConfirm(selected, false)}
+                    >
+                        {busy ? cs("取消中…") : cs("移除所选")}
+                    </button>
+                    <button
+                        type="button"
+                        className="file-companion-dialog-primary file-companion-folder-danger"
+                        data-testid="file-companion-revoke-all"
+                        disabled={busy}
+                        onClick={() => onConfirm(shares.map((share) => share.token), true)}
+                    >
+                        {busy ? cs("取消中…") : cs("移除全部")}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// The left handle is only for dragging a card onto a folder. A click anywhere
+// else on the card, except the buttons and the folder menu, opens the document.
+// The title button opens on its own click. A pointer that travelled was a text
+// selection, so that gesture does not also open.
+const libraryCardClickSlop = 8;
+
+function companionLibraryCardOpens(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    if (target.closest(".file-companion-project-drag, .file-companion-project-actions")) return false;
+    return target.closest("button, select, a, input, textarea, option") == null;
+}
+
+function libraryCardClickMoved(
+    event: { detail: number; clientX: number; clientY: number },
+    press: { x: number; y: number } | null,
+): boolean {
+    if (event.detail <= 0 || !press) return false;
+    const dx = event.clientX - press.x;
+    const dy = event.clientY - press.y;
+    return dx * dx + dy * dy > libraryCardClickSlop * libraryCardClickSlop;
+}
+
 // CompanionLibraryView is the 文档管理 screen: every local document and every
 // accepted share is one 项目 card — the document, its annotations, and its
 // discussion travel together. A single level of folders groups those cards.
-// Drag a card by its type badge onto a folder, or onto 未分类, to categorize
-// it. The title stays a click. The move menu does the same thing from the
-// keyboard. A file-name field narrows the list.
+// Drag a card by the left handle onto a folder, or onto 未分类, to categorize
+// it. That handle does not open the document. A click on the name, summary,
+// or badges does. Buttons and the folder menu keep their own actions; the
+// title button stays the keyboard control. A file-name field narrows the list.
 // Actions open a document for reading, share it, sync the newest marks, or
 // pack it as a companion project zip.
 const companionCatalogChangedEvent = "maclaw:file-companion-catalog";
@@ -1532,6 +1748,10 @@ export function CompanionLibraryView({
     const [editingName, setEditingName] = useState("");
     const [pendingDelete, setPendingDelete] = useState<(CompanionLibraryFolder & { count: number }) | null>(null);
     const [folderBusy, setFolderBusy] = useState(false);
+    const [revokePrompt, setRevokePrompt] = useState<{ name: string; shares: CompanionLibraryItem[]; initialToken: string } | null>(null);
+    const [revokeBusy, setRevokeBusy] = useState(false);
+    const [revokeGroupNames, setRevokeGroupNames] = useState<Record<string, string>>({});
+    const revokeBusyRef = useRef(false);
     const { showConfirm } = useDialog();
     const updatedRef = useRef(onShareUpdated);
     const listedRef = useRef(onListed);
@@ -1546,7 +1766,7 @@ export function CompanionLibraryView({
     const confirmOpenRef = useRef(false);
     // The folder-delete choice owns Escape the same way the confirm dialog does.
     const folderPromptRef = useRef(false);
-    folderPromptRef.current = pendingDelete !== null;
+    folderPromptRef.current = pendingDelete !== null || revokePrompt !== null;
     const folderBusyRef = useRef(false);
     // Set in dragstart before React paints, so the first dragover can accept
     // the drop. The folder is the class the card was in when the drag began.
@@ -1562,6 +1782,8 @@ export function CompanionLibraryView({
     // The dialog that owns the in-progress drag. Text fields and folder
     // controls under it ignore the pointer until the drag ends.
     const dragRootRef = useRef<HTMLElement | null>(null);
+    // Where this gesture started. A click far from it is a text selection.
+    const cardPressRef = useRef<{ x: number; y: number } | null>(null);
     // Set while a rename submit is in flight. Blur fires before the click that
     // submits, and also when Enter leaves the field, so blur must not cancel
     // a rename that is already being saved.
@@ -1686,6 +1908,19 @@ export function CompanionLibraryView({
         return () => document.removeEventListener("keydown", onKey);
     }, [onExit]);
 
+    useEffect(() => {
+        if (!revokePrompt) return;
+        let dead = false;
+        if (typeof ListFileCompanionGroups !== "function") return;
+        ListFileCompanionGroups().then((raw) => {
+            if (dead) return;
+            const names: Record<string, string> = {};
+            for (const group of readGroups(raw)) names[group.id] = group.name;
+            setRevokeGroupNames(names);
+        }).catch(() => undefined);
+        return () => { dead = true; };
+    }, [revokePrompt]);
+
     const beginRow = (id: string, kind: string) => {
         setRowBusy((current) => (current[id] ? current : { ...current, [id]: kind }));
     };
@@ -1738,12 +1973,85 @@ export function CompanionLibraryView({
         }
     };
 
+    const dropOwnedShares = async (targets: CompanionLibraryItem[]) => {
+        let removed = 0;
+        let failed = "";
+        for (const target of targets) {
+            try {
+                const raw = await DeleteFileCompanionShare(target.token) as Record<string, unknown>;
+                if (libraryDeleteGen) libraryDeleteGen.current += 1;
+                const rev = numberOf(raw, "libraryRev", "LibraryRev");
+                const restoredLocal = companionRestoredLocalItem(raw, target.name);
+                if (restoredLocal) companionLibraryShowRestored(restoredLocal, rev, appliedLibraryRevRef.current);
+                companionLibraryHideRow(target, rev, appliedLibraryRevRef.current);
+                appliedSnapshotKeyRef.current = "";
+                setItems((current) => companionLibraryApplyLocalEdits(
+                    current.filter((row) => companionLibraryRowKey(row) !== companionLibraryRowKey(target)),
+                    appliedLibraryRevRef.current,
+                ));
+                removed += 1;
+            } catch (err) {
+                failed = libraryError(err);
+                break;
+            }
+        }
+        return { removed, failed };
+    };
+
+    const revokeChosen = async (tokens: string[], all: boolean) => {
+        const prompt = revokePrompt;
+        if (!prompt || revokeBusyRef.current) return;
+        const wanted = new Set(all ? prompt.shares.map((share) => share.token) : tokens);
+        const targets = prompt.shares.filter((share) => wanted.has(share.token));
+        if (targets.length === 0) {
+            showToast(cs("请选择要移除的分享"), "error", 6000);
+            return;
+        }
+        const every = targets.length === prompt.shares.length;
+        revokeBusyRef.current = true;
+        setRevokeBusy(true);
+        for (const target of targets) beginRow(target.id, "delete");
+        try {
+            const result = await dropOwnedShares(targets);
+            if (result.failed && result.removed === 0) {
+                showToast(result.failed, "error", 6000);
+                return;
+            }
+            showToast(
+                result.failed
+                    ? companionFill(getCompanionUiLang(), "已取消 ${count} 份，其余未能取消：${error}", { count: result.removed, error: result.failed })
+                    : every
+                        ? cs("已取消全部分享。参与者会移除并关闭该文档。")
+                        : cs("已取消所选分享，其余分享仍然有效"),
+                result.failed ? "error" : "success",
+                6000,
+            );
+            setRevokePrompt(null);
+            // The list can take another remove while the refresh is in flight.
+            // The rows just removed are already hidden, so that click sees
+            // what is still shared.
+            revokeBusyRef.current = false;
+            setRevokeBusy(false);
+            await reload();
+        } finally {
+            for (const target of targets) endRow(target.id);
+            revokeBusyRef.current = false;
+            setRevokeBusy(false);
+        }
+    };
+
     const deleteRow = async (item: CompanionLibraryItem) => {
-        if (rowBusy[item.id] || deleteGate.current) return;
+        if (rowBusy[item.id] || deleteGate.current || revokeBusyRef.current) return;
         deleteGate.current = true;
         try {
             beginRow(item.id, "confirm");
             const name = item.name.trim() || cs("这个项目");
+            const siblings = item.source === "cloud" && item.mine && !item.expired ? liveOwnedShares(item.path, items) : [];
+            if (siblings.length > 1) {
+                setRevokePrompt({ name, shares: siblings, initialToken: item.token });
+                endRow(item.id);
+                return;
+            }
             const confirm = companionRemoveConfirm(item, name);
             confirmOpenRef.current = true;
             let ok = false;
@@ -1772,18 +2080,14 @@ export function CompanionLibraryView({
                     // The owner's 移除 is the share control: revoke the link on
                     // the Hub. Participants' next refresh treats the missing
                     // token as deleted and withdraws the copy and open tab.
-                    const raw = await DeleteFileCompanionShare(item.token) as Record<string, unknown>;
-                    if (libraryDeleteGen) libraryDeleteGen.current += 1;
-                    const rev = numberOf(raw, "libraryRev", "LibraryRev");
-                    const restoredLocal = companionRestoredLocalItem(raw, item.name);
-                    if (restoredLocal) companionLibraryShowRestored(restoredLocal, rev, appliedLibraryRevRef.current);
-                    companionLibraryHideRow(item, rev, appliedLibraryRevRef.current);
-                    appliedSnapshotKeyRef.current = "";
-                    setItems((current) => companionLibraryApplyLocalEdits(
-                        current.filter((row) => companionLibraryRowKey(row) !== companionLibraryRowKey(item)),
-                        appliedLibraryRevRef.current,
-                    ));
-                    showToast(cs("已取消分享，参与者会移除并关闭该文档"), "success", 6000);
+                    // The same path the multi-share picker uses, so a single
+                    // link and a chosen link hide the row the same way.
+                    const result = await dropOwnedShares([item]);
+                    if (result.removed === 0) {
+                        showToast(result.failed || cs("操作失败"), "error", 6000);
+                    } else {
+                        showToast(cs("已取消分享，参与者会移除并关闭该文档"), "success", 6000);
+                    }
                 } else {
                     const raw = await DeleteFileCompanionProject(item.id, item.path) as Record<string, unknown>;
                     // Any list that started before this delete finished still has
@@ -2232,16 +2536,18 @@ export function CompanionLibraryView({
             if (dragCardRef.current === card) card.setAttribute("data-dragging", "true");
         });
     };
-    // A local document that was already published has a cloud row beside it.
-    // The local card must offer 修改 on that row instead of 分享, or the same
-    // paper ends up with two links. An expired link is not live, so it does
-    // not hold that seat any more.
-    const sharedByPath = useMemo(() => {
-        const map = new Map<string, CompanionLibraryItem>();
+    // Live shares this person still publishes, grouped by file. A second
+    // audience is another link, so one path can hold more than one row.
+    // An expired link does not hold a seat: the paper can go out again.
+    const sharesByPath = useMemo(() => {
+        const map = new Map<string, CompanionLibraryItem[]>();
         for (const item of items) {
-            if (item.source !== "cloud" || !item.mine || item.expired || !item.path) continue;
+            if (!liveOwnedShare(item)) continue;
             const key = companionSharePathKey(item.path);
-            if (key && !map.has(key)) map.set(key, item);
+            if (!key) continue;
+            const list = map.get(key);
+            if (list) list.push(item);
+            else map.set(key, [item]);
         }
         return map;
     }, [items]);
@@ -2270,24 +2576,54 @@ export function CompanionLibraryView({
             dateOf(item.openedAt) ? companionFill(getCompanionUiLang(), item.source === "cloud" ? "分享于 ${date}" : "打开于 ${date}", { date: dateOf(item.openedAt) }) : "",
         ].filter(Boolean).join(" · ");
         const isOpen = item.path === activePath;
-        // A cloud row is itself a share. A local row is only shared when this
-        // person already published the same path, and then 修改 edits that row.
+        // A cloud row is itself a share. A local row is shared when this person
+        // already published the same path. 添加分享 makes another link for a
+        // different person or group; 修改 still edits the link on this row.
         // An expired row no longer holds either seat: the paper can go out again.
+        const pathKey = companionSharePathKey(item.path);
+        const ownedShares = pathKey ? (sharesByPath.get(pathKey) ?? []) : [];
         const shareRow = item.source === "cloud"
             ? (item.mine && !item.expired ? item : null)
-            : (sharedByPath.get(companionSharePathKey(item.path)) ?? null);
+            : (ownedShares[0] ?? null);
         const alreadyShared = Boolean(shareRow) || (item.source === "cloud" && !item.expired);
+        const canAddShare = Boolean(item.path) && (
+            (item.source === "cloud" && item.mine && !item.expired)
+            || (item.source !== "cloud" && ownedShares.length > 0)
+        );
         const canDrag = folders.length > 0 && !busy && !folderBusy;
         const docTitle = companionLibraryDocTitle(item);
         const kind = (
             <span className="file-companion-project-kind" data-kind={kindOf(item.name)} aria-hidden="true">{kindLabel(item.name)}</span>
         );
+        const openItem = () => {
+            if (item.path) {
+                onOpen(item.path);
+                return;
+            }
+            onImportLink(item.shareUrl);
+        };
+        const openLabel = item.path
+            ? companionFill(getCompanionUiLang(), "打开 ${name}", { name: item.name })
+            : companionFill(getCompanionUiLang(), "导入 ${name} 到本机", { name: item.name });
+        const clickIsStill = (event: { detail: number; clientX: number; clientY: number }) => {
+            const press = cardPressRef.current;
+            cardPressRef.current = null;
+            return !libraryCardClickMoved(event, press);
+        };
         return (
             <div
                 key={item.id}
                 className="file-companion-project"
                 data-testid={`file-companion-library-card-${item.id}`}
                 data-open={isOpen ? "true" : undefined}
+                onMouseDown={(event) => {
+                    if (event.button !== 0) return;
+                    cardPressRef.current = { x: event.clientX, y: event.clientY };
+                }}
+                onClick={(event) => {
+                    if (!companionLibraryCardOpens(event.target) || !clickIsStill(event)) return;
+                    openItem();
+                }}
             >
                 {folders.length > 0 ? (
                     <div
@@ -2308,13 +2644,11 @@ export function CompanionLibraryView({
                             type="button"
                             className="file-companion-project-title"
                             data-testid={`file-companion-library-item-${item.id}`}
-                            title={item.path ? companionFill(getCompanionUiLang(), "打开 ${name}", { name: item.name }) : companionFill(getCompanionUiLang(), "导入 ${name} 到本机", { name: item.name })}
-                            onClick={() => {
-                                if (item.path) {
-                                    onOpen(item.path);
-                                    return;
-                                }
-                                onImportLink(item.shareUrl);
+                            title={openLabel}
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                if (!clickIsStill(event)) return;
+                                openItem();
                             }}
                         >
                             {item.name}
@@ -2334,9 +2668,6 @@ export function CompanionLibraryView({
                     <p
                         className="file-companion-project-meta"
                         data-testid={`file-companion-library-meta-${item.id}`}
-                        draggable={canDrag}
-                        onDragStart={(event) => beginLibraryDrag(event, item, canDrag)}
-                        onDragEnd={() => endLibraryDragRef.current()}
                     >
                         <span className="file-companion-badge" data-tone="source">{item.source === "cloud" ? cs("云端") : cs("本机")}</span>
                         {item.source === "cloud" ? <span className="file-companion-badge">{audienceLabel(item.visibility)}</span> : null}
@@ -2379,7 +2710,7 @@ export function CompanionLibraryView({
                         <span
                             className="file-companion-project-shared"
                             data-testid={`file-companion-library-shared-mark-${item.id}`}
-                            title={sharedMarkTitle(item, shareRow)}
+                            title={sharedMarkTitle(item, shareRow, ownedShares.length)}
                         >
                             <LibraryGlyph name="share" size={12} />
                             <span>{item.source === "cloud" && !item.mine ? cs("收到的") : cs("已分享")}</span>
@@ -2396,6 +2727,18 @@ export function CompanionLibraryView({
                             {cs("分享")}
                         </button>
                     )}
+                    {canAddShare ? (
+                        <button
+                            type="button"
+                            className="file-companion-project-action"
+                            data-testid={`file-companion-library-add-share-${item.id}`}
+                            disabled={Boolean(busy)}
+                            title={cs("添加分享 — 再分享给其他人或群组，已有的分享保持不变")}
+                            onClick={() => onShareProject(item.path)}
+                        >
+                            {cs("添加分享")}
+                        </button>
+                    ) : null}
                     {item.source === "cloud" && shareRow ? (
                         <button
                             type="button"
@@ -2454,7 +2797,9 @@ export function CompanionLibraryView({
                         data-testid={`file-companion-library-delete-${item.id}`}
                         disabled={Boolean(busy)}
                         title={item.source === "cloud"
-                            ? (item.mine && companionOwnPaper(item.path)
+                            ? (item.mine && !item.expired && ownedShares.length > 1
+                                ? cs("取消分享 — 这份文档有多份分享，可以选择某一份或全部移除")
+                                : item.mine && companionOwnPaper(item.path)
                                 ? (item.expired
                                     ? cs("移除分享 — 文档回到本机项目，阅读记录保留")
                                     : cs("取消分享 — 参与者会移除并关闭该文档，本机文档回到本机项目"))
@@ -2727,6 +3072,17 @@ export function CompanionLibraryView({
                         )}
                     </div>
                 </div>
+                {revokePrompt ? (
+                    <ShareRevokePrompt
+                        name={revokePrompt.name}
+                        shares={revokePrompt.shares}
+                        initialToken={revokePrompt.initialToken}
+                        groupNames={revokeGroupNames}
+                        busy={revokeBusy}
+                        onCancel={() => { if (!revokeBusy) setRevokePrompt(null); }}
+                        onConfirm={(tokens, all) => { void revokeChosen(tokens, all); }}
+                    />
+                ) : null}
                 {pendingDelete ? (
                     <FolderDeletePrompt
                         folder={pendingDelete}
@@ -3502,6 +3858,8 @@ export function CompanionShareDialog({
     showToast,
     onListed,
     libraryDeleteGen,
+    onAddShare,
+    existingShares = [],
     onClose,
 }: {
     lang?: string;
@@ -3512,6 +3870,14 @@ export function CompanionShareDialog({
     showToast: LibraryToast;
     onListed?: (listed: unknown) => void;
     libraryDeleteGen?: { current: number };
+    // onAddShare opens a new link for another person or group. The link this
+    // dialog is editing stays as it is.
+    onAddShare?: () => void;
+    // existingShares are the live links of this file. A new link cannot reuse
+    // one of their audiences, and editing this link onto another link's
+    // audience is the same collision. Saving this link onto its own audience
+    // is allowed.
+    existingShares?: CompanionShareRow[];
     onClose: () => void;
 }) {
     if (lang) setCompanionUiLang(lang);
@@ -3546,6 +3912,13 @@ export function CompanionShareDialog({
     const [hostError, setHostError] = useState("");
     const echoVisibility = savedEcho?.visibility ?? share?.visibility ?? "public";
     const echoExpiresAt = savedEcho ? savedEcho.expiresAt : (share?.expiresAt ?? "");
+    const groupNames = useMemo(() => {
+        const names: Record<string, string> = {};
+        for (const group of groups) names[group.id] = group.name;
+        return names;
+    }, [groups]);
+    // The hint names the other links. The one this dialog is editing is omitted.
+    const otherShares = existingShares.filter((row) => row.token !== share?.token);
     const listedRef = useRef(onListed);
     listedRef.current = onListed;
     const { showConfirm } = useDialog();
@@ -3638,6 +4011,15 @@ export function CompanionShareDialog({
         }
         if (visibility === "group" && target === "") {
             showToast(cs("请选择群组"), "error", 6000);
+            return;
+        }
+        // The same audience is the same link. Creating it again would adopt the
+        // link and overwrite its password and expiry. Editing this link onto
+        // another link's audience is the same collision, so that one is refused
+        // too. Saving this link onto its own audience is not.
+        const scope = companionShareScopeKey(visibility, target, visibility === "group" ? groupID : "");
+        if (existingShares.some((row) => row.token !== share?.token && companionShareScopeKey(row.visibility, row.target, row.groupId) === scope)) {
+            showToast(cs("这个范围已经分享过了。请换一个对象，或去修改原来的分享。"), "error", 6000);
             return;
         }
         setShareBusy(true);
@@ -3857,6 +4239,13 @@ export function CompanionShareDialog({
                                 </select>
                             ) : <p className="file-companion-dialog-hint">{cs("还没有管理的群组，先在「阅读群组」里创建一个。")}</p>
                         ) : null}
+                        {otherShares.length > 0 ? (
+                            <p className="file-companion-dialog-hint" data-testid="file-companion-share-existing">
+                                {companionFill(getCompanionUiLang(), "已有分享：${list}", {
+                                    list: otherShares.map((row) => shareChoiceLabel(row, groupNames)).join("、"),
+                                })}
+                            </p>
+                        ) : null}
                     </section>
 
                     <section className="file-companion-dialog-section">
@@ -3943,9 +4332,21 @@ export function CompanionShareDialog({
 
                 <footer className="file-companion-dialog-foot">
                     <p className="file-companion-dialog-hint">
-                        {editing ? cs("改范围或有效期后，链接不变，已导入的人继续可用。") : cs("分享包含文档、高亮和聊天，之后可同步新标注。")}
+                        {editing ? cs("改范围或有效期后，链接不变，已导入的人继续可用。") : cs("分享包含文档、高亮和聊天。之后的新标注和聊天也会同步给参与者。")}
                     </p>
                     <div className="file-companion-dialog-actions">
+                        {editing && onAddShare && path ? (
+                            <button
+                                type="button"
+                                className="file-companion-dialog-secondary"
+                                data-testid="file-companion-share-add"
+                                disabled={shareBusy}
+                                title={cs("添加分享 — 再分享给其他人或群组，已有的分享保持不变")}
+                                onClick={onAddShare}
+                            >
+                                {cs("添加分享")}
+                            </button>
+                        ) : null}
                         {editing ? (
                             <button type="button" className="file-companion-dialog-danger" data-testid="file-companion-share-delete" disabled={shareBusy} onClick={() => { void deleteCurrent(); }}>
                                 {cs("删除分享")}

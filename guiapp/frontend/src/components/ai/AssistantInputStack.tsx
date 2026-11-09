@@ -75,7 +75,7 @@ interface AssistantInputStackProps {
     removeEntry: (id: string) => void;
     removeSelectedFile?: (filePath: string) => void;
     reorderEntry: (fromIndex: number, toIndex: number) => void;
-    resizeInput: () => void;
+    resizeInput: (target?: HTMLTextAreaElement) => void;
     selectedFilePaths: string[];
     setPendingAttachments: React.Dispatch<React.SetStateAction<AttachmentInfo[]>>;
     showBusySpinner: boolean;
@@ -97,7 +97,7 @@ interface AssistantInputStackProps {
     trailingToolbarContent?: React.ReactNode;
     /** Pinned to the right edge of the left toolbar group, in the gap before send. */
     toolbarEndContent?: React.ReactNode;
-    updateInputValue: (value: string) => void;
+    updateInputValue: (value: string, options?: { deferParent?: boolean }) => void;
     voiceInput: UseVoiceInputResult;
 }
 

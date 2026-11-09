@@ -96,9 +96,11 @@ const listLibrary = vi.fn<(args: unknown[]) => Promise<ListLibraryResult>>(async
 const shareDocument = vi.fn(async () => ({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "a.md", visibility: "public", permanent: true }));
 const importShare = vi.fn(async (..._args: any[]): Promise<{ id: string; name: string; path: string; source: string; highlights?: string; chatMarks?: string; annotations?: string; drawings?: string }> => ({ id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", path: "C:/library/shared.pdf", source: "cloud" }));
 const listGroups = vi.fn(async () => [] as Array<Record<string, unknown>>);
-const syncShare = vi.fn(async () => ({ revision: 2 }));
+const syncShare = vi.fn(async (): Promise<{ revision: number; chatRevision?: number }> => ({ revision: 2 }));
 const syncShareMarks = vi.fn(async () => ({ marksRevision: 3 }));
+const syncShareChat = vi.fn(async () => ({ chatRevision: 2 }));
 const fetchShareMarks = vi.fn(async () => ({ marks: "", revision: 0 }));
+const fetchShareChat = vi.fn(async () => ({ messages: "[]", revision: 0 }));
 const updateShare = vi.fn(async (..._args: unknown[]) => ({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "论文.pdf", visibility: "private", permanent: false, expiresAt: "2026-11-24T00:00:00Z" }));
 // AddFileCompanionShareNote returns the legacy notes array or the newer
 // { notes, notesRevision } object; companionNotePost accepts both.
@@ -111,7 +113,7 @@ const removeGroupMember = vi.fn(async () => ({ id: "cg_0123456789abcdef012345678
 const updateGroup = vi.fn(async (id: string, name: string, icon: string) => ({ id, name, icon, admin: true, members: [] as Array<Record<string, unknown>> }));
 const deleteGroup = vi.fn(async () => undefined);
 const deleteProject = vi.fn(async (..._args: unknown[]) => ({ id: "", path: "", name: "", cleared: false }));
-const deleteShare = vi.fn(async (..._args: unknown[]): Promise<void> => undefined);
+const deleteShare = vi.fn(async (..._args: any[]): Promise<any> => undefined);
 const transferHost = vi.fn(async (..._args: unknown[]): Promise<void> => undefined);
 const revokeHost = vi.fn(async (..._args: unknown[]): Promise<void> => undefined);
 const leaveGroup = vi.fn(async () => undefined);
@@ -173,7 +175,9 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     ListFileCompanionGroups: (...args: Parameters<typeof listGroups>) => listGroups(...args),
     SyncFileCompanionShare: (...args: Parameters<typeof syncShare>) => syncShare(...args),
     SyncFileCompanionShareMarks: (...args: Parameters<typeof syncShareMarks>) => syncShareMarks(...args),
+    SyncFileCompanionShareChat: (...args: Parameters<typeof syncShareChat>) => syncShareChat(...args),
     FetchFileCompanionShareMarks: (...args: Parameters<typeof fetchShareMarks>) => fetchShareMarks(...args),
+    FetchFileCompanionShareChat: (...args: Parameters<typeof fetchShareChat>) => fetchShareChat(...args),
     AddFileCompanionShareNote: (...args: Parameters<typeof addShareNote>) => addShareNote(...args),
     ReviewFileCompanionShareNote: (...args: Parameters<typeof reviewShareNote>) => reviewShareNote(...args),
     CreateFileCompanionGroup: (...args: Parameters<typeof createGroup>) => createGroup(...args),
@@ -370,8 +374,12 @@ beforeEach(() => {
     syncShare.mockResolvedValue({ revision: 2 });
     syncShareMarks.mockReset();
     syncShareMarks.mockResolvedValue({ marksRevision: 3 });
+    syncShareChat.mockReset();
+    syncShareChat.mockResolvedValue({ chatRevision: 2 });
     fetchShareMarks.mockReset();
     fetchShareMarks.mockResolvedValue({ marks: "", revision: 0 });
+    fetchShareChat.mockReset();
+    fetchShareChat.mockResolvedValue({ messages: "[]", revision: 0 });
     updateShare.mockReset();
     updateShare.mockResolvedValue({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "论文.pdf", visibility: "private", permanent: false, expiresAt: "2026-11-24T00:00:00Z" });
     addShareNote.mockReset();
@@ -2143,13 +2151,16 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-library"));
         await screen.findByTestId("file-companion-library-panel");
 
-        // A cloud row is already a share: it carries a mark, not a button.
+        // A cloud row is already a share: it carries a mark, not another 分享.
+        // 添加分享 is a new link for someone else; it does not replace 修改.
         expect(screen.getByTestId(`file-companion-library-shared-mark-${token}`).textContent).toContain("已分享");
         expect(screen.queryByTestId(`file-companion-library-share-action-${token}`)).toBeNull();
+        expect(screen.getByTestId(`file-companion-library-add-share-${token}`).textContent).toContain("添加分享");
         // The local row for the same paper is shared too, so it must not
-        // offer a second 分享 either.
+        // offer a second 分享. It can still add one for another audience.
         expect(screen.getByTestId("file-companion-library-shared-mark-local:a").textContent).toContain("已分享");
         expect(screen.queryByTestId("file-companion-library-share-action-local:a")).toBeNull();
+        expect(screen.getByTestId("file-companion-library-add-share-local:a").textContent).toContain("添加分享");
 
         // 修改 opens on the link that already exists.
         fireEvent.click(screen.getByTestId(`file-companion-library-edit-share-${token}`));
@@ -2174,6 +2185,306 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(updateShare).toHaveBeenCalledWith(token, "private", "", "", 0));
         // 修改 does not publish a second link.
         expect(shareDocument).not.toHaveBeenCalled();
+    });
+
+    it("adds another share for a different person without changing the link already out", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const group = "cg_0123456789abcdef0123456789abcdef";
+        listLibrary.mockResolvedValue({
+            items: [
+                { id: "local:a", name: "论文.pdf", path: "C:/notes/a.pdf", source: "local", openedAt: "2026-10-25T00:00:00Z" },
+                {
+                    id: token,
+                    token,
+                    name: "论文.pdf",
+                    path: "C:/notes/a.pdf",
+                    source: "cloud",
+                    owner: "me@example.com",
+                    visibility: "group",
+                    groupId: group,
+                    permanent: true,
+                    shareUrl: `https://hub.example/hub/documents/shares/${token}`,
+                    openedAt: "2026-10-25T00:00:00Z",
+                    mine: true,
+                },
+            ],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.pdf");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-panel");
+
+        fireEvent.click(screen.getByTestId(`file-companion-library-add-share-${token}`));
+        const dialog = await screen.findByTestId("file-companion-share-dialog");
+        expect(within(dialog).getByRole("heading", { name: "分享到云端" })).toBeTruthy();
+        fireEvent.click(within(dialog).getByTestId("file-companion-share-person"));
+        fireEvent.change(within(dialog).getByTestId("file-companion-share-target"), { target: { value: "friend@example.com" } });
+        fireEvent.click(within(dialog).getByTestId("file-companion-library-share"));
+        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.pdf", "person", "", "friend@example.com", expect.any(String), 0));
+        expect(updateShare).not.toHaveBeenCalled();
+    });
+
+    it("keeps an existing audience instead of adopting it when adding a share", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        listLibrary.mockResolvedValue({
+            items: [{
+                id: token,
+                token,
+                name: "论文.pdf",
+                path: "C:/notes/a.pdf",
+                source: "cloud",
+                owner: "me@example.com",
+                visibility: "public",
+                permanent: true,
+                mine: true,
+                openedAt: "2026-10-25T00:00:00Z",
+            }],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.pdf");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        fireEvent.click(await screen.findByTestId(`file-companion-library-add-share-${token}`));
+        const dialog = await screen.findByTestId("file-companion-share-dialog");
+        expect(within(dialog).getByTestId("file-companion-share-existing").textContent).toContain("公开");
+
+        // The form opens on 完全公开, which this paper already uses. Sending it
+        // would rewrite that link rather than add one.
+        fireEvent.click(within(dialog).getByTestId("file-companion-library-share"));
+        expect(await screen.findByText("这个范围已经分享过了。请换一个对象，或去修改原来的分享。")).toBeTruthy();
+        expect(shareDocument).not.toHaveBeenCalled();
+
+        fireEvent.click(within(dialog).getByTestId("file-companion-share-person"));
+        fireEvent.change(within(dialog).getByTestId("file-companion-share-target"), { target: { value: "Friend@Example.com" } });
+        fireEvent.click(within(dialog).getByTestId("file-companion-library-share"));
+        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.pdf", "person", "", "Friend@Example.com", expect.any(String), 0));
+    });
+
+    it("edits the share on the card, and can start another share from that dialog", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const groupToken = "cd_0123456789abcdef0123456789abcdef";
+        const personToken = "cd_fedcba9876543210fedcba9876543210";
+        const group = "cg_0123456789abcdef0123456789abcdef";
+        listLibrary.mockResolvedValue({
+            items: [
+                {
+                    id: groupToken,
+                    token: groupToken,
+                    name: "论文.pdf",
+                    path: "C:/notes/a.pdf",
+                    source: "cloud",
+                    owner: "me@example.com",
+                    visibility: "group",
+                    groupId: group,
+                    permanent: true,
+                    mine: true,
+                    openedAt: "2026-10-25T00:00:00Z",
+                },
+                {
+                    id: personToken,
+                    token: personToken,
+                    name: "论文.pdf",
+                    path: "C:/notes/a.pdf",
+                    source: "cloud",
+                    owner: "me@example.com",
+                    visibility: "person",
+                    target: "friend@example.com",
+                    permanent: true,
+                    mine: true,
+                    openedAt: "2026-10-26T00:00:00Z",
+                },
+            ],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.pdf");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-panel");
+
+        fireEvent.click(screen.getByTestId(`file-companion-library-edit-share-${personToken}`));
+        const dialog = await screen.findByTestId("file-companion-share-dialog");
+        expect(within(dialog).getByRole("heading", { name: "修改分享" })).toBeTruthy();
+        expect((within(dialog).getByTestId("file-companion-share-person") as HTMLButtonElement).getAttribute("aria-pressed")).toBe("true");
+        expect((within(dialog).getByTestId("file-companion-share-target") as HTMLInputElement).value).toBe("friend@example.com");
+
+        fireEvent.click(within(dialog).getByTestId("file-companion-share-add"));
+        const created = await screen.findByTestId("file-companion-share-dialog");
+        expect(within(created).getByRole("heading", { name: "分享到云端" })).toBeTruthy();
+        expect(within(created).queryByTestId("file-companion-share-add")).toBeNull();
+    });
+
+    it("refuses to edit a share onto an audience another share of the same file already uses", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const groupToken = "cd_0123456789abcdef0123456789abcdef";
+        const personToken = "cd_fedcba9876543210fedcba9876543210";
+        const group = "cg_0123456789abcdef0123456789abcdef";
+        listLibrary.mockResolvedValue({
+            items: [
+                {
+                    id: groupToken,
+                    token: groupToken,
+                    name: "论文.pdf",
+                    path: "C:/notes/a.pdf",
+                    source: "cloud",
+                    owner: "me@example.com",
+                    visibility: "group",
+                    groupId: group,
+                    permanent: true,
+                    mine: true,
+                    openedAt: "2026-10-25T00:00:00Z",
+                },
+                {
+                    id: personToken,
+                    token: personToken,
+                    name: "论文.pdf",
+                    path: "C:/notes/a.pdf",
+                    source: "cloud",
+                    owner: "me@example.com",
+                    visibility: "person",
+                    target: "friend@example.com",
+                    permanent: true,
+                    mine: true,
+                    openedAt: "2026-10-26T00:00:00Z",
+                },
+            ],
+            notice: "",
+        });
+        listGroups.mockResolvedValue([{ id: group, name: "论文组", admin: true, members: [] }]);
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.pdf");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-panel");
+
+        fireEvent.click(screen.getByTestId(`file-companion-library-edit-share-${personToken}`));
+        const dialog = await screen.findByTestId("file-companion-share-dialog");
+        const hint = within(dialog).getByTestId("file-companion-share-existing");
+        expect(hint.textContent).not.toContain("friend@example.com");
+        await waitFor(() => expect(hint.textContent).toContain("论文组"));
+
+        // Saving this link onto its own audience is still an update.
+        fireEvent.click(within(dialog).getByTestId("file-companion-library-share"));
+        await waitFor(() => expect(updateShare).toHaveBeenCalledWith(personToken, "person", "", "friend@example.com", -1));
+        await waitFor(() => expect((within(dialog).getByTestId("file-companion-library-share") as HTMLButtonElement).disabled).toBe(false));
+
+        fireEvent.click(within(dialog).getByTestId("file-companion-share-group"));
+        fireEvent.change(await within(dialog).findByTestId("file-companion-share-group-pick"), { target: { value: group } });
+        fireEvent.click(within(dialog).getByTestId("file-companion-library-share"));
+        expect(await screen.findByText("这个范围已经分享过了。请换一个对象，或去修改原来的分享。")).toBeTruthy();
+        expect(updateShare).toHaveBeenCalledTimes(1);
+    });
+
+    it("removes one share or every share when a document has more than one", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const groupToken = "cd_0123456789abcdef0123456789abcdef";
+        const personToken = "cd_fedcba9876543210fedcba9876543210";
+        const group = "cg_0123456789abcdef0123456789abcdef";
+        const localItem = { id: "local:a", token: "local:a", name: "论文.pdf", path: "C:/notes/a.pdf", source: "local", openedAt: "2026-10-25T00:00:00Z" };
+        const groupItem = {
+            id: groupToken,
+            token: groupToken,
+            name: "论文.pdf",
+            path: "C:/notes/a.pdf",
+            source: "cloud",
+            owner: "me@example.com",
+            visibility: "group",
+            groupId: group,
+            permanent: true,
+            shareUrl: `https://hub.example/hub/documents/shares/${groupToken}`,
+            mine: true,
+            openedAt: "2026-10-25T00:00:00Z",
+        };
+        const personItem = {
+            id: personToken,
+            token: personToken,
+            name: "论文.pdf",
+            path: "C:/notes/a.pdf",
+            source: "cloud",
+            owner: "me@example.com",
+            visibility: "person",
+            target: "friend@example.com",
+            permanent: true,
+            shareUrl: `https://hub.example/hub/documents/shares/${personToken}`,
+            mine: true,
+            openedAt: "2026-10-26T00:00:00Z",
+        };
+        let listed = [localItem, groupItem, personItem];
+        listLibrary.mockImplementation(async () => ({ items: listed, notice: "" }));
+        listGroups.mockResolvedValue([{ id: group, name: "论文组", admin: true, members: [] }]);
+        deleteShare.mockImplementation(async (token: string) => {
+            listed = listed.filter((item) => item.token !== token && item.id !== token);
+            return { libraryRev: listed.length + 1 };
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.pdf");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-panel");
+
+        fireEvent.click(screen.getByTestId(`file-companion-library-delete-${groupToken}`));
+        const picker = await screen.findByTestId("file-companion-revoke-shares");
+        expect(picker.textContent).toContain("有 2 份分享");
+        await waitFor(() => expect(picker.textContent).toContain("群组 · 论文组"));
+        expect(picker.textContent).toContain("指定的人 · friend@example.com");
+        expect((within(picker).getByTestId(`file-companion-revoke-share-${groupToken}`) as HTMLInputElement).checked).toBe(true);
+        expect((within(picker).getByTestId(`file-companion-revoke-share-${personToken}`) as HTMLInputElement).checked).toBe(false);
+
+        fireEvent.click(within(picker).getByTestId("file-companion-revoke-selected"));
+        await waitFor(() => expect(deleteShare).toHaveBeenCalledWith(groupToken));
+        expect(deleteShare).not.toHaveBeenCalledWith(personToken);
+        await waitFor(() => expect(screen.queryByTestId(`file-companion-library-card-${groupToken}`)).toBeNull());
+        expect(screen.getByTestId(`file-companion-library-card-${personToken}`)).toBeTruthy();
+        expect(await screen.findByText("已取消所选分享，其余分享仍然有效")).toBeTruthy();
+    });
+
+    it("removes every share of a document at once", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const groupToken = "cd_0123456789abcdef0123456789abcdef";
+        const personToken = "cd_fedcba9876543210fedcba9876543210";
+        const localItem = { id: "local:a", token: "local:a", name: "论文.pdf", path: "C:/notes/a.pdf", source: "local", openedAt: "2026-10-25T00:00:00Z" };
+        const shareOf = (token: string, visibility: string) => ({
+            id: token,
+            token,
+            name: "论文.pdf",
+            path: "C:/notes/a.pdf",
+            source: "cloud",
+            owner: "me@example.com",
+            visibility,
+            permanent: true,
+            mine: true,
+            openedAt: "2026-10-25T00:00:00Z",
+        });
+        let listed = [localItem, shareOf(groupToken, "group"), shareOf(personToken, "person")];
+        listLibrary.mockImplementation(async () => ({ items: listed, notice: "" }));
+        deleteShare.mockImplementation(async (token: string) => {
+            listed = listed.filter((item) => item.token !== token && item.id !== token);
+            return { libraryRev: 8 };
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.pdf");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        fireEvent.click(await screen.findByTestId(`file-companion-library-delete-${personToken}`));
+        const picker = await screen.findByTestId("file-companion-revoke-shares");
+        fireEvent.click(within(picker).getByTestId("file-companion-revoke-all"));
+        await waitFor(() => expect(deleteShare).toHaveBeenCalledWith(groupToken));
+        expect(deleteShare).toHaveBeenCalledWith(personToken);
+        await waitFor(() => expect(screen.queryByTestId(`file-companion-library-card-${groupToken}`)).toBeNull());
+        expect(screen.queryByTestId(`file-companion-library-card-${personToken}`)).toBeNull();
+        expect(await screen.findByText("已取消全部分享。参与者会移除并关闭该文档。")).toBeTruthy();
+        expect(screen.getByTestId("file-companion-library-card-local:a")).toBeTruthy();
     });
 
     it("toasts a successful share and reports an already shared paper and range", async () => {
@@ -2658,10 +2969,271 @@ describe("FileCompanionWindow", () => {
         fireEvent.keyDown(input, { key: "Enter" });
         await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
         // The question reaches the hub on its own, not through the 同步 button.
-        await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
-        const args = syncShare.mock.calls[0] as unknown as [string, string];
+        // The transcript is the small blob. The project zip stays for 同步.
+        await waitFor(() => expect(syncShareChat).toHaveBeenCalled(), { timeout: 4000 });
+        expect(syncShare).not.toHaveBeenCalled();
+        const args = syncShareChat.mock.calls[0] as unknown as [string, string];
         expect(args[0]).toBe("C:/notes/a.pdf");
         expect(JSON.parse(args[1])).toEqual({ highlights: [], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] });
+    });
+
+    it("shows the host's new chat on an open shared document without downloading the file again", async () => {
+        fetchShareChat.mockResolvedValue({
+            messages: JSON.stringify([
+                { role: "user", text: "主持人的新问题" },
+                { role: "assistant", text: "主持人的新回答" },
+            ]),
+            revision: 3,
+        });
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "旧回答" }],
+        }));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                chatRevision: 3,
+                notes: [],
+            }],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("主持人的新回答");
+        expect(screen.queryByText("旧回答")).toBeNull();
+        expect(screen.getByText("主持人的新问题")).toBeTruthy();
+        expect(fetchShareChat).toHaveBeenCalledWith("C:/library/shared.pdf");
+        expect(syncShare).not.toHaveBeenCalled();
+    });
+
+    it("fetches the host's next chat from a later poll while the share is open", async () => {
+        const path = "C:/library/shared.pdf";
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        fetchShareChat.mockResolvedValue({
+            messages: JSON.stringify([{ role: "assistant", text: "第一轮回答" }]),
+            revision: 1,
+        });
+        boot.mockResolvedValue({ paths: [path] });
+        open.mockImplementation(async (target: string) => doc(target, {
+            messages: [{ role: "assistant", text: "旧回答" }],
+        }));
+        listLibrary.mockResolvedValue({
+            items: [{ path, source: "cloud", token, mine: false, chatRevision: 1, notes: [] }],
+            notice: "",
+            syncGen: 1,
+            syncing: false,
+        });
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByText("第一轮回答");
+        const fetchedBefore = fetchShareChat.mock.calls.length;
+
+        // The fast poll carries only the moved revision. The transcript itself
+        // is fetched then, and the open chat follows without reopening the file
+        // or downloading the project zip again.
+        fetchShareChat.mockResolvedValue({
+            messages: JSON.stringify([
+                { role: "assistant", text: "第一轮回答" },
+                { role: "user", text: "主持人的追问" },
+                { role: "assistant", text: "第二轮回答" },
+            ]),
+            revision: 2,
+        });
+        await act(async () => {
+            runtime.emit("file-companion:library", {
+                items: [{ path, source: "cloud", token, mine: false, chatRevision: 2, notes: [] }],
+                notice: "",
+                syncGen: 2,
+                syncing: false,
+            });
+        });
+        await screen.findByText("第二轮回答");
+        expect(screen.getByText("主持人的追问")).toBeTruthy();
+        expect(fetchShareChat.mock.calls.length).toBeGreaterThan(fetchedBefore);
+        expect(syncShare).not.toHaveBeenCalled();
+    });
+
+    it("leaves a host's open chat alone while its own turn is still running", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const path = `C:/Users/me/data/file-companion/library-files/${token}/shared.pdf`;
+        let releaseSend: (() => void) | undefined;
+        send.mockImplementation(() => new Promise<void>((resolve) => { releaseSend = resolve; }));
+        fetchShareChat.mockResolvedValue({
+            messages: JSON.stringify([{ role: "assistant", text: "第一轮回答" }]),
+            revision: 1,
+        });
+        boot.mockResolvedValue({ paths: [path] });
+        open.mockImplementation(async (target: string) => doc(target, {
+            messages: [{ role: "assistant", text: "旧回答" }],
+        }));
+        listLibrary.mockResolvedValue({
+            items: [{ path, source: "cloud", token, mine: false, host: true, hostKnown: true, chatRevision: 1, notes: [] }],
+            notice: "",
+        });
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByText("第一轮回答");
+        const fetchedBefore = fetchShareChat.mock.calls.length;
+
+        const input = screen.getByTestId("file-companion-input") as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: "本地追问" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+        // The host's own turn is still writing. A newer transcript from the
+        // poll must not replace the chat and hide the streaming answer.
+        fetchShareChat.mockResolvedValue({
+            messages: JSON.stringify([
+                { role: "assistant", text: "第一轮回答" },
+                { role: "user", text: "另一台机器的问题" },
+                { role: "assistant", text: "另一台机器的回答" },
+            ]),
+            revision: 2,
+        });
+        await act(async () => {
+            runtime.emit("file-companion:library", {
+                items: [{ path, source: "cloud", token, mine: false, host: true, hostKnown: true, chatRevision: 2, notes: [] }],
+                notice: "",
+                syncGen: 2,
+                syncing: false,
+            });
+        });
+        await act(async () => { await Promise.resolve(); });
+        expect(fetchShareChat.mock.calls.length).toBe(fetchedBefore);
+        expect(screen.queryByText("另一台机器的回答")).toBeNull();
+
+        // The turn ends, and the next list applies the newer transcript.
+        await act(async () => { releaseSend?.(); await Promise.resolve(); await Promise.resolve(); });
+        await act(async () => {
+            runtime.emit("file-companion:library", {
+                items: [{ path, source: "cloud", token, mine: false, host: true, hostKnown: true, chatRevision: 2, notes: [] }],
+                notice: "",
+                syncGen: 3,
+                syncing: false,
+            });
+        });
+        await screen.findByText("另一台机器的回答");
+        expect(screen.getByText("另一台机器的问题")).toBeTruthy();
+    });
+
+    it("does not download the host's own transcript back after pushing", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const path = `C:/Users/me/data/file-companion/library-files/${token}/shared.pdf`;
+        syncShareChat.mockResolvedValue({ chatRevision: 2 });
+        fetchShareChat.mockResolvedValue({
+            messages: JSON.stringify([{ role: "assistant", text: "开篇回答" }]),
+            revision: 1,
+        });
+        boot.mockResolvedValue({ paths: [path] });
+        open.mockImplementation(async (target: string) => doc(target, {
+            messages: [{ role: "assistant", text: "开篇回答" }],
+        }));
+        listLibrary.mockResolvedValue({
+            items: [{ path, source: "cloud", token, mine: false, host: true, hostKnown: true, chatRevision: 1, notes: [] }],
+            notice: "",
+        });
+        const runtime = installRuntime();
+        renderWindow();
+        await waitFor(() => expect(screen.getByTestId("file-companion-host-sync").getAttribute("aria-label")).toBe("同步"));
+        await screen.findByText("开篇回答");
+        await waitFor(() => expect(fetchShareChat.mock.calls.length).toBeGreaterThan(0));
+        const fetchedBefore = fetchShareChat.mock.calls.length;
+
+        const input = screen.getByTestId("file-companion-input") as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: "第一个问题" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(syncShareChat).toHaveBeenCalledTimes(1), { timeout: 4000 });
+
+        // The poll now advertises the revision this machine just uploaded.
+        await act(async () => {
+            runtime.emit("file-companion:library", {
+                items: [{ path, source: "cloud", token, mine: false, host: true, hostKnown: true, chatRevision: 2, notes: [] }],
+                notice: "",
+                syncGen: 2,
+                syncing: false,
+            });
+        });
+        fireEvent.change(input, { target: { value: "第二个问题" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(syncShareChat).toHaveBeenCalledTimes(2), { timeout: 4000 });
+        // No catch-up fetch: this machine's local chat is exactly the revision
+        // the Hub lists, so pulling would only replace the question just typed.
+        expect(fetchShareChat).toHaveBeenCalledTimes(fetchedBefore);
+    });
+
+    it("ignores an older transcript that lands after a full sync", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const path = `C:/Users/me/data/file-companion/library-files/${token}/shared.pdf`;
+        let resolveFetch: ((value: { messages: string; revision: number }) => void) | undefined;
+        const pendingFetch = new Promise<{ messages: string; revision: number }>((resolve) => { resolveFetch = resolve; });
+        fetchShareChat.mockImplementation(() => pendingFetch);
+        syncShare.mockResolvedValue({ revision: 3, chatRevision: 2 });
+        boot.mockResolvedValue({ paths: [path] });
+        open.mockImplementation(async (target: string) => doc(target, {
+            messages: [{ role: "assistant", text: "当前回答" }],
+        }));
+        listLibrary.mockResolvedValue({
+            items: [{ path, source: "cloud", token, mine: false, host: true, hostKnown: true, chatRevision: 1, notes: [] }],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("当前回答");
+        await waitFor(() => expect(fetchShareChat).toHaveBeenCalled());
+
+        // A full 同步 uploads the current chat while the revision-1 fetch is
+        // still out. The fetch then lands with older bytes; it must not replace
+        // the transcript the sync just published.
+        fireEvent.click(await screen.findByTestId("file-companion-host-sync"));
+        await waitFor(() => expect(syncShare).toHaveBeenCalledTimes(1));
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        await act(async () => {
+            resolveFetch?.({
+                messages: JSON.stringify([{ role: "assistant", text: "旧版本回答" }]),
+                revision: 1,
+            });
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(screen.queryByText("旧版本回答")).toBeNull();
+        expect(screen.getByText("当前回答")).toBeTruthy();
+    });
+
+    it("queues a chat push as a chat upload when a full sync is already running", async () => {
+        const token = "cd_0123456789abcdef0123456789abcdef";
+        const path = `C:/Users/me/data/file-companion/library-files/${token}/shared.pdf`;
+        let releaseFull: ((value: { revision: number }) => void) | undefined;
+        syncShare.mockImplementation(() => new Promise((resolve) => { releaseFull = resolve; }));
+        boot.mockResolvedValue({ paths: [path] });
+        open.mockImplementation(async (target: string) => doc(target));
+        listLibrary.mockResolvedValue({
+            items: [{ path, source: "cloud", token, mine: false, host: true, hostKnown: true, chatRevision: 1, notes: [] }],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        const sync = await screen.findByTestId("file-companion-host-sync");
+        fireEvent.click(sync);
+        await waitFor(() => expect(syncShare).toHaveBeenCalledTimes(1));
+
+        // A line arrives while the manual 同步 is still uploading. It waits,
+        // and when that upload lands it is sent as the small transcript blob,
+        // not as a second copy of the paper.
+        const input = screen.getByTestId("file-companion-input") as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: "同步途中发送的问题" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1400)); });
+        expect(syncShareChat).not.toHaveBeenCalled();
+
+        await act(async () => { releaseFull?.({ revision: 3 }); await Promise.resolve(); });
+        await waitFor(() => expect(syncShareChat).toHaveBeenCalledTimes(1), { timeout: 4000 });
+        expect(syncShare).toHaveBeenCalledTimes(1);
     });
 
     it("pushes the host's own highlight change to the share", async () => {
@@ -2783,7 +3355,7 @@ describe("FileCompanionWindow", () => {
     });
 
     it("warns once when the automatic share push fails", async () => {
-        syncShare.mockRejectedValue(new Error("offline"));
+        syncShareChat.mockRejectedValue(new Error("offline"));
         boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
         open.mockImplementation(async (path: string) => doc(path));
         const token = "cd_0123456789abcdef0123456789abcdef";
@@ -2894,6 +3466,26 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(loadChatMarks("C:/notes/a.pdf")).toEqual([]));
         await waitFor(() => expect(loadChatAnnotations("C:/notes/a.pdf")).toEqual([]));
         expect(screen.queryByTestId("file-companion-answer")).toBeNull();
+    });
+
+    it("renders formulas the model wrapped in backticks as math", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockResolvedValue(doc("C:/notes/a.pdf", {
+            messages: [
+                { role: "user", text: "解释公式" },
+                {
+                    role: "assistant",
+                    text: "输入拼成 `x_i = f(I, q, d_i)`，查询内公式：\n\n```\na_j(q) = [a_j(q,d_1), ..., a_j(q,d_N)]\n```",
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        const answer = await screen.findByTestId("file-companion-answer");
+        expect(await screen.findAllByTestId("assistant-inline-math")).toHaveLength(1);
+        expect(await screen.findAllByTestId("assistant-display-math")).toHaveLength(1);
+        // The code chips must be gone; the formulas now go through KaTeX.
+        expect(answer.querySelector("code")).toBeNull();
     });
 
     it("writes a note on the selected answer", async () => {
@@ -4197,7 +4789,7 @@ describe("FileCompanionWindow", () => {
         expect(send).not.toHaveBeenCalled();
         expect((await screen.findByTestId("file-companion-annotation-cn_def")).textContent).toContain("我也这么看");
 
-        const hostReply = { id: "cn_host", author: "host@example.com", text: "主持人 Agent 的回答", createdAt: "2026-10-25T00:02:00Z", host: true, replyTo: "cn_def" };
+        const hostReply = { id: "cn_host", author: "host@example.com", text: "主持人 Agent 的回答：`x_i = f(I, q, d_i)`", createdAt: "2026-10-25T00:02:00Z", host: true, replyTo: "cn_def" };
         listLibrary.mockResolvedValue({
             items: [{
                 path: "C:/library/shared.pdf",
@@ -4218,7 +4810,11 @@ describe("FileCompanionWindow", () => {
         expect(reply.textContent).toContain("主持人 Agent 的回答");
         expect(reply.textContent).toContain("主持人回复");
         expect(reply.textContent).toContain("回复 me@example.com：我也这么看");
-        expect((screen.getByTestId("file-companion-annotation-cn_host")).textContent).toContain("主持人");
+        // The host agent's reply is AI output: a code-wrapped formula renders
+        // as math in the chat bubble and in the 讨论 list alike.
+        expect(reply.querySelector('[data-testid="assistant-inline-math"]')).toBeTruthy();
+        expect(screen.getByTestId("file-companion-annotation-cn_host").textContent).toContain("主持人");
+        expect(screen.getByTestId("file-companion-annotation-body-cn_host").querySelector('[data-testid="assistant-inline-math"]')).toBeTruthy();
     });
 
     it("the host can pass a reader note before the agent answers it", async () => {
@@ -4727,15 +5323,15 @@ describe("FileCompanionWindow", () => {
         fireEvent.keyDown(input, { key: "Enter" });
         await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
         await new Promise((resolve) => setTimeout(resolve, 1500));
-        expect(syncShare).not.toHaveBeenCalled();
+        expect(syncShareChat).not.toHaveBeenCalled();
         await act(async () => {
             releaseMarks({
                 marks: JSON.stringify({ highlights: [mark], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] }),
                 revision: 4,
             });
         });
-        await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
-        const args = syncShare.mock.calls[0] as unknown as [string, string];
+        await waitFor(() => expect(syncShareChat).toHaveBeenCalled(), { timeout: 4000 });
+        const args = syncShareChat.mock.calls[0] as unknown as [string, string];
         expect(args[0]).toBe(cache);
         expect(JSON.parse(args[1]).highlights).toEqual([mark]);
     });
@@ -4761,11 +5357,11 @@ describe("FileCompanionWindow", () => {
         fireEvent.keyDown(input, { key: "Enter" });
         await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
         await new Promise((resolve) => setTimeout(resolve, 1500));
-        expect(syncShare).not.toHaveBeenCalled();
+        expect(syncShareChat).not.toHaveBeenCalled();
         listLibrary.mockResolvedValue({ items: [row], notice: "", syncing: false, syncGen: 2 });
         await act(async () => { window.dispatchEvent(new Event("focus")); });
-        await waitFor(() => expect(syncShare).toHaveBeenCalled(), { timeout: 4000 });
-        const args = syncShare.mock.calls[0] as unknown as [string, string];
+        await waitFor(() => expect(syncShareChat).toHaveBeenCalled(), { timeout: 4000 });
+        const args = syncShareChat.mock.calls[0] as unknown as [string, string];
         expect(args[0]).toBe(cache);
         expect(JSON.parse(args[1]).highlights).toEqual([mark]);
     });
@@ -9396,7 +9992,7 @@ describe("companion titlebar keeps its controls out of the window drag region", 
         expect(source).toContain(".file-companion-window[data-view='library']:not([data-reader-player]) .file-companion-split-preview,");
         expect(source).toMatch(/\.file-companion-window\[data-view='groups'\]:not\(\[data-reader-player\]\) \.file-companion-split-preview\s*\{[^}]*visibility:\s*hidden/);
         expect(source).toMatch(/\.file-companion-project\s*\{[^}]*content-visibility:\s*auto/);
-        expect(source).toMatch(/\.file-companion-project\s*\{[^}]*contain-intrinsic-size:\s*auto 78px/);
+        expect(source).toMatch(/\.file-companion-project\s*\{[^}]*contain-intrinsic-size:\s*auto 97px/);
     });
 
     // jsdom never runs Wails' drop filter. OnFileDrop is registered with

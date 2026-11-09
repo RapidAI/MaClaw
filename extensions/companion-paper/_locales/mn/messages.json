@@ -1,5 +1,6 @@
 {
   "extName": { "message": "Хамт уншихад нэмэх" },
   "extDescription": { "message": "Одоогийн PDF эсвэл өгүүллийг хамт унших санд нэмж нээнэ." },
-  "menuAdd": { "message": "Хамт уншихад нэмэх" }
+  "menuAdd": { "message": "Хамт уншихад нэмэх" },
+  "nativeFailed": { "message": "Хамт уншихтай холбогдож чадсангүй. MaClaw Tools > Browser extension хэсгээс дахин суулгана уу." }
 }

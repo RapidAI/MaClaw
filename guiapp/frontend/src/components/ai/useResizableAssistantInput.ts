@@ -6,25 +6,24 @@ const INPUT_TEXTAREA_DEFAULT_MAX_HEIGHT = 120;
 
 export function useResizableAssistantInput(
     inputRef: React.MutableRefObject<HTMLTextAreaElement | null>,
-    inputValue: string,
     onResizeEnd?: () => void,
 ) {
     const [inputAreaHeight, setInputAreaHeight] = useState<number | null>(null);
 
-    const resizeInput = useCallback(() => {
-        if (!inputRef.current) return;
+    const resizeInput = useCallback((target?: HTMLTextAreaElement) => {
+        const input = target ?? inputRef.current;
+        if (!input) return;
         if (inputAreaHeight) {
-            inputRef.current.style.height = "100%";
+            input.style.height = "100%";
             return;
         }
-        inputRef.current.style.height = "auto";
-        inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, INPUT_TEXTAREA_DEFAULT_MAX_HEIGHT) + "px";
+        input.style.height = "auto";
+        input.style.height = Math.min(input.scrollHeight, INPUT_TEXTAREA_DEFAULT_MAX_HEIGHT) + "px";
     }, [inputAreaHeight, inputRef]);
 
     useEffect(() => {
-        if (!inputRef.current) return;
         resizeInput();
-    }, [inputValue, resizeInput, inputRef]);
+    }, [inputAreaHeight, resizeInput]);
 
     const startInputResize = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
         e.preventDefault();

@@ -11,15 +11,14 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     ClipboardSetText: vi.fn().mockResolvedValue(true),
 }));
 
+const NO_STORE_ROWS = [
+    { browser: 'chrome', state: 'failed', detail: 'no-store-url' },
+    { browser: 'edge', state: 'failed', detail: 'no-store-url' },
+    { browser: 'safari', state: 'absent' },
+];
+
 function install(overrides: Record<string, unknown> = {}) {
-    const installSpy = vi.fn().mockResolvedValue({
-        ok: true,
-        browsers: [
-            { browser: 'chrome', state: 'failed', detail: 'no-store-url' },
-            { browser: 'edge', state: 'not-installed', detail: 'not-installed' },
-            { browser: 'safari', state: 'absent' },
-        ],
-    });
+    const installSpy = vi.fn().mockResolvedValue({ ok: true, browsers: NO_STORE_ROWS });
     const uninstallSpy = vi.fn().mockResolvedValue({
         ok: true,
         browsers: [
@@ -34,7 +33,7 @@ function install(overrides: Record<string, unknown> = {}) {
                 GetACPHostStatus: vi.fn().mockRejectedValue(new Error('no backend')),
                 InstallBrowserExtensions: installSpy,
                 UninstallBrowserExtensions: uninstallSpy,
-                GetBrowserExtensionStatus: vi.fn().mockResolvedValue({ ok: true, browsers: [] }),
+                GetBrowserExtensionStatus: vi.fn().mockResolvedValue({ ok: true, browsers: NO_STORE_ROWS }),
                 ...overrides,
             },
         },
@@ -42,8 +41,23 @@ function install(overrides: Record<string, unknown> = {}) {
     return { installSpy, uninstallSpy };
 }
 
+/** First status read has nothing prepared; later polls return the installed folder. */
+function statusFromNoStore(result: unknown) {
+    return vi.fn()
+        .mockResolvedValueOnce({ ok: true, browsers: NO_STORE_ROWS })
+        .mockResolvedValue(result);
+}
+
 const originalClipboard = Object.getOwnPropertyDescriptor(Navigator.prototype, 'clipboard')
     ?? Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+
+/** Open the card and run the row install, leaving a load-unpacked folder on screen. */
+async function openUnpacked(browser = 'edge') {
+    fireEvent.click(screen.getByTestId('utilities-browser-extension-card'));
+    await waitFor(() => expect(screen.getByTestId(`browser-extension-install-${browser}`)).toBeTruthy());
+    fireEvent.click(screen.getByTestId(`browser-extension-install-${browser}`));
+    await waitFor(() => expect(screen.getByTestId('browser-extension-unpacked')).toBeTruthy());
+}
 
 describe('browser extension tool card', () => {
     afterEach(() => {
@@ -69,42 +83,75 @@ describe('browser extension tool card', () => {
         await waitFor(() => expect(screen.queryByTestId('utilities-browser-extension-card')).toBeNull());
     });
 
-    it('registers installed browsers and does not draw an absent Safari row', async () => {
-        const { installSpy, uninstallSpy } = install();
+    it('reads status on open and registers only from the row button', async () => {
+        const statusSpy = vi.fn().mockResolvedValue({ ok: true, browsers: NO_STORE_ROWS });
+        const { installSpy, uninstallSpy } = install({ GetBrowserExtensionStatus: statusSpy });
         render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
         fireEvent.click(screen.getByTestId('utilities-browser-extension-card'));
-        await waitFor(() => expect(installSpy).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(statusSpy).toHaveBeenCalledTimes(1));
+        // Opening the card must not run a registration that launches a browser.
+        expect(installSpy).not.toHaveBeenCalled();
         expect(screen.getByTestId('browser-extension-panel')).toBeTruthy();
-        expect(screen.getByTestId('browser-extension-row-chrome').textContent).toContain('当前构建没有商店更新地址，扩展不会自动装上');
+        expect(screen.getByTestId('browser-extension-row-chrome').textContent).toContain('点「安装」准备扩展目录，再按提示在浏览器里加载');
         expect(screen.getByTestId('browser-extension-row-chrome').textContent).toContain('安装');
-        expect(screen.getByTestId('browser-extension-row-edge').textContent).toContain('未安装');
-        expect(screen.queryByTestId('browser-extension-install-edge')).toBeNull();
+        expect(screen.getByTestId('browser-extension-row-edge').textContent).toContain('尚未安装');
+        expect(screen.getByTestId('browser-extension-install-edge')).toBeTruthy();
         expect(screen.queryByTestId('browser-extension-row-safari')).toBeNull();
         expect(screen.queryByText(/download|下载页/i)).toBeNull();
         fireEvent.click(screen.getByTestId('browser-extension-install-chrome'));
-        await waitFor(() => expect(installSpy).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(installSpy).toHaveBeenCalledTimes(1));
         fireEvent.click(screen.getByTestId('browser-extension-remove-chrome'));
         await waitFor(() => expect(uninstallSpy).toHaveBeenCalledTimes(1));
         expect(screen.getByTestId('browser-extension-row-chrome').textContent).toContain('未安装');
     });
 
-    it('shows the unpacked folder when the browser must load it', async () => {
-        const reveal = vi.fn().mockResolvedValue(undefined);
+    it('offers the unpacked install flow for Linux Chrome', async () => {
+        const result = {
+            ok: true,
+            unpackedPath: '/home/me/.maclaw/data/file-companion/companion-paper',
+            browsers: [
+                { browser: 'chrome', state: 'needs-enable', detail: 'load-unpacked' },
+            ],
+        };
         const openPage = vi.fn().mockResolvedValue(undefined);
         install({
-            InstallBrowserExtensions: vi.fn().mockResolvedValue({
-                ok: true,
-                unpackedPath: 'C:\\Users\\me\\.maclaw\\data\\file-companion\\companion-paper',
-                browsers: [
-                    { browser: 'edge', state: 'needs-enable', detail: 'load-unpacked' },
-                ],
-            }),
-            RevealBrowserExtensionFolder: reveal,
+            InstallBrowserExtensions: vi.fn().mockResolvedValue(result),
+            GetBrowserExtensionStatus: vi.fn()
+                .mockResolvedValueOnce({
+                    ok: true,
+                    browsers: [{ browser: 'chrome', state: 'failed', detail: 'linux-chrome' }],
+                })
+                .mockResolvedValue(result),
             ShowBrowserExtensionLoad: openPage,
         });
         render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
         fireEvent.click(screen.getByTestId('utilities-browser-extension-card'));
+        await waitFor(() => expect(screen.getByTestId('browser-extension-install-chrome')).toBeTruthy());
+        expect(screen.getByTestId('browser-extension-row-chrome').textContent).toContain('Linux Chrome 无法静默安装');
+        fireEvent.click(screen.getByTestId('browser-extension-install-chrome'));
         await waitFor(() => expect(screen.getByTestId('browser-extension-unpacked')).toBeTruthy());
+        expect(openPage).toHaveBeenCalledWith('chrome');
+    });
+
+    it('shows the unpacked folder and opens the extensions page for that browser', async () => {
+        const reveal = vi.fn().mockResolvedValue(undefined);
+        const openPage = vi.fn().mockResolvedValue(undefined);
+        const result = {
+            ok: true,
+            unpackedPath: 'C:\\Users\\me\\.maclaw\\data\\file-companion\\companion-paper',
+            browsers: [
+                { browser: 'edge', state: 'needs-enable', detail: 'load-unpacked' },
+            ],
+        };
+        install({
+            InstallBrowserExtensions: vi.fn().mockResolvedValue(result),
+            GetBrowserExtensionStatus: statusFromNoStore(result),
+            RevealBrowserExtensionFolder: reveal,
+            ShowBrowserExtensionLoad: openPage,
+        });
+        render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
+        await openUnpacked('edge');
+        expect(openPage).toHaveBeenCalledWith('edge');
         const row = screen.getByTestId('browser-extension-row-edge').textContent || '';
         expect(row).toContain('开发者模式');
         expect(row).toContain('保持开启');
@@ -116,11 +163,96 @@ describe('browser extension tool card', () => {
         expect(row).not.toContain('待确认');
         expect(screen.getByTestId('browser-extension-install-edge').textContent).toContain('打开扩展页');
         expect(screen.getByTestId('browser-extension-unpacked').textContent).toContain('companion-paper');
+        expect(screen.getByTestId('browser-extension-guide').textContent).toContain('已打开扩展页');
         expect(screen.getByTestId('browser-extension-show-folder').textContent).toContain('打开文件夹');
         fireEvent.click(screen.getByTestId('browser-extension-show-folder'));
         await waitFor(() => expect(reveal).toHaveBeenCalledTimes(1));
         fireEvent.click(screen.getByTestId('browser-extension-install-edge'));
-        await waitFor(() => expect(openPage).toHaveBeenCalledWith('edge'));
+        await waitFor(() => expect(openPage).toHaveBeenCalledTimes(2));
+    });
+
+    it('does not claim the extensions page opened when the backend cannot open it', async () => {
+        const result = {
+            ok: true,
+            unpackedPath: 'C:\\Users\\me\\.maclaw\\data\\file-companion\\companion-paper',
+            browsers: [
+                { browser: 'edge', state: 'needs-enable', detail: 'load-unpacked' },
+            ],
+        };
+        install({
+            InstallBrowserExtensions: vi.fn().mockResolvedValue(result),
+            GetBrowserExtensionStatus: statusFromNoStore(result),
+        });
+        render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
+        await openUnpacked('edge');
+        expect(screen.getByRole('alert').textContent).toContain('当前版本不能打开浏览器扩展页');
+        expect(screen.queryByTestId('browser-extension-guide')).toBeNull();
+    });
+
+    it('polls until the browser reports the extension installed', async () => {
+        const loading = {
+            ok: true,
+            unpackedPath: 'C:\\Users\\me\\.maclaw\\data\\file-companion\\companion-paper',
+            browsers: [
+                { browser: 'edge', state: 'needs-enable', detail: 'load-unpacked' },
+            ],
+        };
+        const installed = {
+            ok: true,
+            unpackedPath: loading.unpackedPath,
+            browsers: [
+                { browser: 'edge', state: 'installed', detail: 'installed' },
+            ],
+        };
+        const statusSpy = vi.fn()
+            .mockResolvedValueOnce({ ok: true, browsers: NO_STORE_ROWS })
+            .mockResolvedValue(installed);
+        install({
+            InstallBrowserExtensions: vi.fn().mockResolvedValue(loading),
+            GetBrowserExtensionStatus: statusSpy,
+            ShowBrowserExtensionLoad: vi.fn().mockResolvedValue(undefined),
+        });
+        render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
+        await openUnpacked('edge');
+        expect(screen.getByTestId('browser-extension-row-edge').textContent).toContain('未加载');
+        await waitFor(() => expect(statusSpy).toHaveBeenCalledTimes(2), { timeout: 4000 });
+        expect(screen.getByTestId('browser-extension-row-edge').textContent).toContain('已安装');
+        expect(screen.queryByTestId('browser-extension-guide')).toBeNull();
+    });
+
+    it('does not let an older status poll overwrite a later uninstall', async () => {
+        const loading = {
+            ok: true,
+            unpackedPath: 'C:\\Users\\me\\.maclaw\\data\\file-companion\\companion-paper',
+            browsers: [
+                { browser: 'edge', state: 'needs-enable', detail: 'load-unpacked' },
+            ],
+        };
+        let resolveStale: (value: unknown) => void = () => {};
+        const stale = new Promise((resolve) => { resolveStale = resolve; });
+        const statusSpy = vi.fn()
+            .mockResolvedValueOnce({ ok: true, browsers: NO_STORE_ROWS })
+            .mockImplementationOnce(() => stale);
+        const { uninstallSpy } = install({
+            InstallBrowserExtensions: vi.fn().mockResolvedValue(loading),
+            GetBrowserExtensionStatus: statusSpy,
+            ShowBrowserExtensionLoad: vi.fn().mockResolvedValue(undefined),
+        });
+        render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
+        await openUnpacked('edge');
+        await waitFor(() => expect(statusSpy).toHaveBeenCalledTimes(2), { timeout: 4000 });
+        fireEvent.click(screen.getByTestId('browser-extension-remove-edge'));
+        await waitFor(() => expect(uninstallSpy).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(screen.getByTestId('browser-extension-row-edge').textContent).toContain('未安装'));
+        await act(async () => {
+            resolveStale({
+                ok: true,
+                browsers: [{ browser: 'edge', state: 'installed', detail: 'installed' }],
+            });
+            await stale;
+        });
+        expect(screen.getByTestId('browser-extension-row-edge').textContent).toContain('未安装');
+        expect(screen.getByTestId('browser-extension-row-edge').textContent).not.toContain('已安装');
     });
 
     it('copies the plugin directory beside the path, not its parent', async () => {
@@ -128,17 +260,19 @@ describe('browser extension tool card', () => {
         const parent = 'C:\\Users\\me\\.maclaw\\data\\file-companion';
         vi.mocked(ClipboardSetText).mockReset();
         vi.mocked(ClipboardSetText).mockResolvedValue(true);
+        const result = {
+            ok: true,
+            unpackedPath: plugin,
+            browsers: [
+                { browser: 'edge', state: 'needs-enable', detail: 'load-unpacked' },
+            ],
+        };
         install({
-            InstallBrowserExtensions: vi.fn().mockResolvedValue({
-                ok: true,
-                unpackedPath: plugin,
-                browsers: [
-                    { browser: 'edge', state: 'needs-enable', detail: 'load-unpacked' },
-                ],
-            }),
+            InstallBrowserExtensions: vi.fn().mockResolvedValue(result),
+            GetBrowserExtensionStatus: statusFromNoStore(result),
         });
         render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
-        fireEvent.click(screen.getByTestId('utilities-browser-extension-card'));
+        await openUnpacked('edge');
         await waitFor(() => expect(screen.getByTestId('browser-extension-copy-path')).toBeTruthy());
         const copyBtn = screen.getByTestId('browser-extension-copy-path');
         const path = copyBtn.parentElement?.querySelector('.browser-ext__path');
@@ -157,6 +291,13 @@ describe('browser extension tool card', () => {
     it('does not restore the copied label after a newer folder result', async () => {
         const plugin = 'C:\\Users\\me\\.maclaw\\data\\file-companion\\companion-paper';
         const parent = 'C:\\Users\\me\\.maclaw\\data\\file-companion';
+        const result = {
+            ok: true,
+            unpackedPath: plugin,
+            browsers: [
+                { browser: 'edge', state: 'needs-enable', detail: 'load-unpacked' },
+            ],
+        };
         const uninstall = vi.fn().mockResolvedValue({
             ok: true,
             unpackedPath: plugin + '\\',
@@ -166,17 +307,12 @@ describe('browser extension tool card', () => {
         });
         vi.mocked(ClipboardSetText).mockResolvedValue(true);
         install({
-            InstallBrowserExtensions: vi.fn().mockResolvedValue({
-                ok: true,
-                unpackedPath: plugin,
-                browsers: [
-                    { browser: 'edge', state: 'needs-enable', detail: 'load-unpacked' },
-                ],
-            }),
+            InstallBrowserExtensions: vi.fn().mockResolvedValue(result),
+            GetBrowserExtensionStatus: statusFromNoStore(result),
             UninstallBrowserExtensions: uninstall,
         });
         render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
-        fireEvent.click(screen.getByTestId('utilities-browser-extension-card'));
+        await openUnpacked('edge');
         await waitFor(() => expect(screen.getByTestId('browser-extension-copy-path')).toBeTruthy());
         vi.useFakeTimers();
         fireEvent.click(screen.getByTestId('browser-extension-copy-path'));
@@ -211,17 +347,19 @@ describe('browser extension tool card', () => {
         vi.mocked(ClipboardSetText)
             .mockImplementationOnce(() => first)
             .mockResolvedValueOnce(true);
+        const result = {
+            ok: true,
+            unpackedPath: plugin,
+            browsers: [
+                { browser: 'edge', state: 'needs-enable', detail: 'load-unpacked' },
+            ],
+        };
         install({
-            InstallBrowserExtensions: vi.fn().mockResolvedValue({
-                ok: true,
-                unpackedPath: plugin,
-                browsers: [
-                    { browser: 'edge', state: 'needs-enable', detail: 'load-unpacked' },
-                ],
-            }),
+            InstallBrowserExtensions: vi.fn().mockResolvedValue(result),
+            GetBrowserExtensionStatus: statusFromNoStore(result),
         });
         render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
-        fireEvent.click(screen.getByTestId('utilities-browser-extension-card'));
+        await openUnpacked('edge');
         await waitFor(() => expect(screen.getByTestId('browser-extension-copy-path')).toBeTruthy());
         const copyBtn = screen.getByTestId('browser-extension-copy-path');
         fireEvent.click(copyBtn);
@@ -249,17 +387,19 @@ describe('browser extension tool card', () => {
         vi.mocked(ClipboardSetText)
             .mockImplementationOnce(() => first)
             .mockResolvedValueOnce(false);
+        const result = {
+            ok: true,
+            unpackedPath: plugin + '\\',
+            browsers: [
+                { browser: 'edge', state: 'needs-enable', detail: 'load-unpacked' },
+            ],
+        };
         install({
-            InstallBrowserExtensions: vi.fn().mockResolvedValue({
-                ok: true,
-                unpackedPath: plugin + '\\',
-                browsers: [
-                    { browser: 'edge', state: 'needs-enable', detail: 'load-unpacked' },
-                ],
-            }),
+            InstallBrowserExtensions: vi.fn().mockResolvedValue(result),
+            GetBrowserExtensionStatus: statusFromNoStore(result),
         });
         render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
-        fireEvent.click(screen.getByTestId('utilities-browser-extension-card'));
+        await openUnpacked('edge');
         await waitFor(() => expect(screen.getByTestId('browser-extension-copy-path')).toBeTruthy());
         const copyBtn = screen.getByTestId('browser-extension-copy-path');
         fireEvent.click(copyBtn);
@@ -285,17 +425,19 @@ describe('browser extension tool card', () => {
         vi.mocked(ClipboardSetText).mockResolvedValue(false);
         const writeText = vi.fn().mockRejectedValue(new Error('denied'));
         Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+        const result = {
+            ok: true,
+            unpackedPath: plugin,
+            browsers: [
+                { browser: 'chrome', state: 'needs-enable', detail: 'load-unpacked' },
+            ],
+        };
         install({
-            InstallBrowserExtensions: vi.fn().mockResolvedValue({
-                ok: true,
-                unpackedPath: plugin,
-                browsers: [
-                    { browser: 'chrome', state: 'needs-enable', detail: 'load-unpacked' },
-                ],
-            }),
+            InstallBrowserExtensions: vi.fn().mockResolvedValue(result),
+            GetBrowserExtensionStatus: statusFromNoStore(result),
         });
         render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
-        fireEvent.click(screen.getByTestId('utilities-browser-extension-card'));
+        await openUnpacked('chrome');
         await waitFor(() => expect(screen.getByTestId('browser-extension-copy-path')).toBeTruthy());
         fireEvent.click(screen.getByTestId('browser-extension-copy-path'));
         await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('无法复制插件目录'));

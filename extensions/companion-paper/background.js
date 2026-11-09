@@ -184,6 +184,13 @@ function chooseURL(linkURL, selection, frameURL, pageURL) {
   return page;
 }
 
+function showNativeResult(ok) {
+  if (!chrome.action) return;
+  if (!ok) chrome.action.setBadgeBackgroundColor({ color: "#c62828" });
+  chrome.action.setBadgeText({ text: ok ? "" : "!" });
+  chrome.action.setTitle({ title: chrome.i18n.getMessage(ok ? "menuAdd" : "nativeFailed") });
+}
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (!info || (info.menuItemId !== MENU_ID && info.menuItemId !== MENU_LINK_ID)) return;
   const link = String(info.linkUrl || "").trim();
@@ -197,5 +204,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   else if (url === link) title = link;
   title = title.replace(/[\u0000-\u001f]/g, "");
   if ([...title].length > 200) title = [...title].slice(0, 200).join("");
-  chrome.runtime.sendNativeMessage(HOST, { url, title }, () => { void chrome.runtime.lastError; });
+  chrome.runtime.sendNativeMessage(HOST, { url, title }, (response) => {
+    const failed = !!chrome.runtime.lastError || !response || response.ok !== true;
+    showNativeResult(!failed);
+  });
 });

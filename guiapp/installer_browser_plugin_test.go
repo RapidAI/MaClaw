@@ -150,8 +150,8 @@ func TestInstallerDetectsBrowsersBeforePluginInstall(t *testing.T) {
 	}
 	background := strings.ReplaceAll(readRepoFile(t, filepath.Join("extensions", "companion-paper", "background.js")), "\r\n", "\n")
 	for _, needle := range []string{
-		`contexts: ["page", "frame", "link", "selection"]`,
-		"file://*/*",
+		`contexts: ["page", "selection", "link"]`,
+		"file:///*",
 		"isPaperTarget",
 		"isArxivPaper",
 		"isAclPaper",

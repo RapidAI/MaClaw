@@ -5,19 +5,33 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const created = [];
+const badgeTexts = [];
+const actionTitles = [];
+let clickHandler;
+let nativeResponse = { ok: true };
+let nativeError = null;
 const chrome = {
-  i18n: { getMessage() { return "添加到伴读"; } },
+  i18n: { getMessage(key) { return key === "nativeFailed" ? "无法连接伴读" : "添加到伴读"; } },
+  action: {
+    setBadgeBackgroundColor() {},
+    setBadgeText({ text }) { badgeTexts.push(text); },
+    setTitle({ title }) { actionTitles.push(title); },
+  },
   contextMenus: {
     removeAll(cb) { cb(); },
     create(props, cb) { created.push(props); if (cb) cb(); },
-    onClicked: { addListener() {} },
+    onClicked: { addListener(fn) { clickHandler = fn; } },
   },
   runtime: {
     lastError: null,
     getManifest() { return { version: "1.0.0" }; },
     onInstalled: { addListener() {} },
     onStartup: { addListener() {} },
-    sendNativeMessage() {},
+    sendNativeMessage(_host, _message, cb) {
+      chrome.runtime.lastError = nativeError;
+      cb(nativeResponse);
+      chrome.runtime.lastError = null;
+    },
   },
 };
 const sandbox = {
@@ -120,5 +134,25 @@ assert.equal(
   sandbox.chooseURL("https://arxiv.org/abs/2510.16079", "", "", "https://news.example.org/"),
   "https://arxiv.org/abs/2510.16079",
 );
+
+assert.equal(typeof clickHandler, "function");
+const clickPaper = () => clickHandler(
+  { menuItemId: "add-to-companion", pageUrl: "https://arxiv.org/abs/2510.16079" },
+  { title: "A paper" },
+);
+nativeResponse = { ok: false, code: "save-failed" };
+clickPaper();
+assert.equal(badgeTexts.at(-1), "!");
+assert.equal(actionTitles.at(-1), "无法连接伴读");
+nativeResponse = undefined;
+nativeError = { message: "native host not found" };
+clickPaper();
+assert.equal(badgeTexts.at(-1), "!");
+assert.equal(actionTitles.at(-1), "无法连接伴读");
+nativeResponse = { ok: true };
+nativeError = null;
+clickPaper();
+assert.equal(badgeTexts.at(-1), "");
+assert.equal(actionTitles.at(-1), "添加到伴读");
 
 console.log("background menu patterns ok");

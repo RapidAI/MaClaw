@@ -1,5 +1,6 @@
 {
   "extName": { "message": "添加到伴讀" },
   "extDescription": { "message": "把目前的 PDF 或論文加入伴讀的文件管理並打開。" },
-  "menuAdd": { "message": "添加到伴讀" }
+  "menuAdd": { "message": "添加到伴讀" },
+  "nativeFailed": { "message": "無法連接伴讀。請在 MaClaw 工具的「瀏覽器外掛」中重新安裝。" }
 }

@@ -1082,7 +1082,10 @@ func companionRemoteShareSnapshot(ctx context.Context, identity *auth.IdentitySe
 	shares := make([]map[string]any, 0)
 	for _, job := range jobs {
 		for _, share := range job.shares {
-			fmt.Fprintf(stampHash, "%v|%v|%v|%v\n", share["token"], share["revision"], share["notes_revision"], share["marks_revision"])
+			// chat_revision belongs in the stamp: a host line on a share that
+			// lives on another Hub moves only that counter, and the home Hub's
+			// remote_seq is the sole signal the participant's quiet poll sees.
+			fmt.Fprintf(stampHash, "%v|%v|%v|%v|%v\n", share["token"], share["revision"], share["notes_revision"], share["marks_revision"], share["chat_revision"])
 			shares = append(shares, share)
 		}
 	}

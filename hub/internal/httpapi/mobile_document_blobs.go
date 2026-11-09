@@ -120,12 +120,25 @@ func mobileWriteDocumentBlob(ownerID, kind, id string, raw []byte) (string, erro
 	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
 		return "", err
 	}
-	tmp := abs + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	// A unique temp name: chat and marks pushes can overlap when two host
+	// machines or a retry race the same blob. One shared "id.bin.tmp" lets one
+	// writer rename a half-written file into place.
+	tmp, err := os.CreateTemp(filepath.Dir(abs), filepath.Base(abs)+".*.tmp")
+	if err != nil {
 		return "", err
 	}
-	if err := os.Rename(tmp, abs); err != nil {
-		_ = os.Remove(tmp)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return "", err
+	}
+	if err := os.Rename(tmpName, abs); err != nil {
+		_ = os.Remove(tmpName)
 		return "", err
 	}
 	return rel, nil

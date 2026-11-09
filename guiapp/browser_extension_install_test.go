@@ -290,8 +290,11 @@ func TestInstallBrowserExtensionsStoreURLAndLinuxChrome(t *testing.T) {
 	}
 	linux := (&App{}).InstallBrowserExtensions()
 	by := statusByBrowser(linux)
-	if by["chrome"].State != browserExtStateFailed || by["chrome"].Detail != browserExtDetailLinuxChrome {
+	if by["chrome"].State != browserExtStateNeedsEnable || by["chrome"].Detail != browserExtDetailLoadUnpacked {
 		t.Fatalf("linux chrome=%#v", by["chrome"])
+	}
+	if strings.TrimSpace(linux.UnpackedPath) == "" {
+		t.Fatal("Linux Chrome with a store URL did not prepare the unpacked fallback")
 	}
 	if by["edge"].State != browserExtStateNeedsEnable || by["edge"].Detail != browserExtDetailEdgeSilent {
 		t.Fatalf("linux edge=%#v", by["edge"])
@@ -481,4 +484,180 @@ func bytesContainsArguments(body []byte) bool {
 	}
 	_, ok := generic["arguments"]
 	return ok
+}
+
+// TestInstallBrowserExtensionsFromEmbeddedAsset covers the installed build:
+// there is no extensions/ folder next to the exe, so before the asset was
+// embedded the card button wrote nothing and stayed on no-store-url. The
+// install must now produce the folder, allow the unpacked extension's own id
+// to reach the native host, and keep the folder on a later status read.
+func TestInstallBrowserExtensionsFromEmbeddedAsset(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	hookCompanionInstall(t, dir, companionBrowserLayout{
+		GOOS:      "windows",
+		Home:      home,
+		HostExe:   filepath.Join(dir, "MaClaw.exe"),
+		ChromeExe: `C:\Program Files\Google\Chrome\Application\chrome.exe`,
+		EdgeExe:   `C:\Program Files\Microsoft\Edge\Application\msedge.exe`,
+	})
+	prevExt := companionExtensionDirHook
+	companionExtensionDirHook = func() (string, error) { return "", nil }
+	prevChrome := browserExtensionChromeUpdateURL
+	prevEdge := browserExtensionEdgeUpdateURL
+	browserExtensionChromeUpdateURL = ""
+	browserExtensionEdgeUpdateURL = ""
+	t.Cleanup(func() {
+		companionExtensionDirHook = prevExt
+		browserExtensionChromeUpdateURL = prevChrome
+		browserExtensionEdgeUpdateURL = prevEdge
+	})
+
+	got := (&App{}).InstallBrowserExtensions()
+	if !got.OK {
+		t.Fatalf("install=%#v", got)
+	}
+	if strings.TrimSpace(got.UnpackedPath) == "" {
+		t.Fatal("install did not report the unpacked folder")
+	}
+	rows := statusByBrowser(got)
+	for _, browser := range []string{"chrome", "edge"} {
+		if rows[browser].State != browserExtStateNeedsEnable || rows[browser].Detail != browserExtDetailLoadUnpacked {
+			t.Fatalf("%s=%#v", browser, rows[browser])
+		}
+	}
+	for _, rel := range []string{"manifest.json", "background.js", filepath.Join("_locales", "zh_CN", "messages.json")} {
+		if !companionPathIsFile(filepath.Join(got.UnpackedPath, rel)) {
+			t.Fatalf("unpacked folder is missing %s", rel)
+		}
+	}
+	// The loaded copy has its own id from the dev key. Without that origin the
+	// extension cannot reach the native host and Add to Companion does nothing.
+	body, err := os.ReadFile(filepath.Join(dir, companionBrowserHostName+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var host companionHostManifest
+	if err := json.Unmarshal(body, &host); err != nil {
+		t.Fatal(err)
+	}
+	devID := companionDevExtensionID()
+	if devID == "" {
+		t.Fatal("no dev extension id")
+	}
+	found := false
+	for _, origin := range host.AllowedOrigins {
+		if origin == "chrome-extension://"+devID+"/" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("host manifest does not allow the unpacked id: %v", host.AllowedOrigins)
+	}
+
+	// A status read (what the card polls) has to keep the folder, so the
+	// user can still copy it after reopening the page.
+	status := (&App{}).GetBrowserExtensionStatus()
+	if strings.TrimSpace(status.UnpackedPath) == "" {
+		t.Fatalf("status lost the folder: %#v", status)
+	}
+	if row := statusByBrowser(status)["chrome"]; row.Detail != browserExtDetailLoadUnpacked {
+		t.Fatalf("status row=%#v", row)
+	}
+}
+
+func TestInstallBrowserExtensionsLinuxChromeUsesUnpacked(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	hookCompanionInstall(t, dir, companionBrowserLayout{
+		GOOS:      "linux",
+		Home:      home,
+		HostExe:   "/usr/bin/maclaw",
+		ChromeExe: "/usr/bin/google-chrome",
+	})
+	prevExt := companionExtensionDirHook
+	companionExtensionDirHook = func() (string, error) { return "", nil }
+	prevChrome := browserExtensionChromeUpdateURL
+	prevEdge := browserExtensionEdgeUpdateURL
+	browserExtensionChromeUpdateURL = ""
+	browserExtensionEdgeUpdateURL = ""
+	t.Cleanup(func() {
+		companionExtensionDirHook = prevExt
+		browserExtensionChromeUpdateURL = prevChrome
+		browserExtensionEdgeUpdateURL = prevEdge
+	})
+
+	got := (&App{}).InstallBrowserExtensions()
+	if !got.OK || strings.TrimSpace(got.UnpackedPath) == "" {
+		t.Fatalf("install=%#v", got)
+	}
+	row := statusByBrowser(got)["chrome"]
+	if row.State != browserExtStateNeedsEnable || row.Detail != browserExtDetailLoadUnpacked {
+		t.Fatalf("chrome=%#v", row)
+	}
+	host := filepath.Join(home, ".config", "google-chrome", "NativeMessagingHosts", companionBrowserHostName+".json")
+	if !companionPathIsFile(host) {
+		t.Fatal("Linux Chrome native host was not written")
+	}
+	external := filepath.Join(home, ".config", "google-chrome", "External Extensions", browserExtensionID+".json")
+	if _, err := os.Stat(external); !os.IsNotExist(err) {
+		t.Fatal("Linux Chrome used an external extension registration")
+	}
+	status := (&App{}).GetBrowserExtensionStatus()
+	if strings.TrimSpace(status.UnpackedPath) == "" || statusByBrowser(status)["chrome"].Detail != browserExtDetailLoadUnpacked {
+		t.Fatalf("status=%#v", status)
+	}
+
+	var launched []string
+	prevLaunch := companionBrowserLaunchHook
+	companionBrowserLaunchHook = func(exe, page string) error {
+		launched = append(launched, exe+" "+page)
+		return nil
+	}
+	t.Cleanup(func() { companionBrowserLaunchHook = prevLaunch })
+	if err := (&App{}).ShowBrowserExtensionLoad("chrome"); err != nil {
+		t.Fatal(err)
+	}
+	if len(launched) != 1 || launched[0] != "/usr/bin/google-chrome chrome://extensions/" {
+		t.Fatalf("launched=%v", launched)
+	}
+}
+
+func TestInstallBrowserExtensionsLinuxPackageFailureIsRetryable(t *testing.T) {
+	for _, browser := range []string{"chrome", "edge"} {
+		t.Run(browser, func(t *testing.T) {
+			statePath := filepath.Join(t.TempDir(), "not-a-directory")
+			if err := os.WriteFile(statePath, []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			layout := companionBrowserLayout{
+				GOOS:    "linux",
+				Home:    t.TempDir(),
+				HostExe: "/usr/bin/maclaw",
+			}
+			if browser == "chrome" {
+				layout.ChromeExe = "/usr/bin/google-chrome"
+			} else {
+				layout.EdgeExe = "/usr/bin/microsoft-edge"
+			}
+			hookCompanionInstall(t, statePath, layout)
+			prevChrome := browserExtensionChromeUpdateURL
+			prevEdge := browserExtensionEdgeUpdateURL
+			browserExtensionChromeUpdateURL = ""
+			browserExtensionEdgeUpdateURL = ""
+			t.Cleanup(func() {
+				browserExtensionChromeUpdateURL = prevChrome
+				browserExtensionEdgeUpdateURL = prevEdge
+			})
+
+			got := (&App{}).InstallBrowserExtensions()
+			if got.OK {
+				t.Fatalf("install unexpectedly succeeded: %#v", got)
+			}
+			row := statusByBrowser(got)[browser]
+			if row.State != browserExtStateFailed || row.Detail != browserExtDetailRegisterFailed {
+				t.Fatalf("%s=%#v", browser, row)
+			}
+		})
+	}
 }

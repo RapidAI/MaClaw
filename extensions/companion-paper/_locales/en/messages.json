@@ -1,5 +1,6 @@
 {
   "extName": { "message": "Add to Companion" },
   "extDescription": { "message": "Add the current PDF or paper to Companion and open it." },
-  "menuAdd": { "message": "Add to Companion" }
+  "menuAdd": { "message": "Add to Companion" },
+  "nativeFailed": { "message": "Could not connect to Companion. Reinstall it from MaClaw Tools > Browser extension." }
 }

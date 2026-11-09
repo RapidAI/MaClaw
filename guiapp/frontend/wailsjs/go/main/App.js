@@ -1517,8 +1517,16 @@ export function SyncFileCompanionShareMarks(arg1, arg2) {
   return window['go']['main']['App']['SyncFileCompanionShareMarks'](arg1, arg2);
 }
 
+export function SyncFileCompanionShareChat(arg1, arg2) {
+  return window['go']['main']['App']['SyncFileCompanionShareChat'](arg1, arg2);
+}
+
 export function FetchFileCompanionShareMarks(arg1) {
   return window['go']['main']['App']['FetchFileCompanionShareMarks'](arg1);
+}
+
+export function FetchFileCompanionShareChat(arg1) {
+  return window['go']['main']['App']['FetchFileCompanionShareChat'](arg1);
 }
 
 export function AddFileCompanionShareNote(arg1, arg2) {

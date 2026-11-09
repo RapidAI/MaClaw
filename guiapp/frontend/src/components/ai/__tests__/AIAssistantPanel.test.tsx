@@ -2776,6 +2776,24 @@ describe('AIAssistantPanel property tests', () => {
         expect(sendMessage).not.toHaveBeenCalled();
     });
 
+    it('batches global draft synchronization without delaying textarea input', async () => {
+        const setDraftInputValue = vi.fn();
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { setDraftInputValue },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'f' } });
+        fireEvent.change(input, { target: { value: 'fa' } });
+        fireEvent.change(input, { target: { value: 'fast input' } });
+
+        expect(input.value).toBe('fast input');
+        expect(setDraftInputValue).not.toHaveBeenCalled();
+        await waitFor(() => expect(setDraftInputValue).toHaveBeenCalledTimes(1));
+        expect(setDraftInputValue).toHaveBeenLastCalledWith('fast input');
+    });
+
     it('allows typing in the textarea while a foreground request is still sending even after streaming stops', () => {
         const { getByTestId } = renderPanel({
             state: { messages: [], sending: true, streaming: false, ready: true },

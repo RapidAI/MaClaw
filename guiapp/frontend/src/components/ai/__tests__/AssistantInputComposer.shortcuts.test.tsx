@@ -66,8 +66,14 @@ function renderComposer(inputValue = "draft", handleSend = vi.fn()) {
         voiceInput: {} as AssistantInputComposerProps["voiceInput"],
     };
 
-    render(<AssistantInputComposer {...props} />);
-    return { handleSend, rememberHistoryEdit, resizeInput, updateInputValue };
+    const { rerender } = render(<AssistantInputComposer {...props} />);
+    return {
+        handleSend,
+        rememberHistoryEdit,
+        resizeInput,
+        updateInputValue,
+        rerenderWithValue: (nextValue: string) => rerender(<AssistantInputComposer {...props} inputValue={nextValue} />),
+    };
 }
 
 describe("AssistantInputComposer toolbar end slot", () => {
@@ -125,6 +131,20 @@ describe("AssistantInputComposer toolbar end slot", () => {
 });
 
 describe("AssistantInputComposer keyboard shortcuts", () => {
+    it("resizes only after the controlled input value commits", () => {
+        const { resizeInput, rerenderWithValue } = renderComposer("draft");
+        const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+        expect(resizeInput).toHaveBeenCalledWith(input);
+        resizeInput.mockClear();
+
+        fireEvent.change(input, { target: { value: "next draft" } });
+        expect(resizeInput).not.toHaveBeenCalled();
+
+        rerenderWithValue("next draft");
+        expect(resizeInput).toHaveBeenCalledTimes(1);
+        expect(resizeInput).toHaveBeenCalledWith(input);
+    });
+
     it("sends on plain Enter and never sends on modified Enter combinations", () => {
         const { handleSend } = renderComposer();
         const input = screen.getByRole("textbox");

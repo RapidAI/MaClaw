@@ -362,7 +362,7 @@ describe("companion library folders and file-name filter", () => {
         expect(card.hasAttribute("draggable")).toBe(false);
         expect(handle.getAttribute("draggable")).toBe("true");
         expect(handle.getAttribute("title")).toBe("拖到左侧文件夹以分类");
-        expect(meta.getAttribute("draggable")).toBe("true");
+        expect(meta.getAttribute("draggable")).not.toBe("true");
         expect(screen.getByTestId("file-companion-library-item-local:b").hasAttribute("draggable")).toBe(false);
         const data = libraryDragTransfer();
         card.getBoundingClientRect = () => ({ top: 100, left: 40, bottom: 160, right: 340, width: 300, height: 60, x: 40, y: 100, toJSON: () => ({}) });
@@ -398,8 +398,8 @@ describe("companion library folders and file-name filter", () => {
             placements: { "item:local:b": "fld_paper" },
         });
         const back = libraryDragTransfer();
-        const metaA = screen.getByTestId("file-companion-library-meta-local:a");
-        fireEvent.dragStart(metaA, { dataTransfer: back });
+        const handleA = screen.getByTestId("file-companion-library-drag-local:a");
+        fireEvent.dragStart(handleA, { dataTransfer: back });
         await act(async () => {
             await Promise.resolve();
         });
@@ -759,6 +759,73 @@ describe("CompanionPlaceDialog", () => {
         expect(screen.queryByTestId("file-companion-library-doctitle-local:b")).toBeNull();
         expect(screen.queryByTestId("file-companion-library-doctitle-local:c")).toBeNull();
         expect(companionLibraryDocTitle({ name: "alpha.md", title: longTitle })).toBe(longTitle);
+    });
+
+    it("opens a document from the card surface and leaves action controls alone", async () => {
+        listCatalog.mockResolvedValue({
+            rev: 1,
+            folders: [{ id: "fld_paper", name: "论文" }],
+            placements: {},
+        });
+        const onOpen = vi.fn();
+        const onImportLink = vi.fn();
+        const onShareProject = vi.fn();
+        listLibrary.mockResolvedValue({
+            items: [
+                { ...papers[0], title: "Alpha notes" },
+                papers[1],
+                { id: "cloud:pending", name: "pending.pdf", path: "", source: "cloud", shareUrl: "https://hub.example/s/1", openedAt: "2026-10-25T00:00:00Z", size: 4 },
+                { id: "cloud:live", name: "live.pdf", path: "C:/notes/live.pdf", source: "cloud", shareUrl: "https://hub.example/s/live", openedAt: "2026-10-25T00:00:00Z", size: 8, title: "A shared paper" },
+            ],
+            notice: "",
+        });
+        render(
+            <DialogProvider>
+                <CompanionLibraryView
+                    lang="zh-Hans"
+                    activePath=""
+                    showToast={() => undefined}
+                    onOpen={onOpen}
+                    onExit={() => undefined}
+                    onShareProject={onShareProject}
+                    onEditShare={() => undefined}
+                    onImportLink={onImportLink}
+                />
+            </DialogProvider>,
+        );
+        const card = await screen.findByTestId("file-companion-library-card-local:a");
+        fireEvent.click(screen.getByTestId("file-companion-library-drag-local:a"));
+        expect(onOpen).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId("file-companion-library-meta-local:a"));
+        fireEvent.click(screen.getByTestId("file-companion-library-doctitle-local:a"));
+        fireEvent.click(card);
+        fireEvent.click(screen.getByTestId("file-companion-library-item-local:a"));
+        expect(onOpen).toHaveBeenCalledTimes(4);
+        expect(onOpen).toHaveBeenCalledWith("C:/notes/alpha.md");
+        expect(screen.getByTestId("file-companion-library-meta-local:a").getAttribute("draggable")).not.toBe("true");
+        expect(screen.getByTestId("file-companion-library-item-local:a").getAttribute("title")).toBe("打开 alpha.md");
+
+        onOpen.mockClear();
+        fireEvent.click(screen.getByTestId("file-companion-library-share-action-local:a"));
+        fireEvent.click(screen.getByTestId("file-companion-library-export-local:a"));
+        fireEvent.click(screen.getByTestId("file-companion-library-move-local:a"));
+        fireEvent.click(screen.getByTestId("file-companion-library-shared-mark-cloud:live"));
+        expect(onShareProject).toHaveBeenCalledWith("C:/notes/alpha.md");
+        expect(onOpen).not.toHaveBeenCalled();
+
+        const url = screen.getByTestId("file-companion-library-url-cloud:live");
+        fireEvent.mouseDown(url, { button: 0, clientX: 4, clientY: 4 });
+        fireEvent.click(url, { button: 0, clientX: 40, clientY: 4, detail: 1 });
+        expect(onOpen).not.toHaveBeenCalled();
+        fireEvent.mouseDown(url, { button: 0, clientX: 4, clientY: 4 });
+        fireEvent.click(url, { button: 0, clientX: 6, clientY: 5, detail: 1 });
+        fireEvent.click(screen.getByTestId("file-companion-library-doctitle-cloud:live"));
+        expect(onOpen).toHaveBeenCalledTimes(2);
+        expect(onOpen).toHaveBeenCalledWith("C:/notes/live.pdf");
+
+        fireEvent.click(screen.getByTestId("file-companion-library-meta-cloud:pending"));
+        expect(onImportLink).toHaveBeenCalledWith("https://hub.example/s/1");
+        expect(onOpen).toHaveBeenCalledTimes(2);
     });
 });
 

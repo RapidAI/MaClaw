@@ -33,6 +33,7 @@ import { useConversationViewArchive } from "./useConversationViewArchive";
 import { useNewTaskGuideDraft } from "./useNewTaskGuideDraft";
 import { useResizableAssistantInput } from "./useResizableAssistantInput";
 import { useAssistantInputHistory, type ComposerAttachmentSnapshot } from "./useAssistantInputHistory";
+import { useAssistantLocalDraftSync } from "./useAssistantLocalDraftSync";
 import { historyAttachmentsFromSources } from "./promptHistory";
 import { usePastedImageAttachments } from "./usePastedImageAttachments";
 import { useCiteMermaidDiagramDraft } from "./useCiteMermaidDiagramDraft";
@@ -155,6 +156,7 @@ import { normalizeLang } from "../../i18n";
 
 const AssistantPreviewPane = lazy(() => import("./AssistantPreviewPane").then((module) => ({ default: module.AssistantPreviewPane })));
 const EMPTY_PROGRESS_MESSAGES: ChatMessage[] = [];
+const ARCHIVED_VIEW_MESSAGES: ChatMessage[] = [{ id: "archived-view", role: "system", content: "", timestamp: 0 }];
 
 /** One interactive approval the panel still owes an answer to. */
 type PendingScopeApproval = {
@@ -376,7 +378,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // True only while a new task is being created. The welcome composer is the
     // one on screen then, and a paste must not attach to a message already sent.
     const blockComposerFilesRef = useRef(false);
-    const guideDraft = useNewTaskGuideDraft(setDraftInputValue, blockComposerFilesRef);
+    const { flushLocalDraft, syncLocalDraft } = useAssistantLocalDraftSync(setDraftInputValue);
+    const guideDraft = useNewTaskGuideDraft(draftInputValue, syncLocalDraft, blockComposerFilesRef);
     const cancelRestoreSeqRef = useRef(0);
     const closeAllPreviewPanelsRef = useRef<(() => void) | null>(null);
     const pendingSkillRecDataRef = useRef<any>(null);
@@ -2895,6 +2898,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const prevTabId = prevActiveTabIdRef.current;
         const currentTabId = activeTab.id;
         if (prevTabId === currentTabId) return;
+        flushLocalDraft();
         const multipleTabsExist = tabState.tabs.length > 1;
         if (multipleTabsExist) {
             const currentTabCanOwnPreview = canShowAssistantCodingPreviewForTab(activeTab);
@@ -5330,14 +5334,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             ? (codingAgentComposerStatusText(codingAgentProgress, lang) || idlePlaceholderText)
             : idlePlaceholderText;
     const inputValue = localDraftInputValue;
-    const updateInputValue = useCallback((nextValue: string) => {
+    const updateInputValue = useCallback((nextValue: string, options?: { deferParent?: boolean }) => {
         setLocalDraftInputValue(nextValue);
         if (activeTab.type === "project" || activeTab.type === "expert") {
             saveTabState(activeTab.id, { inputText: nextValue });
             return;
         }
-        setDraftInputValue?.(nextValue);
-    }, [activeTab.id, activeTab.type, saveTabState, setDraftInputValue]);
+        syncLocalDraft(nextValue, options?.deferParent === true);
+    }, [activeTab.id, activeTab.type, saveTabState, syncLocalDraft]);
     const canSend = ready && !recordingActive && !cloudShareReadOnly && !isACPMirrorTabActive && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
     const [welcomeTemplateOffer, setWelcomeTemplateOffer] = useState<WelcomeTemplateSaveOffer | null>(null);
     // Drop the save-offer when switching tabs.
@@ -5527,7 +5531,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const handleInputResizeEnd = useCallback(() => {
         scrollToBottom("auto", true, 2);
     }, [scrollToBottom]);
-    const { inputAreaHeight, resizeInput, startInputResize } = useResizableAssistantInput(inputRef, inputValue, handleInputResizeEnd);
+    const { inputAreaHeight, resizeInput, startInputResize } = useResizableAssistantInput(inputRef, handleInputResizeEnd);
     useContinueEditTaskResultDraft({ lang, inputRef, updateInputValue, resizeInput });
     useCiteMermaidDiagramDraft({ lang, inputRef, updateInputValue, resizeInput });
     useEffect(() => {
@@ -6002,7 +6006,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         pendingAttachments, selectedFilePaths, showComposerText: updateInputValue, replacePendingAttachments: (items) => setPendingAttachments(items as typeof pendingAttachments), replaceSelectedFilePaths: (paths) => setSelectedFilePaths?.(paths),
         activeChatVisible: conversationArchive.earlierCount > 0 || otherMessages.some((message: ChatMessage) => message.role === "user" || message.role === "assistant"),
         handleSend, handleWelcomePromptSend,
-        clearComposerDraft, guideInputValue: draftInputValue, guideInputRef: guideDraft.guideInputRef,
+        clearComposerDraft, guideInputValue: guideDraft.guideInputValue, guideInputRef: guideDraft.guideInputRef,
         guidePendingAttachments: guideDraft.guideAttachments, guideSelectedFilePaths: guideDraft.guidePaths, settleGuideAttachments: guideDraft.settleGuideAttachments, settleSessionAttachments: settlePendingAttachments, clearGuideDraft: guideDraft.clearGuideDraft,
         getTabs, getTabState, saveTabState,
         activateTab, setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
@@ -6726,30 +6730,27 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const wizardComposerUnlocked = taskConfigWiring.wizardOverlay;
     const creatingTask = taskConfigWiring.taskConfig.sending;
     blockComposerFilesRef.current = creatingTask;
+    const handleWelcomePlusMenuAction = useCallback((actionId: PlusMenuActionId) => { if (wizardComposerUnlocked && actionId === "newConversation") return; handlePlusMenuAction(actionId); }, [handlePlusMenuAction, wizardComposerUnlocked]);
     const newTaskWelcomeComposer: WelcomeComposerProps = {
         browseFile, canSend: creatingTask ? false : canSend, cancelPending: wizardComposerUnlocked ? false : cancelPending, cancelSession: creatingTask ? undefined : cancelSession, clearSelectedFile, composeAction,
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleClearInput, handleDragOver, handleDrop, handlePaste,
         handleSend: taskConfigWiring.handleSendWithTaskConfig, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave,
         hardLockInput: creatingTask, inputLocked: creatingTask || (wizardComposerUnlocked ? false : inputLocked), inputRef, inputValue, isBusy: creatingTask || (wizardComposerUnlocked ? false : inputVisualBusy),
         isSelectionCollapsedAtBoundary, onComposeActionChange: handleComposeActionChange, onFireSlashCommand: handleFireSlashCommand, onInsertTemplate: handleInsertTemplate,
-        onPlusMenuAction: (actionId) => {
-            // The cover already is the new-task page. "New conversation" would clear the turn underneath.
-            if (wizardComposerUnlocked && actionId === "newConversation") return;
-            handlePlusMenuAction(actionId);
-        },
+        onPlusMenuAction: handleWelcomePlusMenuAction,
         onPermissionModeChange: handlePermissionModeChange, pendingAttachments, permissionMode, taskCommandAllowed: taskCommandHint,
         showWorkspacePermissionOption: isPureCodingEnvironment, ready, recallHistory, rememberHistoryEdit, removeSelectedFile, resizeInput,
         selectedFilePaths, setPendingAttachments, showBusySpinner: wizardComposerUnlocked ? false : showBusySpinner, submittedPrompts, submittedPromptAttachments,
         onHistoryTextAccepted: acceptHistoryText, updateInputValue, voiceInput,
         ...(separateGuide ? {
             browseFile: guideDraft.browseGuideFile,
-            canSend: creatingTask ? false : ready && (!!draftInputValue.trim() || guideDraft.guideAttachments.length > 0 || guideDraft.guidePaths.length > 0),
+            canSend: creatingTask ? false : ready && (!!guideDraft.guideInputValue.trim() || guideDraft.guideAttachments.length > 0 || guideDraft.guidePaths.length > 0),
             clearSelectedFile: guideDraft.clearGuideFiles,
             handleDragOver: guideDraft.handleGuideDragOver,
             handleDrop: guideDraft.handleGuideDrop,
             handlePaste: guideDraft.handleGuidePaste,
             inputRef: guideDraft.guideInputRef,
-            inputValue: draftInputValue,
+            inputValue: guideDraft.guideInputValue,
             pendingAttachments: guideDraft.guideAttachments,
             removeSelectedFile: guideDraft.removeGuideFile,
             selectedFilePaths: guideDraft.guidePaths,
@@ -6795,6 +6796,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             themeMode={themeMode}
         />
     ) : null;
+    const conversationChrome = useMemo(() => ({ inline: !!inline, maximized: !!maximized, onHideWindow, onToggleMaximize, onActivateTab: activateSwitchingTab, onCloseTab: closeTabWithProjectCleanup }), [inline, maximized, onHideWindow, onToggleMaximize, activateSwitchingTab, closeTabWithProjectCleanup]);
     return (
         <MarkdownImagePreviewProvider onPreviewImage={previewChatImage}>
         <div data-testid="ai-panel-root" data-ai-view={newTaskHome ? "welcome" : "execution"} style={containerStyle}>
@@ -7427,7 +7429,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     ) : null}
                     {showPureCodingEmptyState ? pureCodingEmptyContent : null}
                     <CodingAgentPreviewFocusContext.Provider value={focusCodeFile}>
-                    <AssistantConversationBody emptyContent={isPureCodingEnvironment ? null : undefined} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : [{ id: "archived-view", role: "system", content: "", timestamp: 0 }]} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} liveActivityLabel={standaloneLiveActivityLabel} liveActivityObject={standaloneLiveActivityLabel ? liveReasoningObject : undefined} busyAccessory={hideWorkingTrail ? null : codingWorkingTrail} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
+                    <AssistantConversationBody emptyContent={isPureCodingEnvironment ? null : undefined} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} liveActivityLabel={standaloneLiveActivityLabel} liveActivityObject={standaloneLiveActivityLabel ? liveReasoningObject : undefined} busyAccessory={hideWorkingTrail ? null : codingWorkingTrail} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
                     </CodingAgentPreviewFocusContext.Provider>
                     <div ref={outputEndRef} />
                 </div></div>)}
@@ -7511,7 +7513,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 ) : undefined} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
             </div>
             )}
-            <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} conversationChrome={{ inline: !!inline, maximized: !!maximized, onHideWindow, onToggleMaximize, onActivateTab: activateSwitchingTab, onCloseTab: closeTabWithProjectCleanup }} />
+            <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} conversationChrome={conversationChrome} />
             {panelActive && renameGroupTargetTab && (
                 <AIAssistantRenameGroupDialog
                     error={renameGroupError}

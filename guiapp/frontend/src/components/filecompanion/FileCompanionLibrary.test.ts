@@ -29,7 +29,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     FileCompanionExportProject: vi.fn(),
 }));
 
-import { companionFolderNameError, companionInstalledSharePath, companionLibraryApplyLocalEdits, companionLibraryFolderID, companionLibraryHideRow, companionLibraryNameMatch, companionLibraryRowKey, companionLibraryShowRestored, companionLibrarySync, companionLibraryWithoutRemoved, companionShareDocumentCatchUp, companionShareMarksBehind, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionWithdrawnNotice, resetCompanionLibraryList, takeCompanionLibraryList } from "./FileCompanionLibrary";
+import { companionFolderNameError, companionInstalledSharePath, companionLibraryApplyLocalEdits, companionLibraryFolderID, companionLibraryHideRow, companionLibraryNameMatch, companionLibraryRowKey, companionLibraryShowRestored, companionLibrarySync, companionLibraryWithoutRemoved, companionShareChatBehind, companionShareDocumentCatchUp, companionShareMarksBehind, companionShouldPullShareChat, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionWithdrawnNotice, resetCompanionLibraryList, takeCompanionLibraryList } from "./FileCompanionLibrary";
 
 describe("companionInstalledSharePath", () => {
     it("recognizes a received copy by the share folder", () => {
@@ -50,6 +50,13 @@ describe("companionShouldPullShareMarks", () => {
     it("leaves the authoring paper to the machine that painted the marks", () => {
         expect(companionShouldPullShareMarks({ mine: true, path: "C:/Users/me/Desktop/paper.pdf", marksRevision: 3 })).toBe(false);
         expect(companionShouldPullShareMarks({ mine: true, path: cache, marksRevision: 0 })).toBe(false);
+        expect(companionShouldPullShareChat({ mine: false, path: "C:/library/shared.pdf", chatRevision: 2 })).toBe(true);
+        expect(companionShouldPullShareChat({ mine: true, path: cache, chatRevision: 2 })).toBe(true);
+        expect(companionShouldPullShareChat({ mine: true, path: "C:/Users/me/Desktop/paper.pdf", chatRevision: 2 })).toBe(false);
+        expect(companionShouldPullShareChat({ mine: false, path: cache, chatRevision: 0 })).toBe(false);
+        expect(companionShareChatBehind(cache, 4, 2)).toBe(true);
+        expect(companionShareChatBehind(cache, 2, 2)).toBe(false);
+        expect(companionShareChatBehind("C:/Users/me/Desktop/paper.pdf", 4, 0)).toBe(false);
     });
 });
 

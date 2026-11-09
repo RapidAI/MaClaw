@@ -50,6 +50,25 @@ func TestFileCompanionPaperPromptKeepsTheHostPDF(t *testing.T) {
 	}
 }
 
+func TestFileCompanionPromptsDemandTeXMath(t *testing.T) {
+	// Formulas must arrive as TeX. A model that wraps them in backticks or a
+	// code fence shows raw source, because code spans stay literal by design.
+	for _, ext := range []string{".pdf", ".docx", ".xlsx", ".pptx", ".mp4", ".txt"} {
+		prompt := fileCompanionPrompt("材料"+ext, ext)
+		if !strings.Contains(prompt, "数学公式用 TeX 写") || !strings.Contains(prompt, "不要用反引号或代码块包公式") {
+			t.Fatalf("%s prompt lost the TeX math rule:\n%s", ext, prompt)
+		}
+	}
+	instruction := fileCompanionPaperInstruction()
+	if !strings.Contains(instruction, "行内公式写成 $...$") || !strings.Contains(instruction, "不要用反引号或代码块包公式") {
+		t.Fatalf("paper instruction lost the TeX math rule:\n%s", instruction)
+	}
+	discussion := fileCompanionShareDiscussionPrompt("论文.pdf", ".pdf")
+	if !strings.Contains(discussion, "数学公式用 TeX 写") || !strings.Contains(discussion, "不要用反引号或代码块包公式") {
+		t.Fatalf("share discussion prompt lost the TeX math rule:\n%s", discussion)
+	}
+}
+
 func TestFileCompanionBindingPromptIsInjectedWithoutBotProfile(t *testing.T) {
 	want := fileCompanionPrompt("告知书.pdf", ".pdf")
 	got := buildAssistantBindingPrompt(&agent.AssistantBinding{

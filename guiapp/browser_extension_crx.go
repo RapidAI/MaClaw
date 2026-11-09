@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,7 +60,7 @@ func existingCompanionLocalPackage() companionLocalPackage {
 	if err != nil || id == "" {
 		return companionLocalPackage{}
 	}
-	version, err := readCompanionExtensionVersion(unpacked)
+	version, err := readCompanionExtensionVersion(os.DirFS(unpacked))
 	if err != nil || strings.TrimSpace(version) == "" {
 		return companionLocalPackage{}
 	}
@@ -77,7 +78,7 @@ func companionLocalSideloadNeeded(layout companionBrowserLayout) bool {
 			continue
 		}
 		if layout.GOOS == "linux" && browser == "chrome" {
-			continue
+			return true
 		}
 		if layout.GOOS == "linux" && browser == "edge" && companionPathIsFile(strings.TrimSpace(layout.CRX)) {
 			continue
@@ -91,9 +92,9 @@ func companionLocalSideloadNeeded(layout companionBrowserLayout) bool {
 }
 
 func buildCompanionLocalPackage(dir string) (companionLocalPackage, error) {
-	source, err := companionExtensionSourceDir()
-	if err != nil || strings.TrimSpace(source) == "" {
-		return companionLocalPackage{}, nil
+	source, err := companionExtensionSource()
+	if err != nil {
+		return companionLocalPackage{}, err
 	}
 	key, err := loadOrCreateCompanionDevKey(dir)
 	if err != nil {
@@ -122,6 +123,16 @@ func buildCompanionLocalPackage(dir string) (companionLocalPackage, error) {
 		abs = unpacked
 	}
 	return companionLocalPackage{Ready: true, Dir: abs, ID: id, Version: version}, nil
+}
+
+// companionExtensionSource prefers the live extensions/ folder in a dev tree
+// so edits need no rebuild, then falls back to the copy embedded in the binary.
+// An installed build has neither a repo tree nor a shipped extensions/ folder.
+func companionExtensionSource() (fs.FS, error) {
+	if dir, err := companionExtensionSourceDir(); err == nil && strings.TrimSpace(dir) != "" {
+		return os.DirFS(dir), nil
+	}
+	return companionEmbeddedExtensionFS()
 }
 
 func companionExtensionSourceDir() (string, error) {
@@ -157,8 +168,8 @@ func companionExtensionSourceDir() (string, error) {
 	return "", nil
 }
 
-func readCompanionExtensionVersion(source string) (string, error) {
-	body, err := os.ReadFile(filepath.Join(source, "manifest.json"))
+func readCompanionExtensionVersion(source fs.FS) (string, error) {
+	body, err := fs.ReadFile(source, "manifest.json")
 	if err != nil {
 		return "", err
 	}
@@ -231,7 +242,7 @@ func companionDevKeyID(key *rsa.PrivateKey) (string, error) {
 	return chromeExtensionIDFromManifestKey(base64.StdEncoding.EncodeToString(spki))
 }
 
-func writeCompanionUnpacked(dest, source string, spki []byte) error {
+func writeCompanionUnpacked(dest string, source fs.FS, spki []byte) error {
 	files, err := companionExtensionFiles(source, spki)
 	if err != nil {
 		return err
@@ -246,8 +257,8 @@ func writeCompanionUnpacked(dest, source string, spki []byte) error {
 	return pruneCompanionUnpacked(dest, keep)
 }
 
-func companionExtensionFiles(source string, spki []byte) (map[string][]byte, error) {
-	manifest, err := os.ReadFile(filepath.Join(source, "manifest.json"))
+func companionExtensionFiles(source fs.FS, spki []byte) (map[string][]byte, error) {
+	manifest, err := fs.ReadFile(source, "manifest.json")
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +272,7 @@ func companionExtensionFiles(source string, spki []byte) (map[string][]byte, err
 		return nil, err
 	}
 	out := map[string][]byte{"manifest.json": append(rewritten, '\n')}
-	err = filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+	err = fs.WalkDir(source, ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -275,16 +286,11 @@ func companionExtensionFiles(source string, spki []byte) (map[string][]byte, err
 		if strings.HasSuffix(name, ".mjs") || strings.Contains(name, "_test") {
 			return nil
 		}
-		rel, err := filepath.Rel(source, path)
+		body, err := fs.ReadFile(source, path)
 		if err != nil {
 			return err
 		}
-		rel = filepath.ToSlash(rel)
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		out[rel] = body
+		out[path] = body
 		return nil
 	})
 	if err != nil {

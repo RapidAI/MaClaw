@@ -264,6 +264,10 @@ type FileCompanionLibraryItem struct {
 	// the paper fetches only the marks blob while it moves without a full
 	// project revision bump. An older Hub omits the field and it stays 0.
 	MarksRevision int `json:"marksRevision,omitempty"`
+	// ChatRevision is the host transcript sequence. Readers who already have
+	// the paper fetch that blob when it moves, instead of the project zip.
+	// An older Hub omits the field and it stays 0.
+	ChatRevision int `json:"chatRevision,omitempty"`
 	// Highlights is set on an import that unpacked a companion project.
 	// It is not stored in the library file.
 	Highlights string `json:"highlights,omitempty"`
@@ -368,6 +372,7 @@ type FileCompanionShareResult struct {
 	Token         string `json:"token,omitempty"`
 	Revision      int    `json:"revision,omitempty"`
 	MarksRevision int    `json:"marksRevision,omitempty"`
+	ChatRevision  int    `json:"chatRevision,omitempty"`
 }
 
 // FileCompanionShareUpdate is a newer project the reader should show.
@@ -415,6 +420,10 @@ type fileCompanionShareView struct {
 	NotesRevision    *int                     `json:"notes_revision"`
 	// MarksRevision is a pointer so an older Hub (field absent) reads as 0.
 	MarksRevision *int `json:"marks_revision"`
+	// ChatRevision is a pointer for the same reason: an older Hub has no
+	// transcript blob, and a missing field must not look like revision 0
+	// catching up.
+	ChatRevision *int `json:"chat_revision"`
 	// HubOrigin and ReaderGrant are set when the share lives on another hub.
 	// The home hub lists it so the reader can see a group they joined there.
 	HubOrigin   string `json:"hub_origin,omitempty"`
@@ -1138,6 +1147,9 @@ func mergeFileCompanionSharesWithRevoked(items, remote []FileCompanionLibraryIte
 			if prev.MarksRevision > item.MarksRevision {
 				item.MarksRevision = prev.MarksRevision
 			}
+			if prev.ChatRevision > item.ChatRevision {
+				item.ChatRevision = prev.ChatRevision
+			}
 		}
 		// The Hub row has no local path. A dropped cloud row, or a probe
 		// dismissal that this list just took back, still has the file.
@@ -1204,6 +1216,9 @@ func applyForeignCompanionShares(items []FileCompanionLibraryItem, views map[str
 		}
 		if view.MarksRevision != nil && *view.MarksRevision > item.MarksRevision {
 			item.MarksRevision = *view.MarksRevision
+		}
+		if view.ChatRevision != nil && *view.ChatRevision > item.ChatRevision {
+			item.ChatRevision = *view.ChatRevision
 		}
 		if view.Notes != nil {
 			notes := notesFromCompanionShareView(view)
@@ -1727,6 +1742,9 @@ func libraryItemsFromShares(views []fileCompanionShareView, mine bool, hub strin
 		}
 		if view.MarksRevision != nil {
 			item.MarksRevision = *view.MarksRevision
+		}
+		if view.ChatRevision != nil {
+			item.ChatRevision = *view.ChatRevision
 		}
 		if item.Name == "" {
 			item.Name = "document"
@@ -2534,6 +2552,9 @@ func (a *App) upsertFileCompanionCloudLocked(item FileCompanionLibraryItem) erro
 			}
 			if current.MarksRevision > item.MarksRevision {
 				item.MarksRevision = current.MarksRevision
+			}
+			if current.ChatRevision > item.ChatRevision {
+				item.ChatRevision = current.ChatRevision
 			}
 			continue
 		}

@@ -31,6 +31,13 @@ if ($buildNumber -notmatch '^\d+$') {
 $version = "$($versionParts[0]).$($versionParts[1]).$($versionParts[2]).$buildNumber"
 $parts = $version.Split('.')
 
+# The browser extension folder is embedded in the binary; refresh the committed
+# copy from extensions/companion-paper so the installed app can always unpack it.
+& (Join-Path $root 'scripts\sync-companion-extension-asset.ps1')
+if (-not $?) {
+  throw 'companion extension asset sync failed'
+}
+
 Remove-Item (Join-Path $root 'guiapp\resource_windows_amd64.syso') -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $root 'guiapp\resource_windows_arm64.syso') -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $root 'build\windows\wails.exe.manifest.tmp') -ErrorAction SilentlyContinue

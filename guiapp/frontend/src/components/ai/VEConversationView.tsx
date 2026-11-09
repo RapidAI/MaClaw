@@ -889,7 +889,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         }, 0);
     }, []);
 
-    const { inputAreaHeight, resizeInput, startInputResize } = useResizableAssistantInput(inputRef, inputText);
+    const { inputAreaHeight, resizeInput, startInputResize } = useResizableAssistantInput(inputRef);
 
     const applyInputValue = useCallback((nextValue: string) => {
         setInputText(nextValue);

@@ -433,14 +433,14 @@ export interface WelcomeComposerProps {
     recallHistory: (direction: "up" | "down") => boolean;
     rememberHistoryEdit: (value: string) => void;
     removeSelectedFile?: (filePath: string) => void;
-    resizeInput: () => void;
+    resizeInput: (target?: HTMLTextAreaElement) => void;
     selectedFilePaths: string[];
     setPendingAttachments: React.Dispatch<React.SetStateAction<AttachmentInfo[]>>;
     showBusySpinner: boolean;
     submittedPrompts?: string[];
     submittedPromptAttachments?: PromptHistoryAttachment[][];
     onHistoryTextAccepted?: (text: string) => void;
-    updateInputValue: (value: string) => void;
+    updateInputValue: (value: string, options?: { deferParent?: boolean }) => void;
     voiceInput: UseVoiceInputResult;
 }
 

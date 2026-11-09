@@ -759,7 +759,11 @@ export function SyncFileCompanionShare(arg1:string,arg2:string):Promise<Record<s
 
 export function SyncFileCompanionShareMarks(arg1:string,arg2:string):Promise<Record<string, any>>;
 
+export function SyncFileCompanionShareChat(arg1:string,arg2:string):Promise<Record<string, any>>;
+
 export function FetchFileCompanionShareMarks(arg1:string):Promise<Record<string, any>>;
+
+export function FetchFileCompanionShareChat(arg1:string):Promise<Record<string, any>>;
 
 export function AddFileCompanionShareNote(arg1:string,arg2:string):Promise<Record<string, any>>;
 

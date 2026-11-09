@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
 import { SelectAIAssistantFiles } from "../../../wailsjs/go/main/App";
 import { usePastedImageAttachments } from "./usePastedImageAttachments";
 
@@ -8,8 +8,16 @@ import { usePastedImageAttachments } from "./usePastedImageAttachments";
  */
 const GUIDE_ATTACHMENT_SESSION = "new-task-guide";
 
-export function useNewTaskGuideDraft(setDraftInputValue?: (next: string) => void, fileInputLock?: { current: boolean }) {
+export function useNewTaskGuideDraft(
+    draftInputValue: string,
+    syncDraftInputValue: (next: string, deferParent: boolean) => void,
+    fileInputLock?: { current: boolean },
+) {
     const guideInputRef = useRef<HTMLTextAreaElement | null>(null);
+    const [guideInputValue, setGuideInputValue] = useState(draftInputValue);
+    useEffect(() => {
+        setGuideInputValue(draftInputValue);
+    }, [draftInputValue]);
     const {
         handlePaste: pasteGuideFiles,
         handleDragOver: dragOverGuideFiles,
@@ -44,16 +52,18 @@ export function useNewTaskGuideDraft(setDraftInputValue?: (next: string) => void
     }, [dropGuideFilesOnComposer, fileInputLock]);
     const [guidePaths, setGuidePaths] = useState<string[]>([]);
 
-    const updateGuideDraft = useCallback((next: string) => {
-        setDraftInputValue?.(next);
-    }, [setDraftInputValue]);
+    const updateGuideDraft = useCallback((next: string, options?: { deferParent?: boolean }) => {
+        setGuideInputValue(next);
+        syncDraftInputValue(next, options?.deferParent === true);
+    }, [syncDraftInputValue]);
 
     const clearGuideDraft = useCallback(() => {
-        setDraftInputValue?.("");
+        setGuideInputValue("");
+        syncDraftInputValue("", false);
         if (guideInputRef.current) guideInputRef.current.value = "";
         setGuideAttachments([]);
         setGuidePaths([]);
-    }, [setDraftInputValue, setGuideAttachments]);
+    }, [setGuideAttachments, syncDraftInputValue]);
 
     const dropGuideFiles = useCallback(() => {
         // Always clear, even when the list is still empty, so an in-flight paste
@@ -95,6 +105,7 @@ export function useNewTaskGuideDraft(setDraftInputValue?: (next: string) => void
 
     return {
         guideInputRef,
+        guideInputValue,
         guideAttachments,
         guidePaths,
         setGuideAttachments,

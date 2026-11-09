@@ -654,7 +654,7 @@ func (a *App) SendFileCompanionWebMessage(req FileCompanionWebTurnRequest) error
 	if err := a.ensureFileCompanionHandler(userID, sessionID); err != nil {
 		return err
 	}
-	prompt := "你是文件伴读。当前打开的是网页：" + frame + "。不要使用工具。不要下载视频。用中文直接回答。不要声称已经生成了笔记或 PDF。如果用户想要笔记，告诉他们点「记笔记」。不要要求先全屏。"
+	prompt := "你是文件伴读。当前打开的是网页：" + frame + "。不要使用工具。不要下载视频。用中文直接回答。不要声称已经生成了笔记或 PDF。如果用户想要笔记，告诉他们点「记笔记」。不要要求先全屏。" + fileCompanionTeXMathRule
 	if excerpt := a.fileCompanionLoadSessionNoteExcerpt(sessionID); excerpt != "" {
 		text = fileCompanionAppendNoteExcerpt(text, excerpt)
 	}

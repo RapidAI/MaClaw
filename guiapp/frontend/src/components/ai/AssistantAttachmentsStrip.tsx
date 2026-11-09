@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
+import { memo, useEffect, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { localizeText } from "../../i18n";
 import { AIAssistantAttachmentPreviewDataURL, AIAssistantFileTypeIconDataURL } from "../../../wailsjs/go/main/App";
 import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
@@ -263,7 +263,7 @@ function AttachmentChip({ filePath, fileName, isImage, lang, theme, disabled, on
     );
 }
 
-export function AssistantAttachmentsStrip({
+export const AssistantAttachmentsStrip = memo(function AssistantAttachmentsStrip({
     cancelPending,
     clearSelectedFile,
     lang,
@@ -331,4 +331,4 @@ export function AssistantAttachmentsStrip({
             })}
         </div>
     );
-}
+});

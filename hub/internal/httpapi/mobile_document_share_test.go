@@ -1120,3 +1120,148 @@ func TestCompanionDocumentShareMarksSyncAndFetch(t *testing.T) {
 		t.Fatalf("marks after delete: %d", gone.Code)
 	}
 }
+
+func TestCompanionDocumentShareChatSyncAndFetch(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "share-owner@example.com")
+	otherToken, _ := issueViewerToken(t, identity, "share-reader@example.com")
+
+	created := postCompanionShareWithFields(t, identity, ownerToken, "person", "", "share-reader@example.com", "0", "聊天.pdf", "", []byte("%PDF chat"))
+	if created.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	token := companionShareTokenFrom(t, created)
+
+	chatBody := `[{"role":"user","text":"主持人的新问题"},{"role":"assistant","text":"主持人的新回答"}]`
+	postChat := func(bearer, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/chat", strings.NewReader(body))
+		req.SetPathValue("token", token)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		CompanionDocumentShareChatUpdateHandler(identity).ServeHTTP(rec, req)
+		return rec
+	}
+	getChat := func(bearer string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares/"+token+"/chat", nil)
+		req.SetPathValue("token", token)
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		rec := httptest.NewRecorder()
+		CompanionDocumentShareChatHandler(identity).ServeHTTP(rec, req)
+		return rec
+	}
+	getChanges := func(bearer string) (uint64, string) {
+		req := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares/changes", nil)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		rec := httptest.NewRecorder()
+		CompanionDocumentShareChangesHandler(identity).ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("changes: %d %s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Seq uint64 `json:"seq"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload.Seq, rec.Body.String()
+	}
+
+	if missing := getChat(otherToken); missing.Code != http.StatusNotFound {
+		t.Fatalf("chat before a push: %d %s", missing.Code, missing.Body.String())
+	}
+	// Only the host seat writes the transcript.
+	if reader := postChat(otherToken, chatBody); reader.Code != http.StatusForbidden {
+		t.Fatalf("reader chat post: %d %s", reader.Code, reader.Body.String())
+	}
+	beforeSeq, _ := getChanges(otherToken)
+	host := postChat(ownerToken, chatBody)
+	if host.Code != http.StatusOK {
+		t.Fatalf("host chat post: %d %s", host.Code, host.Body.String())
+	}
+	var posted struct {
+		ChatRevision int `json:"chat_revision"`
+	}
+	if err := json.Unmarshal(host.Body.Bytes(), &posted); err != nil || posted.ChatRevision != 1 {
+		t.Fatalf("chat post view: %s", host.Body.String())
+	}
+	companionSharePersistWG.Wait()
+	// A transcript-only change still bumps the change sequence, so a polling
+	// participant learns about it from the cheap endpoint.
+	afterSeq, changesBody := getChanges(otherToken)
+	if afterSeq != beforeSeq+1 || !strings.Contains(changesBody, `"chat_revision":1`) {
+		t.Fatalf("changes after chat: seq before=%d after=%d body=%s", beforeSeq, afterSeq, changesBody)
+	}
+
+	// The reader with access fetches the blob and its revision.
+	fetched := getChat(otherToken)
+	if fetched.Code != http.StatusOK || fetched.Body.String() != chatBody {
+		t.Fatalf("reader chat get: %d %s", fetched.Code, fetched.Body.String())
+	}
+	if got := fetched.Header().Get("X-Companion-Chat-Revision"); got != "1" {
+		t.Fatalf("chat revision header = %q", got)
+	}
+	if got := fetched.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("chat cache-control = %q", got)
+	}
+	// Pushing the same transcript again is not a new version: the revision and
+	// the change sequence stay put, so participants do not refetch the blob.
+	seqBeforeRepeat, _ := getChanges(otherToken)
+	repeat := postChat(ownerToken, chatBody)
+	var repeated struct {
+		ChatRevision int `json:"chat_revision"`
+	}
+	if err := json.Unmarshal(repeat.Body.Bytes(), &repeated); err != nil || repeated.ChatRevision != 1 {
+		t.Fatalf("duplicate chat push: %s", repeat.Body.String())
+	}
+	seqAfterRepeat, _ := getChanges(otherToken)
+	if seqAfterRepeat != seqBeforeRepeat {
+		t.Fatalf("duplicate chat push bumped seq: before=%d after=%d", seqBeforeRepeat, seqAfterRepeat)
+	}
+	// A changed push moves the revision and replaces the blob.
+	next := `[{"role":"user","text":"第二个问题"}]`
+	again := postChat(ownerToken, next)
+	var reposted struct {
+		ChatRevision int `json:"chat_revision"`
+		Revision     int `json:"revision"`
+	}
+	if err := json.Unmarshal(again.Body.Bytes(), &reposted); err != nil || reposted.ChatRevision != 2 || reposted.Revision != 1 {
+		t.Fatalf("chat repost view: %s", again.Body.String())
+	}
+	fetched = getChat(otherToken)
+	if fetched.Body.String() != next || fetched.Header().Get("X-Companion-Chat-Revision") != "2" {
+		t.Fatalf("chat after repost: %d %s", fetched.Code, fetched.Body.String())
+	}
+
+	// The full list carries the same revision to a participant's library.
+	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares", nil)
+	listReq.Header.Set("Authorization", "Bearer "+otherToken)
+	listRec := httptest.NewRecorder()
+	CompanionDocumentSharesHandler(identity).ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK || !strings.Contains(listRec.Body.String(), `"chat_revision":2`) {
+		t.Fatalf("list chat revision: %d %s", listRec.Code, listRec.Body.String())
+	}
+
+	// A signed-in user with no access is refused.
+	thirdToken, _ := issueViewerToken(t, identity, "share-outsider@example.com")
+	if denied := getChat(thirdToken); denied.Code != http.StatusForbidden {
+		t.Fatalf("outsider chat get: %d", denied.Code)
+	}
+
+	// Deleting the share cleans the transcript blob up too.
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/mobile/documents/shares/"+token, nil)
+	delReq.SetPathValue("token", token)
+	delReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	delRec := httptest.NewRecorder()
+	CompanionDocumentShareDeleteHandler(identity).ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", delRec.Code, delRec.Body.String())
+	}
+	companionSharePersistWG.Wait()
+	if gone := getChat(otherToken); gone.Code != http.StatusNotFound {
+		t.Fatalf("chat after delete: %d", gone.Code)
+	}
+}

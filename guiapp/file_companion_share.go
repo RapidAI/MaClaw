@@ -1389,21 +1389,31 @@ func (a *App) SyncFileCompanionShare(path, highlights string) (FileCompanionShar
 	if len(result) > 0 && result[0].ShareURL != "" {
 		url = result[0].ShareURL
 	}
-	// The zip carries the same marks; refresh the marks blob so readers polling
-	// marks_revision do not re-apply an older payload. Best-effort: a marks
-	// endpoint failure does not undo a successful project sync, and the next
-	// marks change retries.
+	// The zip carries the same marks and transcript. Refresh those blobs so
+	// readers polling the light revisions do not keep an older payload.
+	// Best-effort: a blob endpoint failure does not undo a successful project
+	// sync, and the next change retries. The chat call here does not fall
+	// back to another full sync.
 	if marksErr := a.SyncFileCompanionShareMarksQuiet(path, highlights); marksErr != nil {
 		logFileCompanion("share marks push after sync failed path=%s: %v", path, marksErr)
 	}
+	chatRevision := 0
+	if pushed, chatErr := a.syncFileCompanionShareChat(path); chatErr != nil {
+		if !errors.Is(chatErr, errFileCompanionShareChatUnsupported) {
+			logFileCompanion("share chat push after sync failed path=%s: %v", path, chatErr)
+		}
+	} else {
+		chatRevision = pushed.ChatRevision
+	}
 	return FileCompanionShareResult{
-		URL:        url,
-		Name:       last.Name,
-		ExpiresAt:  last.ExpiresAt,
-		Visibility: last.Visibility,
-		Permanent:  last.Permanent,
-		Token:      last.Token,
-		Revision:   lastView.Revision,
+		URL:          url,
+		Name:         last.Name,
+		ExpiresAt:    last.ExpiresAt,
+		Visibility:   last.Visibility,
+		Permanent:    last.Permanent,
+		Token:        last.Token,
+		Revision:     lastView.Revision,
+		ChatRevision: chatRevision,
 	}, nil
 }
 
@@ -1440,8 +1450,8 @@ func postFileCompanionShareMarks(hub, viewer, token, marks string) (int, error) 
 // SyncFileCompanionShareMarks uploads only the reader marks for every share
 // this file hosts. A highlight, annotation, bookmark, drawing, or chat-mark
 // edit is kilobytes; sending the whole project zip with the paper on each one
-// is what this replaces. The chat transcript still travels in the full
-// SyncFileCompanionShare.
+// is what this replaces. The chat transcript travels in
+// SyncFileCompanionShareChat, and the full zip remains the manual 同步 path.
 func (a *App) SyncFileCompanionShareMarks(path, marks string) (FileCompanionShareResult, error) {
 	return a.syncFileCompanionShareMarks(path, marks)
 }
@@ -1586,6 +1596,223 @@ func (a *App) FetchFileCompanionShareMarks(path string) (FileCompanionShareMarks
 		}
 	}
 	return FileCompanionShareMarksResult{Marks: string(body), Revision: revision}, nil
+}
+
+// errFileCompanionShareChatUnsupported marks a Hub that has no transcript
+// endpoint. The caller uploads the project zip instead, which is how chat
+// traveled before the blob existed.
+var errFileCompanionShareChatUnsupported = errors.New("companion share chat unsupported")
+
+func fileCompanionShareChatUnsupported(err error) bool {
+	var status *fileCompanionShareStatus
+	if !errors.As(err, &status) || status == nil {
+		return false
+	}
+	if status.status == http.StatusMethodNotAllowed {
+		return true
+	}
+	// A 404 with no message is an old Hub. A 404 that names the share is a
+	// missing link, and falling back would upload the zip to the same absence.
+	return status.status == http.StatusNotFound && strings.TrimSpace(status.message) == ""
+}
+
+// SyncFileCompanionShareChat uploads the host transcript for every share this
+// file hosts. The body is read here, after the turn has been saved, so the
+// blob matches the chat on screen. A Hub without the endpoint falls back to
+// the full project sync. marks is that fallback's reader-marks payload.
+func (a *App) SyncFileCompanionShareChat(path, marks string) (FileCompanionShareResult, error) {
+	result, err := a.syncFileCompanionShareChat(path)
+	if errors.Is(err, errFileCompanionShareChatUnsupported) {
+		return a.SyncFileCompanionShare(path, marks)
+	}
+	return result, err
+}
+
+func (a *App) syncFileCompanionShareChat(path string) (FileCompanionShareResult, error) {
+	if a == nil {
+		return FileCompanionShareResult{}, errors.New("app unavailable")
+	}
+	_, canonical, err := a.fileCompanionGrant(path)
+	if err != nil {
+		return FileCompanionShareResult{}, err
+	}
+	shares := a.fileCompanionSyncShares(canonical)
+	if len(shares) == 0 {
+		return FileCompanionShareResult{}, errors.New("还没有分享这份文档，无法同步更新")
+	}
+	hub, viewer, err := a.fileCompanionHubLogin()
+	if err != nil {
+		return FileCompanionShareResult{}, err
+	}
+	messages := a.fileCompanionHistory(fileCompanionSessionID(canonical))
+	if messages == nil {
+		messages = []FileCompanionMessage{}
+	}
+	body, err := json.Marshal(messages)
+	if err != nil {
+		return FileCompanionShareResult{}, errors.New("无法保存分享")
+	}
+	var last FileCompanionLibraryItem
+	var synced bool
+	var unsupported bool
+	var realErr error
+	var goneErr error
+	for _, share := range shares {
+		chatRevision, postErr := postFileCompanionShareChat(hub, viewer, share.Token, body)
+		if postErr != nil {
+			if fileCompanionShareChatUnsupported(postErr) {
+				unsupported = true
+				continue
+			}
+			if fileCompanionShareGone(postErr) {
+				a.retireFileCompanionShare(share.Token)
+				if goneErr == nil {
+					goneErr = postErr
+				}
+				continue
+			}
+			if realErr == nil {
+				realErr = postErr
+			}
+			continue
+		}
+		share.ChatRevision = chatRevision
+		share.Path = canonical
+		share.Mine = true
+		share.Source = "cloud"
+		if err := a.upsertFileCompanionCloud(share); err != nil {
+			if realErr == nil {
+				realErr = errors.New("文档列表无法保存")
+			}
+			continue
+		}
+		last = share
+		synced = true
+	}
+	if realErr != nil {
+		return FileCompanionShareResult{}, realErr
+	}
+	if !synced {
+		if unsupported {
+			return FileCompanionShareResult{}, errFileCompanionShareChatUnsupported
+		}
+		if goneErr == nil {
+			goneErr = errors.New("还没有分享这份文档，无法同步更新")
+		}
+		return FileCompanionShareResult{}, goneErr
+	}
+	return FileCompanionShareResult{
+		URL:          last.ShareURL,
+		Name:         last.Name,
+		ExpiresAt:    last.ExpiresAt,
+		Visibility:   last.Visibility,
+		Permanent:    last.Permanent,
+		Token:        last.Token,
+		Revision:     last.Revision,
+		ChatRevision: last.ChatRevision,
+	}, nil
+}
+
+func postFileCompanionShareChat(hub, viewer, token string, body []byte) (int, error) {
+	req, err := http.NewRequest(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/chat", bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewer)
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, errors.New("暂时无法连接云端")
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(raw)}
+	}
+	var view struct {
+		Token        string `json:"token"`
+		ChatRevision int    `json:"chat_revision"`
+	}
+	if json.Unmarshal(raw, &view) != nil || !fileCompanionShareTokenMatch.MatchString(view.Token) {
+		return 0, errors.New("云端没有返回分享聊天")
+	}
+	return view.ChatRevision, nil
+}
+
+// FileCompanionShareChatResult is the host transcript a reader applies in place.
+type FileCompanionShareChatResult struct {
+	Messages string `json:"messages"`
+	Revision int    `json:"revision"`
+}
+
+// FetchFileCompanionShareChat downloads the host transcript for the open
+// share. The bytes are also written into this file's session, so a later open
+// shows the same lines without waiting for another poll.
+func (a *App) FetchFileCompanionShareChat(path string) (FileCompanionShareChatResult, error) {
+	if a == nil {
+		return FileCompanionShareChatResult{}, errors.New("app unavailable")
+	}
+	_, canonical, err := a.fileCompanionGrant(path)
+	if err != nil {
+		return FileCompanionShareChatResult{}, err
+	}
+	item, ok := a.fileCompanionShareByPath(canonical)
+	if !ok {
+		return FileCompanionShareChatResult{}, errors.New("这份文档还没有导入分享")
+	}
+	hub, viewer, err := a.fileCompanionHubLogin()
+	if err != nil {
+		return FileCompanionShareChatResult{}, err
+	}
+	target, auth, grant, foreign := a.fileCompanionShareCall(hub, viewer, item)
+	if foreign && grant == "" {
+		return FileCompanionShareChatResult{}, errors.New("请重新导入分享链接")
+	}
+	req, err := http.NewRequest(http.MethodGet, target+"/api/mobile/documents/shares/"+item.Token+"/chat", nil)
+	if err != nil {
+		return FileCompanionShareChatResult{}, err
+	}
+	fileCompanionShareAuthorize(req, auth, grant)
+	client := fileCompanionDirectClient(60 * time.Second)
+	resp, err := client.Do(req)
+	if err != nil {
+		return FileCompanionShareChatResult{}, errors.New("暂时无法连接云端")
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return FileCompanionShareChatResult{}, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(raw)}
+	}
+	revision := 0
+	if header := strings.TrimSpace(resp.Header.Get("X-Companion-Chat-Revision")); header != "" {
+		if value, convErr := strconv.Atoi(header); convErr == nil {
+			revision = value
+		}
+	}
+	if _, ok := companionShareChatPayloadOK(raw); !ok {
+		return FileCompanionShareChatResult{}, errors.New("分享聊天无法读取")
+	}
+	var messages []FileCompanionMessage
+	if json.Unmarshal(raw, &messages) == nil {
+		// A local turn is still writing this file's chat. Replacing the stored
+		// transcript now would drop the question that started it, and the
+		// turn's own save would then race this copy back. The window retries
+		// after the turn.
+		sessionID := fileCompanionSessionID(canonical)
+		if a.imHandler == nil || a.imHandler.inFlightTurnForUser("file-companion:"+sessionID) == nil {
+			_ = a.writeFileCompanionProjectSession(sessionID, messages)
+		}
+	}
+	return FileCompanionShareChatResult{Messages: string(raw), Revision: revision}, nil
+}
+
+func companionShareChatPayloadOK(raw []byte) ([]byte, bool) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed[0] != '[' || !json.Valid([]byte(trimmed)) {
+		return nil, false
+	}
+	return []byte(trimmed), true
 }
 
 // FileCompanionShareNotesResult is the note list after one reader's line is

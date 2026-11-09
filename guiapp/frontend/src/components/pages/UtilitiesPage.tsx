@@ -70,10 +70,10 @@ const BROWSER_EXT_DETAIL: Record<string, readonly [string, string, string]> = {
     'edge-silent': ['It installs when the browser starts. You do not need to click Enable.', '启动浏览器后会自动装上，无需再点启用', '啟動瀏覽器後會自動裝上，無需再點啟用'],
     'safari-checkbox': ['Turn this on in Safari settings.', '请在 Safari 设置里勾选这一项', '請在 Safari 設定裡勾選這一項'],
     'store-enable': ['Confirm the browser\'s enable prompt.', '请在浏览器的启用提示里确认', '請在瀏覽器的啟用提示裡確認'],
-    'no-store-url': ['This build has no store update URL, so the extension cannot be installed automatically.', '当前构建没有商店更新地址，扩展不会自动装上', '目前組建沒有商店更新網址，擴充功能不會自動裝上'],
+    'no-store-url': ['Choose Install to prepare the extension folder, then load it in the browser.', '点「安装」准备扩展目录，再按提示在浏览器里加载', '點「安裝」準備擴充目錄，再按提示在瀏覽器裡載入'],
     'local-enable': ['The extension is registered on this computer. Confirm the browser enable prompt.', '已从本机登记扩展，请在浏览器的启用提示里确认', '已從本機登記擴充功能，請在瀏覽器的啟用提示裡確認'],
     'load-unpacked': ['The extension is not loaded, so the page has no Add to Companion menu. On the extensions page, turn on Developer mode and leave it on, choose Load unpacked, and select this folder.', '扩展还没装进浏览器，所以页面上没有「添加到伴读」。在扩展页打开开发者模式并保持开启（Edge 为开发人员模式），点 Load unpacked（中文 Chrome 为“加载已解压的扩展程序”，Edge 为“加载解压缩”），并选中此文件夹。', '擴充功能尚未載入瀏覽器，所以頁面上沒有「添加到伴讀」。在擴充功能頁打開開發人員模式並保持開啟，點 Load unpacked（「載入未封裝項目」），並選取此資料夾。'],
-    'linux-chrome': ['Branded Chrome on Linux has no per-user silent install.', '品牌版 Chrome 没有每用户静默安装路径', '品牌版 Chrome 沒有每位使用者的靜默安裝路徑'],
+    'linux-chrome': ['Chrome on Linux cannot be installed silently. Choose Install to prepare the folder, then load it unpacked.', 'Linux Chrome 无法静默安装。点「安装」准备扩展目录，再按提示加载已解压的扩展程序', 'Linux Chrome 無法靜默安裝。點「安裝」準備擴充目錄，再按提示載入未封裝項目'],
     'no-crx': ['This build has no CRX signing key, so Edge cannot install the extension.', '当前构建没有 CRX 签名密钥，Edge 无法安装扩展', '目前組建沒有 CRX 簽章金鑰，Edge 無法安裝擴充功能'],
     'safari-unsigned': ['The Safari extension is not signed into this build yet.', 'Safari 扩展尚未签进这个版本', 'Safari 擴充尚未簽進這個版本'],
     'login-item': ['Allow the companion helper in Login Items.', '请在系统设置的登录项里允许伴读助手', '請在系統設定的登入項目裡允許伴讀助手'],
@@ -115,11 +115,11 @@ function browserExtensionBadge(lang: string | undefined, state: string, detail?:
 }
 
 function browserExtensionOfferInstall(row: BrowserExtensionRow): '' | 'install' | 'again' | 'load' {
-    if (row.detail === 'safari-checkbox' || row.detail === 'linux-chrome' || row.detail === 'safari-unsigned' || row.detail === 'login-item' || row.detail === 'no-crx') {
+    if (row.detail === 'safari-checkbox' || row.detail === 'safari-unsigned' || row.detail === 'login-item' || row.detail === 'no-crx') {
         return '';
     }
     if (row.detail === 'load-unpacked') return 'load';
-    if (row.state === 'failed' && (row.detail === 'no-store-url' || row.detail === 'register-failed')) return 'install';
+    if (row.state === 'failed' && (row.detail === 'no-store-url' || row.detail === 'register-failed' || row.detail === 'linux-chrome')) return 'install';
     if (row.state === 'needs-enable' || row.state === 'needs-restart') return 'again';
     return '';
 }
@@ -469,6 +469,7 @@ export const UtilitiesPage = ({
         setExpertSearch('');
         setExpertFilter('all');
         setError('');
+        setBrowserExtGuide('');
         expertsRequestRef.current += 1;
         expertMarketUploadsRequestRef.current += 1;
     }, [mode]);
@@ -479,9 +480,11 @@ export const UtilitiesPage = ({
     const [browserExtRows, setBrowserExtRows] = useState<BrowserExtensionRow[]>([]);
     const [browserExtUnpacked, setBrowserExtUnpacked] = useState('');
     const [browserExtPathCopied, setBrowserExtPathCopied] = useState(false);
+    const [browserExtGuide, setBrowserExtGuide] = useState('');
     const [browserExtError, setBrowserExtError] = useState('');
     const browserExtCopiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const browserExtCopyEpoch = useRef(0);
+    const browserExtStateEpoch = useRef(0);
     const browserExtBusyRef = useRef(false);
     const [vscodeFeedback, setVscodeFeedback] = useState<LaunchFeedback | null>(null);
     const [vscodeInstallPrompt, setVscodeInstallPrompt] = useState<string | null>(null);
@@ -1273,6 +1276,11 @@ export const UtilitiesPage = ({
         browserExtensionCopyPathTitle: tailText(lang ?? "", 'Copy the plugin folder', '复制插件目录', '複製外掛目錄'),
         browserExtensionCopyFailed: tailText(lang ?? "", 'Could not copy the plugin folder', '无法复制插件目录', '無法複製外掛目錄'),
         browserExtensionOpenPage: tailText(lang ?? "", 'Open extensions page', '打开扩展页', '打開擴充功能頁'),
+        browserExtensionWorking: tailText(lang ?? "", 'Preparing the extension…', '正在准备插件…', '正在準備外掛…'),
+        browserExtensionGuide: tailText(lang ?? "",
+            'Opened the extensions page. Turn on Developer mode and keep it on, choose Load unpacked, and select the folder below. Choose Copy first if the dialog needs a pasted path; this panel switches to Installed once the browser reports in.',
+            '已打开扩展页。打开开发者模式并保持开启，点「加载已解压的扩展程序」，选中下方插件目录；文件对话框需要粘贴时先点「复制」。加载后本页会自动显示「已安装」。',
+            '已打開擴充功能頁。打開開發人員模式並保持開啟，點「載入未封裝項目」，選取下方外掛目錄；檔案對話框需要貼上時先點「複製」。載入後本頁會自動顯示「已安裝」。'),
         browserExtensionLead: tailText(lang ?? "", 'Right-click Add to Companion in Chrome, Edge, or Safari. The paper is saved in Companion and opened in a tab.', '在 Chrome、Edge 或 Safari 里右键「添加到伴读」，论文会保存到伴读并在标签页打开。', '在 Chrome、Edge 或 Safari 裡右鍵「添加到伴讀」，論文會儲存到伴讀並在分頁開啟。'),
         virtualRepositoryDesc: tailText(lang ?? "", 'Organize Git, SVN, and local build-output directories in a portable virtual tree', '将 Git、SVN 与编译输出等本地目录组织成一棵可移植的虚拟目录树'),
         vscodeMissingTitle: tailText(lang ?? "", 'VS Code not found', '未检测到 VS Code'),
@@ -2093,21 +2101,31 @@ export const UtilitiesPage = ({
         setBrowserExtUnpacked(typeof result?.unpackedPath === 'string' ? result.unpackedPath : '');
         clearBrowserExtensionCopied();
     };
-    const browserExtensionBridge = async () => {
+    const browserExtensionBridge = useCallback(async () => {
         const bridge = (window as any)?.go?.main?.App;
         if (bridge?.InstallBrowserExtensions || bridge?.UninstallBrowserExtensions) return bridge;
         return getApp();
-    };
-    const openBrowserExtensions = async () => {
+    }, []);
+    // Opening the card only reads status. A no-store build that was never
+    // prepared shows the Install action; the install itself stays on the row
+    // button so navigating here cannot launch a browser.
+    const openBrowserExtensionView = async () => {
         if (browserExtBusyRef.current) return;
+        browserExtStateEpoch.current += 1;
         browserExtBusyRef.current = true;
         setBrowserExtBusy(true);
         setBrowserExtError('');
+        setBrowserExtGuide('');
         setView('browser-extension');
         try {
             const mod = await browserExtensionBridge();
-            if (!mod?.InstallBrowserExtensions) throw new Error(tailText(lang ?? "", 'This build cannot register browser extensions', '当前版本不能登记浏览器插件'));
-            applyBrowserExtensionRows(await mod.InstallBrowserExtensions());
+            if (mod?.GetBrowserExtensionStatus) {
+                applyBrowserExtensionRows(await mod.GetBrowserExtensionStatus());
+            } else if (mod?.InstallBrowserExtensions) {
+                applyBrowserExtensionRows(await mod.InstallBrowserExtensions());
+            } else {
+                throw new Error(tailText(lang ?? "", 'This build cannot register browser extensions', '当前版本不能登记浏览器插件'));
+            }
         } catch (e: any) {
             setBrowserExtError(String(e?.message || e));
         } finally {
@@ -2115,11 +2133,66 @@ export const UtilitiesPage = ({
             setBrowserExtBusy(false);
         }
     };
-    const removeBrowserExtensions = async () => {
+    // A no-store build cannot install silently. Install prepares the folder,
+    // then opens this browser's extensions page, so the remaining steps are
+    // Developer mode, Load unpacked and selecting the folder shown below.
+    const installBrowserExtensions = async (browser: string) => {
         if (browserExtBusyRef.current) return;
+        browserExtStateEpoch.current += 1;
         browserExtBusyRef.current = true;
         setBrowserExtBusy(true);
         setBrowserExtError('');
+        setBrowserExtGuide('');
+        try {
+            const mod = await browserExtensionBridge();
+            if (!mod?.InstallBrowserExtensions) throw new Error(tailText(lang ?? "", 'This build cannot register browser extensions', '当前版本不能登记浏览器插件'));
+            const result = await mod.InstallBrowserExtensions();
+            applyBrowserExtensionRows(result);
+            const rows = Array.isArray(result?.browsers) ? result.browsers : [];
+            const row = rows.find((item: BrowserExtensionRow) => item?.browser === browser);
+            const folder = String(result?.unpackedPath || '').trim();
+            if (row?.detail !== 'load-unpacked' || !folder) return;
+            if (!mod?.ShowBrowserExtensionLoad) {
+                throw new Error(tailText(lang ?? "", 'This build cannot open the browser extensions page', '当前版本不能打开浏览器扩展页'));
+            }
+            await mod.ShowBrowserExtensionLoad(browser);
+            if (mountedRef.current) setBrowserExtGuide(t.browserExtensionGuide);
+        } catch (e: any) {
+            if (mountedRef.current) setBrowserExtError(String(e?.message || e));
+        } finally {
+            browserExtBusyRef.current = false;
+            if (mountedRef.current) setBrowserExtBusy(false);
+        }
+    };
+    // Once the user loads the folder, the extension sends hello through the
+    // native host. Poll while a row still waits so the card flips to Installed
+    // without reopening the page. An empty reply keeps the rows on screen.
+    const refreshBrowserExtensionStatus = useCallback(async () => {
+        if (browserExtBusyRef.current) return;
+        const epoch = browserExtStateEpoch.current;
+        try {
+            const mod = await browserExtensionBridge();
+            if (!mod?.GetBrowserExtensionStatus) return;
+            const result = await mod.GetBrowserExtensionStatus();
+            if (!mountedRef.current || epoch !== browserExtStateEpoch.current) return;
+            const rows = Array.isArray(result?.browsers) ? result.browsers : [];
+            if (!rows.length) return;
+            const nextRows = rows.filter((row: BrowserExtensionRow) => row && row.state !== 'absent' && row.browser);
+            setBrowserExtRows(nextRows);
+            if (!nextRows.some((row: BrowserExtensionRow) => row.detail === 'load-unpacked' || row.state === 'needs-enable' || row.state === 'needs-restart')) {
+                setBrowserExtGuide('');
+            }
+        } catch {
+            // A status poll is best-effort; the card keeps what it has.
+        }
+    }, [browserExtensionBridge]);
+    const removeBrowserExtensions = async () => {
+        if (browserExtBusyRef.current) return;
+        browserExtStateEpoch.current += 1;
+        browserExtBusyRef.current = true;
+        setBrowserExtBusy(true);
+        setBrowserExtError('');
+        setBrowserExtGuide('');
         try {
             const mod = await browserExtensionBridge();
             if (!mod?.UninstallBrowserExtensions) throw new Error(tailText(lang ?? "", 'This build cannot register browser extensions', '当前版本不能登记浏览器插件'));
@@ -2162,11 +2235,10 @@ export const UtilitiesPage = ({
     // bar is the parent. Copy keeps the last segment and only drops a trailing
     // separator.
     const browserExtPluginDirectory = browserExtUnpacked.trim().replace(/[\\/]+$/, '');
-    const copyBrowserExtensionFolder = async () => {
-        const pluginDirectory = browserExtPluginDirectory;
-        if (!pluginDirectory) return;
-        // A newer click copies the same plugin directory. An older attempt must
-        // not paint 已复制 or the failure after that click has already finished.
+    const copyPluginFolder = async (pluginDirectory: string): Promise<boolean> => {
+        if (!pluginDirectory) return false;
+        // A newer copy replaces an older one. An older attempt must not paint
+        // 已复制 or the failure after that copy has already finished.
         browserExtCopyEpoch.current += 1;
         const epoch = browserExtCopyEpoch.current;
         if (browserExtCopiedTimer.current) {
@@ -2180,7 +2252,7 @@ export const UtilitiesPage = ({
         } catch {
             copied = false;
         }
-        if (!mountedRef.current || epoch !== browserExtCopyEpoch.current) return;
+        if (!mountedRef.current || epoch !== browserExtCopyEpoch.current) return false;
         if (!copied) {
             try {
                 if (navigator.clipboard?.writeText) {
@@ -2191,19 +2263,29 @@ export const UtilitiesPage = ({
                 copied = false;
             }
         }
-        if (!mountedRef.current || epoch !== browserExtCopyEpoch.current) return;
+        if (!mountedRef.current || epoch !== browserExtCopyEpoch.current) return false;
         if (!copied) {
             setBrowserExtPathCopied(false);
             setBrowserExtError(t.browserExtensionCopyFailed);
-            return;
+            return false;
         }
         setBrowserExtPathCopied(true);
         if (browserExtCopiedTimer.current) clearTimeout(browserExtCopiedTimer.current);
         browserExtCopiedTimer.current = setTimeout(() => {
             if (mountedRef.current && epoch === browserExtCopyEpoch.current) setBrowserExtPathCopied(false);
         }, 2000);
+        return true;
+    };
+    const copyBrowserExtensionFolder = async () => {
+        await copyPluginFolder(browserExtPluginDirectory);
     };
     const showUnpackedFolder = browserExtPluginDirectory !== '' && browserExtRows.some((row) => row.detail === 'load-unpacked');
+    const browserExtWaitsForLoad = browserExtRows.some((row) => row.detail === 'load-unpacked' || row.state === 'needs-enable' || row.state === 'needs-restart');
+    useEffect(() => {
+        if (!active || view !== 'browser-extension' || !browserExtWaitsForLoad) return;
+        const timer = window.setInterval(() => { void refreshBrowserExtensionStatus(); }, 2500);
+        return () => window.clearInterval(timer);
+    }, [active, view, browserExtWaitsForLoad, refreshBrowserExtensionStatus]);
 
     if (view === 'browser-extension') {
         return (
@@ -2214,6 +2296,8 @@ export const UtilitiesPage = ({
                     <p className="utilities-page__subtitle browser-ext__lead">{t.browserExtensionLead}</p>
                 </div>
                 {browserExtError ? <p className="utilities-error" role="alert">{browserExtError}</p> : null}
+                {browserExtGuide ? <p className="browser-ext__guide" data-testid="browser-extension-guide">{browserExtGuide}</p> : null}
+                {browserExtBusy ? <p className="browser-ext__working" data-testid="browser-extension-busy">{t.browserExtensionWorking}</p> : null}
                 <ul className="browser-ext__list" data-testid="browser-extension-rows">
                     {browserExtRows.map((row) => {
                         const offer = browserExtensionOfferInstall(row);
@@ -2234,7 +2318,7 @@ export const UtilitiesPage = ({
                                             className="utilities-btn utilities-btn--primary"
                                             data-testid={`browser-extension-install-${row.browser}`}
                                             disabled={browserExtBusy}
-                                            onClick={() => { void (offer === 'load' ? showBrowserExtensionLoad(row.browser) : openBrowserExtensions()); }}
+                                            onClick={() => { void (offer === 'load' ? showBrowserExtensionLoad(row.browser) : installBrowserExtensions(row.browser)); }}
                                         >
                                             {offer === 'load' ? t.browserExtensionOpenPage : offer === 'again' ? t.browserExtensionInstallAgain : t.browserExtensionInstall}
                                         </button>
@@ -2342,7 +2426,7 @@ export const UtilitiesPage = ({
                 desc: t.browserExtensionDesc,
                 cta: t.open,
                 disabled: browserExtBusy,
-                onClick: () => { void openBrowserExtensions(); },
+                onClick: () => { void openBrowserExtensionView(); },
             },
             {
                 key: 'vscode-ext',

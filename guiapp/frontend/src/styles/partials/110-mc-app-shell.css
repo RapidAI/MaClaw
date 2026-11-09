@@ -6104,6 +6104,7 @@ body.companion-pdf-translation-dragging * {
   background: var(--theme-surface, #ffffff);
   color: var(--theme-text-secondary, #46586f);
   font: 600 11.5px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  cursor: default;
 }
 .file-companion-folder-prompt {
   position: absolute;
@@ -6150,7 +6151,18 @@ body.companion-pdf-translation-dragging * {
 .file-companion-folder-prompt-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
+}
+.file-companion-revoke-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
 }
 .file-companion-folder-danger {
   border-color: var(--theme-danger, #dc2626);
@@ -6193,10 +6205,19 @@ body.companion-pdf-translation-dragging * {
   border: 1px solid var(--theme-border, #d5e0ef);
   border-radius: var(--radius-md);
   background: var(--theme-surface, #ffffff);
+  cursor: pointer;
 }
 .file-companion-project[data-open="true"] {
   border-color: color-mix(in srgb, var(--theme-primary, #2563eb) 40%, var(--theme-border, #d5e0ef));
   background: color-mix(in srgb, var(--theme-primary, #2563eb) 3%, var(--theme-surface, #ffffff));
+}
+.file-companion-project:hover:not(:has(.file-companion-project-drag:hover)):not(:has(.file-companion-project-actions:hover)) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2563eb) 45%, var(--theme-border, #d5e0ef));
+  background: color-mix(in srgb, var(--theme-primary, #2563eb) 5%, var(--theme-surface, #ffffff));
+}
+.file-companion-project[data-open="true"]:hover:not(:has(.file-companion-project-drag:hover)):not(:has(.file-companion-project-actions:hover)) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2563eb) 55%, var(--theme-border, #d5e0ef));
+  background: color-mix(in srgb, var(--theme-primary, #2563eb) 8%, var(--theme-surface, #ffffff));
 }
 .file-companion-project[data-dragging="true"] {
   content-visibility: visible;
@@ -6273,9 +6294,17 @@ body.companion-pdf-translation-dragging * {
   white-space: nowrap;
   min-width: 0;
 }
-.file-companion-project-title:hover {
+.file-companion-project-title:hover,
+.file-companion-project-title:focus-visible {
   color: var(--theme-primary, #2563eb);
-  text-decoration: underline;
+}
+.file-companion-project-title:focus {
+  outline: none;
+}
+.file-companion-project-title:focus-visible {
+  outline: 2px solid var(--theme-primary, #2563eb);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 .file-companion-project-doctitle {
   margin: 0;
@@ -6296,14 +6325,6 @@ body.companion-pdf-translation-dragging * {
   font-size: 11.5px;
   line-height: 1.4;
   color: var(--theme-text-muted, #64748b);
-}
-.file-companion-project-meta[draggable="true"] {
-  cursor: grab;
-  user-select: none;
-  -webkit-user-drag: element;
-}
-.file-companion-project-meta[draggable="true"]:active {
-  cursor: grabbing;
 }
 .file-companion-project-facts {
   white-space: nowrap;
@@ -6356,9 +6377,10 @@ body.companion-pdf-translation-dragging * {
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
+  cursor: default;
 }
-/* A cloud row is already a share. It carries a mark instead of a button:
-   the only action left on it is 修改, which edits that same link. */
+/* A cloud row is already a share. The mark says so. 添加分享 makes another
+   link for a different person or group; 修改 edits the link on this row. */
 .file-companion-project-shared {
   display: inline-flex;
   align-items: center;
@@ -6720,6 +6742,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-dialog-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-left: auto;
 }

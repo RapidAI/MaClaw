@@ -24,7 +24,7 @@
  * The backend also runs Silero VAD on the full audio before ASR for a second
  * layer of noise filtering.
  */
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { DiarizeAndTranscribeAudioBase64, TranscribeAudioBase64, IsASRReady, LoadConfig, SpeakPlainText, NormalizeVoiceCommand, CorrectASRText, SetDesktopPetState, NotifyDesktopPetMicBusy } from "../../../wailsjs/go/main/App";
 import { EventsOn } from "../../../wailsjs/runtime";
 import { normalizeASRText, resolveNormalizedVoiceText, shouldDispatchASRText } from "./asrTextUtils";
@@ -1497,7 +1497,7 @@ export function useVoiceInput(
         return () => window.removeEventListener(START_VOICE_INPUT_EVENT, onExternalStart);
     }, [resetHoldBuffer, startListening]);
 
-    return {
+    return useMemo(() => ({
         state,
         asrReady,
         toggle,
@@ -1509,5 +1509,5 @@ export function useVoiceInput(
         segmentCount,
         error,
         onAudioLevelRef: audioLevelCallbackRef,
-    };
+    }), [asrReady, duration, error, holdRecording, isSpeaking, segmentCount, startHold, state, stopHold, toggle]);
 }

@@ -1,5 +1,6 @@
 {
   "extName": { "message": "添加到伴读" },
   "extDescription": { "message": "把当前 PDF 或论文加入伴读的文档管理并打开。" },
-  "menuAdd": { "message": "添加到伴读" }
+  "menuAdd": { "message": "添加到伴读" },
+  "nativeFailed": { "message": "无法连接伴读。请在 MaClaw 工具的「浏览器插件」中重新安装。" }
 }

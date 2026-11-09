@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { memo, useEffect, useState, useRef } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { tailText } from "../../i18n/mnTail"
@@ -34,7 +34,7 @@ async function resolveGetMemoryStatus(): Promise<(() => Promise<any>) | null> {
  * A tiny SVG ring chart showing memory usage percentage.
  * Self-contained: fetches data from the Wails binding on mount and every 60s.
  */
-export function MemoryUsageRing({ theme: t, themeMode, lang, size = 22 }: MemoryUsageRingProps) {
+export const MemoryUsageRing = memo(function MemoryUsageRing({ theme: t, themeMode, lang, size = 22 }: MemoryUsageRingProps) {
     const [status, setStatus] = useState<MemoryStatus | null>(null);
     const mountedRef = useRef(true);
 
@@ -138,4 +138,4 @@ export function MemoryUsageRing({ theme: t, themeMode, lang, size = 22 }: Memory
             </span>
         </span>
     );
-}
+});

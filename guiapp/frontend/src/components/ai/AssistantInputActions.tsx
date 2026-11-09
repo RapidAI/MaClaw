@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { Z } from "../ui/zIndex";
 import { createPortal } from "react-dom";
 import { localizeText } from "./aiAssistantI18n";
@@ -65,7 +65,7 @@ interface AssistantInputActionsProps {
     voiceInput: UseVoiceInputResult;
 }
 
-export function AssistantInputActionsLeft({
+export const AssistantInputActionsLeft = memo(function AssistantInputActionsLeft({
     active = true,
     attachButtonTestId,
     browseFile,
@@ -443,7 +443,7 @@ export function AssistantInputActionsLeft({
             {showPermissionMode && onPermissionModeChange && <AssistantPermissionModeMenu active={active} lang={lang} mode={permissionMode} onChange={onPermissionModeChange} theme={t} themeMode={themeMode} showWorkspaceOption={showWorkspacePermissionOption} taskCommandAllowed={taskCommandAllowed} />}
         </>
     );
-}
+});
 
 /**
  * Clear and send are one compact trailing pair: both keep the shared composer

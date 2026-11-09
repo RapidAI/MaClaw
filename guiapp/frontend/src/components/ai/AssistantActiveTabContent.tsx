@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizeLang } from "../../i18n";
 import type { AITab, AITabState } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
@@ -33,7 +33,7 @@ type AssistantActiveTabContentProps = {
  * (sharing the same AssistantConversationBody + AssistantInputStack layout but
  * with independent state). This component only handles VE and group tab types.
  */
-export function AssistantActiveTabContent({ activeTab, tabs, isLocalTabActive, isProjectTabActive, lang, theme, getTabState, saveTabState, onAddParticipantToTab, conversationChrome }: AssistantActiveTabContentProps) {
+export const AssistantActiveTabContent = memo(function AssistantActiveTabContent({ activeTab, tabs, isLocalTabActive, isProjectTabActive, lang, theme, getTabState, saveTabState, onAddParticipantToTab, conversationChrome }: AssistantActiveTabContentProps) {
     const contentTabs = useMemo(() => {
         const sourceTabs = tabs && tabs.length > 0 ? tabs : [activeTab];
         return sourceTabs.filter(tab =>
@@ -60,7 +60,7 @@ export function AssistantActiveTabContent({ activeTab, tabs, isLocalTabActive, i
             ))}
         </>
     );
-}
+});
 
 function isPersistentConversationTab(tab: AITab): boolean {
     return tab.type === "ve" || (tab.type === "group" && !!tab.veId);

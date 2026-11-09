@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -105,6 +106,11 @@ type companionDocShare struct {
 	// zip. MarksPath is the small JSON blob holding the five payloads.
 	MarksRevision int    `json:"marks_revision,omitempty"`
 	MarksPath     string `json:"marks_path,omitempty"`
+	// ChatRevision is the host transcript sequence. A new question or answer
+	// bumps it without touching the project zip, so an open share can show the
+	// new lines from one small JSON blob. ChatPath holds that blob.
+	ChatRevision int    `json:"chat_revision,omitempty"`
+	ChatPath     string `json:"chat_path,omitempty"`
 }
 
 // companionShareNote is one reader's discussion on a share. The host's own
@@ -690,6 +696,7 @@ func companionShareView(share companionDocShare, r *http.Request) map[string]any
 		"created_at":     share.CreatedAt.UTC().Format(time.RFC3339),
 		"revision":       share.Revision,
 		"marks_revision": share.MarksRevision,
+		"chat_revision":  share.ChatRevision,
 	}
 	if !share.ExpiresAt.IsZero() {
 		view["expires_at"] = share.ExpiresAt.UTC().Format(time.RFC3339)
@@ -796,6 +803,9 @@ func writeCompanionShareList(w http.ResponseWriter, r *http.Request, identity *a
 	// machines can disagree by minutes, and comparing a note time from one
 	// clock with an install time from the other silently skips live notes.
 	w.Header().Set("ETag", strconv.Quote(strconv.FormatUint(seq, 10)))
+	// The list carries private notes and the share inventory. A shared cache
+	// must not answer another reader (or a later poll) from it.
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mine":         mine,
 		"received":     received,
@@ -837,6 +847,7 @@ func CompanionDocumentShareChangesHandler(identity *auth.IdentityService) http.H
 			Revision      int    `json:"revision"`
 			NotesRevision int    `json:"notes_revision"`
 			MarksRevision int    `json:"marks_revision"`
+			ChatRevision  int    `json:"chat_revision"`
 		}
 		companionDocShares.Lock()
 		seq := companionDocShares.seq
@@ -853,10 +864,14 @@ func CompanionDocumentShareChangesHandler(identity *auth.IdentityService) http.H
 				Revision:      share.Revision,
 				NotesRevision: share.NotesRevision,
 				MarksRevision: share.MarksRevision,
+				ChatRevision:  share.ChatRevision,
 			})
 		}
 		companionDocShares.Unlock()
 		_, remoteSeq := companionRemoteShareSnapshot(r.Context(), identity, principal, ownerID)
+		// The rows are a live change tick. A cached answer would make a
+		// participant believe nothing moved and skip a real transcript update.
+		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusOK, map[string]any{
 			"seq":         seq,
 			"remote_seq":  remoteSeq,
@@ -1122,6 +1137,9 @@ func CompanionDocumentShareDeleteHandler(identity *auth.IdentityService) http.Ha
 		mobileDeleteDocumentBlob(share.BlobPath)
 		if share.MarksPath != "" {
 			mobileDeleteDocumentBlob(share.MarksPath)
+		}
+		if share.ChatPath != "" {
+			mobileDeleteDocumentBlob(share.ChatPath)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": token})
 	}
@@ -1592,6 +1610,11 @@ func CompanionDocumentShareSyncHandler(identity *auth.IdentityService) http.Hand
 // store while normal projects stay far below it.
 const companionMarksMaxBytes = 8 << 20
 
+// companionChatMaxBytes bounds one host transcript. It is the chat bubbles,
+// not the paper, so it stays far below a project zip while a long discussion
+// still fits.
+const companionChatMaxBytes = 8 << 20
+
 // CompanionDocumentShareMarksUpdateHandler stores the host's reader marks —
 // highlights, chat marks, annotations, drawings, bookmarks — without touching
 // the project zip. Readers who already imported the paper poll the change
@@ -1743,7 +1766,226 @@ func CompanionDocumentShareMarksHandler(identity *auth.IdentityService) http.Han
 		defer file.Close()
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Companion-Marks-Revision", strconv.Itoa(revision))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, file)
+	}
+}
+
+// companionShareChatPayload accepts a JSON array of chat bubbles. An empty
+// array is a cleared transcript and is stored, so participants drop the lines
+// the host deleted.
+func companionShareChatPayload(raw []byte) ([]byte, bool) {
+	if len(raw) == 0 || len(raw) > companionChatMaxBytes {
+		return nil, false
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed[0] != '[' || !json.Valid([]byte(trimmed)) {
+		return nil, false
+	}
+	return []byte(trimmed), true
+}
+
+// companionShareChatUnchanged reports that body is byte-identical to the
+// transcript the share already stores. A duplicate push — the manual 同步 that
+// also refreshes the blob, a retry after a lost response — then leaves the
+// revision alone, so participants do not fetch and re-render the same lines.
+func companionShareChatUnchanged(blobPath string, body []byte) bool {
+	if blobPath == "" || len(body) == 0 {
+		return false
+	}
+	file, size, err := mobileOpenDocumentBlob(blobPath)
+	if err != nil || file == nil || size <= 0 {
+		if file != nil {
+			_ = file.Close()
+		}
+		return false
+	}
+	defer file.Close()
+	if size != int64(len(body)) {
+		return false
+	}
+	previous, err := io.ReadAll(io.LimitReader(file, int64(len(body))+1))
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(previous, body)
+}
+
+// CompanionDocumentShareChatUpdateHandler stores the host transcript without
+// the project zip. Readers who already have the paper poll chat_revision and
+// fetch only this blob.
+//
+//	POST /api/mobile/documents/shares/{token}/chat
+func CompanionDocumentShareChatUpdateHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+			return
+		}
+		ownerID := mobilePrincipalOwnerID(principal)
+		if ownerID == "" {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+			return
+		}
+		token := strings.TrimSpace(r.PathValue("token"))
+		if !companionShareTokenPattern.MatchString(token) {
+			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			return
+		}
+		raw, err := io.ReadAll(io.LimitReader(r.Body, companionChatMaxBytes+1))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "聊天无法读取")
+			return
+		}
+		body, ok := companionShareChatPayload(raw)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "聊天无法读取")
+			return
+		}
+		loadCompanionDocShares()
+		companionDocShares.Lock()
+		share, found := companionDocShares.items[token]
+		if status, code, message := companionShareSyncRejection(share, found, ownerID, time.Now().UTC()); status != 0 {
+			companionDocShares.Unlock()
+			writeError(w, status, code, message)
+			return
+		}
+		companionDocShares.Unlock()
+		// A second push with the same transcript is not a new version. Reading
+		// the old blob here keeps chat_revision — and therefore the change
+		// sequence — still, so a polling participant does not fetch and repaint
+		// lines it already shows. A push that raced a newer one and carries the
+		// older bytes also stops here: the newer transcript stays.
+		if companionShareChatUnchanged(share.ChatPath, body) {
+			companionDocShares.Lock()
+			share, found = companionDocShares.items[token]
+			if status, code, message := companionShareSyncRejection(share, found, ownerID, time.Now().UTC()); status != 0 {
+				companionDocShares.Unlock()
+				writeError(w, status, code, message)
+				return
+			}
+			revision := share.Revision
+			chatRevision := share.ChatRevision
+			companionDocShares.Unlock()
+			writeJSON(w, http.StatusOK, map[string]any{
+				"token":         token,
+				"revision":      revision,
+				"chat_revision": chatRevision,
+			})
+			return
+		}
+		blobPath, err := mobileWriteDocumentBlob(ownerID, "share-chat", token, body)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享")
+			return
+		}
+		companionDocShares.Lock()
+		share, found = companionDocShares.items[token]
+		if status, code, message := companionShareSyncRejection(share, found, ownerID, time.Now().UTC()); status != 0 {
+			companionDocShares.Unlock()
+			mobileDeleteDocumentBlob(blobPath)
+			writeError(w, status, code, message)
+			return
+		}
+		previous := share.ChatPath
+		share.ChatPath = blobPath
+		share.ChatRevision++
+		companionDocShares.items[token] = share
+		snap := scheduleCompanionSharePersistLocked()
+		companionDocShares.Unlock()
+		scheduleCompanionShareIndex(snap)
+		if previous != "" && previous != blobPath {
+			mobileDeleteDocumentBlob(previous)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token":         share.Token,
+			"revision":      share.Revision,
+			"chat_revision": share.ChatRevision,
+		})
+	}
+}
+
+// CompanionDocumentShareChatHandler returns the stored host transcript.
+// Anyone who can read the share can read it.
+//
+//	GET /api/mobile/documents/shares/{token}/chat
+func CompanionDocumentShareChatHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+			return
+		}
+		principal, ownerID, ok := companionViewerIfPresent(w, r, identity)
+		if !ok {
+			return
+		}
+		grant := companionReaderGrantHeaderValue(r)
+		token := strings.TrimSpace(r.PathValue("token"))
+		if !companionShareTokenPattern.MatchString(token) {
+			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			return
+		}
+		loadCompanionDocShares()
+		companionDocShares.Lock()
+		share, found := companionDocShares.items[token]
+		if !found {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			return
+		}
+		if share.expired(time.Now().UTC()) {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusGone, "SHARE_EXPIRED", "分享链接已过期")
+			return
+		}
+		if ownerID != "" {
+			contacts := companionViewerContactSet(identity, r.Context(), principal)
+			groups := companionAcceptedGroupIDs(ownerID, contacts)
+			if status, message := companionShareReadAccess(share, ownerID, contacts, groups, ""); status != 0 {
+				companionDocShares.Unlock()
+				code := "SHARE_FORBIDDEN"
+				if status == http.StatusUnauthorized {
+					code = "UNAUTHORIZED"
+				}
+				writeError(w, status, code, message)
+				return
+			}
+		} else {
+			if _, _, known := companionShareForeignReader(share, grant); !known {
+				companionDocShares.Unlock()
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请重新导入分享链接")
+				return
+			}
+		}
+		blobPath := share.ChatPath
+		revision := share.ChatRevision
+		companionDocShares.Unlock()
+		if blobPath == "" {
+			writeError(w, http.StatusNotFound, "SHARE_CHAT_NOT_FOUND", "分享还没有同步聊天")
+			return
+		}
+		file, size, err := mobileOpenDocumentBlob(blobPath)
+		if err != nil || size <= 0 {
+			if file != nil {
+				_ = file.Close()
+			}
+			writeError(w, http.StatusNotFound, "SHARE_CHAT_NOT_FOUND", "分享聊天已经不在")
+			return
+		}
+		defer file.Close()
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		// A transcript can quote the document and the discussion. Keep it out
+		// of shared caches even when a reader is a logged-in account.
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Companion-Chat-Revision", strconv.Itoa(revision))
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.Copy(w, file)
 	}

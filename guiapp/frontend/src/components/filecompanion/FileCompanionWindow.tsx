@@ -55,12 +55,14 @@ import {
     SendFileCompanionWebMessage,
     SyncFileCompanionShare,
     SyncFileCompanionShareMarks,
+    SyncFileCompanionShareChat,
     FetchFileCompanionShareMarks,
+    FetchFileCompanionShareChat,
 } from "../../../wailsjs/go/main/App";
 import { WindowFullscreen, WindowGetPosition, WindowGetSize, WindowHide, WindowSetSize, WindowUnfullscreen } from "../../../wailsjs/runtime";
 import { createWindowMaximizeRestoreSession } from "../../utils/windowRestoreGeometry";
 import { useToast } from "../Toast";
-import { companionDiscussionCounts, companionHostShares, companionLibrarySnapshotKey, companionLibrarySync, companionMineShares, companionNoteDecision, companionNoteKey, companionNotePost, companionNotesFrom, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionShouldPullShareMarks, companionZipKeepsAppliedMarks, companionShareMarksBehind, companionShareDocumentCatchUp, companionWithdrawnNotice, sameCompanionMineShare, takeCompanionLibraryList, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionPlaceDialog, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
+import { companionDiscussionCounts, companionHostShares, companionLibrarySnapshotKey, companionLibrarySync, companionMineShares, companionNoteDecision, companionNoteKey, companionNotePost, companionNotesFrom, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionShouldPullShareMarks, companionShouldPullShareChat, companionShareChatBehind, companionZipKeepsAppliedMarks, companionShareMarksBehind, companionShareDocumentCatchUp, companionWithdrawnNotice, sameCompanionMineShare, takeCompanionLibraryList, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionPlaceDialog, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
@@ -78,6 +80,7 @@ import { noteClockFor, noteMediaFromKind, type NoteMedia } from "./noteStatusMod
 import { FileCompanionComposer } from "./FileCompanionComposer";
 import { CompanionFigureStrip, type CompanionFigure } from "./CompanionFigureStrip";
 import { companionVisibleText, finishCompanionReply, splitCompanionStreamDelta } from "./companionReasoning";
+import { companionCodeMathToTex } from "./companionMathMarkdown";
 import { PaperResultCard } from "./PaperResultCard";
 import { CompanionFileCard, type CompanionFile } from "./CompanionFileCard";
 import { NoteResultCard } from "./NoteResultCard";
@@ -103,9 +106,11 @@ const CLOUD_DISABLE_BYTES = 400 * 1024 * 1024;
 // the host would write the reply back into the file.
 const FILE_COMPANION_INTRO = "这篇文档是什么？";
 // An open share polls often enough that a new reader note, a host decision,
-// and the host agent's reply show up while the discussion is still going.
-// A window with no share keeps the slow cadence. The tick stays short because
-// a share can arrive while the window is already open.
+// the host agent's reply, and the host's own new chat show up while the
+// discussion is still going. The tick asks only whether anything moved. The
+// transcript itself is fetched when its revision changes, so a quiet poll
+// stays small. A window with no share keeps the slow cadence. The tick stays
+// short because a share can arrive while the window is already open.
 const COMPANION_POLL_TICK_MS = 5000;
 const COMPANION_POLL_SLOW_TICKS = 12;
 
@@ -1218,7 +1223,9 @@ function useCompanionActionState(): [CompanionActionState, (next: CompanionActio
 function companionMessageExportText(message: ChatMessage, streaming: boolean): string {
     const cleanedReasoning = cleanReasoningTrailForBody(message.reasoning || "");
     const visible = resolveVisibleAssistantReply(message.text, cleanedReasoning, { live: streaming });
-    return visible.content;
+    // Copy, share and PDF export receive the same formula form the bubble
+    // shows; a code-wrapped formula would otherwise leave the answer as source.
+    return companionCodeMathToTex(visible.content);
 }
 
 /** What a transcript export managed to include, and what it could not. */
@@ -1639,11 +1646,14 @@ const NoteStampAnswer = memo(function NoteStampAnswer({ text, path, web, preview
     onBlocked: (sentence: string) => void;
 }) {
     const { assistantTheme } = useCompanionAppearance();
-    const blocks = noteAnswerBlocks(text);
+    // Models sometimes wrap a formula in backticks. The Markdown painter keeps
+    // code literal by design, so normalize formula-shaped code before it sees it.
+    const displayText = useMemo(() => companionCodeMathToTex(text), [text]);
+    const blocks = useMemo(() => noteAnswerBlocks(displayText), [displayText]);
     if (!blocks.some((block) => block.kind === "stamp")) {
         return (
             <MessageContentRenderer
-                content={text}
+                content={displayText}
                 theme={assistantTheme}
                 isUser={false}
                 isStreaming={streaming}
@@ -1835,7 +1845,7 @@ const CompanionDiscussionReplyRow = memo(function CompanionDiscussionReplyRow({ 
                     overflowWrap: "anywhere",
                 }}
             >
-                <CompanionMessageActions path={path} markdown={message.text} messageId={message.id} />
+                <CompanionMessageActions path={path} markdown={companionCodeMathToTex(message.text)} messageId={message.id} />
                 <p data-testid="file-companion-share-reply-kicker" style={{ margin: "0 0 4px", fontSize: 12, color: "var(--theme-text-muted, #5b6b80)" }}>
                     {cs("主持人回复")}
                 </p>
@@ -1845,7 +1855,7 @@ const CompanionDiscussionReplyRow = memo(function CompanionDiscussionReplyRow({ 
                     </p>
                 ) : null}
                 <MessageContentRenderer
-                    content={message.text}
+                    content={companionCodeMathToTex(message.text)}
                     theme={theme}
                     isUser={false}
                     isStreaming={false}
@@ -2069,8 +2079,13 @@ export function companionAnnotationMarkdown(text: string): string {
 // A stored note does not stream. Memoize the parse so typing in the composer
 // does not re-render every annotation, and drop the blank-line spacers the
 // chat uses: this strip is only a few lines tall.
-const CompanionAnnotationBody = memo(function CompanionAnnotationBody({ noteId, text, theme }: { noteId: string; text: string; theme: Parameters<typeof renderContentWithCodeBlocks>[1] }) {
-    const body = useMemo(() => renderContentWithCodeBlocks(companionAnnotationMarkdown(text), theme, { omitBlankSpacers: true }), [text, theme]);
+const CompanionAnnotationBody = memo(function CompanionAnnotationBody({ noteId, text, theme, host }: { noteId: string; text: string; theme: Parameters<typeof renderContentWithCodeBlocks>[1]; host?: boolean }) {
+    // A host note is the agent's answer. A reader's note keeps its code spans
+    // literal, because the reader wrote them on purpose.
+    const body = useMemo(
+        () => renderContentWithCodeBlocks(companionAnnotationMarkdown(host ? companionCodeMathToTex(text) : text), theme, { omitBlankSpacers: true }),
+        [host, text, theme],
+    );
     return (
         <div className="file-companion-annotation-body" data-testid={`file-companion-annotation-body-${noteId}`}>
             {body}
@@ -2505,6 +2520,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const [mineSharesByPath, setMineSharesByPath] = useState<Map<string, CompanionShareRow>>(() => new Map());
     const mineSharesByPathRef = useRef(mineSharesByPath);
     mineSharesByPathRef.current = mineSharesByPath;
+    // Every live share of a file, not only the one the title bar edits. Adding
+    // a share has to know which audiences are already taken.
+    const [mineShareLists, setMineShareLists] = useState<Map<string, CompanionShareRow[]>>(() => new Map());
     // The auto-push seat is the current host, not whoever created the share.
     const [hostSharesByPath, setHostSharesByPath] = useState<Map<string, CompanionShareRow>>(() => new Map());
     const hostSharesByPathRef = useRef(hostSharesByPath);
@@ -2542,7 +2560,10 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     const pushShareTranscriptRef = useRef<(path: string) => void>(() => undefined);
     const sharePushTimerRef = useRef(new Map<string, number>());
     const sharePushInFlightRef = useRef(new Set<string>());
-    const sharePushPendingRef = useRef(new Set<string>());
+    // What a line that arrived mid-upload needs: another full sync, or only the
+    // transcript blob. A full sync covers a chat line, so "full" wins while it
+    // is queued.
+    const sharePushPendingRef = useRef(new Map<string, "full" | "chat">());
     // A chat line on the downloaded host copy, held until the marks fetch
     // lands. The key is the path identity; the value is the path to upload.
     const sharePushWaitMarksRef = useRef(new Map<string, string>());
@@ -2572,6 +2593,17 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // instead of waiting for the next library poll.
     const shareMarksRevisionRef = useRef(new Map<string, number>());
     const pullShareMarksRef = useRef<(path: string, revision: number) => void>(() => undefined);
+    // Host transcript, same shape as the marks sequence: listed is what the
+    // library advertised, applied is the blob already on screen. A downloaded
+    // host copy waits to upload until applied catches listed.
+    const shareChatRevisionRef = useRef(new Map<string, number>());
+    const appliedShareChatRef = useRef(new Map<string, number>());
+    const wantedShareChatRef = useRef(new Map<string, number>());
+    const pullingShareChatRef = useRef(new Set<string>());
+    // Set when an open landed while a fetch was already out, so that fetch's
+    // result is applied again once the tab exists.
+    const shareChatForceRef = useRef(new Set<string>());
+    const pullShareChatRef = useRef<(path: string, revision: number, force?: boolean) => void>(() => undefined);
     // A document whose automatic upload failed is reported once, not on every
     // turn while the network is down.
     const sharePushWarnedRef = useRef(new Set<string>());
@@ -2628,14 +2660,27 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         // Every list carries the cloud rows, so the title bar's 分享/修改
         // decision is refreshed from the same snapshot as the notes.
         const nextMine = new Map<string, CompanionShareRow>();
+        const nextLists = new Map<string, CompanionShareRow[]>();
         for (const row of companionMineShares(listed)) {
             const key = companionSharePathKey(row.path);
-            if (key && !nextMine.has(key)) nextMine.set(key, row);
+            if (!key) continue;
+            if (!nextMine.has(key)) nextMine.set(key, row);
+            const list = nextLists.get(key);
+            if (list) list.push(row);
+            else nextLists.set(key, [row]);
         }
         setMineSharesByPath((current) => {
             const same = nextMine.size === current.size
                 && [...nextMine].every(([key, row]) => sameCompanionMineShare(current.get(key), row));
             return same ? current : nextMine;
+        });
+        setMineShareLists((current) => {
+            if (current.size !== nextLists.size) return nextLists;
+            for (const [key, rows] of nextLists) {
+                const held = current.get(key);
+                if (!held || held.length !== rows.length || rows.some((row, index) => !sameCompanionMineShare(held[index], row))) return nextLists;
+            }
+            return current;
         });
         const nextHostSeats = new Map<string, CompanionShareRow>();
         for (const row of companionHostShares(listed)) {
@@ -2672,12 +2717,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         // does not: a pull there would cover the highlights being painted.
         // The project zip only downloads when the document revision moves.
         const revisions = shareMarksRevisionRef.current;
+        const chatRevisions = shareChatRevisionRef.current;
         const liveMarks = new Set<string>();
         for (const row of rows) {
             const key = companionSharePathKey(row.path);
             if (key) {
                 liveMarks.add(key);
                 if (row.marksRevision > (revisions.get(key) ?? 0)) revisions.set(key, row.marksRevision);
+                if (row.chatRevision > (chatRevisions.get(key) ?? 0)) chatRevisions.set(key, row.chatRevision);
                 shareDocKnownRef.current.add(key);
                 const caught = companionShareDocumentCatchUp(
                     { listed: shareDocListedRef.current.get(key) ?? 0, applied: shareDocAppliedRef.current.get(key) ?? 0 },
@@ -2688,15 +2735,18 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 shareDocListedRef.current.set(key, caught.listed);
                 shareDocAppliedRef.current.set(key, caught.applied);
             }
-            if (!companionShouldPullShareMarks(row)) continue;
-            pullShareMarksRef.current(row.path, row.marksRevision);
+            if (companionShouldPullShareMarks(row)) pullShareMarksRef.current(row.path, row.marksRevision);
+            if (companionShouldPullShareChat(row)) pullShareChatRef.current(row.path, row.chatRevision);
         }
         for (const key of [...revisions.keys()]) {
             if (liveMarks.has(key)) continue;
             revisions.delete(key);
+            chatRevisions.delete(key);
             shareDocListedRef.current.delete(key);
             shareDocAppliedRef.current.delete(key);
             shareDocKnownRef.current.delete(key);
+            appliedShareChatRef.current.delete(key);
+            wantedShareChatRef.current.delete(key);
         }
         const grouped = new Map<string, typeof rows>();
         for (const row of rows) {
@@ -2765,7 +2815,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 chatEpochRef.current.set(keptSession, (chatEpochRef.current.get(keptSession) ?? 0) + 1);
             }
             const keptMessages = messagesFromDoc({ messages: update.messages } as CompanionDoc);
-            setTabs((current) => current.map((tab) => companionSharePathKey(tab.path) === keptKey ? { ...tab, messages: keptMessages, status: "", previewEpoch: tab.previewEpoch + 1 } : tab));
+            setTabs((current) => current.map((tab) => companionSharePathKey(tab.path) === keptKey ? { ...tab, messages: keptMessages, status: "", previewEpoch: update.preservePreview ? tab.previewEpoch : tab.previewEpoch + 1 } : tab));
             return;
         }
         try {
@@ -3034,9 +3084,24 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             appliedShareMarksRef.current.delete(withdrawnKey);
             wantedShareMarksRef.current.delete(withdrawnKey);
             shareMarksRevisionRef.current.delete(withdrawnKey);
+            appliedShareChatRef.current.delete(withdrawnKey);
+            wantedShareChatRef.current.delete(withdrawnKey);
+            shareChatRevisionRef.current.delete(withdrawnKey);
             forgetIntro(path);
         }
         return true;
+    };
+    // Both pushes return the transcript sequence the Hub now holds. Recording
+    // it keeps a host seat on a downloaded copy from fetching its own upload
+    // back before the next turn, which would drop the question just typed.
+    const rememberShareChatRevision = (path: string, raw: unknown) => {
+        const record = (raw ?? {}) as { chatRevision?: number; ChatRevision?: number };
+        const revision = typeof record.chatRevision === "number" ? record.chatRevision : typeof record.ChatRevision === "number" ? record.ChatRevision : 0;
+        const key = companionSharePathKey(path);
+        if (!key || revision <= 0) return;
+        if (revision > (shareChatRevisionRef.current.get(key) ?? 0)) shareChatRevisionRef.current.set(key, revision);
+        if (revision > (appliedShareChatRef.current.get(key) ?? 0)) appliedShareChatRef.current.set(key, revision);
+        sharePushWaitMarksRef.current.delete(key);
     };
     // The host's own line and its answer reach the hub as they happen; the
     // 同步 button stays for an explicit re-upload. One upload per burst, and a
@@ -3044,12 +3109,15 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     // transcript always lands last.
     const runSharePush = (path: string) => {
         if (sharePushInFlightRef.current.has(path)) {
-            sharePushPendingRef.current.add(path);
+            // A full sync also uploads the transcript, so it covers a queued
+            // chat line.
+            sharePushPendingRef.current.set(path, "full");
             return;
         }
         sharePushInFlightRef.current.add(path);
         void SyncFileCompanionShare(path, companionProjectMarksJSON(path))
-            .then(() => {
+            .then((raw) => {
+                rememberShareChatRevision(path, raw);
                 sharePushWarnedRef.current.delete(path);
             })
             .catch(() => {
@@ -3061,16 +3129,50 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             })
             .finally(() => {
                 sharePushInFlightRef.current.delete(path);
-                if (sharePushPendingRef.current.delete(path)) runSharePush(path);
+                const pending = sharePushPendingRef.current.get(path);
+                if (!pending) return;
+                sharePushPendingRef.current.delete(path);
+                if (pending === "full") runSharePush(path);
+                else runShareChatPush(path);
             });
     };
     const shareCatchUp = (path: string) => {
         const key = companionSharePathKey(path);
-        return companionShareMarksBehind(path, key ? (shareMarksRevisionRef.current.get(key) ?? 0) : 0, key ? (appliedShareMarksRef.current.get(key) ?? 0) : 0, {
+        const marksBehind = companionShareMarksBehind(path, key ? (shareMarksRevisionRef.current.get(key) ?? 0) : 0, key ? (appliedShareMarksRef.current.get(key) ?? 0) : 0, {
             listed: key ? (shareDocListedRef.current.get(key) ?? 0) : 0,
             applied: key ? (shareDocAppliedRef.current.get(key) ?? 0) : 0,
             known: Boolean(key && shareDocKnownRef.current.has(key)),
         });
+        const chatBehind = companionShareChatBehind(path, key ? (shareChatRevisionRef.current.get(key) ?? 0) : 0, key ? (appliedShareChatRef.current.get(key) ?? 0) : 0);
+        return marksBehind || chatBehind;
+    };
+    const runShareChatPush = (path: string) => {
+        if (sharePushInFlightRef.current.has(path)) {
+            // A full sync already queued covers this line; do not downgrade it.
+            if (sharePushPendingRef.current.get(path) !== "full") sharePushPendingRef.current.set(path, "chat");
+            return;
+        }
+        sharePushInFlightRef.current.add(path);
+        void SyncFileCompanionShareChat(path, companionProjectMarksJSON(path))
+            .then((raw) => {
+                rememberShareChatRevision(path, raw);
+                sharePushWarnedRef.current.delete(path);
+            })
+            .catch(() => {
+                // A silent failure would leave the host believing the readers
+                // are up to date. Warn once per document; 同步 can retry.
+                if (sharePushWarnedRef.current.has(path)) return;
+                sharePushWarnedRef.current.add(path);
+                showToast(cs("自动同步到分享失败，可在文档管理里用「同步」重试"), "error", 6000);
+            })
+            .finally(() => {
+                sharePushInFlightRef.current.delete(path);
+                const pending = sharePushPendingRef.current.get(path);
+                if (!pending) return;
+                sharePushPendingRef.current.delete(path);
+                if (pending === "full") runSharePush(path);
+                else runShareChatPush(path);
+            });
     };
     const pushShareTranscript = (path: string) => {
         if (!path || !hostSharesByPathRef.current.has(companionSharePathKey(path))) return;
@@ -3081,12 +3183,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             timers.delete(path);
             const key = companionSharePathKey(path);
             const listed = shareMarksRevisionRef.current.get(key) ?? 0;
+            const chatListed = shareChatRevisionRef.current.get(key) ?? 0;
             if (shareCatchUp(path)) {
                 sharePushWaitMarksRef.current.set(key, path);
                 if (listed > 0) pullShareMarksRef.current(path, listed);
+                if (chatListed > 0) pullShareChatRef.current(path, chatListed);
                 return;
             }
-            runSharePush(path);
+            runShareChatPush(path);
         }, 1200));
     };
     pushShareTranscriptRef.current = pushShareTranscript;
@@ -3202,15 +3306,105 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 else flushSharePushWaiting(path);
             });
     };
+    // A local turn is still writing this file's chat. Replacing the transcript
+    // now would hide the streaming answer and the question that started it,
+    // and the turn's own save would race the fetched copy back. The next list,
+    // or the turn's own push, retries once the turn is done. Note and paper
+    // turns also append local messages, so they hold the transcript too.
+    const shareChatLocalTurn = (path: string) => {
+        const key = companionSharePathKey(path);
+        if (!key) return false;
+        const busy = (candidate: string) => companionSharePathKey(candidate) === key;
+        for (const candidate of sendingPathsRef.current) if (busy(candidate)) return true;
+        for (const candidate of noteBusyPathsRef.current) if (busy(candidate)) return true;
+        for (const candidate of paperBusyPathsRef.current) if (busy(candidate)) return true;
+        const tab = tabsRef.current.find((item) => companionSharePathKey(item.path) === key);
+        return Boolean(tab?.status?.trim());
+    };
+    const pullShareChat = (path: string, revision: number, force = false) => {
+        const key = companionSharePathKey(path);
+        if (!key || revision <= 0 || shareChatLocalTurn(path)) return;
+        const wanted = wantedShareChatRef.current;
+        if (revision > (wanted.get(key) ?? 0)) wanted.set(key, revision);
+        if (pullingShareChatRef.current.has(key)) {
+            if (force) shareChatForceRef.current.add(key);
+            return;
+        }
+        const target = wanted.get(key) ?? revision;
+        if (!force && (appliedShareChatRef.current.get(key) ?? 0) >= target) {
+            flushSharePushWaiting(path);
+            return;
+        }
+        pullingShareChatRef.current.add(key);
+        void FetchFileCompanionShareChat(path)
+            .then((raw) => {
+                // A turn started while the fetch was out. Leave applied behind
+                // so the next list (or the turn's own push) fetches again.
+                if (shareChatLocalTurn(path)) return;
+                const record = (raw ?? {}) as { messages?: string; Messages?: string; revision?: number; Revision?: number };
+                const body = typeof record.messages === "string" ? record.messages : typeof record.Messages === "string" ? record.Messages : "";
+                if (!body) return;
+                let parsed: unknown;
+                try {
+                    parsed = JSON.parse(body);
+                } catch {
+                    return;
+                }
+                if (!Array.isArray(parsed)) return;
+                const reported = typeof record.revision === "number" ? record.revision : typeof record.Revision === "number" ? record.Revision : 0;
+                const next = reported > 0 ? reported : target;
+                // A push finished while this fetch was out and already put a
+                // newer transcript on screen. Applying the older blob would
+                // drop the line that upload carried.
+                if (next < (appliedShareChatRef.current.get(key) ?? 0)) return;
+                applyShareUpdateRef.current({
+                    path,
+                    highlights: "[]",
+                    chatMarks: "",
+                    chatMarksKnown: false,
+                    chatAnnotations: "",
+                    chatAnnotationsKnown: false,
+                    annotations: "",
+                    annotationsKnown: false,
+                    drawings: "",
+                    drawingsKnown: false,
+                    bookmarks: "",
+                    bookmarksKnown: false,
+                    messages: parsed,
+                    project: true,
+                    replaceMessages: true,
+                    keepReaderMarks: true,
+                    preservePreview: true,
+                });
+                appliedShareChatRef.current.set(key, next);
+            })
+            .catch(() => {
+                // SHARE_CHAT_NOT_FOUND means the host has not pushed a transcript
+                // yet. A later revision retries. An offline Hub retries on the
+                // next list too.
+            })
+            .finally(() => {
+                pullingShareChatRef.current.delete(key);
+                const want = wantedShareChatRef.current.get(key) ?? 0;
+                const have = appliedShareChatRef.current.get(key) ?? 0;
+                if (shareChatForceRef.current.delete(key)) {
+                    pullShareChatRef.current(path, want > 0 ? want : revision, true);
+                    return;
+                }
+                if (want > Math.max(have, target)) pullShareChatRef.current(path, want);
+                else flushSharePushWaiting(path);
+            });
+    };
     const flushSharePushWaiting = (path: string) => {
         const key = companionSharePathKey(path);
         const waiting = sharePushWaitMarksRef.current.get(key);
         if (!waiting) return;
         if (shareCatchUp(waiting)) return;
         sharePushWaitMarksRef.current.delete(key);
-        runSharePush(waiting);
+        runShareChatPush(waiting);
     };
     pullShareMarksRef.current = pullShareMarks;
+    pullShareChatRef.current = pullShareChat;
     useEffect(() => () => {
         for (const timer of sharePushTimerRef.current.values()) window.clearTimeout(timer);
         sharePushTimerRef.current.clear();
@@ -3707,6 +3901,12 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 if (withdrawnSharesRef.current.has(openedKey)) return current;
                 return (fromDrop || focus || !current ? next.path : current);
             });
+            const chatRevision = openedKey ? (shareChatRevisionRef.current.get(openedKey) ?? 0) : 0;
+            if (companionShouldPullShareChat({ mine: Boolean(next.shareMine), path: next.path || resolved, chatRevision })) {
+                // A new tab can be created after a fetch already applied to no
+                // tab. Pull once more so the lines land on the chat that is open.
+                pullShareChatRef.current(next.path || resolved, chatRevision, !existing);
+            }
             queueMicrotask(() => {
                 if (!refuseWithdrawnShareRef.current(next.path)) return;
                 if (tabsRef.current.length === 0) tabCommittedRef.current = false;
@@ -7151,7 +7351,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                             <p className="file-companion-annotations-author">
                                                 {note.host ? (note.author ? companionFill(uiLang, "主持人 · ${author}", { author: note.author }) : cs("主持人")) : note.author || cs("读者")}
                                             </p>
-                                            <CompanionAnnotationBody noteId={note.id} text={note.text} theme={appearance.assistantTheme} />
+                                            <CompanionAnnotationBody noteId={note.id} text={note.text} theme={appearance.assistantTheme} host={note.host} />
                                             {!note.host && decision === "ignored" ? (
                                                 <span className="file-companion-annotation-status" data-tone="ignored" data-testid={`file-companion-annotation-ignored-${note.id}`}>{cs("主持人已忽略这条讨论")}</span>
                                             ) : null}
@@ -7277,15 +7477,23 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
             ) : null}
             {shareDialogOpen ? (
                 <CompanionShareDialog
+                    key={shareDialogRow?.token || "create"}
                     lang={uiLang}
                     path={shareDialogPath}
                     name={shareDialogName}
                     share={shareDialogRow
-                        ? mineSharesByPath.get(companionSharePathKey(shareDialogPath)) ?? shareDialogRow
+                        ? (() => {
+                            const latest = mineSharesByPath.get(companionSharePathKey(shareDialogPath));
+                            // The title bar edits the first live share. 修改 on a
+                            // card edits that card, even when the file has others.
+                            return latest && latest.token === shareDialogRow.token ? latest : shareDialogRow;
+                        })()
                         : null}
                     showToast={showToast}
                     onListed={(listed) => { applyLibraryListRef.current(listed); }}
                     libraryDeleteGen={libraryDeleteGen}
+                    onAddShare={shareDialogPath ? () => { setShareDialogRow(null); } : undefined}
+                    existingShares={mineShareLists.get(companionSharePathKey(shareDialogPath)) ?? []}
                     onClose={() => { setShareDialogPath(""); setShareDialogRow(null); }}
                 />
             ) : null}

@@ -20205,31 +20205,35 @@ button.tbk-pill {
     gap: 14px;
 }
 
-.tool-cache-maintenance-section {
-    gap: 14px;
+.system-cleanup-section__header,
+.system-cleanup-section__actions,
+.system-cleanup-section__controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px 16px;
 }
 
-.tool-cache-maintenance-section__header {
-    display: flex;
+.system-cleanup-section__header {
     align-items: flex-start;
     justify-content: space-between;
-    gap: 16px;
 }
 
-.tool-cache-maintenance-section__header h4 {
+.system-cleanup-section__header h4 {
     margin: 0 0 6px;
 }
 
-.tool-cache-maintenance-section__header p {
+.system-cleanup-section__header p,
+.system-cleanup-section__hint {
     margin: 0;
     color: var(--theme-text-secondary);
     font-size: 0.74rem;
     line-height: 1.55;
 }
 
-.tool-cache-maintenance-section__stats {
+.system-cleanup-section__stats {
     display: grid;
-    gap: 6px;
+    gap: 4px;
     padding: 10px 12px;
     border: 1px solid var(--theme-border-subtle);
     border-radius: var(--radius-md);
@@ -20238,37 +20242,69 @@ button.tbk-pill {
     font-size: 0.76rem;
 }
 
-.tool-cache-maintenance-section__stats strong {
+.system-cleanup-section__stats strong {
     color: var(--theme-text-primary);
     font-weight: 800;
 }
 
-.tool-cache-maintenance-section__stats span:last-child {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.tool-cache-maintenance-section__checks {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px 18px;
+.system-cleanup-section__controls label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
     color: var(--theme-text-secondary);
     font-size: 0.76rem;
     font-weight: 600;
 }
 
-.tool-cache-maintenance-section__checks label {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
+.system-cleanup-section__controls input[type='number'] {
+    width: 88px;
 }
 
-.tool-cache-maintenance-section__actions {
+.system-cleanup-section__categories {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: 8px 12px;
+}
+
+.system-cleanup-section__categories label {
     display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 12px;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+    color: var(--theme-text-secondary);
+    font-size: 0.76rem;
+    font-weight: 600;
+}
+
+.system-cleanup-section__categories label span {
+    display: grid;
+    min-width: 0;
+}
+
+.system-cleanup-section__categories small {
+    color: var(--theme-text-muted);
+    font-size: 0.7rem;
+    font-weight: 500;
+}
+
+.system-cleanup-section__progress {
+    display: grid;
+    gap: 6px;
+    color: var(--theme-text-muted);
+    font-size: 0.74rem;
+}
+
+.system-cleanup-section__progress [role='progressbar'] {
+    height: 8px;
+    overflow: hidden;
+}
+
+.system-cleanup-section__progress [role='progressbar'] > * {
+    display: block;
+    height: 100%;
+}
+
+.system-cleanup-section__actions {
     color: var(--theme-text-muted);
     font-size: 0.76rem;
 }
@@ -35865,6 +35901,7 @@ body.companion-pdf-translation-dragging * {
   background: var(--theme-surface, #ffffff);
   color: var(--theme-text-secondary, #46586f);
   font: 600 11.5px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  cursor: default;
 }
 .file-companion-folder-prompt {
   position: absolute;
@@ -35911,7 +35948,30 @@ body.companion-pdf-translation-dragging * {
 .file-companion-folder-prompt-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
+}
+.file-companion-revoke-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+.file-companion-revoke-list .file-companion-folder-choice {
+  align-items: flex-start;
+}
+.file-companion-revoke-list small {
+  display: block;
+  margin-top: 2px;
+  color: var(--theme-text-muted, #64748b);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+  word-break: break-all;
 }
 .file-companion-folder-danger {
   border-color: var(--theme-danger, #dc2626);
@@ -35954,10 +36014,19 @@ body.companion-pdf-translation-dragging * {
   border: 1px solid var(--theme-border, #d5e0ef);
   border-radius: var(--radius-md);
   background: var(--theme-surface, #ffffff);
+  cursor: pointer;
 }
 .file-companion-project[data-open="true"] {
   border-color: color-mix(in srgb, var(--theme-primary, #2563eb) 40%, var(--theme-border, #d5e0ef));
   background: color-mix(in srgb, var(--theme-primary, #2563eb) 3%, var(--theme-surface, #ffffff));
+}
+.file-companion-project:hover:not(:has(.file-companion-project-drag:hover)):not(:has(.file-companion-project-actions:hover)) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2563eb) 45%, var(--theme-border, #d5e0ef));
+  background: color-mix(in srgb, var(--theme-primary, #2563eb) 5%, var(--theme-surface, #ffffff));
+}
+.file-companion-project[data-open="true"]:hover:not(:has(.file-companion-project-drag:hover)):not(:has(.file-companion-project-actions:hover)) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2563eb) 55%, var(--theme-border, #d5e0ef));
+  background: color-mix(in srgb, var(--theme-primary, #2563eb) 8%, var(--theme-surface, #ffffff));
 }
 .file-companion-project[data-dragging="true"] {
   content-visibility: visible;
@@ -36034,9 +36103,17 @@ body.companion-pdf-translation-dragging * {
   white-space: nowrap;
   min-width: 0;
 }
-.file-companion-project-title:hover {
+.file-companion-project-title:hover,
+.file-companion-project-title:focus-visible {
   color: var(--theme-primary, #2563eb);
-  text-decoration: underline;
+}
+.file-companion-project-title:focus {
+  outline: none;
+}
+.file-companion-project-title:focus-visible {
+  outline: 2px solid var(--theme-primary, #2563eb);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 .file-companion-project-doctitle {
   margin: 0;
@@ -36057,14 +36134,6 @@ body.companion-pdf-translation-dragging * {
   font-size: 11.5px;
   line-height: 1.4;
   color: var(--theme-text-muted, #64748b);
-}
-.file-companion-project-meta[draggable="true"] {
-  cursor: grab;
-  user-select: none;
-  -webkit-user-drag: element;
-}
-.file-companion-project-meta[draggable="true"]:active {
-  cursor: grabbing;
 }
 .file-companion-project-facts {
   white-space: nowrap;
@@ -36117,9 +36186,10 @@ body.companion-pdf-translation-dragging * {
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
+  cursor: default;
 }
-/* A cloud row is already a share. It carries a mark instead of a button:
-   the only action left on it is 修改, which edits that same link. */
+/* A cloud row is already a share. The mark says so. 添加分享 makes another
+   link for a different person or group; 修改 edits the link on this row. */
 .file-companion-project-shared {
   display: inline-flex;
   align-items: center;
@@ -36481,6 +36551,7 @@ body.companion-pdf-translation-dragging * {
 .file-companion-dialog-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-left: auto;
 }

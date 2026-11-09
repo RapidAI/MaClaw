@@ -146,7 +146,7 @@ func runCompanionBrowserInstall(write bool) BrowserExtensionInstallResult {
 	var rows []BrowserExtensionBrowserStatus
 	for _, browser := range []string{"chrome", "edge", "safari"} {
 		spec := companionBrowserSpecFor(layout, browser, local)
-		if packErr != nil && spec.Failure == browserExtDetailNoStore {
+		if packErr != nil && (spec.Failure == browserExtDetailNoStore || spec.Failure == browserExtDetailLinuxChrome || spec.Failure == browserExtDetailNoCRX) {
 			spec.Failure = browserExtDetailRegisterFailed
 		}
 		if browser == "safari" && !spec.Present {
@@ -307,7 +307,11 @@ func companionBrowserSpecFor(layout companionBrowserLayout, browser string, loca
 	}
 	if layout.GOOS == "linux" {
 		if browser == "chrome" {
-			spec.Failure = browserExtDetailLinuxChrome
+			if local.Ready {
+				spec.LocalSideload = true
+			} else {
+				spec.Failure = browserExtDetailLinuxChrome
+			}
 			return spec
 		}
 		crx := strings.TrimSpace(layout.CRX)

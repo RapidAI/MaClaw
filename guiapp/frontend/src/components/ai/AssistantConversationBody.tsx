@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import type { AIAssistantInitStatus, ChatMessage } from "./useAIAssistant";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { AssistantPinnedNewsCards } from "./AssistantPinnedNewsCards";
@@ -123,7 +123,7 @@ interface AssistantConversationBodyProps {
     brandDisplayNameCN?: string | null;
 }
 
-export function AssistantConversationBody({
+export const AssistantConversationBody = memo(function AssistantConversationBody({
     emptyContent,
     initLabel,
     initStatus,
@@ -222,4 +222,4 @@ export function AssistantConversationBody({
             ) : null}
         </div>
     );
-}
+});
