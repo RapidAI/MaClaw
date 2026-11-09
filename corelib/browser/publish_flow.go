@@ -78,6 +78,12 @@ type PublishSpec struct {
 	// MinImages: pictures the post must carry (the task's plan); fewer in
 	// the editor fails readback instead of publishing without them.
 	MinImages int
+	// PostURL / UserCookie: the public post URL template ({id}, {user})
+	// filled from the success page's id and the account cookie.
+	PostURL    string
+	UserCookie string
+	// PendingTexts: result-page text that says the post is under review.
+	PendingTexts []string
 }
 
 type PublishStep struct {
@@ -105,6 +111,9 @@ type PublishReport struct {
 	NetLog []string `json:"net_log,omitempty"`
 	// Notice: a blocking notice the page showed ("…才能发布"), any frame.
 	Notice string `json:"notice,omitempty"`
+	// Pending: the post is out but the site still reviews it (审核中); its
+	// public link may not open for others yet.
+	Pending string `json:"pending,omitempty"`
 	// Method records which branch each primitive took (exploration
 	// recording; see publishRun.note): the site experience stores it.
 	Method map[string]string `json:"method,omitempty"`
@@ -220,6 +229,11 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 			// 5-15s a picture): three pictures never fit one 30s budget,
 			// and a cut-off paste kept running and doubled the next try.
 			budget = maxDur(budget, minDur(time.Duration(len(spec.Files))*pictureWait+10*time.Second, 180*time.Second))
+			if spec.BodyKind == "markdown" {
+				// One picture at a time, each with a retry and a wait
+				// for the uploads to settle (mdPictureWait).
+				budget = maxDur(budget, minDur(time.Duration(len(spec.Files))*(2*mdPictureWait+40*time.Second)+20*time.Second, 600*time.Second))
+			}
 		}
 		if !spec.Deadline.IsZero() {
 			if rem := time.Until(spec.Deadline); rem < budget {
@@ -365,6 +379,8 @@ type publishRun struct {
 	gallery      bool
 	// lazyImages: pictures stay local until the submit (spec.LazyUpload).
 	lazyImages bool
+	// mdLinks: the stored picture links a markdown editor got, in order.
+	mdLinks []string
 }
 
 func (p *publishRun) send(method string, params interface{}) (json.RawMessage, error) {
@@ -460,6 +476,7 @@ func (p *publishRun) bodyExpr() string {
 func (p *publishRun) observe() (string, error) {
 	if p.spec.EditorURL != "" {
 		cur, _ := p.eval("location.href")
+		p.see(cur) // an earlier post's result page is never this run's
 		if !samePage(cur, p.spec.EditorURL) {
 			if err := p.navigate(p.spec.EditorURL); err != nil {
 				p.noEditor = true
@@ -1011,6 +1028,10 @@ func (p *publishRun) fillMarkdown() (string, error) {
 			why = fmt.Sprintf("read back %d chars (%q)", len([]rune(got)), clipRunes(got, 24))
 			continue
 		}
+		if err := bodyComplete(got, text); err != nil {
+			why = err.Error()
+			continue
+		}
 		if w, g := paraCount(text), paraCount(got); w > 2 && g*2 < w {
 			why = fmt.Sprintf("the editor kept %d of %d paragraph(s) (blank lines lost)", g, w)
 			continue
@@ -1124,6 +1145,14 @@ func (p *publishRun) readback() (string, error) {
 		got, _ := p.call(obj, readValueFn)
 		if obj == "" || !holds(got, p.bodyWant()) {
 			return "", fmt.Errorf("body no longer holds the text (%d chars)", len([]rune(got)))
+		}
+		if p.bodyKind() == "markdown" {
+			if err := bodyComplete(got, p.bodyWant()); err != nil {
+				return "", fmt.Errorf("%v; nothing was submitted", err)
+			}
+			if err := p.checkMarkdownLinks(got); err != nil {
+				return "", fmt.Errorf("%v; nothing was submitted", err)
+			}
 		}
 		parts = append(parts, fmt.Sprintf("body %d chars", len([]rune(got))))
 		if p.gallery && p.spec.MinImages > 0 && !p.lazyImages {
@@ -1454,7 +1483,7 @@ func (p *publishRun) submit() (string, error) {
 			return "page says " + m, nil
 		}
 		url := p.pageURL()
-		if p.spec.SuccessURL != "" && url != "" {
+		if p.spec.SuccessURL != "" && url != "" && !p.seen[url] {
 			if re, err := regexp.Compile(p.spec.SuccessURL); err == nil && re.MatchString(url) {
 				return "page is the post: " + url, nil
 			}
@@ -1611,9 +1640,22 @@ func (p *publishRun) verify() (string, error) {
 		p.rep.Evidence = "response"
 		return fmt.Sprintf("the site answered the submit with post id %q %s", id, link), nil
 	}
+	// Sites whose success page is not the post itself (a post_url template
+	// builds the public link from its id): wait for that page briefly.
+	if p.spec.PostURL != "" {
+		if u := p.waitSuccessURL(8 * time.Second); u != "" {
+			if out, ok := p.successPagePost(u); ok {
+				p.rep.Evidence = "redirect"
+				return out, nil
+			}
+		}
+	}
 	if u := p.pageURL(); u != "" {
 		success := false
-		if p.spec.SuccessURL != "" {
+		if p.spec.SuccessURL != "" && !p.seen[u] {
+			// A success page the tab already showed before this run's
+			// click is an earlier post's (run_6fa834e0 started on the
+			// previous CSDN success page).
 			if re, err := regexp.Compile(p.spec.SuccessURL); err == nil && re.MatchString(u) {
 				success = true
 			}
@@ -1793,6 +1835,9 @@ func (p *publishRun) pasteImages() (string, error) {
 	obj, err := p.element(p.bodyExpr())
 	if err != nil || obj == "" {
 		return "", fmt.Errorf("body editor not found for pasting images")
+	}
+	if p.bodyKind() == "markdown" {
+		return p.pasteImagesMarkdown(obj)
 	}
 	count := pictureCountFn
 	before, _ := p.call(obj, count)

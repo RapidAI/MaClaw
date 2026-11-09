@@ -45,8 +45,19 @@ type SiteProfile struct {
 	Category string   `json:"category,omitempty"`
 	// EditURL opens a published post for editing; {url} is the post URL.
 	EditURL string `json:"edit_url"`
-	// PostURL builds a post's public URL from an id the list reports ({id}).
+	// PostURL builds a post's public URL from an id the list reports ({id});
+	// {user} is the signed-in account name read from UserCookie.
 	PostURL string `json:"post_url"`
+	// UserCookie: the cookie (readable by the page) holding the account
+	// name PostURL's {user} needs.
+	UserCookie string `json:"user_cookie,omitempty"`
+	// EditorRedirects: regexps of other editors on the site (a second,
+	// different editor this profile's selectors do not fit); an editor_url
+	// matching one is replaced by EditorURL.
+	EditorRedirects []string `json:"editor_redirects,omitempty"`
+	// PendingTexts: text on the result page that says the post is out but
+	// still under review (not public yet), e.g. 审核中.
+	PendingTexts []string `json:"pending_texts,omitempty"`
 
 	TitleSelector  string `json:"title_selector"`
 	BodySelector   string `json:"body_selector"`
@@ -162,6 +173,11 @@ func ParseSiteProfile(b []byte) (*SiteProfile, error) {
 	if p.SuccessURL != "" {
 		if _, err := regexp.Compile(p.SuccessURL); err != nil {
 			return nil, fmt.Errorf("profile %s success_url: %v", p.ID, err)
+		}
+	}
+	for _, r := range p.EditorRedirects {
+		if _, err := regexp.Compile(r); err != nil {
+			return nil, fmt.Errorf("profile %s editor_redirects: %v", p.ID, err)
 		}
 	}
 	switch p.BodyKind {
@@ -283,10 +299,39 @@ func SiteRequestWords() []string {
 
 // PostURLFor builds a post's public URL from a list-reported id.
 func (p *SiteProfile) PostURLFor(id string) string {
-	if p == nil || p.PostURL == "" || id == "" {
+	if p == nil {
 		return ""
 	}
-	return strings.ReplaceAll(p.PostURL, "{id}", url.PathEscape(id))
+	return PostURLFrom(p.PostURL, id, "")
+}
+
+// PostURLFrom fills a post URL template; "" when a placeholder it needs
+// ({id}, or {user} when the template has one) is unknown.
+func PostURLFrom(tmpl, id, user string) string {
+	if tmpl == "" || id == "" {
+		return ""
+	}
+	if strings.Contains(tmpl, "{user}") {
+		if user == "" {
+			return ""
+		}
+		tmpl = strings.ReplaceAll(tmpl, "{user}", url.PathEscape(user))
+	}
+	return strings.ReplaceAll(tmpl, "{id}", url.PathEscape(id))
+}
+
+// RedirectsEditor: raw is another editor of this site that the profile
+// replaces with its own EditorURL.
+func (p *SiteProfile) RedirectsEditor(raw string) bool {
+	if p == nil || p.EditorURL == "" || raw == "" {
+		return false
+	}
+	for _, r := range p.EditorRedirects {
+		if re, err := regexp.Compile(r); err == nil && re.MatchString(strings.TrimSpace(raw)) {
+			return true
+		}
+	}
+	return false
 }
 
 // Apply fills the spec's empty fields from the profile; what the caller set
@@ -305,6 +350,11 @@ func (p *SiteProfile) Apply(s *PublishSpec) {
 			*dst = append([]string(nil), v...)
 		}
 	}
+	if p.RedirectsEditor(s.EditorURL) {
+		// A second editor of the site the profile's selectors do not fit
+		// (CSDN's rich mp.csdn.net editor dropped the pictures, run_6840f5a1).
+		s.EditorURL = p.EditorURL
+	}
 	str(&s.EditorURL, p.EditorURL)
 	str(&s.VerifyURL, p.VerifyURL)
 	str(&s.VerifyAPI, p.VerifyAPI)
@@ -321,6 +371,9 @@ func (p *SiteProfile) Apply(s *PublishSpec) {
 	str(&s.ImageMode, p.ImageMode)
 	str(&s.PlainBold, p.PlainBold)
 	str(&s.SuccessURL, p.SuccessURL)
+	str(&s.PostURL, p.PostURL)
+	str(&s.UserCookie, p.UserCookie)
+	list(&s.PendingTexts, p.PendingTexts)
 	list(&s.ImageTabTexts, p.ImageTabTexts)
 	list(&s.SubmitTexts, p.SubmitTexts)
 	list(&s.ConfirmTexts, p.ConfirmTexts)

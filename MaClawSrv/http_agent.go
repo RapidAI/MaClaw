@@ -607,6 +607,9 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, r
 		if err == nil && msg != nil && run != nil {
 			msg.Content = desktopReplyAfterDelegation(instanceID, run.ID, run.SessionID, msg.Content)
 			msg.Content = desktopReplyWithLink(run.ID, msg.Content)
+			if msg.Metadata == nil && strings.Contains(msg.Content, desktopUnconfirmedReply) {
+				msg.Metadata = map[string]string{}
+			}
 			desktopDropAskAfterPost(msg.Content, msg.Metadata)
 		}
 		if err == nil && msg != nil {

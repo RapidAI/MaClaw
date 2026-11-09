@@ -216,6 +216,10 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 	key := desktopLedgerKey(scope)
 	status := string(run.Status)
 	if msg != nil && strings.TrimSpace(msg.Content) != "" {
+		if msg.Metadata["publish_state"] == "submitted_unconfirmed" {
+			// The run finished; its post is not confirmed (not a success).
+			status += " publish_unconfirmed"
+		}
 		desktopLedgerAdd(key, desktopLedgerEntry{Kind: "run_end", Run: run.ID, Detail: status})
 		return msg
 	}
@@ -269,7 +273,9 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 
 func desktopLedgerRunPost(entries []desktopLedgerEntry, runID string) (desktopLedgerEntry, bool) {
 	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].Kind == "posted" && entries[i].Run == runID {
+		// An unconfirmed submit is not "sent" (run_6840f5a1 would have
+		// been answered 已经发出去了).
+		if entries[i].Kind == "posted" && entries[i].Run == runID && entries[i].Detail != "submitted_unconfirmed" {
 			return entries[i], true
 		}
 	}

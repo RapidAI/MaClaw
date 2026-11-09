@@ -31,6 +31,8 @@ type desktopPublishRecord struct {
 	Evidence string `json:"evidence,omitempty"`
 	// Notice: a blocking notice the page showed.
 	Notice string `json:"notice,omitempty"`
+	// Pending: the site says the post is under review (审核中).
+	Pending string `json:"pending,omitempty"`
 	// Errors and NetLog: the last calls' errors and the page's writes,
 	// truncated, kept so a failed publish can be diagnosed afterwards.
 	Errors  []string  `json:"errors,omitempty"`
@@ -212,7 +214,7 @@ func desktopRecordPublish(scope agentruntime.Scope, spec browser.PublishSpec, re
 			}
 		}
 		if rep != nil {
-			r.Evidence, r.Notice = rep.Evidence, rep.Notice
+			r.Evidence, r.Notice, r.Pending = rep.Evidence, rep.Notice, rep.Pending
 			r.NetLog = rep.NetLog
 			if len(r.NetLog) > desktopRecordNetLogMax {
 				r.NetLog = r.NetLog[len(r.NetLog)-desktopRecordNetLogMax:]
@@ -226,7 +228,12 @@ func desktopRecordPublish(scope agentruntime.Scope, spec browser.PublishSpec, re
 		}
 		r.State, r.Missing, r.PostID = rep.State, rep.Missing, rep.PostID
 		r.URL = rep.ResultURL
-		if rep.PostID != "" && spec.VerifyURL != "" {
+		if r.State == browser.PublishSubmitted || r.State == browser.PublishNotSubmitted || r.State == browser.PublishDraftOnly || r.State == browser.PublishNoEditor {
+			// Not confirmed: no link of an earlier call or another post
+			// may stand for this one (stale success URLs leaked before).
+			r.URL = ""
+		}
+		if rep.PostID != "" && spec.VerifyURL != "" && (r.State == browser.PublishLive || r.State == browser.PublishLiveIncomplete) {
 			if link := desktopPostURLFor(spec, rep.PostID); link != "" {
 				r.URL = link
 			}
@@ -274,7 +281,9 @@ func desktopPublishRecordFacts(r desktopPublishRecord) string {
 	case browser.PublishLiveIncomplete:
 		evidence = "read_back"
 	case browser.PublishSubmitted:
-		evidence = "submit_clicked_unconfirmed"
+		// Not a success: the reply must say it is not confirmed and has
+		// no public link (run_6840f5a1 was reported as 已提交发布).
+		evidence = "submit_clicked_unconfirmed_not_published"
 	case browser.PublishDraftOnly:
 		next = "publish"
 	default:
@@ -284,7 +293,7 @@ func desktopPublishRecordFacts(r desktopPublishRecord) string {
 			next = "final_answer"
 		}
 	}
-	return promptparts.Fact("PUBLISH_RESULT", "state", state, "link", r.URL, "missing", r.Missing, "notice", r.Notice, "evidence", evidence, "next_allowed", next)
+	return promptparts.Fact("PUBLISH_RESULT", "state", state, "link", r.URL, "missing", r.Missing, "notice", r.Notice, "pending", r.Pending, "evidence", evidence, "next_allowed", next)
 }
 
 // desktopPublishNextSiteText follows a settled record when the request
@@ -309,6 +318,9 @@ func desktopPublishRecordLegacyText(r desktopPublishRecord) string {
 	link := r.URL
 	switch r.State {
 	case browser.PublishLive:
+		if r.Pending != "" {
+			return "PUBLISH STATE: published (" + r.Pending + ") — " + link + ". The site took the post and says it is under review; it may not be public yet. Reply once with this link and say it is under review; do nothing else on the site."
+		}
 		return "PUBLISH STATE: published — " + link + ". The post is published and read back. Reply to the user once with this link; do nothing else on the site."
 	case browser.PublishLiveIncomplete:
 		return "PUBLISH STATE: live_incomplete — " + link + " is published but " + r.Missing + ". Do not publish again and do not call it complete: reply with the link and say exactly what is missing."
@@ -317,7 +329,7 @@ func desktopPublishRecordLegacyText(r desktopPublishRecord) string {
 		if where == "" {
 			where = "the site"
 		}
-		return "PUBLISH STATE: submitted_unconfirmed — the submit went out on " + where + " but the post was not confirmed. Do not publish again. Reply that it was submitted and could not be confirmed, with any link above."
+		return "PUBLISH STATE: submitted_unconfirmed — the submit was clicked on " + where + " but no success page, post id or listed post proves it is published; it may only be a draft. Do not publish again. Reply that it is NOT confirmed published and there is no public link; never say it was published or submitted successfully."
 	case browser.PublishDraftOnly:
 		return "PUBLISH STATE: draft_only — the click only saved a draft; nothing was posted. Look at what the page asks for (a settings panel, a required field, a notice) and run action=publish again with the full title, body and files."
 	}
