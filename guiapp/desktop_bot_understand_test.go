@@ -100,8 +100,8 @@ func TestDesktopBotUnderstandingUsesTheModelWords(t *testing.T) {
 	if strings.Contains(system, desktopBotConfirmTask) || strings.Contains(system, "not to make the change on this turn") {
 		t.Fatal("system prompt still treats the stock confirm sentence as approval or tells the worker to wait")
 	}
-	if !strings.Contains(system, "For direct, leave told empty") || !strings.Contains(system, "do not narrate a plan") {
-		t.Fatal("a direct reading may still narrate a plan before acting")
+	if !strings.Contains(system, "For direct, told is your first reply as their working partner") || !strings.Contains(system, "not a step list or a plan narration") {
+		t.Fatal("a direct reading must say back its understanding as a partner, without narrating a plan")
 	}
 	if strings.Contains(got.Instruction, "现在就执行下面这项安排") {
 		t.Fatal("a confirm-pace order was wrapped in the old lead")

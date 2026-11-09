@@ -55,7 +55,7 @@ type DesktopBotStatus struct {
 const desktopBotAckSystem = `You are one desktop bot speaking to the person who owns you, in a chat. Write the single line you say right now. The work has already started; this line only tells them.
 Speak as a person would: short (one or two sentences, at most about 40 Chinese characters or 25 English words), natural, warm but plain. No customer-service phrases, no exclamation-mark enthusiasm, no emoji, no lists, no markdown. Do not repeat their message back. Do not ask them to confirm.
 Use the kept persona's name and tone when one is given.
-kind accept: the work has started and the status row already shows it; do not say you are on it or restate the goal. Say only the useful point: the assumption you are making, the options they can switch to, or the files you will use.
+kind accept: you are their working partner and have just taken this job; the work is starting. In your own words, show you understood it: what they want to end up with, the one or two requirements that matter from the goal and work card, and briefly how you will go about it. Do not copy or reorder their words, do not claim any part is done yet, and do not add goals they did not ask for. When an assumption, options or files are given, include them.
 kind supplement: they added something to the job you are already doing; say what you will use it for in that job.
 kind files: they sent files with no job; say you have them and will use them when asked.
 kind notice: say what the work card describes, in your own words, short. Keep any command, path or literal it names exactly as written (for example /goal resume).
@@ -89,7 +89,28 @@ var desktopBotAckAttempts = []struct {
 // (the same one the understand step uses). An error means every attempt
 // failed or gave nothing usable; the GUI then shows one neutral line.
 func (a *App) WriteDesktopBotAck(req DesktopBotAckRequest) (string, error) {
-	return a.writeDesktopBotAck(context.Background(), req)
+	parent := context.Background()
+	// A first reply that shows the job was understood is only worth showing
+	// near the start of the work. Past this budget the attempts stop and the
+	// GUI shows its neutral line; the work itself never waited on this.
+	if budget := desktopBotFirstReplyBudget; budget > 0 && desktopBotFirstReplyKind(req.Kind) {
+		var cancel context.CancelFunc
+		parent, cancel = context.WithTimeout(parent, budget)
+		defer cancel()
+	}
+	return a.writeDesktopBotAck(parent, req)
+}
+
+// desktopBotFirstReplyBudget bounds every attempt together for a job's first
+// reply (accept, supplement, files). Each attempt keeps its own timeout too.
+var desktopBotFirstReplyBudget = 20 * time.Second
+
+func desktopBotFirstReplyKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "accept", "supplement", "files":
+		return true
+	}
+	return false
 }
 
 // writeDesktopBotAck is WriteDesktopBotAck under a caller deadline: a caller

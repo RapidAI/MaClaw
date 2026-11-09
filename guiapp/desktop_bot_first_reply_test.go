@@ -1,0 +1,155 @@
+package guiapp
+
+import (
+	"context"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// The first reply to a new job is written by the model as a working partner
+// who says back what it understood. It is not a stock line, a keyword
+// template, or a copy of the message.
+func TestDesktopBotFirstReplyPromptsAskForPartnerUnderstanding(t *testing.T) {
+	for name, system := range map[string]string{"understand": desktopBotUnderstandSystem, "ack": desktopBotAckSystem} {
+		if !strings.Contains(system, "working partner") || !strings.Contains(system, "show you understood it") {
+			t.Fatalf("%s prompt does not ask for a partner's understanding", name)
+		}
+		if !strings.Contains(system, "do not claim any part is done") && !strings.Contains(system, "Do not claim any part is done") {
+			t.Fatalf("%s prompt allows claiming work already done", name)
+		}
+		if !strings.Contains(system, "do not add goals") {
+			t.Fatalf("%s prompt allows invented goals", name)
+		}
+	}
+	if strings.Contains(desktopBotUnderstandSystem, "For direct, leave told empty") {
+		t.Fatal("a direct reading still has no first reply")
+	}
+	if strings.Contains(desktopBotAckSystem, "do not say you are on it or restate the goal") {
+		t.Fatal("the accept line is still told not to say back the job")
+	}
+	// No paper- or site-specific rule decides the sentence.
+	if strings.Contains(desktopBotUnderstandSystem, "dailypapers 热门") || strings.Contains(desktopBotAckSystem, "dailypapers") {
+		t.Fatal("first-reply prompt carries a task-specific template")
+	}
+}
+
+func TestDesktopBotDirectReadingKeepsTheModelsUnderstanding(t *testing.T) {
+	cases := []struct {
+		name, text, told, order string
+		wantTold                string
+	}{
+		{
+			name:     "paper to csdn",
+			text:     "搜索一篇dailypapers中的热门论文，做图文摘要后发到csdn",
+			told:     "我去 Hugging Face Daily Papers 挑一篇正热的论文，读完做成配图的摘要，再发到你的 CSDN，发好把链接给你。",
+			order:    "目标：从 huggingface.co/papers 选一篇热门论文，写图文摘要并发布到 CSDN。",
+			wantTold: "我去 Hugging Face Daily Papers 挑一篇正热的论文，读完做成配图的摘要，再发到你的 CSDN，发好把链接给你。",
+		},
+		{
+			name:     "generic non-paper job",
+			text:     "把桌面上的销售表整理成周报发给老王",
+			told:     "我把销售表里的数据理成一份周报，整理好发给老王，发出去跟你说。",
+			order:    "目标：用桌面上的销售表整理一份周报并发送给老王。",
+			wantTold: "我把销售表里的数据理成一份周报，整理好发给老王，发出去跟你说。",
+		},
+		{
+			// A copy of the message is not understanding; the GUI then asks
+			// the ack writer for a line instead of showing the copy.
+			name:     "parrot dropped",
+			text:     "搜索一篇dailypapers中的热门论文，做图文摘要后发到csdn",
+			told:     "搜索一篇dailypapers中的热门论文，做图文摘要后发到csdn。",
+			order:    "目标：发布论文摘要。",
+			wantTold: "",
+		},
+	}
+	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
+	for _, c := range cases {
+		desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+			return `{"told":"` + c.told + `","instruction":"` + c.order + `","pace":"direct","persona":""}`, nil
+		}
+		got, err := (&App{}).UnderstandDesktopBotTask(c.text, "plan", "zh-Hans", nil, "", "")
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got.Pace != "direct" || got.Told != c.wantTold || got.Instruction != c.order {
+			t.Fatalf("%s: got %#v", c.name, got)
+		}
+	}
+}
+
+// A follow-up while a job runs is read with the earlier messages, and the
+// ack writer is told which job is running, so the line names that job.
+func TestDesktopBotFollowUpCarriesTheRunningJob(t *testing.T) {
+	var user string
+	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+		user = req.userPrompt
+		return `{"told":"我会把配图做成三张，摘要发到 CSDN 后告诉你。","instruction":"目标：同上，配图三张。","pace":"direct","persona":""}`, nil
+	}
+	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
+	earlier := []string{"搜索一篇dailypapers中的热门论文，做图文摘要后发到csdn"}
+	if _, err := (&App{}).UnderstandDesktopBotTask("配图要三张", "plan", "zh-Hans", earlier, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(user, earlier[0]) || !strings.Contains(user, "配图要三张") {
+		t.Fatalf("follow-up read without the earlier job:\n%s", user)
+	}
+	if !strings.Contains(desktopBotUnderstandSystem, "stays on that job: it is not a new job") {
+		t.Fatal("a change to the running job may be read as a new job")
+	}
+	prompt := desktopBotAckUser(DesktopBotAckRequest{Kind: "supplement", Message: "配图要三张", Lang: "zh-Hans", RunningTask: "热门论文图文摘要发 CSDN"})
+	if !strings.Contains(prompt, "job already running: 热门论文图文摘要发 CSDN") {
+		t.Fatalf("supplement line does not know its job:\n%s", prompt)
+	}
+}
+
+// A model that never answers cannot hold the first reply open: all attempts
+// together stop at the budget and the GUI shows its neutral line.
+func TestWriteDesktopBotAckFirstReplyIsBounded(t *testing.T) {
+	prev, prevBudget := desktopBotUnderstandLLM, desktopBotFirstReplyBudget
+	t.Cleanup(func() { desktopBotUnderstandLLM, desktopBotFirstReplyBudget = prev, prevBudget })
+	desktopBotFirstReplyBudget = 300 * time.Millisecond
+	var calls int32
+	desktopBotUnderstandLLM = func(ctx context.Context, _ *App, _ desktopBotUnderstandRequest) (string, error) {
+		atomic.AddInt32(&calls, 1)
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	start := time.Now()
+	line, err := (&App{}).WriteDesktopBotAck(DesktopBotAckRequest{Kind: "accept", Message: "把销售表整理成周报", Lang: "zh-Hans", Goal: "整理周报"})
+	if err == nil || line != "" {
+		t.Fatalf("a hung model produced a line: %q %v", line, err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("first reply waited %s past its budget", elapsed)
+	}
+	if n := atomic.LoadInt32(&calls); n < 1 || n > int32(len(desktopBotAckAttempts)) {
+		t.Fatalf("attempts = %d", n)
+	}
+	// Other kinds keep their own per-attempt timeouts only.
+	if desktopBotFirstReplyKind("stopping") || !desktopBotFirstReplyKind("accept") {
+		t.Fatal("first-reply budget applies to the wrong kinds")
+	}
+}
+
+// One message gets one written line: the writer answers once and the
+// result is the model's own sentence, not a stock line.
+func TestWriteDesktopBotAckAcceptUsesThePartnerLine(t *testing.T) {
+	prev := desktopBotUnderstandLLM
+	t.Cleanup(func() { desktopBotUnderstandLLM = prev })
+	var calls int32
+	var system, user string
+	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+		atomic.AddInt32(&calls, 1)
+		system, user = req.systemPrompt, req.userPrompt
+		return "我去挑一篇正热的论文，做成图文摘要发到 CSDN，发好告诉你。", nil
+	}
+	line, err := (&App{}).WriteDesktopBotAck(DesktopBotAckRequest{Kind: "accept", Message: "搜索一篇dailypapers中的热门论文，做图文摘要后发到csdn", Lang: "zh-Hans", Goal: "热门论文图文摘要发CSDN", Instruction: "目标：从 huggingface.co/papers 选一篇热门论文，写图文摘要并发布到 CSDN。"})
+	if err != nil || line != "我去挑一篇正热的论文，做成图文摘要发到 CSDN，发好告诉你。" || atomic.LoadInt32(&calls) != 1 {
+		t.Fatalf("line %q err %v calls %d", line, err, calls)
+	}
+	if !strings.Contains(system, "working partner") || !strings.Contains(user, "goal: 热门论文图文摘要发CSDN") {
+		t.Fatalf("accept prompt lost the partner role or the goal:\n%s", user)
+	}
+}
