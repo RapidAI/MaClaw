@@ -1,11 +1,11 @@
 /**
  * Task-breakdown checklist (T1/T2/T3…) under the coding agent composer.
- * Collapsible through its header: the header stays visible and keeps the
- * running step badge, so a collapsed card is still an ambient progress line.
- * The start / skip / reject gate stays expanded (pendingApproval forces open)
- * so the start decision can never hide behind a stored collapse.
+ * The bar itself is only the summary (count, current step). The full list
+ * floats above that bar while the pointer or keyboard focus is on it, at
+ * half the chat width. Start / skip / reject stay on the bar, so the start
+ * decision is never hover-only.
  */
-import { useCallback, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { localizeText } from "./aiAssistantI18n";
 import type { Theme } from "./aiAssistantPanelTheme";
 import {
@@ -45,16 +45,6 @@ export function codingPlanDoneCount(steps: CodingStepStatus[]): number {
 
 export function codingPlanProgressLabel(steps: CodingStepStatus[]): string {
     return `${codingPlanDoneCount(steps)}/${steps.length}`;
-}
-
-const COLLAPSE_KEY = "mc.planChecklist.collapsed";
-
-function readStoredCollapsed(): boolean {
-    try {
-        return window.localStorage.getItem(COLLAPSE_KEY) === "1";
-    } catch {
-        return false;
-    }
 }
 
 /** Codex checklist marks as compact stroke icons; currentColor carries the row status color. */
@@ -113,22 +103,127 @@ export function CodingAgentPlanChecklist({
     onSkip,
     onReject,
 }: CodingAgentPlanChecklistProps) {
-    // Hooks before the empty-early-return below.
-    const [collapsed, setCollapsed] = useState(readStoredCollapsed);
-    const toggleCollapsed = useCallback(() => {
-        setCollapsed((prev) => {
-            const next = !prev;
-            try {
-                window.localStorage.setItem(COLLAPSE_KEY, next ? "1" : "0");
-            } catch {
-                // Read-only storage keeps the toggle working for this visit only.
-            }
-            return next;
-        });
-    }, []);
-
+    // Hover and keyboard focus are separate. A mouse leave must not close a
+    // list the keyboard still has focused, and clicking the summary must not
+    // take focus away from the composer.
+    const [hovered, setHovered] = useState(false);
+    const [focused, setFocused] = useState(false);
+    const closeTimer = useRef<number | null>(null);
+    const summaryRef = useRef<HTMLButtonElement>(null);
+    const rootRef = useRef<HTMLElement>(null);
+    const hoverRef = useRef<HTMLDivElement>(null);
+    const popoverRef = useRef<HTMLDivElement>(null);
+    // Last pointer x, so a resize can keep the list under the cursor.
+    const anchorX = useRef<number | null>(null);
     const restatement = (understanding || "").trim();
-    if (!pendingApproval && steps.length === 0 && !restatement) {
+    const hasList = steps.length > 0 || !!restatement;
+    useEffect(() => () => {
+        if (closeTimer.current != null) window.clearTimeout(closeTimer.current);
+    }, []);
+    useEffect(() => {
+        if (hasList) return;
+        if (closeTimer.current != null) {
+            window.clearTimeout(closeTimer.current);
+            closeTimer.current = null;
+        }
+        setHovered(false);
+        setFocused(false);
+        if (summaryRef.current && document.activeElement === summaryRef.current) {
+            summaryRef.current.blur();
+        }
+    }, [hasList]);
+    const showList = () => {
+        if (!hasList) return;
+        if (closeTimer.current != null) {
+            window.clearTimeout(closeTimer.current);
+            closeTimer.current = null;
+        }
+        setHovered(true);
+    };
+    const hideList = () => {
+        if (closeTimer.current != null) window.clearTimeout(closeTimer.current);
+        // The list can appear under a pointer that already left the summary,
+        // so :hover stays true and mouseleave does not fire again. Keep
+        // checking until the pointer is actually gone.
+        const tick = () => {
+            closeTimer.current = null;
+            if (hoverRef.current?.matches(":hover")) {
+                closeTimer.current = window.setTimeout(tick, 120);
+                return;
+            }
+            setHovered(false);
+        };
+        closeTimer.current = window.setTimeout(tick, 120);
+    };
+    const open = hasList && (hovered || focused);
+    // The list is only half the bar. Pinning it to the left means a pointer
+    // on the current-step status leaves the list as soon as it moves up.
+    // Center it on the pointer, and keep it inside the bar.
+    const placePopover = () => {
+        const clientX = anchorX.current;
+        const root = rootRef.current;
+        const pop = popoverRef.current;
+        if (clientX == null || !root || !pop) return;
+        const width = pop.offsetWidth;
+        const innerWidth = root.clientWidth;
+        if (width <= 0 || innerWidth <= 0) return;
+        const x = clientX - root.getBoundingClientRect().left - root.clientLeft;
+        const left = Math.max(0, Math.min(x - width / 2, innerWidth - width));
+        pop.style.left = `${Math.round(left)}px`;
+    };
+    const placePopoverRef = useRef(placePopover);
+    placePopoverRef.current = placePopover;
+    useEffect(() => {
+        if (open) return;
+        anchorX.current = null;
+        if (popoverRef.current) popoverRef.current.style.left = "";
+    }, [open]);
+    useLayoutEffect(() => {
+        if (!open) return;
+        const root = rootRef.current;
+        if (!root) return;
+        const column = root.closest(".aap-chat-column");
+        const fit = () => {
+            const top = root.getBoundingClientRect().top;
+            // Stop at the transcript, not the column. The column also holds
+            // the task header, and the list must not cover its buttons.
+            // A hidden transcript (display:none during the new-task wizard)
+            // reports a 0 rect. Treating that as the top of the page makes
+            // the list taller than the column, and the clipped rows cannot scroll.
+            const output = column instanceof HTMLElement
+                ? column.querySelector("[data-testid='ai-output-container']")
+                : null;
+            const outputBox = output instanceof HTMLElement ? output.getBoundingClientRect() : null;
+            const columnBox = column instanceof HTMLElement ? column.getBoundingClientRect() : null;
+            const outputUsable = !!outputBox && outputBox.height > 0;
+            let limit = outputUsable ? outputBox.top : (columnBox ? columnBox.top : top);
+            if (outputUsable && columnBox) limit = Math.max(limit, columnBox.top);
+            // A zero rect (jsdom, or the bar is not on screen yet) has no
+            // measured gap. Anywhere else, use the real space so a short
+            // column does not force the list past the clip.
+            const measured = Math.floor(top - limit - 8);
+            const room = measured > 0 ? measured : 120;
+            root.style.setProperty("--capc-room", `${room}px`);
+            placePopoverRef.current();
+        };
+        fit();
+        const observed = column instanceof HTMLElement ? column : root;
+        const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
+        observer?.observe(observed);
+        // The composer grows inside the column without resizing the column
+        // itself. The transcript above the bar shrinks in that case.
+        if (column instanceof HTMLElement) {
+            const output = column.querySelector("[data-testid='ai-output-container']");
+            if (output instanceof HTMLElement) observer?.observe(output);
+        }
+        window.addEventListener("resize", fit);
+        return () => {
+            observer?.disconnect();
+            window.removeEventListener("resize", fit);
+        };
+    }, [open]);
+
+    if (!pendingApproval && !hasList) {
         return null;
     }
     // Same predicate the step rows use, so a backend `started` lights up the row
@@ -140,18 +235,16 @@ export function CodingAgentPlanChecklist({
     const title = pendingApproval
         ? localizeText(lang, "Plan", "计划", "計畫")
         : localizeText(lang, "Steps", "步骤", "步驟");
-    // The start decision must never sit behind a stored collapse; the collapse
-    // preference only applies once the plan has begun executing.
-    const open = pendingApproval || !collapsed;
     const progressPct = steps.length > 0
         ? Math.round(Math.min(100, Math.max(0, (codingPlanDoneCount(steps) / steps.length) * 100)))
         : 0;
 
     return (
         <section
+            ref={rootRef}
             data-testid="coding-agent-plan-checklist"
             aria-label={title}
-            className={"capc-checklist" + (open ? "" : " capc-collapsed")}
+            className={"capc-checklist" + (open ? " capc-open" : "")}
             style={{
                 // Horizontal inset comes from --mc-composer-inset-x (same rule as
                 // the composer card). An inline margin shorthand would override it.
@@ -161,19 +254,44 @@ export function CodingAgentPlanChecklist({
                 color: theme.text,
             }}
         >
+            <div
+                ref={hoverRef}
+                className="capc-hover"
+                data-testid="coding-agent-plan-hover"
+                onMouseEnter={hasList ? showList : undefined}
+                onMouseLeave={hasList ? hideList : undefined}
+            >
             <button
+                ref={summaryRef}
                 type="button"
                 data-testid="coding-agent-plan-toggle"
                 className="capc-toggle"
-                aria-expanded={open}
-                aria-controls="coding-agent-plan-body"
-                // While the start decision is open the list cannot collapse, so
-                // the toggle must not advertise itself as a working control.
-                disabled={pendingApproval}
-                title={open
-                    ? localizeText(lang, "Collapse the step list", "收起步骤列表", "收起步驟列表")
-                    : localizeText(lang, "Expand the step list", "展开步骤列表", "展開步驟列表")}
-                onClick={toggleCollapsed}
+                aria-expanded={hasList ? open : undefined}
+                aria-controls={hasList ? "coding-agent-plan-body" : undefined}
+                tabIndex={hasList ? 0 : -1}
+                title={hasList
+                    ? localizeText(lang, "Hover to see the step list", "悬停查看步骤列表", "懸停查看步驟列表")
+                    : undefined}
+                onMouseEnter={hasList ? (event) => {
+                    anchorX.current = event.clientX;
+                    placePopover();
+                } : undefined}
+                onMouseMove={hasList ? (event) => {
+                    anchorX.current = event.clientX;
+                    placePopover();
+                } : undefined}
+                onMouseDown={hasList ? (event) => {
+                    // Keep the caret in the composer. Keyboard focus still opens the list.
+                    event.preventDefault();
+                } : undefined}
+                onFocus={hasList ? () => setFocused(true) : undefined}
+                onBlur={hasList ? () => setFocused(false) : undefined}
+                onKeyDown={hasList ? (event) => {
+                    if (event.key !== "Escape") return;
+                    event.preventDefault();
+                    setFocused(false);
+                    event.currentTarget.blur();
+                } : undefined}
             >
                 <span className="capc-head">
                     <span className="capc-title" style={{ color: chrome.accentStrong }}>
@@ -203,7 +321,7 @@ export function CodingAgentPlanChecklist({
                                 {localizeText(lang, "Awaiting start", "待开始实施", "待開始實施")}
                             </span>
                         ) : null}
-                        {!pendingApproval ? (
+                        {hasList ? (
                             <span aria-hidden="true" className="capc-chevron">
                                 <svg viewBox="0 0 16 16" width="14" height="14">
                                     <path d="M4.6 6.4l3.4 3.4 3.4-3.4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -213,75 +331,89 @@ export function CodingAgentPlanChecklist({
                     </span>
                 </span>
             </button>
-            <div
-                id="coding-agent-plan-body"
-                data-testid="coding-agent-plan-body"
-                className="capc-body"
-                aria-hidden={!open}
-            >
-                <div className="capc-body-flow">
-                    {restatement ? (
-                        <div
-                            data-testid="coding-agent-plan-understanding"
-                            className="capc-understanding"
-                            style={{ border: `1px solid ${chrome.border}`, background: chrome.insetBg }}
-                        >
-                            <div className="capc-u-title" style={{ color: chrome.accentStrong }}>
-                                {localizeText(lang, "Understood", "需求理解", "需求理解")}
-                            </div>
-                            <div className="capc-u-text">{restatement}</div>
-                        </div>
-                    ) : null}
-                    <ol className="capc-steps">
-                        {steps.map((st) => {
-                            const color = codingStepStatusColor(st.status, chrome);
-                            const active = codingStepIsActive(st.status);
-                            const failed = codingStepIsFailed(st.status);
-                            return (
-                                <li
-                                    key={st.index}
-                                    data-testid={`coding-agent-plan-step-${st.index}`}
-                                    data-status={st.status}
-                                    aria-current={active ? "step" : undefined}
-                                    className="capc-step"
-                                    style={{
-                                        color,
-                                        fontWeight: active || failed ? 600 : 400,
-                                        // The current step gets a soft accent pill so the eye
-                                        // lands on it without extra chrome.
-                                        ...(active ? { background: chrome.chipActiveBg } : null),
-                                    }}
+            {hasList ? (
+                <div ref={popoverRef} className="capc-popover" aria-hidden={!open}>
+                    <div
+                        id="coding-agent-plan-body"
+                        data-testid="coding-agent-plan-body"
+                        className="capc-popover-card"
+                        aria-hidden={!open}
+                        style={{
+                            border: `1px solid ${chrome.border}`,
+                            background: chrome.surface,
+                            color: theme.text,
+                        }}
+                    >
+                        <div className="capc-body-flow">
+                            {restatement ? (
+                                <div
+                                    data-testid="coding-agent-plan-understanding"
+                                    className="capc-understanding"
+                                    style={{ border: `1px solid ${chrome.border}`, background: chrome.insetBg }}
                                 >
-                                    <span aria-hidden className="capc-glyph"><PlanStepIcon status={st.status} /></span>
-                                    <span className="capc-step-idx">T{st.index}</span>
-                                    <span className="capc-step-main">
-                                        <span className="capc-step-title">{st.title || codingStepStatusLabel(lang, st.status)}</span>
-                                        {(st.summary || "").trim() ? (
-                                            <span
-                                                data-testid={`coding-agent-plan-step-${st.index}-note`}
-                                                className="capc-step-note"
-                                                style={{
-                                                    color: failed ? chrome.stepFailedFg : chrome.muted,
-                                                    // Notes are single-line, but a long path or URL can
-                                                    // still be one unbroken token; keep it inside the row.
-                                                    overflowWrap: "anywhere",
-                                                }}
-                                            >
-                                                {st.summary}
+                                    <div className="capc-u-title" style={{ color: chrome.accentStrong }}>
+                                        {localizeText(lang, "Understood", "需求理解", "需求理解")}
+                                    </div>
+                                    <div className="capc-u-text">{restatement}</div>
+                                </div>
+                            ) : null}
+                            {steps.length > 0 ? (
+                            <ol className="capc-steps">
+                                {steps.map((st) => {
+                                    const color = codingStepStatusColor(st.status, chrome);
+                                    const active = codingStepIsActive(st.status);
+                                    const failed = codingStepIsFailed(st.status);
+                                    return (
+                                        <li
+                                            key={st.index}
+                                            data-testid={`coding-agent-plan-step-${st.index}`}
+                                            data-status={st.status}
+                                            aria-current={active ? "step" : undefined}
+                                            className="capc-step"
+                                            style={{
+                                                color,
+                                                fontWeight: active || failed ? 600 : 400,
+                                                // The current step gets a soft accent pill so the eye
+                                                // lands on it without extra chrome.
+                                                ...(active ? { background: chrome.chipActiveBg } : null),
+                                            }}
+                                        >
+                                            <span aria-hidden className="capc-glyph"><PlanStepIcon status={st.status} /></span>
+                                            <span className="capc-step-idx">T{st.index}</span>
+                                            <span className="capc-step-main">
+                                                <span className="capc-step-title">{st.title || codingStepStatusLabel(lang, st.status)}</span>
+                                                {(st.summary || "").trim() ? (
+                                                    <span
+                                                        data-testid={`coding-agent-plan-step-${st.index}-note`}
+                                                        className="capc-step-note"
+                                                        style={{
+                                                            color: failed ? chrome.stepFailedFg : chrome.muted,
+                                                            // Notes are single-line, but a long path or URL can
+                                                            // still be one unbroken token; keep it inside the row.
+                                                            overflowWrap: "anywhere",
+                                                        }}
+                                                    >
+                                                        {st.summary}
+                                                    </span>
+                                                ) : null}
                                             </span>
-                                        ) : null}
-                                    </span>
-                                    {/* The glyph is aria-hidden and the color carries no
-                                        meaning for screen readers, so state the status. */}
-                                    <span data-testid={`coding-agent-plan-step-${st.index}-sr-status`} style={srOnlyStyle}>
-                                        {`${localizeText(lang, "Status", "状态", "狀態")}：${codingStepStatusLabel(lang, st.status)}`}
-                                    </span>
-                                </li>
-                            );
-                        })}
-                    </ol>
-                    {showPlanGate && (
-                        <div className="capc-actions">
+                                            {/* The glyph is aria-hidden and the color carries no
+                                                meaning for screen readers, so state the status. */}
+                                            <span data-testid={`coding-agent-plan-step-${st.index}-sr-status`} style={srOnlyStyle}>
+                                                {`${localizeText(lang, "Status", "状态", "狀態")}：${codingStepStatusLabel(lang, st.status)}`}
+                                            </span>
+                                        </li>
+                                    );
+                                })}
+                            </ol>
+                            ) : null}
+                        </div>
+                    </div>
+                </div>
+            ) : null}
+            </div>
+            {showPlanGate && (
+                <div className="capc-actions">
                             <button
                                 type="button"
                                 data-testid="coding-agent-plan-approve"
@@ -320,8 +452,6 @@ export function CodingAgentPlanChecklist({
                             </button>
                         </div>
                     )}
-                </div>
-            </div>
         </section>
     );
 }

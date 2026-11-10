@@ -35,6 +35,38 @@ export function AssistantTitleBarNotifications({
         dismissUrgentToast,
     } = useNotifications();
     const { notices: groupInvites, decide: decideGroupInvite, busyId: groupInviteBusyId, error: groupInviteError, listError: groupInviteListError } = useCompanionGroupInvites(active, lang);
+    const [remoteBusy, setRemoteBusy] = useState(false);
+    const [remoteError, setRemoteError] = useState("");
+    const decideRemoteControl = useCallback(async (grantId: string, action: "accept" | "decline" | "ignore" | "end") => {
+        const bindingName = action === "accept"
+            ? "AcceptRemoteControlInvite"
+            : action === "decline"
+                ? "RejectRemoteControlInvite"
+                : action === "ignore"
+                    ? "IgnoreRemoteControlInvite"
+                    : "RevokeRemoteControl";
+        const fn = (window as unknown as { go?: { main?: { App?: Record<string, (id: string) => Promise<unknown>> } } }).go?.main?.App?.[bindingName];
+        if (typeof fn !== "function") {
+            setRemoteError(localizeText(lang, "Remote control is not ready", "远控尚未就绪", "遠控尚未就緒"));
+            return;
+        }
+        setRemoteBusy(true);
+        setRemoteError("");
+        try {
+            await fn(grantId);
+        } catch (err) {
+            const raw = err instanceof Error
+                ? err.message
+                : typeof err === "string"
+                    ? err
+                    : err && typeof err === "object" && "message" in err
+                        ? String((err as { message?: unknown }).message || "")
+                        : "";
+            setRemoteError(raw.trim() || localizeText(lang, "Couldn't update remote control", "暂时无法处理远控", "暫時無法處理遠控"));
+        } finally {
+            setRemoteBusy(false);
+        }
+    }, [lang]);
     // A pushed invitation notice means the pending list changed. Refreshing it
     // here is what makes an invitation appear without waiting for the poll. A
     // reconnect pulls the list's notices too, so the sync event counts as well.
@@ -219,6 +251,9 @@ export function AssistantTitleBarNotifications({
                     onHostTransfer={share.handleHostTransfer}
                     hostTransferBusy={share.hostTransferBusy}
                     hostTransferError={share.hostTransferError}
+                    onRemoteControl={(grantId, action) => { void decideRemoteControl(grantId, action); }}
+                    remoteControlBusy={remoteBusy}
+                    remoteControlError={remoteError}
                     ariaHidden={!active}
                     lang={lang}
                 />

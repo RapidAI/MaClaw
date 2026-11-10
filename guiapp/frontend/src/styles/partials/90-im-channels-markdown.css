@@ -3802,13 +3802,14 @@
 .rsc-error { color: var(--theme-danger); font-size: 12px; margin-bottom: 8px; }
 .rsc-live-actions { display: flex; gap: 8px; }
 
-/* CodingAgentPlanChecklist.tsx — modern collapsible task card (T1/T2/…) */
-.capc-checklist { padding: 9px 10px 10px; border-radius: 12px; box-shadow: 0 4px 16px rgba(34, 56, 82, 0.06); font-size: 12px; line-height: 1.45; }
-.capc-toggle { display: block; width: 100%; border: 0; margin: 0; padding: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+/* CodingAgentPlanChecklist.tsx — summary bar; the T1/T2 list floats on hover. */
+.capc-checklist { position: relative; padding: 6px 10px; border-radius: 12px; box-shadow: 0 4px 16px rgba(34, 56, 82, 0.06); font-size: 12px; line-height: 1.45; }
+.capc-checklist.capc-open { z-index: 6; }
+.capc-toggle { display: block; width: 100%; border: 0; margin: 0; padding: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }
 .capc-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 60%, transparent); outline-offset: 2px; }
-.capc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 8px; margin: -3px -8px 7px; border-radius: 8px; transition: background-color 0.15s ease; }
-.capc-toggle:hover:not(:disabled) .capc-head { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 5%, transparent); }
-.capc-toggle:disabled { cursor: default; }
+.capc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px; margin: 0; border-radius: 8px; transition: background-color 0.15s ease; }
+.capc-hover:hover .capc-head,
+.capc-toggle:focus-visible .capc-head { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 5%, transparent); }
 .capc-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-weight: 600; }
 .capc-title svg { flex-shrink: 0; }
 .capc-progress { display: inline-flex; align-items: center; gap: 6px; margin-left: 2px; font-weight: 500; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -3818,13 +3819,17 @@
 .capc-current { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; }
 .capc-pulse-dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; flex-shrink: 0; animation: capc-pulse 1.2s ease-in-out infinite; }
 .capc-chevron { display: inline-flex; flex-shrink: 0; color: var(--theme-text-muted, #5b6b80); transition: transform 0.18s ease; }
-.capc-collapsed .capc-chevron { transform: rotate(-90deg); }
-/* The collapsible body rides grid-template-rows 1fr⇄0fr, so no fixed heights
-   are needed; visibility keeps a collapsed body out of tab order and screen
-   readers while the close transition finishes. */
-.capc-body { display: grid; grid-template-rows: 1fr; min-height: 0; visibility: visible; transition: grid-template-rows 0.2s ease, visibility 0.2s; }
-.capc-collapsed .capc-body { grid-template-rows: 0fr; visibility: hidden; }
-.capc-body-flow { min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 8px; padding: 1px 0 2px; }
+.capc-checklist:not(.capc-open) .capc-chevron { transform: rotate(-90deg); }
+.capc-open .capc-chevron { transform: rotate(180deg); }
+/* The list floats above the summary and overlaps the bar's top padding, so
+   the pointer can move onto the list without crossing a dead gap. The
+   checklist already spans the coding chat column, so 50% is half that area. */
+.capc-popover { position: absolute; z-index: 6; left: 0; bottom: calc(100% - 6px); width: 50%; min-width: min(260px, 100%); max-width: 100%; box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }
+.capc-open .capc-popover { pointer-events: auto; visibility: visible; }
+/* border-box keeps the padding and border inside the height cap.
+   content-box lets a full list stick about 18px into the task header. */
+.capc-popover-card { box-sizing: border-box; max-height: min(320px, var(--capc-room, 42vh)); overflow: auto; overscroll-behavior: contain; padding: 8px 10px; border-radius: 12px; box-shadow: 0 12px 32px rgba(34, 56, 82, 0.16); }
+.capc-body-flow { min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 1px 0 2px; }
 .capc-understanding { padding: 7px 9px; border-radius: 8px; }
 .capc-u-title { font-weight: 600; margin-bottom: 3px; }
 .capc-steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
@@ -3842,7 +3847,7 @@
    already caps the border; inheriting it would also break T10 and the buttons. */
 .capc-step-title { min-width: 0; flex: 1; overflow-wrap: anywhere; }
 [data-testid='coding-agent-plan-understanding'] { overflow-wrap: anywhere; }
-.capc-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.capc-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .capc-gate { min-height: 27px; padding: 0 12px; border-radius: 6px; font: inherit; font-size: 12px; line-height: 1; cursor: pointer; }
 .capc-gate:disabled { cursor: not-allowed; opacity: 0.55; }
 .capc-gate:hover:not(:disabled) { filter: brightness(0.97); }
@@ -3850,7 +3855,7 @@
 @keyframes capc-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .capc-pulse-dot, .capc-spin, .gkc-pulse-dot, .gkc-spin { animation: none; }
-  .capc-fill, .capc-chevron, .capc-body, .capc-head, .capc-step, .gkc-count-fill, .gkc-fill, .gkc-step { transition: none; }
+  .capc-fill, .capc-chevron, .capc-popover, .capc-head, .capc-step, .gkc-count-fill, .gkc-fill, .gkc-step { transition: none; }
 }
 
 /* GoalChecklistCard.tsx (transcript goalChecklist card; shares capc keyframes).

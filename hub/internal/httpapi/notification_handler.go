@@ -156,6 +156,9 @@ func (h *NotificationHandler) HandleListNotifications(w http.ResponseWriter, r *
 			notification.SourceCompanionShare,
 			notification.SourceCompanionHostTransfer,
 			notification.SourceCompanionHostTransferNotice,
+			notification.SourceRemoteControlInvite,
+			notification.SourceRemoteControlNotice,
+			notification.SourceRemoteControlResult,
 		},
 	}
 

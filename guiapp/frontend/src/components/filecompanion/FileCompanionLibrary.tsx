@@ -2672,8 +2672,9 @@ export function CompanionLibraryView({
         const notes = discussions.reduce((sum, discussion) => sum + discussion.total, 0);
         const pendingReviews = cardShares.reduce((sum, share, index) => sum + (share.host ? discussions[index].explicitPending : 0), 0);
         const hosted = cardShares.some((share) => share.host);
+        // The source badge already says 本机 / 云端, so the facts line carries
+        // only what the badges do not: weight and the date that matters.
         const meta = [
-            item.source === "cloud" ? "" : cs("本机"),
             fmtSize(item.size),
             // A cloud row's openedAt is when the share was created, so the
             // card says 分享于 instead of 打开于.
@@ -2770,23 +2771,23 @@ export function CompanionLibraryView({
                             {docTitle}
                         </p>
                     ) : null}
-                    <p
-                        className="file-companion-project-meta"
-                        data-testid={`file-companion-library-meta-${item.id}`}
-                    >
-                        <span className="file-companion-badge" data-tone="source">{item.source === "cloud" ? cs("云端") : cs("本机")}</span>
-                        {cardShares.length > 0 ? cardShares.map((share) => (
-                            <span className="file-companion-badge" key={share.token || share.id}>{audienceLabel(share.visibility)} · {whenLabel(share)}</span>
-                        )) : <span className="file-companion-badge">{whenLabel(item)}</span>}
-                        {hosted ? (
-                            <span className="file-companion-badge" data-tone="active">{cs("主持人")}</span>
-                        ) : null}
-                        {marks > 0 ? <span className="file-companion-badge" data-tone="mark">{companionFill(getCompanionUiLang(), "标注 ${count}", { count: marks })}</span> : null}
-                        {notes > 0 ? <span className="file-companion-badge" data-tone="note">{companionFill(getCompanionUiLang(), "讨论 ${count}", { count: notes })}</span> : null}
-                        {pendingReviews > 0 ? <span className="file-companion-badge" data-tone="pending" data-testid={`file-companion-library-pending-${item.id}`}>{companionFill(getCompanionUiLang(), "待审核 ${count}", { count: pendingReviews })}</span> : null}
-                        <span className="file-companion-project-facts">{meta}</span>
-                    </p>
                 </div>
+                <p
+                    className="file-companion-project-meta"
+                    data-testid={`file-companion-library-meta-${item.id}`}
+                >
+                    <span className="file-companion-badge" data-tone="source">{item.source === "cloud" ? cs("云端") : cs("本机")}</span>
+                    {cardShares.length > 0 ? cardShares.map((share) => (
+                        <span className="file-companion-badge" key={share.token || share.id}>{audienceLabel(share.visibility)} · {whenLabel(share)}</span>
+                    )) : <span className="file-companion-badge">{whenLabel(item)}</span>}
+                    {hosted ? (
+                        <span className="file-companion-badge" data-tone="active">{cs("主持人")}</span>
+                    ) : null}
+                    {marks > 0 ? <span className="file-companion-badge" data-tone="mark">{companionFill(getCompanionUiLang(), "标注 ${count}", { count: marks })}</span> : null}
+                    {notes > 0 ? <span className="file-companion-badge" data-tone="note">{companionFill(getCompanionUiLang(), "讨论 ${count}", { count: notes })}</span> : null}
+                    {pendingReviews > 0 ? <span className="file-companion-badge" data-tone="pending" data-testid={`file-companion-library-pending-${item.id}`}>{companionFill(getCompanionUiLang(), "待审核 ${count}", { count: pendingReviews })}</span> : null}
+                    {meta ? <span className="file-companion-project-facts">{meta}</span> : null}
+                </p>
                 <div className="file-companion-project-actions">
                     {folders.length > 0 ? (
                         <select
@@ -2895,6 +2896,7 @@ export function CompanionLibraryView({
                     <button
                         type="button"
                         className="file-companion-project-action"
+                        data-tone="danger"
                         data-testid={`file-companion-library-delete-${item.id}`}
                         disabled={Boolean(busy)}
                         title={item.source === "cloud"

@@ -38,6 +38,9 @@ export interface NotificationPanelProps {
     onHostTransfer?: (token: string, decision: "accept" | "decline") => void;
     hostTransferBusy?: boolean;
     hostTransferError?: string;
+    onRemoteControl?: (grantId: string, action: "accept" | "decline" | "ignore" | "end") => void;
+    remoteControlBusy?: boolean;
+    remoteControlError?: string;
     /** Marks the transient panel inaccessible while its host page is hidden. */
     ariaHidden?: boolean;
     lang?: string;
@@ -165,7 +168,7 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
         : stripMarkdownPreview(notification.content || "");
     const hasDistinctPreview = Boolean(contentPreview) && contentPreview !== titleText;
     const hasMoreToRead = titleText.length > 28 || hasDistinctPreview;
-    const needsDecision = Boolean(notification.groupInviteId) || Boolean(companionHostTransferToken(notification));
+    const needsDecision = Boolean(notification.groupInviteId) || Boolean(companionHostTransferToken(notification)) || notification.source === "remote_control_invite" || notification.source === "remote_control_notice";
 
     return (
         <div
@@ -245,6 +248,9 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
     onHostTransfer,
     hostTransferBusy = false,
     hostTransferError = "",
+    onRemoteControl,
+    remoteControlBusy = false,
+    remoteControlError = "",
     ariaHidden = false,
     lang,
 }) => {
@@ -405,6 +411,9 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                     onHostTransfer={onHostTransfer}
                     hostTransferBusy={hostTransferBusy}
                     hostTransferError={hostTransferError}
+                    onRemoteControl={onRemoteControl}
+                    remoteControlBusy={remoteControlBusy}
+                    remoteControlError={remoteControlError}
                 />
             ) : (
             <>

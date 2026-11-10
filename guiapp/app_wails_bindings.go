@@ -2137,6 +2137,10 @@ type AIAssistantSendRequest struct {
 	// workflow = "none": the first message must skip workflow semantic
 	// interception/starts. Additive — absent/zero keeps the current behavior.
 	NoWorkflowInterception bool `json:"no_workflow_interception,omitempty"`
+	// RemoteControl is set only by the desktop that is being controlled.
+	// The message must run as that task, not as a local slash command or an
+	// open task-panel action.
+	RemoteControl bool `json:"-"`
 }
 
 type AIAssistantContextMessage struct {
@@ -2566,7 +2570,7 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	// It must run through the normal task loop, not be consumed by a desktop
 	// control/passthrough command handler.
 	isStartMenuLaunch := strings.TrimSpace(req.IMPlatform) != "" && strings.TrimSpace(req.IMTargetUID) != ""
-	if !isStartMenuLaunch {
+	if !isStartMenuLaunch && !req.RemoteControl {
 		if resp, handled, err := a.handleAgentViewControlMessage(text); handled {
 			normalizeArtifactResponseSource(resp)
 			return resp, err

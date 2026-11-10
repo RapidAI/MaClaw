@@ -3,9 +3,13 @@ package guiapp
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 func TestFileCompanionPDFTitlePrefersTheInfoDictionary(t *testing.T) {
@@ -327,5 +331,265 @@ func writeOfficeCore(t *testing.T, path, title string) {
 	}
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func writeTitleZip(t *testing.T, path string, entries map[string]string) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	zw := zip.NewWriter(file)
+	for name, body := range entries {
+		entry, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFileCompanionTitleCoversMoreDocumentFormats(t *testing.T) {
+	dir := t.TempDir()
+	encoded := "=?utf-8?B?" + base64.StdEncoding.EncodeToString([]byte("论文标题")) + "?="
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"book.adoc", "= AsciiDoc Book\nAuthor Name\n:revnumber: 1.0\n\nbody\n", "AsciiDoc Book"},
+		{"override.asciidoc", "= Section Heading\n:doctitle: Real Book\n", "Real Book"},
+		{"section.adoc", "== Only A Section\n\nbody\n", ""},
+		{"notes.txt", "Meeting Notes\n\nfirst body line\n", "Meeting Notes"},
+		{"single.txt", "Only content line\n", ""},
+		{"blank.txt", "\n\nMeeting Notes\n", ""},
+		{"log.txt", "2026-11-10 07:00:00 INFO started\nmore\n", ""},
+		{"clock.txt", "07:23:46 boot\nmore\n", ""},
+		{"table.txt", "col-a\tcol-b\n1\t2\n", ""},
+		{"rule.txt", "========\nbody\n", ""},
+		{"url.txt", "https://example.com/page\nbody\n", ""},
+		{"config.yaml", "title: YAML Document\nauthor: Ada\n", "YAML Document"},
+		{"quoted.yml", "title: \"Quoted YAML\" # note\nauthor: Ada\n", "Quoted YAML"},
+		{"nested.yaml", "meta:\n  title: Nested\nname: Root\n", ""},
+		{"folded.yml", "title: >-\n  Folded YAML\n  Title\nauthor: Ada\n", "Folded YAML Title"},
+		{"list.yaml", "- title: Item\n- title: Other\n", ""},
+		{"doc.json", `{"title":"JSON Document","records":[{"title":"Nested"}]}`, "JSON Document"},
+		{"manifest.json", `{"name":"Package Name","version":"1.0"}`, "Package Name"},
+		{"nested.json", `{"records":[{"title":"Nested"}]}`, ""},
+		{"array.json", `["title","Not A Title"]`, ""},
+		{"deep.json", `{"meta":{"name":"Inner"},"title":"Outer"}`, "Outer"},
+		{"truncated.json", `{"title":"Readable Prefix","records":[{"x":`, "Readable Prefix"},
+		{"feed.xml", `<?xml version="1.0"?><rss><channel><title>Feed Title</title></channel></rss>`, "Feed Title"},
+		{"book.xml", `<book xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>DocBook Title</dc:title><title>Other</title></book>`, "DocBook Title"},
+		{"mail.eml", "From: a@example.com\r\nSubject: Weekly Report\r\nTo: b@example.com\r\n\r\nSubject: body line\r\n", "Weekly Report"},
+		{"encoded.eml", "Subject: " + encoded + "\r\n\r\nbody\r\n", "论文标题"},
+		{"folded.eml", "Subject: First part\r\n second part\r\n\r\nbody\r\n", "First part second part"},
+		{"nosubject.eml", "From: a@example.com\r\n\r\nSubject: body only\r\n", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name)
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			title, _, _, ok := fileCompanionDocumentTitle(path)
+			if !ok || title != tc.want {
+				t.Fatalf("title = %q ok %v, want %q", title, ok, tc.want)
+			}
+		})
+	}
+}
+
+// A bounded read stops mid-rune on a long UTF-8 document. That tail is not
+// evidence of a legacy codepage, and guessing one turns a Chinese heading into
+// noise.
+func TestFileCompanionTitleDecodesLegacyTextEncodings(t *testing.T) {
+	dir := t.TempDir()
+	gbkHead, err := simplifiedchinese.GBK.NewEncoder().Bytes([]byte("# 中文标题\n\n正文\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gbkPath := filepath.Join(dir, "gbk.md")
+	if err := os.WriteFile(gbkPath, gbkHead, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if title, _, _, ok := fileCompanionDocumentTitle(gbkPath); !ok || title != "中文标题" {
+		t.Fatalf("gbk markdown = %q ok %v", title, ok)
+	}
+	gbkText, err := simplifiedchinese.GBK.NewEncoder().Bytes([]byte("中文标题\n\n正文\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	txtPath := filepath.Join(dir, "gbk.txt")
+	if err := os.WriteFile(txtPath, gbkText, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if title, _, _, ok := fileCompanionDocumentTitle(txtPath); !ok || title != "中文标题" {
+		t.Fatalf("gbk text = %q ok %v", title, ok)
+	}
+	latin, err := charmap.Windows1252.NewEncoder().Bytes([]byte("Café Notes\n\nbody\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	latinPath := filepath.Join(dir, "latin.txt")
+	if err := os.WriteFile(latinPath, latin, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if title, _, _, ok := fileCompanionDocumentTitle(latinPath); !ok || title != "Café Notes" {
+		t.Fatalf("windows-1252 = %q ok %v", title, ok)
+	}
+	utf16Path := filepath.Join(dir, "utf16.md")
+	raw := []byte{0xFF, 0xFE}
+	for _, r := range "# UTF16 Title\n\nbody\n" {
+		raw = append(raw, byte(r), byte(r>>8))
+	}
+	if err := os.WriteFile(utf16Path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if title, _, _, ok := fileCompanionDocumentTitle(utf16Path); !ok || title != "UTF16 Title" {
+		t.Fatalf("utf-16 = %q ok %v", title, ok)
+	}
+	// Cut the last rune of a UTF-8 heading in half at the read boundary.
+	long := filepath.Join(dir, "cut.md")
+	body := []byte("# 中文标题\n\n")
+	body = append(body, bytes.Repeat([]byte("x"), 8192)...)
+	body = append(body, []byte("尾")...)
+	if err := os.WriteFile(long, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if title, _, _, ok := fileCompanionDocumentTitle(long); !ok || title != "中文标题" {
+		t.Fatalf("cut utf-8 = %q ok %v", title, ok)
+	}
+}
+
+func TestFileCompanionHTMLTitleFallsBackPastAnEmptyTitle(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"og.html", `<html><head><title></title><meta property="og:title" content="Share Card"></head></html>`, "Share Card"},
+		{"twitter.html", `<html><head><meta name="twitter:title" content='Tweet Title'></head></html>`, "Tweet Title"},
+		{"entity.html", `<html><head><meta property="og:title" content="A &amp; B"></head></html>`, "A & B"},
+		{"fragment.html", `<div><h1 class="x">Heading <em>Title</em></h1></div>`, "Heading Title"},
+		{"canonical.html", `<html><head><title>Real</title><meta property="og:title" content="Other"></head></html>`, "Real"},
+		{"dataattr.html", `<html><head><meta data-title="Not" content="No"></head></html>`, ""},
+		{"contentname.html", `<html><head><meta property="og:title" content="filename"></head></html>`, "filename"},
+		{"xhtml.xhtml", `<html><head><title>XHTML Page</title></head></html>`, "XHTML Page"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name)
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			title, _, _, ok := fileCompanionDocumentTitle(path)
+			if !ok || title != tc.want {
+				t.Fatalf("title = %q ok %v, want %q", title, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestFileCompanionEPUBTitleFollowsTheContainer(t *testing.T) {
+	dir := t.TempDir()
+	const opf = `<?xml version="1.0"?><package xmlns:dc="http://purl.org/dc/elements/1.1/"><metadata><dc:title>EPUB Book</dc:title></metadata></package>`
+	path := filepath.Join(dir, "book.epub")
+	writeTitleZip(t, path, map[string]string{
+		"mimetype":               "application/epub+zip",
+		"META-INF/container.xml": `<?xml version="1.0"?><container><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`,
+		"OEBPS/content.opf":      opf,
+		"OEBPS/chapter1.xhtml":   `<html><head><title>Chapter One</title></head></html>`,
+	})
+	if title, _, _, ok := fileCompanionDocumentTitle(path); !ok || title != "EPUB Book" {
+		t.Fatalf("epub = %q ok %v", title, ok)
+	}
+	// No container.xml: the single package document still names the book.
+	bare := filepath.Join(dir, "bare.epub")
+	writeTitleZip(t, bare, map[string]string{"content.opf": opf})
+	if title, _, _, ok := fileCompanionDocumentTitle(bare); !ok || title != "EPUB Book" {
+		t.Fatalf("bare epub = %q ok %v", title, ok)
+	}
+	empty := filepath.Join(dir, "empty.epub")
+	writeTitleZip(t, empty, map[string]string{"mimetype": "application/epub+zip"})
+	if title, _, _, ok := fileCompanionDocumentTitle(empty); !ok || title != "" {
+		t.Fatalf("empty epub = %q ok %v", title, ok)
+	}
+}
+
+func TestFileCompanionPPTXTitleReadsTheFirstSlide(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deck.pptx")
+	writeTitleZip(t, path, map[string]string{
+		"docProps/core.xml": `<?xml version="1.0"?><cp:coreProperties xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title></dc:title></cp:coreProperties>`,
+		"ppt/slides/slide1.xml": `<p:sld xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree>` +
+			`<p:sp><p:nvSpPr><p:nvPr><p:ph type="ctrTitle"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Quarterly </a:t></a:r><a:r><a:t>Review</a:t></a:r></a:p></p:txBody></p:sp>` +
+			`<p:sp><p:nvSpPr><p:nvPr><p:ph type="subTitle"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Subtitle text</a:t></a:r></a:p></p:txBody></p:sp>` +
+			`</p:spTree></p:cSld></p:sld>`,
+	})
+	if title, _, _, ok := fileCompanionDocumentTitle(path); !ok || title != "Quarterly Review" {
+		t.Fatalf("pptx = %q ok %v", title, ok)
+	}
+	// An explicit core title still wins over the slide.
+	writeOfficeCore(t, filepath.Join(dir, "named.pptx"), "Deck Name")
+	if title, _, _, ok := fileCompanionDocumentTitle(filepath.Join(dir, "named.pptx")); !ok || title != "Deck Name" {
+		t.Fatalf("named pptx = %q ok %v", title, ok)
+	}
+}
+
+// A format the extractor used to skip reaches the library row through the same
+// fill path as the old ones, and an empty record from the previous version is
+// read again rather than kept as "this file has no title".
+func TestFileCompanionTitleFillCoversANewFormat(t *testing.T) {
+	home := t.TempDir()
+	app := &App{testHomeDir: home}
+	path := filepath.Join(home, "book.epub")
+	writeTitleZip(t, path, map[string]string{
+		"META-INF/container.xml": `<container><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>`,
+		"content.opf":            `<?xml version="1.0"?><package xmlns:dc="http://purl.org/dc/elements/1.1/"><metadata><dc:title>Library Book</dc:title></metadata></package>`,
+	})
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := FileCompanionLibraryItem{
+		ID:       "local:book",
+		Name:     "book.epub",
+		Path:     path,
+		Source:   "local",
+		OpenedAt: "2026-10-25T00:00:00Z",
+	}
+	fileCompanionLibraryMu.Lock()
+	err = app.writeFileCompanionLibraryFileLocked(
+		[]FileCompanionLibraryItem{item},
+		map[string]fileCompanionTitleRecord{
+			fileCompanionTitleKey(path): {Title: "", Size: info.Size(), Mod: info.ModTime().UnixNano(), Version: fileCompanionTitleVersion - 1},
+		},
+		false,
+	)
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !app.fillFileCompanionLibraryTitles() {
+		t.Fatal("fill skipped a record from the previous extractor version")
+	}
+	list, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 1 || list.Items[0].Title != "Library Book" {
+		t.Fatalf("list title = %#v", list.Items)
+	}
+	if app.fillFileCompanionLibraryTitles() {
+		t.Fatal("unchanged epub was read again")
 	}
 }

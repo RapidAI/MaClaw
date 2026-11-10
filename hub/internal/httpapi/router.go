@@ -1440,6 +1440,7 @@ func NewRouter(
 		// Reading-group invitations ride this notification system so an invitee
 		// who is offline still receives them on the next connect.
 		ConfigureCompanionGroupInviteNotifier(identity, notifSvc)
+		registerRemoteControl(mux, hubDB, identity, deviceSvc, notifSvc)
 
 		// Admin routes (requireAdmin)
 		mux.HandleFunc("POST /api/v1/admin/notifications", requireAdmin(notifHandler.HandleCreateNotification))

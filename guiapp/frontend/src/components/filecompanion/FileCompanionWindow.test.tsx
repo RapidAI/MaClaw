@@ -10011,7 +10011,24 @@ describe("companion titlebar keeps its controls out of the window drag region", 
         expect(source).toContain(".file-companion-window[data-view='library']:not([data-reader-player]) .file-companion-split-preview,");
         expect(source).toMatch(/\.file-companion-window\[data-view='groups'\]:not\(\[data-reader-player\]\) \.file-companion-split-preview\s*\{[^}]*visibility:\s*hidden/);
         expect(source).toMatch(/\.file-companion-project\s*\{[^}]*content-visibility:\s*auto/);
-        expect(source).toMatch(/\.file-companion-project\s*\{[^}]*contain-intrinsic-size:\s*auto 97px/);
+        expect(source).toMatch(/\.file-companion-project\s*\{[^}]*contain-intrinsic-size:\s*auto 100px/);
+    });
+
+    it("lays the library card out as identity over a badge and action row", () => {
+        const source = css();
+        // A comment sits between the previous rule and this selector, so the
+        // exact-rule boundary has to look through comments, not just whitespace.
+        const card = source.replace(/\/\*[\s\S]*?\*\//g, "").match(/(?:^|})\s*\.file-companion-project\s*\{([^}]*)\}/);
+        expect(card?.[1] ?? "").toMatch(/display:\s*grid/);
+        expect(card?.[1] ?? "").toMatch(/grid-template-areas:\s*"lead main main"\s*"lead meta actions"/);
+        // The action track is capped so a row with eight buttons wraps them
+        // instead of stretching until the badges have no room left.
+        expect(card?.[1] ?? "").toMatch(/grid-template-columns:\s*auto minmax\(0, 1fr\) minmax\(0, 300px\)/);
+        expect(source).toMatch(/\.file-companion-project-main\s*\{[^}]*grid-area:\s*main/);
+        expect(source).toMatch(/\.file-companion-project-meta\s*\{[^}]*grid-area:\s*meta/);
+        expect(source).toMatch(/\.file-companion-project-actions\s*\{[^}]*grid-area:\s*actions/);
+        // Narrow card: the two footer rows span the width under the identity.
+        expect(source).toMatch(/@container \(max-width: 600px\)\s*\{\s*\.file-companion-project\s*\{[^}]*grid-template-areas:\s*"lead main"\s*"meta meta"\s*"actions actions"/);
     });
 
     // jsdom never runs Wails' drop filter. OnFileDrop is registered with

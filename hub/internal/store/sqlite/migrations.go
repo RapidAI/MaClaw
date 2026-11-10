@@ -1494,6 +1494,29 @@ func RunMigrations(db *sql.DB) error {
 			last_used_at TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cws_share_access_workspace ON cloud_workspace_share_access(workspace_id, recipient_user_id)`,
+		`CREATE TABLE IF NOT EXISTS remote_control_grants (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			controller_user_id TEXT NOT NULL,
+			controller_machine_id TEXT NOT NULL,
+			controller_machine_name TEXT NOT NULL DEFAULT '',
+			target_user_id TEXT NOT NULL DEFAULT '',
+			target_account TEXT NOT NULL DEFAULT '',
+			target_machine_id TEXT NOT NULL DEFAULT '',
+			target_machine_name TEXT NOT NULL DEFAULT '',
+			permission TEXT NOT NULL,
+			status TEXT NOT NULL,
+			same_account INTEGER NOT NULL DEFAULT 0,
+			target_ignored INTEGER NOT NULL DEFAULT 0,
+			invite_notification_id TEXT NOT NULL DEFAULT '',
+			notice_notification_id TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			decided_at TEXT NOT NULL DEFAULT '',
+			expires_at TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_rc_grant_controller ON remote_control_grants(tenant_id, controller_user_id, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_rc_grant_target ON remote_control_grants(tenant_id, target_user_id, status)`,
 	)
 
 	for _, stmt := range alterStmts {

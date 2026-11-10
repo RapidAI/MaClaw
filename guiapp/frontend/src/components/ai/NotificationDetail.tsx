@@ -29,6 +29,9 @@ export interface NotificationDetailProps {
   onHostTransfer?: (token: string, decision: "accept" | "decline") => void;
   hostTransferBusy?: boolean;
   hostTransferError?: string;
+  onRemoteControl?: (grantId: string, action: "accept" | "decline" | "ignore" | "end") => void;
+  remoteControlBusy?: boolean;
+  remoteControlError?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +72,9 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
   onHostTransfer,
   hostTransferBusy = false,
   hostTransferError = "",
+  onRemoteControl,
+  remoteControlBusy = false,
+  remoteControlError = "",
 }) => {
   const isZh = lang?.startsWith("zh");
   const catLabel = CATEGORY_LABELS[notification.category] || CATEGORY_LABELS.custom;
@@ -249,6 +255,21 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
         ) : null}
         {hostTransferToken && hostTransferError.trim() ? (
           <p className="ndet-invite-error" data-testid="notification-host-transfer-error" role="alert">{hostTransferError.trim()}</p>
+        ) : null}
+        {notification.source === "remote_control_invite" && notification.source_id && onRemoteControl ? (
+          <div className="ndet-invite-actions">
+            <button type="button" className="ndet-invite-accept" data-testid="notification-remote-accept" disabled={remoteControlBusy} onClick={() => onRemoteControl(notification.source_id || "", "accept")}>{localizeText(lang, "Accept", "接受", "接受")}</button>
+            <button type="button" className="ndet-invite-decline" data-testid="notification-remote-decline" disabled={remoteControlBusy} onClick={() => onRemoteControl(notification.source_id || "", "decline")}>{localizeText(lang, "Decline", "拒绝", "拒絕")}</button>
+            <button type="button" className="ndet-invite-ignore" data-testid="notification-remote-ignore" disabled={remoteControlBusy} onClick={() => onRemoteControl(notification.source_id || "", "ignore")}>{localizeText(lang, "Ignore", "忽略", "忽略")}</button>
+          </div>
+        ) : null}
+        {notification.source === "remote_control_notice" && notification.source_id && onRemoteControl ? (
+          <div className="ndet-invite-actions">
+            <button type="button" className="ndet-invite-decline" data-testid="notification-remote-end" disabled={remoteControlBusy} onClick={() => onRemoteControl(notification.source_id || "", "end")}>{localizeText(lang, "End remote control", "结束远控", "結束遠控")}</button>
+          </div>
+        ) : null}
+        {remoteControlError?.trim() ? (
+          <p className="ndet-invite-error" data-testid="notification-remote-error" role="alert">{remoteControlError.trim()}</p>
         ) : null}
       </div>
     </div>

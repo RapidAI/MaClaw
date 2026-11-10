@@ -822,6 +822,98 @@
   font-size: 11px;
   font-weight: 700;
 }
+.mc-task-pane .mc-task-machine-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0 4px 8px;
+}
+.mc-task-pane .mc-task-machine-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.mc-task-pane .mc-task-machine-tabs::-webkit-scrollbar { display: none; }
+.mc-task-pane .mc-task-machine-tab,
+.mc-task-pane .mc-task-machine-tab-close,
+.mc-task-pane .mc-task-machine-add button,
+.mc-task-pane .mc-task-machine-create button,
+.mc-task-pane .mc-task-machine-detail button,
+.mc-task-pane .mc-task-machine-send button {
+  border: 1px solid var(--theme-border);
+  background: color-mix(in srgb, var(--theme-primary) 5%, var(--theme-surface));
+  color: var(--theme-text-secondary);
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.mc-task-pane .mc-task-machine-tab.is-active {
+  color: var(--theme-text-primary);
+  border-color: color-mix(in srgb, var(--theme-primary) 55%, var(--theme-border));
+  background: color-mix(in srgb, var(--theme-primary) 12%, var(--theme-surface));
+  font-weight: 700;
+}
+.mc-task-pane .mc-task-machine-tab-wrap {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+.mc-task-pane .mc-task-machine-tab i {
+  margin-left: 4px;
+  font-style: normal;
+  opacity: 0.7;
+}
+.mc-task-pane .mc-task-machine-tab-close {
+  margin-left: -6px;
+  padding: 2px 6px;
+}
+.mc-task-pane .mc-task-machine-note,
+.mc-task-pane .mc-task-machine-error,
+.mc-task-pane .mc-task-machine-add,
+.mc-task-pane .mc-task-machine-detail {
+  border: 1px solid var(--theme-border);
+  border-radius: 10px;
+  padding: 8px;
+  background: color-mix(in srgb, var(--theme-primary) 4%, var(--theme-surface));
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+}
+.mc-task-pane .mc-task-machine-error { color: var(--theme-danger, #b42318); }
+.mc-task-pane .mc-task-machine-add h3,
+.mc-task-pane .mc-task-machine-detail header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
+  color: var(--theme-text-primary);
+  font-size: 12px;
+}
+.mc-task-pane .mc-task-machine-add input,
+.mc-task-pane .mc-task-machine-create input,
+.mc-task-pane .mc-task-machine-send input {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 4px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  background: var(--theme-surface);
+  color: var(--theme-text-primary);
+}
+.mc-task-pane .mc-task-machine-messages {
+  max-height: 180px;
+  overflow: auto;
+}
+.mc-task-pane .mc-task-machine-messages p,
+.mc-task-pane .mc-task-machine-add p { margin: 4px 0; }
+.mc-task-pane .mc-task-machine-permission { display: flex; gap: 12px; margin-bottom: 8px; }
 .mc-task-pane .mc-task-filter-row {
   display: inline-flex;
   flex-wrap: wrap;
@@ -6229,42 +6321,55 @@ body.companion-pdf-translation-dragging * {
 .file-companion-project-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   container-type: inline-size;
 }
+/* A card is two rows: the document identity across the top, the state badges
+   and the action toolbar underneath. The title keeps the full inner width
+   instead of splitting the card with the buttons. The third column is capped
+   so a row with many actions wraps them rather than eating the badges. */
 .file-companion-project {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 300px);
+  grid-template-areas:
+    "lead main main"
+    "lead meta actions";
   align-items: center;
-  gap: 10px;
+  gap: 8px 10px;
   box-sizing: border-box;
   content-visibility: auto;
-  contain-intrinsic-size: auto 97px;
-  padding: 9px 10px;
+  contain-intrinsic-size: auto 100px;
+  padding: 10px 12px;
   border: 1px solid var(--theme-border, #d5e0ef);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg, 12px);
   background: var(--theme-surface, #ffffff);
   cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
 }
 .file-companion-project[data-open="true"] {
   border-color: color-mix(in srgb, var(--theme-primary, #2563eb) 40%, var(--theme-border, #d5e0ef));
   background: color-mix(in srgb, var(--theme-primary, #2563eb) 3%, var(--theme-surface, #ffffff));
+  box-shadow: inset 3px 0 0 var(--theme-primary, #2563eb);
 }
 .file-companion-project:hover:not(:has(.file-companion-project-drag:hover)):not(:has(.file-companion-project-actions:hover)) {
   border-color: color-mix(in srgb, var(--theme-primary, #2563eb) 45%, var(--theme-border, #d5e0ef));
   background: color-mix(in srgb, var(--theme-primary, #2563eb) 5%, var(--theme-surface, #ffffff));
+  box-shadow: var(--shadow-sm);
 }
 .file-companion-project[data-open="true"]:hover:not(:has(.file-companion-project-drag:hover)):not(:has(.file-companion-project-actions:hover)) {
   border-color: color-mix(in srgb, var(--theme-primary, #2563eb) 55%, var(--theme-border, #d5e0ef));
   background: color-mix(in srgb, var(--theme-primary, #2563eb) 8%, var(--theme-surface, #ffffff));
+  box-shadow: inset 3px 0 0 var(--theme-primary, #2563eb), var(--shadow-sm);
 }
 .file-companion-project[data-dragging="true"] {
   content-visibility: visible;
   opacity: 0.55;
 }
 .file-companion-project-drag {
+  grid-area: lead;
+  align-self: start;
   display: inline-flex;
   align-items: center;
-  align-self: stretch;
   gap: 8px;
   flex: 0 0 auto;
   min-width: 0;
@@ -6284,33 +6389,77 @@ body.companion-pdf-translation-dragging * {
   flex: 0 0 auto;
   width: 10px;
   align-self: stretch;
-  min-height: 28px;
+  min-height: 30px;
   border-radius: 4px;
   background-image: radial-gradient(circle, var(--theme-text-muted, #64748b) 1.1px, transparent 1.2px);
   background-size: 5px 6px;
   background-repeat: repeat;
   background-position: center;
-  opacity: 0.85;
+  opacity: 0.45;
+  transition: opacity 120ms ease;
 }
+.file-companion-project-drag:hover .file-companion-project-grip,
+.file-companion-project-drag:focus-within .file-companion-project-grip {
+  opacity: 0.9;
+}
+/* The extension tile is the card's colour anchor: one hue per document family,
+   mixed from the theme so every scheme keeps its own contrast. */
 .file-companion-project-kind {
+  --file-kind: var(--theme-primary, #2563eb);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
   box-sizing: border-box;
-  width: 38px;
-  height: 38px;
-  border-radius: var(--radius-sm, 6px);
-  background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
-  color: var(--theme-primary, #2563eb);
+  width: 40px;
+  height: 40px;
+  border: 1px solid color-mix(in srgb, var(--file-kind) 22%, transparent);
+  border-radius: var(--radius-md, 8px);
+  background: color-mix(in srgb, var(--file-kind) 10%, var(--theme-surface, #ffffff));
+  color: var(--file-kind);
   font: 700 10px/1 "Segoe UI", "SF Pro Text", system-ui, sans-serif;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
+}
+.file-companion-project > .file-companion-project-kind {
+  grid-area: lead;
+  align-self: start;
+}
+.file-companion-project-kind[data-kind="pdf"] {
+  --file-kind: var(--theme-danger, #dc2626);
+}
+.file-companion-project-kind[data-kind="doc"],
+.file-companion-project-kind[data-kind="docx"],
+.file-companion-project-kind[data-kind="rtf"] {
+  --file-kind: var(--theme-primary, #2563eb);
+}
+.file-companion-project-kind[data-kind="html"],
+.file-companion-project-kind[data-kind="htm"],
+.file-companion-project-kind[data-kind="xhtml"] {
+  --file-kind: var(--theme-primary-strong, #1e6bc5);
+}
+.file-companion-project-kind[data-kind="xls"],
+.file-companion-project-kind[data-kind="xlsx"],
+.file-companion-project-kind[data-kind="csv"] {
+  --file-kind: var(--theme-success, #1a7f37);
+}
+.file-companion-project-kind[data-kind="ppt"],
+.file-companion-project-kind[data-kind="pptx"],
+.file-companion-project-kind[data-kind="epub"],
+.file-companion-project-kind[data-kind="mobi"] {
+  --file-kind: var(--theme-warning, #9a6700);
+}
+.file-companion-project-kind[data-kind="md"],
+.file-companion-project-kind[data-kind="markdown"],
+.file-companion-project-kind[data-kind="mdx"],
+.file-companion-project-kind[data-kind="txt"],
+.file-companion-project-kind[data-kind="text"] {
+  --file-kind: var(--theme-text-secondary, #46586f);
 }
 .file-companion-project-main {
+  grid-area: main;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  flex: 1 1 0;
+  gap: 2px;
   min-width: 0;
 }
 .file-companion-project-titleline {
@@ -6324,7 +6473,7 @@ body.companion-pdf-translation-dragging * {
   border: 0;
   background: none;
   color: var(--theme-text-primary, #1f2937);
-  font: 600 13px/1.35 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  font: 600 13px/1.4 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
   text-align: left;
   cursor: pointer;
   overflow: hidden;
@@ -6352,19 +6501,22 @@ body.companion-pdf-translation-dragging * {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--theme-text-secondary, #46586f);
-  font: 400 12px/1.35 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  font: 500 12px/1.4 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
 }
 .file-companion-project-meta {
+  grid-area: meta;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 4px;
   margin: 0;
+  min-width: 0;
   font-size: 11.5px;
   line-height: 1.4;
   color: var(--theme-text-muted, #64748b);
 }
 .file-companion-project-facts {
+  flex: 0 1 auto;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6411,19 +6563,22 @@ body.companion-pdf-translation-dragging * {
   white-space: nowrap;
 }
 .file-companion-project-actions {
+  grid-area: actions;
   display: flex;
   align-items: center;
   align-content: center;
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 4px;
-  flex: 1 1 0;
   min-width: 0;
   cursor: default;
 }
+/* Each control sizes to its own label. The old quarter-width grid truncated
+   取消分享 and 添加分享 to ellipses on a narrow card. */
 .file-companion-project-actions > * {
-  flex: 0 1 calc(25% - 3px);
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
 }
 /* A cloud row is already a share. The mark says so. 添加分享 makes another
    link for a different person or group; 修改 edits the link on this row. */
@@ -6450,7 +6605,7 @@ body.companion-pdf-translation-dragging * {
   align-items: center;
   justify-content: center;
   height: 26px;
-  padding: 0 6px;
+  padding: 0 9px;
   overflow: hidden;
   text-overflow: ellipsis;
   border: 1px solid var(--theme-border, #d5e0ef);
@@ -6460,11 +6615,19 @@ body.companion-pdf-translation-dragging * {
   font: 600 11.5px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
   white-space: nowrap;
   cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
 }
 .file-companion-project-action:hover:not(:disabled) {
   border-color: var(--theme-primary, #2563eb);
   color: var(--theme-primary, #2563eb);
   background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+}
+/* 删除 / 取消分享 is the one control that takes data away, so it answers in the
+   danger hue instead of the same blue as 导出. */
+.file-companion-project-action[data-tone="danger"]:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-danger, #dc2626) 55%, var(--theme-border, #d5e0ef));
+  color: var(--theme-danger, #dc2626);
+  background: var(--theme-danger-bg, rgba(229, 72, 77, 0.06));
 }
 .file-companion-project-action:disabled {
   opacity: 0.45;
@@ -6485,17 +6648,14 @@ body.companion-pdf-translation-dragging * {
 }
 @container (max-width: 600px) {
   .file-companion-project {
-    flex-wrap: wrap;
-  }
-  .file-companion-project-main {
-    flex: 1 1 auto;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "lead main"
+      "meta meta"
+      "actions actions";
   }
   .file-companion-project-actions {
-    flex-basis: 100%;
-    width: 100%;
-  }
-  .file-companion-project-actions > * {
-    flex: 0 1 auto;
+    justify-content: flex-start;
   }
 }
 /* 分享 and 导入 popups share the password dialog's shell. */

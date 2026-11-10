@@ -761,6 +761,27 @@ describe("CompanionPlaceDialog", () => {
         expect(companionLibraryDocTitle({ name: "alpha.md", title: longTitle })).toBe(longTitle);
     });
 
+    it("gives the card title the whole row and keeps badges and actions below it", async () => {
+        listCatalog.mockResolvedValue({ rev: 1, folders: [{ id: "fld_paper", name: "论文" }], placements: {} });
+        renderLibrary([{ ...papers[0], name: "alpha.pdf", path: "C:/notes/alpha.pdf", title: "Attention Is All You Need" }]);
+        const card = await screen.findByTestId("file-companion-library-card-local:a");
+        const main = card.querySelector(".file-companion-project-main");
+        expect(main).toBeTruthy();
+        expect(main!.contains(screen.getByTestId("file-companion-library-item-local:a"))).toBe(true);
+        expect(main!.contains(screen.getByTestId("file-companion-library-doctitle-local:a"))).toBe(true);
+        // The badges and the toolbar are the card's second row. As columns they
+        // split the width with the title and ellipsized the document name.
+        const meta = screen.getByTestId("file-companion-library-meta-local:a");
+        expect(main!.contains(meta)).toBe(false);
+        expect(meta.parentElement).toBe(card);
+        expect(card.querySelector(".file-companion-project-actions")!.parentElement).toBe(card);
+        expect(card.querySelector(".file-companion-project-kind")!.getAttribute("data-kind")).toBe("pdf");
+        expect(screen.getByTestId("file-companion-library-delete-local:a").getAttribute("data-tone")).toBe("danger");
+        // 本机 is the source badge's job; the facts line carries weight and date.
+        expect(meta.textContent).toContain("12 B · 打开于 2026-10-25");
+        expect(meta.textContent!.match(/本机/g)).toHaveLength(1);
+    });
+
     it("does not add or remove layout messages when a background sync settles", async () => {
         const token = "cd_0123456789abcdef0123456789abcdef";
         const item = { id: token, token, name: "shared.pdf", path: "C:/notes/shared.pdf", source: "cloud", shareUrl: `https://hub.example/s/${token}`, mine: true, permanent: true };

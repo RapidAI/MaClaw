@@ -50,6 +50,55 @@ describe("NotificationPanel", () => {
         expect(screen.queryByTestId("notification-detail")).toBeNull();
     });
 
+    it("offers 接受/拒绝/忽略 for a remote-control invite", () => {
+        const invite: AdminNotification = {
+            id: "rc-invite",
+            title: "远控请求",
+            content: "办公室 请求远控你的电脑，权限：仅查看。",
+            category: "custom",
+            priority: "important",
+            is_read: false,
+            created_at: new Date().toISOString(),
+            source: "remote_control_invite",
+            source_id: "grant-1",
+        };
+        const onRemoteControl = vi.fn();
+        renderPanel({
+            notifications: [invite],
+            selectedNotification: invite,
+            onRemoteControl,
+        });
+        fireEvent.click(screen.getByTestId("notification-remote-accept"));
+        fireEvent.click(screen.getByTestId("notification-remote-decline"));
+        fireEvent.click(screen.getByTestId("notification-remote-ignore"));
+        expect(onRemoteControl).toHaveBeenNthCalledWith(1, "grant-1", "accept");
+        expect(onRemoteControl).toHaveBeenNthCalledWith(2, "grant-1", "decline");
+        expect(onRemoteControl).toHaveBeenNthCalledWith(3, "grant-1", "ignore");
+        expect(screen.queryByText("已忽略")).toBeNull();
+    });
+
+    it("offers 结束远控 while this computer is being controlled", () => {
+        const notice: AdminNotification = {
+            id: "rc-watch",
+            title: "远控已开始",
+            content: "办公室 正在以「可操作」使用这台电脑上的任务。",
+            category: "custom",
+            priority: "important",
+            is_read: false,
+            created_at: new Date().toISOString(),
+            source: "remote_control_notice",
+            source_id: "grant-2",
+        };
+        const onRemoteControl = vi.fn();
+        renderPanel({
+            notifications: [notice],
+            selectedNotification: notice,
+            onRemoteControl,
+        });
+        fireEvent.click(screen.getByTestId("notification-remote-end"));
+        expect(onRemoteControl).toHaveBeenCalledWith("grant-2", "end");
+    });
+
     it("offers 接受/拒绝 for a pending host transfer notice", () => {
         const token = "cd_0123456789abcdef0123456789abcdef";
         const transferNotice: AdminNotification = {

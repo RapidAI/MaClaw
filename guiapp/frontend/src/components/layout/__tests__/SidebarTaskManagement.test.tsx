@@ -1584,6 +1584,19 @@ describe('SidebarTaskManagement', () => {
         expect(createButton.textContent).not.toContain('+');
     });
 
+    it('puts machine tabs above the task list and keeps this computer on the left', () => {
+        renderTaskManagement({ lang: 'zh' });
+        const bar = screen.getByTestId('task-machine-bar');
+        const list = screen.getByTestId('sidebar-task-list');
+        const local = screen.getByTestId('task-machine-tab-local');
+        const add = screen.getByTestId('task-machine-add');
+        expect(bar.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(local.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(local.textContent).toContain('本机');
+        expect(add.textContent).toBe('+');
+        expect(screen.queryByRole('button', { name: /结束对本机/ })).toBeNull();
+    });
+
     it('opens task search on the right from the pane field and closes it when cleared', () => {
         const seen: Array<{ type: string; detail?: unknown }> = [];
         const listener = (event: Event) => {

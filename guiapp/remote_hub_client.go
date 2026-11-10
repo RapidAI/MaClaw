@@ -1229,6 +1229,45 @@ func (c *RemoteHubClient) SendSessionImage(img ImageTransferMessage) error {
 	return c.conn.WriteJSON(msg)
 }
 
+func (c *RemoteHubClient) handleRemoteControlExec(msg inboundHubEnvelope) {
+	var payload struct {
+		Op   string          `json:"op"`
+		Body json.RawMessage `json:"body"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		c.sendRemoteControlResult(msg.RequestID, nil, "远控请求无效")
+		return
+	}
+	result, err := c.app.executeRemoteControl(payload.Op, payload.Body)
+	errText := ""
+	if err != nil {
+		errText = err.Error()
+	}
+	c.sendRemoteControlResult(msg.RequestID, result, errText)
+}
+
+func (c *RemoteHubClient) sendRemoteControlResult(requestID string, result any, errText string) {
+	raw, err := json.Marshal(result)
+	if err != nil || len(raw) == 0 || string(raw) == "null" {
+		raw = []byte(`{}`)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return
+	}
+	_ = c.conn.WriteJSON(HubEnvelope{
+		Type:      "remote_control.result",
+		RequestID: requestID,
+		TS:        time.Now().Unix(),
+		MachineID: c.machineID,
+		Payload: map[string]any{
+			"body":  json.RawMessage(raw),
+			"error": errText,
+		},
+	})
+}
+
 func (c *RemoteHubClient) SyncSessions() {
 	if c.manager == nil {
 		return
@@ -1540,6 +1579,8 @@ func (c *RemoteHubClient) readLoop() {
 			c.handleNicknameAssigned(msg)
 		case hubInboundMessageNotificationPush:
 			go c.app.handleNotificationPush(msg.Payload)
+		case hubInboundMessageRemoteControlExec:
+			go c.handleRemoteControlExec(msg)
 		case hubInboundMessageMobileDigitalEmployeeTask:
 			// Hub push: claim immediately instead of waiting for the poll timer.
 			go c.handleMobileDigitalEmployeeTaskPush(msg)

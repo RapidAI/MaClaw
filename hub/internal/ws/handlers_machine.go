@@ -690,6 +690,8 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		case MessageTypeNotificationAck:
 			g.handleNotificationAck(ctx, msg)
+		case "remote_control.result":
+			deliverRemoteControlResult(ctx.MachineID, msg.RequestID, msg.Payload)
 		default:
 			_ = writeWSError(conn, "UNKNOWN_MESSAGE", "Unsupported message type")
 		}

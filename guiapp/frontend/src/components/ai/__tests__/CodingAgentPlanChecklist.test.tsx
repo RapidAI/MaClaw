@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, cleanup, fireEvent } from "@testing-library/react";
+import { render, cleanup, fireEvent, act } from "@testing-library/react";
 import { CodingAgentPlanChecklist, codingPlanProgressLabel } from "../CodingAgentPlanChecklist";
 import { codingStepGlyph } from "../CodingWorkbenchControlPanel";
 
@@ -24,7 +24,10 @@ const chrome = {
 
 const theme = { isDark: false, text: "#111", errorText: "#dc2626" } as any;
 
-afterEach(() => cleanup());
+afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+});
 
 describe("codingPlanProgressLabel", () => {
     it("counts finished steps", () => {
@@ -267,7 +270,8 @@ describe("CodingAgentPlanChecklist", () => {
         expect(fill.style.width).toBe("33%");
     });
 
-    it("collapses the step list behind the header and keeps it awake while approval is pending", () => {
+    it("shows the summary until hover, then the full step list", () => {
+        vi.useFakeTimers();
         const { getByTestId } = render(
             <CodingAgentPlanChecklist
                 lang="zh"
@@ -279,26 +283,244 @@ describe("CodingAgentPlanChecklist", () => {
                 ]}
             />,
         );
+        const card = getByTestId("coding-agent-plan-hover");
         const toggle = getByTestId("coding-agent-plan-toggle");
-        expect(toggle.getAttribute("aria-expanded")).toBe("true");
-        expect(getByTestId("coding-agent-plan-body").getAttribute("aria-hidden")).toBe("false");
-        expect(getByTestId("coding-agent-plan-step-1")).toBeTruthy();
-        fireEvent.click(toggle);
         expect(toggle.getAttribute("aria-expanded")).toBe("false");
-        const body = getByTestId("coding-agent-plan-body");
-        expect(body.getAttribute("aria-hidden")).toBe("true");
-        // Rows stay in the DOM, so expanding restores them without a refetch.
+        expect(getByTestId("coding-agent-plan-body").getAttribute("aria-hidden")).toBe("true");
+        expect(getByTestId("coding-agent-plan-progress").textContent).toContain("0/2");
+        // Rows stay mounted so the hover card does not rebuild them.
         expect(getByTestId("coding-agent-plan-step-1")).toBeTruthy();
-        // The preference is remembered for the next visit of this panel…
-        expect(window.localStorage.getItem("mc.planChecklist.collapsed")).toBe("1");
-        fireEvent.click(toggle);
+        fireEvent.mouseEnter(card);
         expect(toggle.getAttribute("aria-expanded")).toBe("true");
-        // …and cleared again when the user expands it back, so later sessions
-        // start expanded.
-        expect(window.localStorage.getItem("mc.planChecklist.collapsed")).toBe("0");
+        expect(getByTestId("coding-agent-plan-checklist").style.getPropertyValue("--capc-room")).toBe("120px");
+        expect(getByTestId("coding-agent-plan-body").getAttribute("aria-hidden")).toBe("false");
+        fireEvent.mouseLeave(card);
+        expect(toggle.getAttribute("aria-expanded")).toBe("true");
+        act(() => { vi.advanceTimersByTime(120); });
+        expect(toggle.getAttribute("aria-expanded")).toBe("false");
+        expect(getByTestId("coding-agent-plan-body").getAttribute("aria-hidden")).toBe("true");
+        vi.useRealTimers();
     });
 
-    it("forces the list open while the plan awaits its start decision", () => {
+    it("keeps the list under the pointer instead of pinned to the left", () => {
+        const { getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[
+                    { index: 1, title: "定位入口", status: "running" },
+                    { index: 2, title: "改登录", status: "pending" },
+                ]}
+            />,
+        );
+        const checklist = getByTestId("coding-agent-plan-checklist");
+        const popover = checklist.querySelector(".capc-popover") as HTMLElement;
+        vi.spyOn(checklist, "getBoundingClientRect").mockReturnValue({
+            top: 0, bottom: 40, left: 10, right: 410, width: 400, height: 40, x: 10, y: 0, toJSON() { return {}; },
+        });
+        Object.defineProperty(checklist, "clientWidth", { configurable: true, value: 400 });
+        Object.defineProperty(checklist, "clientLeft", { configurable: true, value: 0 });
+        Object.defineProperty(popover, "offsetWidth", { configurable: true, value: 200 });
+        const toggle = getByTestId("coding-agent-plan-toggle");
+        fireEvent.mouseMove(toggle, { clientX: 310 });
+        expect(popover.style.left).toBe("200px");
+        fireEvent.mouseMove(toggle, { clientX: 10 });
+        expect(popover.style.left).toBe("0px");
+    });
+
+    it("keeps the list open when it appears under the pointer", () => {
+        vi.useFakeTimers();
+        const { getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[
+                    { index: 1, title: "定位入口", status: "running" },
+                    { index: 2, title: "改登录", status: "pending" },
+                ]}
+            />,
+        );
+        const hover = getByTestId("coding-agent-plan-hover");
+        vi.spyOn(hover, "matches").mockImplementation((selector) => selector === ":hover");
+        fireEvent.mouseEnter(hover);
+        fireEvent.mouseLeave(hover);
+        act(() => { vi.advanceTimersByTime(120); });
+        expect(getByTestId("coding-agent-plan-toggle").getAttribute("aria-expanded")).toBe("true");
+        vi.useRealTimers();
+    });
+
+    it("closes once the pointer leaves a list that opened underneath it", () => {
+        vi.useFakeTimers();
+        const { getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[
+                    { index: 1, title: "定位入口", status: "running" },
+                    { index: 2, title: "改登录", status: "pending" },
+                ]}
+            />,
+        );
+        const hover = getByTestId("coding-agent-plan-hover");
+        let over = true;
+        vi.spyOn(hover, "matches").mockImplementation((selector) => selector === ":hover" && over);
+        fireEvent.mouseEnter(hover);
+        fireEvent.mouseLeave(hover);
+        act(() => { vi.advanceTimersByTime(120); });
+        expect(getByTestId("coding-agent-plan-toggle").getAttribute("aria-expanded")).toBe("true");
+        over = false;
+        act(() => { vi.advanceTimersByTime(120); });
+        expect(getByTestId("coding-agent-plan-toggle").getAttribute("aria-expanded")).toBe("false");
+        vi.useRealTimers();
+    });
+
+    it("caps the list at the space above the bar instead of a fixed floor", () => {
+        const column = document.createElement("div");
+        column.className = "aap-chat-column";
+        document.body.appendChild(column);
+        const rect = (top: number): DOMRect => ({
+            top, bottom: top, left: 0, right: 0, width: 0, height: 0, x: 0, y: top, toJSON() { return {}; },
+        });
+        const { getByTestId, unmount } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[{ index: 1, title: "定位入口", status: "running" }]}
+            />,
+            { container: column },
+        );
+        const checklist = getByTestId("coding-agent-plan-checklist");
+        vi.spyOn(column, "getBoundingClientRect").mockReturnValue(rect(100));
+        vi.spyOn(checklist, "getBoundingClientRect").mockReturnValue(rect(180));
+        fireEvent.mouseEnter(getByTestId("coding-agent-plan-hover"));
+        expect(checklist.style.getPropertyValue("--capc-room")).toBe("72px");
+        unmount();
+        column.remove();
+    });
+
+    it("stops the list at the transcript so it does not cover the chat header", () => {
+        const column = document.createElement("div");
+        column.className = "aap-chat-column";
+        const output = document.createElement("div");
+        output.dataset.testid = "ai-output-container";
+        const mount = document.createElement("div");
+        column.append(output, mount);
+        document.body.appendChild(column);
+        const rect = (top: number, height = 0): DOMRect => ({
+            top, bottom: top + height, left: 0, right: height > 0 ? 100 : 0, width: height > 0 ? 100 : 0, height, x: 0, y: top, toJSON() { return {}; },
+        });
+        const { getByTestId, unmount } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[{ index: 1, title: "定位入口", status: "running" }]}
+            />,
+            { container: mount },
+        );
+        const checklist = getByTestId("coding-agent-plan-checklist");
+        vi.spyOn(column, "getBoundingClientRect").mockReturnValue(rect(40, 500));
+        vi.spyOn(output, "getBoundingClientRect").mockReturnValue(rect(120, 200));
+        vi.spyOn(checklist, "getBoundingClientRect").mockReturnValue(rect(400, 40));
+        fireEvent.mouseEnter(getByTestId("coding-agent-plan-hover"));
+        expect(checklist.style.getPropertyValue("--capc-room")).toBe("272px");
+        unmount();
+        column.remove();
+    });
+
+    it("ignores a hidden transcript and caps the list at the column", () => {
+        const column = document.createElement("div");
+        column.className = "aap-chat-column";
+        const output = document.createElement("div");
+        output.dataset.testid = "ai-output-container";
+        const mount = document.createElement("div");
+        column.append(output, mount);
+        document.body.appendChild(column);
+        const rect = (top: number, height = 0): DOMRect => ({
+            top, bottom: top + height, left: 0, right: height > 0 ? 100 : 0, width: height > 0 ? 100 : 0, height, x: 0, y: top, toJSON() { return {}; },
+        });
+        const { getByTestId, unmount } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[{ index: 1, title: "定位入口", status: "running" }]}
+            />,
+            { container: mount },
+        );
+        const checklist = getByTestId("coding-agent-plan-checklist");
+        vi.spyOn(column, "getBoundingClientRect").mockReturnValue(rect(100, 400));
+        vi.spyOn(output, "getBoundingClientRect").mockReturnValue(rect(0, 0));
+        vi.spyOn(checklist, "getBoundingClientRect").mockReturnValue(rect(180, 40));
+        fireEvent.mouseEnter(getByTestId("coding-agent-plan-hover"));
+        expect(checklist.style.getPropertyValue("--capc-room")).toBe("72px");
+        unmount();
+        column.remove();
+    });
+
+    it("does not open the list from the start buttons, and keeps a keyboard focus open", () => {
+        vi.useFakeTimers();
+        const { getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                pendingApproval
+                ready
+                steps={[
+                    { index: 1, title: "写代码", status: "pending" },
+                    { index: 2, title: "验证", status: "pending" },
+                ]}
+            />,
+        );
+        const toggle = getByTestId("coding-agent-plan-toggle");
+        fireEvent.mouseEnter(getByTestId("coding-agent-plan-approve"));
+        expect(toggle.getAttribute("aria-expanded")).toBe("false");
+        fireEvent.focus(toggle);
+        expect(toggle.getAttribute("aria-expanded")).toBe("true");
+        fireEvent.mouseLeave(getByTestId("coding-agent-plan-hover"));
+        act(() => { vi.advanceTimersByTime(120); });
+        expect(toggle.getAttribute("aria-expanded")).toBe("true");
+        fireEvent.blur(toggle);
+        expect(toggle.getAttribute("aria-expanded")).toBe("false");
+        // Clicking the summary must not take focus, so the composer keeps the caret.
+        const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+        toggle.dispatchEvent(down);
+        expect(down.defaultPrevented).toBe(true);
+        expect(toggle.getAttribute("aria-expanded")).toBe("false");
+        fireEvent.keyDown(toggle, { key: "Escape" });
+        fireEvent.focus(toggle);
+        expect(toggle.getAttribute("aria-expanded")).toBe("true");
+        fireEvent.keyDown(toggle, { key: "Escape" });
+        expect(toggle.getAttribute("aria-expanded")).toBe("false");
+        vi.useRealTimers();
+    });
+
+    it("drops a stuck hover when the step list goes away", () => {
+        vi.useFakeTimers();
+        const props = {
+            lang: "zh" as const,
+            theme,
+            chrome,
+            steps: [
+                { index: 1, title: "写代码", status: "running" },
+                { index: 2, title: "验证", status: "pending" },
+            ],
+        };
+        const { getByTestId, rerender } = render(<CodingAgentPlanChecklist {...props} />);
+        fireEvent.mouseEnter(getByTestId("coding-agent-plan-hover"));
+        expect(getByTestId("coding-agent-plan-toggle").getAttribute("aria-expanded")).toBe("true");
+        rerender(<CodingAgentPlanChecklist {...props} pendingApproval steps={[]} />);
+        rerender(<CodingAgentPlanChecklist {...props} />);
+        expect(getByTestId("coding-agent-plan-toggle").getAttribute("aria-expanded")).toBe("false");
+        vi.useRealTimers();
+    });
+
+    it("keeps the start decision on the summary while the list stays on hover", () => {
         const { getByTestId } = render(
             <CodingAgentPlanChecklist
                 lang="zh"
@@ -312,9 +534,9 @@ describe("CodingAgentPlanChecklist", () => {
             />,
         );
         const toggle = getByTestId("coding-agent-plan-toggle");
-        expect(toggle.getAttribute("aria-expanded")).toBe("true");
-        // The header is not a working control while the gate is open.
-        expect(toggle.hasAttribute("disabled")).toBe(true);
+        expect(toggle.getAttribute("aria-expanded")).toBe("false");
+        expect(toggle.hasAttribute("disabled")).toBe(false);
+        expect(getByTestId("coding-agent-plan-body").getAttribute("aria-hidden")).toBe("true");
         expect(getByTestId("coding-agent-plan-approve")).toBeTruthy();
     });
 
@@ -339,6 +561,8 @@ describe("CodingAgentPlanChecklist", () => {
             expect(css).toContain(".capc-step-title { min-width: 0; flex: 1; overflow-wrap: anywhere; }");
             expect(css).toContain("[data-testid='coding-agent-plan-understanding'] { overflow-wrap: anywhere; }");
             expect(css).toContain(".capc-step-idx { flex-shrink: 0; min-width: 24px; opacity: 0.86; font-variant-numeric: tabular-nums; white-space: nowrap; }");
+            expect(css).toContain(".capc-popover { position: absolute; z-index: 6; left: 0; bottom: calc(100% - 6px); width: 50%; min-width: min(260px, 100%); max-width: 100%; box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }");
+            expect(css).toContain(".capc-popover-card { box-sizing: border-box; max-height: min(320px, var(--capc-room, 42vh)); overflow: auto; overscroll-behavior: contain; padding: 8px 10px; border-radius: 12px; box-shadow: 0 12px 32px rgba(34, 56, 82, 0.16); }");
         }
     });
 });

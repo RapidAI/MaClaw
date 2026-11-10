@@ -4,16 +4,24 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"html"
 	"io"
+	"mime"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/ianaindex"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 // fileCompanionLibraryFile is library.json. Titles live beside the rows so a
@@ -26,7 +34,7 @@ type fileCompanionLibraryFile struct {
 // fileCompanionTitleVersion bumps when the extractor can see a title it used
 // to miss. Records from an older version are read again even when the file
 // itself has not changed.
-const fileCompanionTitleVersion = 3
+const fileCompanionTitleVersion = 4
 
 // fileCompanionTitleRecord is one file's title at a size and mtime. An entry
 // with an empty title means the file was read and had nothing to show, so the
@@ -257,10 +265,24 @@ func fileCompanionDocumentTitle(path string) (title string, size int64, mod int6
 		title, ok = fileCompanionPDFTitle(path, size)
 	case ".md", ".markdown", ".mdx":
 		title, ok = fileCompanionHeadingTitle(path)
-	case ".html", ".htm":
+	case ".adoc", ".asciidoc":
+		title, ok = fileCompanionAdocTitle(path)
+	case ".html", ".htm", ".xhtml":
 		title, ok = fileCompanionHTMLTitle(path)
 	case ".docx", ".pptx", ".xlsx":
 		title, ok = fileCompanionOfficeCoreTitle(path)
+	case ".epub":
+		title, ok = fileCompanionEPUBTitle(path)
+	case ".xml":
+		title, ok = fileCompanionXMLTitle(path)
+	case ".yaml", ".yml":
+		title, ok = fileCompanionYAMLTitle(path)
+	case ".json":
+		title, ok = fileCompanionJSONTitle(path)
+	case ".eml":
+		title, ok = fileCompanionEMLTitle(path)
+	case ".txt", ".text":
+		title, ok = fileCompanionPlainTextTitle(path)
 	default:
 		return "", size, mod, true
 	}
@@ -738,18 +760,77 @@ func xmpElementText(seg []byte, closeTag string) string {
 	return fileCompanionCleanTitle(html.UnescapeString(string(raw)))
 }
 
-func fileCompanionHeadingTitle(path string) (string, bool) {
+func fileCompanionReadBytesHead(path string, limit int64) ([]byte, bool) {
 	file, err := os.Open(path)
 	if err != nil {
-		return "", false
+		return nil, false
 	}
 	defer file.Close()
-	buf := make([]byte, 8192)
-	n, err := file.Read(buf)
-	if err != nil && err != io.EOF {
+	raw, err := io.ReadAll(io.LimitReader(file, limit))
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+// fileCompanionReadTextHead reads a bounded prefix as text. Every text-format
+// extractor goes through it so a GBK or UTF-16 document yields a readable
+// title instead of mojibake.
+func fileCompanionReadTextHead(path string, limit int64) (string, bool) {
+	raw, ok := fileCompanionReadBytesHead(path, limit)
+	if !ok {
 		return "", false
 	}
-	text := strings.TrimPrefix(string(buf[:n]), "\uFEFF")
+	return fileCompanionDecodeText(raw), true
+}
+
+// fileCompanionDecodeText normalises a text prefix to UTF-8. A BOM decides the
+// encoding outright. Without one, invalid UTF-8 is tried as GBK first because
+// a Chinese document is the common case, but GBK accepts almost any byte pair,
+// so it only wins when the result actually carries Han characters.
+func fileCompanionDecodeText(raw []byte) string {
+	if len(raw) >= 2 {
+		if raw[0] == 0xFF && raw[1] == 0xFE {
+			return utf16BytesToString(raw[2:], false)
+		}
+		if raw[0] == 0xFE && raw[1] == 0xFF {
+			return utf16BytesToString(raw[2:], true)
+		}
+	}
+	raw = bytes.TrimPrefix(raw, []byte("\uFEFF"))
+	if utf8.Valid(raw) {
+		return string(raw)
+	}
+	// A bounded read can cut the final rune in half. That is still UTF-8, and
+	// guessing a codepage from it would turn a Chinese heading into noise.
+	for cut := 1; cut <= 3 && cut < len(raw); cut++ {
+		if utf8.Valid(raw[:len(raw)-cut]) {
+			return string(raw[:len(raw)-cut])
+		}
+	}
+	if decoded, err := simplifiedchinese.GBK.NewDecoder().Bytes(raw); err == nil && utf8.Valid(decoded) && decodedTextHasHan(decoded) {
+		return string(decoded)
+	}
+	if decoded, err := charmap.Windows1252.NewDecoder().Bytes(raw); err == nil && utf8.Valid(decoded) {
+		return string(decoded)
+	}
+	return string(raw)
+}
+
+func decodedTextHasHan(raw []byte) bool {
+	for _, r := range string(raw) {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
+}
+
+func fileCompanionHeadingTitle(path string) (string, bool) {
+	text, ok := fileCompanionReadTextHead(path, 8192)
+	if !ok {
+		return "", false
+	}
 	if strings.HasPrefix(text, "---") {
 		rest := text[3:]
 		end := strings.Index(rest, "\n---")
@@ -987,31 +1068,167 @@ func stripMarkdownHeading(value string) string {
 }
 
 func fileCompanionHTMLTitle(path string) (string, bool) {
-	file, err := os.Open(path)
-	if err != nil {
+	data, ok := fileCompanionReadBytesHead(path, 32<<10)
+	if !ok {
 		return "", false
 	}
-	defer file.Close()
-	buf := make([]byte, 32<<10)
-	n, err := file.Read(buf)
-	if err != nil && err != io.EOF {
-		return "", false
+	return htmlDocumentTitle(data), true
+}
+
+// htmlDocumentTitle keeps <title> first: it is the canonical name and the
+// existing extraction depends on it. A saved page that left it empty still
+// carries the share card's og:title, and a bare fragment carries only an h1.
+func htmlDocumentTitle(data []byte) string {
+	if title := htmlTitleElement(data); title != "" {
+		return title
 	}
-	data := buf[:n]
+	if title := htmlMetaTitle(data); title != "" {
+		return title
+	}
+	return htmlFirstHeading(data)
+}
+
+func htmlTitleElement(data []byte) string {
 	idx := htmlTitleOpen(data)
 	if idx < 0 {
-		return "", true
+		return ""
 	}
 	seg := data[idx:]
 	gt := bytes.IndexByte(seg, '>')
 	if gt < 0 || gt > 200 {
-		return "", true
+		return ""
 	}
 	end := htmlTitleClose(seg[gt:])
 	if end < 0 {
-		return "", true
+		return ""
 	}
-	return html.UnescapeString(string(seg[gt+1 : gt+end])), true
+	return strings.TrimSpace(html.UnescapeString(fileCompanionDecodeText(seg[gt+1 : gt+end])))
+}
+
+func htmlMetaTitle(data []byte) string {
+	lower := bytes.ToLower(data)
+	from := 0
+	for from < len(lower) {
+		rel := bytes.Index(lower[from:], []byte("<meta"))
+		if rel < 0 {
+			return ""
+		}
+		at := from + rel
+		next := at + len("<meta")
+		if next < len(data) && !htmlTitleBoundary(data[next]) {
+			from = next
+			continue
+		}
+		end := bytes.IndexByte(data[at:], '>')
+		if end < 0 {
+			return ""
+		}
+		tag := data[at : at+end+1]
+		for _, key := range []string{"property", "name"} {
+			switch strings.ToLower(htmlAttr(tag, key)) {
+			case "og:title", "twitter:title", "dc.title", "title":
+				if content := strings.TrimSpace(htmlAttr(tag, "content")); content != "" {
+					return html.UnescapeString(fileCompanionDecodeText([]byte(content)))
+				}
+			}
+		}
+		from = at + end + 1
+	}
+	return ""
+}
+
+func htmlFirstHeading(data []byte) string {
+	lower := bytes.ToLower(data)
+	rel := bytes.Index(lower, []byte("<h1"))
+	if rel < 0 {
+		return ""
+	}
+	next := rel + len("<h1")
+	if next < len(data) && !htmlTitleBoundary(data[next]) {
+		return ""
+	}
+	seg := data[rel:]
+	gt := bytes.IndexByte(seg, '>')
+	if gt < 0 || gt > 200 {
+		return ""
+	}
+	end := bytes.Index(bytes.ToLower(seg[gt:]), []byte("</h1"))
+	if end < 0 {
+		return ""
+	}
+	text := htmlStripTags(seg[gt+1 : gt+end])
+	return strings.TrimSpace(html.UnescapeString(fileCompanionDecodeText([]byte(text))))
+}
+
+func htmlStripTags(raw []byte) string {
+	var b strings.Builder
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '<' {
+			b.WriteByte(raw[i])
+			continue
+		}
+		end := bytes.IndexByte(raw[i:], '>')
+		if end < 0 {
+			break
+		}
+		i += end
+	}
+	return b.String()
+}
+
+// htmlAttr reads one attribute out of a tag. The name has to stand alone:
+// "data-title" is not "title", and the value may be quoted or bare.
+func htmlAttr(tag []byte, name string) string {
+	lower := bytes.ToLower(tag)
+	needle := []byte(strings.ToLower(name))
+	from := 0
+	for from < len(lower) {
+		rel := bytes.Index(lower[from:], needle)
+		if rel < 0 {
+			return ""
+		}
+		at := from + rel
+		from = at + len(needle)
+		if at > 0 && htmlAttrNameByte(lower[at-1]) {
+			continue
+		}
+		i := from
+		for i < len(tag) && htmlSpaceByte(tag[i]) {
+			i++
+		}
+		if i >= len(tag) || tag[i] != '=' {
+			continue
+		}
+		i++
+		for i < len(tag) && htmlSpaceByte(tag[i]) {
+			i++
+		}
+		if i >= len(tag) {
+			return ""
+		}
+		if quote := tag[i]; quote == '"' || quote == '\'' {
+			i++
+			end := bytes.IndexByte(tag[i:], quote)
+			if end < 0 {
+				return ""
+			}
+			return string(tag[i : i+end])
+		}
+		end := i
+		for end < len(tag) && !htmlSpaceByte(tag[end]) && tag[end] != '>' {
+			end++
+		}
+		return string(tag[i:end])
+	}
+	return ""
+}
+
+func htmlAttrNameByte(b byte) bool {
+	return b == '-' || b == '_' || b == ':' || b == '.' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
+func htmlSpaceByte(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\r' || b == '\n'
 }
 
 func htmlTitleOpen(data []byte) int {
@@ -1062,6 +1279,7 @@ func fileCompanionOfficeCoreTitle(path string) (string, bool) {
 	defer reader.Close()
 	var core string
 	var document []byte
+	var slide []byte
 	var failed bool
 	for _, file := range reader.File {
 		name := strings.ToLower(filepath.ToSlash(file.Name))
@@ -1080,6 +1298,13 @@ func fileCompanionOfficeCoreTitle(path string) (string, bool) {
 				continue
 			}
 			document = raw
+		case "ppt/slides/slide1.xml":
+			raw, err := readZipLimited(file, 64<<10)
+			if err != nil {
+				failed = true
+				continue
+			}
+			slide = raw
 		}
 	}
 	if strings.TrimSpace(core) != "" {
@@ -1090,10 +1315,78 @@ func fileCompanionOfficeCoreTitle(path string) (string, bool) {
 	if title := docxDocumentTitle(document); title != "" {
 		return title, true
 	}
+	// PowerPoint leaves it empty too. The title placeholder on the first slide
+	// is the name the deck opens with.
+	if title := pptxSlideTitle(slide); title != "" {
+		return title, true
+	}
 	if failed {
 		return "", false
 	}
 	return "", true
+}
+
+func pptxSlideTitle(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	lower := bytes.ToLower(body)
+	at := -1
+	for _, marker := range []string{`type="ctrtitle"`, `type="title"`} {
+		if idx := bytes.Index(lower, []byte(marker)); idx >= 0 && (at < 0 || idx < at) {
+			at = idx
+		}
+	}
+	if at < 0 {
+		return ""
+	}
+	seg := body[at:]
+	if end := bytes.Index(bytes.ToLower(seg), []byte("</p:txbody>")); end >= 0 {
+		seg = seg[:end]
+	}
+	title := pptxShapeText(seg)
+	if utf8.RuneCountInString(title) > 120 {
+		return ""
+	}
+	return title
+}
+
+func pptxShapeText(block []byte) string {
+	var b strings.Builder
+	lower := bytes.ToLower(block)
+	from := 0
+	for from < len(lower) {
+		rel := bytes.Index(lower[from:], []byte("<a:t"))
+		if rel < 0 {
+			break
+		}
+		at := from + rel
+		next := at + len("<a:t")
+		if next < len(block) && !htmlTitleBoundary(block[next]) {
+			from = next
+			continue
+		}
+		seg := block[at:]
+		gt := bytes.IndexByte(seg, '>')
+		if gt <= 0 {
+			break
+		}
+		if seg[gt-1] == '/' {
+			from = at + gt + 1
+			continue
+		}
+		end := bytes.Index(bytes.ToLower(seg[gt:]), []byte("</a:t"))
+		if end < 0 {
+			break
+		}
+		b.WriteString(html.UnescapeString(string(seg[gt+1 : gt+end])))
+		nextFrom := at + gt + end + len("</a:t")
+		if nextFrom <= from {
+			break
+		}
+		from = nextFrom
+	}
+	return fileCompanionCleanTitle(b.String())
 }
 
 func readZipLimited(file *zip.File, limit int64) ([]byte, error) {
@@ -1237,4 +1530,335 @@ func officeDCTitle(body []byte) string {
 		return ""
 	}
 	return html.UnescapeString(string(seg[gt+1 : gt+end]))
+}
+
+// fileCompanionEPUBTitle follows container.xml to the package document. The
+// OPF holds the book's dc:title; a spine entry or a chapter heading does not.
+func fileCompanionEPUBTitle(path string) (string, bool) {
+	reader, err := zip.OpenReader(path)
+	if err != nil {
+		return "", false
+	}
+	defer reader.Close()
+	opfPath := ""
+	var fallback *zip.File
+	for _, file := range reader.File {
+		name := epubEntryName(file.Name)
+		switch {
+		case name == "meta-inf/container.xml":
+			raw, err := readZipLimited(file, 32<<10)
+			if err == nil {
+				opfPath = epubRootfilePath(raw)
+			}
+		case strings.HasSuffix(name, ".opf") && fallback == nil:
+			fallback = file
+		}
+	}
+	target := fallback
+	if opfPath != "" {
+		want := epubEntryName(opfPath)
+		for _, file := range reader.File {
+			if epubEntryName(file.Name) == want {
+				target = file
+				break
+			}
+		}
+	}
+	if target == nil {
+		return "", true
+	}
+	raw, err := readZipLimited(target, 128<<10)
+	if err != nil {
+		return "", false
+	}
+	return officeDCTitle(raw), true
+}
+
+func epubEntryName(name string) string {
+	return strings.ToLower(strings.TrimPrefix(filepath.ToSlash(name), "/"))
+}
+
+func epubRootfilePath(data []byte) string {
+	rel := bytes.Index(bytes.ToLower(data), []byte("<rootfile"))
+	if rel < 0 {
+		return ""
+	}
+	end := bytes.IndexByte(data[rel:], '>')
+	if end < 0 {
+		return ""
+	}
+	return htmlAttr(data[rel:rel+end+1], "full-path")
+}
+
+// fileCompanionXMLTitle covers the documents that carry a title element:
+// DocBook and DITA use <title>, SVG uses <title>, and a feed uses it for the
+// channel. Dublin Core wins where both are present.
+func fileCompanionXMLTitle(path string) (string, bool) {
+	text, ok := fileCompanionReadTextHead(path, 64<<10)
+	if !ok {
+		return "", false
+	}
+	data := []byte(text)
+	if title := strings.TrimSpace(officeDCTitle(data)); title != "" {
+		return title, true
+	}
+	return htmlTitleElement(data), true
+}
+
+// fileCompanionYAMLTitle reads a top-level title. An indented one belongs to a
+// nested record, so the scan stops at the first unindented key that names it
+// and hands the rest to the front-matter reader, which already folds block
+// scalars and strips quotes and comments.
+func fileCompanionYAMLTitle(path string) (string, bool) {
+	text, ok := fileCompanionReadTextHead(path, 32<<10)
+	if !ok {
+		return "", false
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if i > 400 {
+			break
+		}
+		if yamlIndented(line) {
+			continue
+		}
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") || strings.HasPrefix(trim, "- ") {
+			continue
+		}
+		key, _, found := markdownFrontKey(trim)
+		if found && strings.EqualFold(key, "title") {
+			title, _ := markdownFrontTitle(strings.Join(lines[i:], "\n"))
+			return title, true
+		}
+	}
+	return "", true
+}
+
+// fileCompanionJSONTitle reads a top-level "title", then "name". A nested key
+// belongs to a record inside the document, so the scan tracks depth rather
+// than searching the buffer for the first match.
+func fileCompanionJSONTitle(path string) (string, bool) {
+	text, ok := fileCompanionReadTextHead(path, 256<<10)
+	if !ok {
+		return "", false
+	}
+	dec := json.NewDecoder(strings.NewReader(text))
+	depth := 0
+	rootObject := false
+	expectKey := false
+	key := ""
+	title := ""
+	name := ""
+	for {
+		token, err := dec.Token()
+		if err != nil {
+			break
+		}
+		if delim, isDelim := token.(json.Delim); isDelim {
+			switch delim {
+			case '{':
+				depth++
+				if depth == 1 {
+					rootObject = true
+					expectKey = true
+				}
+			case '[':
+				depth++
+				if depth == 1 {
+					rootObject = false
+				}
+			case '}', ']':
+				depth--
+				expectKey = depth == 1 && rootObject
+			}
+			key = ""
+			if depth <= 0 {
+				break
+			}
+			continue
+		}
+		if depth != 1 || !rootObject {
+			continue
+		}
+		value, isText := token.(string)
+		if expectKey {
+			key = value
+			expectKey = false
+			continue
+		}
+		if isText {
+			switch key {
+			case "title":
+				if title == "" {
+					title = value
+				}
+			case "name":
+				if name == "" {
+					name = value
+				}
+			}
+		}
+		key = ""
+		expectKey = true
+	}
+	if strings.TrimSpace(title) != "" {
+		return title, true
+	}
+	return name, true
+}
+
+// fileCompanionEMLTitle reads the Subject header. A folded continuation line
+// belongs to it, and a "Subject:" in the body is content. Encoded words carry
+// their own charset, so the decoder is told how to read one.
+func fileCompanionEMLTitle(path string) (string, bool) {
+	text, ok := fileCompanionReadTextHead(path, 64<<10)
+	if !ok {
+		return "", false
+	}
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	headers := normalized
+	if idx := strings.Index(normalized, "\n\n"); idx >= 0 {
+		headers = normalized[:idx]
+	}
+	subject := ""
+	collecting := false
+	for _, line := range strings.Split(headers, "\n") {
+		if line == "" {
+			break
+		}
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			if collecting {
+				subject += " " + strings.TrimSpace(line)
+			}
+			continue
+		}
+		collecting = false
+		colon := strings.IndexByte(line, ':')
+		if colon <= 0 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(line[:colon]), "subject") {
+			subject = strings.TrimSpace(line[colon+1:])
+			collecting = true
+		}
+	}
+	if subject == "" {
+		return "", true
+	}
+	decoder := &mime.WordDecoder{
+		CharsetReader: func(charset string, input io.Reader) (io.Reader, error) {
+			enc, err := ianaindex.MIME.Encoding(charset)
+			if err != nil {
+				return nil, err
+			}
+			if enc == nil {
+				return nil, errors.New("unsupported charset")
+			}
+			return enc.NewDecoder().Reader(input), nil
+		},
+	}
+	decoded, err := decoder.DecodeHeader(subject)
+	if err != nil || !utf8.ValidString(decoded) {
+		return "", true
+	}
+	return decoded, true
+}
+
+// fileCompanionAdocTitle reads the level-0 heading. An explicit :doctitle:
+// attribute overrides it, which is how an author names a document whose first
+// line is a section heading.
+func fileCompanionAdocTitle(path string) (string, bool) {
+	text, ok := fileCompanionReadTextHead(path, 16<<10)
+	if !ok {
+		return "", false
+	}
+	heading := ""
+	for i, line := range strings.Split(text, "\n") {
+		if i > 120 {
+			break
+		}
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "//") {
+			continue
+		}
+		if strings.HasPrefix(trim, ":") {
+			rest := trim[1:]
+			colon := strings.IndexByte(rest, ':')
+			if colon > 0 && strings.EqualFold(strings.TrimSpace(rest[:colon]), "doctitle") {
+				if value := strings.TrimSpace(rest[colon+1:]); value != "" {
+					return value, true
+				}
+			}
+			continue
+		}
+		if heading == "" && strings.HasPrefix(trim, "= ") {
+			heading = strings.TrimSpace(trim[2:])
+		}
+	}
+	return heading, true
+}
+
+// fileCompanionPlainTextTitle takes the opening line as a name only when a
+// body follows it. A single-line file is all content, and a log or table
+// opening line is not a title.
+func fileCompanionPlainTextTitle(path string) (string, bool) {
+	text, ok := fileCompanionReadTextHead(path, 16<<10)
+	if !ok {
+		return "", false
+	}
+	first := ""
+	hasBody := false
+	for _, line := range strings.Split(text, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == "" {
+			continue
+		}
+		if first == "" {
+			first = trim
+			continue
+		}
+		hasBody = true
+		break
+	}
+	if !hasBody || !plainTextTitleLine(first) {
+		return "", true
+	}
+	return first, true
+}
+
+func plainTextTitleLine(line string) bool {
+	runes := []rune(line)
+	if len(runes) == 0 || len(runes) > 120 || strings.ContainsRune(line, '\t') {
+		return false
+	}
+	switch runes[0] {
+	case '[', '{', '<', '>', '|', '#':
+		return false
+	}
+	lower := strings.ToLower(line)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return false
+	}
+	separator := true
+	alnum := false
+	for _, r := range runes {
+		if r != '-' && r != '=' && r != '*' && r != '_' && r != '~' && r != ' ' {
+			separator = false
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			alnum = true
+		}
+	}
+	if separator || !alnum {
+		return false
+	}
+	// 2026-11-10, 10/11/2026 and 07:23:46 open a log line, not a name.
+	if unicode.IsDigit(runes[0]) {
+		rest := strings.TrimLeftFunc(line, unicode.IsDigit)
+		if rest != "" && (rest[0] == '-' || rest[0] == '/' || rest[0] == ':') {
+			return false
+		}
+	}
+	return true
 }

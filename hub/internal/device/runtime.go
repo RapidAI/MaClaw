@@ -535,6 +535,15 @@ func (s *Service) DrainPendingMessages(machineID string) {
 	}
 }
 
+// SendToOnlineMachine delivers a request that must not run later.
+// SendToMachine queues the payload when the desktop is offline and
+// replays it on reconnect. A remote-control call has already returned
+// "offline" to the controller by then, so the queued command would
+// create a task or send a message with nobody waiting for the result.
+func (s *Service) SendToOnlineMachine(machineID string, msg any) error {
+	return s.sendDirect(machineID, msg)
+}
+
 // sendDirect sends a message to a machine without buffering to the pending
 // queue on failure. Used by DrainPendingMessages to avoid re-enqueue loops.
 func (s *Service) sendDirect(machineID string, msg any) error {

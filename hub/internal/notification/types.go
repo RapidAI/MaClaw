@@ -83,6 +83,14 @@ const SourceCompanionShare = "companion_share"
 const SourceCompanionHostTransfer = "companion_host_transfer"
 const SourceCompanionHostTransferNotice = "companion_host_transfer_notice"
 
+// Remote-control notices are raised by the desktop task list, not by an admin.
+// SourceRemoteControlInvite is the accept / reject / ignore request.
+// SourceRemoteControlNotice tells the controlled machine that access is active.
+// SourceRemoteControlResult tells the inviter about accept, reject, revoke, or expiry.
+const SourceRemoteControlInvite = "remote_control_invite"
+const SourceRemoteControlNotice = "remote_control_notice"
+const SourceRemoteControlResult = "remote_control_result"
+
 // Notification is the core domain model for an admin notification.
 type Notification struct {
 	ID           string       `json:"id"`
