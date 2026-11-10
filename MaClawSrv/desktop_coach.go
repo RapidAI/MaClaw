@@ -164,11 +164,15 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 	var notes []string
 
 	progressed := false
+	if desktopTransportFailure(err) {
+		// The browser was not reached: where it is is unknown again.
+		p.lastURL = ""
+	}
 	if err == nil {
 		if action == "navigate" || action == "deliver" || action == "request_takeover" || action == "file_write" {
 			progressed = true
 		}
-		if u := desktopFirstURL(out); u != "" && u != p.lastURL {
+		if u := desktopFirstURL(out); u != "" && u != p.lastURL && desktopPageURLActions[action] {
 			if p.lastURL != "" {
 				progressed = true
 			}
@@ -245,6 +249,13 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 	log.Printf("[desktop-coach] run=%s actions=%d idle=%d notes=%d", scope.RunID, st.actions, p.idle, len(notes))
 	return "\n\n" + strings.Join(notes, "\n")
 }
+
+// desktopPageURLActions report the page the browser is on. A URL in a shell
+// transcript, a file or a screenshot's tab list is not where the browser is:
+// run_5ecb9d6d's bash read a leftover CSDN draft tab out of the DevTools list
+// while every browser step failed, and the publish plan then said "the
+// editor is open" (compose) without any step having seen the editor.
+var desktopPageURLActions = map[string]bool{"navigate": true, "probe": true, "script": true, "click": true, "type": true, "press": true, "wait": true, "rich_fill": true, "upload": true, "publish": true, "batch": true}
 
 func desktopFirstURL(out string) string {
 	for _, line := range strings.Split(out, "\n") {

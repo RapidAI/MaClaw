@@ -91,6 +91,7 @@ func requestDesktopTakeover(ctx context.Context, scope agentruntime.Scope, reaso
 	desktopEmitNote(scope, "takeover_request", "human", reason)
 	noteDesktopAttention(scope.TenantID, scope.UserID, scope.InstanceID, reason)
 	noteDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID)
+	desktopNoteAskOrTakeover(scope.RunID)
 	return "Takeover requested. The person now sees this desktop with your reason: " + reason +
 		". Do not use the desktop any more in this turn. End your turn now with one short, friendly sentence in your own voice telling them what to do. Do not tell them to press 交还: the desktop comes back to you by itself once they are signed in, have published, or stop touching it, and you continue then.", nil
 }

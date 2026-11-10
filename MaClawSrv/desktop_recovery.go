@@ -816,6 +816,13 @@ func desktopRecover(request agentruntime.TurnRequest, scope agentruntime.Scope, 
 			// goal of the named site, else of the site being worked on.
 			found = desktopRecWaitingFor(waiting, strings.ToLower(goal), desktopPublishSiteFor(scope, args))
 		}
+		if found == "" && len(waiting) == 0 && strings.HasPrefix(strings.ToLower(goal), "publish") {
+			// Nothing of this task waits for a diagnosis: the publish
+			// attempts never got as far as the site (run_5ecb9d6d: two CDP
+			// dial failures, then "is not a goal of this task" for a goal the
+			// person did ask for). Say what is known instead of refusing.
+			return desktopRecoverNothingWaiting(scope, args), nil
+		}
 		if found == "" {
 			return "", fmt.Errorf("recover: %q is not a goal of this task (goals waiting for a diagnosis: %s)", goal, strings.Join(waiting, ", "))
 		}
@@ -1226,4 +1233,31 @@ func desktopRecWaitingFor(waiting []string, name, current string) string {
 		return k
 	}
 	return pick(func(site string) bool { return site == current })
+}
+
+// desktopRecoverNothingWaiting: the answer to recover when this run's
+// publish has no goal waiting for a diagnosis.
+func desktopRecoverNothingWaiting(scope agentruntime.Scope, args map[string]any) string {
+	site := desktopPublishSiteFor(scope, args)
+	var blocked []string
+	if st := desktopRunFor(desktopOwner(scope)); st != nil {
+		st.mu.Lock()
+		for intent, class := range st.blocked {
+			blocked = append(blocked, intent+" ("+class+")")
+		}
+		st.mu.Unlock()
+	}
+	out := "recover: no publish goal of this run is waiting for a diagnosis"
+	if site != "" {
+		out += " (site " + site + ")"
+	}
+	out += ": the publish attempts did not reach the site's editor, so there is no measured result to diagnose and no strategy was refuted."
+	if len(blocked) > 0 {
+		sort.Strings(blocked)
+		out += " Blocked in this run: " + strings.Join(blocked, ", ") + "."
+	}
+	if desktopRouteDown(scope.RunID) {
+		out += " The browser connection is failing; the next browser step reconnects first (screenshot shows the screen meanwhile)."
+	}
+	return out + " Next: call action=publish again (it reconnects and opens a fresh editor), or request_takeover, or report this part as not done with the error."
 }

@@ -160,6 +160,10 @@ func desktopUnstickAfterTimeout(scope agentruntime.Scope, action string, args ma
 	if v := strings.ToLower(strings.TrimSpace(os.Getenv("MACLAW_DESKTOP_UNSTICK"))); v == "off" || v == "0" || v == "false" {
 		return ""
 	}
+	if action != "navigate" && desktopRouteDown(scope.RunID) {
+		log.Printf("[desktop-step] unstick after %s timeout skipped: the browser route is down", action)
+		return desktopRouteDownNote
+	}
 	if action != "navigate" && desktopFormDirty(scope) {
 		// Closing the tab would throw away what the bot (or the person)
 		// typed and uploaded: papers 10-31 05:50 / 05:57 a slow screenshot on

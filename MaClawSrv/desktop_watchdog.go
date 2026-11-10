@@ -245,7 +245,9 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 		}
 		if !applied {
 			desktopApplyOutcome(msg, outcome, why)
-			if posted := desktopPostedNotice(run.ID, msg.Content); posted != "" {
+			if fix := desktopPostCorrection(run.ID, msg.Content); fix != "" {
+				msg.Content = fix + "\n" + msg.Content
+			} else if posted := desktopPostedNotice(run.ID, msg.Content); posted != "" {
 				msg.Content = posted + "\n" + msg.Content
 			}
 		}
@@ -354,13 +356,38 @@ func desktopOutcomeNotice(outcome, why, content string) string {
 // question-only chat (no desktop step) has no outcome.
 func desktopRunOutcome(runID string, msg *agentservice.Message) (string, string) {
 	outcome, why := desktopRecoveryOutcome(runID)
+	// A post the site itself confirmed (from any step) settles the publish
+	// part, whatever the publish action's own result was.
+	outcome, why = desktopReconcileOutcome(runID, outcome, why)
 	desktopRecStateMu.Lock()
 	steps := desktopRecRunSteps[runID]
 	desktopRecStateMu.Unlock()
 	if outcome == "" && steps && msg != nil && msg.Metadata["response_source"] == "ask_user" {
 		return "awaiting_user", "waiting for the person's answer"
 	}
+	if outcome == "" && msg != nil && strings.TrimSpace(msg.Content) != "" && desktopRunWorked(runID) && !desktopOutcomeSaysNotDone.MatchString(msg.Content) {
+		// A run that did its work and answered without a measured gap is
+		// done: every finished desktop run carries an outcome.
+		return agentservice.TaskOutcomeDone, ""
+	}
 	return outcome, why
+}
+
+// desktopRunWorked: the run executed desktop steps and its last one did not fail.
+func desktopRunWorked(runID string) bool {
+	desktopRecStateMu.Lock()
+	steps := desktopRecRunSteps[runID]
+	desktopRecStateMu.Unlock()
+	if !steps {
+		return false
+	}
+	if st := desktopRunForID(runID); st != nil {
+		st.mu.Lock()
+		failed := st.lastFailed
+		st.mu.Unlock()
+		return !failed
+	}
+	return true
 }
 
 // desktopTaskOutcomeMetadata is the assistant metadata the service turns
@@ -375,7 +402,9 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 	}
 	out := map[string]string{agentservice.TaskOutcomeKey: outcome}
 	n := desktopOutcomeNotice(outcome, why, msg.Content)
-	if posted := desktopPostedNotice(runID, msg.Content); posted != "" {
+	if fix := desktopPostCorrection(runID, msg.Content); fix != "" {
+		n = strings.TrimSpace(fix + "\n" + n)
+	} else if posted := desktopPostedNotice(runID, msg.Content); posted != "" {
 		n = strings.TrimSpace(n + "\n" + posted)
 	}
 	if n != "" {

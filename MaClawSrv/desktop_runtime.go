@@ -176,6 +176,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"insert_prep_keys": map[string]any{"type": "string", "description": "publish: native key chords pressed in the editor before each picture, e.g. \"ctrl+End,Enter\" (caret keys, Enter and Escape only)"},
 				"insert_settle_ms": map[string]any{"type": "integer", "description": "publish: wait before each picture, ms (≤20000)"},
 				"trial_pictures":   map[string]any{"type": "integer", "description": "publish: a test: fill title and body and insert the first N (1-3) pictures, never submit"},
+				"reuse_draft":      map[string]any{"type": "boolean", "description": "publish: write on the draft the tab shows (only when the person asked to continue that draft); by default a new post opens a fresh editor"},
 				"check_posted":     map[string]any{"type": "boolean", "description": "publish: first look (read-only) in the post list at verify_url for this title; if it is already there nothing is filled or posted. Use it after the person was handed the editor to publish"},
 				"republish":        map[string]any{"type": "boolean", "description": "publish: only when the person explicitly asked to post the same article again; otherwise a post already on record is never repeated"},
 				"explore":          map[string]any{"type": "boolean", "description": "publish: read-only probe of the editor (fields, frames, file inputs, publish buttons, notices); types, uploads and clicks nothing. Use it on a new site before the real publish"},
@@ -408,6 +409,28 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 		desktopStepEnded(opCtx) // rich_fill returns at its real end
 	} else {
 		out, err = operateDesktopWithTimeout(opCtx, scope, opArgs)
+		if err != nil && ctx.Err() == nil && desktopHealAllowed(desktopOwner(scope), actionName, err) {
+			// The step never reached the browser: heal the route and run
+			// it once more before the failure counts (desktop_heal.go).
+			first := err
+			did := desktopHealTransport(ctx, scope)
+			log.Printf("[desktop-heal] run=%s action=%s after %q: %s; retrying once", scope.RunID, actionName, desktopClipWhy(first.Error()), did)
+			desktopEmitNote(scope, "transport_heal", "bot", did)
+			out, err = operateDesktopWithTimeout(opCtx, scope, opArgs)
+			if err == nil {
+				out = "(the browser connection had dropped; it was reconnected and this step ran again)\n" + out
+			} else if desktopTransportFailure(err) {
+				err = fmt.Errorf("%w (the connection was reset and the desktop session requested again; it still fails, so this is the infrastructure)", err)
+			}
+		}
+	}
+	// Blocks the dead route caused are lifted once a step reaches the
+	// browser again; a slow page's or site's timeouts stay.
+	routeWasDown := desktopRouteDown(scope.RunID)
+	desktopNoteRoute(scope.RunID, actionName, err)
+	desktopNoteProgressAfterAsk(scope, actionName, err)
+	if err == nil && routeWasDown && desktopReachesBrowser(actionName) {
+		desktopClearInfraBlocks(desktopOwner(scope))
 	}
 	if recAtt != nil && recAtt.deadline > 0 && errors.Is(err, context.DeadlineExceeded) {
 		err = fmt.Errorf("desktop %s stopped at the attempt time its goal had left (%s); run goal_check to measure what was reached", actionName, recAtt.deadline.Round(time.Second))
@@ -420,6 +443,9 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 		desktopNoteClipboard(desktopOwner(scope), args)
 	}
 	desktopRecordStep(ctx, desktopOwner(scope), args, out, err, took)
+	if err == nil {
+		desktopObservePublishEvidence(desktopOwner(scope), actionName, out)
+	}
 	desktopNoteStepResult(desktopOwner(scope), err)
 	desktopExperienceRecord(scope, desktopRunSite(desktopOwner(scope)), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	failWarn := desktopFailClassRecord(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
@@ -921,7 +947,11 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		if action == "app_list" {
 			defer beginDesktopActivity(scope.RunID, "正在查看")()
 			text, listErr := operateDesktopApp(ctx, scope, endpoint.Display, action, args, nil)
-			return withDesktopPages(text, listErr, endpoint.CDP, "")
+			attached := ""
+			if binding.session != nil && binding.addr == endpoint.CDP && desktopSessionConnected(binding.session) {
+				attached = binding.session.TargetID
+			}
+			return withDesktopPages(text, listErr, endpoint.CDP, attached)
 		}
 		// Steps replace this with the verb they are actually performing.
 		// The shot after an input step says the screen is being read.
@@ -2147,6 +2177,15 @@ func listDesktopOpenPages(addr, attachedID string) string {
 		return ""
 	}
 	attachedID = strings.TrimSpace(attachedID)
+	if !desktopPagesBelongToAttached(targets, attachedID) {
+		// The list must be this display's browser. The CDP route is shared
+		// by every bot display (one gate port, routed by token per
+		// connection), and a reused connection listed another display's
+		// tabs (run_5ecb9d6d: Bot 1's screenshot listed Bot 3's 小红书 tabs).
+		// Without the attached page in it there is no proof whose it is.
+		log.Printf("[desktop] open-page list dropped: attached=%q not in the %d listed target(s)", attachedID, len(targets))
+		return ""
+	}
 	targets = trimDesktopTabs(addr, attachedID, targets)
 	lines := make([]string, 0, len(targets))
 	for _, target := range targets {
@@ -2167,6 +2206,20 @@ func listDesktopOpenPages(addr, attachedID string) string {
 		return ""
 	}
 	return "Open browser pages (" + strconv.Itoa(len(lines)) + "), including tabs behind the front window:\n" + strings.Join(lines, "\n")
+}
+
+// desktopPagesBelongToAttached: the listed targets include the page this
+// run's browser session is attached to.
+func desktopPagesBelongToAttached(targets []browser.TargetInfo, attachedID string) bool {
+	if attachedID == "" {
+		return false
+	}
+	for _, t := range targets {
+		if t.ID == attachedID {
+			return true
+		}
+	}
+	return false
 }
 
 func desktopPageLocation(raw string) string {

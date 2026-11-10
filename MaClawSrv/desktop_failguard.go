@@ -52,7 +52,7 @@ func desktopIntentClass(action string, args map[string]any) string {
 
 // desktopInfraErrRe: the browser, the desktop or the network did not answer
 // (run_854d0758: "cdp timeout: Page.navigate", "could not open the editor").
-var desktopInfraErrRe = regexp.MustCompile(`cdp timeout|page\.navigate \(id=|could not open the editor|verify page did not load|websocket: |target closed|no such target|connection (refused|reset)|desktop is not open|desktop not open|browser is not (running|reachable)`)
+var desktopInfraErrRe = regexp.MustCompile(`cdp timeout|cdp dial|cdp websocket connection failed|discover targets:|bad handshake|i/o timeout|page\.navigate \(id=|could not open the editor|verify page did not load|websocket: |target closed|no such target|connection (refused|reset)|desktop is not open|desktop not open|browser is not (running|reachable)`)
 
 // desktopIntentClassFor is desktopIntentClass with publish blocked per target
 // site: one site timing out says nothing about the others of a multi-site
@@ -110,6 +110,13 @@ func desktopFailClassCheck(scope agentruntime.Scope, action string, args map[str
 	class := st.blocked[intent]
 	st.mu.Unlock()
 	if class == "" {
+		return nil
+	}
+	if class == "infra_timeout" && desktopHealActions[action] && desktopRouteEverFailed(scope.RunID) && desktopHealTake(scope.RunID) {
+		// The route to the browser is healed by the call itself before it
+		// counts again (desktop_heal.go); refusing it would leave the run
+		// no way to find out the browser is back.
+		log.Printf("[desktop-guard] intent=%s infra-blocked: let through to heal the browser route", intent)
 		return nil
 	}
 	log.Printf("[desktop-guard] refused intent=%s after error_class=%s x%d", intent, class, desktopFailClassLimit)

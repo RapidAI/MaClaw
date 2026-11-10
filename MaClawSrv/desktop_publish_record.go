@@ -35,6 +35,8 @@ type desktopPublishRecord struct {
 	Pending string `json:"pending,omitempty"`
 	// Errors and NetLog: the last calls' errors and the page's writes,
 	// truncated, kept so a failed publish can be diagnosed afterwards.
+	// Drafts: editor pages this run's calls ended on (their own drafts).
+	Drafts  []string  `json:"drafts,omitempty"`
 	Errors  []string  `json:"errors,omitempty"`
 	NetLog  []string  `json:"net_log,omitempty"`
 	Updated time.Time `json:"updated"`
@@ -213,6 +215,12 @@ func desktopRecordPublish(scope agentruntime.Scope, spec browser.PublishSpec, re
 				r.Errors = r.Errors[len(r.Errors)-desktopRecordErrMax:]
 			}
 		}
+		if rep != nil && rep.EditorPage != "" && !desktopStrIn(r.Drafts, rep.EditorPage) {
+			r.Drafts = append(r.Drafts, rep.EditorPage)
+			if len(r.Drafts) > 4 {
+				r.Drafts = r.Drafts[len(r.Drafts)-4:]
+			}
+		}
 		if rep != nil {
 			r.Evidence, r.Notice, r.Pending = rep.Evidence, rep.Notice, rep.Pending
 			r.NetLog = rep.NetLog
@@ -346,4 +354,13 @@ func firstNonEmptyStr(v ...string) string {
 		}
 	}
 	return ""
+}
+
+func desktopStrIn(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }

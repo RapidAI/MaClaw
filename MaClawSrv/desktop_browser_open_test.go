@@ -24,7 +24,7 @@ func TestDesktopBrowserOpenAsNavigate(t *testing.T) {
 
 func TestDesktopDeliverSizeHint(t *testing.T) {
 	err := desktopDeliverSizeHint(map[string]any{"action": "deliver"}, errors.New("docker service rejected the desktop request (HTTP 400): invalid desktop request: file is too large"))
-	if err == nil || !strings.Contains(err.Error(), "150000 bytes") {
+	if err == nil || !strings.Contains(err.Error(), "525000 bytes") || !strings.Contains(err.Error(), "150000") {
 		t.Fatal(err)
 	}
 	if desktopDeliverSizeHint(map[string]any{"action": "bash"}, nil) != nil {

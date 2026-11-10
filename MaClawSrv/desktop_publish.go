@@ -73,6 +73,13 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 	if spec.EditURL == "" {
 		spec.EditURL = ts.EditURL
 	}
+	// A new post opens a fresh editor; only this run's own drafts (an
+	// earlier call that failed) or a draft the person asked to continue
+	// (reuse_draft=true) are written on.
+	if rec, ok := desktopPublishRecordOf(scope.RunID); ok {
+		spec.OwnDrafts = append([]string(nil), rec.Drafts...)
+	}
+	spec.ReuseDraft = desktopArgBool(args, "reuse_draft")
 	expURL := spec.EditorURL
 	if expURL == "" {
 		expURL = session.CurrentURL()

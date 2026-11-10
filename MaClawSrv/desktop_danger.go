@@ -36,6 +36,7 @@ func refuseDesktopDanger(ctx context.Context, scope agentruntime.Scope, action s
 	})
 	if result.Ask.Text != "" {
 		desktopbot.NoteDangerAsk(desktopDangerAskKeys(scope), result.Ask)
+		desktopNoteAskOrTakeover(scope.RunID)
 	}
 	if result.Run {
 		return nil
