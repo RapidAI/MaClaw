@@ -76,7 +76,6 @@ func TestBotMemoryCRUDIsolation(t *testing.T) {
 	}
 }
 
-
 func TestDeleteBotMemoriesBulk(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
 	if err != nil {
@@ -114,5 +113,30 @@ func TestDeleteBotMemoriesBulk(t *testing.T) {
 	left, err := store.ListBotMemories("desktop-user", "bot_a", "", "")
 	if err != nil || len(left) != 0 {
 		t.Fatalf("left=%v err=%v", left, err)
+	}
+}
+
+func TestBotMemoryRejectsProtectedLifecycleTrap(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	if _, err := store.SaveBotMemory("desktop-user", "bot_a", "identity", string(CategorySelfIdentity), nil); err == nil {
+		t.Fatal("protected bot memory creation should fail")
+	}
+	entry, err := store.SaveBotMemory("desktop-user", "bot_a", "editable fact", string(CategoryUserFact), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateBotMemory("desktop-user", "bot_a", entry.ID, "identity", string(CategorySelfIdentity), nil); err == nil {
+		t.Fatal("editing a bot memory into a protected category should fail")
+	}
+	entries, err := store.ListBotMemories("desktop-user", "bot_a", "", "")
+	if err != nil || len(entries) != 1 || entries[0].Content != "editable fact" {
+		t.Fatalf("entries after rejected protected edit = %+v, err=%v", entries, err)
+	}
+	if err := store.DeleteBotMemory("desktop-user", "bot_a", entry.ID); err != nil {
+		t.Fatal(err)
 	}
 }

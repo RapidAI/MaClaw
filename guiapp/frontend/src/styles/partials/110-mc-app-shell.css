@@ -376,8 +376,8 @@
 }
 .mc-task-pane__toolbar-divider {
     width: 1px;
-    height: 16px;
-    margin: 0 4px;
+    height: 18px;
+    margin: 0 3px;
     background: var(--theme-border-subtle, #e6edf5);
 }
 .mc-task-pane > .mc-task-pane__header .mc-task-pane__toolbar > button.mc-task-pane__create-group {
@@ -438,7 +438,7 @@
     display: inline-flex;
     align-items: center;
     flex: 0 0 auto;
-    gap: 6px;
+    gap: 3px;
     margin: 0;
     padding: 0;
     border: 0;
@@ -449,8 +449,8 @@
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    width: 28px !important;
-    height: 28px !important;
+    width: 30px !important;
+    height: 30px !important;
     padding: 0;
     border: 0 !important;
     border-radius: var(--radius-md) !important;

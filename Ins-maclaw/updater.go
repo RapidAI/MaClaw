@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,6 +22,11 @@ const (
 	r2LatestManifestURL     = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest.json"
 	r2PublicBaseURL         = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev"
 	minInstallerBytes       = 5 * 1024 * 1024
+
+	// downloadStallTimeout aborts a download whose body delivers zero bytes
+	// for this long, so a half-open connection cannot hold the whole source
+	// timeout.
+	downloadStallTimeout = 60 * time.Second
 )
 
 type updateManifest struct {
@@ -64,7 +70,6 @@ func updateHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
 }
 
 func fetchLatestReleaseFast(ctx context.Context, productName, targetFileName string) (latestReleaseInfo, error) {
-	var errors []string
 	checks := []struct {
 		source  string
 		url     string
@@ -73,14 +78,32 @@ func fetchLatestReleaseFast(ctx context.Context, productName, targetFileName str
 		{source: "github", url: githubLatestManifestURL, timeout: 4 * time.Second},
 		{source: "r2", url: r2LatestManifestURL, timeout: 5 * time.Second},
 	}
-	for _, check := range checks {
-		release, err := fetchManifestLatestRelease(ctx, productName, targetFileName, check.source, check.url, check.timeout)
-		if err == nil {
-			return release, nil
-		}
-		errors = append(errors, fmt.Sprintf("%s: %v", check.source, err))
+	// Both endpoints serve the same publisher-generated manifest, so query
+	// them concurrently and take the first successful answer. On machines
+	// where github.com is unreachable this keeps discovery at mirror latency
+	// instead of always paying the dead source's full timeout first.
+	type outcome struct {
+		release latestReleaseInfo
+		source  string
+		err     error
 	}
-	return latestReleaseInfo{}, fmt.Errorf("all latest manifest checks failed: %s", strings.Join(errors, "; "))
+	results := make(chan outcome, len(checks))
+	for _, check := range checks {
+		check := check
+		go func() {
+			release, err := fetchManifestLatestRelease(ctx, productName, targetFileName, check.source, check.url, check.timeout)
+			results <- outcome{release: release, source: check.source, err: err}
+		}()
+	}
+	failures := make([]string, 0, len(checks))
+	for range checks {
+		out := <-results
+		if out.err == nil {
+			return out.release, nil
+		}
+		failures = append(failures, fmt.Sprintf("%s: %v", out.source, out.err))
+	}
+	return latestReleaseInfo{}, fmt.Errorf("all latest manifest checks failed: %s", strings.Join(failures, "; "))
 }
 
 func fetchManifestLatestRelease(parent context.Context, productName, targetFileName, source, manifestURL string, timeout time.Duration) (latestReleaseInfo, error) {
@@ -91,7 +114,9 @@ func fetchManifestLatestRelease(parent context.Context, productName, targetFileN
 		return latestReleaseInfo{}, err
 	}
 	req.Header.Set("User-Agent", productName+"-Installer")
-	resp, err := updateHTTPClient(timeout).Do(req)
+	client := updateHTTPClient(timeout)
+	defer client.CloseIdleConnections()
+	resp, err := client.Do(req)
 	if err != nil {
 		return latestReleaseInfo{}, err
 	}
@@ -101,7 +126,7 @@ func fetchManifestLatestRelease(parent context.Context, productName, targetFileN
 		return latestReleaseInfo{}, fmt.Errorf("%s latest manifest returned status %d: %s", source, resp.StatusCode, string(bodyText))
 	}
 	var manifest updateManifest
-	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&manifest); err != nil {
 		return latestReleaseInfo{}, err
 	}
 	tagName := strings.TrimSpace(manifest.Tag)
@@ -131,6 +156,12 @@ func fetchManifestLatestRelease(parent context.Context, productName, targetFileN
 
 func manifestAssetDownloadURLs(manifest updateManifest, fileName, tagName string) []string {
 	urls := []string{}
+	if tagName != "" {
+		// The immutable per-tag mirror always matches the manifest checksum.
+		// latest/<file> is rewritten before the manifest during publish, so
+		// it is only a later fallback.
+		urls = append(urls, immutableReleaseAssetURL(tagName, fileName))
+	}
 	if asset, ok := manifest.Assets[fileName]; ok {
 		urls = append(urls, asset.URLs...)
 		urls = append(urls, asset.URL)
@@ -147,6 +178,10 @@ func manifestAssetDownloadURLs(manifest updateManifest, fileName, tagName string
 
 func r2ReleaseAssetURL(fileName string) string {
 	return fmt.Sprintf("%s/latest/%s", r2PublicBaseURL, fileName)
+}
+
+func immutableReleaseAssetURL(tagName, fileName string) string {
+	return fmt.Sprintf("%s/releases/%s/%s", r2PublicBaseURL, url.PathEscape(tagName), url.PathEscape(fileName))
 }
 
 func combineDownloadURLList(urls ...string) string {
@@ -262,12 +297,18 @@ func downloadInstallerFromURL(ctx context.Context, productName, downloadURL, des
 	}
 	sourceCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(sourceCtx, http.MethodGet, downloadURL, nil)
+	// reqCtx lets the stall watchdog below abort a half-open connection
+	// mid-body without confusing that abort with the whole-source timeout.
+	reqCtx, reqCancel := context.WithCancel(sourceCtx)
+	defer reqCancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", productName+"-Installer")
-	resp, err := updateHTTPClient(12 * time.Second).Do(req)
+	client := updateHTTPClient(12 * time.Second)
+	defer client.CloseIdleConnections()
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -293,9 +334,32 @@ func downloadInstallerFromURL(ctx context.Context, productName, downloadURL, des
 	var downloaded int64
 	buf := make([]byte, 256*1024)
 	lastReport := time.Now()
+	// A half-open TCP connection can deliver zero bytes for the entire
+	// source timeout. Abort when no byte has arrived for downloadStallTimeout
+	// so the next mirror gets its turn instead of hanging the download.
+	var lastReadNanos atomic.Int64
+	lastReadNanos.Store(time.Now().UnixNano())
+	stallDone := make(chan struct{})
+	defer close(stallDone)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stallDone:
+				return
+			case <-ticker.C:
+				if time.Since(time.Unix(0, lastReadNanos.Load())) > downloadStallTimeout {
+					reqCancel()
+					return
+				}
+			}
+		}
+	}()
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
+			lastReadNanos.Store(time.Now().UnixNano())
 			if _, writeErr := out.Write(buf[:n]); writeErr != nil {
 				_ = os.Remove(tmpPath)
 				return writeErr
@@ -313,6 +377,9 @@ func downloadInstallerFromURL(ctx context.Context, productName, downloadURL, des
 			_ = os.Remove(tmpPath)
 			if sourceCtx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("download source timed out: %s", downloadURL)
+			}
+			if reqCtx.Err() == context.Canceled {
+				return fmt.Errorf("download stalled (no data for %s): %s", downloadStallTimeout, downloadURL)
 			}
 			return readErr
 		}

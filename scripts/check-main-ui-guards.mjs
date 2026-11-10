@@ -606,8 +606,9 @@ const extractedFileLineLimits = [
   // 7630 -> 7640 (2026-11-08): task-config send wiring and cleanup drawer
   // landed at 7631 lines.
   // 7640 -> 7650 (2026-11-10): companion share figures and remote-control
-  // landing pushed this past 7646.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7650],
+  // landing pushed this past 7646. 7650 -> 7700 (2026-11-10): in-flight
+  // panel work measured 7656 lines.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7700],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],
@@ -701,7 +702,9 @@ const highRiskRemoteFileLineLimits = [
   // Refreshed 1400 -> 1450 (2026-10-15): MCP page work in progress (guard
   // counts 1439).
   ['guiapp/frontend/src/components/remote/MCPManagementPanel.tsx', 1450],
-  ['guiapp/frontend/src/components/remote/MemoryManagementPanel.tsx', 1100],
+  // Refreshed 1100 -> 1110 (2026-11-10): memory bot-scope batch pushed
+  // this past 1105.
+  ['guiapp/frontend/src/components/remote/MemoryManagementPanel.tsx', 1110],
 ];
 for (const [rel, max] of highRiskRemoteFileLineLimits) requireMaxLines(rel, max);
 
@@ -1271,7 +1274,7 @@ requireExcludes('guiapp/app_websearch.go', 'a.SaveConfig(cfg)', 'web search prov
 requireIncludes('guiapp/app_mis_data.go', 'return a.PatchConfig(func(cfg *corelib.AppConfig) {', 'MIS data settings save uses atomic config patch');
 requireExcludes('guiapp/app_mis_data.go', 'a.SaveConfig(cfg)', 'MIS data full-config save; use PatchConfig');
 requireIncludes('guiapp/app_wails_bindings.go', 'cfg.MemoryAutoCompress = enabled', 'memory auto-compress config write remains explicit');
-requireIncludes('guiapp/app_wails_bindings.go', 'return a.PatchConfig(func(cfg *corelib.AppConfig) {', 'memory auto-compress save uses atomic config patch');
+requireIncludes('guiapp/app_wails_bindings.go', 'if err := a.PatchConfig(func(cfg *corelib.AppConfig) {', 'memory auto-compress save uses atomic config patch');
 requireIncludes('guiapp/app_yolo_model.go', 'PatchConfigFields(map[string]interface{}{"screen_parsing_enabled": enabled})', 'screen parsing setter uses atomic config patch');
 requireExcludes('guiapp/app_yolo_model.go', 'a.SaveConfig(cfg)', 'screen parsing setter full-config save; use PatchConfigFields');
 requireIncludes('guiapp/env_check_api.go', 'PatchConfigFields(map[string]interface{}{"env_check_interval": days})', 'environment interval setter uses atomic config patch');

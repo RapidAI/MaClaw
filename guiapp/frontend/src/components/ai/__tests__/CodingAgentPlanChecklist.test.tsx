@@ -56,6 +56,7 @@ describe("codingStepGlyph", () => {
     it("uses Codex checklist marks", () => {
         expect(codingStepGlyph("passed")).toBe("☑");
         expect(codingStepGlyph("running")).toBe("…");
+        expect(codingStepGlyph("running", false)).toBe("‖");
         expect(codingStepGlyph("pending")).toBe("☐");
         expect(codingStepGlyph("failed")).toBe("✗");
     });
@@ -154,6 +155,57 @@ describe("CodingAgentPlanChecklist", () => {
         expect(getByTestId("coding-agent-plan-step-1-sr-status").textContent).toContain("进行中");
         expect(getByTestId("coding-agent-plan-step-2").getAttribute("aria-current")).toBeNull();
         expect(getByTestId("coding-agent-plan-step-2-sr-status").textContent).toContain("待确认");
+        expect(getByTestId("coding-agent-plan-step-1").querySelector("[data-icon='spin']")).toBeTruthy();
+        expect(getByTestId("coding-agent-plan-current").querySelector(".capc-pulse-dot")).toBeTruthy();
+    });
+
+    it("stops the current-step spinner after the task is interrupted", () => {
+        const { getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                executionLive={false}
+                executionStatusLabel="已中断"
+                steps={[
+                    { index: 3, title: "Fix build", status: "passed" },
+                    { index: 4, title: "Harden error handling", status: "running" },
+                    { index: 5, title: "Optimize", status: "pending" },
+                ]}
+            />,
+        );
+        const current = getByTestId("coding-agent-plan-step-4");
+        expect(current.getAttribute("data-status")).toBe("running");
+        expect(current.getAttribute("aria-current")).toBe("step");
+        expect((current as HTMLElement).style.fontWeight).toBe("400");
+        expect((current as HTMLElement).style.background).toBe("");
+        expect(current.querySelector("[data-icon='hold']")).toBeTruthy();
+        expect(current.querySelector(".capc-spin")).toBeNull();
+        expect(getByTestId("coding-agent-plan-current").querySelector(".capc-pulse-dot")).toBeNull();
+        expect(getByTestId("coding-agent-plan-current").textContent).toContain("T4");
+        expect(getByTestId("coding-agent-plan-current").textContent).toContain("已中断");
+        expect(getByTestId("coding-agent-plan-current").textContent).not.toContain("进行中");
+        expect(getByTestId("coding-agent-plan-step-4-sr-status").textContent).toContain("已中断");
+        expect(getByTestId("coding-agent-plan-step-3").querySelector("[data-icon='hold']")).toBeNull();
+        expect(getByTestId("coding-agent-plan-step-5").querySelector(".capc-spin")).toBeNull();
+    });
+
+    it("uses the task status for a stopped step that has no title", () => {
+        const { getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                executionLive={false}
+                executionStatusLabel="已暂停"
+                steps={[{ index: 2, status: "running" }]}
+            />,
+        );
+        const step = getByTestId("coding-agent-plan-step-2");
+        expect(step.textContent).toContain("已暂停");
+        expect(step.textContent).not.toContain("进行中");
+        expect(step.querySelector("[data-icon='hold']")).toBeTruthy();
+        expect(getByTestId("coding-agent-plan-current").textContent).toContain("已暂停");
     });
 
     it("falls back to a localized status label when a step has no title", () => {

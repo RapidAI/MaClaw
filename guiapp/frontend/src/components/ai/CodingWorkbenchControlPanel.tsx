@@ -119,11 +119,13 @@ export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodin
     };
 }
 
-/** Codex-style checklist mark for a workbench / agent step. */
-export function codingStepGlyph(status: string): string {
+/** Codex-style checklist mark for a workbench / agent step.
+ *  A stored running row is only the cursor. When the task itself is not
+ *  live, the mark is a pause bar instead of an ellipsis. */
+export function codingStepGlyph(status: string, live = true): string {
     if (codingStepIsDone(status)) return "☑";
     if (codingStepIsFailed(status)) return "✗";
-    if (codingStepIsActive(status)) return "…";
+    if (codingStepIsActive(status)) return live ? "…" : "‖";
     if (codingStepIsSkipped(status)) return "–";
     return "☐";
 }
@@ -164,6 +166,20 @@ export function codingStepStatusLabel(lang: string | undefined, status: string):
     return status || localizeText(lang, "Pending", "待确认", "待確認");
 }
 
+/** Status the user should read. A running cursor keeps "in progress" only
+ *  while the task is live; otherwise it shows the task outcome (interrupted,
+ *  paused, cancelled). A blank outcome falls back to stopped, not interrupted. */
+export function codingStepPresentedLabel(
+    lang: string | undefined,
+    status: string,
+    live = true,
+    heldLabel = "",
+): string {
+    if (live || !codingStepIsActive(status)) return codingStepStatusLabel(lang, status);
+    const held = heldLabel.trim();
+    return held || localizeText(lang, "Stopped", "已停止", "已停止");
+}
+
 export type CodingStepStatus = {
     index: number;
     title?: string;
@@ -197,6 +213,9 @@ export type CodingWorkbenchControlPanelProps = {
      * Pass the height of any header bar above the chat area so the chip
      * floats over the client area instead of overlapping header actions. */
     defaultTop?: number;
+    /** False when the task header is not in progress. The running step stays
+     *  the cursor, but the chip must not keep the in-progress ellipsis. */
+    executionLive?: boolean;
     children: ReactNode;
 };
 
@@ -208,6 +227,7 @@ export function deriveChipStatus(
     preparing?: boolean,
     prepareMode?: string,
     needsAttention?: boolean,
+    executionLive = true,
 ): string {
     if (preparing && prepareMode === "new-agent") {
         return localizeText(lang, "Starting…", "启动中…", "啟動中…");
@@ -218,7 +238,7 @@ export function deriveChipStatus(
     }
     const running = steps.find((s) => codingStepIsActive(s.status));
     if (running) {
-        return `T${running.index}…`;
+        return executionLive ? `T${running.index}…` : `T${running.index}`;
     }
     if (pendingApproval) {
         return localizeText(lang, "Pending", "待批", "待批");
@@ -285,6 +305,7 @@ export function CodingWorkbenchControlPanel({
     onExpandedChange,
     envDescription,
     defaultTop = 8,
+    executionLive = true,
     children,
 }: CodingWorkbenchControlPanelProps) {
     const rootRef = useRef<HTMLDivElement | null>(null);
@@ -372,8 +393,8 @@ export function CodingWorkbenchControlPanel({
 
     // Prefer step progress on the chip; pending/conflict badges carry those states.
     const status = useMemo(
-        () => deriveChipStatus(lang, stepStatuses, false, preparing, prepareMode, false),
-        [lang, stepStatuses, preparing, prepareMode],
+        () => deriveChipStatus(lang, stepStatuses, false, preparing, prepareMode, false, executionLive),
+        [lang, stepStatuses, preparing, prepareMode, executionLive],
     );
     // Hide idle "Ready" to keep the chip compact when nothing is happening.
     const showStatusText = useMemo(() => {

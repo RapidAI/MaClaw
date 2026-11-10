@@ -15,8 +15,8 @@ import {
     codingStepIsActive,
     codingStepIsFailed,
     codingStepIsSkipped,
+    codingStepPresentedLabel,
     codingStepStatusColor,
-    codingStepStatusLabel,
     srOnlyStyle,
     type CodingBannerChrome,
     type CodingStepStatus,
@@ -31,6 +31,14 @@ export type CodingAgentPlanChecklistProps = {
     understanding?: string;
     pendingApproval?: boolean;
     ready?: boolean;
+    /**
+     * The task header is actually in progress. A stored `running` step is only
+     * the cursor: after an interrupt, pause, or cancel it must not keep spinning.
+     * Omitted means live, so a checklist rendered on its own still shows motion.
+     */
+    executionLive?: boolean;
+    /** Header status shown on the current step when the run is not live. */
+    executionStatusLabel?: string;
     onApprove?: () => void;
     onSkip?: () => void;
     onReject?: () => void;
@@ -50,7 +58,7 @@ export function codingPlanProgressLabel(steps: CodingStepStatus[]): string {
 }
 
 /** Codex checklist marks as compact stroke icons; currentColor carries the row status color. */
-function PlanStepIcon({ status }: { status: string }) {
+function PlanStepIcon({ status, live = true }: { status: string; live?: boolean }) {
     if (codingStepIsDone(status)) {
         return (
             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -76,8 +84,18 @@ function PlanStepIcon({ status }: { status: string }) {
         );
     }
     if (codingStepIsActive(status)) {
+        // The cursor stays on this row after the task stops. A pause mark does
+        // not use capc-spin, so an interrupted run cannot look still in progress.
+        if (!live) {
+            return (
+                <svg data-icon="hold" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                    <circle cx="8" cy="8" r="6.15" fill="none" stroke="currentColor" strokeWidth="1.3" opacity="0.5" />
+                    <path d="M6.35 5.35v5.3M9.65 5.35v5.3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+            );
+        }
         return (
-            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <svg data-icon="spin" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
                 <g className="capc-spin">
                     <path d="M8 1.85A6.15 6.15 0 1 1 3.65 3.65" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                     <circle cx="8" cy="8" r="2.1" fill="currentColor" opacity="0.55" />
@@ -102,6 +120,8 @@ export function CodingAgentPlanChecklist({
     understanding = "",
     pendingApproval = false,
     ready = true,
+    executionLive = true,
+    executionStatusLabel = "",
     onApprove,
     onSkip,
     onReject,
@@ -268,6 +288,7 @@ export function CodingAgentPlanChecklist({
     // Same predicate the step rows use, so a backend `started` lights up the row
     // and the header badge together.
     const running = steps.find((s) => codingStepIsActive(s.status));
+    const stepLabel = (status: string) => codingStepPresentedLabel(lang, status, executionLive, executionStatusLabel);
     // Confirmed plans keep the checklist. The start / skip / reject gate is
     // only for a plan that has not begun, even if the approval flag is stale.
     const showPlanGate = pendingApproval && codingPlanAwaitingStart(steps);
@@ -364,8 +385,8 @@ export function CodingAgentPlanChecklist({
                             // span not div: the toggle is a <button>, which may
                             // only contain phrasing content.
                             <span data-testid="coding-agent-plan-current" className="capc-current" style={{ color: chrome.accentStrong }}>
-                                <span aria-hidden="true" className="capc-pulse-dot" />
-                                {`T${running.index} ${codingStepStatusLabel(lang, running.status)}`}
+                                {executionLive ? <span aria-hidden="true" className="capc-pulse-dot" /> : null}
+                                {`T${running.index} ${stepLabel(running.status)}`}
                             </span>
                         ) : showPlanGate ? (
                             <span className="capc-current" style={{ color: chrome.accentStrong }}>
@@ -414,6 +435,10 @@ export function CodingAgentPlanChecklist({
                                     const color = codingStepStatusColor(st.status, chrome);
                                     const active = codingStepIsActive(st.status);
                                     const failed = codingStepIsFailed(st.status);
+                                    // Bold and the accent pill mean "executing now". A stopped
+                                    // cursor keeps its color and pause mark without that chrome.
+                                    const moving = active && executionLive;
+                                    const statusText = stepLabel(st.status);
                                     return (
                                         <li
                                             key={st.index}
@@ -423,16 +448,16 @@ export function CodingAgentPlanChecklist({
                                             className="capc-step"
                                             style={{
                                                 color,
-                                                fontWeight: active || failed ? 600 : 400,
+                                                fontWeight: moving || failed ? 600 : 400,
                                                 // The current step gets a soft accent pill so the eye
                                                 // lands on it without extra chrome.
-                                                ...(active ? { background: chrome.chipActiveBg } : null),
+                                                ...(moving ? { background: chrome.chipActiveBg } : null),
                                             }}
                                         >
-                                            <span aria-hidden className="capc-glyph"><PlanStepIcon status={st.status} /></span>
+                                            <span aria-hidden className="capc-glyph"><PlanStepIcon status={st.status} live={executionLive} /></span>
                                             <span className="capc-step-idx">T{st.index}</span>
                                             <span className="capc-step-main">
-                                                <span className="capc-step-title">{st.title || codingStepStatusLabel(lang, st.status)}</span>
+                                                <span className="capc-step-title">{st.title || statusText}</span>
                                                 {(st.summary || "").trim() ? (
                                                     <span
                                                         data-testid={`coding-agent-plan-step-${st.index}-note`}
@@ -451,7 +476,7 @@ export function CodingAgentPlanChecklist({
                                             {/* The glyph is aria-hidden and the color carries no
                                                 meaning for screen readers, so state the status. */}
                                             <span data-testid={`coding-agent-plan-step-${st.index}-sr-status`} style={srOnlyStyle}>
-                                                {`${localizeText(lang, "Status", "状态", "狀態")}：${codingStepStatusLabel(lang, st.status)}`}
+                                                {`${localizeText(lang, "Status", "状态", "狀態")}：${statusText}`}
                                             </span>
                                         </li>
                                     );

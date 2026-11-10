@@ -931,25 +931,13 @@ func (a *App) installNodeJSCLI() error {
 	fmt.Println("  Installing Node.js (this may take a few minutes)...")
 	fmt.Println("  You will be prompted for administrator permission. Please accept to continue.")
 
-	shell32 := syscall.NewLazyDLL("shell32.dll")
-	shellExecute := shell32.NewProc("ShellExecuteW")
-
-	verb := syscall.StringToUTF16Ptr("runas")
-	file := syscall.StringToUTF16Ptr("msiexec.exe")
-	params := syscall.StringToUTF16Ptr(fmt.Sprintf("/i \"%s\" /qb ALLUSERS=1", msiPath))
-	dir := syscall.StringToUTF16Ptr("")
-
-	ret, _, _ := shellExecute.Call(
-		0,
-		uintptr(unsafe.Pointer(verb)),
-		uintptr(unsafe.Pointer(file)),
-		uintptr(unsafe.Pointer(params)),
-		uintptr(unsafe.Pointer(dir)),
-		uintptr(syscall.SW_SHOW),
-	)
-
-	if ret <= 32 {
-		return fmt.Errorf("failed to launch installer with admin privileges (error code: %d)", ret)
+	err = shellExecuteFile("runas", "msiexec.exe",
+		fmt.Sprintf("/i \"%s\" /qb ALLUSERS=1", msiPath), tempDir)
+	if err != nil {
+		if errors.Is(err, windows.ERROR_CANCELLED) {
+			return fmt.Errorf("Node.js installation needs administrator approval; the elevation prompt was declined")
+		}
+		return fmt.Errorf("failed to launch installer with admin privileges: %v", err)
 	}
 
 	fmt.Println("  Waiting for installation to complete...")
@@ -1019,25 +1007,13 @@ func (a *App) installGitBashCLI() error {
 	fmt.Println("  Installing Git (this may take a few minutes)...")
 	fmt.Println("  You will be prompted for administrator permission. Please accept to continue.")
 
-	shell32 := syscall.NewLazyDLL("shell32.dll")
-	shellExecute := shell32.NewProc("ShellExecuteW")
-
-	verb := syscall.StringToUTF16Ptr("runas")
-	file := syscall.StringToUTF16Ptr(exePath)
-	params := syscall.StringToUTF16Ptr("/VERYSILENT /NORESTART /NOCANCEL /SP-")
-	dir := syscall.StringToUTF16Ptr("")
-
-	ret, _, _ := shellExecute.Call(
-		0,
-		uintptr(unsafe.Pointer(verb)),
-		uintptr(unsafe.Pointer(file)),
-		uintptr(unsafe.Pointer(params)),
-		uintptr(unsafe.Pointer(dir)),
-		uintptr(syscall.SW_SHOW),
-	)
-
-	if ret <= 32 {
-		return fmt.Errorf("failed to launch installer with admin privileges (error code: %d)", ret)
+	err := shellExecuteFile("runas", exePath,
+		"/VERYSILENT /NORESTART /NOCANCEL /SP-", tempDir)
+	if err != nil {
+		if errors.Is(err, windows.ERROR_CANCELLED) {
+			return fmt.Errorf("Git installation needs administrator approval; the elevation prompt was declined")
+		}
+		return fmt.Errorf("failed to launch installer with admin privileges: %v", err)
 	}
 
 	fmt.Println("  Waiting for installation to complete...")
@@ -1210,25 +1186,13 @@ func (a *App) installNodeJS() error {
 
 	a.log(a.tr("Installing Node.js (this may take a moment, please grant administrator permission if prompted)..."))
 
-	shell32 := syscall.NewLazyDLL("shell32.dll")
-	shellExecute := shell32.NewProc("ShellExecuteW")
-
-	verb := syscall.StringToUTF16Ptr("runas")
-	file := syscall.StringToUTF16Ptr("msiexec.exe")
-	params := syscall.StringToUTF16Ptr(fmt.Sprintf("/i \"%s\" /qb ALLUSERS=1", msiPath))
-	dir := syscall.StringToUTF16Ptr("")
-
-	ret, _, _ := shellExecute.Call(
-		0,
-		uintptr(unsafe.Pointer(verb)),
-		uintptr(unsafe.Pointer(file)),
-		uintptr(unsafe.Pointer(params)),
-		uintptr(unsafe.Pointer(dir)),
-		uintptr(syscall.SW_HIDE),
-	)
-
-	if ret <= 32 {
-		return fmt.Errorf("failed to launch Node.js installer with admin privileges (error code: %d). Please run the application as administrator.", ret)
+	err := shellExecuteFile("runas", "msiexec.exe",
+		fmt.Sprintf("/i \"%s\" /qb ALLUSERS=1", msiPath), tempDir)
+	if err != nil {
+		if errors.Is(err, windows.ERROR_CANCELLED) {
+			return fmt.Errorf("Node.js installation needs administrator approval; the elevation prompt was declined")
+		}
+		return fmt.Errorf("failed to launch Node.js installer with admin privileges: %v. Please run the application as administrator.", err)
 	}
 
 	a.log(a.tr("Waiting for Node.js installation to complete..."))
@@ -1440,25 +1404,14 @@ func (a *App) installVCRedist() error {
 	fmt.Println("  -Starting installation (requires admin privileges)...")
 	a.log(a.tr("Installing Visual C++ Redistributable..."))
 
-	shell32 := syscall.NewLazyDLL("shell32.dll")
-	shellExecute := shell32.NewProc("ShellExecuteW")
-
-	verb := syscall.StringToUTF16Ptr("runas")
-	file := syscall.StringToUTF16Ptr(exePath)
-	params := syscall.StringToUTF16Ptr("/install /quiet /norestart")
-	dir := syscall.StringToUTF16Ptr("")
-
-	ret, _, _ := shellExecute.Call(
-		0,
-		uintptr(unsafe.Pointer(verb)),
-		uintptr(unsafe.Pointer(file)),
-		uintptr(unsafe.Pointer(params)),
-		uintptr(unsafe.Pointer(dir)),
-		uintptr(syscall.SW_SHOW),
-	)
-
-	if ret <= 32 {
-		errMsg := fmt.Sprintf("failed to launch VC Redist installer with admin privileges (error code: %d)", ret)
+	err := shellExecuteFile("runas", exePath, "/install /quiet /norestart", tempDir)
+	if err != nil {
+		var errMsg string
+		if errors.Is(err, windows.ERROR_CANCELLED) {
+			errMsg = "VC Redistributable installation needs administrator approval; the elevation prompt was declined"
+		} else {
+			errMsg = fmt.Sprintf("failed to launch VC Redist installer with admin privileges: %v", err)
+		}
 		fmt.Printf("  -%s\n", errMsg)
 		return errors.New(errMsg)
 	}
@@ -1527,34 +1480,20 @@ func (a *App) installGitBash() error {
 
 	a.log(a.tr("Installing Git (this may take a moment, please grant administrator permission if prompted)..."))
 
-	shell32 := syscall.NewLazyDLL("shell32.dll")
-	shellExecute := shell32.NewProc("ShellExecuteW")
-
-	verb := syscall.StringToUTF16Ptr("runas")
-	file := syscall.StringToUTF16Ptr(exePath)
-	params := syscall.StringToUTF16Ptr(`/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /DIR="C:\Program Files\Git"`)
-	dir := syscall.StringToUTF16Ptr("")
-
-	ret, _, _ := shellExecute.Call(
-		0,
-		uintptr(unsafe.Pointer(verb)),
-		uintptr(unsafe.Pointer(file)),
-		uintptr(unsafe.Pointer(params)),
-		uintptr(unsafe.Pointer(dir)),
-		uintptr(syscall.SW_HIDE),
-	)
-
-	if ret <= 32 {
+	err := shellExecuteFile("runas", exePath,
+		`/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /DIR="C:\Program Files\Git"`,
+		tempDir)
+	if err != nil {
 		var errMsg string
-		switch ret {
-		case 5:
+		switch {
+		case errors.Is(err, windows.ERROR_CANCELLED):
+			errMsg = "Installation was cancelled at the administrator prompt."
+		case errors.Is(err, windows.ERROR_ACCESS_DENIED):
 			errMsg = "Access denied. Please ensure you have administrator privileges."
-		case 8:
+		case errors.Is(err, windows.ERROR_NOT_ENOUGH_MEMORY):
 			errMsg = "Insufficient memory to complete the operation."
-		case 31:
-			errMsg = "No file association for installer executable."
 		default:
-			errMsg = fmt.Sprintf("Unknown error (code: %d). Please try installing Git manually from https://git-scm.com/", ret)
+			errMsg = fmt.Sprintf("%v. Please try installing Git manually from https://git-scm.com/", err)
 		}
 		return fmt.Errorf("failed to launch Git installer: %s", errMsg)
 	}
@@ -2088,34 +2027,24 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	}()
 
 	if adminMode {
-		shell32 := syscall.NewLazyDLL("shell32.dll")
-		shellExecute := shell32.NewProc("ShellExecuteW")
-
-		verb := syscall.StringToUTF16Ptr("runas")
-		var file, params *uint16
+		var file, params string
 		if useWT {
-			file = syscall.StringToUTF16Ptr(wtPath)
+			file = wtPath
 			// Use call to ensure .bat is executed as a script, not parsed as a command name.
-			params = syscall.StringToUTF16Ptr(fmt.Sprintf("-w new -d \"%s\" cmd /k call \"%s\"", projectDir, tempBatchPath))
+			params = fmt.Sprintf("-w new -d \"%s\" cmd /k call \"%s\"", projectDir, tempBatchPath)
 		} else {
-			file = syscall.StringToUTF16Ptr("cmd.exe")
-			params = syscall.StringToUTF16Ptr(fmt.Sprintf("/c \"%s\"", tempBatchPath))
+			file = "cmd.exe"
+			params = fmt.Sprintf("/c \"%s\"", tempBatchPath)
 		}
-		dir := syscall.StringToUTF16Ptr(projectDir)
 
-		ret, _, _ := shellExecute.Call(
-			0,
-			uintptr(unsafe.Pointer(verb)),
-			uintptr(unsafe.Pointer(file)),
-			uintptr(unsafe.Pointer(params)),
-			uintptr(unsafe.Pointer(dir)),
-			uintptr(syscall.SW_SHOW),
-		)
-
-		if ret <= 32 {
-			a.log(fmt.Sprintf("ShellExecute failed with return value: %d", ret))
+		if err := shellExecuteFile("runas", file, params, projectDir); err != nil {
+			a.log(fmt.Sprintf("ShellExecuteExW runas failed: %v", err))
+			if errors.Is(err, windows.ERROR_CANCELLED) {
+				a.ShowMessage("Launch Error", "Administrator approval was declined.")
+				return fmt.Errorf("failed to launch with admin privileges: the elevation prompt was declined")
+			}
 			a.ShowMessage("Launch Error", "Failed to launch with admin privileges.")
-			return fmt.Errorf("failed to launch with admin privileges: ShellExecute returned %d", ret)
+			return fmt.Errorf("failed to launch with admin privileges: %w", err)
 		}
 		if binaryName == "claude" {
 			// ShellExecute does not return the child PID, but recording this
@@ -2350,52 +2279,30 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 	// it is the one confirmation no application can answer on the user's
 	// behalf, and everything behind it stays silent.
 	elevated := currentProcessIsElevated()
-	verbs := []string{"open"}
+	// "runas" never prompts when the caller is already elevated, so it is a
+	// valid fallback in both orderings.
+	verbs := []string{"open", "runas"}
 	if !elevated {
 		verbs = []string{"runas", "open"}
 	}
 	a.log(fmt.Sprintf("Launching installer silently: %s (elevated=%v verbs=%v)", verifiedPath, elevated, verbs))
 
-	shell32 := syscall.NewLazyDLL("shell32.dll")
-	shellExecute := shell32.NewProc("ShellExecuteW")
-
-	file, err := syscall.UTF16PtrFromString(verifiedPath)
-	if err != nil {
-		return fmt.Errorf("invalid installer path: %w", err)
-	}
-	params, err := syscall.UTF16PtrFromString(windowsInstallerSilentArgs)
-	if err != nil {
-		return fmt.Errorf("invalid installer arguments: %w", err)
-	}
-	dir := syscall.StringToUTF16Ptr("")
-
 	launched := false
 	cancelled := false
-	var lastCode uintptr
+	var lastErr error
 	for _, verb := range verbs {
-		ret, _, _ := shellExecute.Call(
-			0,
-			uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(verb))),
-			uintptr(unsafe.Pointer(file)),
-			uintptr(unsafe.Pointer(params)),
-			uintptr(unsafe.Pointer(dir)),
-			uintptr(syscall.SW_HIDE),
-		)
-		lastCode = ret
-		// ret > 32 means success. 1223 (ERROR_CANCELLED) is reported by some
-		// Windows versions when the UAC prompt is dismissed: treat it as a
-		// cancelled launch, not a success, so the app does not quit for
-		// nothing and the user sees why nothing was installed.
-		if ret > 32 && ret != 1223 {
+		err := shellExecuteFile(verb, verifiedPath, windowsInstallerSilentArgs, filepath.Dir(verifiedPath))
+		if err == nil {
 			launched = true
 			break
 		}
-		if ret == 1223 {
-			a.log(fmt.Sprintf("ShellExecuteW %s cancelled at the elevation prompt", verb))
+		if errors.Is(err, windows.ERROR_CANCELLED) {
+			a.log(fmt.Sprintf("ShellExecuteExW %s cancelled at the elevation prompt", verb))
 			cancelled = true
 			break
 		}
-		a.log(fmt.Sprintf("ShellExecuteW %s failed: %d", verb, ret))
+		a.log(fmt.Sprintf("ShellExecuteExW %s failed: %v", verb, err))
+		lastErr = err
 	}
 
 	if cancelled {
@@ -2408,7 +2315,10 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 		// but it is the closest equivalent to the ShellExecute path.
 		cmd := exec.Command(verifiedPath, windowsInstallerSilentArgList...)
 		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to launch installer: ShellExecute error code %d, direct launch: %w", lastCode, err)
+			if lastErr != nil {
+				return fmt.Errorf("failed to launch installer %s: %v; direct launch also failed: %w; run it manually to finish the update", verifiedPath, lastErr, err)
+			}
+			return fmt.Errorf("failed to launch installer %s: %w; run it manually to finish the update", verifiedPath, err)
 		}
 	}
 
@@ -2431,6 +2341,85 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 // UAC prompt.
 func currentProcessIsElevated() bool {
 	return windows.GetCurrentProcessToken().IsElevated()
+}
+
+// shellExecuteInfoW mirrors SHELLEXECUTEINFOW for ShellExecuteExW.
+type shellExecuteInfoW struct {
+	cbSize     uint32
+	fMask      uint32
+	hwnd       uintptr
+	verb       *uint16
+	file       *uint16
+	parameters *uint16
+	directory  *uint16
+	show       int32
+	instApp    uintptr
+	idList     uintptr
+	class      *uint16
+	keyClass   uintptr
+	hotKey     uint32
+	iconOrMon  uintptr
+	process    uintptr
+}
+
+// shellExecuteFile runs file through the shell with the given verb.
+//
+// It uses ShellExecuteExW rather than ShellExecuteW so failures report the
+// real Win32 error: a declined UAC prompt comes back as ERROR_CANCELLED,
+// while plain ShellExecuteW collapses it into the same access-denied code a
+// genuine failure produces. nShow is SW_SHOWNORMAL, not SW_HIDE: the "runas"
+// verb rejects SW_HIDE with ERROR_ACCESS_DENIED (which was the launch
+// failure reported as "ShellExecute error code 5"), and the NSIS /S switch
+// keeps the installer itself windowless regardless. lpDirectory is the
+// file's own directory because some Windows builds refuse "runas" with an
+// empty working directory.
+func shellExecuteFile(verb, file, params, dir string) error {
+	const (
+		seeMaskNoAsync = 0x00000100
+		swShowNormal   = 1
+	)
+	shell32 := syscall.NewLazyDLL("shell32.dll")
+	shellExecuteEx := shell32.NewProc("ShellExecuteExW")
+
+	verbPtr, err := syscall.UTF16PtrFromString(verb)
+	if err != nil {
+		return fmt.Errorf("invalid verb: %w", err)
+	}
+	filePtr, err := syscall.UTF16PtrFromString(file)
+	if err != nil {
+		return fmt.Errorf("invalid file path: %w", err)
+	}
+	paramsPtr, err := syscall.UTF16PtrFromString(params)
+	if err != nil {
+		return fmt.Errorf("invalid arguments: %w", err)
+	}
+	dirPtr, err := syscall.UTF16PtrFromString(dir)
+	if err != nil {
+		return fmt.Errorf("invalid working directory: %w", err)
+	}
+
+	info := shellExecuteInfoW{
+		cbSize:     uint32(unsafe.Sizeof(shellExecuteInfoW{})),
+		fMask:      seeMaskNoAsync,
+		verb:       verbPtr,
+		file:       filePtr,
+		parameters: paramsPtr,
+		directory:  dirPtr,
+		show:       swShowNormal,
+	}
+	ret, _, callErr := shellExecuteEx.Call(uintptr(unsafe.Pointer(&info)))
+	if ret != 0 {
+		return nil
+	}
+	if callErr != syscall.Errno(0) {
+		return callErr
+	}
+	// GetLastError is sometimes unset even though hInstApp carries a
+	// SE_ERR_* failure code.
+	if info.instApp > 0 && info.instApp <= 32 {
+		return fmt.Errorf("shell error code %d", info.instApp)
+	}
+	return fmt.Errorf("ShellExecuteExW failed")
 }
 
 // installerExtensionAllowed restricts silent launches to NSIS executables.

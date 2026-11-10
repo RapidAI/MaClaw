@@ -10411,7 +10411,12 @@ func (a *App) buildUpdateResult(currentVersion string, release latestReleaseInfo
 	}
 	downloadUrl := strings.TrimSpace(release.DownloadURL)
 	if downloadUrl == "" {
+		primary := r2ReleaseAssetURL(targetFileName, isBeta)
+		if !isBeta {
+			primary = immutableReleaseAssetURL(r2PublicBaseURL, tagName, targetFileName)
+		}
 		downloadUrl = combineDownloadURLList(
+			primary,
 			r2ReleaseAssetURL(targetFileName, isBeta),
 			githubDownloadUrl,
 		)
@@ -10523,11 +10528,7 @@ func pickPreferredUpdateResult(beta UpdateResult, betaErr error, stable UpdateRe
 }
 
 func (a *App) fetchBetaReleaseFast() (latestReleaseInfo, string, error) {
-	if release, err := a.fetchManifestLatestRelease("r2-beta", r2BetaManifestURL, 5*time.Second); err == nil {
-		return release, "r2-beta", nil
-	} else {
-		return latestReleaseInfo{}, "", fmt.Errorf("beta manifest check failed: %v", err)
-	}
+	return a.fetchFirstManifestRelease([]updateSourceSpec{{source: "r2-beta", url: r2BetaManifestURL, timeout: 5 * time.Second}})
 }
 
 type latestReleaseInfo struct {
@@ -10539,25 +10540,59 @@ type latestReleaseInfo struct {
 	SHA256            string
 }
 
-func (a *App) fetchLatestReleaseFast() (latestReleaseInfo, string, error) {
-	var errors []string
-	if release, err := a.fetchGitHubLatestRelease(4 * time.Second); err == nil {
-		return release, "github", nil
-	} else {
-		errors = append(errors, fmt.Sprintf("github: %v", err))
-		a.log(a.tr("CheckUpdate: GitHub latest check failed quickly, trying R2: %v", err))
-	}
-	if release, err := a.fetchR2LatestRelease(5 * time.Second); err == nil {
-		return release, "r2", nil
-	} else {
-		errors = append(errors, fmt.Sprintf("r2: %v", err))
-		return latestReleaseInfo{}, "", fmt.Errorf("all latest manifest checks failed: %s", strings.Join(errors, "; "))
+// updateSourceSpec is one compiled-in manifest endpoint. The public URLs are
+// fixed at build time; a manifest can never redirect the client elsewhere.
+type updateSourceSpec struct {
+	source  string
+	url     string
+	timeout time.Duration
+}
+
+func latestManifestSources() []updateSourceSpec {
+	return []updateSourceSpec{
+		{source: "github", url: githubLatestManifestURL, timeout: 4 * time.Second},
+		{source: "r2", url: r2LatestManifestURL, timeout: 5 * time.Second},
 	}
 }
 
-func (a *App) fetchGitHubLatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
-	a.log(a.tr("CheckUpdate: Starting GitHub manifest check against %s", githubLatestManifestURL))
-	return a.fetchManifestLatestRelease("github", githubLatestManifestURL, timeout)
+func (a *App) fetchLatestReleaseFast() (latestReleaseInfo, string, error) {
+	return a.fetchFirstManifestRelease(latestManifestSources())
+}
+
+// fetchFirstManifestRelease queries every manifest source concurrently and
+// returns the first successful answer. GitHub and the R2 mirror serve the
+// same publisher-generated manifest, so the winner changes nothing about
+// which release is discovered. On machines where github.com is unreachable
+// this keeps each check at mirror latency instead of always paying a dead
+// source's full timeout first. A source that answers first but fails does
+// not end the check; the slower source still gets to win.
+func (a *App) fetchFirstManifestRelease(sources []updateSourceSpec) (latestReleaseInfo, string, error) {
+	type outcome struct {
+		release latestReleaseInfo
+		source  string
+		err     error
+	}
+	results := make(chan outcome, len(sources))
+	for _, spec := range sources {
+		spec := spec
+		a.log(a.tr("CheckUpdate: Starting %s manifest check against %s", spec.source, spec.url))
+		go func() {
+			release, err := a.fetchManifestLatestRelease(spec.source, spec.url, spec.timeout)
+			results <- outcome{release: release, source: spec.source, err: err}
+		}()
+	}
+	failures := make([]string, 0, len(sources))
+	for range sources {
+		out := <-results
+		if out.err == nil {
+			if len(failures) > 0 {
+				a.log(a.tr("CheckUpdate: using %s manifest after other sources failed: %s", out.source, strings.Join(failures, "; ")))
+			}
+			return out.release, out.source, nil
+		}
+		failures = append(failures, fmt.Sprintf("%s: %v", out.source, out.err))
+	}
+	return latestReleaseInfo{}, "", fmt.Errorf("all latest manifest checks failed: %s", strings.Join(failures, "; "))
 }
 
 func (a *App) fetchManifestLatestRelease(source, manifestURL string, timeout time.Duration) (latestReleaseInfo, error) {
@@ -10568,7 +10603,9 @@ func (a *App) fetchManifestLatestRelease(source, manifestURL string, timeout tim
 		return latestReleaseInfo{}, err
 	}
 	req.Header.Set("User-Agent", brand.Current().DisplayName)
-	resp, err := updateHTTPClient(timeout).Do(req)
+	client := updateHTTPClient(timeout)
+	defer client.CloseIdleConnections()
+	resp, err := client.Do(req)
 	if err != nil {
 		return latestReleaseInfo{}, err
 	}
@@ -10578,33 +10615,43 @@ func (a *App) fetchManifestLatestRelease(source, manifestURL string, timeout tim
 		return latestReleaseInfo{}, fmt.Errorf("%s latest manifest returned status %d: %s", source, resp.StatusCode, string(bodyText))
 	}
 	var manifest updateManifest
-	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&manifest); err != nil {
 		return latestReleaseInfo{}, err
 	}
 	tagName := strings.TrimSpace(manifest.Tag)
 	if tagName == "" {
 		tagName = strings.TrimSpace(manifest.Version)
 	}
+	// A parseable body without a tag/version (stale object, captive portal,
+	// truncated publish) is a failed check, not a successful empty answer:
+	// treating it as success here would skip the mirror fallback entirely.
+	if tagName == "" {
+		return latestReleaseInfo{}, fmt.Errorf("%s latest manifest has no tag/version", source)
+	}
 	targetFileName := updateTargetFileName()
 	isBeta := strings.Contains(tagName, "-beta") || strings.Contains(tagName, "-alpha") || strings.Contains(tagName, "-rc")
 	mirrorURLs := manifestAssetDownloadURLs(manifest, targetFileName, tagName, isBeta)
-	githubURL := ""
-	if tagName != "" {
-		githubURL = githubReleaseAssetURL(tagName, targetFileName)
-	}
+	githubURL := githubReleaseAssetURL(tagName, targetFileName)
 	sha256 := ""
 	if asset, ok := manifest.Assets[targetFileName]; ok {
 		sha256 = strings.TrimSpace(asset.SHA256)
 	}
+	// The immutable per-tag mirror always matches the manifest checksum.
+	// latest/<file> is rewritten before the manifest during publish, so it
+	// is only a later fallback; beta has no per-tag mirror directory.
+	var r2URLs []string
+	if isBeta {
+		r2URLs = []string{r2ReleaseAssetURL(targetFileName, true)}
+	} else {
+		r2URLs = []string{
+			immutableReleaseAssetURL(r2PublicBaseURL, tagName, targetFileName),
+			r2ReleaseAssetURL(targetFileName, false),
+		}
+	}
 	// The client only accepts the compiled-in public mirror from the
 	// manifest; never let remote metadata introduce an arbitrary download host.
-	downloadURLs := append([]string{r2ReleaseAssetURL(targetFileName, isBeta), githubURL}, mirrorURLs...)
+	downloadURLs := append(append(r2URLs, githubURL), mirrorURLs...)
 	return latestReleaseInfo{TagName: tagName, Name: tagName, ReleaseURL: "https://github.com/RapidAI/MaClaw/releases/latest", DownloadURL: combineDownloadURLList(downloadURLs...), GitHubDownloadURL: githubURL, SHA256: sha256}, nil
-}
-
-func (a *App) fetchR2LatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
-	a.log(a.tr("CheckUpdate: Starting R2 check against %s", r2LatestManifestURL))
-	return a.fetchManifestLatestRelease("r2", r2LatestManifestURL, timeout)
 }
 
 // ListRollbackReleases returns at most five formal builds from the server-
@@ -11094,7 +11141,9 @@ func fetchGitHubReleaseSHA256(ctx context.Context, manifestURL, target string) (
 		return "", err
 	}
 	req.Header.Set("User-Agent", brand.Current().DisplayName)
-	resp, err := updateHTTPClient(8 * time.Second).Do(req)
+	client := updateHTTPClient(8 * time.Second)
+	defer client.CloseIdleConnections()
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -11121,7 +11170,9 @@ func fetchStableHistory(source, historyURL string, timeout time.Duration) ([]Rol
 		return nil, err
 	}
 	req.Header.Set("User-Agent", brand.Current().DisplayName)
-	resp, err := updateHTTPClient(timeout).Do(req)
+	client := updateHTTPClient(timeout)
+	defer client.CloseIdleConnections()
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -11245,6 +11296,10 @@ type DownloadProgress struct {
 // downloadCancelDrainTimeout bounds how long a new download waits for a
 // cancelled one to release the shared destination file.
 const downloadCancelDrainTimeout = 5 * time.Second
+
+// downloadStallTimeout aborts a download whose body delivers zero bytes for
+// this long, so a half-open connection cannot hold the whole source timeout.
+const downloadStallTimeout = 60 * time.Second
 
 // downloadCanceler tracks one in-flight download. done is closed when the
 // attempt has returned, which is the point at which the destination file is
@@ -11421,12 +11476,18 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 	}
 	sourceCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(sourceCtx, "GET", url, nil)
+	// reqCtx lets the stall watchdog below abort a half-open connection
+	// mid-body without confusing that abort with a user cancel or the
+	// whole-source timeout.
+	reqCtx, reqCancel := context.WithCancel(sourceCtx)
+	defer reqCancel()
+	req, err := http.NewRequestWithContext(reqCtx, "GET", url, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "MaClaw-App")
 	client := updateHTTPClient(12 * time.Second)
+	defer client.CloseIdleConnections()
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -11467,9 +11528,32 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 	var downloaded int64
 	buffer := make([]byte, 256*1024)
 	lastReport := time.Now()
+	// A half-open TCP connection can deliver zero bytes for the entire
+	// source timeout. Abort when no byte has arrived for downloadStallTimeout
+	// so the next mirror gets its turn instead of hanging the download.
+	var lastReadNanos atomic.Int64
+	lastReadNanos.Store(time.Now().UnixNano())
+	stallDone := make(chan struct{})
+	defer close(stallDone)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stallDone:
+				return
+			case <-ticker.C:
+				if time.Since(time.Unix(0, lastReadNanos.Load())) > downloadStallTimeout {
+					reqCancel()
+					return
+				}
+			}
+		}
+	}()
 	for {
 		n, err := resp.Body.Read(buffer)
 		if n > 0 {
+			lastReadNanos.Store(time.Now().UnixNano())
 			if _, writeErr := out.Write(buffer[:n]); writeErr != nil {
 				return "", writeErr
 			}
@@ -11493,6 +11577,9 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 			}
 			if sourceCtx.Err() == context.DeadlineExceeded {
 				return "", fmt.Errorf("download source timed out: %s", url)
+			}
+			if reqCtx.Err() == context.Canceled {
+				return "", fmt.Errorf("download stalled (no data for %s): %s", downloadStallTimeout, url)
 			}
 			return "", err
 		}

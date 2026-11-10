@@ -110,7 +110,7 @@ import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListPendingScopeApprovals, ListWorkflowTemplateSummaries, LoadConfig, LoadProjectTabConversation, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { formatGoalSessionPlan, suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
-import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepStatusColor, codingStepStatusLabel, codingChecklistAllDone, codingPlanAwaitingStart, codingStepsClockFrom, codingStepsClockIsCurrent, codingStepsSnapshotRegresses, codingWorkbenchStepsFromPayload, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
+import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepPresentedLabel, codingStepStatusColor, codingChecklistAllDone, codingPlanAwaitingStart, codingStepsClockFrom, codingStepsClockIsCurrent, codingStepsSnapshotRegresses, codingWorkbenchStepsFromPayload, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { AssistantPureCodingEmptyState } from "./AssistantPureCodingEmptyState";
 import { NewTaskWizardWelcomePane } from "./NewTaskWizardWelcomePane";
@@ -5459,13 +5459,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         turnIncomplete: assistantTurnIncomplete,
         openChatWork,
     }), [activeProjectPreparing, activeTaskExecutionSnapshot, assistantTurnIncomplete, cancelPending, codingStepStatuses, displayMessages.length, liveWorkActive, openChatWork, pendingUnfinishedStatus, lang, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowState.active]);
+    // One flag for the checklist, the chip, and the execution timeline. A
+    // stored running step is only the cursor once this is false.
+    const taskExecutionLive = taskExecutionStatus.tone === "running";
     // Report the live running signal so the sidebar task stats can merge it with
     // the durable snapshot (a pure agent loop run leaves no running snapshot).
     useEffect(() => {
         const onChange = props.onActiveTaskRunningChange as ((running: boolean) => void) | undefined;
         if (typeof onChange !== "function") return;
-        onChange(taskExecutionStatus.tone === "running");
-    }, [taskExecutionStatus.tone, props.onActiveTaskRunningChange]);
+        onChange(taskExecutionLive);
+    }, [taskExecutionLive, props.onActiveTaskRunningChange]);
     // Publish every busy task identity (project paths + expert IDs) so the
     // sidebar can mark all concurrently running rows — including detached
     // runs, backend continuations of a task that is not on screen, and
@@ -6897,6 +6900,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         preparing={activeProjectPreparing}
                         prepareMode={activeProjectPrepareMode || undefined}
                         stepStatuses={codingChecklistSteps}
+                        executionLive={taskExecutionLive}
                         pendingApproval={codingPlanGateOpen}
                         conflictCount={codingConflictCount}
                         lockExpanded={remoteCodingNeedsReconnect}
@@ -7113,12 +7117,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                     {localizeText(lang, "Steps", "执行步骤", "執行步驟")}
                                                 </div>
                                                 {codingChecklistSteps.map((st) => {
-                                                    const icon = codingStepGlyph(st.status);
+                                                    const icon = codingStepGlyph(st.status, taskExecutionLive);
                                                     const color = codingStepStatusColor(st.status, codingBannerChrome);
-                                                    const statusLabel = codingStepStatusLabel(lang, st.status);
-                                                    const timelineActive = codingStepIsActive(st.status);
+                                                    const statusLabel = codingStepPresentedLabel(lang, st.status, taskExecutionLive, taskExecutionStatus.label);
+                                                    const timelineActive = codingStepIsActive(st.status) && taskExecutionLive;
+                                                    // data-status=running is what the shell paints as a live row.
+                                                    // Keep the raw status on data-step-status and drop that paint
+                                                    // once the task itself has stopped.
+                                                    const shownStatus = codingStepIsActive(st.status) && !taskExecutionLive ? "held" : st.status;
                                                     return (
-                                                        <div key={st.index} data-testid={`coding-step-${st.index}`} data-status={st.status} className="mc-execution-step" style={{ display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2, color, fontWeight: timelineActive ? 600 : 400 }}>
+                                                        <div key={st.index} data-testid={`coding-step-${st.index}`} data-status={shownStatus} data-step-status={st.status} className="mc-execution-step" style={{ display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2, color, fontWeight: timelineActive ? 600 : 400 }}>
                                                             <span className="aap-step-icon">{icon}</span>
                                                             <span className="aap-strong">T{st.index}</span>
                                                             <span className="aap-step-summary" title={st.summary || undefined}>
@@ -7487,6 +7495,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         understanding={codingRequirementRestatement}
                         pendingApproval={codingPendingApproval}
                         ready={codingTaskReadyForIntents}
+                        executionLive={taskExecutionLive}
+                        executionStatusLabel={taskExecutionStatus.label}
                         onApprove={() => { void handleCodingPlanGate("approve"); }}
                         onSkip={() => { void handleCodingPlanGate("skip"); }}
                         onReject={() => { void handleCodingPlanGate("reject"); }}

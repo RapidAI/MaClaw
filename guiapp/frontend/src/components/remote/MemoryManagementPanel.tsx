@@ -209,10 +209,15 @@ export function MemoryManagementPanel({ lang, traceFocus }: Props) {
     const [tab, setTab] = useState<"edit" | "timemachine" | "history" | "status">(traceFocus?.seq ? "status" : "edit");
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         localizeText(lang, en, zhHans, zhHant), [lang]);
-    // Revision counter — bumped by TimeMachine after restore/compress so
-    // MemoryEditTab can re-fetch without unmount/remount.
+    // Revision counter — store mutations and TimeMachine operations refresh
+    // the edit list and status without requiring a remount.
     const [revision, setRevision] = useState(0);
     const bumpRevision = useCallback(() => setRevision(r => r + 1), []);
+    useEffect(() => {
+        const handler = () => bumpRevision();
+        EventsOn("memory:changed", handler);
+        return () => { EventsOff("memory:changed"); };
+    }, [bumpRevision]);
     const [entryCount, setEntryCount] = useState(0);
     const [localTraceFocus, setLocalTraceFocus] = useState<TraceFocus>({ value: "", seq: 0 });
     const activeTraceFocus = (traceFocus?.seq || 0) >= (localTraceFocus.seq || 0) ? traceFocus : localTraceFocus;
@@ -263,7 +268,7 @@ export function MemoryManagementPanel({ lang, traceFocus }: Props) {
             {tab === "edit"
                 ? <div role="tabpanel" id="memory-panel-edit" aria-labelledby="memory-tab-edit"><MemoryEditTab t={t} lang={lang} revision={revision} onCountChange={setEntryCount} createRef={createRef} /></div>
                 : tab === "status"
-                ? <div role="tabpanel" id="memory-panel-status" aria-labelledby="memory-tab-status"><MemoryStatusTab t={t} lang={lang} traceFocus={activeTraceFocus} /></div>
+                ? <div role="tabpanel" id="memory-panel-status" aria-labelledby="memory-tab-status"><MemoryStatusTab t={t} lang={lang} traceFocus={activeTraceFocus} revision={revision} /></div>
                 : tab === "history"
                 ? <div role="tabpanel" id="memory-panel-history" aria-labelledby="memory-tab-history"><SessionHistoryTab t={t} lang={lang} onOpenTrace={openLocalTraceFocus} /></div>
                 : <div role="tabpanel" id="memory-panel-timemachine" aria-labelledby="memory-tab-timemachine"><TimeMachineTab t={t} lang={lang} onDataChanged={bumpRevision} /></div>}
@@ -301,41 +306,53 @@ interface MemoryStatusData {
 
 // Pie chart palette and the status charts live in MemoryStatusCharts.tsx.
 
-function MemoryStatusTab({ t, lang, traceFocus }: { t: (en: string, zhHans: string, zhHant?: string) => string; lang: string; traceFocus?: TraceFocus }) {
+function MemoryStatusTab({ t, lang, traceFocus, revision }: { t: (en: string, zhHans: string, zhHant?: string) => string; lang: string; traceFocus?: TraceFocus; revision: number }) {
     const [data, setData] = useState<MemoryStatusData | null>(null);
     const [loading, setLoading] = useState(true);
+    const [statusError, setStatusError] = useState("");
     const [learning, setLearning] = useState<any>(null);
     const [learningError, setLearningError] = useState("");
+    const requestRef = useRef(0);
 
     const fetchData = useCallback(async () => {
+        const requestID = ++requestRef.current;
         setLoading(true);
+        setStatusError("");
         try {
             const result = await GetMemoryStatus();
+            if (requestID !== requestRef.current) return;
             setData(result);
             try {
                 const snapshot = await GetExperienceLearningSnapshot();
+                let governanceSummary;
                 try {
-                    const governanceSummary = await GetExperienceGovernanceSummary({});
-                    setLearning({ ...(snapshot || {}), governance_summary: governanceSummary });
+                    governanceSummary = await GetExperienceGovernanceSummary({});
                 } catch {
-                    setLearning(snapshot);
+                    governanceSummary = undefined;
                 }
+                if (requestID !== requestRef.current) return;
+                setLearning(governanceSummary === undefined ? snapshot : { ...(snapshot || {}), governance_summary: governanceSummary });
                 setLearningError("");
             } catch (learningErr) {
+                if (requestID !== requestRef.current) return;
                 setLearning(null);
                 setLearningError(String(learningErr));
             }
         } catch (e) {
-            console.error("GetMemoryStatus failed:", e);
+            if (requestID === requestRef.current) setStatusError(String(e));
         } finally {
-            setLoading(false);
+            if (requestID === requestRef.current) setLoading(false);
         }
     }, []);
 
-    useEffect(() => { fetchData(); }, [fetchData]);
+    useEffect(() => { fetchData(); }, [fetchData, revision]);
 
-    if (loading || !data) {
-        return <div className="memory-status-loading">{t("Loading...", "加载中...")}</div>;
+    if (!data) {
+        if (loading) return <div className="memory-status-loading">{t("Loading...", "加载中...")}</div>;
+        return <div role="alert" className="memory-status-loading">
+            <div>{statusError || t("Memory status is unavailable.", "记忆状态不可用。")}</div>
+            <button type="button" onClick={fetchData} className="memory-status-refresh-btn">{t("Retry", "重试")}</button>
+        </div>;
     }
 
     const cats = (data.categories || []).map((item) => ({
@@ -353,6 +370,7 @@ function MemoryStatusTab({ t, lang, traceFocus }: { t: (en: string, zhHans: stri
 
     return (
         <div className="memory-status-tab">
+            {statusError && <p role="alert" className="settings-error">{statusError}</p>}
             <section className="memory-status-card memory-status-card--capacity" aria-labelledby="memory-capacity-title">
                 <div className="memory-status-card__header">
                     <h3 id="memory-capacity-title" className="memory-status-card__title">{t("Capacity", "容量使用")}</h3>
@@ -685,7 +703,7 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
             <fieldset disabled={deleting} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
                 <select value={filterBot} onChange={e => { setFilterBot(e.target.value); setSelectedIDs(new Set()); }} aria-label={t("Filter by bot", "按机器人筛选")} data-testid="memory-bot-filter" style={{ ...inputStyle, width: "auto", minWidth: 140, padding: "4px 8px", fontSize: "0.76rem" }}>
-                    <option value="">{t("All bots (shared)", "全部（共享）")}</option>
+                    <option value="">{t("Shared and projects", "共享与项目")}</option>
                     {bots.map(b => (<option key={b.id} value={b.id}>{b.title || b.id}</option>))}
                 </select>
                 <select value={filterCat} onChange={e => { setFilterCat(e.target.value); setSelectedIDs(new Set()); }} aria-label={t("Filter by category", "分类筛选")} style={{ ...inputStyle, width: "auto", padding: "4px 8px", fontSize: "0.76rem" }}>
@@ -710,7 +728,6 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
                     type="button"
                     disabled={selectedIDs.size === 0 || deleting}
                     onClick={() => setBatchDeleteConfirmOpen(true)}
-                    title={filterBot ? t("Batch delete is unavailable in bot scope", "机器人作用域暂不支持批量删除") : undefined}
                     style={{ ...dangerBtnStyle, opacity: selectedIDs.size === 0 || deleting ? 0.55 : 1, cursor: selectedIDs.size === 0 || deleting ? "not-allowed" : "pointer" }}
                 >
                     {deleting && <span style={{ ...buttonSpinnerStyle, marginRight: 6 }} />}
@@ -804,6 +821,7 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
                             <label style={labelStyle}>{t("Tags (comma separated)", "标签（逗号分隔）")}</label>
                             <input value={formTags} onChange={e => setFormTags(e.target.value)} placeholder="tag1, tag2" style={inputStyle} />
                         </div>
+                        {error && <p role="alert" className="settings-error">{error}</p>}
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
                             <button onClick={() => setDlgOpen(false)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
                             <button onClick={handleSave} disabled={saving || !formContent.trim()} style={{ ...primaryBtnStyle, opacity: saving || !formContent.trim() ? 0.5 : 1, cursor: saving || !formContent.trim() ? "default" : "pointer" }}>{saving ? t("Saving…", "保存中…") : t("Save", "保存")}</button>
@@ -842,14 +860,20 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
     const [toggling, setToggling] = useState(false);
     const [maxBackups, setMaxBackupsLocal] = useState(20);
     const [savingMax, setSavingMax] = useState(false);
+    const [backupActionPending, setBackupActionPending] = useState(false);
+    const backupsRequestRef = useRef(0);
 
     const loadBackups = useCallback(async () => {
+        const requestID = ++backupsRequestRef.current;
         setBackupsLoading(true);
         try {
             const list = await ListMemoryBackups();
-            setBackups(Array.isArray(list) ? list : []);
-        } catch (e) { setError(String(e)); }
-        setBackupsLoading(false);
+            if (requestID === backupsRequestRef.current) setBackups(Array.isArray(list) ? list : []);
+        } catch (e) {
+            if (requestID === backupsRequestRef.current) setError(String(e));
+        } finally {
+            if (requestID === backupsRequestRef.current) setBackupsLoading(false);
+        }
     }, []);
 
     const loadStatus = useCallback(async () => {
@@ -901,12 +925,6 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
         return () => { EventsOff("memory:compressed"); };
     }, [loadBackups, loadStatus, onDataChanged]);
 
-    useEffect(() => {
-        const handler = () => { onDataChanged(); loadStatus(); };
-        EventsOn("memory:changed", handler);
-        return () => { EventsOff("memory:changed"); };
-    }, [loadStatus, onDataChanged]);
-
     // Clean up delayed refresh timer on unmount.
     const autoRefreshTimer = useRef<ReturnType<typeof setTimeout>>();
     useEffect(() => () => clearTimeout(autoRefreshTimer.current), []);
@@ -942,19 +960,28 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
     };
 
     const handleRestore = async (name: string) => {
+        if (backupActionPending) return;
+        setBackupActionPending(true);
         setError("");
         try {
             await RestoreMemoryBackup(name);
             setRestoreTarget(null);
-            loadBackups();
+            await loadBackups();
             onDataChanged();
         } catch (e) { setError(String(e)); }
+        finally { setBackupActionPending(false); }
     };
 
     const handleDeleteBackup = async (name: string) => {
+        if (backupActionPending) return;
+        setBackupActionPending(true);
         setError("");
-        try { await DeleteMemoryBackup(name); setDeleteTarget(null); loadBackups(); }
-        catch (e) { setError(String(e)); }
+        try {
+            await DeleteMemoryBackup(name);
+            setDeleteTarget(null);
+            await loadBackups();
+        } catch (e) { setError(String(e)); }
+        finally { setBackupActionPending(false); }
     };
 
     return (
@@ -1010,7 +1037,7 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
                     <input
                         type="number" min={8} max={100} value={maxBackups}
                         onChange={e => { const v = parseInt(e.target.value, 10); if (!isNaN(v)) setMaxBackupsLocal(v); }}
-                        onBlur={async () => { const clamped = Math.max(8, maxBackups); setMaxBackupsLocal(clamped); setSavingMax(true); try { await SetMemoryMaxBackups(clamped); loadBackups(); } catch (e) { setError(String(e)); } setSavingMax(false); }}
+                        onBlur={async () => { const clamped = Math.min(100, Math.max(8, maxBackups)); setMaxBackupsLocal(clamped); setSavingMax(true); try { await SetMemoryMaxBackups(clamped); loadBackups(); } catch (e) { setError(String(e)); } setSavingMax(false); }}
                         onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                         disabled={savingMax}
                         style={{ width: 48, padding: "2px 4px", fontSize: "0.7rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, textAlign: "center", background: colors.surface, color: colors.text }}
@@ -1034,11 +1061,11 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
                                 </div>
                             </div>
                             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                                <button onClick={() => setRestoreTarget(bk.name)} aria-label={`${t("Restore", "恢复")} ${bk.name}`} title={t("Restore", "恢复")} style={{
+                                <button disabled={backupActionPending} onClick={() => setRestoreTarget(bk.name)} aria-label={`${t("Restore", "恢复")} ${bk.name}`} title={t("Restore", "恢复")} style={{
                                     padding: "3px 10px", fontSize: "0.7rem", cursor: "pointer", fontWeight: 600,
                                     background: colors.successBg, color: colors.success, border: `1px solid ${colors.success}`, borderRadius: radius.sm,
                                 }}>RESTORE</button>
-                                <button onClick={() => setDeleteTarget(bk.name)} aria-label={`${t("Delete", "删除")} ${bk.name}`} title={t("Delete", "删除")} style={{
+                                <button disabled={backupActionPending} onClick={() => setDeleteTarget(bk.name)} aria-label={`${t("Delete", "删除")} ${bk.name}`} title={t("Delete", "删除")} style={{
                                     padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer",
                                     background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.danger,
                                 }}>DEL</button>
@@ -1050,25 +1077,25 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
 
             {/* Restore confirmation */}
             {restoreTarget && (
-                <ModalOverlay onClose={() => setRestoreTarget(null)}>
+                <ModalOverlay onClose={() => { if (!backupActionPending) setRestoreTarget(null); }}>
                     <p style={{ fontSize: "0.82rem", marginBottom: 6 }}>{t("Restore this backup?", "确定恢复此备份？")}</p>
                     <p style={{ fontSize: "0.72rem", color: colors.textMuted, marginBottom: 16 }}>
                         {t("Current memory will be replaced by this backup immediately. A safety backup of the current state will be created first.", "当前记忆将被此备份覆盖并立即生效。覆盖前会自动保存一份当前记忆的备份。")}
                     </p>
                     <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                        <button onClick={() => setRestoreTarget(null)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
-                        <button onClick={() => handleRestore(restoreTarget)} style={{ ...cancelBtnStyle, background: colors.successBg, color: colors.success, border: `1px solid ${colors.success}`, fontWeight: 600 }}>{t("Confirm Restore", "确认恢复")}</button>
+                        <button disabled={backupActionPending} onClick={() => setRestoreTarget(null)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
+                        <button disabled={backupActionPending} onClick={() => handleRestore(restoreTarget)} style={{ ...cancelBtnStyle, background: colors.successBg, color: colors.success, border: `1px solid ${colors.success}`, fontWeight: 600 }}>{backupActionPending ? t("Restoring...", "恢复中...") : t("Confirm Restore", "确认恢复")}</button>
                     </div>
                 </ModalOverlay>
             )}
 
             {/* Delete backup confirmation */}
             {deleteTarget && (
-                <ModalOverlay onClose={() => setDeleteTarget(null)}>
+                <ModalOverlay onClose={() => { if (!backupActionPending) setDeleteTarget(null); }}>
                     <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("Delete this backup?", "确定删除此备份？")}</p>
                     <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                        <button onClick={() => setDeleteTarget(null)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
-                        <button onClick={() => handleDeleteBackup(deleteTarget)} style={dangerBtnStyle}>{t("Delete", "删除")}</button>
+                        <button disabled={backupActionPending} onClick={() => setDeleteTarget(null)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
+                        <button disabled={backupActionPending} onClick={() => handleDeleteBackup(deleteTarget)} style={dangerBtnStyle}>{backupActionPending ? t("Deleting...", "删除中...") : t("Delete", "删除")}</button>
                     </div>
                 </ModalOverlay>
             )}

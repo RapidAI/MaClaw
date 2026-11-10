@@ -160,6 +160,8 @@ type Compressor struct {
 	maxBackups    int
 	gcThreshold   int
 
+	operationMu           sync.Mutex
+	backupMu              sync.Mutex
 	mu                    sync.Mutex
 	running               bool
 	cancelFn              context.CancelFunc
@@ -224,6 +226,11 @@ func (mc *Compressor) Compress(ctx context.Context) (*CompressResult, error) {
 		mc.compressCount--
 		mc.mu.Unlock()
 	}()
+	mc.operationMu.Lock()
+	defer mc.operationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	backupName, err := mc.createBackup()
 	if err != nil {
@@ -235,12 +242,20 @@ func (mc *Compressor) Compress(ctx context.Context) (*CompressResult, error) {
 		TotalEntries: mc.entryCount(),
 	}
 
-	result.DedupCount = mc.dedup()
+	deduped, dedupErr := mc.dedupWithError()
+	result.DedupCount = deduped
+	if dedupErr != nil {
+		result.ErrorCount++
+	}
 
 	if mc.llm != nil && mc.llm.IsConfigured() {
 		merged, mergeErr := mc.mergeSemanticDuplicates(ctx)
-		if mergeErr == nil {
-			result.MergedCount = merged
+		result.MergedCount = merged
+		if mergeErr != nil {
+			result.ErrorCount++
+			if errors.Is(mergeErr, context.Canceled) || errors.Is(mergeErr, context.DeadlineExceeded) {
+				return result, mergeErr
+			}
 		}
 	}
 
@@ -248,10 +263,7 @@ func (mc *Compressor) Compress(ctx context.Context) (*CompressResult, error) {
 		mc.store.mu.RLock()
 		var candidates []Entry
 		for _, e := range mc.store.entries {
-			if e.Category.IsProtected() {
-				continue
-			}
-			if e.Pinned {
+			if !e.IsActive() || e.Category.IsProtected() || e.Pinned {
 				continue
 			}
 			if len([]rune(e.Content)) >= mc.minContentLen {
@@ -277,24 +289,42 @@ func (mc *Compressor) Compress(ctx context.Context) (*CompressResult, error) {
 				continue
 			}
 
-			saved := len([]rune(entry.Content)) - len([]rune(compressed))
-			if err := mc.store.Update(entry.ID, compressed, entry.Category, entry.Tags); err != nil {
+			updated := entry
+			updated.Content = compressed
+			updated.CompactForm = ""
+			updated.Embedding = nil
+			updated.InvalidAt = nil
+			updated.Stale = false
+			applied, err := mc.store.UpdateEntriesAndDeleteIDsIfUnchanged([]Entry{updated}, nil, entryExpectations([]Entry{entry}))
+			if err != nil {
 				result.ErrorCount++
 				continue
 			}
+			if !applied {
+				result.SkippedCount++
+				continue
+			}
+			mc.store.scheduleStoredEntryEmbedding(entry.ID)
 			result.CompressedCount++
-			result.SavedChars += saved
+			result.SavedChars += len([]rune(entry.Content)) - len([]rune(compressed))
 		}
 	}
 
 	result.TotalEntries = mc.entryCount()
 
-	// Backfill CompactForm for entries that don't have one yet.
 	if mc.llm != nil && mc.llm.IsConfigured() {
 		mc.backfillCompactForms(ctx)
 	}
 
 	return result, nil
+}
+
+func entryExpectations(entries []Entry) map[string]Entry {
+	expected := make(map[string]Entry, len(entries))
+	for _, entry := range entries {
+		expected[entry.ID] = entry
+	}
+	return expected
 }
 
 // ---------------------------------------------------------------------------
@@ -306,14 +336,15 @@ func (mc *Compressor) Compress(ctx context.Context) (*CompressResult, error) {
 func (mc *Compressor) backfillCompactForms(ctx context.Context) {
 	mc.store.mu.RLock()
 	type pending struct {
-		id      string
-		content string
-		cat     Category
+		id       string
+		content  string
+		cat      Category
+		expected Entry
 	}
 	var todo []pending
 	for _, e := range mc.store.entries {
-		if e.CompactForm == "" && len([]rune(e.Content)) > 20 && !e.Category.IsProtected() {
-			todo = append(todo, pending{id: e.ID, content: e.Content, cat: e.Category})
+		if e.IsActive() && e.CompactForm == "" && len([]rune(e.Content)) > 20 && !e.Category.IsProtected() {
+			todo = append(todo, pending{id: e.ID, content: e.Content, cat: e.Category, expected: e})
 		}
 	}
 	mc.store.mu.RUnlock()
@@ -326,6 +357,7 @@ func (mc *Compressor) backfillCompactForms(ctx context.Context) {
 	}
 
 	updates := make([]Entry, 0, len(todo))
+	expectedEntries := make(map[string]Entry, len(todo))
 	for _, p := range todo {
 		select {
 		case <-ctx.Done():
@@ -337,17 +369,18 @@ func (mc *Compressor) backfillCompactForms(ctx context.Context) {
 		if err != nil || compact == "" {
 			continue
 		}
-		// Only use compact form if it's actually shorter.
 		if len([]rune(compact)) >= len([]rune(p.content)) {
 			continue
 		}
 
 		mc.store.mu.RLock()
 		for i := range mc.store.entries {
-			if mc.store.entries[i].ID == p.id && mc.store.entries[i].CompactForm == "" {
-				updated := mc.store.entries[i]
+			current := mc.store.entries[i]
+			if current.ID == p.id && current.CompactForm == "" && entryMatchesExpectation(current, map[string]Entry{p.id: p.expected}, p.id) {
+				updated := current
 				updated.CompactForm = compact
 				updates = append(updates, updated)
+				expectedEntries[p.id] = p.expected
 				break
 			}
 		}
@@ -356,11 +389,14 @@ func (mc *Compressor) backfillCompactForms(ctx context.Context) {
 done:
 
 	if len(updates) > 0 {
-		if err := mc.store.UpdateEntriesByID(updates); err != nil {
+		applied, err := mc.store.UpdateEntriesAndDeleteIDsIfUnchanged(updates, nil, expectedEntries)
+		if err != nil {
 			log.Printf("[memory_compact] persist compact forms: %v", err)
 			return
 		}
-		log.Printf("[memory_compact] backfilled %d/%d compact forms", len(updates), len(todo))
+		if applied {
+			log.Printf("[memory_compact] backfilled %d/%d compact forms", len(updates), len(todo))
+		}
 	}
 }
 
@@ -438,12 +474,17 @@ func (g *llmCompactFormGenerator) Generate(content string, cat Category) (string
 const minSubstringLen = 20
 
 func (mc *Compressor) dedup() int {
+	removed, _ := mc.dedupWithError()
+	return removed
+}
+
+func (mc *Compressor) dedupWithError() (int, error) {
 	mc.store.mu.RLock()
 
 	n := len(mc.store.entries)
 	if n < 2 {
 		mc.store.mu.RUnlock()
-		return 0
+		return 0, nil
 	}
 	entries := append([]Entry(nil), mc.store.entries...)
 	mc.store.mu.RUnlock()
@@ -456,11 +497,11 @@ func (mc *Compressor) dedup() int {
 	remove := make(map[int]bool)
 
 	for i := 0; i < n; i++ {
-		if remove[i] || entries[i].Pinned {
+		if remove[i] || entries[i].Pinned || entries[i].Category.IsProtected() {
 			continue
 		}
 		for j := i + 1; j < n; j++ {
-			if remove[j] || entries[j].Pinned {
+			if remove[j] || entries[j].Pinned || entries[j].Category.IsProtected() {
 				continue
 			}
 			if !isDuplicateLower(entries[i], entries[j], lower[i], lower[j]) {
@@ -472,29 +513,33 @@ func (mc *Compressor) dedup() int {
 	}
 
 	if len(remove) == 0 {
-		return 0
+		return 0, nil
 	}
 
 	deleteIDs := make([]string, 0, len(remove))
+	expectedEntries := make([]Entry, 0, len(remove))
 	for i := range remove {
 		if entries[i].ID != "" {
 			deleteIDs = append(deleteIDs, entries[i].ID)
+			expectedEntries = append(expectedEntries, entries[i])
 		}
 	}
-	if err := mc.store.UpdateEntriesAndDeleteIDs(nil, deleteIDs); err != nil {
+	applied, err := mc.store.UpdateEntriesAndDeleteIDsIfUnchanged(nil, deleteIDs, entryExpectations(expectedEntries))
+	if err != nil {
 		log.Printf("[memory_compact] persist duplicate removal: %v", err)
-		return 0
+		return 0, err
 	}
-	return len(deleteIDs)
+	if !applied {
+		return 0, nil
+	}
+	return len(deleteIDs), nil
 }
 
 func isDuplicateLower(a, b Entry, ca, cb string) bool {
-	// Inactive rows must not delete a live copy. Owners match exactly, so a
-	// shared entry does not absorb a named owner's memory.
 	if !a.IsActive() || !b.IsActive() || !memoryOwnersEqual(a.OwnerID, b.OwnerID) {
 		return false
 	}
-	if MapToCanonical(a.Category) != MapToCanonical(b.Category) {
+	if MapToCanonical(a.Category) != MapToCanonical(b.Category) || compressionProjectKey(a) != compressionProjectKey(b) {
 		return false
 	}
 
@@ -542,41 +587,38 @@ func pickLoser(entries []Entry, i, j int) int {
 
 const mergeBatchSize = 25
 
-// catOwnerKey is a composite key for grouping entries by (Category, OwnerID).
-// This ensures multi-tenant isolation: entries from different users are never merged.
 type catOwnerKey struct {
-	Category Category
-	OwnerID  string
+	Category   Category
+	OwnerID    string
+	ProjectKey string
+}
+
+func compressionProjectKey(entry Entry) string {
+	return semanticNormalizeProjectPath(inferProjectPath(&entry))
 }
 
 func (mc *Compressor) mergeSemanticDuplicates(ctx context.Context) (int, error) {
 	totalMerged := 0
+	var lastErr error
 
-	// 多租户隔离：按 (CanonicalCategory, OwnerID) 二元组分组
-	// 使用 MapToCanonical 确保 Claude-style 类别与 legacy 类别合并到同一组
-	// （如 "project" 和 "project_knowledge" 在同一组中做语义去重）
 	mc.store.mu.RLock()
 	groupSet := make(map[catOwnerKey]bool)
 	for _, e := range mc.store.entries {
 		if !e.IsActive() {
 			continue
 		}
-		groupSet[catOwnerKey{Category: MapToCanonical(e.Category), OwnerID: strings.TrimSpace(e.OwnerID)}] = true
+		groupSet[catOwnerKey{Category: MapToCanonical(e.Category), OwnerID: strings.TrimSpace(e.OwnerID), ProjectKey: compressionProjectKey(e)}] = true
 	}
 	mc.store.mu.RUnlock()
 
 	for key := range groupSet {
-		// Never merge protected categories (e.g. self_identity).
 		if key.Category.IsProtected() {
 			continue
 		}
 		mc.store.mu.RLock()
 		var entries []Entry
 		for _, e := range mc.store.entries {
-			// Durable task-management entries are 1:1 task identities, not
-			// compressible facts: merging them unions dozens of task-path tags
-			// into one entry and erases every other task from the sidebar.
-			if e.IsActive() && MapToCanonical(e.Category) == key.Category && strings.TrimSpace(e.OwnerID) == key.OwnerID && !e.Pinned && !IsDurableTaskManagementEntry(&e) {
+			if e.IsActive() && MapToCanonical(e.Category) == key.Category && strings.TrimSpace(e.OwnerID) == key.OwnerID && compressionProjectKey(e) == key.ProjectKey && !e.Pinned && !IsDurableTaskManagementEntry(&e) {
 				entries = append(entries, e)
 			}
 		}
@@ -601,12 +643,13 @@ func (mc *Compressor) mergeSemanticDuplicates(ctx context.Context) (int, error) 
 			}
 			merged, err := mc.mergeBatch(ctx, batch)
 			if err != nil {
+				lastErr = err
 				continue
 			}
 			totalMerged += merged
 		}
 	}
-	return totalMerged, nil
+	return totalMerged, lastErr
 }
 
 type mergeInstruction struct {
@@ -713,15 +756,26 @@ Rules:
 		survivor := batch[bestIdx]
 		survivor.Content = inst.Merged
 		survivor.Tags = mergeTags(nil, allTags)
+		survivor.CompactForm = ""
+		survivor.Embedding = nil
+		survivor.InvalidAt = nil
+		survivor.Stale = false
 		deleteIDs := make([]string, 0, len(groupIndices)-1)
+		expectedEntries := make([]Entry, 0, len(groupIndices))
 		for _, idx := range groupIndices {
+			expectedEntries = append(expectedEntries, batch[idx])
 			if idx != bestIdx {
 				deleteIDs = append(deleteIDs, batch[idx].ID)
 			}
 		}
-		if err := mc.store.UpdateEntriesAndDeleteIDs([]Entry{survivor}, deleteIDs); err != nil {
+		applied, err := mc.store.UpdateEntriesAndDeleteIDsIfUnchanged([]Entry{survivor}, deleteIDs, entryExpectations(expectedEntries))
+		if err != nil {
 			return 0, err
 		}
+		if !applied {
+			continue
+		}
+		mc.store.scheduleStoredEntryEmbedding(survivor.ID)
 		for _, id := range deleteIDs {
 			removeIDs[id] = true
 		}
@@ -1075,6 +1129,12 @@ func (mc *Compressor) backupDir() string {
 }
 
 func (mc *Compressor) createBackup() (string, error) {
+	mc.backupMu.Lock()
+	defer mc.backupMu.Unlock()
+	return mc.createBackupLocked()
+}
+
+func (mc *Compressor) createBackupLocked() (string, error) {
 	dir := mc.backupDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create backup dir: %w", err)
@@ -1088,7 +1148,7 @@ func (mc *Compressor) createBackup() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal memory snapshot: %w", err)
 	}
-	name := fmt.Sprintf("memories_backup_%s.json", time.Now().Format("20060102_150405"))
+	name := fmt.Sprintf("memories_backup_%s_%s.json", time.Now().Format("20060102_150405_000000000"), generateID())
 	dst := filepath.Join(dir, name)
 	if err := fileutil.AtomicWriteFile(dst, data, 0o644); err != nil {
 		return "", fmt.Errorf("write backup: %w", err)
@@ -1153,10 +1213,14 @@ const (
 	DefaultMaxBackups = 20
 	// MinBackups is the minimum retention limit accepted by memory backup pruning.
 	MinBackups = 8
+	// MaxBackups is the maximum retention limit accepted by memory backup pruning.
+	MaxBackups = 100
 )
 
 // ListBackups returns available backup snapshots.
 func (mc *Compressor) ListBackups() ([]BackupInfo, error) {
+	mc.backupMu.Lock()
+	defer mc.backupMu.Unlock()
 	// pruneOldBackups scans the directory, prunes excess files, and returns
 	// the surviving files sorted newest-first. Reuse that list directly.
 	files, err := mc.pruneOldBackups()
@@ -1194,6 +1258,11 @@ func (mc *Compressor) SetMaxBackups(n int) {
 	if n < MinBackups {
 		n = MinBackups
 	}
+	if n > MaxBackups {
+		n = MaxBackups
+	}
+	mc.backupMu.Lock()
+	defer mc.backupMu.Unlock()
 	mc.mu.Lock()
 	mc.maxBackups = n
 	mc.mu.Unlock()
@@ -1202,22 +1271,27 @@ func (mc *Compressor) SetMaxBackups(n int) {
 
 // RestoreBackup restores a backup by name.
 func (mc *Compressor) RestoreBackup(backupName string) error {
+	mc.operationMu.Lock()
+	defer mc.operationMu.Unlock()
+	mc.backupMu.Lock()
+	defer mc.backupMu.Unlock()
 	if strings.ContainsAny(backupName, `/\`) || backupName != filepath.Base(backupName) {
 		return fmt.Errorf("invalid backup name: %s", backupName)
 	}
-	dir := mc.backupDir()
-	src := filepath.Join(dir, backupName)
-	if _, err := os.Stat(src); err != nil {
-		return fmt.Errorf("backup not found: %s", backupName)
-	}
-	_, _ = mc.createBackup()
+	src := filepath.Join(mc.backupDir(), backupName)
 	data, err := os.ReadFile(src)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("backup not found: %s", backupName)
+		}
 		return fmt.Errorf("read backup: %w", err)
 	}
 	var restored []Entry
 	if err := json.Unmarshal(data, &restored); err != nil {
 		return fmt.Errorf("parse backup: %w", err)
+	}
+	if _, err := mc.createBackupLocked(); err != nil {
+		return fmt.Errorf("create safety backup: %w", err)
 	}
 	if err := mc.store.RestoreEntriesSnapshot(restored); err != nil {
 		return fmt.Errorf("restore memory snapshot: %w", err)
@@ -1227,6 +1301,8 @@ func (mc *Compressor) RestoreBackup(backupName string) error {
 
 // DeleteBackup removes a backup by name.
 func (mc *Compressor) DeleteBackup(backupName string) error {
+	mc.backupMu.Lock()
+	defer mc.backupMu.Unlock()
 	if strings.ContainsAny(backupName, `/\`) || backupName != filepath.Base(backupName) {
 		return fmt.Errorf("invalid backup name: %s", backupName)
 	}

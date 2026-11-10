@@ -116,6 +116,8 @@ func TestDesktopMemoryListKeepsProjectSessionsAndDropsInactive(t *testing.T) {
 		{Content: "shared"},
 		{Content: "project", OwnerID: projectOwner},
 		{Content: "other", OwnerID: "someone-else"},
+		{Content: "bot", OwnerID: desktopUserID + ":bot:bot-a"},
+		{Content: "bot boundary", OwnerID: desktopUserID, Boundary: &memory.MemoryBoundary{OwnerID: desktopUserID + ":bot:bot-a"}},
 		{Content: "old desktop", OwnerID: desktopUserID, Status: memory.StatusSuperseded},
 		{Content: "dormant project", OwnerID: projectOwner, Status: memory.StatusDormant},
 		{Content: "foreign boundary", Boundary: &memory.MemoryBoundary{OwnerID: "someone-else"}},
@@ -129,7 +131,7 @@ func TestDesktopMemoryListKeepsProjectSessionsAndDropsInactive(t *testing.T) {
 			t.Fatalf("missing %q in %+v", want, visible)
 		}
 	}
-	for _, forbidden := range []string{"other", "old desktop", "dormant project", "foreign boundary"} {
+	for _, forbidden := range []string{"other", "bot", "bot boundary", "old desktop", "dormant project", "foreign boundary"} {
 		if got[forbidden] {
 			t.Fatalf("included %q in %+v", forbidden, visible)
 		}

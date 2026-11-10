@@ -669,11 +669,22 @@ func (s *Store) updateMetadataEntriesByID(entries []Entry) error {
 // transaction, which is required for merge flows that keep one memory and retire
 // another.
 func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) error {
+	_, err := s.updateEntriesAndDeleteIDs(entries, deleteIDs, nil)
+	return err
+}
+
+// UpdateEntriesAndDeleteIDsIfUnchanged applies a batch only when every guarded
+// row still has the expected content and update timestamp. A missing or changed row skips the batch.
+func (s *Store) UpdateEntriesAndDeleteIDsIfUnchanged(entries []Entry, deleteIDs []string, expectedEntries map[string]Entry) (bool, error) {
+	return s.updateEntriesAndDeleteIDs(entries, deleteIDs, expectedEntries)
+}
+
+func (s *Store) updateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string, expectedEntries map[string]Entry) (bool, error) {
 	if s == nil || (len(entries) == 0 && len(deleteIDs) == 0) {
-		return nil
+		return true, nil
 	}
-	if len(deleteIDs) == 0 {
-		return s.UpdateEntriesByID(entries)
+	if len(deleteIDs) == 0 && len(expectedEntries) == 0 {
+		return true, s.UpdateEntriesByID(entries)
 	}
 	now := time.Now()
 	desiredByID := make(map[string]Entry, len(entries))
@@ -682,13 +693,13 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 		entry.ID = strings.TrimSpace(entry.ID)
 		entry.Content = strings.TrimSpace(entry.Content)
 		if entry.ID == "" {
-			return fmt.Errorf("memory_store: entry id must not be empty")
+			return false, fmt.Errorf("memory_store: entry id must not be empty")
 		}
 		if entry.Content == "" {
-			return fmt.Errorf("memory_store: content must not be empty")
+			return false, fmt.Errorf("memory_store: content must not be empty")
 		}
 		if err := ScanForInjection(entry.Content); err != nil {
-			return fmt.Errorf("memory_store: rejected: %w", err)
+			return false, fmt.Errorf("memory_store: rejected: %w", err)
 		}
 		entry.Content = redactSecretsInMemory(entry.Content)
 		if _, exists := desiredByID[entry.ID]; !exists {
@@ -704,7 +715,7 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 			continue
 		}
 		if _, exists := desiredByID[id]; exists {
-			return fmt.Errorf("memory_store: entry %q cannot be updated and deleted in the same batch", id)
+			return false, fmt.Errorf("memory_store: entry %q cannot be updated and deleted in the same batch", id)
 		}
 		if _, exists := deleteSet[id]; !exists {
 			deleteSet[id] = struct{}{}
@@ -724,9 +735,16 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 		idx := s.findEntryIndexByIDLocked(id)
 		if idx < 0 {
 			s.mu.Unlock()
-			return fmt.Errorf("memory_store: entry %q not found", id)
+			if _, ok := expectedEntries[id]; ok {
+				return false, nil
+			}
+			return false, fmt.Errorf("memory_store: entry %q not found", id)
 		}
 		current := s.entries[idx]
+		if !entryMatchesExpectation(current, expectedEntries, id) {
+			s.mu.Unlock()
+			return false, nil
+		}
 		beforeByID[id] = current
 		if current.Content != desired.Content {
 			snap := VersionSnapshot{Content: current.Content, Timestamp: current.UpdatedAt}
@@ -746,7 +764,14 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 		idx := s.findEntryIndexByIDLocked(id)
 		if idx < 0 {
 			s.mu.Unlock()
-			return fmt.Errorf("memory_store: entry %q not found", id)
+			if _, ok := expectedEntries[id]; ok {
+				return false, nil
+			}
+			return false, fmt.Errorf("memory_store: entry %q not found", id)
+		}
+		if !entryMatchesExpectation(s.entries[idx], expectedEntries, id) {
+			s.mu.Unlock()
+			return false, nil
 		}
 		beforeByID[id] = s.entries[idx]
 	}
@@ -774,11 +799,11 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 		}
 		if err := batchBackend.UpdateEntriesAndDeleteIDs(ptrs, orderedDeletes); err != nil {
 			s.mu.Unlock()
-			return fmt.Errorf("memory_store: persist entry mutation batch: %w", err)
+			return false, fmt.Errorf("memory_store: persist entry mutation batch: %w", err)
 		}
 	} else if s.backend != nil {
 		s.mu.Unlock()
-		return fmt.Errorf("memory_store: backend does not support atomic update/delete batch")
+		return false, fmt.Errorf("memory_store: backend does not support atomic update/delete batch")
 	}
 
 	for i, idx := range indices {
@@ -824,7 +849,29 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 	}
 	s.mu.Unlock()
 	s.publishMutations(events)
-	return nil
+	return true, nil
+}
+
+func entryMatchesExpectation(entry Entry, expectedEntries map[string]Entry, id string) bool {
+	expected, ok := expectedEntries[id]
+	if !ok {
+		return true
+	}
+	actualHash := entry.ContentHash
+	if actualHash == "" {
+		actualHash = computeContentHash(entry.Content)
+	}
+	expectedHash := expected.ContentHash
+	if expectedHash == "" {
+		expectedHash = computeContentHash(expected.Content)
+	}
+	if actualHash != expectedHash || !entry.UpdatedAt.Equal(expected.UpdatedAt) {
+		return false
+	}
+	if expected.Version != 0 || entry.Version != 0 {
+		return entry.Version == expected.Version
+	}
+	return true
 }
 
 func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserveContent bool, origin string) error {
@@ -3689,30 +3736,31 @@ func (s *Store) SetEntries(entries []Entry) {
 }
 
 // RestoreEntriesSnapshot replaces active memory with an explicit backup
-// snapshot. For sync-capable backends, restored rows and tombstones for rows
-// absent from the snapshot are committed in one backend mutation before the
-// in-memory view changes.
+// snapshot. Persistence and the in-memory replacement share one Store write
+// boundary so concurrent writes cannot split the database and memory views.
 func (s *Store) RestoreEntriesSnapshot(entries []Entry) error {
 	if s == nil {
 		return fmt.Errorf("memory_store: not initialized")
 	}
+	if err := validateRestoredSnapshot(entries); err != nil {
+		return err
+	}
 	restored := normalizeRestoredSnapshot(entries)
-	if s.backend != nil && s.backend.SupportsSync() {
+	if s.backend != nil {
 		batchBackend, ok := s.backend.(BatchMutationStorageBackend)
 		if !ok {
 			return fmt.Errorf("memory_store: backend does not support atomic snapshot restore")
 		}
-		s.mu.RLock()
-		deleteIDs := restoreSnapshotDeleteIDsLocked(s.entries, restored)
-		s.mu.RUnlock()
 		ptrs := make([]*Entry, len(restored))
 		for i := range restored {
 			ptrs[i] = &restored[i]
 		}
+		s.mu.Lock()
+		deleteIDs := restoreSnapshotDeleteIDsLocked(s.entries, restored)
 		if err := batchBackend.UpdateEntriesAndDeleteIDs(ptrs, deleteIDs); err != nil {
+			s.mu.Unlock()
 			return fmt.Errorf("memory_store: persist restored snapshot: %w", err)
 		}
-		s.mu.Lock()
 		s.replaceEntriesAndRebuildLocked(restored, false)
 		s.dirty = false
 		if s.sync != nil {
@@ -3729,15 +3777,34 @@ func (s *Store) RestoreEntriesSnapshot(entries []Entry) error {
 	previous := append([]Entry(nil), s.entries...)
 	s.replaceEntriesAndRebuildLocked(restored, false)
 	s.markDirtyLocked()
-	s.mu.Unlock()
-	if err := s.flush(); err != nil {
-		s.mu.Lock()
+	if err := s.persistRestoredSnapshotLocked(); err != nil {
 		s.replaceEntriesAndRebuildLocked(previous, false)
 		s.markDirtyLocked()
 		s.mu.Unlock()
 		return fmt.Errorf("memory_store: flush restored snapshot: %w", err)
 	}
+	s.mu.Unlock()
 	s.publishReset("backup_restore")
+	return nil
+}
+
+func (s *Store) persistRestoredSnapshotLocked() error {
+	if s.partMgr != nil && s.partMgr.isEnabled() {
+		s.partMgr.markAllDirty()
+		if _, err := s.partMgr.flushDirty(s.entries); err != nil {
+			return err
+		}
+		s.dirty = false
+		return nil
+	}
+	data, err := json.MarshalIndent(s.entries, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := fileutil.AtomicWriteFile(s.path, data, 0o644); err != nil {
+		return err
+	}
+	s.dirty = false
 	return nil
 }
 
@@ -3834,19 +3901,33 @@ func (s *Store) WaitRebuild() {
 	}
 }
 
-func normalizeRestoredSnapshot(entries []Entry) []Entry {
-	restored := make([]Entry, 0, len(entries))
-	seen := make(map[string]int, len(entries))
+func validateRestoredSnapshot(entries []Entry) error {
+	seen := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
-		if strings.TrimSpace(entry.ID) == "" {
-			entry.ID = generateID()
+		if strings.TrimSpace(entry.Content) == "" {
+			return fmt.Errorf("memory_store: invalid restore snapshot: entry %q has empty content", entry.ID)
 		}
-		if idx, ok := seen[entry.ID]; ok {
-			restored[idx] = entry
+		if err := ScanForInjection(entry.Content); err != nil {
+			return fmt.Errorf("memory_store: invalid restore snapshot: entry %q: %w", entry.ID, err)
+		}
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
 			continue
 		}
-		seen[entry.ID] = len(restored)
-		restored = append(restored, entry)
+		if _, exists := seen[id]; exists {
+			return fmt.Errorf("memory_store: invalid restore snapshot: duplicate entry id %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
+}
+
+func normalizeRestoredSnapshot(entries []Entry) []Entry {
+	restored := append([]Entry(nil), entries...)
+	for i := range restored {
+		if strings.TrimSpace(restored[i].ID) == "" {
+			restored[i].ID = generateID()
+		}
 	}
 	normalizeEntryTimestamps(restored)
 	return restored

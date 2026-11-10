@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { Z } from "../ui/zIndex";
 import { DeleteSession, GetSessionCount, GetSessionFullText, ListSessionHistory, SearchSessionHistory } from "../../../wailsjs/go/main/App";
 import { intlLocale } from "../../i18n";
@@ -40,7 +40,9 @@ type ViewSession = { id: string; topic: string; platform: string; timestamp: str
 export function SessionHistoryTab({ t, lang, onOpenTrace }: SessionHistoryTabProps) {
     const [sessions, setSessions] = useState<SessionSummaryItem[]>([]);
     const [searchResults, setSearchResults] = useState<SessionSearchHit[] | null>(null);
-    const [loading, setLoading] = useState(false);
+    const [listLoading, setListLoading] = useState(false);
+    const [searchLoading, setSearchLoading] = useState(false);
+    const [deleting, setDeleting] = useState(false);
     const [error, setError] = useState("");
     const [query, setQuery] = useState("");
     const [totalCount, setTotalCount] = useState(0);
@@ -48,18 +50,24 @@ export function SessionHistoryTab({ t, lang, onOpenTrace }: SessionHistoryTabPro
     const [fullText, setFullText] = useState("");
     const [fullTextLoading, setFullTextLoading] = useState(false);
     const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+    const listRequestRef = useRef(0);
+    const searchRequestRef = useRef(0);
+    const fullTextRequestRef = useRef(0);
 
-    const loadSessions = useCallback(async () => {
-        setLoading(true);
+    const loadSessions = useCallback(async (limit = 100) => {
+        const requestID = ++listRequestRef.current;
+        setListLoading(true);
         setError("");
         try {
-            const [list, count] = await Promise.all([ListSessionHistory(100), GetSessionCount()]);
+            const [list, count] = await Promise.all([ListSessionHistory(limit), GetSessionCount()]);
+            if (requestID !== listRequestRef.current) return;
             setSessions(Array.isArray(list) ? list : []);
             setTotalCount(count ?? 0);
         } catch (e) {
-            setError(String(e));
+            if (requestID === listRequestRef.current) setError(String(e));
+        } finally {
+            if (requestID === listRequestRef.current) setListLoading(false);
         }
-        setLoading(false);
     }, []);
 
     useEffect(() => { loadSessions(); }, [loadSessions]);
@@ -67,20 +75,32 @@ export function SessionHistoryTab({ t, lang, onOpenTrace }: SessionHistoryTabPro
     const handleSearch = useCallback(async () => {
         const q = query.trim();
         if (!q) {
+            searchRequestRef.current++;
+            setSearchLoading(false);
             setSearchResults(null);
             return;
         }
-        setLoading(true);
+        const requestID = ++searchRequestRef.current;
+        setSearchLoading(true);
         setError("");
         try {
             const results = await SearchSessionHistory(q, 30);
+            if (requestID !== searchRequestRef.current) return;
             const hits = Array.isArray(results) ? results : [];
-            setSearchResults(hits.filter((r: any) => r.session_id || r.snippet !== "no results found"));
+            setSearchResults(hits.filter((r: any) => r.session_id && r.snippet !== "no results found"));
         } catch (e) {
-            setError(String(e));
+            if (requestID === searchRequestRef.current) setError(String(e));
+        } finally {
+            if (requestID === searchRequestRef.current) setSearchLoading(false);
         }
-        setLoading(false);
     }, [query]);
+
+    const clearSearch = () => {
+        searchRequestRef.current++;
+        setSearchLoading(false);
+        setQuery("");
+        setSearchResults(null);
+    };
 
     const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => { if (e.key === "Enter") handleSearch(); };
 
@@ -90,29 +110,45 @@ export function SessionHistoryTab({ t, lang, onOpenTrace }: SessionHistoryTabPro
     }, [onOpenTrace]);
 
     const handleView = async (sessionId: string, topic: string, platform: string, timestamp: string) => {
+        const requestID = ++fullTextRequestRef.current;
         setViewSession({ id: sessionId, topic, platform, timestamp });
         setFullText("");
         setFullTextLoading(true);
         try {
             const text = await GetSessionFullText(sessionId);
-            setFullText(text || "");
+            if (requestID === fullTextRequestRef.current) setFullText(text || "");
         } catch (e) {
-            setFullText(`Error: ${e}`);
+            if (requestID === fullTextRequestRef.current) setFullText(`Error: ${e}`);
+        } finally {
+            if (requestID === fullTextRequestRef.current) setFullTextLoading(false);
         }
-        setFullTextLoading(false);
     };
 
+    const closeViewer = useCallback(() => {
+        fullTextRequestRef.current++;
+        setFullTextLoading(false);
+        setViewSession(null);
+    }, []);
+
     const handleDelete = async (sessionId: string) => {
+        if (deleting) return;
+        setDeleting(true);
         setError("");
         try {
             await DeleteSession(sessionId);
+            listRequestRef.current++;
+            searchRequestRef.current++;
+            setListLoading(false);
+            setSearchLoading(false);
             setDeleteTarget(null);
             setSessions(prev => prev.filter(s => s.session_id !== sessionId));
-            if (searchResults) setSearchResults(prev => prev ? prev.filter(s => s.session_id !== sessionId) : null);
-            if (viewSession?.id === sessionId) setViewSession(null);
+            setSearchResults(prev => prev ? prev.filter(s => s.session_id !== sessionId) : null);
+            if (viewSession?.id === sessionId) closeViewer();
             setTotalCount(prev => Math.max(0, prev - 1));
         } catch (e) {
             setError(String(e));
+        } finally {
+            setDeleting(false);
         }
     };
 
@@ -126,13 +162,14 @@ export function SessionHistoryTab({ t, lang, onOpenTrace }: SessionHistoryTabPro
     };
 
     const displayList = searchResults !== null ? searchResults : sessions;
+    const loading = listLoading || searchLoading;
 
     return (
         <div>
             <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
                 <input placeholder={t("Full-text search (Enter)", "\u5168\u6587\u68c0\u7d22\uff08\u56de\u8f66\u641c\u7d22\uff09")} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={handleKeyDown} aria-label={t("Search sessions", "\u641c\u7d22\u4f1a\u8bdd")} style={{ ...inputStyle, flex: 1 }} />
-                <button onClick={handleSearch} disabled={loading} style={{ ...primaryBtnStyle, cursor: loading ? "wait" : "pointer", opacity: loading ? 0.6 : 1 }}>{t("Search", "\u641c\u7d22")}</button>
-                {searchResults !== null && <button onClick={() => { setQuery(""); setSearchResults(null); }} style={neutralBtnStyle}>{t("Clear", "\u6e05\u9664")}</button>}
+                <button onClick={handleSearch} disabled={searchLoading} style={{ ...primaryBtnStyle, cursor: searchLoading ? "wait" : "pointer", opacity: searchLoading ? 0.6 : 1 }}>{t("Search", "\u641c\u7d22")}</button>
+                {searchResults !== null && <button onClick={clearSearch} style={neutralBtnStyle}>{t("Clear", "\u6e05\u9664")}</button>}
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
@@ -178,13 +215,18 @@ export function SessionHistoryTab({ t, lang, onOpenTrace }: SessionHistoryTabPro
                     );
                 })}
             </div>
-            {viewSession && <SessionViewerModal t={t} lang={lang} viewSession={viewSession} fullText={fullText} loading={fullTextLoading} onClose={() => setViewSession(null)} onOpenTrace={onOpenTrace ? openSessionTrace : undefined} />}
+            {searchResults === null && sessions.length < totalCount && (
+                <button type="button" className="memory-status-refresh-btn" disabled={listLoading} onClick={() => loadSessions(sessions.length + 100)}>
+                    {listLoading ? t("Loading...", "\u52a0\u8f7d\u4e2d...") : t("Load more", "\u52a0\u8f7d\u66f4\u591a")}
+                </button>
+            )}
+            {viewSession && <SessionViewerModal t={t} lang={lang} viewSession={viewSession} fullText={fullText} loading={fullTextLoading} onClose={closeViewer} onOpenTrace={onOpenTrace ? openSessionTrace : undefined} />}
             {deleteTarget && (
-                <ModalOverlay onClose={() => setDeleteTarget(null)}>
+                <ModalOverlay onClose={() => { if (!deleting) setDeleteTarget(null); }}>
                     <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("Delete this session? This cannot be undone.", "\u786e\u5b9a\u5220\u9664\u8fd9\u6761\u4f1a\u8bdd\u8bb0\u5f55\uff1f\u6b64\u64cd\u4f5c\u4e0d\u53ef\u64a4\u9500\u3002")}</p>
                     <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                        <button onClick={() => setDeleteTarget(null)} style={neutralBtnStyle}>{t("Cancel", "\u53d6\u6d88")}</button>
-                        <button onClick={() => handleDelete(deleteTarget)} style={dangerBtnStyle}>{t("Delete", "\u5220\u9664")}</button>
+                        <button disabled={deleting} onClick={() => setDeleteTarget(null)} style={neutralBtnStyle}>{t("Cancel", "\u53d6\u6d88")}</button>
+                        <button disabled={deleting} onClick={() => handleDelete(deleteTarget)} style={dangerBtnStyle}>{deleting ? t("Deleting...", "\u5220\u9664\u4e2d...") : t("Delete", "\u5220\u9664")}</button>
                     </div>
                 </ModalOverlay>
             )}

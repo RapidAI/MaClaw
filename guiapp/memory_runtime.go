@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/memory"
@@ -113,6 +114,46 @@ func (a *App) currentSharedMemoryStore() *memory.Store {
 	a.memoryStoreMu.RLock()
 	defer a.memoryStoreMu.RUnlock()
 	return a.memoryStore
+}
+
+func (a *App) acquireSharedMemoryRuntime() (*memoryRuntimeState, func()) {
+	if a == nil {
+		return nil, func() {}
+	}
+	runtime := a.currentMemoryRuntime()
+	if runtime == nil {
+		a.ensureMemoryStore()
+		runtime = a.currentMemoryRuntime()
+	}
+	if runtime == nil || !runtime.acquire() {
+		return nil, func() {}
+	}
+	return runtime, runtime.release
+}
+
+func memoryEntriesByIDsForStore(store *memory.Store, ids ...string) []memory.Entry {
+	if store == nil {
+		return nil
+	}
+	var out []memory.Entry
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		out = append(out, store.SearchDirectByID(id)...)
+	}
+	return out
+}
+
+func (a *App) memoryMaintenanceForRuntime(runtime *memoryRuntimeState) *memory.Maintenance {
+	if runtime == nil {
+		return nil
+	}
+	if runtime.Maintenance != nil {
+		return runtime.Maintenance
+	}
+	return a.getOrCreateMemoryMaintenance()
 }
 
 func (a *App) currentMemoryRuntime() *memoryRuntimeState {

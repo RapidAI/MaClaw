@@ -25,7 +25,13 @@ func (a *App) handleMemoryMutationForRuntime(runtime *memoryRuntimeState, event 
 			if event.After != nil && event.After.IsActive() {
 				replacement = event.After.Content
 			}
-			change = warehouseChangeFromEntries([]memory.Entry{*event.Before}, string(event.Kind), replacement)
+			kind := string(event.Kind)
+			if event.Kind == memory.MutationUpdate {
+				kind = "updated"
+			} else if event.Kind == memory.MutationDelete {
+				kind = "deleted"
+			}
+			change = warehouseChangeFromEntries([]memory.Entry{*event.Before}, kind, replacement)
 			change.OwnerID = event.OwnerID
 		}
 		a.notifyMemoryWarehouseChangedForStore(runtime.Store, change)

@@ -231,9 +231,10 @@ func TestDownloadURLOrderUsesResponsiveManifestSourceFirst(t *testing.T) {
 		t.Fatalf("github source first URL = %q, want %q", got, githubReleaseURL)
 	}
 
+	immutable := "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/releases/V1.2.3/MaClaw-Setup.exe"
 	mirrorFirst := combineDownloadURLList(append(mirrorURLs, githubReleaseURL)...)
-	if got := splitDownloadURLs(mirrorFirst)[0]; got != "https://mirror.example/MaClaw-Setup.exe" {
-		t.Fatalf("mirror source first URL = %q", got)
+	if got := splitDownloadURLs(mirrorFirst)[0]; got != immutable {
+		t.Fatalf("mirror source first URL = %q, want immutable per-tag mirror %q", got, immutable)
 	}
 }
 

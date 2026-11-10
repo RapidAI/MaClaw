@@ -157,6 +157,10 @@ describe("deriveChipStatus", () => {
         expect(deriveChipStatus("en", [{ index: 3, status: "running" }], false)).toBe("T3…");
     });
 
+    it("drops the in-progress ellipsis once the task has stopped", () => {
+        expect(deriveChipStatus("en", [{ index: 4, status: "running" }], false, false, undefined, false, false)).toBe("T4");
+    });
+
     it("shows step progress when every row of a checklist is done", () => {
         expect(deriveChipStatus("zh-Hans", [
             { index: 1, status: "passed" },

@@ -4111,7 +4111,7 @@ describe('SidebarTaskManagement', () => {
         const cloudSvg = cloudButton.querySelector('svg');
         const cloudPath = cloudSvg?.querySelector('path');
         expect(cloudSvg).toBeTruthy();
-        expect(cloudSvg?.getAttribute('width')).toBe('16');
+        expect(cloudSvg?.getAttribute('width')).toBe('18');
         expect(cloudPath?.getAttribute('fill')).toBe('none');
         expect(cloudPath?.getAttribute('stroke')).toBe('currentColor');
         expect(createButton.classList.contains('mc-task-pane__create-group')).toBe(true);

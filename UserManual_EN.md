@@ -20,7 +20,7 @@ When you launch MaClaw for the first time, a guided wizard walks you through set
 *   Switch between modes at any time with one click — **developers use Pro mode to code, office workers use Simple mode to get things done. Everyone's covered.**
 
 ### Step 3: Configure AI Model
-*   Choose from preset LLM providers (e.g., GLM, DeepSeek, etc.)
+*   Choose from preset LLM providers (e.g., GLM, DeepSeek, Mistral AI, etc.)
 *   Enter your API Key and test connectivity
 *   Also supports OAuth one-click login and free trial access
 
@@ -181,7 +181,7 @@ The sidebar provides quick switching:
 ## 8. Model Settings
 
 1.  Select an AI tool from the sidebar and locate the **"Model Settings"** area.
-2.  **Provider Selection**: Supports preset providers including GLM, Kimi, Doubao, MiniMax, DeepSeek, etc.
+2.  **Provider Selection**: Supports preset providers including GLM, Kimi, Doubao, MiniMax, DeepSeek, Mistral AI, etc.
 3.  **"Original" Mode**: Use official default configs; auto-clears custom proxy settings and environment variables.
 4.  **API Key**: Paste your key in the input field — it's saved automatically after configuration.
 5.  **Smart Sync**: Keys for the same provider auto-sync across different tools.

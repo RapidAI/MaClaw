@@ -43,11 +43,13 @@ func projectBotMemory(botID string, entry memory.Entry) BotMemoryEntry {
 // ListBotMemories returns structured long-term memory for one desktop bot.
 func (a *App) ListBotMemories(botID, category, keyword string) ([]BotMemoryEntry, error) {
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return nil, fmt.Errorf("memory store not initialized")
 	}
 	botID = strings.TrimSpace(botID)
-	entries, err := a.memoryStore.ListBotMemories(desktopUserID, botID, category, keyword)
+	entries, err := runtime.Store.ListBotMemories(desktopUserID, botID, category, keyword)
 	if err != nil {
 		return nil, err
 	}
@@ -64,15 +66,16 @@ func (a *App) SaveBotMemory(botID, content, category string, tags []string) (*Bo
 		return nil, err
 	}
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return nil, fmt.Errorf("memory store not initialized")
 	}
 	botID = strings.TrimSpace(botID)
-	entry, err := a.memoryStore.SaveBotMemory(desktopUserID, botID, content, string(normalizeBotMemoryCategory(category)), tags)
+	entry, err := runtime.Store.SaveBotMemory(desktopUserID, botID, content, string(normalizeBotMemoryCategory(category)), tags)
 	if err != nil {
 		return nil, err
 	}
-	a.notifyMemoryWarehouseChanged(memoryWarehouseChange{})
 	out := projectBotMemory(botID, entry)
 	return &out, nil
 }
@@ -83,14 +86,14 @@ func (a *App) UpdateBotMemory(botID, id, content, category string, tags []string
 		return err
 	}
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	previous := a.memoryEntriesByIDs(id)
-	if err := a.memoryStore.UpdateBotMemory(desktopUserID, strings.TrimSpace(botID), id, content, string(normalizeBotMemoryCategory(category)), tags); err != nil {
+	if err := runtime.Store.UpdateBotMemory(desktopUserID, strings.TrimSpace(botID), id, content, string(normalizeBotMemoryCategory(category)), tags); err != nil {
 		return err
 	}
-	a.notifyMemoryWarehouseChanged(warehouseChangeFromEntries(previous, "updated", content))
 	return nil
 }
 
@@ -100,29 +103,31 @@ func (a *App) DeleteBotMemory(botID, id string) error {
 		return err
 	}
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	previous := a.memoryEntriesByIDs(id)
-	if err := a.memoryStore.DeleteBotMemory(desktopUserID, strings.TrimSpace(botID), id); err != nil {
+	if err := runtime.Store.DeleteBotMemory(desktopUserID, strings.TrimSpace(botID), id); err != nil {
 		return err
 	}
-	a.notifyMemoryWarehouseChanged(warehouseChangeFromEntries(previous, "deleted", ""))
 	return nil
 }
 
 // DeleteBotMemories bulk-deletes bot-scoped long-term memory entries.
 func (a *App) DeleteBotMemories(botID string, ids []string) (map[string]any, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "delete", "bot_id": botID, "ids": ids}); err != nil {
+		return nil, err
+	}
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return nil, fmt.Errorf("memory store not initialized")
 	}
-	deleted, skipped, err := a.memoryStore.DeleteBotMemories(desktopUserID, strings.TrimSpace(botID), ids)
+	deleted, err := runtime.Store.DeleteBotMemoriesAtomic(desktopUserID, strings.TrimSpace(botID), ids)
 	if err != nil {
 		return nil, err
 	}
-	if deleted > 0 {
-		a.notifyMemoryWarehouseChanged(memoryWarehouseChange{})
-	}
-	return map[string]any{"deleted": deleted, "skipped": skipped}, nil
+	return map[string]any{"deleted": deleted, "skipped": []string{}}, nil
 }

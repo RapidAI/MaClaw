@@ -963,6 +963,13 @@ func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 		{Name: "Anthropic", URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5-20250514", AuthType: "oauth", Protocol: "anthropic", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "GitHub Copilot", URL: "https://api.githubcopilot.com", Model: "claude-sonnet-4", AuthType: "oauth", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		// Mistral AI's La Plateforme API key. Hosted chat models: large/medium/
+		// small plus the codestral coding checkpoint. Reasoning spells as
+		// reasoning_effort there; the DeepSeek thinking object fails 422
+		// (corelib.IsMistralAIAPIEndpoint) and hosted flash checkpoints keep
+		// Mistral's json_schema, so the request pipeline needs no per-model
+		// workarounds for this provider.
+		{Name: "Mistral AI", URL: "https://api.mistral.ai/v1", Model: "mistral-large-latest", Models: []string{"mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "codestral-latest"}, Protocol: "openai", ContextLength: 262144, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Qwen", URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen3.8-flash", Protocol: "openai", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		// xAI's Grok Build OAuth provider defaults to Grok 4.7 with a 400K context window.
 		// The public xAI endpoint is OpenAI-compatible, so it uses the standard

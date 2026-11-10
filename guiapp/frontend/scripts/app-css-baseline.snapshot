@@ -26459,7 +26459,14 @@ button.tbk-pill {
 }
 
 /* aiAssistantMarkdown.tsx */
-.aamd-math-inline { vertical-align: middle; }
+.aamd-math-inline { vertical-align: middle; white-space: nowrap; overflow-wrap: normal; word-break: normal; }
+/* KaTeX sizes `.base` to min-content. A chat bubble's overflow-wrap:anywhere
+   makes that width one character, so a subscript drops to the next line.
+   Reset wrapping on the base itself and leave KaTeX's own width alone. */
+.aamd-math-inline .katex,
+.aamd-math-inline .katex .base,
+.aamd-math-display .katex,
+.aamd-math-display .katex .base { overflow-wrap: normal; word-break: normal; white-space: nowrap; }
 .aamd-kb-thumb-wrap { margin: 6px 0; max-width: 100%; min-width: 0; box-sizing: border-box; overflow: hidden; }
 .aamd-table-wrap { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; margin: 6px 0; white-space: normal; }
 .aamd-chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
@@ -30195,8 +30202,8 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-task-pane__toolbar-divider {
     width: 1px;
-    height: 16px;
-    margin: 0 4px;
+    height: 18px;
+    margin: 0 3px;
     background: var(--theme-border-subtle, #e6edf5);
 }
 .mc-task-pane > .mc-task-pane__header .mc-task-pane__toolbar > button.mc-task-pane__create-group {
@@ -30257,7 +30264,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     display: inline-flex;
     align-items: center;
     flex: 0 0 auto;
-    gap: 6px;
+    gap: 3px;
     margin: 0;
     padding: 0;
     border: 0;
@@ -30268,8 +30275,8 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    width: 28px !important;
-    height: 28px !important;
+    width: 30px !important;
+    height: 30px !important;
     padding: 0;
     border: 0 !important;
     border-radius: var(--radius-md) !important;
@@ -30788,6 +30795,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   line-height: 1.35;
 }
 .mc-task-pane .mc-task-machine-add .mc-task-machine-error,
+.mc-task-pane .mc-task-machine-create .mc-task-machine-error,
 .mc-task-pane .mc-task-machine-detail .mc-task-machine-error {
   display: block;
   margin: 0 0 8px;
@@ -30830,6 +30838,12 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   color: var(--theme-text-primary);
   font-size: 12px;
 }
+.mc-task-pane .mc-task-machine-detail header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .mc-task-pane .mc-task-machine-add input,
 .mc-task-pane .mc-task-machine-create input,
 .mc-task-pane .mc-task-machine-send input {
@@ -30847,7 +30861,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   overflow: auto;
 }
 .mc-task-pane .mc-task-machine-messages p,
-.mc-task-pane .mc-task-machine-add p { margin: 4px 0; }
+.mc-task-pane .mc-task-machine-add p { margin: 4px 0; overflow-wrap: anywhere; }
 .mc-task-pane .mc-task-machine-permission { display: flex; gap: 12px; margin-bottom: 8px; }
 .mc-task-pane .mc-task-filter-row {
   display: inline-flex;

@@ -507,41 +507,45 @@ const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind;
     );
 };
 
-const CloudComputingIcon = ({ size = 16 }: { size?: number } = {}) => (
+/** Cloud workspace: a PC whose screen shows a cloud — a desktop that lives in the cloud. */
+const CloudComputingIcon = ({ size = 18 }: { size?: number } = {}) => (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
-        <path {...CREATE_TASK_ICON_PROPS} d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9z" />
+        <rect {...CREATE_TASK_ICON_PROPS} x="3" y="4" width="18" height="12" rx="1.8" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M9 20h6M12 16v4" />
+        <g transform="translate(7.4 5.4) scale(0.38)">
+            <path fill="currentColor" stroke="none" d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9z" />
+        </g>
     </svg>
 );
 
-/** Companion: a document being read, with a small mark for the AI reading. */
-const FileCompanionIcon = ({ size = 16 }: { size?: number } = {}) => (
+/** Companion: an open book with text lines — the AI reads the document with you. */
+const FileCompanionIcon = ({ size = 18 }: { size?: number } = {}) => (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
-        <path {...CREATE_TASK_ICON_PROPS} d="M6 3.5h8.2L19 8.2V20.5H6z" />
-        <path {...CREATE_TASK_ICON_PROPS} d="M14 3.6V8.2H19" />
-        <path {...CREATE_TASK_ICON_PROPS} d="M8.5 12.5h5M8.5 16h3.2" />
-        <path {...CREATE_TASK_ICON_PROPS} d="M16.1 11.2l.4 1 .95.4-.95.4-.4 1-.4-1-.95-.4.95-.4z" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M12 7v14" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M6 8h2M6 12h2M16 8h2M16 12h2" />
     </svg>
 );
 
-/** Knowledge base: an open book, the same mark as the library menu entry. */
-const KnowledgeEntryIcon = ({ size = 16 }: { size?: number } = {}) => (
+/** Knowledge base: a shelf of books — a whole library, not a single document. */
+const KnowledgeEntryIcon = ({ size = 18 }: { size?: number } = {}) => (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
-        <path {...CREATE_TASK_ICON_PROPS} d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-        <path {...CREATE_TASK_ICON_PROPS} d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M4 4v16M8 8v12M12 6v14" />
+        <path {...CREATE_TASK_ICON_PROPS} d="m16 6 4 14" />
     </svg>
 );
 
-/** Cloud drive: a cloud sitting on a disk. The disk keeps it from reading as the workspace cloud. */
-const CloudDriveIcon = ({ size = 16 }: { size?: number } = {}) => (
+/** Cloud drive: a cloud sitting on a disk. The disk keeps it from reading as the workspace screen. */
+const CloudDriveIcon = ({ size = 18 }: { size?: number } = {}) => (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
-        <path {...CREATE_TASK_ICON_PROPS} d="M7.6 11.2h8.6a2.2 2.2 0 0 0 .2-4.4 3.5 3.5 0 0 0-6.7 1.05A2.05 2.05 0 0 0 7.6 11.2z" />
-        <ellipse {...CREATE_TASK_ICON_PROPS} cx="12" cy="16.2" rx="7" ry="2.4" />
-        <path {...CREATE_TASK_ICON_PROPS} d="M5 16.2v3.2a7 2.4 0 0 0 14 0v-3.2" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M7.6 11.4h8.7a2.3 2.3 0 0 0 .2-4.6 3.6 3.6 0 0 0-6.9 1.1A2.1 2.1 0 0 0 7.6 11.4z" />
+        <ellipse {...CREATE_TASK_ICON_PROPS} cx="12" cy="16.4" rx="7" ry="2.5" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M5 16.4v3a7 2.5 0 0 0 14 0v-3" />
     </svg>
 );
 
 const SaveTaskIcon = () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
         <path {...CREATE_TASK_ICON_PROPS} d="M6 4h10l2 2v14H6z" />
         <path {...CREATE_TASK_ICON_PROPS} d="M9 4v6h6V4" />
         <path {...CREATE_TASK_ICON_PROPS} d="M9 16h6" />
@@ -5750,9 +5754,9 @@ export const SidebarTaskManagement = ({
                     title={themeToggleLabel}
                 >
                     {headerThemeMode === 'dark' ? (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
+                        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
                     ) : (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
+                        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
                     )}
                 </button>
             </span>

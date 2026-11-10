@@ -361,9 +361,16 @@ func (s *Store) GetFullText(sessionID string) (string, error) {
 
 // Delete removes a single session by ID.
 func (s *Store) Delete(sessionID string) error {
-	_, err := s.db.Exec(`DELETE FROM sessions WHERE session_id = ?`, sessionID)
+	result, err := s.db.Exec(`DELETE FROM sessions WHERE session_id = ?`, sessionID)
 	if err != nil {
 		return fmt.Errorf("session store: delete: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("session store: delete result: %w", err)
+	}
+	if deleted == 0 {
+		return fmt.Errorf("session store: session %q not found", sessionID)
 	}
 	return nil
 }

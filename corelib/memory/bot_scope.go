@@ -81,6 +81,9 @@ func (s *Store) SaveBotMemory(baseOwner, botID, content, category string, tags [
 	if s == nil {
 		return Entry{}, fmt.Errorf("memory store is nil")
 	}
+	if MapToCanonical(Category(category)).IsProtected() {
+		return Entry{}, fmt.Errorf("protected memory cannot be created here")
+	}
 	tag := BotMemoryTag(botID)
 	cleaned := make([]string, 0, len(tags)+1)
 	seen := map[string]struct{}{tag: {}}
@@ -138,7 +141,7 @@ func (s *Store) UpdateBotMemory(baseOwner, botID, id, content, category string, 
 	if !ok {
 		return fmt.Errorf("memory not found")
 	}
-	if entry.Category.IsProtected() {
+	if entry.Category.IsProtected() || MapToCanonical(Category(category)).IsProtected() {
 		return fmt.Errorf("protected memory cannot be edited here")
 	}
 	tag := BotMemoryTag(botID)
@@ -196,6 +199,53 @@ func (s *Store) findBotOwnedEntry(owner, id string) (Entry, bool) {
 		}
 	}
 	return Entry{}, false
+}
+
+// DeleteBotMemoriesAtomic deletes the complete bot-owned selection or leaves it unchanged.
+func (s *Store) DeleteBotMemoriesAtomic(baseOwner, botID string, ids []string) (int, error) {
+	owner, err := FormatBotMemoryOwner(baseOwner, botID)
+	if err != nil {
+		return 0, err
+	}
+	if s == nil {
+		return 0, fmt.Errorf("memory store is nil")
+	}
+	seen := map[string]bool{}
+	deleteIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		deleteIDs = append(deleteIDs, id)
+	}
+	if len(deleteIDs) == 0 {
+		return 0, fmt.Errorf("at least one memory id is required")
+	}
+	entriesByID := make(map[string]Entry, len(deleteIDs))
+	for _, entry := range s.List("", "") {
+		if seen[entry.ID] && memoryOwnersEqual(entry.OwnerID, owner) && entry.IsActive() {
+			entriesByID[entry.ID] = entry
+		}
+	}
+	for _, id := range deleteIDs {
+		entry, ok := entriesByID[id]
+		if !ok {
+			return 0, fmt.Errorf("memory not found")
+		}
+		if entry.Category.IsProtected() {
+			return 0, fmt.Errorf("protected memory cannot be deleted here")
+		}
+	}
+	applied, err := s.UpdateEntriesAndDeleteIDsIfUnchanged(nil, deleteIDs, entriesByID)
+	if err != nil {
+		return 0, err
+	}
+	if !applied {
+		return 0, fmt.Errorf("memory batch changed during deletion; retry")
+	}
+	return len(deleteIDs), nil
 }
 
 // DeleteBotMemories removes many bot-scoped entries. Protected or foreign ids

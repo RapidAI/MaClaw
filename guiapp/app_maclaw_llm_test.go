@@ -5766,6 +5766,26 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("DeepSeek Model = %q, want %q", deepseek.Model, "deepseek-v4-flash")
 	}
 
+	mistral, ok := findProviderByName(providers, "Mistral AI")
+	if !ok {
+		t.Fatalf("providers missing Mistral AI: %+v", providers)
+	}
+	if mistral.URL != "https://api.mistral.ai/v1" {
+		t.Errorf("Mistral URL = %q, want %q", mistral.URL, "https://api.mistral.ai/v1")
+	}
+	if mistral.Model != "mistral-large-latest" {
+		t.Errorf("Mistral Model = %q, want %q", mistral.Model, "mistral-large-latest")
+	}
+	if mistral.Protocol != "openai" {
+		t.Errorf("Mistral Protocol = %q, want %q", mistral.Protocol, "openai")
+	}
+	if mistral.ContextLength != 262144 {
+		t.Errorf("Mistral ContextLength = %d, want %d", mistral.ContextLength, 262144)
+	}
+	if len(mistral.Models) != 4 {
+		t.Errorf("Mistral Models = %v, want 4 catalog entries", mistral.Models)
+	}
+
 	qwen, ok := findProviderByName(providers, "Qwen")
 	if !ok {
 		t.Fatalf("providers missing Qwen: %+v", providers)
@@ -5905,7 +5925,7 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("星辰大模型 Models = %v, want %s and %s", xingchen.Models, xingchenDefaultModel, xingchenLiteModel)
 	}
 
-	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "Qwen", "xAI-Grok", "OpenCode", "Devin", "智谱编程", "MiniMax", "Kimi", "Kimi Code", volcengineAgentPlanProviderName, tencentTokenPlanProviderName, "讯飞星辰", xingchenProviderName, workbuddy.NameChina, workbuddy.NameGlobal, qoder.NameCN, qoder.NameGlobal, trae.NameCN, trae.NameGlobal, lobsterai.Name, "Custom1", "Custom2"}
+	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "Mistral AI", "Qwen", "xAI-Grok", "OpenCode", "Devin", "智谱编程", "MiniMax", "Kimi", "Kimi Code", volcengineAgentPlanProviderName, tencentTokenPlanProviderName, "讯飞星辰", xingchenProviderName, workbuddy.NameChina, workbuddy.NameGlobal, qoder.NameCN, qoder.NameGlobal, trae.NameCN, trae.NameGlobal, lobsterai.Name, "Custom1", "Custom2"}
 	if len(providers) < len(expectedNames) {
 		t.Fatalf("provider count = %d, want >= %d", len(providers), len(expectedNames))
 	}

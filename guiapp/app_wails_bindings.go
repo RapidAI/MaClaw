@@ -1282,16 +1282,17 @@ func cloneSkillHubEvidenceForSearch(e *MaclawAppTestEvidence) *MaclawAppSearchEv
 // ---------------------------------------------------------------------------
 
 // ListMemories returns active memories for the desktop install (Wails binding).
-// Empty-owner rows and desktop-user project sessions stay visible. Other
-// named owners stay out. Inactive rows stay out. Store.List remains the
-// unfiltered view for migration and tests.
+// Empty-owner rows, desktop-user rows, and project sessions stay visible. Bot
+// scopes and other owners stay out. Store.List remains the unfiltered view for
+// migration and tests.
 func (a *App) ListMemories(category, keyword string) []memory.Entry {
 	a.ensureInteractionInfra()
-	store := a.currentSharedMemoryStore()
-	if store == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return nil
 	}
-	return filterDesktopManageableMemories(store.List(memory.Category(category), keyword))
+	return filterDesktopManageableMemories(runtime.Store.List(memory.Category(category), keyword))
 }
 
 func filterDesktopManageableMemories(entries []memory.Entry) []memory.Entry {
@@ -1301,8 +1302,6 @@ func filterDesktopManageableMemories(entries []memory.Entry) []memory.Entry {
 	out := make([]memory.Entry, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsActive() && desktopMemoryOwnerVisible(entry) {
-			// The editor renders text fields only. Dropping vectors keeps the
-			// Wails payload small when the hot set is embedded.
 			entry.Embedding = nil
 			entry.RelatedEdges = nil
 			out = append(out, entry)
@@ -1315,8 +1314,16 @@ func desktopMemoryOwnerVisible(entry memory.Entry) bool {
 	if !desktopLineageOwner(entry.OwnerID) {
 		return false
 	}
-	if entry.Boundary != nil && strings.TrimSpace(entry.Boundary.OwnerID) != "" && !desktopLineageOwner(entry.Boundary.OwnerID) {
+	if _, bot := memory.ParseBotMemoryOwner(desktopUserID, entry.OwnerID); bot {
 		return false
+	}
+	if entry.Boundary != nil && strings.TrimSpace(entry.Boundary.OwnerID) != "" {
+		if !desktopLineageOwner(entry.Boundary.OwnerID) {
+			return false
+		}
+		if _, bot := memory.ParseBotMemoryOwner(desktopUserID, entry.Boundary.OwnerID); bot {
+			return false
+		}
 	}
 	return true
 }
@@ -1326,21 +1333,32 @@ func desktopLineageOwner(owner string) bool {
 	return owner == "" || owner == desktopUserID || strings.HasPrefix(owner, desktopUserID+":")
 }
 
+func desktopMemoryMutationsAllowed(entries []memory.Entry, ids []string) bool {
+	if len(entries) != len(ids) {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsActive() || !desktopMemoryOwnerVisible(entry) {
+			return false
+		}
+	}
+	return true
+}
+
 // SaveMemory creates a new memory entry (Wails binding).
 func (a *App) SaveMemory(content, category string, tags []string) error {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "category": category, "tags": tags}); err != nil {
 		return err
 	}
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	if err := a.memoryStore.SaveManualMemoryWithContext(content, memory.Category(category), tags, a.memoryWriteContextForOwner(desktopUserID, "manual")); err != nil {
+	if err := runtime.Store.SaveManualMemoryWithContext(content, memory.Category(category), tags, a.memoryWriteContextForOwner(desktopUserID, "manual")); err != nil {
 		return err
 	}
-	// An addition needs no retraction. Recall caches drop immediately, and the
-	// current fact/preference overlay reads the new entry on the next turn.
-	a.notifyMemoryWarehouseChanged(memoryWarehouseChange{})
 	return nil
 }
 
@@ -1350,14 +1368,18 @@ func (a *App) UpdateMemory(id, content, category string, tags []string) error {
 		return err
 	}
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	previous := a.memoryEntriesByIDs(id)
-	if err := a.memoryStore.UpdateManualMemory(id, content, memory.Category(category), tags); err != nil {
+	previous := memoryEntriesByIDsForStore(runtime.Store, id)
+	if !desktopMemoryMutationsAllowed(previous, []string{id}) {
+		return fmt.Errorf("memory not found in desktop scope")
+	}
+	if err := runtime.Store.UpdateManualMemory(id, content, memory.Category(category), tags); err != nil {
 		return err
 	}
-	a.notifyMemoryWarehouseChanged(warehouseChangeFromEntries(previous, "updated", content))
 	return nil
 }
 
@@ -1367,18 +1389,22 @@ func (a *App) DeleteMemory(id string) error {
 		return err
 	}
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	previous := a.memoryEntriesByIDs(id)
-	out := memory.HandleTool(a.memoryStore, map[string]interface{}{
+	previous := memoryEntriesByIDsForStore(runtime.Store, id)
+	if !desktopMemoryMutationsAllowed(previous, []string{id}) {
+		return fmt.Errorf("memory not found in desktop scope")
+	}
+	out := memory.HandleTool(runtime.Store, map[string]interface{}{
 		"action": "delete",
 		"id":     id,
 	}, memory.ToolOptions{})
 	if strings.HasPrefix(out, "delete memory failed:") || strings.HasPrefix(out, "missing ") {
 		return fmt.Errorf("%s", out)
 	}
-	a.notifyMemoryWarehouseChanged(warehouseChangeFromEntries(previous, "deleted", ""))
 	return nil
 }
 
@@ -1406,14 +1432,26 @@ func (a *App) DeleteMemories(ids []string) (int, error) {
 		return 0, err
 	}
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return 0, fmt.Errorf("memory store not initialized")
 	}
-	previous := a.memoryEntriesByIDs(deleteIDs...)
-	if err := a.memoryStore.UpdateEntriesAndDeleteIDs(nil, deleteIDs); err != nil {
+	previous := memoryEntriesByIDsForStore(runtime.Store, deleteIDs...)
+	if !desktopMemoryMutationsAllowed(previous, deleteIDs) {
+		return 0, fmt.Errorf("memory batch contains an entry outside desktop scope")
+	}
+	expected := make(map[string]memory.Entry, len(previous))
+	for _, entry := range previous {
+		expected[entry.ID] = entry
+	}
+	applied, err := runtime.Store.UpdateEntriesAndDeleteIDsIfUnchanged(nil, deleteIDs, expected)
+	if err != nil {
 		return 0, fmt.Errorf("delete memory batch failed: %w", err)
 	}
-	a.notifyMemoryWarehouseChanged(warehouseChangeFromEntries(previous, "deleted", ""))
+	if !applied {
+		return 0, fmt.Errorf("memory batch changed during deletion; retry")
+	}
 	return len(deleteIDs), nil
 }
 
@@ -1423,23 +1461,19 @@ func (a *App) CompressMemories() (*memory.CompressResult, error) {
 		return nil, err
 	}
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return nil, fmt.Errorf("memory store not initialized")
 	}
-	maintenance := a.getOrCreateMemoryMaintenance()
+	maintenance := a.memoryMaintenanceForRuntime(runtime)
 	if maintenance == nil {
 		return nil, fmt.Errorf("memory maintenance not initialized")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	result, err := maintenance.Compress(ctx)
-	// Compression is deliberately best-effort: a timeout or later LLM error can
-	// be returned after deduplication or an earlier entry update already
-	// committed. Always drop frozen prompt snapshots before returning so the
-	// next Agent turn cannot retain pre-maintenance memory on a partial result.
-	a.refreshActiveAgentMemorySnapshots()
-	// Emit event so the frontend refreshes even if the component was
-	// unmounted and remounted (tab switch) during compression.
+	a.refreshAgentMemorySnapshotsForStore(runtime.Store)
 	a.emitEvent("memory:compressed", result)
 	return result, err
 }
@@ -1447,10 +1481,12 @@ func (a *App) CompressMemories() (*memory.CompressResult, error) {
 // ListMemoryBackups returns all available memory backup snapshots (Wails binding).
 func (a *App) ListMemoryBackups() ([]MemoryBackupInfo, error) {
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return nil, fmt.Errorf("memory store not initialized")
 	}
-	maintenance := a.getOrCreateMemoryMaintenance()
+	maintenance := a.memoryMaintenanceForRuntime(runtime)
 	if maintenance == nil {
 		return nil, fmt.Errorf("memory maintenance not initialized")
 	}
@@ -1464,19 +1500,19 @@ func (a *App) RestoreMemoryBackup(backupName string) error {
 		return err
 	}
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	maintenance := a.getOrCreateMemoryMaintenance()
+	maintenance := a.memoryMaintenanceForRuntime(runtime)
 	if maintenance == nil {
 		return fmt.Errorf("memory maintenance not initialized")
 	}
 	if err := maintenance.RestoreBackup(backupName); err != nil {
 		return err
 	}
-	// A restore replaces the entire store, so every shared-store Agent must
-	// discard its frozen memory section before this call returns.
-	a.refreshActiveAgentMemorySnapshots()
+	a.refreshAgentMemorySnapshotsForStore(runtime.Store)
 	return nil
 }
 
@@ -1486,10 +1522,12 @@ func (a *App) DeleteMemoryBackup(backupName string) error {
 		return err
 	}
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	maintenance := a.getOrCreateMemoryMaintenance()
+	maintenance := a.memoryMaintenanceForRuntime(runtime)
 	if maintenance == nil {
 		return fmt.Errorf("memory maintenance not initialized")
 	}
@@ -1501,30 +1539,36 @@ func (a *App) SetAutoCompress(enabled bool) error {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("memory", map[string]interface{}{"action": "save", "maintenance": "set_auto_compress", "enabled": enabled}); err != nil {
 		return err
 	}
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.MemoryAutoCompress = enabled
+	}); err != nil {
+		return err
+	}
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
-	maintenance := a.getOrCreateMemoryMaintenance()
+	maintenance := a.memoryMaintenanceForRuntime(runtime)
 	if maintenance == nil {
 		return fmt.Errorf("memory maintenance not initialized")
 	}
 	if pipeline := maintenance.Pipeline(); pipeline != nil {
 		pipeline.SetAutoCompressEnabled(enabled)
 	}
-	// Persist to config without rewriting a stale full snapshot.
-	return a.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.MemoryAutoCompress = enabled
-	})
+	return nil
 }
 
 // GetAutoCompressStatus returns the current state of the auto-compression service (Wails binding).
 func (a *App) GetAutoCompressStatus() MemoryCompressorStatus {
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return MemoryCompressorStatus{}
 	}
-	maintenance := a.getOrCreateMemoryMaintenance()
+	maintenance := a.memoryMaintenanceForRuntime(runtime)
 	if maintenance == nil {
 		return MemoryCompressorStatus{}
 	}
@@ -1541,10 +1585,12 @@ func (a *App) GetAutoCompressStatus() MemoryCompressorStatus {
 // IsMemoryCompressing returns whether a compression operation is currently in progress (Wails binding).
 func (a *App) IsMemoryCompressing() bool {
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return false
 	}
-	maintenance := a.getOrCreateMemoryMaintenance()
+	maintenance := a.memoryMaintenanceForRuntime(runtime)
 	if maintenance == nil {
 		return false
 	}
@@ -1558,10 +1604,12 @@ func (a *App) IsMemoryCompressing() bool {
 // GetMemoryHealth returns an aggregated health report of the memory system (Wails binding).
 func (a *App) GetMemoryHealth() *memory.HealthReport {
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return &memory.HealthReport{}
 	}
-	return a.memoryStore.HealthReport()
+	return runtime.Store.HealthReport()
 }
 
 // MemoryStatusData holds the structured memory status for the frontend pie chart.
@@ -1594,13 +1642,12 @@ type MemoryStatusCatRow struct {
 // pie chart and the /memory slash command (Wails binding).
 func (a *App) GetMemoryStatus() *MemoryStatusData {
 	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
-		a.ensureMemoryStore()
-	}
-	if a.memoryStore == nil {
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
 		return &MemoryStatusData{MaxCapacity: 2000, Categories: []MemoryStatusCatRow{}}
 	}
-	status := a.memoryStore.StatusForHost()
+	status := runtime.Store.StatusForHost()
 	data := &MemoryStatusData{
 		TotalEntries:      status.TotalEntries,
 		MaxCapacity:       status.MaxCapacity,
@@ -1679,6 +1726,9 @@ func (a *App) GetMemoryMaxBackups() int {
 	if cfg.MemoryMaxBackups < memory.MinBackups {
 		return memory.MinBackups
 	}
+	if cfg.MemoryMaxBackups > memory.MaxBackups {
+		return memory.MaxBackups
+	}
 	return cfg.MemoryMaxBackups
 }
 
@@ -1690,20 +1740,22 @@ func (a *App) SetMemoryMaxBackups(n int) error {
 	if n < memory.MinBackups {
 		n = memory.MinBackups
 	}
+	if n > memory.MaxBackups {
+		n = memory.MaxBackups
+	}
 	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.MemoryMaxBackups = n
 	}); err != nil {
 		return err
 	}
-	if a.memoryStore == nil {
-		a.ensureMemoryStore()
+	runtime, release := a.acquireSharedMemoryRuntime()
+	defer release()
+	if runtime == nil {
+		return fmt.Errorf("memory store not initialized")
 	}
-	if a.memoryStore == nil {
-		return nil
-	}
-	maintenance := a.getOrCreateMemoryMaintenance()
+	maintenance := a.memoryMaintenanceForRuntime(runtime)
 	if maintenance == nil {
-		return nil
+		return fmt.Errorf("memory maintenance not initialized")
 	}
 	return maintenance.SetMaxBackups(n)
 }
@@ -1784,45 +1836,30 @@ func (a *App) ensureSessionStore() {
 }
 
 // ListSessionHistory returns the most recent session summaries (Wails binding).
-func (a *App) ListSessionHistory(limit int) []session.SessionSummary {
+func (a *App) ListSessionHistory(limit int) ([]session.SessionSummary, error) {
 	a.ensureSessionStore()
 	if a.sessionSearchStore == nil {
-		return nil
+		return nil, fmt.Errorf("session store not initialized")
 	}
-	results, err := a.sessionSearchStore.ListRecent(limit)
-	if err != nil {
-		log.Printf("[session_history] list recent: %v", err)
-		return nil
-	}
-	return results
+	return a.sessionSearchStore.ListRecent(limit)
 }
 
 // SearchSessionHistory performs FTS5 full-text search across session transcripts (Wails binding).
-func (a *App) SearchSessionHistory(query string, maxResults int) []session.SearchResult {
+func (a *App) SearchSessionHistory(query string, maxResults int) ([]session.SearchResult, error) {
 	a.ensureSessionStore()
 	if a.sessionSearchStore == nil {
-		return nil
+		return nil, fmt.Errorf("session store not initialized")
 	}
-	results, err := a.sessionSearchStore.Search(query, maxResults)
-	if err != nil {
-		log.Printf("[session_history] search: %v", err)
-		return nil
-	}
-	return results
+	return a.sessionSearchStore.Search(query, maxResults)
 }
 
 // GetSessionFullText returns the full transcript for a session ID (Wails binding).
-func (a *App) GetSessionFullText(sessionID string) string {
+func (a *App) GetSessionFullText(sessionID string) (string, error) {
 	a.ensureSessionStore()
 	if a.sessionSearchStore == nil {
-		return ""
+		return "", fmt.Errorf("session store not initialized")
 	}
-	text, err := a.sessionSearchStore.GetFullText(sessionID)
-	if err != nil {
-		log.Printf("[session_history] get full text: %v", err)
-		return ""
-	}
-	return text
+	return a.sessionSearchStore.GetFullText(sessionID)
 }
 
 // DeleteSession removes a session from the history (Wails binding).
@@ -1835,16 +1872,12 @@ func (a *App) DeleteSession(sessionID string) error {
 }
 
 // GetSessionCount returns the total number of stored sessions (Wails binding).
-func (a *App) GetSessionCount() int {
+func (a *App) GetSessionCount() (int, error) {
 	a.ensureSessionStore()
 	if a.sessionSearchStore == nil {
-		return 0
+		return 0, fmt.Errorf("session store not initialized")
 	}
-	n, err := a.sessionSearchStore.Count()
-	if err != nil {
-		return 0
-	}
-	return n
+	return a.sessionSearchStore.Count()
 }
 
 // getOrCreateMemoryMaintenance returns the singleton corelib memory maintenance facade,

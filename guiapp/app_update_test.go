@@ -648,7 +648,7 @@ func TestBuildUpdateResultPathEscapesGitHubTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildUpdateResult() error = %v", err)
 	}
-	if got := splitDownloadURLs(result.DownloadUrl)[1]; got != "https://github.com/RapidAI/MaClaw/releases/download/V7.1.0%2Funsafe/MaClaw-Setup.exe" {
+	if got := splitDownloadURLs(result.DownloadUrl)[2]; got != "https://github.com/RapidAI/MaClaw/releases/download/V7.1.0%2Funsafe/MaClaw-Setup.exe" {
 		t.Fatalf("GitHub update URL = %q, want escaped tag segment", got)
 	}
 }
@@ -1028,8 +1028,31 @@ func TestBuildUpdateResultUsesR2AndGitHubWhenNoManifestURLsExist(t *testing.T) {
 		t.Fatalf("buildUpdateResult() error = %v", err)
 	}
 	urls := splitDownloadURLs(result.DownloadUrl)
-	if len(urls) != 2 || urls[0] != r2ReleaseAssetURL("MaClaw-Setup.exe", false) || !strings.Contains(urls[1], "github.com/") {
-		t.Fatalf("fallback download candidate order = %#v, want R2, GitHub", urls)
+	immutable := immutableReleaseAssetURL(r2PublicBaseURL, "V7.1.0.11864", "MaClaw-Setup.exe")
+	if len(urls) != 3 || urls[0] != immutable || urls[1] != r2ReleaseAssetURL("MaClaw-Setup.exe", false) || !strings.Contains(urls[2], "github.com/") {
+		t.Fatalf("fallback download candidate order = %#v, want immutable R2, latest R2, GitHub", urls)
+	}
+}
+
+func TestFetchManifestLatestReleasePrefersImmutableR2Download(t *testing.T) {
+	// latest/<file> is rewritten before the manifest during publish; the
+	// per-tag releases/<tag>/ mirror always matches the manifest checksum
+	// and must come first for stable releases.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tag":"V9.9.9","assets":{}}`))
+	}))
+	defer server.Close()
+
+	app := &App{}
+	release, err := app.fetchManifestLatestRelease("github", server.URL, 2*time.Second)
+	if err != nil {
+		t.Fatalf("fetchManifestLatestRelease() error = %v", err)
+	}
+	urls := splitDownloadURLs(release.DownloadURL)
+	immutable := immutableReleaseAssetURL(r2PublicBaseURL, "V9.9.9", "MaClaw-Setup.exe")
+	if len(urls) == 0 || urls[0] != immutable {
+		t.Fatalf("first download candidate = %#v, want immutable R2 mirror %q", urls, immutable)
 	}
 }
 
@@ -1096,5 +1119,115 @@ func TestDownloadUpdateReportsChecksumFailureBeforeTryingFallback(t *testing.T) 
 	}
 	if _, err := os.Stat(filepath.Join(home, "Downloads", "MaClaw-Setup.exe")); !os.IsNotExist(err) {
 		t.Fatalf("installer remains after checksum failure and failed fallback: %v", err)
+	}
+}
+
+func TestFetchManifestLatestReleaseRejectsManifestWithoutVersion(t *testing.T) {
+	// A parseable body that carries no tag/version must count as a failed
+	// check; treating it as success would skip the mirror fallback entirely.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"assets":{}}`))
+	}))
+	defer server.Close()
+
+	app := &App{}
+	if _, err := app.fetchManifestLatestRelease("test", server.URL, 2*time.Second); err == nil || !strings.Contains(err.Error(), "no tag/version") {
+		t.Fatalf("fetchManifestLatestRelease() error = %v, want missing-version failure", err)
+	}
+}
+
+func TestFetchManifestLatestReleaseReadsVersionFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"version":"V9.9.9","assets":{}}`))
+	}))
+	defer server.Close()
+
+	app := &App{}
+	release, err := app.fetchManifestLatestRelease("test", server.URL, 2*time.Second)
+	if err != nil {
+		t.Fatalf("fetchManifestLatestRelease() error = %v", err)
+	}
+	if release.TagName != "V9.9.9" {
+		t.Fatalf("TagName = %q, want V9.9.9", release.TagName)
+	}
+}
+
+func TestFetchFirstManifestReleaseUsesMirrorWhenPrimaryFails(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer dead.Close()
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tag":"V9.9.9","assets":{}}`))
+	}))
+	defer live.Close()
+
+	app := &App{}
+	release, source, err := app.fetchFirstManifestRelease([]updateSourceSpec{
+		{source: "github", url: dead.URL, timeout: 2 * time.Second},
+		{source: "r2", url: live.URL, timeout: 2 * time.Second},
+	})
+	if err != nil {
+		t.Fatalf("fetchFirstManifestRelease() error = %v", err)
+	}
+	if source != "r2" || release.TagName != "V9.9.9" {
+		t.Fatalf("release source=%q tag=%q, want r2 V9.9.9", source, release.TagName)
+	}
+}
+
+func TestFetchFirstManifestReleaseDoesNotWaitForAHangingSource(t *testing.T) {
+	// The hanging endpoint answers only when its request context dies. The
+	// mirror must win long before that timeout, like on a machine where
+	// github.com accepts the connection but never completes it.
+	hanging := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer func() {
+		hanging.CloseClientConnections()
+		hanging.Close()
+	}()
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tag":"V9.9.9","assets":{}}`))
+	}))
+	defer live.Close()
+
+	app := &App{}
+	start := time.Now()
+	release, source, err := app.fetchFirstManifestRelease([]updateSourceSpec{
+		{source: "github", url: hanging.URL, timeout: 30 * time.Second},
+		{source: "r2", url: live.URL, timeout: 2 * time.Second},
+	})
+	if err != nil {
+		t.Fatalf("fetchFirstManifestRelease() error = %v", err)
+	}
+	if source != "r2" || release.TagName != "V9.9.9" {
+		t.Fatalf("release source=%q tag=%q, want r2 V9.9.9", source, release.TagName)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("check waited %v for a hanging source", elapsed)
+	}
+}
+
+func TestFetchFirstManifestReleaseReportsEverySourceFailure(t *testing.T) {
+	newDead := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "unavailable", http.StatusNotFound)
+		}))
+	}
+	first, second := newDead(), newDead()
+	defer first.Close()
+	defer second.Close()
+
+	app := &App{}
+	_, _, err := app.fetchFirstManifestRelease([]updateSourceSpec{
+		{source: "github", url: first.URL, timeout: 2 * time.Second},
+		{source: "r2", url: second.URL, timeout: 2 * time.Second},
+	})
+	if err == nil || !strings.Contains(err.Error(), "github:") || !strings.Contains(err.Error(), "r2:") {
+		t.Fatalf("fetchFirstManifestRelease() error = %v, want both source failures", err)
 	}
 }

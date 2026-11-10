@@ -124,6 +124,7 @@ func TestCoreMemoryDirectEntryWritesStayInAllowedBoundaries(t *testing.T) {
 		},
 		filepath.ToSlash(filepath.Join("corelib", "memory", "store.go")): {
 			"(*Store).UpdateEntriesAndDeleteIDs":      true,
+			"(*Store).updateEntriesAndDeleteIDs":      true,
 			"(*Store).upsertEntriesByID":              true,
 			"(*Store).syncGraphLinksLocked":           true,
 			"(*Store).replaceEntriesAndRebuildLocked": true,
@@ -352,7 +353,7 @@ func TestHostManualMemorySaveUsesCorelibManualHelper(t *testing.T) {
 			"store.SaveManualMemory", "memory.HandleTool(store, map[string]interface{}{\n\t\t\"action\":   \"save\"",
 		},
 		filepath.Join("guiapp", "app_wails_bindings.go"): {
-			"a.memoryStore.SaveManualMemory", "memory.HandleTool(a.memoryStore, map[string]interface{}{\n\t\t\"action\":   \"save\"",
+			"runtime.Store.SaveManualMemory", "memory.HandleTool(a.memoryStore, map[string]interface{}{\n\t\t\"action\":   \"save\"",
 		},
 	}
 	for rel, wants := range checks {
@@ -381,7 +382,7 @@ func TestHostMemoryDeleteUsesCorelibToolAction(t *testing.T) {
 			"memory.HandleTool(store", "\"action\": \"delete\"", "store.Delete(id)",
 		},
 		filepath.Join("guiapp", "app_wails_bindings.go"): {
-			"memory.HandleTool(a.memoryStore", "\"action\": \"delete\"", "a.memoryStore.Delete(id)",
+			"memory.HandleTool(runtime.Store", "\"action\": \"delete\"", "runtime.Store.Delete(id)",
 		},
 	}
 	for rel, wants := range checks {
