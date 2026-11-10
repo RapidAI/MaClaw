@@ -5,6 +5,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"log"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
@@ -49,6 +50,21 @@ func desktopIntentClass(action string, args map[string]any) string {
 	return action
 }
 
+// desktopInfraErrRe: the browser, the desktop or the network did not answer
+// (run_854d0758: "cdp timeout: Page.navigate", "could not open the editor").
+var desktopInfraErrRe = regexp.MustCompile(`cdp timeout|page\.navigate \(id=|could not open the editor|verify page did not load|websocket: |target closed|no such target|connection (refused|reset)|desktop is not open|desktop not open|browser is not (running|reachable)`)
+
+// desktopIntentClassFor is desktopIntentClass with publish blocked per target
+// site: one site timing out says nothing about the others of a multi-site
+// task (run_854d0758 had publish blocked for 知乎, CSDN and 小红书 alike by two
+// 知乎 timeouts).
+func desktopIntentClassFor(scope agentruntime.Scope, action string, args map[string]any) string {
+	if action == "publish" {
+		return "publish:" + desktopPublishSiteFor(scope, args)
+	}
+	return desktopIntentClass(action, args)
+}
+
 // desktopErrorClass names the failure a step ended with, or "".
 func desktopErrorClass(out string, err error) string {
 	msg := ""
@@ -64,6 +80,10 @@ func desktopErrorClass(out string, err error) string {
 		return "cross_origin_block"
 	case err == nil:
 		return ""
+	case desktopInfraErrRe.MatchString(msg):
+		// The browser or the network did not answer: not a lesson about
+		// the method (no "avoid" experience), blocked per site.
+		return "infra_timeout"
 	case strings.Contains(msg, "rich_text_dom_write"):
 		return "rich_text_dom_write"
 	case strings.Contains(msg, "publish_needs_confirmation"):
@@ -85,7 +105,7 @@ func desktopFailClassCheck(scope agentruntime.Scope, action string, args map[str
 	if st == nil || desktopRepeatExempt[action] {
 		return nil
 	}
-	intent := desktopIntentClass(action, args)
+	intent := desktopIntentClassFor(scope, action, args)
 	st.mu.Lock()
 	class := st.blocked[intent]
 	st.mu.Unlock()
@@ -126,7 +146,7 @@ func desktopFailClassRecord(scope agentruntime.Scope, action string, args map[st
 	if class == "" {
 		return ""
 	}
-	intent := desktopIntentClass(action, args)
+	intent := desktopIntentClassFor(scope, action, args)
 	st.mu.Lock()
 	if st.failures == nil {
 		st.failures = map[string]int{}
@@ -169,6 +189,8 @@ func desktopFailClassAdvice(class string) string {
 		return "Switch interface: probe again for fresh refs, use a screenshot and click by position (app_run/computer), or the accessibility tree — or call request_takeover."
 	case "login_wall":
 		return "The site shows a sign-in form, a captcha/安全验证 check, or stays blank. Do not wait or retry: call request_takeover so the person signs in or passes the check, then continue."
+	case "infra_timeout":
+		return "The browser or the site did not respond: this is the infrastructure, not your method. Take a screenshot or probe to see the real state, continue with the other parts of the task, call request_takeover, or report this part as blocked with the error."
 	case "timeout":
 		return "Switch interface: take a screenshot to see the real state and use a different action, or call request_takeover."
 	}

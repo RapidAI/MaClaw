@@ -39,6 +39,12 @@ type Config struct {
 	MaxSpan          time.Duration // elapsed time from a goal's first attempt (model thinking included)
 	LeaseTTL         time.Duration // an attempt whose holder stopped beating this long is dead
 	MinLeft          time.Duration // an attempt needs at least this much wall budget left
+	// InfraLimit infrastructure failures in a row (the browser or the site
+	// did not answer: CDP/navigate timeouts, editor never opened) block the
+	// goal for InfraCooldown. They say nothing about the strategy: no
+	// hypothesis is refuted and no strategy is marked failed by them.
+	InfraLimit    int
+	InfraCooldown time.Duration
 }
 
 func DefaultConfig() Config {
@@ -53,12 +59,14 @@ func DefaultConfig() Config {
 		MaxSpan:          90 * time.Minute,
 		LeaseTTL:         2 * time.Minute,
 		MinLeft:          30 * time.Second,
+		InfraLimit:       2,
+		InfraCooldown:    10 * time.Minute,
 	}
 }
 
 // ConfigFromEnv overrides DefaultConfig with MACLAW_RECOVERY_* values
 // (SAME_FAILURES, NO_PROGRESS, DIAGNOSES, ATTEMPTS, WALL_MIN, TTL_HOURS,
-// SPAN_MIN, LEASE_SEC);
+// SPAN_MIN, LEASE_SEC, INFRA_FAILURES, INFRA_COOLDOWN_MIN);
 // out-of-range values keep the default.
 func ConfigFromEnv(getenv func(string) string) Config {
 	c := DefaultConfig()
@@ -77,6 +85,8 @@ func ConfigFromEnv(getenv func(string) string) Config {
 	c.TTL = time.Duration(num("TTL_HOURS", int(c.TTL/time.Hour), 1, 24*14)) * time.Hour
 	c.MaxSpan = time.Duration(num("SPAN_MIN", int(c.MaxSpan/time.Minute), 5, 24*60)) * time.Minute
 	c.LeaseTTL = time.Duration(num("LEASE_SEC", int(c.LeaseTTL/time.Second), 20, 900)) * time.Second
+	c.InfraLimit = num("INFRA_FAILURES", c.InfraLimit, 1, 10)
+	c.InfraCooldown = time.Duration(num("INFRA_COOLDOWN_MIN", int(c.InfraCooldown/time.Minute), 1, 240)) * time.Minute
 	return c
 }
 
@@ -88,6 +98,10 @@ const (
 	StateExhausted = "exhausted" // budget or hypotheses used up: stop and report
 	StateStopped   = "stopped"   // a consequential side effect is unconfirmed: never retry
 	StateDone      = "done"      // verified complete
+	// StateBlocked: the infrastructure (browser, network, site) failed
+	// InfraLimit times in a row; attempts wait for InfraCooldown, then the
+	// goal resumes in the state it had. Observation and reporting go on.
+	StateBlocked = "blocked"
 )
 
 // Verdict kinds of one observation.
@@ -103,6 +117,11 @@ const (
 	KindExhausted  = "budget_exhausted"
 	KindStopped    = "stopped_unconfirmed"
 	KindStale      = "stale"
+	// KindInfra: the attempt failed before its strategy could matter.
+	KindInfra = "infrastructure_failure"
+	// KindInconclusive: the test ran but did not report a fact its
+	// expectation names; the hypothesis is neither supported nor refuted.
+	KindInconclusive = "hypothesis_inconclusive"
 )
 
 // Observation is one finished attempt and what it measurably left behind.
@@ -118,10 +137,14 @@ type Observation struct {
 	Complete bool   // facts prove the goal is met (independent verification)
 	Trial    bool   // a bounded test, not the real attempt
 	Side     string // "unconfirmed": a consequential write may have happened without proof
-	Error    string // error text (fingerprinted, clipped)
-	Facts    map[string]float64
-	Took     time.Duration
-	At       time.Time
+	// Infra: the browser, the network or the site did not answer (CDP or
+	// navigate timeout, the editor never opened). Not evidence about the
+	// strategy; repeated, it blocks the goal (StateBlocked).
+	Infra bool
+	Error string // error text (fingerprinted, clipped)
+	Facts map[string]float64
+	Took  time.Duration
+	At    time.Time
 }
 
 // Expectation is one fact the test must show, e.g. pictures_kept>=2.
@@ -202,6 +225,7 @@ type Attempt struct {
 	OK       bool               `json:"ok"`
 	Complete bool               `json:"complete,omitempty"`
 	Trial    bool               `json:"trial,omitempty"`
+	Infra    bool               `json:"infra,omitempty"`
 	Finger   string             `json:"finger,omitempty"`
 	Error    string             `json:"error,omitempty"`
 	Facts    map[string]float64 `json:"facts,omitempty"`
@@ -235,6 +259,11 @@ type Goal struct {
 	// Steps are the work steps in flight, each holding a reservation that
 	// is already in SpentMS (see BeginStep).
 	Steps []Step `json:"steps,omitempty"`
+	// InfraFails counts infrastructure failures in a row; BlockedUntil and
+	// Resume belong to StateBlocked.
+	InfraFails   int       `json:"infra_fails,omitempty"`
+	BlockedUntil time.Time `json:"blocked_until,omitempty"`
+	Resume       string    `json:"resume,omitempty"`
 }
 
 // Step is one work step in flight under a goal that is measured, not leased
@@ -401,6 +430,23 @@ func appendAttempt(a []Attempt, x Attempt) []Attempt {
 
 // admit applies state, budget and strategy rules to one more attempt.
 func (e *Engine) admit(g *Goal, strategy string, now time.Time) (bool, error) {
+	unblocked := false
+	if g.State == StateBlocked {
+		if now.Before(g.BlockedUntil) {
+			return false, fmt.Errorf("recovery: refused: BLOCKED — %s; no attempt before %s. Do not retry it now: observe (screenshot, probe) or request_takeover, work on the other parts of the task, and report this part as blocked with this evidence", g.Reason, g.BlockedUntil.In(time.Local).Format("15:04"))
+		}
+		g.State, g.Reason, g.InfraFails, g.BlockedUntil = g.Resume, "", 0, time.Time{}
+		if g.State == "" || g.State == StateBlocked {
+			g.State = StateActive
+		}
+		g.Resume = ""
+		unblocked = true
+	}
+	changed, err := e.admitState(g, strategy, now)
+	return changed || unblocked, err
+}
+
+func (e *Engine) admitState(g *Goal, strategy string, now time.Time) (bool, error) {
 	if why := e.outOfBudget(g, now); why != "" {
 		changed := g.State != StateExhausted
 		g.State, g.Reason = StateExhausted, why
@@ -794,7 +840,10 @@ func (e *Engine) observe(f *scopeFile, g *Goal, o Observation, now time.Time, co
 		}
 	}
 	g.SpentMS += o.Took.Milliseconds()
-	att := Attempt{At: now, Run: o.Run, Method: o.Method, Strategy: o.Strategy, OK: o.OK, Complete: o.Complete, Trial: o.Trial, Facts: o.Facts, TookMS: o.Took.Milliseconds(), Error: clip(o.Error, 300)}
+	att := Attempt{At: now, Run: o.Run, Method: o.Method, Strategy: o.Strategy, OK: o.OK, Complete: o.Complete, Trial: o.Trial, Infra: o.Infra && !o.Complete && o.Side == "", Facts: o.Facts, TookMS: o.Took.Milliseconds(), Error: clip(o.Error, 300)}
+	if !att.Infra {
+		g.InfraFails = 0
+	}
 	if !o.Complete {
 		att.Finger = Fingerprint(o.Method, o.Strategy, o.Error)
 	}
@@ -811,6 +860,9 @@ func (e *Engine) observe(f *scopeFile, g *Goal, o Observation, now time.Time, co
 		}
 	}
 	regressed, lost := regression(prev, o)
+	if att.Infra {
+		regressed, lost = false, ""
+	}
 	switch {
 	case o.Side == "unconfirmed":
 		g.State, g.Reason = StateStopped, "a consequential write went out without proof of its result"
@@ -827,19 +879,44 @@ func (e *Engine) observe(f *scopeFile, g *Goal, o Observation, now time.Time, co
 		if !o.Trial && len(o.Params) > 0 && o.Surface != "" {
 			v.Recipe = verifyRecipe(f, o, now)
 		}
+	case att.Infra:
+		// The browser or the site did not answer: the strategy was never
+		// put to the test. Nothing is refuted or marked failed; the attempt
+		// is not counted against the goal's attempts (its time is).
+		v.Kind = KindInfra
+		if g.Count > 0 {
+			g.Count--
+		}
+		g.InfraFails++
+		if g.InfraFails >= e.Cfg.InfraLimit && g.State != StateBlocked {
+			g.Resume, g.State = g.State, StateBlocked
+			g.BlockedUntil = now.Add(e.Cfg.InfraCooldown)
+			g.Reason = fmt.Sprintf("the browser or the site did not respond %d times in a row (%s)", g.InfraFails, clip(o.Error, 120))
+		}
 	case hyp != nil:
 		// The hypothesis' test: its expected facts decide, nothing else.
 		var missed []string
+		absent := 0
 		for _, ex := range hyp.Expect {
 			if !ex.Met(o.Facts) {
 				got := "missing"
 				if val, ok := o.Facts[ex.Fact]; ok {
 					got = strconv.FormatFloat(val, 'g', -1, 64)
+				} else {
+					absent++
 				}
 				missed = append(missed, fmt.Sprintf("%s (observed %s)", ex, got))
 			}
 		}
-		if len(missed) == 0 && !regressed {
+		if o.OK && !regressed && len(missed) > 0 && absent == len(missed) {
+			// The test ran and reported other facts, not the expected
+			// one: that is no evidence either way. The strategy stays
+			// open; the next diagnosis must expect facts the test reports.
+			why := strings.Join(missed, ", ")
+			hyp.Outcome, hyp.Evidence = "inconclusive", "the test did not report "+why+"; it reported: "+factText(o.Facts)
+			g.State, g.Reason = StateDiagnose, "hypothesis "+strconv.Itoa(hyp.N)+"'s test did not measure what it expected ("+clip(why, 120)+"; the test reported "+clip(factText(o.Facts), 80)+"); register a test whose expect names facts it reports"
+			v.Kind = KindInconclusive
+		} else if len(missed) == 0 && !regressed {
 			hyp.Outcome, hyp.Evidence = "supported", "test showed "+expectText(hyp.Expect)+": "+factText(o.Facts)
 			g.State, g.Reason = StateActive, ""
 			v.Kind = KindSupported
@@ -954,7 +1031,7 @@ func supported(g *Goal, sig string) bool {
 
 func lastComparable(g *Goal, trial bool) *Attempt {
 	for i := len(g.Attempts) - 1; i >= 0; i-- {
-		if g.Attempts[i].Trial == trial {
+		if g.Attempts[i].Trial == trial && !g.Attempts[i].Infra {
 			return &g.Attempts[i]
 		}
 	}
@@ -1011,6 +1088,9 @@ func sameFailures(g *Goal, finger string) int {
 	n := 0
 	for i := len(g.Attempts) - 1; i >= 0; i-- {
 		a := g.Attempts[i]
+		if a.Infra {
+			continue // the infrastructure, not this method, failed
+		}
 		if a.OK || a.Finger != finger {
 			break
 		}
@@ -1021,15 +1101,21 @@ func sameFailures(g *Goal, finger string) int {
 
 // noProgress: the last n attempts (all failed, none improved) — with this one, n+1.
 func noProgress(g *Goal, n int) bool {
-	if len(g.Attempts) < n || n <= 0 {
+	if n <= 0 {
 		return false
 	}
-	for _, a := range g.Attempts[len(g.Attempts)-n:] {
+	seen := 0
+	for i := len(g.Attempts) - 1; i >= 0 && seen < n; i-- {
+		a := g.Attempts[i]
+		if a.Infra {
+			continue // says nothing about progress
+		}
 		if a.Complete || a.Verdict == KindProgress || a.Verdict == KindSupported {
 			return false
 		}
+		seen++
 	}
-	return true
+	return seen == n
 }
 
 // Propose registers the model's diagnosis for a goal that requires one.
@@ -1221,6 +1307,11 @@ func (e *Engine) evidence(g *Goal, o Observation, kind, lost string) string {
 	case StateTrial:
 		h := g.Hyps[len(g.Hyps)-1]
 		b.WriteString(fmt.Sprintf("\nTesting hypothesis %d: %s. %s", h.N, h.Test, e.budgetText(g)))
+	case StateBlocked:
+		b.WriteString(fmt.Sprintf("\nRECOVERY_BLOCKED: %s. This is the infrastructure, not the strategy: nothing was refuted. Do not retry before %s; observe (screenshot, probe) or request_takeover, do the other parts of the task, and report this part as blocked with this evidence.", g.Reason, g.BlockedUntil.In(time.Local).Format("15:04")))
+	}
+	if kind == KindInfra && g.State != StateBlocked {
+		b.WriteString(fmt.Sprintf("\nINFRASTRUCTURE: the browser or the site did not respond; the strategy was not tested and nothing was refuted (%d of %d in a row before the goal is blocked). Observe the page (screenshot, probe) before trying again.", g.InfraFails, e.Cfg.InfraLimit))
 	}
 	return b.String()
 }

@@ -86,6 +86,9 @@ func desktopLedgerAdd(key string, e desktopLedgerEntry) {
 	if strings.TrimSpace(key) == "" {
 		return
 	}
+	if e.Run != "" {
+		desktopLedgerRunKeys.Store(e.Run, key)
+	}
 	if e.At.IsZero() {
 		e.At = desktopLedgerNow()
 	}
@@ -424,4 +427,15 @@ func desktopLedgerTakeoverRefusal(scope agentruntime.Scope) string {
 		return "request_takeover refused: the person was already asked to publish at " + e.At.Format("01-02 15:04") + " and it is not known whether they did. Check the post list first (publish with check_posted=true); never ask them to publish twice."
 	}
 	return ""
+}
+
+// desktopLedgerRunKeys: run id -> the ledger key its entries went to (this
+// process), so a run's completion hook can read its posts by run id.
+var desktopLedgerRunKeys sync.Map
+
+func desktopLedgerKeysForRun(runID string) []string {
+	if v, ok := desktopLedgerRunKeys.Load(runID); ok {
+		return []string{v.(string)}
+	}
+	return nil
 }

@@ -138,6 +138,9 @@ func desktopExperienceOutcome(intent, out string, err error) (note string, worke
 		return fmt.Sprintf("%s entered text and it was verified by read-back", desktopIntentLabel(intent)), true, true
 	}
 	if class := desktopErrorClass(out, err); class != "" {
+		if class == "infra_timeout" {
+			return "", false, false // the infrastructure failed, not the method
+		}
 		return fmt.Sprintf("%s failed with %s", desktopIntentLabel(intent), class), false, true
 	}
 	return "", false, false

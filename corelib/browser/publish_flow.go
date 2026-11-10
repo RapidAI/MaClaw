@@ -320,6 +320,7 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 	if spec.TrialPictures > 0 {
 		p.rep.Trial = true
 		p.rep.State = PublishNotSubmitted
+		p.trialMeasure()
 		p.rep.fact("trial", 1)
 		return p.rep, nil
 	}
@@ -2086,4 +2087,40 @@ func ExplorePublish(d PublishDriver, spec PublishSpec) (map[string]string, error
 func publishExploreJS(submit []string) string {
 	b, _ := json.Marshal(submit)
 	return `(() => { const want = ` + string(b) + `; const docs = [document]; const addFrames = d => { for (const f of d.querySelectorAll('iframe,frame')) { try { const c = f.contentDocument; if (c && !docs.includes(c)) { docs.push(c); addFrames(c); } } catch (e) {} } }; addFrames(document); const inputs = [], buttons = []; for (const d of docs) { for (const i of d.querySelectorAll('input[type=file]')) inputs.push({accept: i.accept || '', multiple: !!i.multiple, frame: d !== document}); for (const e of d.querySelectorAll('button,[role=button],a')) { const t = (e.innerText || '').trim(); if (t && t.length <= 12 && want.some(w => t.includes(w))) buttons.push(t); } } return JSON.stringify({frames: docs.length - 1, file_inputs: inputs, submit_buttons: [...new Set(buttons)].slice(0, 8)}); })()`
+}
+
+// trialMeasure reports, read-only, what a test (trial_pictures) left in the
+// editor: pictures_wanted and pictures_kept (in the body and, for a rich
+// editor, stored by the site). Without it a test on a rich editor reported
+// only trial=1, and an expectation like pictures_kept>=3 was decided by the
+// fact's absence (run_854d0758, Zhihu, 2026-11-10).
+func (p *publishRun) trialMeasure() {
+	if _, ok := p.rep.Facts["pictures_kept"]; ok || len(p.spec.Files) == 0 || p.spec.Body == "" || p.gallery {
+		return
+	}
+	obj, _ := p.element(p.bodyExpr())
+	if obj == "" {
+		return
+	}
+	want := len(p.spec.Files)
+	if p.spec.TrialPictures > 0 && p.spec.TrialPictures < want && p.bodyKind() == "markdown" {
+		want = p.spec.TrialPictures
+	}
+	n := p.imgCount(obj)
+	if p.richFilled {
+		// Wait (bounded) for uploads the paste started, then count the
+		// pictures that still have no server URL.
+		_, _ = p.checkStructure(obj, "editor")
+		if _, pending, err := p.checkStructureOnce(obj, "editor"); err == nil || pending > 0 {
+			n -= pending
+		}
+	}
+	if n < 0 {
+		n = 0
+	}
+	if n > want {
+		n = want
+	}
+	p.rep.fact("pictures_wanted", float64(want))
+	p.rep.fact("pictures_kept", float64(n))
 }

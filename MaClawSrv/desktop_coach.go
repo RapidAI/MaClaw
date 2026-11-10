@@ -827,8 +827,13 @@ var desktopNegatedPublishRe = regexp.MustCompile(`(?i)(不要|不用|不必|无�
 
 // MatchString reports a publish request, ignoring negated clauses.
 func (m desktopPublishAskMatcher) MatchString(request string) bool {
+	// 别 inside a word (分别/特别/区别…) is not a negation: 「并分别发布到知乎、
+	// CSDN、小红书」 (run_854d0758) must stay a publish request.
+	request = desktopNotNegationWordRe.ReplaceAllString(request, "　")
 	return m.re.MatchString(desktopNegatedPublishRe.ReplaceAllString(request, " "))
 }
+
+var desktopNotNegationWordRe = regexp.MustCompile(`(分|特|区|类|个|级|告|识|辨|差|性|派|鉴|判|离|话)别`)
 
 // desktopUnaskedFileAfterPublish refuses saving a copy once the result is
 // published; with the style layer on it carries facts only.

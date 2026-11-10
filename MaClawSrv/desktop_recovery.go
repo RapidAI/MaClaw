@@ -310,14 +310,38 @@ var desktopRecMutating = map[string]bool{"bash": true, "file_write": true, "file
 var desktopRecReopens = map[string]bool{"bash": true, "file_write": true, "file_edit": true, "app_run": true, "task_run": true, "skill_run": true, "script": true}
 
 func desktopRecSite(scope agentruntime.Scope, args map[string]any) string {
-	site := siteExpKey(desktopArg(args, "editor_url"))
-	if site == "" {
-		site = desktopRunSite(desktopOwner(scope))
+	return desktopPublishSiteFor(scope, args)
+}
+
+// desktopPublishSiteFor is the canonical site (profile id, else registrable
+// domain) a publish call is for, resolved like desktopPublish resolves it:
+// editor_url, else the requested site the open page belongs to, else the
+// next requested site not done. The page the tab happens to be on is only
+// the last resort (run_854d0758 charged a CSDN attempt to "127.0.0.1" and
+// kept one platform under three goal keys).
+func desktopPublishSiteFor(scope agentruntime.Scope, args map[string]any) string {
+	editor := desktopArg(args, "editor_url")
+	if site := siteExpKey(editor); site != "" {
+		return site
 	}
-	if site == "" {
-		site = "unknown"
+	page := ""
+	if host := desktopRunSite(desktopOwner(scope)); host != "" {
+		page = "https://" + host + "/"
 	}
-	return site
+	ts := desktopTaskSpecFor(scope.RunID)
+	if base := desktopTaskSpecBase(scope.RunID); len(base.Sites) > 1 {
+		ts = desktopPublishTarget(scope.RunID, base, ts, editor, page)
+	}
+	if site := siteExpKey(ts.EditorURL); site != "" {
+		return site
+	}
+	if ts.Profile != nil && ts.Profile.ID != "" {
+		return ts.Profile.ID
+	}
+	if site := siteExpKey(page); site != "" {
+		return site
+	}
+	return "unknown"
 }
 
 type desktopRecPublishSpec struct {
@@ -583,6 +607,20 @@ func desktopRecoveryStartPublish(scope agentruntime.Scope, spec *browser.Publish
 		return nil, nil
 	}
 	eng := desktopRecovery()
+	// The pipeline's resolved editor is the authority on which site this
+	// attempt is for; the call-time guess (editor_url or the open tab) may
+	// name another one. Re-key and re-gate before anything is filled.
+	if site := siteExpKey(spec.EditorURL); site != "" {
+		if parts := strings.SplitN(att.goal, "|", 4); len(parts) >= 3 && parts[0] == "publish" && parts[2] != site {
+			goal := desktopRecPublishGoal(att.sk, parts[1], site, spec.Title)
+			if err := eng.Gate(att.sk, goal, "publish", att.strategy); err != nil {
+				return nil, fmt.Errorf("%v (nothing was filled or posted)", err)
+			}
+			log.Printf("[recovery] publish goal re-keyed %s -> %s (pipeline target)", att.goal, goal)
+			att.goal, att.surface = goal, "site:"+site+"|publish"
+			desktopRecNoteRunGoal(scope.RunID, att.sk+"\x01"+goal)
+		}
+	}
 	req, _ := json.Marshal(desktopRecPublishSpec{Pictures: len(spec.Files), Body: len([]rune(strings.TrimSpace(spec.Body))), Title: desktopRecHash(spec.Title)})
 	lease, g, err := eng.Acquire(att.sk, recovery.AttemptRequest{Goal: att.goal, Surface: att.surface, Method: "publish", Strategy: att.strategy, Run: scope.RunID, Consequential: !att.trial, Spec: string(req), Check: desktopRecPublishCheck})
 	if err != nil {
@@ -644,6 +682,9 @@ func desktopRecoveryFinishPublish(scope agentruntime.Scope, rep *browser.Publish
 	o := recovery.Observation{Goal: att.goal, Surface: att.surface, Method: att.method, Strategy: att.strategy, Params: att.params, Recipe: att.recipe, Run: scope.RunID, OK: err == nil, Trial: trial || att.trial, Facts: facts}
 	if err != nil {
 		o.Error = desktopRecFirstLine(err.Error())
+		// The browser or the site did not answer before the strategy could
+		// matter: not evidence about it (no refutation, no failed mark).
+		o.Infra = desktopRecInfraFailure(rep, err)
 	}
 	if state == string(browser.PublishSubmitted) {
 		o.Side = "unconfirmed"
@@ -710,6 +751,28 @@ func desktopRecoveryAfter(scope agentruntime.Scope, att *desktopRecAttempt, out 
 	return att.note + "\n" + v.Evidence
 }
 
+// desktopRecInfraFailure: the attempt failed on the infrastructure (CDP or
+// navigate timeout, the editor never opened), before or outside anything the
+// strategy controls. A submit that may have gone out is never infra.
+func desktopRecInfraFailure(rep *browser.PublishReport, err error) bool {
+	if err == nil {
+		return false
+	}
+	if rep != nil && (rep.State == browser.PublishSubmitted || rep.State == browser.PublishLive || rep.State == browser.PublishLiveIncomplete) {
+		return false
+	}
+	msg := strings.ToLower(desktopRecFirstLine(err.Error()))
+	if !desktopInfraErrRe.MatchString(msg) {
+		return false
+	}
+	// A timeout inside the steps a strategy changes is only infra when the
+	// browser itself stopped answering (a CDP timeout), not a slow editor.
+	if rep != nil && rep.Stuck != "" && rep.Stuck != "observe" && !strings.Contains(msg, "cdp timeout") {
+		return false
+	}
+	return true
+}
+
 func desktopRecFirstLine(s string) string {
 	s = strings.TrimSpace(s)
 	if i := strings.Index(s, "\n"); i > 0 {
@@ -747,6 +810,11 @@ func desktopRecover(request agentruntime.TurnRequest, scope agentruntime.Scope, 
 		}
 		if found == "" && len(waiting) == 1 && strings.HasPrefix(goal, "publish") && strings.HasPrefix(waiting[0], "publish|") {
 			found = waiting[0]
+		}
+		if found == "" && strings.HasPrefix(strings.ToLower(goal), "publish") {
+			// "publish", "publish zhihu", "publish|csdn": the waiting publish
+			// goal of the named site, else of the site being worked on.
+			found = desktopRecWaitingFor(waiting, strings.ToLower(goal), desktopPublishSiteFor(scope, args))
 		}
 		if found == "" {
 			return "", fmt.Errorf("recover: %q is not a goal of this task (goals waiting for a diagnosis: %s)", goal, strings.Join(waiting, ", "))
@@ -1044,6 +1112,7 @@ func desktopRecoveryOutcome(runID string) (string, string) {
 	}
 	outcome, why := "", ""
 	rank := map[string]int{"": 0, "done": 1, "not_submitted": 2, "partial": 3, "blocked": 4, "unconfirmed": 5}
+	var done, notDone []string
 	for _, g := range goals {
 		o := ""
 		switch {
@@ -1051,14 +1120,23 @@ func desktopRecoveryOutcome(runID string) (string, string) {
 			o = "done"
 		case g.Lease != nil && g.Lease.Phase == recovery.PhaseSideEffect, g.State == recovery.StateStopped:
 			o = "unconfirmed"
-		case g.Count == 0 && g.Lease == nil && strings.HasPrefix(g.Key, "publish|"):
+		case g.Count == 0 && g.Lease == nil && len(g.Attempts) == 0 && strings.HasPrefix(g.Key, "publish|"):
 			continue // gated, never attempted
 		case len(g.Best) > 0 && desktopRecSomeDone(g.Best):
 			o = "partial"
-		case g.State == recovery.StateExhausted || strings.HasPrefix(g.Key, "check|"):
+		case g.State == recovery.StateExhausted || g.State == recovery.StateBlocked || strings.HasPrefix(g.Key, "check|"):
 			o = "blocked"
 		default:
 			o = "not_submitted"
+		}
+		if o == "done" {
+			done = append(done, desktopRecGoalLabel(g.Key))
+		} else {
+			r := g.Reason
+			if r == "" {
+				r = g.LastKind
+			}
+			notDone = append(notDone, desktopRecGoalLabel(g.Key)+" "+o+desktopClipWhy(r))
 		}
 		if rank[o] > rank[outcome] {
 			outcome = o
@@ -1073,6 +1151,30 @@ func desktopRecoveryOutcome(runID string) (string, string) {
 				why += "；已测得 " + desktopRecFacts2(g.Best)
 			}
 		}
+	}
+	if len(done) > 0 {
+		// A requested site nobody reached is not done either.
+		doneSite := map[string]bool{}
+		for _, d := range done {
+			doneSite[strings.TrimPrefix(d, "publish ")] = true
+		}
+		for _, p := range desktopTaskSitesPending(runID) {
+			if !doneSite[p.ID] {
+				notDone = append(notDone, "publish "+p.ID+" not_submitted: not reached")
+				if rank[outcome] < rank["not_submitted"] {
+					outcome = "not_submitted"
+				}
+			}
+		}
+	}
+	if len(done) > 0 && len(notDone) > 0 && (outcome == "not_submitted" || outcome == "blocked") {
+		// Some parts verified, others not: partial, and the evidence names
+		// every part (run_854d0758 reported not_submitted with the evidence
+		// of one stray goal while 小红书 was verified published).
+		sort.Strings(done)
+		sort.Strings(notDone)
+		outcome = "partial"
+		why = "done: " + strings.Join(done, ", ") + "；not done: " + strings.Join(notDone, "；")
 	}
 	return outcome, why
 }
@@ -1101,4 +1203,27 @@ func desktopRecoveryPrompt() string {
 	return "Self-correction: when a task's result can be checked from files, call action=goal_check first with goal= and criteria=[{kind:file_exists|file_min_lines|file_min_bytes|file_contains|json_min_items, path, value}] taken from the person's request, and again after each change. " +
 		"When a tool result says RECOVERY_REQUIRED, do not repeat what failed, do not blame the site without evidence, and do not lower the goal or use placeholder content: diagnose from the facts and call action=recover with hypothesis, uncertainty, strategy (meaningfully different), params (publish only: insert_prep_keys, insert_settle_ms, body_selector, title_selector, upload_selector, upload_trigger), test (publish tests use trial_pictures=1..3, which never submits) and expect (facts like pictures_kept>=2). " +
 		"A test's facts decide; a hypothesis is not a fact. RECOVERY_EXHAUSTED or STOPPED means stop and tell the person plainly what is done, what is missing and the evidence. "
+}
+
+// desktopRecWaitingFor picks the waiting publish goal a loosely named goal
+// means: the one whose site the name contains, else the current site's.
+func desktopRecWaitingFor(waiting []string, name, current string) string {
+	pick := func(match func(site string) bool) string {
+		found := ""
+		for _, k := range waiting {
+			parts := strings.Split(k, "|")
+			if len(parts) < 3 || parts[0] != "publish" || !match(parts[2]) {
+				continue
+			}
+			if found != "" {
+				return ""
+			}
+			found = k
+		}
+		return found
+	}
+	if k := pick(func(site string) bool { return strings.Contains(name, site) }); k != "" {
+		return k
+	}
+	return pick(func(site string) bool { return site == current })
 }

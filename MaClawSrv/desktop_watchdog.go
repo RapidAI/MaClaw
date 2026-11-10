@@ -216,6 +216,14 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 	defer desktopWatchdogEnd(run.ID)
 	key := desktopLedgerKey(scope)
 	status := string(run.Status)
+	// The run's event stream ends with its end, so an observer of the
+	// stream does not mistake a finished run for a hung one (run_854d0758
+	// ended at 21:27:45 with no last event after its last refused step).
+	defer func() {
+		es := scope
+		es.RunID = run.ID
+		desktopEmit(es, desktopEvent{Event: "run_end", Result: status})
+	}()
 	// The run status stays as it is (compatibility); what the task really
 	// reached is task_outcome, from the goals' measured facts.
 	defer desktopRecoveryEndRun(run.ID)
@@ -237,6 +245,9 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 		}
 		if !applied {
 			desktopApplyOutcome(msg, outcome, why)
+			if posted := desktopPostedNotice(run.ID, msg.Content); posted != "" {
+				msg.Content = posted + "\n" + msg.Content
+			}
 		}
 		desktopLedgerAdd(key, desktopLedgerEntry{Kind: "run_end", Run: run.ID, Detail: status})
 		return msg
@@ -363,11 +374,44 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 		return nil
 	}
 	out := map[string]string{agentservice.TaskOutcomeKey: outcome}
-	if n := desktopOutcomeNotice(outcome, why, msg.Content); n != "" {
+	n := desktopOutcomeNotice(outcome, why, msg.Content)
+	if posted := desktopPostedNotice(runID, msg.Content); posted != "" {
+		n = strings.TrimSpace(n + "\n" + posted)
+	}
+	if n != "" {
 		out[agentservice.TaskOutcomeNoticeKey] = n
 	}
 	if why != "" {
 		out["task_outcome_evidence"] = desktopRuneHead(why, 300)
 	}
 	return out
+}
+
+// desktopPostedNotice names the posts this run verifiably published that the
+// reply does not mention ("" when it mentions them all). A reply written
+// after the run got stuck said 「三个平台都没有发布成功」 while the ledger had the
+// 小红书 post as published (run_854d0758).
+func desktopPostedNotice(runID, content string) string {
+	if runID == "" {
+		return ""
+	}
+	var lines []string
+	seen := map[string]bool{}
+	for _, key := range desktopLedgerKeysForRun(runID) {
+		for _, e := range desktopLedgerEntries(key) {
+			if e.Kind != "posted" || e.Run != runID || e.Detail == "submitted_unconfirmed" || e.URL == "" || seen[e.URL] {
+				continue
+			}
+			seen[e.URL] = true
+			if strings.Contains(content, e.URL) {
+				continue
+			}
+			line := "已确认发布：" + e.Host
+			if e.Title != "" {
+				line += "《" + e.Title + "》"
+			}
+			lines = append(lines, line+" "+e.URL)
+		}
+	}
+	return strings.Join(lines, "\n")
 }

@@ -321,22 +321,32 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 	}
 	desktopTidyOnce(ctx, desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))))
 	if err := desktopBudgetCheck(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))); err != nil {
+		err = desktopGuardRefused(desktopOwner(scope), err)
 		log.Print(desktopStepLogLine(scope.UserID, args, "", err, 0) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)))
 		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", err, 0, "budget")
 		return "", err
 	}
 	repeatWarn, repeatErr := desktopRepeatCheck(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args)
 	if repeatErr != nil {
+		repeatErr = desktopGuardRefused(desktopOwner(scope), repeatErr)
 		log.Print(desktopStepLogLine(scope.UserID, args, "", repeatErr, 0) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)) + " repeat=refused")
 		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", repeatErr, 0, "refused")
 		return "", repeatErr
 	}
+	// An impaired run may always observe or hand the step to the person
+	// (desktop_escape.go): the guards below never refuse those.
+	escapeOK := false
+	if a := strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))); desktopEscapeAction(a) {
+		escapeOK, _ = desktopRunImpaired(desktopOwner(scope))
+	}
 	if pubErr := desktopPublishSideCheck(ctx, strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args); pubErr != nil {
+		pubErr = desktopGuardRefused(desktopOwner(scope), pubErr)
 		log.Print(desktopStepLogLine(scope.UserID, args, "", pubErr, 0) + " model=" + desktopModelLabel(request) + " publish=refused")
 		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", pubErr, 0, "guard")
 		return "", pubErr
 	}
-	if failErr := desktopFailClassCheck(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args); failErr != nil {
+	if failErr := desktopFailClassCheck(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args); failErr != nil && !escapeOK {
+		failErr = desktopGuardRefused(desktopOwner(scope), failErr)
 		log.Print(desktopStepLogLine(scope.UserID, args, "", failErr, 0) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)) + " failclass=refused")
 		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", failErr, 0, "guard")
 		return "", failErr
@@ -358,12 +368,18 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 	if npErr == nil && actionName == "deliver" {
 		npErr = desktopAfterPublishDeliverCheck(desktopOwner(scope), desktopMessageText(request))
 	}
+	if npErr != nil && escapeOK {
+		log.Printf("[desktop-guard] escape: %s permitted on an impaired run (refusal was: %s)", actionName, desktopRuneHead(npErr.Error(), 160))
+		npErr = nil
+	}
 	if npErr != nil {
+		npErr = desktopGuardRefused(desktopOwner(scope), npErr)
 		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", npErr, 0, "guard")
 		return "", npErr
 	}
 	recAtt, recErr := desktopRecoveryBefore(request, scope, actionName, args)
 	if recErr != nil {
+		recErr = desktopGuardRefused(desktopOwner(scope), recErr)
 		log.Print(desktopStepLogLine(scope.UserID, args, "", recErr, 0) + " model=" + desktopModelLabel(request) + " recovery=refused")
 		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", recErr, 0, "guard")
 		return "", recErr
@@ -404,6 +420,7 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 		desktopNoteClipboard(desktopOwner(scope), args)
 	}
 	desktopRecordStep(ctx, desktopOwner(scope), args, out, err, took)
+	desktopNoteStepResult(desktopOwner(scope), err)
 	desktopExperienceRecord(scope, desktopRunSite(desktopOwner(scope)), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	failWarn := desktopFailClassRecord(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	desktopNotePublishAttempt(desktopOwner(scope), actionName, args)

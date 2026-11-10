@@ -124,6 +124,8 @@ type desktopRunState struct {
 	lastClipLen  int               // runes of the last clipboard_set text (rich-body verify)
 	expSites     map[string]bool   // sites whose experience was shown in this run
 	progress     *desktopProgress  // budget / no-progress coaching
+	lastFailed   bool              // the last executed step ended with an error (desktop_escape.go)
+	refusals     int               // guard refusals since the last executed step
 }
 
 func desktopRunNoteSite(scope agentruntime.Scope, site string) {

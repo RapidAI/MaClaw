@@ -56,10 +56,19 @@ func requestDesktopTakeover(ctx context.Context, scope agentruntime.Scope, reaso
 	if reason == "" {
 		return "", fmt.Errorf("request_takeover requires reason")
 	}
-	if desktopPublishOnlyTakeoverRe.MatchString(reason) && !desktopPublishLoginRe.MatchString(reason) && desktopPublishAllowed(ctx) {
+	// A run whose own way is blocked (method blocked, goal blocked or out
+	// of budget, last step failed) may always hand the step to the person:
+	// refusing that too left run_854d0758 with no permitted way forward. A
+	// submit that already went out unconfirmed is still never handed over
+	// as "please publish" (that could post twice).
+	impaired, _ := desktopRunImpaired(desktopOwner(scope))
+	if impaired && desktopPublishOnlyTakeoverRe.MatchString(reason) && desktopRunSubmittedUnconfirmed(scope) {
+		impaired = false
+	}
+	if !impaired && desktopPublishOnlyTakeoverRe.MatchString(reason) && !desktopPublishLoginRe.MatchString(reason) && desktopPublishAllowed(ctx) {
 		return "", fmt.Errorf("%s", desktopPublishTakeoverRefusal)
 	}
-	if desktopElementMissingRe.MatchString(reason) && !desktopPublishLoginRe.MatchString(reason) {
+	if !impaired && desktopElementMissingRe.MatchString(reason) && !desktopPublishLoginRe.MatchString(reason) {
 		return "", fmt.Errorf("%s", desktopElementMissingRefusal)
 	}
 	if desktopPublishOnlyTakeoverRe.MatchString(reason) && !desktopPublishLoginRe.MatchString(reason) {
