@@ -61,10 +61,10 @@ type semanticDupCandidate struct {
 	CosineSimilarity float64
 }
 
-// findSemanticDupCandidate queries the vector index for the best same-category
-// entry with cosine similarity above threshold. Returns nil if no candidate.
+// findSemanticDupCandidate queries the vector index for the best entry in the
+// same category, owner, and project with cosine similarity above threshold.
 // Caller MUST hold s.mu (read or write lock).
-func (s *Store) findSemanticDupCandidate(queryEmb []float32, category Category, ownerID string) *semanticDupCandidate {
+func (s *Store) findSemanticDupCandidate(queryEmb []float32, category Category, ownerID, projectKey string) *semanticDupCandidate {
 	// Skip excluded categories.
 	if semanticDedupExcludedCategories[category] {
 		return nil
@@ -97,6 +97,9 @@ func (s *Store) findSemanticDupCandidate(queryEmb []float32, category Category, 
 		}
 		// Same owner only. A shared row must not absorb or be absorbed by a named owner.
 		if !memoryOwnersEqual(e.OwnerID, ownerID) {
+			continue
+		}
+		if compressionProjectKey(*e) != projectKey {
 			continue
 		}
 		// Skip pinned.
@@ -209,7 +212,10 @@ func (s *Store) ProcessPendingDedup(ctx context.Context) int {
 		if newEntry == nil || candEntry == nil {
 			continue // one or both entries no longer exist
 		}
-		if !newEntry.IsActive() || !candEntry.IsActive() || !memoryOwnersEqual(newEntry.OwnerID, candEntry.OwnerID) {
+		if !newEntry.IsActive() || !candEntry.IsActive() || !memoryOwnersEqual(newEntry.OwnerID, candEntry.OwnerID) || compressionProjectKey(*newEntry) != compressionProjectKey(*candEntry) {
+			continue
+		}
+		if MapToCanonical(newEntry.Category) != MapToCanonical(candEntry.Category) || newEntry.Pinned || candEntry.Pinned || newEntry.Category.IsProtected() || candEntry.Category.IsProtected() {
 			continue
 		}
 		// Durable task-management entries are 1:1 task identities. Their
@@ -230,10 +236,14 @@ func (s *Store) ProcessPendingDedup(ctx context.Context) int {
 		switch decision {
 		case dedupDecisionMerge:
 			updated := *candEntry
+			contentChanged := mergedText != "" && mergedText != candEntry.Content
 			if mergedText != "" {
 				updated.Content = mergedText
 				updated.ContentHash = computeContentHash(mergedText)
 				updated.CompactForm = ""
+				updated.InvalidAt = nil
+				updated.Stale = false
+				updated.Embedding = nil
 				if mergedText == newEntry.Content && len(newEntry.Embedding) > 0 {
 					updated.Embedding = append([]float32(nil), newEntry.Embedding...)
 				}
@@ -244,9 +254,16 @@ func (s *Store) ProcessPendingDedup(ctx context.Context) int {
 			updated.RelatedEdges = removeRelatedEdgeValue(updated.RelatedEdges, newEntry.ID)
 			updated.UpdatedAt = time.Now()
 			updated.AccessCount++
-			if err := s.UpdateEntriesAndDeleteIDs([]Entry{updated}, []string{newEntry.ID}); err != nil {
+			applied, err := s.UpdateEntriesAndDeleteIDsIfUnchanged([]Entry{updated}, []string{newEntry.ID}, entryExpectations([]Entry{*newEntry, *candEntry}))
+			if err != nil {
 				log.Printf("[semantic_dedup] merge persist error: %v", err)
 				continue
+			}
+			if !applied {
+				continue
+			}
+			if contentChanged && len(updated.Embedding) == 0 {
+				s.scheduleStoredEntryEmbedding(candEntry.ID)
 			}
 			merged++
 			log.Printf("[semantic_dedup] merged: %q into %q",

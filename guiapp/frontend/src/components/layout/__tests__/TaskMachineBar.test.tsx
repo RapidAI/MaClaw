@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskMachineBar } from '../TaskMachineBar';
+import { remoteAssistantSend, remoteAssistantSessionSnapshot } from '../remoteAssistantSession';
 import type { useTaskRemoteControl } from '../useTaskRemoteControl';
 
 type Remote = ReturnType<typeof useTaskRemoteControl>;
@@ -20,6 +21,7 @@ function remote(overrides: Partial<Remote> = {}): Remote {
         tasks: [],
         loading: false,
         error: '',
+        errorKind: '',
         detail: null,
         detailPath: '',
         creating: false,
@@ -124,11 +126,15 @@ describe('TaskMachineBar', () => {
         const control = remote({
             selected: { id: 'g1', machine_name: '家里', permission: 'view', status: 'active', online: false },
             operate: false,
+            detailPath: 'D:/tasks/a',
+            detail: { messages: [{ role: 'user', content: 'hello' }], artifacts: [] },
         });
         render(<TaskMachineBar lang="zh-CN" remote={control} onCloseGrant={vi.fn()} />);
         expect(screen.getByTestId('task-machine-note').textContent).toContain('对方离线');
         expect(screen.queryByTestId('task-machine-send')).toBeNull();
         expect(screen.queryByTestId('task-machine-create')).toBeNull();
+        expect(remoteAssistantSessionSnapshot()?.canSend).toBe(false);
+        expect(remoteAssistantSessionSnapshot()?.offline).toBe(true);
     });
 
     it('offers send only when the grant can operate', async () => {
@@ -139,11 +145,13 @@ describe('TaskMachineBar', () => {
             detail: { messages: [{ role: 'user', content: 'hello' }], artifacts: [{ title: 'notes.txt' }] },
         });
         render(<TaskMachineBar lang="zh-CN" remote={control} onCloseGrant={vi.fn()} />);
-        expect(screen.getByTestId('task-machine-send')).toBeTruthy();
-        expect(screen.getByTestId('task-machine-artifacts').textContent).toContain('notes.txt');
-        fireEvent.change(screen.getByTestId('task-machine-send-input'), { target: { value: '继续' } });
+        expect(screen.queryByTestId('task-machine-send')).toBeNull();
+        expect(remoteAssistantSessionSnapshot()?.canSend).toBe(true);
+        expect(remoteAssistantSessionSnapshot()?.offline).toBe(false);
+        expect(remoteAssistantSessionSnapshot()?.taskName).toBe('D:/tasks/a');
+        expect(remoteAssistantSessionSnapshot()?.messages.map(message => message.content)).toContain('hello');
         await act(async () => {
-            fireEvent.click(screen.getByTestId('task-machine-send'));
+            await remoteAssistantSend('继续');
         });
         expect(control.sendMessage).toHaveBeenCalledWith('D:/tasks/a', '继续');
     });

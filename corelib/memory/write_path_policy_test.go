@@ -126,6 +126,7 @@ func TestCoreMemoryDirectEntryWritesStayInAllowedBoundaries(t *testing.T) {
 			"(*Store).UpdateEntriesAndDeleteIDs":      true,
 			"(*Store).updateEntriesAndDeleteIDs":      true,
 			"(*Store).upsertEntriesByID":              true,
+			"(*Store).upsertEntriesByIDMode":          true,
 			"(*Store).syncGraphLinksLocked":           true,
 			"(*Store).replaceEntriesAndRebuildLocked": true,
 			"(*Store).replaceEntriesAndRebuildAsync":  true,

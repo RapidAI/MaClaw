@@ -5539,7 +5539,9 @@ func (c *sharedAgentLoopCallbacks) loadDiscoveryCatalogRows() ([]semanticTurnDir
 			described[key] = summary
 		}
 	}
-	for _, bind := range readyInstalledMCPBinds(inventory) {
+	binds := readyInstalledMCPBinds(inventory)
+	logSkippedDiscoveryMCPBinds(inventory, binds)
+	for _, bind := range binds {
 		name := tool.InstalledMCPModelFunctionName(bind.ServerID, bind.ToolName)
 		if name == "" {
 			continue
@@ -5559,6 +5561,82 @@ func (c *sharedAgentLoopCallbacks) loadDiscoveryCatalogRows() ([]semanticTurnDir
 		return rows, discoveryCatalogPartial
 	}
 	return rows, discoveryCatalogSettled
+}
+
+// logSkippedDiscoveryMCPBinds reports the per-bind reason a ready tools/list
+// observation still produced no catalog row. assessDiscoveredMCPBind fails
+// silently inside readyInstalledMCPBinds, which is how an installed and
+// healthy server could leave zero petitionable names with no trace.
+func logSkippedDiscoveryMCPBinds(inventory semanticDynamicInventory, binds []discoveredMCPBind) {
+	if len(inventory.mcpEntries) == 0 {
+		return
+	}
+	skipped := make([]string, 0, 8)
+	seen := make(map[string]bool, len(inventory.mcpEntries))
+	total := 0
+	for i := range inventory.mcpEntries {
+		entry := &inventory.mcpEntries[i]
+		key := discoveredMCPBindKey(entry.ServerID, entry.ToolName)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		reason := assessDiscoveredMCPBind(inventory, entry.ServerID, entry.ToolName)
+		if reason == "" {
+			continue
+		}
+		total++
+		if len(skipped) < 8 {
+			skipped = append(skipped, reason)
+		}
+	}
+	if total > 0 {
+		log.Printf("[semantic-routing] discovery MCP catalog admitted %d bind(s), skipped %d: %s", len(binds), total, strings.Join(skipped, "; "))
+	}
+}
+
+// discoveryCatalogResolveName resolves a needs token to one catalog row.
+// The exact server__tool name wins; a bare tool name resolves only when a
+// single row carries it, and server:tool / server/tool / server.tool
+// spellings fold onto the installed-MCP name. An ambiguous token resolves
+// nothing rather than picking a server for the model.
+func (c *sharedAgentLoopCallbacks) discoveryCatalogResolveName(name string) (semanticTurnDirectoryEntry, bool) {
+	if row, ok := c.discoveryCatalogRow(name); ok {
+		return row, true
+	}
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return semanticTurnDirectoryEntry{}, false
+	}
+	normalized := strings.NewReplacer(":", "__", "/", "__", ".", "__").Replace(trimmed)
+	if normalized != trimmed {
+		if row, ok := c.discoveryCatalogRow(normalized); ok {
+			return row, true
+		}
+	}
+	rows := c.discoveryCatalogRows()
+	// The x:mcp:<server>:<tool> capability id the host mints for one bind is
+	// a valid name for that row: the planner teaches the model this spelling.
+	for i := range rows {
+		if rows[i].CatalogKind != discoveryCatalogKindMCP {
+			continue
+		}
+		if agentservice.AutoMCPCapabilityIDForBinding(rows[i].ServerID, rows[i].ToolName) == tool.CapabilityID(trimmed) {
+			return rows[i], true
+		}
+	}
+	match := -1
+	matches := 0
+	for i := range rows {
+		if rows[i].ToolName != "" && rows[i].ToolName == trimmed {
+			match = i
+			matches++
+		}
+	}
+	if matches == 1 {
+		return rows[match], true
+	}
+	return semanticTurnDirectoryEntry{}, false
 }
 
 // grantDiscoveryCatalogName loads the one catalog row the model named.

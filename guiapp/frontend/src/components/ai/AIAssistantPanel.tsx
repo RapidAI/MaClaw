@@ -24,6 +24,7 @@ import { DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, getAssistantLightScheme } from "./as
 import { assistantMessageFontStyle } from "./assistantFonts";
 import "./ensureAIAssistantPanelStyles";
 import { localizeText } from "./aiAssistantI18n";
+import { remoteAssistantActive, remoteAssistantCanSend, remoteAssistantClose, remoteAssistantSend, remoteAssistantSending, remoteAssistantStop, useRemoteAssistantSession } from "../layout/remoteAssistantSession";
 import { CodingConflictLogStrip, CodingExecutionPlanCard } from "./aiCodingWorkbenchMiniPanels";
 import { ProjectSearchPanel, useProjectSearch } from "./ProjectSearchPanel";
 import { useTTSReadback } from "./useTTSReadback";
@@ -3994,6 +3995,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const idleTaskSwitchRef = useRef<IdleTaskSwitchContext | null>(null);
     const dismissCoveredNewTaskRef = useRef<(() => void) | null>(null);
     const activateSwitchingTab = useCallback((tabId: string) => {
+        if (remoteAssistantActive()) remoteAssistantClose();
         dismissCoveredNewTaskRef.current?.(); releaseIdleTaskTabs(idleTaskSwitchRef.current, { nextTabId: tabId });
         activateTab(tabId);
         // Already-open task: the click does not change tabs when this one is
@@ -4882,6 +4884,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return { task: activeTask, raw };
     }, [activeTab?.projectPath, codingStepStatuses, taskListProp, workflowAwaitingReview, workflowCurrentPhaseStatus, workflowState.active]);
     const cloudShareReadOnly = cloudWorkspaceSharePermissionFromTags(activeTaskExecutionSnapshot.task?.tags) === 'read';
+    const remoteChat = useRemoteAssistantSession();
+    const remoteChatRef = useRef(remoteChat);
+    remoteChatRef.current = remoteChat;
     const cloudShareReadOnlyRef = useRef(cloudShareReadOnly);
     cloudShareReadOnlyRef.current = cloudShareReadOnly;
     const codingChecklistSteps = useMemo(() => presentCodingAgentChecklist(codingExecutionPlan, codingStepStatuses), [codingExecutionPlan, codingStepStatuses]);
@@ -5017,14 +5022,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     );
     // Block paste/drop attachments while mic is live (composer hard-lock alone is not enough).
     const handlePaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>) => {
-        if (recordingActive || cloudShareReadOnlyRef.current || blockComposerFilesRef.current) {
+        if (recordingActive || cloudShareReadOnlyRef.current || blockComposerFilesRef.current || remoteAssistantActive()) {
             event.preventDefault();
             return;
         }
         handlePasteBase(event);
     }, [handlePasteBase, recordingActive]);
     const handleDragOver = useCallback((event: DragEvent<HTMLElement>) => {
-        if (recordingActive || cloudShareReadOnlyRef.current || blockComposerFilesRef.current) {
+        if (recordingActive || cloudShareReadOnlyRef.current || blockComposerFilesRef.current || remoteAssistantActive()) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "none";
             return;
@@ -5032,14 +5037,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         handleDragOverBase(event);
     }, [handleDragOverBase, recordingActive]);
     const handleDrop = useCallback((event: DragEvent<HTMLElement>) => {
-        if (recordingActive || cloudShareReadOnlyRef.current || blockComposerFilesRef.current) {
+        if (recordingActive || cloudShareReadOnlyRef.current || blockComposerFilesRef.current || remoteAssistantActive()) {
             event.preventDefault();
             return;
         }
         handleDropBase(event);
     }, [handleDropBase, recordingActive]);
     const isACPMirrorTabActive = activeTab.type === "project" && isACPAssistantSessionKey(activeTab.sessionKey);
-    const inputLocked = liveWorkActive || cancelPending || !codingTaskReadyForIntents || recordingActive || isACPMirrorTabActive || cloudShareReadOnly;
+    const inputLocked = remoteChat ? !remoteChat.canSend : (liveWorkActive || cancelPending || !codingTaskReadyForIntents || recordingActive || isACPMirrorTabActive || cloudShareReadOnly);
     // Busy agent allows type-ahead queue; live mic does not — keep submitLocked true
     // for lock UI, but send paths hard-return when recordingActive.
     const submitLocked = inputLocked;
@@ -5213,6 +5218,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         };
     }, [projectSearch.openWithQuery, projectSearch.close]);
     const handleProjectSearchSwitch = useCallback(async (msg: string) => {
+        if (remoteAssistantActive()) return;
         if (liveWorkActive && cancelSession) {
             const ok = await showConfirm(
                 localizeText(lang, "A task is running. Stop it and switch tasks?", "\u5f53\u524d\u6709\u4efb\u52a1\u6b63\u5728\u6267\u884c\u3002\u662f\u5426\u4e2d\u6b62\u5f53\u524d\u4efb\u52a1\u5e76\u5207\u6362\uff1f"),
@@ -5328,6 +5334,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         ? initLabel
         : isACPMirrorTabActive
             ? ((localizeText(lang, "This ACP session is controlled by its external client", "此 ACP 会话由外部客户端控制")))
+            : remoteChat && !remoteChat.canSend
+            ? (remoteChat.offline
+                ? localizeText(lang, "This computer is offline", "对方离线", "對方離線")
+                : localizeText(lang, "This remote task is read-only", "此远控任务为只读", "此遠控任務為唯讀"))
             : cloudShareReadOnly
             ? localizeText(lang, "This shared task is read-only", "此共享任务为只读", "此共享任務為唯讀")
             : recordingActive
@@ -5350,7 +5360,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             ? (codingAgentComposerStatusText(codingAgentProgress, lang) || idlePlaceholderText)
             : idlePlaceholderText;
     const inputValue = localDraftInputValue;
+    const [remoteDraft, setRemoteDraft] = useState('');
+    const remoteDraftKey = remoteChat ? `${remoteChat.grantId}:${remoteChat.projectPath}` : '';
+    useEffect(() => { setRemoteDraft(''); }, [remoteDraftKey]);
+    const composerValue = remoteChat ? remoteDraft : inputValue;
     const updateInputValue = useCallback((nextValue: string, options?: { deferParent?: boolean }) => {
+        if (remoteChatRef.current) {
+            setRemoteDraft(nextValue);
+            return;
+        }
         setLocalDraftInputValue(nextValue);
         if (activeTab.type === "project" || activeTab.type === "expert") {
             saveTabState(activeTab.id, { inputText: nextValue });
@@ -5358,7 +5376,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         syncLocalDraft(nextValue, options?.deferParent === true);
     }, [activeTab.id, activeTab.type, saveTabState, syncLocalDraft]);
-    const canSend = ready && !recordingActive && !cloudShareReadOnly && !isACPMirrorTabActive && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
+    const canSend = remoteChat
+        ? remoteChat.canSend && !!composerValue.trim()
+        : ready && !recordingActive && !cloudShareReadOnly && !isACPMirrorTabActive && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
     const [welcomeTemplateOffer, setWelcomeTemplateOffer] = useState<WelcomeTemplateSaveOffer | null>(null);
     // Drop the save-offer when switching tabs.
     useEffect(() => {
@@ -5393,7 +5413,30 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
     }, [displayMessages]);
-    const conversationArchive = useConversationViewArchive({ messages: otherMessages, scope: (isProjectTabActive || isExpertTabActive) && activeTab.id ? `tab:${activeTab.id}` : "desktop", enabled: ready, lang, theme: t });
+    const remoteTranscript = useMemo(() => {
+        if (!remoteChat) return [];
+        return remoteChat.messages.map((message, index): ChatMessage => {
+            let role: ChatMessage["role"] = "assistant";
+            if (message.role === "user" || message.role === "system" || message.role === "error") role = message.role;
+            return {
+                id: `remote-${remoteChat.grantId}-${index}`,
+                role,
+                content: message.content || '',
+                reasoning: message.reasoning || '',
+                timestamp: index + 1,
+            };
+        });
+    }, [remoteChat]);
+    const remoteRenderedMessages = useMemo(() => {
+        if (!remoteTranscript.length) return null;
+        const last = remoteTranscript.length - 1;
+        return remoteTranscript.map((message, index) => (
+            <Fragment key={message.id}>
+                {renderMessage(message, () => undefined, t, index === last && message.role === "assistant", "", lang)}
+            </Fragment>
+        ));
+    }, [lang, remoteTranscript, t]);
+    const conversationArchive = useConversationViewArchive({ messages: remoteChat ? remoteTranscript : otherMessages, scope: remoteChat ? `remote-control:${remoteChat.grantId}:${remoteChat.projectPath}` : ((isProjectTabActive || isExpertTabActive) && activeTab.id ? `tab:${activeTab.id}` : "desktop"), enabled: remoteChat ? true : ready, lang, theme: t });
     const transcriptMessages = conversationArchive.visibleMessages;
     const [branchPoints, setBranchPoints] = useState<ConversationBranchPointLike[]>([]);
     useEffect(() => {
@@ -5416,6 +5459,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [isLocalTabActive, otherMessages.length, sending, streaming]);
     const branchPointByDisplayIndex = useMemo(() => {
         const map = new Map<number, ConversationBranchPointLike>();
+        if (remoteChat) return map;
         const offset = otherMessages.length - transcriptMessages.length;
         for (const point of branchPoints) {
             const index = Number(point?.index);
@@ -5423,7 +5467,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             map.set(index - offset, point);
         }
         return map;
-    }, [branchPoints, otherMessages.length, transcriptMessages.length]);
+    }, [branchPoints, otherMessages.length, remoteChat, transcriptMessages.length]);
     // Keep active workflow and preview surfaces out of the welcome landing.
     const workflowExecutionActive = workflowState.active || workflowCurrentPhaseRunning || workflowState.splitMode || codePreviewState.active || showAgentView || codingConflictOpen;
     const landing = canShowWorkbenchLanding({ enabled: startOnWorkbenchHome, requested: workbenchHomeRequested, local: isLocalTabActive, coding: isPureCodingEnvironment, activeTask: !!activeAssistantTaskProp, progress: displayProgressMessages.length, thinking: showThinkingState, processing: showProcessingState, preparing: activeProjectPreparing, form: workflowAwaitingForm, generating: workflowFormGeneratingDocument, review: workflowAwaitingReview, starting: !!workflowStartingLabel, queue: queue.length, editing: queueEditDraftActive, interacted: queueInteractionStarted, workflowActive: workflowExecutionActive });
@@ -5532,17 +5576,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const lastRenderedProgressMessage = compactProgressMessages.at(-1);
     const progressActivityKey = lastRenderedProgressMessage?.id || "";
     const wizardScrollSuspendRef = useRef(false);
-    const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, conversationKey: activeTab.id, hasConversation, messages: displayMessages, ready, scrollToTopSeq, suspendedRef: wizardScrollSuspendRef });
+    const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, conversationKey: remoteChat ? `remote:${remoteChat.grantId}:${remoteChat.projectPath}` : activeTab.id, hasConversation: remoteChat ? remoteTranscript.length > 0 : hasConversation, messages: remoteChat ? remoteTranscript : displayMessages, ready: remoteChat ? true : ready, scrollToTopSeq, suspendedRef: wizardScrollSuspendRef });
     useEffect(() => {
         if (activeTab.type !== "project") return;
+        const previous = latestProjectCloseSnapshotRef.current;
+        const keepScroll = !!remoteChat && previous?.tabId === activeTab.id;
         latestProjectCloseSnapshotRef.current = {
             tabId: activeTab.id,
             projectPath: activeTab.projectPath,
             messages: displayMessages,
             inputText: localDraftInputValue,
-            scrollTop: outputContainerRef.current?.scrollTop || 0,
+            scrollTop: keepScroll ? (previous?.scrollTop || 0) : (outputContainerRef.current?.scrollTop || 0),
         };
-    }, [activeTab.id, activeTab.projectPath, activeTab.type, displayMessages, localDraftInputValue, outputContainerRef]);
+    }, [activeTab.id, activeTab.projectPath, activeTab.type, displayMessages, localDraftInputValue, outputContainerRef, remoteChat]);
     const handleInputResizeEnd = useCallback(() => {
         scrollToBottom("auto", true, 2);
     }, [scrollToBottom]);
@@ -5694,6 +5740,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [updateInputValue]);
     const fireSlashInFlightRef = useRef(false);
     const handleFireSlashCommand = useCallback(async (command: FireSlashCommand) => {
+        if (remoteAssistantActive()) {
+            if (!remoteAssistantCanSend() || remoteAssistantSending()) return;
+            setRemoteDraft("");
+            const sent = await remoteAssistantSend(command);
+            if (!sent) setRemoteDraft(current => current.trim() ? current : command);
+            return;
+        }
         if (!ready || fireSlashInFlightRef.current) return;
         // Slash palette actions are task intents too.  Do not let this UI-only
         // shortcut bypass a preparing/disconnected remote coding lifecycle.
@@ -5716,6 +5769,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [activeSessionKey, addEntry, codingTaskReadyForIntents, ready, recordPrompt, sendMessageForTab]);
     const handleClearInput = useCallback(() => {
+        if (remoteAssistantActive()) {
+            setRemoteDraft("");
+            return;
+        }
         clearComposerDraft({ clearAttachments: false });
     }, [clearComposerDraft]);
     const sendInFlightRef = useRef(false);
@@ -5728,6 +5785,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const dispatchTaskIntent = useCallback(async (text: string, options?: Record<string, unknown>): Promise<boolean> => {
         const trimmed = text.trim();
         if (!trimmed) return false;
+        if (remoteAssistantActive()) {
+            if (!remoteAssistantCanSend() || remoteAssistantSending()) return false;
+            return remoteAssistantSend(trimmed);
+        }
         if (!codingTaskReadyForIntents) {
             const queued = addEntry(trimmed, [], { autoDrain: true, steerWhenBusy: false });
             if (queued) queueAutoDrainArmedSessionKeysRef.current.add(activeSessionKey);
@@ -5739,7 +5800,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     /** Welcome param dialog "Send now": dispatch without requiring a second click. */
     const handleWelcomePromptSend = useCallback(async (text: string, meta?: WelcomePromptSubmitMeta) => {
         const trimmed = (text || "").trim();
-        if (!trimmed || cloudShareReadOnlyRef.current) return;
+        if (!trimmed || cloudShareReadOnlyRef.current || remoteAssistantActive()) return;
         if (startOnWorkbenchHome) dismissWorkbenchHome();
         setComposeAction(null);
         if (!ready) {
@@ -5837,6 +5898,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         pptStyleChoiceRef.current = choice;
     }, []);
     const handleSend = useCallback(async (source?: unknown) => {
+        if (remoteAssistantActive()) {
+            if (!remoteAssistantCanSend() || remoteAssistantSending()) return;
+            const commanded = typeof source === "string" ? source.trim() : "";
+            const text = (commanded || (inputRef.current?.value ?? "")).trim();
+            if (!text) return;
+            setRemoteDraft("");
+            const sent = await remoteAssistantSend(text);
+            if (!sent) setRemoteDraft(current => current.trim() ? current : text);
+            return;
+        }
         if (cloudShareReadOnlyRef.current) return;
         if (startOnWorkbenchHome && workbenchHomeRequested) dismissWorkbenchHome();
         if (recordingActive) return;
@@ -6031,7 +6102,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const composerExpert = composerExpertForOpenTab(activeTab, taskListProp, taskConfigWiring.taskConfig.experts);
     dismissCoveredNewTaskRef.current = taskConfigWiring.wizardOverlay ? taskConfigWiring.dismissWizardOverlay : null;
     wizardScrollSuspendRef.current = taskConfigWiring.wizardOverlay;
-    const showWelcomeView = showWelcomeViewBase;
+    const showWelcomeView = remoteChat ? false : showWelcomeViewBase;
     const wizardScreen = taskConfigWiring.wizardOverlay && ready && !showWelcomeViewBase;
     const newTaskHome = showWelcomeView || wizardScreen;
     const separateGuide = wizardScreen && !isLocalTabActive;
@@ -6042,7 +6113,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (separateGuideWasRef.current && !separateGuide) guideDraft.dropGuideFiles();
         separateGuideWasRef.current = separateGuide;
     }, [separateGuide, guideDraft.dropGuideFiles]);
-    const title = startupWarmup
+    const title = remoteChat
+        ? remoteChat.taskName
+        : startupWarmup
         ? initLabel
         : showWelcomeView && isLocalTabActive
         ? localizeText(lang, "New task", "新建任务", "新建任務")
@@ -6079,7 +6152,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const hasPendingSlotCard = displayMessages.some((msg: ChatMessage) =>
             (msg.unfinishedSlot?.actions?.length ?? 0) > 0
             || (msg.recoverableSession?.actions?.length ?? 0) > 0);
-        if ((isLocalTabActive || !hasPendingSlotCard) && (becameIdle || returnedToChatIdle || continueIdleDrain || armedIdleDrain || persistedAutoDrain) && queue.length > 0 && !queueEditDraftActive) {
+        if (!remoteAssistantActive() && (isLocalTabActive || !hasPendingSlotCard) && (becameIdle || returnedToChatIdle || continueIdleDrain || armedIdleDrain || persistedAutoDrain) && queue.length > 0 && !queueEditDraftActive) {
             const entry = queue[0];
             if (firingEntryIdsRef.current.has(entry.id) || drainingEntryIdsRef.current.has(entry.id)) {
                 prevSubmitLockedRef.current = submitLocked;
@@ -6148,6 +6221,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         prevShowChatUIRef.current = showChatUI;
     }, [activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, codingTaskReadyForIntents, dispatchBtwText, displayMessages, isLocalTabActive, queue, queueEditDraftActive, queueInFlightVersion, ready, recordPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, showWelcomeView, submitLocked, taskConfigWiring.launchNewTaskFromText, updateEntry]);
     const handleFireEntry = useCallback(async (id: string) => {
+        if (remoteAssistantActive()) return;
         if (firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id)) return;
         const entry = queue.find(item => item.id === id);
         if (!entry) return;
@@ -6219,6 +6293,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [activeSessionKey, codingTaskReadyForIntents, dispatchBtwText, guideLaunchReference, injectSupplementary, queue, recordPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, updateEntry]);
     useEffect(() => {
+        if (remoteAssistantActive()) return;
         if (activeProjectPreparing || cancelPending || recordingActive) return;
         // Preserve conversational order. In particular, a later ordinary
         // message must not jump ahead of a queued slash/control turn.
@@ -6232,7 +6307,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         if (firingEntryIdsRef.current.has(pendingSteer.id) || drainingEntryIdsRef.current.has(pendingSteer.id)) return;
         void handleFireEntry(pendingSteer.id);
-    }, [activeProjectPreparing, activeSessionIsSending, activeSessionIsStreaming, cancelPending, handleFireEntry, queue, recordingActive, updateEntry]);
+    }, [activeProjectPreparing, activeSessionIsSending, activeSessionIsStreaming, cancelPending, handleFireEntry, queue, recordingActive, remoteChat, updateEntry]);
     const handleDeleteEntry = useCallback((id: string) => {
         if (firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id)) return;
         removeEntry(id);
@@ -6278,6 +6353,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setEditingEntryId(null);
     }, [updateEntry]);
     const handleCancel = useCallback(async () => {
+        if (remoteAssistantActive()) {
+            if (!remoteAssistantCanSend()) return;
+            await remoteAssistantStop();
+            return;
+        }
         if (cancelPending) return;
         // If workflow is awaiting form input (no active agent loop), dismiss the
         // workflow form and cancel the workflow instead of calling cancelSession.
@@ -6473,6 +6553,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             /* ignore */
         }
         const payload = formatRecordingCompletionMessage(result);
+        if (remoteAssistantActive()) return;
         // A recording card can complete while a remote coding workbench is
         // reconnecting. Route through the same lifecycle-aware dispatcher so
         // its completion never jumps ahead of that task's SSH recovery.
@@ -6889,7 +6970,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
             {showChatUI && (
             <div className="aap-chat-column" data-testid="ai-chat-column" data-search-open={projectSearch.open ? "true" : undefined}>
-                {isPureCodingEnvironment && (
+                {!remoteChat && isPureCodingEnvironment && (
                     <CodingWorkbenchControlPanel
                         lang={lang}
                         theme={t}
@@ -7420,13 +7501,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     {...windowDragHandleProps(!!inline, { minHeight: 72 })}
                     onDoubleClick={(event) => handleTaskExecutionHeaderDoubleClick(event, inline ? onToggleMaximize : undefined)}
                 >
-                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={warmupChrome ? { tone: "pending", label: startupWarmup ? "" : initLabel } : taskExecutionStatus} taskCreatedLabel={taskCreatedLabel} workingDirPath={activeTabWorkingDirPath} remoteWorkspace={remoteWorkspace} remoteWorkspaceLabel={remoteWorkspaceLabel} title={title} />
+                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={remoteChat ? { tone: remoteChat.canSend ? "running" : "pending", label: remoteChat.canSend ? remoteChat.machineName : localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀") } : (warmupChrome ? { tone: "pending", label: startupWarmup ? "" : initLabel } : taskExecutionStatus)} taskCreatedLabel={remoteChat ? "" : taskCreatedLabel} workingDirPath={remoteChat ? "" : activeTabWorkingDirPath} remoteWorkspace={remoteChat ? null : remoteWorkspace} remoteWorkspaceLabel={remoteChat ? remoteChat.machineName : remoteWorkspaceLabel} title={title} />
                     <div className="mc-task-execution-actions" data-testid="task-execution-actions" {...windowNoDragRegionProps()}>
                         <div className="mc-task-notification-slot" data-notification-tree="true" data-testid="task-notification-slot" {...windowNoDragRegionProps()}>
                             {/* The new-task wizard covers this header and shows the title-bar bell instead. */}
                             <AssistantTitleBarNotifications active={panelActive && !wizardScreen} inline={false} lang={lang} theme={t} />
                         </div>
-                        {startupWarmup ? null : <>
+                        {remoteChat ? <>
+                        <button className="task-pause-btn" data-action="cancel" type="button" onClick={() => { void handleCancel(); }} disabled={!remoteChat.canSend} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>
+                        <button className="task-share-btn" data-testid="remote-task-chat-close" type="button" onClick={() => remoteAssistantClose()}>{localizeText(lang, "Close", "关闭", "關閉")}</button>
+                        </> : startupWarmup ? null : <>
                         {skillRecordingHere ? <button className="task-skill-pause-btn" data-testid="skill-recording-pause-btn" type="button" onClick={handleToggleSkillRecording} disabled={skillRecordingBusy} aria-busy={skillRecordingBusy} aria-label={localizeText(lang, "Pause skill recording", "暂停 Skill 录制", "暫停 Skill 錄製")} title={localizeText(lang, `Pause skill recording (${skillRecordingCount} steps)`, `暂停 Skill 录制（已记录 ${skillRecordingCount} 步）`, `暫停 Skill 錄製（已記錄 ${skillRecordingCount} 步）`)}><span className="aiti-recording-dot" aria-hidden="true" /><span className="task-skill-pause-label">{localizeText(lang, "Pause", "暂停", "暫停")}</span></button> : null}
                         <TaskTabSwitcher tabs={tabState.tabs} activeTabId={tabState.activeTabId} lang={lang} onActivate={activateSwitchingTab} onClose={closeTabWithProjectCleanup} tasks={taskListProp} onOpenTask={onOpenTaskProp} />
                         <button className="task-pause-btn" data-action="cancel" type="button" onClick={handleCancel} disabled={!inputVisualBusy || cancelPending} aria-busy={cancelPending} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>
@@ -7441,20 +7525,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         ) : null}
                     </div>
                 </div>
-                <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar mc-task-execution" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, ...assistantMessageFontStyle(isPureCodingEnvironment ? "coding" : "conversation", isPureCodingEnvironment ? codingFontFamily : chatFontFamily), whiteSpace: "normal", overflowWrap: "break-word", wordBreak: "normal" }} onScroll={handleScroll} onWheel={handleUserScrollIntent} onTouchMove={handleUserScrollIntent} onPointerDown={handleUserScrollIntent}>
-                    {conversationArchive.banner}
-                    {conversationArchive.dialog}
+                <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar mc-task-execution" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment && !remoteChat ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, ...assistantMessageFontStyle(isPureCodingEnvironment && !remoteChat ? "coding" : "conversation", isPureCodingEnvironment && !remoteChat ? codingFontFamily : chatFontFamily), whiteSpace: "normal", overflowWrap: "break-word", wordBreak: "normal" }} onScroll={handleScroll} onWheel={handleUserScrollIntent} onTouchMove={handleUserScrollIntent} onPointerDown={handleUserScrollIntent}>
+                    {remoteChat ? null : conversationArchive.banner}
+                    {remoteChat ? null : conversationArchive.dialog}
                     {isExpertTabActive && displayMessages.length === 0 && conversationArchive.earlierCount === 0 ? (
                         <ExpertTabEmptyBanner activeTab={activeTab} lang={lang} theme={t} />
                     ) : null}
-                    {showPureCodingEmptyState ? pureCodingEmptyContent : null}
+                    {remoteChat || !showPureCodingEmptyState ? null : pureCodingEmptyContent}
                     <CodingAgentPreviewFocusContext.Provider value={focusCodeFile}>
-                    <AssistantConversationBody emptyContent={isPureCodingEnvironment ? null : undefined} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} liveActivityLabel={standaloneLiveActivityLabel} liveActivityObject={standaloneLiveActivityLabel ? liveReasoningObject : undefined} busyAccessory={hideWorkingTrail ? null : codingWorkingTrail} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
+                    <AssistantConversationBody emptyContent={remoteChat ? undefined : (isPureCodingEnvironment ? null : undefined)} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={remoteChat ? remoteTranscript : (displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES)} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={remoteChat ? [] : pinnedNews} ready={remoteChat ? true : ready} renderedOtherMessages={remoteRenderedMessages || renderedOtherMessages} renderedProgressMessages={remoteChat ? null : renderedProgressMessages} liveActivityLabel={remoteChat ? undefined : standaloneLiveActivityLabel} liveActivityObject={remoteChat ? undefined : (standaloneLiveActivityLabel ? liveReasoningObject : undefined)} busyAccessory={remoteChat || hideWorkingTrail ? null : codingWorkingTrail} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
                     </CodingAgentPreviewFocusContext.Provider>
                     <div ref={outputEndRef} />
                 </div></div>)}
                 {wizardScreen ? newTaskWelcome : null}
-                {activeProjectPreparing && <ProjectPreparingBanner prepareMode={activeProjectPrepareMode} isRemoteCodingDev={isRemoteCodingDevEnvironment} isRemoteMaintenance={isRemoteMaintenanceEnvironment} isCodingDev={isCodingDevEnvironment} lang={lang} theme={t} />}
+                {activeProjectPreparing && !remoteChat && <ProjectPreparingBanner prepareMode={activeProjectPrepareMode} isRemoteCodingDev={isRemoteCodingDevEnvironment} isRemoteMaintenance={isRemoteMaintenanceEnvironment} isCodingDev={isCodingDevEnvironment} lang={lang} theme={t} />}
                 {!showWelcomeView && skillRecordingCard && <InlineChatCard card={skillRecordingCard} onResolve={(cardId, action, values) => { const resolvedCardId = cardId; setSkillRecordingCard((prev: any) => prev ? { ...prev, resolved: true, resolvedAction: action, resolvedValues: values } : null); handleResolveSkillRecordingCard(action, values); setTimeout(() => setSkillRecordingCard((prev: any) => prev && prev.id === resolvedCardId ? null : prev), 2000); }} theme={{ cardBg: t.fieldBg, cardBorder: t.titleBarBorder, textColor: t.text, mutedColor: t.promptColor, accentColor: "#4f7f6f", inputBg: t.fieldBg, inputBorder: t.titleBarBorder, buttonBg: "#4f7f6f", buttonText: "#fff", dangerColor: "var(--theme-danger)" }} lang={lang} />}
                 {!showWelcomeView && codingPreviewAllowed && (workflowAwaitingForm || workflowFormGeneratingDocument) && (
                     <WorkflowFormInlinePrompt
@@ -7505,12 +7589,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 {!showWelcomeView && activeTab.type === "expert" && activeTab.expertId === "builtin-pptx-maker" && (
                     <PPTStyleChooser lang={lang} inputValue={inputValue} onChoice={handlePPTStyleChoice} />
                 )}
-                {!showWelcomeView && <ComputerUseReadinessBanner lang={lang} theme={t} />}
-                {!showWelcomeView && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
-                {!showWelcomeView && !isPureCodingEnvironment && !isACPMirrorTabActive && !isExpertTabActive && <ChatTaskTray tasks={chatTasks.filter((task: { sessionKey?: string }) => chatTaskInSession(task.sessionKey, activeSessionKey))} canDispatch={!!inputValue.trim() && !!dispatchChatTask} lang={lang} theme={t} onRunInBackground={handleRunChatTaskInBackground} onCancel={taskID => { void cancelChatTask?.(taskID); }} />}
-                {!showWelcomeView && !wizardScreen && <GoalQuickBar lang={lang} theme={t} sessionKey={activeSessionKey} />}
-                {!showWelcomeView && !wizardScreen && cloudShareReadOnly ? <div data-testid="ai-cloud-share-readonly" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 12px 6px", color: "var(--theme-text-secondary, #667085)", fontSize: 12, fontWeight: 600 }}><span style={{ display: "inline-flex", padding: "1px 6px", borderRadius: 999, border: "1px solid color-mix(in srgb, currentColor 35%, transparent)", lineHeight: 1.4 }}>{localizeText(lang, "Read-only", "只读", "唯讀")}</span><span style={{ fontWeight: 500 }}>{localizeText(lang, "This shared task is read-only", "此共享任务为只读", "此共享任務為唯讀")}</span><button type="button" data-testid="ai-cloud-share-copy-local" onClick={() => { const source = String(activeTab?.projectPath || "").trim(); if (source) window.dispatchEvent(new CustomEvent("maclaw:copy-read-share-as-local", { detail: { projectPath: source } })); }} style={{ marginLeft: "auto", border: 0, background: "transparent", color: "inherit", font: "inherit", fontWeight: 600, cursor: "pointer", padding: 0 }}>{localizeText(lang, "Copy as local task", "复制为本地任务", "複製為本機任務")}</button></div> : null}
-                {!showWelcomeView && !wizardScreen && <AssistantInputStack active={panelActive} browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={cloudShareReadOnly ? () => undefined : handleVoiceClick} handleVoicePointerDown={cloudShareReadOnly ? () => undefined : handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive || cloudShareReadOnly} inputRef={inputRef} inputValue={inputValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} submittedPromptAttachments={submittedPromptAttachments} onHistoryTextAccepted={acceptHistoryText} theme={t} themeMode={themeMode} toolbarEndContent={<AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} chipTestId="composer-model-chip" />} trailingToolbarContent={(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
+                {!showWelcomeView && !remoteChat && <ComputerUseReadinessBanner lang={lang} theme={t} />}
+                {!showWelcomeView && !remoteChat && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
+                {!showWelcomeView && !remoteChat && !isPureCodingEnvironment && !isACPMirrorTabActive && !isExpertTabActive && <ChatTaskTray tasks={chatTasks.filter((task: { sessionKey?: string }) => chatTaskInSession(task.sessionKey, activeSessionKey))} canDispatch={!!inputValue.trim() && !!dispatchChatTask} lang={lang} theme={t} onRunInBackground={handleRunChatTaskInBackground} onCancel={taskID => { void cancelChatTask?.(taskID); }} />}
+                {!showWelcomeView && !remoteChat && !wizardScreen && <GoalQuickBar lang={lang} theme={t} sessionKey={activeSessionKey} />}
+                {!showWelcomeView && !wizardScreen && remoteChat && (!remoteChat.canSend || !!remoteChat.error) ? <div data-testid={remoteChat.canSend ? "ai-remote-error" : "ai-remote-readonly"} role="alert" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 12px 6px", color: remoteChat.error ? "var(--theme-danger, #b42318)" : "var(--theme-text-secondary, #667085)", fontSize: 12, fontWeight: 600 }}>{remoteChat.canSend ? null : <span style={{ display: "inline-flex", padding: "1px 6px", borderRadius: 999, border: "1px solid color-mix(in srgb, currentColor 35%, transparent)", lineHeight: 1.4 }}>{localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀")}</span>}<span style={{ fontWeight: 500 }}>{remoteChat.error || (remoteChat.offline ? localizeText(lang, "This computer is offline. You cannot operate it from here.", "对方离线，暂时不能操作。", "對方離線，暫時不能操作。") : localizeText(lang, "This remote task is read-only", "此远控任务为只读", "此遠控任務為唯讀"))}</span></div> : !showWelcomeView && !wizardScreen && cloudShareReadOnly ? <div data-testid="ai-cloud-share-readonly" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 12px 6px", color: "var(--theme-text-secondary, #667085)", fontSize: 12, fontWeight: 600 }}><span style={{ display: "inline-flex", padding: "1px 6px", borderRadius: 999, border: "1px solid color-mix(in srgb, currentColor 35%, transparent)", lineHeight: 1.4 }}>{localizeText(lang, "Read-only", "只读", "唯讀")}</span><span style={{ fontWeight: 500 }}>{localizeText(lang, "This shared task is read-only", "此共享任务为只读", "此共享任務為唯讀")}</span><button type="button" data-testid="ai-cloud-share-copy-local" onClick={() => { const source = String(activeTab?.projectPath || "").trim(); if (source) window.dispatchEvent(new CustomEvent("maclaw:copy-read-share-as-local", { detail: { projectPath: source } })); }} style={{ marginLeft: "auto", border: 0, background: "transparent", color: "inherit", font: "inherit", fontWeight: 600, cursor: "pointer", padding: 0 }}>{localizeText(lang, "Copy as local task", "复制为本地任务", "複製為本機任務")}</button></div> : null}
+                {!showWelcomeView && !wizardScreen && <AssistantInputStack active={panelActive} browseFile={remoteChat ? () => undefined : browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={cloudShareReadOnly || remoteChat ? () => undefined : handleVoiceClick} handleVoicePointerDown={cloudShareReadOnly || remoteChat ? () => undefined : handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive || cloudShareReadOnly || (!!remoteChat && !remoteChat.canSend)} inputRef={inputRef} inputValue={composerValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={remoteChat ? [] : pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment && !remoteChat} placeholderText={placeholderText} queue={remoteChat ? [] : queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={remoteChat ? [] : selectedFilePaths} setPendingAttachments={remoteChat ? () => undefined : setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} submittedPromptAttachments={submittedPromptAttachments} onHistoryTextAccepted={acceptHistoryText} theme={t} themeMode={themeMode} toolbarEndContent={remoteChat ? null : <AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} chipTestId="composer-model-chip" />} trailingToolbarContent={!remoteChat && (activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
                     // Working-directory chip inside the composer toolbar, after the
                     // permission-mode button: the primary entry for viewing/changing
                     // where this session operates.

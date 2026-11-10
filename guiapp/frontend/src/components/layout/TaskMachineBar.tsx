@@ -1,32 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { localizeText } from '../../i18n';
 import type { RemotePermission, useTaskRemoteControl } from './useTaskRemoteControl';
+import { bindRemoteAssistantActions, publishRemoteAssistantSession } from './remoteAssistantSession';
 
 type RemoteControl = ReturnType<typeof useTaskRemoteControl>;
 
 function confirmKeyIsIme(event: { key: string; nativeEvent: KeyboardEvent; keyCode: number }) {
     return event.key === 'Enter' && (event.nativeEvent.isComposing || event.keyCode === 229);
-}
-
-function messageRoleLabel(lang: string, role: string) {
-    switch (role) {
-        case 'user':
-            return localizeText(lang, 'You', '我', '我');
-        case 'assistant':
-            return localizeText(lang, 'Assistant', '助手', '助手');
-        case 'system':
-            return localizeText(lang, 'System', '系统', '系統');
-        case 'error':
-            return localizeText(lang, 'Error', '错误', '錯誤');
-        default:
-            return role;
-    }
-}
-
-function messageBody(message: { content?: string; reasoning_content?: string }) {
-    const content = (message.content || '').trim();
-    if (content) return content;
-    return (message.reasoning_content || '').trim();
 }
 
 function permissionLabel(lang: string, permission: string) {
@@ -48,29 +28,54 @@ export function TaskMachineBar({
     const [permission, setPermission] = useState<RemotePermission>('view');
     const [account, setAccount] = useState('');
     const [createName, setCreateName] = useState('');
-    const [draft, setDraft] = useState('');
     const [acting, setActing] = useState(false);
     const actingRef = useRef(false);
-    const sendFlightRef = useRef<Promise<unknown> | null>(null);
-    const stoppingRef = useRef(false);
-    const [stopping, setStopping] = useState(false);
-    const messagesRef = useRef<HTMLDivElement>(null);
-    const stickToLatestRef = useRef(true);
-    const pinningScrollRef = useRef(false);
-    // A draft belongs to the conversation that was open while it was typed.
-    useEffect(() => { setDraft(''); }, [remote.detailPath]);
     // The create box stays mounted across machine tabs. Don't carry a name
     // typed for one computer onto the next.
     useEffect(() => { setCreateName(''); }, [remote.selected?.id]);
-    useEffect(() => { stickToLatestRef.current = true; }, [remote.detailPath]);
+    const selected = remote.selected;
+    const detail = remote.detail;
+    const detailPath = remote.detailPath;
+    const operate = remote.operate;
+    const error = remote.error;
+    const sendMessage = remote.sendMessage;
+    const stopTask = remote.stopTask;
+    const closeDetail = remote.closeDetail;
+    const chatError = (remote.errorKind === 'action' || remote.errorKind === 'conversation') && !!detail && !!detailPath ? error : '';
     useEffect(() => {
-        const node = messagesRef.current;
-        if (!node || !stickToLatestRef.current) return;
-        pinningScrollRef.current = true;
-        node.scrollTop = node.scrollHeight;
-        const timer = window.setTimeout(() => { pinningScrollRef.current = false; }, 0);
-        return () => window.clearTimeout(timer);
-    }, [remote.detailPath, remote.detail?.messages]);
+        if (!selected || !detail || !detailPath) {
+            publishRemoteAssistantSession(null);
+            bindRemoteAssistantActions(null);
+            return;
+        }
+        publishRemoteAssistantSession({
+            grantId: selected.id,
+            machineName: selected.machine_name || selected.machine_id || '',
+            projectPath: detailPath,
+            taskName: detail.task?.name || detailPath,
+            canSend: !!operate && selected.online !== false,
+            offline: selected.online === false,
+            error: chatError,
+            messages: (detail.messages || []).map(message => {
+                const content = (message.content || '').trim();
+                const reasoning = (message.reasoning_content || '').trim();
+                return {
+                    role: message.role,
+                    content: content || reasoning,
+                    reasoning: content ? reasoning : '',
+                };
+            }).filter(message => message.content.trim() !== ''),
+        });
+        bindRemoteAssistantActions({
+            send: text => sendMessage(detailPath, text),
+            stop: () => stopTask(detailPath),
+            close: closeDetail,
+        });
+    }, [chatError, closeDetail, detail, detailPath, operate, selected, sendMessage, stopTask]);
+    useEffect(() => () => {
+        publishRemoteAssistantSession(null);
+        bindRemoteAssistantActions(null);
+    }, []);
     const runAction = async (work: () => Promise<unknown>) => {
         if (actingRef.current) return;
         actingRef.current = true;
@@ -82,12 +87,11 @@ export function TaskMachineBar({
             setActing(false);
         }
     };
-    const selected = remote.selected;
     const viewOnly = !!selected && selected.permission !== 'operate';
     const remoteActivity = !!selected || remote.state.pending.length > 0 || remote.state.controlled.length > 0;
     // A failure belongs next to the form the person is using. The tab row
     // only keeps it when that form is not open, so the same text is not shown twice.
-    const errorInDetail = !!(remote.error && remote.detail && remote.detailPath);
+    const errorInDetail = !!chatError;
     const errorInCreate = !!(remote.error && selected && remote.creating && !errorInDetail);
     const machines = [...remote.state.machines].sort((left, right) =>
         Number(right.online) - Number(left.online)
@@ -210,95 +214,6 @@ export function TaskMachineBar({
                     />
                     <button type="submit" disabled={acting}>{localizeText(lang, 'Create there', '在对方新建', '在對方新建')}</button>
                 </form>
-            ) : null}
-            {remote.detail && remote.detailPath ? (
-                <section className="mc-task-machine-detail" data-testid="task-machine-detail">
-                    <header>
-                        <strong title={remote.detail.task?.name || remote.detailPath}>{remote.detail.task?.name || remote.detailPath}</strong>
-                        <button type="button" data-testid="task-machine-detail-close" onClick={remote.closeDetail}>{localizeText(lang, 'Close', '关闭', '關閉')}</button>
-                    </header>
-                    {errorInDetail ? <p className="mc-task-machine-error" data-testid="task-machine-error" role="alert">{remote.error}</p> : null}
-                    <div
-                        ref={messagesRef}
-                        className="mc-task-machine-messages"
-                        onScroll={(event) => {
-                            if (pinningScrollRef.current) return;
-                            const node = event.currentTarget;
-                            stickToLatestRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
-                        }}
-                    >
-                        {remote.detail.messages.length === 0
-                            ? <p>{localizeText(lang, 'No conversation yet', '还没有会话', '還沒有工作階段')}</p>
-                            : remote.detail.messages.map((message, index) => {
-                                const body = messageBody(message);
-                                if (!body) return null;
-                                return (
-                                    <p key={`${message.role}-${index}`}><b>{messageRoleLabel(lang, message.role)}</b> {body}</p>
-                                );
-                            })}
-                    </div>
-                    {remote.detail.artifacts.length > 0 ? (
-                        <ul className="mc-task-machine-artifacts" data-testid="task-machine-artifacts">
-                            {remote.detail.artifacts.map((artifact, index) => (
-                                <li key={`${artifact.title || 'artifact'}-${index}`}>{artifact.title || artifact.preview}</li>
-                            ))}
-                        </ul>
-                    ) : null}
-                    {remote.operate ? (
-                        <form
-                            className="mc-task-machine-send"
-                            onSubmit={(event) => {
-                                event.preventDefault();
-                                const text = draft.trim();
-                                if (!text || acting) return;
-                                void runAction(async () => {
-                                    const flight = remote.sendMessage(remote.detailPath, text);
-                                    sendFlightRef.current = flight;
-                                    try {
-                                        const ok = await flight;
-                                        if (ok !== false) setDraft('');
-                                    } finally {
-                                        if (sendFlightRef.current === flight) sendFlightRef.current = null;
-                                    }
-                                });
-                            }}
-                        >
-                            <input
-                                data-testid="task-machine-send-input"
-                                value={draft}
-                                placeholder={localizeText(lang, 'Message to run on that computer', '发到对方电脑上运行', '發到對方電腦上運行')}
-                                onKeyDown={(event) => { if (confirmKeyIsIme(event)) event.preventDefault(); }}
-                                onChange={(event) => setDraft(event.target.value)}
-                            />
-                            <button type="submit" data-testid="task-machine-send" disabled={acting}>{localizeText(lang, 'Send', '发送', '傳送')}</button>
-                            <button
-                                type="button"
-                                data-testid="task-machine-stop"
-                                disabled={stopping}
-                                onClick={() => {
-                                    // Sending holds the other buttons until the hub answers.
-                                    // Stop still has to be able to run, and it should land
-                                    // after that send so it stops the turn that was just accepted.
-                                    if (stoppingRef.current) return;
-                                    const path = remote.detailPath;
-                                    const stop = remote.stopTask;
-                                    const pending = sendFlightRef.current;
-                                    stoppingRef.current = true;
-                                    setStopping(true);
-                                    void (async () => {
-                                        if (pending) await pending.catch(() => undefined);
-                                        try {
-                                            await stop(path);
-                                        } finally {
-                                            stoppingRef.current = false;
-                                            setStopping(false);
-                                        }
-                                    })();
-                                }}
-                            >{localizeText(lang, 'Stop', '停止', '停止')}</button>
-                        </form>
-                    ) : null}
-                </section>
             ) : null}
             {adding ? (
                 <div className="mc-task-machine-add" data-testid="task-machine-add-panel">

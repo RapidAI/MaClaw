@@ -102,6 +102,7 @@ export function useTaskRemoteControl() {
     const [tasks, setTasks] = useState<TaskManagementItem[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
+    const [errorKind, setErrorKind] = useState<'' | 'state' | 'tasks' | 'action' | 'conversation'>('');
     const [detail, setDetail] = useState<RemoteTaskDetail | null>(null);
     const [detailPath, setDetailPath] = useState('');
     const [creating, setCreating] = useState(false);
@@ -117,7 +118,13 @@ export function useTaskRemoteControl() {
     const opRefreshGen = useRef(0);
     // A later poll must not wipe an error the user just caused, and a state
     // poll must not clear an error that belongs to the task list.
-    const errorOwner = useRef<'' | 'state' | 'tasks' | 'action'>('');
+    const errorOwner = useRef<'' | 'state' | 'tasks' | 'action' | 'conversation'>('');
+    const ownError = (kind: '' | 'state' | 'tasks' | 'action' | 'conversation', message: string) => {
+        errorOwner.current = kind;
+        setErrorKind(kind);
+        setError(message);
+    };
+    const chatErrorHeld = () => errorOwner.current === 'action' || errorOwner.current === 'conversation';
     tasksRef.current = tasks;
     selectedIdRef.current = selectedId;
     detailPathRef.current = detailPath;
@@ -131,14 +138,10 @@ export function useTaskRemoteControl() {
                 if (current) detailGen.current += 1;
                 return '';
             });
-            if (errorOwner.current === 'state') {
-                errorOwner.current = '';
-                setError('');
-            }
+            if (errorOwner.current === 'state') ownError('', '');
         } catch (err) {
-            if (errorOwner.current === 'action' || errorOwner.current === 'tasks') return;
-            errorOwner.current = 'state';
-            setError(errorText(err, '远控状态暂时无法读取'));
+            if (chatErrorHeld() || errorOwner.current === 'tasks') return;
+            ownError('state', errorText(err, '远控状态暂时无法读取'));
         }
     }, []);
 
@@ -153,10 +156,7 @@ export function useTaskRemoteControl() {
             setTasks([]);
             tasksForGrant.current = '';
             setLoading(false);
-            if (errorOwner.current !== 'action') {
-                errorOwner.current = 'tasks';
-                setError('远控尚未就绪');
-            }
+            if (!chatErrorHeld()) ownError('tasks', '远控尚未就绪');
             return;
         }
         if (tasksForGrant.current !== grantId) setLoading(true);
@@ -168,10 +168,7 @@ export function useTaskRemoteControl() {
             if (!Array.isArray(parsed.tasks)) throw new Error('对方任务暂时无法读取');
             setTasks(prev => (sameSnapshot(prev, parsed.tasks) ? prev : parsed.tasks || []));
             tasksForGrant.current = grantId;
-            if (errorOwner.current === 'tasks' || errorOwner.current === 'state') {
-                errorOwner.current = '';
-                setError('');
-            }
+            if (errorOwner.current === 'tasks' || errorOwner.current === 'state') ownError('', '');
         } catch (err) {
             if (gen !== taskGen.current || selectedIdRef.current !== grantId) return;
             // A failed refresh keeps the list already on screen. Only the first
@@ -180,9 +177,8 @@ export function useTaskRemoteControl() {
                 setTasks([]);
                 tasksForGrant.current = '';
             }
-            if (errorOwner.current === 'action') return;
-            errorOwner.current = 'tasks';
-            setError(err instanceof SyntaxError ? '对方任务暂时无法读取' : errorText(err, '对方任务暂时无法读取'));
+            if (chatErrorHeld()) return;
+            ownError('tasks', err instanceof SyntaxError ? '对方任务暂时无法读取' : errorText(err, '对方任务暂时无法读取'));
         } finally {
             // A list the person already left must not clear the spinner for
             // the machine they are looking at now.
@@ -199,8 +195,7 @@ export function useTaskRemoteControl() {
         setDetailPath(projectPath);
         if (!appBinding('RemoteControlOp')) {
             if (!refreshing) setDetail({ messages: [], artifacts: [] });
-            errorOwner.current = 'action';
-            setError('远控尚未就绪');
+            ownError('conversation', '远控尚未就绪');
             return;
         }
         try {
@@ -217,11 +212,11 @@ export function useTaskRemoteControl() {
             setDetail(prev => (sameSnapshot(prev, next) ? prev : next));
             detailStamp.current = `${projectPath}:${parsed.task?.last_activity || ''}`;
             detailFetchedAt.current = Date.now();
+            if (errorOwner.current === 'conversation') ownError('', '');
         } catch (err) {
             if (gen !== detailGen.current || selectedIdRef.current !== grantId) return;
             if (!refreshing) setDetail({ messages: [], artifacts: [] });
-            errorOwner.current = 'action';
-            setError(err instanceof SyntaxError ? '会话暂时无法读取' : errorText(err, '会话暂时无法读取'));
+            ownError('conversation', err instanceof SyntaxError ? '会话暂时无法读取' : errorText(err, '会话暂时无法读取'));
         }
     }, []);
 
@@ -262,7 +257,7 @@ export function useTaskRemoteControl() {
     const operate = selected?.permission === 'operate' && online;
 
     useEffect(() => {
-        if (!selectedId || !online) {
+        if (!selectedId) {
             taskGen.current += 1;
             detailGen.current += 1;
             setTasks([]);
@@ -270,6 +265,11 @@ export function useTaskRemoteControl() {
             setLoading(false);
             setDetail(null);
             setDetailPath('');
+            setCreating(false);
+            return;
+        }
+        if (!online) {
+            setLoading(false);
             setCreating(false);
             return;
         }
@@ -357,19 +357,16 @@ export function useTaskRemoteControl() {
         const grantId = selected.id;
         const openPath = detailPath;
         if (selected.permission !== 'operate' && op !== 'list_tasks' && op !== 'get_task') {
-            errorOwner.current = 'action';
-            setError('当前权限只能查看');
+            ownError('action', '当前权限只能查看');
             return false;
         }
         if (selected.online === false) {
-            errorOwner.current = 'action';
-            setError('对方离线');
+            ownError('action', '对方离线');
             return false;
         }
         const fn = appBinding('RemoteControlOp');
         if (!fn) {
-            errorOwner.current = 'action';
-            setError('远控尚未就绪');
+            ownError('action', '远控尚未就绪');
             return false;
         }
         try {
@@ -377,8 +374,7 @@ export function useTaskRemoteControl() {
             // The person may have closed the conversation or changed machines
             // while this call was in flight. Do not paint that result back.
             if (selectedIdRef.current !== grantId) return true;
-            errorOwner.current = '';
-            setError('');
+            ownError('', '');
             // The list and conversation refresh after the other computer
             // accepts the operation. Stop waits on this promise, so it must
             // not also wait for those reads.
@@ -386,8 +382,7 @@ export function useTaskRemoteControl() {
             return true;
         } catch (err) {
             if (selectedIdRef.current !== grantId) return false;
-            errorOwner.current = 'action';
-            setError(errorText(err, '远控操作失败'));
+            ownError('action', errorText(err, '远控操作失败'));
             return false;
         }
     }, [detailPath, refreshAfterRemoteOp, selected]);
@@ -395,19 +390,16 @@ export function useTaskRemoteControl() {
     const mutate = useCallback(async (name: string, args: unknown[]) => {
         const fn = appBinding(name);
         if (!fn) {
-            errorOwner.current = 'action';
-            setError('远控尚未就绪');
+            ownError('action', '远控尚未就绪');
             return null;
         }
         try {
             const value = await fn(...args);
-            errorOwner.current = '';
-            setError('');
+            ownError('', '');
             await refresh();
             return value;
         } catch (err) {
-            errorOwner.current = 'action';
-            setError(errorText(err, '远控请求失败'));
+            ownError('action', errorText(err, '远控请求失败'));
             return null;
         }
     }, [refresh]);
@@ -418,6 +410,7 @@ export function useTaskRemoteControl() {
         tasks,
         loading,
         error,
+        errorKind,
         detail,
         detailPath,
         creating,
@@ -426,11 +419,10 @@ export function useTaskRemoteControl() {
             detailGen.current += 1;
             taskGen.current += 1;
             tasksForGrant.current = '';
-            errorOwner.current = '';
+            ownError('', '');
             setSelectedId('');
             setTasks([]);
             setLoading(false);
-            setError('');
             setDetail(null);
             setDetailPath('');
         },
@@ -439,12 +431,11 @@ export function useTaskRemoteControl() {
             detailGen.current += 1;
             taskGen.current += 1;
             tasksForGrant.current = '';
-            errorOwner.current = '';
+            ownError('', '');
             setSelectedId(id);
             setTasks([]);
             setLoading(true);
             setCreating(false);
-            setError('');
             setDetail(null);
             setDetailPath('');
         },

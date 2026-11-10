@@ -875,6 +875,14 @@ func entryMatchesExpectation(entry Entry, expectedEntries map[string]Entry, id s
 }
 
 func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserveContent bool, origin string) error {
+	return s.upsertEntriesByIDMode(entries, requireExisting, preserveContent, origin, false)
+}
+
+func (s *Store) insertEntriesIfAbsent(entries []Entry, origin string) error {
+	return s.upsertEntriesByIDMode(entries, false, true, origin, true)
+}
+
+func (s *Store) upsertEntriesByIDMode(entries []Entry, requireExisting bool, preserveContent bool, origin string, requireAbsent bool) error {
 	if s == nil || len(entries) == 0 {
 		return nil
 	}
@@ -945,6 +953,10 @@ func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserv
 			indices = append(indices, -1)
 			updated = append(updated, desired)
 			continue
+		}
+		if requireAbsent {
+			s.mu.Unlock()
+			return fmt.Errorf("memory_store: active entry %q already exists", id)
 		}
 		current := s.entries[idx]
 		beforeByID[id] = current
@@ -3600,25 +3612,33 @@ func (s *Store) ArchiveActiveEntries(entries []Entry) error {
 		return fmt.Errorf("memory_store: archive not initialized")
 	}
 	ids := make([]string, 0, len(entries))
-	seen := make(map[string]struct{}, len(entries))
+	expected := make(map[string]Entry, len(entries))
 	for _, entry := range entries {
 		id := strings.TrimSpace(entry.ID)
 		if id == "" {
 			return fmt.Errorf("memory_store: archived entry id must not be empty")
 		}
-		if _, ok := seen[id]; ok {
+		if _, ok := expected[id]; ok {
 			continue
 		}
-		seen[id] = struct{}{}
+		expected[id] = entry
 		ids = append(ids, id)
 	}
 	if err := s.archive.AddDurable(entries...); err != nil {
 		return fmt.Errorf("memory_store: archive active entries: %w", err)
 	}
-	if err := s.UpdateEntriesAndDeleteIDs(nil, ids); err != nil {
+	applied, err := s.UpdateEntriesAndDeleteIDsIfUnchanged(nil, ids, expected)
+	if err == nil && applied {
+		return nil
+	}
+	_, rollbackErr := s.archive.RemoveIDsDurable(ids)
+	if rollbackErr != nil {
+		return fmt.Errorf("memory_store: archive rollback failed: %v (active mutation error: %v, applied: %v)", rollbackErr, err, applied)
+	}
+	if err != nil {
 		return err
 	}
-	return nil
+	return fmt.Errorf("memory_store: entries changed during archive; retry")
 }
 
 // ReviveArchivedEntries removes entries from cold storage and restores them to
@@ -3653,7 +3673,7 @@ func (s *Store) ReviveArchivedEntries(ids []string) ([]Entry, error) {
 	if len(revived) == 0 {
 		return nil, nil
 	}
-	if err := s.upsertEntriesByID(revived, false, true, "archive_restore"); err != nil {
+	if err := s.insertEntriesIfAbsent(revived, "archive_restore"); err != nil {
 		return nil, err
 	}
 	removed, err := s.archive.RemoveIDsDurable(removeIDs)
@@ -3982,7 +4002,7 @@ func (s *Store) insertPreparedEntryLocked(entry Entry, hash string, now time.Tim
 		entry.ID = generateID()
 	}
 	if enqueueSemanticDedup && len(entry.Embedding) > 0 {
-		if candidate := s.findSemanticDupCandidate(entry.Embedding, entry.Category, entry.OwnerID); candidate != nil {
+		if candidate := s.findSemanticDupCandidate(entry.Embedding, entry.Category, entry.OwnerID, compressionProjectKey(entry)); candidate != nil {
 			s.enqueuePendingDedup(entry.ID, *candidate)
 		}
 	}

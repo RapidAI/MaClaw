@@ -5973,7 +5973,9 @@ export const SidebarTaskManagement = ({
             const pureCoding = !cloudWorkspace && isPureCodingTask(proj);
             const isRemoving = !remote.selected && removingTaskPaths.has(proj.project_path);
             const removalError = remote.selected ? '' : (removeErrors.get(proj.project_path) || '');
-            const isActive = !remote.selected && activeRowContext ? matchesActiveTaskRowContext(proj, activeRowContext) : false;
+            const isActive = remote.selected
+                ? remote.detailPath === proj.project_path
+                : (activeRowContext ? matchesActiveTaskRowContext(proj, activeRowContext) : false);
             const isOpen = !remote.selected && isTaskInstanceOpen(proj);
             const isBusy = !remote.selected && (openingTaskPath === proj.project_path || isRemoving);
             const liveRunning = isLiveRunningRow(proj);

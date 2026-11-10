@@ -334,7 +334,11 @@ func semanticMCPEntry(ctx context.Context, principal agentservice.Principal, con
 		return entry
 	}
 	contract, ok := contracts.ResolveMCPDynamicContract(ctx, principal, entry.ServerID, entry.ToolName)
-	if !ok || strings.TrimSpace(contract.ObservedBindingDigest) != agentservice.DynamicMCPObservedBindingDigest(entry.ServerID, entry.ToolName, entry.InputSchema) {
+	// The stable-binding-key match, not a raw digest equality: a schema
+	// drift since publication must not quarantine the whole server's tools,
+	// which is what left every installed MCP invisible to the model while
+	// health checks kept succeeding.
+	if !ok || !agentservice.DynamicMCPContractMatchesEntry(contract, entry) {
 		return entry // Quarantined by BuildDynamicSemanticCatalog.
 	}
 	entry.Contract = contract

@@ -293,6 +293,13 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 		// A previous search's guided-skill note is not this page's row.
 		cb.discoverySearchBodies = nil
 	}
+	if discoverySurface {
+		// Installed skills and ready MCP tools are petitionable catalog
+		// rows. Leaving them out of the result listing made an installed
+		// server invisible: the model could not guess the folded
+		// server__tool spelling and had no name to put in needs.
+		entries = appendDiscoveryCatalogSearchEntries(entries, cb.discoveryCatalogRows())
+	}
 	if len(needs) > 0 {
 		// Models pass tool names ("web_search") in needs. Those are not
 		// capability ids. A filter that matches nothing must not erase the
@@ -332,7 +339,11 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 				if name == "" || have[name] {
 					continue
 				}
-				row, ok := cb.discoveryCatalogRow(name)
+				// A bare tool name or a server:tool spelling resolves to the
+				// one installed-MCP row it means. The exact server__tool
+				// spelling is not guessable, so a close token that names one
+				// row is still that row's petition.
+				row, ok := cb.discoveryCatalogResolveName(name)
 				if !ok {
 					continue
 				}
@@ -1395,6 +1406,29 @@ func exactSearchNeeds(raw interface{}) map[tool.CapabilityID]bool {
 	return needs
 }
 
+// appendDiscoveryCatalogSearchEntries folds the installed skill/MCP
+// catalog rows into the searchable listing. They carry no capability id:
+// their petition resolves through the catalog row, not a capability match.
+func appendDiscoveryCatalogSearchEntries(entries []semanticToolsSearchEntry, rows []semanticTurnDirectoryEntry) []semanticToolsSearchEntry {
+	have := make(map[string]bool, len(entries)+len(rows))
+	for _, entry := range entries {
+		have[entry.name] = true
+	}
+	for _, row := range rows {
+		name := strings.TrimSpace(row.Name)
+		if name == "" || have[name] {
+			continue
+		}
+		have[name] = true
+		summary := strings.TrimSpace(row.Summary)
+		if summary == "" {
+			summary = "已安装。"
+		}
+		entries = append(entries, semanticToolsSearchEntry{name: name, summary: summary})
+	}
+	return entries
+}
+
 // capabilityNeedsExcludingNames returns need tokens that are capability
 // ids. Tokens that are tool names are omitted so they cannot drag in every
 // alias of that capability.
@@ -1880,6 +1914,12 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 			return "[可请愿]"
 		}
 		return "[可请愿：直接调用一次]"
+	}
+	// An installed skill or ready MCP tool is petitionable on a discovery
+	// surface even though it is not in the closed petition map: its grant
+	// resolves through the catalog row, not a rule label.
+	if cb != nil && semanticSurfaceIsModelDiscovery(surface) && cb.discoveryCatalogHas(name) {
+		return "[可请愿]"
 	}
 	return "[本轮不可用：不要调用，用已列出的工具完成]"
 }

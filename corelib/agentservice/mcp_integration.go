@@ -327,6 +327,16 @@ func DynamicMCPObservedBindingDigest(serverID, toolName string, schema map[strin
 	return dynamicMCPObservedBindingDigest(serverID, toolName, schema)
 }
 
+// DynamicMCPContractMatchesEntry reports that a resolved contract still
+// binds this inventory entry under the grant-stable identity rules. Hosts
+// that gate a semantic catalog on contract freshness must use this match
+// rather than a raw ObservedBindingDigest equality: a schema drift (a
+// description or parameter-label tweak) keeps the binding usable, and only
+// a capability/effect/tool-name change quarantines the entry.
+func DynamicMCPContractMatchesEntry(contract DynamicCapabilityContract, entry MCPToolEntry) bool {
+	return dynamicMCPContractMatchesEntry(contract, entry)
+}
+
 func dynamicMCPContractMatchesEntry(contract DynamicCapabilityContract, entry MCPToolEntry) bool {
 	// Phase 5: match on the grant-stable identity (capability + global_key +
 	// tool_name), not the observed schema digest. A schema drift (description or

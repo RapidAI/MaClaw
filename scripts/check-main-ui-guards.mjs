@@ -608,7 +608,10 @@ const extractedFileLineLimits = [
   // 7640 -> 7650 (2026-11-10): companion share figures and remote-control
   // landing pushed this past 7646. 7650 -> 7700 (2026-11-10): in-flight
   // panel work measured 7656 lines.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7700],
+  // 7640 -> 7650 (2026-11-10): companion share figures and remote-control
+  // landing pushed this past 7646.
+  // 7650 -> 7750 (2026-11-10): memory/task-bar batch pushed this past 7740.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7750],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],
