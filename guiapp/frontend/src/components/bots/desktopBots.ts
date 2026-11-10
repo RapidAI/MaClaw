@@ -1569,8 +1569,21 @@ export function desktopBotReportFeedText(note: Record<string, unknown>, bots: Ar
     return {
         received: `${name(from)} ${word}：${text}${fileLine}${woken}`,
         sent: `发给 ${name(target)}（${word}）：${text}${fileLine}`,
-        feed: { from: name(from), to: name(target), word },
+        feed: { from: name(from), to: name(target), word, ...desktopBotReportFileRefs(note, files) },
     };
+}
+
+// desktopBotReportFileRefs: the note id and the names Hub stored bytes for
+// (a sha256), so each client fetches the same file; names that are only a
+// desktop path stay unopenable.
+function desktopBotReportFileRefs(note: Record<string, unknown>, files: Array<Record<string, unknown>>): { noteId?: string; stored?: string[] } {
+    const noteId = String(note.id || '').trim();
+    if (!noteId || files.length === 0) return {};
+    const stored = files
+        .filter(f => String(f.sha256 || f.sha || '').trim() !== '')
+        .map(f => String(f.name || '').split(/[\\/]/).pop() || '')
+        .filter(Boolean);
+    return { noteId, stored };
 }
 
 // The end of a run Hub started on the server (a delegate or a wake).

@@ -2603,6 +2603,8 @@ export function SetDesktopBotPrimary(arg1:string):Promise<Array<{id:string,title
 
 export function PostDesktopBotCross(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string):Promise<{posted:boolean,ask?:string,primary_line?:string,names?:Array<string>,notes?:Array<{id:string,from?:string,target?:string,kind?:string,text?:string,order?:string,reply_to?:string}>}>;
 
+export function FetchDesktopBotMailFile(arg1:string,arg2:string):Promise<{name:string,mime:string,data:string}>;
+
 export function PullDesktopBotCrossNotes():Promise<Array<{id:string,owner?:string,from?:string,target?:string,kind?:string,text?:string,order?:string,created_at?:string,started_at?:string,run_id?:string,reply_to?:string}>>;
 
 export function PullDesktopBotFeed(arg1:Array<string>,arg2:boolean):Promise<Array<{id:string,owner?:string,from?:string,target?:string,kind?:string,topic?:string,text?:string,order?:string,created_at?:string,run_id?:string,started_by?:string,wake_run_id?:string,woken_at?:string,shown_at?:string,files?:Array<{name?:string,path?:string,url?:string,size?:number}>}>>;

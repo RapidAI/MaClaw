@@ -134,6 +134,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     PostDesktopBotCross: (...args: unknown[]) => postCross(...args),
     PullDesktopBotCrossNotes: () => pullCross(),
     PullDesktopBotFeed: async () => [],
+    FetchDesktopBotMailFile: async () => ({ name: '', mime: '', data: '' }),
     GetDesktopBotRunOutput: async () => ({ status: 'running', text: '', done: false }),
     ClaimDesktopBotCrossStart: (botId: string, noteId: string) => claimCross(botId, noteId),
     ArmDesktopBotCrossRun: (botId: string, noteId: string) => armCross(botId, noteId),

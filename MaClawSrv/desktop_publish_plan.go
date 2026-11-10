@@ -66,6 +66,13 @@ func desktopPublishPhaseOf(rec desktopPublishRecord, hasRec bool, url string) de
 // A batch is checked step by step; a click on the publish button by script
 // counts as a hand publish in every phase.
 func desktopPublishPlanCheck(phase desktopPublishPhase, action string, args map[string]any) error {
+	// Handing the person a file is never a plan step to refuse: a deliverable
+	// blocked here leaves the file on the desktop and the bot handing it to
+	// another bot instead. Whether a publish task may attach a file at all is
+	// desktopUnaskedFileCheck's and desktopAfterPublishDeliverCheck's call.
+	if action == "deliver" {
+		return nil
+	}
 	pl := desktopPublishPlan[phase]
 	if action == "batch" {
 		if !pl.allowed["batch"] {

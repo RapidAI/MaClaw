@@ -73,6 +73,7 @@ import {
     PostDesktopBotCross,
     PullDesktopBotCrossNotes,
     PullDesktopBotFeed,
+    FetchDesktopBotMailFile,
     GetDesktopBotRunOutput,
     SetDesktopBotPrimary,
     PersistDesktopBotPreference,
@@ -1635,6 +1636,14 @@ function openBotFile(event: { preventDefault: () => void; stopPropagation: () =>
     event.preventDefault();
     event.stopPropagation();
     void OpenFileOrShowInFolder(filePath).catch(() => ShowItemInFolder(filePath));
+}
+
+// openFeedFile downloads a file a bot shared with a Hub message (the same
+// bytes on every client). A failure is thrown to the chip, which shows it.
+async function openFeedFile(noteId: string, name: string): Promise<void> {
+    const file = await FetchDesktopBotMailFile(noteId, name);
+    if (!file || !file.data) throw new Error('Hub 上没有这个文件');
+    saveDesktopFile({ name: file.name || name, mime: file.mime || 'application/octet-stream', data: file.data } as DesktopBotFile);
 }
 
 function saveDesktopFile(file: DesktopBotFile) {
@@ -5638,7 +5647,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     show(target);
                 }
                 if (from && known.has(from) && !desktopBotNoticeSeen(userId, `${id}:from`)) {
-                    appendDesktopBotReport(userId, from, { content: content.sent, failed: false, requestId: `${id}:from`, chat: true });
+                    appendDesktopBotReport(userId, from, { content: content.sent, failed: false, requestId: `${id}:from`, chat: true, feed: { noteId: content.feed.noteId, stored: content.feed.stored } });
                     markDesktopBotNotice(userId, `${id}:from`);
                     show(from);
                 }
@@ -6809,12 +6818,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 const body = message.role === 'assistant' ? stripConfirmedOrderLead(rawBody) : rawBody;
                                 const structured = message.role === 'assistant' && !message.failed && botMessageIsStructured(body);
                                 const feedLine = message.role === 'assistant' && message.chat && !message.askUser && message.phase !== 'plan' && !message.localPaths?.length && !message.files?.length
-                                    ? botFeedLineOf(message.content || '', selected.title, { feed: message.feed, failed: message.failed })
+                                    ? botFeedLineOf(message.content || '', selected.title, { feed: message.feed, failed: message.failed, requestId: message.requestId })
                                     : null;
                                 if (feedLine && botFeedLineInternal(feedLine, selected.title)) return null;
                                 if (feedLine) return (
                                     <div key={message.id} className="desktop-bot-chat__entry desktop-bot-chat__entry--feed" data-message-role="feed">
-                                        <BotFeedLine line={feedLine} />
+                                        <BotFeedLine line={feedLine} onOpenFile={openFeedFile} />
                                     </div>
                                 );
                                 return (

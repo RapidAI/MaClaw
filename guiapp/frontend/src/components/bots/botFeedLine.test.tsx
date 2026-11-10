@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { fireEvent, render } from '@testing-library/react';
+import { fireEvent, render, waitFor } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { BotFeedLine, botFeedLineOf, botFeedSummary , botFeedLineInternal } from './botFeedLine';
+import { BOT_FEED_FILE_MISSING, BotFeedLine, botFeedLineOf, botFeedSummary , botFeedLineInternal } from './botFeedLine';
 import { desktopBotCrossTargetText, desktopBotHubStartedText, desktopBotReportFeedText, desktopBotServerRunText } from './desktopBots';
 
 const bots = [{ id: 'b1', title: 'Bot 1' }, { id: 'b2', title: 'mybod' }];
@@ -73,5 +73,48 @@ describe('botFeedLineInternal', () => {
         expect(botFeedLineInternal(relay, 'Bot 6')).toBe(true);
         const done = botFeedLineOf('Bot 6 完成了：发好了', 'Bot 1', { feed: { from: 'Bot 6', to: 'Bot 1', word: '完成了' } })!;
         expect(botFeedLineInternal(done, 'Bot 1')).toBe(false);
+    });
+});
+
+// Daniel 11-10: 「黄仁勋_简历.docx」 chip in Bot 3's chat could not be opened.
+describe('feed file chips', () => {
+    const note = { id: 'note_891e7230a3bbd133', from: 'b2', target: 'b1', topic: 'artifact', text: '简历好了', files: [{ name: '黄仁勋_简历.docx', size: 61250, sha256: 'a167' }] };
+    it('opens a file Hub stored, on the sender and the receiver side', async () => {
+        const out = desktopBotReportFeedText(note, bots);
+        const opened: string[] = [];
+        const onOpen = async (id: string, name: string) => { opened.push(`${id}/${name}`); };
+        const sent = botFeedLineOf(out.sent, 'mybod', { feed: { noteId: out.feed.noteId, stored: out.feed.stored } })!;
+        const view = render(<BotFeedLine line={sent} onOpenFile={onOpen} />);
+        const chip = view.getByTestId('desktop-bot-feed-file');
+        expect(chip.tagName).toBe('BUTTON');
+        fireEvent.click(chip);
+        await waitFor(() => expect(opened).toEqual(['note_891e7230a3bbd133/黄仁勋_简历.docx']));
+        view.unmount();
+        const got = botFeedLineOf(out.received, 'Bot 1', { feed: out.feed })!;
+        expect(got.noteId).toBe('note_891e7230a3bbd133');
+        const view2 = render(<BotFeedLine line={got} onOpenFile={onOpen} />);
+        expect(view2.getByTestId('desktop-bot-feed-file').tagName).toBe('BUTTON');
+    });
+    it('finds the note of an older stored message by its request id', () => {
+        const out = desktopBotReportFeedText(note, bots);
+        const sent = botFeedLineOf(out.sent, 'mybod', { requestId: 'note_891e7230a3bbd133:from' })!;
+        expect(sent.noteId).toBe('note_891e7230a3bbd133');
+        expect(sent.stored).toBeUndefined();
+    });
+    it('shows a clear disabled chip when only a desktop path went', () => {
+        const out = desktopBotReportFeedText({ ...note, files: [{ name: 'a.docx' }] }, bots);
+        const line = botFeedLineOf(out.received, 'Bot 1', { feed: out.feed })!;
+        const view = render(<BotFeedLine line={line} onOpenFile={async () => {}} />);
+        const chip = view.getByTestId('desktop-bot-feed-file');
+        expect(chip.tagName).toBe('SPAN');
+        expect(chip.getAttribute('aria-disabled')).toBe('true');
+        expect(chip.getAttribute('title')).toContain(BOT_FEED_FILE_MISSING);
+    });
+    it('says why when the download fails', async () => {
+        const out = desktopBotReportFeedText(note, bots);
+        const line = botFeedLineOf(out.received, 'Bot 1', { feed: out.feed })!;
+        const view = render(<BotFeedLine line={line} onOpenFile={async () => { throw new Error('没有这个文件'); }} />);
+        fireEvent.click(view.getByTestId('desktop-bot-feed-file'));
+        await waitFor(() => expect(view.getByRole('alert').textContent).toContain('没有这个文件'));
     });
 });

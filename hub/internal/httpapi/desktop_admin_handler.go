@@ -583,6 +583,10 @@ func PostDesktopNotifyHandler(bots *botmgmt.Service) http.HandlerFunc {
 			State        string `json:"state"`
 			ExpectsReply bool   `json:"expects_reply"`
 			AnswerTo     string `json:"answer_to"`
+			// DeliverIfDirect: a file report for the main bot from a run the
+			// person started in the sender's own chat is not posted; Hub
+			// answers {"direct":true} and MaClawSrv attaches the file there.
+			DeliverIfDirect bool `json:"deliver_if_direct"`
 			// Files are the bytes of shared paths, base64; at most 3 x 8 MB.
 			Files []struct {
 				Name string `json:"name"`
@@ -593,6 +597,12 @@ func PostDesktopNotifyHandler(bots *botmgmt.Service) http.HandlerFunc {
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 36<<20)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid notify request")
 			return
+		}
+		if in.DeliverIfDirect {
+			if direct, err := bots.ReportRunIsDirect(r.Context(), in.TenantID, in.UserID, in.InstanceID, in.RunID, in.Target); err == nil && direct {
+				writeJSON(w, http.StatusOK, map[string]any{"direct": true})
+				return
+			}
 		}
 		var files []botmgmt.BotMailFile
 		for _, f := range in.Files {

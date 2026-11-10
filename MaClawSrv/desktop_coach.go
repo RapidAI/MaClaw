@@ -731,7 +731,7 @@ var desktopUserDirWriteRe = regexp.MustCompile(`(>>?|\btee\b|\bcp\b|\bmv\b|open\
 var (
 	desktopAvoidWordRe     = regexp.MustCompile(`(?i)不要选|别选|不要用|避开|排除|写过|已用|avoid|exclude|except|not these|already (used|covered|written)`)
 	desktopArxivIDRe       = regexp.MustCompile(`\b(\d{4}\.\d{4,5})(?:v\d+)?\b`)
-	desktopPublishAskRe    = desktopPublishAskRegexp(browser.SiteRequestWords())
+	desktopPublishAskRe    = desktopPublishAskMatcher{re: desktopPublishAskRegexp(browser.SiteRequestWords())}
 	desktopPublishButtonRe = regexp.MustCompile(`(?i)["'“「](发布|发表|立即发布|确认发布|发布文章|发布笔记|publish|post)["'”」]`)
 )
 
@@ -814,6 +814,20 @@ func desktopPublishAskRegexp(siteWords []string) *regexp.Regexp {
 		site = "发(" + strings.Join(q, "|") + ")"
 	}
 	return regexp.MustCompile(`(?i)(发布|发表|发|贴|投)(到|在|至)[^。\n]{1,20}|(发布|发表|发到|发在|贴到|投到)[^。\n]{0,12}(` + p + `)|在\s*([a-z][\w.\-]*|` + p + `)[^。\n]{0,20}?(发布|发表|发[^现生觉出])|` + site + `|(post|publish)\b[^.\n]{0,30}\b(to|on)\b`)
+}
+
+// desktopPublishAskMatcher is the publish-request test with negated clauses
+// left out: a brief that says "不要发布到任何网站" (do not post anywhere) is
+// the opposite of a publish request. Reading it as one put a résumé task
+// under the publish plan, whose research phase refused deliver, so the file
+// never reached the person (Bot 3, 2026-11-10).
+type desktopPublishAskMatcher struct{ re *regexp.Regexp }
+
+var desktopNegatedPublishRe = regexp.MustCompile(`(?i)(不要|不用|不必|无需|无须|别|勿|切勿|禁止|不得|不能|不准|不可|避免|不)\s*(再|要|去|把[^。；;，,\n]{0,20}?)?\s*(发布|发表|发到|发在|发|贴|投)[^。；;，,！!？?\n]*|(?:do\s+not|don't|never|without)\s+(post|publish)[^.;,!?\n]*`)
+
+// MatchString reports a publish request, ignoring negated clauses.
+func (m desktopPublishAskMatcher) MatchString(request string) bool {
+	return m.re.MatchString(desktopNegatedPublishRe.ReplaceAllString(request, " "))
 }
 
 // desktopUnaskedFileAfterPublish refuses saving a copy once the result is

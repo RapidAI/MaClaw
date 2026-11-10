@@ -118,6 +118,14 @@ func desktopNotifyMain(ctx context.Context, request agentruntime.TurnRequest, ar
 	if s, _, err := desktopScopeForTurn(request); err == nil {
 		fileScope = s
 	}
+	// A file from a run the person started in this bot's own chat goes to
+	// them here, not to the main bot: Hub answers direct=true (and posts
+	// nothing) when no delegate or wake started this run. An older Hub
+	// ignores the flag and files the message as before.
+	direct := desktopNotifyAsksDirect(kind, fmt.Sprint(body["target"]), artifacts, request)
+	if direct {
+		body["deliver_if_direct"] = true
+	}
 	files, skipped := desktopNotifyFiles(ctx, fileScope, artifacts)
 	if len(files) > 0 {
 		body["files"] = files
@@ -142,6 +150,10 @@ func desktopNotifyMain(ctx context.Context, request agentruntime.TurnRequest, ar
 		desktopNotifyGiveBack(runKey)
 		return "", fmt.Errorf("notify_main failed: %v", err)
 	}
+	if isDirect, _ := out["direct"].(bool); direct && isDirect {
+		desktopNotifyGiveBack(runKey)
+		return desktopNotifyDeliverHere(ctx, fileScope, artifacts)
+	}
 	if dup, _ := out["duplicate"].(bool); dup {
 		return "Already sent the same message; do not send it again. Continue the task.", nil
 	}
@@ -152,6 +164,46 @@ func desktopNotifyMain(ctx context.Context, request agentruntime.TurnRequest, ar
 		return "Sent. You asked a question and expect an answer: end this turn now with a short final reply. The answer arrives as a new message and wakes you.", nil
 	}
 	return "Sent to the main bot. It sees it now, or right after its current turn. Do not wait for an answer here; continue the task (an answer arrives as a new message).", nil
+}
+
+// desktopNotifyAsksDirect: a file report addressed to the main bot (no
+// target) from a turn that is not a mailbox wake may belong to the person
+// who asked in this chat; Hub decides from the run's delegate notes.
+func desktopNotifyAsksDirect(kind, target string, artifacts []string, request agentruntime.TurnRequest) bool {
+	if len(artifacts) == 0 || (kind != "artifact" && kind != "done") || desktopWakeTurn(request) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "", "main", "primary", "<nil>":
+		return true
+	}
+	return false
+}
+
+// desktopNotifyDeliverPath is deliverDesktopPath; tests replace it.
+var desktopNotifyDeliverPath = deliverDesktopPath
+
+// desktopNotifyDeliverHere attaches the report's files to this chat reply,
+// the same as action=deliver.
+func desktopNotifyDeliverHere(ctx context.Context, scope agentruntime.Scope, artifacts []string) (string, error) {
+	var done []string
+	var failed []string
+	for _, p := range artifacts {
+		out, err := desktopNotifyDeliverPath(ctx, scope, p, "")
+		if err != nil {
+			failed = append(failed, p+": "+err.Error())
+			continue
+		}
+		done = append(done, out)
+	}
+	if len(done) == 0 {
+		return "", fmt.Errorf("the person asked for this in this chat, so the file goes to them here, not to the main bot; attaching it failed: %s", strings.Join(failed, "; "))
+	}
+	msg := "The person asked for this in this chat, so the file went to them here, not to the main bot. " + strings.Join(done, " ")
+	if len(failed) > 0 {
+		msg += " Not attached: " + strings.Join(failed, "; ") + "."
+	}
+	return msg, nil
 }
 
 // desktopReportStateKinds maps action=report states to the mail kind.

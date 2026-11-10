@@ -538,6 +538,35 @@ func (a *App) desktopBotMailFile(noteID, name string) (string, string, []byte, e
 	return out.Name, out.MIME, raw, nil
 }
 
+// DesktopBotMailFileData is one shared file for the chat to save: base64 data.
+type DesktopBotMailFileData struct {
+	Name string `json:"name"`
+	MIME string `json:"mime"`
+	Data string `json:"data"`
+}
+
+// FetchDesktopBotMailFile returns a file a bot shared with a Hub message, so
+// its chip in any chat (sender or receiver, on every client) opens the same
+// bytes Hub stored instead of a desktop path only the bot can read.
+func (a *App) FetchDesktopBotMailFile(noteID, name string) (DesktopBotMailFileData, error) {
+	noteID = strings.TrimSpace(noteID)
+	name = strings.TrimSpace(name)
+	if noteID == "" || name == "" {
+		return DesktopBotMailFileData{}, errDesktopBotID
+	}
+	gotName, mime, raw, err := a.desktopBotMailFile(noteID, name)
+	if err != nil {
+		return DesktopBotMailFileData{}, err
+	}
+	if strings.TrimSpace(gotName) == "" {
+		gotName = name
+	}
+	if strings.TrimSpace(mime) == "" {
+		mime = "application/octet-stream"
+	}
+	return DesktopBotMailFileData{Name: gotName, MIME: mime, Data: base64.StdEncoding.EncodeToString(raw)}, nil
+}
+
 // PullDesktopBotCrossNotes returns this user's notes. It does not consume them.
 func (a *App) PullDesktopBotCrossNotes() ([]DesktopBotCrossNote, error) {
 	if a == nil {

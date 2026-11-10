@@ -5219,6 +5219,10 @@ export function PostDesktopBotCross(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['PostDesktopBotCross'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function FetchDesktopBotMailFile(arg1, arg2) {
+  return window['go']['main']['App']['FetchDesktopBotMailFile'](arg1, arg2);
+}
+
 export function PullDesktopBotCrossNotes() {
   return window['go']['main']['App']['PullDesktopBotCrossNotes']();
 }

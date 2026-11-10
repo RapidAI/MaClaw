@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 // botFeedLine: bot-to-bot traffic (Hub feed items) as one short, muted line
 // for the person: who → who, what kind, a short summary. Run ids and raw
 // prompts stay behind a click; files show as chips; help/errors stand out.
@@ -10,6 +12,10 @@ export interface BotFeedMeta {
     to?: string;
     // The topic word desktopBotReportFeedText used (完成了, 交来文件, ...).
     word?: string;
+    // The Hub note that carried the files, and which of them Hub stored
+    // (only those can be fetched and opened on any client).
+    noteId?: string;
+    stored?: string[];
 }
 
 export interface BotFeedLineData {
@@ -20,6 +26,10 @@ export interface BotFeedLineData {
     full: string;
     files: string[];
     alert: boolean;
+    // Set when the files can be fetched from Hub: the note that carried them.
+    noteId?: string;
+    // Names Hub stored; undefined means unknown (an older message), try it.
+    stored?: string[];
 }
 
 const SUMMARY_MAX = 60;
@@ -84,7 +94,7 @@ function stripWoken(body: string): string {
 
 // botFeedLineOf reads a stored chat message. It returns null for anything
 // that is not bot-to-bot traffic, so normal chat keeps its bubble.
-export function botFeedLineOf(content: string, self: string, opts: { feed?: BotFeedMeta; failed?: boolean; fileNames?: string[] } = {}): BotFeedLineData | null {
+export function botFeedLineOf(content: string, self: string, opts: { feed?: BotFeedMeta; failed?: boolean; fileNames?: string[]; requestId?: string } = {}): BotFeedLineData | null {
     const raw = (content || '').trim();
     if (!raw) return null;
     const me = (self || '').trim() || '我';
@@ -94,7 +104,9 @@ export function botFeedLineOf(content: string, self: string, opts: { feed?: BotF
         const summary = botFeedSummary(body) || k;
         if (!opts.failed && (summary === '请审核' || summary === '退回修改')) k = '求助';
         if (!opts.failed && summary === '审核通过') k = '完成';
-        return { from, to, kind: k, summary, full: raw, files: [...files, ...extra], alert: k === '求助' || k === '出错' };
+        const all = [...files, ...extra];
+        const noteId = all.length ? botFeedNoteId(opts.feed, opts.requestId) : undefined;
+        return { from, to, kind: k, summary, full: raw, files: all, alert: k === '求助' || k === '出错', noteId, stored: noteId ? opts.feed?.stored : undefined };
     };
     if (opts.feed?.from) {
         const word = opts.feed.word || '说';
@@ -128,7 +140,58 @@ export function botFeedLineInternal(line: BotFeedLineData, self: string): boolea
     return line.to === me && line.from !== me && (line.kind === '消息' || line.kind === '交代任务') && !line.files.length;
 }
 
-export function BotFeedLine({ line }: { line: BotFeedLineData }) {
+// botFeedNoteId: the Hub note a feed line's files came with. A report is
+// stored with request id "<note id>:from" / "<note id>:target".
+export function botFeedNoteId(feed?: BotFeedMeta, requestId?: string): string | undefined {
+    const direct = (feed?.noteId || '').trim();
+    if (direct) return direct;
+    const m = (requestId || '').trim().match(/^(note_[A-Za-z0-9]+):(?:from|target)$/);
+    return m ? m[1] : undefined;
+}
+
+// botFeedFileOpenable: a chip opens only when Hub holds the bytes.
+export function botFeedFileOpenable(line: BotFeedLineData, name: string): boolean {
+    if (!line.noteId) return false;
+    return !line.stored || line.stored.includes(name);
+}
+
+export const BOT_FEED_FILE_MISSING = '这个文件只在机器人的桌面上，没有传到 Hub，这里打不开';
+
+function BotFeedFile({ line, name, onOpenFile }: { line: BotFeedLineData; name: string; onOpenFile?: (noteId: string, name: string) => Promise<void> }) {
+    const [error, setError] = useState('');
+    const [busy, setBusy] = useState(false);
+    if (!onOpenFile || !botFeedFileOpenable(line, name)) {
+        return (
+            <span className="desktop-bot-feed__file is-disabled" data-testid="desktop-bot-feed-file" aria-disabled="true" title={`${name}：${BOT_FEED_FILE_MISSING}`}>📄 {name}</span>
+        );
+    }
+    const open = async (event: { preventDefault: () => void; stopPropagation: () => void }) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (busy) return;
+        setBusy(true);
+        setError('');
+        try {
+            await onOpenFile(line.noteId as string, name);
+        } catch (err) {
+            setError(`打不开：${String((err as Error)?.message || err || '下载失败')}`);
+        } finally {
+            setBusy(false);
+        }
+    };
+    return (
+        <button
+            type="button"
+            className={'desktop-bot-feed__file is-openable' + (error ? ' is-error' : '')}
+            data-testid="desktop-bot-feed-file"
+            title={error || `下载 ${name}`}
+            disabled={busy}
+            onClick={open}
+        >📄 {name}{error ? <span className="desktop-bot-feed__file-error" role="alert">{error}</span> : null}</button>
+    );
+}
+
+export function BotFeedLine({ line, onOpenFile }: { line: BotFeedLineData; onOpenFile?: (noteId: string, name: string) => Promise<void> }) {
     return (
         <details className={'desktop-bot-feed' + (line.alert ? ' is-alert' : '')} data-testid="desktop-bot-feed" data-kind={line.kind}>
             <summary className="desktop-bot-feed__row">
@@ -136,9 +199,7 @@ export function BotFeedLine({ line }: { line: BotFeedLineData }) {
                 <span className="desktop-bot-feed__dir">{line.from} → {line.to}</span>
                 <span className="desktop-bot-feed__kind">{line.kind}</span>
                 <span className="desktop-bot-feed__summary" data-testid="desktop-bot-feed-summary">{line.summary}</span>
-                {line.files.map(name => (
-                    <span key={name} className="desktop-bot-feed__file" data-testid="desktop-bot-feed-file" title={name}>📄 {name}</span>
-                ))}
+                {line.files.map(name => <BotFeedFile key={name} line={line} name={name} onOpenFile={onOpenFile} />)}
             </summary>
             <div className="desktop-bot-feed__full" data-testid="desktop-bot-feed-full">{line.full}</div>
         </details>
