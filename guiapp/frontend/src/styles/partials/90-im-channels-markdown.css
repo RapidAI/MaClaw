@@ -3805,6 +3805,23 @@
 /* CodingAgentPlanChecklist.tsx — summary bar; the T1/T2 list floats on hover. */
 .capc-checklist { position: relative; padding: 6px 10px; border-radius: 12px; box-shadow: 0 4px 16px rgba(34, 56, 82, 0.06); font-size: 12px; line-height: 1.45; }
 .capc-checklist.capc-open { z-index: 6; }
+.capc-bar { display: flex; align-items: stretch; gap: 8px; min-width: 0; }
+.capc-hover { flex: 1 1 auto; min-width: 0; }
+.capc-files { flex: 0 1 auto; min-width: 0; max-width: 48%; display: flex; align-items: center; }
+.capc-hover + .capc-files { border-left: 1px solid color-mix(in srgb, var(--theme-border, #d8dee8) 70%, transparent); padding-left: 8px; }
+.capc-files-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; border: 0; margin: 0; padding: 2px 4px; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }
+.capc-files-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 60%, transparent); outline-offset: 2px; }
+.capc-files:hover .capc-files-toggle,
+.capc-files-toggle:focus-visible { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 5%, transparent); }
+.capc-files-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.capc-files-title { font-weight: 600; margin-bottom: 6px; }
+.capc-files-popover { position: absolute; z-index: 6; right: 0; left: auto; bottom: calc(100% - 6px); width: min(420px, 100%); box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }
+.capc-files.capc-open .capc-files-popover { pointer-events: auto; visibility: visible; }
+.capc-files-popover .capc-popover-card { display: flex; flex-direction: column; overflow: hidden; }
+.capc-file-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow: auto; overscroll-behavior: contain; max-height: calc(min(320px, var(--capc-room, 42vh)) - 48px); }
+.capc-file-row { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 2px 0; }
+.capc-file-path { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.capc-file-stat { display: inline-flex; align-items: baseline; gap: 6px; flex-shrink: 0; font-variant-numeric: tabular-nums; font-weight: 600; }
 .capc-toggle { display: block; width: 100%; border: 0; margin: 0; padding: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }
 .capc-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 60%, transparent); outline-offset: 2px; }
 .capc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px; margin: 0; border-radius: 8px; transition: background-color 0.15s ease; }
@@ -3818,14 +3835,14 @@
 .capc-head-end { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap; }
 .capc-current { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; }
 .capc-pulse-dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; flex-shrink: 0; animation: capc-pulse 1.2s ease-in-out infinite; }
-.capc-chevron { display: inline-flex; flex-shrink: 0; color: var(--theme-text-muted, #5b6b80); transition: transform 0.18s ease; }
-.capc-checklist:not(.capc-open) .capc-chevron { transform: rotate(-90deg); }
-.capc-open .capc-chevron { transform: rotate(180deg); }
+.capc-chevron { display: inline-flex; flex-shrink: 0; color: var(--theme-text-muted, #5b6b80); transition: transform 0.18s ease; transform: rotate(-90deg); }
+.capc-hover.capc-open .capc-chevron,
+.capc-files.capc-open .capc-chevron { transform: rotate(180deg); }
 /* The list floats above the summary and overlaps the bar's top padding, so
    the pointer can move onto the list without crossing a dead gap. The
    checklist already spans the coding chat column, so 50% is half that area. */
 .capc-popover { position: absolute; z-index: 6; left: 0; bottom: calc(100% - 6px); width: 50%; min-width: min(260px, 100%); max-width: 100%; box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }
-.capc-open .capc-popover { pointer-events: auto; visibility: visible; }
+.capc-hover.capc-open .capc-popover { pointer-events: auto; visibility: visible; }
 /* border-box keeps the padding and border inside the height cap.
    content-box lets a full list stick about 18px into the task header. */
 .capc-popover-card { box-sizing: border-box; max-height: min(320px, var(--capc-room, 42vh)); overflow: auto; overscroll-behavior: contain; padding: 8px 10px; border-radius: 12px; box-shadow: 0 12px 32px rgba(34, 56, 82, 0.16); }

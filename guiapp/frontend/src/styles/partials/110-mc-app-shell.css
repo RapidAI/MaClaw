@@ -825,66 +825,156 @@
 .mc-task-pane .mc-task-machine-bar {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
   min-width: 0;
-  margin: 0 4px 8px;
+  margin: 2px 0 0;
 }
 .mc-task-pane .mc-task-machine-tabs {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  align-items: flex-end;
+  gap: 2px;
   min-width: 0;
+  padding: 0 2px;
+  border-bottom: 1px solid var(--theme-border);
   overflow-x: auto;
   scrollbar-width: none;
 }
 .mc-task-pane .mc-task-machine-tabs::-webkit-scrollbar { display: none; }
 .mc-task-pane .mc-task-machine-tab,
-.mc-task-pane .mc-task-machine-tab-close,
+.mc-task-pane .mc-task-machine-tab-close {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--theme-text-muted);
+  font-family: inherit;
+  cursor: pointer;
+}
+.mc-task-pane .mc-task-machine-tab {
+  position: relative;
+  border-radius: 7px 7px 0 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.011em;
+  line-height: 1;
+  padding: 8px 12px 9px;
+  margin: 0;
+}
+.mc-task-pane .mc-task-machine-tab:hover {
+  color: var(--theme-text-primary);
+  background: color-mix(in srgb, var(--theme-text-primary) 4%, transparent);
+}
+.mc-task-pane .mc-task-machine-tab.is-active {
+  color: var(--theme-text-primary);
+  background: transparent;
+  font-weight: 600;
+}
+.mc-task-pane .mc-task-machine-tab.is-active::after,
+.mc-task-pane .mc-task-machine-tab-wrap.is-active::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--mc-accent, #2e75cb);
+}
+.mc-task-pane .mc-task-machine-tab-wrap.is-active .mc-task-machine-tab::after {
+  content: none;
+}
+.mc-task-pane .mc-task-machine-tab:active {
+  transform: scale(0.98);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-task-pane .mc-task-machine-tab:active { transform: none; }
+}
+.mc-task-pane .mc-task-machine-tab-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: flex-end;
+  min-width: 0;
+}
+.mc-task-pane .mc-task-machine-tab-wrap .mc-task-machine-tab {
+  padding-right: 2px;
+}
+.mc-task-pane .mc-task-machine-tab i {
+  margin-left: 6px;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--theme-text-muted);
+}
+.mc-task-pane .mc-task-machine-tab-close {
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 8px 8px 2px;
+  margin: 0;
+}
+.mc-task-pane .mc-task-machine-tab-close:hover {
+  color: var(--theme-text-primary);
+}
+.mc-task-pane .mc-task-machine-tab--add {
+  margin-left: auto;
+  min-width: 28px;
+  padding: 6px 8px 8px;
+  font-size: 16px;
+  font-weight: 400;
+}
+.mc-task-pane .mc-task-machine-tabs .mc-task-machine-error {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0 4px 8px 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--theme-danger, #b42318);
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mc-task-pane .mc-task-machine-tabs .mc-task-machine-error + .mc-task-machine-tab--add {
+  margin-left: 0;
+}
+.mc-task-pane .mc-task-machine-note {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 5px 2px 2px;
+  color: var(--theme-text-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+.mc-task-pane .mc-task-machine-add,
+.mc-task-pane .mc-task-machine-detail {
+  margin: 8px 2px 4px;
+  border: 1px solid var(--theme-border);
+  border-radius: 10px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--theme-surface-muted) 72%, var(--theme-surface));
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+}
 .mc-task-pane .mc-task-machine-add button,
 .mc-task-pane .mc-task-machine-create button,
 .mc-task-pane .mc-task-machine-detail button,
 .mc-task-pane .mc-task-machine-send button {
   border: 1px solid var(--theme-border);
-  background: color-mix(in srgb, var(--theme-primary) 5%, var(--theme-surface));
-  color: var(--theme-text-secondary);
-  border-radius: 999px;
+  background: var(--theme-surface);
+  color: var(--theme-text-primary);
+  border-radius: 8px;
+  font-family: inherit;
   font-size: 12px;
   line-height: 1.2;
-  padding: 4px 8px;
+  padding: 5px 10px;
   cursor: pointer;
+  box-shadow: none;
 }
-.mc-task-pane .mc-task-machine-tab.is-active {
-  color: var(--theme-text-primary);
-  border-color: color-mix(in srgb, var(--theme-primary) 55%, var(--theme-border));
-  background: color-mix(in srgb, var(--theme-primary) 12%, var(--theme-surface));
-  font-weight: 700;
-}
-.mc-task-pane .mc-task-machine-tab-wrap {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-}
-.mc-task-pane .mc-task-machine-tab i {
-  margin-left: 4px;
-  font-style: normal;
-  opacity: 0.7;
-}
-.mc-task-pane .mc-task-machine-tab-close {
-  margin-left: -6px;
-  padding: 2px 6px;
-}
-.mc-task-pane .mc-task-machine-note,
-.mc-task-pane .mc-task-machine-error,
-.mc-task-pane .mc-task-machine-add,
-.mc-task-pane .mc-task-machine-detail {
-  border: 1px solid var(--theme-border);
-  border-radius: 10px;
-  padding: 8px;
-  background: color-mix(in srgb, var(--theme-primary) 4%, var(--theme-surface));
-  color: var(--theme-text-secondary);
-  font-size: 12px;
-}
-.mc-task-pane .mc-task-machine-error { color: var(--theme-danger, #b42318); }
 .mc-task-pane .mc-task-machine-add h3,
 .mc-task-pane .mc-task-machine-detail header {
   display: flex;
@@ -6324,15 +6414,17 @@ body.companion-pdf-translation-dragging * {
   gap: 8px;
   container-type: inline-size;
 }
-/* A card is two rows: the document identity across the top, the state badges
-   and the action toolbar underneath. The title keeps the full inner width
-   instead of splitting the card with the buttons. The third column is capped
-   so a row with many actions wraps them rather than eating the badges. */
+/* A card is two rows: the document identity across the full inner width, then
+   the type tile, the state badges and the action toolbar. The identity spans
+   every column so neither the tile nor the buttons shorten the title, and the
+   tile sits in the footer row, where its 40px also absorbs wrapped badges
+   instead of adding a row of its own. The third column is capped so a row with
+   many actions wraps them rather than eating the badges. */
 .file-companion-project {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) minmax(0, 300px);
   grid-template-areas:
-    "lead main main"
+    "main main main"
     "lead meta actions";
   align-items: center;
   gap: 8px 10px;
@@ -6402,8 +6494,8 @@ body.companion-pdf-translation-dragging * {
 .file-companion-project-drag:focus-within .file-companion-project-grip {
   opacity: 0.9;
 }
-/* The extension tile is the card's colour anchor: one hue per document family,
-   mixed from the theme so every scheme keeps its own contrast. */
+/* The tile in front of a library card. A host icon for the file type replaces
+   the letter; the letter stays when the operating system has no association. */
 .file-companion-project-kind {
   --file-kind: var(--theme-primary, #2563eb);
   display: inline-flex;
@@ -6454,6 +6546,20 @@ body.companion-pdf-translation-dragging * {
 .file-companion-project-kind[data-kind="txt"],
 .file-companion-project-kind[data-kind="text"] {
   --file-kind: var(--theme-text-secondary, #46586f);
+}
+/* The association icon brings its own colours. The tinted letter tile would
+   sit behind it, so that paint drops out and the image keeps the same box. */
+.file-companion-project-kind--os {
+  background: transparent;
+  border-color: transparent;
+}
+.file-companion-project-kind-img {
+  width: 28px;
+  height: 28px;
+  display: block;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
 }
 .file-companion-project-main {
   grid-area: main;
@@ -6554,14 +6660,6 @@ body.companion-pdf-translation-dragging * {
   background: color-mix(in srgb, var(--theme-danger, #dc2626) 10%, transparent);
   color: var(--theme-danger, #dc2626);
 }
-.file-companion-project-url {
-  font-size: 10.5px;
-  line-height: 1.35;
-  color: var(--theme-text-muted, #94a3b8);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .file-companion-project-actions {
   grid-area: actions;
   display: flex;
@@ -6650,8 +6748,8 @@ body.companion-pdf-translation-dragging * {
   .file-companion-project {
     grid-template-columns: auto minmax(0, 1fr);
     grid-template-areas:
-      "lead main"
-      "meta meta"
+      "main main"
+      "lead meta"
       "actions actions";
   }
   .file-companion-project-actions {

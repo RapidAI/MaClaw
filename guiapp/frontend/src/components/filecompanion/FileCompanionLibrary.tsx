@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { companionFill, cs, getCompanionUiLang, setCompanionUiLang } from "../../i18n/mnCompanion";
 import {
     AddFileCompanionGroupMember,
@@ -28,6 +28,7 @@ import {
     FileCompanionExportProject,
 } from "../../../wailsjs/go/main/App";
 import { useDialog } from "../CustomDialog";
+import { cloudDriveSystemIconKey, cloudDriveSystemIconSettled, cloudDriveSystemIconURL, ensureCloudDriveSystemIcon, forgetCloudDriveSystemIcon, promoteCloudDriveSystemIcons, subscribeCloudDriveSystemIcon } from "../layout/cloudDriveSystemIcons";
 import { companionProjectExportJSON, companionProjectMarksJSON, savePdfBookmarks } from "./pdfBookmarks";
 import { loadPdfMarkCounts, loadPdfMarks, pdfMarkPathKey, savePdfMarks } from "./pdfMarks";
 import { saveChatAnnotations } from "./chatAnnotations";
@@ -1380,6 +1381,53 @@ function kindLabel(name: string): string {
     return (kind || cs("文档")).slice(0, 5).toUpperCase();
 }
 
+// hostIconSuffix is the association to ask the operating system for. A leading
+// dot is the file name (.gitignore), and a date like "2026.10.05 纪要" has no
+// file type. Only a short token is worth a shell call; the letter tile still
+// shows whatever kindOf read.
+function hostIconSuffix(name: string): string {
+    const base = name.replace(/\\/g, "/").split("/").pop()?.trim() ?? "";
+    const dot = base.lastIndexOf(".");
+    // A leading dot is the file name (.gitignore), not an extension.
+    if (dot <= 0) return "";
+    return cloudDriveSystemIconKey(base.slice(dot));
+}
+
+// CompanionProjectKind is the tile in front of a library card. The operating
+// system supplies the icon it associates with the suffix, the same one
+// Explorer shows. Every card of that suffix reads one cached answer, so a
+// renamed file cannot keep the previous type's icon. A type nobody claims,
+// or a picture the browser cannot decode, keeps the short letter tile.
+const CompanionProjectKind = memo(function CompanionProjectKind({ name }: { name: string }) {
+    const kind = kindOf(name);
+    const suffix = hostIconSuffix(name);
+    const subscribe = useCallback(
+        (onStoreChange: () => void) => subscribeCloudDriveSystemIcon(suffix)(onStoreChange),
+        [suffix],
+    );
+    const iconURL = useSyncExternalStore(
+        subscribe,
+        () => cloudDriveSystemIconURL(suffix),
+        () => cloudDriveSystemIconURL(suffix),
+    );
+    if (iconURL) {
+        return (
+            <span className="file-companion-project-kind file-companion-project-kind--os" data-kind={kind} aria-hidden="true">
+                <img
+                    className="file-companion-project-kind-img"
+                    src={iconURL}
+                    alt=""
+                    draggable={false}
+                    onError={() => { forgetCloudDriveSystemIcon(suffix); }}
+                />
+            </span>
+        );
+    }
+    return (
+        <span className="file-companion-project-kind" data-kind={kind} aria-hidden="true">{kindLabel(name)}</span>
+    );
+});
+
 function dateOf(timestamp: string): string {
     return timestamp ? timestamp.slice(0, 10) : "";
 }
@@ -2461,6 +2509,30 @@ export function CompanionLibraryView({
         };
     }, [projectItems, folders, placements, selectedFolder, nameQuery, sourceFilter]);
     const { localItems, cloudItems, placedCount, shownCount, scopedCount, countOf, placedOf } = libraryView;
+    // Ask in the order the cards are drawn. The shell answers one type at a
+    // time, so the top of the list gets its icon before a type further down.
+    // A refresh that keeps the same visible types does not ask again.
+    const iconSuffixKey = useMemo(() => {
+        const seen = new Set<string>();
+        const ordered: string[] = [];
+        for (const project of [...localItems, ...cloudItems]) {
+            const suffix = hostIconSuffix(project.item.name);
+            if (!suffix || seen.has(suffix)) continue;
+            seen.add(suffix);
+            ordered.push(suffix);
+        }
+        return ordered.join("\n");
+    }, [localItems, cloudItems]);
+    useEffect(() => {
+        if (!iconSuffixKey) return;
+        const suffixes = iconSuffixKey.split("\n");
+        for (const suffix of suffixes) {
+            if (cloudDriveSystemIconSettled(suffix)) continue;
+            void ensureCloudDriveSystemIcon(suffix);
+        }
+        // Types already waiting for a previous folder move behind the ones on screen.
+        promoteCloudDriveSystemIcons(suffixes);
+    }, [iconSuffixKey]);
     const nameNarrowed = narrowedLibrary(nameQuery, selectedFolder);
     const hideLocal = sourceFilter === "cloud" || (nameNarrowed && localItems.length === 0);
     const hideCloud = sourceFilter === "local" || (nameNarrowed && cloudItems.length === 0);
@@ -2698,9 +2770,7 @@ export function CompanionLibraryView({
         const viewableShares = (item.source === "cloud" ? cardShares : ownedShares).filter((share) => !share.expired && share.shareUrl !== "");
         const canDrag = folders.length > 0 && !busy && !folderBusy;
         const docTitle = companionLibraryDocTitle(item);
-        const kind = (
-            <span className="file-companion-project-kind" data-kind={kindOf(item.name)} aria-hidden="true">{kindLabel(item.name)}</span>
-        );
+        const kind = <CompanionProjectKind name={item.name} />;
         const openItem = () => {
             if (item.path) {
                 onOpen(item.path);

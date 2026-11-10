@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { ExportLatexSourceBundle, ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { TaskResultUploadButton, taskResultUploadSupported } from "./TaskResultUploadButton";
 import { TaskResultExportButton } from "./TaskResultExportButton";
@@ -6,9 +6,11 @@ import { dispatchPreviewTaskResult, localizeTaskResultExportError, taskResultPre
 import { cloudSafePathLabel } from "./codingTaskMode";
 import { chromeText } from "../../i18n/chromeText";
 import {
+    cloudDriveSystemIconSettled,
+    cloudDriveSystemIconURL,
+    ensureCloudDriveSystemIcon,
     forgetCloudDriveSystemIcon,
-    loadCloudDriveSystemIcon,
-    peekCloudDriveSystemIcon,
+    subscribeCloudDriveSystemIcon,
 } from "../layout/cloudDriveSystemIcons";
 
 
@@ -60,17 +62,18 @@ export function ArtifactFileIcon({ path }: { path: string }) {
     const ext = artifactExt(path);
     const suffix = ext ? `.${ext}` : "";
     const badge = artifactBadge(path);
-    const [iconURL, setIconURL] = useState<string | null>(() => peekCloudDriveSystemIcon(suffix));
+    const subscribe = useCallback(
+        (onStoreChange: () => void) => subscribeCloudDriveSystemIcon(suffix)(onStoreChange),
+        [suffix],
+    );
+    const iconURL = useSyncExternalStore(
+        subscribe,
+        () => cloudDriveSystemIconURL(suffix),
+        () => cloudDriveSystemIconURL(suffix),
+    );
     useEffect(() => {
-        let active = true;
-        const known = peekCloudDriveSystemIcon(suffix);
-        setIconURL(known);
-        if (!known) {
-            void loadCloudDriveSystemIcon(suffix).then((result) => {
-                if (active) setIconURL(result.state === "icon" ? result.url : null);
-            });
-        }
-        return () => { active = false; };
+        if (!suffix || cloudDriveSystemIconSettled(suffix)) return;
+        void ensureCloudDriveSystemIcon(suffix);
     }, [suffix]);
     if (iconURL) {
         return (
@@ -80,7 +83,7 @@ export function ArtifactFileIcon({ path }: { path: string }) {
                     src={iconURL}
                     alt=""
                     draggable={false}
-                    onError={() => { forgetCloudDriveSystemIcon(suffix); setIconURL(null); }}
+                    onError={() => { forgetCloudDriveSystemIcon(suffix); }}
                 />
             </span>
         );

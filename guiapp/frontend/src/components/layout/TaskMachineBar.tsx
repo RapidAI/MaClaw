@@ -78,6 +78,9 @@ export function TaskMachineBar({
                         </button>
                     </span>
                 ))}
+                {remote.error ? (
+                    <span className="mc-task-machine-error" data-testid="task-machine-error" role="alert" title={remote.error}>{remote.error}</span>
+                ) : null}
                 <button
                     type="button"
                     className="mc-task-machine-tab mc-task-machine-tab--add"
@@ -98,7 +101,6 @@ export function TaskMachineBar({
                             : localizeText(lang, 'You can operate. Tasks run on that computer.', '可操作。任务在对方电脑上运行。', '可操作。任務在對方電腦上運行。')}
                 </div>
             ) : null}
-            {remote.error ? <div className="mc-task-machine-error" data-testid="task-machine-error" role="alert">{remote.error}</div> : null}
             {remote.state.pending.length > 0 || remote.state.controlled.length > 0 ? (
                 <div className="mc-task-machine-add">
                     {remote.state.pending.length > 0 ? (

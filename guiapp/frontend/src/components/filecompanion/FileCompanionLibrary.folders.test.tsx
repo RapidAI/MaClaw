@@ -2,6 +2,7 @@
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DialogProvider } from "../CustomDialog";
+import { resetCloudDriveSystemIconCacheForTests } from "../layout/cloudDriveSystemIcons";
 import { CompanionLibraryView, CompanionPlaceDialog, companionLibraryDocTitle, companionLibraryDragType } from "./FileCompanionLibrary";
 
 const listLibrary = vi.fn();
@@ -71,6 +72,8 @@ function renderLibrary(items: ReadonlyArray<Record<string, unknown>> = papers) {
 
 afterEach(() => {
     cleanup();
+    resetCloudDriveSystemIconCacheForTests();
+    delete (window as unknown as { go?: unknown }).go;
     listLibrary.mockReset();
     listCatalog.mockReset();
     createFolder.mockReset();
@@ -768,18 +771,128 @@ describe("CompanionPlaceDialog", () => {
         const main = card.querySelector(".file-companion-project-main");
         expect(main).toBeTruthy();
         expect(main!.contains(screen.getByTestId("file-companion-library-item-local:a"))).toBe(true);
-        expect(main!.contains(screen.getByTestId("file-companion-library-doctitle-local:a"))).toBe(true);
-        // The badges and the toolbar are the card's second row. As columns they
+        // The identity block spans every column, so the document title keeps
+        // the full inner width and stays one line, ellipsising instead.
+        const docTitle = screen.getByTestId("file-companion-library-doctitle-local:a");
+        expect(main!.contains(docTitle)).toBe(true);
+        expect(docTitle.getAttribute("title")).toBe("Attention Is All You Need");
+        // The badges and the toolbar are the card's last row. As columns they
         // split the width with the title and ellipsized the document name.
         const meta = screen.getByTestId("file-companion-library-meta-local:a");
         expect(main!.contains(meta)).toBe(false);
         expect(meta.parentElement).toBe(card);
         expect(card.querySelector(".file-companion-project-actions")!.parentElement).toBe(card);
-        expect(card.querySelector(".file-companion-project-kind")!.getAttribute("data-kind")).toBe("pdf");
+        // The tile shares the footer row rather than the title's row: beside
+        // the identity it cost 26px of height for the same title width.
+        const tile = card.querySelector(".file-companion-project-kind")!;
+        expect(main!.contains(tile)).toBe(false);
+        expect(tile.getAttribute("data-kind")).toBe("pdf");
+        expect(tile.textContent).toBe("PDF");
+        expect(card.querySelector(".file-companion-project-kind-img")).toBeNull();
         expect(screen.getByTestId("file-companion-library-delete-local:a").getAttribute("data-tone")).toBe("danger");
         // 本机 is the source badge's job; the facts line carries weight and date.
         expect(meta.textContent).toContain("12 B · 打开于 2026-10-25");
         expect(meta.textContent!.match(/本机/g)).toHaveLength(1);
+    });
+
+    it("hides a document title that only repeats the filename", async () => {
+        listCatalog.mockResolvedValue({ rev: 1, folders: [{ id: "fld_paper", name: "论文" }], placements: {} });
+        renderLibrary([{ ...papers[0], title: "alpha.md" }]);
+        const card = await screen.findByTestId("file-companion-library-card-local:a");
+        expect(screen.queryByTestId("file-companion-library-doctitle-local:a")).toBeNull();
+        // The card keeps the same two rows; only the title line is omitted.
+        const main = card.querySelector(".file-companion-project-main")!;
+        expect(main.contains(screen.getByTestId("file-companion-library-item-local:a"))).toBe(true);
+        expect(screen.getByTestId("file-companion-library-meta-local:a").parentElement).toBe(card);
+    });
+
+    it("puts the operating-system file icon in front of the card", async () => {
+        const icon = "data:image/png;base64,aaaa";
+        const lookup = vi.fn(async (path: string) => (path === "file.pdf" ? icon : ""));
+        (window as unknown as { go: { main: { App: { AIAssistantFileTypeIconDataURLIfAssociated: typeof lookup } } } }).go = {
+            main: { App: { AIAssistantFileTypeIconDataURLIfAssociated: lookup } },
+        };
+        listCatalog.mockResolvedValue({ rev: 0, folders: [], placements: {} });
+        renderLibrary([{ ...papers[0], name: "alpha.pdf", path: "C:/notes/alpha.pdf" }]);
+        const card = await screen.findByTestId("file-companion-library-card-local:a");
+        const tile = card.querySelector(".file-companion-project-kind");
+        await waitFor(() => expect(tile!.querySelector("img")?.getAttribute("src")).toBe(icon));
+        expect(tile!.classList.contains("file-companion-project-kind--os")).toBe(true);
+        expect(tile!.textContent).toBe("");
+        expect(lookup).toHaveBeenCalledWith("file.pdf");
+    });
+
+    it("asks once for one file type and keeps letters when the system has no icon", async () => {
+        const icon = "data:image/png;base64,bbbb";
+        const lookup = vi.fn(async (path: string) => (path === "file.pdf" ? icon : ""));
+        (window as unknown as { go: { main: { App: { AIAssistantFileTypeIconDataURLIfAssociated: typeof lookup } } } }).go = {
+            main: { App: { AIAssistantFileTypeIconDataURLIfAssociated: lookup } },
+        };
+        listCatalog.mockResolvedValue({ rev: 0, folders: [], placements: {} });
+        renderLibrary([
+            { ...papers[0], name: "alpha.pdf", path: "C:/notes/alpha.pdf" },
+            { ...papers[1], id: "local:b", name: "beta.pdf", path: "C:/notes/beta.pdf" },
+            { id: "local:c", name: "notes.unknownext", path: "C:/notes/notes.unknownext", source: "local", openedAt: "2026-10-25T00:00:00Z", size: 4 },
+        ]);
+        const pdfs = await screen.findAllByTestId(/file-companion-library-card-local:[ab]/);
+        await waitFor(() => {
+            for (const card of pdfs) {
+                expect(card.querySelector(".file-companion-project-kind-img")?.getAttribute("src")).toBe(icon);
+            }
+        });
+        expect(lookup.mock.calls.filter((call) => call[0] === "file.pdf")).toHaveLength(1);
+        const plain = screen.getByTestId("file-companion-library-card-local:c").querySelector(".file-companion-project-kind");
+        await waitFor(() => expect(lookup.mock.calls.some((call) => call[0] === "file.unknownext")).toBe(true));
+        expect(plain!.textContent).toBe("UNKNO");
+        expect(plain!.querySelector("img")).toBeNull();
+    });
+
+    it("uses the system icon after one failed lookup", async () => {
+        const icon = "data:image/png;base64,cccc";
+        let attempts = 0;
+        const lookup = vi.fn(async () => {
+            attempts += 1;
+            if (attempts === 1) throw new Error("shell busy");
+            return icon;
+        });
+        (window as unknown as { go: { main: { App: { AIAssistantFileTypeIconDataURLIfAssociated: typeof lookup } } } }).go = {
+            main: { App: { AIAssistantFileTypeIconDataURLIfAssociated: lookup } },
+        };
+        listCatalog.mockResolvedValue({ rev: 0, folders: [], placements: {} });
+        renderLibrary([{ ...papers[0], name: "alpha.pdf", path: "C:/notes/alpha.pdf" }]);
+        const card = await screen.findByTestId("file-companion-library-card-local:a");
+        await waitFor(() => expect(card.querySelector(".file-companion-project-kind-img")?.getAttribute("src")).toBe(icon));
+        expect(lookup).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not ask the system about a date or a dotfile", async () => {
+        const lookup = vi.fn(async (path: string) => (path === "file.pdf" ? "data:image/png;base64,aaaa" : ""));
+        (window as unknown as { go: { main: { App: { AIAssistantFileTypeIconDataURLIfAssociated: typeof lookup } } } }).go = {
+            main: { App: { AIAssistantFileTypeIconDataURLIfAssociated: lookup } },
+        };
+        listCatalog.mockResolvedValue({ rev: 0, folders: [], placements: {} });
+        renderLibrary([
+            { ...papers[0], name: "alpha.pdf", path: "C:/notes/alpha.pdf" },
+            { id: "local:c", name: "2026.10.05 纪要", path: "C:/notes/memo", source: "local", openedAt: "2026-10-25T00:00:00Z", size: 4 },
+            { id: "local:d", name: ".gitignore", path: "C:/notes/.gitignore", source: "local", openedAt: "2026-10-25T00:00:00Z", size: 4 },
+        ]);
+        await waitFor(() => expect(lookup).toHaveBeenCalledWith("file.pdf"));
+        expect(lookup.mock.calls.map((call) => call[0])).toEqual(["file.pdf"]);
+        expect(screen.getByTestId("file-companion-library-card-local:c").querySelector(".file-companion-project-kind")!.textContent).toBe("05 纪要");
+        expect(screen.getByTestId("file-companion-library-card-local:d").querySelector(".file-companion-project-kind")!.textContent).toBe("GITIG");
+    });
+
+    it("stops asking when the system keeps failing", async () => {
+        const lookup = vi.fn(async () => { throw new Error("no icon mechanism"); });
+        (window as unknown as { go: { main: { App: { AIAssistantFileTypeIconDataURLIfAssociated: typeof lookup } } } }).go = {
+            main: { App: { AIAssistantFileTypeIconDataURLIfAssociated: lookup } },
+        };
+        listCatalog.mockResolvedValue({ rev: 0, folders: [], placements: {} });
+        renderLibrary([{ ...papers[0], name: "alpha.pdf", path: "C:/notes/alpha.pdf" }]);
+        await waitFor(() => expect(lookup).toHaveBeenCalledTimes(3));
+        await act(async () => { await Promise.resolve(); });
+        expect(lookup).toHaveBeenCalledTimes(3);
+        expect(screen.getByTestId("file-companion-library-card-local:a").querySelector(".file-companion-project-kind")!.textContent).toBe("PDF");
     });
 
     it("does not add or remove layout messages when a background sync settles", async () => {

@@ -8,6 +8,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { localizeText } from "./aiAssistantI18n";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { compactCodingTrailPath, type CodingAgentFileChange } from "./CodingAgentProgressStatus";
 import {
     codingPlanAwaitingStart,
     codingStepIsDone,
@@ -26,6 +27,7 @@ export type CodingAgentPlanChecklistProps = {
     theme: Theme;
     chrome: CodingBannerChrome;
     steps: CodingStepStatus[];
+    fileChanges?: CodingAgentFileChange[];
     understanding?: string;
     pendingApproval?: boolean;
     ready?: boolean;
@@ -96,6 +98,7 @@ export function CodingAgentPlanChecklist({
     theme,
     chrome,
     steps,
+    fileChanges = [],
     understanding = "",
     pendingApproval = false,
     ready = true,
@@ -108,17 +111,23 @@ export function CodingAgentPlanChecklist({
     // take focus away from the composer.
     const [hovered, setHovered] = useState(false);
     const [focused, setFocused] = useState(false);
+    const [filesHovered, setFilesHovered] = useState(false);
+    const [filesFocused, setFilesFocused] = useState(false);
     const closeTimer = useRef<number | null>(null);
+    const fileTimer = useRef<number | null>(null);
     const summaryRef = useRef<HTMLButtonElement>(null);
     const rootRef = useRef<HTMLElement>(null);
     const hoverRef = useRef<HTMLDivElement>(null);
+    const fileHoverRef = useRef<HTMLDivElement>(null);
     const popoverRef = useRef<HTMLDivElement>(null);
     // Last pointer x, so a resize can keep the list under the cursor.
     const anchorX = useRef<number | null>(null);
     const restatement = (understanding || "").trim();
     const hasList = steps.length > 0 || !!restatement;
+    const hasFiles = fileChanges.length > 0;
     useEffect(() => () => {
         if (closeTimer.current != null) window.clearTimeout(closeTimer.current);
+        if (fileTimer.current != null) window.clearTimeout(fileTimer.current);
     }, []);
     useEffect(() => {
         if (hasList) return;
@@ -132,6 +141,15 @@ export function CodingAgentPlanChecklist({
             summaryRef.current.blur();
         }
     }, [hasList]);
+    useEffect(() => {
+        if (hasFiles) return;
+        if (fileTimer.current != null) {
+            window.clearTimeout(fileTimer.current);
+            fileTimer.current = null;
+        }
+        setFilesHovered(false);
+        setFilesFocused(false);
+    }, [hasFiles]);
     const showList = () => {
         if (!hasList) return;
         if (closeTimer.current != null) {
@@ -155,7 +173,28 @@ export function CodingAgentPlanChecklist({
         };
         closeTimer.current = window.setTimeout(tick, 120);
     };
+    const showFiles = () => {
+        if (!hasFiles) return;
+        if (fileTimer.current != null) {
+            window.clearTimeout(fileTimer.current);
+            fileTimer.current = null;
+        }
+        setFilesHovered(true);
+    };
+    const hideFiles = () => {
+        if (fileTimer.current != null) window.clearTimeout(fileTimer.current);
+        const tick = () => {
+            fileTimer.current = null;
+            if (fileHoverRef.current?.matches(":hover")) {
+                fileTimer.current = window.setTimeout(tick, 120);
+                return;
+            }
+            setFilesHovered(false);
+        };
+        fileTimer.current = window.setTimeout(tick, 120);
+    };
     const open = hasList && (hovered || focused);
+    const filesOpen = hasFiles && (filesHovered || filesFocused);
     // The list is only half the bar. Pinning it to the left means a pointer
     // on the current-step status leaves the list as soon as it moves up.
     // Center it on the pointer, and keep it inside the bar.
@@ -179,7 +218,7 @@ export function CodingAgentPlanChecklist({
         if (popoverRef.current) popoverRef.current.style.left = "";
     }, [open]);
     useLayoutEffect(() => {
-        if (!open) return;
+        if (!open && !filesOpen) return;
         const root = rootRef.current;
         if (!root) return;
         const column = root.closest(".aap-chat-column");
@@ -221,9 +260,9 @@ export function CodingAgentPlanChecklist({
             observer?.disconnect();
             window.removeEventListener("resize", fit);
         };
-    }, [open]);
+    }, [open, filesOpen]);
 
-    if (!pendingApproval && !hasList) {
+    if (!pendingApproval && !hasList && !hasFiles) {
         return null;
     }
     // Same predicate the step rows use, so a backend `started` lights up the row
@@ -238,13 +277,23 @@ export function CodingAgentPlanChecklist({
     const progressPct = steps.length > 0
         ? Math.round(Math.min(100, Math.max(0, (codingPlanDoneCount(steps) / steps.length) * 100)))
         : 0;
+    const fileLabel = localizeText(
+        lang,
+        fileChanges.length === 1 ? "1 file changed" : `${fileChanges.length} files changed`,
+        `${fileChanges.length} 个文件已修改`,
+        `${fileChanges.length} 個檔案已修改`,
+    );
+    const addColor = theme.isDark ? "#5dba8a" : "#2f7a58";
+    const delColor = theme.isDark ? "#f07178" : "#c43838";
+    const added = fileChanges.reduce((sum, row) => sum + (row.added || 0), 0);
+    const removed = fileChanges.reduce((sum, row) => sum + (row.removed || 0), 0);
 
     return (
         <section
             ref={rootRef}
             data-testid="coding-agent-plan-checklist"
             aria-label={title}
-            className={"capc-checklist" + (open ? " capc-open" : "")}
+            className={"capc-checklist" + ((open || filesOpen) ? " capc-open" : "")}
             style={{
                 // Horizontal inset comes from --mc-composer-inset-x (same rule as
                 // the composer card). An inline margin shorthand would override it.
@@ -254,9 +303,11 @@ export function CodingAgentPlanChecklist({
                 color: theme.text,
             }}
         >
+            <div className="capc-bar">
+            {hasList || pendingApproval ? (
             <div
                 ref={hoverRef}
-                className="capc-hover"
+                className={"capc-hover" + (open ? " capc-open" : "")}
                 data-testid="coding-agent-plan-hover"
                 onMouseEnter={hasList ? showList : undefined}
                 onMouseLeave={hasList ? hideList : undefined}
@@ -407,6 +458,68 @@ export function CodingAgentPlanChecklist({
                                 })}
                             </ol>
                             ) : null}
+                        </div>
+                    </div>
+                </div>
+            ) : null}
+            </div>
+            ) : null}
+            {hasFiles ? (
+                <div
+                    ref={fileHoverRef}
+                    className={"capc-files" + (filesOpen ? " capc-open" : "")}
+                    data-testid="coding-agent-plan-files"
+                    onMouseEnter={showFiles}
+                    onMouseLeave={hideFiles}
+                >
+                    <button
+                        type="button"
+                        className="capc-files-toggle"
+                        data-testid="coding-agent-plan-files-toggle"
+                        aria-expanded={filesOpen}
+                        aria-controls="coding-agent-plan-files-body"
+                        title={localizeText(lang, "Hover to see changed files", "悬停查看修改的文件", "懸停查看修改的檔案")}
+                        onMouseDown={(event) => { event.preventDefault(); }}
+                        onFocus={() => setFilesFocused(true)}
+                        onBlur={() => setFilesFocused(false)}
+                        onKeyDown={(event) => {
+                            if (event.key !== "Escape") return;
+                            event.preventDefault();
+                            setFilesFocused(false);
+                            event.currentTarget.blur();
+                        }}
+                    >
+                        <span data-testid="coding-agent-plan-files-label" className="capc-files-label">{fileLabel}</span>
+                        <span className="capc-file-stat" aria-hidden="true">
+                            <span style={{ color: addColor }}>+{added}</span>
+                            <span style={{ color: delColor }}>-{removed}</span>
+                        </span>
+                        <span aria-hidden="true" className="capc-chevron">
+                            <svg viewBox="0 0 16 16" width="14" height="14">
+                                <path d="M4.6 6.4l3.4 3.4 3.4-3.4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                        </span>
+                    </button>
+                    <div className="capc-files-popover" aria-hidden={!filesOpen}>
+                        <div
+                            id="coding-agent-plan-files-body"
+                            data-testid="coding-agent-plan-files-body"
+                            className="capc-popover-card"
+                            aria-hidden={!filesOpen}
+                            style={{ border: `1px solid ${chrome.border}`, background: chrome.surface, color: theme.text }}
+                        >
+                            <div className="capc-files-title" style={{ color: chrome.accentStrong }}>{fileLabel}</div>
+                            <ul className="capc-file-rows">
+                                {fileChanges.map((row) => (
+                                    <li key={row.path} className="capc-file-row" data-testid="coding-agent-plan-file" title={row.path}>
+                                        <span className="capc-file-path">{compactCodingTrailPath(row.path) || row.path}</span>
+                                        <span className="capc-file-stat">
+                                            <span style={{ color: addColor }}>+{row.added || 0}</span>
+                                            <span style={{ color: delColor }}>-{row.removed || 0}</span>
+                                        </span>
+                                    </li>
+                                ))}
+                            </ul>
                         </div>
                     </div>
                 </div>

@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  cloudDriveSystemIconURL,
+  ensureCloudDriveSystemIcon,
   forgetCloudDriveSystemIcon,
   loadCloudDriveSystemIcon,
   peekCloudDriveSystemIcon,
+  promoteCloudDriveSystemIcons,
   resetCloudDriveSystemIconCacheForTests,
+  subscribeCloudDriveSystemIcon,
 } from '../cloudDriveSystemIcons';
 
 type IconCall = { name: string };
@@ -116,6 +120,139 @@ describe('cloud drive system icons', () => {
     const calls = installHostIcons(() => 'data:image/png;base64,X');
     expect(await loadCloudDriveSystemIcon('')).toEqual({ state: 'absent' });
     expect(calls).toHaveLength(0);
+  });
+
+  it('treats letter case as one type and wakes only that type', async () => {
+    const calls = installHostIcons(() => 'data:image/png;base64,PDFICON');
+    const pdfNotes: string[] = [];
+    const otherNotes: string[] = [];
+    const stopPdf = subscribeCloudDriveSystemIcon('.pdf')(() => { pdfNotes.push(cloudDriveSystemIconURL('.pdf')); });
+    const stopOther = subscribeCloudDriveSystemIcon('.docx')(() => { otherNotes.push('docx'); });
+
+    await loadCloudDriveSystemIcon('.PDF');
+
+    expect(calls.map((call) => call.name)).toEqual(['file.pdf']);
+    expect(peekCloudDriveSystemIcon('.pdf')).toBe('data:image/png;base64,PDFICON');
+    expect(pdfNotes).toEqual(['data:image/png;base64,PDFICON']);
+    expect(otherNotes).toEqual([]);
+
+    forgetCloudDriveSystemIcon('.Pdf');
+    expect(pdfNotes).toEqual(['data:image/png;base64,PDFICON', '']);
+    expect(await loadCloudDriveSystemIcon('.pdf')).toEqual({ state: 'absent' });
+    expect(calls).toHaveLength(1);
+
+    stopPdf();
+    stopOther();
+  });
+
+  it('retries a shell fault from one ask and skips a suffix that is not a file type', async () => {
+    let callsSoFar = 0;
+    const calls = installHostIcons(() => {
+      callsSoFar += 1;
+      if (callsSoFar === 1) throw new Error('shell busy');
+      return 'data:image/png;base64,RECOVERED';
+    });
+
+    expect(await ensureCloudDriveSystemIcon('.05')).toEqual({ state: 'absent' });
+    expect(await ensureCloudDriveSystemIcon('05 纪要')).toEqual({ state: 'absent' });
+    expect(calls).toHaveLength(0);
+
+    expect(await ensureCloudDriveSystemIcon('.pdf')).toEqual({
+      state: 'icon',
+      url: 'data:image/png;base64,RECOVERED',
+    });
+    expect(calls).toHaveLength(2);
+    expect(peekCloudDriveSystemIcon('.pdf')).toBe('data:image/png;base64,RECOVERED');
+  });
+
+  it('asks the host for two file types at a time', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const calls = installHostIcons(async () => {
+      await gate;
+      return 'data:image/png;base64,ICON';
+    });
+
+    const pending = Promise.all([
+      loadCloudDriveSystemIcon('.pdf'),
+      loadCloudDriveSystemIcon('.docx'),
+      loadCloudDriveSystemIcon('.xlsx'),
+    ]);
+    for (let turn = 0; turn < 10 && calls.length < 2; turn += 1) await Promise.resolve();
+    expect(calls.map((call) => call.name)).toEqual(['file.pdf', 'file.docx']);
+
+    release();
+    await pending;
+    expect(calls.map((call) => call.name)).toEqual(['file.pdf', 'file.docx', 'file.xlsx']);
+  });
+
+  it('runs a promoted type before types already waiting', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const calls = installHostIcons(async () => {
+      await gate;
+      return 'data:image/png;base64,ICON';
+    });
+
+    const pending = Promise.all([
+      loadCloudDriveSystemIcon('.pdf'),
+      loadCloudDriveSystemIcon('.docx'),
+      loadCloudDriveSystemIcon('.xlsx'),
+      loadCloudDriveSystemIcon('.txt'),
+    ]);
+    for (let turn = 0; turn < 10 && calls.length < 2; turn += 1) await Promise.resolve();
+    expect(calls.map((call) => call.name)).toEqual(['file.pdf', 'file.docx']);
+
+    promoteCloudDriveSystemIcons(['.txt']);
+    release();
+    await pending;
+    expect(calls.map((call) => call.name)).toEqual(['file.pdf', 'file.docx', 'file.txt', 'file.xlsx']);
+  });
+
+  it('drops a queued lookup when the cache is reset and still answers the next one', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const calls = installHostIcons(async () => {
+      await gate;
+      return 'data:image/png;base64,ICON';
+    });
+
+    const pending = Promise.all([
+      loadCloudDriveSystemIcon('.pdf'),
+      loadCloudDriveSystemIcon('.docx'),
+      loadCloudDriveSystemIcon('.xlsx'),
+    ]);
+    for (let turn = 0; turn < 10 && calls.length < 2; turn += 1) await Promise.resolve();
+    expect(calls.map((call) => call.name)).toEqual(['file.pdf', 'file.docx']);
+
+    resetCloudDriveSystemIconCacheForTests();
+    release();
+    await pending;
+    expect(calls.map((call) => call.name)).not.toContain('file.xlsx');
+
+    expect(await loadCloudDriveSystemIcon('.txt')).toEqual({
+      state: 'icon',
+      url: 'data:image/png;base64,ICON',
+    });
+    expect(calls.map((call) => call.name)).toContain('file.txt');
+  });
+
+  it('shares one retry when several rows ask for the same type', async () => {
+    let callsSoFar = 0;
+    const calls = installHostIcons(() => {
+      callsSoFar += 1;
+      if (callsSoFar === 1) throw new Error('shell busy');
+      return 'data:image/png;base64,RECOVERED';
+    });
+
+    const [first, second] = await Promise.all([
+      ensureCloudDriveSystemIcon('.pdf'),
+      ensureCloudDriveSystemIcon('.pdf'),
+    ]);
+
+    expect(first).toEqual({ state: 'icon', url: 'data:image/png;base64,RECOVERED' });
+    expect(second).toEqual(first);
+    expect(calls).toHaveLength(2);
   });
 
   it('treats a missing desktop binding as absent rather than a retryable fault', async () => {

@@ -540,6 +540,70 @@ describe("CodingAgentPlanChecklist", () => {
         expect(getByTestId("coding-agent-plan-approve")).toBeTruthy();
     });
 
+    it("opens the file list from the right side without opening the steps", () => {
+        vi.useFakeTimers();
+        const { getByTestId, getAllByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[
+                    { index: 1, title: "定位入口", status: "running" },
+                    { index: 2, title: "改登录", status: "pending" },
+                ]}
+                fileChanges={[
+                    { path: "guiapp/file_a.go", added: 47, removed: 0 },
+                    { path: "guiapp/file_b.go", added: 15, removed: 6 },
+                ]}
+            />,
+        );
+        const filesToggle = getByTestId("coding-agent-plan-files-toggle");
+        expect(getByTestId("coding-agent-plan-files-label").textContent).toContain("2 个文件已修改");
+        expect(filesToggle.textContent).toContain("+62");
+        expect(filesToggle.textContent).toContain("-6");
+        fireEvent.mouseEnter(getByTestId("coding-agent-plan-files"));
+        expect(filesToggle.getAttribute("aria-expanded")).toBe("true");
+        expect(getByTestId("coding-agent-plan-toggle").getAttribute("aria-expanded")).toBe("false");
+        expect(getByTestId("coding-agent-plan-files-body").getAttribute("aria-hidden")).toBe("false");
+        expect(getAllByTestId("coding-agent-plan-file").map((row) => row.textContent).join("\n")).toContain("file_a.go");
+        expect(getByTestId("coding-agent-plan-files-body").className).toContain("capc-popover-card");
+        fireEvent.mouseLeave(getByTestId("coding-agent-plan-files"));
+        act(() => { vi.advanceTimersByTime(120); });
+        expect(filesToggle.getAttribute("aria-expanded")).toBe("false");
+        vi.useRealTimers();
+    });
+
+    it("hovering the steps does not open the file list", () => {
+        const { getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[{ index: 1, title: "定位入口", status: "running" }]}
+                fileChanges={[{ path: "guiapp/file_a.go", added: 10, removed: 2 }]}
+            />,
+        );
+        fireEvent.mouseEnter(getByTestId("coding-agent-plan-hover"));
+        expect(getByTestId("coding-agent-plan-toggle").getAttribute("aria-expanded")).toBe("true");
+        expect(getByTestId("coding-agent-plan-files-toggle").getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("shows the file count without a step list", () => {
+        const { getByTestId, queryByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[]}
+                fileChanges={[{ path: "guiapp/file_a.go", added: 4, removed: 1 }]}
+            />,
+        );
+        expect(getByTestId("coding-agent-plan-files-label").textContent).toContain("1 个文件已修改");
+        expect(queryByTestId("coding-agent-plan-toggle")).toBeNull();
+        fireEvent.mouseEnter(getByTestId("coding-agent-plan-files"));
+        expect(getByTestId("coding-agent-plan-files-body").textContent).toContain("file_a.go");
+    });
+
     it("uses the composer side inset so the card matches the input width", () => {
         const partial = readFileSync(resolve(process.cwd(), "src/styles/partials/100-pet-store-mc.css"), "utf8");
         const assembled = readFileSync(resolve(process.cwd(), "src/App.css"), "utf8");

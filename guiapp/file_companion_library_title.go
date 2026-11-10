@@ -34,7 +34,18 @@ type fileCompanionLibraryFile struct {
 // fileCompanionTitleVersion bumps when the extractor can see a title it used
 // to miss. Records from an older version are read again even when the file
 // itself has not changed.
-const fileCompanionTitleVersion = 4
+const fileCompanionTitleVersion = 5
+
+// The card ellipsises a title to one line and shows the whole thing on hover,
+// so extraction keeps it whole. The cap only stops a document whose "title" is
+// really a page of prose from filling library.json.
+const fileCompanionTitleMaxRunes = 500
+
+// fileCompanionTitleLikeMaxRunes separates a name from body text where the
+// format offers no explicit title marker: a docx first paragraph, a pptx
+// title shape, a txt opening line. A marked title (a # heading, dc:title,
+// PDF /Title) is believed at any length up to fileCompanionTitleMaxRunes.
+const fileCompanionTitleLikeMaxRunes = 240
 
 // fileCompanionTitleRecord is one file's title at a size and mtime. An entry
 // with an empty title means the file was read and had nothing to show, so the
@@ -244,8 +255,8 @@ func fileCompanionCleanTitle(value string) string {
 	}, value)
 	value = strings.Join(strings.Fields(value), " ")
 	runes := []rune(value)
-	if len(runes) > 240 {
-		value = strings.TrimSpace(string(runes[:240]))
+	if len(runes) > fileCompanionTitleMaxRunes {
+		value = strings.TrimSpace(string(runes[:fileCompanionTitleMaxRunes]))
 	}
 	return value
 }
@@ -1345,7 +1356,7 @@ func pptxSlideTitle(body []byte) string {
 		seg = seg[:end]
 	}
 	title := pptxShapeText(seg)
-	if utf8.RuneCountInString(title) > 120 {
+	if utf8.RuneCountInString(title) > fileCompanionTitleLikeMaxRunes {
 		return ""
 	}
 	return title
@@ -1409,7 +1420,7 @@ func docxDocumentTitle(body []byte) string {
 		return title
 	}
 	text := docxFirstParagraph(body)
-	if utf8.RuneCountInString(text) > 120 {
+	if utf8.RuneCountInString(text) > fileCompanionTitleLikeMaxRunes {
 		return ""
 	}
 	return text
@@ -1829,7 +1840,7 @@ func fileCompanionPlainTextTitle(path string) (string, bool) {
 
 func plainTextTitleLine(line string) bool {
 	runes := []rune(line)
-	if len(runes) == 0 || len(runes) > 120 || strings.ContainsRune(line, '\t') {
+	if len(runes) == 0 || len(runes) > fileCompanionTitleLikeMaxRunes || strings.ContainsRune(line, '\t') {
 		return false
 	}
 	switch runes[0] {

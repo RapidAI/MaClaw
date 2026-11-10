@@ -2581,6 +2581,86 @@ export function latestCodingAgentTurnSnapshot(messages: ChatMessage[]): CodingAg
     };
 }
 
+export interface CodingAgentTurnFiles {
+    files: CodingAgentFileChange[];
+    added: number;
+    removed: number;
+}
+
+/** File list for the composer summary. The latest diff summary is the base.
+ *  Edits after it still count. A rewrite replaces that file; later edits add. */
+export function codingAgentTurnFileChanges(messages: Array<{ content?: string }> | null | undefined): CodingAgentTurnFiles {
+    const empty = { files: [], added: 0, removed: 0 };
+    const parsed = (messages || [])
+        .map((msg) => parseCodingAgentProgress(msg?.content || ""))
+        .filter((progress): progress is CodingAgentProgress => !!progress)
+        .map(normalizeCodingAgentProgress);
+    if (parsed.length === 0) return empty;
+    const latest = parsed[parsed.length - 1];
+    const sameTurn = parsed.filter((progress) => codingAgentSameTurn(progress, latest));
+    let summaryAt = -1;
+    for (let i = sameTurn.length - 1; i >= 0; i--) {
+        if ((sameTurn[i].event || "").toLowerCase() === "diff_summary") {
+            summaryAt = i;
+            break;
+        }
+    }
+    let files: CodingAgentFileChange[] = summaryAt >= 0 ? codingAgentFileChangeRows(sameTurn[summaryAt]) : [];
+    // diff_updated is the git snapshot and is emitted before the matching
+    // tool_finished. That second event repeats the same numbers.
+    const snapshotPaths = new Set<string>();
+    const snapshotFor = (path: string) => {
+        for (const existing of snapshotPaths) {
+            if (codingAgentFilePathsMatch(existing, path)) return existing;
+        }
+        return "";
+    };
+    for (let i = summaryAt + 1; i < sameTurn.length; i++) {
+        const event = sameTurn[i];
+        const name = (event.event || "").toLowerCase();
+        let replace = false;
+        if (name === "tool_finished") {
+            const outcome = (event.outcome || "").toLowerCase();
+            if (outcome && outcome !== "success") continue;
+            const tool = (event.detail || "").trim().toLowerCase().replace(/^ssh_/, "");
+            if (!CODING_PROCESS_EDIT_TOOLS.has(tool)) continue;
+            // write_file replaces the file. A later edit is another delta.
+            replace = tool === "write_file";
+        } else if (name === "diff_updated") {
+            // Git snapshot for this path. A bare "N files" echo has no line counts.
+            replace = true;
+        } else {
+            continue;
+        }
+        const rows = event.fileChanges?.length ? codingAgentFileChangeRows(event) : [];
+        for (const row of rows) {
+            if (row.added <= 0 && row.removed <= 0) continue;
+            const idx = files.findIndex((existing) => codingAgentFilePathsMatch(existing.path, row.path));
+            const prior = snapshotFor(row.path);
+            if (!replace && idx >= 0 && prior && files[idx].added === row.added && files[idx].removed === row.removed) {
+                snapshotPaths.delete(prior);
+                continue;
+            }
+            if (prior) snapshotPaths.delete(prior);
+            if (idx < 0) {
+                files.push(row);
+            } else {
+                files[idx] = {
+                    path: preferredCodingAgentFilePath(files[idx].path, row.path),
+                    added: replace ? row.added : files[idx].added + row.added,
+                    removed: replace ? row.removed : files[idx].removed + row.removed,
+                };
+            }
+            if (replace && name === "diff_updated") snapshotPaths.add(files[idx < 0 ? files.length - 1 : idx].path);
+        }
+    }
+    return {
+        files,
+        added: files.reduce((sum, row) => sum + row.added, 0),
+        removed: files.reduce((sum, row) => sum + row.removed, 0),
+    };
+}
+
 function collectCodingAgentToolTrace(events: CodingAgentProgress[], maxTools = 3): CodingAgentToolTrace[] | undefined {
     const tools: CodingAgentToolTrace[] = [];
     for (const event of events) {

@@ -10014,21 +10014,41 @@ describe("companion titlebar keeps its controls out of the window drag region", 
         expect(source).toMatch(/\.file-companion-project\s*\{[^}]*contain-intrinsic-size:\s*auto 100px/);
     });
 
-    it("lays the library card out as identity over a badge and action row", () => {
-        const source = css();
+    it("spans the card identity over the tile, badge and action row", () => {
         // A comment sits between the previous rule and this selector, so the
         // exact-rule boundary has to look through comments, not just whitespace.
-        const card = source.replace(/\/\*[\s\S]*?\*\//g, "").match(/(?:^|})\s*\.file-companion-project\s*\{([^}]*)\}/);
+        const source = css().replace(/\/\*[\s\S]*?\*\//g, "");
+        const containerAt = source.indexOf("@container (max-width: 600px)");
+        expect(containerAt).toBeGreaterThan(-1);
+        // The identity owns every column, so the tile and the action track
+        // cannot take width from the title. Giving the title a row of its own
+        // instead cost 26px of card height for the same title width.
+        const card = source.slice(0, containerAt).match(/(?:^|})\s*\.file-companion-project\s*\{([^}]*)\}/);
         expect(card?.[1] ?? "").toMatch(/display:\s*grid/);
-        expect(card?.[1] ?? "").toMatch(/grid-template-areas:\s*"lead main main"\s*"lead meta actions"/);
+        expect(card?.[1] ?? "").toMatch(/grid-template-areas:\s*"main main main"\s*"lead meta actions"/);
         // The action track is capped so a row with eight buttons wraps them
         // instead of stretching until the badges have no room left.
         expect(card?.[1] ?? "").toMatch(/grid-template-columns:\s*auto minmax\(0, 1fr\) minmax\(0, 300px\)/);
         expect(source).toMatch(/\.file-companion-project-main\s*\{[^}]*grid-area:\s*main/);
         expect(source).toMatch(/\.file-companion-project-meta\s*\{[^}]*grid-area:\s*meta/);
         expect(source).toMatch(/\.file-companion-project-actions\s*\{[^}]*grid-area:\s*actions/);
-        // Narrow card: the two footer rows span the width under the identity.
-        expect(source).toMatch(/@container \(max-width: 600px\)\s*\{\s*\.file-companion-project\s*\{[^}]*grid-template-areas:\s*"lead main"\s*"meta meta"\s*"actions actions"/);
+        // Bound the narrow rule to the query block: an inner rule closes with
+        // an indented brace, so the first column-zero brace ends the block.
+        // Matching past it would still pass if the rule leaked out of the query.
+        const block = source.slice(containerAt).match(/@container \(max-width: 600px\) \{([\s\S]*?)\n\}/);
+        expect(block?.[1] ?? "").toMatch(/\.file-companion-project\s*\{[^}]*grid-template-areas:\s*"main main"\s*"lead meta"\s*"actions actions"/);
+        // Two rows for every card, titled or not: no per-title grid variant.
+        expect(source).not.toContain('[data-doctitle="true"]');
+        const main = source.match(/\.file-companion-project-main\s*\{([^}]*)\}/);
+        expect(main?.[1] ?? "").toMatch(/flex-direction:\s*column/);
+        expect(main?.[1] ?? "").toMatch(/gap:\s*2px/);
+        expect(main?.[1] ?? "").toMatch(/min-width:\s*0/);
+        // As complete a title as fits, on exactly one line; hover carries the rest.
+        const line = source.match(/\.file-companion-project-doctitle\s*\{([^}]*)\}/);
+        expect(line?.[1] ?? "").toMatch(/white-space:\s*nowrap/);
+        expect(line?.[1] ?? "").toMatch(/text-overflow:\s*ellipsis/);
+        expect(line?.[1] ?? "").toMatch(/overflow:\s*hidden/);
+        expect(line?.[1] ?? "").toMatch(/min-width:\s*0/);
     });
 
     // jsdom never runs Wails' drop filter. OnFileDrop is registered with

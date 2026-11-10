@@ -130,8 +130,30 @@ func shellCOMReady(err error) bool {
 	return err == nil || err == syscall.Errno(1) // S_OK or S_FALSE
 }
 
+// shellIconMu keeps the process-wide system image list on one call. Two
+// lookups at once return blank icons or fault inside the shell.
+var shellIconMu sync.Mutex
+
 func shellFileTypeIconPNG(path string) ([]byte, error) {
-	// Shell icon lookup is COM and must stay on one OS thread.
+	img, err := shellFileTypeIconImage(path)
+	if err != nil {
+		return nil, err
+	}
+	// Encoding does not touch the shell, so the next type can enter the image
+	// list while this PNG is written.
+	img = fitIcon(img, shellIconMaxEdge)
+	var out bytes.Buffer
+	if err := png.Encode(&out, img); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+func shellFileTypeIconImage(path string) (*image.NRGBA, error) {
+	shellIconMu.Lock()
+	defer shellIconMu.Unlock()
+
+	// Shell icon lookup is COM and must stay on one OS thread for this call.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	shellIconProcOnce.Do(loadShellIconProcs)
@@ -152,17 +174,7 @@ func shellFileTypeIconPNG(path string) ([]byte, error) {
 			useAttributes = 0
 		}
 	}
-
-	img, err := shellAssociatedIcon(path, useAttributes)
-	if err != nil {
-		return nil, err
-	}
-	img = fitIcon(img, shellIconMaxEdge)
-	var out bytes.Buffer
-	if err := png.Encode(&out, img); err != nil {
-		return nil, err
-	}
-	return out.Bytes(), nil
+	return shellAssociatedIcon(path, useAttributes)
 }
 
 // shellAssociatedIcon prefers the jumbo image list, then 48px, then SHGetFileInfo.

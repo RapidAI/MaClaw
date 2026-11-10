@@ -6,7 +6,9 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -592,4 +594,49 @@ func TestFileCompanionTitleFillCoversANewFormat(t *testing.T) {
 	if app.fillFileCompanionLibraryTitles() {
 		t.Fatal("unchanged epub was read again")
 	}
+}
+
+// The card ellipsises a title to one line and shows the rest on hover, so a
+// long name has to survive extraction. Dropping it left the card with no title
+// at all, which is less complete than a shortened one.
+func TestFileCompanionTitleKeepsALongNameWhole(t *testing.T) {
+	home := t.TempDir()
+	write := func(name, content string) string {
+		t.Helper()
+		path := filepath.Join(home, name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	name200 := strings.Repeat("深度学习", 50)
+	cases := []struct {
+		file    string
+		content string
+		want    string
+	}{
+		{"plain.txt", name200 + "\n\n正文\n", name200},
+		{"prose.txt", strings.Repeat("字", 300) + "\n正文\n", ""},
+		{"heading.md", "# " + strings.Repeat("标题", 200) + "\n\n正文\n", strings.Repeat("标题", 200)},
+		{"huge.md", "# " + strings.Repeat("标题", 300) + "\n\n正文\n", strings.Repeat("标题", fileCompanionTitleMaxRunes/2)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			got, _, _, ok := fileCompanionDocumentTitle(write(tc.file, tc.content))
+			if !ok {
+				t.Fatal("extractor could not read the file")
+			}
+			if got != tc.want {
+				t.Fatalf("title = %d runes, want %d", utf8.RuneCountInString(got), utf8.RuneCountInString(tc.want))
+			}
+		})
+	}
+	t.Run("docx", func(t *testing.T) {
+		path := filepath.Join(home, "paper.docx")
+		writeDocxTitle(t, path, "", `<w:p><w:r><w:t>`+name200+`</w:t></w:r></w:p><w:p><w:r><w:t>正文</w:t></w:r></w:p>`)
+		got, _, _, ok := fileCompanionDocumentTitle(path)
+		if !ok || got != name200 {
+			t.Fatalf("docx title = %q (ok=%v), want the whole %d-rune name", got, ok, utf8.RuneCountInString(name200))
+		}
+	})
 }

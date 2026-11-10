@@ -70,7 +70,7 @@ import {
 } from "./welcomeTaskMemory";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
-import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentMessagesHavePlainTrail, codingAgentToolOperandText, latestCodingAgentTurnSnapshot, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
+import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentMessagesHavePlainTrail, codingAgentToolOperandText, codingAgentTurnFileChanges, latestCodingAgentTurnSnapshot, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
 import { isToolProgressMessage } from "./aiAssistantProgressUtils";
 import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantMessageOwnsLiveActivityAt, codingBubbleHostsLiveTitle, codingLiveAnswerStarted, codingLiveReasoningCue, codingShownLiveLabel, codingTimelineLastThoughtIndex, codingTimelineLiveThoughtIndex, codingTimelineThoughtIsCurrent, extractInFlightToolName, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
 import { IconBranch, IconRocket } from "./WorkbenchIcons";
@@ -5047,6 +5047,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         [activeSessionKey, displayMessages, displayProgressMessages],
     );
     const codingAgentTurnSnapshot = useMemo(() => activeSessionHasWork ? latestCodingAgentTurnSnapshot(headerProgressMessages) : null, [activeSessionHasWork, headerProgressMessages]);
+    const codingTurnFiles = useMemo(() => isPureCodingEnvironment ? codingAgentTurnFileChanges(headerProgressMessages) : { files: [], added: 0, removed: 0 }, [headerProgressMessages, isPureCodingEnvironment]);
     const codingAgentProgress = useMemo(() => codingAgentTurnSnapshot?.latest || activeCodingAgentProgress(headerProgressMessages, activeSessionHasWork), [activeSessionHasWork, codingAgentTurnSnapshot, headerProgressMessages]);
     const liveAssistantDisplayTimeline = useMemo(() => {
         if (!isPureCodingEnvironment) return undefined;
@@ -7465,12 +7466,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         onDismiss={handleWelcomeTemplateOfferDismiss}
                     />
                 )}
-                {!showWelcomeView && isPureCodingEnvironment && !codingChecklistRetired && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement) && (
+                {!showWelcomeView && isPureCodingEnvironment && ((!codingChecklistRetired && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement)) || codingTurnFiles.files.length > 0) && (
                     <CodingAgentPlanChecklist
                         lang={lang}
                         theme={t}
                         chrome={codingBannerChrome}
                         steps={codingChecklistSteps}
+                        fileChanges={codingTurnFiles.files}
                         understanding={codingRequirementRestatement}
                         pendingApproval={codingPendingApproval}
                         ready={codingTaskReadyForIntents}
