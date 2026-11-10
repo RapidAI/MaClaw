@@ -1192,6 +1192,7 @@ func (a *App) reportDesktopSupplementState(botID, sessionKey, runID string) {
 func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase string) {
 	run := a.registerActiveDesktopRun(botID, requestID, sessionKey, text, phase)
 	a.publishDesktopRunDriving(botID)
+	a.publishDesktopRunState(botID, requestID, "", "running")
 	// The run id has to be read inside the closure. A bare defer would freeze
 	// the value it had when armed, which is the empty placeholder, because Hub
 	// only names the run later; the entry would then be re-keyed under the real
@@ -1200,6 +1201,7 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 	defer func() {
 		unregisterActiveDesktopRun(botID, requestID, run.RunID)
 		a.publishDesktopRunDriving(botID)
+		a.publishDesktopRunState(botID, requestID, run.RunID, "done")
 	}()
 	started := time.Now()
 	ctx, cancel := context.WithCancel(desktopSurfaceContext())
@@ -1284,6 +1286,9 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 	// the pull that starts after this returns and before the ack lands. A
 	// transport failure is not acked.
 	resp.trayTaskName = trayTaskLabelFromCommand(text)
+	// The page keeps the run id on the settled bubble, so another client's
+	// copy of the same result (delivery or sync) is recognised as this one.
+	resp.RunID = strings.TrimSpace(run.RunID)
 	a.emitAIAssistantResponse(requestID, resp)
 	if err == nil && strings.TrimSpace(run.RunID) != "" {
 		noteDesktopRunShown(botID, run.RunID)
@@ -1613,6 +1618,7 @@ func (a *App) publishDesktopBotActivity(botID, runID, activity string) {
 		return
 	}
 	a.emitEvent("desktop-bot-activity", string(raw))
+	a.publishDesktopActivityRemote(botID, runID, activity)
 }
 
 // desktopPersonStillAsked is a question, a secret, or a choice the person can

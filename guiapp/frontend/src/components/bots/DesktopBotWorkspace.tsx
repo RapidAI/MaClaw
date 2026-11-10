@@ -166,6 +166,7 @@ import { botWindowIsForeground, setBotWindowForeground, watchBotReplies } from '
 import { BotMessageBody, botMessageIsStructured } from './botMessageBody';
 import { BotFeedLine, botFeedLineInternal, botFeedLineOf } from './botFeedLine';
 import { botChatIsNearBottom, botChatLogStamp, pinBotChatToBottom } from './botChatScroll';
+import { BOT_SYNCED_EVENT, noteDesktopBotCleared } from './desktopBotSync';
 import { DesktopBotComposer } from './DesktopBotComposer';
 import { BotEditDialog } from './BotEditDialog';
 import { BotAvatar } from './BotAvatar';
@@ -3566,6 +3567,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         shotPaths: shots,
                         localPaths: attached.localPaths,
                         files: attached.files,
+                        runId: String(data.run_id || data.RunID || '').trim() || item.runId,
                     } : item);
                     commit(botId, foldPlanConfirmation(next, next.findIndex(item => item.id === pending.messageId)));
                     if (!result.silent) reportDesktopBotCrossResult(userId, botId, result.content);
@@ -3646,6 +3648,19 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         };
         const off = EventsOn('desktop-bot-report', handler);
         return () => { if (typeof off === 'function') off(); };
+    }, [userId]);
+
+    // Another client of this person wrote to a transcript (multi-client
+    // sync). Storage already holds the merge; the screen follows it.
+    useEffect(() => {
+        const onSynced = (event: Event) => {
+            const detail = (event as CustomEvent<{ userId?: string; botId?: string }>).detail || {};
+            const botId = String(detail.botId || '');
+            if (!botId || String(detail.userId || '') !== userId) return;
+            setMessagesByBot(prev => ({ ...prev, [botId]: messagesForBot(userId, botId) }));
+        };
+        window.addEventListener(BOT_SYNCED_EVENT, onSynced);
+        return () => window.removeEventListener(BOT_SYNCED_EVENT, onSynced);
     }, [userId]);
 
     useEffect(() => {
@@ -5848,6 +5863,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (literal) verbatim = true;
         if (!literal && !preset && isDesktopBotClearCommand(content)) {
             setCommand('');
+            noteDesktopBotCleared(userId, botId);
             commit(botId, clearedBotMessages(messagesForBot(userId, botId)));
             return;
         }

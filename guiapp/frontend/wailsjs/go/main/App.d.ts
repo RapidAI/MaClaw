@@ -2585,6 +2585,10 @@ export function ArmDesktopBotAdmitCancel(arg1:string):Promise<void>;
 
 export function PullDesktopBotDeliveries():Promise<void>;
 
+export function StartDesktopBotConversationSync():Promise<string>;
+
+export function PublishDesktopBotConversation(arg1:string,arg2:Array<{bot_id:string,id:string,kind?:string,patch?:boolean,data:any}>):Promise<void>;
+
 export function ArmDesktopBotSchedule(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:number,arg7:number,arg8:number):Promise<string>;
 
 export function ListDesktopBotSchedules(arg1:string):Promise<Array<{id:string,name:string,action:string,interval_minutes:number,hour:number,minute:number,day_of_week:number,next_run_at?:string,status?:string}>>;

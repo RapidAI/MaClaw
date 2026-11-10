@@ -470,6 +470,8 @@ func NewRouter(
 	mux.HandleFunc("GET /api/v1/bots/pending", GetBotPendingHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/cross-notes", GetBotCrossNotesHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/feed", BotFeedHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/conversation", BotConversationHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/conversation", BotConversationHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/feed", BotFeedHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/inbox", BotMailboxHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/inbox", BotMailboxHandler(botSvc, identity))

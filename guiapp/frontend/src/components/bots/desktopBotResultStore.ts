@@ -1,6 +1,7 @@
 import { EventsOn } from '../../../wailsjs/runtime';
 import { PostDesktopBotCross } from '../../../wailsjs/go/main/App';
 import { desktopBotLine } from './desktopBotAck';
+import { startDesktopBotSync } from './desktopBotSync';
 import { desktopTurnFromPayload, isDesktopBotFiller } from './visibleDesktopTurn';
 import {
     appendDesktopBotReport,
@@ -117,6 +118,7 @@ let desktopBotResultBound = false;
 export function bindDesktopBotResultStore() {
     if (desktopBotResultBound) return;
     desktopBotResultBound = true;
+    startDesktopBotSync();
     EventsOn('ai-assistant-response', handleDesktopBotResult);
     EventsOn('desktop-bot-view', handleDesktopBotView);
     EventsOn('desktop-bot-report', handleDesktopBotReport);
@@ -205,6 +207,7 @@ export function handleDesktopBotResult(payload: unknown) {
         shotPaths,
         files: attached.files,
         localPaths: attached.localPaths,
+        runId: String(data.run_id || data.RunID || '').trim() || undefined,
     });
     if (!result.silent) reportDesktopBotCrossResult(resultUser, resultBot, result.content);
     if (result.failed && !ask && settledId) rewordFailedTurn(resultUser, resultBot, settledId, shown, String(result.content || ''));
@@ -250,6 +253,7 @@ export function handleDesktopBotReport(payload: unknown) {
         files: attached.files,
         localPaths: attached.localPaths,
         phase: reportedTurnPhase(data),
+        runId: String(data.run_id || data.RunID || '').trim() || undefined,
     });
 }
 

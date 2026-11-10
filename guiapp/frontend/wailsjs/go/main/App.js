@@ -5183,6 +5183,14 @@ export function PullDesktopBotDeliveries() {
   return window['go']['main']['App']['PullDesktopBotDeliveries']();
 }
 
+export function StartDesktopBotConversationSync() {
+  return window['go']['main']['App']['StartDesktopBotConversationSync']();
+}
+
+export function PublishDesktopBotConversation(arg1, arg2) {
+  return window['go']['main']['App']['PublishDesktopBotConversation'](arg1, arg2);
+}
+
 export function ArmDesktopBotSchedule(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
   return window['go']['main']['App']['ArmDesktopBotSchedule'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
 }

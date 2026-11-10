@@ -902,6 +902,14 @@ export interface DesktopBotMessage {
     // Nothing has gone to the desktop yet. The words are kept because the
     // reading is a helper for the turn, not the turn itself.
     noReading?: { text: string; phase: BotPhase; kind: DesktopBotNoReading };
+    // The Hub run this bubble settled. Another client's copy of the same
+    // result carries it too, so the two are recognised as one turn.
+    runId?: string;
+    // Set on a bubble another client of this person wrote (multi-client
+    // sync): the Hub journal's first sequence and that client's id. Such a
+    // bubble is shown only; this client never sends or recovers it.
+    syncSeq?: number;
+    syncOrigin?: string;
 }
 
 export interface DesktopBotNoticeBot {
@@ -1238,6 +1246,24 @@ function dropEveryShot(bots: Record<string, DesktopBotMessage[]> | undefined) {
     }
 }
 
+// The multi-client sync registers here (desktopBotSync.ts) so every write of a
+// transcript is offered to the other clients without this module importing it.
+type TranscriptSyncHook = (userId: string, botId: string, messages: DesktopBotMessage[]) => void;
+let transcriptSyncHook: TranscriptSyncHook | null = null;
+
+export function setDesktopBotTranscriptSyncHook(hook: TranscriptSyncHook | null) {
+    transcriptSyncHook = hook;
+}
+
+function offerTranscriptSync(userId: string, botId: string, messages: DesktopBotMessage[]) {
+    if (!transcriptSyncHook) return;
+    try {
+        transcriptSyncHook(userId, botId, messages);
+    } catch {
+        // Sync is best effort; the local transcript is already written.
+    }
+}
+
 export function saveBotMessages(userId: string, botId: string, messages: DesktopBotMessage[]) {
     const store = storage();
     if (!store) return;
@@ -1252,11 +1278,13 @@ export function saveBotMessages(userId: string, botId: string, messages: Desktop
     try {
         store.setItem(MESSAGE_KEY, payload);
         noteTranscriptWrite(userId, botId);
+        offerTranscriptSync(userId, botId, messages);
     } catch {
         dropEveryShot(all[key]);
         try {
             store.setItem(MESSAGE_KEY, JSON.stringify(all));
             noteTranscriptWrite(userId, botId);
+            offerTranscriptSync(userId, botId, messages);
         } catch {
             // The previous transcript stays. A screenshot that does not fit
             // is better lost than the whole conversation.
@@ -1304,7 +1332,7 @@ export function notePendingBotDesktop(userId: string, botId: string, patch: { ha
 
 // settlePendingBotReply records the instance result on the pending reply.
 // The bots page may already be closed when MaClawSrv finishes.
-export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[] }): string {
+export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; runId?: string }): string {
     const current = messagesForBot(userId, botId);
     const index = pendingBotIndex(current, patch.requestId || '');
     if (index < 0) return '';
@@ -1327,6 +1355,7 @@ export function settlePendingBotReply(userId: string, botId: string, patch: { co
         shotPaths,
         localPaths,
         files: patch.failed || localPaths ? undefined : desktopBotFiles(patch.files),
+        runId: (patch.runId || '').trim() || previous.runId,
     };
     saveBotMessages(userId, botId, foldPlanConfirmation(next, index));
     return previous.id;
@@ -1506,10 +1535,13 @@ export function takeDesktopBotCrossRun(userId: string, botId: string): DesktopBo
 // The same request id is written once, so the open page and the store can
 // both hear the event. A scheduled report passes no phase, so it does not
 // take the confirm control. A destructive delegate passes phase plan.
-export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean; feed?: BotFeedMeta }) {
+export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean; feed?: BotFeedMeta; runId?: string }) {
     const requestId = (patch.requestId || '').trim();
+    const runId = (patch.runId || '').trim();
     const current = messagesForBot(userId, botId);
     if (requestId && current.some(item => item.requestId === requestId)) return;
+    // Another client already showed this run here (multi-client sync).
+    if (runId && current.some(item => item.runId === runId)) return;
     const reason = (patch.attentionReason || '').trim();
     const localPaths = patch.failed ? undefined : desktopBotLocalPaths(patch.localPaths);
     const shotPaths = patch.failed ? undefined : desktopBotLocalPaths(patch.shotPaths);
@@ -1533,6 +1565,7 @@ export function appendDesktopBotReport(userId: string, botId: string, patch: { c
         noticeBots: patch.noticeBots && patch.noticeBots.length > 0 ? patch.noticeBots : undefined,
         chat: patch.chat === true ? true : undefined,
         feed: patch.feed,
+        runId: runId || undefined,
     };
     saveBotMessages(userId, botId, [...current, message]);
 }

@@ -140,9 +140,12 @@ type SettingsView struct {
 
 // Service stores the tenant MaClawSrv connection and the bots created there.
 type Service struct {
-	System    store.SystemSettingsRepository
-	Directory Directory
-	Desktop   DesktopControl
+	System store.SystemSettingsRepository
+	// convJournal is the per-person conversation journal the GUIs sync by.
+	convOnce    sync.Once
+	convJournal *convHub
+	Directory   Directory
+	Desktop     DesktopControl
 	// MaterialStageDir holds partial material uploads; empty is a temp dir.
 	MaterialStageDir string
 	// MailFileDir keeps files shared in bot messages; empty is a temp dir.
