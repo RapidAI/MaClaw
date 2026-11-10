@@ -447,9 +447,10 @@ func desktopScheduleReports(text string, result desktopBotRelayResult, runErr er
 		AskText:     result.AskUserQuestion,
 		Handoff:     result.UserControl || strings.TrimSpace(result.AttentionReason) != "",
 		Changed:     strings.TrimSpace(result.SendToUser) != "" && !desktopbot.NotContent(result.SendToUser),
-		Done:        strings.TrimSpace(result.SendToUser) != "" && !desktopbot.NotContent(result.SendToUser),
+		Done:        strings.TrimSpace(result.SendToUser) != "" && !desktopbot.NotContent(result.SendToUser) && !desktopTaskOutcomeNotDone(result.TaskOutcome),
 	})
-	return decision.Report || result.UserControl || strings.TrimSpace(result.AttentionReason) != ""
+	// A scheduled run whose task is not done is reported, never left quiet.
+	return decision.Report || result.UserControl || strings.TrimSpace(result.AttentionReason) != "" || desktopTaskOutcomeNotDone(result.TaskOutcome)
 }
 
 func (a *App) reportDesktopBotSchedule(task *scheduler.ScheduledTask, text string, result desktopBotRelayResult, runErr error) {
@@ -487,6 +488,9 @@ func (a *App) reportDesktopBotSchedule(task *scheduler.ScheduledTask, text strin
 		payload["desktop_handoff_url"] = result.NovncURL
 		payload["desktop_user_control"] = result.UserControl
 		payload["attention_reason"] = strings.TrimSpace(result.AttentionReason)
+	}
+	if o := desktopTaskOutcomeOf(result.TaskOutcome); o != "" {
+		payload["task_outcome"] = o
 	}
 	if question := strings.TrimSpace(result.AskUserQuestion); question != "" || strings.TrimSpace(result.AskUserSecretName) != "" {
 		payload["ask_user_input_type"] = strings.TrimSpace(result.AskUserInputType)

@@ -213,6 +213,10 @@ func trayResponseIsCompletion(resp *IMAgentResponse) bool {
 	if strings.TrimSpace(resp.Error) != "" || trayResponseWaitsForReply(resp) || trayResponseNeedsConfirm(resp) {
 		return false
 	}
+	if desktopTaskOutcomeNotDone(resp.TaskOutcome) {
+		// The run ended, its task did not (measured on the server).
+		return false
+	}
 	return true
 }
 

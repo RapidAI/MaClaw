@@ -89,3 +89,16 @@ func TestDesktopRunPollBodyEndsAFinishedRun(t *testing.T) {
 		}
 	})
 }
+
+func TestDesktopRunPollBodyCarriesTaskOutcome(t *testing.T) {
+	_, body, _ := desktopRunPollBody(botmgmt.Reply{Text: "x", TaskOutcome: "blocked"}, true, nil)
+	raw, _ := json.Marshal(body)
+	if !strings.Contains(string(raw), `"task_outcome":"blocked"`) {
+		t.Fatalf("body=%s", raw)
+	}
+	_, body, _ = desktopRunPollBody(botmgmt.Reply{Text: "x"}, true, nil)
+	raw, _ = json.Marshal(body)
+	if strings.Contains(string(raw), "task_outcome") {
+		t.Fatalf("an older run grew a task_outcome: %s", raw)
+	}
+}

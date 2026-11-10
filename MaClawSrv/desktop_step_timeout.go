@@ -75,13 +75,19 @@ func operateDesktopWithTimeout(ctx context.Context, scope agentruntime.Scope, ar
 	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
 	limit := desktopStepTimeout(action)
 	desktopNoteFormInput(scope, action)
+	// The step's end is reported here, once, when the operation really
+	// returns; the operation's own nested calls do not report it.
+	endCtx := ctx
+	ctx = withDesktopStepEnd(ctx, nil)
 	if limit <= 0 {
+		defer desktopStepEnded(endCtx)
 		return operateDesktopFunc(ctx, scope, args)
 	}
 	stepCtx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	done := make(chan desktopStepOutcome, 1)
 	go func() {
+		defer desktopStepEnded(endCtx) // the step's real end, also after a timeout
 		defer func() {
 			if r := recover(); r != nil {
 				done <- desktopStepOutcome{err: fmt.Errorf("desktop %s failed: %v", action, r)}

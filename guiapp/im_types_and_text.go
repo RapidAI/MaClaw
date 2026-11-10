@@ -128,6 +128,10 @@ type IMAgentResponse struct {
 	AskUserSecretName      string `json:"ask_user_secret_name,omitempty"`
 	AskUserQuestion        string `json:"ask_user_question,omitempty"`
 	AskUserOptionsJSON     string `json:"ask_user_options_json,omitempty"`
+	// TaskOutcome is the measured task outcome of a cloud-desktop run (see
+	// desktopBotRelayResult.TaskOutcome); a not-done outcome is never a
+	// "task completed" notification.
+	TaskOutcome string `json:"task_outcome,omitempty"`
 	// DesktopImages are screenshots that could not be written on this machine.
 	// A saved screenshot is DesktopShotPaths, and those bytes stay out of the transcript.
 	DesktopImages []DesktopBotImage `json:"desktop_images,omitempty"`

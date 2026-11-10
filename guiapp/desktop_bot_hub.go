@@ -65,6 +65,11 @@ type desktopBotRelayResult struct {
 	// the read succeeded, and the bubble is this text when the run never
 	// called send_to_user. A filler stays empty so the turn ends quietly.
 	RunError string
+	// TaskOutcome is MaClawSrv's measured task outcome relayed by Hub
+	// ("done", "partial", "blocked", "not_submitted", "unconfirmed",
+	// "awaiting_user"; empty from an older Hub or MaClawSrv). Anything but
+	// "done" means the task is not finished, whatever the run status says.
+	TaskOutcome string
 }
 
 // desktopBotRelayOverride is set by tests. Production posts to Hub.
@@ -1241,6 +1246,7 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		resp.AskUserSecretName = strings.TrimSpace(result.AskUserSecretName)
 		resp.AskUserQuestion = strings.TrimSpace(result.AskUserQuestion)
 		resp.AskUserOptionsJSON = strings.TrimSpace(result.AskUserOptionsJSON)
+		resp.TaskOutcome = desktopTaskOutcomeOf(result.TaskOutcome)
 		if desktopPersonStillAsked(resp.AskUserQuestion, resp.AskUserSecretName, resp.AskUserOptionsJSON) {
 			// The run ended to ask this person something. Mark it so a reply is
 			// routed back as the next turn instead of being offered to a run
@@ -1449,6 +1455,7 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		Images             []DesktopBotImage `json:"images"`
 		Files              []DesktopBotFile  `json:"files"`
 		Error              string            `json:"error"`
+		TaskOutcome        string            `json:"task_outcome"`
 		Accepted           bool              `json:"accepted"`
 		RunID              string            `json:"run_id"`
 		Status             string            `json:"status"`
@@ -1536,7 +1543,7 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		"phase", phase,
 		"text_len", strconv.Itoa(len(strings.TrimSpace(out.Text))),
 	)
-	return a.desktopRelayFromWire(out.Text, out.SendToUser, out.NovncURL, out.AttentionReason, out.AskUserInputType, out.AskUserSecretName, out.AskUserQuestion, out.AskUserOptionsJSON, out.Handoff, out.Images, out.Files, out.Error)
+	return a.desktopRelayFromWire(out.Text, out.SendToUser, out.NovncURL, out.AttentionReason, out.AskUserInputType, out.AskUserSecretName, out.AskUserQuestion, out.AskUserOptionsJSON, out.Handoff, out.Images, out.Files, out.Error, out.TaskOutcome)
 }
 
 // desktopBotAdmitAttempts is how many times one admission is tried. The
@@ -1639,7 +1646,7 @@ func desktopAskHasOptions(raw string) bool {
 	return false
 }
 
-func (a *App) desktopRelayFromWire(text, sendToUser, novnc, attention, askType, askName, askQuestion, askOptions string, handoff bool, images []DesktopBotImage, files []DesktopBotFile, runError string) (desktopBotRelayResult, error) {
+func (a *App) desktopRelayFromWire(text, sendToUser, novnc, attention, askType, askName, askQuestion, askOptions string, handoff bool, images []DesktopBotImage, files []DesktopBotFile, runError string, taskOutcome ...string) (desktopBotRelayResult, error) {
 	// An empty body is a quiet finish, not 「没有返回结果」. The person sees
 	// send_to_user when the run called it, and nothing when it did not.
 	// A filler error is the same silence. A real error is the failed bubble.
@@ -1660,6 +1667,7 @@ func (a *App) desktopRelayFromWire(text, sendToUser, novnc, attention, askType, 
 		Images:             cleanDesktopBotImages(images),
 		Files:              cleanDesktopBotFiles(files),
 		RunError:           runError,
+		TaskOutcome:        desktopTaskOutcomeOf(taskOutcome...),
 	}, nil
 }
 
@@ -1713,6 +1721,7 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 			Images             []DesktopBotImage `json:"images"`
 			Files              []DesktopBotFile  `json:"files"`
 			Error              string            `json:"error"`
+			TaskOutcome        string            `json:"task_outcome"`
 			Accepted           bool              `json:"accepted"`
 			Status             string            `json:"status"`
 			Activity           string            `json:"activity"`
@@ -1785,7 +1794,7 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 			"attention", strings.TrimSpace(out.AttentionReason),
 			"polls", strconv.Itoa(polls),
 		)
-		return a.desktopRelayFromWire(out.Text, out.SendToUser, out.NovncURL, out.AttentionReason, out.AskUserInputType, out.AskUserSecretName, out.AskUserQuestion, out.AskUserOptionsJSON, out.Handoff, out.Images, out.Files, out.Error)
+		return a.desktopRelayFromWire(out.Text, out.SendToUser, out.NovncURL, out.AttentionReason, out.AskUserInputType, out.AskUserSecretName, out.AskUserQuestion, out.AskUserOptionsJSON, out.Handoff, out.Images, out.Files, out.Error, out.TaskOutcome)
 	}
 }
 

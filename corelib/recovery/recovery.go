@@ -229,7 +229,28 @@ type Goal struct {
 	Evidence string             `json:"evidence,omitempty"` // last compact evidence
 	Spec     string             `json:"spec,omitempty"`     // pinned success criteria (never relaxed)
 	Lease    *Lease             `json:"lease,omitempty"`    // the attempt in flight, if any
+	// Open: work was done on the goal since its last measurement; that
+	// work is one attempt, counted when its first step began.
+	Open bool `json:"open,omitempty"`
+	// Steps are the work steps in flight, each holding a reservation that
+	// is already in SpentMS (see BeginStep).
+	Steps []Step `json:"steps,omitempty"`
 }
+
+// Step is one work step in flight under a goal that is measured, not leased
+// (goal_check goals). Its reservation is charged to SpentMS when it begins
+// and settled to the real duration when it ends; a step whose end is never
+// reported (its process died) keeps the full reservation charged.
+type Step struct {
+	ID         string    `json:"id"`
+	Holder     string    `json:"holder"`
+	Run        string    `json:"run,omitempty"`
+	Started    time.Time `json:"started"`
+	ReservedMS int64     `json:"reserved_ms"`
+	Until      time.Time `json:"until"`
+}
+
+const maxStepsInFlight = 32
 
 // Attempt phases of a lease.
 const (
@@ -416,7 +437,7 @@ func (e *Engine) outOfBudget(g *Goal, now time.Time) string {
 	}
 	spent := time.Duration(g.SpentMS) * time.Millisecond
 	switch {
-	case g.Count >= e.Cfg.MaxAttempts:
+	case g.Count >= e.Cfg.MaxAttempts && !g.Open:
 		return fmt.Sprintf("%d of %d attempts used", g.Count, e.Cfg.MaxAttempts)
 	case spent >= e.Cfg.MaxWall || (g.Lease == nil && e.Cfg.MaxWall-spent < e.Cfg.MinLeft):
 		return fmt.Sprintf("%s of %s attempt time used", spent.Round(time.Second), e.Cfg.MaxWall)
@@ -428,12 +449,16 @@ func (e *Engine) outOfBudget(g *Goal, now time.Time) string {
 
 // WallLeft is the attempt time a goal has left (for the tool's own deadline).
 func (e *Engine) WallLeft(g *Goal) time.Duration {
+	return e.wallLeftAt(g, e.now())
+}
+
+func (e *Engine) wallLeftAt(g *Goal, now time.Time) time.Duration {
 	if g == nil {
 		return e.Cfg.MaxWall
 	}
 	left := e.Cfg.MaxWall - time.Duration(g.SpentMS)*time.Millisecond
 	if e.Cfg.MaxSpan > 0 && g.Count > 0 {
-		if s := e.Cfg.MaxSpan - e.now().Sub(g.Created); s < left {
+		if s := e.Cfg.MaxSpan - now.Sub(g.Created); s < left {
 			left = s
 		}
 	}
@@ -441,6 +466,122 @@ func (e *Engine) WallLeft(g *Goal) time.Duration {
 		left = 0
 	}
 	return left
+}
+
+// BeginStep admits one work step under a measured goal and charges its
+// reservation to the goal's attempt time before the step runs, so a crash
+// or restart before the next measurement never loses (or resets) it. The
+// first step after a measurement opens the next attempt and counts it;
+// later steps of the same attempt are not counted again. The returned
+// budget (≤ want) is the step's hard deadline; the caller must end the
+// step with EndStep at its real end. An empty id with a nil error means the
+// goal is gone (expired) and nothing was reserved.
+func (e *Engine) BeginStep(scope, goal, run, strategy string, want time.Duration) (string, time.Duration, error) {
+	var id string
+	var budget time.Duration
+	err := e.tx(scope, goal, func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error) {
+		if g == nil {
+			return nil, false, nil
+		}
+		changed := e.reap(g, now)
+		changed = e.pruneSteps(g, now) || changed
+		if g.Lease != nil {
+			return nil, changed, fmt.Errorf("recovery: refused: another attempt at this goal is still running (%s, started %s ago); wait for its result", g.Lease.Method, now.Sub(g.Lease.Started).Round(time.Second))
+		}
+		if len(g.Steps) > 0 && e.wallLeftAt(g, now) < e.Cfg.MinLeft {
+			// The time is held by steps still running, not used up: wait
+			// for them instead of ending the goal on a reservation.
+			return nil, changed, fmt.Errorf("recovery: refused: the attempt time this goal has left is held by %d step(s) still running; wait for them, then measure", len(g.Steps))
+		}
+		ch, err := e.admit(g, strategy, now)
+		if err != nil {
+			return g, changed || ch, err
+		}
+		if len(g.Steps) >= maxStepsInFlight {
+			return g, changed, fmt.Errorf("recovery: refused: %d steps of this goal are still running; wait for them", len(g.Steps))
+		}
+		left := e.wallLeftAt(g, now)
+		if left <= 0 {
+			return g, changed, fmt.Errorf("recovery: refused: this goal has no attempt time left; measure what was reached and report it")
+		}
+		budget = want
+		if budget <= 0 || budget > left {
+			budget = left
+		}
+		if !g.Open {
+			g.Count++
+			g.Open = true
+			if g.Count == 1 {
+				g.Created = now
+			}
+		}
+		if run != "" && (len(g.Runs) == 0 || g.Runs[len(g.Runs)-1] != run) {
+			g.Runs = append(g.Runs, run)
+		}
+		id = newID()
+		g.SpentMS += budget.Milliseconds()
+		g.Steps = append(g.Steps, Step{ID: id, Holder: processHolder, Run: run, Started: now, ReservedMS: budget.Milliseconds(), Until: now.Add(budget)})
+		g.Updated = now
+		return g, true, nil
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	return id, budget, nil
+}
+
+// EndStep settles a step at its real end: the goal is charged what the
+// step really took instead of its reservation (an overrun past the
+// reservation is charged too). A step already pruned as dead stays charged
+// in full; only an overrun beyond its reservation is added. Calling it more
+// than once for one step is the caller's error (it would charge an overrun
+// twice); took is the step's real duration.
+func (e *Engine) EndStep(scope, goal, id string, reserved, took time.Duration) {
+	if id == "" {
+		return
+	}
+	if took < 0 {
+		took = 0
+	}
+	_ = e.tx(scope, goal, func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error) {
+		if g == nil {
+			return nil, false, nil
+		}
+		for i, st := range g.Steps {
+			if st.ID == id {
+				g.SpentMS += took.Milliseconds() - st.ReservedMS
+				if g.SpentMS < 0 {
+					g.SpentMS = 0
+				}
+				g.Steps = append(g.Steps[:i:i], g.Steps[i+1:]...)
+				g.Updated = now
+				return g, true, nil
+			}
+		}
+		if over := took - reserved; over > 0 {
+			g.SpentMS += over.Milliseconds()
+			g.Updated = now
+			return g, true, nil
+		}
+		return nil, false, nil
+	})
+}
+
+// pruneSteps forgets steps whose deadline passed more than LeaseTTL ago:
+// their holder stopped answering. Their reservation stays charged.
+func (e *Engine) pruneSteps(g *Goal, now time.Time) bool {
+	kept := g.Steps[:0]
+	for _, st := range g.Steps {
+		if now.Sub(st.Until) <= e.Cfg.LeaseTTL {
+			kept = append(kept, st)
+		}
+	}
+	pruned := len(kept) != len(g.Steps)
+	if len(kept) == 0 {
+		kept = nil
+	}
+	g.Steps = kept
+	return pruned
 }
 
 // Gate is asked before a non-leased attempt at goal (nil allows it).
@@ -607,10 +748,16 @@ func (e *Engine) Observe(scope string, o Observation) Verdict {
 			g = &Goal{Key: o.Goal, Scope: scope, Created: now, State: StateActive}
 		}
 		e.reap(g, now)
+		e.pruneSteps(g, now)
 		if !o.At.IsZero() {
 			now = o.At
 		}
-		v = e.observe(f, g, o, now, true)
+		// Work since the last measurement was counted when its first step
+		// began (BeginStep), and its time is charged by the steps: the
+		// measurement closes that attempt instead of counting another.
+		count := !g.Open
+		g.Open = false
+		v = e.observe(f, g, o, now, count)
 		return g, true, nil
 	})
 	if err != nil {

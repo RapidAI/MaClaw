@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime/promptparts"
 	"github.com/RapidAI/CodeClaw/corelib/demoskill"
@@ -367,17 +368,33 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", recErr, 0, "guard")
 		return "", recErr
 	}
+	opArgs, opCtx := args, ctx
 	if recAtt != nil && recAtt.deadline > 0 {
-		// A step under a check goal may only use the attempt time left.
+		// A step under a check goal may only use the time its goals
+		// reserved for it; the reservation is settled at the step's real
+		// end, even when that is after this call stopped waiting.
+		stepStart := time.Now()
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, recAtt.deadline)
 		defer cancel()
+		opCtx = withDesktopStepEnd(ctx, func() { recAtt.settle(time.Since(stepStart)) })
+		if actionName == "bash" {
+			opArgs = make(map[string]any, len(args))
+			for k, v := range args {
+				opArgs[k] = v
+			}
+			opArgs["command"] = desktopRecBoundCommand(desktopArg(args, "command"), recAtt.deadline)
+		}
 	}
 	var out string
 	if actionName == "rich_fill" {
 		out, err = desktopRichFill(ctx, scope, args)
+		desktopStepEnded(opCtx) // rich_fill returns at its real end
 	} else {
-		out, err = operateDesktopWithTimeout(ctx, scope, args)
+		out, err = operateDesktopWithTimeout(opCtx, scope, opArgs)
+	}
+	if recAtt != nil && recAtt.deadline > 0 && errors.Is(err, context.DeadlineExceeded) {
+		err = fmt.Errorf("desktop %s stopped at the attempt time its goal had left (%s); run goal_check to measure what was reached", actionName, recAtt.deadline.Round(time.Second))
 	}
 	noteDesktopPageNeed(scope, out)
 	err = desktopDeliverSizeHint(args, err)

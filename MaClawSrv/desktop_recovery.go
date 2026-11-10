@@ -68,7 +68,7 @@ func desktopRecoveryScope(scope agentruntime.Scope) string {
 
 // In-process state (the ledger itself is the engine's store): the attempt
 // a publish call is about to make and the one whose pipeline runs, the
-// goals and lineage each run touched (for the honest outcome) and the time
+// goals and lineage each run touched (for the honest outcome).
 // spent in mutating steps since a check goal's last measurement.
 var (
 	desktopRecStateMu    sync.Mutex
@@ -78,7 +78,6 @@ var (
 	desktopRecLineages   = map[string]string{}             // recKey -> lineage
 	desktopRecRunLineage = map[string]string{}             // runID -> "sk\x01lineage"
 	desktopRecRunSteps   = map[string]bool{}               // runID -> made a desktop step
-	desktopRecPending    = map[string]time.Duration{}
 )
 
 func desktopRecKey(scope agentruntime.Scope) string {
@@ -292,6 +291,8 @@ type desktopRecAttempt struct {
 	trial                               bool
 	recipe                              string
 	checks                              []string // mutating step: the lineage's unfinished check goals
+	steps                               []desktopRecStep
+	settled                             sync.Once
 	deadline                            time.Duration
 	note                                string
 
@@ -470,7 +471,11 @@ func desktopRecoveryBefore(request agentruntime.TurnRequest, scope agentruntime.
 	if len(gs) == 0 {
 		return nil, nil
 	}
+	// Each goal reserves the step's time in its ledger before the step
+	// runs (durable across a crash or restart); the step's deadline is the
+	// smallest reservation.
 	att := &desktopRecAttempt{sk: sk, method: "check"}
+	want := desktopRecStepWant(action)
 	for _, g := range gs {
 		if g.State == recovery.StateDone {
 			if desktopRecReopens[action] {
@@ -479,17 +484,17 @@ func desktopRecoveryBefore(request agentruntime.TurnRequest, scope agentruntime.
 				continue
 			}
 		}
-		if err := eng.Gate(sk, g.Key, "check", desktopRecCheckStrategy(g)); err != nil {
+		id, budget, err := eng.BeginStep(sk, g.Key, scope.RunID, desktopRecCheckStrategy(g), want)
+		if err != nil {
+			att.settle(0) // nothing ran: give the other reservations back
 			return nil, fmt.Errorf("%v (goal_check %q)", err, desktopRecCheckName(g.Key))
 		}
-		desktopRecStateMu.Lock()
-		left := eng.WallLeft(g) - desktopRecPending[sk+"\x00"+g.Key]
-		desktopRecStateMu.Unlock()
-		if left <= 0 {
-			return nil, fmt.Errorf("recovery: refused: goal %q has no attempt time left; run goal_check to measure what was reached, then report it", desktopRecCheckName(g.Key))
+		if id == "" {
+			continue // expired meanwhile
 		}
-		if att.deadline == 0 || left < att.deadline {
-			att.deadline = left
+		att.steps = append(att.steps, desktopRecStep{goal: g.Key, id: id, reserved: budget})
+		if att.deadline == 0 || budget < att.deadline {
+			att.deadline = budget
 		}
 		att.checks = append(att.checks, g.Key)
 		desktopRecNoteRunGoal(scope.RunID, sk+"\x01"+g.Key)
@@ -498,6 +503,62 @@ func desktopRecoveryBefore(request agentruntime.TurnRequest, scope agentruntime.
 		return nil, nil
 	}
 	return att, nil
+}
+
+// desktopRecStep is one durable step reservation (recovery.BeginStep).
+type desktopRecStep struct {
+	goal, id string
+	reserved time.Duration
+}
+
+// desktopRecStepWant is the reservation a step asks for: its own hard time
+// limit (the step cannot run longer), cut to the goal's time left.
+func desktopRecStepWant(action string) time.Duration {
+	if action == "rich_fill" {
+		return desktopStepTimeout("publish")
+	}
+	return desktopStepTimeout(action)
+}
+
+// settle ends the step's reservations with its real duration, once, at the
+// step's real end (a step that outlived its tool call settles when it
+// returns; one whose process died stays charged in full).
+func (a *desktopRecAttempt) settle(took time.Duration) {
+	if a == nil || len(a.steps) == 0 {
+		return
+	}
+	a.settled.Do(func() {
+		eng := desktopRecovery()
+		for _, st := range a.steps {
+			eng.EndStep(a.sk, st.goal, st.id, st.reserved, took)
+		}
+	})
+}
+
+type desktopStepEndKey struct{}
+
+// withDesktopStepEnd lets the code that really runs a step report its end,
+// also after the tool call stopped waiting for it.
+func withDesktopStepEnd(ctx context.Context, fn func()) context.Context {
+	return context.WithValue(ctx, desktopStepEndKey{}, fn)
+}
+
+func desktopStepEnded(ctx context.Context) {
+	if fn, ok := ctx.Value(desktopStepEndKey{}).(func()); ok && fn != nil {
+		fn()
+	}
+}
+
+// desktopRecBoundCommand makes a container command under a check goal stop
+// at the step's deadline inside the container too (not only the wait for
+// it), where coreutils timeout exists.
+func desktopRecBoundCommand(command string, limit time.Duration) string {
+	secs := int((limit + time.Second - 1) / time.Second)
+	if secs <= 0 || strings.TrimSpace(command) == "" {
+		return command
+	}
+	q := "'" + strings.ReplaceAll(command, "'", `'\''`) + "'"
+	return fmt.Sprintf("if command -v timeout >/dev/null 2>&1; then exec timeout -k 5 %d bash -c %s; else exec bash -c %s; fi", secs, q, q)
 }
 
 func desktopRecCheckName(key string) string {
@@ -621,11 +682,8 @@ func desktopRecoveryAfter(scope agentruntime.Scope, att *desktopRecAttempt, out 
 		return ""
 	}
 	if att.method == "check" {
-		desktopRecStateMu.Lock()
-		for _, k := range att.checks {
-			desktopRecPending[att.sk+"\x00"+k] += took
-		}
-		desktopRecStateMu.Unlock()
+		// Settled where the step really ended (desktopStepEnded); a step
+		// still running past its deadline keeps its reservation until then.
 		return ""
 	}
 	desktopRecStateMu.Lock()
@@ -898,19 +956,14 @@ func desktopGoalCheck(ctx context.Context, request agentruntime.TurnRequest, sco
 		}
 		_ = json.Unmarshal([]byte(g.Spec), &cs)
 	}
-	desktopRecStateMu.Lock()
-	pk := sk + "\x00" + key
-	took := desktopRecPending[pk]
-	delete(desktopRecPending, pk)
-	desktopRecStateMu.Unlock()
 	desktopRecNoteRunGoal(scope.RunID, sk+"\x01"+key)
 	facts, missed, good := desktopRecMeasure(ctx, scope, cs)
-	if g.Count == 0 && took == 0 && len(missed) > 0 {
+	if g.Count == 0 && len(missed) > 0 {
 		// The baseline before any work: not an attempt.
 		return fmt.Sprintf("[goal_check] %s pinned; baseline: %s\nnot met yet: %s", name, desktopRecFacts2(facts), strings.Join(missed, "; ")), nil
 	}
 	complete := len(missed) == 0
-	o := recovery.Observation{Goal: key, Surface: "check", Method: "check", Strategy: desktopRecCheckStrategy(g), Run: scope.RunID, OK: complete, Complete: complete, Facts: facts, Took: took}
+	o := recovery.Observation{Goal: key, Surface: "check", Method: "check", Strategy: desktopRecCheckStrategy(g), Run: scope.RunID, OK: complete, Complete: complete, Facts: facts}
 	if !complete {
 		o.Error = "not met: " + strings.Join(missed, "; ")
 	}

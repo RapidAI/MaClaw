@@ -108,7 +108,9 @@ type desktopRunView struct {
 	ProgressWhere   string `json:"progress_where,omitempty"`
 	ProgressNext    string `json:"progress_next,omitempty"`
 	ProgressOpen    string `json:"progress_open,omitempty"`
-	Message         struct {
+	// Metadata is the run's own metadata (task_outcome lives there too).
+	Metadata map[string]string `json:"metadata,omitempty"`
+	Message  struct {
 		Content     string            `json:"content"`
 		Metadata    map[string]string `json:"metadata"`
 		Attachments []replyAttachment `json:"attachments"`
@@ -590,7 +592,7 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 			Error:       view.Error,
 			Handoff:     view.DesktopHandoff,
 			Attention:   view.AttentionReason,
-			Metadata:    view.Message.Metadata,
+			Metadata:    desktopRunOutcomeMeta(view.Message.Metadata, view.Metadata),
 			Attachments: view.Message.Attachments,
 			Waiting:     strings.TrimSpace(job.ClientMessageID) != "",
 		}
@@ -1074,7 +1076,7 @@ func (s *Service) readmitDesktopRun(ctx context.Context, tenantID, userID, botID
 		Error:       view.Error,
 		Handoff:     view.DesktopHandoff,
 		Attention:   view.AttentionReason,
-		Metadata:    view.Message.Metadata,
+		Metadata:    desktopRunOutcomeMeta(view.Message.Metadata, view.Metadata),
 		Attachments: view.Message.Attachments,
 		Waiting:     strings.TrimSpace(view.Message.Metadata["client_message_id"]) != "",
 	}

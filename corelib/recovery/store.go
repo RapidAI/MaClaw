@@ -212,7 +212,7 @@ func liveGoal(f *scopeFile, key string, ttl time.Duration, now time.Time) *Goal 
 	}
 	// An attempt in flight or an unconfirmed side effect never expires
 	// silently.
-	if ttl > 0 && now.Sub(g.Updated) > ttl && g.Lease == nil && g.State != StateStopped {
+	if ttl > 0 && now.Sub(g.Updated) > ttl && g.Lease == nil && len(g.Steps) == 0 && g.State != StateStopped {
 		delete(f.Goals, key)
 		return nil
 	}

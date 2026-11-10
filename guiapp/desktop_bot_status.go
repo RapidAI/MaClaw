@@ -224,6 +224,7 @@ type desktopBotDelivery struct {
 		AskUserOptionsJSON string            `json:"ask_user_options_json"`
 		Images             []DesktopBotImage `json:"images"`
 		Files              []DesktopBotFile  `json:"files"`
+		TaskOutcome        string            `json:"task_outcome"`
 	} `json:"reply"`
 	Error string `json:"error"`
 }
@@ -274,6 +275,9 @@ func (a *App) emitDesktopBotDelivery(owner string, item desktopBotDelivery) bool
 	}
 	if len(ids) > 0 {
 		payload["desktop_attachment_ids"] = ids
+	}
+	if o := desktopTaskOutcomeOf(item.Reply.TaskOutcome); o != "" {
+		payload["task_outcome"] = o
 	}
 	switch strings.TrimSpace(item.Phase) {
 	case "plan", "execute":

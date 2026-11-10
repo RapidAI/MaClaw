@@ -85,6 +85,20 @@ run completion (agentservice) ─► AssistantMessageMetadataHook (srv) ─► d
   stopped (`unconfirmed`), never retried automatically.
 * A late result from an attempt that lost its lease is not recorded
   (`stale`); a lost lease refuses the submit handshake.
+* Measured (goal_check) goals have no lease; each mutating step under them
+  is a durable step reservation (`BeginStep` / `EndStep`): admitted and
+  charged to `spent_ms` in the ledger **before** the step runs (min of the
+  step's own hard limit and the goal's time left; that is also the step's
+  deadline), settled to the real duration when the step really returns —
+  also after the tool call stopped waiting (timeout, cancel), an overrun
+  past the reservation is charged too. A process that dies mid-step leaves
+  the full reservation charged (pruned from `steps` LeaseTTL after its
+  deadline; a goal with steps in flight does not expire). A restart never
+  gives time back. The first step after a measurement opens the attempt and
+  counts it (`open`); the next goal_check closes it without counting again.
+  Steps of several runs/processes on one goal are each charged once (same
+  transaction). Out of time while other steps hold reservations refuses the
+  step without exhausting the goal.
 
 ## Defaults (env `MACLAW_RECOVERY_*`)
 
@@ -138,8 +152,14 @@ recipes / 64 conversations.
   not expire); an instruction resumed after that starts a fresh budget.
 * Within one instruction, all articles to one site share one goal until the
   current one is verified (conservative: a failing article blocks the next).
-* Time spent in mutating steps under a check goal is kept in memory until the
-  next goal_check; a process restart in between loses that part.
+* A step's deadline stops MaClawSrv's wait for it and cancels its context;
+  a container `bash` step is additionally wrapped in coreutils
+  `timeout -k 5 <reserved s>` (when present in the container). Other
+  remote operations (app_run, task_run, skill_run, computer, file_write …)
+  stop when their request is cancelled only as far as desktopd/Hub honour
+  that; until they return, their reservation stays charged.
+* Tools other than desktop mutating steps and publish (e.g. non-desktop
+  tools, sub-agents) are not instrumented.
 * A publish trial leaves the trial text in the editor (sites that autosave
   keep it as the draft until the real attempt refills it).
 

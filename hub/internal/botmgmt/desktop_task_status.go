@@ -50,6 +50,7 @@ type desktopTaskPin struct {
 	Started            string `json:"started,omitempty"`
 	Finished           string `json:"finished,omitempty"`
 	ClientMessageID    string `json:"client_message_id,omitempty"`
+	TaskOutcome        string `json:"task_outcome,omitempty"`
 }
 
 // DesktopTaskStatus is one run as a status question would see it.
@@ -63,6 +64,7 @@ type DesktopTaskStatus struct {
 	WhereWeAre   string    `json:"where_we_are,omitempty"`
 	NextStep     string    `json:"next_step,omitempty"`
 	OpenProblems string    `json:"open_problems,omitempty"`
+	TaskOutcome  string    `json:"task_outcome,omitempty"`
 	Started      time.Time `json:"-"`
 }
 
@@ -150,6 +152,7 @@ func (st *desktopAdmitState) pinLocked() *desktopTaskPin {
 		Attention:          strings.TrimSpace(st.reply.AttentionReason),
 		Delivered:          st.delivered,
 		ClientMessageID:    strings.TrimSpace(st.clientMessageID),
+		TaskOutcome:        desktopTaskOutcome(st.reply.TaskOutcome),
 	}
 	if !st.started.IsZero() {
 		pin.Started = st.started.UTC().Format(time.RFC3339)
@@ -226,6 +229,7 @@ func (s *Service) restoreDesktopTasks(tenantID string, tasks map[string]*desktop
 				AskUserSecretName:  pin.AskUserSecretName,
 				AskUserQuestion:    pin.AskUserQuestion,
 				AskUserOptionsJSON: pin.AskUserOptionsJSON,
+				TaskOutcome:        desktopTaskOutcome(pin.TaskOutcome),
 			},
 		}
 		if state.status == "" {
@@ -624,6 +628,7 @@ func statusFromState(state *desktopAdmitState) DesktopTaskStatus {
 		WhereWeAre:   state.progressWhere,
 		NextStep:     state.progressNext,
 		OpenProblems: state.progressOpen,
+		TaskOutcome:  desktopTaskOutcome(state.reply.TaskOutcome),
 		Started:      state.started,
 	}
 }
@@ -1079,6 +1084,10 @@ func desktopTaskStatusLine(item DesktopTaskStatus, lang string, withResult, show
 			line = "没有完成。"
 		}
 	default:
+		if not := desktopOutcomeStatusLine(item.TaskOutcome, hant, en); not != "" {
+			line = not
+			break
+		}
 		if en {
 			line = "That one is done."
 		} else if hant {

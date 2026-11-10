@@ -67,6 +67,10 @@ type Reply struct {
 	AskUserOptionsJSON string       `json:"ask_user_options_json,omitempty"`
 	Images             []ReplyImage `json:"images,omitempty"`
 	Files              []ReplyFile  `json:"files,omitempty"`
+	// TaskOutcome is MaClawSrv's measured task outcome for the run (empty
+	// from an older MaClawSrv): anything but "done" means not finished,
+	// whatever the reply text or run status says.
+	TaskOutcome string `json:"task_outcome,omitempty"`
 }
 
 // ReplyFile is one document the bot produced for this chat.
@@ -478,8 +482,9 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		Error           string `json:"error"`
 		Async           bool   `json:"async"`
 		Run             struct {
-			ID     string `json:"id"`
-			Status string `json:"status"`
+			ID       string            `json:"id"`
+			Status   string            `json:"status"`
+			Metadata map[string]string `json:"metadata"`
 		} `json:"run"`
 	}
 	// The token exchange is a remote call: keep it off s.mu, so one slow
@@ -628,7 +633,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		Error:       payload.Error,
 		Handoff:     payload.DesktopHandoff,
 		Attention:   payload.AttentionReason,
-		Metadata:    payload.Message.Metadata,
+		Metadata:    desktopRunOutcomeMeta(payload.Message.Metadata, payload.Run.Metadata),
 		Attachments: payload.Message.Attachments,
 		Waiting:     strings.TrimSpace(clientMessageID) != "",
 	})
@@ -757,6 +762,8 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 	}
 	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: sendToUser, Waiting: body.Waiting})
 	reply := Reply{Text: text, SendToUser: visible.Sentence, Images: replyImages(body.Attachments), Files: replyFiles(body.Attachments)}
+	reply.TaskOutcome = desktopTaskOutcome(body.Metadata[desktopTaskOutcomeKey])
+	reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, reply.SendToUser)
 	if meta := body.Metadata; meta != nil {
 		reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
 		reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
@@ -801,9 +808,9 @@ func desktopSentenceReply(body desktopCommandBody) Reply {
 		sendToUser = strings.TrimSpace(body.Metadata["send_to_user"])
 	}
 	visible := desktopbot.Visible(desktopbot.Turn{SendToUser: sendToUser})
-	reply := Reply{}
+	reply := Reply{TaskOutcome: desktopTaskOutcome(body.Metadata[desktopTaskOutcomeKey])}
 	if visible.Bubble && !visible.Failed {
-		reply.SendToUser = visible.Sentence
+		reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, visible.Sentence)
 		reply.Images = replyImages(body.Attachments)
 		reply.Files = replyFiles(body.Attachments)
 	}

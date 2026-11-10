@@ -838,6 +838,11 @@ func (s *Service) reportDelegateRunEnd(tenantID, userID, botID, runID, status st
 	case runErr != nil || status == "failed" || status == "error":
 		topic = "blocked"
 		text = "失败 / failed: " + firstNonEmptyString(text, fmt.Sprint(runErr))
+	case desktopOutcomeNotDone(reply.TaskOutcome):
+		// The run finished but its task did not (measured by MaClawSrv): a
+		// confident reply is not a "done".
+		topic = "blocked"
+		text = firstNonEmptyString(desktopOutcomeStatusLine(reply.TaskOutcome, false, false)+" "+text, "需要人处理 / needs the person")
 	case reply.Handoff || strings.TrimSpace(reply.AttentionReason) != "" || strings.TrimSpace(reply.AskUserQuestion) != "":
 		topic = "blocked"
 		text = firstNonEmptyString(strings.TrimSpace(reply.AskUserQuestion), strings.TrimSpace(reply.AttentionReason), text, "需要人处理 / needs the person")
