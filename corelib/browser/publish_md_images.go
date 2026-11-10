@@ -9,6 +9,7 @@ package browser
 // end with its own distinct link; anything less stops before the submit.
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -78,8 +79,50 @@ func (p *publishRun) quietUploads(max time.Duration) {
 	}
 }
 
-// pasteOneMarkdown pastes picture k and waits for a link not in known.
-func (p *publishRun) pasteOneMarkdown(obj string, k int, known map[string]bool) (string, error) {
+// errPictureLost: inserting one picture removed a picture link the editor
+// held before. It is measured, not guessed: the earlier link is gone from
+// the editor text while the new upload was stored or not.
+type errPictureLost struct {
+	lost, at int
+	stored   bool
+}
+
+func (e errPictureLost) Error() string {
+	how := "and no new link for it appeared"
+	if e.stored {
+		how = "although the site stored its upload"
+	}
+	return fmt.Sprintf("regression: inserting picture %d removed picture %d's link from the editor text (%s); nothing was submitted", e.at, e.lost, how)
+}
+
+// prepInsert runs the strategy's native key chords in the editor before a
+// picture goes in (trusted input: editors that keep their own caret update
+// it from real keys, not from a script-set selection).
+func (p *publishRun) prepInsert(obj string) error {
+	if p.spec.InsertSettle > 0 {
+		time.Sleep(p.spec.InsertSettle)
+	}
+	if len(p.spec.InsertPrepKeys) == 0 {
+		return nil
+	}
+	if _, err := p.call(obj, "function(){ this.focus(); return 'ok'; }"); err != nil {
+		return err
+	}
+	for _, chord := range p.spec.InsertPrepKeys {
+		if err := p.pressChord(chord); err != nil {
+			return fmt.Errorf("key %s: %v", chord, err)
+		}
+		time.Sleep(60 * time.Millisecond)
+	}
+	return nil
+}
+
+// pasteOneMarkdown pastes picture k and waits for a link not in known; an
+// earlier link (have) that disappears meanwhile is a regression.
+func (p *publishRun) pasteOneMarkdown(obj string, k int, known map[string]bool, have []string) (string, error) {
+	if err := p.prepInsert(obj); err != nil {
+		return "", err
+	}
 	t0 := time.Now()
 	if _, err := p.send("Runtime.callFunctionOn", map[string]interface{}{"objectId": obj, "functionDeclaration": publishPasteImageFn, "arguments": []map[string]interface{}{{"value": k}, {"value": true}}, "awaitPromise": true, "returnByValue": true}); err != nil {
 		return "", err
@@ -87,11 +130,23 @@ func (p *publishRun) pasteOneMarkdown(obj string, k int, known map[string]bool) 
 	end := time.Now().Add(mdPictureWait)
 	for time.Now().Before(end) {
 		time.Sleep(500 * time.Millisecond)
-		if _, _, failed, _ := p.net.uploadStats(t0); failed > 0 {
+		ok, _, failed, _ := p.net.uploadStats(t0)
+		if failed > 0 {
 			return "", fmt.Errorf("the site's upload failed: %s", strings.Join(p.net.failedSince(t0), "; "))
 		}
+		text := p.mdText(obj)
+		for i, u := range have {
+			if !strings.Contains(text, u) {
+				// Give the editor a moment: a re-render can drop and
+				// restore text; a lost link stays lost.
+				time.Sleep(1500 * time.Millisecond)
+				if !strings.Contains(p.mdText(obj), u) {
+					return "", errPictureLost{lost: i + 1, at: k + 1, stored: ok > 0}
+				}
+			}
+		}
 		var fresh []string
-		for _, u := range markdownImageURLs(p.mdText(obj)) {
+		for _, u := range markdownImageURLs(text) {
 			if !known[u] {
 				fresh = append(fresh, u)
 			}
@@ -113,11 +168,19 @@ func (p *publishRun) pasteOneMarkdown(obj string, k int, known map[string]bool) 
 }
 
 // pasteImagesMarkdown puts every picture file into the markdown editor, one
-// at a time, and checks each has its own remote link.
+// at a time, and checks each has its own remote link and that no earlier
+// one was lost on the way. Facts: pictures_wanted, pictures_kept, and on a
+// loss regression=1 lost_item=N.
 func (p *publishRun) pasteImagesMarkdown(obj string) (string, error) {
 	if _, err := p.loadPicker(); err != nil {
 		return "", err
 	}
+	files := len(p.spec.Files)
+	if p.spec.TrialPictures > 0 && p.spec.TrialPictures < files {
+		files = p.spec.TrialPictures
+	}
+	p.rep.fact("pictures_wanted", float64(files))
+	p.rep.fact("regression", 0)
 	known := map[string]bool{}
 	for _, u := range markdownImageURLs(p.mdText(obj)) {
 		known[u] = true
@@ -125,17 +188,35 @@ func (p *publishRun) pasteImagesMarkdown(obj string) (string, error) {
 	start := len(known)
 	var links []string
 	var notes []string
-	for k := range p.spec.Files {
+	kept := func() {
+		text := p.mdText(obj)
+		n := 0
+		for _, u := range links {
+			if strings.Contains(text, u) {
+				n++
+			}
+		}
+		p.rep.fact("pictures_kept", float64(n))
+	}
+	for k := 0; k < files; k++ {
 		p.quietUploads(15 * time.Second)
-		u, err := p.pasteOneMarkdown(obj, k, known)
-		if err != nil && !strings.Contains(err.Error(), "upload failed") {
+		u, err := p.pasteOneMarkdown(obj, k, known, links)
+		var lost errPictureLost
+		if err != nil && !errors.As(err, &lost) && !strings.Contains(err.Error(), "upload failed") {
 			// One more try; a late link from the first paste counts too.
 			notes = append(notes, fmt.Sprintf("picture %d retried (%v)", k+1, err))
 			p.quietUploads(10 * time.Second)
-			u, err = p.pasteOneMarkdown(obj, k, known)
+			u, err = p.pasteOneMarkdown(obj, k, known, links)
+		}
+		if errors.As(err, &lost) {
+			kept()
+			p.rep.fact("regression", 1)
+			p.rep.fact("lost_item", float64(lost.lost))
+			return strings.Join(notes, "; "), err
 		}
 		if err != nil {
-			return strings.Join(notes, "; "), fmt.Errorf("picture %d of %d was not stored by the site (%v); %d of %d picture(s) are in the editor; nothing was submitted", k+1, len(p.spec.Files), err, len(links), len(p.spec.Files))
+			kept()
+			return strings.Join(notes, "; "), fmt.Errorf("picture %d of %d was not stored by the site (%v); %d of %d picture(s) are in the editor; nothing was submitted", k+1, files, err, len(links), files)
 		}
 		links = append(links, u)
 	}
@@ -146,11 +227,16 @@ func (p *publishRun) pasteImagesMarkdown(obj string) (string, error) {
 			have++
 		}
 	}
-	if have < len(p.spec.Files) {
-		return "", fmt.Errorf("after pasting, the editor keeps %d of the %d picture link(s); nothing was submitted", have, len(p.spec.Files))
+	p.rep.fact("pictures_kept", float64(have))
+	if have < files {
+		p.rep.fact("regression", 1)
+		return "", fmt.Errorf("after pasting, the editor keeps %d of the %d picture link(s); nothing was submitted", have, files)
 	}
 	p.mdLinks = links
 	out := fmt.Sprintf("pasted %d picture(s) one at a time; each has its own stored link (links %d->%d)", len(links), start, len(markdownImageURLs(text)))
+	if len(p.spec.InsertPrepKeys) > 0 {
+		out += "; before each picture pressed " + strings.Join(p.spec.InsertPrepKeys, ",")
+	}
 	if len(notes) > 0 {
 		out += "; " + strings.Join(notes, "; ")
 	}

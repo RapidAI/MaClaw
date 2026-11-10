@@ -1,0 +1,88 @@
+<!doctype html><meta charset=utf-8><title>写文章-CSDN博客</title>
+<style>body{font:14px sans-serif;margin:0} .article-bar__title{width:600px;height:30px} pre.editor__inner{display:block;width:900px;min-height:400px;border:1px solid #ccc;white-space:pre-wrap;margin:0}
+.modal{position:fixed;left:200px;top:100px;width:600px;height:400px;background:#fff;border:1px solid #333;display:none} .modal.show{display:block} .tag-chip{display:inline-block;padding:2px 6px;background:#eef}</style>
+<body>
+<div class="article-bar"><input class="article-bar__title" placeholder="请输入文章标题（5～100个字）"><button id="pub" class="btn-publish">发布文章</button></div>
+<div class="editor"><pre class="editor__inner markdown-highlighting" contenteditable="plaintext-only"></pre></div>
+<div class="modal modal__publish-article" id="modal">
+  <div class="row"><span class="label">*文章标签</span> <span id="chips"></span> <button id="addtag" class="tag__btn-tag">添加文章标签</button> <input id="taginput" placeholder="请输入文字搜索，Enter键入可添加自定义标签" style="display:none"></div>
+  <div class="row"><span class="label">文章类型</span> <label><input type="radio" name="t" checked>原创</label><label><input type="radio" name="t">转载</label></div>
+  <div class="footer"><button id="cancel">取消</button><button id="save">保存为草稿</button><button id="confirm" class="button btn-b-red">发布文章</button></div>
+  <div id="err"></div>
+</div>
+<script>
+// A markdown editor that keeps its OWN caret (like cledit + PageDown, the
+// CSDN /md editor): the remembered selection changes only on trusted
+// keyboard/mouse/input events, focus puts it back into the page, and a
+// picture goes in at the remembered selection. After a picture the editor
+// selects its caption; a picture inserted on a selection that already sits
+// inside ![..](..) toggles that link OFF and inserts nothing (PageDown's
+// link toggle). A script-set DOM selection is ignored.
+const ed = document.querySelector('pre.editor__inner');
+let mem = {s: 0, e: 0}, busy = false;
+window.__toggled = 0;
+function offsets() {
+  const sel = getSelection();
+  if (!sel.rangeCount || !ed.contains(sel.anchorNode)) return null;
+  const r = sel.getRangeAt(0), a = document.createRange();
+  a.setStart(ed, 0); a.setEnd(r.startContainer, r.startOffset);
+  const s = a.toString().length;
+  return {s, e: s + r.toString().length};
+}
+function remember(ev) { if (!ev.isTrusted) return; const o = offsets(); if (o) mem = o; }
+['keyup', 'mouseup', 'input'].forEach(t => ed.addEventListener(t, remember));
+function restore() {
+  const t = ed.firstChild; if (!t) return;
+  const r = document.createRange();
+  r.setStart(t, Math.min(mem.s, t.length)); r.setEnd(t, Math.min(mem.e, t.length));
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+}
+ed.addEventListener('focus', () => setTimeout(restore, 0));
+function setText(t) { ed.textContent = t; ed.normalize(); }
+function insertImage(url) {
+  const t = ed.textContent, s = Math.min(mem.s, t.length), e = Math.min(mem.e, t.length);
+  let before = t.slice(0, s), sel = t.slice(s, e), after = t.slice(e);
+  const m1 = before.match(/\s*!?\[$/), m2 = after.match(/^\][ ]?(?:\n[ ]*)?(\(.*?\))?/);
+  if (m1 && m2 && m2[0].length > 1) {
+    before = before.slice(0, before.length - m1[0].length) + m1[0].replace(/!?\[/, '');
+    after = after.slice(m2[0].length);
+    setText(before + sel + after);
+    mem = {s: before.length, e: before.length + sel.length};
+    window.__toggled++;
+    restore();
+    return;
+  }
+  const desc = sel || '在这里插入图片描述';
+  setText(before + '![' + desc + '](' + url + ')\n' + after);
+  mem = {s: before.length + 2, e: before.length + 2 + desc.length};
+  restore();
+}
+ed.addEventListener('paste', async ev => {
+  const items = [...(ev.clipboardData ? ev.clipboardData.files : [])];
+  if (!items.length) return;
+  ev.preventDefault();
+  const f = items[0];
+  if (!/^image\/(png|jpe?g|gif|webp|bmp)$/.test(f.type)) { window.__rejected = (window.__rejected || 0) + 1; return; }
+  if (busy) { window.__lost = (window.__lost || 0) + 1; return; }
+  busy = true;
+  const fd = new FormData(); fd.append('file', f);
+  const r = await fetch('/up', {method: 'POST', body: fd});
+  const u = await r.text();
+  insertImage(u);
+  busy = false;
+  autosave();
+});
+function autosave() { fetch('/saveArticle', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: document.querySelector('.article-bar__title').value, markdowncontent: ed.textContent, status: 2})}); }
+ed.addEventListener('input', autosave);
+const modal = document.getElementById('modal');
+document.getElementById('pub').onclick = () => modal.classList.add('show');
+document.getElementById('addtag').onclick = () => { const i = document.getElementById('taginput'); i.style.display = 'inline-block'; i.focus(); };
+document.getElementById('taginput').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.value) { const c = document.createElement('span'); c.className = 'tag-chip'; c.textContent = e.target.value; document.getElementById('chips').appendChild(c); e.target.value = ''; } });
+document.getElementById('confirm').onclick = async () => {
+  if (!document.querySelector('#chips .tag-chip')) { document.getElementById('err').textContent = '请添加文章标签'; return; }
+  const r = await fetch('/saveArticle', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: document.querySelector('.article-bar__title').value, markdowncontent: ed.textContent, status: 0, tags: [...document.querySelectorAll('#chips .tag-chip')].map(c => c.textContent).join(',')})});
+  const j = await r.json();
+  if (j.code !== 200) { document.getElementById('err').textContent = j.msg || 'failed'; return; }
+  location.href = '/mp_blog/creation/success/' + j.data.id;
+};
+</script>

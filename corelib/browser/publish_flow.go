@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -84,6 +85,15 @@ type PublishSpec struct {
 	UserCookie string
 	// PendingTexts: result-page text that says the post is under review.
 	PendingTexts []string
+	// Strategy parameters a run may change at runtime (recovery): native
+	// key chords pressed in the editor before each picture goes in (e.g.
+	// ctrl+End, Enter: put the editor's own caret on a new last line), and
+	// a pause before each picture.
+	InsertPrepKeys []string
+	InsertSettle   time.Duration
+	// TrialPictures > 0 is a bounded test: fill title and body, put in only
+	// the first N pictures, measure, and stop; nothing is submitted.
+	TrialPictures int
 }
 
 type PublishStep struct {
@@ -117,6 +127,17 @@ type PublishReport struct {
 	// Method records which branch each primitive took (exploration
 	// recording; see publishRun.note): the site experience stores it.
 	Method map[string]string `json:"method,omitempty"`
+	// Facts are the run's measured results (pictures wanted/kept, a lost
+	// earlier picture, published); runtime recovery reads them.
+	Facts map[string]float64 `json:"facts,omitempty"`
+	Trial bool               `json:"trial,omitempty"`
+}
+
+func (r *PublishReport) fact(k string, v float64) {
+	if r.Facts == nil {
+		r.Facts = map[string]float64{}
+	}
+	r.Facts[k] = v
 }
 
 // PublishState is the outcome of a publish run.
@@ -150,12 +171,26 @@ func (r *PublishReport) String() string {
 		}
 		fmt.Fprintf(&b, "%s: %s (%dms) %s\n", s.Name, mark, s.TookMS, s.Detail)
 	}
+	if r.Trial && r.Stuck == "" {
+		fmt.Fprintf(&b, "trial finished: nothing was submitted\n")
+	}
 	if r.Stuck != "" {
 		fmt.Fprintf(&b, "publish stopped at step %q; nothing after it ran", r.Stuck)
 	} else if r.ResultURL != "" {
 		fmt.Fprintf(&b, "published: %s", r.ResultURL)
 		if r.PostID != "" {
 			fmt.Fprintf(&b, " (post id %s)", r.PostID)
+		}
+	}
+	if len(r.Facts) > 0 {
+		keys := make([]string, 0, len(r.Facts))
+		for k := range r.Facts {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b.WriteString("\n[facts]")
+		for _, k := range keys {
+			fmt.Fprintf(&b, " %s=%g", k, r.Facts[k])
 		}
 	}
 	return strings.TrimSpace(b.String())
@@ -199,9 +234,9 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		{"fill_title", spec.Title == "", p.fillTitle},
 		{"fill_body", spec.Body == "", p.fillBody},
 		{"paste_images", len(spec.Files) == 0 || spec.Body == "", p.pasteImages},
-		{"readback", spec.Title == "" && spec.Body == "", p.readback},
-		{"submit", false, p.submit},
-		{"verify_result", false, p.verifyAll},
+		{"readback", (spec.Title == "" && spec.Body == "") || spec.TrialPictures > 0, p.readback},
+		{"submit", spec.TrialPictures > 0, p.submit},
+		{"verify_result", spec.TrialPictures > 0, p.verifyAll},
 	}
 	for _, st := range steps {
 		if st.skip {
@@ -279,12 +314,19 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		}
 	}
 	p.rep.NetLog = p.net.logLines(publishNetLogMax)
+	if spec.TrialPictures > 0 {
+		p.rep.Trial = true
+		p.rep.State = PublishNotSubmitted
+		p.rep.fact("trial", 1)
+		return p.rep, nil
+	}
 	if p.rep.Evidence == "" {
 		// verify only succeeds with evidence; this is a safety net.
 		p.rep.State = PublishSubmitted
 		return p.rep, fmt.Errorf("publish ended without evidence of the post")
 	}
 	p.rep.State = PublishLive
+	p.rep.fact("published", 1)
 	return p.rep, nil
 }
 

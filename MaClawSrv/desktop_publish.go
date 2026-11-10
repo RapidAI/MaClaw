@@ -53,6 +53,9 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		// the hard step limit (ZN-21 was cut off at 300s mid-read-back).
 		Deadline: time.Now().Add(desktopStepTimeout("publish") - 30*time.Second),
 	}
+	if err := desktopPublishApplyStrategy(args, &spec); err != nil {
+		return "", err
+	}
 	ts := desktopTaskSpecFor(scope.RunID)
 	// A request naming several sites: the call is for the requested site its
 	// editor_url or open page is on, else the next one not done yet.
@@ -123,6 +126,24 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		session.Policy.AllowUpload = true
 	}
 	rep, err := browser.RunPublish(session.PublishDriver(), spec)
+	return desktopPublishFinish(scope, spec, site, expUsed, rep, err)
+}
+
+// desktopPublishFinish records a finished pipeline run: the recovery facts,
+// the run's publish record and the site experience. A trial (trial_pictures)
+// is a test, not an outcome: it records neither, and never counts as posted.
+func desktopPublishFinish(scope agentruntime.Scope, spec browser.PublishSpec, site string, expUsed bool, rep *browser.PublishReport, err error) (string, error) {
+	desktopRecoveryNotePublish(scope, rep)
+	if spec.TrialPictures > 0 {
+		out := ""
+		if rep != nil {
+			out = rep.String()
+		}
+		if err != nil {
+			return "", fmt.Errorf("%s\n%s\ntrial: nothing was submitted", err.Error(), out)
+		}
+		return out + "\ntrial: nothing was submitted; the editor holds the trial text and pictures until the real publish refills it", nil
+	}
 	rec := desktopRecordPublish(scope, spec, rep, err)
 	siteExpRecord(scope, site, expUsed, spec, rep, err)
 	out := ""

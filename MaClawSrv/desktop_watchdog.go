@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -215,11 +216,21 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 	defer desktopWatchdogEnd(run.ID)
 	key := desktopLedgerKey(scope)
 	status := string(run.Status)
+	// The run status stays as it is (compatibility); what the task really
+	// reached is task_outcome, from the goals' measured facts.
+	outcome, why := desktopRecoveryOutcome(run.ID)
+	if outcome == "" && msg != nil && msg.Metadata["response_source"] == "ask_user" {
+		outcome, why = "awaiting_user", "waiting for the person's answer"
+	}
+	if outcome != "" {
+		status += " outcome=" + outcome
+	}
 	if msg != nil && strings.TrimSpace(msg.Content) != "" {
 		if msg.Metadata["publish_state"] == "submitted_unconfirmed" {
 			// The run finished; its post is not confirmed (not a success).
 			status += " publish_unconfirmed"
 		}
+		desktopApplyOutcome(msg, outcome, why)
 		desktopLedgerAdd(key, desktopLedgerEntry{Kind: "run_end", Run: run.ID, Detail: status})
 		return msg
 	}
@@ -266,6 +277,7 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 		msg.Metadata = map[string]string{}
 	}
 	msg.Metadata["receipt"] = "srv"
+	desktopApplyOutcome(msg, outcome, why)
 	desktopLedgerAdd(key, desktopLedgerEntry{Kind: "run_end", Run: run.ID, Detail: status + " receipt_by_srv"})
 	log.Printf("[watchdog] run=%s ended without a reply; srv receipt sent (status=%s)", run.ID, status)
 	return msg
@@ -280,4 +292,36 @@ func desktopLedgerRunPost(entries []desktopLedgerEntry, runID string) (desktopLe
 		}
 	}
 	return desktopLedgerEntry{}, false
+}
+
+// desktopOutcomeSaysNotDone: the reply already tells the person it is not done.
+var desktopOutcomeSaysNotDone = regexp.MustCompile(`没做成|没做完|未完成|没有完成|还没完成|没发出|未发布|没有发布|没发布|未提交|没有提交|未确认|还差`)
+
+// desktopApplyOutcome marks a reply whose task is not done (blocked,
+// partial, not_submitted, unconfirmed, awaiting_user) and, unless the reply
+// already says so, starts it with one plain line and the measured evidence.
+func desktopApplyOutcome(msg *agentservice.Message, outcome, why string) {
+	if msg == nil || outcome == "" {
+		return
+	}
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]string{}
+	}
+	msg.Metadata["task_outcome"] = outcome
+	if outcome == "awaiting_user" || desktopOutcomeSaysNotDone.MatchString(msg.Content) {
+		return
+	}
+	line := map[string]string{
+		"partial":       "这件还没完全做成，只完成了一部分。",
+		"blocked":       "这件没做成，我已经停下，没有再重复尝试。",
+		"not_submitted": "这件还没提交，内容没有发出去。",
+		"unconfirmed":   "提交后没能确认结果，我没有重复提交，请以页面上的实际状态为准。",
+	}[outcome]
+	if line == "" {
+		return
+	}
+	if why != "" {
+		line += "（依据：" + why + "）"
+	}
+	msg.Content = line + "\n" + msg.Content
 }

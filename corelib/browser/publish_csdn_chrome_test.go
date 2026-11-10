@@ -28,8 +28,12 @@ type csdnFixture struct {
 }
 
 func csdnServer(t *testing.T) (*httptest.Server, *csdnFixture) {
+	return csdnServerPage(t, "csdn_md.html")
+}
+
+func csdnServerPage(t *testing.T, page string) (*httptest.Server, *csdnFixture) {
 	f := &csdnFixture{}
-	html, err := os.ReadFile(filepath.Join("testdata", "publish", "csdn_md.html"))
+	html, err := os.ReadFile(filepath.Join("testdata", "publish", page))
 	if err != nil {
 		t.Fatal(err)
 	}
