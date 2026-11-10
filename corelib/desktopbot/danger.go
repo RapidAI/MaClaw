@@ -576,3 +576,15 @@ func baseName(path string) string {
 	}
 	return path
 }
+
+// ForgetDangerAsk drops the stored asks of these keys: the run went on
+// without the command (it was not needed), so the question must not be
+// attached to its final reply (run_5ecb9d6d ended published with 「我想在桌面上
+// 跑一条命令…可以吗？」 still under the answer).
+func ForgetDangerAsk(keys ...string) {
+	for _, key := range keys {
+		if key = strings.TrimSpace(key); key != "" {
+			dangerAsks.Delete(key)
+		}
+	}
+}

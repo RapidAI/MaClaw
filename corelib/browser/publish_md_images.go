@@ -123,10 +123,39 @@ func (p *publishRun) pasteOneMarkdown(obj string, k int, known map[string]bool, 
 	if err := p.prepInsert(obj); err != nil {
 		return "", err
 	}
+	if k < len(p.spec.Files) && !p.mdInputFailed {
+		// The editor's own picture input first: one file, the site's own
+		// upload path (a synthetic paste into CSDN's editor wiped every
+		// second picture in run_5ecb9d6d). No input or no link: paste.
+		if in, _ := p.element(mdImageInputJS); in != "" {
+			t0 := time.Now()
+			if _, err := p.send("DOM.setFileInputFiles", map[string]interface{}{"objectId": in, "files": []string{p.spec.Files[k]}}); err == nil {
+				u, werr := p.waitMarkdownLink(obj, k, known, have, t0)
+				var lost errPictureLost
+				if werr == nil || errors.As(werr, &lost) || strings.Contains(werr.Error(), "upload failed") {
+					if werr == nil {
+						p.mdViaInput++
+					}
+					return u, werr
+				}
+				p.mdInputFailed = true
+			}
+		}
+	}
 	t0 := time.Now()
 	if _, err := p.send("Runtime.callFunctionOn", map[string]interface{}{"objectId": obj, "functionDeclaration": publishPasteImageFn, "arguments": []map[string]interface{}{{"value": k}, {"value": true}}, "awaitPromise": true, "returnByValue": true}); err != nil {
 		return "", err
 	}
+	return p.waitMarkdownLink(obj, k, known, have, t0)
+}
+
+// mdImageInputJS: the editor's own picture file input (not the run's
+// hidden picker, not one inside an open dialog such as a cover upload).
+const mdImageInputJS = `(() => { const all = []; const walk = r => { r.querySelectorAll('input[type=file]').forEach(e => all.push(e)); r.querySelectorAll('*').forEach(n => { if (n.shadowRoot) walk(n.shadowRoot); }); }; walk(document); const ok = e => e.id !== '__pub_picker' && !e.disabled && !e.closest('[role=dialog],.el-dialog,.modal,[class*=modal],[class*=dialog]'); const img = all.filter(e => ok(e) && /image|\.(png|jpe?g|gif|webp)/i.test(e.accept || '')); return img[0] || null; })()`
+
+// waitMarkdownLink waits for picture k's own new link after t0; an earlier
+// link (have) that disappears meanwhile is a regression.
+func (p *publishRun) waitMarkdownLink(obj string, k int, known map[string]bool, have []string, t0 time.Time) (string, error) {
 	end := time.Now().Add(mdPictureWait)
 	for time.Now().Before(end) {
 		time.Sleep(500 * time.Millisecond)
@@ -234,6 +263,9 @@ func (p *publishRun) pasteImagesMarkdown(obj string) (string, error) {
 	}
 	p.mdLinks = links
 	out := fmt.Sprintf("pasted %d picture(s) one at a time; each has its own stored link (links %d->%d)", len(links), start, len(markdownImageURLs(text)))
+	if p.mdViaInput > 0 {
+		out += fmt.Sprintf("; %d through the editor's picture input", p.mdViaInput)
+	}
 	if len(p.spec.InsertPrepKeys) > 0 {
 		out += "; before each picture pressed " + strings.Join(p.spec.InsertPrepKeys, ",")
 	}

@@ -94,6 +94,12 @@ type PublishSpec struct {
 	// TrialPictures > 0 is a bounded test: fill title and body, put in only
 	// the first N pictures, measure, and stop; nothing is submitted.
 	TrialPictures int
+	// OwnDrafts: editor pages (with their draft id) this run's own earlier
+	// publish calls left; a call may go on there. Any other draft page the
+	// tab shows (a restored session's old draft) is left for a fresh
+	// EditorURL unless ReuseDraft (the person asked to continue a draft).
+	OwnDrafts  []string
+	ReuseDraft bool
 	// BeforeSubmit, when set, runs right before the submit click; an error
 	// stops the publish with nothing submitted.
 	BeforeSubmit func() error `json:"-"`
@@ -134,6 +140,9 @@ type PublishReport struct {
 	// earlier picture, published); runtime recovery reads them.
 	Facts map[string]float64 `json:"facts,omitempty"`
 	Trial bool               `json:"trial,omitempty"`
+	// EditorPage: the tab's address when the run ended (a failed call's
+	// draft page, so the next call of the same run may go on there).
+	EditorPage string `json:"editor_page,omitempty"`
 }
 
 func (r *PublishReport) fact(k string, v float64) {
@@ -219,6 +228,11 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		p.rep.Stuck = "spec"
 		return p.rep, fmt.Errorf("publish not started: the body has [[img:%d]] but only %d picture file(s) were given; pass a file for every anchor or remove the anchor (nothing was filled or posted)", b[0], len(spec.Files))
 	}
+	if why := TitleProblem(spec.Title); why != "" {
+		p.rep.State = PublishNotSubmitted
+		p.rep.Stuck = "spec"
+		return p.rep, fmt.Errorf("publish not started: %s", why)
+	}
 	if why := ParagraphProblem(spec.Body); why != "" {
 		p.rep.State = PublishNotSubmitted
 		p.rep.Stuck = "spec"
@@ -227,6 +241,11 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 	p.net = startNetTracker(d)
 	defer p.net.stop()
 	defer p.recordMethod()
+	defer func() {
+		if cur, err := p.eval("location.href"); err == nil {
+			p.rep.EditorPage = cur
+		}
+	}()
 	steps := []struct {
 		name string
 		skip bool
@@ -383,6 +402,11 @@ func (p *publishRun) failedState() PublishState {
 }
 
 type publishRun struct {
+	// mdViaInput counts pictures the markdown editor's own file input took;
+	// mdInputFailed: that input gave no link once, the rest are pasted.
+	mdViaInput    int
+	mdInputFailed bool
+	coverSet      bool // the panel's cover input got the first picture
 	submitClicked atomic.Bool
 	clickedAt     time.Time
 	// incomplete: the post is live but its re-read found something missing.
@@ -523,7 +547,16 @@ func (p *publishRun) observe() (string, error) {
 	if p.spec.EditorURL != "" {
 		cur, _ := p.eval("location.href")
 		p.see(cur) // an earlier post's result page is never this run's
-		if !samePage(cur, p.spec.EditorURL) {
+		fresh := !samePage(cur, p.spec.EditorURL)
+		if !fresh && foreignDraft(cur, p.spec) {
+			// A restored tab on an old draft (editor.csdn.net/md?articleId=…
+			// of an earlier session): writing there edits that draft and its
+			// pictures and title leak into this post. A new post starts in a
+			// fresh editor.
+			fresh = true
+			p.rep.fact("fresh_editor", 1)
+		}
+		if fresh {
 			if err := p.navigate(p.spec.EditorURL); err != nil {
 				p.noEditor = true
 				return "", fmt.Errorf("could not open the editor %s: %v", p.spec.EditorURL, err)
@@ -553,6 +586,24 @@ func (p *publishRun) observe() (string, error) {
 		detail += "; the page shows a notice: " + n
 	}
 	return detail, nil
+}
+
+// foreignDraft: cur is the editor page with a draft of its own (a query or
+// path the plain EditorURL lacks) that this run did not leave.
+func foreignDraft(cur string, spec PublishSpec) bool {
+	if spec.ReuseDraft || spec.EditorURL == "" {
+		return false
+	}
+	n := func(u string) string { return strings.TrimRight(strings.SplitN(u, "#", 2)[0], "/") }
+	if n(cur) == n(spec.EditorURL) {
+		return false
+	}
+	for _, d := range spec.OwnDrafts {
+		if d != "" && n(d) == n(cur) {
+			return false
+		}
+	}
+	return true
 }
 
 // samePage: same host and path, ignoring query and trailing slash.
@@ -2123,4 +2174,19 @@ func (p *publishRun) trialMeasure() {
 	}
 	p.rep.fact("pictures_wanted", float64(want))
 	p.rep.fact("pictures_kept", float64(n))
+}
+
+// TitleProblem: a title that is Markdown, not a title (run_5ecb9d6d's body
+// once began 「![## 一、先说结论」: a picture link swallowed a heading).
+func TitleProblem(title string) string {
+	t := strings.TrimSpace(title)
+	switch {
+	case strings.HasPrefix(t, "!["), strings.Contains(t, "]("):
+		return "the title holds a Markdown picture link; pass the plain title text"
+	case strings.HasPrefix(t, "# "), strings.HasPrefix(t, "##"):
+		return "the title starts with a Markdown heading mark (#); pass the plain title text"
+	case strings.Contains(t, "\n"):
+		return "the title has a line break; pass one line"
+	}
+	return ""
 }

@@ -59,12 +59,15 @@ func applyTaskOutcome(run *Run, msg *Message) string {
 	run.Metadata[TaskOutcomeKey] = outcome
 	if TaskOutcomeNeedsUser(outcome) {
 		run.WaitingForUser = true
-		if notice != "" && !strings.HasPrefix(strings.TrimSpace(msg.Content), notice) {
-			if strings.TrimSpace(msg.Content) == "" {
-				msg.Content = notice
-			} else {
-				msg.Content = notice + "\n" + msg.Content
-			}
+	}
+	// The host sends a notice only when the reply needs one: the task is
+	// not done, or the reply denies a result the host verified (a done
+	// task whose reply says it failed gets the correction too).
+	if notice != "" && !strings.HasPrefix(strings.TrimSpace(msg.Content), notice) {
+		if strings.TrimSpace(msg.Content) == "" {
+			msg.Content = notice
+		} else {
+			msg.Content = notice + "\n" + msg.Content
 		}
 	}
 	return outcome

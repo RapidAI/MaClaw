@@ -253,6 +253,9 @@ func (p *publishRun) handlePanel() (string, bool) {
 		return "", false
 	}
 	did, left := p.fillPanel(sc)
+	if c := p.panelCover(); c != "" {
+		did = append(did, c)
+	}
 	if len(did) > 0 {
 		time.Sleep(500 * time.Millisecond)
 		if again, err := p.scanPanel(); err == nil && again.Panel {
@@ -281,3 +284,40 @@ func (p *publishRun) handlePanel() (string, bool) {
 	}
 	return detail + "; pressed " + sc.Confirm, true
 }
+
+// panelCoverJS: the open panel's empty picture input (a cover such as
+// CSDN's 添加封面 / 从本地上传 el-upload__input) when the panel shows no
+// cover picture yet.
+const panelCoverJS = `(() => { const p0 = document.querySelector('[data-mc-panel]'); if (!p0) return null; const pn = p0.closest('[role=dialog],.el-dialog,.modal,[class*=modal i],[class*=dialog i],[class*=drawer i]') || p0; const ins = [...pn.querySelectorAll('input[type=file]')].filter(e => !e.disabled && (!e.accept || /image|\.(png|jpe?g|gif|webp)/i.test(e.accept)) && !(e.files && e.files.length)); if (!ins.length) return null; const box = (ins[0].parentElement && ins[0].parentElement.closest('[class*=cover i],[class*=upload i]')) || ins[0].parentElement; if (box && [...box.querySelectorAll('img')].some(i => i.naturalWidth > 0 || /^(https?|blob|data):/.test(i.src))) return null; return ins[0]; })()`
+
+// panelCover puts the post's first picture on the panel's empty cover
+// input (run_5ecb9d6d went out with an empty CSDN cover). A cover the
+// panel already shows is left as it is.
+func (p *publishRun) panelCover() string {
+	if len(p.spec.Files) == 0 || p.coverSet || !isImageExt(fileExt(p.spec.Files[:1])) {
+		return ""
+	}
+	in, _ := p.element(panelCoverJS)
+	if in == "" {
+		return ""
+	}
+	if _, err := p.send("DOM.setFileInputFiles", map[string]interface{}{"objectId": in, "files": []string{p.spec.Files[0]}}); err != nil {
+		return ""
+	}
+	p.coverSet = true
+	// Wait until the panel shows the cover (its upload answered) before
+	// the confirm click; the site reads the cover at that click.
+	end := time.Now().Add(15 * time.Second)
+	for time.Now().Before(end) {
+		time.Sleep(400 * time.Millisecond)
+		if v, _ := p.eval(panelCoverShownJS); v == "1" {
+			p.rep.fact("cover_set", 1)
+			return "cover (first picture)"
+		}
+	}
+	p.quietUploads(5 * time.Second)
+	return "cover (first picture, not shown yet)"
+}
+
+// panelCoverShownJS: the open panel shows a cover picture.
+const panelCoverShownJS = `(() => { const p0 = document.querySelector('[data-mc-panel]'); if (!p0) return '0'; const pn = p0.closest('[role=dialog],.el-dialog,.modal,[class*=modal i],[class*=dialog i],[class*=drawer i]') || p0; for (const e of pn.querySelectorAll('input[type=file]')) { const box = (e.parentElement && e.parentElement.closest('[class*=cover i],[class*=upload i]')) || e.parentElement; if (box && [...box.querySelectorAll('img')].some(i => /^(https?|blob|data):/.test(i.src))) return '1'; } return '0'; })()`
