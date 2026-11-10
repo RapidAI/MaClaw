@@ -59,17 +59,24 @@ func (s *memSender) first() any {
 }
 
 type memNotice struct {
-	items  []Notice
-	nextID int
+	items    []Notice
+	revoked  []string
+	nextID   int
+	onNotify func(Notice)
 }
 
-func (n *memNotice) Notify(_ context.Context, notice Notice) (string, error) {
+func (n *memNotice) Notify(ctx context.Context, notice Notice) (string, error) {
 	n.nextID++
 	n.items = append(n.items, notice)
+	if n.onNotify != nil {
+		n.onNotify(notice)
+	}
 	return "n" + string(rune('0'+n.nextID)), nil
 }
 
-func (n *memNotice) Revoke(context.Context, string) {}
+func (n *memNotice) Revoke(_ context.Context, id string) {
+	n.revoked = append(n.revoked, id)
+}
 
 func (n *memNotice) sources() []string {
 	out := make([]string, len(n.items))
@@ -152,6 +159,40 @@ func TestInviteIsBoundToTheControllerMachine(t *testing.T) {
 	home, err := svc.Snapshot(ctx, "tenant", "user-a", "mac-b")
 	if err != nil || len(home.Pending) != 1 || home.Pending[0].ID != second.ID {
 		t.Fatalf("home pending = %+v err=%v", home.Pending, err)
+	}
+}
+
+func TestAcceptDuringInviteNoticeKeepsTheGrantActive(t *testing.T) {
+	svc, _, _, notes := testService(t)
+	ctx := context.Background()
+	notes.onNotify = func(notice Notice) {
+		if notice.Source != NoticeInvite {
+			return
+		}
+		if _, err := svc.Accept(ctx, "other-tenant", "user-b", "mac-c", notice.SourceID); err != nil {
+			t.Errorf("accept during notify: %v", err)
+		}
+	}
+	grant, err := svc.Invite(ctx, "tenant", "user-a", "mac-a", "bob@example.com", PermOperate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := svc.Snapshot(ctx, "tenant", "user-a", "mac-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Pending) != 0 || len(state.Grants) != 1 || state.Grants[0].ID != grant.ID || state.Grants[0].MachineName != "对方电脑" {
+		t.Fatalf("tabs = %+v pending = %+v", state.Grants, state.Pending)
+	}
+	invitee, err := svc.Snapshot(ctx, "other-tenant", "user-b", "mac-c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invitee.Invites) != 0 || len(invitee.Controlled) != 1 {
+		t.Fatalf("invitee = invites:%+v controlled:%+v", invitee.Invites, invitee.Controlled)
+	}
+	if len(notes.revoked) == 0 {
+		t.Fatal("the invite notice should be withdrawn once the grant is no longer pending")
 	}
 }
 

@@ -1238,12 +1238,28 @@ func (c *RemoteHubClient) handleRemoteControlExec(msg inboundHubEnvelope) {
 		c.sendRemoteControlResult(msg.RequestID, nil, "远控请求无效")
 		return
 	}
-	result, err := c.app.executeRemoteControl(payload.Op, payload.Body)
+	result, err := c.executeRemoteControlRecovered(payload.Op, payload.Body)
 	errText := ""
 	if err != nil {
 		errText = err.Error()
 	}
 	c.sendRemoteControlResult(msg.RequestID, result, errText)
+}
+
+// executeRemoteControlRecovered turns a panic into an error result. Without
+// this the controller waits until the hub call times out.
+func (c *RemoteHubClient) executeRemoteControlRecovered(op string, body json.RawMessage) (result any, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("remote control exec panic: %v", rec)
+			result = nil
+			err = errors.New("对方暂时无法完成")
+		}
+	}()
+	if c == nil || c.app == nil {
+		return nil, errors.New("远控尚未就绪")
+	}
+	return c.app.executeRemoteControl(op, body)
 }
 
 func (c *RemoteHubClient) sendRemoteControlResult(requestID string, result any, errText string) {

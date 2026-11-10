@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { localizeText } from '../../i18n';
 import type { RemotePermission, useTaskRemoteControl } from './useTaskRemoteControl';
 
@@ -26,6 +26,22 @@ export function TaskMachineBar({
     const [draft, setDraft] = useState('');
     const [acting, setActing] = useState(false);
     const actingRef = useRef(false);
+    const sendFlightRef = useRef<Promise<unknown> | null>(null);
+    const stoppingRef = useRef(false);
+    const [stopping, setStopping] = useState(false);
+    const messagesRef = useRef<HTMLDivElement>(null);
+    const stickToLatestRef = useRef(true);
+    // A draft belongs to the conversation that was open while it was typed.
+    useEffect(() => { setDraft(''); }, [remote.detailPath]);
+    // The create box stays mounted across machine tabs. Don't carry a name
+    // typed for one computer onto the next.
+    useEffect(() => { setCreateName(''); }, [remote.selected?.id]);
+    useEffect(() => { stickToLatestRef.current = true; }, [remote.detailPath]);
+    useEffect(() => {
+        const node = messagesRef.current;
+        if (!node || !stickToLatestRef.current) return;
+        node.scrollTop = node.scrollHeight;
+    }, [remote.detailPath, remote.detail?.messages]);
     const runAction = async (work: () => Promise<unknown>) => {
         if (actingRef.current) return;
         actingRef.current = true;
@@ -39,10 +55,16 @@ export function TaskMachineBar({
     };
     const selected = remote.selected;
     const viewOnly = !!selected && selected.permission !== 'operate';
+    const remoteActivity = !!selected || remote.state.pending.length > 0 || remote.state.controlled.length > 0;
+    // A failure belongs next to the form the person is using. The tab row
+    // only keeps it when that form is not open, so the same text is not shown twice.
+    const errorInDetail = !!(remote.error && remote.detail && remote.detailPath);
+    const errorInCreate = !!(remote.error && selected && remote.creating && !errorInDetail);
 
     return (
         <div className="mc-task-machine-bar" data-testid="task-machine-bar">
-            <div className="mc-task-machine-tabs" role="tablist" aria-label={localizeText(lang, 'Machines', '机器', '機器')}>
+            <div className="mc-task-machine-tabs">
+                <div className="mc-task-machine-tablist" role="tablist" aria-label={localizeText(lang, 'Machines', '机器', '機器')}>
                 <button
                     type="button"
                     role="tab"
@@ -78,7 +100,8 @@ export function TaskMachineBar({
                         </button>
                     </span>
                 ))}
-                {remote.error ? (
+                </div>
+                {remote.error && remoteActivity && !errorInDetail && !errorInCreate ? (
                     <span className="mc-task-machine-error" data-testid="task-machine-error" role="alert" title={remote.error}>{remote.error}</span>
                 ) : null}
                 <button
@@ -141,6 +164,7 @@ export function TaskMachineBar({
                         });
                     }}
                 >
+                    {errorInCreate ? <p className="mc-task-machine-error" data-testid="task-machine-error" role="alert">{remote.error}</p> : null}
                     <input
                         data-testid="task-machine-create-name"
                         value={createName}
@@ -156,7 +180,15 @@ export function TaskMachineBar({
                         <strong>{remote.detail.task?.name || remote.detailPath}</strong>
                         <button type="button" data-testid="task-machine-detail-close" onClick={remote.closeDetail}>{localizeText(lang, 'Close', '关闭', '關閉')}</button>
                     </header>
-                    <div className="mc-task-machine-messages">
+                    {errorInDetail ? <p className="mc-task-machine-error" data-testid="task-machine-error" role="alert">{remote.error}</p> : null}
+                    <div
+                        ref={messagesRef}
+                        className="mc-task-machine-messages"
+                        onScroll={(event) => {
+                            const node = event.currentTarget;
+                            stickToLatestRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
+                        }}
+                    >
                         {remote.detail.messages.length === 0
                             ? <p>{localizeText(lang, 'No conversation yet', '还没有会话', '還沒有工作階段')}</p>
                             : remote.detail.messages.map((message, index) => (
@@ -178,8 +210,14 @@ export function TaskMachineBar({
                                 const text = draft.trim();
                                 if (!text || acting) return;
                                 void runAction(async () => {
-                                    const ok = await remote.sendMessage(remote.detailPath, text);
-                                    if (ok !== false) setDraft('');
+                                    const flight = remote.sendMessage(remote.detailPath, text);
+                                    sendFlightRef.current = flight;
+                                    try {
+                                        const ok = await flight;
+                                        if (ok !== false) setDraft('');
+                                    } finally {
+                                        if (sendFlightRef.current === flight) sendFlightRef.current = null;
+                                    }
                                 });
                             }}
                         >
@@ -190,13 +228,40 @@ export function TaskMachineBar({
                                 onChange={(event) => setDraft(event.target.value)}
                             />
                             <button type="submit" data-testid="task-machine-send" disabled={acting}>{localizeText(lang, 'Send', '发送', '傳送')}</button>
-                            <button type="button" data-testid="task-machine-stop" onClick={() => void remote.stopTask(remote.detailPath)}>{localizeText(lang, 'Stop', '停止', '停止')}</button>
+                            <button
+                                type="button"
+                                data-testid="task-machine-stop"
+                                disabled={stopping}
+                                onClick={() => {
+                                    // Sending holds the other buttons until the hub answers.
+                                    // Stop still has to be able to run, and it should land
+                                    // after that send so it stops the turn that was just accepted.
+                                    if (stoppingRef.current) return;
+                                    const path = remote.detailPath;
+                                    const stop = remote.stopTask;
+                                    const pending = sendFlightRef.current;
+                                    stoppingRef.current = true;
+                                    setStopping(true);
+                                    void (async () => {
+                                        if (pending) await pending.catch(() => undefined);
+                                        try {
+                                            await stop(path);
+                                        } finally {
+                                            stoppingRef.current = false;
+                                            setStopping(false);
+                                        }
+                                    })();
+                                }}
+                            >{localizeText(lang, 'Stop', '停止', '停止')}</button>
                         </form>
                     ) : null}
                 </section>
             ) : null}
             {adding ? (
                 <div className="mc-task-machine-add" data-testid="task-machine-add-panel">
+                    {remote.error && !remoteActivity ? (
+                        <p className="mc-task-machine-error" data-testid="task-machine-error" role="alert">{remote.error}</p>
+                    ) : null}
                     <div className="mc-task-machine-permission" role="group" aria-label={localizeText(lang, 'Permission', '权限', '權限')}>
                         <label><input type="radio" name="remote-permission" checked={permission === 'view'} onChange={() => setPermission('view')} />{permissionLabel(lang, 'view')}</label>
                         <label><input type="radio" name="remote-permission" checked={permission === 'operate'} onChange={() => setPermission('operate')} />{permissionLabel(lang, 'operate')}</label>

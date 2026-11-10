@@ -111,6 +111,42 @@ describe('CodingAgentProgressStatus', () => {
         expect(files.removed).toBe(4);
     });
 
+    it('keeps line counts when the diff summary names the files but has no counts', () => {
+        const files = codingAgentTurnFileChanges([
+            makeProgressMsg('Coding Agent Event: ' + JSON.stringify({
+                version: 1, agent: 'coding', event: 'tool_finished', phase: 'running', task_id: 'T1', turn_id: 'turn-1',
+                detail: 'write_file', outcome: 'success', file_changes: [{ path: 'a.go', added: 8, removed: 1 }],
+            })),
+            makeProgressMsg('Coding Agent Event: ' + JSON.stringify({
+                version: 1, agent: 'coding', event: 'diff_summary', phase: 'result', task_id: 'T1', turn_id: 'turn-1',
+                count: 1, files: ['a.go'], file_changes: [{ path: 'a.go', added: 0, removed: 0 }],
+            })),
+            makeProgressMsg('Coding Agent Event: ' + JSON.stringify({
+                version: 1, agent: 'coding', event: 'tool_finished', phase: 'running', task_id: 'T1', turn_id: 'turn-1',
+                detail: 'edit_file', outcome: 'success', file_changes: [{ path: 'a.go', added: 2, removed: 0 }],
+            })),
+        ]);
+        expect(files.files).toEqual([{ path: 'a.go', added: 10, removed: 1 }]);
+    });
+
+    it('trusts a zero line count when the diff summary measured other files', () => {
+        const files = codingAgentTurnFileChanges([
+            makeProgressMsg('Coding Agent Event: ' + JSON.stringify({
+                version: 1, agent: 'coding', event: 'tool_finished', phase: 'running', task_id: 'T1', turn_id: 'turn-1',
+                detail: 'edit_file', outcome: 'success', file_changes: [{ path: 'b.go', added: 4, removed: 1 }],
+            })),
+            makeProgressMsg('Coding Agent Event: ' + JSON.stringify({
+                version: 1, agent: 'coding', event: 'diff_summary', phase: 'result', task_id: 'T1', turn_id: 'turn-1',
+                count: 2, files: ['a.go', 'b.go'],
+                file_changes: [{ path: 'a.go', added: 10, removed: 1 }, { path: 'b.go', added: 0, removed: 0 }],
+            })),
+        ]);
+        expect(files.files).toEqual([
+            { path: 'a.go', added: 10, removed: 1 },
+            { path: 'b.go', added: 0, removed: 0 },
+        ]);
+    });
+
     it('does not count a file that was only read', () => {
         const files = codingAgentTurnFileChanges([
             makeProgressMsg('Coding Agent Event: ' + JSON.stringify({
@@ -230,6 +266,24 @@ describe('CodingAgentProgressStatus', () => {
             })),
         ]);
         expect(files.files).toEqual([{ path: 'a.go', added: 14, removed: 2 }]);
+    });
+
+    it('keeps the git snapshot when the following tool result has different numbers', () => {
+        const files = codingAgentTurnFileChanges([
+            makeProgressMsg('Coding Agent Event: ' + JSON.stringify({
+                version: 1, agent: 'coding', event: 'diff_updated', phase: 'running', task_id: 'T1', turn_id: 'turn-1',
+                files: ['a.go'], file_changes: [{ path: 'a.go', added: 10, removed: 1 }],
+            })),
+            makeProgressMsg('Coding Agent Event: ' + JSON.stringify({
+                version: 1, agent: 'coding', event: 'tool_finished', phase: 'running', task_id: 'T1', turn_id: 'turn-1',
+                detail: 'write_file', outcome: 'success', file_changes: [{ path: 'a.go', added: 3, removed: 0 }],
+            })),
+            makeProgressMsg('Coding Agent Event: ' + JSON.stringify({
+                version: 1, agent: 'coding', event: 'tool_finished', phase: 'running', task_id: 'T1', turn_id: 'turn-1',
+                detail: 'edit_file', outcome: 'success', file_changes: [{ path: 'a.go', added: 2, removed: 1 }],
+            })),
+        ]);
+        expect(files.files).toEqual([{ path: 'a.go', added: 12, removed: 2 }]);
     });
 
     it('treats a missing exploratory file as a neutral lookup result', () => {

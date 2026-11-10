@@ -1861,6 +1861,8 @@ function buildTaskContextMenuItems(opts: {
     onArchiveTask?: (menu: NonNullable<TaskContextMenu>, archived: boolean) => void;
     /** Set while a remote machine tab is selected. View hides mutations. Operate keeps rename and pin. */
     remotePermission?: 'view' | 'operate';
+    /** True when this rename must stay on the remote machine even if the tab changes before blur. */
+    markRenameScope?: (remote: boolean) => void;
 }): TaskContextMenuItem[] {
     const {
         lang, menu, setRenamingTaskPath, setRenameValue,
@@ -1899,6 +1901,10 @@ function buildTaskContextMenuItems(opts: {
             label: textForLang(lang, 'Rename', '重命名', '重命名'),
             icon: 'rename',
             action: () => {
+                // Remember where the rename started. Blur can run after the
+                // machine tab has already changed, and that must not rename a
+                // local task that happens to use the same path.
+                opts.markRenameScope?.(opts.remotePermission === 'operate');
                 setRenamingTaskPath(menu.projectPath);
                 setRenameValue(menu.name);
                 setTaskContextMenu(null);
@@ -1994,7 +2000,7 @@ function buildTaskContextMenuItems(opts: {
         icon: 'pin',
         action: async () => {
             await pinTask(menu.projectPath, !menu.pinned);
-            refreshTasks();
+            if (!opts.remotePermission) refreshTasks();
             setTaskContextMenu(null);
         },
     });
@@ -2676,6 +2682,7 @@ export const SidebarTaskManagement = ({
     const remoteRef = useRef(remote);
     remoteRef.current = remote;
     const renameCancelRef = useRef(false);
+    const renameRemoteRef = useRef(false);
     const [creatingTask, setCreatingTask] = useState(false);
     const [creatingTaskMode, setCreatingTaskMode] = useState<'' | PureCodingAgentMode>('');
     const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -5808,7 +5815,9 @@ export const SidebarTaskManagement = ({
                         ? textForLang(lang, 'That computer is offline', '对方离线', '對方離線')
                         : taskSearchQuery.trim()
                             ? textForLang(lang, 'No matching tasks', '没有匹配的任务', '沒有匹配的任務')
-                            : textForLang(lang, 'No tasks on that computer', '这台机器上暂无任务', '這台機器上暫無任務'))
+                            : remote.tasks.length > 0
+                                ? textForLang(lang, 'No tasks in this group', '该分组暂无任务', '該分組暫無任務')
+                                : textForLang(lang, 'No tasks on that computer', '这台机器上暂无任务', '這台機器上暫無任務'))
                     : taskFilter === 'all' && workspaceFilter === 'all'
                     ? textForLang(lang, 'No tasks', '\u6682\u65e0\u4efb\u52a1', '\u66ab\u7121\u4efb\u52d9')
                     : textForLang(lang, 'No tasks in this group', '\u8be5\u5206\u7ec4\u6682\u65e0\u4efb\u52a1', '\u8a72\u5206\u7d44\u66ab\u7121\u4efb\u52d9')}
@@ -6067,7 +6076,7 @@ export const SidebarTaskManagement = ({
                                 {workflowStatus && <span data-testid="task-workflow-status" aria-label={`${textForLang(lang, 'Task status', '任务状态', '任務狀態')}: ${workflowStatus.label}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} title={`${proj.active_workflow?.type || 'workflow'}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: `1px solid ${TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].border}`, color: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].color, background: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].background, fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{workflowStatus.label}{workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}</span>}
                             </span>
                         )}
-                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { if (renameCancelRef.current) { renameCancelRef.current = false; setRenamingTaskPath(null); return; } const trimmed = renameValue.trim(); const gate = remoteRef.current; if (gate.selected) { if (gate.operate && trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await gate.renameTask(proj.project_path, trimmed); } setRenamingTaskPath(null); return; } if (trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { e.preventDefault(); renameCancelRef.current = true; setRenamingTaskPath(null); } }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span><TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />{proj.pinned && !pureCoding && <span data-testid="task-pinned-badge" className="stsm-badge-pinned" title={textForLang(lang, 'Pinned', '置顶', '置頂')}>{textForLang(lang, 'Pinned', '置顶', '置頂')}</span>}{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
+                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { if (renameCancelRef.current) { renameCancelRef.current = false; renameRemoteRef.current = false; setRenamingTaskPath(null); return; } const trimmed = renameValue.trim(); const remoteRename = renameRemoteRef.current; renameRemoteRef.current = false; if (remoteRename) { const gate = remoteRef.current; if (gate.selected && gate.operate && trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await gate.renameTask(proj.project_path, trimmed); } setRenamingTaskPath(null); return; } if (trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { e.preventDefault(); renameCancelRef.current = true; setRenamingTaskPath(null); } }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span><TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />{proj.pinned && !pureCoding && <span data-testid="task-pinned-badge" className="stsm-badge-pinned" title={textForLang(lang, 'Pinned', '置顶', '置頂')}>{textForLang(lang, 'Pinned', '置顶', '置頂')}</span>}{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
                         {secondaryText ? <span data-testid="task-secondary-label" className="stsm-row-secondary">{secondaryText}</span> : null}
                         {showWorkspaceLine ? (
                             <span
@@ -6971,6 +6980,7 @@ export const SidebarTaskManagement = ({
                 onNewTaskFromTask: newTaskFromTask,
                 onDuplicateTask: duplicateTask,
                 remotePermission: remote.selected ? (remote.selected.permission === 'operate' ? 'operate' : 'view') : undefined,
+                markRenameScope: (remote) => { renameRemoteRef.current = remote; },
                 pinTask: async (projectPath, pinned) => {
                     const gate = remoteRef.current;
                     if (gate.selected) {

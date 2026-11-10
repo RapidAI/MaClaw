@@ -2587,27 +2587,10 @@ export interface CodingAgentTurnFiles {
     removed: number;
 }
 
-/** File list for the composer summary. The latest diff summary is the base.
- *  Edits after it still count. A rewrite replaces that file; later edits add. */
-export function codingAgentTurnFileChanges(messages: Array<{ content?: string }> | null | undefined): CodingAgentTurnFiles {
-    const empty = { files: [], added: 0, removed: 0 };
-    const parsed = (messages || [])
-        .map((msg) => parseCodingAgentProgress(msg?.content || ""))
-        .filter((progress): progress is CodingAgentProgress => !!progress)
-        .map(normalizeCodingAgentProgress);
-    if (parsed.length === 0) return empty;
-    const latest = parsed[parsed.length - 1];
-    const sameTurn = parsed.filter((progress) => codingAgentSameTurn(progress, latest));
-    let summaryAt = -1;
-    for (let i = sameTurn.length - 1; i >= 0; i--) {
-        if ((sameTurn[i].event || "").toLowerCase() === "diff_summary") {
-            summaryAt = i;
-            break;
-        }
-    }
-    let files: CodingAgentFileChange[] = summaryAt >= 0 ? codingAgentFileChangeRows(sameTurn[summaryAt]) : [];
+function foldCodingAgentTurnFiles(events: CodingAgentProgress[], base: CodingAgentFileChange[]): CodingAgentFileChange[] {
+    const files = base.map((row) => ({ ...row }));
     // diff_updated is the git snapshot and is emitted before the matching
-    // tool_finished. That second event repeats the same numbers.
+    // tool_finished. The tool result is the same edit, whatever numbers it carries.
     const snapshotPaths = new Set<string>();
     const snapshotFor = (path: string) => {
         for (const existing of snapshotPaths) {
@@ -2615,8 +2598,7 @@ export function codingAgentTurnFileChanges(messages: Array<{ content?: string }>
         }
         return "";
     };
-    for (let i = summaryAt + 1; i < sameTurn.length; i++) {
-        const event = sameTurn[i];
+    for (const event of events) {
         const name = (event.event || "").toLowerCase();
         let replace = false;
         if (name === "tool_finished") {
@@ -2634,13 +2616,15 @@ export function codingAgentTurnFileChanges(messages: Array<{ content?: string }>
         }
         const rows = event.fileChanges?.length ? codingAgentFileChangeRows(event) : [];
         for (const row of rows) {
-            if (row.added <= 0 && row.removed <= 0) continue;
             const idx = files.findIndex((existing) => codingAgentFilePathsMatch(existing.path, row.path));
             const prior = snapshotFor(row.path);
-            if (!replace && idx >= 0 && prior && files[idx].added === row.added && files[idx].removed === row.removed) {
+            // The snapshot is emitted first. The tool result that follows is
+            // the same edit, even when its estimate does not match the git numbers.
+            if (name === "tool_finished" && prior) {
                 snapshotPaths.delete(prior);
                 continue;
             }
+            if (row.added <= 0 && row.removed <= 0) continue;
             if (prior) snapshotPaths.delete(prior);
             if (idx < 0) {
                 files.push(row);
@@ -2654,6 +2638,43 @@ export function codingAgentTurnFileChanges(messages: Array<{ content?: string }>
             if (replace && name === "diff_updated") snapshotPaths.add(files[idx < 0 ? files.length - 1 : idx].path);
         }
     }
+    return files;
+}
+
+/** File list for the composer summary. The latest diff summary is the base.
+ *  Edits after it still count. A rewrite replaces that file; later edits add.
+ *  A summary that names files but has no line counts keeps the counts already seen. */
+export function codingAgentTurnFileChanges(messages: Array<{ content?: string }> | null | undefined): CodingAgentTurnFiles {
+    const empty = { files: [], added: 0, removed: 0 };
+    const parsed = (messages || [])
+        .map((msg) => parseCodingAgentProgress(msg?.content || ""))
+        .filter((progress): progress is CodingAgentProgress => !!progress)
+        .map(normalizeCodingAgentProgress);
+    if (parsed.length === 0) return empty;
+    const latest = parsed[parsed.length - 1];
+    const sameTurn = parsed.filter((progress) => codingAgentSameTurn(progress, latest));
+    let summaryAt = -1;
+    for (let i = sameTurn.length - 1; i >= 0; i--) {
+        if ((sameTurn[i].event || "").toLowerCase() === "diff_summary") {
+            summaryAt = i;
+            break;
+        }
+    }
+    const before = summaryAt > 0 ? foldCodingAgentTurnFiles(sameTurn.slice(0, summaryAt), []) : [];
+    let base = summaryAt >= 0 ? codingAgentFileChangeRows(sameTurn[summaryAt]) : [];
+    const summaryHasCounts = base.some((row) => row.added > 0 || row.removed > 0);
+    if (!summaryHasCounts && base.length > 0 && before.length > 0) {
+        base = base.map((row) => {
+            const prev = before.find((item) => codingAgentFilePathsMatch(item.path, row.path));
+            if (!prev || (prev.added <= 0 && prev.removed <= 0)) return row;
+            return {
+                path: preferredCodingAgentFilePath(row.path, prev.path),
+                added: prev.added,
+                removed: prev.removed,
+            };
+        });
+    }
+    const files = foldCodingAgentTurnFiles(sameTurn.slice(summaryAt + 1), base);
     return {
         files,
         added: files.reduce((sum, row) => sum + row.added, 0),

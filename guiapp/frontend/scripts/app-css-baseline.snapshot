@@ -26848,27 +26848,27 @@ button.tbk-pill {
 .capc-checklist.capc-open { z-index: 6; }
 .capc-bar { display: flex; align-items: stretch; gap: 8px; min-width: 0; }
 .capc-hover { flex: 1 1 auto; min-width: 0; }
-.capc-files { flex: 0 1 auto; min-width: 0; max-width: 48%; display: flex; align-items: center; }
+.capc-files { flex: 0 0 auto; min-width: 0; max-width: 48%; display: flex; align-items: center; }
+.capc-bar > .capc-files:first-child { margin-left: auto; }
 .capc-hover + .capc-files { border-left: 1px solid color-mix(in srgb, var(--theme-border, #d8dee8) 70%, transparent); padding-left: 8px; }
 .capc-files-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; border: 0; margin: 0; padding: 2px 4px; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }
 .capc-files-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 60%, transparent); outline-offset: 2px; }
 .capc-files:hover .capc-files-toggle,
 .capc-files-toggle:focus-visible { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 5%, transparent); }
 .capc-files-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.capc-files-title { font-weight: 600; margin-bottom: 6px; }
+.capc-files-title { position: sticky; top: 0; z-index: 1; margin: -8px -10px 0; padding: 8px 10px 10px; background: inherit; font-weight: 600; }
 .capc-files-popover { position: absolute; z-index: 6; right: 0; left: auto; bottom: calc(100% - 6px); width: min(420px, 100%); box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }
 .capc-files.capc-open .capc-files-popover { pointer-events: auto; visibility: visible; }
-.capc-files-popover .capc-popover-card { display: flex; flex-direction: column; overflow: hidden; }
-.capc-file-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow: auto; overscroll-behavior: contain; max-height: calc(min(320px, var(--capc-room, 42vh)) - 48px); }
+.capc-file-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .capc-file-row { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 2px 0; }
 .capc-file-path { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .capc-file-stat { display: inline-flex; align-items: baseline; gap: 6px; flex-shrink: 0; font-variant-numeric: tabular-nums; font-weight: 600; }
 .capc-toggle { display: block; width: 100%; border: 0; margin: 0; padding: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }
 .capc-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 60%, transparent); outline-offset: 2px; }
-.capc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px; margin: 0; border-radius: 8px; transition: background-color 0.15s ease; }
+.capc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 2px 4px; margin: 0; overflow: hidden; border-radius: 8px; transition: background-color 0.15s ease; }
 .capc-hover:hover .capc-head,
 .capc-toggle:focus-visible .capc-head { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 5%, transparent); }
-.capc-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-weight: 600; }
+.capc-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; font-weight: 600; }
 .capc-title svg { flex-shrink: 0; }
 .capc-progress { display: inline-flex; align-items: center; gap: 6px; margin-left: 2px; font-weight: 500; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .capc-track { width: 48px; height: 4px; border-radius: 999px; background: color-mix(in srgb, currentColor 18%, transparent); overflow: hidden; }
@@ -30644,66 +30644,182 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-pane .mc-task-machine-bar {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
   min-width: 0;
-  margin: 0 4px 8px;
+  margin: 2px 0 0;
 }
 .mc-task-pane .mc-task-machine-tabs {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  border-bottom: 1px solid var(--theme-border);
+}
+.mc-task-pane .mc-task-machine-tablist {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  flex: 1 1 auto;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
-.mc-task-pane .mc-task-machine-tabs::-webkit-scrollbar { display: none; }
+.mc-task-pane .mc-task-machine-tablist::-webkit-scrollbar { display: none; }
+.mc-task-pane .mc-task-machine-tablist > .mc-task-machine-tab,
+.mc-task-pane .mc-task-machine-tab-wrap {
+  flex: 0 0 auto;
+}
 .mc-task-pane .mc-task-machine-tab,
-.mc-task-pane .mc-task-machine-tab-close,
+.mc-task-pane .mc-task-machine-tab-close {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--theme-text-muted);
+  font-family: inherit;
+  cursor: pointer;
+}
+.mc-task-pane .mc-task-machine-tab {
+  position: relative;
+  border-radius: 7px 7px 0 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.011em;
+  line-height: 1;
+  padding: 8px 12px 9px;
+  margin: 0;
+}
+.mc-task-pane .mc-task-machine-tab:hover {
+  color: var(--theme-text-primary);
+  background: color-mix(in srgb, var(--theme-text-primary) 4%, transparent);
+}
+.mc-task-pane .mc-task-machine-tab.is-active,
+.mc-task-pane .mc-task-machine-tab.is-active:hover {
+  color: var(--mc-accent, #2e75cb);
+  background: var(--theme-surface-muted);
+  box-shadow: inset 0 -3px 0 var(--mc-accent, #2e75cb);
+  font-weight: 700;
+}
+.mc-task-pane .mc-task-machine-tab-wrap.is-active {
+  background: var(--theme-surface-muted);
+  box-shadow: inset 0 -3px 0 var(--mc-accent, #2e75cb);
+  border-radius: 8px 8px 0 0;
+}
+.mc-task-pane .mc-task-machine-tab-wrap.is-active .mc-task-machine-tab,
+.mc-task-pane .mc-task-machine-tab-wrap.is-active .mc-task-machine-tab:hover {
+  color: var(--mc-accent, #2e75cb);
+  background: transparent;
+  box-shadow: none;
+  font-weight: 700;
+}
+.mc-task-pane .mc-task-machine-tab-wrap.is-active .mc-task-machine-tab-close,
+.mc-task-pane .mc-task-machine-tab.is-active i {
+  color: var(--mc-accent, #2e75cb);
+}
+.mc-task-pane .mc-task-machine-tab:active:not(.is-active) {
+  opacity: 0.72;
+}
+.mc-task-pane .mc-task-machine-tab-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: flex-end;
+  max-width: 100%;
+}
+.mc-task-pane .mc-task-machine-tab > span {
+  display: inline-block;
+  max-width: 9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.mc-task-pane .mc-task-machine-tab-wrap .mc-task-machine-tab {
+  padding-right: 2px;
+}
+.mc-task-pane .mc-task-machine-tab i {
+  margin-left: 6px;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--theme-text-muted);
+}
+.mc-task-pane .mc-task-machine-tab-close {
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 8px 8px 2px;
+  margin: 0;
+}
+.mc-task-pane .mc-task-machine-tab-close:hover {
+  color: var(--theme-text-primary);
+}
+.mc-task-pane .mc-task-machine-tab--add {
+  flex: 0 0 auto;
+  min-width: 28px;
+  padding: 6px 8px 8px;
+  background: transparent;
+  font-size: 16px;
+  font-weight: 400;
+}
+.mc-task-pane .mc-task-machine-tabs .mc-task-machine-error {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 42%;
+  margin: 0 2px 7px 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--theme-danger, #b42318);
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mc-task-pane .mc-task-machine-note {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 5px 2px 2px;
+  color: var(--theme-text-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-error,
+.mc-task-pane .mc-task-machine-detail .mc-task-machine-error {
+  display: block;
+  margin: 0 0 8px;
+  color: var(--theme-danger, #b42318);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.mc-task-pane .mc-task-machine-add,
+.mc-task-pane .mc-task-machine-detail {
+  margin: 8px 2px 4px;
+  border: 1px solid var(--theme-border);
+  border-radius: 10px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--theme-surface-muted) 72%, var(--theme-surface));
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+}
 .mc-task-pane .mc-task-machine-add button,
 .mc-task-pane .mc-task-machine-create button,
 .mc-task-pane .mc-task-machine-detail button,
 .mc-task-pane .mc-task-machine-send button {
   border: 1px solid var(--theme-border);
-  background: color-mix(in srgb, var(--theme-primary) 5%, var(--theme-surface));
-  color: var(--theme-text-secondary);
-  border-radius: 999px;
+  background: var(--theme-surface);
+  color: var(--theme-text-primary);
+  border-radius: 8px;
+  font-family: inherit;
   font-size: 12px;
   line-height: 1.2;
-  padding: 4px 8px;
+  padding: 5px 10px;
   cursor: pointer;
+  box-shadow: none;
 }
-.mc-task-pane .mc-task-machine-tab.is-active {
-  color: var(--theme-text-primary);
-  border-color: color-mix(in srgb, var(--theme-primary) 55%, var(--theme-border));
-  background: color-mix(in srgb, var(--theme-primary) 12%, var(--theme-surface));
-  font-weight: 700;
-}
-.mc-task-pane .mc-task-machine-tab-wrap {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-}
-.mc-task-pane .mc-task-machine-tab i {
-  margin-left: 4px;
-  font-style: normal;
-  opacity: 0.7;
-}
-.mc-task-pane .mc-task-machine-tab-close {
-  margin-left: -6px;
-  padding: 2px 6px;
-}
-.mc-task-pane .mc-task-machine-note,
-.mc-task-pane .mc-task-machine-error,
-.mc-task-pane .mc-task-machine-add,
-.mc-task-pane .mc-task-machine-detail {
-  border: 1px solid var(--theme-border);
-  border-radius: 10px;
-  padding: 8px;
-  background: color-mix(in srgb, var(--theme-primary) 4%, var(--theme-surface));
-  color: var(--theme-text-secondary);
-  font-size: 12px;
-}
-.mc-task-pane .mc-task-machine-error { color: var(--theme-danger, #b42318); }
 .mc-task-pane .mc-task-machine-add h3,
 .mc-task-pane .mc-task-machine-detail header {
   display: flex;
@@ -36143,15 +36259,17 @@ body.companion-pdf-translation-dragging * {
   gap: 8px;
   container-type: inline-size;
 }
-/* A card is two rows: the document identity across the top, the state badges
-   and the action toolbar underneath. The title keeps the full inner width
-   instead of splitting the card with the buttons. The third column is capped
-   so a row with many actions wraps them rather than eating the badges. */
+/* A card is two rows: the document identity across the full inner width, then
+   the type tile, the state badges and the action toolbar. The identity spans
+   every column so neither the tile nor the buttons shorten the title, and the
+   tile sits in the footer row, where its 40px also absorbs wrapped badges
+   instead of adding a row of its own. The third column is capped so a row with
+   many actions wraps them rather than eating the badges. */
 .file-companion-project {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) minmax(0, 300px);
   grid-template-areas:
-    "lead main main"
+    "main main main"
     "lead meta actions";
   align-items: center;
   gap: 8px 10px;
@@ -36164,15 +36282,6 @@ body.companion-pdf-translation-dragging * {
   background: var(--theme-surface, #ffffff);
   cursor: pointer;
   transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
-}
-/* An extracted title is the reason to open the document, so it gets a row of
-   its own across every column and the extension tile no longer shortens it.
-   A card with no title keeps the two-row grid and pays no extra gap. */
-.file-companion-project[data-doctitle="true"] {
-  grid-template-areas:
-    "lead main main"
-    "doc doc doc"
-    "meta meta actions";
 }
 .file-companion-project[data-open="true"] {
   border-color: color-mix(in srgb, var(--theme-primary, #2563eb) 40%, var(--theme-border, #d5e0ef));
@@ -36336,7 +36445,6 @@ body.companion-pdf-translation-dragging * {
   border-radius: 2px;
 }
 .file-companion-project-doctitle {
-  grid-area: doc;
   margin: 0;
   min-width: 0;
   max-width: 100%;
@@ -36396,14 +36504,6 @@ body.companion-pdf-translation-dragging * {
 .file-companion-badge[data-tone="pending"] {
   background: color-mix(in srgb, var(--theme-danger, #dc2626) 10%, transparent);
   color: var(--theme-danger, #dc2626);
-}
-.file-companion-project-url {
-  font-size: 10.5px;
-  line-height: 1.35;
-  color: var(--theme-text-muted, #94a3b8);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .file-companion-project-actions {
   grid-area: actions;
@@ -36493,15 +36593,8 @@ body.companion-pdf-translation-dragging * {
   .file-companion-project {
     grid-template-columns: auto minmax(0, 1fr);
     grid-template-areas:
-      "lead main"
-      "meta meta"
-      "actions actions";
-  }
-  .file-companion-project[data-doctitle="true"] {
-    grid-template-areas:
-      "lead main"
-      "doc doc"
-      "meta meta"
+      "main main"
+      "lead meta"
       "actions actions";
   }
   .file-companion-project-actions {

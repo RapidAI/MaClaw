@@ -68,6 +68,24 @@ describe('TaskMachineBar', () => {
         expect(screen.getByTestId('task-machine-pending').textContent).not.toContain('已忽略');
     });
 
+    it('keeps a local status failure inside the add panel', () => {
+        const control = remote({
+            error: '远控请求失败',
+            state: {
+                machine_id: 'mac-a',
+                machines: [],
+                grants: [],
+                pending: [],
+                invites: [],
+                controlled: [],
+            },
+        });
+        render(<TaskMachineBar lang="zh-CN" remote={control} onCloseGrant={vi.fn()} />);
+        expect(screen.queryByTestId('task-machine-error')).toBeNull();
+        fireEvent.click(screen.getByTestId('task-machine-add'));
+        expect(screen.getByTestId('task-machine-error').textContent).toContain('远控请求失败');
+    });
+
     it('keeps this computer fixed and lets a granted machine be closed', () => {
         render(<TaskMachineBar lang="zh-CN" remote={remote()} onCloseGrant={vi.fn()} />);
         const local = screen.getByTestId('task-machine-tab-local');

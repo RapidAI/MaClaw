@@ -6,6 +6,13 @@ import (
 	"testing"
 )
 
+func TestExecuteRemoteControlRecoveredWithoutApp(t *testing.T) {
+	_, err := (&RemoteHubClient{}).executeRemoteControlRecovered("list_tasks", nil)
+	if err == nil || !strings.Contains(err.Error(), "尚未就绪") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestExecuteRemoteControlRejectsUnknownOp(t *testing.T) {
 	_, err := (&App{}).executeRemoteControl("drop_database", nil)
 	if err == nil || !strings.Contains(err.Error(), "不支持") {

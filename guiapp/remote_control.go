@@ -91,7 +91,12 @@ func (a *App) remoteControlJSON(method, path string, payload any, dest any) erro
 		return errors.New("暂时无法连接云端")
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	// Read one extra byte so a response that does not fit is a clear failure
+	// instead of a truncated JSON body reported as an unreadable result.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, remoteControlBodyLimit+1))
+	if len(body) > remoteControlBodyLimit {
+		return errors.New("远控结果太大")
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		message := fileCompanionShareMessage(body)
 		if message == "" {
@@ -472,6 +477,9 @@ func remoteControlMessageError(text string) error {
 // remoteControlTaskLimit matches the sidebar's ListTasks(1000) so a remote
 // tab does not drop tasks that this computer would still show.
 const remoteControlTaskLimit = 1000
+
+// remoteControlBodyLimit is the largest Hub response this desktop will read.
+const remoteControlBodyLimit = 8 << 20
 
 func trimRemoteControlText(value string, limit int) string {
 	runes := []rune(value)

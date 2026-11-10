@@ -108,24 +108,34 @@ export function useTaskRemoteControl() {
     const detailGen = useRef(0);
     const tasksForGrant = useRef('');
     const tasksRef = useRef(tasks);
+    const selectedIdRef = useRef(selectedId);
+    const detailPathRef = useRef(detailPath);
     const detailStamp = useRef('');
     const detailFetchedAt = useRef(0);
-    // A later list poll must not wipe an error the user just caused.
-    const errorOwner = useRef<'' | 'list' | 'action'>('');
+    const detailFollowRef = useRef(0);
+    // A later poll must not wipe an error the user just caused, and a state
+    // poll must not clear an error that belongs to the task list.
+    const errorOwner = useRef<'' | 'state' | 'tasks' | 'action'>('');
     tasksRef.current = tasks;
+    selectedIdRef.current = selectedId;
+    detailPathRef.current = detailPath;
 
     const refresh = useCallback(async () => {
         try {
             const next = asState(await callBinding<RemoteControlState>('ListRemoteControlState', EMPTY_STATE));
             setState(prev => (sameSnapshot(prev, next) ? prev : next));
-            setSelectedId(current => (current && next.grants.some(grant => grant.id === current) ? current : ''));
-            if (errorOwner.current === 'list') {
+            setSelectedId(current => {
+                if (current && next.grants.some(grant => grant.id === current)) return current;
+                if (current) detailGen.current += 1;
+                return '';
+            });
+            if (errorOwner.current === 'state') {
                 errorOwner.current = '';
                 setError('');
             }
         } catch (err) {
-            if (errorOwner.current === 'action') return;
-            errorOwner.current = 'list';
+            if (errorOwner.current === 'action' || errorOwner.current === 'tasks') return;
+            errorOwner.current = 'state';
             setError(errorText(err, '远控状态暂时无法读取'));
         }
     }, []);
@@ -141,46 +151,62 @@ export function useTaskRemoteControl() {
             setTasks([]);
             tasksForGrant.current = '';
             setLoading(false);
-            errorOwner.current = 'list';
-            setError('远控尚未就绪');
+            if (errorOwner.current !== 'action') {
+                errorOwner.current = 'tasks';
+                setError('远控尚未就绪');
+            }
             return;
         }
         if (tasksForGrant.current !== grantId) setLoading(true);
         try {
             const raw = await callBinding<string>('RemoteControlOp', '{}', grantId, 'list_tasks', '');
-            if (gen !== taskGen.current) return;
-            const parsed = JSON.parse(raw || '{}') as { tasks?: TaskManagementItem[] };
-            const nextTasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
-            setTasks(prev => (sameSnapshot(prev, nextTasks) ? prev : nextTasks));
+            if (gen !== taskGen.current || selectedIdRef.current !== grantId) return;
+            const parsed = JSON.parse(raw || '{}') as { tasks?: TaskManagementItem[]; error?: string };
+            if (parsed.error) throw new Error(parsed.error);
+            if (!Array.isArray(parsed.tasks)) throw new Error('对方任务暂时无法读取');
+            setTasks(prev => (sameSnapshot(prev, parsed.tasks) ? prev : parsed.tasks || []));
             tasksForGrant.current = grantId;
-            if (errorOwner.current === 'list') {
+            if (errorOwner.current === 'tasks' || errorOwner.current === 'state') {
                 errorOwner.current = '';
                 setError('');
             }
         } catch (err) {
-            if (gen !== taskGen.current) return;
-            setTasks([]);
-            tasksForGrant.current = '';
-            errorOwner.current = 'list';
-            setError(errorText(err, '对方任务暂时无法读取'));
+            if (gen !== taskGen.current || selectedIdRef.current !== grantId) return;
+            // A failed refresh keeps the list already on screen. Only the first
+            // load, which never landed, clears it.
+            if (tasksForGrant.current !== grantId) {
+                setTasks([]);
+                tasksForGrant.current = '';
+            }
+            if (errorOwner.current === 'action') return;
+            errorOwner.current = 'tasks';
+            setError(err instanceof SyntaxError ? '对方任务暂时无法读取' : errorText(err, '对方任务暂时无法读取'));
         } finally {
-            if (gen === taskGen.current) setLoading(false);
+            // A list the person already left must not clear the spinner for
+            // the machine they are looking at now.
+            if (gen === taskGen.current && selectedIdRef.current === grantId) setLoading(false);
         }
     }, []);
 
     const openTask = useCallback(async (grantId: string, projectPath: string) => {
+        // A poll for the previous machine can start after the person has
+        // already returned to this computer. Leave the current tab alone.
+        if (selectedIdRef.current !== grantId) return;
+        const refreshing = detailPathRef.current === projectPath;
         const gen = ++detailGen.current;
         setDetailPath(projectPath);
         if (!appBinding('RemoteControlOp')) {
-            setDetail({ messages: [], artifacts: [] });
+            if (!refreshing) setDetail({ messages: [], artifacts: [] });
             errorOwner.current = 'action';
             setError('远控尚未就绪');
             return;
         }
         try {
             const raw = await callBinding<string>('RemoteControlOp', '{}', grantId, 'get_task', JSON.stringify({ project_path: projectPath }));
-            if (gen !== detailGen.current) return;
-            const parsed = JSON.parse(raw || '{}') as RemoteTaskDetail;
+            if (gen !== detailGen.current || selectedIdRef.current !== grantId) return;
+            const parsed = JSON.parse(raw || '{}') as RemoteTaskDetail & { error?: string };
+            if (parsed.error) throw new Error(parsed.error);
+            if (!Array.isArray(parsed.messages)) throw new Error('会话暂时无法读取');
             const next = {
                 task: parsed.task,
                 messages: parsed.messages || [],
@@ -190,10 +216,10 @@ export function useTaskRemoteControl() {
             detailStamp.current = `${projectPath}:${parsed.task?.last_activity || ''}`;
             detailFetchedAt.current = Date.now();
         } catch (err) {
-            if (gen !== detailGen.current) return;
-            setDetail({ messages: [], artifacts: [] });
+            if (gen !== detailGen.current || selectedIdRef.current !== grantId) return;
+            if (!refreshing) setDetail({ messages: [], artifacts: [] });
             errorOwner.current = 'action';
-            setError(errorText(err, '会话暂时无法读取'));
+            setError(err instanceof SyntaxError ? '会话暂时无法读取' : errorText(err, '会话暂时无法读取'));
         }
     }, []);
 
@@ -230,6 +256,7 @@ export function useTaskRemoteControl() {
     useEffect(() => {
         if (!selectedId || !online) {
             taskGen.current += 1;
+            detailGen.current += 1;
             setTasks([]);
             tasksForGrant.current = '';
             setLoading(false);
@@ -266,8 +293,23 @@ export function useTaskRemoteControl() {
         return () => window.clearInterval(timer);
     }, [detailPath, online, openTask, selectedId]);
 
+    const openActivity = selected && detailPath
+        ? tasks.find(item => item.project_path === detailPath)?.last_activity || ''
+        : '';
+    useEffect(() => {
+        if (!selectedId || !detailPath || !online || !detailStamp.current) return;
+        const stamp = `${detailPath}:${openActivity}`;
+        if (stamp === detailStamp.current) return;
+        if (Date.now() - detailFetchedAt.current < 800) return;
+        void openTask(selectedId, detailPath);
+    }, [detailPath, online, openActivity, openTask, selectedId]);
+
+    useEffect(() => () => window.clearTimeout(detailFollowRef.current), []);
+
     const run = useCallback(async (op: string, body: Record<string, unknown>) => {
         if (!selected) return false;
+        const grantId = selected.id;
+        const openPath = detailPath;
         if (selected.permission !== 'operate' && op !== 'list_tasks' && op !== 'get_task') {
             errorOwner.current = 'action';
             setError('当前权限只能查看');
@@ -285,19 +327,31 @@ export function useTaskRemoteControl() {
             return false;
         }
         try {
-            await fn(selected.id, op, JSON.stringify(body));
+            await fn(grantId, op, JSON.stringify(body));
+            // The person may have closed the conversation or changed machines
+            // while this call was in flight. Do not paint that result back.
+            if (selectedIdRef.current !== grantId) return true;
             errorOwner.current = '';
             setError('');
-            await loadTasks(selected.id);
-            if (detailPath) await openTask(selected.id, detailPath);
-            // The send returns before the other computer stores the turn.
-            // Drop the idle stamp so the next poll shows that turn.
-            if (op === 'send_message' || op === 'stop_task') {
+            await loadTasks(grantId);
+            if (selectedIdRef.current === grantId && detailPathRef.current === openPath && openPath) {
+                await openTask(grantId, openPath);
+            }
+            if ((op === 'send_message' || op === 'stop_task') && detailPathRef.current === openPath) {
                 detailStamp.current = '';
                 detailFetchedAt.current = 0;
+                // The other computer stores the turn after this call returns.
+                // The 15s poll would leave the sent message invisible until then.
+                window.clearTimeout(detailFollowRef.current);
+                detailFollowRef.current = window.setTimeout(() => {
+                    if (selectedIdRef.current === grantId && detailPathRef.current === openPath) {
+                        void openTask(grantId, openPath);
+                    }
+                }, 1000);
             }
             return true;
         } catch (err) {
+            if (selectedIdRef.current !== grantId) return false;
             errorOwner.current = 'action';
             setError(errorText(err, '远控操作失败'));
             return false;
@@ -336,16 +390,26 @@ export function useTaskRemoteControl() {
         refresh,
         selectLocal: () => {
             detailGen.current += 1;
+            taskGen.current += 1;
+            tasksForGrant.current = '';
             errorOwner.current = '';
             setSelectedId('');
+            setTasks([]);
+            setLoading(false);
             setError('');
             setDetail(null);
             setDetailPath('');
         },
         selectGrant: (id: string) => {
+            if (selectedIdRef.current === id) return;
             detailGen.current += 1;
+            taskGen.current += 1;
+            tasksForGrant.current = '';
             errorOwner.current = '';
             setSelectedId(id);
+            setTasks([]);
+            setLoading(true);
+            setCreating(false);
             setError('');
             setDetail(null);
             setDetailPath('');
@@ -376,13 +440,22 @@ export function useTaskRemoteControl() {
         },
         revoke: async (grantID: string) => {
             const value = await mutate('RevokeRemoteControl', [grantID]);
-            if (value !== null && selectedId === grantID) setSelectedId('');
+            if (value !== null && selectedIdRef.current === grantID) {
+                detailGen.current += 1;
+                setSelectedId('');
+                setDetail(null);
+                setDetailPath('');
+            }
             return value !== null;
         },
         openTask: (projectPath: string) => {
             if (selected && selected.online !== false) void openTask(selected.id, projectPath);
         },
-        closeDetail: () => { setDetail(null); setDetailPath(''); },
+        closeDetail: () => {
+            detailGen.current += 1;
+            setDetail(null);
+            setDetailPath('');
+        },
         createTask: async (name: string) => {
             const ok = await run('create_task', { name });
             if (ok) setCreating(false);

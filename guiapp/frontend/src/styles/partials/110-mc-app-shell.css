@@ -834,12 +834,22 @@
   align-items: flex-end;
   gap: 2px;
   min-width: 0;
-  padding: 0 2px;
   border-bottom: 1px solid var(--theme-border);
+}
+.mc-task-pane .mc-task-machine-tablist {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
-.mc-task-pane .mc-task-machine-tabs::-webkit-scrollbar { display: none; }
+.mc-task-pane .mc-task-machine-tablist::-webkit-scrollbar { display: none; }
+.mc-task-pane .mc-task-machine-tablist > .mc-task-machine-tab,
+.mc-task-pane .mc-task-machine-tab-wrap {
+  flex: 0 0 auto;
+}
 .mc-task-pane .mc-task-machine-tab,
 .mc-task-pane .mc-task-machine-tab-close {
   appearance: none;
@@ -864,36 +874,45 @@
   color: var(--theme-text-primary);
   background: color-mix(in srgb, var(--theme-text-primary) 4%, transparent);
 }
-.mc-task-pane .mc-task-machine-tab.is-active {
-  color: var(--theme-text-primary);
+.mc-task-pane .mc-task-machine-tab.is-active,
+.mc-task-pane .mc-task-machine-tab.is-active:hover {
+  color: var(--mc-accent, #2e75cb);
+  background: var(--theme-surface-muted);
+  box-shadow: inset 0 -3px 0 var(--mc-accent, #2e75cb);
+  font-weight: 700;
+}
+.mc-task-pane .mc-task-machine-tab-wrap.is-active {
+  background: var(--theme-surface-muted);
+  box-shadow: inset 0 -3px 0 var(--mc-accent, #2e75cb);
+  border-radius: 8px 8px 0 0;
+}
+.mc-task-pane .mc-task-machine-tab-wrap.is-active .mc-task-machine-tab,
+.mc-task-pane .mc-task-machine-tab-wrap.is-active .mc-task-machine-tab:hover {
+  color: var(--mc-accent, #2e75cb);
   background: transparent;
-  font-weight: 600;
+  box-shadow: none;
+  font-weight: 700;
 }
-.mc-task-pane .mc-task-machine-tab.is-active::after,
-.mc-task-pane .mc-task-machine-tab-wrap.is-active::after {
-  content: "";
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: -1px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--mc-accent, #2e75cb);
+.mc-task-pane .mc-task-machine-tab-wrap.is-active .mc-task-machine-tab-close,
+.mc-task-pane .mc-task-machine-tab.is-active i {
+  color: var(--mc-accent, #2e75cb);
 }
-.mc-task-pane .mc-task-machine-tab-wrap.is-active .mc-task-machine-tab::after {
-  content: none;
-}
-.mc-task-pane .mc-task-machine-tab:active {
-  transform: scale(0.98);
-}
-@media (prefers-reduced-motion: reduce) {
-  .mc-task-pane .mc-task-machine-tab:active { transform: none; }
+.mc-task-pane .mc-task-machine-tab:active:not(.is-active) {
+  opacity: 0.72;
 }
 .mc-task-pane .mc-task-machine-tab-wrap {
   position: relative;
   display: inline-flex;
   align-items: flex-end;
-  min-width: 0;
+  max-width: 100%;
+}
+.mc-task-pane .mc-task-machine-tab > span {
+  display: inline-block;
+  max-width: 9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 .mc-task-pane .mc-task-machine-tab-wrap .mc-task-machine-tab {
   padding-right: 2px;
@@ -917,16 +936,18 @@
   color: var(--theme-text-primary);
 }
 .mc-task-pane .mc-task-machine-tab--add {
-  margin-left: auto;
+  flex: 0 0 auto;
   min-width: 28px;
   padding: 6px 8px 8px;
+  background: transparent;
   font-size: 16px;
   font-weight: 400;
 }
 .mc-task-pane .mc-task-machine-tabs .mc-task-machine-error {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
-  margin: 0 4px 8px 12px;
+  max-width: 42%;
+  margin: 0 2px 7px 8px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -938,9 +959,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.mc-task-pane .mc-task-machine-tabs .mc-task-machine-error + .mc-task-machine-tab--add {
-  margin-left: 0;
-}
 .mc-task-pane .mc-task-machine-note {
   border: 0;
   border-radius: 0;
@@ -948,6 +966,15 @@
   padding: 5px 2px 2px;
   color: var(--theme-text-muted);
   font-size: 11.5px;
+  line-height: 1.35;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-error,
+.mc-task-pane .mc-task-machine-create .mc-task-machine-error,
+.mc-task-pane .mc-task-machine-detail .mc-task-machine-error {
+  display: block;
+  margin: 0 0 8px;
+  color: var(--theme-danger, #b42318);
+  font-size: 12px;
   line-height: 1.35;
 }
 .mc-task-pane .mc-task-machine-add,

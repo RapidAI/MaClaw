@@ -738,9 +738,12 @@ func (s *Service) notifyInvite(ctx context.Context, grant Grant) {
 	if err != nil || id == "" {
 		return
 	}
-	grant.InviteNotificationID = id
-	grant.UpdatedAt = time.Now().UTC()
-	_ = s.update(ctx, grant)
+	// The notice is created after the invite row exists. Accept, reject, or
+	// ignore can land in that gap. Writing the whole row back would restore
+	// the pending snapshot and undo that decision.
+	if !s.attachNoticeID(ctx, grant.ID, "invite_notification_id", id, StatusPending) {
+		s.revokeNotice(ctx, id)
+	}
 }
 
 func (s *Service) notifyWatch(ctx context.Context, grant Grant) {
@@ -763,9 +766,11 @@ func (s *Service) notifyWatch(ctx context.Context, grant Grant) {
 	if err != nil || id == "" {
 		return
 	}
-	grant.NoticeNotificationID = id
-	grant.UpdatedAt = time.Now().UTC()
-	_ = s.update(ctx, grant)
+	// Same gap as the invite notice: a full-row write can revive a grant the
+	// other side already ended while this notice was being created.
+	if !s.attachNoticeID(ctx, grant.ID, "notice_notification_id", id, StatusActive) {
+		s.revokeNotice(ctx, id)
+	}
 }
 
 func (s *Service) notifyResult(ctx context.Context, userID, title, content, sourceID string) {
@@ -779,6 +784,27 @@ func (s *Service) notifyResult(ctx context.Context, userID, title, content, sour
 		Source:         NoticeResult,
 		SourceID:       sourceID,
 	})
+}
+
+// attachNoticeID records a notice on a grant that is still in expectStatus.
+// It returns false when the grant already moved on, so the caller can drop
+// the notice instead of rewriting status, machine, or permission.
+func (s *Service) attachNoticeID(ctx context.Context, grantID, column, noticeID, expectStatus string) bool {
+	var query string
+	switch column {
+	case "invite_notification_id":
+		query = `UPDATE remote_control_grants SET invite_notification_id = ?, updated_at = ? WHERE id = ? AND status = ?`
+	case "notice_notification_id":
+		query = `UPDATE remote_control_grants SET notice_notification_id = ?, updated_at = ? WHERE id = ? AND status = ?`
+	default:
+		return false
+	}
+	res, err := s.db.ExecContext(ctx, query, noticeID, formatTime(time.Now().UTC()), grantID, expectStatus)
+	if err != nil {
+		return false
+	}
+	n, err := res.RowsAffected()
+	return err == nil && n > 0
 }
 
 func (s *Service) revokeNotice(ctx context.Context, id string) {
