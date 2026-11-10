@@ -3161,6 +3161,42 @@ func mapLocalCodingSubAgentStatusForRetry(status TaskExecStatus) v2.TaskRunStatu
 	}
 }
 
+// codingWorkbenchStepOutcome resolves a coding SubAgent result into the v2 run
+// status, the sticky plan-step status, the step summary, and the user-visible
+// error. An iteration-budget handoff stays open. A transient provider outage
+// that outlived the loop's retry budget is not a failure of the step's own work:
+// it becomes a resumable skip (继续 reruns every non-passed step) instead of a
+// terminal failure that stops the sequence and skips the rest of the plan.
+func codingWorkbenchStepOutcome(v1Result *CodingSubAgentResult) (v2.TaskRunStatus, string, string, string) {
+	status := mapLocalCodingSubAgentStatusForRetry(v1Result.Status)
+	stepStatus := codingStepFailed
+	switch status {
+	case v2.TaskPassed:
+		stepStatus = codingStepPassed
+	case v2.TaskSkipped:
+		stepStatus = codingStepSkipped
+	}
+	stepSummary := v1Result.Summary
+	resultErr := v1Result.Error
+	if status == v2.TaskFailed && codingLoopIterationExhausted(v1Result.Error) {
+		// The step is still open. Recording it failed paints a failure
+		// the person did not hit. A stock error summary is not progress.
+		stepStatus = codingStepRunning
+		stepSummary = stickyCodingCarrySummary(v1Result.Summary, v1Result.Error)
+	}
+	if status == v2.TaskFailed && isSubAgentTransientProviderError(v1Result.Error) {
+		status = v2.TaskSkipped
+		stepStatus = codingStepSkipped
+		resultErr = codingExecText(
+			"The model service was temporarily unreachable and the retry budget was spent. Send 继续 to resume this step.",
+			"模型服务暂时不可达，重试后仍失败，本步骤已暂停。发送「继续」可从本步骤恢复执行。",
+			"模型服務暫時不可達，重試後仍失敗，本步驟已暫停。傳送「繼續」可從本步驟恢復執行。",
+		)
+		stepSummary = resultErr
+	}
+	return status, stepStatus, stepSummary, resultErr
+}
+
 // failedTaskItemsFromResults returns original task items whose matching result failed.
 func failedTaskItemsFromResults(tasks []*v2.TaskItem, results []v2.TaskRunResult) []*v2.TaskItem {
 	if len(tasks) == 0 || len(results) == 0 {
@@ -4019,22 +4055,8 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, codingStepFailed, "SubAgent returned nil")
 			return &v2.TaskRunResult{TaskIndex: t.Index, Title: t.Title, Status: v2.TaskFailed, Error: "SubAgent returned nil"}
 		}
-		status := mapLocalCodingSubAgentStatusForRetry(v1Result.Status)
-		stepStatus := codingStepFailed
-		switch status {
-		case v2.TaskPassed:
-			stepStatus = codingStepPassed
-		case v2.TaskSkipped:
-			stepStatus = codingStepSkipped
-		}
+		status, stepStatus, stepSummary, resultErr := codingWorkbenchStepOutcome(v1Result)
 		summary := v1Result.Summary
-		stepSummary := summary
-		if status == v2.TaskFailed && codingLoopIterationExhausted(v1Result.Error) {
-			// The step is still open. Recording it failed paints a failure
-			// the person did not hit. A stock error summary is not progress.
-			stepStatus = codingStepRunning
-			stepSummary = stickyCodingCarrySummary(summary, v1Result.Error)
-		}
 		// Step verification gate after successful implement/verify-style steps.
 		// Always verify on the main project path (post-merge).
 		if status == v2.TaskPassed && planned && stepNeedsVerifyGate(t.Title, t.Description, t.Index, planStepTotal) {
@@ -4127,7 +4149,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			Summary:        summary,
 			FilesCreated:   v1Result.FilesCreated,
 			FilesModified:  v1Result.FilesModified,
-			Error:          v1Result.Error,
+			Error:          resultErr,
 			RuntimeTaskID:  v1Result.RuntimeTaskID,
 			RuntimeHandoff: v1Result.RuntimeHandoff,
 		}

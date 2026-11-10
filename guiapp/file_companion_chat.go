@@ -171,6 +171,19 @@ func (a *App) SendFileCompanionMessage(req FileCompanionTurnRequest) error {
 		streamEvents.emit("ai-assistant-stream-done", "")
 	}
 	msg = a.fileCompanionPrepareScannedPDF(msg, canonical, text, onProgress)
+	// Participants read this question while the model is still answering.
+	// The push after the turn sends the answer. A paper turn's stored line is
+	// the paper brief, not this text, so it stays with the finished turn.
+	if !paper {
+		if visible := fileCompanionVisibleUserText(text); visible != "" {
+			// Freeze the transcript before the model runs. A late read would
+			// see this turn's answer and either skip the question or append
+			// it after the reply.
+			if body, shares, ok := a.prepareFileCompanionShareQuestion(canonical, visible); ok {
+				go a.sendFileCompanionShareQuestion(body, shares)
+			}
+		}
+	}
 	var resp *IMAgentResponse
 	if fileCompanionTurnModelHook != nil {
 		resp = fileCompanionTurnModelHook(msg)

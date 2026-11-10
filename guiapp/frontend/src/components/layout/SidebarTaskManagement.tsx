@@ -3011,6 +3011,10 @@ export const SidebarTaskManagement = ({
     const [taskListOrder, setTaskListOrder] = useState<string[]>(readTaskListOrder);
     const [collapsedTaskFolders, setCollapsedTaskFolders] = useState<ReadonlySet<TaskListFolderKind>>(readCollapsedTaskFolders);
     const [collapsedWorkdirFolders, setCollapsedWorkdirFolders] = useState<ReadonlySet<string>>(readCollapsedWorkdirFolders);
+    // A remote machine must not inherit folders this computer has collapsed.
+    // The same directory key exists on both, and that would hide the other list.
+    const [remoteCollapsedTaskFolders, setRemoteCollapsedTaskFolders] = useState<ReadonlySet<TaskListFolderKind>>(() => new Set());
+    const [remoteCollapsedWorkdirs, setRemoteCollapsedWorkdirs] = useState<ReadonlySet<string>>(() => new Set());
     const [pinnedWorkdirFolders, setPinnedWorkdirFolders] = useState<ReadonlySet<string>>(readPinnedWorkdirFolders);
     const [workdirContextMenu, setWorkdirContextMenu] = useState<WorkdirFolderContextMenu | null>(null);
     const [taskFolderOrder, setTaskFolderOrder] = useState<MovableTaskListFolderKind[]>(readTaskFolderOrder);
@@ -3025,6 +3029,15 @@ export const SidebarTaskManagement = ({
     const pendingListScrollRef = useRef<{ kind: 'task' | 'folder'; key: string } | null>(null);
     const toggleWorkdirFolder = (key: string) => {
         if (!key) return;
+        if (remoteRef.current.selected) {
+            setRemoteCollapsedWorkdirs(prev => {
+                const next = new Set(prev);
+                if (next.has(key)) next.delete(key);
+                else next.add(key);
+                return next;
+            });
+            return;
+        }
         setCollapsedWorkdirFolders(prev => {
             const next = new Set(prev);
             if (next.has(key)) next.delete(key);
@@ -3034,6 +3047,15 @@ export const SidebarTaskManagement = ({
         });
     };
     const toggleTaskFolder = (kind: TaskListFolderKind) => {
+        if (remoteRef.current.selected) {
+            setRemoteCollapsedTaskFolders(prev => {
+                const next = new Set(prev);
+                if (next.has(kind)) next.delete(kind);
+                else next.add(kind);
+                return next;
+            });
+            return;
+        }
         setCollapsedTaskFolders(prev => {
             const next = new Set(prev);
             if (next.has(kind)) next.delete(kind);
@@ -3248,6 +3270,8 @@ export const SidebarTaskManagement = ({
         }
         if (remoteMachineKeyRef.current === remoteMachineKey) return;
         remoteMachineKeyRef.current = remoteMachineKey;
+        setRemoteCollapsedTaskFolders(new Set());
+        setRemoteCollapsedWorkdirs(new Set());
         setTaskSearchQuery('');
         setTaskSearchOpen(false);
         lastPublishedQueryRef.current = '';
@@ -3561,9 +3585,11 @@ export const SidebarTaskManagement = ({
     }, [taskFilter, taskFilterCounts]);
     useEffect(() => {
         setArchiveFilterDismissed(false);
-        // Read the collapse set at the filter change only. Toggling 会话 or
-        // 编程 later must not recapture it.
-        setArchiveFilterStartedCollapsed(collapsedTaskFolders.has('archive'));
+        // Read the collapse set of the list on screen at the filter change
+        // only. A remote tab must not inherit this computer's archive flag,
+        // and toggling 会话 or 编程 later must not recapture it.
+        const collapsed = remote.selected ? remoteCollapsedTaskFolders : collapsedTaskFolders;
+        setArchiveFilterStartedCollapsed(collapsed.has('archive'));
     }, [taskFilter, workspaceFilter]);
     // Dock theme toggle mirrors the quick-settings theme chip; fall back to the
     // App root attribute when the caller does not pass themeMode explicitly.
@@ -3608,6 +3634,7 @@ export const SidebarTaskManagement = ({
         : '';
     const revealedFolderTaskKeyRef = useRef('');
     useEffect(() => {
+        if (remote.selected) return;
         if (!activeFolderExpandKey || !activeFolderKind) return;
         // Archive stays collapsed until the user opens it, including when the
         // task they just archived is the one on screen.
@@ -3621,7 +3648,7 @@ export const SidebarTaskManagement = ({
             writeCollapsedTaskFolders(next);
             return next;
         });
-    }, [activeFolderExpandKey, activeFolderKind]);
+    }, [activeFolderExpandKey, activeFolderKind, remote.selected]);
     // Only a row that is actually inside a directory folder. A lone task, or a
     // partner hidden by the current filter, must not clear that folder's collapse.
     const activeWorkdirKey = activeListedTask
@@ -3632,6 +3659,7 @@ export const SidebarTaskManagement = ({
         : '';
     const revealedWorkdirTaskKeyRef = useRef('');
     useEffect(() => {
+        if (remote.selected) return;
         if (!activeWorkdirExpandKey || !activeWorkdirKey) return;
         if (revealedWorkdirTaskKeyRef.current === activeWorkdirExpandKey) return;
         revealedWorkdirTaskKeyRef.current = activeWorkdirExpandKey;
@@ -3642,7 +3670,7 @@ export const SidebarTaskManagement = ({
             writeCollapsedWorkdirFolders(next);
             return next;
         });
-    }, [activeWorkdirExpandKey, activeWorkdirKey]);
+    }, [activeWorkdirExpandKey, activeWorkdirKey, remote.selected]);
     // Only the active folder's own expand state. Collapsing the other folder
     // must not scroll the list back to the current task.
     const activeFolderExpanded = !activeFolderKind || !collapsedTaskFolders.has(activeFolderKind);
@@ -4941,6 +4969,7 @@ export const SidebarTaskManagement = ({
     };
 
     const openSceneDetail = async (projectPath: string, fallbackName?: string, reload = false) => {
+        if (remoteRef.current.selected) return;
         if (sceneDetailPath === projectPath && !reload) {
             sceneDetailRequestGenRef.current += 1;
             setSceneDetailPath(null);
@@ -5823,9 +5852,10 @@ export const SidebarTaskManagement = ({
                     : textForLang(lang, 'No tasks in this group', '\u8be5\u5206\u7ec4\u6682\u65e0\u4efb\u52a1', '\u8a72\u5206\u7d44\u66ab\u7121\u4efb\u52d9')}
             </div>
         ) : taskFolders.map(folder => {
+            const folderCollapsed = remote.selected ? remoteCollapsedTaskFolders : collapsedTaskFolders;
             const folderExpanded = remoteTaskQuery || (folder.kind === 'archive' && showArchivedMatches)
                 ? true
-                : !collapsedTaskFolders.has(folder.kind);
+                : !folderCollapsed.has(folder.kind);
             const folderLabel = taskListFolderLabel(folder.kind, lang);
             const folderToggleLabel = folderExpanded
                 ? textForLang(lang, `Collapse ${folderLabel}`, `折叠${folderLabel}`, `摺疊${folderLabel}`)
@@ -5908,7 +5938,8 @@ export const SidebarTaskManagement = ({
             const workdirCollapseKey = entry.kind === 'folder'
                 ? taskWorkdirCollapseKey(folder.kind, entry.folder.key)
                 : '';
-            const workdirExpanded = remoteTaskQuery || entry.kind !== 'folder' || !collapsedWorkdirFolders.has(workdirCollapseKey);
+            const workdirCollapsed = remote.selected ? remoteCollapsedWorkdirs : collapsedWorkdirFolders;
+            const workdirExpanded = remoteTaskQuery || entry.kind !== 'folder' || !workdirCollapsed.has(workdirCollapseKey);
             const rowTasks = entry.kind === 'folder'
                 ? (workdirExpanded ? entry.folder.tasks : [])
                 : [entry.task];
@@ -5936,11 +5967,11 @@ export const SidebarTaskManagement = ({
             // server, but they are not pure-coding tasks in this sidebar.
             // Keep the row metadata aligned with the visible task type.
             const pureCoding = !cloudWorkspace && isPureCodingTask(proj);
-            const isRemoving = removingTaskPaths.has(proj.project_path);
-            const removalError = removeErrors.get(proj.project_path) || '';
+            const isRemoving = !remote.selected && removingTaskPaths.has(proj.project_path);
+            const removalError = remote.selected ? '' : (removeErrors.get(proj.project_path) || '');
             const isActive = !remote.selected && activeRowContext ? matchesActiveTaskRowContext(proj, activeRowContext) : false;
             const isOpen = !remote.selected && isTaskInstanceOpen(proj);
-            const isBusy = openingTaskPath === proj.project_path || isRemoving;
+            const isBusy = !remote.selected && (openingTaskPath === proj.project_path || isRemoving);
             const liveRunning = isLiveRunningRow(proj);
             const statusBucket = taskStatusBucketFor(proj);
             const workflowStatus = liveRunning
@@ -5958,7 +5989,7 @@ export const SidebarTaskManagement = ({
             const recentTimeLabel = taskRecentTimeLabel(proj.last_activity || proj.created_at, lang);
             const secondaryStatusLabel = isRemoving
                 ? textForLang(lang, 'Removing task...', '正在删除任务...', '正在刪除任務...')
-                : openingTaskPath === proj.project_path
+                    : !remote.selected && openingTaskPath === proj.project_path
                     ? textForLang(lang, pureCoding ? 'Restoring pure coding environment...' : 'Restoring...', pureCoding ? '正在恢复纯编程环境...' : '恢复中...', pureCoding ? '正在恢復純程式環境...' : '恢復中...')
                     : '';
             const statusMarkLabel = secondaryStatusLabel || taskListStatusMarkLabel(durableKind, workflowStatus, lang);
@@ -6006,7 +6037,7 @@ export const SidebarTaskManagement = ({
                 gap: '6px',
                 padding: '4px 6px 4px 8px',
                 borderRadius: '8px',
-                cursor: isBusy ? 'progress' : 'grab',
+                cursor: isBusy ? 'progress' : remote.selected ? 'pointer' : 'grab',
                 opacity: isBusy ? 0.78 : 1,
                 // Only the active row keeps a selection highlight; open-but-inactive
                 // and plain rows stay transparent (hover comes from CSS).
@@ -6017,9 +6048,9 @@ export const SidebarTaskManagement = ({
             };
             const orderKey = taskOrderKey(proj);
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path} data-task-order-key={orderKey}>
-                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy && !remote.selected} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current) { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setWorkdirContextMenu(null); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, executionDir: proj.execution_dir, workflowTemplateId: String(proj.active_workflow?.type || '').trim(), orderKey, archived: archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
+                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy && !remote.selected} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current) { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (remote.selected) { void handleTaskDoubleClick(proj); return; } if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setWorkdirContextMenu(null); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, executionDir: proj.execution_dir, workflowTemplateId: String(proj.active_workflow?.type || '').trim(), orderKey, archived: remote.selected ? !!proj.archived : archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, remote.selected ? textForLang(lang, 'Click to open.', '单击打开', '單擊開啟') : textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
                     <TaskStatusMark kind={statusKind} label={statusMarkLabel} />
-                    <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>
+                    {remote.selected ? null : <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>}
                     <span className="stsm-row-body">
                         {(workflowStatus || codingBadge || proj.pinned || shareFromLabel || shareReadOnlyLabel) && (
                             <span className="stsm-badge-row">
@@ -6076,7 +6107,7 @@ export const SidebarTaskManagement = ({
                                 {workflowStatus && <span data-testid="task-workflow-status" aria-label={`${textForLang(lang, 'Task status', '任务状态', '任務狀態')}: ${workflowStatus.label}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} title={`${proj.active_workflow?.type || 'workflow'}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: `1px solid ${TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].border}`, color: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].color, background: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].background, fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{workflowStatus.label}{workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}</span>}
                             </span>
                         )}
-                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { if (renameCancelRef.current) { renameCancelRef.current = false; renameRemoteRef.current = false; setRenamingTaskPath(null); return; } const trimmed = renameValue.trim(); const remoteRename = renameRemoteRef.current; renameRemoteRef.current = false; if (remoteRename) { const gate = remoteRef.current; if (gate.selected && gate.operate && trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await gate.renameTask(proj.project_path, trimmed); } setRenamingTaskPath(null); return; } if (trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { e.preventDefault(); renameCancelRef.current = true; setRenamingTaskPath(null); } }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span><TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />{proj.pinned && !pureCoding && <span data-testid="task-pinned-badge" className="stsm-badge-pinned" title={textForLang(lang, 'Pinned', '置顶', '置頂')}>{textForLang(lang, 'Pinned', '置顶', '置頂')}</span>}{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
+                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { if (renameCancelRef.current) { renameCancelRef.current = false; renameRemoteRef.current = false; setRenamingTaskPath(null); return; } const trimmed = renameValue.trim(); const remoteRename = renameRemoteRef.current; renameRemoteRef.current = false; if (remoteRename) { const gate = remoteRef.current; if (gate.selected && gate.operate && trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await gate.renameTask(proj.project_path, trimmed); } setRenamingTaskPath(null); return; } if (trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') { if (e.nativeEvent.isComposing || e.keyCode === 229) return; (e.target as HTMLInputElement).blur(); } if (e.key === 'Escape') { e.preventDefault(); renameCancelRef.current = true; setRenamingTaskPath(null); } }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span><TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />{proj.pinned && !pureCoding && <span data-testid="task-pinned-badge" className="stsm-badge-pinned" title={textForLang(lang, 'Pinned', '置顶', '置頂')}>{textForLang(lang, 'Pinned', '置顶', '置頂')}</span>}{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
                         {secondaryText ? <span data-testid="task-secondary-label" className="stsm-row-secondary">{secondaryText}</span> : null}
                         {showWorkspaceLine ? (
                             <span
@@ -6090,12 +6121,12 @@ export const SidebarTaskManagement = ({
                                 ) : null}
                             </span>
                         ) : null}
-                        {!isRemoving && openingTaskPath !== proj.project_path && createdAtLabel && <span data-testid="task-created-at" className="stsm-row-created">{createdAtLabel}</span>}
-                        {(openingTaskPath === proj.project_path || isRemoving) && <span data-testid={isRemoving ? 'task-remove-progress' : undefined} role={isRemoving ? 'status' : undefined} aria-label={isRemoving ? textForLang(lang, 'Removing task', '正在删除任务', '正在刪除任務') : textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} className="sidebar-task-progress__track stsm-row-progress"><span className="sidebar-task-progress__bar" /></span>}
+                        {!isBusy && createdAtLabel && <span data-testid="task-created-at" className="stsm-row-created">{createdAtLabel}</span>}
+                        {isBusy && <span data-testid={isRemoving ? 'task-remove-progress' : undefined} role={isRemoving ? 'status' : undefined} aria-label={isRemoving ? textForLang(lang, 'Removing task', '正在删除任务', '正在刪除任務') : textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} className="sidebar-task-progress__track stsm-row-progress"><span className="sidebar-task-progress__bar" /></span>}
                         {removalError && <span data-testid="task-remove-error" role="alert" className="stsm-row-error">{removalError}</span>}
                     </span>
                     <span className="stsm-row-actions">
-                    {isOwnedCloudWorkspaceTask(proj) && (
+                    {isOwnedCloudWorkspaceTask(proj) && !remote.selected && (
                         <button
                             type="button"
                             data-testid="task-cloud-share"
@@ -6114,10 +6145,10 @@ export const SidebarTaskManagement = ({
                             <CloudShareIcon />
                         </button>
                     )}
-                    <button type="button" aria-label={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} title={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} onClick={e => { e.stopPropagation(); if (!isRemoving) void openSceneDetail(proj.project_path, proj.name); }} disabled={isRemoving || (sceneDetailLoading && sceneDetailPath === proj.project_path)} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', opacity: isRemoving || (sceneDetailLoading && sceneDetailPath === proj.project_path) ? 0.4 : 0.78, cursor: isRemoving ? 'progress' : 'pointer', width: '20px', height: '20px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><ProjectSearchIcon name="info" size={13} /></button>
+                    {remote.selected ? null : <button type="button" aria-label={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} title={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} onClick={e => { e.stopPropagation(); if (!isRemoving) void openSceneDetail(proj.project_path, proj.name); }} disabled={isRemoving || (sceneDetailLoading && sceneDetailPath === proj.project_path)} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', opacity: isRemoving || (sceneDetailLoading && sceneDetailPath === proj.project_path) ? 0.4 : 0.78, cursor: isRemoving ? 'progress' : 'pointer', width: '20px', height: '20px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><ProjectSearchIcon name="info" size={13} /></button>}
                     </span>
                 </div>
-                {sceneDetailPath === proj.project_path && <SidebarTaskEvidencePanel detail={sceneDetail} loading={sceneDetailLoading} lang={lang} onContinueWorkflow={continueWorkflowProject} error={sceneDetailError} onRetry={() => { void openSceneDetail(proj.project_path, proj.name, true); }} />}
+                {!remote.selected && sceneDetailPath === proj.project_path && <SidebarTaskEvidencePanel detail={sceneDetail} loading={sceneDetailLoading} lang={lang} onContinueWorkflow={continueWorkflowProject} error={sceneDetailError} onRetry={() => { void openSceneDetail(proj.project_path, proj.name, true); }} />}
             </div>
             });
             if (entry.kind !== 'folder') return rows;

@@ -902,6 +902,26 @@ func postCompanionShareImport(t *testing.T, identity *auth.IdentityService, bear
 	return rec
 }
 
+func TestCompanionRemoteChangeRows(t *testing.T) {
+	rows := companionRemoteChangeRows([]map[string]any{{
+		"token":          "cd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"hub_origin":     "https://other.example",
+		"revision":       float64(2),
+		"notes_revision": float64(3),
+		"marks_revision": float64(4),
+		"chat_revision":  float64(5),
+		"reader_grant":   "secret",
+	}, {
+		"token":      "not-a-token",
+		"hub_origin": "https://other.example",
+	}, {
+		"token": "cd_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	}})
+	if len(rows) != 1 || rows[0].ChatRevision != 5 || rows[0].NotesRevision != 3 || rows[0].HubOrigin != "https://other.example" {
+		t.Fatalf("remote counters: %+v", rows)
+	}
+}
+
 func TestCompanionDocumentShareChangesEndpointAndListETag(t *testing.T) {
 	resetCompanionDocShares(t)
 	identity, _, _ := newHTTPAPITestServices(t)
@@ -937,6 +957,10 @@ func TestCompanionDocumentShareChangesEndpointAndListETag(t *testing.T) {
 			Token         string `json:"token"`
 			Revision      int    `json:"revision"`
 			NotesRevision int    `json:"notes_revision"`
+			Visibility    string `json:"visibility"`
+			Host          bool   `json:"host"`
+			Target        string `json:"target"`
+			PendingHost   bool   `json:"pending_host"`
 		} `json:"shares"`
 	}
 	if err := json.Unmarshal(ownerChanges.Body.Bytes(), &ownerPayload); err != nil {
@@ -945,12 +969,31 @@ func TestCompanionDocumentShareChangesEndpointAndListETag(t *testing.T) {
 	if ownerPayload.Seq == 0 || len(ownerPayload.Shares) != 2 {
 		t.Fatalf("owner changes payload: %s", ownerChanges.Body.String())
 	}
-	seen := map[string]int{}
-	for _, row := range ownerPayload.Shares {
-		seen[row.Token] = row.Revision
+	if !bytes.Contains(ownerChanges.Body.Bytes(), []byte(`"remote_shares":`)) {
+		t.Fatal("changes feed omitted the cross-hub counters")
 	}
-	if seen[publicToken] != 1 || seen[personToken] != 1 {
-		t.Fatalf("owner change rows: %s", ownerChanges.Body.String())
+	seen := map[string]struct {
+		revision   int
+		visibility string
+		host       bool
+		target     string
+	}{}
+	for _, row := range ownerPayload.Shares {
+		if row.PendingHost {
+			t.Fatalf("new share has a pending host: %+v", row)
+		}
+		seen[row.Token] = struct {
+			revision   int
+			visibility string
+			host       bool
+			target     string
+		}{row.Revision, row.Visibility, row.Host, row.Target}
+	}
+	if seen[publicToken].revision != 1 || seen[publicToken].visibility != "public" || !seen[publicToken].host || seen[publicToken].target != "" {
+		t.Fatalf("public change row: %+v", seen[publicToken])
+	}
+	if seen[personToken].revision != 1 || seen[personToken].visibility != "person" || !seen[personToken].host || seen[personToken].target != "share-reader@example.com" {
+		t.Fatalf("person change row: %+v", seen[personToken])
 	}
 
 	otherChanges := getChanges(otherToken)
@@ -960,15 +1003,17 @@ func TestCompanionDocumentShareChangesEndpointAndListETag(t *testing.T) {
 	var otherPayload struct {
 		Seq    uint64 `json:"seq"`
 		Shares []struct {
-			Token string `json:"token"`
+			Token  string `json:"token"`
+			Target string `json:"target"`
 		} `json:"shares"`
 	}
 	if err := json.Unmarshal(otherChanges.Body.Bytes(), &otherPayload); err != nil {
 		t.Fatal(err)
 	}
 	// The person share names this reader; the public one does not until they
-	// import it, so only one row is visible now.
-	if len(otherPayload.Shares) != 1 || otherPayload.Shares[0].Token != personToken {
+	// import it, so only one row is visible now. The invite target stays on
+	// the admin row, the same way the full list hides it from a reader.
+	if len(otherPayload.Shares) != 1 || otherPayload.Shares[0].Token != personToken || otherPayload.Shares[0].Target != "" {
 		t.Fatalf("other change rows: %s", otherChanges.Body.String())
 	}
 
@@ -1245,6 +1290,37 @@ func TestCompanionDocumentShareChatSyncAndFetch(t *testing.T) {
 		t.Fatalf("list chat revision: %d %s", listRec.Code, listRec.Body.String())
 	}
 
+	// A question posted from the revision it read must not replace an answer
+	// that landed first. The same body with the current revision still writes.
+	staleBody := `[{"role":"user","text":"晚到的旧问题"}]`
+	staleReq := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/chat", strings.NewReader(staleBody))
+	staleReq.SetPathValue("token", token)
+	staleReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	staleReq.Header.Set("Content-Type", "application/json")
+	staleReq.Header.Set("X-Companion-Chat-Base", "1")
+	staleRec := httptest.NewRecorder()
+	CompanionDocumentShareChatUpdateHandler(identity).ServeHTTP(staleRec, staleReq)
+	if staleRec.Code != http.StatusConflict {
+		t.Fatalf("stale question: %d %s", staleRec.Code, staleRec.Body.String())
+	}
+	if fetched = getChat(otherToken); fetched.Body.String() != next {
+		t.Fatalf("stale question replaced the answer: %s", fetched.Body.String())
+	}
+	freshBody := `[{"role":"user","text":"第二个问题"},{"role":"assistant","text":"第二个回答"}]`
+	freshReq := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/chat", strings.NewReader(freshBody))
+	freshReq.SetPathValue("token", token)
+	freshReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	freshReq.Header.Set("Content-Type", "application/json")
+	freshReq.Header.Set("X-Companion-Chat-Base", "2")
+	freshRec := httptest.NewRecorder()
+	CompanionDocumentShareChatUpdateHandler(identity).ServeHTTP(freshRec, freshReq)
+	if freshRec.Code != http.StatusOK {
+		t.Fatalf("current question: %d %s", freshRec.Code, freshRec.Body.String())
+	}
+	if fetched = getChat(otherToken); fetched.Body.String() != freshBody {
+		t.Fatalf("question at the current revision: %s", fetched.Body.String())
+	}
+
 	// A signed-in user with no access is refused.
 	thirdToken, _ := issueViewerToken(t, identity, "share-outsider@example.com")
 	if denied := getChat(thirdToken); denied.Code != http.StatusForbidden {
@@ -1263,5 +1339,91 @@ func TestCompanionDocumentShareChatSyncAndFetch(t *testing.T) {
 	companionSharePersistWG.Wait()
 	if gone := getChat(otherToken); gone.Code != http.StatusNotFound {
 		t.Fatalf("chat after delete: %d", gone.Code)
+	}
+}
+
+// Transcript images have their own endpoint. Only the host seat writes one,
+// the write does not move the change sequence, and anyone who can read the
+// share reads the image.
+func TestCompanionShareFigureUploadAndFetch(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, owner := issueViewerToken(t, identity, "figure-owner@example.com")
+	readerToken, _ := issueViewerToken(t, identity, "figure-reader@example.com")
+	const token = "cd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	companionDocShares.Lock()
+	companionDocShares.items[token] = companionDocShare{
+		Token: token, OwnerID: owner.UserID, OwnerLabel: "figure-owner@example.com",
+		Visibility: "public", CreatedAt: time.Now().UTC(), Revision: 1,
+	}
+	seqBefore := companionDocShares.seq
+	companionDocShares.Unlock()
+
+	png := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{7}, 64)...)
+	postFigure := func(bearer, name string, body []byte) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/shares/"+token+"/figures/"+name, bytes.NewReader(body))
+		req.SetPathValue("token", token)
+		req.SetPathValue("name", name)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		rec := httptest.NewRecorder()
+		CompanionDocumentShareFigureUpdateHandler(identity).ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := postFigure(readerToken, "fig-1.png", png); rec.Code != http.StatusForbidden {
+		t.Fatalf("reader figure post: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := postFigure(ownerToken, "a..b.png", png); rec.Code != http.StatusBadRequest {
+		t.Fatalf("dotted name post: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := postFigure(ownerToken, "fig-1.png", png); rec.Code != http.StatusOK {
+		t.Fatalf("host figure post: %d %s", rec.Code, rec.Body.String())
+	}
+	companionDocShares.Lock()
+	if companionDocShares.seq != seqBefore {
+		companionDocShares.Unlock()
+		t.Fatal("figure upload moved the change sequence")
+	}
+	if companionDocShares.items[token].Figures["fig-1.png"] == "" {
+		companionDocShares.Unlock()
+		t.Fatal("figure blob path not recorded")
+	}
+	companionDocShares.Unlock()
+
+	getFigure := func(bearer, name string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/shares/"+token+"/figures/"+name, nil)
+		req.SetPathValue("token", token)
+		req.SetPathValue("name", name)
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		rec := httptest.NewRecorder()
+		CompanionDocumentShareFigureHandler(identity).ServeHTTP(rec, req)
+		return rec
+	}
+	got := getFigure(readerToken, "fig-1.png")
+	if got.Code != http.StatusOK || !bytes.Equal(got.Body.Bytes(), png) {
+		t.Fatalf("reader figure get: %d len=%d", got.Code, got.Body.Len())
+	}
+	if mime := got.Header().Get("Content-Type"); mime != "image/png" {
+		t.Fatalf("figure mime: %q", mime)
+	}
+	if rec := getFigure("", "fig-1.png"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous figure get: %d", rec.Code)
+	}
+	if rec := getFigure(readerToken, "missing.png"); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown figure get: %d", rec.Code)
+	}
+
+	// Deleting the share cleans the figure blob up too.
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/mobile/documents/shares/"+token, nil)
+	delReq.SetPathValue("token", token)
+	delReq.Header.Set("Authorization", "Bearer "+ownerToken)
+	delRec := httptest.NewRecorder()
+	CompanionDocumentShareDeleteHandler(identity).ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", delRec.Code, delRec.Body.String())
+	}
+	if rec := getFigure(readerToken, "fig-1.png"); rec.Code != http.StatusNotFound {
+		t.Fatalf("figure after delete: %d", rec.Code)
 	}
 }

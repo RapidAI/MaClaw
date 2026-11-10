@@ -34,6 +34,7 @@ export type RemoteControlState = {
 export type RemoteTaskMessage = {
     role: string;
     content: string;
+    reasoning_content?: string;
 };
 
 export type RemoteTaskArtifact = {
@@ -113,6 +114,7 @@ export function useTaskRemoteControl() {
     const detailStamp = useRef('');
     const detailFetchedAt = useRef(0);
     const detailFollowRef = useRef(0);
+    const opRefreshGen = useRef(0);
     // A later poll must not wipe an error the user just caused, and a state
     // poll must not clear an error that belongs to the task list.
     const errorOwner = useRef<'' | 'state' | 'tasks' | 'action'>('');
@@ -229,6 +231,11 @@ export function useTaskRemoteControl() {
             if (document.hidden) return;
             void refresh();
         }, 20000);
+        const onVisible = () => {
+            if (document.hidden) return;
+            void refresh();
+        };
+        document.addEventListener('visibilitychange', onVisible);
         let offNew = () => {};
         let offRevoke = () => {};
         try {
@@ -244,6 +251,7 @@ export function useTaskRemoteControl() {
         }
         return () => {
             window.clearInterval(timer);
+            document.removeEventListener('visibilitychange', onVisible);
             offNew();
             offRevoke();
         };
@@ -276,7 +284,12 @@ export function useTaskRemoteControl() {
         };
         tick();
         const timer = window.setInterval(tick, 12000);
-        return () => window.clearInterval(timer);
+        const onVisible = () => { tick(); };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => {
+            window.clearInterval(timer);
+            document.removeEventListener('visibilitychange', onVisible);
+        };
     }, [loadTasks, online, selectedId]);
 
     useEffect(() => {
@@ -290,7 +303,15 @@ export function useTaskRemoteControl() {
             if (stamp === detailStamp.current && Date.now() - detailFetchedAt.current < 60000) return;
             void openTask(selectedId, detailPath);
         }, 15000);
-        return () => window.clearInterval(timer);
+        const onVisible = () => {
+            if (document.hidden) return;
+            void openTask(selectedId, detailPath);
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => {
+            window.clearInterval(timer);
+            document.removeEventListener('visibilitychange', onVisible);
+        };
     }, [detailPath, online, openTask, selectedId]);
 
     const openActivity = selected && detailPath
@@ -305,6 +326,31 @@ export function useTaskRemoteControl() {
     }, [detailPath, online, openActivity, openTask, selectedId]);
 
     useEffect(() => () => window.clearTimeout(detailFollowRef.current), []);
+
+    const refreshAfterRemoteOp = useCallback(async (grantId: string, openPath: string, op: string) => {
+        // A newer send or stop can start while this refresh is still reading.
+        // The older one must not clear the stamp or replace the follow-up.
+        const gen = ++opRefreshGen.current;
+        await loadTasks(grantId);
+        if (gen !== opRefreshGen.current) return;
+        if (selectedIdRef.current === grantId && detailPathRef.current === openPath && openPath) {
+            await openTask(grantId, openPath);
+        }
+        if (gen !== opRefreshGen.current) return;
+        if ((op === 'send_message' || op === 'stop_task') && selectedIdRef.current === grantId && detailPathRef.current === openPath) {
+            detailStamp.current = '';
+            detailFetchedAt.current = 0;
+            // The other computer stores the turn after the send returns.
+            // One more read picks it up without waiting for the 15s poll.
+            window.clearTimeout(detailFollowRef.current);
+            detailFollowRef.current = window.setTimeout(() => {
+                if (gen !== opRefreshGen.current) return;
+                if (selectedIdRef.current === grantId && detailPathRef.current === openPath) {
+                    void openTask(grantId, openPath);
+                }
+            }, 1000);
+        }
+    }, [loadTasks, openTask]);
 
     const run = useCallback(async (op: string, body: Record<string, unknown>) => {
         if (!selected) return false;
@@ -333,22 +379,10 @@ export function useTaskRemoteControl() {
             if (selectedIdRef.current !== grantId) return true;
             errorOwner.current = '';
             setError('');
-            await loadTasks(grantId);
-            if (selectedIdRef.current === grantId && detailPathRef.current === openPath && openPath) {
-                await openTask(grantId, openPath);
-            }
-            if ((op === 'send_message' || op === 'stop_task') && detailPathRef.current === openPath) {
-                detailStamp.current = '';
-                detailFetchedAt.current = 0;
-                // The other computer stores the turn after this call returns.
-                // The 15s poll would leave the sent message invisible until then.
-                window.clearTimeout(detailFollowRef.current);
-                detailFollowRef.current = window.setTimeout(() => {
-                    if (selectedIdRef.current === grantId && detailPathRef.current === openPath) {
-                        void openTask(grantId, openPath);
-                    }
-                }, 1000);
-            }
+            // The list and conversation refresh after the other computer
+            // accepts the operation. Stop waits on this promise, so it must
+            // not also wait for those reads.
+            void refreshAfterRemoteOp(grantId, openPath, op);
             return true;
         } catch (err) {
             if (selectedIdRef.current !== grantId) return false;
@@ -356,7 +390,7 @@ export function useTaskRemoteControl() {
             setError(errorText(err, '远控操作失败'));
             return false;
         }
-    }, [detailPath, loadTasks, openTask, selected]);
+    }, [detailPath, refreshAfterRemoteOp, selected]);
 
     const mutate = useCallback(async (name: string, args: unknown[]) => {
         const fn = appBinding(name);

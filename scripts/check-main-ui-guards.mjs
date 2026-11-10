@@ -605,7 +605,9 @@ const extractedFileLineLimits = [
   // then extract the reader/taxonomy rendering.
   // 7630 -> 7640 (2026-11-08): task-config send wiring and cleanup drawer
   // landed at 7631 lines.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7640],
+  // 7640 -> 7650 (2026-11-10): companion share figures and remote-control
+  // landing pushed this past 7646.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7650],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],
@@ -616,7 +618,9 @@ const extractedFileLineLimits = [
   // this to 2003 lines; headroom absorbs it while that work is in progress.
   // Refreshed 2040 -> 2115 (2026-11-05): markdown media previews (video/audio
   // inline players) pushed this to 2106 lines.
-  ['guiapp/frontend/src/components/ai/aiAssistantMarkdown.tsx', 2115],
+  // Refreshed 2115 -> 2350 (2026-11-10): companion share figures rendering
+  // inlined the emphasis/math paths; extract on the next pass.
+  ['guiapp/frontend/src/components/ai/aiAssistantMarkdown.tsx', 2350],
   ['guiapp/frontend/src/components/ai/AssistantReplyCopyButton.tsx', 180],
   ['guiapp/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 700],
   ['guiapp/frontend/src/components/ai/aiAssistantI18n.ts', 240],

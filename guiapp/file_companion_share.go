@@ -648,11 +648,12 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 			continue
 		}
 		// The local row was retired when this paper was shared. The share is
-		// gone, so the owner's file is a local project again. Drop that cloud
-		// row in the same write: leaving it on disk lets the next list fold
-		// the restored local row away before this refresh can finish. A
-		// downloaded copy stays on the installed-share path below.
-		if !installed && prev.Mine {
+		// gone, so the owner's file is a local project again — the author's
+		// path, or the copy this machine downloaded when that path was lost.
+		// Drop that cloud row in the same write: leaving it on disk lets the
+		// next list fold the restored local row away before this refresh can
+		// finish.
+		if prev.Mine && (!installed || fileCompanionLibraryFileExists(prev.Path)) {
 			if current, readOK := a.readFileCompanionLibraryLocked(); readOK {
 				ownPath, ownName, ownSize := prev.Path, prev.Name, prev.Size
 				kept := make([]FileCompanionLibraryItem, 0, len(current)+1)
@@ -669,7 +670,7 @@ func (a *App) dropRevokedFileCompanionShares(live []FileCompanionLibraryItem, pr
 				}
 				addedLocal := false
 				var restoredRow FileCompanionLibraryItem
-				if row, ok := fileCompanionOwnLocalRow(a, kept, ownPath, ownName, ownSize, token); ok {
+				if row, ok := fileCompanionOwnLocalRow(a, kept, true, token, ownPath, ownName, ownSize); ok {
 					kept = append([]FileCompanionLibraryItem{row}, kept...)
 					restoredRow = row
 					addedLocal = true
@@ -768,11 +769,23 @@ func (a *App) finishProbeDismissedInstalledCopies(hub, viewer string, remote []F
 		}
 		dir := filepath.Join(root, token)
 		path := ""
+		keptCopy := false
 		for _, item := range items {
-			if companionFigureInsideDir(dir, item.Path) {
-				path = strings.TrimSpace(item.Path)
+			if !companionFigureInsideDir(dir, item.Path) {
+				continue
+			}
+			if item.KeptShareCopy {
+				keptCopy = true
 				break
 			}
+			if path == "" {
+				path = strings.TrimSpace(item.Path)
+			}
+		}
+		// The retired share's copy is this machine's local project now. It is
+		// not a download to finish.
+		if keptCopy {
+			continue
 		}
 		if path == "" {
 			path = fileCompanionOneInstalledShareFile(dir)
@@ -800,7 +813,15 @@ func (a *App) finishProbeDismissedInstalledCopies(hub, viewer string, remote []F
 		dir := filepath.Join(root, candidate.token)
 		fileCompanionLibraryMu.Lock()
 		still, stillUser := a.readDismissedSharesLocked()
-		if stillUser[candidate.token] || !still[candidate.token] || dropped[candidate.token] || !companionFigureInsideDir(dir, candidate.path) || !fileCompanionLibraryFileExists(candidate.path) {
+		fresh, _ := a.readFileCompanionLibraryLocked()
+		keptCopy := false
+		for _, item := range fresh {
+			if item.KeptShareCopy && companionFigureInsideDir(dir, item.Path) {
+				keptCopy = true
+				break
+			}
+		}
+		if stillUser[candidate.token] || !still[candidate.token] || dropped[candidate.token] || keptCopy || !companionFigureInsideDir(dir, candidate.path) || !fileCompanionLibraryFileExists(candidate.path) {
 			fileCompanionLibraryMu.Unlock()
 			continue
 		}
@@ -864,11 +885,23 @@ func (a *App) finishAbandonedShareCopies(remote []FileCompanionLibraryItem, drop
 		}
 		dir := filepath.Join(root, token)
 		path := ""
+		keptCopy := false
 		for _, item := range items {
-			if companionFigureInsideDir(dir, item.Path) {
-				path = strings.TrimSpace(item.Path)
+			if !companionFigureInsideDir(dir, item.Path) {
+				continue
+			}
+			if item.KeptShareCopy {
+				keptCopy = true
 				break
 			}
+			if path == "" {
+				path = strings.TrimSpace(item.Path)
+			}
+		}
+		// A retired share's kept copy is a local project, not an abandoned
+		// download.
+		if keptCopy {
+			continue
 		}
 		if path == "" {
 			path = fileCompanionOneInstalledShareFile(dir)
@@ -886,6 +919,10 @@ func (a *App) finishAbandonedShareCopies(remote []FileCompanionLibraryItem, drop
 		claimed := still[candidate.token] || dropped[candidate.token] || seen[candidate.token]
 		if !claimed {
 			for _, item := range fresh {
+				if item.KeptShareCopy && companionFigureInsideDir(dir, item.Path) {
+					claimed = true
+					break
+				}
 				if item.Source == "cloud" && item.Token == candidate.token {
 					claimed = true
 					break
@@ -1405,6 +1442,7 @@ func (a *App) SyncFileCompanionShare(path, highlights string) (FileCompanionShar
 	} else {
 		chatRevision = pushed.ChatRevision
 	}
+	a.pushFileCompanionShareFigures(hub, viewer, shares, a.fileCompanionHistory(fileCompanionSessionID(canonical)))
 	return FileCompanionShareResult{
 		URL:          url,
 		Name:         last.Name,
@@ -1658,7 +1696,7 @@ func (a *App) syncFileCompanionShareChat(path string) (FileCompanionShareResult,
 	var realErr error
 	var goneErr error
 	for _, share := range shares {
-		chatRevision, postErr := postFileCompanionShareChat(hub, viewer, share.Token, body)
+		chatRevision, postErr := a.postFileCompanionShareChatKeepingNewer(hub, viewer, share, body)
 		if postErr != nil {
 			if fileCompanionShareChatUnsupported(postErr) {
 				unsupported = true
@@ -1701,6 +1739,8 @@ func (a *App) syncFileCompanionShareChat(path string) (FileCompanionShareResult,
 		}
 		return FileCompanionShareResult{}, goneErr
 	}
+	// The transcript landed; the images it names follow on their own channel.
+	a.pushFileCompanionShareFigures(hub, viewer, shares, messages)
 	return FileCompanionShareResult{
 		URL:          last.ShareURL,
 		Name:         last.Name,
@@ -1713,13 +1753,197 @@ func (a *App) syncFileCompanionShareChat(path string) (FileCompanionShareResult,
 	}, nil
 }
 
-func postFileCompanionShareChat(hub, viewer, token string, body []byte) (int, error) {
+// prepareFileCompanionShareQuestion freezes the transcript the participants
+// should see while the model is still answering. The revision on each share
+// is the one this question read. The upload names it, so a copy that arrives
+// after the finished answer does not replace that answer.
+func (a *App) prepareFileCompanionShareQuestion(canonical, question string) ([]byte, []FileCompanionLibraryItem, bool) {
+	question = strings.TrimSpace(question)
+	if a == nil || canonical == "" || question == "" {
+		return nil, nil, false
+	}
+	shares := a.fileCompanionSyncShares(canonical)
+	if len(shares) == 0 {
+		return nil, nil, false
+	}
+	messages := a.fileCompanionHistory(fileCompanionSessionID(canonical))
+	if messages == nil {
+		messages = []FileCompanionMessage{}
+	}
+	// Always append. The same words can be asked again after an answer, and
+	// this snapshot is taken before the model stores this turn.
+	messages = append(messages, FileCompanionMessage{Role: "user", Text: question})
+	body, err := json.Marshal(messages)
+	if err != nil {
+		return nil, nil, false
+	}
+	return body, shares, true
+}
+
+func (a *App) sendFileCompanionShareQuestion(body []byte, shares []FileCompanionLibraryItem) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logFileCompanion("share question publish panic: %v", recovered)
+		}
+	}()
+	if a == nil || len(body) == 0 || len(shares) == 0 {
+		return
+	}
+	hub, viewer, err := a.fileCompanionHubLogin()
+	if err != nil {
+		return
+	}
+	for _, share := range shares {
+		revision, postErr := postFileCompanionShareChat(hub, viewer, share.Token, body, share.ChatRevision)
+		if postErr != nil {
+			var status *fileCompanionShareStatus
+			if errors.As(postErr, &status) && status.status == http.StatusConflict {
+				continue
+			}
+			logFileCompanion("share question publish failed token=%s", share.Token)
+			continue
+		}
+		// The next question has to name this revision. Leaving the library
+		// at the previous one makes that upload look stale and the hub
+		// drops it.
+		a.noteFileCompanionShareChatRevision(share.Token, revision)
+	}
+	var messages []FileCompanionMessage
+	if json.Unmarshal(body, &messages) == nil {
+		a.pushFileCompanionShareFigures(hub, viewer, shares, messages)
+	}
+}
+
+// publishFileCompanionShareQuestion uploads the frozen question. The turn
+// calls prepare first, then sends on the side, so the model is not waiting
+// on the hub.
+func (a *App) publishFileCompanionShareQuestion(canonical, question string) {
+	body, shares, ok := a.prepareFileCompanionShareQuestion(canonical, question)
+	if !ok {
+		return
+	}
+	a.sendFileCompanionShareQuestion(body, shares)
+}
+
+// postFileCompanionShareChatKeepingNewer writes the host transcript unless
+// the hub already has a newer one. A question posted at the start of the
+// turn is a prefix of this body, so the answer replaces it. A later question
+// that already landed is longer, and this older body must not erase it.
+func (a *App) postFileCompanionShareChatKeepingNewer(hub, viewer string, share FileCompanionLibraryItem, body []byte) (int, error) {
+	revision, err := postFileCompanionShareChat(hub, viewer, share.Token, body, share.ChatRevision)
+	if err == nil {
+		return revision, nil
+	}
+	var status *fileCompanionShareStatus
+	if !errors.As(err, &status) || status == nil || status.status != http.StatusConflict {
+		return 0, err
+	}
+	remote, remoteRevision, getErr := getFileCompanionShareChat(hub, viewer, share.Token)
+	if getErr != nil || remoteRevision <= 0 {
+		return 0, err
+	}
+	if !fileCompanionChatBodyAhead(body, remote) {
+		return remoteRevision, nil
+	}
+	return postFileCompanionShareChat(hub, viewer, share.Token, body, remoteRevision)
+}
+
+// fileCompanionChatBodyAhead reports that the host's local transcript should
+// replace the hub copy. The same bytes, or a hub copy that already continued
+// past this one, stay where they are.
+func fileCompanionChatBodyAhead(local, remote []byte) bool {
+	localMessages, localOK := fileCompanionChatMessages(local)
+	remoteMessages, remoteOK := fileCompanionChatMessages(remote)
+	if !localOK {
+		return false
+	}
+	if !remoteOK {
+		return true
+	}
+	n := len(localMessages)
+	if len(remoteMessages) < n {
+		n = len(remoteMessages)
+	}
+	for i := 0; i < n; i++ {
+		if localMessages[i].Role != remoteMessages[i].Role || localMessages[i].Text != remoteMessages[i].Text {
+			return true
+		}
+	}
+	return len(localMessages) > len(remoteMessages)
+}
+
+func fileCompanionChatMessages(raw []byte) ([]FileCompanionMessage, bool) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, true
+	}
+	var messages []FileCompanionMessage
+	if json.Unmarshal(raw, &messages) != nil {
+		return nil, false
+	}
+	return messages, true
+}
+
+func getFileCompanionShareChat(hub, viewer, token string) ([]byte, int, error) {
+	req, err := http.NewRequest(http.MethodGet, hub+"/api/mobile/documents/shares/"+token+"/chat", nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewer)
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, errors.New("暂时无法连接云端")
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, 0, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(raw)}
+	}
+	revision := 0
+	if header := strings.TrimSpace(resp.Header.Get("X-Companion-Chat-Revision")); header != "" {
+		if value, convErr := strconv.Atoi(header); convErr == nil {
+			revision = value
+		}
+	}
+	return raw, revision, nil
+}
+
+// noteFileCompanionShareChatRevision raises the stored transcript counter.
+// A slower answer must not move it backwards.
+func (a *App) noteFileCompanionShareChatRevision(token string, revision int) {
+	token = strings.TrimSpace(token)
+	if a == nil || revision <= 0 || !fileCompanionShareTokenMatch.MatchString(token) {
+		return
+	}
+	fileCompanionLibraryMu.Lock()
+	defer fileCompanionLibraryMu.Unlock()
+	items, ok := a.readFileCompanionLibraryLocked()
+	if !ok {
+		return
+	}
+	changed := false
+	for i := range items {
+		if items[i].Source != "cloud" || items[i].Token != token || revision <= items[i].ChatRevision {
+			continue
+		}
+		items[i].ChatRevision = revision
+		changed = true
+	}
+	if changed {
+		_ = a.writeFileCompanionLibraryLocked(items)
+	}
+}
+
+func postFileCompanionShareChat(hub, viewer, token string, body []byte, base int) (int, error) {
 	req, err := http.NewRequest(http.MethodPost, hub+"/api/mobile/documents/shares/"+token+"/chat", bytes.NewReader(body))
 	if err != nil {
 		return 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+viewer)
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	if base >= 0 {
+		req.Header.Set("X-Companion-Chat-Base", strconv.Itoa(base))
+	}
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

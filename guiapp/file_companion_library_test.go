@@ -14,7 +14,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2210,6 +2212,9 @@ func TestDeleteFileCompanionProjectLeavesSharedPathData(t *testing.T) {
 	}
 }
 
+// The owner's own share whose only copy is the download under
+// library-files/<token> goes back to 本机项目 on delete; the share row is
+// hidden and the file and its reading data stay.
 func TestDeleteFileCompanionCloudProjectHidesShareAndKeepsFile(t *testing.T) {
 	const token = "cd_0123456789abcdef0123456789abcdef"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2266,31 +2271,41 @@ func TestDeleteFileCompanionCloudProjectHidesShareAndKeepsFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	deleted, err := app.DeleteFileCompanionProject(token, "")
-	if err != nil || !deleted.Cleared {
+	if err != nil || deleted.Cleared || !deleted.Restored {
 		t.Fatalf("delete = %#v %v", deleted, err)
 	}
 	got, err := os.ReadFile(source)
 	if err != nil || string(got) != string(body) {
 		t.Fatalf("imported file = %q %v", got, err)
 	}
-	if _, err := os.Stat(note); !os.IsNotExist(err) {
+	// The copy is the local project now; its reading data is not cleared.
+	if _, err := os.Stat(note); err != nil {
 		t.Fatalf("derived paper = %v", err)
 	}
 	list, err := app.ListFileCompanionLibrary()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sawLocal bool
+	var sawLocal, sawKept bool
 	for _, row := range list.Items {
-		if row.Token == token || row.Path == source {
+		if row.Token == token {
 			t.Fatalf("dismissed share returned: %#v", list.Items)
 		}
 		if row.Source == "local" && row.Name == "local.md" {
 			sawLocal = true
 		}
+		if row.Source != "cloud" && fileCompanionSameLibraryPath(row.Path, source) {
+			sawKept = true
+			if !row.KeptShareCopy {
+				t.Fatalf("kept copy row is not marked: %+v", row)
+			}
+		}
 	}
 	if !sawLocal {
 		t.Fatalf("local row lost: %#v", list.Items)
+	}
+	if !sawKept {
+		t.Fatalf("kept copy did not return to the library: %#v", list.Items)
 	}
 	_ = app.upsertFileCompanionCloud(FileCompanionLibraryItem{
 		ID: token, Token: token, Name: "shared.pdf", Path: source, Source: "cloud",
@@ -3492,13 +3507,13 @@ func TestFileCompanionShareRefreshQuietKeepsTheNotice(t *testing.T) {
 	fileCompanionShareRefreshCheck.mu.Lock()
 	fileCompanionShareRefreshCheck.reset(hub)
 	fileCompanionShareRefreshCheck.mu.Unlock()
-	quiet, notice := app.fileCompanionShareRefreshQuiet(hub, "viewer", false)
+	quiet, notice, _ := app.fileCompanionShareRefreshQuiet(hub, "viewer", false)
 	if quiet || notice != "" {
 		t.Fatalf("first signed-out refresh quiet=%v notice=%q", quiet, notice)
 	}
 
 	primeFileCompanionShareRefreshCheck(hub, 0, 0)
-	quiet, notice = app.fileCompanionShareRefreshQuiet(hub, "viewer", false)
+	quiet, notice, _ = app.fileCompanionShareRefreshQuiet(hub, "viewer", false)
 	if !quiet || notice != fileCompanionLibraryLoginNotice {
 		t.Fatalf("signed-out quiet=%v notice=%q", quiet, notice)
 	}
@@ -3513,12 +3528,12 @@ func TestFileCompanionShareRefreshQuietKeepsTheNotice(t *testing.T) {
 	}))
 	defer changes.Close()
 	primeFileCompanionShareRefreshCheck(changes.URL, 7, 3)
-	quiet, notice = app.fileCompanionShareRefreshQuiet(changes.URL, "viewer", true)
+	quiet, notice, _ = app.fileCompanionShareRefreshQuiet(changes.URL, "viewer", true)
 	if !quiet || notice != "" {
 		t.Fatalf("unchanged quiet=%v notice=%q", quiet, notice)
 	}
 	primeFileCompanionShareRefreshCheck(changes.URL, 6, 3)
-	quiet, notice = app.fileCompanionShareRefreshQuiet(changes.URL, "viewer", true)
+	quiet, notice, _ = app.fileCompanionShareRefreshQuiet(changes.URL, "viewer", true)
 	if quiet || notice != "" {
 		t.Fatalf("changed sequence quiet=%v notice=%q", quiet, notice)
 	}
@@ -3527,7 +3542,7 @@ func TestFileCompanionShareRefreshQuietKeepsTheNotice(t *testing.T) {
 	downURL := down.URL
 	down.Close()
 	primeFileCompanionShareRefreshCheck(downURL, 1, 0)
-	quiet, notice = app.fileCompanionShareRefreshQuiet(downURL, "viewer", true)
+	quiet, notice, _ = app.fileCompanionShareRefreshQuiet(downURL, "viewer", true)
 	if !quiet || notice != fileCompanionLibraryOfflineNotice {
 		t.Fatalf("offline quiet=%v notice=%q", quiet, notice)
 	}
@@ -3538,7 +3553,7 @@ func TestFileCompanionShareRefreshQuietKeepsTheNotice(t *testing.T) {
 	}))
 	defer denied.Close()
 	primeFileCompanionShareRefreshCheck(denied.URL, 1, 0)
-	quiet, notice = app.fileCompanionShareRefreshQuiet(denied.URL, "viewer", true)
+	quiet, notice, _ = app.fileCompanionShareRefreshQuiet(denied.URL, "viewer", true)
 	if !quiet || notice != "请先登录 MaClaw Hub" {
 		t.Fatalf("status quiet=%v notice=%q", quiet, notice)
 	}
@@ -3548,7 +3563,7 @@ func TestFileCompanionShareRefreshQuietKeepsTheNotice(t *testing.T) {
 	}))
 	defer old.Close()
 	primeFileCompanionShareRefreshCheck(old.URL, 1, 0)
-	quiet, notice = app.fileCompanionShareRefreshQuiet(old.URL, "viewer", true)
+	quiet, notice, _ = app.fileCompanionShareRefreshQuiet(old.URL, "viewer", true)
 	if quiet || notice != "" {
 		t.Fatalf("old hub quiet=%v notice=%q", quiet, notice)
 	}
@@ -3557,5 +3572,903 @@ func TestFileCompanionShareRefreshQuietKeepsTheNotice(t *testing.T) {
 	fileCompanionShareRefreshCheck.mu.Unlock()
 	if !unsupported {
 		t.Fatal("old hub was not remembered")
+	}
+}
+
+func saveFileCompanionShareDiscussionSync(t *testing.T) {
+	t.Helper()
+	st := &fileCompanionShareDiscussionSyncState
+	st.mu.Lock()
+	var savedNotes map[string]fileCompanionDiscussionShare
+	if st.notes != nil {
+		savedNotes = make(map[string]fileCompanionDiscussionShare, len(st.notes))
+		for token, share := range st.notes {
+			savedNotes[token] = share
+		}
+	}
+	saved := fileCompanionShareDiscussionSync{
+		hub:         st.hub,
+		seq:         st.seq,
+		fullDone:    st.fullDone,
+		unsupported: st.unsupported,
+		hadLogin:    st.hadLogin,
+		lastMine:    st.lastMine,
+		notes:       savedNotes,
+		backlog:     st.backlog,
+	}
+	st.mu.Unlock()
+	t.Cleanup(func() {
+		st.mu.Lock()
+		st.hub = saved.hub
+		st.seq = saved.seq
+		st.fullDone = saved.fullDone
+		st.unsupported = saved.unsupported
+		st.hadLogin = saved.hadLogin
+		st.lastMine = saved.lastMine
+		st.notes = saved.notes
+		st.backlog = saved.backlog
+		st.mu.Unlock()
+	})
+}
+
+// The library refresh and the discussion watcher poll the same share list.
+// The host pushed a new chat line between their two fetches, so the watcher
+// saw a newer ETag than the library did. Each poll must record the sequence
+// of its own response: a shared watermark let the watcher's newer response
+// cover the library's older one, the 5-second pre-check then read "nothing
+// changed", and the participant waited for the 10-minute full refresh to see
+// the host's line.
+func TestFileCompanionShareListWatermarksStayPerPoller(t *testing.T) {
+	saveFileCompanionShareRefreshCheck(t)
+	saveFileCompanionShareDiscussionSync(t)
+	const token = "cd_0123456789abcdef0123456789abcdef"
+	var mu sync.Mutex
+	seq := uint64(7)
+	chatRevision := 3
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		currentSeq, currentChat := seq, chatRevision
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/mobile/documents/shares":
+			w.Header().Set("ETag", `"`+strconv.FormatUint(currentSeq, 10)+`"`)
+			_, _ = fmt.Fprintf(w, `{"notes_reply":true,"notes_review":true,"remote_seq":0,"mine":[],"received":[{"token":%q,"name":"a.pdf","owner":"host@example.com","host":false,"visibility":"public","permanent":true,"revision":1,"chat_revision":%d,"created_at":"2026-10-25T00:00:00Z"}]}`, token, currentChat)
+		case "/api/mobile/documents/shares/changes":
+			_, _ = fmt.Fprintf(w, `{"seq":%d,"remote_seq":0,"shares":[]}`, currentSeq)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	hub := server.URL
+	bump := func(nextSeq uint64, nextChat int) {
+		mu.Lock()
+		seq = nextSeq
+		chatRevision = nextChat
+		mu.Unlock()
+	}
+
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      hub,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	paper := filepath.Join(t.TempDir(), "a.pdf")
+	if err := os.WriteFile(paper, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "a.pdf", Path: paper, Source: "cloud",
+		Visibility: "public", Revision: 1, ChatRevision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fileCompanionShareRefreshCheck.mu.Lock()
+	fileCompanionShareRefreshCheck.reset(hub)
+	fileCompanionShareRefreshCheck.mu.Unlock()
+	fileCompanionShareDiscussionSyncState.mu.Lock()
+	fileCompanionShareDiscussionSyncState.reset(hub)
+	fileCompanionShareDiscussionSyncState.mu.Unlock()
+
+	// The library refresh fetches at seq 7. The host publishes a new chat
+	// line and the discussion watcher fetches the newer list while that
+	// refresh is still finishing; only then does the refresh record its
+	// watermark.
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	bump(8, 4)
+	if _, err := app.pollFileCompanionShareDiscussions(); err != nil {
+		t.Fatal(err)
+	}
+	noteFileCompanionShareFullRefresh(hub)
+	fileCompanionShareRefreshCheck.mu.Lock()
+	librarySeq := fileCompanionShareRefreshCheck.seq
+	fileCompanionShareRefreshCheck.mu.Unlock()
+	fileCompanionShareDiscussionSyncState.mu.Lock()
+	discussionSeq := fileCompanionShareDiscussionSyncState.seq
+	fileCompanionShareDiscussionSyncState.mu.Unlock()
+	if librarySeq != 7 {
+		t.Fatalf("library watermark = %d, want the sequence of its own response (7)", librarySeq)
+	}
+	if discussionSeq != 8 {
+		t.Fatalf("discussion watermark = %d, want 8", discussionSeq)
+	}
+	if quiet, notice, _ := app.fileCompanionShareRefreshQuiet(hub, "viewer-token", true); quiet {
+		t.Fatalf("the host's new chat was swallowed by the watcher's watermark: quiet=%v notice=%q", quiet, notice)
+	}
+	// The refresh that pre-check asks for lands the new transcript sequence.
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	noteFileCompanionShareFullRefresh(hub)
+	found := false
+	for _, item := range listed.Items {
+		if item.Token == token {
+			found = true
+			if item.ChatRevision != 4 {
+				t.Fatalf("chat revision = %d, want 4", item.ChatRevision)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("share row missing: %+v", listed.Items)
+	}
+	if quiet, notice, _ := app.fileCompanionShareRefreshQuiet(hub, "viewer-token", true); !quiet || notice != "" {
+		t.Fatalf("caught-up refresh quiet=%v notice=%q", quiet, notice)
+	}
+
+	// The other direction: a library response must not cover the watcher's
+	// watermark either, or a reader note waits for the next idle poll.
+	bump(9, 5)
+	if _, err := app.pollFileCompanionShareDiscussions(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	noteFileCompanionShareFullRefresh(hub)
+	fileCompanionShareDiscussionSyncState.mu.Lock()
+	discussionSeq = fileCompanionShareDiscussionSyncState.seq
+	fileCompanionShareDiscussionSyncState.mu.Unlock()
+	if discussionSeq != 9 {
+		t.Fatalf("discussion watermark after a library refresh = %d, want 9", discussionSeq)
+	}
+}
+
+// The discussion watcher answers notes. A host transcript moves the same
+// global sequence and used to make every signed-in machine download the full
+// share list, notes included, on the next tick.
+func TestFileCompanionShareDiscussionChatSkipsTheList(t *testing.T) {
+	saveFileCompanionShareDiscussionSync(t)
+	savedFailures := fileCompanionShareDiscussionFailures
+	savedReady := fileCompanionShareDiscussionReady
+	fileCompanionShareDiscussionFailures = map[string]time.Time{}
+	fileCompanionShareDiscussionReady = map[string]fileCompanionShareDiscussionReadyReply{}
+	t.Cleanup(func() {
+		fileCompanionShareDiscussionFailures = savedFailures
+		fileCompanionShareDiscussionReady = savedReady
+	})
+	const token = "cd_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	var listCalls int
+	var mu sync.Mutex
+	seq := uint64(8)
+	notes := 2
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		currentSeq, currentNotes := seq, notes
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/mobile/documents/shares/changes":
+			_, _ = fmt.Fprintf(w, `{"seq":%d,"remote_seq":0,"shares":[{"token":%q,"revision":1,"notes_revision":%d,"marks_revision":1,"chat_revision":4,"visibility":"public","expires_at":"","target":"","group_id":"","host":false,"pending_host":false}]}`, currentSeq, token, currentNotes)
+		case "/api/mobile/documents/shares":
+			mu.Lock()
+			listCalls++
+			mu.Unlock()
+			w.Header().Set("ETag", `"`+strconv.FormatUint(currentSeq, 10)+`"`)
+			_, _ = fmt.Fprintf(w, `{"notes_reply":true,"notes_review":true,"remote_seq":0,"mine":[],"received":[{"token":%q,"name":"a.pdf","owner":"host@example.com","host":false,"visibility":"public","permanent":true,"revision":1,"notes_revision":%d,"chat_revision":4,"created_at":"2026-10-25T00:00:00Z"}]}`, token, currentNotes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	st := &fileCompanionShareDiscussionSyncState
+	st.mu.Lock()
+	st.hub = server.URL
+	st.seq = 7
+	st.fullDone = true
+	st.hadLogin = true
+	st.lastMine = 1
+	st.notes = map[string]fileCompanionDiscussionShare{token: {Notes: 2, HostKnown: true}}
+	st.mu.Unlock()
+
+	if got := app.pollFileCompanionShareDiscussionsQuiet(); got != 1 {
+		t.Fatalf("chat-only poll count = %d, want the last hosted count", got)
+	}
+	mu.Lock()
+	calls := listCalls
+	mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("chat-only change fetched the share list %d times", calls)
+	}
+	st.mu.Lock()
+	gotSeq := st.seq
+	st.mu.Unlock()
+	if gotSeq != 8 {
+		t.Fatalf("discussion sequence = %d, want 8", gotSeq)
+	}
+
+	st.mu.Lock()
+	st.backlog = true
+	st.mu.Unlock()
+	if got := app.pollFileCompanionShareDiscussionsQuiet(); got != 0 {
+		t.Fatalf("backlog poll count = %d, want the hosted shares in the list", got)
+	}
+	mu.Lock()
+	calls = listCalls
+	mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("a capped note poll fetched the share list %d times", calls)
+	}
+
+	mu.Lock()
+	seq = 9
+	notes = 3
+	mu.Unlock()
+	if got := app.pollFileCompanionShareDiscussionsQuiet(); got != 0 {
+		t.Fatalf("note poll count = %d, want the hosted shares in the list", got)
+	}
+	mu.Lock()
+	calls = listCalls
+	mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("a new note fetched the share list %d times", calls)
+	}
+}
+
+func TestFileCompanionShareNotesMoved(t *testing.T) {
+	savedFailures := fileCompanionShareDiscussionFailures
+	savedReady := fileCompanionShareDiscussionReady
+	fileCompanionShareDiscussionFailures = map[string]time.Time{}
+	fileCompanionShareDiscussionReady = map[string]fileCompanionShareDiscussionReadyReply{}
+	t.Cleanup(func() {
+		fileCompanionShareDiscussionFailures = savedFailures
+		fileCompanionShareDiscussionReady = savedReady
+	})
+	const token = "cd_ffffffffffffffffffffffffffffffff"
+	host := false
+	known := map[string]fileCompanionDiscussionShare{token: {Notes: 2, HostKnown: true}}
+	changes := fileCompanionShareChanges{HasShares: true, Shares: []fileCompanionShareChange{{
+		Token: token, NotesRevision: 2, ChatRevision: 4, Host: &host,
+	}}}
+	if fileCompanionShareNotesMoved(changes, known) {
+		t.Fatal("a transcript update was treated as a note change")
+	}
+	host = true
+	if !fileCompanionShareNotesMoved(changes, known) {
+		t.Fatal("a host transfer was not treated as a note-poll change")
+	}
+	host = false
+	if fileCompanionShareDiscussionRetryDue(time.Now()) {
+		t.Fatal("no failed answer was due")
+	}
+	fileCompanionShareDiscussionFailures[token] = time.Now().Add(-fileCompanionShareDiscussionFailureHold - time.Second)
+	if fileCompanionShareDiscussionRetryDue(time.Now()) {
+		t.Fatal("a model failure with no saved reply woke the share list")
+	}
+	fileCompanionShareDiscussionReady[token] = fileCompanionShareDiscussionReadyReply{
+		Text: "已写好的回复", At: time.Now(),
+	}
+	if !fileCompanionShareDiscussionRetryDue(time.Now()) {
+		t.Fatal("a saved reply was not due after the hold")
+	}
+}
+
+func waitFileCompanionLibrarySync(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !fileCompanionLibrarySyncRunning.Load() && !fileCompanionShareLiveOnce.Load() {
+			return
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	t.Fatal("library sync did not finish")
+}
+
+func libraryChatRevision(t *testing.T, app *App, token string) int {
+	t.Helper()
+	fileCompanionLibraryMu.Lock()
+	defer fileCompanionLibraryMu.Unlock()
+	items, ok := app.readFileCompanionLibraryLocked()
+	if !ok {
+		t.Fatal("library unreadable")
+	}
+	for _, item := range items {
+		if item.Token == token {
+			return item.ChatRevision
+		}
+	}
+	t.Fatalf("share %s missing from the library", token)
+	return 0
+}
+
+// The host's new line only moves chat_revision. The participant's poll used to
+// treat that as "fetch the whole share list, probe revocations, maybe download
+// the project", so the open chat stayed on the old transcript until that work
+// finished — or for the ten-minute reconcile, when a newer watermark had
+// already been recorded. The changes feed already carries the counter. The
+// poll has to publish it and let the open chat fetch the blob.
+func TestFileCompanionShareChatPublishesWithoutTheFullList(t *testing.T) {
+	saveFileCompanionShareRefreshCheck(t)
+	prevInline := fileCompanionLibraryListInline
+	fileCompanionLibraryListInline = false
+	t.Cleanup(func() {
+		waitFileCompanionLibrarySync(t)
+		fileCompanionLibraryListInline = prevInline
+	})
+	const token = "cd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	var listCalls int
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/mobile/documents/shares/changes":
+			_, _ = fmt.Fprintf(w, `{"seq":8,"remote_seq":0,"shares":[{"token":%q,"revision":1,"notes_revision":2,"marks_revision":1,"chat_revision":4,"visibility":"public","expires_at":"","target":"reader@example.com","group_id":"","host":false,"pending_host":false}]}`, token)
+		case "/api/mobile/documents/shares":
+			mu.Lock()
+			listCalls++
+			mu.Unlock()
+			_, _ = fmt.Fprintf(w, `{"notes_reply":true,"remote_seq":0,"mine":[],"received":[{"token":%q,"name":"a.pdf","owner":"host@example.com","host":false,"visibility":"public","permanent":true,"revision":1,"notes_revision":2,"marks_revision":1,"chat_revision":4,"created_at":"2026-10-25T00:00:00Z"}]}`, token)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	paper := filepath.Join(app.testHomeDir, "a.pdf")
+	if err := os.WriteFile(paper, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "a.pdf", Path: paper, Source: "cloud",
+		Visibility: "public", Host: false, HostKnown: true, Revision: 1,
+		NotesRevision: 2, MarksRevision: 1, ChatRevision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	primeFileCompanionShareRefreshCheck(server.URL, 7, 0)
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	waitFileCompanionLibrarySync(t)
+	mu.Lock()
+	calls := listCalls
+	mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("chat-only change fetched the share list %d times", calls)
+	}
+	if got := libraryChatRevision(t, app, token); got != 4 {
+		t.Fatalf("chat revision = %d, want 4", got)
+	}
+	fileCompanionShareRefreshCheck.mu.Lock()
+	seq := fileCompanionShareRefreshCheck.seq
+	fileCompanionShareRefreshCheck.mu.Unlock()
+	if seq != 8 {
+		t.Fatalf("watermark = %d, want 8", seq)
+	}
+	if quiet, notice, _ := app.fileCompanionShareRefreshQuiet(server.URL, "viewer-token", true); !quiet || notice != "" {
+		t.Fatalf("after the counter landed quiet=%v notice=%q", quiet, notice)
+	}
+}
+
+// A host line on a share that lives on another Hub used to move only
+// remote_seq, so the participant still waited for the full list. The changes
+// feed now carries that share's counters, and chat publishes from them.
+func TestFileCompanionShareRemoteChatPublishesWithoutTheFullList(t *testing.T) {
+	saveFileCompanionShareRefreshCheck(t)
+	prevInline := fileCompanionLibraryListInline
+	fileCompanionLibraryListInline = false
+	t.Cleanup(func() {
+		waitFileCompanionLibrarySync(t)
+		fileCompanionLibraryListInline = prevInline
+	})
+	const token = "cd_ffffffffffffffffffffffffffffffff"
+	const origin = "https://other.example"
+	var listCalls int
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/mobile/documents/shares/changes":
+			_, _ = fmt.Fprintf(w, `{"seq":8,"remote_seq":5,"shares":[],"remote_shares":[{"token":%q,"hub_origin":%q,"revision":1,"notes_revision":2,"marks_revision":1,"chat_revision":4}]}`, token, origin)
+		case "/api/mobile/documents/shares":
+			mu.Lock()
+			listCalls++
+			mu.Unlock()
+			_, _ = fmt.Fprintf(w, `{"notes_reply":true,"remote_seq":5,"mine":[],"received":[{"token":%q,"name":"a.pdf","owner":"host@example.com","host":false,"visibility":"group","permanent":true,"revision":1,"notes_revision":2,"marks_revision":1,"chat_revision":4,"hub_origin":%q,"created_at":"2026-10-25T00:00:00Z"}]}`, token, origin)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	paper := filepath.Join(app.testHomeDir, "a.pdf")
+	if err := os.WriteFile(paper, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "a.pdf", Path: paper, Source: "cloud",
+		Visibility: "group", HubOrigin: origin, Host: false, HostKnown: true,
+		Revision: 1, NotesRevision: 2, MarksRevision: 1, ChatRevision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	primeFileCompanionShareRefreshCheck(server.URL, 7, 4)
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	waitFileCompanionLibrarySync(t)
+	mu.Lock()
+	calls := listCalls
+	mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("cross-hub chat fetched the share list %d times", calls)
+	}
+	if got := libraryChatRevision(t, app, token); got != 4 {
+		t.Fatalf("chat revision = %d, want 4", got)
+	}
+	fileCompanionShareRefreshCheck.mu.Lock()
+	seq := fileCompanionShareRefreshCheck.seq
+	remoteSeq := fileCompanionShareRefreshCheck.remoteSeq
+	fileCompanionShareRefreshCheck.mu.Unlock()
+	if seq != 8 || remoteSeq != 5 {
+		t.Fatalf("watermark = %d/%d, want 8/5", seq, remoteSeq)
+	}
+}
+
+// A foreign share the changes feed does not list (a public import, or a group
+// past the snapshot cap) must not turn a home chat into a full refresh.
+func TestFileCompanionShareChatSkipsWhenAForeignShareIsOutsideTheFeed(t *testing.T) {
+	saveFileCompanionShareRefreshCheck(t)
+	prevInline := fileCompanionLibraryListInline
+	fileCompanionLibraryListInline = false
+	t.Cleanup(func() {
+		waitFileCompanionLibrarySync(t)
+		fileCompanionLibraryListInline = prevInline
+	})
+	const homeToken = "cd_11111111111111111111111111111111"
+	const foreignToken = "cd_22222222222222222222222222222222"
+	var listCalls int
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/mobile/documents/shares/changes":
+			_, _ = fmt.Fprintf(w, `{"seq":8,"remote_seq":4,"shares":[{"token":%q,"revision":1,"notes_revision":2,"marks_revision":1,"chat_revision":4,"visibility":"public","expires_at":"","target":"","group_id":"","host":false,"pending_host":false}],"remote_shares":[]}`, homeToken)
+		case "/api/mobile/documents/shares":
+			mu.Lock()
+			listCalls++
+			mu.Unlock()
+			_, _ = fmt.Fprintf(w, `{"notes_reply":true,"remote_seq":4,"mine":[],"received":[{"token":%q,"name":"a.pdf","owner":"host@example.com","host":false,"visibility":"public","permanent":true,"revision":1,"notes_revision":2,"marks_revision":1,"chat_revision":4,"created_at":"2026-10-25T00:00:00Z"}]}`, homeToken)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	homePaper := filepath.Join(app.testHomeDir, "a.pdf")
+	foreignPaper := filepath.Join(app.testHomeDir, "b.pdf")
+	if err := os.WriteFile(homePaper, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(foreignPaper, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: homeToken, Token: homeToken, Name: "a.pdf", Path: homePaper, Source: "cloud",
+		Visibility: "public", Host: false, HostKnown: true, Revision: 1,
+		NotesRevision: 2, MarksRevision: 1, ChatRevision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: foreignToken, Token: foreignToken, Name: "b.pdf", Path: foreignPaper, Source: "cloud",
+		Visibility: "public", HubOrigin: "https://other.example", Host: false, HostKnown: true,
+		Revision: 1, NotesRevision: 1, MarksRevision: 1, ChatRevision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	primeFileCompanionShareRefreshCheck(server.URL, 7, 4)
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	waitFileCompanionLibrarySync(t)
+	mu.Lock()
+	calls := listCalls
+	mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("home chat fetched the share list %d times because a foreign share was outside the feed", calls)
+	}
+	if got := libraryChatRevision(t, app, homeToken); got != 4 {
+		t.Fatalf("chat revision = %d, want 4", got)
+	}
+}
+
+// A note or a new document still needs the share list. The transcript counter
+// is written first, so the chat does not wait on that list.
+func TestFileCompanionShareNotesStillRefreshTheList(t *testing.T) {
+	saveFileCompanionShareRefreshCheck(t)
+	prevInline := fileCompanionLibraryListInline
+	fileCompanionLibraryListInline = false
+	t.Cleanup(func() {
+		waitFileCompanionLibrarySync(t)
+		fileCompanionLibraryListInline = prevInline
+	})
+	const token = "cd_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	var listCalls int
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/mobile/documents/shares/changes":
+			_, _ = fmt.Fprintf(w, `{"seq":8,"remote_seq":0,"shares":[{"token":%q,"revision":1,"notes_revision":3,"marks_revision":1,"chat_revision":4}]}`, token)
+		case "/api/mobile/documents/shares":
+			mu.Lock()
+			listCalls++
+			mu.Unlock()
+			w.Header().Set("ETag", `"8"`)
+			_, _ = fmt.Fprintf(w, `{"notes_reply":true,"remote_seq":0,"mine":[],"received":[{"token":%q,"name":"a.pdf","owner":"host@example.com","host":false,"visibility":"public","permanent":true,"revision":1,"notes_revision":3,"marks_revision":1,"chat_revision":4,"created_at":"2026-10-25T00:00:00Z"}]}`, token)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	paper := filepath.Join(app.testHomeDir, "a.pdf")
+	if err := os.WriteFile(paper, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "a.pdf", Path: paper, Source: "cloud",
+		Visibility: "public", Revision: 1, NotesRevision: 2, MarksRevision: 1, ChatRevision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	primeFileCompanionShareRefreshCheck(server.URL, 7, 0)
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	waitFileCompanionLibrarySync(t)
+	mu.Lock()
+	calls := listCalls
+	mu.Unlock()
+	if calls == 0 {
+		t.Fatal("a new note did not refresh the share list")
+	}
+	if got := libraryChatRevision(t, app, token); got != 4 {
+		t.Fatalf("chat revision = %d, want 4", got)
+	}
+}
+
+// A project download can take long enough that the host publishes another
+// line while it is still running. The next poll has to publish that line
+// before the download returns.
+func TestFileCompanionShareChatPublishesWhileARefreshIsBlocked(t *testing.T) {
+	saveFileCompanionShareRefreshCheck(t)
+	prevInline := fileCompanionLibraryListInline
+	fileCompanionLibraryListInline = false
+	release := make(chan struct{})
+	var closeRelease sync.Once
+	var server *httptest.Server
+	t.Cleanup(func() {
+		closeRelease.Do(func() { close(release) })
+		waitFileCompanionLibrarySync(t)
+		if server != nil {
+			server.Close()
+		}
+		fileCompanionLibraryListInline = prevInline
+	})
+	const token = "cd_cccccccccccccccccccccccccccccccc"
+	var mu sync.Mutex
+	seq := uint64(2)
+	chatRevision := 1
+	notesRevision := 5
+	entered := make(chan struct{})
+	var once sync.Once
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		currentSeq, currentChat, currentNotes := seq, chatRevision, notesRevision
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/mobile/documents/shares/changes":
+			_, _ = fmt.Fprintf(w, `{"seq":%d,"remote_seq":0,"shares":[{"token":%q,"revision":1,"notes_revision":%d,"marks_revision":0,"chat_revision":%d}]}`, currentSeq, token, currentNotes, currentChat)
+		case "/api/mobile/documents/shares":
+			once.Do(func() { close(entered) })
+			<-release
+			mu.Lock()
+			currentSeq, currentChat, currentNotes = seq, chatRevision, notesRevision
+			mu.Unlock()
+			w.Header().Set("ETag", `"`+strconv.FormatUint(currentSeq, 10)+`"`)
+			_, _ = fmt.Fprintf(w, `{"notes_reply":true,"remote_seq":0,"mine":[],"received":[{"token":%q,"name":"a.pdf","owner":"host@example.com","host":false,"visibility":"public","permanent":true,"revision":1,"notes_revision":%d,"chat_revision":%d,"created_at":"2026-10-25T00:00:00Z"}]}`, token, currentNotes, currentChat)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	paper := filepath.Join(app.testHomeDir, "a.pdf")
+	if err := os.WriteFile(paper, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "a.pdf", Path: paper, Source: "cloud",
+		Visibility: "public", Revision: 1, NotesRevision: 0, ChatRevision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	primeFileCompanionShareRefreshCheck(server.URL, 1, 0)
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("share list was not requested")
+	}
+	mu.Lock()
+	seq = 3
+	chatRevision = 2
+	mu.Unlock()
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if libraryChatRevision(t, app, token) == 2 {
+			return
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	t.Fatalf("chat revision while the share list was blocked = %d, want 2", libraryChatRevision(t, app, token))
+}
+
+// A sequence bump that does not move the transcript still has to fetch the
+// share list. Host transfer, audience, and expiry live in that list, and the
+// counters alone cannot tell them from an unrelated sequence bump.
+func TestFileCompanionShareSequenceWithoutChatStillRefreshes(t *testing.T) {
+	saveFileCompanionShareRefreshCheck(t)
+	prevInline := fileCompanionLibraryListInline
+	fileCompanionLibraryListInline = false
+	t.Cleanup(func() {
+		waitFileCompanionLibrarySync(t)
+		fileCompanionLibraryListInline = prevInline
+	})
+	const token = "cd_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	var listCalls int
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/mobile/documents/shares/changes":
+			_, _ = fmt.Fprintf(w, `{"seq":8,"remote_seq":0,"shares":[{"token":%q,"revision":1,"notes_revision":2,"marks_revision":1,"chat_revision":3,"visibility":"public","expires_at":"","target":"","group_id":"","pending_host":false}]}`, token)
+		case "/api/mobile/documents/shares":
+			mu.Lock()
+			listCalls++
+			mu.Unlock()
+			w.Header().Set("ETag", `"8"`)
+			_, _ = fmt.Fprintf(w, `{"notes_reply":true,"remote_seq":0,"mine":[],"received":[{"token":%q,"name":"a.pdf","owner":"host@example.com","host":false,"visibility":"public","permanent":true,"revision":1,"notes_revision":2,"marks_revision":1,"chat_revision":3,"created_at":"2026-10-25T00:00:00Z"}]}`, token)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	paper := filepath.Join(app.testHomeDir, "a.pdf")
+	if err := os.WriteFile(paper, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "a.pdf", Path: paper, Source: "cloud",
+		Visibility: "public", Revision: 1, NotesRevision: 2, MarksRevision: 1, ChatRevision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	primeFileCompanionShareRefreshCheck(server.URL, 7, 0)
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	waitFileCompanionLibrarySync(t)
+	mu.Lock()
+	calls := listCalls
+	mu.Unlock()
+	if calls == 0 {
+		t.Fatal("an unexplained sequence bump skipped the share list")
+	}
+}
+
+// A host line that lands in the same snapshot as an audience edit publishes
+// the transcript immediately and still fetches the share list.
+func TestFileCompanionShareChatWithAudienceStillRefreshes(t *testing.T) {
+	saveFileCompanionShareRefreshCheck(t)
+	prevInline := fileCompanionLibraryListInline
+	fileCompanionLibraryListInline = false
+	t.Cleanup(func() {
+		waitFileCompanionLibrarySync(t)
+		fileCompanionLibraryListInline = prevInline
+	})
+	const token = "cd_ffffffffffffffffffffffffffffffff"
+	var listCalls int
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/mobile/documents/shares/changes":
+			_, _ = fmt.Fprintf(w, `{"seq":8,"remote_seq":0,"shares":[{"token":%q,"revision":1,"notes_revision":2,"marks_revision":1,"chat_revision":4,"visibility":"private","expires_at":"","target":"","group_id":"","pending_host":false}]}`, token)
+		case "/api/mobile/documents/shares":
+			mu.Lock()
+			listCalls++
+			mu.Unlock()
+			w.Header().Set("ETag", `"8"`)
+			_, _ = fmt.Fprintf(w, `{"notes_reply":true,"remote_seq":0,"mine":[],"received":[{"token":%q,"name":"a.pdf","owner":"host@example.com","host":false,"visibility":"private","permanent":true,"revision":1,"notes_revision":2,"marks_revision":1,"chat_revision":4,"created_at":"2026-10-25T00:00:00Z"}]}`, token)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	paper := filepath.Join(app.testHomeDir, "a.pdf")
+	if err := os.WriteFile(paper, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "a.pdf", Path: paper, Source: "cloud",
+		Visibility: "public", Revision: 1, NotesRevision: 2, MarksRevision: 1, ChatRevision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	primeFileCompanionShareRefreshCheck(server.URL, 7, 0)
+	if _, err := app.ListFileCompanionLibrary(); err != nil {
+		t.Fatal(err)
+	}
+	waitFileCompanionLibrarySync(t)
+	mu.Lock()
+	calls := listCalls
+	mu.Unlock()
+	if calls == 0 {
+		t.Fatal("an audience edit that arrived with a chat line skipped the share list")
+	}
+	if got := libraryChatRevision(t, app, token); got != 4 {
+		t.Fatalf("chat revision = %d, want 4", got)
+	}
+}
+
+func TestFileCompanionShareChangeNeedsList(t *testing.T) {
+	item := FileCompanionLibraryItem{
+		Visibility: "public", Revision: 1, NotesRevision: 2, ChatRevision: 3,
+		HostKnown: true, Host: false,
+	}
+	row := fileCompanionShareChange{Revision: 1, NotesRevision: 2, ChatRevision: 4}
+	if fileCompanionShareChangeNeedsList(row, item) {
+		t.Fatal("a chat counter was treated as a share-list change")
+	}
+	visibility := "public"
+	expires := ""
+	target := ""
+	group := ""
+	host := false
+	pending := false
+	row.Visibility = &visibility
+	row.ExpiresAt = &expires
+	row.Target = &target
+	row.GroupID = &group
+	row.Host = &host
+	row.PendingHost = &pending
+	if fileCompanionShareChangeNeedsList(row, item) {
+		t.Fatal("an unchanged share identity was treated as a share-list change")
+	}
+	private := "private"
+	row.Visibility = &private
+	if !fileCompanionShareChangeNeedsList(row, item) {
+		t.Fatal("an audience edit was not treated as a share-list change")
+	}
+	row.Visibility = &visibility
+	host = true
+	if !fileCompanionShareChangeNeedsList(row, item) {
+		t.Fatal("a host transfer was not treated as a share-list change")
+	}
+	item.HostKnown = false
+	if fileCompanionShareChangeNeedsList(row, item) {
+		t.Fatal("an unknown host seat turned a chat line into a share-list change")
+	}
+	item.HostKnown = true
+	host = false
+	item.Admin = false
+	readerTarget := "reader@example.com"
+	row.Target = &readerTarget
+	if fileCompanionShareChangeNeedsList(row, item) {
+		t.Fatal("a participant row treated the admin-only invite target as a change")
+	}
+	item.Admin = true
+	if !fileCompanionShareChangeNeedsList(row, item) {
+		t.Fatal("an admin row ignored an invite target edit")
+	}
+	item.ExpiresAt = "2026-11-10T00:00:00Z"
+	sameInstant := "2026-11-10T08:00:00+08:00"
+	row.ExpiresAt = &sameInstant
+	row.Target = &target
+	if fileCompanionShareChangeNeedsList(row, item) {
+		t.Fatal("the same expiry spelled with an offset was treated as a change")
+	}
+	blank := ""
+	row.Visibility = &blank
+	if fileCompanionShareChangeNeedsList(row, item) {
+		t.Fatal("an empty audience on an older share was treated as a change from public")
+	}
+}
+
+func TestReconcileFileCompanionLibraryKeepsNewerChat(t *testing.T) {
+	const token = "cd_dddddddddddddddddddddddddddddddd"
+	fresh := []FileCompanionLibraryItem{{
+		ID: token, Token: token, Source: "cloud", Path: "C:/a.pdf",
+		Revision: 1, ChatRevision: 5, MarksRevision: 3, OpenedAt: "2026-10-25T00:00:00Z",
+	}}
+	snapshot := []FileCompanionLibraryItem{{
+		ID: token, Token: token, Source: "cloud", Path: "C:/a.pdf",
+		Revision: 1, ChatRevision: 4, MarksRevision: 2, OpenedAt: "2026-10-25T00:00:00Z",
+	}}
+	got := reconcileFileCompanionLibrary(fresh, snapshot, nil)
+	if len(got) != 1 || got[0].ChatRevision != 5 || got[0].MarksRevision != 3 {
+		t.Fatalf("older snapshot replaced the live transcript: %+v", got)
+	}
+	fresh[0].Revision = 2
+	snapshot[0].ChatRevision = 6
+	snapshot[0].MarksRevision = 4
+	got = reconcileFileCompanionLibrary(fresh, snapshot, nil)
+	if len(got) != 1 || got[0].Revision != 2 || got[0].ChatRevision != 6 || got[0].MarksRevision != 4 {
+		t.Fatalf("newer document revision dropped a newer transcript: %+v", got)
 	}
 }

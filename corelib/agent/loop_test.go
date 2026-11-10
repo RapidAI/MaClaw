@@ -2989,6 +2989,55 @@ func TestRunLoopUpstreamStreamIdleUsesOuterRetry(t *testing.T) {
 	}
 }
 
+func TestRunLoopPreHeaderTimeoutUsesOuterRetry(t *testing.T) {
+	useLLMRetryBackoff(t, 200*time.Millisecond)
+	var mu sync.Mutex
+	var arrivals []time.Time
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		mu.Lock()
+		arrivals = append(arrivals, time.Now())
+		n := len(arrivals)
+		mu.Unlock()
+		if n == 1 {
+			return nil, headerTimeoutError{}
+		}
+		const success = `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`
+		header := make(http.Header)
+		header.Set("Content-Type", "application/json")
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Status:        "200 OK",
+			Proto:         "HTTP/1.1",
+			Header:        header,
+			Body:          io.NopCloser(strings.NewReader(success)),
+			ContentLength: int64(len(success)),
+			Request:       req,
+		}, nil
+	})
+	cb := &unexpectedEOFRetryCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://api.example.test/v1", Model: "test"},
+		maxIter:   1,
+		sysPrompt: "sys",
+	}}
+	result := RunLoop(cb, "test", nil, &http.Client{Transport: transport})
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v, want the pre-header timeout to retry to success", result)
+	}
+	mu.Lock()
+	n := len(arrivals)
+	gap := time.Duration(0)
+	if n >= 2 {
+		gap = arrivals[1].Sub(arrivals[0])
+	}
+	mu.Unlock()
+	if n != 2 {
+		t.Fatalf("requests=%d, want the timed-out send plus one outer retry", n)
+	}
+	if gap < 150*time.Millisecond {
+		t.Fatalf("retry gap %s, want the outer backoff rather than an immediate fallback", gap)
+	}
+}
+
 func TestRunLoopCodeGenChatStaysOnBufferedCompletion(t *testing.T) {
 	var mu sync.Mutex
 	var bodies []map[string]any

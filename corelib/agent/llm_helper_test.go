@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -450,6 +451,36 @@ func TestShouldRetrySimpleLLMError_UnexpectedEOF(t *testing.T) {
 	}
 	if shouldRetrySimpleLLMError(errors.New("unexpected end of JSON input")) {
 		t.Fatal("a JSON parse error stays on the immediate fallback path")
+	}
+}
+
+// headerTimeoutError mirrors the transport's response-header timeout: a
+// net.Error whose Timeout reports true and that carries no model payload.
+type headerTimeoutError struct{}
+
+func (headerTimeoutError) Error() string   { return "timeout awaiting response headers" }
+func (headerTimeoutError) Timeout() bool   { return true }
+func (headerTimeoutError) Temporary() bool { return true }
+
+func TestGatewayRejectedLLMFailure_TransportTimeout(t *testing.T) {
+	timedOut := fmt.Errorf("[https://api.example.test/v1/chat/completions] %w", headerTimeoutError{})
+	if !shouldRetrySimpleLLMError(timedOut) {
+		t.Fatal("a transport timeout should be retryable")
+	}
+	if !gatewayRejectedLLMFailure(nil, timedOut) {
+		t.Fatal("a coding host must retry a pre-header transport timeout that delivered no payload")
+	}
+	if gatewayRejectedLLMFailure(&llm.Response{}, timedOut) {
+		t.Fatal("a partial response must not be retried even when the error is a timeout")
+	}
+	if !gatewayRejectedLLMFailure(nil, context.DeadlineExceeded) {
+		t.Fatal("a route deadline with no payload should reach the outer backoff")
+	}
+	// A non-timeout network error is still ambiguous for coding hosts: the
+	// request may have been written and reset mid-flight.
+	reset := &net.DNSError{Err: "connection reset by peer", IsTimeout: false}
+	if gatewayRejectedLLMFailure(nil, reset) {
+		t.Fatal("a non-timeout transport error is not a definitive rejection")
 	}
 }
 

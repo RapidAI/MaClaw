@@ -70,6 +70,22 @@ type fileCompanionShareDiscussionSync struct {
 	unsupported bool
 	hadLogin    bool
 	lastMine    int
+	// notes is the note counter and host seat last seen for each home-hub
+	// share. A host transcript moves the global sequence without moving
+	// these, and the agent does not read that transcript.
+	notes map[string]fileCompanionDiscussionShare
+	// backlog means the last poll stopped at its answer cap with more notes
+	// still waiting. The next tick has to continue even when no counter moved.
+	backlog bool
+}
+
+// fileCompanionDiscussionShare is the part of a home share this watcher acts
+// on. HostKnown is false for a row saved before the seat was stored; the
+// feed's host bit is not compared then, or a legacy row would refetch forever.
+type fileCompanionDiscussionShare struct {
+	Notes     int
+	Host      bool
+	HostKnown bool
 }
 
 var fileCompanionShareDiscussionSyncState fileCompanionShareDiscussionSync
@@ -81,17 +97,74 @@ func (st *fileCompanionShareDiscussionSync) reset(hub string) {
 	st.unsupported = false
 	st.hadLogin = false
 	st.lastMine = 0
+	st.notes = nil
+	st.backlog = false
 }
 
 // fileCompanionShareDiscussionRecordFullRefresh marks that a full poll just
-// saw the Hub at the current change sequence.
-func fileCompanionShareDiscussionRecordFullRefresh(hub string) {
+// saw the Hub at the change sequence of its own response. The library's
+// refresh polls the same endpoint concurrently; either poll reading the
+// other's newer sequence would skip a change it never saw.
+func fileCompanionShareDiscussionRecordFullRefresh(hub string, seq uint64, notes map[string]fileCompanionDiscussionShare) {
 	st := &fileCompanionShareDiscussionSyncState
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.hub = hub
 	st.fullDone = true
-	st.seq = fileCompanionShareListSeq.Load()
+	st.seq = seq
+	st.notes = notes
+}
+
+// fileCompanionShareNotesMoved reports that a full poll has to run. The
+// changes feed carries note counters but not the note text. A missing feed
+// (an older Hub) cannot be told apart from a note, so it counts as moved.
+// Home shares that disappeared count too. Shares that live on another Hub
+// are absent from this feed on purpose and are not part of the baseline.
+func fileCompanionShareNotesMoved(changes fileCompanionShareChanges, known map[string]fileCompanionDiscussionShare) bool {
+	if !changes.HasShares || known == nil {
+		return true
+	}
+	seen := map[string]bool{}
+	for _, row := range changes.Shares {
+		token := strings.TrimSpace(row.Token)
+		if token == "" {
+			continue
+		}
+		seen[token] = true
+		prev, ok := known[token]
+		if !ok || row.NotesRevision != prev.Notes {
+			return true
+		}
+		// Handing the seat over does not move the note counter. The new
+		// host still has to load the notes that were already waiting.
+		if prev.HostKnown && row.Host != nil && *row.Host != prev.Host {
+			return true
+		}
+	}
+	for token := range known {
+		if !seen[token] {
+			return true
+		}
+	}
+	return false
+}
+
+// fileCompanionShareDiscussionRetryDue reports that a reply is already written
+// and waiting to be posted again. A model failure with no saved reply does
+// not wake the poll: the note may be gone, or the hourly budget may skip it,
+// and treating every old failure as due downloaded the full share list on
+// every tick.
+func fileCompanionShareDiscussionRetryDue(now time.Time) bool {
+	for key, ready := range fileCompanionShareDiscussionReady {
+		if now.Sub(ready.At) >= fileCompanionShareDiscussionReadyTTL {
+			continue
+		}
+		if at, blocked := fileCompanionShareDiscussionFailures[key]; blocked && now.Sub(at) < fileCompanionShareDiscussionFailureHold {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // The maps below are in-memory limits, not durable state. The Hub's reply_to
@@ -176,10 +249,10 @@ func (a *App) stopFileCompanionShareDiscussionWatch() {
 }
 
 // pollFileCompanionShareDiscussionsQuiet decides whether this tick needs the
-// full poll. When the Hub's change sequence is unchanged since the last full
-// poll, nothing moved and the expensive fetch (every share, every note) is
-// skipped. The returned count is the last known number of hosted shares, so
-// the cadence stays as it was.
+// full poll. An unchanged sequence skips it. A sequence that moved only a
+// transcript or reader marks skips it too: this agent reads notes, and the
+// note text is the expensive part of the share list. The returned count is
+// the last known number of hosted shares, so the cadence stays as it was.
 func (a *App) pollFileCompanionShareDiscussionsQuiet() int {
 	st := &fileCompanionShareDiscussionSyncState
 	st.mu.Lock()
@@ -202,10 +275,20 @@ func (a *App) pollFileCompanionShareDiscussionsQuiet() int {
 		st.hadLogin = true
 		st.mu.Unlock()
 		if hadLogin {
-			seq, _, err := a.fetchFileCompanionShareChanges(hub, viewer)
+			changes, err := a.fetchFileCompanionShareChanges(hub, viewer)
 			if err == nil {
 				st.mu.Lock()
-				quiet := st.fullDone && seq == st.seq
+				workLeft := st.backlog || fileCompanionShareDiscussionRetryDue(time.Now())
+				quiet := st.fullDone && changes.Seq == st.seq && !workLeft
+				if st.fullDone && !quiet && !workLeft && !fileCompanionShareNotesMoved(changes, st.notes) {
+					// The sequence moved, and every note counter and host
+					// seat this poll already stored is unchanged. That is a
+					// transcript or a marks update. Remember the sequence so
+					// the next tick stays quiet, and leave the note baseline
+					// as it is.
+					st.seq = changes.Seq
+					quiet = true
+				}
 				count := st.lastMine
 				st.mu.Unlock()
 				if quiet {
@@ -240,11 +323,31 @@ func (a *App) pollFileCompanionShareDiscussions() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	items, replySupported, reviewSupported, serverTime, err := a.fetchFileCompanionShareList(hub, viewer)
+	items, replySupported, reviewSupported, serverTime, mark, err := a.fetchFileCompanionShareList(hub, viewer)
 	if err != nil {
 		return 0, err
 	}
-	fileCompanionShareDiscussionRecordFullRefresh(hub)
+	notes := map[string]fileCompanionDiscussionShare{}
+	for _, item := range items {
+		token := strings.TrimSpace(item.Token)
+		if token == "" || item.HubOrigin != "" {
+			continue
+		}
+		notes[token] = fileCompanionDiscussionShare{
+			Notes: item.NotesRevision, Host: item.Host, HostKnown: item.HostKnown,
+		}
+	}
+	fileCompanionShareDiscussionRecordFullRefresh(hub, mark.seq, notes)
+	// A poll that answered its cap may still have notes waiting. Remember
+	// that after the replies, including on the paths that return earlier
+	// with nothing left to answer.
+	backlog := false
+	defer func() {
+		st := &fileCompanionShareDiscussionSyncState
+		st.mu.Lock()
+		st.backlog = backlog
+		st.mu.Unlock()
+	}()
 	// An older Hub cannot mark a host note or link it to a reader note. Running
 	// the agent there would answer every host line again and again.
 	if !replySupported {
@@ -271,8 +374,10 @@ func (a *App) pollFileCompanionShareDiscussions() (int, error) {
 		}
 	}
 	answered := 0
+	stoppedEarly := false
 	for _, item := range mine {
 		if answered >= fileCompanionShareDiscussionPerPoll {
+			stoppedEarly = true
 			break
 		}
 		// A note that already carries a decision is in review, even when the
@@ -383,6 +488,10 @@ func (a *App) pollFileCompanionShareDiscussions() (int, error) {
 		delete(fileCompanionShareDiscussionFailures, failureKey)
 		answered++
 	}
+	// The cap stopped the loop before later shares were read. Come back for
+	// those notes even if no counter moves. Finishing the list, even when
+	// the last answer filled the cap, has nothing left to fetch.
+	backlog = stoppedEarly
 	return len(mine), nil
 }
 
@@ -513,7 +622,7 @@ func forgetFileCompanionShareDiscussionUnlessApproved(token string, notes []File
 // keeps the snapshot from this poll; the Hub still refuses the reply if the
 // note was ignored while the turn ran.
 func (a *App) refreshFileCompanionApprovedNote(hub, viewer, token, noteID string, fallback FileCompanionShareNote, fallbackNotes []FileCompanionShareNote) (FileCompanionShareNote, []FileCompanionShareNote, bool) {
-	items, _, reviewOn, _, err := a.fetchFileCompanionShareList(hub, viewer)
+	items, _, reviewOn, _, _, err := a.fetchFileCompanionShareList(hub, viewer)
 	if err != nil {
 		return fallback, fallbackNotes, true
 	}

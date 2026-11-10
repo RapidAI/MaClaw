@@ -59,6 +59,8 @@ describe('TaskMachineBar', () => {
         const control = remote();
         render(<TaskMachineBar lang="zh-CN" remote={control} onCloseGrant={vi.fn()} />);
         fireEvent.click(screen.getByTestId('task-machine-add'));
+        expect(control.refresh).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('task-machine-own-mac-b').textContent).toContain('家里 · 在线');
         fireEvent.change(screen.getByTestId('task-machine-account'), { target: { value: 'bob@example.com' } });
         await act(async () => {
             fireEvent.click(screen.getByTestId('task-machine-invite'));

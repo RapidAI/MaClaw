@@ -135,6 +135,154 @@ describe("companionCodeMathToTex", () => {
         expect(companionCodeMathToTex(text)).toBe(text);
     });
 
+    it("typesets bare TeX subscripts and superscripts in a sentence", () => {
+        expect(companionCodeMathToTex("Alignment: F^l_{0,c}, F^l_{1,c} = dilated conv (k=1, d=16) of F^l_0, F^l_1."))
+            .toBe("Alignment: $F^l_{0,c}$, $F^l_{1,c}$ = dilated conv (k=1, d=16) of $F^l_0$, $F^l_1$.");
+        expect(companionCodeMathToTex("Loss: L_total = L_ce + λ1 L_d^l + λ2 L_comp, with L_comp pulling."))
+            .toBe("Loss: $L_total$ = $L_ce$ + λ1 $L_d^l$ + λ2 $L_comp$, with $L_comp$ pulling.");
+        expect(companionCodeMathToTex("final Ŷ = σ(Ŷ_ag + Ŷ_aw)，令F^l_{0,c}成立。"))
+            .toBe("final $Ŷ$ = $σ$($Ŷ_ag$ + $Ŷ_aw$)，令$F^l_{0,c}$成立。");
+    });
+
+    it("typesets unicode subscripts, superscripts, and lone Greek letters", () => {
+        const yellow = "文中取 λ₁=λ₂=1、γ=1、τ=25%。";
+        const yellowTex = "文中取 $λ_1$=$λ_2$=1、$γ$=1、$τ$=25%。";
+        expect(companionCodeMathToTex(yellow)).toBe(yellowTex);
+        expect(companionCodeMathToTex(yellowTex)).toBe(yellowTex);
+        expect(companionCodeMathToTex("特征 F₀ˡ、F₁ˡ 与 F₀,cˡ。"))
+            .toBe("特征 $F_0^l$、$F_1^l$ 与 $F_{0,c}^l$。");
+        expect(companionCodeMathToTex("差异 Oˡ，掩码 Mˡ，Cat(F₀ᴺ, F₁ᴺ)，求和 Σᵢ。"))
+            .toBe("差异 $O^l$，掩码 $M^l$，Cat($F_0^N$, $F_1^N$)，求和 $Σ_i$。");
+        expect(companionCodeMathToTex("损失 L_total = L_ce + λ₁ Σᵢ L_dˡ + λ₂ L_comp。"))
+            .toBe("损失 $L_total$ = $L_ce$ + $λ_1$ $Σ_i$ $L_d^l$ + $λ_2$ $L_comp$。");
+        expect(companionCodeMathToTex("特征 F₀^l 与 F₀, convolution。"))
+            .toBe("特征 $F_0^l$ 与 $F_0$, convolution。");
+        // An ASCII digit after a Greek letter is still prose, as is a unit or a word.
+        expect(companionCodeMathToTex("系数 λ1 与 λ2。")).toBe("系数 λ1 与 λ2。");
+        expect(companionCodeMathToTex("单位 μm，文件 file²，浓度 H₂O。"))
+            .toBe("单位 μm，文件 file²，浓度 $H_2$O。");
+        expect(companionCodeMathToTex("字段 inₜₕₑ 保持原样。")).toBe("字段 inₜₕₑ 保持原样。");
+        expect(companionCodeMathToTex("`λ₁` 与 F₀ˡ")).toBe("`λ₁` 与 $F_0^l$");
+        expect(companionCodeMathToTex("![F₀ˡ](https://example.com/a.png) 与 λ₁"))
+            .toBe("![F₀ˡ](https://example.com/a.png) 与 $λ_1$");
+        expect(companionCodeMathToTex("见 [方法 λ₁](https://example.com/a_b) 后 γ。"))
+            .toBe("见 [方法 $λ_1$](https://example.com/a_b) 后 $γ$。");
+        expect(companionCodeMathToTex("$F_0 and λ₁")).toBe("$F_0 and λ₁");
+        expect(companionCodeMathToTex("$x$ 与 λ₁")).toBe("$x$ 与 $λ_1$");
+        // A prime sits in front of a unicode script the same way it does for `F'_0`.
+        expect(companionCodeMathToTex("残差 F'₀ 与 F*₀。")).toBe("残差 $F'_0$ 与 $F*_0$。");
+        expect(companionCodeMathToTex("记号 F₀^{l} 与 F₀^{l_{0}}。")).toBe("记号 $F_0^{l}$ 与 $F_0^{l_{0}}$。");
+        // A failed or prose script stays attached to its letter.
+        expect(companionCodeMathToTex("See σ^{the result of alignment} next.")).toBe("See σ^{the result of alignment} next.");
+        expect(companionCodeMathToTex("α^")).toBe("α^");
+        expect(companionCodeMathToTex("α^2")).toBe("$α^2$");
+        expect(companionCodeMathToTex("F₀_{0")).toBe("F₀_{0");
+        expect(companionCodeMathToTex("F₀_{0,c}")).toBe("F₀_{0,c}");
+        expect(companionCodeMathToTex("σ(Ŷ_ag)")).toBe("$σ$($Ŷ_ag$)");
+        expect(companionCodeMathToTex("Ŷ=1")).toBe("$Ŷ$=1");
+        // The apostrophe is part of the variable. A star is multiplication, and a Latin prime is prose.
+        expect(companionCodeMathToTex("导数 σ'(x) 与 σ′。")).toBe("导数 $σ'$(x) 与 $σ′$。");
+        expect(companionCodeMathToTex(companionCodeMathToTex("导数 σ'(x) 与 σ′。"))).toBe("导数 $σ'$(x) 与 $σ′$。");
+        expect(companionCodeMathToTex("σ'₀ 与 σ*v，函数 f'。")).toBe("$σ'_0$ 与 $σ$*v，函数 f'。");
+        expect(companionCodeMathToTex("σ'^")).toBe("σ'^");
+        expect(companionCodeMathToTex(`a${"ₐ".repeat(9)}`)).toBe(`a${"ₐ".repeat(9)}`);
+        // A second apostrophe is still the variable. A dangling caret is unfinished.
+        expect(companionCodeMathToTex("导数 σ''(x) 与 Ŷ''。")).toBe("导数 $σ''$(x) 与 $Ŷ''$。");
+        expect(companionCodeMathToTex("σ''''")).toBe("σ''''");
+        expect(companionCodeMathToTex("F''_0 与 F''₀ 与 σ''^2。")).toBe("$F''_0$ 与 $F''_0$ 与 $σ''^2$。");
+        expect(companionCodeMathToTex("F₀^ 与 L_d^ 与 x²^。")).toBe("F₀^ 与 L_d^ 与 x²^。");
+        expect(companionCodeMathToTex("残差 F₀' 与 F_0'。")).toBe("残差 $F_0'$ 与 $F_0'$。");
+        expect(companionCodeMathToTex("F_0_1 与 x^2^3。")).toBe("F_0_1 与 x^2^3。");
+        // A prime between scripts stays inside the formula. An unfinished one stays whole.
+        expect(companionCodeMathToTex("导数 F_0'^l 与 F₀'^l 与 L_d'ˡ。")).toBe("导数 $F_0'^l$ 与 $F_0'^l$ 与 $L_d'^l$。");
+        expect(companionCodeMathToTex("F_0'^")).toBe("F_0'^");
+        expect(companionCodeMathToTex("F_0*x")).toBe("$F_0$*x");
+        expect(companionCodeMathToTex("名称 in_the'^2 保持原样。")).toBe("名称 in_the'^2 保持原样。");
+        expect(companionCodeMathToTex("见 [方法 F_0'^l](https://example.com/a_b) 后 x^*。"))
+            .toBe("见 [方法 $F_0'^l$](https://example.com/a_b) 后 $x^*$。");
+    });
+
+    it("leaves names, code, urls and delimited formulas untouched", () => {
+        const text = "公式 $F^l_{0,c}$ 已经写好。见 https://example.com/a_b 和 `user_id`。";
+        expect(companionCodeMathToTex(text)).toBe(text);
+        expect(companionCodeMathToTex("见 HTTP://example.com/a_b_c 即可。")).toBe("见 HTTP://example.com/a_b_c 即可。");
+        for (const name of ["user_id", "feature_diff", "in_the", "id_name", "get_user_by_id", "py_v2"]) {
+            expect(companionCodeMathToTex(`字段 ${name} 保持原样。`)).toBe(`字段 ${name} 保持原样。`);
+        }
+        const fence = "```ts\nconst value = F^l_0;\n```";
+        expect(companionCodeMathToTex(fence)).toBe(fence);
+        // A Windows newline must not hide the fence, or the formula inside is wrapped.
+        expect(companionCodeMathToTex("```ts\r\nconst value = F^l_0;\r\n```")).toBe(fence);
+        expect(companionCodeMathToTex("令F^l_0成立\r\n")).toBe("令$F^l_0$成立\n");
+        // A phrase in braces is not a subscript, and an open `` ends at the line.
+        expect(companionCodeMathToTex("See F^{the result of alignment} next.")).toBe("See F^{the result of alignment} next.");
+        expect(companionCodeMathToTex("``keep\nF^l_0")).toBe("``keep\n$F^l_0$");
+        expect(companionCodeMathToTex("面积 km^2，浓度 CO_2。")).toBe("面积 $km^2$，浓度 $CO_2$。");
+        expect(companionCodeMathToTex("见 https://example.com/a_b。令F^l_0成立，it's_fine。"))
+            .toBe("见 https://example.com/a_b。令$F^l_0$成立，it's_fine。");
+        expect(companionCodeMathToTex("残差 F'_0。")).toBe("残差 $F'_0$。");
+        expect(companionCodeMathToTex("对偶 x^* 与 F^*_0，记号 F*_0。")).toBe("对偶 $x^*$ 与 $F^*_0$，记号 $F*_0$。");
+        expect(companionCodeMathToTex("文件 file^* 保持原样。")).toBe("文件 file^* 保持原样。");
+        // A `$$` that is not a display block must not hide a later formula.
+        expect(companionCodeMathToTex("see $$ later F^l_0")).toBe("see $$ later $F^l_0$");
+        expect(companionCodeMathToTex("$$\nF^l_0")).toBe("$$\nF^l_0");
+        expect(companionCodeMathToTex("$$\nF^l_0\n$$")).toBe("$$\nF^l_0\n$$");
+        expect(companionCodeMathToTex("名称 in_the^2 保持原样。")).toBe("名称 in_the^2 保持原样。");
+    });
+
+    it("typesets one nested brace and leaves an open delimiter alone", () => {
+        expect(companionCodeMathToTex("特征 F^{l_{0,c}} 与 x_{i_{j}}。")).toBe("特征 $F^{l_{0,c}}$ 与 $x_{i_{j}}$。");
+        expect(companionCodeMathToTex("`F^{l_{0,c}}`")).toBe("$F^{l_{0,c}}$");
+        // A closer that has not arrived yet must not grow a second dollar,
+        // and must not pull a later formula on the same line into the span.
+        expect(companionCodeMathToTex("$F^l_0")).toBe("$F^l_0");
+        expect(companionCodeMathToTex("$F^l_0 and L_ce")).toBe("$F^l_0 and L_ce");
+        expect(companionCodeMathToTex("$F^l_0$ and L_ce")).toBe("$F^l_0$ and $L_ce$");
+        expect(companionCodeMathToTex("\\(F^l_0")).toBe("\\(F^l_0");
+        expect(companionCodeMathToTex("see \\[F^l_0")).toBe("see \\[F^l_0");
+        // A closer glued to the next letter is not a boundary, so both stay
+        // source. A space is a boundary, and the next atom typesets.
+        expect(companionCodeMathToTex("$x$F^l_0")).toBe("$x$F^l_0");
+        expect(companionCodeMathToTex("$x$ 与 F^l_0")).toBe("$x$ 与 $F^l_0$");
+        // A finished display block does not pair with a later `$$`.
+        expect(companionCodeMathToTex("$$\nx\n$$\nsee $$F^l_0")).toBe("$$\nx\n$$\nsee $$F^l_0");
+        expect(companionCodeMathToTex("$$x$$F^l_0")).toBe("$$x$$$F^l_0$");
+        // A dollar inside code or a link is not an opener for the rest of the line.
+        expect(companionCodeMathToTex("代码 `$total` 与 L_ce。")).toBe("代码 `$total` 与 $L_ce$。");
+        expect(companionCodeMathToTex("见 [说明](https://example.com/a$b) 与 L_ce。")).toBe("见 [说明](https://example.com/a$b) 与 $L_ce$。");
+        expect(companionCodeMathToTex("记号 `$$` 之后 $$F^l_0")).toBe("记号 `$$` 之后 $$F^l_0");
+        // An inline label is typeset. The destination, an image alt, and a
+        // reference label stay source, so the target remains attached.
+        expect(companionCodeMathToTex("见 [方法 F^l_0](https://example.com/a_b) 后 F^l_1。"))
+            .toBe("见 [方法 $F^l_0$](https://example.com/a_b) 后 $F^l_1$。");
+        expect(companionCodeMathToTex("见 [文档 https://example.com/a_b](https://example.com/c)F^l_1。"))
+            .toBe("见 [文档 https://example.com/a_b](https://example.com/c)$F^l_1$。");
+        // A `)` inside the path is still the destination. The formula there stays
+        // part of the target; the label and the following atom typeset.
+        const parenthesized = "见 [方法 F^l_0](https://example.com/a_(b)/F^l_1) 后 L_ce。";
+        const parenthesizedTex = "见 [方法 $F^l_0$](https://example.com/a_(b)/F^l_1) 后 $L_ce$。";
+        expect(companionCodeMathToTex(parenthesized)).toBe(parenthesizedTex);
+        expect(companionCodeMathToTex(parenthesizedTex)).toBe(parenthesizedTex);
+        expect(companionCodeMathToTex("见 [方法 F^l_0](https://example.com/a_(b_(c))/F^l_1) 后 L_ce。"))
+            .toBe("见 [方法 $F^l_0$](https://example.com/a_(b_(c))/F^l_1) 后 $L_ce$。");
+        expect(companionCodeMathToTex("![F^l_0](https://example.com/a_(b).png) 与 L_ce"))
+            .toBe("![F^l_0](https://example.com/a_(b).png) 与 $L_ce$");
+        expect(companionCodeMathToTex("见 [项 F^{l_0](https://example.com/a) 后 L_ce。"))
+            .toBe("见 [项 F^{l_0](https://example.com/a) 后 $L_ce$。");
+        expect(companionCodeMathToTex("![F^l_0](https://example.com/a.png) 与 F^l_1"))
+            .toBe("![F^l_0](https://example.com/a.png) 与 $F^l_1$");
+        expect(companionCodeMathToTex("见 [F^l_0][fig] 与 F^l_1")).toBe("见 [F^l_0][fig] 与 $F^l_1$");
+        // An unclosed or too-deep brace is not a shorter atom plus a stray tail.
+        expect(companionCodeMathToTex("F^{l_{0,c}")).toBe("F^{l_{0,c}");
+        expect(companionCodeMathToTex("项 x_{i_{j} 未写完")).toBe("项 x_{i_{j} 未写完");
+        expect(companionCodeMathToTex("项 x_{i_{j_{k}}} 保持原样")).toBe("项 x_{i_{j_{k}}} 保持原样");
+    });
+
+    it("wraps a backtick TeX atom once", () => {
+        expect(companionCodeMathToTex("`F^l_{0,c}`")).toBe("$F^l_{0,c}$");
+        expect(companionCodeMathToTex(companionCodeMathToTex("`F^l_{0,c}`"))).toBe("$F^l_{0,c}$");
+    });
+
     it("is idempotent", () => {
         const input = "把 `x_i = f(I, q, d_i)` 代进去：\n\n```\na_j(q) = [a_j(q,d_1), ..., a_j(q,d_N)]\n```";
         const once = companionCodeMathToTex(input);

@@ -111,6 +111,12 @@ type companionDocShare struct {
 	// new lines from one small JSON blob. ChatPath holds that blob.
 	ChatRevision int    `json:"chat_revision,omitempty"`
 	ChatPath     string `json:"chat_path,omitempty"`
+	// Figures maps a transcript image name to its blob path. The images the
+	// chat refers to are binary, unlike the JSON blobs above, so they have
+	// their own endpoint. Recording a figure does not move seq: a message
+	// that names it always arrives with a chat or project bump, and a bump
+	// here would send every reader through the full list for nothing.
+	Figures map[string]string `json:"figures,omitempty"`
 }
 
 // companionShareNote is one reader's discussion on a share. The host's own
@@ -223,6 +229,13 @@ func cloneCompanionDocShare(share companionDocShare) companionDocShare {
 			importers[id] = at
 		}
 		share.Importers = importers
+	}
+	if len(share.Figures) > 0 {
+		figures := make(map[string]string, len(share.Figures))
+		for name, path := range share.Figures {
+			figures[name] = path
+		}
+		share.Figures = figures
 	}
 	return share
 }
@@ -848,6 +861,15 @@ func CompanionDocumentShareChangesHandler(identity *auth.IdentityService) http.H
 			NotesRevision int    `json:"notes_revision"`
 			MarksRevision int    `json:"marks_revision"`
 			ChatRevision  int    `json:"chat_revision"`
+			// Identity fields travel with the counters. A chat line and a host
+			// transfer can share one sequence, and the desktop skips the full
+			// list only when every field it can see here is unchanged.
+			Visibility  string `json:"visibility"`
+			ExpiresAt   string `json:"expires_at"`
+			Target      string `json:"target"`
+			GroupID     string `json:"group_id"`
+			Host        bool   `json:"host"`
+			PendingHost bool   `json:"pending_host"`
 		}
 		companionDocShares.Lock()
 		seq := companionDocShares.seq
@@ -859,25 +881,103 @@ func CompanionDocumentShareChangesHandler(identity *auth.IdentityService) http.H
 			if share.OwnerID != ownerID && !companionShareReceived(share, ownerID, contacts, groups) {
 				continue
 			}
+			expires := ""
+			if !share.ExpiresAt.IsZero() {
+				expires = share.ExpiresAt.UTC().Format(time.RFC3339)
+			}
+			// The full list keeps the invite target and a pending nomination
+			// on the admin row. Readers already know the group id. Sending
+			// the target to them would also make their chat poll look like
+			// an audience edit, because their stored row has no target.
+			target := ""
+			pendingHost := false
+			if share.OwnerID == ownerID {
+				target = share.Target
+				pendingHost = strings.TrimSpace(share.PendingHostID) != ""
+			}
 			rows = append(rows, changeRow{
 				Token:         share.Token,
 				Revision:      share.Revision,
 				NotesRevision: share.NotesRevision,
 				MarksRevision: share.MarksRevision,
 				ChatRevision:  share.ChatRevision,
+				Visibility:    share.Visibility,
+				ExpiresAt:     expires,
+				Target:        target,
+				GroupID:       share.GroupID,
+				Host:          companionShareIsHost(share, ownerID),
+				PendingHost:   pendingHost,
 			})
 		}
 		companionDocShares.Unlock()
-		_, remoteSeq := companionRemoteShareSnapshot(r.Context(), identity, principal, ownerID)
+		remoteShares, remoteSeq := companionRemoteShareSnapshot(r.Context(), identity, principal, ownerID)
 		// The rows are a live change tick. A cached answer would make a
 		// participant believe nothing moved and skip a real transcript update.
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusOK, map[string]any{
-			"seq":         seq,
-			"remote_seq":  remoteSeq,
-			"server_time": now.UTC().Format(time.RFC3339),
-			"shares":      rows,
+			"seq":           seq,
+			"remote_seq":    remoteSeq,
+			"server_time":   now.UTC().Format(time.RFC3339),
+			"shares":        rows,
+			"remote_shares": companionRemoteChangeRows(remoteShares),
 		})
+	}
+}
+
+// companionRemoteChangeRow is the part of a cross-hub share the desktop can
+// apply without the full list. The reader grant stays off this feed.
+type companionRemoteChangeRow struct {
+	Token         string `json:"token"`
+	HubOrigin     string `json:"hub_origin"`
+	Revision      int    `json:"revision"`
+	NotesRevision int    `json:"notes_revision"`
+	MarksRevision int    `json:"marks_revision"`
+	ChatRevision  int    `json:"chat_revision"`
+}
+
+func companionRemoteChangeRows(shares []map[string]any) []companionRemoteChangeRow {
+	rows := make([]companionRemoteChangeRow, 0, len(shares))
+	for _, share := range shares {
+		token, _ := share["token"].(string)
+		origin, _ := share["hub_origin"].(string)
+		token = strings.TrimSpace(token)
+		origin = strings.TrimSpace(origin)
+		if !companionShareTokenPattern.MatchString(token) || origin == "" {
+			continue
+		}
+		rows = append(rows, companionRemoteChangeRow{
+			Token:         token,
+			HubOrigin:     origin,
+			Revision:      companionJSONInt(share["revision"]),
+			NotesRevision: companionJSONInt(share["notes_revision"]),
+			MarksRevision: companionJSONInt(share["marks_revision"]),
+			ChatRevision:  companionJSONInt(share["chat_revision"]),
+		})
+	}
+	return rows
+}
+
+// companionJSONInt reads a counter out of a share view. The remote snapshot
+// is decoded as map[string]any, so these numbers arrive as float64.
+func companionJSONInt(value any) int {
+	switch n := value.(type) {
+	case int:
+		if n < 0 {
+			return 0
+		}
+		return n
+	case int64:
+		if n < 0 {
+			return 0
+		}
+		return int(n)
+	case float64:
+		if n < 0 || n > float64(int(^uint(0)>>1)) {
+			return 0
+		}
+		return int(n)
+	default:
+		return 0
 	}
 }
 
@@ -1140,6 +1240,9 @@ func CompanionDocumentShareDeleteHandler(identity *auth.IdentityService) http.Ha
 		}
 		if share.ChatPath != "" {
 			mobileDeleteDocumentBlob(share.ChatPath)
+		}
+		for _, figurePath := range share.Figures {
+			mobileDeleteDocumentBlob(figurePath)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": token})
 	}
@@ -1849,6 +1952,20 @@ func CompanionDocumentShareChatUpdateHandler(identity *auth.IdentityService) htt
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "聊天无法读取")
 			return
 		}
+		// A question published at the start of a turn names the revision it
+		// read. The finished answer does not. If the answer lands first, the
+		// late question must not replace it.
+		base := 0
+		hasBase := false
+		if rawBase := strings.TrimSpace(r.Header.Get("X-Companion-Chat-Base")); rawBase != "" {
+			parsed, convErr := strconv.Atoi(rawBase)
+			if convErr != nil || parsed < 0 {
+				writeError(w, http.StatusBadRequest, "BAD_REQUEST", "聊天无法读取")
+				return
+			}
+			base = parsed
+			hasBase = true
+		}
 		loadCompanionDocShares()
 		companionDocShares.Lock()
 		share, found := companionDocShares.items[token]
@@ -1881,17 +1998,29 @@ func CompanionDocumentShareChatUpdateHandler(identity *auth.IdentityService) htt
 			})
 			return
 		}
-		blobPath, err := mobileWriteDocumentBlob(ownerID, "share-chat", token, body)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享")
-			return
-		}
+		// The blob path is stable for a share, so the write replaces the
+		// transcript participants are reading. Hold the lock across that
+		// write. Otherwise the answer can land in the file, and a question
+		// that already passed its revision check then replaces those bytes.
 		companionDocShares.Lock()
 		share, found = companionDocShares.items[token]
 		if status, code, message := companionShareSyncRejection(share, found, ownerID, time.Now().UTC()); status != 0 {
 			companionDocShares.Unlock()
-			mobileDeleteDocumentBlob(blobPath)
 			writeError(w, status, code, message)
+			return
+		}
+		if hasBase && share.ChatRevision != base {
+			current := share.ChatRevision
+			companionDocShares.Unlock()
+			writeErrorWithFields(w, http.StatusConflict, "CHAT_STALE", "聊天已更新", map[string]any{
+				"chat_revision": current,
+			})
+			return
+		}
+		blobPath, err := mobileWriteDocumentBlob(ownerID, "share-chat", token, body)
+		if err != nil {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享")
 			return
 		}
 		previous := share.ChatPath
@@ -1988,6 +2117,226 @@ func CompanionDocumentShareChatHandler(identity *auth.IdentityService) http.Hand
 		w.Header().Set("X-Companion-Chat-Revision", strconv.Itoa(revision))
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.Copy(w, file)
+	}
+}
+
+// companionShareFigureName is the one path segment an image lives under. The
+// transcript stores the host's absolute path; only the base name crosses the
+// wire, so a hostile or careless path cannot pick the blob it reads.
+var companionShareFigureName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+func companionShareFigureNameOK(name string) bool {
+	return companionShareFigureName.MatchString(name) && !strings.Contains(name, "..")
+}
+
+// companionShareFigureMaxBytes bounds one image. The desktop sends the
+// display-scale copy, which stays far below this; the cap stops a pushed
+// full-print scan from bloating the blob store.
+const companionShareFigureMaxBytes = 8 << 20
+
+// companionShareFigureBlobID is the blob id of one image: stable per share,
+// so a re-render of the same figure replaces the previous bytes in place.
+func companionShareFigureBlobID(token, name string) string {
+	return token + "-" + name
+}
+
+// companionShareFigureBlobRel guesses the blob path one writer used. It
+// exists so a figure written before the map entry was persisted — or by a
+// different host seat — can still be found.
+func companionShareFigureBlobRel(ownerID, token, name string) string {
+	ownerID = filepath.Base(strings.TrimSpace(ownerID))
+	if ownerID == "" || ownerID == "." || ownerID == ".." {
+		return ""
+	}
+	return filepath.ToSlash(filepath.Join(ownerID, "share-figure", companionShareFigureBlobID(token, name)+".bin"))
+}
+
+// CompanionDocumentShareFigureUpdateHandler stores one image the transcript
+// refers to. Only the current host writes, and the write does not move the
+// change sequence: a figure always arrives with the message that names it,
+// which already bumped the transcript or the project.
+//
+//	POST /api/mobile/documents/shares/{token}/figures/{name}
+func CompanionDocumentShareFigureUpdateHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+			return
+		}
+		ownerID := mobilePrincipalOwnerID(principal)
+		if ownerID == "" {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请先登录 MaClaw Hub")
+			return
+		}
+		token := strings.TrimSpace(r.PathValue("token"))
+		if !companionShareTokenPattern.MatchString(token) {
+			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			return
+		}
+		name := strings.TrimSpace(r.PathValue("name"))
+		if !companionShareFigureNameOK(name) {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "图片名不可用")
+			return
+		}
+		raw, err := io.ReadAll(io.LimitReader(r.Body, companionShareFigureMaxBytes+1))
+		if err != nil || len(raw) == 0 {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "图片无法读取")
+			return
+		}
+		if len(raw) > companionShareFigureMaxBytes {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "图片过大")
+			return
+		}
+		loadCompanionDocShares()
+		companionDocShares.Lock()
+		share, found := companionDocShares.items[token]
+		if status, code, message := companionShareSyncRejection(share, found, ownerID, time.Now().UTC()); status != 0 {
+			companionDocShares.Unlock()
+			writeError(w, status, code, message)
+			return
+		}
+		blobPath, err := mobileWriteDocumentBlob(ownerID, "share-figure", companionShareFigureBlobID(token, name), raw)
+		if err != nil {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusInternalServerError, "SHARE_FAILED", "无法保存分享")
+			return
+		}
+		// The map travels with the share so a figure uploaded by a previous
+		// host seat is still found after a transfer. The background write
+		// persists it without moving the change sequence: a figure always
+		// arrives with the message that names it, and a bump would send
+		// every reader through the full list for nothing.
+		if share.Figures == nil {
+			share.Figures = map[string]string{}
+		}
+		share.Figures[name] = blobPath
+		companionDocShares.items[token] = share
+		snap := cloneCompanionShareIndexLocked()
+		companionDocShares.Unlock()
+		scheduleCompanionShareIndex(snap)
+		writeJSON(w, http.StatusOK, map[string]any{"name": name, "size": len(raw)})
+	}
+}
+
+// companionShareFigureBlobPath finds where one named image is stored. The
+// map answers first; an upload that never reached the index (a restart in
+// between, or a write by a former host seat) is found under the owner's and
+// the current host's blob directory.
+func companionShareFigureBlobPath(share companionDocShare, token, name string) string {
+	if path := strings.TrimSpace(share.Figures[name]); path != "" {
+		return path
+	}
+	for _, owner := range []string{share.OwnerID, companionShareHostID(share)} {
+		if rel := companionShareFigureBlobRel(owner, token, name); rel != "" && mobileDocumentBlobSize(rel) > 0 {
+			return rel
+		}
+	}
+	return ""
+}
+
+// CompanionDocumentShareFigureHandler returns one transcript image. Anyone
+// who can read the share can read it, including a cross-Hub reader with a
+// grant — the same rule as the marks and chat blobs.
+//
+//	GET /api/mobile/documents/shares/{token}/figures/{name}
+func CompanionDocumentShareFigureHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+			return
+		}
+		principal, ownerID, ok := companionViewerIfPresent(w, r, identity)
+		if !ok {
+			return
+		}
+		grant := companionReaderGrantHeaderValue(r)
+		token := strings.TrimSpace(r.PathValue("token"))
+		if !companionShareTokenPattern.MatchString(token) {
+			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			return
+		}
+		name := strings.TrimSpace(r.PathValue("name"))
+		if !companionShareFigureNameOK(name) {
+			writeError(w, http.StatusNotFound, "SHARE_FIGURE_NOT_FOUND", "分享图片不存在")
+			return
+		}
+		loadCompanionDocShares()
+		companionDocShares.Lock()
+		share, found := companionDocShares.items[token]
+		if !found {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusNotFound, "SHARE_NOT_FOUND", "分享链接不存在")
+			return
+		}
+		if share.expired(time.Now().UTC()) {
+			companionDocShares.Unlock()
+			writeError(w, http.StatusGone, "SHARE_EXPIRED", "分享链接已过期")
+			return
+		}
+		if ownerID != "" {
+			contacts := companionViewerContactSet(identity, r.Context(), principal)
+			groups := companionAcceptedGroupIDs(ownerID, contacts)
+			if status, message := companionShareReadAccess(share, ownerID, contacts, groups, ""); status != 0 {
+				companionDocShares.Unlock()
+				code := "SHARE_FORBIDDEN"
+				if status == http.StatusUnauthorized {
+					code = "UNAUTHORIZED"
+				}
+				writeError(w, status, code, message)
+				return
+			}
+		} else {
+			if _, _, known := companionShareForeignReader(share, grant); !known {
+				companionDocShares.Unlock()
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "请重新导入分享链接")
+				return
+			}
+		}
+		blobPath := companionShareFigureBlobPath(share, token, name)
+		companionDocShares.Unlock()
+		if blobPath == "" {
+			writeError(w, http.StatusNotFound, "SHARE_FIGURE_NOT_FOUND", "分享图片不存在")
+			return
+		}
+		file, size, err := mobileOpenDocumentBlob(blobPath)
+		if err != nil || size <= 0 {
+			if file != nil {
+				_ = file.Close()
+			}
+			writeError(w, http.StatusNotFound, "SHARE_FIGURE_NOT_FOUND", "分享图片已经不在")
+			return
+		}
+		defer file.Close()
+		w.Header().Set("Content-Type", companionShareFigureMime(name))
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, file)
+	}
+}
+
+// companionShareFigureMime picks the image type from the file extension, so a
+// participant's <img> renders the bytes directly.
+func companionShareFigureMime(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".bmp":
+		return "image/bmp"
+	case ".svg":
+		return "image/svg+xml"
+	default:
+		return "image/png"
 	}
 }
 

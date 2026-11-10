@@ -884,3 +884,189 @@ func TestListFileCompanionLibraryReattachesARememberedHostFile(t *testing.T) {
 		}
 	}
 }
+
+// The sharer's only copy on this machine is the downloaded one under
+// library-files/<token>: the original moved away, or this is a second
+// sign-in. 取消分享 puts that copy back in 本机项目 instead of clearing it.
+func TestDeleteOwnShareRestoresTheInstalledCopy(t *testing.T) {
+	resetFileCompanionShareProbeCache()
+	const token = "cd_e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+	app := newShareRevokeTestApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete && r.URL.Path == "/api/mobile/documents/shares/"+token {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		shareListHandler(token, true).ServeHTTP(w, r)
+	}))
+	downloaded, _ := seedReceivedShareCopy(t, app, token)
+	fileCompanionLibraryMu.Lock()
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{{
+		ID: token, Token: token, Name: "paper.pdf", Path: downloaded, Source: "cloud",
+		Mine: true, Visibility: "public", Permanent: true, Revision: 1,
+		OpenedAt: "2026-11-06T00:00:00Z",
+	}})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed, err := app.DeleteFileCompanionShare(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !removed.Restored || removed.Path == "" || removed.LocalID == "" {
+		t.Fatalf("installed owner copy was cleared instead of restored: %+v", removed)
+	}
+	if _, err := os.Stat(downloaded); err != nil {
+		t.Fatalf("the only copy was removed: %v", err)
+	}
+	list, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawLocal := false
+	for _, item := range list.Items {
+		if item.Source != "cloud" && fileCompanionSameLibraryPath(item.Path, downloaded) {
+			sawLocal = true
+			if !item.KeptShareCopy {
+				t.Fatalf("kept copy row is not marked: %+v", item)
+			}
+		}
+	}
+	if !sawLocal {
+		t.Fatalf("no local row for the kept copy: %+v", list.Items)
+	}
+}
+
+// The hub stops listing the owner's share whose row names the downloaded
+// copy. The refresh restores the local project and keeps the file: the copy
+// is the owner's document, not a participant cache to remove.
+func TestRevokedOwnShareKeepsTheInstalledCopy(t *testing.T) {
+	resetFileCompanionShareProbeCache()
+	const token = "cd_e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2"
+	app := newShareRevokeTestApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/mobile/documents/shares" {
+			_, _ = w.Write([]byte(`{"notes_reply":true,"mine":[],"received":[],"server_time":"` + time.Now().UTC().Format(time.RFC3339) + `"}`))
+			return
+		}
+		if r.URL.Path == "/api/mobile/documents/shares/"+token {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"code":"SHARE_NOT_FOUND","message":"分享链接不存在"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	downloaded, _ := seedReceivedShareCopy(t, app, token)
+	fileCompanionLibraryMu.Lock()
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{{
+		ID: token, Token: token, Name: "paper.pdf", Path: downloaded, Source: "cloud",
+		Mine: true, Visibility: "public", Permanent: true, Revision: 1,
+		OpenedAt: "2026-11-06T00:00:00Z",
+	}})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range listed.Items {
+		if item.Token == token {
+			t.Fatalf("revoked owner share still listed: %+v", item)
+		}
+	}
+	sawLocal := false
+	for _, item := range listed.Items {
+		if item.Source != "cloud" && fileCompanionSameLibraryPath(item.Path, downloaded) {
+			sawLocal = true
+		}
+	}
+	if !sawLocal {
+		t.Fatalf("the owner's kept copy left the library: %+v", listed.Items)
+	}
+	if _, err := os.Stat(downloaded); err != nil {
+		t.Fatalf("the revoked owner's copy was deleted: %v", err)
+	}
+	if len(listed.Removed) != 0 {
+		t.Fatalf("the owner's open tab was closed: %v", listed.Removed)
+	}
+	// A later refresh must not treat the kept copy as an abandoned download.
+	again, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stillLocal := false
+	for _, item := range again.Items {
+		if item.Source != "cloud" && fileCompanionSameLibraryPath(item.Path, downloaded) {
+			stillLocal = true
+		}
+	}
+	if !stillLocal {
+		t.Fatalf("a later refresh dropped the kept copy row: %+v", again.Items)
+	}
+	if _, err := os.Stat(downloaded); err != nil {
+		t.Fatalf("a later refresh deleted the kept copy: %v", err)
+	}
+}
+
+// A group share the owner left is not dismissed, so the next refresh used to
+// treat the kept copy as an abandoned download and delete it. The kept row
+// must claim the directory instead.
+func TestRevokedOwnGroupShareKeepsTheInstalledCopy(t *testing.T) {
+	resetFileCompanionShareProbeCache()
+	const token = "cd_e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3"
+	app := newShareRevokeTestApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/mobile/documents/shares" {
+			_, _ = w.Write([]byte(`{"notes_reply":true,"mine":[],"received":[],"server_time":"` + time.Now().UTC().Format(time.RFC3339) + `"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	downloaded, _ := seedReceivedShareCopy(t, app, token)
+	fileCompanionLibraryMu.Lock()
+	err := app.writeFileCompanionLibraryLocked([]FileCompanionLibraryItem{{
+		ID: token, Token: token, Name: "paper.pdf", Path: downloaded, Source: "cloud",
+		Mine: true, Visibility: "group", GroupID: "grp_1", Revision: 1,
+		OpenedAt: "2026-11-06T00:00:00Z",
+	}})
+	fileCompanionLibraryMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawLocal := false
+	for _, item := range listed.Items {
+		if item.Token == token {
+			t.Fatalf("revoked owner group share still listed: %+v", item)
+		}
+		if item.Source != "cloud" && fileCompanionSameLibraryPath(item.Path, downloaded) {
+			sawLocal = true
+		}
+	}
+	if !sawLocal {
+		t.Fatalf("the owner's kept copy left the library: %+v", listed.Items)
+	}
+	// The group token is not dismissed, so the abandoned-download pass is the
+	// one that must leave the kept copy alone.
+	again, err := app.ListFileCompanionLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(downloaded); err != nil {
+		t.Fatalf("a later refresh deleted the kept group copy: %v", err)
+	}
+	stillLocal := false
+	for _, item := range again.Items {
+		if item.Source != "cloud" && fileCompanionSameLibraryPath(item.Path, downloaded) {
+			stillLocal = true
+		}
+	}
+	if !stillLocal {
+		t.Fatalf("a later refresh dropped the kept group copy row: %+v", again.Items)
+	}
+}

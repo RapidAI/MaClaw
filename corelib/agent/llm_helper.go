@@ -281,11 +281,12 @@ func cleanRetryableLLMFailure(resp *llm.Response, err error) bool {
 }
 
 // gatewayRejectedLLMFailure is cleanRetryableLLMFailure restricted to failures
-// the gateway itself answered with a status, plus token validation (which runs
-// before the model). It is the gate for hosts that contain ambiguous delivery:
-// a bare transport error means the request was written but no reply came back,
-// so the model may already have processed it and a retry would duplicate the
-// turn. Only a definitive rejection proves nothing was generated.
+// that delivered no model payload. It is the gate for hosts that contain
+// ambiguous delivery: a partial response (resp != nil) has already rendered
+// output, so retrying it would duplicate the turn. With resp == nil nothing was
+// delivered, and a definitive rejection, a dropped body, or a transport timeout
+// all prove the host holds no model output, so the same task can wait and send
+// again.
 func gatewayRejectedLLMFailure(resp *llm.Response, err error) bool {
 	if !cleanRetryableLLMFailure(resp, err) {
 		return false
@@ -308,6 +309,16 @@ func gatewayRejectedLLMFailure(resp *llm.Response, err error) bool {
 	// error frame ("upstream stream idle timeout") is that dropped body, not
 	// a model rejection.
 	if llm.IsUnexpectedStreamEOF(err) || llm.IsStreamIdleStall(err) {
+		return true
+	}
+	// A transport timeout (response-header timeout, client timeout, route
+	// deadline, i/o timeout) returned no usable response. resp == nil above
+	// already guarantees nothing was assembled or rendered, so this is strictly
+	// less ambiguous than the dropped-body cases: a machine sleep or brief
+	// network blip must reach the outer backoff instead of terminally failing
+	// the task on the first timed-out send.
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
 	}
 	return false

@@ -1202,6 +1202,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
 
     const adoptBackendTranscript = useCallback((tabId: string, conversation: unknown, generationAtRequest: number): ChatMessage[] | null => {
         if ((historyGenerationByTabIdRef.current.get(tabId) || 0) !== generationAtRequest) return null;
+        // A load that resolves after the tab closed (or its id was reused by a
+        // reopen) must not paint into a different tab instance.
+        if (!tabStateRef.current.tabs.some(tab => tab.id === tabId)) return null;
         if (!Array.isArray(conversation) || conversation.length === 0) {
             if (cacheHasConversation(tabStatesRef.current.get(tabId)?.history)) noteActiveTranscriptLanded(tabId);
             return [];
@@ -1758,6 +1761,10 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         const tab = prev.tabs.find(t => t.id === tabId);
         if (!tab || !tab.closable) return;
 
+        // Invalidate any in-flight transcript load for this tab instance so a
+        // late response cannot adopt after close or into a reused tab id.
+        historyGenerationByTabIdRef.current.set(tabId, (historyGenerationByTabIdRef.current.get(tabId) || 0) + 1);
+
         flushDirtyTabConversationNow(tabId);
 
         // Release a closed tab's runtime workdir. Project tabs also archive
@@ -1809,6 +1816,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         if (deletedIDs.size === 0) return;
         const current = tabStateRef.current;
         for (const tabID of deletedIDs) {
+            historyGenerationByTabIdRef.current.set(tabID, (historyGenerationByTabIdRef.current.get(tabID) || 0) + 1);
             tabStatesRef.current.delete(tabID);
             dirtyTabIdsRef.current.delete(tabID);
             pendingProjectTabCloseByIDRef.current.delete(tabID);
@@ -1933,6 +1941,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             .map(tab => tab.id);
         const deletedIDs = new Set<string>([tabId, ...openTabIDs]);
         for (const tabID of deletedIDs) {
+            historyGenerationByTabIdRef.current.set(tabID, (historyGenerationByTabIdRef.current.get(tabID) || 0) + 1);
             tabStatesRef.current.delete(tabID);
             // Drop dirty flags so a pending debounced flush cannot re-save this expert.
             dirtyTabIdsRef.current.delete(tabID);

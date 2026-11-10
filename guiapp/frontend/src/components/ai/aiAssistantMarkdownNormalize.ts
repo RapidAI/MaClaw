@@ -12,7 +12,10 @@ const capabilityIconAfterPunctuationPattern = new RegExp(`([\\uff1a:;\\uff1b])[ 
 const capabilityIconMidSentencePattern = new RegExp(`([^\\n\\s])[ \\t]+${digitalEmployeeCapabilityIconPattern}[ \\t]*`, "gu");
 // Protect path-like spans before escaped-newline rewriting. Without this,
 // Windows/home paths containing "\n…" (e.g. \notes, ~\name) get a hard line break.
-const markdownSensitiveSpanPattern = /(\\\([^\r\n]*?\\\))|(\$(?!\$)[^\r\n$]+\$(?!\$))|(!?\[[^\]\n]+\]\([^)\n]+\))|(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^\s*\n][^*\n]*\*)|(https?:\/\/[^\s<>()]+)|([A-Za-z]:\\[^\n\r\s*?"<>|]+)|(~[/\\][^\n\r\s*?"<>|]+)/g;
+// Links and URLs are masked first with a balanced-parenthesis scan. This
+// pattern remains the fallback for one nested pair, plus math, code, emphasis,
+// and paths. Stopping at the first `)` lets a later `1)` become a list item.
+const markdownSensitiveSpanPattern = /(\\\([^\r\n]*?\\\))|(\$(?!\$)[^\r\n$]+\$(?!\$))|(!?\[[^\]\n]+\]\((?:[^()\n]|\([^()\n]*\))+\))|(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^\s*\n][^*\n]*\*)|(https?:\/\/(?:[^\s<>()]|\([^()\s]*\))+)|([A-Za-z]:\\[^\n\r\s*?"<>|]+)|(~[/\\][^\n\r\s*?"<>|]+)/g;
 const compactPipeTableSeparatorPattern = /(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)/g;
 const bareHeadingMarkerLinePattern = /^(#{1,6})(?:\s+#{1,6})*$/;
 // Include GFM "+" and common unicode bullets so bare-heading attach refuses list
@@ -350,15 +353,144 @@ function needsMarkdownSpanProtection(text: string): boolean {
         || text.includes("~");
 }
 
+function readBalancedDestinationEnd(text: string, openParen: number): number {
+    if (text[openParen] !== "(") return -1;
+    let depth = 1;
+    const limit = Math.min(text.length, openParen + 2000);
+    for (let i = openParen + 1; i < limit; i++) {
+        const c = text[i];
+        if (c === "\n") return -1;
+        if (c === "(") depth++;
+        else if (c === ")") {
+            depth--;
+            if (depth === 0) return i + 1;
+        }
+    }
+    return -1;
+}
+
+function readBracketDestinationEnd(text: string, bracket: number): number {
+    if (text[bracket] !== "[") return -1;
+    const labelEnd = text.indexOf("]", bracket + 1);
+    if (labelEnd < 0 || labelEnd - bracket > 300) return -1;
+    const label = text.slice(bracket + 1, labelEnd);
+    if (!label || label.includes("\n") || text[labelEnd + 1] !== "(") return -1;
+    return readBalancedDestinationEnd(text, labelEnd + 1);
+}
+
+function readImageOrLinkEnd(text: string, index: number): number {
+    const bracket = text[index] === "!" ? index + 1 : index;
+    return readBracketDestinationEnd(text, bracket);
+}
+
+/** A link or image, including `[![alt](img)](page)`, with nested parentheses in the destination. */
+function readProtectedLinkEnd(text: string, index: number): number {
+    if (text[index] === "[" && text[index + 1] === "!" && text[index + 2] === "[") {
+        const imageEnd = readImageOrLinkEnd(text, index + 1);
+        if (imageEnd !== -1 && text[imageEnd] === "]" && text[imageEnd + 1] === "(") {
+            const pageEnd = readBalancedDestinationEnd(text, imageEnd + 1);
+            if (pageEnd !== -1) return pageEnd;
+        }
+        return -1;
+    }
+    if (text[index] === "!" || text[index] === "[") return readImageOrLinkEnd(text, index);
+    return -1;
+}
+
+function readProtectedUrlEnd(text: string, index: number): number {
+    if (text[index] !== "h" && text[index] !== "H") return -1;
+    const scheme = /^https?:\/\//i.exec(text.slice(index, index + 8));
+    if (!scheme) return -1;
+    let i = index + scheme[0].length;
+    let depth = 0;
+    const limit = Math.min(text.length, index + 2000);
+    while (i < limit) {
+        const c = text[i];
+        if (c === "(") {
+            depth++;
+            i++;
+            continue;
+        }
+        if (c === ")") {
+            if (depth === 0) break;
+            depth--;
+            i++;
+            continue;
+        }
+        // Same whitespace set as `\s`, including the ideographic space.
+        // A following `1)` must stay outside the URL so the list splitter can see it.
+        if (c === "<" || c === ">" || /\s/u.test(c)) break;
+        i++;
+    }
+    return i > index + scheme[0].length ? i : -1;
+}
+
+function isSensitiveSpanTrigger(text: string, index: number): boolean {
+    const c = text[index];
+    if (c === "$" || c === "\\" || c === "`" || c === "*" || c === "[" || c === "!" || c === "~") return true;
+    if ((c === "h" || c === "H") && (text[index + 1] === "t" || text[index + 1] === "T")) return true;
+    const letter = (c >= "A" && c <= "Z") || (c >= "a" && c <= "z");
+    return letter && text[index + 1] === ":" && text[index + 2] === "\\";
+}
+
+function regexSensitiveSpanEnd(text: string, index: number): number {
+    markdownSensitiveSpanPattern.lastIndex = index;
+    const match = markdownSensitiveSpanPattern.exec(text);
+    if (!match || match.index !== index) return -1;
+    return match.index + match[0].length;
+}
+
+function sensitiveSpanEnd(text: string, index: number): number {
+    const c = text[index];
+    if (c === "[" || c === "!") {
+        const link = readProtectedLinkEnd(text, index);
+        if (link > index) return link;
+    } else if (c === "h" || c === "H") {
+        const url = readProtectedUrlEnd(text, index);
+        if (url > index) return url;
+    }
+    return regexSensitiveSpanEnd(text, index);
+}
+
+function nextSensitiveTrigger(text: string, from: number): number {
+    for (let i = from; i < text.length; i++) {
+        if (isSensitiveSpanTrigger(text, i)) return i;
+    }
+    return text.length;
+}
+
+function maskSensitiveSpans(text: string, spans: string[], tokenPrefix: string): string {
+    const parts: string[] = [];
+    let index = 0;
+    try {
+        while (index < text.length) {
+            if (!isSensitiveSpanTrigger(text, index)) {
+                const next = nextSensitiveTrigger(text, index + 1);
+                parts.push(text.slice(index, next));
+                index = next;
+                continue;
+            }
+            const end = sensitiveSpanEnd(text, index);
+            if (end > index) {
+                parts.push(`${tokenPrefix}${spans.length}__`);
+                spans.push(text.slice(index, end));
+                index = end;
+                continue;
+            }
+            parts.push(text[index]);
+            index++;
+        }
+    } finally {
+        markdownSensitiveSpanPattern.lastIndex = 0;
+    }
+    return parts.join("");
+}
+
 function withMarkdownSensitiveSpansProtected(text: string, transform: (value: string) => string): string {
     const spans: string[] = [];
     let tokenPrefix = "__MACLAW_MD_PROTECTED__";
     while (text.includes(tokenPrefix)) tokenPrefix = `${tokenPrefix}_`;
-    const protectedText = text.replace(markdownSensitiveSpanPattern, (span) => {
-        const token = `${tokenPrefix}${spans.length}__`;
-        spans.push(span);
-        return token;
-    });
+    const protectedText = maskSensitiveSpans(text, spans, tokenPrefix);
     const transformed = transform(protectedText);
     const tokenPattern = new RegExp(`${escapeRegExp(tokenPrefix)}(\\d+)__`, "g");
     return transformed.replace(tokenPattern, (_token, indexText) => {

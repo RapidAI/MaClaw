@@ -51,7 +51,7 @@ func TestTrimRemoteControlTextKeepsShortMessages(t *testing.T) {
 	if trimRemoteControlText("你好", 4) != "你好" {
 		t.Fatal("short text changed")
 	}
-	if got := trimRemoteControlText("你好世界", 2); got != "你好" {
+	if got := trimRemoteControlText("你好世界", 2); got != "你好…" {
 		t.Fatalf("got %q", got)
 	}
 }

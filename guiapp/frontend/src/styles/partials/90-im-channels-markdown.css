@@ -3418,7 +3418,14 @@
 }
 
 /* aiAssistantMarkdown.tsx */
-.aamd-math-inline { vertical-align: middle; }
+.aamd-math-inline { vertical-align: middle; white-space: nowrap; overflow-wrap: normal; word-break: normal; }
+/* KaTeX sizes `.base` to min-content. A chat bubble's overflow-wrap:anywhere
+   makes that width one character, so a subscript drops to the next line.
+   Reset wrapping on the base itself and leave KaTeX's own width alone. */
+.aamd-math-inline .katex,
+.aamd-math-inline .katex .base,
+.aamd-math-display .katex,
+.aamd-math-display .katex .base { overflow-wrap: normal; word-break: normal; white-space: nowrap; }
 .aamd-kb-thumb-wrap { margin: 6px 0; max-width: 100%; min-width: 0; box-sizing: border-box; overflow: hidden; }
 .aamd-table-wrap { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; margin: 6px 0; white-space: normal; }
 .aamd-chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }

@@ -9,9 +9,35 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 )
+
+func TestCompanionRemoteSnapshotServesStale(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	principal := &auth.ViewerPrincipal{UserID: "stale-remote-user", Email: "stale-remote@example.com"}
+	const ownerID = "stale-remote-user"
+	companionRemoteSnapCache.Lock()
+	gen := companionRemoteSnapCache.gen
+	companionRemoteSnapCache.items[ownerID] = companionRemoteSnapshot{
+		gen:    gen,
+		at:     time.Now().Add(-time.Hour),
+		shares: []map[string]any{{"token": "cd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "chat_revision": float64(9)}},
+		stamp:  42,
+	}
+	companionRemoteSnapCache.Unlock()
+	t.Cleanup(func() {
+		companionRemoteSnapCache.Lock()
+		delete(companionRemoteSnapCache.items, ownerID)
+		delete(companionRemoteSnapCache.refreshing, ownerID)
+		companionRemoteSnapCache.Unlock()
+	})
+	_, stamp := companionRemoteShareSnapshot(context.Background(), identity, principal, ownerID)
+	if stamp != 42 {
+		t.Fatalf("stale snapshot was rebuilt on the request, stamp %d", stamp)
+	}
+}
 
 func TestCompanionGroupCrossTenantInviteNotifiesAndShowsShares(t *testing.T) {
 	resetCompanionDocShares(t)

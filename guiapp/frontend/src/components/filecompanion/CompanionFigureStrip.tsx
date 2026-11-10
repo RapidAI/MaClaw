@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
-import { FileCompanionFigureDataURL } from "../../../wailsjs/go/main/App";
+import { FileCompanionFigureDataURL, FetchFileCompanionShareFigure } from "../../../wailsjs/go/main/App";
 import { companionSay } from "../../i18n/mnCompanion";
 import { ImageZoomOverlay } from "../ai/markdownMedia";
 
@@ -30,7 +30,7 @@ function cacheFigureDataURL(path: string, dataURL: string): void {
     }
 }
 
-function loadFigureDataURL(path: string): Promise<string> {
+function loadFigureDataURL(docPath: string, path: string): Promise<string> {
     const cached = figureDataURLs.get(path);
     if (cached) {
         cacheFigureDataURL(path, cached);
@@ -39,19 +39,33 @@ function loadFigureDataURL(path: string): Promise<string> {
     if (typeof FileCompanionFigureDataURL !== "function") return Promise.resolve("");
     const pending = figureDataURLPromises.get(path);
     if (pending) return pending;
+    // The path in a synced transcript names a file on the host's machine. A
+    // participant asks the share for it once; the mirror on disk serves the
+    // next render, so the remote call does not repeat.
+    const remote = () => (docPath && typeof FetchFileCompanionShareFigure === "function"
+        ? FetchFileCompanionShareFigure(docPath, path)
+            .then((dataURL) => {
+                if (dataURL) cacheFigureDataURL(path, dataURL);
+                return dataURL || "";
+            })
+            .catch(() => "")
+        : Promise.resolve(""));
     // A failed fetch leaves the map empty, so a later render can retry it.
     const request = FileCompanionFigureDataURL(path)
         .then((dataURL) => {
-            if (dataURL) cacheFigureDataURL(path, dataURL);
-            return dataURL || "";
+            if (dataURL) {
+                cacheFigureDataURL(path, dataURL);
+                return dataURL;
+            }
+            return remote();
         })
-        .catch(() => "")
+        .catch(() => remote())
         .finally(() => figureDataURLPromises.delete(path));
     figureDataURLPromises.set(path, request);
     return request;
 }
 
-export function CompanionFigureStrip({ figures, messageId, lang = "en" }: { figures: CompanionFigure[]; messageId: string; lang?: string }) {
+export function CompanionFigureStrip({ figures, messageId, lang = "en", docPath = "" }: { figures: CompanionFigure[]; messageId: string; lang?: string; docPath?: string }) {
     const [loaded, setLoaded] = useState<Record<string, string>>({});
     const [failed, setFailed] = useState<Record<string, boolean>>({});
     const [zoomed, setZoomed] = useState<string>("");
@@ -63,12 +77,24 @@ export function CompanionFigureStrip({ figures, messageId, lang = "en" }: { figu
         figures.forEach((figure) => {
             if (!figure.path || requested.current.has(figure.path)) return;
             requested.current.add(figure.path);
-            void loadFigureDataURL(figure.path).then((dataURL) => {
+            void loadFigureDataURL(docPath, figure.path).then((dataURL) => {
                 if (!live) return;
                 if (dataURL) {
                     setLoaded((current) => ({ ...current, [figure.path]: dataURL }));
                 } else {
                     setFailed((current) => ({ ...current, [figure.path]: true }));
+                    // The figure may still be in flight on the host's side —
+                    // the transcript lands before the image upload does.
+                    // Re-arm the request so a later render can pull it again.
+                    window.setTimeout(() => {
+                        requested.current.delete(figure.path);
+                        setFailed((current) => {
+                            if (!current[figure.path]) return current;
+                            const next = { ...current };
+                            delete next[figure.path];
+                            return next;
+                        });
+                    }, 15000);
                 }
             });
         });

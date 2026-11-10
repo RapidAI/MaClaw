@@ -12,6 +12,7 @@ import {
     renderMessage,
 } from "./aiAssistantMarkdown";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
+import { normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 import { MarkdownImagePreviewProvider } from "./markdownMedia";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import { darkTheme, lightTheme } from "./aiAssistantPanelTheme";
@@ -450,6 +451,11 @@ describe("renderContentWithCodeBlocks", () => {
         expect(formula.style.overflowX).toBe("");
         expect(formula.style.overflowY).toBe("");
         expect(formula.style.minWidth).toBe("");
+        // A parent `overflow-wrap: anywhere` must not shrink KaTeX's min-content
+        // base, or the subscript falls onto the next line.
+        expect(formula.style.overflowWrap).toBe("normal");
+        expect(formula.style.whiteSpace).toBe("nowrap");
+        expect(formula.style.wordBreak).toBe("normal");
     });
 
     it("keeps malformed inline formulas aligned without introducing a scroll container", () => {
@@ -472,6 +478,146 @@ describe("renderContentWithCodeBlocks", () => {
         expect(table.querySelectorAll("tbody td")).toHaveLength(2);
         expect(screen.getByTestId("assistant-inline-math").textContent).toContain("P");
         expect(table.textContent).toContain("条件概率");
+    });
+
+    it("typesets a formula inside emphasis instead of leaving the stars", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("**损失 $L_ce$ 项** 与 *$F^l$*，以及 2*$x$。", lightTheme)}</div>,
+        );
+
+        const strong = container.querySelector("strong");
+        const em = container.querySelector("em");
+        expect(strong?.querySelector("[data-testid='assistant-inline-math']")).not.toBeNull();
+        expect(strong?.textContent).toContain("损失");
+        expect(em?.querySelector("[data-testid='assistant-inline-math']")).not.toBeNull();
+        expect(container.textContent).not.toContain("**");
+        const formulas = screen.getAllByTestId("assistant-inline-math");
+        expect(formulas).toHaveLength(3);
+        const multiplied = formulas.find((node) => node.textContent?.includes("x"));
+        expect(multiplied?.closest("em")).toBeNull();
+        expect(multiplied?.closest("strong")).toBeNull();
+    });
+
+    it("does not let a leftover bold star italicize a later formula", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("**plain** and *$x$*", lightTheme)}</div>,
+        );
+
+        expect(container.querySelector("strong")?.textContent).toContain("plain");
+        expect(container.querySelector("strong")?.querySelector("[data-testid='assistant-inline-math']")).toBeNull();
+        const em = container.querySelector("em");
+        expect(em?.querySelector("[data-testid='assistant-inline-math']")).not.toBeNull();
+        expect(em?.textContent).not.toContain("plain");
+    });
+
+    it("keeps a star inside the formula from ending the emphasis", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("比较 *$a*b$* 与 **$a*b$**。", lightTheme)}</div>,
+        );
+
+        const em = container.querySelector("em");
+        const strong = container.querySelector("strong");
+        expect(em?.querySelector("[data-testid='assistant-inline-math']")?.textContent).toContain("a*b");
+        expect(strong?.querySelector("[data-testid='assistant-inline-math']")?.textContent).toContain("a*b");
+        expect(em?.textContent).not.toContain("*$");
+        expect(container.textContent).not.toContain("**");
+    });
+
+    it("typesets a formula inside spaced bold markers", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("损失 ** $L_ce$ ** 结束", lightTheme)}</div>,
+        );
+
+        const strong = container.querySelector("strong");
+        expect(strong?.querySelector("[data-testid='assistant-inline-math']")).not.toBeNull();
+        expect(strong?.textContent).toContain("L");
+        expect(container.textContent).not.toContain("**");
+        expect(container.textContent).toContain("损失");
+        expect(container.textContent).toContain("结束");
+    });
+
+    it("keeps a star inside a url from ending the emphasis", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("*见 $x$ 于 https://example.com/a*b。*", lightTheme)}</div>,
+        );
+
+        const em = container.querySelector("em");
+        const link = container.querySelector("[data-testid='markdown-external-link']");
+        expect(em?.querySelector("[data-testid='assistant-inline-math']")).not.toBeNull();
+        expect(link?.getAttribute("href")).toBe("https://example.com/a*b");
+        expect(em?.contains(link)).toBe(true);
+    });
+
+    it("typesets a formula inside a link label", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("见 [方法 $F^l_0$](https://example.com/a_b) 后 $F^l_1$。", lightTheme)}</div>,
+        );
+
+        const link = container.querySelector("[data-testid='markdown-external-link']");
+        expect(link?.getAttribute("href")).toBe("https://example.com/a_b");
+        expect(link?.querySelector("[data-testid='assistant-inline-math']")).not.toBeNull();
+        expect(link?.textContent).toContain("方法");
+        const outside = [...container.querySelectorAll("[data-testid='assistant-inline-math']")].find((node) => !link?.contains(node));
+        expect(outside?.textContent).toContain("F");
+        expect(container.textContent).not.toContain("](https://example.com/a_b)");
+    });
+
+    it("keeps parentheses in the url when the label contains a formula", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("见 [方法 $F^l_0$](https://example.com/a_(b)/F^l_1) 后 $L_ce$。", lightTheme)}</div>,
+        );
+
+        const link = container.querySelector("[data-testid='markdown-external-link']");
+        const maths = [...container.querySelectorAll("[data-testid='assistant-inline-math']")];
+        expect(link?.getAttribute("href")).toContain("example.com");
+        expect(link?.getAttribute("href")).toContain("F");
+        expect(maths).toHaveLength(2);
+        expect(maths.filter((node) => link?.contains(node))).toHaveLength(1);
+        expect(link?.textContent).toContain("方法");
+        expect(container.textContent).not.toContain("](https");
+        expect([...container.querySelectorAll("span")].some((node) => node.textContent === "1)")).toBe(false);
+    });
+
+    it("does not turn a parenthesized url into an ordered list", () => {
+        const source = "见 [方法 $F^l_0$](https://example.com/a_(b)/F^l_1) 后 $L_ce$。";
+        expect(normalizeInlineListMarkers(source)).toBe(source);
+        expect(normalizeInlineListMarkers("见 [说明](https://example.com/a_(b))。1. 第一步"))
+            .toBe("见 [说明](https://example.com/a_(b))。\n1. 第一步");
+        const nested = "见 [方法 $F^l_0$](https://example.com/a_(b_(c))/F^l_1) 后 $L_ce$。";
+        expect(normalizeInlineListMarkers(nested)).toBe(nested);
+        expect(normalizeInlineListMarkers("见 https://example.com/a_(b_(c))/F^l_1) 后。")).toBe(
+            "见 https://example.com/a_(b_(c))/F^l_1) 后。",
+        );
+        expect(normalizeInlineListMarkers("`see [a](https://example.com/a_(b_(c))/F^l_1)`")).toBe(
+            "`see [a](https://example.com/a_(b_(c))/F^l_1)`",
+        );
+        expect(normalizeInlineListMarkers("见 https://example.com/a　F^l_1) 下一步")).toBe(
+            "见 https://example.com/a　F^l_\n1) 下一步",
+        );
+    });
+
+    it("keeps a deeply parenthesized url together with its label formula", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("见 [方法 $F^l_0$](https://example.com/a_(b_(c))/F^l_1) 后 $L_ce$。", lightTheme)}</div>,
+        );
+
+        const link = container.querySelector("[data-testid='markdown-external-link']");
+        expect(link?.querySelector("[data-testid='assistant-inline-math']")).not.toBeNull();
+        expect(link?.getAttribute("href")).toContain("example.com");
+        expect([...container.querySelectorAll("span")].some((node) => node.textContent === "1)")).toBe(false);
+        expect(container.textContent).toContain("后");
+    });
+
+    it("typesets a formula in a bold link", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("**[$x$](https://example.com/item)**", lightTheme)}</div>,
+        );
+
+        const strong = container.querySelector("strong");
+        const link = strong?.querySelector("[data-testid='markdown-external-link']");
+        expect(link?.getAttribute("href")).toBe("https://example.com/item");
+        expect(link?.querySelector("[data-testid='assistant-inline-math']")).not.toBeNull();
+        expect(container.textContent).not.toContain("**");
     });
 
     it("recognizes formulas immediately adjacent to Chinese prose", () => {

@@ -86,6 +86,9 @@ type Grant struct {
 	TargetAccount         string
 	TargetMachineID       string
 	TargetMachineName     string
+	ControllerHub         string
+	TargetHub             string
+	FederationSecret      string
 	Permission            string
 	Status                string
 	SameAccount           bool
@@ -223,6 +226,9 @@ func (s *Service) ensureSchema(ctx context.Context) error {
 			target_account TEXT NOT NULL DEFAULT '',
 			target_machine_id TEXT NOT NULL DEFAULT '',
 			target_machine_name TEXT NOT NULL DEFAULT '',
+			controller_hub TEXT NOT NULL DEFAULT '',
+			target_hub TEXT NOT NULL DEFAULT '',
+			federation_secret TEXT NOT NULL DEFAULT '',
 			permission TEXT NOT NULL,
 			status TEXT NOT NULL,
 			same_account INTEGER NOT NULL DEFAULT 0,
@@ -239,6 +245,11 @@ func (s *Service) ensureSchema(ctx context.Context) error {
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	for _, column := range []string{"controller_hub", "target_hub", "federation_secret"} {
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE remote_control_grants ADD COLUMN "+column+" TEXT NOT NULL DEFAULT ''"); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
 			return err
 		}
 	}
@@ -373,7 +384,7 @@ func (s *Service) Accept(ctx context.Context, tenantID, userID, machineID, grant
 	}
 	// The stored tenant is the inviter's. The caller here is the invitee, who
 	// may belong to another tenant, so the pair has to be found on the grant.
-	if existing, found := s.findActivePair(ctx, grant.TenantID, grant.ControllerMachineID, machine.ID); found {
+	if existing, found := s.findActivePair(ctx, grant.TenantID, grant.ControllerMachineID, machine.ID); found && grant.ControllerHub == "" {
 		s.revokeNotice(ctx, grant.InviteNotificationID)
 		existing.Permission = grant.Permission
 		existing.UpdatedAt = time.Now().UTC()
@@ -383,7 +394,7 @@ func (s *Service) Accept(ctx context.Context, tenantID, userID, machineID, grant
 		grant.Status = StatusRevoked
 		grant.UpdatedAt = existing.UpdatedAt
 		_ = s.update(ctx, grant)
-		s.notifyResult(ctx, grant.ControllerUserID, "远控已接受", fmt.Sprintf("%s 已接受远控，权限：%s。", displayMachine(machine), permissionLabel(grant.Permission)), existing.ID)
+		s.notifyControllerResult(ctx, grant, "远控已接受", fmt.Sprintf("%s 已接受远控，权限：%s。", displayMachine(machine), permissionLabel(grant.Permission)), existing.ID)
 		s.notifyWatch(ctx, existing)
 		return existing, nil
 	}
@@ -398,7 +409,7 @@ func (s *Service) Accept(ctx context.Context, tenantID, userID, machineID, grant
 		return Grant{}, err
 	}
 	s.revokeNotice(ctx, grant.InviteNotificationID)
-	s.notifyResult(ctx, grant.ControllerUserID, "远控已接受", fmt.Sprintf("%s 已接受远控，权限：%s。任务列表里已出现这台机器。", grant.TargetMachineName, permissionLabel(grant.Permission)), grant.ID)
+	s.notifyControllerResult(ctx, grant, "远控已接受", fmt.Sprintf("%s 已接受远控，权限：%s。任务列表里已出现这台机器。", grant.TargetMachineName, permissionLabel(grant.Permission)), grant.ID)
 	s.notifyWatch(ctx, grant)
 	return grant, nil
 }
@@ -421,7 +432,7 @@ func (s *Service) Reject(ctx context.Context, tenantID, userID, grantID string) 
 	if who == "" {
 		who = "对方"
 	}
-	s.notifyResult(ctx, grant.ControllerUserID, "远控已拒绝", who+" 已拒绝远控。", grant.ID)
+	s.notifyControllerResult(ctx, grant, "远控已拒绝", who+" 已拒绝远控。", grant.ID)
 	return nil
 }
 
@@ -476,10 +487,10 @@ func (s *Service) Revoke(ctx context.Context, tenantID, userID, machineID, grant
 	s.revokeNotice(ctx, grant.InviteNotificationID)
 	s.revokeNotice(ctx, grant.NoticeNotificationID)
 	if asController && !grant.SameAccount && previous == StatusActive {
-		s.notifyResult(ctx, grant.TargetUserID, "远控已结束", "对方已结束对这台电脑的远控。", grant.ID)
+		s.notifyTargetResult(ctx, grant, "远控已结束", "对方已结束对这台电脑的远控。", grant.ID)
 	}
 	if asTarget && previous == StatusActive {
-		s.notifyResult(ctx, grant.ControllerUserID, "远控已结束", grant.TargetMachineName+" 已结束远控。", grant.ID)
+		s.notifyControllerResult(ctx, grant, "远控已结束", grant.TargetMachineName+" 已结束远控。", grant.ID)
 	}
 	return nil
 }
@@ -499,7 +510,7 @@ func (s *Service) Snapshot(ctx context.Context, tenantID, userID, machineID stri
 	for _, grant := range rows {
 		switch {
 		case grant.ControllerUserID == userID && grant.ControllerMachineID == machineID && grant.Status == StatusActive:
-			state.Grants = append(state.Grants, s.controllerView(grant))
+			state.Grants = append(state.Grants, s.controllerView(ctx, grant))
 		case grant.ControllerUserID == userID && grant.ControllerMachineID == machineID && grant.Status == StatusPending:
 			state.Pending = append(state.Pending, GrantView{
 				ID:          grant.ID,
@@ -720,7 +731,7 @@ func (s *Service) expireOne(ctx context.Context, grant Grant) {
 	if who == "" {
 		who = "对方"
 	}
-	s.notifyResult(ctx, grant.ControllerUserID, "远控邀请已过期", "发给 "+who+" 的远控邀请已过期。", grant.ID)
+	s.notifyControllerResult(ctx, grant, "远控邀请已过期", "发给 "+who+" 的远控邀请已过期。", grant.ID)
 }
 
 func (s *Service) notifyInvite(ctx context.Context, grant Grant) {
@@ -814,15 +825,19 @@ func (s *Service) revokeNotice(ctx context.Context, id string) {
 	s.notify.Revoke(ctx, id)
 }
 
-func (s *Service) controllerView(grant Grant) GrantView {
+func (s *Service) controllerView(ctx context.Context, grant Grant) GrantView {
+	name := grant.TargetMachineName
 	online := false
 	if s.machines != nil {
 		online = s.machines.Online(grant.TargetMachineID)
+		if machine, ok := s.machines.BelongsTo(ctx, grant.TargetUserID, grant.TargetMachineID); ok {
+			name = displayMachine(machine)
+		}
 	}
 	return GrantView{
 		ID:          grant.ID,
 		MachineID:   grant.TargetMachineID,
-		MachineName: grant.TargetMachineName,
+		MachineName: name,
 		Account:     grant.TargetAccount,
 		Permission:  grant.Permission,
 		Status:      StatusActive,
@@ -887,11 +902,13 @@ func (s *Service) insert(ctx context.Context, grant Grant) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO remote_control_grants (
 		id, tenant_id, controller_user_id, controller_machine_id, controller_machine_name,
 		target_user_id, target_account, target_machine_id, target_machine_name,
+		controller_hub, target_hub, federation_secret,
 		permission, status, same_account, target_ignored, invite_notification_id, notice_notification_id,
 		created_at, decided_at, expires_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		grant.ID, grant.TenantID, grant.ControllerUserID, grant.ControllerMachineID, grant.ControllerMachineName,
 		grant.TargetUserID, grant.TargetAccount, grant.TargetMachineID, grant.TargetMachineName,
+		grant.ControllerHub, grant.TargetHub, grant.FederationSecret,
 		grant.Permission, grant.Status, boolInt(grant.SameAccount), boolInt(grant.TargetIgnored), grant.InviteNotificationID, grant.NoticeNotificationID,
 		formatTime(grant.CreatedAt), formatTime(grant.DecidedAt), formatTime(grant.ExpiresAt), formatTime(grant.UpdatedAt),
 	)
@@ -967,6 +984,7 @@ func (s *Service) listForDesktop(ctx context.Context, tenantID, userID, machineI
 
 const grantSelect = `SELECT id, tenant_id, controller_user_id, controller_machine_id, controller_machine_name,
 	target_user_id, target_account, target_machine_id, target_machine_name,
+	controller_hub, target_hub, federation_secret,
 	permission, status, same_account, target_ignored, invite_notification_id, notice_notification_id,
 	created_at, decided_at, expires_at, updated_at FROM remote_control_grants`
 
@@ -981,6 +999,7 @@ func scanGrant(row grantScanner) (Grant, error) {
 	err := row.Scan(
 		&grant.ID, &grant.TenantID, &grant.ControllerUserID, &grant.ControllerMachineID, &grant.ControllerMachineName,
 		&grant.TargetUserID, &grant.TargetAccount, &grant.TargetMachineID, &grant.TargetMachineName,
+		&grant.ControllerHub, &grant.TargetHub, &grant.FederationSecret,
 		&grant.Permission, &grant.Status, &same, &ignored, &grant.InviteNotificationID, &grant.NoticeNotificationID,
 		&created, &decided, &expires, &updated,
 	)

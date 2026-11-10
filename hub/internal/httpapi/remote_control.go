@@ -33,11 +33,7 @@ func (m remoteControlMachines) BelongsTo(ctx context.Context, userID, machineID 
 		if item.MachineID != machineID {
 			continue
 		}
-		name := strings.TrimSpace(item.Alias)
-		if name == "" {
-			name = strings.TrimSpace(item.Name)
-		}
-		return remotecontrol.Machine{ID: item.MachineID, Name: name, Online: item.Online}, true
+		return remotecontrol.Machine{ID: item.MachineID, Name: remoteControlMachineName(item), Online: m.Online(item.MachineID)}, true
 	}
 	return remotecontrol.Machine{}, false
 }
@@ -136,6 +132,11 @@ func registerRemoteControl(mux *http.ServeMux, db *sql.DB, identity *auth.Identi
 	mux.HandleFunc("POST /api/remote-control/grants/{id}/ignore", h.ignore)
 	mux.HandleFunc("POST /api/remote-control/grants/{id}/revoke", h.revoke)
 	mux.HandleFunc("POST /api/remote-control/grants/{id}/op", h.op)
+	mux.HandleFunc("POST /api/remote-control/federation/invites", h.federationInvite)
+	mux.HandleFunc("POST /api/remote-control/federation/proof", h.federationProof)
+	mux.HandleFunc("POST /api/remote-control/federation/grants/{id}/decision", h.federationDecision)
+	mux.HandleFunc("POST /api/remote-control/federation/grants/{id}/op", h.federationOp)
+	mux.HandleFunc("POST /api/remote-control/federation/grants/{id}/status", h.federationStatus)
 }
 
 func (h remoteControlHandler) state(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +150,18 @@ func (h remoteControlHandler) state(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state.Machines = h.otherMachines(r.Context(), principal.UserID, machineID)
+	h.refreshFederatedGrants(r.Context(), principal.TenantID, principal.UserID, machineID, &state)
 	writeJSON(w, http.StatusOK, state)
+}
+
+func remoteControlMachineName(item device.MachineRuntimeInfo) string {
+	if name := strings.TrimSpace(item.Name); name != "" {
+		return name
+	}
+	if hostname := strings.TrimSpace(item.Hostname); hostname != "" {
+		return hostname
+	}
+	return strings.TrimSpace(item.Alias)
 }
 
 func (h remoteControlHandler) otherMachines(ctx context.Context, userID, machineID string) []remotecontrol.MachineView {
@@ -165,11 +177,7 @@ func (h remoteControlHandler) otherMachines(ctx context.Context, userID, machine
 		if item.MachineID == "" || item.MachineID == machineID {
 			continue
 		}
-		name := strings.TrimSpace(item.Alias)
-		if name == "" {
-			name = strings.TrimSpace(item.Name)
-		}
-		out = append(out, remotecontrol.MachineView{ID: item.MachineID, Name: name, Online: item.Online || h.devices.IsMachineOnline(item.MachineID)})
+		out = append(out, remotecontrol.MachineView{ID: item.MachineID, Name: remoteControlMachineName(item), Online: h.devices.IsMachineOnline(item.MachineID)})
 	}
 	return out
 }
@@ -193,11 +201,7 @@ func (h remoteControlHandler) machines(w http.ResponseWriter, r *http.Request) {
 		if item.MachineID == "" || item.MachineID == machineID {
 			continue
 		}
-		name := strings.TrimSpace(item.Alias)
-		if name == "" {
-			name = strings.TrimSpace(item.Name)
-		}
-		out = append(out, remotecontrol.Machine{ID: item.MachineID, Name: name, Online: item.Online || h.devices.IsMachineOnline(item.MachineID)})
+		out = append(out, remotecontrol.Machine{ID: item.MachineID, Name: remoteControlMachineName(item), Online: h.devices.IsMachineOnline(item.MachineID)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"machines": out})
 }
@@ -236,6 +240,9 @@ func (h remoteControlHandler) invite(w http.ResponseWriter, r *http.Request) {
 	}
 	grant, err := h.svc.Invite(r.Context(), principal.TenantID, principal.UserID, machineID, body.Account, body.Permission)
 	if err != nil {
+		grant, err = h.inviteAcrossHub(r.Context(), principal.TenantID, principal.UserID, machineID, body.Account, body.Permission, err)
+	}
+	if err != nil {
 		writeRemoteControlError(w, err)
 		return
 	}
@@ -249,7 +256,28 @@ func (h remoteControlHandler) accept(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	grant, err := h.svc.Accept(r.Context(), principal.TenantID, principal.UserID, machineID, r.PathValue("id"))
+	grantID := r.PathValue("id")
+	federated, federatedErr := h.svc.FederatedGrantForTarget(r.Context(), principal.UserID, grantID)
+	if federatedErr == nil && (federated.Status == remotecontrol.StatusPending || federated.Status == remotecontrol.StatusActive) {
+		if federated.Status == remotecontrol.StatusPending {
+			machine, owned := (remoteControlMachines{devices: h.devices}).BelongsTo(r.Context(), principal.UserID, machineID)
+			if !owned {
+				writeRemoteControlError(w, &remotecontrol.StatusError{Code: "INVALID", Message: "请先登录这台电脑"})
+				return
+			}
+			federated.TargetMachineID = machine.ID
+			federated.TargetMachineName = machine.Name
+		}
+		if err := h.relayTargetDecision(r.Context(), federated, "accept"); err != nil {
+			writeRemoteControlError(w, err)
+			return
+		}
+		if federated.Status == remotecontrol.StatusActive {
+			writeJSON(w, http.StatusOK, map[string]any{"grant": h.svcView(federated)})
+			return
+		}
+	}
+	grant, err := h.svc.Accept(r.Context(), principal.TenantID, principal.UserID, machineID, grantID)
 	if err != nil {
 		writeRemoteControlError(w, err)
 		return
@@ -258,9 +286,31 @@ func (h remoteControlHandler) accept(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h remoteControlHandler) reject(w http.ResponseWriter, r *http.Request) {
-	h.decide(w, r, func(ctx context.Context, tenantID, userID, grantID string) error {
-		return h.svc.Reject(ctx, tenantID, userID, grantID)
-	})
+	principal, _, ok := h.viewer(w, r)
+	if !ok {
+		return
+	}
+	grantID := r.PathValue("id")
+	federated, federatedErr := h.svc.FederatedGrantForTarget(r.Context(), principal.UserID, grantID)
+	if federatedErr == nil {
+		if federated.Status != remotecontrol.StatusPending && federated.Status != remotecontrol.StatusRejected {
+			writeRemoteControlError(w, remotecontrol.ErrNotFound)
+			return
+		}
+		if err := h.relayTargetDecision(r.Context(), federated, "decline"); err != nil {
+			writeRemoteControlError(w, err)
+			return
+		}
+		if federated.Status == remotecontrol.StatusRejected {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+	}
+	if err := h.svc.Reject(r.Context(), principal.TenantID, principal.UserID, grantID); err != nil {
+		writeRemoteControlError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (h remoteControlHandler) ignore(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +336,29 @@ func (h remoteControlHandler) revoke(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.svc.Revoke(r.Context(), principal.TenantID, principal.UserID, machineID, r.PathValue("id")); err != nil {
+	grantID := r.PathValue("id")
+	target, targetErr := h.svc.FederatedGrantForTarget(r.Context(), principal.UserID, grantID)
+	controller, controllerErr := h.svc.ControllerGrant(r.Context(), principal.TenantID, principal.UserID, machineID, grantID)
+	if targetErr == nil {
+		if err := h.relayTargetDecision(r.Context(), target, "revoke"); err != nil {
+			writeRemoteControlError(w, err)
+			return
+		}
+		if target.Status == remotecontrol.StatusRevoked {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+	} else if controllerErr == nil && controller.TargetHub != "" {
+		if err := h.relayControllerRevoke(r.Context(), controller); err != nil {
+			writeRemoteControlError(w, err)
+			return
+		}
+		if controller.Status == remotecontrol.StatusRevoked {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+	}
+	if err := h.svc.Revoke(r.Context(), principal.TenantID, principal.UserID, machineID, grantID); err != nil {
 		writeRemoteControlError(w, err)
 		return
 	}
@@ -305,7 +377,15 @@ func (h remoteControlHandler) op(w http.ResponseWriter, r *http.Request) {
 	if !decodeRemoteControlBody(w, r, &body) {
 		return
 	}
-	result, err := h.svc.Exec(r.Context(), principal.TenantID, principal.UserID, machineID, r.PathValue("id"), body.Op, body.Body)
+	grantID := r.PathValue("id")
+	grant, grantErr := h.svc.ControllerGrant(r.Context(), principal.TenantID, principal.UserID, machineID, grantID)
+	var result json.RawMessage
+	var err error
+	if grantErr == nil && grant.TargetHub != "" {
+		result, err = h.execAcrossHub(r.Context(), grant, body.Op, body.Body)
+	} else {
+		result, err = h.svc.Exec(r.Context(), principal.TenantID, principal.UserID, machineID, grantID, body.Op, body.Body)
+	}
 	if err != nil {
 		writeRemoteControlError(w, err)
 		return

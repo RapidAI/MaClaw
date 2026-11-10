@@ -39,6 +39,59 @@ type codingAgentResumeSnapDisk struct {
 	Hash string `json:"hash"`
 }
 
+// codingAgentResumePersistPath keeps the claimed tree on the file. A private
+// checkout is where this turn runs; writing it over the claimed tree would
+// make the next turn in that tree look like a different project.
+func codingAgentResumePersistPath(userID, stored, current string, sameProject bool) string {
+	current = normalizeProjectSessionPath(current)
+	stored = normalizeProjectSessionPath(stored)
+	if !sameProject || stored == "" {
+		return current
+	}
+	taskPath := projectPathFromSessionOwnerID(userID)
+	if taskPrivateExecution(taskPath, current) && !taskPrivateExecution(taskPath, stored) {
+		return stored
+	}
+	return current
+}
+
+// codingAgentResumeSameProject reports that the stored transcript and this
+// turn are one task. Equal paths match. So does a later execution directory
+// of that same task: the private checkout or sandbox created when another
+// task already holds the tree. A different repository does not match.
+func codingAgentResumeSameProject(userID, stored, current string) bool {
+	stored = normalizeProjectSessionPath(stored)
+	current = normalizeProjectSessionPath(current)
+	if stored == "" || current == "" {
+		return false
+	}
+	if sameTaskWorkRoot(userID, stored, current) {
+		return true
+	}
+	// This turn is inside the non-git sandbox. With no occupation recorded for
+	// this sandbox, the file still names the tree it replaced. A checkout
+	// record is a different copy and does not veto this sandbox. An
+	// occupation of this sandbox that names another tree does not take the
+	// file.
+	taskPath := projectPathFromSessionOwnerID(userID)
+	if taskPath == "" || !taskSandboxExecution(taskPath, current) || taskPrivateExecution(taskPath, stored) {
+		return false
+	}
+	if exclusiveCopyHolds(taskPath, current) {
+		return false
+	}
+	if id := gitPathIdentity(current); id.top != "" && sameNormalizedPath(id.top, current) {
+		return false
+	}
+	// A loose directory that merely sits inside some parent repository still
+	// names the tree this sandbox replaced. A path inside another repository
+	// does not, unless that repository also contains this sandbox.
+	if id := gitPathIdentity(stored); id.top != "" && !pathInsideWorkRoot(id.top, current) {
+		return false
+	}
+	return true
+}
+
 func codingAgentResumeStatePath(userID string) string {
 	sticky := stickyCodingMemoryFilePath(userID)
 	if sticky == "" {
@@ -50,6 +103,9 @@ func codingAgentResumeStatePath(userID string) string {
 // loadCodingAgentResume reads the last root loop for this task. A different
 // project, an expired file, or a missing file yields an empty resume. The
 // caller still checks snapshot bytes before treating a file as read.
+//
+// projectPath is where this turn executes. It is not the conversation.
+// A private checkout of the same work still loads the transcript.
 func loadCodingAgentResume(userID, projectPath string) codingAgentResume {
 	userID = strings.TrimSpace(userID)
 	projectPath = normalizeProjectSessionPath(projectPath)
@@ -85,7 +141,7 @@ func loadCodingAgentResume(userID, projectPath string) codingAgentResume {
 		log.Printf("[coding-env] load coding agent state failed path=%s err=%v", path, readErr)
 		return codingAgentResume{}
 	}
-	if normalizeProjectSessionPath(disk.ProjectPath) != projectPath {
+	if !codingAgentResumeSameProject(userID, disk.ProjectPath, projectPath) {
 		return codingAgentResume{}
 	}
 	history := codingAgentResumeReady(disk.History)
@@ -195,7 +251,7 @@ func recordCodingAgentResume(userID, projectPath string, delta []agent.Conversat
 		if data, err := os.ReadFile(path); err == nil {
 			_ = json.Unmarshal(data, &prior)
 		}
-		sameProject := normalizeProjectSessionPath(prior.ProjectPath) == projectPath
+		sameProject := codingAgentResumeSameProject(userID, prior.ProjectPath, projectPath)
 		freshEnough := prior.UpdatedAtUnix <= 0 || time.Since(time.Unix(prior.UpdatedAtUnix, 0)) <= stickyCodingMemoryMaxAge
 		var base []agent.ConversationEntry
 		if sameProject && freshEnough {
@@ -214,7 +270,7 @@ func recordCodingAgentResume(userID, projectPath string, delta []agent.Conversat
 			memo = prior.Memo
 		}
 		disk := codingAgentResumeDisk{
-			ProjectPath:   projectPath,
+			ProjectPath:   codingAgentResumePersistPath(userID, prior.ProjectPath, projectPath, sameProject && freshEnough),
 			UpdatedAtUnix: time.Now().Unix(),
 			History:       history,
 			Memo:          memo,
@@ -261,12 +317,12 @@ func recordCodingAgentResumeMemo(userID, projectPath, memo string) {
 		if data, err := os.ReadFile(path); err == nil {
 			_ = json.Unmarshal(data, &prior)
 		}
-		sameProject := normalizeProjectSessionPath(prior.ProjectPath) == projectPath
+		sameProject := codingAgentResumeSameProject(userID, prior.ProjectPath, projectPath)
 		freshEnough := prior.UpdatedAtUnix <= 0 || time.Since(time.Unix(prior.UpdatedAtUnix, 0)) <= stickyCodingMemoryMaxAge
 		if !sameProject || !freshEnough {
 			prior = codingAgentResumeDisk{ProjectPath: projectPath}
 		}
-		prior.ProjectPath = projectPath
+		prior.ProjectPath = codingAgentResumePersistPath(userID, prior.ProjectPath, projectPath, sameProject && freshEnough)
 		prior.UpdatedAtUnix = time.Now().Unix()
 		prior.Memo = memo
 		data, err := json.Marshal(prior)

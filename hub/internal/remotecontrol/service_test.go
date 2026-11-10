@@ -139,6 +139,23 @@ func TestSameAccountGrantIsImmediateAndNotifiesTarget(t *testing.T) {
 	}
 }
 
+func TestSnapshotUsesCurrentMachineNameAndLivePresence(t *testing.T) {
+	svc, machines, _, _ := testService(t)
+	ctx := context.Background()
+	if _, err := svc.GrantSameAccount(ctx, "tenant", "user-a", "mac-a", "mac-b", PermView); err != nil {
+		t.Fatal(err)
+	}
+	machines.owned["user-a/mac-b"] = Machine{ID: "mac-b", Name: "DESKTOP-HOME"}
+	machines.online["mac-b"] = false
+	state, err := svc.Snapshot(ctx, "tenant", "user-a", "mac-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Grants) != 1 || state.Grants[0].MachineName != "DESKTOP-HOME" || state.Grants[0].Online {
+		t.Fatalf("tabs = %+v", state.Grants)
+	}
+}
+
 func TestInviteIsBoundToTheControllerMachine(t *testing.T) {
 	svc, _, _, notes := testService(t)
 	ctx := context.Background()
@@ -493,6 +510,42 @@ func TestRevokeNotifiesTheOtherSide(t *testing.T) {
 	for _, item := range notes.items[before:] {
 		if item.Source == NoticeResult {
 			t.Fatalf("same-account close should not add a result notice: %+v", item)
+		}
+	}
+}
+
+func TestExistingGrantStoreAddsFederationColumns(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	_, err = db.Exec(`CREATE TABLE remote_control_grants (
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, controller_user_id TEXT NOT NULL, target_user_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = New(db, nil, nil, nil, nil)
+	rows, err := db.Query(`PRAGMA table_info(remote_control_grants)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, kind string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		columns[name] = true
+	}
+	for _, name := range []string{"controller_hub", "target_hub", "federation_secret"} {
+		if !columns[name] {
+			t.Fatalf("missing column %s: %+v", name, columns)
 		}
 	}
 }

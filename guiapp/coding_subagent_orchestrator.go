@@ -649,7 +649,11 @@ func isSubAgentTransientProviderError(text string) bool {
 		strings.Contains(lower, "server overloaded") ||
 		strings.Contains(lower, "overloaded") ||
 		strings.Contains(lower, "context deadline exceeded") ||
+		strings.Contains(lower, "timeout awaiting response headers") ||
+		strings.Contains(lower, "client.timeout") ||
+		strings.Contains(lower, "i/o timeout") ||
 		strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "connection refused") ||
 		strings.Contains(lower, "unexpected eof") ||
 		strings.Contains(lower, "tls handshake timeout") ||
 		strings.Contains(lower, "temporarily unavailable")

@@ -161,6 +161,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     OpenFileOrShowInFolder: (...args: Parameters<typeof openResult>) => openResult(...args),
     ExportTaskResultFile: (...args: Parameters<typeof saveResult>) => saveResult(...args),
     FileCompanionFigureDataURL: (...args: Parameters<typeof figureDataURL>) => figureDataURL(...args),
+    FetchFileCompanionShareFigure: vi.fn(async () => ""),
     FileCompanionExportPDF: (...args: Parameters<typeof exportPdf>) => exportPdf(...args),
     FileCompanionExportProject: (...args: Parameters<typeof exportProject>) => exportProject(...args),
     ListFileCompanionLibrary: (...args: Parameters<typeof listLibrary>) => listLibrary(...args),
@@ -3505,6 +3506,33 @@ describe("FileCompanionWindow", () => {
         expect(await screen.findAllByTestId("assistant-display-math")).toHaveLength(1);
         // The code chips must be gone; the formulas now go through KaTeX.
         expect(answer.querySelector("code")).toBeNull();
+    });
+
+    it("typesets bare TeX scripts in a paper reply", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.pdf"] });
+        open.mockResolvedValue(doc("C:/notes/a.pdf", {
+            messages: [
+                { role: "user", text: "写出公式" },
+                {
+                    role: "assistant",
+                    text: "Alignment: F^l_{0,c}, F^l_1 = dilated conv. Loss: L_ce + L_d^l.",
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        const answer = await screen.findByTestId("file-companion-answer");
+        const formulas = answer.querySelectorAll('[data-testid="assistant-inline-math"]');
+        expect(formulas.length).toBeGreaterThanOrEqual(4);
+        // KaTeX's hidden annotation still carries the source. The bubble must
+        // not show the dollar delimiters, and the formula must not inherit the
+        // column's overflow-wrap (that drops a subscript onto the next line).
+        expect(answer.textContent).not.toContain("$");
+        expect(answer.textContent).toContain("dilated conv");
+        const formula = formulas[0] as HTMLElement;
+        expect(formula.querySelector(".katex")).toBeTruthy();
+        expect(formula.style.overflowWrap).toBe("normal");
+        expect(formula.style.whiteSpace).toBe("nowrap");
     });
 
     it("writes a note on the selected answer", async () => {

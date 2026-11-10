@@ -1504,6 +1504,9 @@ func RunMigrations(db *sql.DB) error {
 			target_account TEXT NOT NULL DEFAULT '',
 			target_machine_id TEXT NOT NULL DEFAULT '',
 			target_machine_name TEXT NOT NULL DEFAULT '',
+			controller_hub TEXT NOT NULL DEFAULT '',
+			target_hub TEXT NOT NULL DEFAULT '',
+			federation_secret TEXT NOT NULL DEFAULT '',
 			permission TEXT NOT NULL,
 			status TEXT NOT NULL,
 			same_account INTEGER NOT NULL DEFAULT 0,
@@ -1517,6 +1520,9 @@ func RunMigrations(db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_rc_grant_controller ON remote_control_grants(tenant_id, controller_user_id, status)`,
 		`CREATE INDEX IF NOT EXISTS idx_rc_grant_target ON remote_control_grants(tenant_id, target_user_id, status)`,
+		`ALTER TABLE remote_control_grants ADD COLUMN controller_hub TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE remote_control_grants ADD COLUMN target_hub TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE remote_control_grants ADD COLUMN federation_secret TEXT NOT NULL DEFAULT ''`,
 	)
 
 	for _, stmt := range alterStmts {

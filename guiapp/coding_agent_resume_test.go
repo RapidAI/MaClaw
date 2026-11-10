@@ -3,6 +3,7 @@ package guiapp
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -334,5 +335,466 @@ func TestClearStickyCodingDropsAgentResume(t *testing.T) {
 	(&IMMessageHandler{}).clearStickyCodingWorkbenchMemory(userID)
 	if _, err := os.Stat(codingAgentResumeStatePath(userID)); !os.IsNotExist(err) {
 		t.Fatalf("resume file still present: %v", err)
+	}
+}
+
+func TestCodingAgentResumeSurvivesSharedDirectoryCheckout(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("head\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "-c", "core.autocrlf=false", "add", "README")
+	mustGit(t, repo, "-c", "user.email=test@example.com", "-c", "user.name=test", "-c", "core.autocrlf=false", "commit", "-m", "init")
+
+	taskDir := filepath.Join(t.TempDir(), "tasks", "check-npu")
+	siblingDir := filepath.Join(t.TempDir(), "tasks", "buddy-font")
+	owner := projectSessionOwnerID(taskDir)
+	sibling := projectSessionOwnerID(siblingDir)
+	recordCodingAgentResume(owner, repo, []agent.ConversationEntry{
+		{Role: "user", Content: "检查本机 NPU"},
+		{Role: "assistant", Content: "NPU 空闲"},
+	}, nil)
+	recordCodingAgentResume(sibling, repo, []agent.ConversationEntry{
+		{Role: "user", Content: "修复 buddy 字体"},
+		{Role: "assistant", Content: "字库已接上"},
+	}, nil)
+
+	checkout := filepath.Join(t.TempDir(), "exclusive", exclusiveTaskLeaf(taskDir))
+	mustGit(t, repo, "worktree", "add", "--detach", checkout)
+	t.Cleanup(func() {
+		_ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", checkout).Run()
+	})
+
+	got := loadCodingAgentResume(owner, checkout)
+	if len(got.History) != 2 || got.History[0].Content != "检查本机 NPU" || got.History[1].Content != "NPU 空闲" {
+		t.Fatalf("checkout load = %#v, want the task transcript", got.History)
+	}
+	recordCodingAgentResume(owner, checkout, []agent.ConversationEntry{
+		{Role: "user", Content: "继续"},
+		{Role: "assistant", Content: "继续检查"},
+	}, nil)
+	back := loadCodingAgentResume(owner, repo)
+	if len(back.History) != 4 || back.History[0].Content != "检查本机 NPU" || back.History[2].Content != "继续" {
+		t.Fatalf("return to the shared tree dropped history: %#v", back.History)
+	}
+	siblingHistory := loadCodingAgentResume(sibling, repo)
+	if len(siblingHistory.History) != 2 || siblingHistory.History[0].Content != "修复 buddy 字体" {
+		t.Fatalf("sibling history = %#v", siblingHistory.History)
+	}
+}
+
+func TestCodingAgentResumeSurvivesPrivateSandbox(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "shared")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	taskDir := filepath.Join(t.TempDir(), "tasks", "notes")
+	owner := projectSessionOwnerID(taskDir)
+	recordCodingAgentResume(owner, repo, []agent.ConversationEntry{
+		{Role: "user", Content: "整理笔记"},
+		{Role: "assistant", Content: "已列出大纲"},
+	}, nil)
+	sandbox := filepath.Join(taskDir, "workspace")
+	got := loadCodingAgentResume(owner, sandbox)
+	if len(got.History) != 2 || got.History[0].Content != "整理笔记" {
+		t.Fatalf("sandbox load = %#v, want the task transcript", got.History)
+	}
+	if other := loadCodingAgentResume(owner, t.TempDir()); len(other.History) != 0 {
+		t.Fatalf("unrelated directory loaded history: %#v", other.History)
+	}
+}
+
+func TestRecoveredSlotMatchesPrivateCheckoutOfSameRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("head\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "-c", "core.autocrlf=false", "add", "README")
+	mustGit(t, repo, "-c", "user.email=test@example.com", "-c", "user.name=test", "-c", "core.autocrlf=false", "commit", "-m", "init")
+	checkout := filepath.Join(t.TempDir(), "checkout")
+	mustGit(t, repo, "worktree", "add", "--detach", checkout)
+	t.Cleanup(func() {
+		_ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", checkout).Run()
+	})
+	taskDir := filepath.Join(t.TempDir(), "tasks", "notes")
+	owner := projectSessionOwnerID(taskDir)
+	if !recoveredSlotMatchesSession(owner, &agent.UnfinishedTaskSlot{ProjectPath: repo}, checkout) {
+		t.Fatal("a private checkout of the same repository was treated as a different task")
+	}
+	other := filepath.Join(t.TempDir(), "other-repo")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, other, "init")
+	if recoveredSlotMatchesSession(owner, &agent.UnfinishedTaskSlot{ProjectPath: other}, checkout) {
+		t.Fatal("a different repository matched this checkout")
+	}
+}
+
+func TestCodingAgentResumeStoredAtSandboxDoesNotFollowAnotherDirectory(t *testing.T) {
+	taskDir := filepath.Join(t.TempDir(), "tasks", "notes")
+	owner := projectSessionOwnerID(taskDir)
+	sandbox := filepath.Join(taskDir, "workspace")
+	if err := os.MkdirAll(sandbox, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recordCodingAgentResume(owner, sandbox, []agent.ConversationEntry{
+		{Role: "user", Content: "只在沙箱里"},
+		{Role: "assistant", Content: "记下了"},
+	}, nil)
+	if other := loadCodingAgentResume(owner, t.TempDir()); len(other.History) != 0 {
+		t.Fatalf("unrelated directory loaded sandbox history: %#v", other.History)
+	}
+	got := loadCodingAgentResume(owner, sandbox)
+	if len(got.History) != 2 || got.History[0].Content != "只在沙箱里" {
+		t.Fatalf("sandbox reload = %#v", got.History)
+	}
+}
+
+func TestRecoveredSlotDoesNotAdoptForeignDirectoryViaSandbox(t *testing.T) {
+	taskDir := filepath.Join(t.TempDir(), "tasks", "notes")
+	owner := projectSessionOwnerID(taskDir)
+	sandbox := filepath.Join(taskDir, "workspace")
+	if recoveredSlotMatchesSession(owner, &agent.UnfinishedTaskSlot{ProjectPath: t.TempDir()}, sandbox) {
+		t.Fatal("a foreign folder matched this task's sandbox")
+	}
+}
+
+func TestRecoveredSlotMatchesCachedSandboxOfClaimedDirectory(t *testing.T) {
+	taskDir := filepath.Join(t.TempDir(), "tasks", "notes")
+	owner := projectSessionOwnerID(taskDir)
+	claimed := filepath.Join(t.TempDir(), "shared-notes")
+	if err := os.MkdirAll(claimed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sandbox := filepath.Join(taskDir, "workspace")
+	key := normalizeRecentTaskPathKey(taskDir)
+	exclusiveCheckouts.Store(key, exclusiveCheckout{
+		requested: normalizeCodingRuntimeRef(claimed),
+		result:    sandbox,
+		fallback:  true,
+	})
+	t.Cleanup(func() { exclusiveCheckouts.Delete(key) })
+	if !recoveredSlotMatchesSession(owner, &agent.UnfinishedTaskSlot{ProjectPath: claimed}, sandbox) {
+		t.Fatal("the sandbox created for this occupation was treated as a different task")
+	}
+	if recoveredSlotMatchesSession(owner, &agent.UnfinishedTaskSlot{ProjectPath: t.TempDir()}, sandbox) {
+		t.Fatal("a directory outside the occupation matched the sandbox")
+	}
+}
+
+func TestTaskPrivateExecutionRequiresLeafBoundary(t *testing.T) {
+	taskDir := filepath.Join(t.TempDir(), "tasks", "notes")
+	leaf := exclusiveTaskLeaf(taskDir)
+	checkout := filepath.Join(t.TempDir(), "exclusive", leaf)
+	longer := filepath.Join(t.TempDir(), "exclusive", leaf+"-more")
+	if !taskPrivateExecution(taskDir, checkout) {
+		t.Fatal("checkout was not this task's private copy")
+	}
+	if taskPrivateExecution(taskDir, longer) {
+		t.Fatal("a longer directory name was treated as this task's checkout")
+	}
+}
+
+func TestCodingAgentResumeSandboxDoesNotAdoptAnotherDirectoryDuringOccupation(t *testing.T) {
+	taskDir := filepath.Join(t.TempDir(), "tasks", "notes")
+	owner := projectSessionOwnerID(taskDir)
+	claimed := filepath.Join(t.TempDir(), "shared-notes")
+	other := filepath.Join(t.TempDir(), "other-notes")
+	if err := os.MkdirAll(claimed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sandbox := filepath.Join(taskDir, "workspace")
+	if err := os.MkdirAll(sandbox, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recordCodingAgentResume(owner, other, []agent.ConversationEntry{
+		{Role: "user", Content: "别的目录"},
+		{Role: "assistant", Content: "不应被接上"},
+	}, nil)
+	key := normalizeRecentTaskPathKey(taskDir)
+	exclusiveCheckouts.Store(key, exclusiveCheckout{
+		requested: normalizeCodingRuntimeRef(claimed),
+		result:    sandbox,
+		fallback:  true,
+	})
+	t.Cleanup(func() { exclusiveCheckouts.Delete(key) })
+	if got := loadCodingAgentResume(owner, sandbox); len(got.History) != 0 {
+		t.Fatalf("sandbox of the claimed directory loaded another directory: %#v", got.History)
+	}
+	recordCodingAgentResume(owner, claimed, []agent.ConversationEntry{
+		{Role: "user", Content: "整理笔记"},
+		{Role: "assistant", Content: "已列出大纲"},
+	}, nil)
+	got := loadCodingAgentResume(owner, sandbox)
+	if len(got.History) != 2 || got.History[0].Content != "整理笔记" {
+		t.Fatalf("claimed directory via sandbox = %#v", got.History)
+	}
+}
+
+func TestCodingAgentResumeSandboxIgnoresCheckoutOccupation(t *testing.T) {
+	taskDir := filepath.Join(t.TempDir(), "tasks", "notes")
+	owner := projectSessionOwnerID(taskDir)
+	notes := filepath.Join(t.TempDir(), "notes")
+	if err := os.MkdirAll(notes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recordCodingAgentResume(owner, notes, []agent.ConversationEntry{
+		{Role: "user", Content: "整理笔记"},
+		{Role: "assistant", Content: "已列出大纲"},
+	}, nil)
+	checkout := filepath.Join(t.TempDir(), "exclusive", exclusiveTaskLeaf(taskDir))
+	key := normalizeRecentTaskPathKey(taskDir)
+	exclusiveCheckouts.Store(key, exclusiveCheckout{
+		gitRoot:   filepath.Join(t.TempDir(), "repo"),
+		requested: normalizeCodingRuntimeRef(filepath.Join(t.TempDir(), "repo")),
+		result:    checkout,
+		path:      checkout,
+	})
+	t.Cleanup(func() { exclusiveCheckouts.Delete(key) })
+	sandbox := filepath.Join(taskDir, "workspace")
+	if err := os.MkdirAll(sandbox, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := loadCodingAgentResume(owner, sandbox)
+	if len(got.History) != 2 || got.History[0].Content != "整理笔记" {
+		t.Fatalf("checkout occupation blocked the sandbox = %#v", got.History)
+	}
+}
+
+func TestGitPathIdentitySeesRepositoryCreatedAfterAMiss(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := filepath.Join(t.TempDir(), "later")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if id := gitPathIdentity(dir); sameNormalizedPath(id.top, dir) {
+		t.Fatal("directory was its own repository before init")
+	}
+	mustGit(t, dir, "init")
+	id := gitPathIdentity(dir)
+	if !sameNormalizedPath(id.top, dir) {
+		t.Fatalf("git init was not visible, top=%q", id.top)
+	}
+}
+
+func TestGitPathIdentityIsSharedAcrossOneRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	pkgDir := filepath.Join(repo, "pkg")
+	otherDir := filepath.Join(repo, "other")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init")
+	pkg := gitPathIdentity(pkgDir)
+	other := gitPathIdentity(otherDir)
+	if !sameNormalizedPath(pkg.top, repo) || !sameNormalizedPath(other.top, repo) {
+		t.Fatalf("pkg top=%q other top=%q repo=%q", pkg.top, other.top, repo)
+	}
+	if !sameNormalizedPath(pkg.common, other.common) {
+		t.Fatalf("common dirs differ: %q %q", pkg.common, other.common)
+	}
+}
+
+func TestCodingAgentResumeSiblingDirectoriesInsideOneRepositoryStayApart(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	pkgDir := filepath.Join(repo, "pkg")
+	otherDir := filepath.Join(repo, "other")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init")
+	taskDir := filepath.Join(t.TempDir(), "tasks", "pkg-task")
+	owner := projectSessionOwnerID(taskDir)
+	recordCodingAgentResume(owner, pkgDir, []agent.ConversationEntry{
+		{Role: "user", Content: "改 pkg"},
+		{Role: "assistant", Content: "pkg 已改"},
+	}, nil)
+	if got := loadCodingAgentResume(owner, otherDir); len(got.History) != 0 {
+		t.Fatalf("sibling directory loaded history: %#v", got.History)
+	}
+	if got := loadCodingAgentResume(owner, repo); len(got.History) != 2 || got.History[0].Content != "改 pkg" {
+		t.Fatalf("repository root = %#v", got.History)
+	}
+}
+
+func TestCodingAgentResumeCheckoutDoesNotAdoptSiblingDirectory(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	pkgDir := filepath.Join(repo, "pkg")
+	otherDir := filepath.Join(repo, "other")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("head\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "-c", "core.autocrlf=false", "add", "README")
+	mustGit(t, repo, "-c", "user.email=test@example.com", "-c", "user.name=test", "-c", "core.autocrlf=false", "commit", "-m", "init")
+	taskDir := filepath.Join(t.TempDir(), "tasks", "pkg-task")
+	owner := projectSessionOwnerID(taskDir)
+	recordCodingAgentResume(owner, pkgDir, []agent.ConversationEntry{
+		{Role: "user", Content: "改 pkg"},
+		{Role: "assistant", Content: "pkg 已改"},
+	}, nil)
+	checkout := filepath.Join(t.TempDir(), "exclusive", exclusiveTaskLeaf(taskDir))
+	mustGit(t, repo, "worktree", "add", "--detach", checkout)
+	t.Cleanup(func() {
+		_ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", checkout).Run()
+	})
+	if err := os.MkdirAll(filepath.Join(checkout, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(checkout, "other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := loadCodingAgentResume(owner, filepath.Join(checkout, "pkg"))
+	if len(got.History) != 2 || got.History[0].Content != "改 pkg" {
+		t.Fatalf("same directory in the checkout = %#v", got.History)
+	}
+	if other := loadCodingAgentResume(owner, filepath.Join(checkout, "other")); len(other.History) != 0 {
+		t.Fatalf("sibling directory loaded history: %#v", other.History)
+	}
+}
+
+func TestCodingAgentResumeSandboxDoesNotAdoptGitSubdirectory(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	sub := filepath.Join(repo, "pkg")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init")
+	taskDir := filepath.Join(t.TempDir(), "tasks", "notes")
+	owner := projectSessionOwnerID(taskDir)
+	recordCodingAgentResume(owner, sub, []agent.ConversationEntry{
+		{Role: "user", Content: "仓库里的目录"},
+		{Role: "assistant", Content: "不应进沙箱"},
+	}, nil)
+	sandbox := filepath.Join(taskDir, "workspace")
+	if err := os.MkdirAll(sandbox, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadCodingAgentResume(owner, sandbox); len(got.History) != 0 {
+		t.Fatalf("sandbox loaded a git subdirectory: %#v", got.History)
+	}
+}
+
+func TestRecoveredSlotCachedCheckoutDoesNotMatchSiblingDirectory(t *testing.T) {
+	taskDir := filepath.Join(t.TempDir(), "tasks", "pkg-task")
+	owner := projectSessionOwnerID(taskDir)
+	repo := filepath.Join(t.TempDir(), "repo")
+	claimed := filepath.Join(repo, "pkg")
+	other := filepath.Join(repo, "other")
+	checkout := filepath.Join(t.TempDir(), "exclusive", exclusiveTaskLeaf(taskDir), "pkg")
+	key := normalizeRecentTaskPathKey(taskDir)
+	exclusiveCheckouts.Store(key, exclusiveCheckout{
+		gitRoot:   repo,
+		requested: normalizeCodingRuntimeRef(claimed),
+		result:    checkout,
+		path:      filepath.Dir(checkout),
+	})
+	t.Cleanup(func() { exclusiveCheckouts.Delete(key) })
+	if recoveredSlotMatchesSession(owner, &agent.UnfinishedTaskSlot{ProjectPath: other}, checkout) {
+		t.Fatal("a sibling directory matched this checkout")
+	}
+	if !recoveredSlotMatchesSession(owner, &agent.UnfinishedTaskSlot{ProjectPath: claimed}, checkout) {
+		t.Fatal("the occupied directory did not match its checkout")
+	}
+}
+
+func TestCodingAgentResumePrivateCopiesStayInTheirOwnTree(t *testing.T) {
+	taskDir := filepath.Join(t.TempDir(), "tasks", "notes")
+	owner := projectSessionOwnerID(taskDir)
+	sandbox := filepath.Join(taskDir, "workspace")
+	if err := os.MkdirAll(filepath.Join(sandbox, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recordCodingAgentResume(owner, filepath.Join(sandbox, "a"), []agent.ConversationEntry{
+		{Role: "user", Content: "沙箱甲"},
+		{Role: "assistant", Content: "只在甲"},
+	}, nil)
+	if got := loadCodingAgentResume(owner, sandbox); len(got.History) != 2 || got.History[0].Content != "沙箱甲" {
+		t.Fatalf("parent of the sandbox directory = %#v", got.History)
+	}
+	if other := loadCodingAgentResume(owner, filepath.Join(sandbox, "b")); len(other.History) != 0 {
+		t.Fatalf("sibling sandbox directory loaded history: %#v", other.History)
+	}
+	checkout := filepath.Join(t.TempDir(), "exclusive", exclusiveTaskLeaf(taskDir))
+	if err := os.MkdirAll(checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadCodingAgentResume(owner, checkout); len(got.History) != 0 {
+		t.Fatalf("exclusive checkout loaded sandbox history: %#v", got.History)
+	}
+}
+
+func TestRecoveredSlotCachedCheckoutDoesNotMatchSiblingSubdirectory(t *testing.T) {
+	taskDir := filepath.Join(t.TempDir(), "tasks", "pkg-task")
+	owner := projectSessionOwnerID(taskDir)
+	claimed := filepath.Join(t.TempDir(), "repo", "pkg")
+	checkout := filepath.Join(t.TempDir(), "exclusive", exclusiveTaskLeaf(taskDir), "pkg")
+	key := normalizeRecentTaskPathKey(taskDir)
+	exclusiveCheckouts.Store(key, exclusiveCheckout{
+		requested: normalizeCodingRuntimeRef(claimed),
+		result:    checkout,
+		fallback:  true,
+	})
+	t.Cleanup(func() { exclusiveCheckouts.Delete(key) })
+	if recoveredSlotMatchesSession(owner, &agent.UnfinishedTaskSlot{ProjectPath: filepath.Join(claimed, "a")}, filepath.Join(checkout, "b")) {
+		t.Fatal("a sibling under the occupied directory matched the other sibling of the copy")
+	}
+	if !recoveredSlotMatchesSession(owner, &agent.UnfinishedTaskSlot{ProjectPath: filepath.Join(claimed, "a")}, filepath.Join(checkout, "a")) {
+		t.Fatal("the same subdirectory did not match across the occupied tree and its copy")
+	}
+}
+
+func TestGitIdentityLinesSkipHints(t *testing.T) {
+	top, common := gitIdentityLines([]string{
+		"hint: using a different repository",
+		"D:/repo",
+		".git",
+	})
+	if top != "D:/repo" || common != ".git" {
+		t.Fatalf("top=%q common=%q", top, common)
 	}
 }

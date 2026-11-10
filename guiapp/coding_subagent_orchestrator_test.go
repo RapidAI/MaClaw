@@ -1283,6 +1283,38 @@ func TestRunAllTasksPausesOnTransientProviderErrorWithoutRetryStorm(t *testing.T
 	}
 }
 
+func TestRunAllTasksPausesOnHeaderTimeoutWithoutRetryStorm(t *testing.T) {
+	orch := NewTaskExecutionOrchestrator()
+	orch.MaxRetries = 3
+	orch.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A"},
+		{Index: 1, Title: "Task B"},
+	}, "", "", "/project", "")
+	runner := &SubAgentTaskRunner{orchestrator: orch}
+	calls := 0
+
+	original := runTaskWithSubAgent
+	defer func() { runTaskWithSubAgent = original }()
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		calls++
+		return &CodingSubAgentResult{Status: TaskExecFailed, Error: `LLM call failed: Post "https://api.example.test/v1/chat/completions": timeout awaiting response headers`}
+	}
+
+	report := runner.RunAllTasks(nil, nil)
+	if calls != 1 {
+		t.Fatalf("header timeout should stop after one subagent call, got %d", calls)
+	}
+	if !strings.Contains(report, "paused to avoid retry storms") {
+		t.Fatalf("expected paused report, got %q", report)
+	}
+	if got := orch.Tasks[0]; got.Status != TaskExecInterrupted {
+		t.Fatalf("current task should be interrupted pending recovery, got %#v", got)
+	}
+	if got := orch.Tasks[1]; got.Status != TaskExecPending {
+		t.Fatalf("next task should not start after a header timeout, got %#v", got)
+	}
+}
+
 func TestSubAgentNonRetryableFailureClassification(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1323,11 +1355,17 @@ func TestIsSubAgentTransientProviderErrorRequiresProviderContextForGenericTimeou
 		{name: "provider gateway timeout", text: `openai upstream request timeout`, want: true},
 		{name: "provider unexpected eof", text: `anthropic request failed: unexpected EOF`, want: true},
 		{name: "provider http 408", text: `LLM call failed: HTTP 408 request timeout`, want: true},
+		{name: "provider header timeout", text: `LLM call failed: Post "https://example.test/v1/chat/completions": timeout awaiting response headers`, want: true},
+		{name: "provider client timeout", text: `LLM call failed: Post "https://example.test/v1/chat/completions": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`, want: true},
+		{name: "provider io timeout", text: `openai request failed: read tcp 1.2.3.4:443: i/o timeout`, want: true},
+		{name: "provider connection refused", text: `LLM provider request failed: dial tcp: connection refused`, want: true},
 		{name: "hub entitlement sync", text: `LLM call failed: HTTP 403: LLM_MODEL_FORBIDDEN no active model service entitlement`, want: true},
 		{name: "local command deadline", text: `bash command failed: context deadline exceeded`, want: false},
 		{name: "local http deadline", text: `integration test failed: Post "http://127.0.0.1:3000/health": context deadline exceeded`, want: false},
 		{name: "local connection reset", text: `integration test failed: connection reset by peer`, want: false},
 		{name: "local http 408", text: `integration test failed: HTTP 408 request timeout`, want: false},
+		{name: "local header timeout", text: `integration test failed: Post "http://127.0.0.1:3000/health": timeout awaiting response headers`, want: false},
+		{name: "local io timeout", text: `bash command failed: i/o timeout`, want: false},
 	}
 
 	for _, tc := range cases {

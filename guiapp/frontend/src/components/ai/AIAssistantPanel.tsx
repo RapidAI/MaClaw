@@ -3003,7 +3003,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const restored = getTabState(currentTabId);
             const hasPendingRoundForTab = activeTab.type === "project" && !!findProjectRoundForTab(currentTabId, activeTab.projectPath);
             if (!sending && !hasPendingRoundForTab) {
-                projectTabRoundsRef.current.clear();
+                // Only drop round tracking for the idle tab being entered. A
+                // blanket clear also wiped rounds belonging to off-screen tasks
+                // that are still running, so their response never landed in the
+                // tab cache and switching back showed an empty transcript.
+                for (const [key, round] of Array.from(projectTabRoundsRef.current.entries())) {
+                    if (round.tabId === currentTabId) projectTabRoundsRef.current.delete(key);
+                }
             }
             if (restored) {
                 if (projectStreamHistoryRef.current?.tabId !== currentTabId) projectStreamHistoryRef.current = null;
@@ -3523,6 +3529,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
 			// actively reading. An empty view still catches up from the cache.
 			if (openIntent === "activate") {
 				paintTranscriptIfViewEmpty(tab.id, getTabState(tab.id)?.history);
+				// The cache can be empty because the session file landed after
+				// startup hydration, or an off-screen round never landed. The
+				// restore no-ops when the cache already holds a transcript, so
+				// this only retries the backend for a genuinely empty tab.
+				void restoreBackendConversationIfNeeded();
 				return tab;
 			}
 			void restoreBackendConversationIfNeeded();

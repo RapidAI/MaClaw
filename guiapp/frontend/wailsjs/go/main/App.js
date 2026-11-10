@@ -1529,6 +1529,10 @@ export function FetchFileCompanionShareChat(arg1) {
   return window['go']['main']['App']['FetchFileCompanionShareChat'](arg1);
 }
 
+export function FetchFileCompanionShareFigure(arg1, arg2) {
+  return window['go']['main']['App']['FetchFileCompanionShareFigure'](arg1, arg2);
+}
+
 export function AddFileCompanionShareNote(arg1, arg2) {
   return window['go']['main']['App']['AddFileCompanionShareNote'](arg1, arg2);
 }

@@ -21,6 +21,7 @@ import {
     MarkdownImagePreview,
     MarkdownLinkedImage,
     parseMarkdownImageAt,
+    readMarkdownImageAt,
     readMarkdownLinkAt,
     readWrappedMarkdownImage,
     safeHttpURL,
@@ -307,9 +308,13 @@ const inlineMarkdownRestoredPattern = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~[/\\
 
 function renderLinkLabel(label: string, href: string, t: Theme, quietCode: boolean, keyRef: { n: number }): React.ReactNode {
     const shown = visibleMarkdownLinkLabel(label, href);
-    if (shown === href || safeHttpURL(shown) === href || !inlineHasNestedMarkup(shown)) {
+    if (shown === href || safeHttpURL(shown) === href) {
         return expandPlainTextWithIcons(shown, `a-${keyRef.n++}`);
     }
+    // Math is cut out of a line before links. A `$` that stayed inside the
+    // label is typeset here, after the link has been kept whole.
+    if (shown.includes("$") || shown.includes("\\(")) return renderInlineMarkdown(shown, t, quietCode);
+    if (!inlineHasNestedMarkup(shown)) return expandPlainTextWithIcons(shown, `a-${keyRef.n++}`);
     return renderInlineMarkdownRestored(shown, t, quietCode, true);
 }
 
@@ -534,6 +539,14 @@ function splitInlineMath(text: string): InlineMathSegment[] {
             continue;
         }
 
+        // A formula inside a label or an image alt stays with its target.
+        // Cutting it out here would leave `](url)` behind as text.
+        const opaque = skipMarkdownLinkOrImage(text, index);
+        if (opaque !== -1) {
+            index = opaque;
+            continue;
+        }
+
         if (text.startsWith("\\(", index) && !isEscapedAt(text, index)) {
             const close = findUnescapedDelimiter(text, "\\)", index + 2);
             if (close !== -1 && close > index + 2) {
@@ -571,7 +584,7 @@ function splitInlineMath(text: string): InlineMathSegment[] {
             && !/\d/u.test(text[index + 1] || "")
         ) {
             let close = index + 1;
-            while (close < text.length) {
+            while (close < text.length && text[close] !== "\n") {
                 if (
                     text[close] === "$"
                     && !isEscapedAt(text, close)
@@ -607,19 +620,231 @@ function renderMath(latex: string, displayMode: boolean, key: React.Key): React.
     } catch {
         // Keep malformed streaming content legible rather than losing the reply.
         return displayMode
-            ? <div key={key} data-testid="assistant-display-math" style={{ margin: "6px 0", ...blockWrapStyle }}>{`$$${latex}$$`}</div>
-            : <span key={key} data-testid="assistant-inline-math" className="aamd-math-inline">{`$${latex}$`}</span>;
+            ? <div key={key} data-testid="assistant-display-math" className="aamd-math-display" style={{ margin: "6px 0", ...blockWrapStyle, overflowWrap: "normal", wordBreak: "normal" }}>{`$$${latex}$$`}</div>
+            : <span key={key} data-testid="assistant-inline-math" className="aamd-math-inline" style={{ whiteSpace: "nowrap", overflowWrap: "normal", wordBreak: "normal" }}>{`$${latex}$`}</span>;
     }
 
     const style: React.CSSProperties = displayMode
-        ? { margin: "6px 0", maxWidth: "100%", overflowX: "auto", overflowY: "hidden", ...blockWrapStyle }
+        ? { margin: "6px 0", maxWidth: "100%", overflowX: "auto", overflowY: "hidden", ...blockWrapStyle, overflowWrap: "normal", wordBreak: "normal" }
         // An inline expression is part of a prose line, not an independent
         // scroll area. On Windows, the latter reserves a scrollbar that can
         // obscure short formulas even when they otherwise fit.
-        : { verticalAlign: "middle" };
+        // `overflow-wrap: anywhere` on a chat bubble is inherited, and KaTeX
+        // sizes `.base` to min-content. `anywhere` makes that min-content one
+        // character wide, so a superscript or subscript drops onto the next
+        // line. Reset wrapping on the formula itself.
+        : { verticalAlign: "middle", whiteSpace: "nowrap", overflowWrap: "normal", wordBreak: "normal" };
     return displayMode
-        ? <div key={key} data-testid="assistant-display-math" style={style} dangerouslySetInnerHTML={{ __html: html }} />
-        : <span key={key} data-testid="assistant-inline-math" style={style} dangerouslySetInnerHTML={{ __html: html }} />;
+        ? <div key={key} data-testid="assistant-display-math" className="aamd-math-display" style={style} dangerouslySetInnerHTML={{ __html: html }} />
+        : <span key={key} data-testid="assistant-inline-math" className="aamd-math-inline" style={style} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function skipBacktickSpan(text: string, index: number): number {
+    if (text[index] !== "`") return -1;
+    let run = 1;
+    while (text[index + run] === "`") run++;
+    const close = text.indexOf("`".repeat(run), index + run);
+    return close === -1 ? -1 : close + run;
+}
+
+/** A finished link or image. Stars and dollars inside it belong to the label, not the surrounding line. */
+function skipMarkdownLinkOrImage(text: string, index: number): number {
+    if (text[index] === "[") {
+        const wrapped = readWrappedMarkdownImage(text, index);
+        if (wrapped) return wrapped.end;
+        const link = readMarkdownLinkAt(text, index);
+        if (link) return link.end;
+    } else if (text[index] === "!") {
+        const image = readMarkdownImageAt(text, index);
+        if (image) return image.end;
+    }
+    return -1;
+}
+
+function skipUrlSpan(text: string, index: number): number {
+    if (text[index] !== "h" && text[index] !== "H") return -1;
+    if (!/^https?:\/\//i.test(text.slice(index, index + 8))) return -1;
+    let end = index + 8;
+    while (end < text.length) {
+        const code = text.charCodeAt(end);
+        if (code <= 0x20 || (code >= 0x3000 && code <= 0x303f) || (code >= 0x4e00 && code <= 0x9fff) || (code >= 0xff00 && code <= 0xffef)) break;
+        end++;
+    }
+    return end;
+}
+
+/** A finished `$...$` / `$$...$$` / `\(...\)` span. Stars inside it are math, not emphasis. */
+function skipDelimitedMathSpan(text: string, index: number): number {
+    if (text.startsWith("\\(", index) && !isEscapedAt(text, index)) {
+        const close = findUnescapedDelimiter(text, "\\)", index + 2);
+        return close === -1 ? -1 : close + 2;
+    }
+    if (
+        text.startsWith("$$", index)
+        && !isEscapedAt(text, index)
+        && isInlineMathBoundaryBefore(text, index)
+    ) {
+        const close = findUnescapedDelimiter(text, "$$", index + 2);
+        if (close > index + 2 && isInlineMathBoundaryAfter(text, close + 1)) return close + 2;
+    }
+    if (
+        text[index] === "$"
+        && !isEscapedAt(text, index)
+        && text[index + 1] !== "$"
+        && !/\s/u.test(text[index + 1] || "")
+        && !/\d/u.test(text[index + 1] || "")
+        && isInlineMathBoundaryBefore(text, index)
+    ) {
+        let close = index + 1;
+        while (close < text.length && text[close] !== "\n") {
+            if (
+                text[close] === "$"
+                && !isEscapedAt(text, close)
+                && text[close + 1] !== "$"
+                && isInlineMathBoundaryAfter(text, close)
+                && !/\s/u.test(text[close - 1] || "")
+            ) return close + 1;
+            close++;
+        }
+    }
+    return -1;
+}
+
+/** `$` or `\(` that is not inside code, a link, an image, or a URL. */
+function hasMathDelimiterOutsideOpaque(text: string): boolean {
+    for (let index = 0; index < text.length; index++) {
+        const code = skipBacktickSpan(text, index);
+        if (code !== -1) {
+            index = code - 1;
+            continue;
+        }
+        const link = skipMarkdownLinkOrImage(text, index);
+        if (link !== -1) {
+            index = link - 1;
+            continue;
+        }
+        const url = skipUrlSpan(text, index);
+        if (url !== -1) {
+            index = url - 1;
+            continue;
+        }
+        if (text[index] === "\\") {
+            if (text[index + 1] === "(") return true;
+            index++;
+            continue;
+        }
+        if (text[index] === "$") return true;
+    }
+    return false;
+}
+
+type EmphasisPiece = { kind: "text" | "bold" | "em"; text: string };
+
+/**
+ * Emphasis that contains a formula. Math is split before emphasis, so
+ * `**$L$**` would otherwise show the stars, then the formula, then the stars.
+ * Markers stay outside the formula. A star inside code, math, a link, or a
+ * URL is not emphasis. Italic does not open on a space; bold does, matching
+ * `** $L$ **`.
+ */
+function splitEmphasisContainingMath(text: string): EmphasisPiece[] | null {
+    const parts: EmphasisPiece[] = [];
+    let index = 0;
+    let plainStart = 0;
+    let found = false;
+    const pushPlain = (end: number) => {
+        if (plainStart < end) parts.push({ kind: "text", text: text.slice(plainStart, end) });
+        plainStart = end;
+    };
+    while (index < text.length) {
+        if (text[index] === "`") {
+            const code = skipBacktickSpan(text, index);
+            if (code !== -1) {
+                index = code;
+                continue;
+            }
+        }
+        const link = skipMarkdownLinkOrImage(text, index);
+        if (link !== -1) {
+            index = link;
+            continue;
+        }
+        const url = skipUrlSpan(text, index);
+        if (url !== -1) {
+            index = url;
+            continue;
+        }
+        const math = skipDelimitedMathSpan(text, index);
+        if (math !== -1) {
+            index = math;
+            continue;
+        }
+        if (text[index] !== "*" || isEscapedAt(text, index)) {
+            index++;
+            continue;
+        }
+        let run = 1;
+        while (text[index + run] === "*") run++;
+        const next = text[index + run];
+        // A run that is not emphasis must be skipped whole. Stepping one star
+        // turns the tail of `**plain**` into an opener and italicizes a later formula.
+        if (run > 3) {
+            index += run;
+            continue;
+        }
+        // `\*[^\s*]` does not open on a space. `\*\*[^*]+\*\*` does (`** $x$ **`).
+        if (run === 1 && (!next || /\s/u.test(next))) {
+            index++;
+            continue;
+        }
+        const marker = "*".repeat(run);
+        const lineEnd = text.indexOf("\n", index);
+        const limit = lineEnd === -1 ? text.length : lineEnd;
+        let close = -1;
+        for (let cursor = index + run; cursor < limit; cursor++) {
+            if (text[cursor] === "`") {
+                const code = skipBacktickSpan(text, cursor);
+                if (code !== -1) {
+                    cursor = code - 1;
+                    continue;
+                }
+            }
+            const innerLink = skipMarkdownLinkOrImage(text, cursor);
+            if (innerLink !== -1) {
+                cursor = innerLink - 1;
+                continue;
+            }
+            const innerUrl = skipUrlSpan(text, cursor);
+            if (innerUrl !== -1) {
+                cursor = innerUrl - 1;
+                continue;
+            }
+            // A star inside `$a*b$` is multiplication, not the end of the emphasis.
+            if (text[cursor] === "$" || text[cursor] === "\\") {
+                const innerMath = skipDelimitedMathSpan(text, cursor);
+                if (innerMath !== -1) {
+                    cursor = innerMath - 1;
+                    continue;
+                }
+            }
+            if (!text.startsWith(marker, cursor) || text[cursor + run] === "*") continue;
+            close = cursor;
+            break;
+        }
+        const inner = close === -1 ? "" : text.slice(index + run, close);
+        if (close === -1 || !hasMathDelimiterOutsideOpaque(inner)) {
+            index += run;
+            continue;
+        }
+        found = true;
+        pushPlain(index);
+        parts.push({ kind: run === 1 ? "em" : "bold", text: inner });
+        index = close + run;
+        plainStart = index;
+    }
+    if (!found) return null;
+    pushPlain(text.length);
+    return parts;
 }
 
 export function renderInlineMarkdown(text: string, t: Theme, quietCode = false): React.ReactNode[] {
@@ -628,6 +853,21 @@ export function renderInlineMarkdown(text: string, t: Theme, quietCode = false):
     // none of them is one text segment.
     if (!text.includes("$") && !text.includes("\\(")) {
         return renderInlineMarkdownRestored(text, t, quietCode);
+    }
+    if (text.includes("*")) {
+        const pieces = splitEmphasisContainingMath(text);
+        if (pieces) {
+            return pieces.flatMap((piece, index): React.ReactNode[] => {
+                const inner = renderInlineMarkdown(piece.text, t, quietCode);
+                if (piece.kind === "text") return inner;
+                const style: React.CSSProperties = piece.kind === "bold"
+                    ? { color: t.boldColor, fontWeight: 700, ...inlineWrapStyle }
+                    : { color: t.italicColor, ...inlineWrapStyle };
+                return piece.kind === "bold"
+                    ? [<strong key={`em-${index}`} style={style}>{inner}</strong>]
+                    : [<em key={`em-${index}`} style={style}>{inner}</em>];
+            });
+        }
     }
     const segments = splitInlineMath(text);
     if (segments.length === 1 && segments[0].kind === "text") return renderInlineMarkdownRestored(text, t, quietCode);

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -89,9 +90,10 @@ type companionRemoteSnapshot struct {
 
 var companionRemoteSnapCache = struct {
 	sync.Mutex
-	gen   uint64
-	items map[string]companionRemoteSnapshot
-}{items: map[string]companionRemoteSnapshot{}}
+	gen        uint64
+	items      map[string]companionRemoteSnapshot
+	refreshing map[string]bool
+}{items: map[string]companionRemoteSnapshot{}, refreshing: map[string]bool{}}
 
 // ConfigureCompanionFederation wires center so an invite can find the
 // invitee's hub and a receiving hub can check that the origin is real.
@@ -1041,19 +1043,79 @@ func companionRemoteShareSnapshot(ctx context.Context, identity *auth.IdentitySe
 	contacts := companionViewerContactSet(identity, ctx, principal)
 	companionRemoteSnapCache.Lock()
 	gen := companionRemoteSnapCache.gen
-	if cached, ok := companionRemoteSnapCache.items[ownerID]; ok && cached.gen == gen && time.Since(cached.at) < companionRemoteSnapTTL {
+	cached, cachedOK := companionRemoteSnapCache.items[ownerID]
+	if cachedOK && cached.gen == gen && time.Since(cached.at) < companionRemoteSnapTTL {
 		shares := cached.shares
 		stamp := cached.stamp
 		companionRemoteSnapCache.Unlock()
 		return shares, stamp
 	}
+	// A stale snapshot is enough for this response. Rebuilding it waits on
+	// the other hubs, and this handler is also what tells a participant that
+	// a home chat moved. Doing that wait on the request held the home
+	// transcript behind every cross-hub round trip. The next poll sees the
+	// refresh.
+	if cachedOK && cached.gen == gen {
+		shares := cached.shares
+		stamp := cached.stamp
+		start := false
+		if !companionRemoteSnapCache.refreshing[ownerID] {
+			companionRemoteSnapCache.refreshing[ownerID] = true
+			start = true
+		}
+		companionRemoteSnapCache.Unlock()
+		if start {
+			copied := *principal
+			go companionRemoteShareSnapshotRefresh(identity, &copied, ownerID)
+		}
+		return shares, stamp
+	}
 	companionRemoteSnapCache.Unlock()
 
+	return companionRemoteShareSnapshotFetch(ctx, ownerID, contacts, gen)
+}
+
+func companionRemoteShareSnapshotRefresh(identity *auth.IdentityService, principal *auth.ViewerPrincipal, ownerID string) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("[companion-group] remote snapshot refresh %s: %v", ownerID, recovered)
+		}
+		companionRemoteSnapCache.Lock()
+		delete(companionRemoteSnapCache.refreshing, ownerID)
+		companionRemoteSnapCache.Unlock()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	contacts := companionViewerContactSet(identity, ctx, principal)
+	companionRemoteSnapCache.Lock()
+	gen := companionRemoteSnapCache.gen
+	companionRemoteSnapCache.Unlock()
+	companionRemoteShareSnapshotFetch(ctx, ownerID, contacts, gen)
+}
+
+func companionRemoteShareSnapshotFetch(ctx context.Context, ownerID string, contacts map[string]struct{}, gen uint64) ([]map[string]any, uint64) {
 	invites := companionRemoteInvitesFor(ownerID, contacts)
+	// Invites and the documents inside a group are stored in maps. Ranging
+	// those maps makes this stamp a different number on every cache miss
+	// even when nothing changed, and the desktop then refetches the full
+	// share list on every poll.
+	sort.Slice(invites, func(i, j int) bool {
+		if invites[i].OriginHub != invites[j].OriginHub {
+			return invites[i].OriginHub < invites[j].OriginHub
+		}
+		if invites[i].GroupID != invites[j].GroupID {
+			return invites[i].GroupID < invites[j].GroupID
+		}
+		if invites[i].Contact != invites[j].Contact {
+			return invites[i].Contact < invites[j].Contact
+		}
+		return invites[i].Status < invites[j].Status
+	})
 	stampHash := fnv.New64a()
 	type job struct {
 		invite companionRemoteInvite
 		shares []map[string]any
+		ok     bool
 	}
 	jobs := make([]job, 0, len(invites))
 	for _, invite := range invites {
@@ -1066,6 +1128,7 @@ func companionRemoteShareSnapshot(ctx context.Context, identity *auth.IdentitySe
 	if len(jobs) > 4 {
 		jobs = jobs[:4]
 	}
+	failed := false
 	if len(jobs) > 0 {
 		fetchCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 		var wg sync.WaitGroup
@@ -1073,15 +1136,40 @@ func companionRemoteShareSnapshot(ctx context.Context, identity *auth.IdentitySe
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				jobs[i].shares = companionFetchRemoteShares(fetchCtx, jobs[i].invite)
+				jobs[i].shares, jobs[i].ok = companionFetchRemoteShares(fetchCtx, jobs[i].invite)
 			}(i)
 		}
 		wg.Wait()
 		cancel()
+		for _, job := range jobs {
+			if !job.ok {
+				failed = true
+				break
+			}
+		}
+	}
+	// A timed-out origin lists zero documents. Caching that stamp makes the
+	// next successful read look like a change, and the desktop refetches the
+	// full share list on every poll for as long as the origin blips.
+	if failed {
+		companionRemoteSnapCache.Lock()
+		if cached, ok := companionRemoteSnapCache.items[ownerID]; ok && cached.gen == gen {
+			cached.at = time.Now()
+			companionRemoteSnapCache.items[ownerID] = cached
+			companionRemoteSnapCache.Unlock()
+			return cached.shares, cached.stamp
+		}
+		companionRemoteSnapCache.Unlock()
 	}
 	shares := make([]map[string]any, 0)
 	for _, job := range jobs {
-		for _, share := range job.shares {
+		ordered := append([]map[string]any(nil), job.shares...)
+		sort.Slice(ordered, func(i, j int) bool {
+			left, _ := ordered[i]["token"].(string)
+			right, _ := ordered[j]["token"].(string)
+			return left < right
+		})
+		for _, share := range ordered {
 			// chat_revision belongs in the stamp: a host line on a share that
 			// lives on another Hub moves only that counter, and the home Hub's
 			// remote_seq is the sole signal the participant's quiet poll sees.
@@ -1101,23 +1189,23 @@ func companionRemoteShareSnapshot(ctx context.Context, identity *auth.IdentitySe
 	return shares, stamp
 }
 
-func companionFetchRemoteShares(ctx context.Context, invite companionRemoteInvite) []map[string]any {
+func companionFetchRemoteShares(ctx context.Context, invite companionRemoteInvite) ([]map[string]any, bool) {
 	origin := companionHubBaseURL(invite.OriginHub)
 	if origin == "" || !companionReaderGrantPattern.MatchString(invite.Secret) {
-		return nil
+		return nil, true
 	}
 	q := url.Values{}
 	q.Set("contact", invite.Contact)
 	endpoint := origin + "/api/mobile/documents/groups/" + url.PathEscape(invite.GroupID) + "/remote-shares?" + q.Encode()
 	status, raw, err := companionGet(ctx, endpoint, invite.Secret)
 	if err != nil || status != http.StatusOK {
-		return nil
+		return nil, false
 	}
 	var payload struct {
 		Shares []json.RawMessage `json:"shares"`
 	}
 	if json.Unmarshal(raw, &payload) != nil {
-		return nil
+		return nil, false
 	}
 	out := make([]map[string]any, 0, len(payload.Shares))
 	for _, item := range payload.Shares {
@@ -1134,5 +1222,5 @@ func companionFetchRemoteShares(ctx context.Context, invite companionRemoteInvit
 		view["visibility"] = "group"
 		out = append(out, view)
 	}
-	return out
+	return out, true
 }

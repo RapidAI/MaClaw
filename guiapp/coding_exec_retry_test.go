@@ -10,6 +10,37 @@ import (
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
+func TestCodingWorkbenchStepOutcome(t *testing.T) {
+	cases := []struct {
+		name       string
+		res        *CodingSubAgentResult
+		wantStatus v2.TaskRunStatus
+		wantStep   string
+	}{
+		{name: "passed", res: &CodingSubAgentResult{Status: TaskExecPassed}, wantStatus: v2.TaskPassed, wantStep: codingStepPassed},
+		{name: "transient header timeout", res: &CodingSubAgentResult{Status: TaskExecFailed, Error: `LLM call failed: Post "https://api.example.test/v1/chat/completions": timeout awaiting response headers`}, wantStatus: v2.TaskSkipped, wantStep: codingStepSkipped},
+		{name: "transient 503", res: &CodingSubAgentResult{Status: TaskExecFailed, Error: `LLM call failed: HTTP 503: service unavailable`}, wantStatus: v2.TaskSkipped, wantStep: codingStepSkipped},
+		{name: "real step failure", res: &CodingSubAgentResult{Status: TaskExecFailed, Error: `go test failed: expected 200 got 500`}, wantStatus: v2.TaskFailed, wantStep: codingStepFailed},
+		{name: "iteration budget", res: &CodingSubAgentResult{Status: TaskExecFailed, Error: `max iterations reached (156)`}, wantStatus: v2.TaskFailed, wantStep: codingStepRunning},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, stepStatus, stepSummary, resultErr := codingWorkbenchStepOutcome(tc.res)
+			if status != tc.wantStatus || stepStatus != tc.wantStep {
+				t.Fatalf("status=%s step=%s, want %s/%s", status, stepStatus, tc.wantStatus, tc.wantStep)
+			}
+			if tc.wantStatus == v2.TaskSkipped && tc.res.Status == TaskExecFailed {
+				if !strings.Contains(resultErr, "继续") || stepSummary != resultErr {
+					t.Fatalf("resultErr=%q stepSummary=%q, want the resume note", resultErr, stepSummary)
+				}
+				if !codingPlanStepNeedsResume(stepStatus) {
+					t.Fatalf("a transient pause must stay resumable, step=%s", stepStatus)
+				}
+			}
+		})
+	}
+}
+
 func TestParseCodingExecRetryCommand(t *testing.T) {
 	cases := []struct {
 		in   string

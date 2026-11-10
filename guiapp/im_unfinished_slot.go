@@ -655,6 +655,12 @@ func recoveredSlotMatchesSession(userID string, slot *agent.UnfinishedTaskSlot, 
 	if isProcessDefaultWorkspacePath(current) && (slotPath == "" || sameNormalizedPath(slotPath, sessionProject) || sameTaskWorkspace(slotPath, sessionProject)) {
 		return true
 	}
+	// A linked checkout of the repository this slot names is the same task.
+	// So is the private copy this process already detached for that
+	// occupation. A sandbox does not adopt an unrelated directory.
+	if sameTaskWorkRoot(userID, slotPath, current) {
+		return true
+	}
 	return false
 }
 

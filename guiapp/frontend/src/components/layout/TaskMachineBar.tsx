@@ -4,6 +4,31 @@ import type { RemotePermission, useTaskRemoteControl } from './useTaskRemoteCont
 
 type RemoteControl = ReturnType<typeof useTaskRemoteControl>;
 
+function confirmKeyIsIme(event: { key: string; nativeEvent: KeyboardEvent; keyCode: number }) {
+    return event.key === 'Enter' && (event.nativeEvent.isComposing || event.keyCode === 229);
+}
+
+function messageRoleLabel(lang: string, role: string) {
+    switch (role) {
+        case 'user':
+            return localizeText(lang, 'You', '我', '我');
+        case 'assistant':
+            return localizeText(lang, 'Assistant', '助手', '助手');
+        case 'system':
+            return localizeText(lang, 'System', '系统', '系統');
+        case 'error':
+            return localizeText(lang, 'Error', '错误', '錯誤');
+        default:
+            return role;
+    }
+}
+
+function messageBody(message: { content?: string; reasoning_content?: string }) {
+    const content = (message.content || '').trim();
+    if (content) return content;
+    return (message.reasoning_content || '').trim();
+}
+
 function permissionLabel(lang: string, permission: string) {
     return permission === 'operate'
         ? localizeText(lang, 'Can operate', '可操作', '可操作')
@@ -31,6 +56,7 @@ export function TaskMachineBar({
     const [stopping, setStopping] = useState(false);
     const messagesRef = useRef<HTMLDivElement>(null);
     const stickToLatestRef = useRef(true);
+    const pinningScrollRef = useRef(false);
     // A draft belongs to the conversation that was open while it was typed.
     useEffect(() => { setDraft(''); }, [remote.detailPath]);
     // The create box stays mounted across machine tabs. Don't carry a name
@@ -40,7 +66,10 @@ export function TaskMachineBar({
     useEffect(() => {
         const node = messagesRef.current;
         if (!node || !stickToLatestRef.current) return;
+        pinningScrollRef.current = true;
         node.scrollTop = node.scrollHeight;
+        const timer = window.setTimeout(() => { pinningScrollRef.current = false; }, 0);
+        return () => window.clearTimeout(timer);
     }, [remote.detailPath, remote.detail?.messages]);
     const runAction = async (work: () => Promise<unknown>) => {
         if (actingRef.current) return;
@@ -110,7 +139,10 @@ export function TaskMachineBar({
                     data-testid="task-machine-add"
                     aria-expanded={adding}
                     aria-label={localizeText(lang, 'Add a machine', '添加机器', '新增機器')}
-                    onClick={() => setAdding(open => !open)}
+                    onClick={() => {
+                        if (!adding) void remote.refresh();
+                        setAdding(open => !open);
+                    }}
                 >
                     +
                 </button>
@@ -169,6 +201,7 @@ export function TaskMachineBar({
                         data-testid="task-machine-create-name"
                         value={createName}
                         placeholder={localizeText(lang, 'Task name on that computer', '在对方电脑上的任务名', '在對方電腦上的任務名')}
+                        onKeyDown={(event) => { if (confirmKeyIsIme(event)) event.preventDefault(); }}
                         onChange={(event) => setCreateName(event.target.value)}
                     />
                     <button type="submit" disabled={acting}>{localizeText(lang, 'Create there', '在对方新建', '在對方新建')}</button>
@@ -177,7 +210,7 @@ export function TaskMachineBar({
             {remote.detail && remote.detailPath ? (
                 <section className="mc-task-machine-detail" data-testid="task-machine-detail">
                     <header>
-                        <strong>{remote.detail.task?.name || remote.detailPath}</strong>
+                        <strong title={remote.detail.task?.name || remote.detailPath}>{remote.detail.task?.name || remote.detailPath}</strong>
                         <button type="button" data-testid="task-machine-detail-close" onClick={remote.closeDetail}>{localizeText(lang, 'Close', '关闭', '關閉')}</button>
                     </header>
                     {errorInDetail ? <p className="mc-task-machine-error" data-testid="task-machine-error" role="alert">{remote.error}</p> : null}
@@ -185,15 +218,20 @@ export function TaskMachineBar({
                         ref={messagesRef}
                         className="mc-task-machine-messages"
                         onScroll={(event) => {
+                            if (pinningScrollRef.current) return;
                             const node = event.currentTarget;
                             stickToLatestRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
                         }}
                     >
                         {remote.detail.messages.length === 0
                             ? <p>{localizeText(lang, 'No conversation yet', '还没有会话', '還沒有工作階段')}</p>
-                            : remote.detail.messages.map((message, index) => (
-                                <p key={`${message.role}-${index}`}><b>{message.role}</b> {message.content}</p>
-                            ))}
+                            : remote.detail.messages.map((message, index) => {
+                                const body = messageBody(message);
+                                if (!body) return null;
+                                return (
+                                    <p key={`${message.role}-${index}`}><b>{messageRoleLabel(lang, message.role)}</b> {body}</p>
+                                );
+                            })}
                     </div>
                     {remote.detail.artifacts.length > 0 ? (
                         <ul className="mc-task-machine-artifacts" data-testid="task-machine-artifacts">
@@ -225,6 +263,7 @@ export function TaskMachineBar({
                                 data-testid="task-machine-send-input"
                                 value={draft}
                                 placeholder={localizeText(lang, 'Message to run on that computer', '发到对方电脑上运行', '發到對方電腦上運行')}
+                                onKeyDown={(event) => { if (confirmKeyIsIme(event)) event.preventDefault(); }}
                                 onChange={(event) => setDraft(event.target.value)}
                             />
                             <button type="submit" data-testid="task-machine-send" disabled={acting}>{localizeText(lang, 'Send', '发送', '傳送')}</button>
@@ -308,6 +347,7 @@ export function TaskMachineBar({
                             data-testid="task-machine-account"
                             value={account}
                             placeholder={localizeText(lang, 'Phone or email', '手机号或邮箱', '手機號或郵箱')}
+                            onKeyDown={(event) => { if (confirmKeyIsIme(event)) event.preventDefault(); }}
                             onChange={(event) => setAccount(event.target.value)}
                         />
                         <button type="submit" data-testid="task-machine-invite" disabled={acting}>{localizeText(lang, 'Send invite', '发送邀请', '傳送邀請')}</button>

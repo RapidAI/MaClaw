@@ -1012,6 +1012,12 @@
   color: var(--theme-text-primary);
   font-size: 12px;
 }
+.mc-task-pane .mc-task-machine-detail header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .mc-task-pane .mc-task-machine-add input,
 .mc-task-pane .mc-task-machine-create input,
 .mc-task-pane .mc-task-machine-send input {
@@ -1029,7 +1035,7 @@
   overflow: auto;
 }
 .mc-task-pane .mc-task-machine-messages p,
-.mc-task-pane .mc-task-machine-add p { margin: 4px 0; }
+.mc-task-pane .mc-task-machine-add p { margin: 4px 0; overflow-wrap: anywhere; }
 .mc-task-pane .mc-task-machine-permission { display: flex; gap: 12px; margin-bottom: 8px; }
 .mc-task-pane .mc-task-filter-row {
   display: inline-flex;

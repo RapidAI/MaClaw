@@ -765,6 +765,8 @@ export function FetchFileCompanionShareMarks(arg1:string):Promise<Record<string,
 
 export function FetchFileCompanionShareChat(arg1:string):Promise<Record<string, any>>;
 
+export function FetchFileCompanionShareFigure(arg1:string,arg2:string):Promise<string>;
+
 export function AddFileCompanionShareNote(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function ReviewFileCompanionShareNote(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;

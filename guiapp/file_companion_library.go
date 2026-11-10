@@ -36,6 +36,10 @@ const fileCompanionLibraryCap = 200
 var (
 	fileCompanionLibraryMu        sync.Mutex
 	fileCompanionLibraryRefreshMu sync.Mutex
+	// fileCompanionShareLiveOnce keeps a second poll from stacking another
+	// changes read while a download is already in progress. The transcript
+	// counter still has to move; the heavy refresh does not.
+	fileCompanionShareLiveOnce    atomic.Bool
 	fileCompanionShareTokenMatch  = regexp.MustCompile(`^cd_[0-9a-f]{32}$`)
 	fileCompanionShareTokenFind   = regexp.MustCompile(`cd_[0-9a-f]{32}`)
 	fileCompanionReaderGrantMatch = regexp.MustCompile(`^cgr_[0-9a-f]{32}$`)
@@ -47,16 +51,17 @@ var (
 	fileCompanionShareEpoch = map[string]uint64{}
 )
 
-// fileCompanionShareListSeq is the Hub change sequence from the most recent
-// successful share-list response (the Hub sends it as the ETag header). The
-// refresh pre-check compares against it to skip a full refresh when nothing
-// on the Hub moved.
-var fileCompanionShareListSeq atomic.Uint64
-
-// fileCompanionShareRemoteSeq is the per-viewer stamp of documents that live
-// on another hub. It moves when a remote group gains or loses a paper, which
-// the local share sequence does not see.
-var fileCompanionShareRemoteSeq atomic.Uint64
+// fileCompanionShareWatermark is the Hub change sequence of one share-list
+// response: seq is the ETag the Hub sends, remoteSeq the per-viewer stamp of
+// documents on other hubs. Each poller records the watermark of its own
+// response. A process-wide value would let the discussion watcher's newer
+// response cover the library's older one; the 5-second pre-check then reads
+// "nothing changed" while the transcript on disk is behind, and the host's
+// new chat only lands on the 10-minute full refresh.
+type fileCompanionShareWatermark struct {
+	seq       uint64
+	remoteSeq uint64
+}
 
 // fileCompanionShareRefreshCheck remembers what the last full library refresh
 // saw, so the 5-second poll can ask the cheap changes endpoint instead of
@@ -101,36 +106,174 @@ func (st *fileCompanionShareRefreshState) reset(hub string) {
 	st.hadLogin = false
 }
 
-// fetchFileCompanionShareChanges asks the Hub for its change sequence. The
-// answer is a small JSON body, unlike the full list that carries every share
-// and note, so a poll round costs almost nothing.
-func (a *App) fetchFileCompanionShareChanges(hub, viewer string) (uint64, uint64, error) {
+// fileCompanionShareChange is one share's counters on the cheap changes feed.
+// The transcript and the reader marks move here without the note bodies or
+// the project zip, which is what a participant's open chat actually needs.
+type fileCompanionShareChange struct {
+	Token         string `json:"token"`
+	Revision      int    `json:"revision"`
+	NotesRevision int    `json:"notes_revision"`
+	MarksRevision int    `json:"marks_revision"`
+	ChatRevision  int    `json:"chat_revision"`
+	// Pointers distinguish a Hub that sends the identity of the share from an
+	// older feed that only has the counters. Absent means "do not compare".
+	Visibility  *string `json:"visibility"`
+	ExpiresAt   *string `json:"expires_at"`
+	Target      *string `json:"target"`
+	GroupID     *string `json:"group_id"`
+	Host        *bool   `json:"host"`
+	PendingHost *bool   `json:"pending_host"`
+	// HubOrigin is set only on a share that lives on another Hub. The home
+	// feed leaves it empty.
+	HubOrigin string `json:"hub_origin,omitempty"`
+}
+
+// fileCompanionShareChangeNeedsList reports that this row moved in a way the
+// transcript blob cannot carry: a new document, a note, or the share's own
+// identity (audience, expiry, host seat). Chat and marks counters are applied
+// either way.
+func fileCompanionShareChangeNeedsList(row fileCompanionShareChange, item FileCompanionLibraryItem) bool {
+	if row.Revision > item.Revision || row.NotesRevision > item.NotesRevision {
+		return true
+	}
+	if row.Visibility == nil {
+		return false
+	}
+	// The share list stores a missing audience as public. The changes feed
+	// sends the Hub value unchanged, and an older share can still have an
+	// empty audience. Treating those two spellings as different made every
+	// later chat line download the full list.
+	if fileCompanionShareAudience(*row.Visibility) != fileCompanionShareAudience(item.Visibility) {
+		return true
+	}
+	if row.ExpiresAt != nil && !fileCompanionShareTimeEqual(*row.ExpiresAt, item.ExpiresAt) {
+		return true
+	}
+	// Target and a pending nomination are stored on the admin's row only. The
+	// full list does not give them to a participant, so comparing them there
+	// made every host line look like an audience edit and took the slow path.
+	if item.Admin {
+		if row.Target != nil && strings.TrimSpace(*row.Target) != strings.TrimSpace(item.Target) {
+			return true
+		}
+		if row.PendingHost != nil && *row.PendingHost != item.PendingHost {
+			return true
+		}
+	}
+	// A group member's row keeps the group id. An empty stored id is a public
+	// share or a row from before the field existed; the feed's id is not a
+	// change those rows can see.
+	if row.GroupID != nil && strings.TrimSpace(item.GroupID) != "" && strings.TrimSpace(*row.GroupID) != strings.TrimSpace(item.GroupID) {
+		return true
+	}
+	// A row saved before the host seat was known still follows Mine. Comparing
+	// it here would turn every later chat line into a full refresh. The
+	// ten-minute reconcile learns the seat.
+	if row.Host != nil && item.HostKnown && *row.Host != item.Host {
+		return true
+	}
+	return false
+}
+
+// fileCompanionShareAudience folds the two spellings of a public share into
+// one. An empty audience is the older record; the library writes it as public.
+func fileCompanionShareAudience(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "public"
+	}
+	return raw
+}
+
+// fileCompanionShareTimeEqual reports that two expiry strings are the same
+// instant. The list and the changes feed can spell one UTC time with Z or
+// with an offset; a byte compare would send every later chat line through
+// the full share list.
+func fileCompanionShareTimeEqual(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == right {
+		return true
+	}
+	parse := func(value string) (time.Time, bool) {
+		if value == "" {
+			return time.Time{}, false
+		}
+		if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+			return parsed, true
+		}
+		if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+			return parsed, true
+		}
+		return time.Time{}, false
+	}
+	leftTime, leftOK := parse(left)
+	rightTime, rightOK := parse(right)
+	return leftOK && rightOK && leftTime.Equal(rightTime)
+}
+
+// fileCompanionShareChanges is one answer from the changes endpoint.
+// HasShares is false when this Hub only sends the two sequences. ForceFull
+// is the library poll asking for a reconcile even after the counters land:
+// the first snapshot, or the ten-minute pass that checks expiry and revocation.
+type fileCompanionShareChanges struct {
+	Seq             uint64
+	RemoteSeq       uint64
+	Shares          []fileCompanionShareChange
+	HasShares       bool
+	RemoteShares    []fileCompanionShareChange
+	HasRemoteShares bool
+	ForceFull       bool
+}
+
+// fetchFileCompanionShareChanges asks the Hub for its change sequence and the
+// per-share counters. The answer is a small JSON body, unlike the full list
+// that carries every share and note, so a poll round costs almost nothing.
+func (a *App) fetchFileCompanionShareChanges(hub, viewer string) (fileCompanionShareChanges, error) {
+	var empty fileCompanionShareChanges
 	req, err := http.NewRequest(http.MethodGet, hub+"/api/mobile/documents/shares/changes", nil)
 	if err != nil {
-		return 0, 0, err
+		return empty, err
 	}
 	req.Header.Set("Authorization", "Bearer "+viewer)
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, 0, err
+		return empty, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
-		return 0, 0, errFileCompanionShareChangesUnsupported
+		return empty, errFileCompanionShareChangesUnsupported
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, 0, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
+		return empty, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
 	}
 	var payload struct {
-		Seq       uint64 `json:"seq"`
-		RemoteSeq uint64 `json:"remote_seq"`
+		Seq          uint64          `json:"seq"`
+		RemoteSeq    uint64          `json:"remote_seq"`
+		Shares       json.RawMessage `json:"shares"`
+		RemoteShares json.RawMessage `json:"remote_shares"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
-		return 0, 0, errors.New("云端分享状态无法读取")
+		return empty, errors.New("云端分享状态无法读取")
 	}
-	return payload.Seq, payload.RemoteSeq, nil
+	out := fileCompanionShareChanges{Seq: payload.Seq, RemoteSeq: payload.RemoteSeq}
+	shares := strings.TrimSpace(string(payload.Shares))
+	if shares != "" && shares != "null" {
+		out.HasShares = true
+		if json.Unmarshal(payload.Shares, &out.Shares) != nil {
+			return empty, errors.New("云端分享状态无法读取")
+		}
+	}
+	remote := strings.TrimSpace(string(payload.RemoteShares))
+	if remote != "" && remote != "null" {
+		out.HasRemoteShares = true
+		if json.Unmarshal(payload.RemoteShares, &out.RemoteShares) != nil {
+			return empty, errors.New("云端分享状态无法读取")
+		}
+	}
+	return out, nil
 }
 
 // fileCompanionShareRefreshProbeOnly classifies the round before it starts.
@@ -155,8 +298,11 @@ func fileCompanionShareRefreshProbeOnly(hub string, loginOK bool) bool {
 // or a Hub that cannot be reached also skips it: the full list would fail
 // the same way, and the notice is the sentence that list would have shown.
 // A fresh login, an older Hub, or a full refresh that has gone stale returns
-// quiet false so the refresh runs and reconciles.
-func (a *App) fileCompanionShareRefreshQuiet(hub, viewer string, loginOK bool) (bool, string) {
+// quiet false so the refresh runs and reconciles. The changes payload comes
+// back either way once this Hub has been read, so a transcript counter can
+// be published before that reconcile.
+func (a *App) fileCompanionShareRefreshQuiet(hub, viewer string, loginOK bool) (bool, string, fileCompanionShareChanges) {
+	var none fileCompanionShareChanges
 	st := &fileCompanionShareRefreshCheck
 	st.mu.Lock()
 	if st.hub != hub {
@@ -164,61 +310,251 @@ func (a *App) fileCompanionShareRefreshQuiet(hub, viewer string, loginOK bool) (
 	}
 	if st.unsupported {
 		st.mu.Unlock()
-		return false, ""
+		return false, "", none
 	}
 	if !loginOK {
 		st.hadLogin = false
 		quiet := st.fullDone
 		st.mu.Unlock()
 		if !quiet {
-			return false, ""
+			return false, "", none
 		}
-		return true, fileCompanionLibraryLoginNotice
+		return true, fileCompanionLibraryLoginNotice, none
 	}
 	if !st.hadLogin {
 		st.hadLogin = true
 		st.mu.Unlock()
-		return false, ""
+		return false, "", none
 	}
-	if !st.fullDone || time.Since(st.lastFull) > fileCompanionShareRefreshFullInterval {
-		st.mu.Unlock()
-		return false, ""
-	}
+	forceFull := !st.fullDone || time.Since(st.lastFull) > fileCompanionShareRefreshFullInterval
 	st.mu.Unlock()
-	seq, remoteSeq, err := a.fetchFileCompanionShareChanges(hub, viewer)
+	changes, err := a.fetchFileCompanionShareChanges(hub, viewer)
 	if err != nil {
 		if errors.Is(err, errFileCompanionShareChangesUnsupported) {
 			st.mu.Lock()
 			st.unsupported = true
 			st.mu.Unlock()
-			return false, ""
+			return false, "", none
 		}
-		// The Hub is unreachable; a full refresh would fail the same way, so
-		// skip it and keep serving the stored library. The opening disk answer
-		// has no notice, and this event is what settles the panel.
+		// A stale snapshot still has to try the full list: the changes
+		// request can fail while the share list is the call that reconciles.
+		// After a successful refresh, the same failure skips that list. The
+		// opening disk answer has no notice, and this event is what settles
+		// the panel.
+		if forceFull {
+			return false, "", none
+		}
 		var status *fileCompanionShareStatus
 		if errors.As(err, &status) {
-			return true, status.Error()
+			return true, status.Error(), none
 		}
-		return true, fileCompanionLibraryOfflineNotice
+		return true, fileCompanionLibraryOfflineNotice, none
+	}
+	changes.ForceFull = forceFull
+	if forceFull {
+		return false, "", changes
 	}
 	st.mu.Lock()
-	quiet := seq == st.seq && remoteSeq == st.remoteSeq
+	quiet := changes.Seq == st.seq && changes.RemoteSeq == st.remoteSeq
 	st.mu.Unlock()
-	return quiet, ""
+	return quiet, "", changes
+}
+
+// applyFileCompanionShareLiveCounters writes a newer host transcript or reader
+// marks sequence onto the stored row. Those two counters are enough for an
+// open share to fetch the blob. A new share, a missing home-hub share, a
+// moved document, or a moved note still needs the full list: the changes feed
+// does not carry the file or the note text. A share on another Hub arrives in
+// remote_shares when this Hub sends it. An older Hub only moves remote_seq,
+// and that still needs the full list.
+func (a *App) applyFileCompanionShareLiveCounters(changes fileCompanionShareChanges) (moved bool, structural bool) {
+	if a == nil || !changes.HasShares {
+		return false, true
+	}
+	fileCompanionLibraryMu.Lock()
+	defer fileCompanionLibraryMu.Unlock()
+	items, ok := a.readFileCompanionLibraryLocked()
+	if !ok {
+		return false, true
+	}
+	byToken := make(map[string]fileCompanionShareChange, len(changes.Shares))
+	for _, row := range changes.Shares {
+		token := strings.TrimSpace(row.Token)
+		if !fileCompanionShareTokenMatch.MatchString(token) {
+			continue
+		}
+		row.Token = token
+		byToken[token] = row
+	}
+	dismissed := a.readDismissedShareTokensLocked()
+	now := time.Now().UTC()
+	known := map[string]bool{}
+	changed := false
+	for i := range items {
+		item := &items[i]
+		token := strings.TrimSpace(item.Token)
+		if item.Source != "cloud" || item.HubOrigin != "" || !fileCompanionShareTokenMatch.MatchString(token) || dismissed[token] {
+			continue
+		}
+		known[token] = true
+		row, found := byToken[token]
+		if !found {
+			if item.HubOrigin == "" && !fileCompanionShareExpiredAt(item.ExpiresAt, now) {
+				structural = true
+			}
+			continue
+		}
+		if fileCompanionShareChangeNeedsList(row, *item) {
+			structural = true
+		}
+		if row.ChatRevision > item.ChatRevision {
+			item.ChatRevision = row.ChatRevision
+			changed = true
+		}
+		if row.MarksRevision > item.MarksRevision {
+			item.MarksRevision = row.MarksRevision
+			changed = true
+		}
+	}
+	for token := range byToken {
+		if dismissed[token] || known[token] {
+			continue
+		}
+		structural = true
+		break
+	}
+	if changes.HasRemoteShares {
+		remoteByKey := make(map[string]fileCompanionShareChange, len(changes.RemoteShares))
+		for _, row := range changes.RemoteShares {
+			token := strings.TrimSpace(row.Token)
+			origin := fileCompanionHubOrigin(row.HubOrigin)
+			if !fileCompanionShareTokenMatch.MatchString(token) || origin == "" {
+				continue
+			}
+			row.Token = token
+			row.HubOrigin = origin
+			remoteByKey[origin+"\n"+token] = row
+		}
+		seenRemote := map[string]bool{}
+		for i := range items {
+			item := &items[i]
+			token := strings.TrimSpace(item.Token)
+			if item.Source != "cloud" || item.HubOrigin == "" || !fileCompanionShareTokenMatch.MatchString(token) || dismissed[token] {
+				continue
+			}
+			origin := fileCompanionHubOrigin(item.HubOrigin)
+			if origin == "" {
+				continue
+			}
+			key := origin + "\n" + token
+			seenRemote[key] = true
+			row, found := remoteByKey[key]
+			if !found {
+				// remote_shares is a capped set of group invites, not every
+				// foreign share. A public link from another Hub, or a group
+				// past that cap, is absent on every poll. Treating the absence
+				// as a deletion made the next home chat download the full
+				// list. A share that really left still changes remote_seq. When
+				// no counter in this snapshot was applied, that poll takes the
+				// list. When a transcript moved in the same snapshot, the
+				// deletion waits for the ten-minute reconcile.
+				continue
+			}
+			if fileCompanionShareChangeNeedsList(row, *item) {
+				structural = true
+			}
+			if row.ChatRevision > item.ChatRevision {
+				item.ChatRevision = row.ChatRevision
+				changed = true
+			}
+			if row.MarksRevision > item.MarksRevision {
+				item.MarksRevision = row.MarksRevision
+				changed = true
+			}
+		}
+		for key, row := range remoteByKey {
+			if seenRemote[key] || dismissed[row.Token] {
+				continue
+			}
+			structural = true
+			break
+		}
+	}
+	if !changed {
+		return false, structural
+	}
+	if err := a.writeFileCompanionLibraryLocked(items); err != nil {
+		return false, true
+	}
+	return true, structural
+}
+
+// emitFileCompanionLibrarySettle publishes the library already stored. The
+// snapshot itself is empty; the stamp reads the disk, so a transcript counter
+// written just before this call is what the open chat fetches.
+func (a *App) emitFileCompanionLibrarySettle(notice string) {
+	if a == nil {
+		return
+	}
+	listed := FileCompanionLibraryList{
+		Notice:      notice,
+		Syncing:     false,
+		SyncGen:     fileCompanionLibrarySyncGen.Add(1),
+		NotesReply:  a.fileCompanionNotesReply.Load(),
+		NotesReview: a.fileCompanionNotesReview.Load(),
+	}
+	a.emitEvent("file-companion:library", a.stampFileCompanionLibraryList(listed))
+}
+
+// catchUpFileCompanionShareLiveCounters publishes a host transcript that
+// arrived while a download or a revocation probe is still running. The heavy
+// refresh stays single-flight, and waiting for it is what left the
+// participant's chat behind the host's line.
+func (a *App) catchUpFileCompanionShareLiveCounters() {
+	if a == nil || !fileCompanionShareLiveOnce.CompareAndSwap(false, true) {
+		return
+	}
+	defer fileCompanionShareLiveOnce.Store(false)
+	hub, viewer, err := a.fileCompanionHubLogin()
+	if err != nil {
+		return
+	}
+	changes, err := a.fetchFileCompanionShareChanges(hub, viewer)
+	if err != nil || !changes.HasShares {
+		return
+	}
+	moved, _ := a.applyFileCompanionShareLiveCounters(changes)
+	if moved {
+		a.emitFileCompanionLibrarySettle("")
+	}
+}
+
+// recordFileCompanionShareListWatermark pins the sequences to the list this
+// refresh actually fetched, while that response is the newest fact it has.
+// A hub switch in flight leaves the new hub's state alone.
+func recordFileCompanionShareListWatermark(hub string, mark fileCompanionShareWatermark) {
+	st := &fileCompanionShareRefreshCheck
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.hub != hub {
+		return
+	}
+	st.seq = mark.seq
+	st.remoteSeq = mark.remoteSeq
 }
 
 // noteFileCompanionShareFullRefresh records that a full refresh succeeded, so
-// the next pre-check has a sequence to compare and a clock to age against.
+// the next pre-check has a clock to age against. The sequences were pinned
+// when the list itself was fetched.
 func noteFileCompanionShareFullRefresh(hub string) {
 	st := &fileCompanionShareRefreshCheck
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	st.hub = hub
+	if st.hub != hub {
+		return
+	}
 	st.fullDone = true
 	st.lastFull = time.Now()
-	st.seq = fileCompanionShareListSeq.Load()
-	st.remoteSeq = fileCompanionShareRemoteSeq.Load()
 }
 
 // FileCompanionLibraryItem is one row in 文档管理.
@@ -300,6 +636,12 @@ type FileCompanionLibraryItem struct {
 	// Bookmarks is the same import-only value for named places on the paper.
 	// A legacy project omits it and leaves a reader's own bookmarks alone.
 	Bookmarks string `json:"bookmarks,omitempty"`
+	// KeptShareCopy marks a 本机项目 row whose file still lives inside a
+	// retired share's library-files/<token> directory. The owner's own copy
+	// is a local project once the share is gone, so the share-cleanup passes
+	// that delete download directories must leave this file alone. A
+	// participant's copy never gets this flag: it is removed with the share.
+	KeptShareCopy bool `json:"keptShareCopy,omitempty"`
 }
 
 // FileCompanionShareNote is one reader's discussion on a shared paper.
@@ -650,6 +992,12 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 	// The hub index published during the read is newer and stays on screen
 	// even when this answer is applied first.
 	started := a.startFileCompanionLibrarySync()
+	// A download already in flight must not hide the host's next line. The
+	// changes feed carries the transcript counter, and the open chat fetches
+	// that blob without waiting for the project zip.
+	if !started && fileCompanionLibrarySyncRunning.Load() {
+		go a.catchUpFileCompanionShareLiveCounters()
+	}
 	phase := fileCompanionLibrarySyncPhase.Load()
 	running := started || phase != fileCompanionLibrarySyncIdle
 	var gen uint64
@@ -727,8 +1075,38 @@ func (a *App) startFileCompanionLibrarySync() bool {
 		}()
 		// The fast poll ticks every few seconds while a share is open. When
 		// the Hub reports no change since the last full refresh, skip the
-		// share list, revocation probes, and downloads.
-		if quiet, notice := a.fileCompanionShareRefreshQuiet(hub, viewer, loginErr == nil); quiet {
+		// share list, revocation probes, and downloads. A host line only
+		// moves chat_revision. That counter is in this same small response,
+		// so the open chat can fetch the transcript without the share list.
+		quiet, notice, look := a.fileCompanionShareRefreshQuiet(hub, viewer, loginErr == nil)
+		if !quiet && look.HasShares {
+			moved, structural := a.applyFileCompanionShareLiveCounters(look)
+			st := &fileCompanionShareRefreshCheck
+			st.mu.Lock()
+			remoteMoved := st.hub == hub && look.RemoteSeq != st.remoteSeq
+			st.mu.Unlock()
+			// An older Hub only sends remote_seq. A newer one also sends the
+			// foreign counters, and apply already decided whether they need
+			// the list. Forcing the list here made every cross-hub chat wait
+			// on the share list, the probes, and the zip.
+			if remoteMoved && !look.HasRemoteShares {
+				structural = true
+			}
+			if moved {
+				a.emitFileCompanionLibrarySettle("")
+			}
+			// Skip the share list only when the new sequence is a transcript
+			// or marks counter we just published. A host transfer, a new
+			// audience, or an expiry bumps the same sequence without moving
+			// those counters, and skipping it would hide them until the
+			// ten-minute reconcile. A sequence bump this feed cannot explain
+			// still takes the list.
+			if moved && !structural && !look.ForceFull {
+				recordFileCompanionShareListWatermark(hub, fileCompanionShareWatermark{seq: look.Seq, remoteSeq: look.RemoteSeq})
+				return
+			}
+		}
+		if quiet {
 			// The hub list is not worth fetching: nothing changed, the reader
 			// is signed out, or the hub cannot be reached. Settle the panel on
 			// the library as it is now. Leaving the opening answer marked
@@ -737,14 +1115,7 @@ func (a *App) startFileCompanionLibrarySync() bool {
 			// The notice is the one the full list would have shown. Stamp reads
 			// the disk once; an empty snapshot adds nothing a later delete did
 			// not save.
-			listed := FileCompanionLibraryList{
-				Notice:      notice,
-				Syncing:     false,
-				SyncGen:     fileCompanionLibrarySyncGen.Add(1),
-				NotesReply:  a.fileCompanionNotesReply.Load(),
-				NotesReview: a.fileCompanionNotesReview.Load(),
-			}
-			a.emitEvent("file-companion:library", a.stampFileCompanionLibraryList(listed))
+			a.emitFileCompanionLibrarySettle(notice)
 			return
 		}
 		fileCompanionLibrarySyncPhase.Store(fileCompanionLibrarySyncRefresh)
@@ -844,7 +1215,7 @@ func (a *App) listFileCompanionLibrary() (FileCompanionLibraryList, error) {
 		// the revision the first refresh already stored, instead of downloading
 		// the same project twice and writing an older library over the newer one.
 		fileCompanionLibraryRefreshMu.Lock()
-		remote, notesReply, notesReview, _, err := a.fetchFileCompanionShareList(hub, viewer)
+		remote, notesReply, notesReview, _, mark, err := a.fetchFileCompanionShareList(hub, viewer)
 		if err != nil {
 			fileCompanionLibraryRefreshMu.Unlock()
 			var status *fileCompanionShareStatus
@@ -854,6 +1225,7 @@ func (a *App) listFileCompanionLibrary() (FileCompanionLibraryList, error) {
 				notice = fileCompanionLibraryOfflineNotice
 			}
 		} else {
+			recordFileCompanionShareListWatermark(hub, mark)
 			a.fileCompanionNotesReply.Store(notesReply)
 			a.fileCompanionNotesReview.Store(notesReview)
 			// A received link can disappear from the list because the host
@@ -1313,9 +1685,20 @@ func reconcileFileCompanionLibrary(fresh, snapshot []FileCompanionLibraryItem, d
 						item.Notes = updated.Notes
 						item.NotesRevision = updated.NotesRevision
 					}
+					// The changes feed can land a newer transcript while this
+					// refresh's snapshot was still the previous one. A higher
+					// document revision must not throw that counter away.
+					if updated.ChatRevision > item.ChatRevision {
+						item.ChatRevision = updated.ChatRevision
+					}
+					if updated.MarksRevision > item.MarksRevision {
+						item.MarksRevision = updated.MarksRevision
+					}
 				} else {
 					keptNotes := item.Notes
 					keptRev := item.NotesRevision
+					keptChat := item.ChatRevision
+					keptMarks := item.MarksRevision
 					keptPath := strings.TrimSpace(item.Path)
 					sameRevision := item.Revision == updated.Revision
 					item = updated
@@ -1331,6 +1714,12 @@ func reconcileFileCompanionLibrary(fresh, snapshot []FileCompanionLibraryItem, d
 					if keptRev > item.NotesRevision {
 						item.Notes = keptNotes
 						item.NotesRevision = keptRev
+					}
+					if keptChat > item.ChatRevision {
+						item.ChatRevision = keptChat
+					}
+					if keptMarks > item.MarksRevision {
+						item.MarksRevision = keptMarks
 					}
 				}
 			}
@@ -1516,12 +1905,48 @@ func foldFileCompanionPromotedLocalsLive(items []FileCompanionLibraryItem, liveT
 
 // fileCompanionOwnLocalRow is the 本机项目 row for a file whose cloud project
 // is going away. exceptToken is the share being retired and does not count as
-// another owner of the file. A downloaded copy, a file another live share
-// still names, or a local row that is already there gets nothing.
-func fileCompanionOwnLocalRow(a *App, items []FileCompanionLibraryItem, path, name string, size int64, exceptToken string) (FileCompanionLibraryItem, bool) {
+// another owner of the file. A file another live share still names, or a
+// local row that is already there, gets nothing.
+//
+// mine says the cloud row was this account's own share. The author's paper
+// outside library-files comes back unchanged. The copy a refresh downloaded
+// under library-files/<token> is also the owner's document — the original
+// was missing or this is a second machine — so it returns to 本机项目 marked
+// KeptShareCopy instead of being cleared with the share. A participant's
+// copy is not the reader's document and still gets nothing.
+func fileCompanionOwnLocalRow(a *App, items []FileCompanionLibraryItem, mine bool, exceptToken, path, name string, size int64) (FileCompanionLibraryItem, bool) {
 	path = strings.TrimSpace(path)
-	if a == nil || path == "" || !fileCompanionLibraryFileExists(path) || fileCompanionInstalledShareCopy(a, path) {
+	if a == nil || !fileCompanionShareTokenMatch.MatchString(exceptToken) {
 		return FileCompanionLibraryItem{}, false
+	}
+	kept := ""
+	pathExists := fileCompanionLibraryFileExists(path)
+	if pathExists && !fileCompanionInstalledShareCopy(a, path) {
+		kept = path
+	} else if mine {
+		// The author's own file is gone or the row never had one. The share
+		// sidecar may still remember the original, and the refresh may have
+		// left a downloaded copy — either is the owner's document.
+		remembered := strings.TrimSpace(a.readFileCompanionSharePathsLocked()[exceptToken])
+		rememberedOK := remembered != "" && fileCompanionLibraryFileExists(remembered)
+		switch {
+		case rememberedOK && !fileCompanionInstalledShareCopy(a, remembered):
+			kept = remembered
+		case pathExists:
+			kept = path
+		case rememberedOK:
+			kept = remembered
+		default:
+			dir := filepath.Join(a.GetDataDir(), "file-companion", "library-files", exceptToken)
+			kept = fileCompanionOneInstalledShareFile(dir)
+		}
+	}
+	if kept == "" {
+		return FileCompanionLibraryItem{}, false
+	}
+	path = kept
+	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+		size = info.Size()
 	}
 	// One canonical key for this file. Each row is compared cheaply first so
 	// a library refresh does not resolve every path while holding the lock.
@@ -1559,12 +1984,13 @@ func fileCompanionOwnLocalRow(a *App, items []FileCompanionLibraryItem, path, na
 		name = filepath.Base(path)
 	}
 	return FileCompanionLibraryItem{
-		ID:       fileCompanionLibraryLocalID(path),
-		Name:     name,
-		Path:     path,
-		Source:   "local",
-		OpenedAt: time.Now().UTC().Format(time.RFC3339),
-		Size:     size,
+		ID:            fileCompanionLibraryLocalID(path),
+		Name:          name,
+		Path:          path,
+		Source:        "local",
+		OpenedAt:      time.Now().UTC().Format(time.RFC3339),
+		Size:          size,
+		KeptShareCopy: fileCompanionInstalledShareCopy(a, path),
 	}, true
 }
 
@@ -1677,37 +2103,34 @@ func fileCompanionShareAuthorize(req *http.Request, viewer, grant string) {
 	}
 }
 
-func (a *App) fetchFileCompanionShares(hub, viewer string) ([]FileCompanionLibraryItem, error) {
-	items, _, _, _, err := a.fetchFileCompanionShareList(hub, viewer)
-	return items, err
-}
-
 // fetchFileCompanionShareList also reports whether the Hub records host
 // replies and whether reader notes wait for host review, plus the Hub's own
 // clock. An older Hub omits both flags, and the owner machine then leaves the
 // discussion to its owner instead of answering every note as if new. The
 // server time keeps the discussion watermark on the same clock as the note
 // timestamps; comparing a Hub-created note with a locally created install time
-// can skip live notes when the clocks disagree.
-func (a *App) fetchFileCompanionShareList(hub, viewer string) ([]FileCompanionLibraryItem, bool, bool, time.Time, error) {
+// can skip live notes when the clocks disagree. The watermark belongs to this
+// response alone; the caller records it for its own poll.
+func (a *App) fetchFileCompanionShareList(hub, viewer string) ([]FileCompanionLibraryItem, bool, bool, time.Time, fileCompanionShareWatermark, error) {
+	var mark fileCompanionShareWatermark
 	req, err := http.NewRequest(http.MethodGet, hub+"/api/mobile/documents/shares", nil)
 	if err != nil {
-		return nil, false, false, time.Time{}, err
+		return nil, false, false, time.Time{}, mark, err
 	}
 	req.Header.Set("Authorization", "Bearer "+viewer)
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, false, false, time.Time{}, err
+		return nil, false, false, time.Time{}, mark, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, false, false, time.Time{}, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
+		return nil, false, false, time.Time{}, mark, &fileCompanionShareStatus{status: resp.StatusCode, message: fileCompanionShareMessage(body)}
 	}
 	if etag := strings.Trim(resp.Header.Get("ETag"), `"`); etag != "" {
 		if value, convErr := strconv.ParseUint(etag, 10, 64); convErr == nil {
-			fileCompanionShareListSeq.Store(value)
+			mark.seq = value
 		}
 	}
 	var payload struct {
@@ -1719,9 +2142,9 @@ func (a *App) fetchFileCompanionShareList(hub, viewer string) ([]FileCompanionLi
 		RemoteSeq   uint64                   `json:"remote_seq"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
-		return nil, false, false, time.Time{}, errors.New("云端分享记录无法读取")
+		return nil, false, false, time.Time{}, mark, errors.New("云端分享记录无法读取")
 	}
-	fileCompanionShareRemoteSeq.Store(payload.RemoteSeq)
+	mark.remoteSeq = payload.RemoteSeq
 	serverTime, _ := time.Parse(time.RFC3339, strings.TrimSpace(payload.ServerTime))
 	out := make([]FileCompanionLibraryItem, 0, len(payload.Mine)+len(payload.Received))
 	out = append(out, libraryItemsFromShares(payload.Mine, true, hub)...)
@@ -1733,7 +2156,7 @@ func (a *App) fetchFileCompanionShareList(hub, viewer string) ([]FileCompanionLi
 			_ = a.saveFileCompanionShareGrant(token, grant)
 		}
 	}
-	return out, payload.NotesReply, payload.NotesReview, serverTime, nil
+	return out, payload.NotesReply, payload.NotesReview, serverTime, mark, nil
 }
 
 func libraryItemsFromShares(views []fileCompanionShareView, mine bool, hub string) []FileCompanionLibraryItem {
@@ -2637,10 +3060,11 @@ func (a *App) retireFileCompanionShareReason(token string, byUser bool) FileComp
 	var ownPath, ownName string
 	var ownSize int64
 	found := false
+	mine := false
 	kept := make([]FileCompanionLibraryItem, 0, len(items)+1)
 	for _, item := range items {
 		if item.Source == "cloud" && item.Token == token {
-			ownPath, ownName, ownSize = item.Path, item.Name, item.Size
+			ownPath, ownName, ownSize, mine = item.Path, item.Name, item.Size, item.Mine
 			found = true
 			continue
 		}
@@ -2648,7 +3072,7 @@ func (a *App) retireFileCompanionShareReason(token string, byUser bool) FileComp
 	}
 	var restoredID, restoredPath, restoredName string
 	var restoredSize int64
-	if row, ok := fileCompanionOwnLocalRow(a, kept, ownPath, ownName, ownSize, token); ok {
+	if row, ok := fileCompanionOwnLocalRow(a, kept, mine, token, ownPath, ownName, ownSize); ok {
 		kept = append([]FileCompanionLibraryItem{row}, kept...)
 		kept = trimFileCompanionLibrary(kept, fileCompanionLibraryCap)
 		found = true
@@ -2801,7 +3225,7 @@ func (a *App) DeleteFileCompanionProject(id, path string) (FileCompanionProjectD
 	localID := ""
 	localSize := int64(0)
 	if found.Source == "cloud" && found.Mine {
-		if row, ok := fileCompanionOwnLocalRow(a, kept, path, found.Name, found.Size, found.Token); ok {
+		if row, ok := fileCompanionOwnLocalRow(a, kept, true, found.Token, path, found.Name, found.Size); ok {
 			kept = append([]FileCompanionLibraryItem{row}, kept...)
 			kept = trimFileCompanionLibrary(kept, fileCompanionLibraryCap)
 			restored = true

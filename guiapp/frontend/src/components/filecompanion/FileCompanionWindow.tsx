@@ -1646,14 +1646,13 @@ const NoteStampAnswer = memo(function NoteStampAnswer({ text, path, web, preview
     onBlocked: (sentence: string) => void;
 }) {
     const { assistantTheme } = useCompanionAppearance();
-    // Models sometimes wrap a formula in backticks. The Markdown painter keeps
-    // code literal by design, so normalize formula-shaped code before it sees it.
-    const displayText = useMemo(() => companionCodeMathToTex(text), [text]);
-    const blocks = useMemo(() => noteAnswerBlocks(displayText), [displayText]);
+    // `text` is already companionCodeMathToTex output from the row. Scanning
+    // again re-parses KaTeX on every parent render.
+    const blocks = useMemo(() => noteAnswerBlocks(text), [text]);
     if (!blocks.some((block) => block.kind === "stamp")) {
         return (
             <MessageContentRenderer
-                content={displayText}
+                content={text}
                 theme={assistantTheme}
                 isUser={false}
                 isStreaming={streaming}
@@ -1741,7 +1740,14 @@ const CompanionChatMessageRow = memo(function CompanionChatMessageRow({
         : resolveVisibleAssistantReply(message.text, cleanedReasoning, { live: streaming });
     const displayReasoning = stripAssistantToolCallMarkers(visibleReply.reasoning).trim();
     const paperPending = !mine && !message.resultPath && paperRequestIds.current.has(paperRequestOf(message.id));
-    const answerText = companionCommandBubble(uiLang, message.resultPath ? cs("已生成论文解读") : paperPending ? cs("正在生成论文解读…") : companionMessageExportText(message, streaming));
+    // The visible body was just resolved above. Export text resolves it again,
+    // which repeats the formula scan on every streamed token.
+    const answerSource = message.resultPath || paperPending
+        ? ""
+        : mine
+            ? companionMessageExportText(message, streaming)
+            : companionCodeMathToTex(visibleReply.content);
+    const answerText = companionCommandBubble(uiLang, message.resultPath ? cs("已生成论文解读") : paperPending ? cs("正在生成论文解读…") : answerSource);
     // Both controls work on finished Markdown. Mid-stream text would copy a
     // half answer, and the paper reply exports through its own result card.
     const shareable = !mine && !streaming && !message.resultPath && !paperPending && answerText.trim().length > 0;
@@ -1808,7 +1814,7 @@ const CompanionChatMessageRow = memo(function CompanionChatMessageRow({
                     {message.noteCardPath ? <NoteResultCard filePath={message.noteCardPath} messageId={message.id} lang={uiLang} /> : null}
                     {message.files && message.files.length > 0 ? <CompanionFileCard files={message.files} messageId={message.id} lang={uiLang} /> : null}
                     {!mine && message.figures && message.figures.length > 0 ? (
-                        <CompanionFigureStrip figures={message.figures} messageId={message.id} lang={uiLang} />
+                        <CompanionFigureStrip figures={message.figures} messageId={message.id} lang={uiLang} docPath={path} />
                     ) : null}
                     {messageReview ? (
                         <p data-testid={`file-companion-message-review-${messageReview.noteId}`} data-tone={messageReview.tone} style={{ margin: "6px 0 0", fontSize: 12, lineHeight: 1.4, opacity: 0.92 }}>{messageReview.label}</p>
@@ -1825,6 +1831,7 @@ const CompanionDiscussionReplyRow = memo(function CompanionDiscussionReplyRow({ 
     uiLang: string;
     theme: AssistantTheme;
 }) {
+    const replyMarkdown = companionCodeMathToTex(message.text);
     return (
         <div
             data-testid={`file-companion-share-reply-${message.id.replace(/^share-note-/, "")}`}
@@ -1845,7 +1852,7 @@ const CompanionDiscussionReplyRow = memo(function CompanionDiscussionReplyRow({ 
                     overflowWrap: "anywhere",
                 }}
             >
-                <CompanionMessageActions path={path} markdown={companionCodeMathToTex(message.text)} messageId={message.id} />
+                <CompanionMessageActions path={path} markdown={replyMarkdown} messageId={message.id} />
                 <p data-testid="file-companion-share-reply-kicker" style={{ margin: "0 0 4px", fontSize: 12, color: "var(--theme-text-muted, #5b6b80)" }}>
                     {cs("主持人回复")}
                 </p>
@@ -1855,7 +1862,7 @@ const CompanionDiscussionReplyRow = memo(function CompanionDiscussionReplyRow({ 
                     </p>
                 ) : null}
                 <MessageContentRenderer
-                    content={companionCodeMathToTex(message.text)}
+                    content={replyMarkdown}
                     theme={theme}
                     isUser={false}
                     isStreaming={false}
@@ -4130,8 +4137,9 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 }
                 return { ...tab, messages, status: "" };
             }));
-            // The finished answer is the other half of what participants see.
-            // A turn the reader stopped does not publish that partial.
+            // The question was published when the turn started. This push sends
+            // the finished answer. A turn the reader stopped does not publish
+            // that partial.
             if (!stopped && !errText && matched) pushShareTranscriptRef.current(matched.path);
             if (reloadPath) void openPath(reloadPath, false, true);
         };
@@ -5752,8 +5760,8 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 ...(selection && selectionStart >= 0 ? { selection_start: selectionStart } : {}),
                             }),
                     });
-                    // The host's question is part of the transcript participants
-                    // are reading, so it goes out with the turn, not at 同步.
+                    // The question already went out at the start of the turn. This
+                    // push is the finished answer.
                     pushShareTranscriptRef.current(tabPath);
                 }
             } catch (err) {

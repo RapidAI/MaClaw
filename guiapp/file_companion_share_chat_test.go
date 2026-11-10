@@ -323,3 +323,154 @@ func TestFetchFileCompanionShareChatLeavesAnInFlightTurnAlone(t *testing.T) {
 		t.Fatalf("in-flight session was replaced: %#v", history)
 	}
 }
+
+// The host's question is uploaded when the turn starts, carrying the revision
+// it read, so a later answer can replace it and a late copy of the question
+// cannot replace the answer.
+func TestPublishFileCompanionShareQuestionBeforeTheAnswer(t *testing.T) {
+	const token = "cd_abcdefabcdefabcdefabcdefabcdefab"
+	var body string
+	var base string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/mobile/documents/shares/"+token+"/chat" {
+			http.NotFound(w, r)
+			return
+		}
+		raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		body = string(raw)
+		base = r.Header.Get("X-Companion-Chat-Base")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"token":%q,"revision":1,"chat_revision":5}`, token)
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	t.Cleanup(func() {
+		if app.imHandler != nil && app.imHandler.memory != nil {
+			app.imHandler.memory.Stop()
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	app.ctx = ctx
+	paper := filepath.Join(app.testHomeDir, "a.pdf")
+	if err := os.WriteFile(paper, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "a.pdf", Path: paper, Source: "cloud",
+		Visibility: "public", Mine: true, Host: true, HostKnown: true,
+		Revision: 1, ChatRevision: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.writeFileCompanionProjectSession(fileCompanionSessionID(paper), []FileCompanionMessage{
+		{Role: "user", Text: "主持人的新问题"},
+		{Role: "assistant", Text: "上一轮回答"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.publishFileCompanionShareQuestion(paper, "主持人的新问题")
+	if base != "4" {
+		t.Fatalf("question base = %q, want 4", base)
+	}
+	if strings.Count(body, "主持人的新问题") != 2 || !strings.Contains(body, "上一轮回答") {
+		t.Fatalf("question body = %s", body)
+	}
+	if got := libraryChatRevision(t, app, token); got != 5 {
+		t.Fatalf("library chat revision = %d, want 5", got)
+	}
+}
+
+func TestFileCompanionChatBodyAhead(t *testing.T) {
+	local := []byte(`[{"role":"user","text":"问"},{"role":"assistant","text":"答"}]`)
+	question := []byte(`[{"role":"user","text":"问"}]`)
+	if !fileCompanionChatBodyAhead(local, question) {
+		t.Fatal("the answer should replace the question that started the turn")
+	}
+	newer := []byte(`[{"role":"user","text":"问"},{"role":"assistant","text":"答"},{"role":"user","text":"下一问"}]`)
+	if fileCompanionChatBodyAhead(local, newer) {
+		t.Fatal("an older answer must not replace a question that already landed")
+	}
+	if fileCompanionChatBodyAhead(local, local) {
+		t.Fatal("the same transcript should stay")
+	}
+}
+
+// An answer that lost the race with the next question must not replace it.
+func TestSyncFileCompanionShareChatKeepsANewerQuestion(t *testing.T) {
+	const token = "cd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	var posts int
+	const newer = `[{"role":"user","text":"问"},{"role":"assistant","text":"答"},{"role":"user","text":"下一问"}]`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/mobile/documents/shares/"+token+"/chat" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			w.Header().Set("X-Companion-Chat-Revision", "2")
+			_, _ = io.WriteString(w, newer)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		posts++
+		if got := r.Header.Get("X-Companion-Chat-Base"); got != "1" {
+			t.Errorf("base = %q", got)
+		}
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"code":"CHAT_STALE","chat_revision":2}`)
+	}))
+	defer server.Close()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"},
+	}
+	t.Cleanup(func() {
+		if app.imHandler != nil && app.imHandler.memory != nil {
+			app.imHandler.memory.Stop()
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	app.ctx = ctx
+	app.seedFileCompanionPaths(nil)
+	source := filepath.Join(t.TempDir(), "论文.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := app.FileCompanionOpen(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.upsertFileCompanionCloud(FileCompanionLibraryItem{
+		ID: token, Token: token, Name: "论文.pdf", Path: opened.Path,
+		Source: "cloud", Visibility: "person", Mine: true, Host: true, HostKnown: true,
+		Revision: 1, ChatRevision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.writeFileCompanionProjectSession(fileCompanionSessionID(opened.Path), []FileCompanionMessage{
+		{Role: "user", Text: "问"},
+		{Role: "assistant", Text: "答"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := app.SyncFileCompanionShareChat(opened.Path, "[]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if posts != 1 {
+		t.Fatalf("posted %d times", posts)
+	}
+	if result.ChatRevision != 2 {
+		t.Fatalf("chat revision = %d, want 2", result.ChatRevision)
+	}
+}

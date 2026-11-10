@@ -486,5 +486,5 @@ func trimRemoteControlText(value string, limit int) string {
 	if len(runes) <= limit {
 		return value
 	}
-	return string(runes[:limit])
+	return string(runes[:limit]) + "…"
 }
