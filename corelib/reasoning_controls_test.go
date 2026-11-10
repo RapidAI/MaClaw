@@ -417,6 +417,97 @@ func TestApplyReasoningControlsAgnesClampsUnsupportedEfforts(t *testing.T) {
 	}
 }
 
+func TestApplyReasoningControlsMistralDeepSeekModelKeepsOpenAISpelling(t *testing.T) {
+	// Mistral hosts DeepSeek-family models by id, but its strict chat schema
+	// rejects the DeepSeek thinking object with HTTP 422. Reasoning choices
+	// travel as reasoning_effort instead.
+	body := map[string]interface{}{}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://api.mistral.ai/v1", Model: "deepseek-v4-1-flash-1017", ThinkingMode: "high"},
+		body,
+		ReasoningAPIChat,
+	)
+	if got := body["reasoning_effort"]; got != "high" {
+		t.Fatalf("mistral deepseek reasoning_effort = %#v, want high", got)
+	}
+	if _, exists := body["thinking"]; exists {
+		t.Fatalf("mistral request must not carry the thinking object: %#v", body)
+	}
+}
+
+func TestApplyReasoningControlsMistralAutoLeavesDefaults(t *testing.T) {
+	// Auto plus a hosted DeepSeek model must not acquire a DeepSeek thinking
+	// object on Mistral: the endpoint fails 422 for that field regardless of
+	// the model id behind it.
+	body := map[string]interface{}{}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://api.mistral.ai/v1", Model: "deepseek-v4-1-flash-1017"},
+		body,
+		ReasoningAPIChat,
+	)
+	for _, key := range []string{"thinking", "reasoning", "reasoning_effort", "enable_thinking"} {
+		if _, exists := body[key]; exists {
+			t.Fatalf("mistral auto request must omit %q: %#v", key, body)
+		}
+	}
+}
+
+func TestApplyReasoningControlsMistralDisabledOmitsControl(t *testing.T) {
+	// Mistral rejects reasoning_effort=minimal, and its fieldless default
+	// already serves the no-reasoning behavior, so disabled omits the control.
+	body := map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://api.mistral.ai/v1", Model: "deepseek-v4-1-flash-1017", ThinkingMode: "disabled"},
+		body,
+		ReasoningAPIChat,
+	)
+	for _, key := range []string{"thinking", "reasoning", "reasoning_effort", "enable_thinking"} {
+		if _, exists := body[key]; exists {
+			t.Fatalf("mistral disabled request must omit %q: %#v", key, body)
+		}
+	}
+}
+
+func TestApplyReasoningControlsMistralClampsUnsupportedEfforts(t *testing.T) {
+	// Hosted reasoning models on Mistral validate the effort against
+	// {low, high}: medium and minimal clamp to low, xhigh to high.
+	for _, tc := range []struct {
+		effort string
+		want   string
+	}{
+		{effort: "medium", want: "low"},
+		{effort: "minimal", want: "low"},
+		{effort: "xhigh", want: "high"},
+	} {
+		body := map[string]interface{}{}
+		ApplyReasoningControls(
+			MaclawLLMConfig{URL: "https://api.mistral.ai/v1", Model: "deepseek-v4-1-flash-1017", ThinkingMode: "enabled", ReasoningEffort: tc.effort},
+			body,
+			ReasoningAPIChat,
+		)
+		if got := body["reasoning_effort"]; got != tc.want {
+			t.Fatalf("mistral %s clamp = %#v, want %s", tc.effort, got, tc.want)
+		}
+	}
+}
+
+func TestRetargetReasoningControlsUpstreamMistralRewritesThinkingObject(t *testing.T) {
+	// A DeepSeek-style thinking object forwarded to Mistral must become
+	// reasoning_effort; otherwise the strict schema fails the request 422.
+	body := map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}
+	RetargetReasoningControlsForUpstream(
+		MaclawLLMConfig{URL: "https://api.mistral.ai/v1", Model: "mistral-large-latest"},
+		body,
+		ReasoningAPIChat,
+	)
+	if got := body["reasoning_effort"]; got != "low" {
+		t.Fatalf("retargeted mistral reasoning_effort = %#v, want low (medium clamp)", got)
+	}
+	if _, exists := body["thinking"]; exists {
+		t.Fatalf("retargeted mistral body must not keep the thinking object: %#v", body)
+	}
+}
+
 func TestRetargetReasoningControlsForUpstream(t *testing.T) {
 	// A DeepSeek-style thinking object forwarded to Agnes must become
 	// reasoning_effort; otherwise Agnes silently skips reasoning.

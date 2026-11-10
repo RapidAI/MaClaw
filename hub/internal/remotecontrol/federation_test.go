@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -160,5 +161,89 @@ func TestFederatedInviteExpiryCannotBeAccepted(t *testing.T) {
 	}
 	if _, err := controller.AcceptFederated(ctx, grant.ID, testFederationSecret, "mac-c", "对方电脑"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expired accept err = %v", err)
+	}
+}
+
+func TestFederatedAcceptConcurrentCallsNotifyOnce(t *testing.T) {
+	controller, _, _, notes := testService(t)
+	controller.db.SetMaxOpenConns(1)
+	target, _, _, _ := testService(t)
+	grant := importTestFederatedInvite(t, controller, target)
+	ctx := context.Background()
+	const calls = 12
+	var wg sync.WaitGroup
+	errs := make(chan error, calls)
+	for i := 0; i < calls; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := controller.AcceptFederated(ctx, grant.ID, testFederationSecret, "mac-c", "对方电脑")
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(notes.items) != 1 {
+		t.Fatalf("concurrent accept notices = %d", len(notes.items))
+	}
+	stored, err := controller.FederationGrant(ctx, grant.ID, testFederationSecret)
+	if err != nil || stored.Status != StatusActive {
+		t.Fatalf("grant = %+v err=%v", stored, err)
+	}
+}
+
+func TestFederatedAcceptCannotReviveConcurrentRevoke(t *testing.T) {
+	controller, _, _, _ := testService(t)
+	controller.db.SetMaxOpenConns(1)
+	target, _, _, _ := testService(t)
+	grant := importTestFederatedInvite(t, controller, target)
+	ctx := context.Background()
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, _ = controller.AcceptFederated(ctx, grant.ID, testFederationSecret, "mac-c", "对方电脑")
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_ = controller.RevokeFederated(ctx, grant.ID, testFederationSecret, false)
+	}()
+	close(start)
+	wg.Wait()
+	stored, err := controller.FederationGrant(ctx, grant.ID, testFederationSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != StatusRevoked {
+		t.Fatalf("accepted an already revoked grant: %+v", stored)
+	}
+}
+
+func TestFederatedImportRetriesFailedNotification(t *testing.T) {
+	controller, _, _, _ := testService(t)
+	target, _, _, notes := testService(t)
+	notes.fail = errors.New("notification unavailable")
+	grant := importTestFederatedInvite(t, controller, target)
+	if len(notes.items) != 0 {
+		t.Fatal("failed notification was recorded as sent")
+	}
+	notes.fail = nil
+	if err := target.ImportFederatedInvite(context.Background(), grant); err != nil {
+		t.Fatal(err)
+	}
+	if len(notes.items) != 1 || notes.items[0].Source != NoticeInvite {
+		t.Fatalf("retry notices = %+v", notes.items)
+	}
+	stored, err := target.FederationGrant(context.Background(), grant.ID, testFederationSecret)
+	if err != nil || stored.InviteNotificationID == "" {
+		t.Fatalf("notification was not attached: %+v err=%v", stored, err)
 	}
 }

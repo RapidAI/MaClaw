@@ -12,6 +12,7 @@ export const subscriptionUrls: { [key: string]: string } = {
     "百度千帆": "https://cloud.baidu.com/product/codingplan.html",
     "Codex": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
     "DeepSeek": "https://platform.deepseek.com/api_keys",
+    "Mistral AI": "https://console.mistral.ai/api-keys",
     "Google AI Studio": "https://aistudio.google.com/apikey",
     "XiaoMi": "https://platform.xiaomimimo.com/#/console/api-keys",
     "摩尔线程": "https://code.mthreads.com/",
@@ -61,6 +62,7 @@ export const knownProviderEndpoints: ProviderEndpoint[] = [
     { name: "Together AI", url: "https://api.together.xyz/v1", protocol: "openai", region: "global" },
     { name: "Groq", url: "https://api.groq.com/openai/v1", protocol: "openai", region: "global" },
     { name: "Perplexity", url: "https://api.perplexity.ai", protocol: "openai", region: "global" },
+    { name: "Mistral AI", url: "https://api.mistral.ai/v1", protocol: "openai", region: "global", description: "La Plateforme API key" },
 ];
 
 
@@ -88,6 +90,12 @@ export const recommendedModels: { [provider: string]: { id: string; note?: strin
     "GLM": [{ id: "glm-5.1" }],
     "Kimi": [{ id: "kimi-k2-thinking" }, { id: "kimi-for-coding" }],
     "Doubao": [{ id: "doubao-seed-code-preview-latest" }],
+    "Mistral AI": [
+        { id: "mistral-large-latest", note: "Default" },
+        { id: "mistral-medium-latest" },
+        { id: "mistral-small-latest", note: "Lite" },
+        { id: "codestral-latest", note: "Coding" },
+    ],
     "MiniMax": [{ id: "MiniMax-M2.1" }],
     "DeepSeek": [{ id: "deepseek-chat" }],
     "xAI-Grok": xaiGrokChatModelIds.map(id => (id === "grok-4.7" ? { id, note: "Default" } : { id })),

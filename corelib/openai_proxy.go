@@ -34,6 +34,35 @@ type OpenAIProxyConfig struct {
 	// UsageCallbackSync runs UsageCallback on the request path. The default
 	// async mode keeps skill proxy responses independent from statistics I/O.
 	UsageCallbackSync bool
+	// Upstream is the AI assistant's resolved request config. When set, the
+	// proxy forwards with that snapshot instead of rebuilding a partial one
+	// from the scalar fields above.
+	Upstream MaclawLLMConfig
+	// DecorateUpstream adds the provider headers the AI assistant client adds
+	// (account identity, OAuth markers, Hub workload hints). Nil leaves the
+	// built-in Authorization and User-Agent unchanged.
+	DecorateUpstream func(*http.Request, MaclawLLMConfig)
+	// BaseTransport is the outbound round tripper. The GUI sets the same
+	// proxy-aware pool the AI assistant uses. Nil keeps http.DefaultTransport.
+	BaseTransport http.RoundTripper
+}
+
+// OpenAIProxyConfigFromLLM copies the assistant's resolved request config onto
+// a skill proxy. Scalar fields stay filled for validation and logs; Upstream
+// keeps the account and provider identity those fields cannot express.
+func OpenAIProxyConfigFromLLM(cfg MaclawLLMConfig) OpenAIProxyConfig {
+	return OpenAIProxyConfig{
+		URL:             cfg.URL,
+		Key:             cfg.Key,
+		Model:           cfg.Model,
+		Protocol:        cfg.Protocol,
+		WireAPI:         cfg.WireAPI,
+		AgentType:       cfg.AgentType,
+		AuthType:        cfg.AuthType,
+		ThinkingMode:    cfg.ThinkingMode,
+		ReasoningEffort: cfg.ReasoningEffort,
+		Upstream:        cfg,
+	}
 }
 
 // OpenAIProxyUsage is the token usage observed by the skill-local OpenAI proxy.
@@ -58,12 +87,52 @@ type OpenAIProxy struct {
 
 // NewOpenAIProxy creates a new proxy instance with the given config.
 func NewOpenAIProxy(cfg OpenAIProxyConfig) *OpenAIProxy {
+	timeout := time.Duration(DefaultLLMTimeoutSec) * time.Second
+	if cfg.Upstream.TimeoutSec > 0 {
+		timeout = time.Duration(cfg.Upstream.EffectiveTimeoutSec()) * time.Second
+	}
+	client := &http.Client{Timeout: timeout, Transport: cfg.outboundTransport()}
 	return &OpenAIProxy{
 		config: cfg,
-		client: &http.Client{
-			Timeout: time.Duration(DefaultLLMTimeoutSec) * time.Second,
-		},
+		client: client,
 	}
+}
+
+func (cfg OpenAIProxyConfig) outboundTransport() http.RoundTripper {
+	base := cfg.BaseTransport
+	if cfg.DecorateUpstream == nil {
+		return base
+	}
+	return openAIProxyHeaderTransport{
+		base:     base,
+		cfg:      cfg.resolvedLLMConfig(),
+		decorate: cfg.DecorateUpstream,
+	}
+}
+
+// openAIProxyHeaderTransport stamps assistant-client headers onto the
+// upstream request after the SDK has built it.
+type openAIProxyHeaderTransport struct {
+	base     http.RoundTripper
+	cfg      MaclawLLMConfig
+	decorate func(*http.Request, MaclawLLMConfig)
+}
+
+func (t openAIProxyHeaderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req == nil {
+		return nil, fmt.Errorf("openai proxy: nil upstream request")
+	}
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if t.decorate != nil {
+		// RoundTrip must not mutate the caller's request. The SDK may reuse
+		// the header map after the call returns.
+		req = req.Clone(req.Context())
+		t.decorate(req, t.cfg)
+	}
+	return base.RoundTrip(req)
 }
 
 // ValidateOpenAIProxyUpstreamConfig reports whether a skill-local proxy can
@@ -71,17 +140,18 @@ func NewOpenAIProxy(cfg OpenAIProxyConfig) *OpenAIProxy {
 // providers need a usable key/token; explicit no-auth or loopback providers are
 // allowed for local model servers.
 func ValidateOpenAIProxyUpstreamConfig(cfg OpenAIProxyConfig) error {
-	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+	resolved := cfg.resolvedLLMConfig()
+	if strings.TrimSpace(resolved.URL) == "" || strings.TrimSpace(resolved.Model) == "" {
 		return fmt.Errorf("no LLM provider URL/model is configured")
 	}
-	if strings.TrimSpace(cfg.Key) != "" {
+	if strings.TrimSpace(resolved.Key) != "" {
 		return nil
 	}
-	authType := strings.ToLower(strings.TrimSpace(cfg.AuthType))
+	authType := strings.ToLower(strings.TrimSpace(resolved.AuthType))
 	if authType == "none" {
 		return nil
 	}
-	if isLoopbackOpenAIProxyURL(cfg.URL) {
+	if isLoopbackOpenAIProxyURL(resolved.URL) {
 		return nil
 	}
 	switch authType {
@@ -115,8 +185,9 @@ func (p *OpenAIProxy) Start() (int, error) {
 	p.port = p.listener.Addr().(*net.TCPAddr).Port
 	p.server = &http.Server{Handler: mux}
 
-	log.Printf("[openai-proxy] listening on 127.0.0.1:%d (upstream: %s, protocol: %s, model: %s)",
-		p.port, p.config.URL, p.config.Protocol, p.config.Model)
+	resolved := p.maclawLLMConfig()
+	log.Printf("[openai-proxy] listening on 127.0.0.1:%d (upstream: %s, protocol: %s, model: %s, provider: %s)",
+		p.port, resolved.URL, resolved.Protocol, resolved.Model, resolved.ProviderName)
 
 	go func() {
 		if err := p.server.Serve(p.listener); err != nil && err != http.ErrServerClosed {
@@ -478,10 +549,11 @@ func scanSkillDirForOpenAIEnvUsage(skillDir string) openAIEnvUsage {
 // routeProtocol determines which upstream protocol to use based on config.
 // Returns "anthropic", "responses", or "openai" (default).
 func (p *OpenAIProxy) routeProtocol() string {
-	if strings.EqualFold(p.config.Protocol, "anthropic") {
+	cfg := p.maclawLLMConfig()
+	if strings.EqualFold(cfg.Protocol, "anthropic") {
 		return "anthropic"
 	}
-	w := strings.ToLower(strings.TrimSpace(p.config.WireAPI))
+	w := strings.ToLower(strings.TrimSpace(cfg.WireAPI))
 	if w == "responses" || w == "responses-ws" {
 		return "responses"
 	}
@@ -561,11 +633,11 @@ func (p *OpenAIProxy) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	switch protocol {
 	case "anthropic":
-		respBody, statusCode, forwardErr = p.forwardAnthropic(body)
+		respBody, statusCode, forwardErr = p.forwardAnthropic(r.Context(), body)
 	case "responses":
-		respBody, statusCode, forwardErr = p.forwardResponses(body)
+		respBody, statusCode, forwardErr = p.forwardResponses(r.Context(), body)
 	default:
-		respBody, statusCode, forwardErr = p.forwardOpenAI(body)
+		respBody, statusCode, forwardErr = p.forwardOpenAI(r.Context(), body)
 	}
 
 	// 5. Handle forward error
@@ -586,7 +658,7 @@ func (p *OpenAIProxy) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	p.recordUsage(body, respBody, statusCode)
 
 	// 7. Log at debug level
-	log.Printf("[openai-proxy] protocol=%s url=%s model=%s status=%d", protocol, p.config.URL, originalModel, statusCode)
+	log.Printf("[openai-proxy] protocol=%s url=%s model=%s status=%d", protocol, p.maclawLLMConfig().URL, originalModel, statusCode)
 }
 
 func isOpenAIProxyChatCompletionsPath(path string) bool {
@@ -637,7 +709,7 @@ func (p *OpenAIProxy) handleResponses(w http.ResponseWriter, r *http.Request) {
 	var statusCode int
 	var forwardErr error
 	if p.routeProtocol() == "responses" {
-		respBody, statusCode, forwardErr = p.forwardResponsesRaw(body)
+		respBody, statusCode, forwardErr = p.forwardResponsesRaw(r.Context(), body)
 	} else {
 		chatBody, model, err := openAIProxyResponsesRequestToChat(body)
 		if err != nil {
@@ -652,9 +724,9 @@ func (p *OpenAIProxy) handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 		switch p.routeProtocol() {
 		case "anthropic":
-			respBody, statusCode, forwardErr = p.forwardAnthropic(chatBody)
+			respBody, statusCode, forwardErr = p.forwardAnthropic(r.Context(), chatBody)
 		default:
-			respBody, statusCode, forwardErr = p.forwardOpenAI(chatBody)
+			respBody, statusCode, forwardErr = p.forwardOpenAI(r.Context(), chatBody)
 		}
 		if forwardErr == nil && statusCode < 400 {
 			respBody, forwardErr = openAIProxyChatResponseToResponses(respBody, model)
@@ -804,7 +876,7 @@ func (p *OpenAIProxy) handleModels(w http.ResponseWriter, r *http.Request) bool 
 		})
 		return true
 	}
-	model := strings.TrimSpace(p.config.Model)
+	model := strings.TrimSpace(p.maclawLLMConfig().Model)
 	if model == "" {
 		model = "maclaw-local-proxy"
 	}
@@ -834,15 +906,18 @@ func openAIProxyModelObject(model string) map[string]interface{} {
 
 // forwardOpenAI forwards the request directly to an OpenAI-compatible upstream.
 // It replaces the model field, forces stream: false, and forwards the response as-is.
-func (p *OpenAIProxy) forwardOpenAI(body map[string]interface{}) ([]byte, int, error) {
+func (p *OpenAIProxy) forwardOpenAI(ctx context.Context, body map[string]interface{}) ([]byte, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Work on a shallow copy to avoid mutating the caller's map
 	fwd := make(map[string]interface{}, len(body))
 	for k, v := range body {
 		fwd[k] = v
 	}
 
-	cfg := p.maclawLLMConfig()
-	respBody, statusCode, err := ForwardOpenAICompatRequest(context.Background(), cfg, fwd, p.client, "")
+	cfg := p.openAIWireConfig()
+	respBody, statusCode, err := ForwardOpenAICompatRequest(ctx, cfg, fwd, p.client, "")
 	if err != nil && openAICompatSDKError(err) != nil {
 		respBody = normalizeOpenAIProxyErrorBody(respBody)
 		return respBody, statusCode, nil
@@ -1223,13 +1298,16 @@ func anthropicToOpenAI(resp map[string]interface{}, model string) map[string]int
 
 // forwardAnthropic converts OpenAI request to Anthropic format, sends it,
 // and converts the response back to OpenAI format.
-func (p *OpenAIProxy) forwardAnthropic(body map[string]interface{}) ([]byte, int, error) {
+func (p *OpenAIProxy) forwardAnthropic(ctx context.Context, body map[string]interface{}) ([]byte, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// 1. Convert request to Anthropic format
 	cfg := p.maclawLLMConfig()
 	ApplyReasoningControls(cfg, body, ReasoningAPIAnthropic)
 	anthropicReq := openaiToAnthropic(body, cfg.UpstreamModel())
 
-	respBody, statusCode, err := forwardAnthropicMessageWithSDK(context.Background(), cfg, anthropicReq, p.client)
+	respBody, statusCode, err := forwardAnthropicMessageWithSDK(ctx, cfg, anthropicReq, p.client)
 	if err != nil {
 		if statusCode >= 400 {
 			return openAICompatAnthropicUpstreamError(statusCode, respBody)
@@ -1257,9 +1335,12 @@ func (p *OpenAIProxy) forwardAnthropic(body map[string]interface{}) ([]byte, int
 
 // forwardResponses converts OpenAI request to Responses API format, sends it,
 // and converts the response back to OpenAI format.
-func (p *OpenAIProxy) forwardResponses(body map[string]interface{}) ([]byte, int, error) {
+func (p *OpenAIProxy) forwardResponses(ctx context.Context, body map[string]interface{}) ([]byte, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// 1. Convert request to Responses API format
-	cfg := p.maclawLLMConfig()
+	cfg := p.openAIWireConfig()
 	fwd := cloneOpenAICompatBody(body)
 	sanitizeOpenAICompatForwardBodyForResponses(cfg, fwd)
 	responsesReq := openaiToResponses(fwd, cfg.UpstreamModel())
@@ -1271,18 +1352,20 @@ func (p *OpenAIProxy) forwardResponses(body map[string]interface{}) ([]byte, int
 		return nil, 0, fmt.Errorf("marshal responses request: %w", err)
 	}
 
-	// 3. Construct URL
-	upstreamURL := openAIResponsesEndpoint(p.config.URL)
+	// 3. Construct URL from the same snapshot the chat path forwards.
+	upstreamURL := openAIResponsesEndpoint(cfg.URL)
 
 	// 4. Create POST request
-	req, err := http.NewRequest("POST", upstreamURL, bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, 0, fmt.Errorf("create request: %w", err)
 	}
 
 	// 5. Set headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.config.Key)
+	if cfg.Key != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Key)
+	}
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 	ApplyOpenCodeSessionHeader(req, cfg)
@@ -1327,10 +1410,13 @@ func (p *OpenAIProxy) forwardResponses(body map[string]interface{}) ([]byte, int
 	return data, http.StatusOK, nil
 }
 
-func (p *OpenAIProxy) forwardResponsesRaw(body map[string]interface{}) ([]byte, int, error) {
+func (p *OpenAIProxy) forwardResponsesRaw(ctx context.Context, body map[string]interface{}) ([]byte, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	fwd := cloneOpenAICompatBody(body)
-	cfg := p.maclawLLMConfig()
-	return ForwardOpenAIResponsesRawRequest(context.Background(), cfg, fwd, p.client)
+	cfg := p.openAIWireConfig()
+	return ForwardOpenAIResponsesRawRequest(ctx, cfg, fwd, p.client)
 }
 
 func ForwardOpenAIResponsesRawRequest(ctx context.Context, cfg MaclawLLMConfig, body map[string]interface{}, client *http.Client) ([]byte, int, error) {
@@ -1844,15 +1930,34 @@ func (p *OpenAIProxy) maclawLLMConfig() MaclawLLMConfig {
 	if p == nil {
 		return MaclawLLMConfig{}
 	}
+	return p.config.resolvedLLMConfig()
+}
+
+// openAIWireConfig is the assistant snapshot with the OpenCode gateway the
+// interactive client selects from the model. Anthropic stays on the saved
+// URL; only the OpenAI and Responses wires use this.
+func (p *OpenAIProxy) openAIWireConfig() MaclawLLMConfig {
+	cfg := p.maclawLLMConfig()
+	if IsOpenCodeURL(cfg.URL) {
+		cfg.URL = OpenCodeUpstreamBaseFor(cfg.URL, cfg.UpstreamModel(), cfg.Key)
+	}
+	return cfg
+}
+
+func (cfg OpenAIProxyConfig) resolvedLLMConfig() MaclawLLMConfig {
+	if strings.TrimSpace(cfg.Upstream.URL) != "" || strings.TrimSpace(cfg.Upstream.Model) != "" {
+		return cfg.Upstream
+	}
 	return MaclawLLMConfig{
-		URL:             p.config.URL,
-		Key:             p.config.Key,
-		Model:           p.config.Model,
-		Protocol:        p.config.Protocol,
-		WireAPI:         p.config.WireAPI,
-		AgentType:       p.config.AgentType,
-		ThinkingMode:    p.config.ThinkingMode,
-		ReasoningEffort: p.config.ReasoningEffort,
+		URL:             cfg.URL,
+		Key:             cfg.Key,
+		Model:           cfg.Model,
+		Protocol:        cfg.Protocol,
+		WireAPI:         cfg.WireAPI,
+		AgentType:       cfg.AgentType,
+		AuthType:        cfg.AuthType,
+		ThinkingMode:    cfg.ThinkingMode,
+		ReasoningEffort: cfg.ReasoningEffort,
 	}
 }
 

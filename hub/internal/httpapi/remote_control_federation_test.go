@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,6 +28,17 @@ func (s federationTestSender) Send(_ string, msg any) error {
 	s.messages <- item
 	return nil
 }
+
+type federationTestNotifier struct {
+	notices []remotecontrol.Notice
+}
+
+func (n *federationTestNotifier) Notify(_ context.Context, notice remotecontrol.Notice) (string, error) {
+	n.notices = append(n.notices, notice)
+	return "notice-1", nil
+}
+
+func (n *federationTestNotifier) Revoke(context.Context, string) {}
 
 func newRemoteControlFederationHandler(t *testing.T, userID, machineID, machineName string) (remoteControlHandler, federationTestSender) {
 	t.Helper()
@@ -254,5 +266,118 @@ func TestRemoteControlAcceptRetriesAfterRelayFailure(t *testing.T) {
 	active, err := controller.svc.FederationGrant(ctx, grant.ID, secret)
 	if err != nil || active.Status != remotecontrol.StatusActive || active.TargetMachineID != enrollment.MachineID {
 		t.Fatalf("controller grant = %+v err=%v", active, err)
+	}
+	originalID := active.ID
+	secondSecret := "cd_abcdef0123456789abcdef0123456789"
+	second, err := controller.svc.InviteFederated(ctx, "tenant-a", "user-a", "mac-a", "target-retry@example.com", remotecontrol.PermOperate, controllerServer.URL, "https://hub-b.example.com", secondSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.TargetUserID = enrollment.UserID
+	if err := target.svc.ImportFederatedInvite(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	grant = second
+	if rec := callAccept(); rec.Code != http.StatusOK {
+		t.Fatalf("replacement accept status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	updated, err := controller.svc.FederationGrant(ctx, originalID, secret)
+	if err != nil || updated.Status != remotecontrol.StatusActive || updated.Permission != remotecontrol.PermOperate {
+		t.Fatalf("updated grant = %+v err=%v", updated, err)
+	}
+	replaced, err := controller.svc.FederationGrant(ctx, second.ID, secondSecret)
+	if err != nil || replaced.Status != remotecontrol.StatusRevoked {
+		t.Fatalf("replaced grant = %+v err=%v", replaced, err)
+	}
+	controllerState, err := controller.svc.Snapshot(ctx, "tenant-a", "user-a", "mac-a")
+	if err != nil || len(controllerState.Grants) != 1 || controllerState.Grants[0].ID != originalID {
+		t.Fatalf("controller tabs = %+v err=%v", controllerState.Grants, err)
+	}
+	targetState, err := target.svc.Snapshot(ctx, "tenant-b", enrollment.UserID, enrollment.MachineID)
+	if err != nil || len(targetState.Controlled) != 1 || targetState.Controlled[0].ID != originalID {
+		t.Fatalf("target controlled = %+v err=%v", targetState.Controlled, err)
+	}
+}
+
+func TestRemoteControlFederationInviteDeliversNotificationAndRejectsMismatch(t *testing.T) {
+	oldTrust := companionOriginTrusted
+	oldOrigin := companionLocalOriginFn
+	companionOriginTrusted = func(context.Context, string) bool { return true }
+	companionLocalOriginFn = func() string { return "https://hub-b.example.com" }
+	t.Cleanup(func() {
+		companionOriginTrusted = oldTrust
+		companionLocalOriginFn = oldOrigin
+	})
+	controller, _ := newRemoteControlFederationHandler(t, "user-a", "mac-a", "OFFICE-A")
+	controllerServer := remoteControlFederationServer(controller)
+	defer controllerServer.Close()
+	identity, targetDevices, _ := newHTTPAPITestServices(t)
+	_, enrollment := issueViewerToken(t, identity, "invited@example.com")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	adapter := remoteControlMachines{devices: targetDevices}
+	sender := federationTestSender{messages: make(chan map[string]any, 1)}
+	notifier := &federationTestNotifier{}
+	target := remoteControlHandler{
+		svc: remotecontrol.New(db, nil, adapter, sender, notifier), devices: targetDevices, identity: identity,
+	}
+	ctx := context.Background()
+	secret := "cd_0123456789abcdef0123456789abcdef"
+	grant, err := controller.svc.InviteFederated(ctx, "tenant-a", "user-a", "mac-a", "invited@example.com", remotecontrol.PermView, controllerServer.URL, "https://hub-b.example.com", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite := remoteControlFederationRequest{
+		GrantID: grant.ID, OriginHub: grant.ControllerHub, Secret: secret, Contact: grant.TargetAccount,
+		Permission: grant.Permission, ControllerUserID: grant.ControllerUserID,
+		ControllerMachineID: grant.ControllerMachineID, ControllerMachineName: grant.ControllerMachineName,
+		TenantID: grant.TenantID, ExpiresAt: grant.ExpiresAt,
+	}
+	callInvite := func(body remoteControlFederationRequest) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/api/remote-control/federation/invites", bytes.NewReader(raw))
+		rec := httptest.NewRecorder()
+		target.federationInvite(rec, req)
+		return rec
+	}
+	if rec := callInvite(invite); rec.Code != http.StatusOK {
+		t.Fatalf("invite status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(notifier.notices) != 1 || notifier.notices[0].Source != remotecontrol.NoticeInvite || notifier.notices[0].AudienceUserID != enrollment.UserID {
+		t.Fatalf("notices = %+v", notifier.notices)
+	}
+	imported, err := target.svc.FederationGrant(ctx, grant.ID, secret)
+	if err != nil || imported.Status != remotecontrol.StatusPending || imported.TargetUserID != enrollment.UserID {
+		t.Fatalf("imported = %+v err=%v", imported, err)
+	}
+	if rec := callInvite(invite); rec.Code != http.StatusOK {
+		t.Fatalf("repeated invite status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(notifier.notices) != 1 {
+		t.Fatal("repeated invite sent another notification")
+	}
+
+	secondSecret := "cd_abcdef0123456789abcdef0123456789"
+	second, err := controller.svc.InviteFederated(ctx, "tenant-a", "user-a", "mac-a", "other@example.com", remotecontrol.PermView, controllerServer.URL, "https://hub-b.example.com", secondSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := invite
+	tampered.GrantID = second.ID
+	tampered.Secret = secondSecret
+	tampered.Contact = second.TargetAccount
+	tampered.ExpiresAt = second.ExpiresAt
+	tampered.Permission = remotecontrol.PermOperate
+	if rec := callInvite(tampered); rec.Code != http.StatusBadRequest {
+		t.Fatalf("tampered invite status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := target.svc.FederationGrant(ctx, second.ID, secondSecret); !errors.Is(err, remotecontrol.ErrNotFound) {
+		t.Fatalf("tampered invite was imported: %v", err)
+	}
+	if len(notifier.notices) != 1 {
+		t.Fatal("tampered invite sent a notification")
 	}
 }

@@ -1931,6 +1931,60 @@ func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
 	return cfg
 }
 
+// aiAssistantUpstreamLLMConfig is the upstream the interactive AI assistant
+// calls. The chat loop resolves the foreground role first and falls back to
+// the assistant profile; a skill proxy has to use that same snapshot.
+func (a *App) aiAssistantUpstreamLLMConfig() corelib.MaclawLLMConfig {
+	if a == nil {
+		return corelib.MaclawLLMConfig{}
+	}
+	if cfg, err := a.ResolveMaclawLLMRole(maclawLLMRoleForeground); err == nil {
+		if strings.TrimSpace(cfg.URL) != "" && strings.TrimSpace(cfg.Model) != "" {
+			return cfg
+		}
+	}
+	return a.GetMaclawLLMConfig()
+}
+
+// skillOpenAIProxyConfig builds the local skill proxy from the AI assistant's
+// upstream. recordUsage attributes successful proxy calls to that provider.
+func (a *App) skillOpenAIProxyConfig(recordUsage bool) corelib.OpenAIProxyConfig {
+	llmCfg := corelib.MaclawLLMConfig{}
+	if a != nil {
+		llmCfg = a.aiAssistantUpstreamLLMConfig()
+	}
+	proxyCfg := corelib.OpenAIProxyConfigFromLLM(llmCfg)
+	proxyCfg.DecorateUpstream = decorateSkillProxyLikeAssistant
+	proxyCfg.BaseTransport = skillProxyUpstreamRoundTripper(llmCfg)
+	if recordUsage && a != nil {
+		providerName := maclawLLMUsageProviderName(a, llmCfg)
+		proxyCfg.UsageCallback = func(usage corelib.OpenAIProxyUsage) {
+			if providerName == "" {
+				return
+			}
+			a.AccumulateLLMTokenUsageWithCache(providerName, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens)
+			a.AccumulateLLMProfileTokenUsageWithCache(llmCfg, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens)
+		}
+	}
+	return proxyCfg
+}
+
+func decorateSkillProxyLikeAssistant(req *http.Request, cfg corelib.MaclawLLMConfig) {
+	llm.ApplyProviderAuthHeaders(req, cfg)
+	llm.ApplyWorkloadHintHeaders(req, cfg)
+}
+
+// skillProxyUpstreamRoundTripper is the assistant's outbound pool, with the
+// same provider body rewrite the assistant client installs. Providers that
+// speak plain OpenAI keep the shared pool itself.
+func skillProxyUpstreamRoundTripper(cfg corelib.MaclawLLMConfig) http.RoundTripper {
+	client := llm.WrapAssistantHTTPClient(&http.Client{Transport: skillProxyUpstreamTransport}, cfg)
+	if client == nil || client.Transport == nil {
+		return skillProxyUpstreamTransport
+	}
+	return client.Transport
+}
+
 // GetCodingLLMConfig returns coding's effective base selection before the
 // existing reasoning/vision router applies a final request-level override.
 func (a *App) GetCodingLLMConfig() corelib.MaclawLLMConfig {

@@ -59,6 +59,23 @@ func currentMaclawLLMProxy() proxyutil.Config {
 	return maclawLLMProxyCfg
 }
 
+// skillProxyUpstreamTransport is the shared outbound pool for skill-local
+// OpenAI proxies. It uses the same MaClaw proxy function as the AI assistant
+// and keeps idle connections across skill runs instead of dialing DefaultTransport
+// (two idle sockets per host) for every run.
+var skillProxyUpstreamTransport = &http.Transport{
+	Proxy: llmOrEnvProxy,
+	DialContext: (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	ForceAttemptHTTP2:   true,
+	TLSHandshakeTimeout: 15 * time.Second,
+	MaxIdleConns:        32,
+	MaxIdleConnsPerHost: 8,
+	IdleConnTimeout:     90 * time.Second,
+}
+
 // llmOrEnvProxy sends MaClaw-scope LLM HTTP through the saved proxy.
 // When that scope is off, it falls back to HTTP_PROXY/HTTPS_PROXY.
 func llmOrEnvProxy(req *http.Request) (*url.URL, error) {

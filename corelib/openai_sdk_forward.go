@@ -59,6 +59,16 @@ func openAICompatSDKOptions(cfg MaclawLLMConfig, client *http.Client) []option.R
 	}
 	if name, value, ok := OpenCodeSessionHeaderForConfig(cfg); ok {
 		opts = append(opts, option.WithHeader(name, value))
+		if IsOpenCodeURL(cfg.URL) {
+			opts = append(opts,
+				option.WithHeader(OpenCodeSessionIDHeader, value),
+				option.WithHeader(OpenCodeRequestHeader, OpenCodeClientRequestID(value, "request")),
+				option.WithHeader(OpenCodeProjectHeader, OpenCodeProjectGlobal),
+			)
+		}
+	}
+	if IsOpenCodeURL(cfg.URL) {
+		opts = append(opts, option.WithHeader("x-opencode-client", "cli"))
 	}
 	if timeout := cfg.EffectiveTimeoutSec(); timeout > 0 {
 		opts = append(opts, option.WithRequestTimeout(time.Duration(timeout)*time.Second))

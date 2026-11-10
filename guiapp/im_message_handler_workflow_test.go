@@ -3292,6 +3292,54 @@ func TestWorkflowFormGateCancelCancelsWorkflow(t *testing.T) {
 	}
 }
 
+func TestCancelAIAssistantSessionForOwnerCancelsWorkflowAndForegroundLoop(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := desktopUserID
+	if _, err := engine.StartWorkflow(userID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "build app"}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	otherUserID := "desktop-user:D:/work/other"
+	if _, err := engine.StartWorkflow(otherUserID, v2.StructuredIntent{Category: v2.WorkflowCoding, Summary: "other task"}); err != nil {
+		t.Fatalf("StartWorkflow for other task failed: %v", err)
+	}
+
+	loopCtx := NewLoopContext("chat", 3, nil)
+	handler.setSessionLoopCtx(userID, loopCtx)
+	handler.getSessionLoop(userID).userText = "workflow task"
+	go func() {
+		<-loopCtx.CancelC
+		loopCtx.Done()
+	}()
+
+	taskText, err := handler.app.cancelAIAssistantSessionForOwner(handler, userID)
+	if err != nil {
+		t.Fatalf("cancelAIAssistantSessionForOwner failed: %v", err)
+	}
+	if taskText != "workflow task" {
+		t.Fatalf("cancelled task text = %q, want workflow task", taskText)
+	}
+	if ws := engine.GetActiveWorkflow(userID); ws != nil {
+		t.Fatalf("session cancel should clear active workflow, got %#v", ws)
+	}
+	if state := handler.app.workflowV2.machine.GetActive(userID); state != nil {
+		t.Fatalf("session cancel should clear workflowV2 state, got %#v", state)
+	}
+	stored, err := handler.app.workflowV2.store.Load(userID)
+	if err != nil {
+		t.Fatalf("load cancelled workflow snapshot: %v", err)
+	}
+	if stored == nil || stored.Status != v2.StatusCancelled {
+		t.Fatalf("task-list workflow snapshot = %#v, want cancelled", stored)
+	}
+	if !loopCtx.IsCancelled() {
+		t.Fatal("session cancel should cancel the active foreground loop")
+	}
+	if other := engine.GetActiveWorkflow(otherUserID); other == nil {
+		t.Fatal("session cancel must not cancel another task's workflow")
+	}
+}
+
 func TestDismissAgentViewCancelWorkflowCancelsForegroundLoop(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	engine := handler.app.workflowEngine

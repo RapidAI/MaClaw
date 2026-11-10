@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNeedsOpenAIProxy(t *testing.T) {
@@ -141,6 +142,13 @@ func TestValidateOpenAIProxyUpstreamConfigRequiresRemoteAuth(t *testing.T) {
 		{
 			name:    "loopback without key",
 			cfg:     OpenAIProxyConfig{URL: "http://127.0.0.1:11434/v1", Model: "local"},
+			wantErr: false,
+		},
+		{
+			name: "upstream snapshot supplies url and key",
+			cfg: OpenAIProxyConfig{Upstream: MaclawLLMConfig{
+				URL: "https://api.deepseek.com/v1", Model: "deepseek-chat", Key: "sk-test",
+			}},
 			wantErr: false,
 		},
 	}
@@ -667,6 +675,184 @@ func TestHandleChatCompletions_AcceptsNonV1ChatPath(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
 		t.Fatalf("non-v1 chat status = %d body=%s", resp.StatusCode, data)
+	}
+}
+
+func TestOpenAIProxyForwardsAssistantUpstreamIdentity(t *testing.T) {
+	var gotModel, gotHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Assistant-Marker")
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		}
+		gotModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl-test","object":"chat.completion","model":"assistant-model","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer upstream.Close()
+
+	cfg := OpenAIProxyConfigFromLLM(MaclawLLMConfig{
+		URL:             upstream.URL,
+		Key:             "sk-assistant",
+		Model:           "assistant-model",
+		Protocol:        "openai",
+		ProviderName:    "Assistant Provider",
+		AuthType:        "oauth",
+		AgentType:       "opencode",
+		TraeMachineID:   "machine-1",
+		ThinkingMode:    "enabled",
+		ReasoningEffort: "high",
+	})
+	cfg.DecorateUpstream = func(r *http.Request, c MaclawLLMConfig) {
+		r.Header.Set("X-Assistant-Marker", c.ProviderName+"|"+c.TraeMachineID+"|"+c.AuthType)
+	}
+	p := NewOpenAIProxy(cfg)
+	resolved := p.maclawLLMConfig()
+	if resolved.ProviderName != "Assistant Provider" || resolved.TraeMachineID != "machine-1" || resolved.AuthType != "oauth" || resolved.AgentType != "opencode" || resolved.Model != "assistant-model" {
+		t.Fatalf("resolved config = %+v", resolved)
+	}
+	port, err := p.Start()
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer p.Stop()
+
+	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", port), "application/json", strings.NewReader(`{"model":"caller-model","messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, data)
+	}
+	if gotModel != "assistant-model" {
+		t.Fatalf("upstream model = %q, want assistant-model", gotModel)
+	}
+	if gotHeader != "Assistant Provider|machine-1|oauth" {
+		t.Fatalf("assistant marker = %q", gotHeader)
+	}
+}
+
+func TestOpenAIProxyHeaderTransportLeavesCallerRequestAlone(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Assistant-Marker") != "Assistant Provider" {
+			t.Errorf("upstream marker = %q", r.Header.Get("X-Assistant-Marker"))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	req, err := http.NewRequest(http.MethodGet, upstream.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := openAIProxyHeaderTransport{
+		cfg: MaclawLLMConfig{ProviderName: "Assistant Provider"},
+		decorate: func(r *http.Request, c MaclawLLMConfig) {
+			r.Header.Set("X-Assistant-Marker", c.ProviderName)
+		},
+	}
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := req.Header.Get("X-Assistant-Marker"); got != "" {
+		t.Fatalf("caller request marker = %q, want empty", got)
+	}
+}
+
+func TestOpenAIProxyRouteFollowsUpstreamSnapshot(t *testing.T) {
+	responses := NewOpenAIProxy(OpenAIProxyConfig{Upstream: MaclawLLMConfig{
+		URL: "https://api.example/v1", Model: "assistant-model", Protocol: "openai", WireAPI: "responses",
+	}})
+	if got := responses.routeProtocol(); got != "responses" {
+		t.Fatalf("route = %q, want responses from the upstream snapshot", got)
+	}
+	anthropic := NewOpenAIProxy(OpenAIProxyConfig{Upstream: MaclawLLMConfig{
+		URL: "https://api.example", Model: "assistant-model", Protocol: "anthropic",
+	}})
+	if got := anthropic.routeProtocol(); got != "anthropic" {
+		t.Fatalf("route = %q, want anthropic from the upstream snapshot", got)
+	}
+}
+
+func TestOpenAIProxyOpenCodeUsesAssistantGateway(t *testing.T) {
+	var gotURL, gotClient string
+	body := `{"id":"chatcmpl-test","object":"chat.completion","model":"gpt-5","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`
+	p := NewOpenAIProxy(OpenAIProxyConfig{
+		Upstream: MaclawLLMConfig{URL: "https://opencode.ai/zen/v1", Key: "sk-test", Model: "gpt-5"},
+		BaseTransport: openAIProxyRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			gotURL = r.URL.String()
+			gotClient = r.Header.Get("x-opencode-client")
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Status:        "200 OK",
+				Proto:         "HTTP/1.1",
+				ProtoMajor:    1,
+				ProtoMinor:    1,
+				Header:        make(http.Header),
+				Body:          io.NopCloser(strings.NewReader(body)),
+				ContentLength: int64(len(body)),
+				Request:       r,
+			}, nil
+		}),
+	})
+	if _, _, err := p.forwardOpenAI(context.Background(), map[string]interface{}{
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotURL != "https://opencode.ai/inference/go/openai/v1/chat/completions" {
+		t.Fatalf("upstream url = %q", gotURL)
+	}
+	if gotClient != "cli" {
+		t.Fatalf("x-opencode-client = %q", gotClient)
+	}
+	free := NewOpenAIProxy(OpenAIProxyConfig{Upstream: MaclawLLMConfig{
+		URL: "https://opencode.ai/zen/go/v1", Key: "sk-test", Model: "glm-5.3-flash-free",
+	}})
+	if got := free.openAIWireConfig().URL; got != "https://opencode.ai/inference/openai/v1" {
+		t.Fatalf("free gateway = %q", got)
+	}
+	plain := NewOpenAIProxy(OpenAIProxyConfig{URL: "https://api.deepseek.com/v1", Key: "sk-test", Model: "deepseek-chat"})
+	if got := plain.openAIWireConfig().URL; got != "https://api.deepseek.com/v1" {
+		t.Fatalf("non-opencode url = %q", got)
+	}
+}
+
+func TestOpenAIProxyForwardStopsWhenCallerCancels(t *testing.T) {
+	started := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		select {
+		case <-r.Context().Done():
+		case <-timer.C:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl-test","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"late"}}]}`)
+	}))
+	defer upstream.Close()
+
+	p := NewOpenAIProxy(OpenAIProxyConfig{URL: upstream.URL, Key: "sk-test", Model: "test-model"})
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-started
+		cancel()
+	}()
+	start := time.Now()
+	_, _, err := p.forwardOpenAI(ctx, map[string]interface{}{
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}},
+	})
+	if err == nil {
+		t.Fatal("cancelled caller returned a successful upstream response")
+	}
+	if elapsed := time.Since(start); elapsed > 800*time.Millisecond {
+		t.Fatalf("cancel took %s, upstream call kept running", elapsed)
 	}
 }
 
@@ -1225,7 +1411,7 @@ func TestForwardOpenAI_Success(t *testing.T) {
 		"stream":   true,
 	}
 
-	respBody, statusCode, err := p.forwardOpenAI(body)
+	respBody, statusCode, err := p.forwardOpenAI(context.Background(), body)
 	if err != nil {
 		t.Fatalf("forwardOpenAI error: %v", err)
 	}
@@ -1261,7 +1447,7 @@ func TestForwardOpenAI_DropsStreamOptionsWhenForcingNonStream(t *testing.T) {
 		}, nil
 	})}
 
-	_, statusCode, err := p.forwardOpenAI(map[string]interface{}{
+	_, statusCode, err := p.forwardOpenAI(context.Background(), map[string]interface{}{
 		"model":          "gpt-4",
 		"messages":       []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
 		"stream":         true,
@@ -1326,7 +1512,7 @@ func TestForwardOpenAI_NormalizesCodeGenAutoModelAndSanitizesTools(t *testing.T)
 		}},
 	}
 
-	_, statusCode, err := p.forwardOpenAI(body)
+	_, statusCode, err := p.forwardOpenAI(context.Background(), body)
 	if err != nil {
 		t.Fatalf("forwardOpenAI: %v", err)
 	}
@@ -1380,7 +1566,7 @@ func TestForwardOpenAI_NormalizesGLMCodingPlanEndpointAndMessages(t *testing.T) 
 		}, nil
 	})}
 
-	_, statusCode, err := p.forwardOpenAI(map[string]interface{}{
+	_, statusCode, err := p.forwardOpenAI(context.Background(), map[string]interface{}{
 		"model": "glm-5.1",
 		"messages": []interface{}{
 			map[string]interface{}{"role": "user", "content": []interface{}{
@@ -1445,7 +1631,7 @@ func TestForwardOpenAI_UpstreamError(t *testing.T) {
 		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
 	}
 
-	respBody, statusCode, err := p.forwardOpenAI(body)
+	respBody, statusCode, err := p.forwardOpenAI(context.Background(), body)
 	if err != nil {
 		t.Fatalf("forwardOpenAI should not return error for 4xx/5xx, got: %v", err)
 	}
@@ -1503,7 +1689,7 @@ func TestForwardOpenAI_URLConstruction(t *testing.T) {
 			})
 
 			body := map[string]interface{}{"model": "x", "messages": []interface{}{}}
-			_, _, err = p.forwardOpenAI(body)
+			_, _, err = p.forwardOpenAI(context.Background(), body)
 			if err != nil {
 				t.Fatalf("forwardOpenAI error: %v", err)
 			}
@@ -2241,7 +2427,7 @@ func TestForwardResponses_Success(t *testing.T) {
 		"stream":   true,
 	}
 
-	respBody, statusCode, err := p.forwardResponses(body)
+	respBody, statusCode, err := p.forwardResponses(context.Background(), body)
 	if err != nil {
 		t.Fatalf("forwardResponses error: %v", err)
 	}
@@ -2327,7 +2513,7 @@ func TestForwardResponses_NormalizesCodeGenAutoModelAndSanitizesTools(t *testing
 		}},
 	}
 
-	_, statusCode, err := p.forwardResponses(body)
+	_, statusCode, err := p.forwardResponses(context.Background(), body)
 	if err != nil {
 		t.Fatalf("forwardResponses: %v", err)
 	}
@@ -2387,7 +2573,7 @@ func TestForwardResponses_SanitizesOpenAISDKFieldsAndKeepsToolOutput(t *testing.
 		},
 	}
 
-	_, statusCode, err := p.forwardResponses(body)
+	_, statusCode, err := p.forwardResponses(context.Background(), body)
 	if err != nil {
 		t.Fatalf("forwardResponses: %v", err)
 	}
@@ -2447,7 +2633,7 @@ func TestForwardResponses_UpstreamError(t *testing.T) {
 		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
 	}
 
-	respBody, statusCode, err := p.forwardResponses(body)
+	respBody, statusCode, err := p.forwardResponses(context.Background(), body)
 	if err != nil {
 		t.Fatalf("forwardResponses should not return error for upstream 5xx, got: %v", err)
 	}
@@ -2480,7 +2666,7 @@ func TestForwardResponses_Unreachable(t *testing.T) {
 		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
 	}
 
-	_, _, err := p.forwardResponses(body)
+	_, _, err := p.forwardResponses(context.Background(), body)
 	if err == nil {
 		t.Fatal("forwardResponses should return error when upstream is unreachable")
 	}
@@ -2516,7 +2702,7 @@ func TestForwardResponses_URLConstruction(t *testing.T) {
 	})
 
 	body := map[string]interface{}{"model": "x", "messages": []interface{}{}}
-	_, _, err = p.forwardResponses(body)
+	_, _, err = p.forwardResponses(context.Background(), body)
 	if err != nil {
 		t.Fatalf("forwardResponses error: %v", err)
 	}
@@ -2581,7 +2767,7 @@ func TestOpenAIProxyForwardResponsesHonorsThinkingMode(t *testing.T) {
 		}, nil
 	})}
 
-	_, status, err := p.forwardResponses(map[string]interface{}{
+	_, status, err := p.forwardResponses(context.Background(), map[string]interface{}{
 		"model":    "ignored",
 		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}},
 		"thinking": map[string]interface{}{"type": "enabled"},
@@ -2633,7 +2819,7 @@ func TestOpenAIProxyForwardAnthropicHonorsThinkingMode(t *testing.T) {
 				}, nil
 			})}
 
-			_, status, err := p.forwardAnthropic(map[string]interface{}{
+			_, status, err := p.forwardAnthropic(context.Background(), map[string]interface{}{
 				"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}},
 				"thinking": map[string]interface{}{"type": "enabled", "budget_tokens": 9999},
 			})

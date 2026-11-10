@@ -2479,25 +2479,7 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 	if needsProxy {
 		var proxyCfg corelib.OpenAIProxyConfig
 		if e.app != nil {
-			llmCfg := e.app.GetMaclawLLMConfig()
-			providerName := maclawLLMUsageProviderName(e.app, llmCfg)
-			proxyCfg = corelib.OpenAIProxyConfig{
-				URL:             llmCfg.URL,
-				Key:             llmCfg.Key,
-				Model:           llmCfg.Model,
-				Protocol:        llmCfg.Protocol,
-				WireAPI:         llmCfg.WireAPI,
-				AuthType:        llmCfg.AuthType,
-				ThinkingMode:    llmCfg.ThinkingMode,
-				ReasoningEffort: llmCfg.ReasoningEffort,
-				UsageCallback: func(usage corelib.OpenAIProxyUsage) {
-					if providerName == "" {
-						return
-					}
-					e.app.AccumulateLLMTokenUsageWithCache(providerName, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens)
-					e.app.AccumulateLLMProfileTokenUsageWithCache(llmCfg, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens)
-				},
-			}
+			proxyCfg = e.app.skillOpenAIProxyConfig(true)
 		}
 		if err := corelib.ValidateOpenAIProxyUpstreamConfig(proxyCfg); err != nil {
 			return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: fmt.Errorf("skill requires OpenAI-compatible environment variables, but the GUI local proxy cannot start because %s [action: configure_llm]", err)}

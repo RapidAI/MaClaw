@@ -2565,6 +2565,32 @@ func TestOpenAI_RequestBody_StripsReasoningContentForStandardSDKCompatibility(t 
 	}
 }
 
+// Mistral's hosted flash checkpoints ride the Mistral chat schema: a replayed
+// assistant reasoning_content answers 422 for that message, so the thinking
+// history must descend to content (+ tool_calls) on that host even though the
+// model id stays DeepSeek-family.
+func TestOpenAI_RequestBody_StripsReasoningContentForMistralHostedDeepSeek(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.mistral.ai/v1", Model: "deepseek-v4-1-flash-1017"},
+		[]interface{}{map[string]interface{}{"role": "assistant", "content": "previous", "reasoning_content": "drop"}},
+		OpenAIChatRequestOptions{Stream: false},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	message := req["messages"].([]interface{})[0].(map[string]interface{})
+	if _, ok := message["reasoning_content"]; ok {
+		t.Fatalf("mistral hosted deepseek request leaked reasoning_content: %#v", message)
+	}
+	if got := message["content"]; got != "previous" {
+		t.Fatalf("content = %#v, want previous", got)
+	}
+}
+
 func TestOpenAI_RequestBody_PreservesReasoningContentForDeepSeekThinking(t *testing.T) {
 	_, body, err := BuildOpenAIChatRequestData(
 		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-chat"},
@@ -4990,6 +5016,33 @@ func TestBuildOpenAIChatRequestData_PreservesDeepSeekFlashJSONSchemaResponseForm
 	}
 }
 
+// Mistral's hosted flash checkpoint keeps the Mistral chat schema, which
+// enforces json_schema natively. The DeepSeek relay downgrade must not fire
+// there, or structured output silently loses enforcement.
+func TestBuildOpenAIChatRequestData_MistralHostedFlashKeepsJSONSchema(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.mistral.ai/v1", Model: "deepseek-v4-1-flash-1017"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		OpenAIChatRequestOptions{ResponseFormat: map[string]interface{}{
+			"type": "json_schema",
+			"json_schema": map[string]interface{}{
+				"name": "answer", "schema": map[string]interface{}{"type": "object"}, "strict": true,
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	responseFormat, _ := req["response_format"].(map[string]interface{})
+	if got := responseFormat["type"]; got != "json_schema" {
+		t.Fatalf("mistral hosted flash response_format.type = %#v, want json_schema", got)
+	}
+}
+
 func TestBuildOpenAIChatRequestData_DowngradesDeepSeekFlashFreeFormJSONSchemaResponseFormat(t *testing.T) {
 	_, body, err := BuildOpenAIChatRequestData(
 		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
@@ -6265,6 +6318,33 @@ func TestBuildOpenAIChatRequestBodyAutoEffortUsesNativeControl(t *testing.T) {
 	thinking, _ = generic["thinking"].(map[string]interface{})
 	if thinking["type"] != "enabled" || thinking["budget_tokens"] != 1024 {
 		t.Fatalf("auto low tool budget = %#v", generic["thinking"])
+	}
+}
+
+// Regression: the GUI connectivity test and the agent loop both build a body
+// for a Mistral-hosted DeepSeek model id. Mistral's strict chat schema answers
+// HTTP 422 "Extra inputs are not permitted" for the DeepSeek thinking object,
+// so the wire body must keep OpenAI-style reasoning_effort only.
+func TestBuildOpenAIChatRequestBodyMistralHostedDeepSeekOmitsThinking(t *testing.T) {
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}
+
+	auto := buildOpenAIChatRequestBody(corelib.MaclawLLMConfig{
+		URL: "https://api.mistral.ai/v1", Model: "deepseek-v4-1-flash-1017",
+	}, messages, OpenAIChatRequestOptions{})
+	for _, key := range []string{"thinking", "reasoning", "reasoning_effort"} {
+		if _, ok := auto[key]; ok {
+			t.Fatalf("mistral auto body gained %q: %#v", key, auto[key])
+		}
+	}
+
+	effort := buildOpenAIChatRequestBody(corelib.MaclawLLMConfig{
+		URL: "https://api.mistral.ai/v1", Model: "deepseek-v4-1-flash-1017", ReasoningEffort: "high",
+	}, messages, OpenAIChatRequestOptions{})
+	if got := effort["reasoning_effort"]; got != "high" {
+		t.Fatalf("mistral configured-effort body = %#v, want reasoning_effort high", effort["reasoning_effort"])
+	}
+	if _, ok := effort["thinking"]; ok {
+		t.Fatalf("mistral effort body gained thinking: %#v", effort["thinking"])
 	}
 }
 

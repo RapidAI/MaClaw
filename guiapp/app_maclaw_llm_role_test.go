@@ -1,9 +1,11 @@
 package guiapp
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
 func newRoleTestApp(t *testing.T, cfg corelib.AppConfig) *App {
@@ -223,6 +225,82 @@ func TestResolveMaclawLLMRoleOfficialAssistantKeepsHubSnapshot(t *testing.T) {
 	}
 	if fg.Model != "official-high" || fg.ProviderID != "hub" {
 		t.Fatalf("official auto should keep the Hub foreground band, got %+v", fg)
+	}
+}
+
+func TestSkillProxyUsesAIAssistantUpstream(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       roleTestProviders(),
+		MaclawLLMCurrentProvider: hubServiceProviderName,
+		HubRoleModels: corelib.MaclawLLMHubRoleModels{
+			Foreground: "official-high",
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "auto"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+
+	profile := app.GetMaclawLLMConfig()
+	if profile.Model != "auto" {
+		t.Fatalf("assistant profile model = %q, want auto", profile.Model)
+	}
+	proxyCfg := app.skillOpenAIProxyConfig(false)
+	if proxyCfg.Model != "official-high" || proxyCfg.URL != "https://hub.example/api/llm/v1" || proxyCfg.Key != "viewer" {
+		t.Fatalf("proxy scalars = url %q model %q key %q", proxyCfg.URL, proxyCfg.Model, proxyCfg.Key)
+	}
+	if proxyCfg.Upstream.Model != "official-high" || proxyCfg.Upstream.ProviderName != hubServiceProviderName || proxyCfg.Upstream.ProviderID != "hub" {
+		t.Fatalf("proxy upstream = %+v", proxyCfg.Upstream)
+	}
+	if proxyCfg.DecorateUpstream == nil {
+		t.Fatal("proxy is missing the assistant header decorator")
+	}
+	if proxyCfg.BaseTransport != skillProxyUpstreamTransport {
+		t.Fatal("proxy is not using the shared assistant proxy transport")
+	}
+
+	thirdParty := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       roleTestProviders(),
+		MaclawLLMCurrentProvider: "Local",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "local", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	localCfg := thirdParty.skillOpenAIProxyConfig(false)
+	if localCfg.Model != "assistant-model" || localCfg.Upstream.ProviderName != "Local" || localCfg.Upstream.Key != "key" || localCfg.URL != "https://local.example/v1" {
+		t.Fatalf("third-party proxy = url %q model %q upstream %+v", localCfg.URL, localCfg.Model, localCfg.Upstream)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "https://api.x.ai/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decorateSkillProxyLikeAssistant(req, corelib.MaclawLLMConfig{ProviderName: "xAI-Grok", AuthType: "oauth"})
+	if got := req.Header.Get("X-XAI-Token-Auth"); got != "xai-grok-cli" {
+		t.Fatalf("X-XAI-Token-Auth = %q, want the assistant OAuth marker", got)
+	}
+
+	profileWB := workbuddy.ChinaProfile()
+	workBuddy := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "wb", Name: profileWB.Name, URL: profileWB.ChatURL, Key: "wb-token",
+			Model: profileWB.DefaultModel, Protocol: "openai", AuthType: "oauth",
+			ConnectionTestPassed: true,
+		}},
+		MaclawLLMCurrentProvider: profileWB.Name,
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "wb", Model: profileWB.DefaultModel},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	wbCfg := workBuddy.skillOpenAIProxyConfig(false)
+	wbTransport, ok := wbCfg.BaseTransport.(*workbuddy.Transport)
+	if !ok || wbTransport == nil || wbTransport.Base != skillProxyUpstreamTransport {
+		t.Fatalf("WorkBuddy proxy transport = %#v, want the assistant rewrite on the shared pool", wbCfg.BaseTransport)
 	}
 }
 

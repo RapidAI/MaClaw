@@ -1688,6 +1688,12 @@ func DeepSeekFlashAcceptsImages(model string) bool {
 	if i := strings.IndexByte(model, '['); i > 0 {
 		model = strings.TrimSpace(model[:i])
 	}
+	// V4.1 checkpoints read images natively; relays rename them with dashes
+	// (Mistral serves "deepseek-v4-1-flash-1017"), so substring matching keeps
+	// those variants from being flattened to text-only by mistake.
+	if strings.Contains(model, "v4.1-flash") || strings.Contains(model, "v4-1-flash") {
+		return true
+	}
 	switch model {
 	case "deepseek-v4.1-flash", "deepseek-v4.1-flash-free", "deepseek-flash", "deepseek-v4-flash-vision-exp":
 		return true

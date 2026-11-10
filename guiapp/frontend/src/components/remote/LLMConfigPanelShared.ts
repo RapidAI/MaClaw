@@ -149,6 +149,10 @@ export const KNOWN_OPENAI_ENDPOINTS: KnownOpenAIEndpoint[] = [
     { name: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "openai/gpt-4o", context_length: 128000 },
     { name: "Together AI", url: "https://api.together.xyz/v1", model: "meta-llama/Llama-3-70b-chat-hf", context_length: 128000 },
     { name: "Groq", url: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", context_length: 128000 },
+    // La Plateforme API key. Hosted chat models: large/medium/small plus the
+    // codestral coding checkpoint. Reasoning spells as reasoning_effort; the
+    // DeepSeek thinking object fails 422 here (corelib.IsMistralAIAPIEndpoint).
+    { name: "Mistral AI", url: "https://api.mistral.ai/v1", model: "mistral-large-latest", models: ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "codestral-latest"], context_length: 262144 },
     { name: "Perplexity", url: "https://api.perplexity.ai", model: "sonar-pro", context_length: 128000 },
     // Keep the legacy Chinese alias, but align its defaults with Qwen so the
     // same DashScope endpoint does not silently fall back to an older model or

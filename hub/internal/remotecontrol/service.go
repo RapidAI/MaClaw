@@ -348,6 +348,9 @@ func (s *Service) Invite(ctx context.Context, tenantID, userID, controllerMachin
 	}
 	s.expirePending(ctx, tenantID, userID)
 	if existing, found := s.findOpenInvite(ctx, tenantID, userID, controller.ID, targetUserID); found {
+		if existing.InviteNotificationID == "" {
+			s.notifyInvite(ctx, existing)
+		}
 		return existing, nil
 	}
 	now := time.Now().UTC()
@@ -376,6 +379,11 @@ func (s *Service) Invite(ctx context.Context, tenantID, userID, controllerMachin
 func (s *Service) Accept(ctx context.Context, tenantID, userID, machineID, grantID string) (Grant, error) {
 	grant, err := s.pendingForTarget(ctx, tenantID, userID, grantID)
 	if err != nil {
+		current, loadErr := s.load(ctx, grantID)
+		machineID = strings.TrimSpace(machineID)
+		if loadErr == nil && current.Status == StatusActive && current.TargetUserID == userID && current.TargetMachineID == machineID {
+			return current, nil
+		}
 		return Grant{}, err
 	}
 	machine, err := s.requireOwnMachine(ctx, userID, machineID)
@@ -384,16 +392,28 @@ func (s *Service) Accept(ctx context.Context, tenantID, userID, machineID, grant
 	}
 	// The stored tenant is the inviter's. The caller here is the invitee, who
 	// may belong to another tenant, so the pair has to be found on the grant.
-	if existing, found := s.findActivePair(ctx, grant.TenantID, grant.ControllerMachineID, machine.ID); found && grant.ControllerHub == "" {
-		s.revokeNotice(ctx, grant.InviteNotificationID)
-		existing.Permission = grant.Permission
-		existing.UpdatedAt = time.Now().UTC()
-		if err := s.update(ctx, existing); err != nil {
+	if existing, found := s.findActivePair(ctx, grant.TenantID, grant.ControllerMachineID, machine.ID); found {
+		now := time.Now().UTC()
+		grant.Status = StatusRevoked
+		grant.DecidedAt = now
+		grant.UpdatedAt = now
+		changed, err := s.updateExpected(ctx, grant, StatusPending)
+		if err != nil {
 			return Grant{}, err
 		}
-		grant.Status = StatusRevoked
-		grant.UpdatedAt = existing.UpdatedAt
-		_ = s.update(ctx, grant)
+		if !changed {
+			return Grant{}, ErrNotFound
+		}
+		existing.Permission = grant.Permission
+		existing.UpdatedAt = now
+		changed, err = s.updateExpected(ctx, existing, StatusActive)
+		if err != nil {
+			return Grant{}, err
+		}
+		if !changed {
+			return Grant{}, ErrNotFound
+		}
+		s.revokeNotice(ctx, grant.InviteNotificationID)
 		s.notifyControllerResult(ctx, grant, "远控已接受", fmt.Sprintf("%s 已接受远控，权限：%s。", displayMachine(machine), permissionLabel(grant.Permission)), existing.ID)
 		s.notifyWatch(ctx, existing)
 		return existing, nil
@@ -405,8 +425,16 @@ func (s *Service) Accept(ctx context.Context, tenantID, userID, machineID, grant
 	grant.TargetIgnored = false
 	grant.DecidedAt = now
 	grant.UpdatedAt = now
-	if err := s.update(ctx, grant); err != nil {
+	changed, err := s.updateExpected(ctx, grant, StatusPending)
+	if err != nil {
 		return Grant{}, err
+	}
+	if !changed {
+		current, loadErr := s.load(ctx, grant.ID)
+		if loadErr == nil && current.Status == StatusActive && current.TargetUserID == userID && current.TargetMachineID == machine.ID {
+			return current, nil
+		}
+		return Grant{}, ErrNotFound
 	}
 	s.revokeNotice(ctx, grant.InviteNotificationID)
 	s.notifyControllerResult(ctx, grant, "远控已接受", fmt.Sprintf("%s 已接受远控，权限：%s。任务列表里已出现这台机器。", grant.TargetMachineName, permissionLabel(grant.Permission)), grant.ID)
@@ -418,14 +446,26 @@ func (s *Service) Accept(ctx context.Context, tenantID, userID, machineID, grant
 func (s *Service) Reject(ctx context.Context, tenantID, userID, grantID string) error {
 	grant, err := s.pendingForTarget(ctx, tenantID, userID, grantID)
 	if err != nil {
+		current, loadErr := s.load(ctx, grantID)
+		if loadErr == nil && current.Status == StatusRejected && current.TargetUserID == userID {
+			return nil
+		}
 		return err
 	}
 	now := time.Now().UTC()
 	grant.Status = StatusRejected
 	grant.DecidedAt = now
 	grant.UpdatedAt = now
-	if err := s.update(ctx, grant); err != nil {
+	changed, err := s.updateExpected(ctx, grant, StatusPending)
+	if err != nil {
 		return err
+	}
+	if !changed {
+		current, loadErr := s.load(ctx, grant.ID)
+		if loadErr == nil && current.Status == StatusRejected && current.TargetUserID == userID {
+			return nil
+		}
+		return ErrNotFound
 	}
 	s.revokeNotice(ctx, grant.InviteNotificationID)
 	who := strings.TrimSpace(grant.TargetAccount)
@@ -440,12 +480,20 @@ func (s *Service) Reject(ctx context.Context, tenantID, userID, grantID string) 
 func (s *Service) Ignore(ctx context.Context, tenantID, userID, grantID string) error {
 	grant, err := s.pendingForTarget(ctx, tenantID, userID, grantID)
 	if err != nil {
+		current, loadErr := s.load(ctx, grantID)
+		if loadErr == nil && current.TargetUserID == userID && current.TargetIgnored {
+			return nil
+		}
 		return err
 	}
 	grant.TargetIgnored = true
 	grant.UpdatedAt = time.Now().UTC()
-	if err := s.update(ctx, grant); err != nil {
+	changed, err := s.updateExpected(ctx, grant, StatusPending)
+	if err != nil {
 		return err
+	}
+	if !changed {
+		return ErrNotFound
 	}
 	s.revokeNotice(ctx, grant.InviteNotificationID)
 	return nil
@@ -464,9 +512,6 @@ func (s *Service) Revoke(ctx context.Context, tenantID, userID, machineID, grant
 	if grant.TenantID != strings.TrimSpace(tenantID) && grant.TargetUserID != userID {
 		return ErrNotFound
 	}
-	if grant.Status != StatusActive && grant.Status != StatusPending {
-		return ErrNotFound
-	}
 	// Ending from the controlling machine stays the controller path, including
 	// same-account, so that close does not also count as the target ending it.
 	// The target notice is delivered to the account, so any of that account's
@@ -476,23 +521,47 @@ func (s *Service) Revoke(ctx context.Context, tenantID, userID, machineID, grant
 	if !asController && !asTarget {
 		return denied("")
 	}
-	now := time.Now().UTC()
-	previous := grant.Status
-	grant.Status = StatusRevoked
-	grant.DecidedAt = now
-	grant.UpdatedAt = now
-	if err := s.update(ctx, grant); err != nil {
-		return err
+	if grant.Status == StatusRevoked {
+		return nil
 	}
-	s.revokeNotice(ctx, grant.InviteNotificationID)
-	s.revokeNotice(ctx, grant.NoticeNotificationID)
-	if asController && !grant.SameAccount && previous == StatusActive {
-		s.notifyTargetResult(ctx, grant, "远控已结束", "对方已结束对这台电脑的远控。", grant.ID)
+	if grant.Status != StatusActive && grant.Status != StatusPending {
+		return ErrNotFound
 	}
-	if asTarget && previous == StatusActive {
-		s.notifyControllerResult(ctx, grant, "远控已结束", grant.TargetMachineName+" 已结束远控。", grant.ID)
+	for attempt := 0; attempt < 2; attempt++ {
+		now := time.Now().UTC()
+		previous := grant.Status
+		grant.Status = StatusRevoked
+		grant.DecidedAt = now
+		grant.UpdatedAt = now
+		changed, err := s.updateExpected(ctx, grant, previous)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			current, loadErr := s.load(ctx, grant.ID)
+			if loadErr != nil {
+				return loadErr
+			}
+			if current.Status == StatusRevoked {
+				return nil
+			}
+			if current.Status == StatusActive || current.Status == StatusPending {
+				grant = current
+				continue
+			}
+			return ErrNotFound
+		}
+		s.revokeNotice(ctx, grant.InviteNotificationID)
+		s.revokeNotice(ctx, grant.NoticeNotificationID)
+		if asController && !grant.SameAccount && previous == StatusActive {
+			s.notifyTargetResult(ctx, grant, "远控已结束", "对方已结束对这台电脑的远控。", grant.ID)
+		}
+		if asTarget && previous == StatusActive {
+			s.notifyControllerResult(ctx, grant, "远控已结束", grant.TargetMachineName+" 已结束远控。", grant.ID)
+		}
+		return nil
 	}
-	return nil
+	return ErrNotFound
 }
 
 // Snapshot lists tabs, waiting invites, and machines of this account.
@@ -723,7 +792,8 @@ func (s *Service) expireOne(ctx context.Context, grant Grant) {
 	grant.Status = StatusExpired
 	grant.UpdatedAt = time.Now().UTC()
 	grant.DecidedAt = grant.UpdatedAt
-	if err := s.update(ctx, grant); err != nil {
+	changed, err := s.updateExpected(ctx, grant, StatusPending)
+	if err != nil || !changed {
 		return
 	}
 	s.revokeNotice(ctx, grant.InviteNotificationID)
@@ -916,14 +986,29 @@ func (s *Service) insert(ctx context.Context, grant Grant) error {
 }
 
 func (s *Service) update(ctx context.Context, grant Grant) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE remote_control_grants SET
+	_, err := s.updateExpected(ctx, grant, "")
+	return err
+}
+
+func (s *Service) updateExpected(ctx context.Context, grant Grant, expectedStatus string) (bool, error) {
+	query := `UPDATE remote_control_grants SET
 		target_machine_id = ?, target_machine_name = ?, permission = ?, status = ?, target_ignored = ?,
 		invite_notification_id = ?, notice_notification_id = ?, decided_at = ?, updated_at = ?
-		WHERE id = ?`,
+		WHERE id = ?`
+	args := []any{
 		grant.TargetMachineID, grant.TargetMachineName, grant.Permission, grant.Status, boolInt(grant.TargetIgnored),
 		grant.InviteNotificationID, grant.NoticeNotificationID, formatTime(grant.DecidedAt), formatTime(grant.UpdatedAt), grant.ID,
-	)
-	return err
+	}
+	if expectedStatus != "" {
+		query += ` AND status = ?`
+		args = append(args, expectedStatus)
+	}
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	changed, err := res.RowsAffected()
+	return changed == 1, err
 }
 
 func (s *Service) load(ctx context.Context, id string) (Grant, error) {

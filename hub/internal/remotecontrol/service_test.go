@@ -59,22 +59,34 @@ func (s *memSender) first() any {
 }
 
 type memNotice struct {
+	mu       sync.Mutex
 	items    []Notice
 	revoked  []string
 	nextID   int
 	onNotify func(Notice)
+	fail     error
 }
 
 func (n *memNotice) Notify(ctx context.Context, notice Notice) (string, error) {
+	n.mu.Lock()
+	if n.fail != nil {
+		err := n.fail
+		n.mu.Unlock()
+		return "", err
+	}
 	n.nextID++
+	id := "n" + string(rune('0'+n.nextID))
 	n.items = append(n.items, notice)
+	n.mu.Unlock()
 	if n.onNotify != nil {
 		n.onNotify(notice)
 	}
-	return "n" + string(rune('0'+n.nextID)), nil
+	return id, nil
 }
 
 func (n *memNotice) Revoke(_ context.Context, id string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	n.revoked = append(n.revoked, id)
 }
 
@@ -547,6 +559,179 @@ func TestExistingGrantStoreAddsFederationColumns(t *testing.T) {
 		if !columns[name] {
 			t.Fatalf("missing column %s: %+v", name, columns)
 		}
+	}
+}
+
+func TestConcurrentLocalAcceptNotifiesOnce(t *testing.T) {
+	svc, _, _, notes := testService(t)
+	svc.db.SetMaxOpenConns(1)
+	ctx := context.Background()
+	invited, err := svc.Invite(ctx, "tenant", "user-a", "mac-a", "bob@example.com", PermView)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const calls = 12
+	var wg sync.WaitGroup
+	errs := make(chan error, calls)
+	for i := 0; i < calls; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := svc.Accept(ctx, "tenant", "user-b", "mac-c", invited.ID)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			t.Fatal(err)
+		}
+	}
+	if len(notes.items) != 3 {
+		t.Fatalf("invite, accept, and watch should each notify once: %+v", notes.items)
+	}
+	stored, err := svc.load(ctx, invited.ID)
+	if err != nil || stored.Status != StatusActive {
+		t.Fatalf("grant = %+v err=%v", stored, err)
+	}
+}
+
+func TestLocalAcceptCannotReviveConcurrentRevoke(t *testing.T) {
+	svc, _, _, _ := testService(t)
+	svc.db.SetMaxOpenConns(1)
+	ctx := context.Background()
+	invited, err := svc.Invite(ctx, "tenant", "user-a", "mac-a", "bob@example.com", PermView)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, _ = svc.Accept(ctx, "tenant", "user-b", "mac-c", invited.ID)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_ = svc.Revoke(ctx, "tenant", "user-a", "mac-a", invited.ID)
+	}()
+	close(start)
+	wg.Wait()
+	stored, err := svc.load(ctx, invited.ID)
+	if err != nil || stored.Status != StatusRevoked {
+		t.Fatalf("grant = %+v err=%v", stored, err)
+	}
+}
+
+func TestLateExpiryDoesNotExpireAcceptedGrant(t *testing.T) {
+	svc, _, _, _ := testService(t)
+	ctx := context.Background()
+	invited, err := svc.Invite(ctx, "tenant", "user-a", "mac-a", "bob@example.com", PermView)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Accept(ctx, "tenant", "user-b", "mac-c", invited.ID); err != nil {
+		t.Fatal(err)
+	}
+	svc.expireOne(ctx, invited)
+	stored, err := svc.load(ctx, invited.ID)
+	if err != nil || stored.Status != StatusActive {
+		t.Fatalf("grant = %+v err=%v", stored, err)
+	}
+}
+
+func TestLocalNotificationActionsAreIdempotent(t *testing.T) {
+	ctx := context.Background()
+	t.Run("accept", func(t *testing.T) {
+		svc, _, _, notes := testService(t)
+		invited, err := svc.Invite(ctx, "tenant", "user-a", "mac-a", "bob@example.com", PermView)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if _, err := svc.Accept(ctx, "tenant", "user-b", "mac-c", invited.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if len(notes.items) != 3 {
+			t.Fatalf("accept notices = %+v", notes.items)
+		}
+	})
+	t.Run("decline", func(t *testing.T) {
+		svc, _, _, notes := testService(t)
+		invited, err := svc.Invite(ctx, "tenant", "user-a", "mac-a", "bob@example.com", PermView)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if err := svc.Reject(ctx, "tenant", "user-b", invited.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if len(notes.items) != 2 {
+			t.Fatalf("decline notices = %+v", notes.items)
+		}
+	})
+	t.Run("ignore", func(t *testing.T) {
+		svc, _, _, notes := testService(t)
+		invited, err := svc.Invite(ctx, "tenant", "user-a", "mac-a", "bob@example.com", PermView)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if err := svc.Ignore(ctx, "tenant", "user-b", invited.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if len(notes.items) != 1 {
+			t.Fatalf("ignore notices = %+v", notes.items)
+		}
+	})
+	t.Run("end", func(t *testing.T) {
+		svc, _, _, notes := testService(t)
+		invited, err := svc.Invite(ctx, "tenant", "user-a", "mac-a", "bob@example.com", PermView)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.Accept(ctx, "tenant", "user-b", "mac-c", invited.ID); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if err := svc.Revoke(ctx, "tenant-b", "user-b", "mac-c", invited.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if len(notes.items) != 4 {
+			t.Fatalf("end notices = %+v", notes.items)
+		}
+	})
+}
+
+func TestDuplicateInviteRetriesFailedNotification(t *testing.T) {
+	svc, _, _, notes := testService(t)
+	notes.fail = errors.New("notification unavailable")
+	ctx := context.Background()
+	first, err := svc.Invite(ctx, "tenant", "user-a", "mac-a", "bob@example.com", PermView)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notes.items) != 0 {
+		t.Fatal("failed notification was recorded as sent")
+	}
+	notes.fail = nil
+	second, err := svc.Invite(ctx, "tenant", "user-a", "mac-a", "bob@example.com", PermView)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != first.ID || len(notes.items) != 1 || notes.items[0].Source != NoticeInvite {
+		t.Fatalf("retry grant = %+v notices = %+v", second, notes.items)
+	}
+	stored, err := svc.load(ctx, first.ID)
+	if err != nil || stored.InviteNotificationID == "" {
+		t.Fatalf("notification was not attached: %+v err=%v", stored, err)
 	}
 }
 

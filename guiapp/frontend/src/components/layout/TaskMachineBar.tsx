@@ -89,6 +89,10 @@ export function TaskMachineBar({
     // only keeps it when that form is not open, so the same text is not shown twice.
     const errorInDetail = !!(remote.error && remote.detail && remote.detailPath);
     const errorInCreate = !!(remote.error && selected && remote.creating && !errorInDetail);
+    const machines = [...remote.state.machines].sort((left, right) =>
+        Number(right.online) - Number(left.online)
+        || (left.name || left.id).localeCompare(right.name || right.id, lang, { sensitivity: 'base' })
+        || left.id.localeCompare(right.id));
 
     return (
         <div className="mc-task-machine-bar" data-testid="task-machine-bar">
@@ -309,7 +313,7 @@ export function TaskMachineBar({
                         <h3>{localizeText(lang, 'Other computers on this account', '同帐号的其它机器', '同帳號的其它機器')}</h3>
                         {remote.state.machines.length === 0
                             ? <p>{localizeText(lang, 'No other computer is registered on this account.', '这个帐号下没有其它已注册的电脑。', '這個帳號下沒有其它已註冊的電腦。')}</p>
-                            : remote.state.machines.map(machine => {
+                            : machines.map(machine => {
                                 const granted = remote.state.grants.find(grant => grant.machine_id === machine.id);
                                 return (
                                 <button

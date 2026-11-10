@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -1625,6 +1626,65 @@ func TestParsePublicSSEToResponse_ConvertsContentCodexToolCall(t *testing.T) {
 	}
 	if got := resp.Choices[0].FinishReason; got != "tool_calls" {
 		t.Fatalf("finish_reason = %q, want tool_calls", got)
+	}
+}
+
+// Regression: Mistral's hosted reasoning models stream one final chunk whose
+// delta.content is a content-part array (thinking + text). A string-typed
+// field failed to unmarshal that chunk, so every reasoning delta and the
+// closing text chunk were silently dropped and the visible answer stayed empty.
+func TestParseSSEStream_MistralHostedThinkingArrayDeltas(t *testing.T) {
+	body := []byte(
+		`data: {"id":"m-1","choices":[{"delta":{"role":"assistant","content":""},"finish_reason":null}]}` + "\n\n" +
+			`data: {"id":"m-1","p":"abcdef","choices":[{"delta":{"index":0,"content":[{"type":"thinking","thinking":[{"type":"text","text":"T1"}],"closed":true}]},"finish_reason":null}]}` + "\n\n" +
+			`data: {"id":"m-1","p":"abcdefg","choices":[{"delta":{"index":0,"content":[{"type":"thinking","thinking":[{"type":"text","text":"T2"}],"closed":true}]},"finish_reason":null}]}` + "\n\n" +
+			`data: {"id":"m-1","p":"abcdefgh","choices":[{"delta":{"index":0,"content":[{"type":"thinking","thinking":[{"type":"text","text":"."}],"closed":true},{"type":"text","text":"OK"}]},"finish_reason":"stop"}]}` + "\n\n" +
+			`data: [DONE]` + "\n\n",
+	)
+	var streamed, reasoning strings.Builder
+	resp, err := parseSSEStreamWithReasoning(bytes.NewReader(body), func(delta string) {
+		streamed.WriteString(delta)
+	}, func(delta string) {
+		reasoning.WriteString(delta)
+	})
+	if err != nil {
+		t.Fatalf("parseSSEStreamWithReasoning: %v", err)
+	}
+	if got := streamed.String(); got != "OK" {
+		t.Fatalf("visible stream = %q, want OK", got)
+	}
+	if got := reasoning.String(); got != "T1T2." {
+		t.Fatalf("reasoning stream = %q, want T1T2.", got)
+	}
+	if got := resp.Choices[0].Message.Content; got != "OK" {
+		t.Fatalf("final content = %q, want OK", got)
+	}
+	if got := resp.Choices[0].Message.ReasoningContent; got != "T1T2." {
+		t.Fatalf("final reasoning = %q, want T1T2.", got)
+	}
+}
+
+func TestParseSSEToResponse_MistralHostedThinkingArrayDeltas(t *testing.T) {
+	body := []byte(
+		`data: {"id":"m-1","choices":[{"delta":{"content":""},"finish_reason":null}]}` + "\n\n" +
+			`data: {"id":"m-1","p":"abcdef","choices":[{"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"We"}],"closed":true}]},"finish_reason":null}]}` + "\n\n" +
+			`data: {"id":"m-1","p":"abcdefg","choices":[{"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":" need answer"}],"closed":true}]},"finish_reason":null}]}` + "\n\n" +
+			`data: {"id":"m-1","p":"abcdefgh","choices":[{"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"."}],"closed":true},{"type":"text","text":"OK"}]},"finish_reason":"stop"}]}` + "\n\n" +
+			`data: [DONE]` + "\n\n",
+	)
+	resp, err := ParseSSEToResponse(body)
+	if err != nil {
+		t.Fatalf("ParseSSEToResponse: %v", err)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1", len(resp.Choices))
+	}
+	msg := resp.Choices[0].Message
+	if msg.Content != "OK" {
+		t.Fatalf("content = %q, want OK", msg.Content)
+	}
+	if msg.ReasoningContent != "We need answer." {
+		t.Fatalf("reasoning_content = %q, want %q", msg.ReasoningContent, "We need answer.")
 	}
 }
 

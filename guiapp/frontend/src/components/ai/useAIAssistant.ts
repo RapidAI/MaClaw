@@ -7494,7 +7494,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     // coding workbench keep the task-folder key while the tab may use the
     // workspace path). Without it, the stop control was dead for that round:
     // the lookup under the tab key found nothing and left the work running.
-    const cancelSession = useCallback(async (requestedSessionKey?: string): Promise<CancelAIAssistantResult> => {
+    // forceBackend also settles a durable running snapshot left by a finished
+    // or restored task after its foreground round has disappeared.
+    const cancelSession = useCallback(async (requestedSessionKey?: string, forceBackend = false): Promise<CancelAIAssistantResult> => {
         const explicitSessionKey = String(requestedSessionKey || '').trim();
         const sessionKeyAtCancel = explicitSessionKey || activeSessionKeyForEvents() || 'desktop-user';
         const lookupSessionKey = normalizeRuntimeSessionKey(sessionKeyAtCancel);
@@ -7512,7 +7514,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const cancelingDetachedRound = !!detachedRoundAtCancel;
         const pendingTaskAtCancel = findPendingTaskBySession(sessionKeyAtCancel, activeRoundSessionKey);
         const nextGeneration = (canceledRound?.generation ?? activeRoundAtCancel.generation) + 1;
-        if (!canceledRound?.assistantMessageId && (!canceledRound || isRoundIdle(canceledRound)) && !pendingTaskAtCancel) {
+        if (!forceBackend && !canceledRound?.assistantMessageId && (!canceledRound || isRoundIdle(canceledRound)) && !pendingTaskAtCancel) {
             return { canceledText: "" };
         }
         console.info('[useAIAssistant] cancel foreground session', {

@@ -70,6 +70,27 @@ describe('TaskMachineBar', () => {
         expect(screen.getByTestId('task-machine-pending').textContent).not.toContain('已忽略');
     });
 
+    it('puts online computers first and orders them by machine name', () => {
+        const control = remote({
+            state: {
+                machine_id: 'mac-a',
+                machines: [
+                    { id: 'mac-z', name: 'Z-Offline', online: false },
+                    { id: 'mac-c', name: 'B-Online', online: true },
+                    { id: 'mac-b', name: 'A-Online', online: true },
+                ],
+                grants: [], pending: [], invites: [], controlled: [],
+            },
+        });
+        render(<TaskMachineBar lang="zh-CN" remote={control} onCloseGrant={vi.fn()} />);
+        fireEvent.click(screen.getByTestId('task-machine-add'));
+        const first = screen.getByTestId('task-machine-own-mac-b');
+        const second = screen.getByTestId('task-machine-own-mac-c');
+        const offline = screen.getByTestId('task-machine-own-mac-z');
+        expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(second.compareDocumentPosition(offline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
     it('keeps a local status failure inside the add panel', () => {
         const control = remote({
             error: '远控请求失败',

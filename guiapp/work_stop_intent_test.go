@@ -39,6 +39,47 @@ func startHeldChatTask(t *testing.T, h *IMMessageHandler) (release func()) {
 	}
 }
 
+func TestCancelAIAssistantSessionForOwnerCancelsBackgroundChatTasks(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	reg := h.ensureChatTasks()
+	otherSession := "desktop-user:D:/work/other"
+	mainHold := make(chan struct{})
+	otherHold := make(chan struct{})
+	defer close(mainHold)
+	defer close(otherHold)
+	reg.executor = func(_ *IMMessageHandler, task *chatTaskRecord) chatTaskRunResult {
+		if task.SessionKey == otherSession {
+			<-otherHold
+			return chatTaskRunResult{Text: "other task finished"}
+		}
+		<-mainHold
+		return chatTaskRunResult{Text: "main task finished"}
+	}
+	mainTask, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{Text: "main task", SessionKey: desktopUserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitChatTaskStatus(t, reg, mainTask.ID, chatTaskRunning)
+	other, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{Text: "other task", SessionKey: otherSession})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitChatTaskStatus(t, reg, other.ID, chatTaskRunning)
+
+	_, _ = h.app.cancelAIAssistantSessionForOwner(h, desktopUserID)
+
+	if got := reg.activeCount(desktopUserID); got != 0 {
+		t.Fatalf("background chat tasks still active after session cancel: %d", got)
+	}
+	tasks := reg.List(desktopUserID)
+	if len(tasks) != 1 || tasks[0].Status != string(chatTaskCanceled) {
+		t.Fatalf("background chat task status = %+v, want cancelled", tasks)
+	}
+	if got := reg.activeCount(otherSession); got != 1 {
+		t.Fatalf("session cancel changed another session's active task count: %d", got)
+	}
+}
+
 func TestWorkStopFastPathSkipsTheClassifier(t *testing.T) {
 	h, _ := testChatTaskHandler(t)
 	release := startHeldChatTask(t, h)

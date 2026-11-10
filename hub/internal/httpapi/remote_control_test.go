@@ -23,6 +23,11 @@ func TestRemoteControlMachineNamePrefersComputerName(t *testing.T) {
 	if got := remoteControlMachineName(item); got != "Bravo" {
 		t.Fatalf("alias fallback = %q", got)
 	}
+	item.Name = "MaClaw Desktop"
+	item.Hostname = "desktop-home"
+	if got := remoteControlMachineName(item); got != "desktop-home" {
+		t.Fatalf("generic name fallback = %q", got)
+	}
 }
 
 func TestRemoteControlOtherMachinesUsesLivePresence(t *testing.T) {

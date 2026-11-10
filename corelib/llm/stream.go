@@ -721,15 +721,24 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 
 		delta := chunk.Choices[0].Delta
 
-		// Stream text deltas to the callback.
-		if delta.Content != "" {
-			contentBuf.WriteString(delta.Content)
-			thinkFilter.Write(delta.Content)
+		// Stream text deltas to the callback. A hosted reasoning array
+		// (Mistral content-part shape) may carry thinking and text in one
+		// chunk: route each part to its own lane.
+		text, thinking := openAIDeltaContent(delta.Content)
+		if text != "" {
+			contentBuf.WriteString(text)
+			thinkFilter.Write(text)
 		}
 		if reasoning := openAISSEReasoningText(delta); reasoning != "" {
 			reasoningBuf.WriteString(reasoning)
 			if reasoningProtocol != nil {
 				reasoningProtocol.Write(reasoning)
+			}
+		}
+		if thinking != "" {
+			reasoningBuf.WriteString(thinking)
+			if reasoningProtocol != nil {
+				reasoningProtocol.Write(thinking)
 			}
 		}
 

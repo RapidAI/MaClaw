@@ -114,6 +114,20 @@ describe('Maclaw provider quick-fill catalog', () => {
         }).map(model => model.id)).toEqual(['TeleChat3-438B-A24B', 'Xing4.0-29B-A4B']);
     });
 
+    it('lists Mistral AI on the La Plateforme OpenAI base with the brand mark', () => {
+        const mistral = KNOWN_OPENAI_ENDPOINTS.find(provider => provider.name === 'Mistral AI');
+
+        expect(mistral).toMatchObject({
+            url: 'https://api.mistral.ai/v1',
+            model: 'mistral-large-latest',
+            context_length: 262144,
+            models: ['mistral-large-latest', 'mistral-medium-latest', 'mistral-small-latest', 'codestral-latest'],
+        });
+        expect(mistral?.protocol ?? '').toBe('');
+        expect(mistral?.auth_type ?? '').toBe('');
+        expect(PROVIDER_LOGOS['Mistral AI']).toBeTruthy();
+    });
+
     it('replaces a stale model catalog when quick-fill changes provider', () => {
         const xingchen = KNOWN_OPENAI_ENDPOINTS.find(provider => provider.name === '星辰大模型');
         const deepseek = KNOWN_OPENAI_ENDPOINTS.find(provider => provider.name === 'DeepSeek');

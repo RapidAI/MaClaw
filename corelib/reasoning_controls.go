@@ -364,8 +364,9 @@ func reasoningEffortForMode(mode, configured string) string {
 // openAIStyleReasoningEffort resolves the wire effort for an OpenAI-style
 // reasoning endpoint, adjusting for providers whose accepted vocabulary is
 // narrower than OpenAI's. omit reports that no control should be sent at all:
-// Agnes rejects reasoning_effort=minimal with HTTP 400, and its default
-// (no field) is already the no-reasoning behavior, so “off” maps to omission.
+// Agnes rejects reasoning_effort=minimal with HTTP 400 and Mistral answers 422
+// for it on the hosted reasoning models; both fieldless defaults already serve
+// the no-reasoning behavior, so “off” maps to omission.
 func openAIStyleReasoningEffort(cfg MaclawLLMConfig, mode string) (effort string, omit bool) {
 	effort = reasoningEffortForMode(mode, cfg.ReasoningEffort)
 	if isXAIReasoningEndpoint(cfg) {
@@ -377,16 +378,25 @@ func openAIStyleReasoningEffort(cfg MaclawLLMConfig, mode string) (effort string
 			return "low", false
 		}
 	}
-	if isAgnesReasoningEndpoint(cfg) {
+	if isNarrowOpenAIEffortEndpoint(cfg) {
 		switch effort {
 		case "minimal":
-			// Agnes rejects reasoning_effort=minimal with HTTP 400. “Off” maps
-			// to omission (the fieldless default already skips reasoning); an
-			// explicit minimal effort clamps up to the accepted floor.
+			// Agnes rejects reasoning_effort=minimal with HTTP 400, and
+			// Mistral answers 422 for it on the hosted reasoning models.
+			// “Off” maps to omission (the fieldless default already skips
+			// reasoning); an explicit minimal effort clamps up to the
+			// accepted floor.
 			if mode == "disabled" {
 				return "", true
 			}
 			return "low", false
+		case "medium":
+			if IsMistralAIAPIEndpoint(cfg) {
+				// Hosted reasoning models on Mistral validate the effort
+				// against {low, high}; medium is rejected. Down-map to the
+				// cheapest legal level instead of failing the request.
+				return "low", false
+			}
 		case "xhigh":
 			return "high", false
 		}
@@ -617,14 +627,23 @@ func usesOpenAIStyleReasoning(cfg MaclawLLMConfig) bool {
 		// Agnes accepts reasoning_effort (low/medium/high) but silently ignores
 		// the DeepSeek-style thinking object and Qwen-style enable_thinking.
 		return true
+	case "api.mistral.ai":
+		// Mistral hosts DeepSeek-family models by id, but its chat schema is
+		// strict: the DeepSeek thinking object is an unknown field and the
+		// endpoint answers HTTP 422. reasoning_effort is the accepted spelling.
+		return true
 	default:
 		return false
 	}
 }
 
-func isAgnesReasoningEndpoint(cfg MaclawLLMConfig) bool {
+// isNarrowOpenAIEffortEndpoint reports hosts whose OpenAI-style effort
+// vocabulary is narrower than OpenAI's own set. Both Agnes and Mistral reject
+// reasoning_effort=minimal; hosted reasoning models on Mistral also reject
+// medium, so the accepted levels there are low and high.
+func isNarrowOpenAIEffortEndpoint(cfg MaclawLLMConfig) bool {
 	switch requestHost(cfg) {
-	case "api.agnes-ai.cn", "agnes-ai.cn":
+	case "api.agnes-ai.cn", "agnes-ai.cn", "api.mistral.ai":
 		return true
 	default:
 		return false
@@ -998,7 +1017,7 @@ func applyGeminiThinkingLevel(cfg MaclawLLMConfig, generationConfig map[string]i
 		level = "low"
 	}
 	generationConfig["thinkingConfig"] = map[string]interface{}{
-		"thinkingLevel":  level,
+		"thinkingLevel":   level,
 		"includeThoughts": true,
 	}
 }
@@ -1135,6 +1154,21 @@ func IsAMDRadeonPublicChatEndpoint(cfg MaclawLLMConfig) bool {
 	}
 }
 
+// IsMistralAIAPIEndpoint reports the official Mistral La Plateforme API host.
+// Its OpenAI-compatible schema is strictly validated: a DeepSeek reasoning
+// thinking object arrives as an unknown field and the endpoint answers
+// HTTP 422 "Extra inputs are not permitted". Reasoning choices travel as
+// reasoning_effort instead, and hosted reasoning models accept only the low
+// and high efforts there.
+func IsMistralAIAPIEndpoint(cfg MaclawLLMConfig) bool {
+	switch requestHost(cfg) {
+	case "api.mistral.ai":
+		return true
+	default:
+		return false
+	}
+}
+
 // llmEndpointHostname returns the lowercase host, accepting a URL that was
 // saved without a scheme. url.Parse treats a scheme-less value as a path, which
 // would hide developer.amd.com.cn and let a thinking object through.
@@ -1205,9 +1239,12 @@ func amdRadeonChatEffort(cfg MaclawLLMConfig, mode string) string {
 // ShouldAutoStampDeepSeekThinking reports whether a chat body should gain a
 // DeepSeek thinking object when the caller left thinking on auto. AMD's public
 // gateway rejects that object for every DeepSeek model, so the stamp stays off
-// that host. An explicit thinking request is rewritten separately.
+// that host. Mistral is equally strict: the object fails validation there
+// regardless of the model behind it. An explicit thinking request is rewritten
+// separately.
 func ShouldAutoStampDeepSeekThinking(cfg MaclawLLMConfig) bool {
-	return IsAutoThinkingMode(cfg.ThinkingMode) && IsDeepSeekThinkingModeModel(cfg) && !IsAMDRadeonPublicChatEndpoint(cfg)
+	return IsAutoThinkingMode(cfg.ThinkingMode) && IsDeepSeekThinkingModeModel(cfg) &&
+		!IsAMDRadeonPublicChatEndpoint(cfg) && !IsMistralAIAPIEndpoint(cfg)
 }
 
 // AddAutoDeepSeekThinkingObject stamps thinking.type=enabled for hosts that

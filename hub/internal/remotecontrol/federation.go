@@ -78,6 +78,9 @@ func (s *Service) ImportFederatedInvite(ctx context.Context, grant Grant) error 
 	}
 	if existing, err := s.load(ctx, grant.ID); err == nil {
 		if federationSecretMatches(existing.FederationSecret, grant.FederationSecret) && existing.ControllerHub == grant.ControllerHub {
+			if existing.Status == StatusPending && !existing.TargetIgnored && existing.InviteNotificationID == "" {
+				s.notifyInvite(ctx, existing)
+			}
 			return nil
 		}
 		return denied("远控邀请标识冲突")
@@ -118,6 +121,17 @@ func (s *Service) FederatedGrantForTarget(ctx context.Context, userID, grantID s
 	return grant, nil
 }
 
+func (s *Service) ActiveFederatedPair(ctx context.Context, grant Grant, targetMachineID string) (Grant, bool) {
+	if grant.Status != StatusPending || grant.ControllerHub == "" {
+		return Grant{}, false
+	}
+	existing, found := s.findActivePair(ctx, grant.TenantID, grant.ControllerMachineID, strings.TrimSpace(targetMachineID))
+	if !found || existing.ID == grant.ID || existing.ControllerHub != grant.ControllerHub {
+		return Grant{}, false
+	}
+	return existing, true
+}
+
 func (s *Service) ControllerGrant(ctx context.Context, tenantID, userID, machineID, grantID string) (Grant, error) {
 	grant, err := s.load(ctx, grantID)
 	if err != nil {
@@ -129,13 +143,37 @@ func (s *Service) ControllerGrant(ctx context.Context, tenantID, userID, machine
 	return grant, nil
 }
 
-func (s *Service) AcceptFederated(ctx context.Context, grantID, secret, targetMachineID, targetMachineName string) (Grant, error) {
+func (s *Service) AcceptFederated(ctx context.Context, grantID, secret, targetMachineID, targetMachineName string, permissions ...string) (Grant, error) {
 	grant, err := s.FederationGrant(ctx, grantID, secret)
 	if err != nil {
 		return Grant{}, err
 	}
 	targetMachineID = strings.TrimSpace(targetMachineID)
 	if grant.Status == StatusActive && grant.TargetMachineID == targetMachineID {
+		permission := grant.Permission
+		if len(permissions) > 0 && strings.TrimSpace(permissions[0]) != "" {
+			permission, err = normalizePermission(permissions[0])
+			if err != nil {
+				return Grant{}, err
+			}
+		}
+		if permission == grant.Permission {
+			return grant, nil
+		}
+		grant.Permission = permission
+		grant.UpdatedAt = time.Now().UTC()
+		changed, updateErr := s.updateExpected(ctx, grant, StatusActive)
+		if updateErr != nil {
+			return Grant{}, updateErr
+		}
+		if !changed {
+			current, loadErr := s.FederationGrant(ctx, grantID, secret)
+			if loadErr == nil && current.Status == StatusActive && current.TargetMachineID == targetMachineID && current.Permission == permission {
+				return current, nil
+			}
+			return Grant{}, ErrNotFound
+		}
+		s.notifyResult(ctx, grant.ControllerUserID, "远控权限已更新", fmt.Sprintf("%s 的远控权限已改为%s。", grant.TargetMachineName, permissionLabel(permission)), grant.ID)
 		return grant, nil
 	}
 	if grant.Status != StatusPending || (!grant.ExpiresAt.IsZero() && time.Now().UTC().After(grant.ExpiresAt)) {
@@ -151,8 +189,16 @@ func (s *Service) AcceptFederated(ctx context.Context, grantID, secret, targetMa
 	grant.TargetIgnored = false
 	grant.DecidedAt = now
 	grant.UpdatedAt = now
-	if err := s.update(ctx, grant); err != nil {
+	changed, err := s.updateExpected(ctx, grant, StatusPending)
+	if err != nil {
 		return Grant{}, err
+	}
+	if !changed {
+		current, loadErr := s.FederationGrant(ctx, grantID, secret)
+		if loadErr == nil && current.Status == StatusActive && current.TargetMachineID == targetMachineID {
+			return current, nil
+		}
+		return Grant{}, ErrNotFound
 	}
 	s.revokeNotice(ctx, grant.InviteNotificationID)
 	s.notifyResult(ctx, grant.ControllerUserID, "远控已接受", fmt.Sprintf("%s 已接受远控，权限：%s。任务列表里已出现这台机器。", grant.TargetMachineName, permissionLabel(grant.Permission)), grant.ID)
@@ -174,8 +220,16 @@ func (s *Service) RejectFederated(ctx context.Context, grantID, secret string) e
 	grant.Status = StatusRejected
 	grant.DecidedAt = now
 	grant.UpdatedAt = now
-	if err := s.update(ctx, grant); err != nil {
+	changed, err := s.updateExpected(ctx, grant, StatusPending)
+	if err != nil {
 		return err
+	}
+	if !changed {
+		current, loadErr := s.FederationGrant(ctx, grantID, secret)
+		if loadErr == nil && current.Status == StatusRejected {
+			return nil
+		}
+		return ErrNotFound
 	}
 	s.revokeNotice(ctx, grant.InviteNotificationID)
 	s.notifyResult(ctx, grant.ControllerUserID, "远控已拒绝", grant.TargetAccount+" 已拒绝远控。", grant.ID)
@@ -183,32 +237,39 @@ func (s *Service) RejectFederated(ctx context.Context, grantID, secret string) e
 }
 
 func (s *Service) RevokeFederated(ctx context.Context, grantID, secret string, fromController bool) error {
-	grant, err := s.FederationGrant(ctx, grantID, secret)
-	if err != nil {
-		return err
-	}
-	if grant.Status == StatusRevoked {
+	for attempt := 0; attempt < 2; attempt++ {
+		grant, err := s.FederationGrant(ctx, grantID, secret)
+		if err != nil {
+			return err
+		}
+		if grant.Status == StatusRevoked {
+			return nil
+		}
+		if grant.Status != StatusActive && grant.Status != StatusPending {
+			return ErrNotFound
+		}
+		previous := grant.Status
+		now := time.Now().UTC()
+		grant.Status = StatusRevoked
+		grant.DecidedAt = now
+		grant.UpdatedAt = now
+		changed, err := s.updateExpected(ctx, grant, previous)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			continue
+		}
+		s.revokeNotice(ctx, grant.InviteNotificationID)
+		s.revokeNotice(ctx, grant.NoticeNotificationID)
+		if previous == StatusActive {
+			if fromController {
+				s.notifyResult(ctx, grant.TargetUserID, "远控已结束", "对方已结束对这台电脑的远控。", grant.ID)
+			} else {
+				s.notifyResult(ctx, grant.ControllerUserID, "远控已结束", grant.TargetMachineName+" 已结束远控。", grant.ID)
+			}
+		}
 		return nil
 	}
-	if grant.Status != StatusActive && grant.Status != StatusPending {
-		return ErrNotFound
-	}
-	previous := grant.Status
-	now := time.Now().UTC()
-	grant.Status = StatusRevoked
-	grant.DecidedAt = now
-	grant.UpdatedAt = now
-	if err := s.update(ctx, grant); err != nil {
-		return err
-	}
-	s.revokeNotice(ctx, grant.InviteNotificationID)
-	s.revokeNotice(ctx, grant.NoticeNotificationID)
-	if previous == StatusActive {
-		if fromController {
-			s.notifyResult(ctx, grant.TargetUserID, "远控已结束", "对方已结束对这台电脑的远控。", grant.ID)
-		} else {
-			s.notifyResult(ctx, grant.ControllerUserID, "远控已结束", grant.TargetMachineName+" 已结束远控。", grant.ID)
-		}
-	}
-	return nil
+	return ErrNotFound
 }

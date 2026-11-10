@@ -4537,6 +4537,18 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.messages).toEqual([]);
     });
 
+    it('cancelSession settles a durable running snapshot without an active round', async () => {
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.cancelSession(undefined, true);
+        });
+
+        expect(CancelAIAssistantSessionForSession).toHaveBeenCalledWith('desktop-user');
+        expect(result.current.sending).toBe(false);
+        expect(result.current.messages).toEqual([]);
+    });
+
     it('normalizes structured unfinished slot payloads into assistant messages', async () => {
         mockSendResponse = {
             text: '检测到未完成任务',

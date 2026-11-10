@@ -1656,6 +1656,182 @@ func TestSkillRunnerStartRun_AllowsGUIOpenAIProxyEnv(t *testing.T) {
 	_ = runner.CancelRun(runID)
 }
 
+// localOpenAIProxyProbeCommand prints the injected OpenAI env and GETs the
+// local proxy's /models endpoint. The HTTP call can succeed only when the
+// proxy is already listening before the skill step starts.
+func localOpenAIProxyProbeCommand() (command, shell string) {
+	if runtime.GOOS == "windows" {
+		return strings.TrimSpace(`
+$ProgressPreference = 'SilentlyContinue'
+Write-Output ("KEY=" + $env:OPENAI_API_KEY)
+Write-Output ("URL=" + $env:OPENAI_BASE_URL)
+Write-Output ("MODEL=" + $env:OPENAI_MODEL)
+$base = [string]$env:OPENAI_BASE_URL
+if ([string]::IsNullOrWhiteSpace($base)) { Write-Output 'HTTP_ERR=missing OPENAI_BASE_URL'; exit 1 }
+$base = $base.TrimEnd('/')
+$models = ([string][char]47) + 'models'
+$last = 'unreachable'
+for ($i = 0; $i -lt 20; $i++) {
+  try {
+    $resp = Invoke-WebRequest -UseBasicParsing -Uri ($base + $models) -TimeoutSec 5
+    Write-Output ("HTTP=" + [int]$resp.StatusCode)
+    Write-Output $resp.Content
+    exit 0
+  } catch {
+    $last = $_.Exception.Message
+    Start-Sleep -Milliseconds 100
+  }
+}
+Write-Output ("HTTP_ERR=" + $last)
+exit 1
+`), "powershell"
+	}
+	return strings.TrimSpace(`
+printf 'KEY=%s\nURL=%s\nMODEL=%s\n' "$OPENAI_API_KEY" "$OPENAI_BASE_URL" "$OPENAI_MODEL"
+base="${OPENAI_BASE_URL%/}"
+if [ -z "$base" ]; then echo 'HTTP_ERR=missing OPENAI_BASE_URL'; exit 1; fi
+py=python3
+command -v python3 >/dev/null 2>&1 || py=python
+"$py" - "$base" <<'PY'
+import sys, time, urllib.request
+base = sys.argv[1]
+models = chr(47) + "models"
+last = "unreachable"
+for _ in range(20):
+    try:
+        with urllib.request.urlopen(base + models, timeout=5) as resp:
+            print("HTTP=%s" % resp.status)
+            print(resp.read().decode())
+            sys.exit(0)
+    except Exception as exc:
+        last = str(exc)
+        time.sleep(0.1)
+print("HTTP_ERR=" + last)
+sys.exit(1)
+PY
+`), "bash"
+}
+
+func assertLocalOpenAIProxyProbeOutput(t *testing.T, output string) {
+	t.Helper()
+	for _, want := range []string{
+		"KEY=sk-maclaw-local-proxy",
+		"URL=http://127.0.0.1:",
+		"/v1",
+		"MODEL=test-model",
+		"HTTP=200",
+		`"id":"test-model"`,
+		`"owned_by":"maclaw-local-proxy"`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("probe output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestSkillRunnerInjectsStartedLocalOpenAIProxy(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("OPENAI_MODEL", "")
+
+	command, shell := localOpenAIProxyProbeCommand()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	pinTestLLMProviderForSkillTest(t, app)
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:        "openai-proxy-probe",
+		Status:      "active",
+		RequiredEnv: []string{"OPENAI_API_KEY", "OPENAI_BASE_URL"},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command":         command,
+				"preferred_shell": shell,
+			},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("openai-proxy-probe", nil)
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; local proxy should satisfy declared OpenAI env", err)
+	}
+	status := waitSkillRunDoneWithin(t, runner, runID, 30*time.Second)
+	if status.Status != "success" {
+		t.Fatalf("status = %+v, want success with proxy env injected before the step", status)
+	}
+	if len(status.Steps) != 1 {
+		t.Fatalf("steps = %#v, want one step", status.Steps)
+	}
+	assertLocalOpenAIProxyProbeOutput(t, status.Steps[0].Output)
+}
+
+func TestSkillExecutorInjectsStartedLocalOpenAIProxy(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("OPENAI_MODEL", "")
+
+	command, shell := localOpenAIProxyProbeCommand()
+	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
+	exec := NewSkillExecutor(app, nil, nil)
+	output, err := exec.executeSkillSteps(&corelib.NLSkillEntry{
+		Name:   "openai-proxy-probe-sync",
+		Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command":         command,
+				"preferred_shell": shell,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("executeSkillSteps() error = %v, output = %s", err, output)
+	}
+	assertLocalOpenAIProxyProbeOutput(t, output)
+}
+
+func waitSkillRunDoneWithin(t *testing.T, runner *SkillRunner, runID string, timeout time.Duration) *SkillRunStatus {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var status *SkillRunStatus
+	var err error
+	for time.Now().Before(deadline) {
+		status, err = runner.GetRunStatus(runID)
+		if err != nil {
+			t.Fatalf("GetRunStatus() error = %v", err)
+		}
+		if status.Status != "running" {
+			for time.Now().Before(deadline) {
+				if runner == nil || runner.activeRuns.Load() == 0 {
+					time.Sleep(100 * time.Millisecond)
+					return status
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			t.Fatalf("run %s reached terminal status but did not finish cleanup, last status = %+v", runID, status)
+			return status
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("run %s did not finish, last status = %+v", runID, status)
+	return nil
+}
+
 func TestSkillRunnerRunFailsWhenOpenAIProxyConfigMissing(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	skill := &corelib.NLSkillEntry{

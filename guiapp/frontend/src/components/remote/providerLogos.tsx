@@ -65,6 +65,28 @@ function QoderLogo() {
 }
 
 /**
+ * Official Mistral AI brand mark (the pixel "M" in the brand palette),
+ * embedded from mistral.ai's public favicon. Like the Trae and LobsterAI
+ * assets it is a baked-in-color mark, so it keeps its identity on light and
+ * dark surfaces where a currentColor line logo would not.
+ */
+const MISTRAL_ICON_DATA = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgzIiBoZWlnaHQ9IjE4MyIgdmlld0JveD0iMCAwIDE4MyAxODMiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHg9IjMzIiB5PSIzMyIgd2lkdGg9IjI0IiBoZWlnaHQ9IjIzIiBmaWxsPSIjRkZBRjAxIi8+CjxyZWN0IHg9IjMzIiB5PSI1NiIgd2lkdGg9IjQ3IiBoZWlnaHQ9IjI0IiBmaWxsPSIjRkY4MjA0Ii8+CjxyZWN0IHg9IjMzIiB5PSI4MCIgd2lkdGg9IjExOCIgaGVpZ2h0PSIyMyIgZmlsbD0iI0ZBNTAwRiIvPgo8cmVjdCB4PSIxMjciIHk9IjEwMyIgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiBmaWxsPSIjRTEwNTAwIi8+CjxyZWN0IHg9IjgwIiB5PSIxMDMiIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgZmlsbD0iI0UxMDUwMCIvPgo8cmVjdCB4PSIzMyIgeT0iMTAzIiB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIGZpbGw9IiNFMTA1MDAiLz4KPHJlY3QgeD0iMTA0IiB5PSIxMjciIHdpZHRoPSI3MCIgaGVpZ2h0PSIyMyIgZmlsbD0iI0M0MDAxRCIvPgo8cmVjdCB4PSIxMCIgeT0iMTI3IiB3aWR0aD0iNzAiIGhlaWdodD0iMjMiIGZpbGw9IiNDNDAwMUQiLz4KPHJlY3QgeD0iMTA0IiB5PSI1NiIgd2lkdGg9IjQ3IiBoZWlnaHQ9IjI0IiBmaWxsPSIjRkY4MjA0Ii8+CjxyZWN0IHg9IjEyNyIgeT0iMzMiIHdpZHRoPSIyNCIgaGVpZ2h0PSIyMyIgZmlsbD0iI0ZGQUYwMSIvPgo8L3N2Zz4K";
+
+function MistralAILogo() {
+    return (
+        <img
+            src={MISTRAL_ICON_DATA}
+            width={14}
+            height={14}
+            alt=""
+            aria-hidden="true"
+            draggable={false}
+            style={{ borderRadius: 3, flexShrink: 0 }}
+        />
+    );
+}
+
+/**
  * Official brand assets, embedded as data URIs.
  * Trae: the dark-green site favicon from trae.cn (the green frame + twin dots
  * mark). LobsterAI: the desktop app icon from the official open-source repo.
@@ -243,4 +265,5 @@ export const PROVIDER_LOGOS: Record<string, React.ReactNode> = {
     [TRAE_CN_PROVIDER]: <TraeLogo />,
     [TRAE_GLOBAL_PROVIDER]: <TraeLogo />,
     [LOBSTERAI_PROVIDER]: <LobsterAILogo />,
+    "Mistral AI": <MistralAILogo />,
 };

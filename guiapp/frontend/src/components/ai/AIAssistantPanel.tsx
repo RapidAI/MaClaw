@@ -4800,6 +4800,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return Array.from(keys).sort();
     }, [chatTasks]);
+    const openChatWork = useMemo(
+        () => openChatWorkForSession(chatTasks, activeSessionKey),
+        [activeSessionKey, chatTasks],
+    );
     const sidebarLiveSessionKeys = useMemo(() => {
         if (offscreenLiveSessionKeys.length === 0 && chatTaskLiveSessionKeys.length === 0) return busySessionKeys;
         // Keep the existing in-flight order and append the extra identities.
@@ -4920,8 +4924,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const target = liveWorkSessionKey && !sessionKeysMatch(liveWorkSessionKey, activeSessionKey)
             ? liveWorkSessionKey
             : undefined;
-        return cancelSession(target);
-    }, [activeSessionKey, cancelSession, liveWorkSessionKey]);
+        return cancelSession(target, (activeTaskSnapshotRunning || openChatWork === 'running') && !liveWorkActive);
+    }, [activeSessionKey, activeTaskSnapshotRunning, cancelSession, liveWorkActive, liveWorkSessionKey, openChatWork]);
     useEffect(() => {
         if (!workflowFormGeneratingPhaseID) return;
         if (
@@ -5051,7 +5055,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     latestShowChatUIRef.current = showChatUI;
     const showThinkingState = liveWorkStreaming;
     const showProcessingState = workflowAwaitingForm || workflowFormGeneratingDocument || (isBusy && (!activeSessionIsStreaming || hasActiveDetachedProjectRound));
-    const inputVisualBusy = liveWorkActive || activeTaskSnapshotRunning || workflowAwaitingForm || workflowFormGeneratingDocument;
+    const inputVisualBusy = liveWorkActive || activeTaskSnapshotRunning || openChatWork === 'running' || workflowAwaitingForm || workflowFormGeneratingDocument;
     const showBusySpinner = inputVisualBusy;
     const headerProgressMessages = useMemo<ChatMessage[]>(
         () => progressMessagesForStage(displayProgressMessages, displayMessages, activeSessionKey),
@@ -5436,10 +5440,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const taskCreatedLabel = formatTaskCreatedAt(taskCreatedTimestamp, lang);
     const pendingUnfinishedStatus = latestPendingUnfinishedStatus(displayMessages);
     const assistantTurnIncomplete = latestAssistantTurnIncomplete(displayMessages);
-    const openChatWork = useMemo(
-        () => openChatWorkForSession(chatTasks, activeSessionKey),
-        [activeSessionKey, chatTasks],
-    );
     const taskExecutionStatus = useMemo(() => resolveTaskExecutionStatus({
         lang,
         raw: activeTaskExecutionSnapshot.raw,

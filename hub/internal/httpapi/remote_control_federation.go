@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/remotecontrol"
@@ -125,6 +126,15 @@ func decodeRemoteControlFederation(w http.ResponseWriter, r *http.Request) (remo
 	return body, body.OriginHub, true
 }
 
+func remoteControlInviteProofMatches(invite, proof remoteControlFederationRequest) bool {
+	return (proof.Permission == "" || proof.Permission == invite.Permission) &&
+		(proof.ControllerUserID == "" || proof.ControllerUserID == invite.ControllerUserID) &&
+		(proof.ControllerMachineID == "" || proof.ControllerMachineID == invite.ControllerMachineID) &&
+		(proof.Contact == "" || proof.Contact == invite.Contact) &&
+		(proof.TenantID == "" || proof.TenantID == invite.TenantID) &&
+		(proof.ExpiresAt.IsZero() || invite.ExpiresAt.IsZero() || proof.ExpiresAt.Equal(invite.ExpiresAt))
+}
+
 func (h remoteControlHandler) federationInvite(w http.ResponseWriter, r *http.Request) {
 	body, origin, ok := decodeRemoteControlFederation(w, r)
 	if !ok {
@@ -135,11 +145,16 @@ func (h remoteControlHandler) federationInvite(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "INVALID", "跨 Hub 远控邀请无效")
 		return
 	}
-	_, err := remoteControlRelayPost(r.Context(), origin+"/api/remote-control/federation/proof", remoteControlFederationRequest{
+	raw, err := remoteControlRelayPost(r.Context(), origin+"/api/remote-control/federation/proof", remoteControlFederationRequest{
 		GrantID: grantID, OriginHub: origin, Secret: body.Secret,
 	})
 	if err != nil {
 		writeRemoteControlError(w, err)
+		return
+	}
+	var proof remoteControlFederationRequest
+	if json.Unmarshal(raw, &proof) != nil || !remoteControlInviteProofMatches(body, proof) {
+		writeError(w, http.StatusBadRequest, "INVALID", "远控邀请证明与内容不一致")
 		return
 	}
 	userID := companionContactUserIDAcrossTenants(r.Context(), h.identity, body.Contact)
@@ -181,7 +196,11 @@ func (h remoteControlHandler) federationProof(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "没有找到这次远控")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": grant.Status})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "status": grant.Status, "permission": grant.Permission,
+		"controller_user_id": grant.ControllerUserID, "controller_machine_id": grant.ControllerMachineID,
+		"contact": grant.TargetAccount, "tenant_id": grant.TenantID, "expires_at": grant.ExpiresAt,
+	})
 }
 
 func (h remoteControlHandler) federationDecision(w http.ResponseWriter, r *http.Request) {
@@ -196,7 +215,7 @@ func (h remoteControlHandler) federationDecision(w http.ResponseWriter, r *http.
 	}
 	switch body.Action {
 	case "accept":
-		grant, err = h.svc.AcceptFederated(r.Context(), body.GrantID, body.Secret, body.TargetMachineID, body.TargetMachineName)
+		grant, err = h.svc.AcceptFederated(r.Context(), body.GrantID, body.Secret, body.TargetMachineID, body.TargetMachineName, body.Permission)
 	case "decline":
 		err = h.svc.RejectFederated(r.Context(), body.GrantID, body.Secret)
 	case "revoke":
@@ -253,30 +272,36 @@ func (h remoteControlHandler) refreshFederatedGrants(ctx context.Context, tenant
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+	var wg sync.WaitGroup
 	for i := range state.Grants {
 		view := &state.Grants[i]
 		grant, err := h.svc.ControllerGrant(ctx, tenantID, userID, machineID, view.ID)
 		if err != nil || grant.TargetHub == "" {
 			continue
 		}
-		raw, err := remoteControlRelayPost(ctx, grant.TargetHub+"/api/remote-control/federation/grants/"+grant.ID+"/status", remoteControlFederationRequest{
-			GrantID: grant.ID, OriginHub: grant.ControllerHub, Secret: grant.FederationSecret,
-		})
-		if err != nil {
-			view.Online = false
-			continue
-		}
-		var status struct {
-			Online      bool   `json:"online"`
-			MachineName string `json:"machine_name"`
-		}
-		if json.Unmarshal(raw, &status) == nil {
-			view.Online = status.Online
-			if strings.TrimSpace(status.MachineName) != "" {
-				view.MachineName = strings.TrimSpace(status.MachineName)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			raw, err := remoteControlRelayPost(ctx, grant.TargetHub+"/api/remote-control/federation/grants/"+grant.ID+"/status", remoteControlFederationRequest{
+				GrantID: grant.ID, OriginHub: grant.ControllerHub, Secret: grant.FederationSecret,
+			})
+			if err != nil {
+				view.Online = false
+				return
 			}
-		}
+			var status struct {
+				Online      bool   `json:"online"`
+				MachineName string `json:"machine_name"`
+			}
+			if json.Unmarshal(raw, &status) == nil {
+				view.Online = status.Online
+				if strings.TrimSpace(status.MachineName) != "" {
+					view.MachineName = strings.TrimSpace(status.MachineName)
+				}
+			}
+		}()
 	}
+	wg.Wait()
 }
 
 func (h remoteControlHandler) relayTargetDecision(ctx context.Context, grant remotecontrol.Grant, action string) error {
@@ -284,7 +309,7 @@ func (h remoteControlHandler) relayTargetDecision(ctx context.Context, grant rem
 		return nil
 	}
 	_, err := remoteControlRelayPost(ctx, grant.ControllerHub+"/api/remote-control/federation/grants/"+grant.ID+"/decision", remoteControlFederationRequest{
-		GrantID: grant.ID, OriginHub: grant.ControllerHub, Secret: grant.FederationSecret, Action: action,
+		GrantID: grant.ID, OriginHub: grant.ControllerHub, Secret: grant.FederationSecret, Action: action, Permission: grant.Permission,
 		TargetMachineID: grant.TargetMachineID, TargetMachineName: grant.TargetMachineName,
 	})
 	return err

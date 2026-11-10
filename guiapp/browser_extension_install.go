@@ -894,7 +894,10 @@ func companionRegistrationFiles(layout companionBrowserLayout) []string {
 		}
 	}
 	if dir, err := browserExtensionStateDir(); err == nil && dir != "" {
-		paths = append(paths, filepath.Join(dir, companionLocalCRXName))
+		paths = append(paths,
+			filepath.Join(dir, companionLocalCRXName),
+			filepath.Join(dir, "extensions-page.html"),
+		)
 	}
 	return paths
 }

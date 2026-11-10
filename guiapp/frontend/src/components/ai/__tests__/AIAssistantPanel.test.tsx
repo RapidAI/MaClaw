@@ -980,6 +980,57 @@ describe('AIAssistantPanel property tests', () => {
         expect(sendButton.querySelector('svg')).toBeNull();
     });
 
+    it('cancels a durable running snapshot when no live round is tracked', async () => {
+        const projectPath = 'D:/tasks/stale-running-task';
+        const cancelSession = vi.fn<(sessionKey?: string, force?: boolean) => Promise<CancelAIAssistantResult>>().mockResolvedValue({ canceledText: '' });
+        const { getByRole } = renderPanel({
+            pendingProjectTabOpen: { projectPath, taskTitle: 'Stale running task', autoSend: false },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            tasks: [
+                {
+                    name: 'Stale running task',
+                    project_path: projectPath,
+                    active_workflow: { status: 'running', phase: 'implementation' },
+                },
+            ],
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { cancelSession },
+        });
+
+        await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy());
+        const cancelButton = getByRole('button', { name: 'Pause task' }) as HTMLButtonElement;
+        expect(cancelButton.disabled).toBe(false);
+        fireEvent.click(cancelButton);
+
+        await waitFor(() => expect(cancelSession).toHaveBeenCalledWith(undefined, true));
+    });
+
+    it('cancels background chat work when it is the only running work', async () => {
+        const projectPath = 'D:/tasks/background-only-task';
+        const sessionKey = `desktop-user:${projectPath}`;
+        const cancelSession = vi.fn<(sessionKey?: string, force?: boolean) => Promise<CancelAIAssistantResult>>().mockResolvedValue({ canceledText: '' });
+        const { getByRole } = renderPanel({
+            pendingProjectTabOpen: { projectPath, taskTitle: 'Background only task', autoSend: false },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: {
+                messages: [],
+                sending: false,
+                busySessionKeys: [],
+                chatTasks: [{ id: 'ct-background-only', sessionKey, title: 'Background work', status: 'running' }],
+                streaming: false,
+                ready: true,
+            },
+            actions: { cancelSession },
+        });
+
+        await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy());
+        const cancelButton = getByRole('button', { name: 'Pause task' }) as HTMLButtonElement;
+        expect(cancelButton.disabled).toBe(false);
+        fireEvent.click(cancelButton);
+
+        await waitFor(() => expect(cancelSession).toHaveBeenCalledWith(undefined, true));
+    });
+
     it('does not show workflow document generation chrome for non-document execution forms', async () => {
         // coding.implementation is a non-document execution phase (expects_document: false).
         const workflowForm: AgentView = {

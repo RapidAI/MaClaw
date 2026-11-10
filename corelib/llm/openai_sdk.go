@@ -25,22 +25,7 @@ import (
 )
 
 func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client) ([]byte, int, error) {
-	client = HTTPClientForRequestContext(ctx, client)
-	if workbuddy.Matches(cfg) {
-		client = workbuddy.WrapClient(client)
-	}
-	if trae.Matches(cfg.ProviderName, cfg.URL) {
-		client = trae.WrapClient(client)
-	}
-	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
-		client = lobsterai.WrapClient(client)
-	}
-	if qoder.Matches(cfg) {
-		client = qoder.WrapClientForConfig(client, cfg)
-	}
-	if windsurf.MatchesProvider(cfg.ProviderName, cfg.URL) {
-		client = windsurf.WrapClient(client)
-	}
+	client = WrapAssistantHTTPClient(HTTPClientForRequestContext(ctx, client), cfg)
 	if !json.Valid(body) {
 		return nil, 0, fmt.Errorf("parse openai request body: invalid JSON")
 	}
@@ -117,22 +102,7 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 }
 
 func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback, onReasoning TokenCallback) (*Response, int, []byte, error) {
-	client = HTTPClientForRequestContext(ctx, client)
-	if workbuddy.Matches(cfg) {
-		client = workbuddy.WrapClient(client)
-	}
-	if trae.Matches(cfg.ProviderName, cfg.URL) {
-		client = trae.WrapClient(client)
-	}
-	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
-		client = lobsterai.WrapClient(client)
-	}
-	if qoder.Matches(cfg) {
-		client = qoder.WrapClientForConfig(client, cfg)
-	}
-	if windsurf.MatchesProvider(cfg.ProviderName, cfg.URL) {
-		client = windsurf.WrapClient(client)
-	}
+	client = WrapAssistantHTTPClient(HTTPClientForRequestContext(ctx, client), cfg)
 	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
 	cfg.URL = corelib.OpenCodeUpstreamBaseFor(cfg.URL, openAIBodyModel(body), cfg.Key)
 	if resp, status, raw, err, handled := openCodeFreeDirect(ctx, cfg, body, client, onToken); handled {
@@ -496,6 +466,32 @@ func llmUsageHasCounts(u *Usage) bool {
 	return u.InputReported || u.OutputReported ||
 		u.PromptTokens > 0 || u.CompletionTokens > 0 || u.TotalTokens > 0 ||
 		u.CachedInputTokens > 0 || u.CacheWriteTokens > 0
+}
+
+// WrapAssistantHTTPClient applies the provider body rewrites the interactive
+// assistant uses before a chat call leaves the process. Callers that only
+// share the proxy pool still need this wrap: WorkBuddy, Trae, LobsterAI,
+// Qoder, and Devin do not accept a plain OpenAI chat body.
+func WrapAssistantHTTPClient(client *http.Client, cfg corelib.MaclawLLMConfig) *http.Client {
+	if client == nil {
+		client = &http.Client{Transport: http.DefaultTransport}
+	}
+	if workbuddy.Matches(cfg) {
+		client = workbuddy.WrapClient(client)
+	}
+	if trae.Matches(cfg.ProviderName, cfg.URL) {
+		client = trae.WrapClient(client)
+	}
+	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
+		client = lobsterai.WrapClient(client)
+	}
+	if qoder.Matches(cfg) {
+		client = qoder.WrapClientForConfig(client, cfg)
+	}
+	if windsurf.MatchesProvider(cfg.ProviderName, cfg.URL) {
+		client = windsurf.WrapClient(client)
+	}
+	return client
 }
 
 func openAISDKOptions(cfg corelib.MaclawLLMConfig, client *http.Client) []option.RequestOption {

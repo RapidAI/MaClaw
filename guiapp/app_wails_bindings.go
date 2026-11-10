@@ -3647,6 +3647,14 @@ func (a *App) cancelAIAssistantSessionForOwner(handler *IMMessageHandler, userID
 	// while a Coding owner loses all active descendant handles before the loop
 	// observes cancellation.
 	a.revokeDesktopCodingTaskRelation(targetUserID)
+	// The stop button ends the whole task, not just its current agent loop.
+	// Otherwise the workflow snapshot stays active and the header and task list
+	// continue to report the cancelled turn as running.
+	handler.cancelWorkflowForUser(targetUserID)
+	// Background chat work is another live-running source for the same row.
+	if tasks := handler.ensureChatTasks(); tasks != nil && !isChatTaskMemoryOwner(targetUserID) {
+		tasks.CancelSession(targetUserID)
+	}
 	return handler.CancelSessionForUser(targetUserID)
 }
 

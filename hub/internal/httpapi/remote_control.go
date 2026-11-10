@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
@@ -155,11 +156,13 @@ func (h remoteControlHandler) state(w http.ResponseWriter, r *http.Request) {
 }
 
 func remoteControlMachineName(item device.MachineRuntimeInfo) string {
-	if name := strings.TrimSpace(item.Name); name != "" {
-		return name
-	}
-	if hostname := strings.TrimSpace(item.Hostname); hostname != "" {
+	name := strings.TrimSpace(item.Name)
+	hostname := strings.TrimSpace(item.Hostname)
+	if hostname != "" && (name == "" || strings.EqualFold(name, "MaClaw Desktop")) {
 		return hostname
+	}
+	if name != "" {
+		return name
 	}
 	return strings.TrimSpace(item.Alias)
 }
@@ -258,7 +261,8 @@ func (h remoteControlHandler) accept(w http.ResponseWriter, r *http.Request) {
 	}
 	grantID := r.PathValue("id")
 	federated, federatedErr := h.svc.FederatedGrantForTarget(r.Context(), principal.UserID, grantID)
-	if federatedErr == nil && (federated.Status == remotecontrol.StatusPending || federated.Status == remotecontrol.StatusActive) {
+	alreadyActive := federatedErr == nil && federated.Status == remotecontrol.StatusActive
+	if federatedErr == nil && (federated.Status == remotecontrol.StatusPending || alreadyActive) {
 		if federated.Status == remotecontrol.StatusPending {
 			machine, owned := (remoteControlMachines{devices: h.devices}).BelongsTo(r.Context(), principal.UserID, machineID)
 			if !owned {
@@ -267,12 +271,22 @@ func (h remoteControlHandler) accept(w http.ResponseWriter, r *http.Request) {
 			}
 			federated.TargetMachineID = machine.ID
 			federated.TargetMachineName = machine.Name
+			existing, replace := h.svc.ActiveFederatedPair(r.Context(), federated, machine.ID)
+			if replace && (federated.ExpiresAt.IsZero() || time.Now().UTC().Before(federated.ExpiresAt)) {
+				if err := h.relayTargetDecision(r.Context(), federated, "revoke"); err != nil {
+					writeRemoteControlError(w, err)
+					return
+				}
+				existing.Permission = federated.Permission
+				existing.TargetMachineName = federated.TargetMachineName
+				federated = existing
+			}
 		}
 		if err := h.relayTargetDecision(r.Context(), federated, "accept"); err != nil {
 			writeRemoteControlError(w, err)
 			return
 		}
-		if federated.Status == remotecontrol.StatusActive {
+		if alreadyActive {
 			writeJSON(w, http.StatusOK, map[string]any{"grant": h.svcView(federated)})
 			return
 		}
@@ -441,6 +455,8 @@ func writeRemoteControlError(w http.ResponseWriter, err error) {
 		switch status.Code {
 		case "FORBIDDEN":
 			code = http.StatusForbidden
+		case "NOT_FOUND":
+			code = http.StatusNotFound
 		case "OFFLINE":
 			code = http.StatusConflict
 		case "TIMEOUT":

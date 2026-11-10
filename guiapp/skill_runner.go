@@ -873,17 +873,7 @@ func (r *SkillRunner) startRunForOwner(policyOwnerID, skillName string, preResol
 		probeSteps := cskill.PrecheckExecutableSteps(
 			cskill.SelectedExecutableSteps(target.Steps, selectedForProbe), templateVars)
 		if corelib.NeedsOpenAIProxyAuto(target.RequiredEnv, extraEnv, probeSteps, target.SkillDir, target.NoLLMAPI) {
-			llmCfg := r.executor.app.GetMaclawLLMConfig()
-			proxyCfg := corelib.OpenAIProxyConfig{
-				URL:             llmCfg.URL,
-				Key:             llmCfg.Key,
-				Model:           llmCfg.Model,
-				Protocol:        llmCfg.Protocol,
-				WireAPI:         llmCfg.WireAPI,
-				AuthType:        llmCfg.AuthType,
-				ThinkingMode:    llmCfg.ThinkingMode,
-				ReasoningEffort: llmCfg.ReasoningEffort,
-			}
+			proxyCfg := r.executor.app.skillOpenAIProxyConfig(false)
 			if err := corelib.ValidateOpenAIProxyUpstreamConfig(proxyCfg); err != nil {
 				return "", fmt.Errorf("skill %q requires OpenAI-compatible API access, but %s [action: configure_llm]",
 					skillName, err)
@@ -3267,28 +3257,11 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	log.Printf("[skill-runner] run=%s owner=%q openai proxy check: needsProxy=%v required_env=%v extraEnv_keys=%v processEnv_OPENAI_API_KEY=%q",
 		run.status.RunID, run.status.OwnerID, needsProxy, skill.RequiredEnv, mapKeys(run.extraEnv), truncateEnvForLog(os.Getenv("OPENAI_API_KEY")))
 	if needsProxy {
-		// Build config from current LLM provider
+		// Same upstream the interactive AI assistant calls, including account
+		// identity the scalar URL/key/model fields cannot carry.
 		var proxyCfg corelib.OpenAIProxyConfig
 		if r.executor != nil && r.executor.app != nil {
-			llmCfg := r.executor.app.GetMaclawLLMConfig()
-			providerName := maclawLLMUsageProviderName(r.executor.app, llmCfg)
-			proxyCfg = corelib.OpenAIProxyConfig{
-				URL:             llmCfg.URL,
-				Key:             llmCfg.Key,
-				Model:           llmCfg.Model,
-				Protocol:        llmCfg.Protocol,
-				WireAPI:         llmCfg.WireAPI,
-				AuthType:        llmCfg.AuthType,
-				ThinkingMode:    llmCfg.ThinkingMode,
-				ReasoningEffort: llmCfg.ReasoningEffort,
-				UsageCallback: func(usage corelib.OpenAIProxyUsage) {
-					if providerName == "" {
-						return
-					}
-					r.executor.app.AccumulateLLMTokenUsageWithCache(providerName, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens)
-					r.executor.app.AccumulateLLMProfileTokenUsageWithCache(llmCfg, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens)
-				},
-			}
+			proxyCfg = r.executor.app.skillOpenAIProxyConfig(true)
 		}
 		if err := corelib.ValidateOpenAIProxyUpstreamConfig(proxyCfg); err != nil {
 			errMsg := fmt.Sprintf("skill requires OpenAI-compatible environment variables, but the GUI local proxy cannot start because %s [action: configure_llm]", err)

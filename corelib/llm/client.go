@@ -161,7 +161,12 @@ func buildOpenAIChatRequestBody(
 		messages = normalizeOpenAICompatTextOnlyMessageContent(messages)
 	}
 	messages = normalizeOpenAIChatToolCallLinkage(messages)
-	messages = sanitizeOpenAIChatMessagesForSDKCompatibility(messages, corelib.IsDeepSeekThinking(cfg))
+	// DeepSeek relays require reasoning_content on every replayed assistant
+	// message, so IsDeepSeekThinking preserves it. Mistral's hosted flash
+	// checkpoints ride the Mistral chat schema instead: an inbound
+	// reasoning_content answers 422 for that message, so the second turn of
+	// any thinking conversation must not replay it.
+	messages = sanitizeOpenAIChatMessagesForSDKCompatibility(messages, corelib.IsDeepSeekThinking(cfg) && !corelib.IsMistralAIAPIEndpoint(cfg))
 	messages = sanitizeEmptyToolCalls(messages)
 	messages = sanitizeInvalidToolCallArguments(messages)
 	messages = sanitizeOrphanedToolCalls(messages, cfg.NeedsConservativeOpenAICompatSanitization() || corelib.IsGLMCodingPlanOpenAICompat(cfg))
@@ -255,8 +260,9 @@ func buildOpenAIChatRequestBody(
 		// reasoning_effort to OpenRouter and Qwen, and the wrong object to Kimi.
 		// Official DeepSeek is left for the stamp below, which rejects minimal
 		// and medium. AMD DeepSeek is not that stamp: this gateway never gets
-		// the DeepSeek thinking object.
-		if corelib.IsAMDRadeonPublicChatEndpoint(cfg) || !corelib.IsDeepSeekThinkingModeModel(cfg) {
+		// the DeepSeek thinking object. Mistral is the same: the thinking
+		// object fails 422 there, so the effort rides reasoning_effort.
+		if corelib.IsAMDRadeonPublicChatEndpoint(cfg) || corelib.IsMistralAIAPIEndpoint(cfg) || !corelib.IsDeepSeekThinkingModeModel(cfg) {
 			next := cfg
 			next.ReasoningEffort = re
 			next.ThinkingMode = "enabled"
@@ -2072,7 +2078,10 @@ func sanitizeOpenAIResponseFormatForProvider(cfg corelib.MaclawLLMConfig, raw in
 	// normalization. A caller that explicitly owns a machine-readable contract
 	// must instead preserve it and handle a provider capability failure; turning
 	// that request into generic JSON is a semantic downgrade.
-	if !preserveContract && corelib.IsDeepSeekFlashOpenAICompat(cfg) && responseFormat["type"] == "json_schema" {
+	// DeepSeek's relay dialect rejects json_schema, so the Flash matcher
+	// downgrades it... but Mistral's hosted flash checkpoint keeps the Mistral
+	// chat schema, which enforces json_schema natively; keep the strict form.
+	if !preserveContract && !corelib.IsMistralAIAPIEndpoint(cfg) && corelib.IsDeepSeekFlashOpenAICompat(cfg) && responseFormat["type"] == "json_schema" {
 		return map[string]interface{}{"type": "json_object"}
 	}
 	return responseFormat
@@ -3037,7 +3046,11 @@ type sseChunk struct {
 	ID      string `json:"id,omitempty"`
 	Choices []struct {
 		Delta struct {
-			Content          string                `json:"content"`
+			// Content stays untyped: OpenAI-compatible gateways stream strings,
+			// but Mistral's hosted reasoning models stream a content-part array
+			// (thinking + text parts). Unmarshalling that into a string fails
+			// the whole chunk and silently drops the final text chunk.
+			Content          interface{}           `json:"content"`
 			ReasoningContent string                `json:"reasoning_content"`
 			Reasoning        string                `json:"reasoning"`
 			Thinking         string                `json:"thinking"`
@@ -3049,8 +3062,56 @@ type sseChunk struct {
 	Usage *Usage `json:"usage,omitempty"`
 }
 
+// openAIDeltaContent extracts the visible text and reasoning text from an
+// OpenAI-compatible stream delta content value. Providers usually stream
+// strings; Mistral's hosted reasoning models stream the content-part array the
+// non-stream path already normalizes:
+//
+//	[{"type":"thinking","thinking":[{"type":"text","text":"..."}]},{"type":"text","text":"OK"}]
+//
+// The thinking part's text feeds the reasoning lane instead of the visible
+// content so a hosted DeepSeek trace never leaks into the answer.
+func openAIDeltaContent(raw interface{}) (text string, thinking string) {
+	switch v := raw.(type) {
+	case nil:
+		return "", ""
+	case string:
+		return v, ""
+	default:
+		items := toInterfaceSlice(v)
+		if len(items) == 0 {
+			return "", ""
+		}
+		var textParts, thinkParts []string
+		for _, item := range items {
+			m := toStringInterfaceMap(item)
+			if m == nil {
+				continue
+			}
+			switch stringField(m, "type") {
+			case "text", "input_text", "output_text":
+				if s := stringField(m, "text"); s != "" {
+					textParts = append(textParts, s)
+				}
+			case "thinking":
+				if inner := toInterfaceSlice(m["thinking"]); len(inner) > 0 {
+					for _, part := range inner {
+						partMap := toStringInterfaceMap(part)
+						if s := stringField(partMap, "text"); s != "" {
+							thinkParts = append(thinkParts, s)
+						}
+					}
+				} else if s := stringField(m, "text"); s != "" {
+					thinkParts = append(thinkParts, s)
+				}
+			}
+		}
+		return strings.Join(textParts, "\n"), strings.Join(thinkParts, "\n")
+	}
+}
+
 func openAISSEReasoningText(delta struct {
-	Content          string                `json:"content"`
+	Content          interface{}           `json:"content"`
 	ReasoningContent string                `json:"reasoning_content"`
 	Reasoning        string                `json:"reasoning"`
 	Thinking         string                `json:"thinking"`
@@ -3132,8 +3193,10 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 		}
 
 		delta := chunk.Choices[0].Delta
-		contentBuf.WriteString(delta.Content)
+		text, thinking := openAIDeltaContent(delta.Content)
+		contentBuf.WriteString(text)
 		reasoningBuf.WriteString(openAISSEReasoningText(delta))
+		reasoningBuf.WriteString(thinking)
 
 		if chunk.Choices[0].FinishReason != "" {
 			finishReason = chunk.Choices[0].FinishReason

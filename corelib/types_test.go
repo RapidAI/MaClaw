@@ -425,3 +425,25 @@ func TestApplyZhipuCodingConfigMigration(t *testing.T) {
 		t.Fatalf("implied current flat model = %q, want %q", implied.MaclawLLMModel, ZhipuCodingDefaultModel)
 	}
 }
+
+func TestDeepSeekFlashAcceptsImagesCoversDashNamedVariants(t *testing.T) {
+	// Mistral serves the V4.1 flash checkpoint with a dash spelling; a text-only
+	// verdict used to strip every image before such requests left the app.
+	accepts := []string{
+		"deepseek-v4.1-flash",
+		"deepseek-v4-1-flash-1017",
+		"deepseek-v4.1-flash-free",
+		"deepseek-flash",
+		"deepseek-v4-flash-vision-exp",
+	}
+	for _, model := range accepts {
+		if !DeepSeekFlashAcceptsImages(model) {
+			t.Fatalf("DeepSeekFlashAcceptsImages(%q) = false, want true", model)
+		}
+	}
+	for _, model := range []string{"deepseek-chat", "deepseek-v4-flash", "deepseek-coder"} {
+		if DeepSeekFlashAcceptsImages(model) {
+			t.Fatalf("DeepSeekFlashAcceptsImages(%q) = true, want false", model)
+		}
+	}
+}

@@ -467,7 +467,7 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 	// AMD skips that stamp: it would keep thinking and fold medium into high.
 	FinishOpenAIChatReasoningControls(cfg, body)
 	if isDeepSeekFlash {
-		normalizeDeepSeekFlashForwardBody(body)
+		normalizeDeepSeekFlashForwardBody(cfg, body)
 	}
 	if isDeepSeekFlash || isGLMCodingPlan {
 		normalizeOpenAICompatForwardTools(body)
@@ -1040,12 +1040,15 @@ func openAICompatForwardArrayLen(value interface{}) int {
 	return len(openAICompatForwardSlice(value))
 }
 
-func normalizeDeepSeekFlashForwardBody(body map[string]interface{}) {
+func normalizeDeepSeekFlashForwardBody(cfg MaclawLLMConfig, body map[string]interface{}) {
 	if n, ok := openAICompatPositiveIntValue(body["n"]); ok && n > 1 {
 		body["n"] = 1
 	}
 	if rf := mapFromAny(body["response_format"]); rf != nil {
-		if strings.TrimSpace(fmt.Sprint(rf["type"])) == "json_schema" {
+		// Only the DeepSeek relay dialect rejects json_schema. Mistral's hosted
+		// flash checkpoint keeps the Mistral schema, which enforces json_schema
+		// natively, so the strict form survives the forward there.
+		if strings.TrimSpace(fmt.Sprint(rf["type"])) == "json_schema" && !IsMistralAIAPIEndpoint(cfg) {
 			body["response_format"] = map[string]interface{}{"type": "json_object"}
 		}
 	}
