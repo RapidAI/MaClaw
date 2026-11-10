@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -21,26 +22,26 @@ func TestNoteDesktopToolUseCountsScreenStepsOnly(t *testing.T) {
 	for action, route := range desktopToolRoutes {
 		switch route {
 		case "bash", "file", "http", "install":
-			noteDesktopToolUse(pool, call(action), nil)
+			noteDesktopToolUse(context.Background(), pool, call(action), nil)
 			if at, _ := pool.BotGUIUse("tenant-a", "alice"); !at.IsZero() {
 				t.Fatalf("headless %s (%s) counted as desktop use", action, route)
 			}
 		}
 	}
-	noteDesktopToolUse(pool, call("click"), errors.New("failed"))
+	noteDesktopToolUse(context.Background(), pool, call("click"), errors.New("failed"))
 	if at, _ := pool.BotGUIUse("tenant-a", "alice"); !at.IsZero() {
 		t.Fatal("a failed step counted as desktop use")
 	}
 	for _, action := range []string{"screenshot", "computer", "app_open", "click", "type", "navigate"} {
 		pool.ForgetBotGUIUse("tenant-a", "alice")
-		noteDesktopToolUse(pool, call(action), nil)
+		noteDesktopToolUse(context.Background(), pool, call(action), nil)
 		if at, _ := pool.BotGUIUse("tenant-a", "alice"); at.IsZero() {
 			t.Fatalf("screen step %s did not count as desktop use", action)
 		}
 	}
 	for action, route := range desktopToolRoutes {
 		if route == "stop" {
-			noteDesktopToolUse(pool, call(action), nil)
+			noteDesktopToolUse(context.Background(), pool, call(action), nil)
 			if at, _ := pool.BotGUIUse("tenant-a", "alice"); !at.IsZero() {
 				t.Fatal("stop kept the desktop-use record")
 			}
@@ -105,5 +106,53 @@ func TestDesktopServiceScreenRoutesNoteBotUse(t *testing.T) {
 	}
 	if at, _ := pool.BotGUIUse("tenant-a", "alice"); !at.IsZero() {
 		t.Fatal("stop kept the bot-on-screen record")
+	}
+}
+
+// A successful screen step peeks the already-running noVNC page for that
+// desktop user (so an isolated bot that never opened a session still has a
+// live URL). Headless steps do not peek or record use.
+func TestNoteDesktopToolUsePeeksLiveURLForScreenStepsOnly(t *testing.T) {
+	var paths []string
+	docker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/desktops/view":
+			var body struct {
+				UserID string `json:"user_id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			_, _ = w.Write([]byte(`{"display":":38","novnc_url":"http://dockerd.example/vnc.html?u=` + body.UserID + `"}`))
+		case "/v1/desktops/session", "/v1/desktops/ensure":
+			t.Errorf("noting tool use started the desktop via %s", r.URL.Path)
+			http.Error(w, "started", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(docker.Close)
+	pool := desktopPoolFake(t, newDesktopSettingsMem(), docker.URL)
+	user := "alice::desk::bot_2"
+	call := desktopToolCall{RunID: "run_1", ToolCallID: "tc", Tenant: "tenant-a", User: user, Action: "screenshot"}
+	noteDesktopToolUse(context.Background(), pool, call, nil)
+	at, novnc := pool.BotGUIUse("tenant-a", user)
+	if at.IsZero() || novnc != "http://dockerd.example/vnc.html?u="+user {
+		t.Fatalf("screenshot use at=%v novnc=%q", at, novnc)
+	}
+	for _, path := range paths {
+		if path == "/v1/desktops/session" || path == "/v1/desktops/ensure" {
+			t.Fatalf("peek started the desktop: %v", paths)
+		}
+	}
+	paths = nil
+	pool.ForgetBotGUIUse("tenant-a", user)
+	noteDesktopToolUse(context.Background(), pool, desktopToolCall{Tenant: "tenant-a", User: user, Action: "bash"}, nil)
+	if at, _ := pool.BotGUIUse("tenant-a", user); !at.IsZero() {
+		t.Fatal("bash counted as desktop use")
+	}
+	for _, path := range paths {
+		if path == "/v1/desktops/view" {
+			t.Fatal("a headless step peeked a view URL")
+		}
 	}
 }

@@ -102,6 +102,15 @@ func (c botDesktopControl) BotDesktopUse(tenantID, userID string) (time.Time, st
 	return c.pool.BotGUIUse(tenantID, userID)
 }
 
+// PeekDesktopView is the already-running noVNC page for this desktop user
+// (botmgmt.DesktopViewPeek). It never starts or pins the desktop.
+func (c botDesktopControl) PeekDesktopView(ctx context.Context, tenantID, userID string) (string, error) {
+	if c.pool == nil {
+		return "", nil
+	}
+	return c.pool.PeekDesktopView(ctx, tenantID, userID)
+}
+
 func (c botDesktopControl) Stop(ctx context.Context, tenantID, userID string) error {
 	if c.pool == nil {
 		return nil
@@ -688,7 +697,7 @@ func PostDesktopAppHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			writeDesktopError(w, err)
 			return
 		}
-		pool.NoteBotGUIUse(in.TenantID, in.UserID, "")
+		noteDesktopScreenUse(r.Context(), pool, in.TenantID, in.UserID)
 		writeJSON(w, http.StatusOK, map[string]string{"output": output})
 	}
 }
@@ -720,7 +729,7 @@ func PostDesktopOpenHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			writeDesktopError(w, err)
 			return
 		}
-		pool.NoteBotGUIUse(in.TenantID, in.UserID, "")
+		noteDesktopScreenUse(r.Context(), pool, in.TenantID, in.UserID)
 		writeJSON(w, http.StatusOK, map[string]string{"output": output})
 	}
 }
@@ -870,7 +879,7 @@ func PostDesktopScreenshotHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			writeDesktopError(w, err)
 			return
 		}
-		pool.NoteBotGUIUse(in.TenantID, in.UserID, "")
+		noteDesktopScreenUse(r.Context(), pool, in.TenantID, in.UserID)
 		body := map[string]any{
 			"mime":          shot.MIME,
 			"image_base64":  base64.StdEncoding.EncodeToString(shot.Data),
@@ -919,7 +928,7 @@ func PostDesktopCtlHandler(pool *desktoppool.Pool, bots ...*botmgmt.Service) htt
 			writeDesktopError(w, err)
 			return
 		}
-		pool.NoteBotGUIUse(in.TenantID, in.UserID, "")
+		noteDesktopScreenUse(r.Context(), pool, in.TenantID, in.UserID)
 		for _, b := range bots {
 			b.NoteDesktopCtl(in.TenantID, in.UserID, in.Request)
 		}

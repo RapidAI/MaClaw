@@ -129,7 +129,7 @@ func PostDesktopToolHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			return
 		}
 		text, attachmentID, err := dispatchDesktopTool(r.Context(), pool, call)
-		noteDesktopToolUse(pool, call, err)
+		noteDesktopToolUse(r.Context(), pool, call, err)
 		if err != nil {
 			writeDesktopError(w, err)
 			return
@@ -150,7 +150,7 @@ func PostDesktopToolHandler(pool *desktoppool.Pool) http.HandlerFunc {
 // really using it. bash, file, http and install run headless and do not
 // count. A stop drops the record. A failed step records nothing. The
 // session route records itself with the page it returned.
-func noteDesktopToolUse(pool *desktoppool.Pool, call desktopToolCall, err error) {
+func noteDesktopToolUse(ctx context.Context, pool *desktoppool.Pool, call desktopToolCall, err error) {
 	if pool == nil || err != nil {
 		return
 	}
@@ -160,10 +160,21 @@ func noteDesktopToolUse(pool *desktoppool.Pool, call desktopToolCall, err error)
 	}
 	switch route {
 	case "screenshot", "app", "open", "ctl":
-		pool.NoteBotGUIUse(call.Tenant, call.User, "")
+		noteDesktopScreenUse(ctx, pool, call.Tenant, call.User)
 	case "stop":
 		pool.ForgetBotGUIUse(call.Tenant, call.User)
 	}
+}
+
+// noteDesktopScreenUse records a successful screen-touching step and, when
+// the screen is already up, that desktop user's own noVNC page. It never
+// starts or pins the desktop. Headless tools must not call it.
+func noteDesktopScreenUse(ctx context.Context, pool *desktoppool.Pool, tenantID, userID string) {
+	if pool == nil || strings.TrimSpace(userID) == "" {
+		return
+	}
+	novnc, _ := pool.PeekDesktopView(ctx, tenantID, userID)
+	pool.NoteBotGUIUse(tenantID, userID, novnc)
 }
 
 func dispatchDesktopTool(ctx context.Context, pool *desktoppool.Pool, call desktopToolCall) (string, string, error) {

@@ -84,8 +84,12 @@ func TestDesktopScreenshotHandlerReturnsTheSavedPath(t *testing.T) {
 	t.Setenv("MACLAW_DESKTOP_API_TOKEN", "desktop-api-token")
 	var gotName string
 	docker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/desktops/ensure" {
+		switch r.URL.Path {
+		case "/v1/desktops/ensure":
 			_, _ = w.Write([]byte(`{"status":"running"}`))
+			return
+		case "/v1/desktops/view":
+			_, _ = w.Write([]byte(`{"novnc_url":"http://dockerd.example/vnc.html"}`))
 			return
 		}
 		var in struct {

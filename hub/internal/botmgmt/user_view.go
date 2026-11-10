@@ -166,8 +166,17 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 		if !ok {
 			return "", false, nil
 		}
-		if s.desktopViewURL(tenantID, userID) == "" && raw != "" {
-			s.rememberDesktopView(tenantID, userID, raw)
+		if s.desktopViewURL(tenantID, userID) == "" {
+			if raw == "" {
+				// A screen-touching step (screenshot, ctl, app, open) may
+				// have recorded use without a session wake, so the in-memory
+				// page is empty. Derive this bot's own running-screen URL
+				// without starting or pinning anything.
+				raw = s.peekDesktopView(ctx, tenantID, userID)
+			}
+			if raw != "" {
+				s.rememberDesktopView(tenantID, userID, raw)
+			}
 		}
 	}
 	novnc := s.desktopViewURL(tenantID, userID)
@@ -179,6 +188,27 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 // noVNC page it returned. It never reaches the desktop.
 type DesktopActivity interface {
 	BotDesktopUse(tenantID, userID string) (time.Time, string)
+}
+
+// DesktopViewPeek is the optional look-up of an already-running desktop's
+// noVNC page. It must never start, wake, or pin the desktop.
+type DesktopViewPeek interface {
+	PeekDesktopView(ctx context.Context, tenantID, userID string) (string, error)
+}
+
+func (s *Service) peekDesktopView(ctx context.Context, tenantID, userID string) string {
+	if s == nil || s.Desktop == nil {
+		return ""
+	}
+	peek, ok := s.Desktop.(DesktopViewPeek)
+	if !ok || peek == nil {
+		return ""
+	}
+	raw, err := peek.PeekDesktopView(ctx, tenantID, userID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(raw)
 }
 
 // BotDesktopInUseWindow is how long after the last bot desktop-screen step

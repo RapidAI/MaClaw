@@ -17,6 +17,10 @@ func TestDesktopScreenshotHandlerPassesOptionsAndGeometry(t *testing.T) {
 			_, _ = w.Write([]byte(`{"status":"running"}`))
 			return
 		}
+		if r.URL.Path == "/v1/desktops/view" {
+			_, _ = w.Write([]byte(`{"novnc_url":"http://dockerd.example/vnc.html"}`))
+			return
+		}
 		_ = json.NewDecoder(r.Body).Decode(&got)
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.Header().Set("X-Desktop-Screen-Size", "1280x800")

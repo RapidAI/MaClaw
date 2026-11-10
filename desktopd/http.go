@@ -105,6 +105,28 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		writeJSON(w, http.StatusOK, session)
 	})
+	// POST /v1/desktops/view returns the noVNC page of a screen that is
+	// already running. It never starts, restores, or refreshes last_activity.
+	// An empty novnc_url means the screen is not up.
+	mux.HandleFunc("POST /v1/desktops/view", func(w http.ResponseWriter, r *http.Request) {
+		if !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var in struct {
+			TenantID string `json:"tenant_id"`
+			UserID   string `json:"user_id"`
+		}
+		if !decodeBody(w, r, &in) {
+			return
+		}
+		session, err := svc.PeekSession(r.Context(), Spec{TenantID: in.TenantID, UserID: in.UserID})
+		if err != nil {
+			writeServiceErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, session)
+	})
 	// POST /v1/desktops/proxy-mode switches one user's desktop egress mode.
 	// It takes effect on the next connection; open tunnels of that desktop
 	// are dropped so the browser reconnects on the new route.

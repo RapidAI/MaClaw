@@ -594,6 +594,36 @@ func (p *Pool) OpenDesktop(ctx context.Context, tenantID, userID string) (Deskto
 	return DesktopSession{CDP: out.CDP, Display: out.Display, Novnc: strings.TrimSpace(out.Novnc)}, nil
 }
 
+// PeekDesktopView returns the noVNC page for a desktop user whose screen is
+// already running (the owner's display, or one isolated bot's display in a
+// shared container). It never calls Ensure or OpenDesktop. An empty string
+// means the screen is not up, the service is older than this route, or the
+// look-up failed — viewing must not start or fail a tool that already
+// succeeded.
+func (p *Pool) PeekDesktopView(ctx context.Context, tenantID, userID string) (string, error) {
+	if p == nil {
+		return "", nil
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", nil
+	}
+	var out struct {
+		Novnc string `json:"novnc_url"`
+	}
+	body := map[string]string{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/view", body, &out); err != nil {
+		return "", nil
+	}
+	return strings.TrimSpace(out.Novnc), nil
+}
+
 // RunApp forwards one xdotool command to the Docker service that owns the user.
 func (p *Pool) RunApp(ctx context.Context, tenantID, userID, display string, args []string) (string, error) {
 	server, err := p.resolve(ctx, tenantID, userID)
