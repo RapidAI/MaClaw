@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
@@ -217,10 +218,26 @@ func (s *Service) serveTunnel(w http.ResponseWriter, r *http.Request) {
 			pr.Out.Host = upstreamHost
 		},
 		FlushInterval: -1,
+		Transport:     desktopTunnelTransport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			http.Error(w, "desktop tunnel unavailable", http.StatusBadGateway)
 			_ = err
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// desktopTunnelTransport carries the tunnel's hop to the bot CDP gate. The
+// gate routes a TCP connection by the token of its FIRST request and then
+// only pipes bytes, so a pooled connection keeps that first display: a later
+// request for another bot's display read that display's tab list and its
+// WebSocket upgrade failed with "bad handshake" (run_5ecb9d6d, 11-11). Every
+// request gets its own connection.
+var desktopTunnelTransport http.RoundTripper = &http.Transport{
+	Proxy:                 nil,
+	DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+	DisableKeepAlives:     true,
+	ForceAttemptHTTP2:     false,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: time.Second,
 }

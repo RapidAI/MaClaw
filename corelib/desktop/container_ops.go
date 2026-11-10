@@ -40,8 +40,11 @@ const (
 	// edit has to match, and the compiler lines at the end of a command.
 	ToolResultMax = FileReadMax + 64
 	// FileDeliverBase64Max is the longest standard base64 string one chat
-	// attachment may carry. Hub reads a message up to 1 MiB plus one screenshot.
-	FileDeliverBase64Max = 200_000
+	// attachment may carry. Hub reads a message up to 1 MiB plus one
+	// screenshot, and a reply carries one file: 700 000 characters (about
+	// 512 KiB of file) leave room for the text. 200 000 refused an ordinary
+	// 203 KB .docx résumé the first time (run_09b084c6).
+	FileDeliverBase64Max = 700_000
 	// FileBytesMax is the most raw bytes that still encode inside that string.
 	// A longer file is refused whole. deliver does not attach a prefix.
 	FileBytesMax = FileDeliverBase64Max / 4 * 3
