@@ -595,13 +595,20 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	run.AssistantMessageID = assistant.ID
 	run.ResponseSource = strings.TrimSpace(assistant.Metadata[metaResponseSource])
 	run.WaitingForUser = normalizeResponseSourceKind(run.ResponseSource).IsWaitingForUser()
+	outcome := applyTaskOutcome(&run, &assistant)
+	withOutcome := func(m map[string]any) map[string]any {
+		if outcome != "" {
+			m[TaskOutcomeKey] = outcome
+		}
+		return m
+	}
 	terminalEvents := make([]RunEvent, 0, 3)
 	if run.WaitingForUser {
-		terminalEvents = append(terminalEvents, runTerminalEventFor(run, "ask_user", map[string]any{"response_source": run.ResponseSource}))
+		terminalEvents = append(terminalEvents, runTerminalEventFor(run, "ask_user", withOutcome(map[string]any{"response_source": run.ResponseSource})))
 	}
 	terminalEvents = append(terminalEvents,
-		runTerminalEventFor(run, "assistant.message", map[string]any{"message_id": assistant.ID}),
-		runTerminalEventFor(run, "run.completed", map[string]any{"message_id": assistant.ID}),
+		runTerminalEventFor(run, "assistant.message", withOutcome(map[string]any{"message_id": assistant.ID})),
+		runTerminalEventFor(run, "run.completed", withOutcome(map[string]any{"message_id": assistant.ID})),
 	)
 	terminalEventsCommitted, err := s.saveRunCompletionWithEvents(assistant, run, terminalEvents)
 	if err != nil {

@@ -36,6 +36,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/recovery"
 )
@@ -65,50 +66,24 @@ func desktopRecoveryScope(scope agentruntime.Scope) string {
 	return recovery.ScopeKey(o.TenantID, o.UserID)
 }
 
-// In-process state: facts the publish pipeline measured for the call in
-// flight, the goals each run touched (for the honest receipt) and the time
-// spent in mutating calls since a check goal's last measurement.
+// In-process state (the ledger itself is the engine's store): the attempt
+// a publish call is about to make and the one whose pipeline runs, the
+// goals and lineage each run touched (for the honest outcome) and the time
+// spent in mutating steps since a check goal's last measurement.
 var (
-	desktopRecStateMu sync.Mutex
-	desktopRecFacts   = map[string]desktopRecPublishFacts{}
-	desktopRecRuns    = map[string][]string{} // runID -> goal keys
-	desktopRecPending = map[string]time.Duration{}
-	desktopRecCheck   = map[string]string{} // runID -> active check goal key
+	desktopRecStateMu    sync.Mutex
+	desktopRecPendingAtt = map[string]*desktopRecAttempt{} // recKey -> publish attempt gated, not started
+	desktopRecLive       = map[string]*desktopRecAttempt{} // recKey -> publish attempt holding its goal
+	desktopRecRuns       = map[string][]string{}           // runID -> "sk\x01goal"
+	desktopRecLineages   = map[string]string{}             // recKey -> lineage
+	desktopRecRunLineage = map[string]string{}             // runID -> "sk\x01lineage"
+	desktopRecRunSteps   = map[string]bool{}               // runID -> made a desktop step
+	desktopRecPending    = map[string]time.Duration{}
 )
-
-type desktopRecPublishFacts struct {
-	facts map[string]float64
-	state string
-	trial bool
-}
 
 func desktopRecKey(scope agentruntime.Scope) string {
 	o := desktopOwner(scope)
 	return o.TenantID + "\x00" + o.UserID + "\x00" + scope.RunID
-}
-
-// desktopRecoveryNotePublish is called by the publish pipeline with its
-// structured report (trusted measurements).
-func desktopRecoveryNotePublish(scope agentruntime.Scope, rep *browser.PublishReport) {
-	if rep == nil {
-		return
-	}
-	f := map[string]float64{}
-	for k, v := range rep.Facts {
-		f[k] = v
-	}
-	desktopRecStateMu.Lock()
-	desktopRecFacts[desktopRecKey(scope)] = desktopRecPublishFacts{facts: f, state: string(rep.State), trial: rep.Trial}
-	desktopRecStateMu.Unlock()
-}
-
-func desktopRecTakeFacts(scope agentruntime.Scope) (desktopRecPublishFacts, bool) {
-	desktopRecStateMu.Lock()
-	defer desktopRecStateMu.Unlock()
-	k := desktopRecKey(scope)
-	f, ok := desktopRecFacts[k]
-	delete(desktopRecFacts, k)
-	return f, ok
 }
 
 func desktopRecNoteRunGoal(runID, goal string) {
@@ -121,6 +96,9 @@ func desktopRecNoteRunGoal(runID, goal string) {
 		if g == goal {
 			return
 		}
+	}
+	if len(desktopRecRuns) > 4096 {
+		desktopRecRuns = map[string][]string{}
 	}
 	desktopRecRuns[runID] = append(desktopRecRuns[runID], goal)
 }
@@ -265,18 +243,72 @@ func desktopRecHash(s string) string {
 	return hex.EncodeToString(sum[:5])
 }
 
+// desktopRecConversation is the authoritative conversation of a turn (the
+// session the person writes in); a run without one is its own conversation.
+func desktopRecConversation(request agentruntime.TurnRequest, scope agentruntime.Scope) string {
+	switch in := request.Input.(type) {
+	case agentservice.ExecuteRequest:
+		if in.Session.ID != "" {
+			return "s:" + in.Session.ID
+		}
+	case *agentservice.ExecuteRequest:
+		if in != nil && in.Session.ID != "" {
+			return "s:" + in.Session.ID
+		}
+	}
+	return "r:" + scope.RunID
+}
+
+// desktopRecLineage is the logical task this run works on: one per
+// conversation and person's instruction (continuations, resumes and
+// renames stay in it), computed by the engine from the person's message —
+// never from anything the model passes.
+func desktopRecLineage(request agentruntime.TurnRequest, scope agentruntime.Scope) (string, error) {
+	k := desktopRecKey(scope)
+	desktopRecStateMu.Lock()
+	if l, ok := desktopRecLineages[k]; ok {
+		desktopRecStateMu.Unlock()
+		return l, nil
+	}
+	desktopRecStateMu.Unlock()
+	sk := desktopRecoveryScope(scope)
+	l, err := desktopRecovery().Lineage(sk, desktopRecConversation(request, scope), desktopMessageText(request))
+	if err != nil {
+		return "", fmt.Errorf("recovery: refused: the task ledger is unavailable (%v); nothing was done", err)
+	}
+	desktopRecStateMu.Lock()
+	if len(desktopRecLineages) > 4096 {
+		desktopRecLineages, desktopRecRunLineage = map[string]string{}, map[string]string{}
+	}
+	desktopRecLineages[k] = l
+	desktopRecRunLineage[scope.RunID] = sk + "\x01" + l
+	desktopRecStateMu.Unlock()
+	return l, nil
+}
+
 type desktopRecAttempt struct {
 	sk, goal, surface, method, strategy string
 	params                              map[string]string
 	trial                               bool
 	recipe                              string
-	check                               bool // a mutating step under a check goal
+	checks                              []string // mutating step: the lineage's unfinished check goals
+	deadline                            time.Duration
 	note                                string
+
+	mu       sync.Mutex
+	lease    *recovery.Lease
+	started  bool
+	finished bool
+	verdict  recovery.Verdict
+	stop     chan struct{}
 }
 
 var desktopRecMutating = map[string]bool{"bash": true, "file_write": true, "file_edit": true, "script": true, "click": true, "type": true, "press": true, "computer": true, "app_run": true, "task_run": true, "upload": true, "rich_fill": true, "skill_run": true}
 
-func desktopRecPublishGoal(scope agentruntime.Scope, args map[string]any, task string) (goal, surface string) {
+// desktopRecReopens: steps that can change a checked result file.
+var desktopRecReopens = map[string]bool{"bash": true, "file_write": true, "file_edit": true, "app_run": true, "task_run": true, "skill_run": true, "script": true}
+
+func desktopRecSite(scope agentruntime.Scope, args map[string]any) string {
 	site := siteExpKey(desktopArg(args, "editor_url"))
 	if site == "" {
 		site = desktopRunSite(desktopOwner(scope))
@@ -284,11 +316,54 @@ func desktopRecPublishGoal(scope agentruntime.Scope, args map[string]any, task s
 	if site == "" {
 		site = "unknown"
 	}
-	what := desktopArg(args, "title")
-	if strings.TrimSpace(what) == "" {
-		what = task
+	return site
+}
+
+type desktopRecPublishSpec struct {
+	Pictures int    `json:"pictures"`
+	Body     int    `json:"body"`
+	Title    string `json:"title,omitempty"`
+}
+
+// desktopRecPublishGoal is the goal one publish call works on: the lineage's
+// publish goal for the site. A renamed title stays the same goal (same
+// budget, same lockout); only after that goal was verified does a different
+// title start the next article of the same instruction.
+func desktopRecPublishGoal(sk, lineage, site, title string) string {
+	base := "publish|" + lineage + "|" + site
+	th := desktopRecHash(title)
+	eng := desktopRecovery()
+	for i := 1; i <= 12; i++ {
+		key := base
+		if i > 1 {
+			key = base + "|" + strconv.Itoa(i)
+		}
+		g := eng.Status(sk, key)
+		if g == nil || g.State != recovery.StateDone {
+			return key
+		}
+		var ps desktopRecPublishSpec
+		_ = json.Unmarshal([]byte(g.Spec), &ps)
+		if ps.Title == "" || ps.Title == th {
+			return key // the same article again: the engine refuses a repeat
+		}
 	}
-	return "publish|" + site + "|" + desktopRecHash(what), "site:" + site + "|publish"
+	return base + "|12"
+}
+
+// desktopRecPublishCheck refuses a requirement lower than the pinned one.
+func desktopRecPublishCheck(pinned, now string) error {
+	var p, n desktopRecPublishSpec
+	if json.Unmarshal([]byte(pinned), &p) != nil || json.Unmarshal([]byte(now), &n) != nil {
+		return fmt.Errorf("unreadable requirement")
+	}
+	if n.Pictures < p.Pictures {
+		return fmt.Errorf("%d picture(s) instead of the %d the task started with", n.Pictures, p.Pictures)
+	}
+	if n.Body*10 < p.Body*6 {
+		return fmt.Errorf("a body of %d characters instead of the %d the task started with", n.Body, p.Body)
+	}
+	return nil
 }
 
 // desktopRecCheckStrategy: a check goal's strategy is its hypothesis.
@@ -303,19 +378,37 @@ func desktopRecCheckStrategy(g *recovery.Goal) string {
 	return "h" + strconv.Itoa(last.N)
 }
 
+func desktopRecCheckPrefix(lineage string) string { return "check|" + lineage + "|" }
+
 // desktopRecoveryBefore gates one tool call. It may fill args from a
 // verified recipe (returned note says so) or refuse the call.
-func desktopRecoveryBefore(scope agentruntime.Scope, action string, args map[string]any, task string) (*desktopRecAttempt, error) {
+func desktopRecoveryBefore(request agentruntime.TurnRequest, scope agentruntime.Scope, action string, args map[string]any) (*desktopRecAttempt, error) {
+	if action != "publish" && !desktopRecMutating[action] {
+		return nil, nil
+	}
+	if action == "publish" && desktopArgBool(args, "explore") {
+		return nil, nil
+	}
 	eng := desktopRecovery()
 	sk := desktopRecoveryScope(scope)
-	switch {
-	case action == "publish" && !desktopArgBool(args, "explore"):
+	lineage, err := desktopRecLineage(request, scope)
+	if err != nil {
+		return nil, err
+	}
+	desktopRecStateMu.Lock()
+	if len(desktopRecRunSteps) > 4096 {
+		desktopRecRunSteps = map[string]bool{}
+	}
+	desktopRecRunSteps[scope.RunID] = true
+	desktopRecStateMu.Unlock()
+	if action == "publish" {
 		params, err := desktopRecPublishArgsParams(args)
 		if err != nil {
 			return nil, fmt.Errorf("publish refused: %v (nothing was filled or posted)", err)
 		}
-		goal, surface := desktopRecPublishGoal(scope, args, task)
-		att := &desktopRecAttempt{sk: sk, goal: goal, surface: surface, method: "publish", trial: desktopRecInt(args, "trial_pictures") > 0}
+		site := desktopRecSite(scope, args)
+		goal := desktopRecPublishGoal(sk, lineage, site, desktopArg(args, "title"))
+		att := &desktopRecAttempt{sk: sk, goal: goal, surface: "site:" + site + "|publish", method: "publish", trial: desktopRecInt(args, "trial_pictures") > 0}
 		g := eng.Status(sk, goal)
 		if g != nil && g.State == recovery.StateTrial && len(g.Hyps) > 0 {
 			h := g.Hyps[len(g.Hyps)-1]
@@ -344,7 +437,7 @@ func desktopRecoveryBefore(scope agentruntime.Scope, action string, args map[str
 			}
 		}
 		if len(params) == 0 && !att.trial && (g == nil || g.State == recovery.StateActive) {
-			for _, r := range eng.Store.Recipes(sk, surface, "publish", eng.Cfg.RecipeMaxAge, eng.Now()) {
+			for _, r := range eng.Recipes(sk, att.surface, "publish") {
 				if g != nil && g.Failed[recovery.Sig(r.Params)] != "" {
 					continue
 				}
@@ -359,65 +452,204 @@ func desktopRecoveryBefore(scope agentruntime.Scope, action string, args map[str
 		att.params = params
 		att.strategy = recovery.Sig(params)
 		desktopRecNoteRunGoal(scope.RunID, sk+"\x01"+goal)
+		// A cheap precheck; the attempt itself is admitted atomically when
+		// the pipeline acquires the goal (desktopRecoveryStartPublish).
 		if err := eng.Gate(sk, goal, "publish", att.strategy); err != nil {
 			return nil, err
 		}
-		return att, nil
-	case desktopRecMutating[action]:
 		desktopRecStateMu.Lock()
-		goal := desktopRecCheck[desktopRecKey(scope)]
+		desktopRecPendingAtt[desktopRecKey(scope)] = att
 		desktopRecStateMu.Unlock()
-		if goal == "" {
-			return nil, nil
-		}
-		g := eng.Status(sk, goal)
-		if g == nil || g.State == recovery.StateDone {
-			return nil, nil
-		}
-		if err := eng.Gate(sk, goal, "check", desktopRecCheckStrategy(g)); err != nil {
-			return nil, fmt.Errorf("%v (goal_check %q)", err, strings.TrimPrefix(goal, "check:"))
-		}
-		return &desktopRecAttempt{sk: sk, goal: goal, method: "check", check: true}, nil
+		return att, nil
 	}
-	return nil, nil
+	// A mutating step is part of the attempt of every unfinished check goal
+	// of this task: it is gated by all of them (renaming a goal in
+	// goal_check does not escape one that waits for a diagnosis), and its
+	// time is bounded by the attempt time they have left.
+	gs := eng.Goals(sk, desktopRecCheckPrefix(lineage))
+	if len(gs) == 0 {
+		return nil, nil
+	}
+	att := &desktopRecAttempt{sk: sk, method: "check"}
+	for _, g := range gs {
+		if g.State == recovery.StateDone {
+			if desktopRecReopens[action] {
+				eng.Reopen(sk, g.Key, "changed after its verification; run goal_check again")
+			} else {
+				continue
+			}
+		}
+		if err := eng.Gate(sk, g.Key, "check", desktopRecCheckStrategy(g)); err != nil {
+			return nil, fmt.Errorf("%v (goal_check %q)", err, desktopRecCheckName(g.Key))
+		}
+		desktopRecStateMu.Lock()
+		left := eng.WallLeft(g) - desktopRecPending[sk+"\x00"+g.Key]
+		desktopRecStateMu.Unlock()
+		if left <= 0 {
+			return nil, fmt.Errorf("recovery: refused: goal %q has no attempt time left; run goal_check to measure what was reached, then report it", desktopRecCheckName(g.Key))
+		}
+		if att.deadline == 0 || left < att.deadline {
+			att.deadline = left
+		}
+		att.checks = append(att.checks, g.Key)
+		desktopRecNoteRunGoal(scope.RunID, sk+"\x01"+g.Key)
+	}
+	if len(att.checks) == 0 {
+		return nil, nil
+	}
+	return att, nil
 }
 
-// desktopRecoveryAfter records the attempt and returns the evidence text.
+func desktopRecCheckName(key string) string {
+	if i := strings.LastIndex(key, "|"); i >= 0 {
+		return key[i+1:]
+	}
+	return key
+}
+
+// desktopRecoveryStartPublish acquires the publish goal for the attempt
+// about to run, from inside the pipeline: from here until the pipeline's own
+// end (even past the tool call's time limit) no other attempt — in this or
+// any process sharing the ledger — starts on the goal. The submit click
+// waits for the SideEffect handshake; the pipeline's deadline is cut to the
+// goal's attempt time left.
+func desktopRecoveryStartPublish(scope agentruntime.Scope, spec *browser.PublishSpec) (*desktopRecAttempt, error) {
+	desktopRecStateMu.Lock()
+	att := desktopRecPendingAtt[desktopRecKey(scope)]
+	delete(desktopRecPendingAtt, desktopRecKey(scope))
+	desktopRecStateMu.Unlock()
+	if att == nil {
+		return nil, nil
+	}
+	eng := desktopRecovery()
+	req, _ := json.Marshal(desktopRecPublishSpec{Pictures: len(spec.Files), Body: len([]rune(strings.TrimSpace(spec.Body))), Title: desktopRecHash(spec.Title)})
+	lease, g, err := eng.Acquire(att.sk, recovery.AttemptRequest{Goal: att.goal, Surface: att.surface, Method: "publish", Strategy: att.strategy, Run: scope.RunID, Consequential: !att.trial, Spec: string(req), Check: desktopRecPublishCheck})
+	if err != nil {
+		return nil, fmt.Errorf("%v (nothing was filled or posted)", err)
+	}
+	if left := eng.WallLeft(g); time.Now().Add(left).Before(spec.Deadline) || spec.Deadline.IsZero() {
+		spec.Deadline = time.Now().Add(left)
+	}
+	att.mu.Lock()
+	att.lease, att.started, att.stop = lease, true, make(chan struct{})
+	att.mu.Unlock()
+	if !att.trial {
+		spec.BeforeSubmit = func() error { return eng.SideEffect(att.sk, att.goal, lease.ID) }
+	}
+	go func(stop chan struct{}) {
+		t := time.NewTicker(eng.Cfg.LeaseTTL / 3)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				if err := eng.Beat(att.sk, att.goal, lease.ID); err == recovery.ErrLeaseLost {
+					return
+				}
+			}
+		}
+	}(att.stop)
+	desktopRecStateMu.Lock()
+	desktopRecLive[desktopRecKey(scope)] = att
+	desktopRecStateMu.Unlock()
+	return att, nil
+}
+
+// desktopRecoveryFinishPublish records the pipeline's measured result at
+// its real end and releases the goal.
+func desktopRecoveryFinishPublish(scope agentruntime.Scope, rep *browser.PublishReport, err error) {
+	desktopRecStateMu.Lock()
+	att := desktopRecLive[desktopRecKey(scope)]
+	delete(desktopRecLive, desktopRecKey(scope))
+	desktopRecStateMu.Unlock()
+	if att == nil {
+		return
+	}
+	att.mu.Lock()
+	defer att.mu.Unlock()
+	if att.finished || att.lease == nil {
+		return
+	}
+	close(att.stop)
+	facts := map[string]float64{}
+	state, trial := "", false
+	if rep != nil {
+		for k, v := range rep.Facts {
+			facts[k] = v
+		}
+		state, trial = string(rep.State), rep.Trial
+	}
+	o := recovery.Observation{Goal: att.goal, Surface: att.surface, Method: att.method, Strategy: att.strategy, Params: att.params, Recipe: att.recipe, Run: scope.RunID, OK: err == nil, Trial: trial || att.trial, Facts: facts}
+	if err != nil {
+		o.Error = desktopRecFirstLine(err.Error())
+	}
+	if state == string(browser.PublishSubmitted) {
+		o.Side = "unconfirmed"
+	}
+	want, hasWant := facts["pictures_wanted"]
+	o.Complete = err == nil && !o.Trial && facts["published"] == 1 && (!hasWant || facts["pictures_kept"] >= want)
+	att.verdict = desktopRecovery().Finish(att.sk, att.lease.ID, o)
+	att.finished = true
+	log.Printf("[recovery] goal=%s verdict=%s state=%s strategy=%q", att.goal, att.verdict.Kind, att.verdict.State, att.strategy)
+}
+
+// desktopRecoveryAbortPublish ends an acquired attempt whose pipeline never
+// ran (a panic or refusal before RunPublish): nothing was done.
+func desktopRecoveryAbortPublish(scope agentruntime.Scope, att *desktopRecAttempt) {
+	if att == nil {
+		return
+	}
+	desktopRecStateMu.Lock()
+	if desktopRecLive[desktopRecKey(scope)] == att {
+		delete(desktopRecLive, desktopRecKey(scope))
+	}
+	desktopRecStateMu.Unlock()
+	att.mu.Lock()
+	defer att.mu.Unlock()
+	if att.finished || att.lease == nil {
+		return
+	}
+	close(att.stop)
+	desktopRecovery().Abandon(att.sk, att.goal, att.lease.ID)
+	att.finished, att.started = true, false
+}
+
+// desktopRecoveryAfter returns the evidence text for the step.
 func desktopRecoveryAfter(scope agentruntime.Scope, att *desktopRecAttempt, out string, err error, took time.Duration) string {
 	if att == nil {
 		return ""
 	}
-	if att.check {
+	if att.method == "check" {
 		desktopRecStateMu.Lock()
-		desktopRecPending[att.sk+"\x00"+att.goal] += took
+		for _, k := range att.checks {
+			desktopRecPending[att.sk+"\x00"+k] += took
+		}
 		desktopRecStateMu.Unlock()
 		return ""
 	}
-	pf, ran := desktopRecTakeFacts(scope)
-	if !ran {
+	desktopRecStateMu.Lock()
+	if desktopRecPendingAtt[desktopRecKey(scope)] == att {
+		delete(desktopRecPendingAtt, desktopRecKey(scope))
+	}
+	desktopRecStateMu.Unlock()
+	att.mu.Lock()
+	started, finished, v := att.started, att.finished, att.verdict
+	att.mu.Unlock()
+	switch {
+	case !started:
 		// The pipeline did not run (a guard or record answered): no attempt.
 		return att.note
-	}
-	o := recovery.Observation{Goal: att.goal, Surface: att.surface, Method: att.method, Strategy: att.strategy, Params: att.params, Recipe: att.recipe, Run: scope.RunID, OK: err == nil, Trial: pf.trial, Facts: pf.facts, Took: took}
-	if err != nil {
-		o.Error = desktopRecFirstLine(err.Error())
-	}
-	if pf.state == string(browser.PublishSubmitted) {
-		o.Side = "unconfirmed"
-	}
-	want, hasWant := pf.facts["pictures_wanted"]
-	o.Complete = err == nil && !pf.trial && pf.facts["published"] == 1 && (!hasWant || pf.facts["pictures_kept"] >= want)
-	v := desktopRecovery().Observe(att.sk, o)
-	log.Printf("[recovery] goal=%s verdict=%s state=%s strategy=%q", att.goal, v.Kind, v.State, att.strategy)
-	text := att.note
-	if v.Kind == recovery.KindVerified {
-		text += "\n[recovery] goal verified by the site's own result"
+	case !finished:
+		return att.note + "\n[recovery] the attempt is still running past this step's time limit and keeps holding the goal: no other publish of it starts until it ends; its measured result goes to the task ledger. Do not publish again — observe the page and report"
+	case v.Kind == recovery.KindVerified:
+		text := att.note + "\n[recovery] goal verified by the site's own result"
 		if v.Recipe != nil {
 			text += fmt.Sprintf("; recipe %s recorded for this site (params only, re-verified on every use)", v.Recipe.ID)
 		}
 		return text
 	}
-	return text + "\n" + v.Evidence
+	return att.note + "\n" + v.Evidence
 }
 
 func desktopRecFirstLine(s string) string {
@@ -433,23 +665,38 @@ func desktopRecFirstLine(s string) string {
 func desktopRecover(request agentruntime.TurnRequest, scope agentruntime.Scope, args map[string]any) (string, error) {
 	eng := desktopRecovery()
 	sk := desktopRecoveryScope(scope)
-	goal := strings.TrimSpace(desktopArg(args, "goal"))
-	if goal != "" && !strings.HasPrefix(goal, "publish|") && !strings.HasPrefix(goal, "check:") {
-		goal = "check:" + goal
+	lineage, err := desktopRecLineage(request, scope)
+	if err != nil {
+		return "", err
 	}
-	if goal == "" {
-		var waiting []string
-		for _, k := range desktopRecRunGoals(scope.RunID) {
-			s, g, _ := strings.Cut(k, "\x01")
-			if s != sk {
-				continue
-			}
-			if st := eng.Status(sk, g); st != nil && st.State == recovery.StateDiagnose {
-				waiting = append(waiting, g)
+	// Only a goal of this task can be diagnosed (the model names it; the
+	// task's identity is not the model's to choose).
+	var mine, waiting []string
+	for _, g := range append(eng.Goals(sk, "publish|"+lineage+"|"), eng.Goals(sk, desktopRecCheckPrefix(lineage))...) {
+		mine = append(mine, g.Key)
+		if g.State == recovery.StateDiagnose {
+			waiting = append(waiting, g.Key)
+		}
+	}
+	goal := strings.TrimSpace(desktopArg(args, "goal"))
+	if goal != "" {
+		found := ""
+		for _, k := range mine {
+			if k == goal || desktopRecCheckName(k) == goal || (strings.HasPrefix(k, "check|") && "check:"+desktopRecCheckName(k) == goal) {
+				found = k
+				break
 			}
 		}
+		if found == "" && len(waiting) == 1 && strings.HasPrefix(goal, "publish") && strings.HasPrefix(waiting[0], "publish|") {
+			found = waiting[0]
+		}
+		if found == "" {
+			return "", fmt.Errorf("recover: %q is not a goal of this task (goals waiting for a diagnosis: %s)", goal, strings.Join(waiting, ", "))
+		}
+		goal = found
+	} else {
 		if len(waiting) != 1 {
-			return "", fmt.Errorf("recover: pass goal= (goals of this run waiting for a diagnosis: %s)", strings.Join(waiting, ", "))
+			return "", fmt.Errorf("recover: pass goal= (goals of this task waiting for a diagnosis: %s)", strings.Join(waiting, ", "))
 		}
 		goal = waiting[0]
 	}
@@ -621,9 +868,17 @@ func desktopGoalCheck(ctx context.Context, request agentruntime.TurnRequest, sco
 	if name == "" || len([]rune(name)) > 60 {
 		return "", fmt.Errorf("goal_check: goal= names the result being checked (≤60 chars), e.g. \"orders.json\"")
 	}
-	key := "check:" + strings.TrimPrefix(name, "check:")
+	name = strings.TrimPrefix(name, "check:")
+	if strings.ContainsAny(name, "|\x00\x01") {
+		return "", fmt.Errorf("goal_check: goal= may not contain |")
+	}
 	eng := desktopRecovery()
 	sk := desktopRecoveryScope(scope)
+	lineage, err := desktopRecLineage(request, scope)
+	if err != nil {
+		return "", err
+	}
+	key := desktopRecCheckPrefix(lineage) + name
 	cs, err := desktopRecCriteria(args)
 	if err != nil {
 		return "", err
@@ -644,7 +899,6 @@ func desktopGoalCheck(ctx context.Context, request agentruntime.TurnRequest, sco
 		_ = json.Unmarshal([]byte(g.Spec), &cs)
 	}
 	desktopRecStateMu.Lock()
-	desktopRecCheck[desktopRecKey(scope)] = key
 	pk := sk + "\x00" + key
 	took := desktopRecPending[pk]
 	delete(desktopRecPending, pk)
@@ -709,32 +963,49 @@ func desktopRecFacts2(f map[string]float64) string {
 
 // ---- honest outcome for the receipt ----
 
-// desktopRecoveryOutcome is the task outcome the run's goals prove:
-// "" (nothing tracked or all verified), "partial", "blocked",
-// "not_submitted" or "unconfirmed", with one line of evidence.
+// desktopRecoveryOutcome is the task outcome the run's goals prove, with
+// one line of evidence: "" (nothing tracked), "done" (every goal verified by
+// measurement), "partial", "blocked", "not_submitted" or "unconfirmed".
+// The goals are the ones this run touched and, when it made desktop steps,
+// every unfinished goal of its task — a check goal counts whether or not the
+// model called goal_check again after its last change.
 func desktopRecoveryOutcome(runID string) (string, string) {
 	eng := desktopRecovery()
-	outcome, why := "", ""
-	rank := map[string]int{"": 0, "not_submitted": 1, "partial": 2, "blocked": 3, "unconfirmed": 4}
-	for _, k := range desktopRecRunGoals(runID) {
+	desktopRecStateMu.Lock()
+	keys := append([]string(nil), desktopRecRuns[runID]...)
+	lin, steps := desktopRecRunLineage[runID], desktopRecRunSteps[runID]
+	desktopRecStateMu.Unlock()
+	goals := map[string]*recovery.Goal{}
+	for _, k := range keys {
 		sk, goal, _ := strings.Cut(k, "\x01")
-		g := eng.Status(sk, goal)
-		if g == nil || g.State == recovery.StateDone || g.Count == 0 {
-			continue
+		if g := eng.Status(sk, goal); g != nil {
+			goals[k] = g
 		}
+	}
+	if sk, l, ok := strings.Cut(lin, "\x01"); ok && steps {
+		for _, g := range append(eng.Goals(sk, "publish|"+l+"|"), eng.Goals(sk, desktopRecCheckPrefix(l))...) {
+			if g.State != recovery.StateDone {
+				goals[sk+"\x01"+g.Key] = g
+			}
+		}
+	}
+	outcome, why := "", ""
+	rank := map[string]int{"": 0, "done": 1, "not_submitted": 2, "partial": 3, "blocked": 4, "unconfirmed": 5}
+	for _, g := range goals {
 		o := ""
 		switch {
-		case g.State == recovery.StateStopped:
+		case g.State == recovery.StateDone:
+			o = "done"
+		case g.Lease != nil && g.Lease.Phase == recovery.PhaseSideEffect, g.State == recovery.StateStopped:
 			o = "unconfirmed"
+		case g.Count == 0 && g.Lease == nil && strings.HasPrefix(g.Key, "publish|"):
+			continue // gated, never attempted
 		case len(g.Best) > 0 && desktopRecSomeDone(g.Best):
 			o = "partial"
-		case g.State == recovery.StateExhausted:
+		case g.State == recovery.StateExhausted || strings.HasPrefix(g.Key, "check|"):
 			o = "blocked"
 		default:
 			o = "not_submitted"
-		}
-		if strings.HasPrefix(goal, "check:") && o == "not_submitted" {
-			o = "blocked"
 		}
 		if rank[o] > rank[outcome] {
 			outcome = o
@@ -742,12 +1013,24 @@ func desktopRecoveryOutcome(runID string) (string, string) {
 			if why == "" {
 				why = g.LastKind
 			}
+			if o == "done" {
+				why = "verified by measurement"
+			}
 			if len(g.Best) > 0 {
 				why += "；已测得 " + desktopRecFacts2(g.Best)
 			}
 		}
 	}
 	return outcome, why
+}
+
+// desktopRecoveryEndRun drops a finished run's in-process bookkeeping.
+func desktopRecoveryEndRun(runID string) {
+	desktopRecStateMu.Lock()
+	defer desktopRecStateMu.Unlock()
+	delete(desktopRecRuns, runID)
+	delete(desktopRecRunLineage, runID)
+	delete(desktopRecRunSteps, runID)
 }
 
 func desktopRecSomeDone(best map[string]float64) bool {

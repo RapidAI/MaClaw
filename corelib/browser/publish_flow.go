@@ -94,6 +94,9 @@ type PublishSpec struct {
 	// TrialPictures > 0 is a bounded test: fill title and body, put in only
 	// the first N pictures, measure, and stop; nothing is submitted.
 	TrialPictures int
+	// BeforeSubmit, when set, runs right before the submit click; an error
+	// stops the publish with nothing submitted.
+	BeforeSubmit func() error `json:"-"`
 }
 
 type PublishStep struct {
@@ -1487,6 +1490,13 @@ func (p *publishRun) hasEditor(d time.Duration) (bool, error) {
 }
 
 func (p *publishRun) submit() (string, error) {
+	if p.spec.BeforeSubmit != nil {
+		// The caller's last word before a consequential click (e.g. the
+		// attempt still holds its goal); refusing leaves nothing submitted.
+		if err := p.spec.BeforeSubmit(); err != nil {
+			return "", fmt.Errorf("not submitted: %v", err)
+		}
+	}
 	before, _ := p.eval("document.body ? document.body.innerText.slice(0, 20000) : ''")
 	// Set before the click: a page that freezes on publish never answers it.
 	closed := p.closeOverlays()

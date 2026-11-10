@@ -42,11 +42,14 @@ func recoveryTestEnv(t *testing.T) {
 	})
 }
 
+// recoveryTurn is one run of a person's conversation (one session per
+// tenant+user in these tests).
 func recoveryTurn(tenant, user, run, task string) agentruntime.TurnRequest {
 	return agentruntime.TurnRequest{
 		Scope: agentruntime.Scope{TenantID: tenant, UserID: user, InstanceID: "bot-rec", RunID: run},
 		Input: agentservice.ExecuteRequest{
 			Instance: agentservice.Instance{ID: "bot-rec"},
+			Session:  agentservice.Session{ID: "sess-" + tenant + "-" + user},
 			Message:  agentservice.Message{Content: task, Metadata: map[string]string{"bot_phase": "execute"}},
 		},
 	}
@@ -255,8 +258,9 @@ func recPublishOp(srv *httptest.Server, d *recDriver) func(context.Context, agen
 		spec.EditorURL = srv.URL + "/md"
 		spec.SuccessURL = "/mp_blog/creation/success/(\\d+)"
 		spec.MinImages = len(spec.Files)
-		rep, err := browser.RunPublish(d, spec)
-		return desktopPublishFinish(scope, spec, "csdn", false, rep, err)
+		return desktopPublishExecute(scope, spec, "csdn", false, func(spec browser.PublishSpec) (*browser.PublishReport, error) {
+			return browser.RunPublish(d, spec)
+		})
 	}
 }
 
@@ -364,7 +368,7 @@ func TestRecoveryCaretEditorEndToEndThroughInvokeTool(t *testing.T) {
 	if strings.Contains(string(raw), "VFlash") || strings.Contains(string(raw), "remembers") {
 		t.Fatalf("recipe holds content or hypothesis text: %s", raw)
 	}
-	if out, _ := desktopRecoveryOutcome(ridCaret1); out != "" {
+	if out, _ := desktopRecoveryOutcome(ridCaret1); out != "done" {
 		t.Fatalf("verified run has outcome %q", out)
 	}
 
@@ -379,8 +383,13 @@ func TestRecoveryCaretEditorEndToEndThroughInvokeTool(t *testing.T) {
 	if rs = eng.Store.AllRecipes(sk); rs[0].Verified != 2 {
 		t.Fatalf("recipe not re-verified: %+v", rs[0])
 	}
+	// The first article again in the same task is not posted twice.
+	before := site.count()
+	if _, err := invoke(t, req2, m.publish(nil)); err == nil || site.count() != before {
+		t.Fatalf("a verified article was published again: %v", err)
+	}
 	// Another person on the same site gets nothing from alice.
-	if got := eng.Store.Recipes(recovery.ScopeKey("tenant-rec", "bob"), rs[0].Surface, "publish", 0, time.Now()); len(got) != 0 {
+	if got := eng.Recipes(recovery.ScopeKey("tenant-rec", "bob"), rs[0].Surface, "publish"); len(got) != 0 {
 		t.Fatal("recipe crossed users")
 	}
 }
@@ -457,6 +466,13 @@ func TestRecoveryFileTransformRegressionThroughInvokeTool(t *testing.T) {
 	if _, err := invoke(t, req, map[string]any{"action": "bash", "command": "cp /home/desktop/work/orders.json.maclaw-lastgood /home/desktop/work/orders.json"}); err == nil || !strings.Contains(err.Error(), "action=recover") || bashRuns != before {
 		t.Fatalf("mutation allowed without a diagnosis: %v", err)
 	}
+	// Naming a fresh goal does not escape the one waiting for a diagnosis.
+	if _, err := invoke(t, req, map[string]any{"action": "goal_check", "goal": "orders-v2.json", "criteria": []any{map[string]any{"kind": "file_exists", "path": home + "/work/orders-v2.json"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := invoke(t, req, map[string]any{"action": "bash", "command": "true"}); err == nil || !strings.Contains(err.Error(), "action=recover") || bashRuns != before {
+		t.Fatalf("a renamed goal bypassed the diagnosis: %v", err)
+	}
 	if _, err := invoke(t, req, map[string]any{"action": "recover", "goal": "orders.json", "hypothesis": "awk splits on every comma, so quoted names with a comma make 4 fields and those rows are dropped", "uncertainty": "whether other rows have quotes", "strategy": "parse with a real CSV parser (python csv module) instead of splitting on commas", "test": "convert and goal_check", "expect": []any{"items:orders.json>=120"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -492,12 +508,20 @@ func TestRecoveryBudgetResumeUnconfirmedAndReceipt(t *testing.T) {
 		if err := desktopPublishApplyStrategy(args, &spec); err != nil {
 			return "", err
 		}
+		spec.Body = desktopArg(args, "body")
 		rep := &browser.PublishReport{State: state, Facts: map[string]float64{"pictures_wanted": 3, "pictures_kept": float64(calls % 2)}}
-		if spec.TrialPictures > 0 {
-			rep.Trial, rep.Facts = true, map[string]float64{"pictures_wanted": 2, "pictures_kept": 2, "trial": 1}
-			return desktopPublishFinish(scope, spec, "example", false, rep, nil)
-		}
-		return desktopPublishFinish(scope, spec, "example", false, rep, fmt.Errorf("publish step paste_images failed: picture %d of 3 was not stored", calls))
+		return desktopPublishExecute(scope, spec, "example", false, func(spec browser.PublishSpec) (*browser.PublishReport, error) {
+			if spec.TrialPictures > 0 {
+				rep.Trial, rep.Facts = true, map[string]float64{"pictures_wanted": 2, "pictures_kept": 2, "trial": 1}
+				return rep, nil
+			}
+			if state == browser.PublishSubmitted && spec.BeforeSubmit != nil {
+				if err := spec.BeforeSubmit(); err != nil {
+					return rep, err
+				}
+			}
+			return rep, fmt.Errorf("publish step paste_images failed: picture %d of 3 was not stored", calls)
+		})
 	}
 	pub := func(extra map[string]any) map[string]any {
 		a := map[string]any{"action": "publish", "title": "预算测试", "body": "正文内容足够长的一段文字。", "editor_url": "https://write.example.org/new"}
@@ -512,8 +536,9 @@ func TestRecoveryBudgetResumeUnconfirmedAndReceipt(t *testing.T) {
 	// Resumed in a new run (after a restart: a fresh engine on the same store).
 	desktopRecoveryEng = nil
 	req2 := recoveryTurn("tenant-b", "dave", ridB2, "继续")
-	if _, err := invoke(t, req2, pub(map[string]any{"body_selector": ".editor"})); err == nil || !strings.Contains(err.Error(), "action=recover") {
-		t.Fatalf("resumed run skipped the pending diagnosis: %v", err)
+	// ... and the model renamed the article: still the same goal.
+	if _, err := invoke(t, req2, pub(map[string]any{"body_selector": ".editor", "title": "换了一个新标题的同一篇文章"})); err == nil || !strings.Contains(err.Error(), "action=recover") {
+		t.Fatalf("a renamed title in a resumed run skipped the pending diagnosis: %v", err)
 	}
 	// No goal= needed: the run's one goal waiting for a diagnosis is used.
 	if _, err := invoke(t, req2, map[string]any{"action": "recover", "hypothesis": "the editor drops a picture inserted while the previous one is still being placed", "strategy": "native caret keys before each picture", "params": map[string]any{"insert_prep_keys": "End"}, "test": "trial_pictures=2", "expect": []any{"pictures_kept>=2"}}); err != nil {
@@ -529,6 +554,13 @@ func TestRecoveryBudgetResumeUnconfirmedAndReceipt(t *testing.T) {
 	before := calls
 	if _, err := invoke(t, req2, pub(map[string]any{"insert_prep_keys": "End"})); err == nil || !strings.Contains(err.Error(), "budget") || calls != before {
 		t.Fatalf("attempt after exhaustion ran: %v calls=%d", err, calls)
+	}
+	// A genuinely new instruction in the same conversation is a new task
+	// with its own budget.
+	ridB3 := recRunID("run-recov-b-3")
+	callsB3 := calls
+	if _, err := invoke(t, recoveryTurn("tenant-b", "dave", ridB3, "另外写一篇关于 Rust 异步运行时的新文章，发到 example 网站"), pub(map[string]any{"title": "Rust 异步运行时"})); (err != nil && strings.Contains(err.Error(), "refused")) || calls != callsB3+1 {
+		t.Fatalf("a new task was blocked by the old one: %v", err)
 	}
 	msg := &agentservice.Message{Content: "已经发好了", Metadata: map[string]string{"response_source": "ask_user"}}
 	msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: "tenant-b", UserID: "dave"}, &agentservice.Run{ID: ridB2, Status: agentservice.RunStatusSucceeded}, msg, nil, false)
@@ -558,7 +590,15 @@ func TestRecoveryBudgetResumeUnconfirmedAndReceipt(t *testing.T) {
 	if msg.Metadata["task_outcome"] != "unconfirmed" {
 		t.Fatalf("outcome %q", msg.Metadata["task_outcome"])
 	}
-	// ask_user alone is awaiting_user, never done.
+	// A question-only chat (no desktop step) has no task outcome ...
+	msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: "x", UserID: "y"}, &agentservice.Run{ID: "run-question", Status: agentservice.RunStatusSucceeded}, &agentservice.Message{Content: "你想发到哪个网站？", Metadata: map[string]string{"response_source": "ask_user"}}, nil, false)
+	if msg.Metadata["task_outcome"] != "" {
+		t.Fatalf("question-only outcome %q", msg.Metadata["task_outcome"])
+	}
+	// ... a run that worked on the desktop and ends asking is awaiting_user.
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps["run-none"] = true
+	desktopRecStateMu.Unlock()
 	msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: "x", UserID: "y"}, &agentservice.Run{ID: "run-none", Status: agentservice.RunStatusSucceeded}, &agentservice.Message{Content: "请你点一下发布", Metadata: map[string]string{"response_source": "ask_user"}}, nil, false)
 	if msg.Metadata["task_outcome"] != "awaiting_user" {
 		t.Fatalf("ask_user outcome %q", msg.Metadata["task_outcome"])
@@ -580,5 +620,117 @@ func TestRecoveryToolSchemaAndParamWhitelist(t *testing.T) {
 	}
 	if !strings.Contains(desktopRecoveryPrompt(), "action=recover") {
 		t.Fatal("prompt")
+	}
+}
+
+// One attempt at a time per task goal, across runs of the same task, a
+// second engine on the same ledger (another process) and a tool call that
+// timed out while its pipeline still runs; the late result is recorded, the
+// lease ends with it, and a verified article is not posted again.
+func TestRecoveryOneAttemptAtATimeAcrossRunsAndTimeouts(t *testing.T) {
+	recoveryTestEnv(t)
+	t.Setenv("MACLAW_DESKTOP_STEP_TIMEOUT_PUBLISH", "0.5")
+	release := make(chan struct{})
+	var mu sync.Mutex
+	started, posted := 0, 0
+	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+		spec := browser.PublishSpec{Title: desktopArg(args, "title"), Body: desktopArg(args, "body"), Deadline: time.Now().Add(time.Minute)}
+		return desktopPublishExecute(scope, spec, "example", false, func(spec browser.PublishSpec) (*browser.PublishReport, error) {
+			mu.Lock()
+			started++
+			mu.Unlock()
+			<-release // the pipeline outlives the tool call
+			if err := spec.BeforeSubmit(); err != nil {
+				return &browser.PublishReport{State: browser.PublishNotSubmitted}, err
+			}
+			mu.Lock()
+			posted++
+			mu.Unlock()
+			return &browser.PublishReport{State: browser.PublishLive, ResultURL: "https://write.example.org/p/1", Evidence: "response id", Facts: map[string]float64{"published": 1}}, nil
+		})
+	}
+	pub := map[string]any{"action": "publish", "title": "并发测试", "body": "一段足够长的正文内容，用来测试同一个任务不会被并发发布两次。", "editor_url": "https://write.example.org/new"}
+	ridA, ridB := recRunID("run-recov-lease-a"), recRunID("run-recov-lease-b")
+	reqA := recoveryTurn("tenant-l", "frank", ridA, "把这篇并发测试文章发到 example 网站上")
+	out, err := invoke(t, reqA, pub)
+	text := out
+	if err != nil {
+		text = err.Error()
+	}
+	if !strings.Contains(text, "timed out") || !strings.Contains(text, "still running") {
+		t.Fatalf("timeout not reported as a running attempt: %s", text)
+	}
+	// A resumed run of the same task, a renamed title, and another engine
+	// on the same ledger: none starts a second attempt.
+	reqB := recoveryTurn("tenant-l", "frank", ridB, "继续")
+	renamed := map[string]any{}
+	for k, v := range pub {
+		renamed[k] = v
+	}
+	renamed["title"] = "并发测试（改名）"
+	if _, err := invoke(t, reqB, renamed); err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("second attempt while the first runs: %v", err)
+	}
+	other := recovery.New(recovery.DefaultConfig(), recovery.NewStore(desktopRecoveryRoot))
+	sk := recovery.ScopeKey("tenant-l", "frank")
+	gs := other.Goals(sk, "publish|")
+	if len(gs) != 1 || gs[0].Lease == nil {
+		t.Fatalf("goals %+v", gs)
+	}
+	if _, _, err := other.Acquire(sk, recovery.AttemptRequest{Goal: gs[0].Key, Method: "publish", Consequential: true}); err == nil {
+		t.Fatal("another process acquired the goal")
+	}
+	close(release)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if g := other.Status(sk, gs[0].Key); g != nil && g.Lease == nil {
+			if g.State != recovery.StateDone {
+				t.Fatalf("late result not recorded: %s %s", g.State, g.Reason)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("lease never released")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if o, _ := desktopRecoveryOutcome(ridA); o != "done" {
+		t.Fatalf("outcome %q", o)
+	}
+	if _, err := invoke(t, reqB, pub); err == nil {
+		t.Fatal("verified article published again")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if started != 1 || posted != 1 {
+		t.Fatalf("started=%d posted=%d", started, posted)
+	}
+}
+
+// The service hook gets the measured outcome with its notice.
+func TestRecoveryTaskOutcomeMetadataForTheService(t *testing.T) {
+	recoveryTestEnv(t)
+	rid := recRunID("run-recov-meta")
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps[rid] = true
+	desktopRecStateMu.Unlock()
+	if m := desktopTaskOutcomeMetadata(rid, agentservice.Message{Content: "你想发到哪里？", Metadata: map[string]string{"response_source": "ask_user"}}); m[agentservice.TaskOutcomeKey] != agentservice.TaskOutcomeAwaitingUser {
+		t.Fatalf("%v", m)
+	}
+	if m := desktopTaskOutcomeMetadata(recRunID("run-recov-q"), agentservice.Message{Content: "你想发到哪里？", Metadata: map[string]string{"response_source": "ask_user"}}); m != nil {
+		t.Fatalf("question-only chat got %v", m)
+	}
+	eng := desktopRecovery()
+	sk := recovery.ScopeKey("t", "u")
+	l, _, err := eng.Acquire(sk, recovery.AttemptRequest{Goal: "publish|x#1|example", Method: "publish", Consequential: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = eng.SideEffect(sk, "publish|x#1|example", l.ID)
+	eng.Finish(sk, l.ID, recovery.Observation{Goal: "publish|x#1|example", Method: "publish", Side: "unconfirmed", Error: "submitted, no result"})
+	desktopRecNoteRunGoal(rid, sk+"\x01publish|x#1|example")
+	m := desktopTaskOutcomeMetadata(rid, agentservice.Message{Content: "发好了！"})
+	if m[agentservice.TaskOutcomeKey] != "unconfirmed" || !strings.Contains(m[agentservice.TaskOutcomeNoticeKey], "没能确认") {
+		t.Fatalf("%v", m)
 	}
 }

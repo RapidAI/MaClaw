@@ -14,8 +14,10 @@
 package recovery
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -34,6 +36,9 @@ type Config struct {
 	MaxWall          time.Duration // time spent in attempts at one goal, across strategies, runs and resumes
 	TTL              time.Duration // a goal's ledger is kept this long after its last change (resume)
 	RecipeMaxAge     time.Duration // a verified recipe not re-verified for this long is no longer offered
+	MaxSpan          time.Duration // elapsed time from a goal's first attempt (model thinking included)
+	LeaseTTL         time.Duration // an attempt whose holder stopped beating this long is dead
+	MinLeft          time.Duration // an attempt needs at least this much wall budget left
 }
 
 func DefaultConfig() Config {
@@ -45,11 +50,15 @@ func DefaultConfig() Config {
 		MaxWall:          25 * time.Minute,
 		TTL:              12 * time.Hour,
 		RecipeMaxAge:     30 * 24 * time.Hour,
+		MaxSpan:          90 * time.Minute,
+		LeaseTTL:         2 * time.Minute,
+		MinLeft:          30 * time.Second,
 	}
 }
 
 // ConfigFromEnv overrides DefaultConfig with MACLAW_RECOVERY_* values
-// (SAME_FAILURES, NO_PROGRESS, DIAGNOSES, ATTEMPTS, WALL_MIN, TTL_HOURS);
+// (SAME_FAILURES, NO_PROGRESS, DIAGNOSES, ATTEMPTS, WALL_MIN, TTL_HOURS,
+// SPAN_MIN, LEASE_SEC);
 // out-of-range values keep the default.
 func ConfigFromEnv(getenv func(string) string) Config {
 	c := DefaultConfig()
@@ -66,6 +75,8 @@ func ConfigFromEnv(getenv func(string) string) Config {
 	c.MaxAttempts = num("ATTEMPTS", c.MaxAttempts, 2, 100)
 	c.MaxWall = time.Duration(num("WALL_MIN", int(c.MaxWall/time.Minute), 1, 240)) * time.Minute
 	c.TTL = time.Duration(num("TTL_HOURS", int(c.TTL/time.Hour), 1, 24*14)) * time.Hour
+	c.MaxSpan = time.Duration(num("SPAN_MIN", int(c.MaxSpan/time.Minute), 5, 24*60)) * time.Minute
+	c.LeaseTTL = time.Duration(num("LEASE_SEC", int(c.LeaseTTL/time.Second), 20, 900)) * time.Second
 	return c
 }
 
@@ -91,6 +102,7 @@ const (
 	KindVerified   = "verified"
 	KindExhausted  = "budget_exhausted"
 	KindStopped    = "stopped_unconfirmed"
+	KindStale      = "stale"
 )
 
 // Observation is one finished attempt and what it measurably left behind.
@@ -216,6 +228,43 @@ type Goal struct {
 	LastKind string             `json:"last_kind,omitempty"`
 	Evidence string             `json:"evidence,omitempty"` // last compact evidence
 	Spec     string             `json:"spec,omitempty"`     // pinned success criteria (never relaxed)
+	Lease    *Lease             `json:"lease,omitempty"`    // the attempt in flight, if any
+}
+
+// Attempt phases of a lease.
+const (
+	PhaseRunning    = "running"     // no consequential effect yet: a dead holder's attempt is reclaimed
+	PhaseSideEffect = "side_effect" // a consequential write may have gone out: a dead holder stops the goal
+)
+
+// Lease is the one attempt in flight at a goal. Only its holder may finish
+// it; a holder that stops beating for LeaseTTL is dead.
+type Lease struct {
+	ID            string    `json:"id"`
+	Holder        string    `json:"holder"`
+	Run           string    `json:"run,omitempty"`
+	Method        string    `json:"method"`
+	Strategy      string    `json:"strategy,omitempty"`
+	Consequential bool      `json:"consequential,omitempty"`
+	Phase         string    `json:"phase"`
+	Started       time.Time `json:"started"`
+	Beat          time.Time `json:"beat"`
+}
+
+// ErrLeaseLost: this attempt no longer holds its goal (taken over or ended).
+var ErrLeaseLost = errors.New("recovery: this attempt no longer holds its goal")
+
+var processHolder = func() string {
+	h, _ := os.Hostname()
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("%s:%d:%x", h, os.Getpid(), b)
+}()
+
+func newID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 const maxAttemptsKept = 24
@@ -279,99 +328,311 @@ func Sig(params map[string]string) string {
 	return b.String()
 }
 
-// Gate is asked before an attempt at goal with strategy sig: nil allows it.
-func (e *Engine) Gate(scope, goal, method, strategy string) error {
-	g := e.Store.Goal(scope, goal, e.Cfg.TTL, e.now())
-	if g == nil {
-		return nil
+// ---- transactions ----
+
+// tx runs fn on goal key (nil when none) inside the scope's transaction.
+func (e *Engine) tx(scope, key string, fn func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error)) error {
+	now := e.now()
+	return e.Store.update(scope, func(f *scopeFile) (bool, error) {
+		g := liveGoal(f, key, e.Cfg.TTL, now)
+		if g != nil {
+			g.Scope = scope
+		}
+		ng, write, err := fn(f, g, now)
+		if ng != nil {
+			ng.Scope = scope
+			f.Goals[key] = ng
+		}
+		return write || ng != nil, err
+	})
+}
+
+// reap ends a lease whose holder is dead: before any side effect the
+// attempt counts as interrupted; after one the goal stops (never retried).
+func (e *Engine) reap(g *Goal, now time.Time) bool {
+	l := g.Lease
+	if l == nil || now.Sub(l.Beat) <= e.Cfg.LeaseTTL {
+		return false
 	}
-	if err := e.budgetLeft(g); err != nil {
-		return err
+	took := l.Beat.Sub(l.Started)
+	g.SpentMS += took.Milliseconds()
+	att := Attempt{At: now, Run: l.Run, Method: l.Method, Strategy: l.Strategy, TookMS: took.Milliseconds()}
+	if l.Phase == PhaseSideEffect {
+		g.State, g.Reason = StateStopped, "an attempt stopped answering after its consequential write began; its result is unknown"
+		att.Error, att.Verdict = "holder gone after the side effect began", KindStopped
+	} else {
+		att.Error, att.Verdict = "interrupted before any side effect (holder gone)", KindFailure
+		att.Finger = Fingerprint(l.Method, l.Strategy, att.Error)
+	}
+	g.Attempts = appendAttempt(g.Attempts, att)
+	g.Lease = nil
+	g.Updated = now
+	return true
+}
+
+func appendAttempt(a []Attempt, x Attempt) []Attempt {
+	a = append(a, x)
+	if len(a) > maxAttemptsKept {
+		a = a[len(a)-maxAttemptsKept:]
+	}
+	return a
+}
+
+// admit applies state, budget and strategy rules to one more attempt.
+func (e *Engine) admit(g *Goal, strategy string, now time.Time) (bool, error) {
+	if why := e.outOfBudget(g, now); why != "" {
+		changed := g.State != StateExhausted
+		g.State, g.Reason = StateExhausted, why
+		return changed, fmt.Errorf("recovery: refused: this goal is out of recovery budget (%s); stop and report what is done, what is missing and the evidence", why)
 	}
 	switch g.State {
 	case StateStopped:
-		return fmt.Errorf("recovery: refused: %s; the earlier attempt may already have taken effect, so it is never repeated — observe the real state and report it", g.Reason)
+		return false, fmt.Errorf("recovery: refused: %s; the earlier attempt may already have taken effect, so it is never repeated — observe the real state and report it", g.Reason)
 	case StateExhausted:
-		return fmt.Errorf("recovery: refused: this goal is out of recovery budget (%s); stop and report what is done, what is missing and the evidence", g.Reason)
+		return false, fmt.Errorf("recovery: refused: this goal is out of recovery budget (%s); stop and report what is done, what is missing and the evidence", g.Reason)
 	case StateDiagnose:
-		return fmt.Errorf("recovery: refused: %s. Before another attempt call action=recover with hypothesis, uncertainty, strategy (meaningfully different from: %s), test and expect. %s", g.Reason, e.failedList(g), e.budgetText(g))
+		return false, fmt.Errorf("recovery: refused: %s. Before another attempt call action=recover with hypothesis, uncertainty, strategy (meaningfully different from: %s), test and expect. %s", g.Reason, e.failedList(g), e.budgetText(g))
 	case StateTrial:
 		h := &g.Hyps[len(g.Hyps)-1]
 		if h.Sig != "" && h.Sig != strategy {
-			return fmt.Errorf("recovery: refused: hypothesis %d is being tested with strategy %q; run its test (%s) with exactly that strategy first", h.N, h.Sig, h.Test)
+			return false, fmt.Errorf("recovery: refused: hypothesis %d is being tested with strategy %q; run its test (%s) with exactly that strategy first", h.N, h.Sig, h.Test)
 		}
 		if h.Sig == "" {
 			if why, failed := g.Failed[strategy]; failed {
-				return fmt.Errorf("recovery: refused: that is the strategy that already failed (%s); hypothesis %d needs a different one", why, h.N)
+				return false, fmt.Errorf("recovery: refused: that is the strategy that already failed (%s); hypothesis %d needs a different one", why, h.N)
 			}
 		}
-		return nil
+		return false, nil
 	}
 	if why, failed := g.Failed[strategy]; failed && len(g.Hyps) > 0 {
-		return fmt.Errorf("recovery: refused: strategy %q already failed for this goal (%s)", strategyLabel(strategy), why)
+		return false, fmt.Errorf("recovery: refused: strategy %q already failed for this goal (%s)", strategyLabel(strategy), why)
 	}
-	return nil
+	return false, nil
 }
 
-func (e *Engine) budgetLeft(g *Goal) error {
+func (e *Engine) outOfBudget(g *Goal, now time.Time) string {
 	if g.State == StateDone || g.State == StateStopped {
-		return nil
+		return ""
 	}
-	why := ""
+	spent := time.Duration(g.SpentMS) * time.Millisecond
 	switch {
 	case g.Count >= e.Cfg.MaxAttempts:
-		why = fmt.Sprintf("%d of %d attempts used", g.Count, e.Cfg.MaxAttempts)
-	case time.Duration(g.SpentMS)*time.Millisecond >= e.Cfg.MaxWall:
-		why = fmt.Sprintf("%s of %s attempt time used", (time.Duration(g.SpentMS) * time.Millisecond).Round(time.Second), e.Cfg.MaxWall)
+		return fmt.Sprintf("%d of %d attempts used", g.Count, e.Cfg.MaxAttempts)
+	case spent >= e.Cfg.MaxWall || (g.Lease == nil && e.Cfg.MaxWall-spent < e.Cfg.MinLeft):
+		return fmt.Sprintf("%s of %s attempt time used", spent.Round(time.Second), e.Cfg.MaxWall)
+	case e.Cfg.MaxSpan > 0 && g.Count > 0 && now.Sub(g.Created) >= e.Cfg.MaxSpan:
+		return fmt.Sprintf("%s since the first attempt (limit %s)", now.Sub(g.Created).Round(time.Second), e.Cfg.MaxSpan)
 	}
-	if why == "" {
-		return nil
-	}
-	if g.State != StateExhausted {
-		g.State, g.Reason = StateExhausted, why
-		e.Store.Put(g)
-	}
-	return fmt.Errorf("recovery: refused: this goal is out of recovery budget (%s); stop and report what is done, what is missing and the evidence", why)
+	return ""
 }
 
-func (e *Engine) budgetText(g *Goal) string {
-	left := time.Duration(e.Cfg.MaxWall.Milliseconds()-g.SpentMS) * time.Millisecond
+// WallLeft is the attempt time a goal has left (for the tool's own deadline).
+func (e *Engine) WallLeft(g *Goal) time.Duration {
+	if g == nil {
+		return e.Cfg.MaxWall
+	}
+	left := e.Cfg.MaxWall - time.Duration(g.SpentMS)*time.Millisecond
+	if e.Cfg.MaxSpan > 0 && g.Count > 0 {
+		if s := e.Cfg.MaxSpan - e.now().Sub(g.Created); s < left {
+			left = s
+		}
+	}
 	if left < 0 {
 		left = 0
 	}
-	return fmt.Sprintf("Budget left for this goal: %d attempt(s), %s, %d hypothesis(es).", e.Cfg.MaxAttempts-g.Count, left.Round(time.Second), e.Cfg.MaxDiagnoses-len(g.Hyps))
+	return left
 }
 
-func (e *Engine) failedList(g *Goal) string {
-	if len(g.Failed) == 0 {
-		return "the default way"
-	}
-	var parts []string
-	for sig, why := range g.Failed {
-		parts = append(parts, strategyLabel(sig)+" ("+clip(why, 80)+")")
-	}
-	sort.Strings(parts)
-	return strings.Join(parts, "; ")
+// Gate is asked before a non-leased attempt at goal (nil allows it).
+func (e *Engine) Gate(scope, goal, method, strategy string) error {
+	return e.tx(scope, goal, func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error) {
+		if g == nil {
+			return nil, false, nil
+		}
+		reaped := e.reap(g, now)
+		if g.Lease != nil {
+			return nil, reaped, fmt.Errorf("recovery: refused: another attempt at this goal is still running (%s, started %s ago); wait for its result", g.Lease.Method, now.Sub(g.Lease.Started).Round(time.Second))
+		}
+		changed, err := e.admit(g, strategy, now)
+		return nil, changed || reaped, err
+	})
 }
 
-func strategyLabel(sig string) string {
-	if sig == "" {
-		return "default"
-	}
-	return clip(sig, 80)
+// AttemptRequest asks for the lease of one attempt.
+type AttemptRequest struct {
+	Goal, Surface, Method, Strategy, Run string
+	Consequential                        bool
+	// Spec, when set, is pinned on first use; Check refuses a later spec
+	// that lowers it (a nil Check requires equality).
+	Spec  string
+	Check func(pinned, spec string) error
 }
 
-// Observe records one attempt and decides what it means.
+// Acquire reserves one attempt at a goal: the attempt is counted now, and no
+// other attempt (any process sharing the store) may start until this one
+// ends with Finish or Abandon, or its holder is dead.
+func (e *Engine) Acquire(scope string, r AttemptRequest) (*Lease, *Goal, error) {
+	var out *Lease
+	var snap *Goal
+	err := e.tx(scope, r.Goal, func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error) {
+		created := false
+		if g == nil {
+			g = &Goal{Key: r.Goal, Scope: scope, Surface: r.Surface, Created: now, Updated: now, State: StateActive}
+			created = true
+		}
+		reaped := e.reap(g, now)
+		if g.Lease != nil {
+			return nil, reaped, fmt.Errorf("recovery: refused: another attempt at this goal is still running (%s, started %s ago); never start a second one — wait for its result", g.Lease.Method, now.Sub(g.Lease.Started).Round(time.Second))
+		}
+		if g.State == StateDone {
+			// A verified goal is not attempted again within its lineage.
+			return nil, reaped, fmt.Errorf("recovery: refused: this goal was already verified as done; report the result instead of doing it again")
+		}
+		changed, err := e.admit(g, r.Strategy, now)
+		if err != nil {
+			if created {
+				return nil, false, err
+			}
+			if changed || reaped {
+				return g, true, err
+			}
+			return nil, false, err
+		}
+		if r.Spec != "" {
+			switch {
+			case g.Spec == "":
+				g.Spec = r.Spec
+			case r.Check != nil:
+				if err := r.Check(g.Spec, r.Spec); err != nil {
+					return g, reaped, fmt.Errorf("recovery: refused: %v (the goal's requirement is pinned: %s)", err, clip(g.Spec, 160))
+				}
+			case g.Spec != r.Spec:
+				return g, reaped, fmt.Errorf("recovery: refused: the goal's requirement is pinned (%s) and cannot change", clip(g.Spec, 160))
+			}
+		}
+		if r.Surface != "" {
+			g.Surface = r.Surface
+		}
+		g.Count++
+		if g.Count == 1 {
+			g.Created = now
+		}
+		g.Updated = now
+		if r.Run != "" && (len(g.Runs) == 0 || g.Runs[len(g.Runs)-1] != r.Run) {
+			g.Runs = append(g.Runs, r.Run)
+		}
+		g.Lease = &Lease{ID: newID(), Holder: processHolder, Run: r.Run, Method: r.Method, Strategy: r.Strategy, Consequential: r.Consequential, Phase: PhaseRunning, Started: now, Beat: now}
+		l := *g.Lease
+		out = &l
+		snap = g.clone()
+		return g, true, nil
+	})
+	return out, snap, err
+}
+
+func (e *Engine) holding(g *Goal, id string, now time.Time) bool {
+	return g != nil && g.Lease != nil && g.Lease.ID == id && now.Sub(g.Lease.Beat) <= e.Cfg.LeaseTTL
+}
+
+// Beat keeps a lease alive while its attempt really runs.
+func (e *Engine) Beat(scope, goal, id string) error {
+	return e.tx(scope, goal, func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error) {
+		if g == nil || g.Lease == nil || g.Lease.ID != id {
+			return nil, false, ErrLeaseLost
+		}
+		g.Lease.Beat = now
+		return g, true, nil
+	})
+}
+
+// SideEffect is the handshake right before a consequential write: it
+// succeeds only while the lease is held and alive, and from then on a dead
+// holder stops the goal instead of freeing it. A caller that gets an error
+// must not perform the write.
+func (e *Engine) SideEffect(scope, goal, id string) error {
+	return e.tx(scope, goal, func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error) {
+		if !e.holding(g, id, now) {
+			return nil, false, ErrLeaseLost
+		}
+		g.Lease.Phase, g.Lease.Beat = PhaseSideEffect, now
+		return g, true, nil
+	})
+}
+
+// Abandon ends a lease whose attempt never ran (refused before anything was
+// done): the reserved attempt is given back.
+func (e *Engine) Abandon(scope, goal, id string) {
+	_ = e.tx(scope, goal, func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error) {
+		if g == nil || g.Lease == nil || g.Lease.ID != id || g.Lease.Phase != PhaseRunning {
+			return nil, false, nil
+		}
+		g.Lease = nil
+		if g.Count > 0 {
+			g.Count--
+		}
+		return g, true, nil
+	})
+}
+
+// Finish records the leased attempt's observation and ends the lease. A
+// result from an attempt that no longer holds the goal is not recorded.
+func (e *Engine) Finish(scope, id string, o Observation) Verdict {
+	var v Verdict
+	err := e.tx(scope, o.Goal, func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error) {
+		if g == nil || g.Lease == nil || g.Lease.ID != id {
+			v = Verdict{Kind: KindStale, Evidence: "[recovery] this attempt's result arrived after the goal was taken over or closed; nothing was recorded from it"}
+			if g != nil {
+				v.State = g.State
+			}
+			return nil, false, nil
+		}
+		if o.Took <= 0 {
+			o.Took = now.Sub(g.Lease.Started)
+		}
+		g.Lease = nil
+		v = e.observe(f, g, o, now, false)
+		return g, true, nil
+	})
+	if err != nil {
+		v = Verdict{Kind: KindStale, Evidence: "[recovery] the result could not be recorded: " + err.Error()}
+	}
+	return v
+}
+
+// Observe records one non-leased attempt (goal_check measurements).
 func (e *Engine) Observe(scope string, o Observation) Verdict {
-	now := o.At
-	if now.IsZero() {
-		now = e.now()
+	var v Verdict
+	err := e.tx(scope, o.Goal, func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error) {
+		if g == nil {
+			g = &Goal{Key: o.Goal, Scope: scope, Created: now, State: StateActive}
+		}
+		e.reap(g, now)
+		if !o.At.IsZero() {
+			now = o.At
+		}
+		v = e.observe(f, g, o, now, true)
+		return g, true, nil
+	})
+	if err != nil {
+		v = Verdict{Kind: KindStale, Evidence: "[recovery] the result could not be recorded: " + err.Error()}
 	}
-	g := e.Store.Goal(scope, o.Goal, e.Cfg.TTL, now)
-	if g == nil {
-		g = &Goal{Key: o.Goal, Scope: scope, Created: now, State: StateActive}
-	}
-	g.Scope = scope
+	return v
+}
+
+// Reopen puts a verified goal back to active (its result was changed after
+// the verification, so it must be measured again).
+func (e *Engine) Reopen(scope, goal, why string) {
+	_ = e.tx(scope, goal, func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error) {
+		if g == nil || g.State != StateDone {
+			return nil, false, nil
+		}
+		g.State, g.Reason, g.Updated = StateActive, why, now
+		return g, true, nil
+	})
+}
+
+// observe decides what one attempt means (inside the transaction).
+func (e *Engine) observe(f *scopeFile, g *Goal, o Observation, now time.Time, count bool) Verdict {
 	if o.Surface != "" {
 		g.Surface = o.Surface
 	}
@@ -379,7 +640,12 @@ func (e *Engine) Observe(scope string, o Observation) Verdict {
 	if o.Run != "" && (len(g.Runs) == 0 || g.Runs[len(g.Runs)-1] != o.Run) {
 		g.Runs = append(g.Runs, o.Run)
 	}
-	g.Count++
+	if count {
+		g.Count++
+		if g.Count == 1 {
+			g.Created = now
+		}
+	}
 	g.SpentMS += o.Took.Milliseconds()
 	att := Attempt{At: now, Run: o.Run, Method: o.Method, Strategy: o.Strategy, OK: o.OK, Complete: o.Complete, Trial: o.Trial, Facts: o.Facts, TookMS: o.Took.Milliseconds(), Error: clip(o.Error, 300)}
 	if !o.Complete {
@@ -405,16 +671,14 @@ func (e *Engine) Observe(scope string, o Observation) Verdict {
 	case o.Complete:
 		v.Kind = KindVerified
 		g.State, g.Reason = StateDone, ""
-		if hyp != nil || (o.Strategy != "" && supported(g, o.Strategy)) {
-			for i := range g.Hyps {
-				if g.Hyps[i].Sig == o.Strategy && g.Hyps[i].Outcome != "refuted" {
-					g.Hyps[i].Outcome = "verified"
-					g.Hyps[i].Evidence = "goal verified: " + factText(o.Facts)
-				}
+		for i := range g.Hyps {
+			if g.Hyps[i].Sig == o.Strategy && g.Hyps[i].Outcome != "refuted" && g.Hyps[i].Outcome != "pending" || (hyp != nil && &g.Hyps[i] == hyp) {
+				g.Hyps[i].Outcome = "verified"
+				g.Hyps[i].Evidence = "goal verified: " + factText(o.Facts)
 			}
 		}
 		if !o.Trial && len(o.Params) > 0 && o.Surface != "" {
-			v.Recipe = e.Store.VerifyRecipe(scope, o, now)
+			v.Recipe = verifyRecipe(f, o, now)
 		}
 	case hyp != nil:
 		// The hypothesis' test: its expected facts decide, nothing else.
@@ -443,8 +707,7 @@ func (e *Engine) Observe(scope string, o Observation) Verdict {
 			v.Kind = KindRefuted
 		}
 	case !o.OK && o.Strategy != "" && supported(g, o.Strategy):
-		// A test can pass at small scale and the real attempt still fail:
-		// the hypothesis did not hold, whatever its test showed.
+		// A test can pass at small scale and the real attempt still fail.
 		why := clip(o.Error, 120)
 		if regressed {
 			why = "lost " + lost
@@ -475,23 +738,20 @@ func (e *Engine) Observe(scope string, o Observation) Verdict {
 		v.Kind = KindProgress
 	}
 	if o.Recipe != "" && !o.Complete && v.Kind != KindProgress {
-		e.Store.FailRecipe(scope, o.Recipe, v.Kind+": "+clip(o.Error, 120), now)
+		failRecipe(f, o.Recipe, o.Run, v.Kind+": "+clip(o.Error, 120), now)
 	}
 	if improves(g.Best, o.Facts) && !o.Trial && !regressed {
 		g.Best = copyFacts(o.Facts)
 	}
 	att.Verdict = v.Kind
-	g.Attempts = append(g.Attempts, att)
-	if len(g.Attempts) > maxAttemptsKept {
-		g.Attempts = g.Attempts[len(g.Attempts)-maxAttemptsKept:]
-	}
+	g.Attempts = appendAttempt(g.Attempts, att)
 	if g.State == StateDiagnose && len(g.Hyps) >= e.Cfg.MaxDiagnoses {
 		g.State, g.Reason = StateExhausted, fmt.Sprintf("all %d hypotheses were used and the goal is still not met", e.Cfg.MaxDiagnoses)
 		v.Kind = KindExhausted
 	}
 	if g.State != StateDone && g.State != StateStopped {
-		if err := e.budgetLeftNoSave(g); err != "" {
-			g.State, g.Reason = StateExhausted, err
+		if why := e.outOfBudget(g, now); why != "" {
+			g.State, g.Reason = StateExhausted, why
 			v.Kind = KindExhausted
 		}
 	}
@@ -499,18 +759,34 @@ func (e *Engine) Observe(scope string, o Observation) Verdict {
 	v.State = g.State
 	v.Evidence = e.evidence(g, o, v.Kind, lost)
 	g.Evidence = v.Evidence
-	e.Store.Put(g)
 	return v
 }
 
-func (e *Engine) budgetLeftNoSave(g *Goal) string {
-	switch {
-	case g.Count >= e.Cfg.MaxAttempts:
-		return fmt.Sprintf("%d of %d attempts used", g.Count, e.Cfg.MaxAttempts)
-	case time.Duration(g.SpentMS)*time.Millisecond >= e.Cfg.MaxWall:
-		return fmt.Sprintf("%s of %s attempt time used", (time.Duration(g.SpentMS) * time.Millisecond).Round(time.Second), e.Cfg.MaxWall)
+func (e *Engine) budgetText(g *Goal) string {
+	left := time.Duration(e.Cfg.MaxWall.Milliseconds()-g.SpentMS) * time.Millisecond
+	if left < 0 {
+		left = 0
 	}
-	return ""
+	return fmt.Sprintf("Budget left for this goal: %d attempt(s), %s, %d hypothesis(es).", e.Cfg.MaxAttempts-g.Count, left.Round(time.Second), e.Cfg.MaxDiagnoses-len(g.Hyps))
+}
+
+func (e *Engine) failedList(g *Goal) string {
+	if len(g.Failed) == 0 {
+		return "the default way"
+	}
+	var parts []string
+	for sig, why := range g.Failed {
+		parts = append(parts, strategyLabel(sig)+" ("+clip(why, 80)+")")
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "; ")
+}
+
+func strategyLabel(sig string) string {
+	if sig == "" {
+		return "default"
+	}
+	return clip(sig, 80)
 }
 
 func (g *Goal) markFailed(sig, why string) {
@@ -614,66 +890,68 @@ func noProgress(g *Goal, n int) bool {
 // an error); params may be empty when the strategy is a different method
 // whose signature binds on its first test attempt.
 func (e *Engine) Propose(scope, goal, run string, p Proposal, validate func(map[string]string) error) (string, error) {
-	g := e.Store.Goal(scope, goal, e.Cfg.TTL, e.now())
-	if g == nil {
-		return "", fmt.Errorf("recover: goal %q has no failed attempt on record; just carry on", clip(goal, 80))
-	}
-	switch g.State {
-	case StateDiagnose:
-	case StateTrial:
-		return "", fmt.Errorf("recover: hypothesis %d is still waiting for its test (%s); run it first", g.Hyps[len(g.Hyps)-1].N, g.Hyps[len(g.Hyps)-1].Test)
-	case StateExhausted, StateStopped:
-		return "", fmt.Errorf("recover: refused: %s", g.Reason)
-	default:
-		return "", fmt.Errorf("recover: nothing to diagnose for this goal (state %s); carry on", g.State)
-	}
-	if len(g.Hyps) >= e.Cfg.MaxDiagnoses {
-		g.State, g.Reason = StateExhausted, "no hypotheses left"
-		e.Store.Put(g)
-		return "", fmt.Errorf("recover: refused: all %d hypotheses were used", e.Cfg.MaxDiagnoses)
-	}
-	if len([]rune(strings.TrimSpace(p.Hypothesis))) < 12 || strings.TrimSpace(p.Strategy) == "" || strings.TrimSpace(p.Test) == "" {
-		return "", fmt.Errorf("recover: hypothesis (a cause you can test), strategy and test are all required")
-	}
-	if len(p.Expect) == 0 {
-		return "", fmt.Errorf("recover: expect needs at least one fact the test must show, e.g. pictures_kept>=2")
-	}
-	var exp []Expectation
-	for _, s := range p.Expect {
-		x, err := ParseExpectation(s)
-		if err != nil {
-			return "", fmt.Errorf("recover: %v", err)
+	var text string
+	err := e.tx(scope, goal, func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error) {
+		if g == nil {
+			return nil, false, fmt.Errorf("recover: goal %q has no failed attempt on record; just carry on", clip(goal, 80))
 		}
-		exp = append(exp, x)
-	}
-	if validate != nil {
-		if err := validate(p.Params); err != nil {
-			return "", fmt.Errorf("recover: params: %v", err)
+		switch g.State {
+		case StateDiagnose:
+		case StateTrial:
+			return nil, false, fmt.Errorf("recover: hypothesis %d is still waiting for its test (%s); run it first", g.Hyps[len(g.Hyps)-1].N, g.Hyps[len(g.Hyps)-1].Test)
+		case StateExhausted, StateStopped:
+			return nil, false, fmt.Errorf("recover: refused: %s", g.Reason)
+		default:
+			return nil, false, fmt.Errorf("recover: nothing to diagnose for this goal (state %s); carry on", g.State)
 		}
-	}
-	sig := Sig(p.Params)
-	if sig != "" {
-		if why, failed := g.Failed[sig]; failed {
-			return "", fmt.Errorf("recover: refused: that strategy already failed for this goal (%s); propose a meaningfully different one", why)
+		if len(g.Hyps) >= e.Cfg.MaxDiagnoses {
+			g.State, g.Reason = StateExhausted, "no hypotheses left"
+			return g, true, fmt.Errorf("recover: refused: all %d hypotheses were used", e.Cfg.MaxDiagnoses)
 		}
-		for _, h := range g.Hyps {
-			if h.Sig == sig {
-				return "", fmt.Errorf("recover: refused: hypothesis %d already tested that exact strategy (%s)", h.N, h.Outcome)
+		if len([]rune(strings.TrimSpace(p.Hypothesis))) < 12 || strings.TrimSpace(p.Strategy) == "" || strings.TrimSpace(p.Test) == "" {
+			return nil, false, fmt.Errorf("recover: hypothesis (a cause you can test), strategy and test are all required")
+		}
+		if len(p.Expect) == 0 {
+			return nil, false, fmt.Errorf("recover: expect needs at least one fact the test must show, e.g. pictures_kept>=2")
+		}
+		var exp []Expectation
+		for _, s := range p.Expect {
+			x, err := ParseExpectation(s)
+			if err != nil {
+				return nil, false, fmt.Errorf("recover: %v", err)
+			}
+			exp = append(exp, x)
+		}
+		if validate != nil {
+			if err := validate(p.Params); err != nil {
+				return nil, false, fmt.Errorf("recover: params: %v", err)
 			}
 		}
-	}
-	norm := normText(p.Strategy)
-	for _, h := range g.Hyps {
-		if normText(h.Strategy) == norm {
-			return "", fmt.Errorf("recover: refused: hypothesis %d proposed the same strategy; a new attempt must change what is done", h.N)
+		sig := Sig(p.Params)
+		if sig != "" {
+			if why, failed := g.Failed[sig]; failed {
+				return nil, false, fmt.Errorf("recover: refused: that strategy already failed for this goal (%s); propose a meaningfully different one", why)
+			}
+			for _, h := range g.Hyps {
+				if h.Sig == sig {
+					return nil, false, fmt.Errorf("recover: refused: hypothesis %d already tested that exact strategy (%s)", h.N, h.Outcome)
+				}
+			}
 		}
-	}
-	h := Hypothesis{N: len(g.Hyps) + 1, Text: clip(p.Hypothesis, 400), Uncertainty: clip(p.Uncertainty, 200), Strategy: clip(p.Strategy, 300), Sig: sig, Params: p.Params, Test: clip(p.Test, 300), Expect: exp, Outcome: "pending", Run: run}
-	g.Hyps = append(g.Hyps, h)
-	g.State, g.Reason = StateTrial, ""
-	g.Updated = e.now()
-	e.Store.Put(g)
-	return fmt.Sprintf("Hypothesis %d registered (not a fact until its test shows %s). Now run the test: %s. The facts of that attempt decide supported or refuted. %s", h.N, expectText(exp), h.Test, e.budgetText(g)), nil
+		norm := normText(p.Strategy)
+		for _, h := range g.Hyps {
+			if normText(h.Strategy) == norm {
+				return nil, false, fmt.Errorf("recover: refused: hypothesis %d proposed the same strategy; a new attempt must change what is done", h.N)
+			}
+		}
+		h := Hypothesis{N: len(g.Hyps) + 1, Text: clip(p.Hypothesis, 400), Uncertainty: clip(p.Uncertainty, 200), Strategy: clip(p.Strategy, 300), Sig: sig, Params: p.Params, Test: clip(p.Test, 300), Expect: exp, Outcome: "pending", Run: run}
+		g.Hyps = append(g.Hyps, h)
+		g.State, g.Reason = StateTrial, ""
+		g.Updated = now
+		text = fmt.Sprintf("Hypothesis %d registered (not a fact until its test shows %s). Now run the test: %s. The facts of that attempt decide supported or refuted. %s", h.N, expectText(exp), h.Test, e.budgetText(g))
+		return g, true, nil
+	})
+	return text, err
 }
 
 func normText(s string) string {
@@ -684,26 +962,81 @@ func normText(s string) string {
 // calls must give the same criteria (or none), so a run cannot lower the bar
 // after a failure.
 func (e *Engine) Pin(scope, goal, spec string) (*Goal, error) {
-	now := e.now()
-	g := e.Store.Goal(scope, goal, e.Cfg.TTL, now)
-	if g == nil {
-		g = &Goal{Key: goal, Scope: scope, Created: now, Updated: now, State: StateActive, Spec: spec}
-		e.Store.Put(g)
-		return g, nil
-	}
-	if g.Spec == "" && spec != "" {
-		g.Spec = spec
-		e.Store.Put(g)
-	}
-	if spec != "" && g.Spec != spec {
-		return g, fmt.Errorf("goal_check: the success criteria of %q are pinned (%s); they cannot be changed or relaxed after attempts began", clip(goal, 60), clip(g.Spec, 200))
-	}
-	return g, nil
+	var out *Goal
+	err := e.tx(scope, goal, func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error) {
+		if g == nil {
+			g = &Goal{Key: goal, Scope: scope, Created: now, Updated: now, State: StateActive, Spec: spec}
+			out = g.clone()
+			return g, true, nil
+		}
+		write := false
+		if g.Spec == "" && spec != "" {
+			g.Spec, write = spec, true
+		}
+		out = g.clone()
+		if spec != "" && g.Spec != spec {
+			return nil, write, fmt.Errorf("goal_check: the success criteria of %q are pinned (%s); they cannot be changed or relaxed after attempts began", clip(goal, 60), clip(g.Spec, 200))
+		}
+		if write {
+			return g, true, nil
+		}
+		return nil, false, nil
+	})
+	return out, err
 }
 
-// Status is the goal's ledger (nil when none).
+// Status is the goal's ledger (nil when none or unreadable).
 func (e *Engine) Status(scope, goal string) *Goal {
-	return e.Store.Goal(scope, goal, e.Cfg.TTL, e.now())
+	g, _ := e.Store.Goal(scope, goal, e.Cfg.TTL, e.now())
+	return g
+}
+
+// Goals lists the live goals under a key prefix (a lineage).
+func (e *Engine) Goals(scope, prefix string) []*Goal {
+	gs, _ := e.Store.Goals(scope, prefix, e.Cfg.TTL, e.now())
+	return gs
+}
+
+var continueRe = regexp.MustCompile(`(?i)^\s*(继续|接着|再试|重试|再来|再发|还是|好的|好|嗯|行|可以|ok|okay|go on|continue|retry|resume|try again)`)
+
+// NewTask reports whether a person's message is a new instruction rather
+// than a nudge to continue (only the person's own words start a new task).
+func NewTask(msg string) bool {
+	r := []rune(strings.TrimSpace(msg))
+	if len(r) < 12 {
+		return false
+	}
+	if continueRe.MatchString(string(r)) && len(r) < 40 {
+		return false
+	}
+	return true
+}
+
+// Lineage returns the current logical-task id of one conversation for the
+// person's message: the same id for continuations, resumes and repeats of
+// the same instruction; a new generation only for a new instruction.
+func (e *Engine) Lineage(scope, conversation, message string) (string, error) {
+	sum := sha256.Sum256([]byte(conversation))
+	conv := hex.EncodeToString(sum[:6])
+	ah := sha256.Sum256([]byte(normText(message)))
+	anchor := hex.EncodeToString(ah[:6])
+	gen := 0
+	err := e.Store.update(scope, func(f *scopeFile) (bool, error) {
+		now := e.now()
+		l := f.Lineages[conv]
+		switch {
+		case l == nil:
+			l = &Lineage{Gen: 1, Anchor: anchor}
+			f.Lineages[conv] = l
+		case NewTask(message) && anchor != l.Anchor:
+			l.Gen++
+			l.Anchor = anchor
+		}
+		l.Updated = now
+		gen = l.Gen
+		return true, nil
+	})
+	return fmt.Sprintf("%s#%d", conv, gen), err
 }
 
 // evidence is the compact structured text the model sees after a verdict.
@@ -792,3 +1125,8 @@ func FactsLine(f map[string]float64) string {
 
 // EnvGetenv is os.Getenv (kept here so callers need not import os).
 var EnvGetenv = os.Getenv
+
+// Recipes are the verified, non-stale recipes for a surface and method.
+func (e *Engine) Recipes(scope, surface, method string) []Recipe {
+	return e.Store.Recipes(scope, surface, method, e.Cfg.RecipeMaxAge, e.now())
+}

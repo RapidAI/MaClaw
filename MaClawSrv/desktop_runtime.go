@@ -361,11 +361,17 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", npErr, 0, "guard")
 		return "", npErr
 	}
-	recAtt, recErr := desktopRecoveryBefore(scope, actionName, args, desktopTurnTask(request))
+	recAtt, recErr := desktopRecoveryBefore(request, scope, actionName, args)
 	if recErr != nil {
 		log.Print(desktopStepLogLine(scope.UserID, args, "", recErr, 0) + " model=" + desktopModelLabel(request) + " recovery=refused")
 		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", recErr, 0, "guard")
 		return "", recErr
+	}
+	if recAtt != nil && recAtt.deadline > 0 {
+		// A step under a check goal may only use the attempt time left.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, recAtt.deadline)
+		defer cancel()
 	}
 	var out string
 	if actionName == "rich_fill" {

@@ -10,33 +10,53 @@ is changed by it.
 ```
 model tool call ─► InvokeTool ─► invokeDesktopTool guards (budget, repeat, publish, failclass, no-progress, drift)
                                    │
-                                   ├─ action=recover / goal_check ─► desktop_recovery.go (early, no side effect)
+                                   ├─ action=recover / goal_check ─► desktop_recovery.go (no side effect)
                                    │
-                                   ├─ desktopRecoveryBefore: goal key, strategy params (whitelist),
-                                   │    supported-hypothesis / verified-recipe params, Engine.Gate
-                                   │    (refuses: diagnosis pending, trial that would submit, failed
-                                   │    strategy, budget out, unconfirmed submit)
-                                   ├─ operation (publish pipeline / bash / …)
-                                   │    publish: PublishReport.Facts (pictures_wanted, pictures_kept,
-                                   │    regression, lost_item, trial, published) → desktopRecoveryNotePublish
-                                   └─ desktopRecoveryAfter: Engine.Observe → verdict + evidence text
-                                        appended to the tool result the model reads next
-run end ─► desktopEnsureReceipt ─► desktopRecoveryOutcome → metadata task_outcome + honest first line
+                                   ├─ desktopRecoveryBefore: task lineage, goal key, strategy params
+                                   │    (whitelist), supported-hypothesis / verified-recipe params,
+                                   │    Engine.Gate precheck; mutating steps: gated by every unfinished
+                                   │    check goal of the task, ctx deadline = attempt time left
+                                   ├─ operation
+                                   │    publish: desktopPublishExecute
+                                   │      Engine.Acquire (atomic admit + reserve + lease; refused → nothing filled)
+                                   │      heartbeat (Beat every LeaseTTL/3) while the pipeline really runs
+                                   │      pipeline Deadline cut to the goal's attempt time left
+                                   │      BeforeSubmit → Engine.SideEffect (handshake; refused → not submitted)
+                                   │      pipeline end (even after the tool call timed out) → Engine.Finish
+                                   │        with PublishReport.Facts (pictures_wanted, pictures_kept,
+                                   │        regression, lost_item, trial, published)
+                                   └─ desktopRecoveryAfter: verdict evidence appended to the tool result
+                                        (or "still running, holds the goal" after a step timeout)
+run completion (agentservice) ─► AssistantMessageMetadataHook (srv) ─► desktopTaskOutcomeMetadata
+     ─► run.Metadata.task_outcome, run.WaitingForUser, terminal event payloads, notice line before the reply
 ```
 
-* **Goals.** `publish|<site>|<title hash>` for publish calls;
-  `check:<name>` for `goal_check` (criteria: file_exists, file_min_lines,
-  file_min_bytes, file_contains, json_min_items; pinned on first use, never
-  relaxed). Mutating calls between two checks are that goal's attempt and are
-  refused while it needs a diagnosis.
+* **Task lineage.** `Engine.Lineage(scope, conversation, person's message)`:
+  one id per conversation (session id; a run without one is its own) and
+  instruction. Continuations ("继续", "再试一次", short replies), resumes and
+  repeats of the same instruction keep it; a new instruction (≥12 runes, not a
+  continuation, different text) starts the next generation. Computed from the
+  person's message only — nothing the model passes chooses it.
+* **Goals.** `publish|<lineage>|<site>` (titles and files are not in the
+  key: a renamed article is the same goal, same budget, same lockout; only
+  after it was verified does a different title start `…|2`, the next article
+  of the same instruction; the same title again is refused as a duplicate).
+  The first attempt pins the requirement (pictures, body length); fewer
+  pictures or a body under 60% of it is refused.
+  `check|<lineage>|<name>` for `goal_check` (criteria: file_exists,
+  file_min_lines, file_min_bytes, file_contains, json_min_items; pinned on
+  first use, never relaxed). Every mutating step is part of the attempt of
+  every unfinished check goal of the task (so a newly named goal does not
+  escape one waiting for a diagnosis); a step that can change a file reopens
+  a verified check goal, which then has to be measured again.
 * **Detection.** Same failure fingerprint twice (numbers/urls stripped);
   regression (tool fact `regression=1`, or a measured fact below the previous
   comparable attempt); no measurable improvement in N attempts.
-* **Diagnosis.** `action=recover` with hypothesis, uncertainty, strategy,
-  params (publish: insert_prep_keys, insert_settle_ms, body/title/upload
-  selector, upload_trigger — validated, caret keys only, never Ctrl/Alt+Enter),
-  test, expect (`fact op number`). Refused when the strategy or params already
-  failed or were already tested.
+* **Diagnosis.** `action=recover` (goal must belong to the current task)
+  with hypothesis, uncertainty, strategy, params (publish: insert_prep_keys,
+  insert_settle_ms, body/title/upload selector, upload_trigger — validated,
+  caret keys only, never Ctrl/Alt+Enter), test, expect (`fact op number`).
+  Refused when the strategy or params already failed or were already tested.
 * **Test.** The hypothesis' next attempt is its test; a publish test must be
   `trial_pictures=1..3` (fills and inserts, never submits). Expected facts
   decide supported/refuted; a supported strategy that then fails for real is
@@ -48,6 +68,24 @@ run end ─► desktopEnsureReceipt ─► desktopRecoveryOutcome → metadata t
   result re-verifies; one failure retires it; not offered after 30 days
   without re-verification.
 
+## Concurrency and crashes
+
+* Every read-modify-write of a person's ledger is one transaction: an
+  in-process mutex plus an exclusive OS file lock (`flock` / `LockFileEx`) on
+  `<file>.lock`, re-read under the lock, written to a temp file, fsync'd,
+  renamed, directory fsync'd. A corrupt or unreadable ledger fails closed
+  (attempts refused, the file is never overwritten).
+* A publish attempt holds a lease on its goal from admission to the
+  pipeline's real end. While held (heartbeat) no other attempt — another run,
+  another engine, another process on the same data dir — starts on the goal,
+  however long it takes.
+* Holder gone (crash, kill) **before** the submit handshake: after LeaseTTL
+  the attempt is recorded as interrupted (it spent its reserved count) and
+  the goal can be attempted again. **After** the handshake: the goal is
+  stopped (`unconfirmed`), never retried automatically.
+* A late result from an attempt that lost its lease is not recorded
+  (`stale`); a lost lease refuses the submit handshake.
+
 ## Defaults (env `MACLAW_RECOVERY_*`)
 
 | setting | default | env |
@@ -55,39 +93,55 @@ run end ─► desktopEnsureReceipt ─► desktopRecoveryOutcome → metadata t
 | same failure before diagnosis | 2 | SAME_FAILURES (1-10) |
 | attempts without progress | 3 | NO_PROGRESS (2-20) |
 | hypotheses per goal | 3 | DIAGNOSES (1-10) |
-| attempts per goal (all strategies, runs, resumes) | 10 | ATTEMPTS (2-100) |
-| attempt wall time per goal | 25 min | WALL_MIN (1-240) |
-| goal ledger kept for resume | 12 h | TTL_HOURS (1-336) |
+| attempts per goal (all strategies, titles, runs, resumes) | 10 | ATTEMPTS (2-100) |
+| attempt wall time per goal (enforced as the tool deadline) | 25 min | WALL_MIN (1-240) |
+| elapsed time from the first attempt (model time included) | 90 min | SPAN_MIN (5-1440) |
+| dead-holder detection | 2 min | LEASE_SEC (20-900) |
+| goal ledger kept after its last change (resume) | 12 h | TTL_HOURS (1-336) |
 | recipe offered without re-verification | 30 days | — |
 
 Store: `<MaclawDataDir>/desktop-recovery/<sha256(scope)[:12]>.json`, one file
-per tenant+user, 0600, at most 64 goals / 32 recipes.
+per tenant+user, 0600, at most 96 goals (never one with a lease) / 32
+recipes / 64 conversations.
 
 ## Guarantees
 
 * Facts come from the tool's own structured measurements, never from page
   text; a model's words never make a goal complete.
-* A submit whose result is unproven (`submitted_unconfirmed`) stops the goal:
-  no retry, no recover.
-* Budgets are per goal and persisted: switching method, params, file names or
-  resuming in a new run spends the same budget.
+* At most one attempt per goal is in flight across runs, engines and
+  processes sharing the data dir; a consequential submit happens only while
+  its attempt holds the goal.
+* A submit whose result is unproven stops the goal: no retry, no recover.
+* Budgets are per task goal and persisted: switching method, params, title,
+  file names or resuming in a new run spends the same budget; a new
+  instruction is a new task with its own budget; tenants and users never
+  share goals or recipes.
 * Approvals, login/captcha hand-offs and publish permission are the existing
   guards; recovery only adds refusals.
-* blocked / partial / not_submitted / unconfirmed / awaiting_user are written
-  to the reply's `task_outcome` and stated in its first line; run status stays
-  as before for compatibility.
+* Task outcome (agentservice `task_outcome`: done, partial, blocked,
+  not_submitted, unconfirmed, awaiting_user) is set at run completion from
+  the ledger, after the model's last reply: it is persisted on the run and
+  the assistant message, sent in the ask_user / assistant.message /
+  run.completed payloads, a not-done task is `waiting_for_user`, and its
+  notice line goes before the reply. The run status stays `succeeded` for
+  compatibility; cancellation and failure paths are unchanged. A
+  question-only chat (no desktop step) gets no outcome.
 
 ## Limits
 
 * Facts exist for the publish pipeline and file criteria only; other tools
   are covered by the generic repeat/no-progress guards, not by recovery.
-* Page/DOM criteria for goal_check are not implemented.
-* Goal key uses the title (publish) or the check name; a retitled article is
-  a new goal.
+  Page/DOM criteria for goal_check are not implemented.
+* Cross-process exclusion assumes the processes share a local filesystem
+  with working advisory locks (not NFS without lock support).
+* A goal expires 12 h after its last change (a stopped or leased one does
+  not expire); an instruction resumed after that starts a fresh budget.
+* Within one instruction, all articles to one site share one goal until the
+  current one is verified (conservative: a failing article blocks the next).
+* Time spent in mutating steps under a check goal is kept in memory until the
+  next goal_check; a process restart in between loses that part.
 * A publish trial leaves the trial text in the editor (sites that autosave
   keep it as the draft until the real attempt refills it).
-* Observe is not atomic across concurrent calls of one goal (one desktop
-  step at a time per person in practice).
 
 ## Reproduce offline
 

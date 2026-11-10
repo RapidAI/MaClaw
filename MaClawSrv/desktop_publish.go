@@ -125,7 +125,21 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 	if len(spec.Files) > 0 {
 		session.Policy.AllowUpload = true
 	}
-	rep, err := browser.RunPublish(session.PublishDriver(), spec)
+	return desktopPublishExecute(scope, spec, site, expUsed, func(spec browser.PublishSpec) (*browser.PublishReport, error) {
+		return browser.RunPublish(session.PublishDriver(), spec)
+	})
+}
+
+// desktopPublishExecute runs the pipeline as one attempt of its recovery
+// goal: the goal is acquired first (refused: nothing is filled), held until
+// the pipeline's own end and released with its measured result.
+func desktopPublishExecute(scope agentruntime.Scope, spec browser.PublishSpec, site string, expUsed bool, run func(browser.PublishSpec) (*browser.PublishReport, error)) (string, error) {
+	recAtt, err := desktopRecoveryStartPublish(scope, &spec)
+	if err != nil {
+		return "", err
+	}
+	defer desktopRecoveryAbortPublish(scope, recAtt) // only if never finished (panic)
+	rep, err := run(spec)
 	return desktopPublishFinish(scope, spec, site, expUsed, rep, err)
 }
 
@@ -133,7 +147,7 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 // the run's publish record and the site experience. A trial (trial_pictures)
 // is a test, not an outcome: it records neither, and never counts as posted.
 func desktopPublishFinish(scope agentruntime.Scope, spec browser.PublishSpec, site string, expUsed bool, rep *browser.PublishReport, err error) (string, error) {
-	desktopRecoveryNotePublish(scope, rep)
+	desktopRecoveryFinishPublish(scope, rep, err)
 	if spec.TrialPictures > 0 {
 		out := ""
 		if rep != nil {

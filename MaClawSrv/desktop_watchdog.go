@@ -218,9 +218,14 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 	status := string(run.Status)
 	// The run status stays as it is (compatibility); what the task really
 	// reached is task_outcome, from the goals' measured facts.
-	outcome, why := desktopRecoveryOutcome(run.ID)
-	if outcome == "" && msg != nil && msg.Metadata["response_source"] == "ask_user" {
-		outcome, why = "awaiting_user", "waiting for the person's answer"
+	defer desktopRecoveryEndRun(run.ID)
+	outcome, why := "", ""
+	applied := msg != nil && msg.Metadata[agentservice.TaskOutcomeKey] != ""
+	if applied {
+		// Set at completion by the service (desktopTaskOutcomeMetadata).
+		outcome = msg.Metadata[agentservice.TaskOutcomeKey]
+	} else {
+		outcome, why = desktopRunOutcome(run.ID, msg)
 	}
 	if outcome != "" {
 		status += " outcome=" + outcome
@@ -230,7 +235,9 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 			// The run finished; its post is not confirmed (not a success).
 			status += " publish_unconfirmed"
 		}
-		desktopApplyOutcome(msg, outcome, why)
+		if !applied {
+			desktopApplyOutcome(msg, outcome, why)
+		}
 		desktopLedgerAdd(key, desktopLedgerEntry{Kind: "run_end", Run: run.ID, Detail: status})
 		return msg
 	}
@@ -308,8 +315,16 @@ func desktopApplyOutcome(msg *agentservice.Message, outcome, why string) {
 		msg.Metadata = map[string]string{}
 	}
 	msg.Metadata["task_outcome"] = outcome
-	if outcome == "awaiting_user" || desktopOutcomeSaysNotDone.MatchString(msg.Content) {
-		return
+	if line := desktopOutcomeNotice(outcome, why, msg.Content); line != "" {
+		msg.Content = line + "\n" + msg.Content
+	}
+}
+
+// desktopOutcomeNotice is the line put in front of a reply whose task is not
+// done ("" when the reply already says so, or nothing needs saying).
+func desktopOutcomeNotice(outcome, why, content string) string {
+	if outcome == "awaiting_user" || outcome == "done" || desktopOutcomeSaysNotDone.MatchString(content) {
+		return ""
 	}
 	line := map[string]string{
 		"partial":       "这件还没完全做成，只完成了一部分。",
@@ -317,11 +332,42 @@ func desktopApplyOutcome(msg *agentservice.Message, outcome, why string) {
 		"not_submitted": "这件还没提交，内容没有发出去。",
 		"unconfirmed":   "提交后没能确认结果，我没有重复提交，请以页面上的实际状态为准。",
 	}[outcome]
-	if line == "" {
-		return
-	}
-	if why != "" {
+	if line != "" && why != "" {
 		line += "（依据：" + why + "）"
 	}
-	msg.Content = line + "\n" + msg.Content
+	return line
+}
+
+// desktopRunOutcome: the measured outcome of a run's goals, or — for a run
+// that worked on the desktop and ended with a question — awaiting_user. A
+// question-only chat (no desktop step) has no outcome.
+func desktopRunOutcome(runID string, msg *agentservice.Message) (string, string) {
+	outcome, why := desktopRecoveryOutcome(runID)
+	desktopRecStateMu.Lock()
+	steps := desktopRecRunSteps[runID]
+	desktopRecStateMu.Unlock()
+	if outcome == "" && steps && msg != nil && msg.Metadata["response_source"] == "ask_user" {
+		return "awaiting_user", "waiting for the person's answer"
+	}
+	return outcome, why
+}
+
+// desktopTaskOutcomeMetadata is the assistant metadata the service turns
+// into the run's task outcome at completion.
+func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[string]string {
+	if runID == "" {
+		return nil
+	}
+	outcome, why := desktopRunOutcome(runID, &msg)
+	if outcome == "" {
+		return nil
+	}
+	out := map[string]string{agentservice.TaskOutcomeKey: outcome}
+	if n := desktopOutcomeNotice(outcome, why, msg.Content); n != "" {
+		out[agentservice.TaskOutcomeNoticeKey] = n
+	}
+	if why != "" {
+		out["task_outcome_evidence"] = desktopRuneHead(why, 300)
+	}
+	return out
 }

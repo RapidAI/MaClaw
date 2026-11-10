@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +77,22 @@ func TestCaretEditorNativeKeysKeepEveryPicture(t *testing.T) {
 	site.mu.Unlock()
 	if n := len(markdownImageURLs(body)); n != 4 {
 		t.Fatalf("published body has %d picture links:\n%s", n, body)
+	}
+}
+
+func TestBeforeSubmitRefusalLeavesNothingSubmitted(t *testing.T) {
+	addr := startFixtureChrome(t)
+	s, site := caretSpec(t, addr)
+	s.InsertPrepKeys = []string{"ctrl+End", "Enter"}
+	calls := 0
+	s.BeforeSubmit = func() error { calls++; return errors.New("attempt lease lost") }
+	d := fixtureTab(t, addr, "about:blank")
+	rep, err := RunPublish(d, s)
+	if err == nil || !strings.Contains(err.Error()+rep.String(), "not submitted") || rep.State == PublishLive {
+		t.Fatalf("state=%s err=%v\n%s", rep.State, err, rep)
+	}
+	if calls != 1 || site.count() != 0 {
+		t.Fatalf("calls=%d published=%d", calls, site.count())
 	}
 }
 

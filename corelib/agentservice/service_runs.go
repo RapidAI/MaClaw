@@ -339,5 +339,8 @@ func (s *Service) enrichRun(run Run) (Run, error) {
 		run.ResponseSource = strings.TrimSpace(msg.Metadata[metaResponseSource])
 		run.WaitingForUser = normalizeResponseSourceKind(run.ResponseSource).IsWaitingForUser()
 	}
+	if TaskOutcomeNeedsUser(runTaskOutcome(run, &msg)) {
+		run.WaitingForUser = true
+	}
 	return run, nil
 }

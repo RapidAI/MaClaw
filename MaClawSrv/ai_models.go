@@ -399,23 +399,26 @@ func (s *HTTPServer) decorateAssistantMessageMetadata(ctx context.Context, p age
 	_ = p
 	_ = inst
 	_ = sess
-	_ = run
+	// What the task really reached, measured by the desktop goal ledger
+	// (the run's status stays "succeeded" when its execution ended normally).
+	out := desktopTaskOutcomeMetadata(run.ID, msg)
 	if s == nil || s.aiModels == nil || strings.TrimSpace(msg.Content) == "" {
-		return nil
+		return out
+	}
+	if out == nil {
+		out = map[string]string{}
 	}
 	status := s.aiModels.statusOne(srvAIModelTTS, cfg)
 	if !status.Ready {
 		_ = s.aiModels.startDownload(srvAIModelTTS, cfg, false)
-		return map[string]string{
-			"tts_available": "false",
-			"tts_status":    "model_not_ready",
-		}
+		out["tts_available"] = "false"
+		out["tts_status"] = "model_not_ready"
+		return out
 	}
-	return map[string]string{
-		"tts_available": "true",
-		"tts_endpoint":  "/api/v1/ai-models/tts/synthesize",
-		"tts_voice_id":  status.VoiceID,
-	}
+	out["tts_available"] = "true"
+	out["tts_endpoint"] = "/api/v1/ai-models/tts/synthesize"
+	out["tts_voice_id"] = status.VoiceID
+	return out
 }
 
 func (s *HTTPServer) ensureConfiguredAIModelsAsync(cfg corelib.AppConfig) {
