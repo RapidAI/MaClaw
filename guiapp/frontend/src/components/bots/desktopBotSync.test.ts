@@ -204,6 +204,19 @@ describe('multi-client conversation sync', () => {
         const out = syncProjection({ id: 'm-1', role: 'assistant', content: 'ok', requestId: 'local:1', images: [{ mime: 'image/png', data: 'AAA' }], shotPaths: ['C:/x.png'], localPaths: ['C:/a.docx'], queued: true, crossNoteId: 'n1' } as DesktopBotMessage);
         expect(out).toEqual({ role: 'assistant', content: 'ok' });
     });
+
+    it('does not replace a written acknowledgement with a later receipt for the same bubble', () => {
+        const id = at(1_800_000_000_100, 'ack');
+        const stored = [
+            { id, role: 'assistant' as const, content: '我去网上查黄仁勋的资料，做成带照片的简历发给你。', ack: true, understood: true, syncSeq: 2, syncOrigin: 'A' },
+        ];
+        const merged = mergeSyncEntries(stored, [{
+            bot_id: 'bot_1', id, seq: 1, created_seq: 1, origin: 'A',
+            data: { role: 'assistant', content: '收到，正在看。', ack: true, understood: true },
+        }]);
+        expect(merged.changed).toBe(false);
+        expect(merged.messages[0].content).toBe('我去网上查黄仁勋的资料，做成带照片的简历发给你。');
+    });
 });
 
 describe('sync through the stored transcript', () => {

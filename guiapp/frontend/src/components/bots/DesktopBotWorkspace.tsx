@@ -95,7 +95,7 @@ import {
     WatchDesktopBot,
     WakeDesktopBot,
 } from '../../../wailsjs/go/main/App';
-import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, desktopBotAck, desktopBotLine, desktopBotReceiptAck, desktopBotStoppingLine, desktopBotVariedFallback, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
+import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, desktopBotAck, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotReceiptAck, desktopBotStoppingLine, desktopBotVariedFallback, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
@@ -4825,13 +4825,26 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         // The first reply has one end-to-end budget from this moment (the
         // command's arrival): the reading's own sentence when it is back in
         // time, otherwise one neutral receipt. receiptPosted means that
-        // receipt is out, so no later line competes with it.
+        // receipt is already on screen; a later understanding line still
+        // replaces it in place (same bubble id) rather than adding a second
+        // first reply.
         const receivedAt = Date.now();
         const ackLeftMs = () => DESKTOP_BOT_FIRST_ACK_BUDGET_MS - (Date.now() - receivedAt);
         let receiptPosted = false;
         // ackSaid: a first reply (the reading's sentence or a written line)
         // is already on its way, so the receipt is not needed.
         let ackSaid = false;
+        const receiptIndex = (stored: DesktopBotMessage[]) => stored.findIndex(item => item.ack && desktopBotIsPlaceholderAck(item.content, lang));
+        const putAckLine = (stored: DesktopBotMessage[], line: string, chips?: string[], anchorId?: string) => {
+            const receiptAt = receiptIndex(stored);
+            if (receiptAt >= 0) {
+                if (desktopBotIsPlaceholderAck(line, lang)) return stored;
+                return stored.map((item, i) => i === receiptAt ? { ...item, content: line, options: chips } : item);
+            }
+            const ack: DesktopBotMessage = { id: messageID(), role: 'assistant', content: line, ack: true, understood: true, options: chips };
+            const at = anchorId ? stored.findIndex(item => item.id === anchorId) : -1;
+            return at >= 0 ? [...stored.slice(0, at), ack, ...stored.slice(at)] : [...stored, ack];
+        };
         // At the mark, a turn still waiting (reading, supplement check, or
         // anything else before its first reply) gets one neutral receipt
         // that claims no understanding; the work carries on. A turn that
@@ -4849,16 +4862,20 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 commit(botId, [...stored.slice(0, at), receipt, ...stored.slice(at)]);
             }, DESKTOP_BOT_FIRST_ACK_BUDGET_MS);
         }
-        // A line written after the work started goes above the wait bubble,
-        // or at the end when that bubble has already settled.
+        // A line written after the work started upgrades the receipt in
+        // place when one is up, otherwise it goes above the wait bubble,
+        // or at the end when that bubble has already settled. After the
+        // budget, a late model line still gets a short try so the receipt
+        // can be replaced; a second stock line is not shown.
         const postLaterAck = (botId: string, anchorId: string, ctx: DesktopBotAckContext, chips?: string[]) => {
             ackSaid = true;
-            void desktopBotAck(ctx, undefined, ackLeftMs()).then(line => {
+            const left = ackLeftMs();
+            const budget = left > 0 ? left : (receiptPosted ? DESKTOP_BOT_FIRST_ACK_BUDGET_MS : left);
+            void desktopBotAck(ctx, undefined, budget).then(line => {
                 if (userIdRef.current !== ownerId) return;
                 const stored = messagesForBot(ownerId, botId);
-                const ack: DesktopBotMessage = { id: messageID(), role: 'assistant', content: line, ack: true, understood: true, options: chips };
-                const at = stored.findIndex(item => item.id === anchorId);
-                commit(botId, at >= 0 ? [...stored.slice(0, at), ack, ...stored.slice(at)] : [...stored, ack]);
+                if (receiptPosted && desktopBotIsPlaceholderAck(line, lang)) return;
+                commit(botId, putAckLine(stored, line, chips, anchorId));
             });
         };
         void (async () => {
@@ -5136,10 +5153,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 unclear: str(u.unclear, u.Unclear), assumption: str(u.assumption, u.Assumption),
                 options: options.length, files: ackFiles.length, fallback: !!str(u.fallback, u.Fallback),
             });
-            // After the receipt, a late reading's sentence is not said: the
-            // person already heard back, and two first replies would compete.
-            const sentence = receiptPosted ? '' : told.trim();
-            const earlyAckPosted = !receiptPosted && !sentence && !verbatim && sendPhase === 'execute' && worthSaying;
+            // After the receipt, a late reading's sentence still replaces
+            // that receipt in place so the person sees the understanding
+            // that arrived, without a second first-reply bubble.
+            const sentence = told.trim();
+            const earlyAckPosted = !sentence && !verbatim && sendPhase === 'execute' && worthSaying;
             const acceptAckCtx: DesktopBotAckContext = {
                 kind: 'accept', message: content, lang, persona: personaForBot(ownerId, botId),
                 goal: str(u.goal, u.Goal), instruction,
@@ -5162,11 +5180,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (sentence && sentence !== content.trim()) {
                 ackSaid = true;
                 const stored = messagesForBot(ownerId, botId);
-                const at = stored.findIndex(item => item.id === assistantMessage.id);
-                if (at >= 0) {
-                    const ackMessage: DesktopBotMessage = { id: messageID(), role: 'assistant', content: sentence, ack: true, understood: true, options: options.length >= 2 ? options : undefined };
-                    commit(botId, [...stored.slice(0, at), ackMessage, ...stored.slice(at)]);
-                }
+                commit(botId, putAckLine(stored, sentence, options.length >= 2 ? options : undefined, assistantMessage.id));
             }
             if (ownerLeft() || bubbleGone()) {
                 if (ownerLeft()) leaveAccount();
@@ -5318,10 +5332,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 queueRef.current.set(botId, queued);
                 return;
             }
-            if (!receiptPosted && desktopAckOwedOnDispatch({ sentence, verbatim, phase: sendPhase, earlyAckPosted })) {
+            if (desktopAckOwedOnDispatch({ sentence, verbatim, phase: sendPhase, earlyAckPosted })) {
                 // A new job that had no line yet: say a short one now, above
                 // the wait bubble (2026-11-03 21:05: a second task mid-run got
-                // only "正在一点点推进" and no reply).
+                // only "正在一点点推进" and no reply). After a receipt, this
+                // upgrades that bubble in place when the model line arrives.
                 postLaterAck(botId, assistantMessage.id, acceptAckCtx);
             }
             {

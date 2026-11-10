@@ -2955,10 +2955,10 @@ describe('DesktopBotWorkspace', () => {
             });
             expect(sendTask).toHaveBeenCalledWith('bot_1', `指令:execute:${ask}`, 'execute');
             await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
-            // One first reply only: the late sentence and the written line do not follow it.
-            expect(screen.queryByText('我去 dailypapers 挑今天最热的论文，做成图文摘要后发到你的 CSDN。')).toBeNull();
+            // The late understanding replaces the receipt in place; no second first-reply bubble, and no stock line after it.
+            expect(screen.getAllByText('我去 dailypapers 挑今天最热的论文，做成图文摘要后发到你的 CSDN。')).toHaveLength(1);
             expect(screen.queryByText('好，这就去办。')).toBeNull();
-            expect(screen.getAllByText('收到，正在看。')).toHaveLength(1);
+            expect(screen.queryByText('收到，正在看。')).toBeNull();
         } finally {
             vi.useRealTimers();
         }

@@ -9,6 +9,7 @@ import {
     setDesktopBotTranscriptSyncHook,
     type DesktopBotMessage,
 } from './desktopBots';
+import { desktopBotIsPlaceholderAck } from './desktopBotAck';
 
 // Multi-client conversation sync.
 //
@@ -128,6 +129,16 @@ export function mergeSyncEntries(stored: DesktopBotMessage[], entries: DesktopBo
                 let next = remoteMessage(entry, data);
                 next = { ...next, syncSeq: current.syncSeq };
                 if (current.askResolved) next.askResolved = true;
+                // A written understanding must not be rolled back to the
+                // stock receipt if an older entry arrives out of order.
+                if (current.ack && !desktopBotIsPlaceholderAck(String(current.content || '')) && desktopBotIsPlaceholderAck(String(next.content || ''))) {
+                    const flagged = withFlags(current, data);
+                    if (flagged !== current) {
+                        list[at] = flagged;
+                        changed = true;
+                    }
+                    continue;
+                }
                 if (!sameMessage(current, next)) {
                     list[at] = next;
                     changed = true;

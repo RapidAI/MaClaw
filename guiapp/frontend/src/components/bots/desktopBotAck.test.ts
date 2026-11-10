@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../wailsjs/go/main/App', () => ({ WriteDesktopBotAck: vi.fn() }));
 
-import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, desktopBotAck, desktopBotLine, desktopBotNeutralAck, desktopBotReceiptAck, desktopBotStoppingLine, type DesktopBotAckContext } from './desktopBotAck';
+import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, desktopBotAck, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotReceiptAck, desktopBotStoppingLine, type DesktopBotAckContext } from './desktopBotAck';
 
 describe('desktopBotAck', () => {
     it('uses the model line', async () => {
@@ -65,5 +65,15 @@ describe('desktopBotAck first-reply budget', () => {
         expect(await desktopBotAck({ kind: 'accept', message: 'x', lang: 'zh-Hans' }, write, 4000)).toBe('我把销售表理成本周周报，发给老王。');
         expect(DESKTOP_BOT_FIRST_ACK_BUDGET_MS).toBeLessThanOrEqual(5000);
         expect(desktopBotReceiptAck('zh-Hans')).toBe('收到，正在看。');
+    });
+});
+
+describe('desktopBotIsPlaceholderAck', () => {
+    it('recognises the receipt and the failed-model line, not a written understanding', () => {
+        expect(desktopBotIsPlaceholderAck('收到，正在看。', 'zh-Hans')).toBe(true);
+        expect(desktopBotIsPlaceholderAck('好，我先做着。', 'zh-Hans')).toBe(true);
+        expect(desktopBotIsPlaceholderAck('Got it, reading it now.', 'en')).toBe(true);
+        expect(desktopBotIsPlaceholderAck('我去网上查黄仁勋的资料，做成带照片的简历发给你。', 'zh-Hans')).toBe(false);
+        expect(desktopBotIsPlaceholderAck('好的，我来发。', 'zh-Hans')).toBe(false);
     });
 });

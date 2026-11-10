@@ -47,21 +47,42 @@ export function desktopBotNeutralAck(ctx: Pick<DesktopBotAckContext, 'kind' | 'l
 }
 
 // DESKTOP_BOT_FIRST_ACK_BUDGET_MS is how long, from the moment a command
-// arrives, the person may wait for the bot's first reply. The reading that
-// the work needs anyway usually brings the model's own understanding inside
-// it (no extra call). When it does not, one neutral receipt goes out at this
-// mark and the work carries on; nothing written later competes with it.
+// arrives, the person may wait for a first reply. The reading that the work
+// needs anyway usually brings the model's own understanding inside it (no
+// extra call). When it does not, one neutral receipt goes out at this mark
+// so the person hears back at once; a later understanding line still
+// replaces that receipt in place.
 export const DESKTOP_BOT_FIRST_ACK_BUDGET_MS = 4000;
 
 // The receipt said when the reading is still running at the budget. It
 // claims nothing about the task: the reading may yet turn it into a question
-// or an answer.
+// or an answer, which then takes this line's place.
 export function desktopBotReceiptAck(lang: string): string {
     const code = normalizeLang(lang);
     if (code === 'en') return 'Got it, reading it now.';
     if (code === 'mn') return 'Ойлголоо, одоо уншиж байна.';
     if (code === 'zh-Hant') return '收到，正在看。';
     return '收到，正在看。';
+}
+
+function plainAckLine(text: string): string {
+    return String(text || '').replace(/\s+/g, '').replace(/[。.!！?？]+$/, '');
+}
+
+// desktopBotIsPlaceholderAck is true for the stock receipt or the one
+// neutral line used when every model attempt failed. An understanding
+// sentence from the model must never be replaced by one of these.
+export function desktopBotIsPlaceholderAck(line: string, lang?: string): boolean {
+    const got = plainAckLine(line);
+    if (!got) return false;
+    const langs = lang ? [lang] : ['zh-Hans', 'zh-Hant', 'en', 'mn'];
+    for (const item of langs) {
+        if (plainAckLine(desktopBotReceiptAck(item)) === got) return true;
+        if (plainAckLine(desktopBotNeutralAck({ kind: 'accept', lang: item })) === got) return true;
+        if (plainAckLine(desktopBotNeutralAck({ kind: 'accept', lang: item, files: ['x'] })) === got) return true;
+        if (plainAckLine(desktopBotNeutralAck({ kind: 'supplement', lang: item })) === got) return true;
+    }
+    return false;
 }
 
 // desktopBotAck never rejects. The work has already started; this only
