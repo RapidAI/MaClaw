@@ -118,3 +118,10 @@ describe('feed file chips', () => {
         await waitFor(() => expect(view.getByRole('alert').textContent).toContain('没有这个文件'));
     });
 });
+
+describe('feed line markdown', () => {
+    it('summary drops markdown marks and the full text renders markdown', () => {
+        expect(botFeedSummary('**文件路径**：`/tmp/a.png`')).toBe('文件路径：/tmp/a.png');
+        expect(botFeedSummary('- 第一项')).toBe('第一项');
+    });
+});

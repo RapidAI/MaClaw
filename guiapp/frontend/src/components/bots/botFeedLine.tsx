@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { BotMessageBody, botMessageIsStructured } from './botMessageBody';
 
 // botFeedLine: bot-to-bot traffic (Hub feed items) as one short, muted line
 // for the person: who → who, what kind, a short summary. Run ids and raw
@@ -76,7 +77,12 @@ export function botFeedSummary(text: string): string {
         .replace(/\s*\/?\s*please\s*review\b/ig, '')
         .replace(/\s+/g, ' ')
         .trim();
-    const line = human || first;
+    // The summary is one plain line: Markdown marks are not shown raw.
+    const line = (human || first)
+        .replace(/^(?:#{1,6}\s+|[-*+]\s+|>\s*)/, '')
+        .replace(/\*\*([^*]+)\*\*/g, '$1')
+        .replace(/`([^`]+)`/g, '$1')
+        .trim() || human || first;
     if (!cjk(line) && line.length > SUMMARY_MAX) return '一段英文指令（点开看原文）';
     const chars = [...line];
     return chars.length > SUMMARY_MAX ? chars.slice(0, SUMMARY_MAX - 1).join('') + '…' : line;
@@ -201,7 +207,7 @@ export function BotFeedLine({ line, onOpenFile }: { line: BotFeedLineData; onOpe
                 <span className="desktop-bot-feed__summary" data-testid="desktop-bot-feed-summary">{line.summary}</span>
                 {line.files.map(name => <BotFeedFile key={name} line={line} name={name} onOpenFile={onOpenFile} />)}
             </summary>
-            <div className="desktop-bot-feed__full" data-testid="desktop-bot-feed-full">{line.full}</div>
+            <div className="desktop-bot-feed__full" data-testid="desktop-bot-feed-full">{botMessageIsStructured(line.full) ? <BotMessageBody text={line.full} /> : line.full}</div>
         </details>
     );
 }
