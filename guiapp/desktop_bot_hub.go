@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -1480,9 +1482,38 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 	defer cancelAdmit()
 	var status int
 	var err error
+	var outageSince time.Time
+	outageTries := 0
 	for attempt := 1; attempt <= desktopBotAdmitAttempts; attempt++ {
 		out.ClientMessageID = ""
 		status, err = a.desktopBotExchange(admitCtx, http.MethodPost, path, body, &out, 30*time.Minute, map[string]string{"Prefer": "respond-async"})
+		if err != nil && desktopBotNotReached(err) {
+			// Hub was not there (a redeploy): nothing was admitted, so the
+			// same turn is sent again until Hub is back or the window ends.
+			if outageSince.IsZero() {
+				outageSince = time.Now()
+			}
+			if time.Since(outageSince) < desktopBotAdmitOutageWindow {
+				botlog.Write(botID, "gui.admit_wait_hub", err,
+					"http", strconv.Itoa(status),
+					"tries", strconv.Itoa(outageTries+1),
+					"waited_s", strconv.Itoa(int(time.Since(outageSince).Seconds())),
+				)
+				wait := time.NewTimer(desktopBotOutageWait(outageTries))
+				outageTries++
+				select {
+				case <-admitCtx.Done():
+					wait.Stop()
+					if ctx.Err() != nil {
+						return desktopBotRelayResult{}, ctx.Err()
+					}
+					return desktopBotRelayResult{}, err
+				case <-wait.C:
+				}
+				attempt--
+				continue
+			}
+		}
 		// Whether this answer proved the key round-tripped. It belongs to
 		// this attempt only, never to the session: the Hub answering now is
 		// the one whose behavior matters, and a later Hub can be an older
@@ -1552,6 +1583,57 @@ const desktopBotAdmitAttempts = 3
 // carries a 30 minute read because an older Hub may answer only when the run
 // ends, so the attempts are not simply additive and still need a ceiling.
 const desktopBotAdmitBudget = 45 * time.Minute
+
+// desktopHubNotReachedError: the call never reached Hub. The connection was
+// refused or failed before a request was sent, or the proxy in front of Hub
+// answered a gateway error with its own page — what a Hub redeploy looks like
+// for its ~20 seconds (papers 2026-11-11 20:27:43–20:28:03: Bot 3's turn was
+// answered 「服务端连不上」 and never reached Hub or MaClawSrv). It reads as the
+// old message so the chat wording is unchanged.
+type desktopHubNotReachedError struct{}
+
+func (desktopHubNotReachedError) Error() string { return "MaClawSrv 不可达" }
+
+func desktopBotNotReached(err error) bool {
+	var e desktopHubNotReachedError
+	return errors.As(err, &e)
+}
+
+func desktopGatewayStatus(status int) bool {
+	return status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+}
+
+// desktopDialFailed: the connection itself failed (refused, no route, name
+// not resolved), so no byte of the request reached the server.
+func desktopDialFailed(err error) bool {
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "dial" {
+		return true
+	}
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
+}
+
+// desktopBotAdmitOutageWindow is how long a turn that never reached Hub is
+// sent again (same key, so it can never become a second run) before the
+// person is told it did not go through. A Hub or MaClawSrv redeploy is not a
+// task failure.
+var desktopBotAdmitOutageWindow = 10 * time.Minute
+
+// desktopBotOutageWait is the backoff between those sends: 2 s doubling to 30 s.
+var desktopBotOutageWait = func(n int) time.Duration {
+	d := 2 * time.Second
+	for i := 0; i < n && d < 30*time.Second; i++ {
+		d *= 2
+	}
+	if d > 30*time.Second {
+		d = 30 * time.Second
+	}
+	return d
+}
 
 // desktopBotAdmitRetryWait is the gap before the next admission try. The
 // person is waiting on a bubble, so the first wait is short; the second is
@@ -2622,6 +2704,9 @@ func (a *App) desktopBotExchange(ctx context.Context, method, path string, body 
 		if errors.Is(err, context.DeadlineExceeded) {
 			return 0, fmt.Errorf("MaClawSrv 没有在时限内返回结果")
 		}
+		if desktopDialFailed(err) {
+			return 0, desktopHubNotReachedError{}
+		}
 		return 0, fmt.Errorf("MaClawSrv 不可达")
 	}
 	defer resp.Body.Close()
@@ -2630,8 +2715,13 @@ func (a *App) desktopBotExchange(ctx context.Context, method, path string, body 
 		var failure struct {
 			Message string `json:"message"`
 		}
-		_ = json.Unmarshal(payload, &failure)
+		jsonErr := json.Unmarshal(payload, &failure)
 		callErr := fmt.Errorf("MaClawSrv 不可达")
+		if jsonErr != nil && desktopGatewayStatus(resp.StatusCode) {
+			// A proxy in front of Hub answered for it (a restarting Hub):
+			// Hub never wrote this body.
+			callErr = desktopHubNotReachedError{}
+		}
 		if strings.TrimSpace(failure.Message) != "" {
 			callErr = fmt.Errorf("%s", strings.TrimSpace(failure.Message))
 		}
