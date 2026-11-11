@@ -311,6 +311,10 @@ func Main(v string) {
 	if err != nil {
 		println("Error:", err.Error())
 	}
+	// Retire the companion even when Wails returned without running the
+	// shutdown callback (early startup failure). Once per process; a missing
+	// companion makes the relay self-terminate.
+	app.signalFileCompanionQuit()
 	// Do not simply return: the Go runtime's ExitProcess can hang in DLL
 	// detach (injected graphics/audio hooks), leaving a window-less process
 	// behind after a tray quit. finishDesktopExit removes the tray icon and

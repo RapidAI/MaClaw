@@ -618,7 +618,9 @@ func (a *App) signalFileCompanionQuit() {
 	}
 	if err := a.startCompanionProcess([]string{exe, fileCompanionOpenArg, fileCompanionQuitArg}); err != nil {
 		logFileCompanion("quit relay spawn: %v", err)
+		return
 	}
+	log.Printf("[exit-lifecycle] companion quit relayed")
 }
 
 // requestCompanionQuit quits this companion through the same exit controller
