@@ -624,3 +624,10 @@ func TestD112TimeoutKillIsNotATaskFailure(t *testing.T) {
 		t.Fatal("exit 1 explained as kill")
 	}
 }
+
+func TestD112DeliverWithoutReplySlotSaysWhy(t *testing.T) {
+	err := noteDesktopFile(context.Background(), "REPORT.md", "text/markdown", []byte("x"))
+	if err == nil || !strings.Contains(err.Error(), "Do not retry deliver") {
+		t.Fatalf("err %v", err)
+	}
+}

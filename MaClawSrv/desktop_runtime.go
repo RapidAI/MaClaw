@@ -3574,7 +3574,10 @@ func desktopDelivered(name string, size int) string {
 func noteDesktopFile(ctx context.Context, name, mime string, raw []byte) error {
 	slot := desktopShotSlotFrom(ctx)
 	if slot == nil {
-		return fmt.Errorf("desktop document could not be attached to this reply")
+		// A turn the server started itself (a background-job check or
+		// resume) has no reply to carry files: papers 11-12 01:09-01:11,
+		// Bot 1 retried deliver with REPORT.md, a .docx and a .txt probe.
+		return fmt.Errorf("desktop document could not be attached: this turn has no chat reply that can carry files (it was started by the background-job watcher). Do not retry deliver or probe other file types; give the file's path and its key content (numbers, conclusions) in your final reply instead")
 	}
 	encoded := base64.StdEncoding.EncodeToString(raw)
 	if !desktopBoundedData(encoded, desktop.FileDeliverBase64Max) {
