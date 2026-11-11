@@ -115,13 +115,13 @@ func TestImportPackageSources_UsesFetchableURIWhenCanonicalURIIsNotHTTP(t *testi
 	result := ImportPackageSources(context.Background(), store, []PackageSource{{
 		ID:           "mixed-uri",
 		CanonicalURI: "knowledge://archived/mixed-uri",
-		URI:          "HTTPS://example.test/article",
+		URI:          "HTTPS://example.com/article",
 	}}, PackageImportOptions{})
 
 	if result.Imported != 1 || result.Status != "completed" {
 		t.Fatalf("fetchable fallback URI was not imported: %#v", result)
 	}
-	if store.savedURL != "HTTPS://example.test/article" {
+	if store.savedURL != "HTTPS://example.com/article" {
 		t.Fatalf("SaveURL URL=%q, want original HTTP URI", store.savedURL)
 	}
 }
@@ -131,13 +131,13 @@ func TestImportPackageSources_SkipsMalformedCanonicalHTTPURIForValidOriginal(t *
 	result := ImportPackageSources(context.Background(), store, []PackageSource{{
 		ID:           "malformed-canonical",
 		CanonicalURI: "https:///missing-host",
-		URI:          "https://example.test/original",
+		URI:          "https://example.com/original",
 	}}, PackageImportOptions{})
 
 	if result.Imported != 1 || result.Status != "completed" {
 		t.Fatalf("valid original URI was not imported: %#v", result)
 	}
-	if store.savedURL != "https://example.test/original" {
+	if store.savedURL != "https://example.com/original" {
 		t.Fatalf("SaveURL URL=%q, want valid original URI", store.savedURL)
 	}
 }
@@ -147,13 +147,13 @@ func TestImportPackageSources_SkipsBlockedCanonicalHTTPURIForValidOriginal(t *te
 	result := ImportPackageSources(context.Background(), store, []PackageSource{{
 		ID:           "blocked-canonical",
 		CanonicalURI: "http://localhost/private",
-		URI:          "https://example.test/original",
+		URI:          "https://example.com/original",
 	}}, PackageImportOptions{})
 
 	if result.Imported != 1 || result.Status != "completed" {
 		t.Fatalf("valid original URI was not imported: %#v", result)
 	}
-	if store.savedURL != "https://example.test/original" {
+	if store.savedURL != "https://example.com/original" {
 		t.Fatalf("SaveURL URL=%q, want valid original URI", store.savedURL)
 	}
 }
@@ -653,7 +653,7 @@ func (s *packageURLSharedDeadlineStore) SaveText(ctx context.Context, req TextSa
 func TestImportPackageSources_URLFetchAndFallbackShareSourceDeadline(t *testing.T) {
 	store := &packageURLSharedDeadlineStore{}
 	result := ImportPackageSources(context.Background(), store, []PackageSource{{
-		ID: "shared-budget", URI: "https://example.test/article", Content: "portable content",
+		ID: "shared-budget", URI: "https://example.com/article", Content: "portable content",
 	}}, PackageImportOptions{PerSourceTimeout: time.Second})
 
 	if result.Imported != 1 || result.Failed != 0 {
@@ -671,7 +671,7 @@ func (s *packageURLInternalTimeoutStore) SaveURL(context.Context, URLSaveRequest
 func TestImportPackageSources_URLInternalTimeoutStillUsesInlineFallback(t *testing.T) {
 	store := &packageURLInternalTimeoutStore{}
 	result := ImportPackageSources(context.Background(), store, []PackageSource{{
-		ID: "url-timeout", URI: "https://example.test/article", Title: "fallback", Content: "portable content",
+		ID: "url-timeout", URI: "https://example.com/article", Title: "fallback", Content: "portable content",
 	}}, PackageImportOptions{PerSourceTimeout: time.Second})
 
 	if result.Imported != 1 || result.Failed != 0 || result.Skipped != 0 {
@@ -708,7 +708,7 @@ func (s *packageURLBudgetExpiredWrappedStore) SaveText(ctx context.Context, req 
 func TestImportPackageSources_URLSourceBudgetExpiryDoesNotStartFallback(t *testing.T) {
 	store := &packageURLBudgetExpiredWrappedStore{}
 	result := ImportPackageSources(context.Background(), store, []PackageSource{{
-		ID: "url-budget", URI: "https://example.test/article", Content: "portable content",
+		ID: "url-budget", URI: "https://example.com/article", Content: "portable content",
 	}}, PackageImportOptions{PerSourceTimeout: 20 * time.Millisecond})
 
 	if result.Imported != 0 || result.Failed != 1 || result.Skipped != 1 {
@@ -743,7 +743,7 @@ func TestImportPackageSources_URLFallbackParentCancellationStopsBatch(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(20*time.Millisecond, cancel)
 	result := ImportPackageSources(ctx, store, []PackageSource{
-		{ID: "url-current", URI: "https://example.test/current", Content: "fallback"},
+		{ID: "url-current", URI: "https://example.com/current", Content: "fallback"},
 		{ID: "source-pending", Content: "pending"},
 	}, PackageImportOptions{PerSourceTimeout: time.Second})
 

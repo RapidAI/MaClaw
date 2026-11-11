@@ -1973,7 +1973,9 @@ func TestSameClientSessionConcurrentContinueRefreshesCursorAfterRunLock(t *testi
 	}()
 	select {
 	case <-firstPollStarted:
-	case <-time.After(time.Second):
+	// 5s: a fresh CLI process must boot and reach its first poll; a full-suite
+	// run loads the machine enough to push process startup past 1s.
+	case <-time.After(5 * time.Second):
 		t.Fatal("first poll did not start")
 	}
 	go func() {
@@ -2041,7 +2043,9 @@ func TestImplicitCurrentConcurrentContinueRefreshesCursorAfterRunLock(t *testing
 	}()
 	select {
 	case <-firstPollStarted:
-	case <-time.After(time.Second):
+	// 5s: a fresh CLI process must boot and reach its first poll; a full-suite
+	// run loads the machine enough to push process startup past 1s.
+	case <-time.After(5 * time.Second):
 		t.Fatal("first poll did not start")
 	}
 	go func() {

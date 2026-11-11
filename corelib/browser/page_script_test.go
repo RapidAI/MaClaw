@@ -159,10 +159,18 @@ const expr = fs.readFileSync(process.argv[3], 'utf8');
 const dom = new JSDOM('<!doctype html><title>Draft</title><body><div role="button"><button>保存</button></div><button>保存草稿</button><button style="display:none">隐藏</button><item class="pdf">no</item><button>item.pdf</button><div role="dialog" class="cookie" id="cookie">Accept cookies</div><button class="cookie">接受 Cookie</button><p>Privacy Policy</p><input id="q"><input name="secret" type="password" value="hunter2"><select id="state"><option>完成</option></select></body>', {url: 'https://docs.example.com/draft?token=1', pretendToBeVisual: true, runScripts: 'dangerously'});
 const window = dom.window;
 window.Element.prototype.getBoundingClientRect = function() { return {x:1,y:1,width:20,height:10,top:1,left:1,right:21,bottom:11}; };
+window.Element.prototype.getClientRects = function() {
+  const st = window.getComputedStyle(this);
+  if (st && (st.display === 'none' || st.visibility === 'hidden')) return [];
+  return [{}];
+};
 const iframe = window.document.createElement('iframe');
 window.document.body.appendChild(iframe);
 iframe.contentDocument.body.innerHTML = '<button>里面</button>';
-if (iframe.contentWindow && iframe.contentWindow.Element) iframe.contentWindow.Element.prototype.getBoundingClientRect = window.Element.prototype.getBoundingClientRect;
+if (iframe.contentWindow && iframe.contentWindow.Element) {
+  iframe.contentWindow.Element.prototype.getBoundingClientRect = window.Element.prototype.getBoundingClientRect;
+  iframe.contentWindow.Element.prototype.getClientRects = window.Element.prototype.getClientRects;
+}
 if (process.argv[4] === 'login-frame') {
   const login = window.document.createElement('iframe');
   window.document.body.appendChild(login);

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EventsOn } from '../../../wailsjs/runtime';
-import type { TaskManagementItem } from './SidebarTaskManagement';
+import { taskStatusBucketFor, type TaskManagementItem } from './SidebarTaskManagement';
 
 export type RemotePermission = 'view' | 'operate';
 
@@ -105,6 +105,8 @@ export function useTaskRemoteControl() {
     const [errorKind, setErrorKind] = useState<'' | 'state' | 'tasks' | 'action' | 'conversation'>('');
     const [detail, setDetail] = useState<RemoteTaskDetail | null>(null);
     const [detailPath, setDetailPath] = useState('');
+    const [detailLoading, setDetailLoading] = useState(false);
+    const [awaitingReply, setAwaitingReply] = useState(false);
     const [creating, setCreating] = useState(false);
     const taskGen = useRef(0);
     const detailGen = useRef(0);
@@ -116,6 +118,16 @@ export function useTaskRemoteControl() {
     const detailFetchedAt = useRef(0);
     const detailFollowRef = useRef(0);
     const opRefreshGen = useRef(0);
+    const detailRef = useRef<RemoteTaskDetail | null>(null);
+    // After a send/stop the next reply can take a while through the Hub. Poll
+    // the conversation fast inside this window so the chat shows progress
+    // instead of waiting for the 15s idle poll.
+    const fastFollowUntil = useRef(0);
+    // Transcript length when the send left. A longer transcript with a
+    // non-user tail means the other computer answered; until then the chat
+    // keeps an explicit "working" indicator.
+    const awaitBaseline = useRef(-1);
+    detailRef.current = detail;
     // A later poll must not wipe an error the user just caused, and a state
     // poll must not clear an error that belongs to the task list.
     const errorOwner = useRef<'' | 'state' | 'tasks' | 'action' | 'conversation'>('');
@@ -193,8 +205,18 @@ export function useTaskRemoteControl() {
         const refreshing = detailPathRef.current === projectPath;
         const gen = ++detailGen.current;
         setDetailPath(projectPath);
+        if (!refreshing) {
+            // A different task's transcript must not render under the new
+            // path while its own is still on the way.
+            setDetail(null);
+            setDetailLoading(true);
+            // A send waiting for a reply belongs to the previous task.
+            awaitBaseline.current = -1;
+            setAwaitingReply(false);
+        }
         if (!appBinding('RemoteControlOp')) {
             if (!refreshing) setDetail({ messages: [], artifacts: [] });
+            setDetailLoading(false);
             ownError('conversation', '远控尚未就绪');
             return;
         }
@@ -210,12 +232,23 @@ export function useTaskRemoteControl() {
                 artifacts: parsed.artifacts || [],
             };
             setDetail(prev => (sameSnapshot(prev, next) ? prev : next));
+            setDetailLoading(false);
             detailStamp.current = `${projectPath}:${parsed.task?.last_activity || ''}`;
             detailFetchedAt.current = Date.now();
+            // The sent line may land first and the reply later. Only a newer
+            // tail that is not the person's own row counts as an answer.
+            if (awaitBaseline.current >= 0 && parsed.messages.length > awaitBaseline.current) {
+                const last = parsed.messages[parsed.messages.length - 1];
+                if (last && last.role !== 'user') {
+                    awaitBaseline.current = -1;
+                    setAwaitingReply(false);
+                }
+            }
             if (errorOwner.current === 'conversation') ownError('', '');
         } catch (err) {
             if (gen !== detailGen.current || selectedIdRef.current !== grantId) return;
             if (!refreshing) setDetail({ messages: [], artifacts: [] });
+            setDetailLoading(false);
             ownError('conversation', err instanceof SyntaxError ? '会话暂时无法读取' : errorText(err, '会话暂时无法读取'));
         }
     }, []);
@@ -265,11 +298,17 @@ export function useTaskRemoteControl() {
             setLoading(false);
             setDetail(null);
             setDetailPath('');
+            setDetailLoading(false);
+            setAwaitingReply(false);
+            awaitBaseline.current = -1;
             setCreating(false);
             return;
         }
         if (!online) {
             setLoading(false);
+            setDetailLoading(false);
+            setAwaitingReply(false);
+            awaitBaseline.current = -1;
             setCreating(false);
             return;
         }
@@ -291,6 +330,35 @@ export function useTaskRemoteControl() {
             document.removeEventListener('visibilitychange', onVisible);
         };
     }, [loadTasks, online, selectedId]);
+
+    // The open task reports a run through the same active_workflow snapshot
+    // the sidebar row uses, whether this grant can operate or only view.
+    const openTaskRunningNow = useCallback(() => {
+        const path = detailPathRef.current;
+        if (!path) return false;
+        const item = tasksRef.current.find(task => task.project_path === path) || detailRef.current?.task;
+        return !!item && taskStatusBucketFor(item) === 'running';
+    }, []);
+
+    // Poll an open conversation fast while the other computer keeps running:
+    // right after a send, and for the whole run in both view and operate
+    // modes, so continued output reaches the controller without a manual
+    // refresh. Idle tasks fall back to the 15s stamp poll below.
+    useEffect(() => {
+        if (!selectedId || !detailPath || !online) return;
+        const timer = window.setInterval(() => {
+            if (document.hidden) return;
+            const running = openTaskRunningNow();
+            if (awaitBaseline.current >= 0 && !running && Date.now() > fastFollowUntil.current) {
+                awaitBaseline.current = -1;
+                setAwaitingReply(false);
+            }
+            if (Date.now() < fastFollowUntil.current || awaitBaseline.current >= 0 || running) {
+                void openTask(selectedId, detailPath);
+            }
+        }, 3000);
+        return () => window.clearInterval(timer);
+    }, [detailPath, online, openTask, openTaskRunningNow, selectedId]);
 
     useEffect(() => {
         if (!selectedId || !detailPath || !online) return;
@@ -326,6 +394,14 @@ export function useTaskRemoteControl() {
     }, [detailPath, online, openActivity, openTask, selectedId]);
 
     useEffect(() => () => window.clearTimeout(detailFollowRef.current), []);
+
+    // The open conversation is "busy" while a send waits for its first reply
+    // or the task row still reports a run. The list bucket is the durable
+    // signal; awaitingReply covers the gap before the list poll catches up.
+    const openTaskItem = detailPath
+        ? tasks.find(item => item.project_path === detailPath) || detail?.task
+        : undefined;
+    const detailBusy = awaitingReply || (!!openTaskItem && taskStatusBucketFor(openTaskItem) === 'running');
 
     const refreshAfterRemoteOp = useCallback(async (grantId: string, openPath: string, op: string) => {
         // A newer send or stop can start while this refresh is still reading.
@@ -369,6 +445,15 @@ export function useTaskRemoteControl() {
             ownError('action', '远控尚未就绪');
             return false;
         }
+        // Arm the working indicator before the call itself: the Hub round
+        // trip already takes a moment, and the baseline must be read before
+        // any in-flight poll can grow the transcript.
+        const expectsReply = op === 'send_message' || op === 'stop_task';
+        if (expectsReply) {
+            awaitBaseline.current = detailRef.current?.messages.length ?? 0;
+            setAwaitingReply(true);
+            fastFollowUntil.current = Date.now() + 120000;
+        }
         try {
             await fn(grantId, op, JSON.stringify(body));
             // The person may have closed the conversation or changed machines
@@ -382,6 +467,11 @@ export function useTaskRemoteControl() {
             return true;
         } catch (err) {
             if (selectedIdRef.current !== grantId) return false;
+            if (expectsReply) {
+                awaitBaseline.current = -1;
+                setAwaitingReply(false);
+                fastFollowUntil.current = 0;
+            }
             ownError('action', errorText(err, '远控操作失败'));
             return false;
         }
@@ -413,6 +503,8 @@ export function useTaskRemoteControl() {
         errorKind,
         detail,
         detailPath,
+        detailLoading,
+        detailBusy,
         creating,
         refresh,
         selectLocal: () => {
@@ -425,6 +517,9 @@ export function useTaskRemoteControl() {
             setLoading(false);
             setDetail(null);
             setDetailPath('');
+            setDetailLoading(false);
+            setAwaitingReply(false);
+            awaitBaseline.current = -1;
         },
         selectGrant: (id: string) => {
             if (selectedIdRef.current === id) return;
@@ -438,6 +533,9 @@ export function useTaskRemoteControl() {
             setCreating(false);
             setDetail(null);
             setDetailPath('');
+            setDetailLoading(false);
+            setAwaitingReply(false);
+            awaitBaseline.current = -1;
         },
         setCreating,
         grantSameAccount: async (machineID: string, permission: RemotePermission) => {
@@ -470,6 +568,9 @@ export function useTaskRemoteControl() {
                 setSelectedId('');
                 setDetail(null);
                 setDetailPath('');
+                setDetailLoading(false);
+                setAwaitingReply(false);
+                awaitBaseline.current = -1;
             }
             return value !== null;
         },
@@ -480,6 +581,9 @@ export function useTaskRemoteControl() {
             detailGen.current += 1;
             setDetail(null);
             setDetailPath('');
+            setDetailLoading(false);
+            setAwaitingReply(false);
+            awaitBaseline.current = -1;
         },
         createTask: async (name: string) => {
             const ok = await run('create_task', { name });

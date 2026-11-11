@@ -134,6 +134,7 @@ func TestSendAIAssistantMessage_RejectsOversizedToolArguments_OpenAI(t *testing.
 	defer server.Close()
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(app.closeSemanticInvocationStore)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -196,6 +197,7 @@ func TestSendAIAssistantMessage_RejectsOversizedToolArguments_Anthropic(t *testi
 	defer server.Close()
 
 	app := &App{testHomeDir: tempHome}
+	t.Cleanup(app.closeSemanticInvocationStore)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)

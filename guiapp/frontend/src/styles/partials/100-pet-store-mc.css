@@ -1769,6 +1769,16 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .aap-plan-text { white-space: pre-wrap; max-height: 120px; overflow: auto; }
 .aap-wf-icon { opacity: 0.7; display: inline-flex; }
 .aap-wf-title { font-size: 0.88rem; font-weight: 600; }
+.aap-remote-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 48px 0;
+    color: var(--theme-text-muted);
+}
+.aap-remote-empty-hint { color: var(--theme-text-muted); }
 .aap-wf-sub { font-size: 0.75rem; opacity: 0.7; }
 .aap-expert-icon { font-size: 36px; line-height: 1; }
 .aap-expert-desc { font-size: 0.8rem; max-width: 420px; line-height: 1.5; }

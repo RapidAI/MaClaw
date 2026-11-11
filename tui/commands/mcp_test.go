@@ -11,7 +11,12 @@ import (
 )
 
 func TestMCPListEmptyGuidesToTUITemplates(t *testing.T) {
-	t.Setenv("MACLAW_DATA_DIR", t.TempDir())
+	// The product default language is en; this test asserts the zh copy.
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	if err := NewFileConfigStore(dataDir).SaveConfig(corelib.AppConfig{Language: "zh"}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
 
 	out, err := captureMCPStdout(t, func() error {
 		return mcpList(nil)

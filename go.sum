@@ -22,6 +22,10 @@ github.com/UserExistsError/conpty v0.1.4 h1:+3FhJhiqhyEJa+K5qaK3/w6w+sN3Nh9O9VbJ
 github.com/UserExistsError/conpty v0.1.4/go.mod h1:PDglKIkX3O/2xVk0MV9a6bCWxRmPVfxqZoTG/5sSd9I=
 github.com/VantageDataChat/GoExcel v0.0.0-20260626231344-644ce957794e h1:fNkUxFEQblbzj0AtvG2Y/hQPKxYApZw09Io1evLto7E=
 github.com/VantageDataChat/GoExcel v0.0.0-20260626231344-644ce957794e/go.mod h1:7JSbDlEu3YX6CiGlNMWBgCYiK2xzvVIDPRKKeHwdezw=
+github.com/VantageDataChat/GoExcel v0.0.0-20261109235716-4d3449e07309 h1:jb3jXGLsni5u8J+R6YjLPuMAVAA3YAz/Vfw1/30Qz1A=
+github.com/VantageDataChat/GoExcel v0.0.0-20261109235716-4d3449e07309/go.mod h1:7JSbDlEu3YX6CiGlNMWBgCYiK2xzvVIDPRKKeHwdezw=
+github.com/VantageDataChat/GoExcel v0.0.0-20261110213740-d7496429564d h1:9uC5S/d9Q/cXsFS76jC8T9V2KBCBhz6Yqhd5E2oLjmo=
+github.com/VantageDataChat/GoExcel v0.0.0-20261110213740-d7496429564d/go.mod h1:7JSbDlEu3YX6CiGlNMWBgCYiK2xzvVIDPRKKeHwdezw=
 github.com/Vantagics/GoPPT v0.0.0-20261107035927-beb3aba0f510 h1:CPWadNt7vlLTCDnxQwY2E+YrUHlKuxr76ebVDBInwno=
 github.com/Vantagics/GoPPT v0.0.0-20261107035927-beb3aba0f510/go.mod h1:dyyn71qnVef/gY6q+hTw21MFQzIBFcL/ewGQeYG2JsY=
 github.com/Vantagics/LegacyOfficeReader v0.0.0-20260621074012-a324c1dbb18b h1:YACDPb68/yQ/txav7ZPLCu/sW1sIcdGtMoJM74D4rOM=

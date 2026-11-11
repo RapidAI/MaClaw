@@ -14,6 +14,7 @@ func newPaginatorTestStore(t *testing.T, n int) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Stop)
 	for i := 0; i < n; i++ {
 		// Create entries with varying content lengths to test token budget.
 		content := strings.Repeat("word ", 20+i*5) // ~100-600 chars
@@ -266,6 +267,7 @@ func TestCursorPaginator_EmptyStore_ReturnsEmptyPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Stop)
 	pager := NewCursorPaginator()
 
 	result, err := pager.FirstPage(store, "nonexistent query", "", "", "user1")

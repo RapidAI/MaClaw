@@ -347,8 +347,21 @@ func TestPersistedCorpusLoadsWithoutRereadingContent(t *testing.T) {
 	root = filepath.Clean(root)
 	key := searchIndexCorpusKey(root, resolveSearchExcludePattern(map[string]interface{}{}, dir), false)
 	stored := searchIndexDiskPath(disk, key)
-	if _, err := os.Stat(stored); err != nil {
-		t.Fatalf("published index was not persisted: %v", err)
+	// The disk write lands just after the cache publish this helper waits on;
+	// poll briefly so a fast machine cannot Stat inside that gap.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, err := os.Stat(stored)
+		if err == nil {
+			break
+		}
+		if !os.IsNotExist(err) {
+			t.Fatalf("stat persisted index: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("published index was not persisted: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	loaded, ok := loadSearchIndexFile(disk, key, root, "", false)
 	if !ok {

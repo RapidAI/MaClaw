@@ -139,6 +139,8 @@ func TestLLMStatusHubReadyGuidesToServiceRedeem(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("MACLAW_DATA_DIR", dataDir)
 	if err := NewFileConfigStore(dataDir).SaveConfig(corelib.AppConfig{
+		// The product default language is en; this test asserts the zh copy.
+		Language:          "zh",
 		RemoteHubURL:      "https://hub.example",
 		RemoteViewerToken: "viewer-token",
 	}); err != nil {

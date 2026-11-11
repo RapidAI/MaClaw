@@ -24,6 +24,8 @@ function remote(overrides: Partial<Remote> = {}): Remote {
         errorKind: '',
         detail: null,
         detailPath: '',
+        detailLoading: false,
+        detailBusy: false,
         creating: false,
         refresh: vi.fn(),
         selectLocal: vi.fn(),
@@ -91,6 +93,40 @@ describe('TaskMachineBar', () => {
         const offline = screen.getByTestId('task-machine-own-mac-z');
         expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(second.compareDocumentPosition(offline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('never offers this computer as a grant target in the add panel', () => {
+        const control = remote({
+            state: {
+                machine_id: 'mac-a',
+                machines: [
+                    { id: 'mac-a', name: '本机', online: true },
+                    { id: 'mac-b', name: '家里', online: true },
+                ],
+                grants: [], pending: [], invites: [], controlled: [],
+            },
+        });
+        render(<TaskMachineBar lang="zh-CN" remote={control} onCloseGrant={vi.fn()} />);
+        fireEvent.click(screen.getByTestId('task-machine-add'));
+        expect(screen.queryByTestId('task-machine-own-mac-a')).toBeNull();
+        expect(screen.getByTestId('task-machine-own-mac-b').textContent).toContain('家里');
+    });
+
+    it('publishes a loading session while the transcript is on the way', () => {
+        const control = remote({
+            selected: { id: 'g1', machine_name: '家里', permission: 'operate', status: 'active', online: true },
+            operate: true,
+            tasks: [{ id: 't1', name: '整理报告', project_path: 'D:/tasks/a' }],
+            detailPath: 'D:/tasks/a',
+            detail: null,
+            detailLoading: true,
+        });
+        render(<TaskMachineBar lang="zh-CN" remote={control} onCloseGrant={vi.fn()} />);
+        const snapshot = remoteAssistantSessionSnapshot();
+        expect(snapshot?.loading).toBe(true);
+        expect(snapshot?.canSend).toBe(true);
+        expect(snapshot?.taskName).toBe('整理报告');
+        expect(snapshot?.messages).toHaveLength(0);
     });
 
     it('keeps a local status failure inside the add panel', () => {

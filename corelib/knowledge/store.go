@@ -6291,7 +6291,26 @@ func deleteSourceDerivedRows(ctx context.Context, tx *sql.Tx, sourceID string) e
 			OR (entity_type = 'table_row' AND entity_id IN (SELECT id FROM kb_rows WHERE source_id = ?))`, sourceID, sourceID, sourceID); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_rows_fts WHERE row_id IN (SELECT id FROM kb_rows WHERE source_id = ?)`, sourceID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM document_nodes_fts WHERE node_id IN (SELECT id FROM document_nodes WHERE source_id = ?)`, sourceID); err != nil {
+		return err
+	}
+	// Structured spreadsheet rows belong to the derived set: a refresh that
+	// replaces them must not leave the previous snapshot's rows, cells,
+	// columns, and tables behind (2026-11-11 CSV refresh regression: the old
+	// kb_rows survived the replace and kept serving stale data).
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_cells WHERE table_id IN (SELECT id FROM kb_tables WHERE source_id = ?)`, sourceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_columns WHERE table_id IN (SELECT id FROM kb_tables WHERE source_id = ?)`, sourceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_rows WHERE source_id = ?`, sourceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_tables WHERE source_id = ?`, sourceID); err != nil {
 		return err
 	}
 	if err := deleteSourceCardsAndFacts(ctx, tx, sourceID); err != nil {

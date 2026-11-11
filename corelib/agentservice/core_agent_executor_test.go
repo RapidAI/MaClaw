@@ -1950,8 +1950,15 @@ func TestCoreAgentExecutorMemoryUsesCorelibStoreFactory(t *testing.T) {
 	if got := store.List(memory.CategoryUserFact, "legacy server"); len(got) != 1 {
 		t.Fatalf("expected migrated legacy agent memory, got %+v", got)
 	}
-	if _, err := os.Stat(filepath.Join(dataDir, "memory", "memories.json")); err != nil {
-		t.Fatalf("expected MaClawSrv memory to use corelib canonical memory directory: %v", err)
+	// The canonical directory is <dataDir>/memory; the auto backend defaults
+	// to SQLite (memory.db), and a JSON-seeded store renames memories.json to
+	// memories.json.migrated after migration. Either canonical file proves
+	// MaClawSrv uses the corelib canonical memory directory.
+	canonical := filepath.Join(dataDir, "memory")
+	_, dbErr := os.Stat(filepath.Join(canonical, "memory.db"))
+	_, jsonErr := os.Stat(filepath.Join(canonical, "memories.json"))
+	if dbErr != nil && jsonErr != nil {
+		t.Fatalf("expected MaClawSrv memory to use corelib canonical memory directory: %v / %v", dbErr, jsonErr)
 	}
 }
 
@@ -3050,7 +3057,9 @@ func TestCoreAgentBuildTools_ManagedDynamicSemanticSurfaceDoesNotUnionLegacyTool
 		t.Fatalf("managed semantic surface leaked legacy tools: %#v", tools)
 	}
 	name := tooldef.Name(tools[0])
-	if !strings.HasPrefix(name, "invoke_") || !cb.IsToolAllowedForPromptProfile(name, agent.PromptProfileLight) {
+	// The surface name is the stable server__tool spelling (2026-11-05);
+	// light-profile safety is the property under test, not a rotating token.
+	if name != "server__read" || !cb.IsToolAllowedForPromptProfile(name, agent.PromptProfileLight) {
 		t.Fatalf("semantic invocation was not the sole light-safe surface: name=%q tools=%#v", name, tools)
 	}
 	if !cb.ManagedSemanticTurn() {

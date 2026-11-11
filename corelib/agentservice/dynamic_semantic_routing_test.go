@@ -127,8 +127,12 @@ func TestCoreDynamicSemanticSurfaceDoesNotBulkExposeMCP(t *testing.T) {
 		t.Fatalf("semantic defs=%#v managed=%v", defs, managed)
 	}
 	name := defs[0]["function"].(map[string]interface{})["name"].(string)
-	if strings.Contains(name, "approved") || strings.Contains(name, "report") || strings.Contains(name, "mcp") {
-		t.Fatalf("rendered semantic grant leaked provider identity: %q", name)
+	// Installed MCP capabilities keep the stable server__tool spelling the
+	// model can call across turns. Authorization still rides the one-shot
+	// grant, not the name: rotating invoke_* tokens made the model call a
+	// name that had already left the list (2026-11-05).
+	if name != "approved__report" {
+		t.Fatalf("rendered semantic grant is not the stable installed-MCP name: %q", name)
 	}
 	if !cb.IsToolAllowed(name) {
 		t.Fatalf("semantic grant was removed by legacy name policy: %q", name)
@@ -143,8 +147,14 @@ func TestCoreDynamicSemanticSurfaceDoesNotBulkExposeMCP(t *testing.T) {
 	if replay := cb.ExecuteToolCall(name, `{"q":"weekly"}`, "call-1"); replay.Outcome != "ok" || replay.Result != "bound" || provider.boundCalls != 1 {
 		t.Fatalf("host-call replay=%+v bound=%d", replay, provider.boundCalls)
 	}
-	if defs, managed := cb.dynamicSemanticToolDefinitions(); !managed || len(defs) != 0 {
-		t.Fatalf("consumed grant was re-rendered defs=%#v managed=%v", defs, managed)
+	// After the one-shot grant is consumed, the settled-iterative host lists
+	// the next authorized sibling under the same stable name; the consumed
+	// token itself never renders again.
+	if defs, managed := cb.dynamicSemanticToolDefinitions(); !managed || len(defs) != 1 {
+		t.Fatalf("settled sibling was not re-listed defs=%#v managed=%v", defs, managed)
+	}
+	if next := defs[0]["function"].(map[string]interface{})["name"].(string); next != name {
+		t.Fatalf("sibling re-listed under a different name: %q want %q", next, name)
 	}
 }
 

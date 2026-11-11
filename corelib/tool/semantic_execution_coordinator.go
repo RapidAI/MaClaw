@@ -202,9 +202,20 @@ func (c *SQLiteSemanticExecutionCoordinator) PublishSurface(request SurfacePubli
 	defer func() { _ = tx.Rollback() }()
 
 	var existingDigest, existingSnapshot, existingTenantID, existingToolSnapshotID string
-	err = tx.QueryRow(`SELECT rs.plan_digest, rr.snapshot_digest, rs.tenant_id, COALESCE(rs.tool_snapshot_id, '') FROM semantic_route_states rs JOIN semantic_route_revisions rr ON rr.route_key = rs.route_key WHERE rs.route_key = ?`, routeKey).Scan(&existingDigest, &existingSnapshot, &existingTenantID, &existingToolSnapshotID)
+	var existingPlanJSON []byte
+	err = tx.QueryRow(`SELECT rs.plan_digest, rr.snapshot_digest, rs.tenant_id, COALESCE(rs.tool_snapshot_id, ''), rs.plan_json FROM semantic_route_states rs JOIN semantic_route_revisions rr ON rr.route_key = rs.route_key WHERE rs.route_key = ?`, routeKey).Scan(&existingDigest, &existingSnapshot, &existingTenantID, &existingToolSnapshotID, &existingPlanJSON)
 	if err == nil {
-		if existingDigest != digest || existingSnapshot != request.Revision.SnapshotDigest || existingTenantID != request.TenantID || !routeToolSnapshotCompatible(existingToolSnapshotID, request.Revision.Scope.ToolSnapshotID) {
+		// A repeat-sibling or observation follow-up grows the published plan
+		// in place; recovery re-opens with the original plan and must adopt
+		// the advanced state instead of conflicting (see RoutePlanExtends).
+		planAdvanced := false
+		if existingDigest != digest {
+			var existingPlan ToolPlan
+			if jsonErr := json.Unmarshal(existingPlanJSON, &existingPlan); jsonErr == nil {
+				planAdvanced = RoutePlanExtends(existingPlan, request.Revision.Plan)
+			}
+		}
+		if (existingDigest != digest && !planAdvanced) || existingSnapshot != request.Revision.SnapshotDigest || existingTenantID != request.TenantID || !routeToolSnapshotCompatible(existingToolSnapshotID, request.Revision.Scope.ToolSnapshotID) {
 			return RouteState{}, nil, fmt.Errorf("route_state_conflict")
 		}
 		if _, bindErr := canonicalRouteScope(tx, request.Revision.Scope); bindErr != nil {
@@ -220,7 +231,10 @@ func (c *SQLiteSemanticExecutionCoordinator) PublishSurface(request SurfacePubli
 		if err != nil {
 			return RouteState{}, nil, err
 		}
-		if !sameOptionalRouteRevisionRef(state.ParentRevision, request.Revision.ExpectedParent) && !sameOptionalRouteRevisionRef(state.Revision, request.Revision.ExpectedParent) {
+		// A nil ExpectedParent is a pure recovery: re-open whatever revision
+		// the route has advanced to (a repeat-sibling execute advances it).
+		// A caller that asserts lineage keeps the strict parent check.
+		if request.Revision.ExpectedParent != nil && !sameOptionalRouteRevisionRef(state.ParentRevision, request.Revision.ExpectedParent) && !sameOptionalRouteRevisionRef(state.Revision, request.Revision.ExpectedParent) {
 			return RouteState{}, nil, fmt.Errorf("route_revision_conflict")
 		}
 		if !sameOptionalRouteAmendmentRef(state.Amendment, request.Revision.Amendment) {
@@ -2078,6 +2092,12 @@ func (c *SQLiteSemanticExecutionCoordinator) storeRepeatSibling(scope Invocation
 	}
 	if n, _ := result.RowsAffected(); n != 1 {
 		return ToolPlan{}, fmt.Errorf("repeat sibling was not stored")
+	}
+	// Keep the lineage's current revision digest in step with the extended
+	// plan. Recovery passes the lineage ref back as ExpectedParent, so a
+	// stale digest would make the re-open conflict with its own state.
+	if _, err := tx.Exec(`UPDATE semantic_route_lineages SET current_plan_digest = ?, updated_at = ? WHERE lineage_key = ?`, digest, routeStateTime(now), routeLineageKey(scope)); err != nil {
+		return ToolPlan{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return ToolPlan{}, err

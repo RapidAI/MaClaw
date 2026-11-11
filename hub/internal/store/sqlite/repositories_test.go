@@ -1269,13 +1269,15 @@ func TestSessionRepositorySummarizeUserTokenUsageDoesNotMultiplyDuplicateIdentit
 		t.Fatalf("create user: %v", err)
 	}
 	db := st.System.(*systemRepo).db
-	for _, value := range []string{"Dup@Example.com", "dup@example.com"} {
-		if _, err := db.Exec(`
-			INSERT INTO user_identities (id, tenant_id, user_id, type, value, verified, verified_at, created_at, updated_at)
-			VALUES (?, ?, ?, 'email', ?, 1, ?, ?, ?)`,
-			user.ID+"_"+value, user.TenantID, user.ID, value, now.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
-			t.Fatalf("insert identity %s: %v", value, err)
-		}
+	// Users.Create already stored the normalized lowercase email identity
+	// (dup@example.com). Adding the lowercase value again now hits the
+	// (tenant, type, value) UNIQUE constraint, so seed only the case-variant
+	// duplicate — the pair the summarize must dedup.
+	if _, err := db.Exec(`
+		INSERT INTO user_identities (id, tenant_id, user_id, type, value, verified, verified_at, created_at, updated_at)
+		VALUES (?, ?, ?, 'email', 'Dup@Example.com', 1, ?, ?, ?)`,
+		user.ID+"_dupcase", user.TenantID, user.ID, now.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert duplicate identity: %v", err)
 	}
 	if _, err := db.Exec(`
 		INSERT INTO user_usage_daily (tenant_id, user_email, day, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)

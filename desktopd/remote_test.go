@@ -21,7 +21,15 @@ func TestBrowserRestoresTheLoggedInProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	if strings.Contains(text, "about:blank") {
+	// tidy_tabs legitimately opens one about:blank page as a keep-alive when
+	// it closes the last tab (68aee12e); the ban is only for the launch args,
+	// where a blank page would cover the restored, logged-in tabs.
+	argv := text[strings.Index(text, "def browser_argv"):]
+	argvNext := strings.Index(argv, "\ndef ")
+	if argvNext < 0 {
+		argvNext = len(argv)
+	}
+	if strings.Contains(argv[:argvNext], "about:blank") {
 		t.Fatal("a blank start page replaces the logged-in tabs")
 	}
 	if !strings.Contains(text, "--restore-last-session") || !strings.Contains(text, "--user-data-dir=%s") || !strings.Contains(text, "--profile-directory=Default") || !strings.Contains(text, "--disable-sync") || !strings.Contains(text, "ThirdPartyStoragePartitioning") {

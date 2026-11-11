@@ -33,7 +33,7 @@ func (f *fakeAdmits) list() []string {
 
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 1000; i++ { // 10s: tolerate full-suite load
 		if cond() {
 			return
 		}

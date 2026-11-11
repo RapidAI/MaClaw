@@ -1384,3 +1384,124 @@ func TestSQLiteDeadChildClosesQueuedSiblings(t *testing.T) {
 		t.Fatalf("after sweep status=%q stale=%v, want running while the sibling lease is open", got, stale)
 	}
 }
+
+func TestSQLiteInterruptAbandonedRunsReconcilesRestartRows(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	started := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	// A running attempt whose lease is still open: the process that owned it
+	// died, so a restart sweep must not wait out the clock.
+	running, err := store.CreateTask(Task{TaskID: "run", ProjectRef: "repo-run", Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartAttempt(running.TaskID, "gui:local", 15*time.Minute, PolicySnapshot{ProjectRoot: "repo-run", Mode: "local"}, started); err != nil {
+		t.Fatal(err)
+	}
+	// An attempt this process is still inside survives the sweep.
+	live, err := store.CreateTask(Task{TaskID: "live", ProjectRef: "repo-live", Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveAttempt, err := store.StartAttempt(live.TaskID, "gui:local", 15*time.Minute, PolicySnapshot{ProjectRoot: "repo-live", Mode: "local"}, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markLocalLiveWriter(liveAttempt.AttemptID)
+	t.Cleanup(func() { unmarkLocalLiveWriter(liveAttempt.AttemptID) })
+	// A top-level queued task and a queued child of a waiting parent: nothing
+	// dispatches them after a restart.
+	if _, err := store.CreateTask(Task{TaskID: "queued", ProjectRef: "repo-queued", Mode: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := store.CreateTask(Task{TaskID: "parent", ProjectRef: "repo-parent", Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentAttempt, err := store.StartAttempt(parent.TaskID, "gui:local", time.Minute, PolicySnapshot{ProjectRoot: "repo-parent", Mode: "local"}, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := ChildTaskService{Store: store, Now: func() time.Time { return started }}
+	handle, err := service.AdmitReadOnlyChild(parentAttempt.AttemptID, "gui:local", ChildTaskSpec{Name: "inspect", RequestedWork: "inspect", ProjectRef: "repo-parent", Mode: "local"}, PolicySnapshot{ProjectRoot: "repo-parent", Mode: "local", ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := started.Add(2 * time.Minute)
+	interrupted, err := store.InterruptAbandonedRuns(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(interrupted) != 1 || interrupted[0].TaskID != running.TaskID || interrupted[0].Status != TaskInterrupted || interrupted[0].SideEffectState != SideEffectUncertain {
+		t.Fatalf("interrupted=%+v", interrupted)
+	}
+	if task, err := store.GetTask(running.TaskID); err != nil || task.Status != TaskInterrupted || !task.UpdatedAt.Equal(now) {
+		t.Fatalf("running task=%+v err=%v, want interrupted at %s", task, err, now)
+	}
+	if task, err := store.GetTask(live.TaskID); err != nil || task.Status != TaskRunning {
+		t.Fatalf("live task=%+v err=%v, want still running", task, err)
+	}
+	if task, err := store.GetTask("queued"); err != nil || task.Status != TaskInterrupted {
+		t.Fatalf("queued task=%+v err=%v, want interrupted", task, err)
+	}
+	if task, err := store.GetTask(handle.TaskID); err != nil || task.Status != TaskInterrupted {
+		t.Fatalf("queued child=%+v err=%v, want interrupted", task, err)
+	}
+	if task, err := store.GetTask(parent.TaskID); err != nil || task.Status != TaskInterrupted {
+		t.Fatalf("waiting parent=%+v err=%v, want interrupted", task, err)
+	}
+}
+
+func TestSQLiteInterruptAbandonedRunsKeepsWaitingParentHandoff(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	started := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	root := "repo-parent"
+	parent, err := store.CreateTask(Task{TaskID: "parent", ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentAttempt, err := store.StartAttempt(parent.TaskID, "gui:local", time.Minute, PolicySnapshot{ProjectRoot: root, Mode: "local"}, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := ChildTaskService{Store: store, Now: func() time.Time { return started }}
+	readOnly := PolicySnapshot{ProjectRoot: root, Mode: "local", ReadOnly: true}
+	handle, err := service.AdmitReadOnlyChild(parentAttempt.AttemptID, "gui:local", ChildTaskSpec{Name: "inspect", RequestedWork: "inspect", ProjectRef: root, Mode: "local"}, readOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childAttempt, err := store.StartAttempt(handle.TaskID, "gui:local", time.Minute, readOnly, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(childAttempt.AttemptID, "gui:local", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}, started.Add(30*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// The process died after the child finished but before the review
+	// handoff. The durable waiting_child row stays consumable; the sweep
+	// leaves it alone.
+	now := started.Add(2 * time.Minute)
+	if _, err := store.InterruptAbandonedRuns(now); err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.GetTask(parent.TaskID)
+	if err != nil || task.Status != TaskWaitingChild {
+		t.Fatalf("parent=%+v err=%v, want waiting_child so the review handoff stays valid", task, err)
+	}
+	// The list read must not report the review handoff as a run.
+	listed, stale, err := store.ReadTaskList(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := listed[root]; got != string(TaskWaitingApproval) || stale {
+		t.Fatalf("status=%q stale=%v, want waiting_review projection and no stale flag", got, stale)
+	}
+}

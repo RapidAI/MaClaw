@@ -5977,7 +5977,8 @@ export const SidebarTaskManagement = ({
                 ? remote.detailPath === proj.project_path
                 : (activeRowContext ? matchesActiveTaskRowContext(proj, activeRowContext) : false);
             const isOpen = !remote.selected && isTaskInstanceOpen(proj);
-            const isBusy = !remote.selected && (openingTaskPath === proj.project_path || isRemoving);
+            const remoteOpening = !!remote.selected && remote.detailLoading && remote.detailPath === proj.project_path;
+            const isBusy = (!remote.selected && (openingTaskPath === proj.project_path || isRemoving)) || remoteOpening;
             const liveRunning = isLiveRunningRow(proj);
             const statusBucket = taskStatusBucketFor(proj);
             const workflowStatus = liveRunning
@@ -5995,6 +5996,8 @@ export const SidebarTaskManagement = ({
             const recentTimeLabel = taskRecentTimeLabel(proj.last_activity || proj.created_at, lang);
             const secondaryStatusLabel = isRemoving
                 ? textForLang(lang, 'Removing task...', '正在删除任务...', '正在刪除任務...')
+                    : remoteOpening
+                    ? textForLang(lang, 'Opening task…', '正在打开任务…', '正在開啟任務…')
                     : !remote.selected && openingTaskPath === proj.project_path
                     ? textForLang(lang, pureCoding ? 'Restoring pure coding environment...' : 'Restoring...', pureCoding ? '正在恢复纯编程环境...' : '恢复中...', pureCoding ? '正在恢復純程式環境...' : '恢復中...')
                     : '';

@@ -41,6 +41,8 @@ export interface NotificationPanelProps {
     onRemoteControl?: (grantId: string, action: "accept" | "decline" | "ignore" | "end") => void;
     remoteControlBusy?: boolean;
     remoteControlError?: string;
+    /** Grant id -> invite action that already succeeded this session. */
+    remoteControlDecided?: Record<string, string>;
     /** Marks the transient panel inaccessible while its host page is hidden. */
     ariaHidden?: boolean;
     lang?: string;
@@ -251,6 +253,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
     onRemoteControl,
     remoteControlBusy = false,
     remoteControlError = "",
+    remoteControlDecided = {},
     ariaHidden = false,
     lang,
 }) => {
@@ -414,6 +417,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                     onRemoteControl={onRemoteControl}
                     remoteControlBusy={remoteControlBusy}
                     remoteControlError={remoteControlError}
+                    remoteControlDecided={remoteControlDecided[selectedNotification.source_id || ""]}
                 />
             ) : (
             <>

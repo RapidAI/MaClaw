@@ -3673,6 +3673,20 @@
   color: var(--theme-text-primary);
 }
 .ndet-invite-actions button:disabled { opacity: 0.55; cursor: default; }
+.ndet-invite-decided {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid var(--theme-border-subtle, var(--theme-border));
+  background: var(--theme-surface-muted, transparent);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--theme-text-secondary);
+}
 .ndet-invite-error { margin: 10px 0 0; font-size: 12px; line-height: 1.45; color: var(--theme-danger); }
 .ndet-invite-note { margin: 10px 0 0; font-size: 12px; line-height: 1.45; color: var(--theme-text-muted); }
 

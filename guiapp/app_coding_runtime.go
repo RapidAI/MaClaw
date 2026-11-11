@@ -66,6 +66,14 @@ func (a *App) ensureCodingRuntimeStore() *codingruntime.SQLiteStore {
 	} else if len(interrupted) > 0 {
 		log.Printf("[coding-runtime] marked %d parent attempt(s) interrupted because child dispatch cannot survive restart", len(interrupted))
 	}
+	// Process restart kills every executor and every dispatch queue. Rows
+	// still inside their lease window and queued rows would otherwise keep
+	// the task list at 进行中 until the lease clock runs out — or forever.
+	if abandoned, err := store.InterruptAbandonedRuns(time.Now().UTC()); err != nil {
+		log.Printf("[coding-runtime] reconcile abandoned runs failed: %v", err)
+	} else if len(abandoned) > 0 {
+		log.Printf("[coding-runtime] marked %d abandoned attempt(s) interrupted at store open; recovery requires read-only probe", len(abandoned))
+	}
 	a.codingRuntimeStore = store
 	return store
 }

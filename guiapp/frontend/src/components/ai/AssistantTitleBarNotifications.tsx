@@ -37,6 +37,9 @@ export function AssistantTitleBarNotifications({
     const { notices: groupInvites, decide: decideGroupInvite, busyId: groupInviteBusyId, error: groupInviteError, listError: groupInviteListError } = useCompanionGroupInvites(active, lang);
     const [remoteBusy, setRemoteBusy] = useState(false);
     const [remoteError, setRemoteError] = useState("");
+    // A successful invite decision is sticky: the buttons stay settled so a
+    // re-opened notice cannot look unanswered or be clicked twice.
+    const [remoteDecided, setRemoteDecided] = useState<Record<string, string>>({});
     const decideRemoteControl = useCallback(async (grantId: string, action: "accept" | "decline" | "ignore" | "end") => {
         const bindingName = action === "accept"
             ? "AcceptRemoteControlInvite"
@@ -54,6 +57,7 @@ export function AssistantTitleBarNotifications({
         setRemoteError("");
         try {
             await fn(grantId);
+            setRemoteDecided(prev => ({ ...prev, [grantId]: action }));
         } catch (err) {
             const raw = err instanceof Error
                 ? err.message
@@ -254,6 +258,7 @@ export function AssistantTitleBarNotifications({
                     onRemoteControl={(grantId, action) => { void decideRemoteControl(grantId, action); }}
                     remoteControlBusy={remoteBusy}
                     remoteControlError={remoteError}
+                    remoteControlDecided={remoteDecided}
                     ariaHidden={!active}
                     lang={lang}
                 />

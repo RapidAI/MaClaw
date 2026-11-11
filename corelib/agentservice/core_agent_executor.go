@@ -2191,6 +2191,12 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		specFromCoreTool("knowledge_save_url", "", knowledgeOK, knowledgeReason),
 		specFromCoreTool("knowledge_save_text", "", knowledgeOK, knowledgeReason),
 		specFromCoreTool("memory", "", c.memory != nil, memoryReason),
+		// The desktop memory tools are shared core capabilities the executor
+		// serves through desktopMemoryCall; the catalog must advertise them
+		// or the parity contract with the GUI host silently drops them.
+		specFromCoreTool("memory_write", "", c.memory != nil, memoryReason),
+		specFromCoreTool("memory_forget", "", c.memory != nil, memoryReason),
+		specFromCoreTool("memory_search", "", c.memory != nil, memoryReason),
 		specFromCoreTool("read_file", "", workspaceOK, workspaceReason),
 		specFromCoreTool("read_document", "", workspaceOK, workspaceReason),
 		specFromCoreTool("read_tool_result", "", true, ""),

@@ -78,21 +78,21 @@ func TestCreatePublishIMSubmitAndTenantIsolation(t *testing.T) {
 
 	// start + answer via im/handle
 	code := pub.ShortCode
-	resp, err := rt.Handle(ctx, "tenant-a", IMHandleRequest{
+	resp, err := rt.Handle(ctx, "tenant-a", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "staff1", UserName: "Alice",
 		ChatType: "group", GroupID: "g1", Text: "/survey " + code,
 	})
 	if err != nil || !resp.Handled {
 		t.Fatalf("start: err=%v handled=%v reply=%q", err, resp.Handled, resp.ReplyText)
 	}
-	resp, err = rt.Handle(ctx, "tenant-a", IMHandleRequest{
+	resp, err = rt.Handle(ctx, "tenant-a", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "staff1", UserName: "Alice",
 		ChatType: "group", GroupID: "g1", Text: "1",
 	})
 	if err != nil || !resp.Handled {
 		t.Fatalf("q1: %v %v", err, resp)
 	}
-	resp, err = rt.Handle(ctx, "tenant-a", IMHandleRequest{
+	resp, err = rt.Handle(ctx, "tenant-a", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "staff1", UserName: "Alice",
 		ChatType: "group", GroupID: "g1", Text: "2,1", // multi: opt_a,opt_c sorted storage
 	})
@@ -107,7 +107,7 @@ func TestCreatePublishIMSubmitAndTenantIsolation(t *testing.T) {
 	}
 
 	// second submit rejected
-	resp, err = rt.Handle(ctx, "tenant-a", IMHandleRequest{
+	resp, err = rt.Handle(ctx, "tenant-a", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "staff1", UserName: "Alice",
 		ChatType: "group", GroupID: "g1", Text: "/survey " + code,
 	})
@@ -195,7 +195,7 @@ func TestAnonymousHMACAndExport(t *testing.T) {
 	_ = st.Bind(ctx, "t1", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
 	_, _ = st.Publish(ctx, "t1", sv.ID)
 
-	resp, err := rt.Handle(ctx, "t1", IMHandleRequest{
+	resp, err := rt.Handle(ctx, "t1", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "staffX", UserName: "SecretName",
 		ChatType: "group", GroupID: "g", Text: "/survey " + sv.ShortCode + " 1",
 	})
@@ -274,7 +274,7 @@ func TestAllowUpdateUPSERT(t *testing.T) {
 	_, _ = st.Publish(ctx, "t", sv.ID)
 
 	// first submit
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + sv.ShortCode + " 3",
 	})
@@ -282,7 +282,7 @@ func TestAllowUpdateUPSERT(t *testing.T) {
 		t.Fatal(err, r)
 	}
 	// start again → confirm_update
-	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + sv.ShortCode,
 	})
@@ -293,17 +293,17 @@ func TestAllowUpdateUPSERT(t *testing.T) {
 		t.Fatalf("got %q", r.ReplyText)
 	}
 	// answer "2" must not count as answer in confirm_update
-	r, _ = rt.Handle(ctx, "t", IMHandleRequest{
+	r, _ = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g", Text: "2",
 	})
 	if r.ReplyText != "您已提交。回复「修改」可重新作答，或「取消」退出" {
 		t.Fatalf("got %q", r.ReplyText)
 	}
 	// modify + resubmit
-	_, _ = rt.Handle(ctx, "t", IMHandleRequest{
+	_, _ = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g", Text: "修改",
 	})
-	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g", Text: "5",
 	})
 	if err != nil || r.ReplyText != "提交成功，感谢参与！" {
@@ -371,7 +371,7 @@ func TestWriteExportToEnvPath(t *testing.T) {
 	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
 	_, _ = st.Publish(ctx, "t", sv.ID)
 	rt := NewRuntime(st)
-	_, err = rt.Handle(ctx, "t", IMHandleRequest{
+	_, err = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", UserName: "Bob", ChatType: "group", GroupID: "g",
 		Text: "/survey " + sv.ShortCode + " 1",
 	})
@@ -405,7 +405,7 @@ func TestDeadlineOnSubmit(t *testing.T) {
 	}
 	rt := NewRuntime(st)
 	rt.Now = func() time.Time { return future.Add(time.Second) }
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u", ChatType: "group", GroupID: "g",
 		Text: "/survey " + sv.ShortCode,
 	})
@@ -450,7 +450,7 @@ func TestListIncludesBindingAndQuestionCounts(t *testing.T) {
 	// submit one response then re-list
 	rt := NewRuntime(st)
 	_, _ = st.Publish(ctx, "t", sv.ID)
-	_, err = rt.Handle(ctx, "t", IMHandleRequest{
+	_, err = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", UserName: "A", ChatType: "group", GroupID: "g1",
 		Text: "/survey " + sv.ShortCode,
 	})
@@ -458,10 +458,10 @@ func TestListIncludesBindingAndQuestionCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	// answer both questions quickly via conversational
-	_, _ = rt.Handle(ctx, "t", IMHandleRequest{
+	_, _ = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g1", Text: "1",
 	})
-	_, _ = rt.Handle(ctx, "t", IMHandleRequest{
+	_, _ = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g1", Text: "hi",
 	})
 	list2, err := st.List(ctx, "t", "")
@@ -495,7 +495,7 @@ func TestSurveyIntroMetaAndStartIncludesDeadline(t *testing.T) {
 	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
 	_, _ = st.Publish(ctx, "t", sv.ID)
 	rt := NewRuntime(st)
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + sv.ShortCode,
 	})
@@ -505,7 +505,7 @@ func TestSurveyIntroMetaAndStartIncludesDeadline(t *testing.T) {
 	if !strings.Contains(r.ReplyText, "开始填写") || !strings.Contains(r.ReplyText, "截止") {
 		t.Fatalf("start reply=%q", r.ReplyText)
 	}
-	list, err := rt.Handle(ctx, "t", IMHandleRequest{
+	list, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u2", ChatType: "group", GroupID: "g",
 		Text: "/survey list",
 	})
@@ -591,7 +591,7 @@ func TestSessionTTLExpires(t *testing.T) {
 	rt := NewRuntime(st)
 	rt.Now = func() time.Time { return now }
 
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub.ShortCode,
 	})
@@ -599,7 +599,7 @@ func TestSessionTTLExpires(t *testing.T) {
 		t.Fatalf("start: %v %v", err, r)
 	}
 	// Answer Q1 under session
-	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "hello",
 	})
@@ -609,7 +609,7 @@ func TestSessionTTLExpires(t *testing.T) {
 	// Expire session
 	now = now.Add(SessionTTL + time.Minute)
 	// Mid-answer after TTL: should not continue session as active answering
-	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "world",
 	})
@@ -651,7 +651,7 @@ func TestFinalizeDeadlineIsNotHTTPError(t *testing.T) {
 	if !errors.Is(err, ErrDeadlinePassed) {
 		t.Fatalf("want ErrDeadlinePassed got %v", err)
 	}
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + sv.ShortCode + " 1",
 	})
@@ -676,7 +676,7 @@ func TestResumeSameSurveyDoesNotResetCursor(t *testing.T) {
 	})
 	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
 	pub, _ := st.Publish(ctx, "t", sv.ID)
-	_, err := rt.Handle(ctx, "t", IMHandleRequest{
+	_, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub.ShortCode,
 	})
@@ -684,7 +684,7 @@ func TestResumeSameSurveyDoesNotResetCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	// answer Q1
-	_, err = rt.Handle(ctx, "t", IMHandleRequest{
+	_, err = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "hello",
 	})
@@ -692,7 +692,7 @@ func TestResumeSameSurveyDoesNotResetCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	// re-issue start should resume at Q2, not wipe
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub.ShortCode,
 	})
@@ -731,7 +731,7 @@ func TestCloseClearsSessions(t *testing.T) {
 	})
 	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
 	pub, _ := st.Publish(ctx, "t", sv.ID)
-	_, err := rt.Handle(ctx, "t", IMHandleRequest{
+	_, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub.ShortCode,
 	})
@@ -851,7 +851,7 @@ func TestGetByCodeInvalidVsDBError(t *testing.T) {
 	ctx := context.Background()
 	rt := NewRuntime(st)
 	// Invalid format must be a handled reply, not a 500.
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey BAD!!!",
 	})
@@ -880,12 +880,12 @@ func TestCorruptPhaseResumeDoesNotWipe(t *testing.T) {
 	})
 	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
 	pub, _ := st.Publish(ctx, "t", sv.ID)
-	_, _ = rt.Handle(ctx, "t", IMHandleRequest{
+	_, _ = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub.ShortCode,
 	})
 	// Answer Q1
-	_, _ = rt.Handle(ctx, "t", IMHandleRequest{
+	_, _ = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "hello",
 	})
@@ -902,7 +902,7 @@ func TestCorruptPhaseResumeDoesNotWipe(t *testing.T) {
 	if err := st.SaveSession(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub.ShortCode,
 	})
@@ -980,7 +980,7 @@ func TestResumeExtendsSessionTTL(t *testing.T) {
 	})
 	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
 	pub, _ := st.Publish(ctx, "t", sv.ID)
-	_, err := rt.Handle(ctx, "t", IMHandleRequest{
+	_, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub.ShortCode,
 	})
@@ -995,7 +995,7 @@ func TestResumeExtendsSessionTTL(t *testing.T) {
 	early := sess1.ExpiresAt
 	// Advance clock and resume via short code.
 	rt.Now = func() time.Time { return base.Add(10 * time.Minute) }
-	_, err = rt.Handle(ctx, "t", IMHandleRequest{
+	_, err = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub.ShortCode,
 	})
@@ -1025,7 +1025,7 @@ func TestInvalidFastPathOpensSession(t *testing.T) {
 	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
 	pub, _ := st.Publish(ctx, "t", sv.ID)
 	// Invalid fast answer must still open a session (not leave the user stranded).
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub.ShortCode + " 99",
 	})
@@ -1036,7 +1036,7 @@ func TestInvalidFastPathOpensSession(t *testing.T) {
 		t.Fatalf("want invalid answer reply, got %q", r.ReplyText)
 	}
 	// Follow-up answer without retyping /survey code.
-	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "1",
 	})
@@ -1058,7 +1058,7 @@ func TestFastPathTextAndOptionalSkip(t *testing.T) {
 	})
 	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
 	pub, _ := st.Publish(ctx, "t", sv.ID)
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub.ShortCode + " hello world",
 	})
@@ -1075,7 +1075,7 @@ func TestFastPathTextAndOptionalSkip(t *testing.T) {
 	})
 	_ = st.Bind(ctx, "t", sv2.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
 	pub2, _ := st.Publish(ctx, "t", sv2.ID)
-	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u2", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub2.ShortCode + " 跳过",
 	})
@@ -1105,16 +1105,16 @@ func TestStatusConfirmUpdatePhase(t *testing.T) {
 	})
 	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
 	pub, _ := st.Publish(ctx, "t", sv.ID)
-	_, _ = rt.Handle(ctx, "t", IMHandleRequest{
+	_, _ = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub.ShortCode + " 1",
 	})
 	// Re-start to enter confirm_update
-	_, _ = rt.Handle(ctx, "t", IMHandleRequest{
+	_, _ = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub.ShortCode,
 	})
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey status",
 	})
@@ -1141,7 +1141,7 @@ func TestOptionalSkipAdvances(t *testing.T) {
 	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
 	pub, _ := st.Publish(ctx, "t", sv.ID)
 	// Start conversational
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "/survey " + pub.ShortCode,
 	})
@@ -1149,7 +1149,7 @@ func TestOptionalSkipAdvances(t *testing.T) {
 		t.Fatalf("start err=%v reply=%q", err, r.ReplyText)
 	}
 	// Skip optional q1
-	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "跳过",
 	})
@@ -1160,7 +1160,7 @@ func TestOptionalSkipAdvances(t *testing.T) {
 		t.Fatalf("expected q2 prompt after skip, got %q", r.ReplyText)
 	}
 	// Answer required q2
-	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "1",
 	})
@@ -1376,7 +1376,7 @@ func TestPlatformNormalizedOnHandle(t *testing.T) {
 	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
 	pub, _ := st.Publish(ctx, "t", sv.ID)
 	// Mixed-case platform should still match bindings / session keys.
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: "Lansenger", UserID: "u1", ChatType: "GROUP", GroupID: "g",
 		Text: "/survey " + pub.ShortCode + " 1",
 	})
@@ -1391,7 +1391,7 @@ func TestPlatformNormalizedOnHandle(t *testing.T) {
 func TestListP2PMessage(t *testing.T) {
 	st := openTestDB(t)
 	rt := NewRuntime(st)
-	r, err := rt.Handle(context.Background(), "t", IMHandleRequest{
+	r, err := rt.Handle(context.Background(), "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u", ChatType: "p2p", Text: "/survey list",
 	})
 	if err != nil {
@@ -1423,7 +1423,7 @@ func TestListHidesDeadlinePassedSurveys(t *testing.T) {
 	}
 	rt := NewRuntime(st)
 	// Before deadline: listed
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u", ChatType: "group", GroupID: "g", Text: "/survey list",
 	})
 	if err != nil {
@@ -1434,7 +1434,7 @@ func TestListHidesDeadlinePassedSurveys(t *testing.T) {
 	}
 	// After deadline: hidden
 	rt.Now = func() time.Time { return future.Add(time.Minute) }
-	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u", ChatType: "group", GroupID: "g", Text: "/survey list",
 	})
 	if err != nil {

@@ -233,6 +233,32 @@ func canonicalRoutePlan(plan ToolPlan) ([]byte, string, error) {
 	return encoded, SchemaDigest(encoded), nil
 }
 
+// RoutePlanExtends reports whether extended grew out of base in place: the
+// plan identity is unchanged and every base selection survives with the same
+// binding. Repeat-sibling and observation follow-ups grow a published plan
+// this way, so recovery that re-opens the surface from the base plan must
+// adopt the advanced state instead of conflicting with its digest. Adopting
+// is safe because the stored plan is a superset: the request cannot widen
+// the surface it re-opens.
+func RoutePlanExtends(extended, base ToolPlan) bool {
+	if extended.ID != base.ID || len(extended.Selections) < len(base.Selections) {
+		return false
+	}
+	extendedByID := make(map[string]PlannedSelection, len(extended.Selections))
+	for _, sel := range extended.Selections {
+		extendedByID[sel.ID] = sel
+	}
+	for _, sel := range base.Selections {
+		match, ok := extendedByID[sel.ID]
+		if !ok || match.NeedID != sel.NeedID || match.AdapterName != sel.AdapterName ||
+			match.Provider.StableID() != sel.Provider.StableID() ||
+			match.ParameterAuthorization.Digest != sel.ParameterAuthorization.Digest {
+			return false
+		}
+	}
+	return true
+}
+
 func cloneRouteStatePlan(plan ToolPlan) ToolPlan {
 	clone := plan
 	clone.Selections = make([]PlannedSelection, len(plan.Selections))
@@ -779,7 +805,12 @@ func (s *memoryRouteStateStore) PublishRevision(request RouteRevisionPublishRequ
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.states[key]; ok {
-		if strings.TrimSpace(existing.TenantID) == "" || existing.PlanDigest != digest || existing.SnapshotDigest != request.SnapshotDigest || !routeToolSnapshotCompatible(existing.Scope.ToolSnapshotID, request.Scope.ToolSnapshotID) || existing.Revision == nil || !sameOptionalRouteAmendmentRef(existing.Amendment, request.Amendment) || (!sameOptionalRouteRevisionRef(existing.ParentRevision, request.ExpectedParent) && !sameOptionalRouteRevisionRef(existing.Revision, request.ExpectedParent)) {
+		// A repeat-sibling or observation follow-up grows the published plan
+		// in place, so recovery re-opens with the original plan whose digest
+		// no longer matches. Adopting is safe: the stored plan is a superset
+		// of the request plan, so the request cannot widen the surface.
+		planAdvanced := existing.PlanDigest != digest && RoutePlanExtends(existing.Plan, request.Plan)
+		if strings.TrimSpace(existing.TenantID) == "" || (existing.PlanDigest != digest && !planAdvanced) || existing.SnapshotDigest != request.SnapshotDigest || !routeToolSnapshotCompatible(existing.Scope.ToolSnapshotID, request.Scope.ToolSnapshotID) || existing.Revision == nil || !sameOptionalRouteAmendmentRef(existing.Amendment, request.Amendment) || (!sameOptionalRouteRevisionRef(existing.ParentRevision, request.ExpectedParent) && !sameOptionalRouteRevisionRef(existing.Revision, request.ExpectedParent)) {
 			return RouteState{}, fmt.Errorf("route_state_conflict")
 		}
 		if strings.TrimSpace(existing.Scope.ToolSnapshotID) == "" && strings.TrimSpace(request.Scope.ToolSnapshotID) != "" {
@@ -985,6 +1016,17 @@ func (s *memoryRouteStateStore) storeRepeatSiblingPlan(scope InvocationScope, pr
 	state.Plan = cloneRouteStatePlan(updated)
 	state.PlanDigest = digest
 	state.UpdatedAt = now
+	// Keep the revision refs (the state's embedded copy and the lineage's
+	// current copy) in step with the extended plan. Recovery passes the
+	// lineage ref back as ExpectedParent and resolves it against the state
+	// row, so a stale digest would make the re-open conflict with itself.
+	if state.Revision != nil {
+		state.Revision.PlanDigest = digest
+		if current, ok := s.lineages[routeLineageKey(scope)]; ok {
+			current.PlanDigest = digest
+			s.lineages[routeLineageKey(scope)] = current
+		}
+	}
 	s.states[key] = state
 	return cloneRouteStatePlan(state.Plan), nil
 }
@@ -1640,9 +1682,20 @@ func (s *SQLiteRouteStateStore) PublishRevision(request RouteRevisionPublishRequ
 	defer func() { _ = tx.Rollback() }()
 
 	var existingDigest, existingSnapshot, existingTenantID, existingToolSnapshotID string
-	err = tx.QueryRow(`SELECT rs.plan_digest, rr.snapshot_digest, rs.tenant_id, COALESCE(rs.tool_snapshot_id, '') FROM semantic_route_states rs JOIN semantic_route_revisions rr ON rr.route_key = rs.route_key WHERE rs.route_key = ?`, routeKey).Scan(&existingDigest, &existingSnapshot, &existingTenantID, &existingToolSnapshotID)
+	var existingPlanJSON []byte
+	err = tx.QueryRow(`SELECT rs.plan_digest, rr.snapshot_digest, rs.tenant_id, COALESCE(rs.tool_snapshot_id, ''), rs.plan_json FROM semantic_route_states rs JOIN semantic_route_revisions rr ON rr.route_key = rs.route_key WHERE rs.route_key = ?`, routeKey).Scan(&existingDigest, &existingSnapshot, &existingTenantID, &existingToolSnapshotID, &existingPlanJSON)
 	if err == nil {
-		if existingDigest != digest || existingSnapshot != request.SnapshotDigest || strings.TrimSpace(existingTenantID) == "" || !routeToolSnapshotCompatible(existingToolSnapshotID, request.Scope.ToolSnapshotID) {
+		// A repeat-sibling or observation follow-up grows the published plan
+		// in place; recovery re-opens with the original plan and must adopt
+		// the advanced state instead of conflicting (see RoutePlanExtends).
+		planAdvanced := false
+		if existingDigest != digest {
+			var existingPlan ToolPlan
+			if jsonErr := json.Unmarshal(existingPlanJSON, &existingPlan); jsonErr == nil {
+				planAdvanced = RoutePlanExtends(existingPlan, request.Plan)
+			}
+		}
+		if (existingDigest != digest && !planAdvanced) || existingSnapshot != request.SnapshotDigest || strings.TrimSpace(existingTenantID) == "" || !routeToolSnapshotCompatible(existingToolSnapshotID, request.Scope.ToolSnapshotID) {
 			return RouteState{}, fmt.Errorf("route_state_conflict")
 		}
 		if _, bindErr := canonicalRouteScope(tx, request.Scope); bindErr != nil {
@@ -1658,7 +1711,10 @@ func (s *SQLiteRouteStateStore) PublishRevision(request RouteRevisionPublishRequ
 		if err != nil {
 			return RouteState{}, err
 		}
-		if !sameOptionalRouteRevisionRef(state.ParentRevision, request.ExpectedParent) && !sameOptionalRouteRevisionRef(state.Revision, request.ExpectedParent) {
+		// A nil ExpectedParent is a pure recovery: re-open whatever revision
+		// the route has advanced to. A caller that asserts lineage keeps the
+		// strict parent check.
+		if request.ExpectedParent != nil && !sameOptionalRouteRevisionRef(state.ParentRevision, request.ExpectedParent) && !sameOptionalRouteRevisionRef(state.Revision, request.ExpectedParent) {
 			return RouteState{}, fmt.Errorf("route_revision_conflict")
 		}
 		return state, nil

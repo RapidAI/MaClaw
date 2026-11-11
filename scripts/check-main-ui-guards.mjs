@@ -611,7 +611,8 @@ const extractedFileLineLimits = [
   // 7640 -> 7650 (2026-11-10): companion share figures and remote-control
   // landing pushed this past 7646.
   // 7650 -> 7750 (2026-11-10): memory/task-bar batch pushed this past 7740.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7750],
+  // 7750 -> 7830 (2026-11-11): receipt-replacement batch measured 7775 lines.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7830],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],
@@ -674,8 +675,8 @@ const extractedFileLineLimits = [
   // Refreshed 180 -> 220 -> 250 (2026-10-27): in-flight notification work
   // measured 228 lines.
   // Refreshed 250 -> 285 (2026-11-10): remote-control notification wiring
-  // landed at 282 lines.
-  ['guiapp/frontend/src/components/ai/AssistantTitleBarNotifications.tsx', 285],
+  // landed at 282 lines. 285 -> 295 (2026-11-11): measured 287 lines.
+  ['guiapp/frontend/src/components/ai/AssistantTitleBarNotifications.tsx', 295],
   ['guiapp/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 50],
   // Refreshed 240 -> 255 (2026-10-15): attachment-snapshot recall wiring
   // (guard counts 247).

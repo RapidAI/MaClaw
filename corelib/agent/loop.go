@@ -1340,6 +1340,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 	isFirstTurn := len(history) == 0
 	systemPrompt := cb.BuildSystemPrompt(userText, isFirstTurn)
+	// The host prompt value currently reflected in conversation[0]'s base.
+	// Loop overlays (working state, session facts, retractions) and a mid-turn
+	// petition prompt stack on top of it; adoptRenderedHostPrompt below must
+	// replace the base only when the host itself rewrites this value, so an
+	// unchanged host prompt never wipes those overlays.
+	syncedHostPrompt := systemPrompt
 	// Tool definitions are request-owned state. Do not construct an initial
 	// compatibility surface before a real model request exists: a static host may
 	// return fresh inventory, policy or feature-gated tools on every BuildTools
@@ -2071,7 +2077,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// BuildTools can publish installed tools and rewrite the turn directory
 		// after the prompt was first copied. Pick that up before the outbound
 		// reminder, while this slice still shares the host's system message.
-		adoptRenderedSystemPrompt(cb, conversation, userText, isFirstTurn)
+		// Adopt only a genuine host-side rewrite: the loop overlays (working
+		// state, session facts, retractions) and a mid-turn petition prompt
+		// live in this same system message, so an unchanged host prompt must
+		// keep them instead of resetting to the bare host copy. When the host
+		// did rewrite, the overlays are re-derived on the new base.
+		if rendered := cb.BuildSystemPrompt(userText, isFirstTurn); rendered != "" && rendered != syncedHostPrompt {
+			replaceConversationSystemPrompt(conversation, rendered)
+			conversation = applyPromptOverlays(conversation, workingState, attachWS, sessionFacts, retractionsForPrompt)
+			syncedHostPrompt = rendered
+		}
 		// The contract reminder is outbound only. conversation keeps the prompt the
 		// host built; the next iteration replaces this block instead of stacking it.
 		// outboundBase stays unlifted so a retry that rebuilds the tool list can

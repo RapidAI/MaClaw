@@ -63,6 +63,24 @@ func TestDemoRecordingBuildsTimeline(t *testing.T) {
 	if _, err := tbl.handle(ctx, "k", desktop.CtlDemoBegin, map[string]any{"title": "发邮件"}, deps); err != nil {
 		t.Fatal(err)
 	}
+	// Wait for the recorder's first poll before changing the window title.
+	// Each capture calls ctl("windows") (appended to ops), so ops growing
+	// past the InputBegin probe proves the initial focus event landed. Under
+	// load the watch goroutine can otherwise be scheduled for the first time
+	// after the title change, collapsing the two focus events into one.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		polled := len(ops) >= 2
+		mu.Unlock()
+		if polled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recorder never polled windows before the title change")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if _, err := tbl.handle(ctx, "k", desktop.CtlDemoNarrate, map[string]any{"text": "把周报发给老板"}, deps); err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +88,23 @@ func TestDemoRecordingBuildsTimeline(t *testing.T) {
 	mu.Lock()
 	title = "写邮件"
 	mu.Unlock()
+	// Same for the second capture: it must run (and record the changed
+	// window) before End snapshots the timeline.
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		repolled := len(ops) >= 3
+		mu.Unlock()
+		if repolled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recorder never polled after the title change")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The focus append lands right after the observed windows call; give the
+	// capture a couple of poll cycles so End cannot snapshot between them.
 	time.Sleep(50 * time.Millisecond)
 	out, err := tbl.handle(ctx, "k", desktop.CtlDemoEnd, nil, deps)
 	if err != nil {

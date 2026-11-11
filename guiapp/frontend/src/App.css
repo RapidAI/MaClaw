@@ -26714,6 +26714,20 @@ button.tbk-pill {
   color: var(--theme-text-primary);
 }
 .ndet-invite-actions button:disabled { opacity: 0.55; cursor: default; }
+.ndet-invite-decided {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid var(--theme-border-subtle, var(--theme-border));
+  background: var(--theme-surface-muted, transparent);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--theme-text-secondary);
+}
 .ndet-invite-error { margin: 10px 0 0; font-size: 12px; line-height: 1.45; color: var(--theme-danger); }
 .ndet-invite-note { margin: 10px 0 0; font-size: 12px; line-height: 1.45; color: var(--theme-text-muted); }
 
@@ -29817,6 +29831,16 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .aap-plan-text { white-space: pre-wrap; max-height: 120px; overflow: auto; }
 .aap-wf-icon { opacity: 0.7; display: inline-flex; }
 .aap-wf-title { font-size: 0.88rem; font-weight: 600; }
+.aap-remote-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 48px 0;
+    color: var(--theme-text-muted);
+}
+.aap-remote-empty-hint { color: var(--theme-text-muted); }
 .aap-wf-sub { font-size: 0.75rem; opacity: 0.7; }
 .aap-expert-icon { font-size: 36px; line-height: 1; }
 .aap-expert-desc { font-size: 0.8rem; max-width: 420px; line-height: 1.5; }
@@ -30787,9 +30811,10 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-task-pane .mc-task-machine-note {
   border: 0;
+  border-left: 2px solid color-mix(in srgb, var(--theme-primary) 45%, transparent);
   border-radius: 0;
   background: transparent;
-  padding: 5px 2px 2px;
+  padding: 4px 8px 4px;
   color: var(--theme-text-muted);
   font-size: 11.5px;
   line-height: 1.35;
@@ -30806,12 +30831,13 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-pane .mc-task-machine-add,
 .mc-task-pane .mc-task-machine-detail {
   margin: 8px 2px 4px;
-  border: 1px solid var(--theme-border);
-  border-radius: 10px;
-  padding: 10px;
-  background: color-mix(in srgb, var(--theme-surface-muted) 72%, var(--theme-surface));
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  background: var(--theme-surface);
   color: var(--theme-text-secondary);
   font-size: 12px;
+  box-shadow: var(--shadow-sm), var(--shadow-md);
 }
 .mc-task-pane .mc-task-machine-add button,
 .mc-task-pane .mc-task-machine-create button,
@@ -30855,6 +30881,17 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   border-radius: 8px;
   background: var(--theme-surface);
   color: var(--theme-text-primary);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.mc-task-pane .mc-task-machine-add input::placeholder,
+.mc-task-pane .mc-task-machine-create input::placeholder,
+.mc-task-pane .mc-task-machine-send input::placeholder { color: var(--theme-text-tertiary); }
+.mc-task-pane .mc-task-machine-add input:focus,
+.mc-task-pane .mc-task-machine-create input:focus,
+.mc-task-pane .mc-task-machine-send input:focus {
+  outline: none;
+  border-color: var(--theme-primary);
+  box-shadow: 0 0 0 3px var(--theme-primary-soft);
 }
 .mc-task-pane .mc-task-machine-messages {
   max-height: 180px;
@@ -30862,7 +30899,256 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-task-pane .mc-task-machine-messages p,
 .mc-task-pane .mc-task-machine-add p { margin: 4px 0; overflow-wrap: anywhere; }
-.mc-task-pane .mc-task-machine-permission { display: flex; gap: 12px; margin-bottom: 8px; }
+/* The add-machine flow opens as a modal dialog sharing the app dialog shell
+   (.modal-backdrop / .modal-content); the card chrome comes from the shell,
+   so the inner .mc-task-machine-add drops its own. */
+.mc-task-pane .mc-task-machine-dialog {
+  width: 400px;
+  max-width: calc(100vw - 40px);
+  max-height: 80vh;
+  overflow: auto;
+}
+.mc-task-pane .mc-task-machine-dialog .mc-task-machine-add {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+/* Segmented permission picker: a two-slot well with the active option raised
+   on a surface chip, replacing the bare radio pair. */
+.mc-task-pane .mc-task-machine-add .mc-task-machine-permission {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 3px;
+  border-radius: var(--radius-md);
+  background: var(--theme-control-well);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-perm-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-perm-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: calc(var(--radius-md) - 2px);
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-perm-option:hover { color: var(--theme-text-primary); }
+.mc-task-pane .mc-task-machine-add .mc-task-machine-perm-option:focus-within {
+  box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-perm-option.is-selected {
+  background: var(--theme-surface);
+  color: var(--theme-primary-strong);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm), 0 0 0 1px var(--theme-border-subtle);
+}
+/* The selected chip replaces the ring, so keyboard focus needs its own restack. */
+.mc-task-pane .mc-task-machine-add .mc-task-machine-perm-option.is-selected:focus-within {
+  box-shadow: var(--shadow-sm), 0 0 0 2px var(--theme-primary-soft);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own { margin: 0 0 12px; }
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own,
+.mc-task-pane .mc-task-machine-add .mc-task-machine-invite {
+  border-top: 1px solid var(--theme-border-subtle);
+  padding-top: 10px;
+}
+.mc-task-pane .mc-task-machine-add h3 {
+  margin: 0 0 8px;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+/* Device rows: full-width cards with a live status dot and, when the machine
+   is already granted, its current permission as a trailing pill. */
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item {
+  display: flex;
+  width: 100%;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface);
+  color: var(--theme-text-primary);
+  font-size: 12.5px;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item:hover {
+  border-color: color-mix(in srgb, var(--theme-primary) 35%, var(--theme-border));
+  background: color-mix(in srgb, var(--theme-primary) 4%, var(--theme-surface));
+  box-shadow: var(--shadow-sm);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-dot,
+.mc-task-pane .mc-task-machine-add .mc-task-machine-row-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--theme-success);
+  box-shadow: 0 0 0 3px var(--theme-success-bg);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item[data-online='false'] {
+  color: var(--theme-text-muted);
+  background: color-mix(in srgb, var(--theme-surface-muted) 55%, var(--theme-surface));
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item[data-online='false'] .mc-task-machine-own-dot {
+  background: color-mix(in srgb, var(--theme-text-muted) 55%, var(--theme-surface));
+  box-shadow: none;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-text {
+  display: inline-flex;
+  flex: 1;
+  min-width: 0;
+  align-items: baseline;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-status {
+  flex: none;
+  color: var(--theme-text-muted);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-item[data-online='false'] .mc-task-machine-own-status { color: var(--theme-text-tertiary); }
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--theme-primary-soft);
+  color: var(--theme-primary-strong);
+  font-size: 11px;
+  font-weight: 600;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-chevron {
+  flex: none;
+  color: var(--theme-text-tertiary);
+  font-size: 14px;
+  line-height: 1;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-own-empty {
+  margin: 0;
+  padding: 10px;
+  border: 1px dashed var(--theme-border);
+  border-radius: var(--radius-md);
+  color: var(--theme-text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+/* Pending / being-controlled rows: text left with a state dot, action right. */
+.mc-task-pane .mc-task-machine-add .mc-task-machine-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 0;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-row button { flex: none; }
+.mc-task-pane .mc-task-machine-add .mc-task-machine-row-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-row-dot[data-state='pending'] {
+  background: var(--theme-warning);
+  box-shadow: 0 0 0 3px var(--theme-warning-bg);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-row-dot[data-state='active'] {
+  background: var(--theme-primary);
+  box-shadow: 0 0 0 3px var(--theme-primary-soft);
+}
+/* Cross-account invite: icon-led input plus a full-width primary CTA. */
+.mc-task-pane .mc-task-machine-add .mc-task-machine-invite-field {
+  position: relative;
+  margin: 4px 0 10px;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-invite-field svg {
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  transform: translateY(-50%);
+  color: var(--theme-text-muted);
+  pointer-events: none;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-invite-field input {
+  margin: 0;
+  padding: 7px 10px 7px 28px;
+  font-size: 12.5px;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-invite-field input::placeholder { color: var(--theme-text-tertiary); }
+.mc-task-pane .mc-task-machine-add .mc-task-machine-invite-field input:focus {
+  outline: none;
+  border-color: var(--theme-primary);
+  box-shadow: 0 0 0 3px var(--theme-primary-soft);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-primary {
+  width: 100%;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--theme-primary);
+  color: var(--theme-on-primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-primary:hover:not(:disabled) {
+  background: var(--theme-primary-strong);
+  box-shadow: var(--shadow-md);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-primary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--theme-primary-soft);
+}
+.mc-task-pane .mc-task-machine-add .mc-task-machine-primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-task-pane .mc-task-machine-add .mc-task-machine-perm-option,
+  .mc-task-pane .mc-task-machine-add .mc-task-machine-own-item,
+  .mc-task-pane .mc-task-machine-add .mc-task-machine-primary,
+  .mc-task-pane .mc-task-machine-add input,
+  .mc-task-pane .mc-task-machine-create input,
+  .mc-task-pane .mc-task-machine-send input {
+    transition: none;
+  }
+}
 .mc-task-pane .mc-task-filter-row {
   display: inline-flex;
   flex-wrap: wrap;

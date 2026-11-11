@@ -207,7 +207,7 @@ var Baseline = map[Rule]map[string]Reason{
 		// is op-time provisioning on a service the person drives, never a
 		// model-facing selection, and no provider is chosen by name here.
 		// Deleted only if desktopd stops provisioning tools at op time.
-		"desktopd/http.go:EnsureTools-REVERSED": ReasonSemanticOwner,
+		"desktopd/http.go:EnsureTools":      ReasonSemanticOwner,
 		"desktopd/workspace.go:EnsureTools": ReasonSemanticOwner,
 
 		"guiapp/im_handler_wiring.go:routeTools":                 ReasonLegacyNameRouter,
@@ -261,6 +261,10 @@ var Baseline = map[Rule]map[string]Reason{
 		"guiapp/im_tools_misc.go:FilterTools": ReasonDiscoveryListing,
 
 		"guiapp/tool_cache_maintenance.go:ensureToolCachePath": ReasonNameMatchOnly,
+		// The system-cleanup roots re-ensure the tool cache directory before
+		// cleaning it. Same name-match-only class as above: a cache-path
+		// ensure, never a model-facing tool set change.
+		"guiapp/system_cleanup.go:ensureToolCachePath": ReasonNameMatchOnly,
 		"guiapp/openhuman_wiring.go:injectToolMemoryHint":      ReasonNameMatchOnly,
 	},
 }

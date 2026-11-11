@@ -5436,6 +5436,41 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             </Fragment>
         ));
     }, [lang, remoteTranscript, t]);
+    const remoteBusyLabel = useMemo(
+        () => localizeText(lang, "Working on the other computer…", "对方正在执行…", "對方正在執行…"),
+        [lang],
+    );
+    const remoteEmptyContent = useMemo(() => {
+        if (!remoteChat) return undefined;
+        if (remoteChat.loading) {
+            return (
+                <div data-testid="remote-chat-loading" className="aap-remote-loading">
+                    <div className="aap-wf-icon"><IconRocket size={28} color="currentColor" /></div>
+                    <div className="aap-wf-title">{localizeText(lang, "Opening remote task…", "正在打开远端任务…", "正在開啟遠端任務…")}</div>
+                    <div className="aap-wf-sub">{localizeText(lang, "Please wait...", "请稍候...", "請稍候...")}</div>
+                </div>
+            );
+        }
+        if (remoteChat.offline) {
+            return (
+                <span data-testid="remote-chat-offline" className="aap-remote-empty-hint">
+                    {localizeText(lang, "That computer is offline. Its conversation stays here for viewing.", "对方离线。会话仍可查看，暂时不能发送。", "對方離線。會話仍可查看，暫時不能傳送。")}
+                </span>
+            );
+        }
+        if (!remoteChat.canSend) {
+            return (
+                <span data-testid="remote-chat-readonly" className="aap-remote-empty-hint">
+                    {localizeText(lang, "View only. You cannot send messages to that computer.", "仅查看。不能向对方电脑发送消息。", "唯讀。不能向對方電腦傳送訊息。")}
+                </span>
+            );
+        }
+        return (
+            <span data-testid="remote-chat-idle" className="aap-remote-empty-hint">
+                {localizeText(lang, "Connected. Messages sent here run on that computer.", "已连接远端任务，输入的消息会在对方电脑上执行。", "已連接遠端任務，輸入的訊息會在對方電腦上執行。")}
+            </span>
+        );
+    }, [lang, remoteChat, t]);
     const conversationArchive = useConversationViewArchive({ messages: remoteChat ? remoteTranscript : otherMessages, scope: remoteChat ? `remote-control:${remoteChat.grantId}:${remoteChat.projectPath}` : ((isProjectTabActive || isExpertTabActive) && activeTab.id ? `tab:${activeTab.id}` : "desktop"), enabled: remoteChat ? true : ready, lang, theme: t });
     const transcriptMessages = conversationArchive.visibleMessages;
     const [branchPoints, setBranchPoints] = useState<ConversationBranchPointLike[]>([]);
@@ -7533,7 +7568,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     ) : null}
                     {remoteChat || !showPureCodingEmptyState ? null : pureCodingEmptyContent}
                     <CodingAgentPreviewFocusContext.Provider value={focusCodeFile}>
-                    <AssistantConversationBody emptyContent={remoteChat ? undefined : (isPureCodingEnvironment ? null : undefined)} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={remoteChat ? remoteTranscript : (displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES)} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={remoteChat ? [] : pinnedNews} ready={remoteChat ? true : ready} renderedOtherMessages={remoteRenderedMessages || renderedOtherMessages} renderedProgressMessages={remoteChat ? null : renderedProgressMessages} liveActivityLabel={remoteChat ? undefined : standaloneLiveActivityLabel} liveActivityObject={remoteChat ? undefined : (standaloneLiveActivityLabel ? liveReasoningObject : undefined)} busyAccessory={remoteChat || hideWorkingTrail ? null : codingWorkingTrail} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
+                    <AssistantConversationBody emptyContent={remoteChat ? remoteEmptyContent : (isPureCodingEnvironment ? null : undefined)} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={remoteChat ? remoteTranscript : (displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES)} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={remoteChat ? [] : pinnedNews} ready={remoteChat ? true : ready} renderedOtherMessages={remoteChat ? remoteRenderedMessages : renderedOtherMessages} renderedProgressMessages={remoteChat ? null : renderedProgressMessages} liveActivityLabel={remoteChat ? (remoteChat.busy && !remoteChat.loading ? remoteBusyLabel : undefined) : standaloneLiveActivityLabel} liveActivityObject={remoteChat ? undefined : (standaloneLiveActivityLabel ? liveReasoningObject : undefined)} busyAccessory={remoteChat || hideWorkingTrail ? null : codingWorkingTrail} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
                     </CodingAgentPreviewFocusContext.Provider>
                     <div ref={outputEndRef} />
                 </div></div>)}

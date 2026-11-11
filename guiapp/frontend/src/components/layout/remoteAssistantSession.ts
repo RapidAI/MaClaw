@@ -14,6 +14,10 @@ export type RemoteAssistantSession = {
     canSend: boolean;
     offline: boolean;
     error: string;
+    /** The task is open but its transcript is still on the way. */
+    loading?: boolean;
+    /** The other computer is working on the open task. */
+    busy?: boolean;
     messages: RemoteAssistantTranscriptMessage[];
 };
 
@@ -23,9 +27,23 @@ type RemoteAssistantActions = {
     close: () => void;
 };
 
+// A sent line the remote transcript has not echoed yet. The other computer
+// can swallow an input without storing a visible user row (a workflow form
+// answer, for example), so the line stays rendered until a real copy lands.
+type SentMark = {
+    key: string;
+    text: string;
+    /** Copies of this text already in the transcript when the send left. */
+    baseline: number;
+    /**
+     * Transcript length at send time; the echo slot for this line. -1 while
+     * the transcript is still loading — the first real fetch anchors it.
+     */
+    at: number;
+};
+
 let raw: RemoteAssistantSession | null = null;
-let pending = '';
-let pendingSeen = 0;
+let marks: SentMark[] = [];
 let current: RemoteAssistantSession | null = null;
 let actions: RemoteAssistantActions | null = null;
 let flight: Promise<boolean> | null = null;
@@ -39,13 +57,27 @@ function userTextCount(messages: RemoteAssistantTranscriptMessage[], text: strin
     return count;
 }
 
-function withPending(session: RemoteAssistantSession | null): RemoteAssistantSession | null {
-    if (!session || !pending) return session;
-    if (userTextCount(session.messages, pending) > pendingSeen) return session;
-    return {
-        ...session,
-        messages: [...session.messages, { role: 'user', content: pending }],
-    };
+function markKey(session: RemoteAssistantSession | null) {
+    return session ? `${session.grantId}${session.projectPath}` : '';
+}
+
+function withEchoes(session: RemoteAssistantSession | null): RemoteAssistantSession | null {
+    if (!session || marks.length === 0) return session;
+    const key = markKey(session);
+    let merged: RemoteAssistantTranscriptMessage[] | null = null;
+    // Two sends can share one anchor (the transcript did not move between
+    // them). Counting earlier injections keeps their send order intact.
+    let offset = 0;
+    for (const mark of marks) {
+        if (mark.key !== key) continue;
+        // publish already drops marks the transcript echoed; every mark left
+        // here is an unsettled send and keeps its own rendered line.
+        merged = merged ?? session.messages.slice();
+        const at = mark.at < 0 ? merged.length : Math.min(mark.at + offset, merged.length);
+        merged.splice(at, 0, { role: 'user', content: mark.text });
+        offset += 1;
+    }
+    return merged ? { ...session, messages: merged } : session;
 }
 
 function sessionKey(session: RemoteAssistantSession | null) {
@@ -55,6 +87,9 @@ function sessionKey(session: RemoteAssistantSession | null) {
         session.projectPath,
         session.canSend ? '1' : '0',
         session.offline ? '1' : '0',
+        session.loading ? '1' : '0',
+        session.busy ? '1' : '0',
+        session.machineName,
         session.taskName,
         session.error,
         session.messages.map(message => `${message.role}\n${message.content}\n${message.reasoning || ''}`).join('\n--\n'),
@@ -62,17 +97,37 @@ function sessionKey(session: RemoteAssistantSession | null) {
 }
 
 function emit() {
-    const next = withPending(raw);
+    const next = withEchoes(raw);
     if (sessionKey(next) === sessionKey(current)) return;
     current = next;
     listeners.forEach(listener => listener());
 }
 
 export function publishRemoteAssistantSession(next: RemoteAssistantSession | null) {
-    if (next && pending && userTextCount(next.messages, pending) > pendingSeen) pending = '';
-    if (!next) {
-        pending = '';
-        pendingSeen = 0;
+    if (next) {
+        const key = markKey(next);
+        // A send made while the transcript was loading anchors its echo at
+        // the end of the history this fetch just delivered.
+        for (const mark of marks) {
+            if (mark.key === key && mark.at < 0) mark.at = next.messages.length;
+        }
+        // Each transcript copy above a mark's baseline settles one mark with
+        // that text, so two sends of the same line keep two echoes.
+        const consumed = new Map<string, number>();
+        marks = marks.filter(mark => {
+            if (mark.key !== key) return true;
+            const seen = userTextCount(next.messages, mark.text) - (consumed.get(mark.text) || 0);
+            if (seen > mark.baseline) {
+                consumed.set(mark.text, (consumed.get(mark.text) || 0) + 1);
+                return false;
+            }
+            return true;
+        });
+    } else {
+        // Only the session that just closed loses its unsettled echoes. A
+        // send on another task keeps its line for when it is reopened.
+        const key = markKey(raw);
+        marks = marks.filter(mark => mark.key !== key);
     }
     raw = next;
     emit();
@@ -109,14 +164,19 @@ export function remoteAssistantSend(text: string) {
     const trimmed = text.trim();
     const send = actions?.send;
     if (!raw?.canSend || !send || !trimmed || flight) return Promise.resolve(false);
-    pending = trimmed;
-    pendingSeen = userTextCount(raw.messages, trimmed);
+    const mark: SentMark = {
+        key: markKey(raw),
+        text: trimmed,
+        baseline: userTextCount(raw.messages, trimmed),
+        at: raw.loading ? -1 : raw.messages.length,
+    };
+    marks = [...marks, mark];
     const run = Promise.resolve(send(trimmed)).then(ok => {
-        if (ok === false) pending = '';
+        if (ok === false) marks = marks.filter(item => item !== mark);
         emit();
         return ok !== false;
     }, () => {
-        pending = '';
+        marks = marks.filter(item => item !== mark);
         emit();
         return false;
     }).finally(() => {

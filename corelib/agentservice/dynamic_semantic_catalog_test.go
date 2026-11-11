@@ -162,8 +162,11 @@ func TestProjectedDynamicProvidersUseCommonPlannerAndRenderer(t *testing.T) {
 		t.Fatalf("render projected selection=%#v err=%v", rendered, err)
 	}
 	function := rendered[0].Definition["function"].(map[string]interface{})
-	if function["name"] == second.AdapterName || strings.Contains(function["name"].(string), "second") {
-		t.Fatalf("renderer leaked dynamic provider identity: %#v", function)
+	// The model-visible name is the stable server__tool spelling; the
+	// rotating adapter id never reaches the model. Authorization rides the
+	// one-shot grant, not the name (2026-11-05).
+	if name, _ := function["name"].(string); name != "second__lookup" || name == second.AdapterName {
+		t.Fatalf("renderer did not use the stable installed-MCP name: %#v", function)
 	}
 	description, _ := function["description"].(string)
 	if !strings.HasPrefix(description, "Execute the approved dynamic capability. Call it whenever it is listed; after a successful call this name may briefly leave the list and later reappear for the next authorized step.") {

@@ -12,6 +12,7 @@ func TestRecallDynamicEmitsExperienceRetrievedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Stop)
 	trail := lifecycle.NewEventTrail(8)
 	store.SetExperienceEventSink(trail)
 

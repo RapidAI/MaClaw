@@ -114,13 +114,13 @@ func TestIMGroupSessionIsolation(t *testing.T) {
 	pubB := publishIMTestSurvey(t, st, "SurveyB", []string{"g2"}, twoQ)
 
 	// Start survey A in g1 and answer Q1.
-	if _, err := rt.Handle(ctx, "t", IMHandleRequest{
+	if _, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g1",
 		Text: "/survey " + pubA.ShortCode,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rt.Handle(ctx, "t", IMHandleRequest{
+	if _, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g1",
 		Text: "ans-g1",
 	}); err != nil {
@@ -128,7 +128,7 @@ func TestIMGroupSessionIsolation(t *testing.T) {
 	}
 
 	// Same user starts survey B in g2 — must NOT hit the "busy with A" conflict.
-	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g2",
 		Text: "/survey " + pubB.ShortCode,
 	})
@@ -177,7 +177,7 @@ func TestIMEventsDrivesGatewayHints(t *testing.T) {
 	pub := publishIMTestSurvey(t, st, "Ev", []string{"g"}, twoQ)
 	call := func(text string) IMHandleResponse {
 		t.Helper()
-		r, err := rt.Handle(ctx, "t", IMHandleRequest{
+		r, err := rt.Handle(ctx, "t", IMHandleRequest{Lang: "zh",
 			Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g", Text: text,
 		})
 		if err != nil {

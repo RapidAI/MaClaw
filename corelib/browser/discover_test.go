@@ -15,10 +15,13 @@ import (
 )
 
 func TestWaitForPersistentCDPStopsWhenCallerCancels(t *testing.T) {
+	// Build the profile dir before starting the clock: TempDir creation can
+	// take hundreds of milliseconds under load and is not the code under test.
+	profileDir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	started := time.Now()
-	if addr, ok := waitForPersistentCDPCtx(ctx, t.TempDir(), 10*time.Second); ok || addr != "" {
+	if addr, ok := waitForPersistentCDPCtx(ctx, profileDir, 10*time.Second); ok || addr != "" {
 		t.Fatalf("wait result = %q,%v; want empty,false", addr, ok)
 	}
 	if !errors.Is(ctx.Err(), context.Canceled) {

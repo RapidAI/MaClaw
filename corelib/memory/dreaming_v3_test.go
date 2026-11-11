@@ -14,6 +14,7 @@ func TestRecallDynamic_TemporalDemotion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Stop)
 
 	now := time.Now()
 	pastInvalid := now.Add(-24 * time.Hour)
@@ -94,6 +95,7 @@ func TestDetectTemporallyExpired_BoundaryUntilExpired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Stop)
 
 	past := time.Now().Add(-48 * time.Hour)
 	e := Entry{
@@ -128,6 +130,7 @@ func TestDetectTemporallyExpired_ValidAtOldNoActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Stop)
 
 	oldTime := time.Now().Add(-45 * 24 * time.Hour)   // 45 days ago
 	oldUpdate := time.Now().Add(-20 * 24 * time.Hour) // 20 days ago (> 14 day window)
@@ -166,6 +169,7 @@ func TestDetectTemporallyExpired_RecentActivityProtects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Stop)
 
 	oldTime := time.Now().Add(-45 * 24 * time.Hour) // 45 days ago
 	recentUpdate := time.Now().Add(-3 * 24 * time.Hour) // 3 days ago (< 14 day window)
@@ -193,6 +197,7 @@ func TestDetectTemporallyExpired_PinnedSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Stop)
 
 	past := time.Now().Add(-48 * time.Hour)
 	e := Entry{
@@ -219,6 +224,7 @@ func TestFormatMemorySummary_BasicStructure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Stop)
 
 	// Add entries in different categories.
 	entries := []Entry{
@@ -261,6 +267,7 @@ func TestFormatMemorySummary_OwnerIDFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Stop)
 
 	e1 := Entry{Content: "UserA's secret project", Category: CategoryProjectKnowledge, OwnerID: "user_a", Strength: 5.0}
 	e2 := Entry{Content: "UserB's other project", Category: CategoryProjectKnowledge, OwnerID: "user_b", Strength: 5.0}
@@ -290,6 +297,7 @@ func TestDetectTemporallyExpired_PreferenceNotExpired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Stop)
 
 	oldTime := time.Now().Add(-90 * 24 * time.Hour) // 90 days ago
 	oldUpdate := time.Now().Add(-60 * 24 * time.Hour) // 60 days ago (well beyond activity window)

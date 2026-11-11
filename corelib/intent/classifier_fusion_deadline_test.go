@@ -1129,10 +1129,11 @@ func TestClassifyL3TimeoutDoesNotCacheLookupHint(t *testing.T) {
 
 	first := uic.Classify(MessageContext{Text: query})
 	// The lookup guess carries document_generate evidence, so a tree timeout
-	// keeps the turn explicitly unconfirmed rather than degrading to a bare
-	// lookup hint that would silently drop the requested artifact.
-	if first.Primary != LabelUnknown || !first.Degraded {
-		t.Fatalf("first = %+v, want unconfirmed unknown for an unverifiable composite", first)
+	// keeps the lookup as a degraded hint and moves the artifact half to
+	// Offered (directory evidence, not a minted grant): collapsing the whole
+	// turn to unknown used to drop web_search together with the PDF.
+	if first.Primary != LabelLiveData || !first.Degraded {
+		t.Fatalf("first = %+v, want the degraded live_data lookup hint", first)
 	}
 	embeds := emb.queries
 	second := uic.Classify(MessageContext{Text: query})
@@ -1161,13 +1162,19 @@ func TestClassifyL3TimeoutDropsUnconfirmedGenerate(t *testing.T) {
 	uic.mu.Unlock()
 
 	result := uic.Classify(MessageContext{Text: "查询南京天气，并生成pdf报告"})
-	if result.Primary != LabelUnknown || !result.Degraded {
-		t.Fatalf("result = %+v, want unconfirmed unknown when the tree cannot rule on the composite", result)
+	if result.Primary != LabelLiveData || !result.Degraded {
+		t.Fatalf("result = %+v, want the degraded live_data lookup when the tree cannot rule on the composite", result)
 	}
-	for _, label := range result.Labels() {
+	// "Drops unconfirmed generate" means the granted surface: the artifact
+	// half must not ride as a Secondary and must not mint a tool on a
+	// degraded turn. It may stay as an Offered directory entry.
+	for _, label := range result.Secondary {
 		if label == LabelDocumentGenerate {
-			t.Fatalf("L3 timeout must drop unconfirmed generate, got %+v", result)
+			t.Fatalf("L3 timeout must not confirm generate as secondary, got %+v", result)
 		}
+	}
+	if len(result.ToolNames) != 0 {
+		t.Fatalf("L3 timeout must not mint tools, got %+v", result)
 	}
 }
 

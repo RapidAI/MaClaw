@@ -340,6 +340,12 @@ func loadStickyCodingWorkbenchMemoryFromDisk(userID string) (mem stickyCodingWor
 	// annotations; the next write persists the compact form.
 	for i := range mem.StepStatuses {
 		mem.StepStatuses[i].Summary = codingStepChecklistNote(mem.StepStatuses[i].Summary)
+		// A live-looking step in a cold-loaded snapshot belongs to a dead
+		// process: nothing is executing after a restart, so it must not come
+		// back as 进行中 in the checklist or the task badge.
+		if codingChecklistStepActive(mem.StepStatuses[i].Status) {
+			mem.StepStatuses[i].Status = "interrupted"
+		}
 	}
 	if mem.UpdatedAtUnix > 0 {
 		age := time.Since(time.Unix(mem.UpdatedAtUnix, 0))

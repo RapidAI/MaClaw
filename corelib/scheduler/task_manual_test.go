@@ -164,9 +164,12 @@ func TestDeleteRunningTaskCancelsBeforeRemoval(t *testing.T) {
 	}
 	select {
 	case <-cancelled:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Delete() did not cancel the running task")
 	}
+	// The unwinding run still writes its final state into the temp dir; wait
+	// for the lease so TempDir cleanup cannot race that write on Windows.
+	awaitLeaseClear(t, manager, id)
 }
 
 func TestForceDeleteRemovesARunningTask(t *testing.T) {
@@ -221,6 +224,7 @@ func TestStopKeepsExecutionLeaseUntilRunFinishes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
+	t.Cleanup(manager.Stop)
 
 	started := make(chan struct{}, 1)
 	cancelled := make(chan struct{}, 1)
@@ -258,7 +262,27 @@ func TestStopKeepsExecutionLeaseUntilRunFinishes(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Stop() did not cancel the running task")
 	}
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		manager.mu.RLock()
+		_, running := manager.runningTasks[id]
+		manager.mu.RUnlock()
+		if !running {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("execution lease was not released after cancelled run finished")
+}
+
+// awaitLeaseClear waits for the run's execution lease to be released. The
+// lease delete is the last thing fireManual does, after its state save, so a
+// cleared lease also means the temp dir stops seeing writes.
+func awaitLeaseClear(t *testing.T, manager *Manager, id string) {
+	t.Helper()
+	// 15s: the unwinding run still saves state to SQLite; a full-suite run
+	// loads the machine enough to push that write past 5s.
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		manager.mu.RLock()
 		_, running := manager.runningTasks[id]

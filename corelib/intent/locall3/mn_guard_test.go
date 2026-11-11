@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -126,8 +127,12 @@ func TestMNShadowLogsVerdictRemoteDecides(t *testing.T) {
 			t.Fatalf("rec %d: %+v", i, r)
 		}
 	}
-	if fi, err := os.Stat(logp); err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("log perm %v %v", fi, err)
+	// The 0o600 writer mode is a Unix invariant; Windows maps it to the
+	// read-only attribute and reports 0o666, so the check only applies there.
+	if runtime.GOOS != "windows" {
+		if fi, err := os.Stat(logp); err != nil || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("log perm %v %v", fi, err)
+		}
 	}
 }
 

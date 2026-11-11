@@ -286,6 +286,24 @@ func (s *SQLiteStore) listActiveTaskStatuses(now time.Time) (map[string]string, 
 		}
 		deadChild[parentID] = childLease{leaseUntil: row.leaseUntil, attemptID: row.attemptID, died: unixNanos(leaseDeathTime(fromUnixNanos(row.leaseUntil), now))}
 	}
+	// A child that can still deliver keeps its waiting parent live. Queued
+	// children count: dispatch has not happened yet, but the parent is
+	// waiting for exactly that delivery.
+	liveChild := map[string]bool{}
+	for _, row := range scanned {
+		parentID := strings.TrimSpace(row.parentID)
+		if parentID == "" {
+			continue
+		}
+		switch TaskStatus(row.status) {
+		case TaskQueued, TaskWaitingChild, TaskWaitingApproval:
+			liveChild[parentID] = true
+		case TaskRunning:
+			if row.attemptID != "" && !runningAttemptDead(fromUnixNanos(row.leaseUntil), now, row.attemptID) {
+				liveChild[parentID] = true
+			}
+		}
+	}
 	choices := map[string]activeCodingRuntimeRefChoice{}
 	for _, row := range scanned {
 		ref := strings.TrimSpace(row.ref)
@@ -324,6 +342,12 @@ func (s *SQLiteStore) listActiveTaskStatuses(now time.Time) (map[string]string, 
 					updatedAt = death.died
 				}
 			}
+		}
+		// A waiting parent whose children all settled is awaiting the review
+		// handoff, not executing. The durable row stays waiting_child so the
+		// handoff stays consumable; the list just must not read it as a run.
+		if TaskStatus(status) == TaskWaitingChild && !liveChild[row.taskID] {
+			status = string(TaskWaitingApproval)
 		}
 		// A child shares the parent's project_ref. A finished child is not the
 		// task outcome. Skipping it after the rewrite also ignores a child
@@ -1199,6 +1223,104 @@ func (s *SQLiteStore) ExpireLeases(now time.Time) ([]*Attempt, error) {
 	return out, nil
 }
 
+// InterruptAbandonedRuns reconciles durable rows only a live process can
+// drive, at the store's first open in a process. A running attempt whose
+// executor is not registered on this process is dead even while its lease
+// clock is still open: the lease exists so a suspended live process keeps
+// its claim, not so a dead process keeps it. A queued task is never
+// dispatched from durable state either, so a queued row left behind belongs
+// to the dead process; a queued child whose parent is still waiting
+// interrupts that parent the same way the unstarted-child sweep does.
+// ExpireLeases stays the live-process sweep for leases that run out while
+// the app is up.
+func (s *SQLiteStore) InterruptAbandonedRuns(now time.Time) ([]*Attempt, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	// lease_until then attempt id matches the sweep order every other pass
+	// uses, so the first dead child stamps its waiting parent the same way.
+	rows, err := s.db.Query(`SELECT attempt_id FROM coding_runtime_attempts WHERE status=? ORDER BY lease_until ASC, attempt_id ASC`, TaskRunning)
+	if err != nil {
+		return nil, err
+	}
+	var attemptIDs []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if localWriterLive(id) {
+			continue
+		}
+		attemptIDs = append(attemptIDs, id)
+	}
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	type queuedRow struct{ taskID, parentID string }
+	var queued []queuedRow
+	qrows, err := s.db.Query(`SELECT task_id, parent_task_id FROM coding_runtime_tasks WHERE status=?`, TaskQueued)
+	if err != nil {
+		return nil, err
+	}
+	for qrows.Next() {
+		var row queuedRow
+		if err = qrows.Scan(&row.taskID, &row.parentID); err != nil {
+			qrows.Close()
+			return nil, err
+		}
+		queued = append(queued, row)
+	}
+	if err = qrows.Close(); err != nil {
+		return nil, err
+	}
+	if err = qrows.Err(); err != nil {
+		return nil, err
+	}
+	if len(attemptIDs) == 0 && len(queued) == 0 {
+		return nil, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var out []*Attempt
+	for _, id := range attemptIDs {
+		a, err := s.interruptDeadAttemptTx(tx, id, now, false)
+		if err != nil {
+			return nil, err
+		}
+		if a != nil {
+			out = append(out, a)
+		}
+	}
+	// A running task row whose attempt already ended is the same corpse.
+	if _, err := tx.Exec(`UPDATE coding_runtime_tasks SET status=?,updated_at=? WHERE status=? AND NOT EXISTS(SELECT 1 FROM coding_runtime_attempts a WHERE a.task_id=coding_runtime_tasks.task_id AND a.status=?)`, TaskInterrupted, unixNanos(now), TaskRunning, TaskRunning); err != nil {
+		return nil, err
+	}
+	for _, row := range queued {
+		// The status guard skips children a waiting-parent interrupt above
+		// already settled, and any child re-queued during this transaction.
+		if _, err := tx.Exec(`UPDATE coding_runtime_tasks SET status=?,updated_at=? WHERE task_id=? AND status=?`, TaskInterrupted, unixNanos(now), row.taskID, TaskQueued); err != nil {
+			return nil, err
+		}
+		if parentID := strings.TrimSpace(row.parentID); parentID != "" {
+			if err := s.interruptWaitingParentTx(tx, parentID, now); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // InterruptUnstartedChildren reconciles queued child dispatches at startup.
 // Unlike a running attempt, a queued child has no lease or executor that can
 // survive process exit. It is never auto-dispatched from durable state.
@@ -1261,13 +1383,19 @@ func (s *SQLiteStore) InterruptUnstartedChildren(now time.Time) ([]*Attempt, err
 	return out, nil
 }
 
-// interruptExpiredAttemptTx closes a running attempt whose lease has ended
-// and whose executor is not on this process. finished_at and the owning
-// task's updated_at are the lease end (or now, when the lease has no end),
-// so noticing the row later does not move it in front of a newer outcome.
-// The task update matches only status=running, so a task that already
-// reached a later status is not rewritten.
 func (s *SQLiteStore) interruptExpiredAttemptTx(tx *sql.Tx, attemptID string, now time.Time) (*Attempt, error) {
+	return s.interruptDeadAttemptTx(tx, attemptID, now, true)
+}
+
+// interruptDeadAttemptTx closes a running attempt whose executor is not on
+// this process. finished_at and the owning task's updated_at are the lease
+// end (or now, when the lease has no end or is still open), so noticing the
+// row later does not move it in front of a newer outcome. The task update
+// matches only status=running, so a task that already reached a later
+// status is not rewritten. requireDeadLease gates the close on the lease
+// clock; the startup sweep passes false because an attempt with no live
+// local executor is dead even while its lease is still open.
+func (s *SQLiteStore) interruptDeadAttemptTx(tx *sql.Tx, attemptID string, now time.Time, requireDeadLease bool) (*Attempt, error) {
 	// The attempt row carries the workspace probes. Lease death only needs
 	// the status, the lease end, and the parent link.
 	var taskID, status, parentID string
@@ -1280,7 +1408,10 @@ func (s *SQLiteStore) interruptExpiredAttemptTx(tx *sql.Tx, attemptID string, no
 		return nil, err
 	}
 	leaseTime := fromUnixNanos(leaseUntil)
-	if TaskStatus(status) != TaskRunning || !runningAttemptDead(leaseTime, now, attemptID) {
+	if TaskStatus(status) != TaskRunning || localWriterLive(attemptID) {
+		return nil, nil
+	}
+	if requireDeadLease && !runningAttemptDead(leaseTime, now, attemptID) {
 		return nil, nil
 	}
 	died := leaseDeathTime(leaseTime, now)
@@ -1306,7 +1437,13 @@ func (s *SQLiteStore) interruptExpiredAttemptTx(tx *sql.Tx, attemptID string, no
 			return nil, err
 		}
 	}
-	if _, err = s.appendEventTx(tx, attemptID, taskID, "lease_expired", "", died); err != nil {
+	// The audit event names the real cause: a dead lease expired, a dead
+	// process was abandoned. The two are not interchangeable on review.
+	event := "lease_expired"
+	if !requireDeadLease {
+		event = "attempt_abandoned"
+	}
+	if _, err = s.appendEventTx(tx, attemptID, taskID, event, "", died); err != nil {
 		return nil, err
 	}
 	return &Attempt{AttemptID: attemptID, TaskID: taskID, Status: TaskInterrupted, SideEffectState: SideEffectUncertain, FinishedAt: died}, nil

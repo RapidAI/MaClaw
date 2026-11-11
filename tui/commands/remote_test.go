@@ -222,6 +222,8 @@ func TestRemoteStatusTreatsHubViewerAsServiceReady(t *testing.T) {
 	t.Setenv("MACLAW_DATA_DIR", dataDir)
 	store := NewFileConfigStore(dataDir)
 	if err := store.SaveConfig(corelib.AppConfig{
+		// The product default language is en; this test asserts the zh copy.
+		Language:          "zh",
 		RemoteHubURL:      "https://hub.example",
 		RemoteViewerToken: "viewer-token",
 	}); err != nil {
