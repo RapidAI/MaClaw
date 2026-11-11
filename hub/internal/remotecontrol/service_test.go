@@ -742,3 +742,132 @@ func TestStatusErrorIsDistinct(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNewControllerDisplacesThePreviousOne(t *testing.T) {
+	svc, machines, _, notes := testService(t)
+	ctx := context.Background()
+	machines.owned["user-c/mac-d"] = Machine{ID: "mac-d", Name: "第三台"}
+	machines.online["mac-d"] = true
+
+	first, err := svc.Invite(ctx, "tenant", "user-a", "mac-a", "bob@example.com", PermOperate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Accept(ctx, "tenant", "user-b", "mac-c", first.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.Invite(ctx, "tenant", "user-c", "mac-d", "bob@example.com", PermView)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Accept(ctx, "tenant", "user-b", "mac-c", second.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := svc.load(ctx, first.ID)
+	if err != nil || loaded.Status != StatusRevoked {
+		t.Fatalf("displaced grant = %+v err=%v", loaded, err)
+	}
+	state, err := svc.Snapshot(ctx, "tenant", "user-b", "mac-c")
+	if err != nil || len(state.Controlled) != 1 || state.Controlled[0].ID != second.ID {
+		t.Fatalf("controlled = %+v err=%v", state.Controlled, err)
+	}
+	if _, err := svc.Exec(ctx, "tenant", "user-a", "mac-a", first.ID, OpListTasks, nil); err == nil {
+		t.Fatal("displaced controller must not keep operating the machine")
+	}
+	ended := false
+	for _, item := range notes.items {
+		if item.Source == NoticeResult && item.AudienceUserID == "user-a" && item.Title == "远控已结束" {
+			ended = true
+		}
+	}
+	if !ended {
+		t.Fatalf("displaced controller was not told: %+v", notes.items)
+	}
+}
+
+func TestSameAccountNewMachineDisplacesTheEarlierController(t *testing.T) {
+	svc, machines, _, _ := testService(t)
+	ctx := context.Background()
+	machines.owned["user-a/mac-d"] = Machine{ID: "mac-d", Name: "第三台"}
+	machines.online["mac-d"] = true
+
+	first, err := svc.GrantSameAccount(ctx, "tenant", "user-a", "mac-a", "mac-b", PermView)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.GrantSameAccount(ctx, "tenant", "user-a", "mac-d", "mac-b", PermOperate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := svc.load(ctx, first.ID)
+	if err != nil || loaded.Status != StatusRevoked {
+		t.Fatalf("displaced grant = %+v err=%v", loaded, err)
+	}
+	state, err := svc.Snapshot(ctx, "tenant", "user-a", "mac-b")
+	if err != nil || len(state.Controlled) != 1 || state.Controlled[0].ID != second.ID {
+		t.Fatalf("controlled = %+v err=%v", state.Controlled, err)
+	}
+	again, err := svc.GrantSameAccount(ctx, "tenant", "user-a", "mac-d", "mac-b", PermView)
+	if err != nil || again.ID != second.ID {
+		t.Fatalf("re-add = %+v err=%v", again, err)
+	}
+}
+
+func TestExecRetiresAStaleDuplicateController(t *testing.T) {
+	svc, _, sender, _ := testService(t)
+	ctx := context.Background()
+	first, err := svc.GrantSameAccount(ctx, "tenant", "user-a", "mac-a", "mac-b", PermOperate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A leftover second active row — the state a pre-sweep database or a
+	// missed activation path could leave on the target machine.
+	later := time.Now().UTC().Add(time.Hour)
+	stale := Grant{
+		ID: "rc_stale_peer", TenantID: "tenant", ControllerUserID: "user-a",
+		ControllerMachineID: "mac-d", ControllerMachineName: "第三台",
+		TargetUserID: "user-a", TargetAccount: "user-a",
+		TargetMachineID: "mac-b", TargetMachineName: "家里",
+		Permission: PermOperate, Status: StatusActive, SameAccount: true,
+		CreatedAt: later, DecidedAt: later, UpdatedAt: later,
+	}
+	if err := svc.insert(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Exec(ctx, "tenant", "user-a", "mac-a", first.ID, OpListTasks, nil); err == nil {
+		t.Fatal("stale controller must lose at exec time")
+	}
+	loaded, err := svc.load(ctx, first.ID)
+	if err != nil || loaded.Status != StatusRevoked {
+		t.Fatalf("stale grant = %+v err=%v", loaded, err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		body, err := svc.Exec(ctx, "tenant", "user-a", "mac-d", stale.ID, OpListTasks, nil)
+		if err != nil {
+			done <- err
+			return
+		}
+		if string(body) != `{"tasks":[]}` {
+			done <- errors.New("unexpected body " + string(body))
+			return
+		}
+		done <- nil
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	var msg map[string]any
+	for msg == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("exec was not sent")
+		}
+		time.Sleep(10 * time.Millisecond)
+		if first := sender.first(); first != nil {
+			msg = first.(map[string]any)
+		}
+	}
+	svc.Complete("mac-b", msg["request_id"].(string), json.RawMessage(`{"body":{"tasks":[]}}`))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

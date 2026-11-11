@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -124,6 +125,11 @@ func registerRemoteControl(mux *http.ServeMux, db *sql.DB, identity *auth.Identi
 	}
 	ws.OnRemoteControlResult = svc.Complete
 	h := remoteControlHandler{svc: svc, devices: devices, identity: identity}
+	svc.RelayFederatedRevoke = func(ctx context.Context, grant remotecontrol.Grant) {
+		if err := h.relayTargetDecision(ctx, grant, "revoke"); err != nil {
+			log.Printf("[remote-control] federated revoke relay failed grant=%s hub=%s: %v", grant.ID, grant.ControllerHub, err)
+		}
+	}
 	mux.HandleFunc("GET /api/remote-control/state", h.state)
 	mux.HandleFunc("GET /api/remote-control/machines", h.machines)
 	mux.HandleFunc("POST /api/remote-control/same-account", h.sameAccount)
@@ -262,7 +268,10 @@ func (h remoteControlHandler) accept(w http.ResponseWriter, r *http.Request) {
 	grantID := r.PathValue("id")
 	federated, federatedErr := h.svc.FederatedGrantForTarget(r.Context(), principal.UserID, grantID)
 	alreadyActive := federatedErr == nil && federated.Status == remotecontrol.StatusActive
-	if federatedErr == nil && (federated.Status == remotecontrol.StatusPending || alreadyActive) {
+	// An ignored invite must not reach the controller's Hub: relaying the
+	// accept first and failing the local accept below would mark the remote
+	// copy active while this one stays pending — a ghost grant.
+	if federatedErr == nil && ((federated.Status == remotecontrol.StatusPending && !federated.TargetIgnored) || alreadyActive) {
 		if federated.Status == remotecontrol.StatusPending {
 			machine, owned := (remoteControlMachines{devices: h.devices}).BelongsTo(r.Context(), principal.UserID, machineID)
 			if !owned {
@@ -274,8 +283,14 @@ func (h remoteControlHandler) accept(w http.ResponseWriter, r *http.Request) {
 			existing, replace := h.svc.ActiveFederatedPair(r.Context(), federated, machine.ID)
 			if replace && (federated.ExpiresAt.IsZero() || time.Now().UTC().Before(federated.ExpiresAt)) {
 				if err := h.relayTargetDecision(r.Context(), federated, "revoke"); err != nil {
-					writeRemoteControlError(w, err)
-					return
+					// NOT_FOUND: the controller Hub already dropped the
+					// duplicate invite — keep going, the active grant below
+					// is what matters.
+					var status *remotecontrol.StatusError
+					if !errors.As(err, &status) || status.Code != "NOT_FOUND" {
+						writeRemoteControlError(w, err)
+						return
+					}
 				}
 				existing.Permission = federated.Permission
 				existing.TargetMachineName = federated.TargetMachineName
@@ -355,8 +370,13 @@ func (h remoteControlHandler) revoke(w http.ResponseWriter, r *http.Request) {
 	controller, controllerErr := h.svc.ControllerGrant(r.Context(), principal.TenantID, principal.UserID, machineID, grantID)
 	if targetErr == nil {
 		if err := h.relayTargetDecision(r.Context(), target, "revoke"); err != nil {
-			writeRemoteControlError(w, err)
-			return
+			// NOT_FOUND means the controller Hub already ended this grant —
+			// the local copy is the stale one, so fall through and end it.
+			var status *remotecontrol.StatusError
+			if !errors.As(err, &status) || status.Code != "NOT_FOUND" {
+				writeRemoteControlError(w, err)
+				return
+			}
 		}
 		if target.Status == remotecontrol.StatusRevoked {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -364,8 +384,13 @@ func (h remoteControlHandler) revoke(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if controllerErr == nil && controller.TargetHub != "" {
 		if err := h.relayControllerRevoke(r.Context(), controller); err != nil {
-			writeRemoteControlError(w, err)
-			return
+			// NOT_FOUND means the other Hub already ended this grant — the
+			// local copy is the stale one, so fall through and end it here.
+			var status *remotecontrol.StatusError
+			if !errors.As(err, &status) || status.Code != "NOT_FOUND" {
+				writeRemoteControlError(w, err)
+				return
+			}
 		}
 		if controller.Status == remotecontrol.StatusRevoked {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true})

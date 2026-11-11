@@ -160,9 +160,15 @@ func (s *Service) AcceptFederated(ctx context.Context, grantID, secret, targetMa
 		if permission == grant.Permission {
 			return grant, nil
 		}
+		s.activateMu.Lock()
 		grant.Permission = permission
 		grant.UpdatedAt = time.Now().UTC()
 		changed, updateErr := s.updateExpected(ctx, grant, StatusActive)
+		var displaced []Grant
+		if updateErr == nil && changed {
+			displaced = s.displacePeerControllers(ctx, targetMachineID, grant.ID)
+		}
+		s.activateMu.Unlock()
 		if updateErr != nil {
 			return Grant{}, updateErr
 		}
@@ -173,6 +179,7 @@ func (s *Service) AcceptFederated(ctx context.Context, grantID, secret, targetMa
 			}
 			return Grant{}, ErrNotFound
 		}
+		s.notifyDisplaced(ctx, displaced)
 		s.notifyResult(ctx, grant.ControllerUserID, "远控权限已更新", fmt.Sprintf("%s 的远控权限已改为%s。", grant.TargetMachineName, permissionLabel(permission)), grant.ID)
 		return grant, nil
 	}
@@ -182,6 +189,7 @@ func (s *Service) AcceptFederated(ctx context.Context, grantID, secret, targetMa
 	if targetMachineID == "" {
 		return Grant{}, invalid("被控机器无效")
 	}
+	s.activateMu.Lock()
 	now := time.Now().UTC()
 	grant.TargetMachineID = targetMachineID
 	grant.TargetMachineName = strings.TrimSpace(targetMachineName)
@@ -190,6 +198,11 @@ func (s *Service) AcceptFederated(ctx context.Context, grantID, secret, targetMa
 	grant.DecidedAt = now
 	grant.UpdatedAt = now
 	changed, err := s.updateExpected(ctx, grant, StatusPending)
+	var displaced []Grant
+	if err == nil && changed {
+		displaced = s.displacePeerControllers(ctx, targetMachineID, grant.ID)
+	}
+	s.activateMu.Unlock()
 	if err != nil {
 		return Grant{}, err
 	}
@@ -200,6 +213,7 @@ func (s *Service) AcceptFederated(ctx context.Context, grantID, secret, targetMa
 		}
 		return Grant{}, ErrNotFound
 	}
+	s.notifyDisplaced(ctx, displaced)
 	s.revokeNotice(ctx, grant.InviteNotificationID)
 	s.notifyResult(ctx, grant.ControllerUserID, "远控已接受", fmt.Sprintf("%s 已接受远控，权限：%s。任务列表里已出现这台机器。", grant.TargetMachineName, permissionLabel(grant.Permission)), grant.ID)
 	return grant, nil

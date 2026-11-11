@@ -168,7 +168,10 @@ func (a *App) restoreCompanionPDF(canonical string, args map[string]interface{},
 	if failWave < 1 {
 		failWave = nextFailWave(cache)
 	}
-	formulaEng, formulaReady := a.restoreFormulaEngine()
+	formulaEng, formulaDone, formulaReady := a.restoreFormulaEngine()
+	if formulaDone != nil {
+		defer formulaDone()
+	}
 	layoutReady := a.restoreLayoutReady()
 	todo, rest := selectRestorePages(count, requested, explicit, cache, formulaReady, layoutReady, failWave)
 	if len(todo) == 0 {
@@ -343,15 +346,18 @@ func (a *App) finishRestoreFromCache(doc *agent.ScanRestore, cache map[int]fileC
 	}
 }
 
-func (a *App) restoreFormulaEngine() (*formula.Engine, bool) {
+// restoreFormulaEngine returns the shared FormulaNet engine and a release
+// function the caller must run once it stops using eng. When no engine is
+// available the release is nil.
+func (a *App) restoreFormulaEngine() (*formula.Engine, func(), bool) {
 	if fileCompanionRestoreRecognize != nil || a == nil || !a.GetFormulaEnabled() {
-		return nil, false
+		return nil, nil, false
 	}
-	eng, err := a.ensureFormulaReady()
+	eng, done, err := a.ensureFormulaReady()
 	if err != nil || eng == nil {
-		return nil, false
+		return nil, nil, false
 	}
-	return eng, true
+	return eng, done, true
 }
 
 func (a *App) recognizeRestorePage(doc *agent.ScanRestore, page int, formulaEng *formula.Engine, formulaReady bool) (fileCompanionRestoreCachePage, error) {
@@ -626,7 +632,8 @@ func (a *App) recognizeLayoutFormulas(entry *fileCompanionRestoreCachePage, img 
 	}
 	recognize := fileCompanionRestoreFormula
 	if recognize == nil && fileCompanionRestoreRecognize == nil {
-		if eng, ok := a.restoreFormulaEngine(); ok && eng != nil {
+		if eng, done, ok := a.restoreFormulaEngine(); ok && eng != nil {
+			defer done()
 			recognize = eng.Recognize
 		}
 	}
@@ -1593,7 +1600,11 @@ func (a *App) restoreFinishedView(canonical string) (restoreFinishedView, bool) 
 func (a *App) restoreWorkRemains(cache map[int]fileCompanionRestoreCachePage, count int) bool {
 	formulaReady := false
 	if cacheMapHasFormulaPending(cache) {
-		_, formulaReady = a.restoreFormulaEngine()
+		var formulaDone func()
+		_, formulaDone, formulaReady = a.restoreFormulaEngine()
+		if formulaDone != nil {
+			formulaDone()
+		}
 	}
 	layoutReady := false
 	if cacheCouldRefreshLayout(cache) {
@@ -1923,7 +1934,11 @@ func (a *App) convertMessageFromCache(cache map[int]fileCompanionRestoreCachePag
 	}
 	formulaReady := false
 	if cacheMapHasFormulaPending(cache) {
-		_, formulaReady = a.restoreFormulaEngine()
+		var formulaDone func()
+		_, formulaDone, formulaReady = a.restoreFormulaEngine()
+		if formulaDone != nil {
+			formulaDone()
+		}
 	}
 	formulaNote := convertRestoreWording(formulaPendingSuffix(cache, formulaReady))
 	if formulaNote != "" {

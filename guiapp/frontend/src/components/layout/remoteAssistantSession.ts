@@ -14,13 +14,6 @@ export type RemoteAssistantWorkflow = {
     pending_review?: boolean;
 };
 
-export type RemoteAssistantArtifact = {
-    title: string;
-    preview?: string;
-    sourceType?: string;
-    updatedAt?: string;
-};
-
 /**
  * Live status mirrored from the remote task snapshot. Everything here comes
  * from the get_task poll, so it refreshes on the same cadence (3s while the
@@ -37,10 +30,6 @@ export type RemoteAssistantActivity = {
     workflowType?: string;
     /** RFC3339 heartbeat from the remote task row's last_activity. */
     lastActivityAt?: string;
-    /** Tail of the newest assistant reasoning, for the expandable body. */
-    reasoningTail?: string;
-    /** Recent artifacts the remote task produced. */
-    artifacts?: RemoteAssistantArtifact[];
     /** Local timestamp when this run was first observed, for elapsed time. */
     busySince?: number;
 };

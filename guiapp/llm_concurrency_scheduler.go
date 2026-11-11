@@ -426,6 +426,22 @@ func (s *llmConcurrencyScheduler) foregroundHTTPBusy() bool {
 	return s.activeFG > 0 || s.hasQueuedForegroundLocked()
 }
 
+// anyLLMBusy reports LLM work of any lane in flight or queued, including the
+// desktop foreground-agent-loop counter. The idle memory releaser uses it to
+// skip a GC/free pass while a request is active.
+func (s *llmConcurrencyScheduler) anyLLMBusy() bool {
+	if s == nil {
+		return false
+	}
+	if s.foregroundWorkLocked() > 0 {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeFG > 0 || s.activeBG > 0 || s.activeInteractive > 0 ||
+		s.activeChatTask > 0 || len(s.queue) > 0
+}
+
 // foregroundLaneBusy is the union of the agent loop and foreground HTTP.
 // The late-tree gate does not use it: a task-context ClassifyContext is
 // foreground HTTP that starts and ends before the loop claims the lane.

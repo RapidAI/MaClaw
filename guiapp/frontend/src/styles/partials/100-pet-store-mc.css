@@ -1785,38 +1785,6 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     font-size: 11px;
     color: var(--theme-text-muted);
 }
-.aap-remote-activity-thinking { white-space: pre-wrap; }
-.aap-remote-artifacts-inline { margin-top: 8px; }
-.aap-remote-artifacts-title {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--theme-text-muted);
-    margin-bottom: 4px;
-}
-.aap-remote-artifacts {
-    margin: 4px 0 7px;
-    padding: 6px 9px;
-    font-size: 12px;
-    color: var(--theme-text-secondary);
-    background: var(--theme-surface-muted);
-    border: 1px solid var(--theme-border);
-    border-radius: var(--radius-md);
-}
-.aap-remote-artifacts-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--theme-text-muted);
-    margin-bottom: 4px;
-}
-.aap-remote-artifacts-count { opacity: 0.75; font-weight: 500; }
-.aap-remote-artifact-list { display: flex; flex-direction: column; gap: 2px; }
-.aap-remote-artifact { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.aap-remote-artifact-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.aap-remote-artifact-time { flex: 0 0 auto; font-size: 11px; opacity: 0.72; }
 .aap-wf-sub { font-size: 0.75rem; opacity: 0.7; }
 .aap-expert-icon { font-size: 36px; line-height: 1; }
 .aap-expert-desc { font-size: 0.8rem; max-width: 420px; line-height: 1.5; }

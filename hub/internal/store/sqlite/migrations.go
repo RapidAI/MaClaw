@@ -1523,6 +1523,8 @@ func RunMigrations(db *sql.DB) error {
 		`ALTER TABLE remote_control_grants ADD COLUMN controller_hub TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE remote_control_grants ADD COLUMN target_hub TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE remote_control_grants ADD COLUMN federation_secret TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE remote_control_grants ADD COLUMN target_machine_id TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_rc_grant_target_machine ON remote_control_grants(target_machine_id, status)`,
 	)
 
 	for _, stmt := range alterStmts {

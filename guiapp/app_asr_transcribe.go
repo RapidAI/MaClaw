@@ -15,13 +15,68 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/asr"
+	"github.com/RapidAI/CodeClaw/corelib/modelmanager"
 	"github.com/RapidAI/CodeClaw/corelib/vad"
 )
 
+// asrModelIdleUnloadDelay releases the SenseVoice weights after this much
+// transcription idle time; the next call reloads them transparently.
+// MACLAW_MODEL_IDLE_UNLOAD_SEC overrides it (0 disables idle unload).
+const asrModelIdleUnloadDelay = 5 * time.Minute
+
 var (
-	asrInstance asr.ASRModel
-	asrMu       sync.Mutex
+	asrMM     *modelmanager.Manager[asr.ASRModel]
+	asrMMOnce sync.Once
 )
+
+// asrModelManager owns the SenseVoice lifecycle: the model is NOT loaded at
+// startup or on enable — first transcription acquires it, and the manager
+// unloads it after asrModelIdleUnloadDelay of no use.
+func asrModelManager() *modelmanager.Manager[asr.ASRModel] {
+	asrMMOnce.Do(func() {
+		asrMM = modelmanager.New(modelmanager.Config[asr.ASRModel]{
+			Name: "asr",
+			Load: func() (asr.ASRModel, error) {
+				dir, err := embeddingModelsDir()
+				if err != nil {
+					return nil, fmt.Errorf("models dir: %w", err)
+				}
+				modelPath := filepath.Join(dir, asrModelFilename)
+				m, err := asr.NewSenseVoice(modelPath)
+				if err != nil {
+					return nil, fmt.Errorf("load SenseVoice ASR model: %w", err)
+				}
+				return m, nil
+			},
+			Close:       func(m asr.ASRModel) { m.Close() },
+			UnloadDelay: asrModelIdleUnloadDelay,
+		})
+	})
+	return asrMM
+}
+
+// acquireASRModel returns the loaded ASR model plus a release function the
+// caller MUST invoke when finished (it schedules the idle unload). The model
+// stays guaranteed-valid between the call and done.
+func (a *App) acquireASRModel() (asr.ASRModel, func(), error) {
+	info := a.CheckASRModel()
+	if !info["exists"].(bool) {
+		return nil, nil, fmt.Errorf("ASR model not downloaded")
+	}
+	model, done, err := asrModelManager().Acquire()
+	if err != nil {
+		return nil, nil, err
+	}
+	return model, done, nil
+}
+
+// resetASRModel drops the in-memory model so the next transcription loads the
+// weights file currently on disk (a download may have replaced it).
+func resetASRModel() {
+	if asrMM != nil {
+		asrMM.Unload()
+	}
+}
 
 const asrRawFallbackMinRMS = 0.0025
 const asrPreferRawMaxSec = 15.0
@@ -254,44 +309,18 @@ func shouldDropASRText(text string, sampleCount int) (bool, string) {
 	return false, ""
 }
 
-// getASRModel returns the singleton ASR model, loading on first call.
-// Thread-safe. Automatically retries if the model wasn't available before.
-// Uses the configured SenseVoice model.
-func (a *App) getASRModel() (asr.ASRModel, error) {
-	return a.getASRModelQuiet(false)
+// transcribeASR runs one SenseVoice pass inside an acquisition: the model is
+// pinned for the duration of the call and the idle-unload timer is scheduled
+// on return.
+func (a *App) transcribeASR(pcm []float32) (string, error) {
+	model, done, err := a.acquireASRModel()
+	if err != nil {
+		return "", err
+	}
+	defer done()
+	return model.Transcribe(pcm)
 }
 
-func (a *App) getASRModelQuiet(quiet bool) (asr.ASRModel, error) {
-	asrMu.Lock()
-	defer asrMu.Unlock()
-
-	if asrInstance != nil {
-		return asrInstance, nil
-	}
-
-	info := a.CheckASRModel()
-	if !info["exists"].(bool) {
-		return nil, fmt.Errorf("ASR model not downloaded")
-	}
-	dir, err := embeddingModelsDir()
-	if err != nil {
-		return nil, fmt.Errorf("models dir: %w", err)
-	}
-
-	modelPath := filepath.Join(dir, asrModelFilename)
-	if quiet {
-		log.Printf("[asr] loading model")
-	} else {
-		log.Printf("[asr] loading model from %s", modelPath)
-	}
-	m, err := asr.NewSenseVoice(modelPath)
-	if err != nil {
-		return nil, fmt.Errorf("load SenseVoice ASR model: %w", err)
-	}
-	asrInstance = m
-	log.Printf("[asr] model loaded successfully")
-	return asrInstance, nil
-}
 
 // TranscribeAudioBase64 accepts base64-encoded WAV audio data and returns
 // the transcribed text using the local SenseVoice ASR model.
@@ -421,12 +450,7 @@ func (a *App) transcribeWAVBytes(wavData []byte, opts asrTranscribeOpts) (string
 	if asrTranscribeModelHook != nil {
 		text, err = asrTranscribeModelHook(pcm)
 	} else {
-		var model asr.ASRModel
-		model, err = a.getASRModelQuiet(opts.Quiet)
-		if err != nil {
-			return "", fmt.Errorf("ASR model: %w", err)
-		}
-		text, err = model.Transcribe(pcm)
+		text, err = a.transcribeASR(pcm)
 	}
 	if err != nil {
 		return "", fmt.Errorf("transcribe: %w", err)

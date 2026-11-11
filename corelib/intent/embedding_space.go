@@ -81,7 +81,9 @@ func intentEmbeddingPrompted(emb embedding.Embedder) bool {
 // intentScoreCalibrationFor returns the score map matching the space emb
 // embeds Layer 2 text in.
 func intentScoreCalibrationFor(emb embedding.Embedder) intentScoreCalibration {
-	if _, ok := emb.(*embedding.Qwen3Embedder); ok {
+	// Family check, not a concrete-type assert: the guiapp lazy facade wraps
+	// the same Qwen3 space and must take the same calibration.
+	if embedding.EmbedderFamily(emb) == embedding.FamilyQwen3 {
 		// Qwen3 cosines live on a different scale than Gemma's in both the
 		// prompted and the raw regime; only the prompted map is calibrated.
 		if intentEmbeddingPrompted(emb) {

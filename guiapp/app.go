@@ -2852,6 +2852,9 @@ func (a *App) startup(ctx context.Context) {
 	// Start the runtime sampler before any heavy work so the first sample
 	// captures the WebView processes created alongside this window.
 	startPerfSampler()
+	// Return freed heap to the OS once the app has been idle for a while so
+	// RSS drops after work finishes instead of only when a model unloads.
+	startIdleMemoryReleaser()
 	a.ctx = ctx
 	// `MaClaw.exe --quit` only reaches OnStartup when no running instance was
 	// there to receive the handoff. The user asked for an exit, so do not open

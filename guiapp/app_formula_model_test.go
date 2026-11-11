@@ -14,6 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/formula"
 	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
+	"github.com/RapidAI/CodeClaw/corelib/modelmanager"
 )
 
 func withFormulaModelDir(t *testing.T) {
@@ -36,16 +37,18 @@ func withFormulaReleaseDown(t *testing.T) {
 
 func resetSharedFormula(t *testing.T) {
 	t.Helper()
+	resetSharedFormulaState()
+	t.Cleanup(resetSharedFormulaState)
+}
+
+func resetSharedFormulaState() {
 	sharedFormula.mu.Lock()
-	sharedFormula.eng = nil
+	if sharedFormula.mm != nil {
+		sharedFormula.mm.Shutdown()
+	}
+	sharedFormula.mm = nil
 	sharedFormula.dir = ""
 	sharedFormula.mu.Unlock()
-	t.Cleanup(func() {
-		sharedFormula.mu.Lock()
-		sharedFormula.eng = nil
-		sharedFormula.dir = ""
-		sharedFormula.mu.Unlock()
-	})
 }
 
 func TestCheckFormulaModelMissing(t *testing.T) {
@@ -181,15 +184,25 @@ func TestFormulaReadyUsesCacheAndRefetchesMissingFiles(t *testing.T) {
 
 	planted := &formula.Engine{}
 	sharedFormula.mu.Lock()
-	sharedFormula.eng = planted
+	sharedFormula.mm = modelmanager.New(modelmanager.Config[*formula.Engine]{
+		Name:        "formula-test",
+		Load:        func() (*formula.Engine, error) { return planted, nil },
+		UnloadDelay: time.Hour,
+	})
 	sharedFormula.dir = dir
 	sharedFormula.mu.Unlock()
+	if _, warmDone, err := sharedFormula.acquire(dir); err != nil {
+		t.Fatalf("plant shared formula engine: %v", err)
+	} else {
+		warmDone()
+	}
 
 	app := newOCRTestApp(corelib.AppConfig{FormulaEnabled: true})
-	eng, err := app.ensureFormulaReady()
+	eng, engDone, err := app.ensureFormulaReady()
 	if err != nil || eng != planted {
 		t.Fatalf("ready eng=%v err=%v", eng, err)
 	}
+	engDone()
 	deadline := time.Now().Add(5 * time.Second)
 	for hits.Load() == 0 {
 		if time.Now().After(deadline) {

@@ -247,3 +247,74 @@ func TestFederatedImportRetriesFailedNotification(t *testing.T) {
 		t.Fatalf("notification was not attached: %+v err=%v", stored, err)
 	}
 }
+
+func TestFederatedAcceptDisplacesTheEarlierController(t *testing.T) {
+	controller, _, _, controllerNotes := testService(t)
+	other, otherMachines, _, _ := testService(t)
+	target, _, _, _ := testService(t)
+	ctx := context.Background()
+	otherMachines.owned["user-c/mac-d"] = Machine{ID: "mac-d", Name: "远端二"}
+
+	// The production relay posts to the displaced grant's ControllerHub; here
+	// the hook calls that hub's revoke path directly.
+	hubs := map[string]*Service{}
+	target.RelayFederatedRevoke = func(ctx context.Context, grant Grant) {
+		if hub, ok := hubs[grant.ID]; ok {
+			_ = hub.RevokeFederated(ctx, grant.ID, grant.FederationSecret, false)
+		}
+	}
+
+	first, err := controller.InviteFederated(ctx, "tenant-a", "user-a", "mac-a", "bob@example.com", PermView, "https://hub-a.example.com", "https://hub-t.example.com", testFederationSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.TargetUserID = "user-b"
+	if err := target.ImportFederatedInvite(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	hubs[first.ID] = controller
+	if _, err := target.Accept(ctx, "tenant-b", "user-b", "mac-c", first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.AcceptFederated(ctx, first.ID, testFederationSecret, "mac-c", "对方电脑"); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := other.InviteFederated(ctx, "tenant-c", "user-c", "mac-d", "bob@example.com", PermOperate, "https://hub-c.example.com", "https://hub-t.example.com", testFederationSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.TargetUserID = "user-b"
+	if err := target.ImportFederatedInvite(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	hubs[second.ID] = other
+	if _, err := target.Accept(ctx, "tenant-b", "user-b", "mac-c", second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.AcceptFederated(ctx, second.ID, testFederationSecret, "mac-c", "对方电脑"); err != nil {
+		t.Fatal(err)
+	}
+
+	stored, err := target.FederationGrant(ctx, first.ID, testFederationSecret)
+	if err != nil || stored.Status != StatusRevoked {
+		t.Fatalf("displaced target-side grant = %+v err=%v", stored, err)
+	}
+	remote, err := controller.FederationGrant(ctx, first.ID, testFederationSecret)
+	if err != nil || remote.Status != StatusRevoked {
+		t.Fatalf("displaced controller-side grant = %+v err=%v", remote, err)
+	}
+	state, err := target.Snapshot(ctx, "tenant-b", "user-b", "mac-c")
+	if err != nil || len(state.Controlled) != 1 || state.Controlled[0].ID != second.ID {
+		t.Fatalf("controlled = %+v err=%v", state.Controlled, err)
+	}
+	ended := false
+	for _, item := range controllerNotes.items {
+		if item.Source == NoticeResult && item.AudienceUserID == "user-a" && item.Title == "远控已结束" {
+			ended = true
+		}
+	}
+	if !ended {
+		t.Fatalf("displaced controller was not told: %+v", controllerNotes.items)
+	}
+}

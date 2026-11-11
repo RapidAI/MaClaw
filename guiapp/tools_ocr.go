@@ -123,7 +123,7 @@ func runOCRFormula(app *App, args map[string]interface{}) string {
 	}
 	var eng *formula.Engine
 	if app != nil {
-		ready, err := app.ensureFormulaReady()
+		ready, done, err := app.ensureFormulaReady()
 		if err != nil {
 			if errors.Is(err, errFormulaNotReady) {
 				return "Formula model files are not present yet; a background download of FormulaNet has been started. Please retry shortly."
@@ -133,6 +133,7 @@ func runOCRFormula(app *App, args map[string]interface{}) string {
 			}
 			return fmt.Sprintf("ocr_recognize failed: %v", err)
 		}
+		defer done()
 		eng = ready
 	}
 	if eng == nil {

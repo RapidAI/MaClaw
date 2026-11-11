@@ -30,17 +30,6 @@ function prefersReducedMotion() {
         && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-// The live panel expands on the newest thinking; the transcript itself keeps
-// full messages. Keep only the tail so a long thought does not flood it.
-function remoteReasoningTail(messages: { reasoning_content?: string }[] | undefined, limit = 900) {
-    for (let i = (messages?.length || 0) - 1; i >= 0; i--) {
-        const reasoning = (messages?.[i]?.reasoning_content || '').trim();
-        // Code points, not UTF-16 units — an emoji at the cut must not split.
-        if (reasoning) return reasoning.length > limit ? Array.from(reasoning).slice(-limit).join('') : reasoning;
-    }
-    return '';
-}
-
 // Mounted only while the add-machine dialog is open: the focus trap belongs to
 // the dialog's lifetime, so its mount-only effects can move focus in and hand
 // it back to the "+" button on the way out.
@@ -255,25 +244,16 @@ export function TaskMachineBar({
                 workflow: detail?.task?.active_workflow ?? openTaskRow?.active_workflow ?? null,
                 workflowType: detail?.task?.workflow_type || openTaskRow?.workflow_type || '',
                 lastActivityAt: openTaskRow?.last_activity || detail?.task?.last_activity || '',
-                reasoningTail: remoteReasoningTail(detail?.messages),
-                // RecentArtifacts arrives newest-first from the desktop.
-                artifacts: (detail?.artifacts || []).slice(0, 6).map(artifact => ({
-                    title: (artifact.title || artifact.source_type || '').trim(),
-                    preview: (artifact.preview || '').trim(),
-                    sourceType: artifact.source_type || '',
-                    updatedAt: artifact.updated_at || '',
-                })).filter(artifact => artifact.title !== ''),
                 busySince: detailBusy && busySinceRef.current.at ? busySinceRef.current.at : undefined,
             },
+            // Keep thinking in `reasoning` so it renders as a 思考过程 block
+            // like a local task. A turn that is still thinking has no content
+            // yet; promoting the trail to content painted it as plain prose.
             messages: (detail?.messages || []).map(message => {
                 const content = (message.content || '').trim();
                 const reasoning = (message.reasoning_content || '').trim();
-                return {
-                    role: message.role,
-                    content: content || reasoning,
-                    reasoning: content ? reasoning : '',
-                };
-            }).filter(message => message.content.trim() !== ''),
+                return { role: message.role, content, reasoning };
+            }).filter(message => message.content !== '' || (message.reasoning || '') !== ''),
         });
         bindRemoteAssistantActions({
             send: text => sendMessage(detailPath, text),
@@ -404,17 +384,20 @@ export function TaskMachineBar({
                             ? localizeText(lang, 'Offline', '离线', '離線')
                             : permissionLabel(lang, grant.permission);
                         const shortLabel = machineTabShortLabel(lang, index);
+                        // A grant from another account shares the machine name
+                        // alone — the account disambiguates whose machine it is.
+                        const fullName = grant.account ? `${machineName} (${grant.account})` : machineName;
                         return (
                         <span key={grant.id} className={`mc-task-machine-tab-wrap${selected?.id === grant.id ? ' is-active' : ''}`}>
                             <button
                                 type="button"
                                 role="tab"
                                 aria-selected={selected?.id === grant.id}
-                                aria-label={machineName || shortLabel}
+                                aria-label={fullName || shortLabel}
                                 className={`mc-task-machine-tab${selected?.id === grant.id ? ' is-active' : ''}`}
                                 data-testid={`task-machine-tab-${grant.id}`}
                                 data-offline={grant.online === false ? 'true' : undefined}
-                                title={machineName ? `${machineName} · ${tabStatus}` : tabStatus}
+                                title={fullName ? `${fullName} · ${tabStatus}` : tabStatus}
                                 ref={selected?.id === grant.id ? activeTabRef : undefined}
                                 onClick={() => remote.selectGrant(grant.id)}
                             >

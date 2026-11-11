@@ -62,6 +62,23 @@ describe('TaskMachineBar', () => {
         expect(screen.getByTestId('task-machine-add').textContent).toBe('+');
     });
 
+    it('names the account on a granted tab tooltip', () => {
+        const control = remote({
+            state: {
+                machine_id: 'mac-a',
+                machines: [],
+                grants: [
+                    { id: 'g1', machine_id: 'mac-b', machine_name: 'mayong-pc', account: 'mayong@example.com', permission: 'operate', status: 'active', online: true },
+                ],
+                pending: [], invites: [], controlled: [],
+            },
+        });
+        render(<TaskMachineBar lang="zh-CN" remote={control} onCloseGrant={vi.fn()} />);
+        const grantTab = screen.getByTestId('task-machine-tab-g1');
+        expect(grantTab.getAttribute('title')).toBe('mayong-pc (mayong@example.com) · 可操作');
+        expect(grantTab.getAttribute('aria-label')).toBe('mayong-pc (mayong@example.com)');
+    });
+
     it('offers edge scrollers once the tab strip overflows', () => {
         render(<TaskMachineBar lang="zh-CN" remote={remote()} onCloseGrant={vi.fn()} />);
         expect(screen.queryByTestId('task-machine-scroll-left')).toBeNull();
@@ -245,5 +262,29 @@ describe('TaskMachineBar', () => {
             await remoteAssistantSend('继续');
         });
         expect(control.sendMessage).toHaveBeenCalledWith('D:/tasks/a', '继续');
+    });
+
+    it('keeps remote thinking in the reasoning field instead of the body', async () => {
+        const control = remote({
+            selected: { id: 'g1', machine_name: '家里', permission: 'operate', status: 'active', online: true },
+            operate: true,
+            detailPath: 'D:/tasks/a',
+            detail: {
+                messages: [
+                    { role: 'user', content: '北京天气' },
+                    { role: 'assistant', content: '', reasoning_content: 'thinking about weather' },
+                    { role: 'assistant', content: '现在晴', reasoning_content: 'final thought' },
+                ],
+                artifacts: [],
+            },
+        });
+        render(<TaskMachineBar lang="zh-CN" remote={control} onCloseGrant={vi.fn()} />);
+        const messages = remoteAssistantSessionSnapshot()?.messages || [];
+        // A turn that is still thinking has no content: it must surface as a
+        // 思考过程 block, not as a prose bubble.
+        const thinking = messages.find(m => m.reasoning === 'thinking about weather');
+        expect(thinking?.content).toBe('');
+        const answered = messages.find(m => m.content === '现在晴');
+        expect(answered?.reasoning).toBe('final thought');
     });
 });

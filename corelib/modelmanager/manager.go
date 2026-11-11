@@ -194,6 +194,16 @@ func (m *Manager[T]) Loaded() bool {
 	return m.loaded
 }
 
+// Peek returns the currently loaded model without acquiring it, scheduling
+// the unload timer, or loading it when absent. ok=false when nothing is in
+// memory. Intended for cheap state reads (dimension, backend) that must not
+// pay a load just to answer; anything that runs inference must Acquire.
+func (m *Manager[T]) Peek() (model T, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.model, m.loaded
+}
+
 // SetUnloadDelay changes the idle timeout. Takes effect on the next done() call.
 func (m *Manager[T]) SetUnloadDelay(d time.Duration) {
 	m.mu.Lock()

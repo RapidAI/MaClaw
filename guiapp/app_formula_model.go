@@ -10,9 +10,15 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/formula"
+	"github.com/RapidAI/CodeClaw/corelib/modelmanager"
 )
 
 const formulaDownloadTimeout = 30 * time.Minute
+
+// formulaIdleUnloadDelay releases the FormulaNet graphs after this much
+// recognition idle time; the next call reloads them transparently.
+// MACLAW_MODEL_IDLE_UNLOAD_SEC overrides it (0 disables idle unload).
+const formulaIdleUnloadDelay = 5 * time.Minute
 
 var formulaDownloadMu sync.Mutex
 
@@ -26,9 +32,12 @@ var errFormulaRepairing = errors.New("formula model files failed verification")
 // errFormulaDownloadBusy means another download already holds the lock.
 var errFormulaDownloadBusy = errors.New("formula download already running")
 
+// formulaRuntime owns the shared FormulaNet engine through a modelmanager:
+// the graphs load on first acquire and unload after formulaIdleUnloadDelay
+// of no use. A new manager is built when the model dir changes.
 type formulaRuntime struct {
 	mu  sync.Mutex
-	eng *formula.Engine
+	mm  *modelmanager.Manager[*formula.Engine]
 	dir string
 }
 
@@ -103,7 +112,7 @@ func (a *App) downloadFormulaModel(autoEnable bool) error {
 	}
 	// Load outside the download lock so a second request is not stuck behind
 	// graph init, and a busy caller can tell "already downloading" from "done".
-	if _, err := sharedFormula.open(dir); err != nil {
+	if err := sharedFormula.warm(dir); err != nil {
 		if a != nil {
 			a.emitFormulaProgress(0, 0, 0, err.Error())
 		}
@@ -196,31 +205,36 @@ func (a *App) formulaStillConfiguredEnabled() bool {
 	return err == nil && cfg.FormulaEnabled
 }
 
-// ensureFormulaReady returns the loaded FormulaNet engine. Disk pins are
-// checked on every call. A missing file or a failed pin starts a background
-// repair. An engine already loaded from a good copy is still returned, so a
-// deleted file does not blank out recognition while the files are fetched
-// again. With nothing loaded, the caller gets errFormulaNotReady or
-// errFormulaRepairing.
-func (a *App) ensureFormulaReady() (*formula.Engine, error) {
+// ensureFormulaReady returns the loaded FormulaNet engine plus a release
+// function the caller must run when done using it (done() schedules the idle
+// unload; it never invalidates the returned engine). Disk pins are checked on
+// every call. A missing file or a failed pin starts a background repair. An
+// engine already loaded from a good copy is still returned, so a deleted file
+// does not blank out recognition while the files are fetched again. With
+// nothing loaded, the caller gets errFormulaNotReady or errFormulaRepairing.
+func (a *App) ensureFormulaReady() (*formula.Engine, func(), error) {
 	dir, err := formula.DefaultModelDir()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := formula.VerifyLoaded(dir); err != nil {
 		if !errors.Is(err, formula.ErrCorrupt) && !errors.Is(err, os.ErrNotExist) {
-			return nil, err
+			return nil, nil, err
 		}
 		go a.backgroundPreloadFormulaModel()
-		if eng := sharedFormula.current(dir); eng != nil {
-			return eng, nil
+		// Acquire rather than peek: the caller holds a lease so the idle
+		// timer cannot unload the graphs mid-recognition. When nothing is
+		// resident, Open re-fails on the bad pins and we fall through to
+		// the not-ready errors below.
+		if eng, done, aerr := sharedFormula.acquire(dir); aerr == nil {
+			return eng, done, nil
 		}
 		if errors.Is(err, formula.ErrCorrupt) {
-			return nil, errFormulaRepairing
+			return nil, nil, errFormulaRepairing
 		}
-		return nil, errFormulaNotReady
+		return nil, nil, errFormulaNotReady
 	}
-	return sharedFormula.open(dir)
+	return sharedFormula.acquire(dir)
 }
 
 func (a *App) backgroundPreloadFormulaModel() {
@@ -249,31 +263,58 @@ func (a *App) backgroundPreloadFormulaModel() {
 		log.Printf("[formula] background preload: download complete")
 		return
 	}
-	if _, err := sharedFormula.open(dir); err != nil {
+	if err := sharedFormula.warm(dir); err != nil {
 		log.Printf("[formula] background preload: %v", err)
 	}
 }
 
-func (r *formulaRuntime) current(dir string) *formula.Engine {
+// acquire returns the loaded engine and a release function (done must run
+// when the caller stops using the engine — it schedules the idle unload).
+// A dir change swaps in a fresh manager so a stale dir's graphs are dropped.
+func (r *formulaRuntime) acquire(dir string) (*formula.Engine, func(), error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.eng != nil && r.dir == dir {
-		return r.eng
+	if r.mm == nil || r.dir != dir {
+		if r.mm != nil {
+			r.mm.Shutdown()
+		}
+		d := dir
+		r.mm = modelmanager.New(modelmanager.Config[*formula.Engine]{
+			Name: "formula",
+			Load: func() (*formula.Engine, error) { return formula.Open(d) },
+			// Graph memory is Go heap plus onnxrt scratch; the post-unload
+			// ReleaseMemory pass returns both to the OS.
+			Close:       nil,
+			UnloadDelay: formulaIdleUnloadDelay,
+		})
+		r.dir = dir
 	}
+	mm := r.mm
+	r.mu.Unlock()
+	return mm.Acquire()
+}
+
+// warm loads the engine now (download/verify callers prove the files open)
+// and releases the acquisition; the idle timer unloads it when unused.
+func (r *formulaRuntime) warm(dir string) error {
+	_, done, err := r.acquire(dir)
+	if err != nil {
+		return err
+	}
+	done()
 	return nil
 }
 
-func (r *formulaRuntime) open(dir string) (*formula.Engine, error) {
+// current returns the engine already resident for dir, or nil — a peek used
+// to keep serving a deleted file's cached engine while it re-downloads.
+func (r *formulaRuntime) current(dir string) *formula.Engine {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.eng != nil && r.dir == dir {
-		return r.eng, nil
+	if r.mm == nil || r.dir != dir {
+		return nil
 	}
-	eng, err := formula.Open(dir)
-	if err != nil {
-		return nil, err
+	eng, ok := r.mm.Peek()
+	if !ok {
+		return nil
 	}
-	r.eng = eng
-	r.dir = dir
-	return eng, nil
+	return eng
 }

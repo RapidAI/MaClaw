@@ -2,14 +2,13 @@ import { useEffect, useState } from "react";
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
 import { localizeText } from "../../i18n";
 import { workflowStatusForTask } from "../layout/SidebarTaskManagement";
-import type { RemoteAssistantArtifact, RemoteAssistantSession } from "../layout/remoteAssistantSession";
+import type { RemoteAssistantSession } from "../layout/remoteAssistantSession";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { formatProjectSearchTime } from "./projectSearchTime";
 
 // Heartbeat timestamps arrive on the poll cadence; a local 1s tick keeps the
 // "N 秒前" and elapsed readouts moving between polls while a run is live.
 const TICK_BUSY_MS = 1000;
-const TICK_IDLE_MS = 15000;
 
 function remoteTimeAgo(lang: string, iso: string | undefined, now: number): string {
     const stamp = Date.parse(iso || "");
@@ -37,31 +36,15 @@ function remoteTerminalStatus(status?: string): boolean {
     return /(completed|cancelled|canceled|failed|interrupted|done)/.test(String(status || "").trim().toLowerCase());
 }
 
-function RemoteArtifactList({ artifacts, lang, now }: { artifacts: RemoteAssistantArtifact[]; lang: string; now: number }) {
-    return (
-        <div className="aap-remote-artifact-list">
-            {artifacts.map((artifact, index) => (
-                <div className="aap-remote-artifact" key={`${artifact.title}-${index}`} title={artifact.preview || artifact.title}>
-                    <span className="aap-remote-artifact-name">{artifact.title}</span>
-                    {artifact.updatedAt ? (
-                        <span className="aap-remote-artifact-time">{remoteTimeAgo(lang, artifact.updatedAt, now)}</span>
-                    ) : null}
-                </div>
-            ))}
-        </div>
-    );
-}
-
 /**
- * Live status surface for a remote-control task. The get_task poll already
- * carries a workflow snapshot, a heartbeat, the newest thinking, and produced
- * artifacts — this renders them where the old static "对方正在执行…" hint sat.
- * While idle it keeps the produced-artifacts block visible on its own.
+ * Live status surface for a remote-control task. The get_task poll carries a
+ * workflow snapshot and a heartbeat; the transcript itself renders each
+ * turn's thinking as 思考过程 blocks, so this panel only reports the live
+ * state instead of duplicating the reasoning or the produced-file list.
  */
 export function RemoteAssistantActivity({ session, lang, theme: t }: { session: RemoteAssistantSession; lang: string; theme: Theme }) {
     const activity = session.activity;
     const busy = !!session.busy && !session.loading;
-    const artifacts = activity?.artifacts || [];
     const workflow = activity?.workflow || undefined;
     const workflowStatus = workflowStatusForTask(workflow, lang);
     const paused = /(paused|pause|已暂停|暂停)/.test(`${workflow?.status || ""} ${workflow?.phase || ""}`.toLowerCase());
@@ -72,12 +55,14 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
     const showPanel = (busy || paused || review) && !session.loading;
     const [now, setNow] = useState(() => Date.now());
     useEffect(() => {
-        if (!showPanel && artifacts.length === 0) return;
-        const timer = window.setInterval(() => setNow(Date.now()), busy ? TICK_BUSY_MS : TICK_IDLE_MS);
+        // The elapsed/heartbeat meta only renders while busy — ticking in a
+        // paused or waiting state would re-render for nobody.
+        if (!busy) return;
+        const timer = window.setInterval(() => setNow(Date.now()), TICK_BUSY_MS);
         return () => window.clearInterval(timer);
-    }, [artifacts.length, busy, showPanel]);
+    }, [busy]);
 
-    if (!showPanel && artifacts.length === 0) return null;
+    if (!showPanel) return null;
 
     let liveLabel = localizeText(lang, "Working on the other computer…", "对方正在执行…", "對方正在執行…");
     if (activity?.stopping) {
@@ -106,43 +91,22 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
 
     return (
         <div className="aap-remote-activity" data-testid="remote-activity">
-            {showPanel ? (
-                <AssistantReasoningPanel
-                    live={busy}
-                    // objectLabel only renders in live mode; a collapsed
-                    // paused/review panel carries it as the preview instead.
-                    preview={busy ? undefined : liveObject}
-                    defaultOpen={!!activity?.reasoningTail}
-                    label={liveLabel}
-                    objectLabel={liveObject}
-                    lang={lang}
-                    theme={t}
-                    contentKey={`remote-live|${session.grantId}|${session.projectPath}`}
-                >
-                    <>
-                        {activity?.reasoningTail ? (
-                            <div className="aap-remote-activity-thinking" data-testid="remote-activity-thinking">{activity.reasoningTail}</div>
-                        ) : null}
-                        {artifacts.length > 0 ? (
-                            <div className="aap-remote-artifacts-inline">
-                                <div className="aap-remote-artifacts-title">{localizeText(lang, "Produced so far", "已产出文件", "已產出文件")}</div>
-                                <RemoteArtifactList artifacts={artifacts} lang={lang} now={now} />
-                            </div>
-                        ) : null}
-                    </>
-                </AssistantReasoningPanel>
-            ) : null}
+            <AssistantReasoningPanel
+                live={busy}
+                // A paused/review row cannot expand (no body); preview keeps
+                // the object name visible under the label instead.
+                preview={busy ? undefined : liveObject}
+                defaultOpen={false}
+                label={liveLabel}
+                objectLabel={liveObject}
+                lang={lang}
+                theme={t}
+                contentKey={`remote-live|${session.grantId}|${session.projectPath}`}
+            >
+                {null}
+            </AssistantReasoningPanel>
             {busy && meta ? (
                 <div className="aap-remote-activity-meta" data-testid="remote-activity-meta">{meta}</div>
-            ) : null}
-            {artifacts.length > 0 ? (
-                <div className="aap-remote-artifacts" data-testid="remote-artifacts">
-                    <div className="aap-remote-artifacts-head">
-                        <span>{localizeText(lang, "Produced on that computer", "对方已产出文件", "對方已產出文件")}</span>
-                        <span className="aap-remote-artifacts-count">{artifacts.length}</span>
-                    </div>
-                    <RemoteArtifactList artifacts={artifacts} lang={lang} now={now} />
-                </div>
             ) : null}
         </div>
     );

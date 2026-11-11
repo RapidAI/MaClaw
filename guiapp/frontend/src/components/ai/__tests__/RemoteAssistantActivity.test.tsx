@@ -77,31 +77,17 @@ describe('RemoteAssistantActivity', () => {
         expect(screen.getByTestId('assistant-reasoning-label').textContent).toBe('等待对方处理审核…');
     });
 
-    it('opens the panel body on the newest reasoning tail while busy', () => {
+    it('shows a plain live status row without an expandable body', () => {
         renderActivity(session({
-            activity: { reasoningTail: '正在编译 snake_game.cpp' },
+            activity: { workflow: { status: 'active', phase: 'execute' } },
         }));
-        expect(screen.getByTestId('remote-activity-thinking').textContent).toBe('正在编译 snake_game.cpp');
+        // Thinking lives in the transcript's 思考过程 blocks and produced
+        // files stay on the other computer — the status row does not expand.
+        expect(screen.getByTestId('assistant-reasoning-panel').getAttribute('data-live')).toBe('true');
+        expect(screen.queryByTestId('assistant-reasoning-toggle-state')).toBeNull();
     });
 
-    it('keeps produced artifacts visible when the task is idle', () => {
-        renderActivity(session({
-            busy: false,
-            activity: {
-                artifacts: [
-                    { title: 'snake_game.cpp', updatedAt: new Date().toISOString() },
-                    { title: 'build.log' },
-                ],
-            },
-        }));
-        expect(screen.queryByTestId('assistant-reasoning-panel')).toBeNull();
-        const block = screen.getByTestId('remote-artifacts');
-        expect(block.textContent).toContain('对方已产出文件');
-        expect(block.textContent).toContain('snake_game.cpp');
-        expect(block.textContent).toContain('build.log');
-    });
-
-    it('renders nothing while idle with no artifacts', () => {
+    it('renders nothing while idle', () => {
         const { container } = renderActivity(session({ busy: false, activity: {} }));
         expect(container.firstChild).toBeNull();
     });

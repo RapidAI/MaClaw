@@ -398,7 +398,8 @@ type CompanionTab = {
     shareMine?: boolean;
     notes?: CompanionShareNote[];
     saveError: string;
-    htmlPreview: boolean;
+    /** Rendered view for HTML / Markdown tabs; source editing when false. */
+    preview: boolean;
     kind?: "web";
     frameUrl?: string;
 };
@@ -710,13 +711,14 @@ function notesFromDoc(doc: CompanionDoc): CompanionShareNote[] | undefined {
 function tabFromDoc(doc: CompanionDoc, fallbackPath: string): CompanionTab {
     const path = field(doc, "path", "Path", fallbackPath);
     const name = field(doc, "name", "Name", path.split(/[/\\]/).pop() || path);
+    const content = field(doc, "content", "Content", "");
     return {
         path,
         name,
         editable: field(doc, "editable", "Editable", false),
         readOnly: field(doc, "readOnly", "ReadOnly", !field(doc, "editable", "Editable", false)),
         canExport: field(doc, "canExport", "CanExport", false),
-        content: field(doc, "content", "Content", ""),
+        content,
         loadedHash: field(doc, "loadedHash", "LoadedHash", ""),
         sessionId: field(doc, "sessionId", "SessionID", ""),
         size: Number(field(doc, "size", "Size", 0)) || 0,
@@ -733,7 +735,7 @@ function tabFromDoc(doc: CompanionDoc, fallbackPath: string): CompanionTab {
         confirmOverwrite: false,
         previewEpoch: 0,
         saveError: "",
-        htmlPreview: false,
+        preview: filePreviewKindFromName(name) === "markdown" && markdownPreviewFits(content) && content.trim() !== "",
         notes: notesFromDoc(doc),
     };
 }
@@ -752,6 +754,18 @@ const AtxHeadingLine = memo(function AtxHeadingLine({ line, index, onActivate }:
 });
 
 const markdownSegmentLineCap = 2000;
+
+// The rendered pane parses every line into blocks. Past the editor's own
+// fancy cap a plain textarea is the faster default — 预览 still opens it.
+function markdownPreviewFits(content: string): boolean {
+    let newlines = 0;
+    for (let i = 0; i < content.length; i += 1) {
+        if (content.charCodeAt(i) !== 10) continue;
+        newlines += 1;
+        if (newlines >= markdownSegmentLineCap) return false;
+    }
+    return true;
+}
 
 type MarkdownSegment =
     | { kind: "edit"; start: number; text: string }
@@ -3901,7 +3915,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             ...next,
                             draft: tab.draft,
                             previewEpoch: tab.previewEpoch + 1,
-                            htmlPreview: tab.htmlPreview,
+                            preview: tab.preview,
                         };
                     }
                     const keepSelection = sameSelectionAnchor(next.content, tab.selection, tab.selectionStart);
@@ -3915,7 +3929,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         selection: keepSelection ? tab.selection : "",
                         selectionStart: keepSelection ? tab.selectionStart : -1,
                         previewEpoch: tab.previewEpoch,
-                        htmlPreview: tab.htmlPreview,
+                        preview: tab.preview,
                     };
                 });
             });
@@ -5166,11 +5180,15 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
     }, []);
     const textEditorKind = kind === "markdown" || kind === "text" || kind === "code" || kind === "html";
     const showEditor = Boolean(activeTab && !isWebTab && !activeTab.error && textEditorKind && (activeTab.editable || activeTab.content || activeTab.readOnlyReason));
-    const showPreview = Boolean(activeTab && !isWebTab && !activeTab.error && (kind === "pptx" || kind === "docx" || kind === "pdf" || kind === "xlsx" || kind === "office" || kind === "image" || kind === "video" || kind === "audio" || kind === "html" || kind === "latex"));
+    const previewToggleKind = kind === "html" || kind === "markdown";
+    // HTML/Markdown previews render the same text the editor would; a file that
+    // failed the text sniff has nothing to show in either mode, so it keeps the
+    // unsupported notice instead of a blank pane.
+    const showPreview = Boolean(activeTab && !isWebTab && !activeTab.error && (kind === "pptx" || kind === "docx" || kind === "pdf" || kind === "xlsx" || kind === "office" || kind === "image" || kind === "video" || kind === "audio" || kind === "latex" || (previewToggleKind && showEditor)));
     const emptyFile = Boolean(activeTab && !isWebTab && !activeTab.error && !showEditor && activeTab.size <= 0);
-    const htmlPreviewing = Boolean(activeTab && kind === "html" && activeTab.htmlPreview);
-    const showSource = showEditor && !htmlPreviewing;
-    const showPreviewPane = showPreview && !emptyFile && (kind !== "html" || htmlPreviewing);
+    const renderedPreviewing = Boolean(activeTab && previewToggleKind && activeTab.preview);
+    const showSource = showEditor && !renderedPreviewing;
+    const showPreviewPane = showPreview && !emptyFile && (!previewToggleKind || renderedPreviewing);
     const unsupported = Boolean(activeTab && !isWebTab && !activeTab.error && !showEditor && !showPreview && !emptyFile);
     const cloudDisabled = !activeTab || !activeTab.canExport || activeTab.size > CLOUD_DISABLE_BYTES;
     const [importBusyPath, setImportBusyPath] = useState("");
@@ -6362,7 +6380,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     confirmOverwrite: false,
                     previewEpoch: 0,
                     saveError: "",
-                    htmlPreview: false,
+                    preview: false,
                     kind: "web",
                     frameUrl: frame,
                 };
@@ -7164,14 +7182,18 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                 <div className="file-companion-split" data-testid="file-companion-split" ref={splitRef}>
                     <section className="file-companion-split-preview">
                         {holdPlayer || !activeTab.error ? null : <div data-testid="file-companion-file-error">{fileErrorText(activeTab.error)}</div>}
-                        {!holdPlayer && kind === "html" && !activeTab.error ? (
+                        {/* The selection lives in the source textarea, which is gone
+                            in either mode after the flip — drop it so a stale quote
+                            cannot ride along on the next question. The toggle only
+                            matters when a source editor exists to flip to. */}
+                        {!holdPlayer && previewToggleKind && !activeTab.error && showEditor ? (
                             <button
                                 type="button"
                                 className="file-companion-tool"
-                                data-testid="file-companion-html-toggle"
-                                onClick={() => updateActive({ htmlPreview: !activeTab.htmlPreview })}
+                                data-testid="file-companion-preview-toggle"
+                                onClick={() => updateActive({ preview: !activeTab.preview, selection: "", selectionStart: -1 })}
                             >
-                                {activeTab.htmlPreview ? cs("源码") : cs("预览")}
+                                {activeTab.preview ? cs("源码") : cs("预览")}
                             </button>
                         ) : null}
                         {!holdPlayer && showSource && kind === "markdown" ? (
@@ -7243,7 +7265,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             </div>
                         ) : null}
                         {!holdPlayer && showPreviewPane ? (
-                            <div data-testid="file-companion-preview" style={{ flex: 1, minHeight: 160 }}>
+                            <div data-testid="file-companion-preview" style={{ flex: 1, minHeight: 160, overflow: "auto" }}>
                                 <FilePreviewView
                                     key={`${activeTab.path}:${activeTab.previewEpoch}`}
                                     file={previewFile}

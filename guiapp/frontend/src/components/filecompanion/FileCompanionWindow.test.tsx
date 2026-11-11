@@ -230,6 +230,22 @@ function renderWindow(options?: { askOnOpen?: boolean }) {
     );
 }
 
+// Markdown tabs open on the rendered preview; the 源码 toggle brings back the
+// source editor. Specs that drive the textarea call these instead of querying
+// the editor testid directly.
+function sourceEditorEl(): HTMLTextAreaElement {
+    const toggle = screen.queryByTestId("file-companion-preview-toggle");
+    if (toggle && !screen.queryByTestId("file-companion-editor")) fireEvent.click(toggle);
+    return screen.getByTestId("file-companion-editor") as HTMLTextAreaElement;
+}
+
+async function sourceEditor(): Promise<HTMLTextAreaElement> {
+    await waitFor(() => {
+        sourceEditorEl();
+    });
+    return sourceEditorEl();
+}
+
 // 导出 PDF opens a destination panel. 导出文件 is the save-dialog path.
 function exportChatAsFile() {
     fireEvent.click(screen.getByTestId("file-companion-export-chat"));
@@ -717,10 +733,10 @@ describe("FileCompanionWindow", () => {
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: path.endsWith("b.md") ? "beta" : "alpha" }));
         const runtime = installRuntime();
         renderWindow();
-        expect((await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha");
+        expect((await sourceEditor() as HTMLTextAreaElement).value).toBe("alpha");
         runtime.emit("file-companion:open", ["C:/notes/b.md"]);
         await waitFor(() => {
-            expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("beta");
+            expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("beta");
         });
     });
 
@@ -1666,7 +1682,7 @@ describe("FileCompanionWindow", () => {
         expect(choose).not.toHaveBeenCalled();
         await act(async () => { releaseBoot({ paths: ["C:/notes/a.md"] }); });
         await screen.findByTestId("file-companion-tab-a.md");
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("alpha");
         expect(choose).not.toHaveBeenCalled();
     });
 
@@ -1705,7 +1721,7 @@ describe("FileCompanionWindow", () => {
         installRuntime();
         renderWindow();
         await screen.findByTestId("file-companion-tab-a.md");
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("alpha");
         expect(choose).not.toHaveBeenCalled();
     });
 
@@ -1717,7 +1733,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByTestId("file-companion-tab-a.md");
         await screen.findByTestId("file-companion-tab-b.md");
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("beta");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("beta");
         const files = screen.getByTestId("file-companion-titlebar-files");
         const chooseButton = screen.getByTestId("file-companion-choose");
         expect(chooseButton.closest("[data-testid='file-companion-titlebar']")).toBe(screen.getByTestId("file-companion-titlebar"));
@@ -1748,7 +1764,7 @@ describe("FileCompanionWindow", () => {
         });
         await screen.findByTestId("file-companion-tab-b.md");
         expect(open.mock.calls.map((call) => call[0])).toEqual(["C:/notes/a.md", "C:/notes/b.md"]);
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("beta");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("beta");
     });
 
     it("keeps a file that finishes opening after another tab is closed", async () => {
@@ -1768,7 +1784,7 @@ describe("FileCompanionWindow", () => {
             releaseNext(doc("C:/notes/b.md", { editable: true, readOnly: false, content: "beta" }));
         });
         await screen.findByTestId("file-companion-tab-b.md");
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("beta");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("beta");
     });
 
     it("asks again after the last tab is closed and the window is shown", async () => {
@@ -1801,7 +1817,7 @@ describe("FileCompanionWindow", () => {
         choose.mockResolvedValue(["C:/notes/a.md"]);
         pickLocalFile();
         await screen.findByTestId("file-companion-tab-a.md");
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("alpha");
     });
 
     it("opens another file from the last tab", async () => {
@@ -1817,9 +1833,9 @@ describe("FileCompanionWindow", () => {
         const chooseButton = screen.getByTestId("file-companion-choose");
         expect(chooseButton.closest("[data-testid='file-companion-titlebar']")).toBe(screen.getByTestId("file-companion-titlebar"));
         expect(strip.compareDocumentPosition(chooseButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("gamma");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("gamma");
         fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("alpha");
     });
 
     it("shows the file picked from the dialog while another file is open", async () => {
@@ -1828,10 +1844,10 @@ describe("FileCompanionWindow", () => {
         choose.mockResolvedValue(["C:/notes/c.md"]);
         installRuntime();
         renderWindow();
-        expect((await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha");
+        expect((await sourceEditor() as HTMLTextAreaElement).value).toBe("alpha");
         pickLocalFile();
         await waitFor(() => {
-            expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("gamma");
+            expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("gamma");
         });
     });
 
@@ -1940,7 +1956,7 @@ describe("FileCompanionWindow", () => {
         installRuntime();
         renderWindow();
         await screen.findByTestId("file-companion-tab-a.md");
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("alpha");
         const choose = screen.getByTestId("file-companion-choose");
         const close = screen.getByTestId("file-companion-close");
         const bar = screen.getByTestId("file-companion-titlebar");
@@ -1961,7 +1977,7 @@ describe("FileCompanionWindow", () => {
         expect(hideWindow).toHaveBeenCalledTimes(1);
         expect(quit).not.toHaveBeenCalled();
         expect(screen.getByTestId("file-companion-tab-a.md")).toBeTruthy();
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("alpha");
     });
 
     it("fills the companion window from the title bar and restores that size", async () => {
@@ -6954,7 +6970,7 @@ describe("FileCompanionWindow", () => {
         }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         expect(editor.readOnly).toBe(true);
         expect(editor.value).toContain("keep");
         expect(screen.getByTestId("file-companion-readonly-note").textContent).toContain("没有写入权限");
@@ -6970,7 +6986,7 @@ describe("FileCompanionWindow", () => {
         }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         expect(editor.readOnly).toBe(true);
         expect(editor.value).toContain("truncated preview");
         expect(screen.getByTestId("file-companion-readonly-note").textContent).toContain("文件过大，为避免截断写回，已禁止保存");
@@ -7021,7 +7037,7 @@ describe("FileCompanionWindow", () => {
         });
         const runtime = installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         expect(editor.value).toContain("alpha beta");
         runtime.emit("ai-assistant-response", JSON.stringify({
             session_key: "file-companion:a.md",
@@ -7030,7 +7046,7 @@ describe("FileCompanionWindow", () => {
             request_id: "rewrite",
         }));
         await waitFor(() => {
-            expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toContain("gamma");
+            expect((sourceEditorEl() as HTMLTextAreaElement).value).toContain("gamma");
         });
     });
 
@@ -7048,7 +7064,7 @@ describe("FileCompanionWindow", () => {
         });
         const runtime = installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "alpha local" } });
         runtime.emit("ai-assistant-response", JSON.stringify({
             session_key: "file-companion:a.md",
@@ -7059,7 +7075,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => {
             expect(screen.getByTestId("file-companion-conflict").textContent).toContain("文件在磁盘上已被修改");
         });
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha local");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("alpha local");
     });
 
     it("keeps a draft typed while the send is still saving", async () => {
@@ -7069,7 +7085,7 @@ describe("FileCompanionWindow", () => {
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1", loadedHash: "h1" }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
         const input = screen.getByTestId("file-companion-input") as HTMLTextAreaElement;
         fireEvent.change(input, { target: { value: "先问这句" } });
@@ -7097,7 +7113,7 @@ describe("FileCompanionWindow", () => {
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1", loadedHash: "h1" }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "改这一段" } });
         fireEvent.click(screen.getByTestId("file-companion-send"));
@@ -7111,7 +7127,7 @@ describe("FileCompanionWindow", () => {
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha beta alpha" }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         editor.setSelectionRange(11, 16);
         fireEvent.select(editor);
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "改这一段" } });
@@ -7130,7 +7146,7 @@ describe("FileCompanionWindow", () => {
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha beta alpha" }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         editor.setSelectionRange(11, 16);
         fireEvent.select(editor);
         fireEvent.change(editor, { target: { value: "alpha beta ALPHA", selectionStart: 11, selectionEnd: 16 } });
@@ -7148,7 +7164,7 @@ describe("FileCompanionWindow", () => {
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha beta alpha" }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         editor.setSelectionRange(11, 16);
         fireEvent.select(editor);
         fireEvent.change(editor, { target: { value: "alpha beta alpha!", selectionStart: 17, selectionEnd: 17 } });
@@ -7169,7 +7185,7 @@ describe("FileCompanionWindow", () => {
         });
         const runtime = installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         editor.setSelectionRange(11, 16);
         fireEvent.select(editor);
         runtime.emit("ai-assistant-response", JSON.stringify({
@@ -7179,7 +7195,7 @@ describe("FileCompanionWindow", () => {
             request_id: "reload-selection",
         }));
         await waitFor(() => {
-            expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("no alpha here");
+            expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("no alpha here");
         });
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "再问一句" } });
         fireEvent.click(screen.getByTestId("file-companion-send"));
@@ -7198,7 +7214,7 @@ describe("FileCompanionWindow", () => {
         });
         const runtime = installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         editor.setSelectionRange(11, 16);
         fireEvent.select(editor);
         runtime.emit("ai-assistant-response", JSON.stringify({
@@ -7208,7 +7224,7 @@ describe("FileCompanionWindow", () => {
             request_id: "reload-keep",
         }));
         await waitFor(() => {
-            expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toContain("译文");
+            expect((sourceEditorEl() as HTMLTextAreaElement).value).toContain("译文");
         });
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "再改一次" } });
         fireEvent.click(screen.getByTestId("file-companion-send"));
@@ -7225,7 +7241,7 @@ describe("FileCompanionWindow", () => {
         save.mockResolvedValue({ saved: false, conflict: true, diskHash: "disk" });
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
         await waitFor(() => {
             expect(screen.getByTestId("file-companion-conflict").textContent).toContain("文件在磁盘上已被修改");
@@ -7254,7 +7270,7 @@ describe("FileCompanionWindow", () => {
         save.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
         const runtime = installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
         await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.md", "v2", "h1"), { timeout: 2000 });
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "请改写" } });
@@ -7273,7 +7289,7 @@ describe("FileCompanionWindow", () => {
             expect(screen.getByTestId("file-companion-tab-a.md").textContent ?? "").not.toContain("*");
         });
         expect(send).not.toHaveBeenCalled();
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("v2");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("v2");
         expect((screen.getByTestId("file-companion-input") as HTMLTextAreaElement).value).toBe("请改写");
         expect(fileCompanionInputHistory()).toEqual([]);
     });
@@ -7292,14 +7308,14 @@ describe("FileCompanionWindow", () => {
         await screen.findByTestId("file-companion-empty");
         runtime.emit("file-companion:open", ["C:/notes/a.md"]);
         runtime.emit("file-companion:open", ["C:/notes/a.md"]);
-        expect((await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("new");
+        expect((await sourceEditor() as HTMLTextAreaElement).value).toBe("new");
         await act(async () => {
             releaseFirst(doc("C:/notes/a.md", { editable: true, readOnly: false, content: "old", loadedHash: "h-old" }));
             await Promise.resolve();
             await Promise.resolve();
         });
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("new");
-        fireEvent.change(screen.getByTestId("file-companion-editor"), { target: { value: "typed" } });
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("new");
+        fireEvent.change(sourceEditorEl(), { target: { value: "typed" } });
         await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.md", "typed", "h-new"), { timeout: 2000 });
     });
 
@@ -7308,7 +7324,7 @@ describe("FileCompanionWindow", () => {
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1", loadedHash: "h1" }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
         expect(save).not.toHaveBeenCalled();
         fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
@@ -7324,7 +7340,7 @@ describe("FileCompanionWindow", () => {
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1", loadedHash: "h1" }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
         expect(save).not.toHaveBeenCalled();
         fireEvent.click(screen.getByLabelText("关闭 a.md"));
@@ -7348,16 +7364,16 @@ describe("FileCompanionWindow", () => {
         save.mockImplementation(() => new Promise((resolve) => { releaseSave = resolve; }));
         const runtime = installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
         await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.md", "v2", "h1"), { timeout: 2000 });
         runtime.emit("file-companion:open", ["C:/notes/a.md"]);
         await waitFor(() => {
-            expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("stale");
+            expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("stale");
         });
         releaseSave({ saved: true, diskHash: "h2" });
         await waitFor(() => {
-            expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("v2");
+            expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("v2");
         });
         expect(save.mock.calls.map((call) => call[1])).not.toContain("stale");
     });
@@ -7376,7 +7392,7 @@ describe("FileCompanionWindow", () => {
         save.mockImplementation(() => new Promise((resolve) => { releaseSave = resolve; }));
         const runtime = installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
         await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.md", "v2", "h1"), { timeout: 2000 });
         runtime.emit("file-companion:open", ["C:/notes/a.md"]);
@@ -7391,10 +7407,10 @@ describe("FileCompanionWindow", () => {
             await Promise.resolve();
         });
         await waitFor(() => {
-            expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("v2");
+            expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("v2");
         });
         expect(opens).toBe(3);
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).not.toBe("old");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).not.toBe("old");
     });
 
     it("keeps the chat position when the reader has scrolled up", async () => {
@@ -7492,10 +7508,10 @@ describe("FileCompanionWindow", () => {
         save.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
         await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.md", "v2", "h1"), { timeout: 2000 });
-        fireEvent.change(screen.getByTestId("file-companion-editor"), { target: { value: "v3" } });
+        fireEvent.change(sourceEditorEl(), { target: { value: "v3" } });
         release({ saved: true, diskHash: "h2" });
         await waitFor(() => expect(save.mock.calls.some((call) => call[1] === "v3")).toBe(true), { timeout: 2000 });
     });
@@ -7509,14 +7525,14 @@ describe("FileCompanionWindow", () => {
         }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         expect(editor.value).toBe("intro");
         expect(screen.getByTestId("file-companion-atx-line").textContent).toContain("Title");
         fireEvent.change(editor, { target: { value: "intro2" } });
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("intro2");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("intro2");
         expect(screen.getByTestId("file-companion-atx-line").textContent).toContain("Title");
         fireEvent.click(screen.getByTestId("file-companion-atx-line"));
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("intro2\n# Title\nkeep");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("intro2\n# Title\nkeep");
         expect(screen.queryByTestId("file-companion-atx-line")).toBeNull();
     });
 
@@ -7561,6 +7577,20 @@ describe("FileCompanionWindow", () => {
         expect(screen.queryByTestId("file-companion-editor")).toBeNull();
     });
 
+    it("keeps the unsupported message when a markdown file is not readable text", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/binary.md"] });
+        // The host leaves content empty and the doc uneditable when the payload
+        // fails the UTF-8 sniff (for example a GBK-encoded .md).
+        open.mockImplementation(async (path: string) => doc(path, { size: 40, content: "", editable: false }));
+        installRuntime();
+        renderWindow();
+        const note = await screen.findByTestId("file-companion-unsupported");
+        expect(note.textContent).toContain("此文件类型暂不支持预览");
+        expect(note.textContent).toContain("binary.md");
+        expect(screen.queryByTestId("file-companion-preview")).toBeNull();
+        expect(screen.queryByTestId("file-companion-preview-toggle")).toBeNull();
+    });
+
     it("renders a leading heading outside the source editor", async () => {
         boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
         open.mockImplementation(async (path: string) => doc(path, {
@@ -7570,11 +7600,11 @@ describe("FileCompanionWindow", () => {
         }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         expect(editor.value).toBe("keep");
         expect(screen.getByTestId("file-companion-atx-line").textContent).toContain("Title");
         fireEvent.click(screen.getByTestId("file-companion-atx-line"));
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("# Title\nkeep");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("# Title\nkeep");
         expect(screen.queryByTestId("file-companion-atx-line")).toBeNull();
     });
 
@@ -7584,12 +7614,12 @@ describe("FileCompanionWindow", () => {
         save.mockRejectedValue(new Error("file is not writable"));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
         await waitFor(() => {
             expect(screen.getByTestId("file-companion-save-error").textContent).toContain("没有写入权限");
         }, { timeout: 2000 });
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("v2");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("v2");
         expect(screen.queryByTestId("file-companion-file-error")).toBeNull();
     });
 
@@ -7599,7 +7629,7 @@ describe("FileCompanionWindow", () => {
         send.mockRejectedValue("只有视频或音频可以生成笔记");
         installRuntime();
         renderWindow();
-        await screen.findByTestId("file-companion-editor");
+        await sourceEditor();
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "hello" } });
         fireEvent.click(screen.getByTestId("file-companion-send"));
         await waitFor(() => {
@@ -7614,7 +7644,7 @@ describe("FileCompanionWindow", () => {
         save.mockResolvedValue({ saved: false, conflict: true, diskHash: "disk" });
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
         await waitFor(() => expect(save).toHaveBeenCalled(), { timeout: 2000 });
         expect(screen.getByTestId("file-companion-conflict").textContent).toContain("文件在磁盘上已被修改");
@@ -7632,13 +7662,50 @@ describe("FileCompanionWindow", () => {
         }));
         installRuntime();
         renderWindow();
-        expect((await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement).value).toContain("Hello");
+        expect((await sourceEditor() as HTMLTextAreaElement).value).toContain("Hello");
         expect(screen.queryByTestId("html-preview-panel")).toBeNull();
-        fireEvent.click(screen.getByTestId("file-companion-html-toggle"));
+        fireEvent.click(screen.getByTestId("file-companion-preview-toggle"));
         expect(await screen.findByTestId("html-preview-panel")).toBeTruthy();
         expect(screen.queryByTestId("file-companion-editor")).toBeNull();
-        fireEvent.click(screen.getByTestId("file-companion-html-toggle"));
-        expect((await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement).value).toContain("Hello");
+        fireEvent.click(screen.getByTestId("file-companion-preview-toggle"));
+        expect((await sourceEditor() as HTMLTextAreaElement).value).toContain("Hello");
+    });
+
+    it("opens a Markdown file rendered and switches to the source editor", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            editable: true,
+            readOnly: false,
+            content: "# Title\n\nkeep",
+        }));
+        installRuntime();
+        renderWindow();
+        const preview = await screen.findByTestId("file-companion-preview");
+        expect(preview.textContent).toContain("Title");
+        expect(preview.textContent).toContain("keep");
+        expect(screen.queryByTestId("file-companion-editor")).toBeNull();
+        const editor = await sourceEditor();
+        expect(editor.value).toContain("keep");
+        expect(screen.queryByTestId("file-companion-preview")).toBeNull();
+        fireEvent.click(screen.getByTestId("file-companion-preview-toggle"));
+        expect(await screen.findByTestId("file-companion-preview")).toBeTruthy();
+    });
+
+    it("opens a very long markdown file in the source editor", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/long.md"] });
+        const body = Array.from({ length: 2100 }, (_, index) => `line ${index}`).join("\n");
+        open.mockImplementation(async (path: string) => doc(path, {
+            editable: true,
+            readOnly: false,
+            content: body,
+        }));
+        installRuntime();
+        renderWindow();
+        const editor = await sourceEditor();
+        expect(editor.value).toContain("line 0");
+        expect(screen.queryByTestId("file-companion-preview")).toBeNull();
+        fireEvent.click(screen.getByTestId("file-companion-preview-toggle"));
+        expect(await screen.findByTestId("file-companion-preview")).toBeTruthy();
     });
 
     it("keeps a fenced heading in the source and renders the heading after the fence", async () => {
@@ -7650,7 +7717,7 @@ describe("FileCompanionWindow", () => {
         }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         expect(editor.value).toContain("# Hidden");
         expect(editor.value).not.toContain("# Shown");
         expect(screen.getByTestId("file-companion-atx-line").textContent).toContain("Shown");
@@ -7665,7 +7732,7 @@ describe("FileCompanionWindow", () => {
         }));
         installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         expect(editor.value).toContain("# Hidden");
         expect(editor.value).not.toContain("# Shown");
         expect(screen.getByTestId("file-companion-atx-line").textContent).toContain("Shown");
@@ -7680,11 +7747,11 @@ describe("FileCompanionWindow", () => {
         }));
         installRuntime();
         renderWindow();
-        expect((await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("keep");
+        expect((await sourceEditor() as HTMLTextAreaElement).value).toBe("keep");
         fireEvent.click(screen.getByTestId("file-companion-atx-line"));
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("# One\nkeep");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("# One\nkeep");
         fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
-        expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("body");
+        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("body");
         expect(screen.getByTestId("file-companion-atx-line").textContent).toContain("Two");
     });
 
@@ -7821,7 +7888,7 @@ describe("FileCompanionWindow", () => {
         send.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
         const runtime = installRuntime();
         renderWindow();
-        const editor = await screen.findByTestId("file-companion-editor") as HTMLTextAreaElement;
+        const editor = await sourceEditor() as HTMLTextAreaElement;
         editor.setSelectionRange(0, 5);
         fireEvent.select(editor);
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "草稿不要发出去" } });
@@ -7876,7 +7943,7 @@ describe("FileCompanionWindow", () => {
         send.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
         const runtime = installRuntime();
         renderWindow();
-        await screen.findByTestId("file-companion-editor");
+        await sourceEditor();
         const input = screen.getByTestId("file-companion-input") as HTMLTextAreaElement;
         fireEvent.change(input, { target: { value: "read the paper" } });
         fireEvent.keyDown(input, { key: "Enter" });

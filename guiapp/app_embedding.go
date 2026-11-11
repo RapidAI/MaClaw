@@ -180,6 +180,7 @@ type VectorSearchStatus struct {
 	ModelPath                 string `json:"model_path"`                   // full path to model file
 	ModelSize                 int64  `json:"model_size"`                   // file size in bytes
 	EmbedderOK                bool   `json:"embedder_ok"`                  // embedder loaded and functional
+	EmbedderLoaded            bool   `json:"embedder_loaded"`              // weights currently resident in memory
 	EmbedderDim               int    `json:"embedder_dim"`                 // embedding dimension (0 if not loaded)
 	EntryCount                int    `json:"entry_count"`                  // total memory entries
 	EmbeddedCount             int    `json:"embedded_count"`               // entries with embeddings
@@ -210,6 +211,9 @@ func (a *App) GetVectorSearchStatus() VectorSearchStatus {
 	}
 
 	// Embedder runtime check.
+	if lazy, ok := a.intentEmbedder.(*embedding.LazyEmbedder); ok {
+		status.EmbedderLoaded = lazy.Loaded()
+	}
 	if a.memoryStore != nil {
 		status.EmbedderOK = a.memoryStore.EmbedderActive()
 		if status.EmbedderOK {
@@ -858,9 +862,23 @@ func (a *App) activateIntentClassifierEmbedderAsync(emb embedding.Embedder) {
 	fmt.Printf("[embedding] intent-only activation complete in %v\n", time.Since(t0))
 }
 
+// embeddingIdleUnloadDelay is how long the shared local embedding model may
+// sit unused before its weights are released. Intent classification is on the
+// hot path of every turn, so the delay is longer than the 5-minute media
+// model default; a reload (~1.5s, mmap) then happens at most once per break.
+// MACLAW_MODEL_IDLE_UNLOAD_SEC overrides it (0 disables the idle unload).
+const embeddingIdleUnloadDelay = 30 * time.Minute
+
 // sharedEmbeddingEmbedder serializes model loading and publishes one shared
 // embedding runtime per App. This prevents concurrent startup/settings/download
 // paths from loading multiple model instances and spiking memory.
+//
+// The stored embedder is a *embedding.LazyEmbedder facade: the weights are
+// verified eagerly here (the call contract is unchanged — errors and the
+// noop result surface exactly like a direct load), then held by a
+// modelmanager that releases them after embeddingIdleUnloadDelay of no use
+// and reloads on the next call. Consumers keep the facade, so the unload/
+// reload cycle is invisible to classifiers, stores and attached heads.
 func (a *App) sharedEmbeddingEmbedder(modelPath string, load func(string) (embedding.Embedder, error)) (embedding.Embedder, error) {
 	if a == nil {
 		return embedding.NoopEmbedder{}, nil
@@ -869,6 +887,14 @@ func (a *App) sharedEmbeddingEmbedder(modelPath string, load func(string) (embed
 	defer a.embeddingMu.Unlock()
 	if a.intentEmbedder != nil && !embedding.IsNoop(a.intentEmbedder) {
 		if strings.TrimSpace(modelPath) == "" || modelPath == a.intentEmbedderPath {
+			// A hit still verifies the file is loadable: the facade may be
+			// paged out after an idle unload, and callers of this function
+			// rely on it proving the model works.
+			if lazy, ok := a.intentEmbedder.(*embedding.LazyEmbedder); ok && !lazy.Loaded() {
+				if _, werr := lazy.Warm(); werr != nil {
+					return nil, werr
+				}
+			}
 			return a.intentEmbedder, nil
 		}
 		log.Printf("[embedding] switching embedder %s -> %s (closing previous instance)", embedding.EmbedderFamily(a.intentEmbedder), modelPath)
@@ -882,19 +908,30 @@ func (a *App) sharedEmbeddingEmbedder(modelPath string, load func(string) (embed
 	if cfg, err := a.LoadConfig(); err == nil {
 		embedding.SetHWAccelPreferred(cfg.EmbedHWAccelEnabled())
 	}
-	emb, err := load(modelPath)
+	lazy := embedding.NewLazyEmbedder(embedding.LazyEmbedderConfig{
+		Name: "embedding",
+		Load: func() (embedding.Embedder, error) {
+			e, lerr := load(modelPath)
+			if lerr != nil || e == nil || embedding.IsNoop(e) {
+				return e, lerr
+			}
+			if g, ok := e.(embedding.AccelEmbedder); ok {
+				g.ApplyAccel(embedding.HWAccelPreferred())
+			}
+			return e, nil
+		},
+		UnloadDelay: embeddingIdleUnloadDelay,
+	})
+	emb, err := lazy.Warm()
 	if err != nil {
 		return nil, err
 	}
 	if emb == nil || embedding.IsNoop(emb) {
 		return emb, nil
 	}
-	if g, ok := emb.(embedding.AccelEmbedder); ok {
-		g.ApplyAccel(embedding.HWAccelPreferred())
-	}
-	a.intentEmbedder = emb
+	a.intentEmbedder = lazy
 	a.intentEmbedderPath = modelPath
-	return emb, nil
+	return lazy, nil
 }
 
 // GetEmbedAccelInfo prefers the live GUI embedder instance pin (About badge SoT).

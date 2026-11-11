@@ -381,3 +381,48 @@ func TestRemoteControlFederationInviteDeliversNotificationAndRejectsMismatch(t *
 		t.Fatal("tampered invite sent a notification")
 	}
 }
+
+func TestRemoteControlStaleFederatedGrantHealsOnNotFound(t *testing.T) {
+	oldTrust := companionOriginTrusted
+	companionOriginTrusted = func(context.Context, string) bool { return true }
+	t.Cleanup(func() { companionOriginTrusted = oldTrust })
+	controller, _ := newRemoteControlFederationHandler(t, "user-a", "mac-a", "OFFICE-A")
+	target, _ := newRemoteControlFederationHandler(t, "user-b", "mac-c", "HOME-C")
+	controllerServer := remoteControlFederationServer(controller)
+	defer controllerServer.Close()
+	targetServer := remoteControlFederationServer(target)
+	defer targetServer.Close()
+	ctx := context.Background()
+	secret := "cd_0123456789abcdef0123456789abcdef"
+	grant, err := controller.svc.InviteFederated(ctx, "tenant-a", "user-a", "mac-a", "bob@example.com", remotecontrol.PermOperate, controllerServer.URL, targetServer.URL, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant.TargetUserID = "user-b"
+	if err := target.svc.ImportFederatedInvite(ctx, grant); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := target.svc.Accept(ctx, "tenant-b", "user-b", "mac-c", grant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := target.relayTargetDecision(ctx, accepted, "accept"); err != nil {
+		t.Fatal(err)
+	}
+	// The target ends the grant without telling the controller's Hub — the
+	// state a lost displacement or revoke relay leaves behind.
+	if err := target.svc.Revoke(ctx, "tenant-b", "user-b", "mac-c", grant.ID); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := controller.svc.ControllerGrant(ctx, "tenant-a", "user-a", "mac-a", grant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.execAcrossHub(ctx, stored, remotecontrol.OpListTasks, nil); err == nil {
+		t.Fatal("op on a stale grant must fail")
+	}
+	state, err := controller.svc.Snapshot(ctx, "tenant-a", "user-a", "mac-a")
+	if err != nil || len(state.Grants) != 0 {
+		t.Fatalf("stale grant still listed: %+v err=%v", state.Grants, err)
+	}
+}

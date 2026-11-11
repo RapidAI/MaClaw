@@ -79,6 +79,7 @@ func (a *App) downloadASRModel(autoEnable bool) error {
 			} else if !a.asrStillConfiguredEnabled() {
 				return nil
 			}
+			resetASRModel()
 			a.emitASRProgress(100, 0, 0, "")
 			return nil
 		}
@@ -99,6 +100,7 @@ func (a *App) downloadASRModel(autoEnable bool) error {
 	} else if !a.asrStillConfiguredEnabled() {
 		return nil
 	}
+	resetASRModel()
 	return nil
 }
 
@@ -152,6 +154,7 @@ func (a *App) backgroundPreloadASRModel() {
 			if !a.asrStillConfiguredEnabled() {
 				return
 			}
+			resetASRModel()
 			fmt.Println("[asr] background preload: download complete")
 			return
 		}
@@ -168,6 +171,7 @@ func (a *App) backgroundPreloadASRModel() {
 		if !a.asrStillConfiguredEnabled() {
 			return
 		}
+		resetASRModel()
 		fmt.Println("[asr] background preload: hub download complete")
 	}
 }

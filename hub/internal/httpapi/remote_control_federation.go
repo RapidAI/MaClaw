@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -287,6 +288,7 @@ func (h remoteControlHandler) refreshFederatedGrants(ctx context.Context, tenant
 			})
 			if err != nil {
 				view.Online = false
+				h.dropStaleFederatedGrant(ctx, grant, err)
 				return
 			}
 			var status struct {
@@ -333,6 +335,7 @@ func (h remoteControlHandler) execAcrossHub(ctx context.Context, grant remotecon
 		GrantID: grant.ID, OriginHub: grant.ControllerHub, Secret: grant.FederationSecret, Op: op, Body: body,
 	})
 	if err != nil {
+		h.dropStaleFederatedGrant(ctx, grant, err)
 		return nil, err
 	}
 	var decoded struct {
@@ -342,4 +345,18 @@ func (h remoteControlHandler) execAcrossHub(ctx context.Context, grant remotecon
 		return nil, fmt.Errorf("跨 Hub 远控结果无法读取")
 	}
 	return decoded.Result, nil
+}
+
+// dropStaleFederatedGrant ends this Hub's copy when the other Hub answers
+// NOT_FOUND: the grant was revoked or displaced there, so it must not stay
+// listed as controllable here. The controller user hears about the end only
+// once because the first revoke flips the status.
+func (h remoteControlHandler) dropStaleFederatedGrant(ctx context.Context, grant remotecontrol.Grant, err error) {
+	var status *remotecontrol.StatusError
+	if !errors.As(err, &status) || status.Code != "NOT_FOUND" {
+		return
+	}
+	if revokeErr := h.svc.RevokeFederated(ctx, grant.ID, grant.FederationSecret, false); revokeErr != nil {
+		log.Printf("[remote-control] stale federated grant %s revoke failed: %v", grant.ID, revokeErr)
+	}
 }

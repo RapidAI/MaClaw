@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/diarization"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/modelmanager"
 )
 
 func testCAMPlusHeader() []byte {
@@ -82,28 +84,34 @@ func TestDiarizationEnabledDefaultsToTrue(t *testing.T) {
 }
 
 func TestResetCAMPlusModelOnlyDropsMatchingCache(t *testing.T) {
-	camPlusMu.Lock()
-	previousModel, previousPath := camPlusInstance, camPlusPath
-	camPlusInstance, camPlusPath = &diarization.CAMPlus{}, "D:/models/current.cmpg"
-	camPlusMu.Unlock()
+	// Fire the once so the planted manager is not overwritten mid-test.
+	camPlusMMOnce.Do(func() {})
+	prevMM := camPlusMM
+	prevPath, _ := camPlusLoadedPath.Load().(string)
 	t.Cleanup(func() {
-		camPlusMu.Lock()
-		camPlusInstance, camPlusPath = previousModel, previousPath
-		camPlusMu.Unlock()
+		camPlusMM = prevMM
+		camPlusLoadedPath.Store(prevPath)
 	})
 
+	loadedPath := "D:/models/current.cmpg"
+	camPlusMM = modelmanager.New(modelmanager.Config[*diarization.CAMPlus]{
+		Name:        "cam++-test",
+		Load:        func() (*diarization.CAMPlus, error) { return &diarization.CAMPlus{}, nil },
+		UnloadDelay: time.Hour,
+	})
+	camPlusLoadedPath.Store(loadedPath)
+	if _, done, err := camPlusMM.Acquire(); err != nil {
+		t.Fatalf("plant CAM++ model: %v", err)
+	} else {
+		done()
+	}
+
 	resetCAMPlusModel("D:/models/other.cmpg")
-	camPlusMu.Lock()
-	kept := camPlusInstance != nil
-	camPlusMu.Unlock()
-	if !kept {
+	if !camPlusMM.Loaded() {
 		t.Fatal("unrelated model replacement cleared cached CAM++ instance")
 	}
-	resetCAMPlusModel("D:/models/current.cmpg")
-	camPlusMu.Lock()
-	cleared := camPlusInstance == nil && camPlusPath == ""
-	camPlusMu.Unlock()
-	if !cleared {
+	resetCAMPlusModel(loadedPath)
+	if camPlusMM.Loaded() {
 		t.Fatal("matching model replacement did not clear cached CAM++ instance")
 	}
 }

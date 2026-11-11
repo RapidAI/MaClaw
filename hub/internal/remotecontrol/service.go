@@ -178,8 +178,15 @@ type Service struct {
 	sender   Sender
 	notify   Notifier
 
-	mu      sync.Mutex
-	waiters map[string]waiter
+	// RelayFederatedRevoke, when set, tells the controller's own Hub that a
+	// grant it originated was ended here, so the remote copy is revoked and
+	// the remote controller is notified. The HTTP layer wires it because
+	// cross-Hub calls live outside this package.
+	RelayFederatedRevoke func(ctx context.Context, grant Grant)
+
+	mu         sync.Mutex
+	waiters    map[string]waiter
+	activateMu sync.Mutex
 }
 
 type waiter struct {
@@ -248,12 +255,13 @@ func (s *Service) ensureSchema(ctx context.Context) error {
 			return err
 		}
 	}
-	for _, column := range []string{"controller_hub", "target_hub", "federation_secret"} {
+	for _, column := range []string{"controller_hub", "target_hub", "federation_secret", "target_machine_id"} {
 		if _, err := s.db.ExecContext(ctx, "ALTER TABLE remote_control_grants ADD COLUMN "+column+" TEXT NOT NULL DEFAULT ''"); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
 			return err
 		}
 	}
-	return nil
+	_, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_rc_grant_target_machine ON remote_control_grants(target_machine_id, status)`)
+	return err
 }
 
 // GrantSameAccount authorizes another desktop of the same user immediately.
@@ -278,21 +286,36 @@ func (s *Service) GrantSameAccount(ctx context.Context, tenantID, userID, contro
 		return Grant{}, invalid("没有找到这台机器")
 	}
 	s.expirePending(ctx, tenantID, userID)
+	s.activateMu.Lock()
+	var displaced []Grant
 	if existing, found := s.findActivePair(ctx, tenantID, controller.ID, target.ID); found {
 		name := displayMachine(target)
 		permissionChanged := existing.Permission != permission
-		if permissionChanged || existing.TargetMachineName != name {
-			existing.Permission = permission
-			existing.TargetMachineName = name
-			existing.UpdatedAt = time.Now().UTC()
-			if err := s.update(ctx, existing); err != nil {
-				return Grant{}, err
-			}
+		if !permissionChanged && existing.TargetMachineName == name {
+			displaced = s.displacePeerControllers(ctx, target.ID, existing.ID)
+			s.activateMu.Unlock()
+			s.notifyDisplaced(ctx, displaced)
+			return existing, nil
+		}
+		existing.Permission = permission
+		existing.TargetMachineName = name
+		existing.UpdatedAt = time.Now().UTC()
+		changed, err := s.updateExpected(ctx, existing, StatusActive)
+		if err != nil {
+			s.activateMu.Unlock()
+			return Grant{}, err
+		}
+		if changed {
+			displaced = s.displacePeerControllers(ctx, target.ID, existing.ID)
+			s.activateMu.Unlock()
+			s.notifyDisplaced(ctx, displaced)
 			if permissionChanged {
 				s.notifyWatch(ctx, existing)
 			}
+			return existing, nil
 		}
-		return existing, nil
+		// A concurrent revoke ended the pair between the lookup and the
+		// update. Grant fresh below instead of writing it back to life.
 	}
 	now := time.Now().UTC()
 	grant := Grant{
@@ -313,8 +336,12 @@ func (s *Service) GrantSameAccount(ctx context.Context, tenantID, userID, contro
 		UpdatedAt:             now,
 	}
 	if err := s.insert(ctx, grant); err != nil {
+		s.activateMu.Unlock()
 		return Grant{}, err
 	}
+	displaced = s.displacePeerControllers(ctx, target.ID, grant.ID)
+	s.activateMu.Unlock()
+	s.notifyDisplaced(ctx, displaced)
 	s.notifyWatch(ctx, grant)
 	return grant, nil
 }
@@ -392,6 +419,8 @@ func (s *Service) Accept(ctx context.Context, tenantID, userID, machineID, grant
 	}
 	// The stored tenant is the inviter's. The caller here is the invitee, who
 	// may belong to another tenant, so the pair has to be found on the grant.
+	s.activateMu.Lock()
+	var displaced []Grant
 	if existing, found := s.findActivePair(ctx, grant.TenantID, grant.ControllerMachineID, machine.ID); found {
 		now := time.Now().UTC()
 		grant.Status = StatusRevoked
@@ -399,20 +428,27 @@ func (s *Service) Accept(ctx context.Context, tenantID, userID, machineID, grant
 		grant.UpdatedAt = now
 		changed, err := s.updateExpected(ctx, grant, StatusPending)
 		if err != nil {
+			s.activateMu.Unlock()
 			return Grant{}, err
 		}
 		if !changed {
+			s.activateMu.Unlock()
 			return Grant{}, ErrNotFound
 		}
 		existing.Permission = grant.Permission
 		existing.UpdatedAt = now
 		changed, err = s.updateExpected(ctx, existing, StatusActive)
 		if err != nil {
+			s.activateMu.Unlock()
 			return Grant{}, err
 		}
 		if !changed {
+			s.activateMu.Unlock()
 			return Grant{}, ErrNotFound
 		}
+		displaced = s.displacePeerControllers(ctx, machine.ID, existing.ID)
+		s.activateMu.Unlock()
+		s.notifyDisplaced(ctx, displaced)
 		s.revokeNotice(ctx, grant.InviteNotificationID)
 		s.notifyControllerResult(ctx, grant, "远控已接受", fmt.Sprintf("%s 已接受远控，权限：%s。", displayMachine(machine), permissionLabel(grant.Permission)), existing.ID)
 		s.notifyWatch(ctx, existing)
@@ -427,15 +463,20 @@ func (s *Service) Accept(ctx context.Context, tenantID, userID, machineID, grant
 	grant.UpdatedAt = now
 	changed, err := s.updateExpected(ctx, grant, StatusPending)
 	if err != nil {
+		s.activateMu.Unlock()
 		return Grant{}, err
 	}
 	if !changed {
+		s.activateMu.Unlock()
 		current, loadErr := s.load(ctx, grant.ID)
 		if loadErr == nil && current.Status == StatusActive && current.TargetUserID == userID && current.TargetMachineID == machine.ID {
 			return current, nil
 		}
 		return Grant{}, ErrNotFound
 	}
+	displaced = s.displacePeerControllers(ctx, machine.ID, grant.ID)
+	s.activateMu.Unlock()
+	s.notifyDisplaced(ctx, displaced)
 	s.revokeNotice(ctx, grant.InviteNotificationID)
 	s.notifyControllerResult(ctx, grant, "远控已接受", fmt.Sprintf("%s 已接受远控，权限：%s。任务列表里已出现这台机器。", grant.TargetMachineName, permissionLabel(grant.Permission)), grant.ID)
 	s.notifyWatch(ctx, grant)
@@ -577,6 +618,11 @@ func (s *Service) Snapshot(ctx context.Context, tenantID, userID, machineID stri
 		return state, err
 	}
 	for _, grant := range rows {
+		// A stale second-active row must never read as "controlling": retire
+		// it so both sides' views converge without waiting for the next op.
+		if grant.Status == StatusActive && s.retireStaleController(ctx, grant) {
+			continue
+		}
 		switch {
 		case grant.ControllerUserID == userID && grant.ControllerMachineID == machineID && grant.Status == StatusActive:
 			state.Grants = append(state.Grants, s.controllerView(ctx, grant))
@@ -645,6 +691,9 @@ func (s *Service) Exec(ctx context.Context, tenantID, userID, controllerMachineI
 	}
 	if grant.ControllerUserID != userID || grant.ControllerMachineID != strings.TrimSpace(controllerMachineID) {
 		return nil, denied("不能把远控转给其它机器")
+	}
+	if s.retireStaleController(ctx, grant) {
+		return nil, ErrNotFound
 	}
 	if !permissionAllows(grant.Permission, op) {
 		return nil, denied("当前权限只能查看")
@@ -867,6 +916,88 @@ func (s *Service) notifyResult(ctx context.Context, userID, title, content, sour
 	})
 }
 
+// displacePeerControllers ends every other active grant on the same target:
+// one desktop answers to exactly one controller at a time, so whoever
+// activates last wins. It runs under activateMu and returns the grants it
+// displaced so the caller can notify them after the lock is released.
+func (s *Service) displacePeerControllers(ctx context.Context, targetMachineID, keepID string) []Grant {
+	targetMachineID = strings.TrimSpace(targetMachineID)
+	if targetMachineID == "" {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, grantSelect+` WHERE target_machine_id = ? AND status = ? AND id <> ?`,
+		targetMachineID, StatusActive, strings.TrimSpace(keepID))
+	if err != nil {
+		return nil
+	}
+	var displaced []Grant
+	for rows.Next() {
+		grant, err := scanGrant(rows)
+		if err != nil {
+			_ = rows.Close()
+			return displaced
+		}
+		displaced = append(displaced, grant)
+	}
+	_ = rows.Close()
+	var ended []Grant
+	for _, grant := range displaced {
+		now := time.Now().UTC()
+		grant.Status = StatusRevoked
+		grant.DecidedAt = now
+		grant.UpdatedAt = now
+		changed, err := s.updateExpected(ctx, grant, StatusActive)
+		if err != nil || !changed {
+			continue
+		}
+		ended = append(ended, grant)
+	}
+	return ended
+}
+
+// retireStaleController enforces one controller per desktop at exec time as
+// well as at activation: when a newer grant already controls the same machine
+// this row is a stale leftover — end it and tell its side, matching what the
+// activation sweep would have produced. Returns true when the grant lost.
+func (s *Service) retireStaleController(ctx context.Context, grant Grant) bool {
+	row := s.db.QueryRowContext(ctx, `SELECT id FROM remote_control_grants
+		WHERE target_machine_id = ? AND status = ? AND (decided_at > ? OR (decided_at = ? AND id > ?))
+		LIMIT 1`, grant.TargetMachineID, StatusActive, formatTime(grant.DecidedAt), formatTime(grant.DecidedAt), grant.ID)
+	var newerID string
+	if err := row.Scan(&newerID); err != nil {
+		return false
+	}
+	now := time.Now().UTC()
+	grant.Status = StatusRevoked
+	grant.DecidedAt = now
+	grant.UpdatedAt = now
+	changed, err := s.updateExpected(ctx, grant, StatusActive)
+	if err != nil || !changed {
+		return true
+	}
+	s.notifyDisplaced(ctx, []Grant{grant})
+	return true
+}
+
+// notifyDisplaced withdraws a displaced grant's notices and tells the old
+// controller the session is over. Rows this Hub imported for a remote
+// controller go through RelayFederatedRevoke so the controller's own Hub ends
+// its copy too; local grants and controller-side copies notify the local
+// controller user directly.
+func (s *Service) notifyDisplaced(ctx context.Context, displaced []Grant) {
+	for _, grant := range displaced {
+		s.revokeNotice(ctx, grant.InviteNotificationID)
+		s.revokeNotice(ctx, grant.NoticeNotificationID)
+		if grant.TargetUserID == "" || grant.ControllerHub == "" {
+			s.notifyResult(ctx, grant.ControllerUserID, "远控已结束", "另一台设备已开始远控这台电脑，本次远控已结束。", grant.ID)
+			continue
+		}
+		if s.RelayFederatedRevoke != nil {
+			s.RelayFederatedRevoke(ctx, grant)
+		}
+	}
+}
+
 // attachNoticeID records a notice on a grant that is still in expectStatus.
 // It returns false when the grant already moved on, so the caller can drop
 // the notice instead of rewriting status, machine, or permission.
@@ -982,11 +1113,6 @@ func (s *Service) insert(ctx context.Context, grant Grant) error {
 		grant.Permission, grant.Status, boolInt(grant.SameAccount), boolInt(grant.TargetIgnored), grant.InviteNotificationID, grant.NoticeNotificationID,
 		formatTime(grant.CreatedAt), formatTime(grant.DecidedAt), formatTime(grant.ExpiresAt), formatTime(grant.UpdatedAt),
 	)
-	return err
-}
-
-func (s *Service) update(ctx context.Context, grant Grant) error {
-	_, err := s.updateExpected(ctx, grant, "")
 	return err
 }
 

@@ -10,16 +10,48 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/asr"
 	"github.com/RapidAI/CodeClaw/corelib/diarization"
+	"github.com/RapidAI/CodeClaw/corelib/modelmanager"
 )
 
+// camPlusIdleUnloadDelay releases the CAM++ speaker-embedding weights after
+// this much diarization idle time; the next call reloads them transparently.
+// MACLAW_MODEL_IDLE_UNLOAD_SEC overrides it (0 disables idle unload).
+const camPlusIdleUnloadDelay = 5 * time.Minute
+
 var (
-	camPlusInstance *diarization.CAMPlus
-	camPlusPath     string
-	camPlusMu       sync.Mutex
+	camPlusMM     *modelmanager.Manager[*diarization.CAMPlus]
+	camPlusMMOnce sync.Once
+	// camPlusLoadedPath records the path the resident weights were loaded
+	// from, so resetCAMPlusModel only unloads on a matching replacement.
+	camPlusLoadedPath atomic.Value // string
 )
+
+// camPlusModelManager owns the CAM++ lifecycle: weights load on first
+// diarization and unload after camPlusIdleUnloadDelay of no use. The model is
+// immutable once loaded; a replaced file takes effect on the next load.
+func camPlusModelManager() *modelmanager.Manager[*diarization.CAMPlus] {
+	camPlusMMOnce.Do(func() {
+		camPlusMM = modelmanager.New(modelmanager.Config[*diarization.CAMPlus]{
+			Name: "cam++",
+			Load: func() (*diarization.CAMPlus, error) {
+				dir, err := embeddingModelsDir()
+				if err != nil {
+					return nil, fmt.Errorf("models dir: %w", err)
+				}
+				return diarization.LoadCAMPlus(filepath.Join(dir, diarization.DefaultCAMPlusFilename))
+			},
+			// Weights are plain Go slices; dropping the reference frees them.
+			Close:       nil,
+			UnloadDelay: camPlusIdleUnloadDelay,
+		})
+	})
+	return camPlusMM
+}
 
 // SpeakerTranscript is a speaker-labelled portion of a meeting transcript.
 // Speaker IDs are local to the input recording: Speaker 0 does not identify a
@@ -145,39 +177,39 @@ func osStatNonEmpty(path string) (int64, error) {
 	return info.Size(), nil
 }
 
-func (a *App) getCAMPlusModel() (*diarization.CAMPlus, error) {
-	camPlusMu.Lock()
-	defer camPlusMu.Unlock()
+// acquireCAMPlusModel returns the loaded CAM++ model plus a release function
+// the caller MUST invoke when finished (it schedules the idle unload).
+func (a *App) acquireCAMPlusModel() (*diarization.CAMPlus, func(), error) {
 	dir, err := embeddingModelsDir()
 	if err != nil {
-		return nil, fmt.Errorf("models dir: %w", err)
+		return nil, nil, fmt.Errorf("models dir: %w", err)
 	}
 	path := filepath.Join(dir, diarization.DefaultCAMPlusFilename)
-	if camPlusInstance != nil && camPlusPath == path {
-		return camPlusInstance, nil
-	}
 	if _, err := osStatNonEmpty(path); err != nil {
-		return nil, fmt.Errorf("CAM++ diarization model not downloaded: %s", path)
+		return nil, nil, fmt.Errorf("CAM++ diarization model not downloaded: %s", path)
 	}
-	model, err := diarization.LoadCAMPlus(path)
+	model, done, err := camPlusModelManager().Acquire()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	camPlusInstance = model
-	camPlusPath = path
-	return model, nil
+	camPlusLoadedPath.Store(path)
+	return model, done, nil
 }
 
 // resetCAMPlusModel drops the cached immutable weights after a replacement or
-// an invalid-cache cleanup. Existing calls retain their local model pointer;
-// the next call loads the artifact currently on disk.
+// an invalid-cache cleanup. Acquisitions still in flight keep their model
+// pointer; the next call loads the artifact currently on disk. A reset for
+// an unrelated path leaves the resident model alone.
 func resetCAMPlusModel(path string) {
-	camPlusMu.Lock()
-	defer camPlusMu.Unlock()
-	if path == "" || camPlusPath == path {
-		camPlusInstance = nil
-		camPlusPath = ""
+	if camPlusMM == nil {
+		return
 	}
+	if path != "" {
+		if loaded, _ := camPlusLoadedPath.Load().(string); loaded != "" && loaded != path {
+			return
+		}
+	}
+	camPlusMM.Unload()
 }
 
 // DiarizeAndTranscribeWAVBytes returns independently transcribed, local
@@ -198,18 +230,20 @@ func (a *App) DiarizeAndTranscribeWAVBytes(wavData []byte, knownSpeakers int) ([
 	if err != nil {
 		return nil, fmt.Errorf("WAV to PCM: %w", err)
 	}
-	model, err := a.getCAMPlusModel()
+	model, camDone, err := a.acquireCAMPlusModel()
 	if err != nil {
 		return nil, err
 	}
+	defer camDone()
 	spans, err := diarization.Diarize(pcm, model, diarization.Config{KnownSpeakers: knownSpeakers})
 	if err != nil {
 		return nil, err
 	}
-	asrModel, err := a.getASRModel()
+	asrModel, asrDone, err := a.acquireASRModel()
 	if err != nil {
 		return nil, err
 	}
+	defer asrDone()
 	out := make([]SpeakerTranscript, 0, len(spans))
 	for _, span := range spans {
 		start := int(span.Start * diarization.SampleRate)
@@ -254,10 +288,11 @@ func (a *App) EstimateSpeakerCountWAVBytes(wavData []byte) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("WAV to PCM: %w", err)
 	}
-	model, err := a.getCAMPlusModel()
+	model, camDone, err := a.acquireCAMPlusModel()
 	if err != nil {
 		return 0, err
 	}
+	defer camDone()
 	// Automatic mode (KnownSpeakers=0) already applies the duration soft-cap so
 	// short two-person clips do not inflate the suggested count. Fewer windows
 	// than full diarization: this path only needs a coarse headcount.
