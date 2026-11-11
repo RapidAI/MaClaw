@@ -1211,7 +1211,10 @@ func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopL
 		}
 	}
 	in := agentservice.SendMessageInput{Content: desktopLongJobWatchPrompt(j, dec), SessionID: j.SessionID, Metadata: map[string]string{"long_job_id": j.ID, "long_job_watch": string(dec)}}
-	_, _, err := svc.SendMessageAsync(context.WithoutCancel(ctx), principal, j.InstanceID, in)
+	_, run, err := svc.SendMessageAsync(context.WithoutCancel(ctx), principal, j.InstanceID, in)
+	if err == nil && run != nil {
+		go desktopLongJobFollowRun(context.WithoutCancel(ctx), principal, j, run.ID, dec)
+	}
 	return err
 }
 
@@ -1227,12 +1230,12 @@ func desktopLongJobWatchPrompt(j *desktopLongJob, dec desktopLongJobDecision) st
 	goal := "若与上次通知相比没有新的进展，就结束，不要调用 send_to_user。"
 	switch dec {
 	case longJobResume:
-		goal = "这不是新任务，不要重新启动同一个命令。这个人已经收到了这次轮询的状态和最后输出。用这些证据判断：结束了就核对结果（指标、产物）并用 action=say 简短告诉这个人；失败或停滞就查明原因并换一种做法继续，必要时用 action=say 说明。不要把已经说过的再说一遍。"
+		goal = "这不是新任务，不要重新启动同一个命令。这个人已经收到了这次轮询的状态和最后输出。用这些证据判断：结束了就核对结果（指标、产物）并简短告诉这个人；失败或停滞就查明原因并换一种做法继续，并说明。你的最后回复会转给这个人（已用 action=say 说过就不再转）；没有要说的新内容时最后回复只写 NO_UPDATE。不要把已经说过的再说一遍。"
 	case longJobNotice:
 		goal = "这不是新任务，不要重新启动该命令。这是按预计时间安排的查看，出现了新的阶段结果、已经远超预计时间，或预计会超过命令自带的时限。用 send_to_user 简短告诉这个人这一阶段的结果（指标或日志要点）或比预计晚了多少，附上这次轮询的证据（进程存活与否、最近日志）。不要报步数。对剩余时间有更好的估计时，用 action=job_status，next_check_minutes 和 check_reason 设定下次查看。"
 	}
 	if dec == longJobCheck {
-		goal = "这不是新任务，不要重新启动该命令，也不要动它的进程。这是按预计时间安排的查看：这个任务的日志里看不到可测的进度，进度写在它自己的文件里（只有你知道在哪）。用一两条只读命令（如 tail 它的训练/运行日志、看进程）查实际进度。只有出现新的阶段结果（指标）、明显变慢、按实测速度会超过命令自带时限、或出错时，才用 action=say 简短告诉这个人，附上证据（指标、速度、预计结束时间）；没有新情况就直接结束，不要说话。最后用 action=job_status（job_id、next_check_minutes、check_reason）按实测速度设定下次查看。不要报步数。"
+		goal = "这不是新任务，不要重新启动该命令，也不要动它的进程。这是按预计时间安排的查看：这个任务的日志里看不到可测的进度，进度写在它自己的文件里（只有你知道在哪）。用一两条只读命令（如 tail 它的训练/运行日志、看进程）查实际进度。只有出现新的阶段结果（指标）、明显变慢、按实测速度会超过命令自带时限、或出错时，才告诉这个人：先用 action=job_status（job_id、next_check_minutes、check_reason）按实测速度设定下次查看，然后你的最后回复就是发给这个人的消息（系统会转给他），简短写结果和证据（指标、速度、预计结束时间），不要写“已告知”之类的话。没有新情况时，同样设定下次查看，最后回复只写 NO_UPDATE。不要报步数。"
 	}
 	return "这一轮是后台长任务的定时巡查，没有人在等一句套话。\n" + goal + "\n\n" + desktopLongJobView(j)
 }

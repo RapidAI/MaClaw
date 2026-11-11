@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
@@ -560,5 +561,41 @@ func TestD111CommandTimeLimit(t *testing.T) {
 	j.DeadlineSaid = true
 	if d := desktopLongJobDecide(j, "running", "", time.Time{}); d != longJobSilent {
 		t.Fatalf("limit said twice: %s", d)
+	}
+}
+
+// papers 11-12 00:18: a watcher turn's final reply reached nobody.
+func TestD111WatchTurnReplyIsDelivered(t *testing.T) {
+	d100Env(t)
+	desktopLongJobSleep = func(ctx context.Context, d time.Duration) bool { return true }
+	var sent []map[string]any
+	oldSay, oldGet := desktopLongJobSayFunc, desktopLongJobRunGetter
+	t.Cleanup(func() { desktopLongJobSayFunc, desktopLongJobRunGetter = oldSay, oldGet })
+	desktopLongJobSayFunc = func(ctx context.Context, body map[string]any) error { sent = append(sent, body); return nil }
+	reply := "训练变慢：24.6→5 样本/秒，会超过 00:50 的时限。"
+	calls := 0
+	desktopLongJobRunGetter = func(ctx context.Context, p agentservice.Principal, inst, sess, run string) (agentservice.RunStatus, string, error) {
+		calls++
+		if calls < 2 {
+			return agentservice.RunStatusRunning, "", nil
+		}
+		return agentservice.RunStatusSucceeded, reply, nil
+	}
+	j := &desktopLongJob{ID: "job_w", InstanceID: "inst_1", SessionID: "s1", UserID: "u1::desk::bot_1", TenantID: "t"}
+	desktopLongJobFollowRun(context.Background(), agentservice.Principal{}, j, "run_1", longJobCheck)
+	if len(sent) != 1 || sent[0]["text"] != reply || sent[0]["user_id"] != "u1" {
+		t.Fatalf("sent %v", sent)
+	}
+	reply = "NO_UPDATE"
+	calls, sent = 5, nil
+	desktopLongJobFollowRun(context.Background(), agentservice.Principal{}, j, "run_2", longJobCheck)
+	if len(sent) != 0 {
+		t.Fatalf("silent token sent %v", sent)
+	}
+	reply = "结果"
+	desktopSayRuns.allow("inst_1|run_3|", false, time.Now())
+	desktopLongJobFollowRun(context.Background(), agentservice.Principal{}, j, "run_3", longJobResume)
+	if len(sent) != 0 {
+		t.Fatalf("run that said itself got a second message %v", sent)
 	}
 }
