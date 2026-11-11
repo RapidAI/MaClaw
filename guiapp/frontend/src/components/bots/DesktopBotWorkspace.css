@@ -3869,6 +3869,8 @@ button.desktop-bot-feed__file {
    by one unit, so the line stays dotted. */
 .desktop-bot-sleep {
     display: flex;
+    flex-direction: column;
+    gap: 8px;
     flex: 1 1 auto;
     align-items: center;
     justify-content: center;
@@ -3891,6 +3893,19 @@ button.desktop-bot-feed__file {
     color: var(--theme-text-primary, #526277);
     line-height: 0;
     cursor: pointer;
+}
+
+.desktop-bot-sleep__status,
+.desktop-bot-sleep__error {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    text-align: center;
+    color: var(--theme-text-secondary, #6b7a8c);
+}
+
+.desktop-bot-sleep__error {
+    color: var(--mc-danger, #c0392b);
 }
 
 .desktop-bot-sleep__wake:hover,

@@ -99,6 +99,7 @@ import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, desktopBotAck, desktopBotIsPlaceholder
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
+import { wakeFailureReason } from './desktopWake';
 import {
     appendDesktopBotReport,
     DESKTOP_BOT_NOT_PRIMARY,
@@ -890,6 +891,8 @@ function copy(lang: string) {
             watching: 'Watching the desktop.',
             desktopAsleep: 'Desktop is asleep. It wakes when the bot needs it, or when you click Wake.',
             wakeDesktop: 'Wake',
+            wakingDesktop: 'Waking the computer…',
+            wakeFailed: 'The computer did not wake: ',
             viewOnly: 'View only',
             takeControl: 'Take control',
             screenMode: 'Screen mode',
@@ -1106,6 +1109,8 @@ function copy(lang: string) {
             watching: '正在觀看桌面。',
             desktopAsleep: '桌面在休眠。Bot 需要桌面步驟時會喚醒，或你點「喚醒」。',
             wakeDesktop: '喚醒',
+            wakingDesktop: '正在喚醒電腦…',
+            wakeFailed: '電腦喚醒失敗：',
             viewOnly: '僅觀看',
             takeControl: '取得控制權',
             screenMode: '螢幕模式',
@@ -1320,6 +1325,8 @@ function copy(lang: string) {
         watching: '正在观看桌面。',
         desktopAsleep: '桌面在休眠。Bot 需要桌面步骤时会唤醒，或你点「唤醒」。',
         wakeDesktop: '唤醒',
+        wakingDesktop: '正在唤醒电脑…',
+        wakeFailed: '电脑唤醒失败：',
         viewOnly: '仅观看',
         takeControl: '取得控制权',
         screenMode: '屏幕模式',
@@ -2358,6 +2365,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const visibleShot = shotPreview && shotPreview.userId === userId && shotPreview.botId === selectedId ? shotPreview.src : '';
     const [retryByBot, setRetryByBot] = useState<Record<string, boolean>>({});
     const [asleepByBot, setAsleepByBot] = useState<Record<string, boolean>>({});
+    // The person's 唤醒 click: in flight, or failed with the reason. A click
+    // during a wake shows the wake, it is not silently dropped; a failure or
+    // timeout is said instead of an endless spinner (papers 2026-11-11: Bot 3
+    // could not get a display and every click just went back to sleep).
+    const [wakeByBot, setWakeByBot] = useState<Record<string, { state: 'waking' | 'failed'; reason?: string }>>({});
+    const wakingRef = useRef<Record<string, boolean>>({});
     const [preferredListWidth, setPreferredListWidth] = useState(readListWidth);
     const [listContainerWidth, setListContainerWidth] = useState(0);
     const [listResizing, setListResizing] = useState(false);
@@ -6334,6 +6347,20 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
 
     const retryConnection = async (botId: string) => {
         // Explicit human 唤醒. Watching / opening 电脑 must not start the desktop.
+        if (wakingRef.current[botId]) {
+            setWakeByBot(prev => ({ ...prev, [botId]: { state: 'waking' } }));
+            return;
+        }
+        wakingRef.current[botId] = true;
+        setWakeByBot(prev => ({ ...prev, [botId]: { state: 'waking' } }));
+        try {
+            await wakeDesktopOnce(botId);
+        } finally {
+            wakingRef.current[botId] = false;
+        }
+    };
+
+    const wakeDesktopOnce = async (botId: string) => {
         const epoch = watchEpochByBot.current[botId] || takeDesktopWatchEpoch();
         watchEpochByBot.current[botId] = epoch;
         stageEpoch.current = epoch;
@@ -6345,13 +6372,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const url = String(view?.novnc_url || '');
             if (!url) {
                 setAsleepByBot(prev => ({ ...prev, [botId]: true }));
+                setWakeByBot(prev => ({ ...prev, [botId]: { state: 'failed', reason: wakeFailureReason('') } }));
                 return;
             }
+            setWakeByBot(prev => { const next = { ...prev }; delete next[botId]; return next; });
             setRetryByBot(prev => ({ ...prev, [botId]: false }));
             setAsleepByBot(prev => ({ ...prev, [botId]: false }));
             syncLive(botId, { url, userControl: view?.user_control === true, attentionReason: String(view?.attention_reason || '') });
             openPanel(botId, 'user');
-        } catch {
+        } catch (err) {
+            setWakeByBot(prev => ({ ...prev, [botId]: { state: 'failed', reason: wakeFailureReason(err) } }));
             if (stageEpoch.current !== epoch) return;
             const panel = panelsRef.current[botId];
             if (panel !== 'auto' && panel !== 'user') return;
@@ -7243,6 +7273,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     <button type="button" className="desktop-bot-sleep__wake" data-testid="desktop-bot-wake" title={text.wakeDesktop} aria-label={text.desktopAsleep} onClick={() => void retryConnection(selected.id)}>
                                         <ComputerSleepScene />
                                     </button>
+                                    {wakeByBot[selected.id]?.state === 'waking' ? (
+                                        <p className="desktop-bot-sleep__status" data-testid="desktop-bot-waking" role="status">{text.wakingDesktop}</p>
+                                    ) : wakeByBot[selected.id]?.state === 'failed' ? (
+                                        <p className="desktop-bot-sleep__error" data-testid="desktop-bot-wake-failed" role="alert">{text.wakeFailed}{wakeByBot[selected.id]?.reason}</p>
+                                    ) : null}
                                 </div>
                             ) : !ownPictureDown && shownDesktopUrl ? (
                                 <div ref={stageRef} className={'desktop-bot-stage' + (stageInteractive ? ' is-user' : ' is-bot') + ((takeover || screenExpanded) ? ' is-fullscreen' : '')} data-testid="desktop-bot-stage">
@@ -7335,6 +7370,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <div className="desktop-bot-screen" data-testid="desktop-bot-screen">
                                     <p>{text.desktopDown}</p>
                                     <button type="button" data-testid="desktop-bot-wake" onClick={() => void retryConnection(selected.id)}>{text.wakeDesktop}</button>
+                                    {wakeByBot[selected.id]?.state === 'waking' ? (
+                                        <p className="desktop-bot-sleep__status" data-testid="desktop-bot-waking" role="status">{text.wakingDesktop}</p>
+                                    ) : wakeByBot[selected.id]?.state === 'failed' ? (
+                                        <p className="desktop-bot-sleep__error" data-testid="desktop-bot-wake-failed" role="alert">{text.wakeFailed}{wakeByBot[selected.id]?.reason}</p>
+                                    ) : null}
                                 </div>
                             ) : (
                                 <div className="desktop-bot-screen" data-testid="desktop-bot-screen">
