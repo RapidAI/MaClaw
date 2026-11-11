@@ -657,7 +657,7 @@ func srvDesktopRuntimeModules() []agentruntime.Module {
 	if !desktopAvailable() {
 		return nil
 	}
-	return []agentruntime.Module{desktopRuntimeModule{}}
+	return []agentruntime.Module{desktopRuntimeModule{}, localRelayModule{}}
 }
 
 func desktopCDPAddr() string {
