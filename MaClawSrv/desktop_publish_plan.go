@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime/promptparts"
+	"regexp"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/browser"
@@ -73,6 +74,13 @@ func desktopPublishPlanCheck(phase desktopPublishPhase, action string, args map[
 	if action == "deliver" {
 		return nil
 	}
+	// An action name that is no action at all (Bot 1 step 44, Nov 11: the
+	// whole shell command sent as action=) is not a phase question: the
+	// refusal named the command "not part of this phase" and the model could
+	// not tell what was wrong. Say what it is instead.
+	if action != "" && action != "batch" && !desktopActionAllowed(action) {
+		return desktopUnknownActionError(action)
+	}
 	pl := desktopPublishPlan[phase]
 	if action == "batch" {
 		if !pl.allowed["batch"] {
@@ -108,4 +116,16 @@ func desktopPlanRefusal(phase desktopPublishPhase, action string) error {
 		return fmt.Errorf("refused: publish_plan(%s) — %s", phase, promptparts.Fact("REFUSED", "reason", "publish_plan", "phase", string(phase), "action", action, "next_allowed", "final_answer"))
 	}
 	return fmt.Errorf("refused: publish_plan(%s) — %s is not part of this phase. Next: %s", phase, action, pl.next)
+}
+
+// desktopShellLikeRe: an action value that is really a shell command.
+var desktopShellLikeRe = regexp.MustCompile(`\s|^(cd|python3?|bash|sh|ls|cat|curl|wget|pip3?|convert|ffmpeg|import)$|[|;&<>=/]`)
+
+// desktopUnknownActionError names an action value that is no desktop action,
+// and the fix when it is a shell command put in the action field.
+func desktopUnknownActionError(action string) error {
+	if desktopShellLikeRe.MatchString(action) {
+		return fmt.Errorf("invalid desktop call: action=%q is a shell command, not an action. Call action=bash with command=<that command>", desktopRuneHead(action, 60))
+	}
+	return fmt.Errorf("desktop action must be %s", strings.Join(desktopExecuteActions, ", "))
 }

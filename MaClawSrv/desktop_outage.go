@@ -250,3 +250,17 @@ func desktopRunNeverWorked(runID string) (string, bool) {
 	}
 	return "一步实际工作都没做成，最后一步出错：" + desktopRuneHead(last, 80), true
 }
+
+// desktopRunEverWorked: at least one desktop step of the run did real work.
+func desktopRunEverWorked(runID string) bool {
+	st := desktopRunForID(runID)
+	if st == nil {
+		watchdogMu.Lock()
+		defer watchdogMu.Unlock()
+		w, ok := watchdogRuns[runID]
+		return ok && w.ok > 0
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.workOK > 0
+}

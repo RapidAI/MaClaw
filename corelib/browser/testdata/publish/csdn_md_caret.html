@@ -1,0 +1,53 @@
+<!doctype html><meta charset=utf-8><title>写文章-CSDN博客</title>
+<style>body{font:14px sans-serif;margin:0} .article-bar__title{width:600px;height:30px} pre.editor__inner{display:block;width:900px;min-height:400px;border:1px solid #ccc;white-space:pre-wrap;margin:0}
+.modal{position:fixed;left:200px;top:100px;width:600px;height:400px;background:#fff;border:1px solid #333;display:none} .modal.show{display:block} .tag-chip{display:inline-block;padding:2px 6px;background:#eef}</style>
+<body>
+<div class="article-bar"><input class="article-bar__title" placeholder="请输入文章标题（5～100个字）"><button id="pub" class="btn-publish">发布文章</button></div>
+<div class="editor"><pre class="editor__inner markdown-highlighting" contenteditable="true"></pre></div>
+<div class="modal modal__publish-article" id="modal">
+  <div class="row"><span class="label">*文章标签</span> <span id="chips"></span> <button id="addtag" class="tag__btn-tag">添加文章标签</button> <input id="taginput" placeholder="请输入文字搜索，Enter键入可添加自定义标签" style="display:none"></div>
+  <div class="row"><span class="label">文章类型</span> <label><input type="radio" name="t" checked>原创</label><label><input type="radio" name="t">转载</label></div>
+  <div class="footer"><button id="cancel">取消</button><button id="save">保存为草稿</button><button id="confirm" class="button btn-b-red">发布文章</button></div>
+  <div id="err"></div>
+</div>
+<script>
+const ed = document.querySelector('pre.editor__inner');
+let busy = false, uploads = 0, lastURL = '';
+// CSDN-like picture button (d99): the editor's own image input inserts the
+// picture's markdown at the caret, replacing the selection, and leaves the
+// inserted markdown selected. A second insert with no caret move replaces
+// picture 1's link (Nov 11 10:41, editor.csdn.net, twice).
+const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.style.display = 'none'; document.body.appendChild(inp);
+inp.addEventListener('change', async () => {
+  const f = inp.files[0]; if (!f) return;
+  const fd = new FormData(); fd.append('file', f);
+  const r = await fetch('/up', {method: 'POST', body: fd});
+  const u = await r.text();
+  const md = '![在这里插入图片描述](' + u + ')';
+  const sel = getSelection();
+  let range = sel.rangeCount ? sel.getRangeAt(0) : null;
+  if (!range || !ed.contains(range.startContainer)) { range = document.createRange(); range.selectNodeContents(ed); range.collapse(false); }
+  range.deleteContents();
+  const node = document.createTextNode(md);
+  range.insertNode(node);
+  ed.normalize();
+  const all = ed.textContent, at = all.lastIndexOf(md);
+  const tn = ed.firstChild; const nr = document.createRange(); nr.setStart(tn, at); nr.setEnd(tn, at + md.length);
+  sel.removeAllRanges(); sel.addRange(nr);
+  inp.value = '';
+  autosave();
+});
+function autosave() { fetch('/saveArticle', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: document.querySelector('.article-bar__title').value, markdowncontent: ed.textContent, status: 2})}); }
+ed.addEventListener('input', autosave);
+const modal = document.getElementById('modal');
+document.getElementById('pub').onclick = () => modal.classList.add('show');
+document.getElementById('addtag').onclick = () => { const i = document.getElementById('taginput'); i.style.display = 'inline-block'; i.focus(); };
+document.getElementById('taginput').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.value) { const c = document.createElement('span'); c.className = 'tag-chip'; c.textContent = e.target.value; document.getElementById('chips').appendChild(c); e.target.value = ''; } });
+document.getElementById('confirm').onclick = async () => {
+  if (!document.querySelector('#chips .tag-chip')) { document.getElementById('err').textContent = '请添加文章标签'; return; }
+  const r = await fetch('/saveArticle', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: document.querySelector('.article-bar__title').value, markdowncontent: ed.textContent, status: 0, tags: [...document.querySelectorAll('#chips .tag-chip')].map(c => c.textContent).join(',')})});
+  const j = await r.json();
+  if (j.code !== 200) { document.getElementById('err').textContent = j.msg || 'failed'; return; }
+  location.href = '/mp_blog/creation/success/' + j.data.id;
+};
+</script>

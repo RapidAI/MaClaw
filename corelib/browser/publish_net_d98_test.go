@@ -2,6 +2,7 @@ package browser
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,5 +37,32 @@ func TestD98UnrelatedWriteFailureIsNotAnUploadFailure(t *testing.T) {
 	}
 	if txt := tr.uploadFailureText(t0); txt != got[0] {
 		t.Fatalf("text = %q", txt)
+	}
+}
+
+// CSDN, Nov 11 10:41: the editor's picture input inserts at the caret and
+// leaves the new link selected; picture 2 replaced picture 1's link. A
+// markdown body's pictures now go in after ctrl+End,Enter by default.
+func TestD99CSDNCaretInsertKeepsEveryPicture(t *testing.T) {
+	addr := startFixtureChrome(t)
+	run := func() (*PublishReport, error) {
+		srv, _ := csdnServerPage(t, "csdn_md_caret.html")
+		d := fixtureTab(t, addr, "about:blank")
+		files := csdnFiles(t)
+		return RunPublish(d, csdnSpec(srv, files))
+	}
+	prevKeys := mdDefaultPrepKeys
+	mdDefaultPrepKeys = nil
+	_, err := run()
+	mdDefaultPrepKeys = prevKeys
+	if err == nil || !strings.Contains(err.Error(), "removed picture 1") {
+		t.Skipf("fixture does not reproduce the lost link without the default (err=%v)", err)
+	}
+	rep, err := run()
+	if err != nil {
+		t.Fatalf("with the default caret move: %v\n%s", err, rep)
+	}
+	if rep.State != PublishLive {
+		t.Fatalf("state=%s\n%s", rep.State, rep)
 	}
 }

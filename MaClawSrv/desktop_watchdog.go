@@ -43,6 +43,13 @@ type watchdogRun struct {
 	refused  int
 	warned   map[string]bool
 	stop     string // why the run is to end ("" = keep going)
+	// graced: the model already had its one turn after the stop to say
+	// what it reached (see desktopWatchdogVerdict).
+	graced bool
+	// wrote: desktop files this run wrote or edited, for the stop reply.
+	wrote []string
+	// ok: steps that succeeded.
+	ok int
 }
 
 var (
@@ -87,6 +94,17 @@ func desktopWatchdogBefore(scope agentruntime.Scope, action string, args map[str
 	w := watchdogGet(scope.RunID)
 	w.steps++
 	w.lastStep = time.Now()
+	if action == "file_write" || action == "file_edit" || action == "deliver" {
+		if p := strings.TrimSpace(desktopArg(args, "path")); p != "" && len(w.wrote) < 50 {
+			seen := false
+			for _, x := range w.wrote {
+				seen = seen || x == p
+			}
+			if !seen {
+				w.wrote = append(w.wrote, p)
+			}
+		}
+	}
 	w.sigs = append(w.sigs, sig)
 	if len(w.sigs) > watchdogLoopWindow {
 		w.sigs = w.sigs[len(w.sigs)-watchdogLoopWindow:]
@@ -137,6 +155,7 @@ func desktopWatchdogAfter(scope agentruntime.Scope, err error) {
 	w := watchdogGet(scope.RunID)
 	if err == nil {
 		w.errRun = 0
+		w.ok++
 		return
 	}
 	if err == errWatchdogStop {
@@ -161,7 +180,55 @@ func desktopWatchdogVerdict(runID string) (string, bool) {
 	if !ok || w.stop == "" {
 		return "", false
 	}
-	return desktopWatchdogReply(w.stop), true
+	// A run over its time or step budget was making progress: the model
+	// gets one turn after the stop to say what is done and what is not,
+	// which only it knows (a training stage, a metric). A run that keeps
+	// calling tools ends here. Loops and failures end at once.
+	if !w.graced && (w.stop == "wall" || w.stop == "steps") {
+		w.graced = true
+		return "", false
+	}
+	return desktopWatchdogReplyFor(w), true
+}
+
+// desktopWatchdogStopped reports a run the watchdog ended and why.
+func desktopWatchdogStopped(runID string) (string, bool) {
+	watchdogMu.Lock()
+	defer watchdogMu.Unlock()
+	w, ok := watchdogRuns[runID]
+	if !ok || w.stop == "" {
+		return "", false
+	}
+	return w.stop, true
+}
+
+var desktopWatchdogWhy = map[string]string{
+	"loop":    "同一步反复执行没有推进",
+	"errors":  "接连几步失败",
+	"refused": "接连几步被拒绝",
+	"stalled": "很久没有进展",
+	"steps":   "步数用完",
+	"wall":    "超过了单次任务的时间上限",
+}
+
+// desktopWatchdogReplyFor is the stop reply with what the run concretely
+// left behind (steps, time, files) and that the rest is not done.
+func desktopWatchdogReplyFor(w *watchdogRun) string {
+	text := desktopWatchdogReply(w.stop)
+	if w.stop != "wall" && w.stop != "steps" {
+		return text
+	}
+	mins := int(time.Since(w.started).Minutes())
+	text = "这件还没做完：" + desktopWatchdogWhy[w.stop] + "，我先停下了，没有重复提交任何东西。"
+	text += "已做 " + itoa(w.steps) + " 步（成功 " + itoa(w.ok) + " 步），用时约 " + itoa(mins) + " 分钟。"
+	if len(w.wrote) > 0 {
+		files := w.wrote
+		if len(files) > 8 {
+			files = files[len(files)-8:]
+		}
+		text += "已写出的文件：" + strings.Join(files, "、") + "。"
+	}
+	return text + "剩下的部分还没做，要继续的话跟我说一声，我从这里接着做。"
 }
 
 // desktopWatchdogReply is the bot's own short result for a run it stops.
@@ -355,6 +422,21 @@ func desktopOutcomeNotice(outcome, why, content string) string {
 // that worked on the desktop and ended with a question — awaiting_user. A
 // question-only chat (no desktop step) has no outcome.
 func desktopRunOutcome(runID string, msg *agentservice.Message) (string, string) {
+	outcome, why := desktopRunOutcomeMeasured(runID, msg)
+	// A run the watchdog ended (time or step budget, a loop, failures) is
+	// not done, whatever its last step was (macmini training, Nov 11 11:09,
+	// was recorded done after its time limit). A more specific not-done
+	// cause found above stays.
+	if stop, ok := desktopWatchdogStopped(runID); ok && (outcome == "" || outcome == agentservice.TaskOutcomeDone) {
+		if desktopRunEverWorked(runID) {
+			return agentservice.TaskOutcomePartial, "stopped: " + desktopWatchdogWhy[stop]
+		}
+		return agentservice.TaskOutcomeBlocked, "stopped: " + desktopWatchdogWhy[stop]
+	}
+	return outcome, why
+}
+
+func desktopRunOutcomeMeasured(runID string, msg *agentservice.Message) (string, string) {
 	outcome, why := desktopRecoveryOutcome(runID)
 	// A post the site itself confirmed (from any step) settles the publish
 	// part, whatever the publish action's own result was.

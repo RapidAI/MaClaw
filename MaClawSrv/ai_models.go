@@ -401,6 +401,9 @@ func (s *HTTPServer) decorateAssistantMessageMetadata(ctx context.Context, p age
 	_ = sess
 	// What the task really reached, measured by the desktop goal ledger
 	// (the run's status stays "succeeded" when its execution ended normally).
+	// A check goal a later step reopened is measured again first, while
+	// the round's desktop is still bound, so the outcome is measured.
+	desktopRecRecheckAtEnd(ctx, run.ID)
 	out := desktopTaskOutcomeMetadata(run.ID, msg)
 	// A picture the person asked for is looked at now, while this round's
 	// desktop is still bound (it is released when PostMessage returns).

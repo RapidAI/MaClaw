@@ -734,7 +734,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	}
 	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
 	if !desktopActionAllowed(action) {
-		return "", fmt.Errorf("desktop action must be %s", strings.Join(desktopExecuteActions, ", "))
+		return "", desktopUnknownActionError(action)
 	}
 	// Deliver attaches one file to this chat. A path reads that file from the
 	// desktop. A name and content build the file here. A login in progress

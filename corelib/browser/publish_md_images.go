@@ -64,6 +64,16 @@ const publishPasteImageFn = `async function(k, svgToPNG) {
   return f.type || 'file';
 }`
 
+// mdDefaultPrepKeys/mdDefaultSettle: before each picture of a markdown body,
+// end of text and a new line, after the previous insert settled.
+var (
+	// MarkdownPictureCaretDefault turns the default on (tests of the
+	// recovery mechanism itself turn it off to exercise a caret regression).
+	MarkdownPictureCaretDefault = true
+	mdDefaultPrepKeys           = []string{"ctrl+End", "Enter"}
+	mdDefaultSettle             = 1500 * time.Millisecond
+)
+
 // mdPictureWait: one picture's upload and link (CSDN takes 5-15 s).
 const mdPictureWait = 30 * time.Second
 
@@ -210,6 +220,17 @@ func (p *publishRun) pasteImagesMarkdown(obj string) (string, error) {
 	}
 	p.rep.fact("pictures_wanted", float64(files))
 	p.rep.fact("regression", 0)
+	// The editor's own picture input inserts at the editor's caret, which
+	// after a picture sits on that picture's link: CSDN (Nov 11 10:41, twice)
+	// had picture 2 replace picture 1's link; Escape did not help, and
+	// ctrl+End,Enter with a 1.5 s settle (the run's own recovery) did. With
+	// no strategy of its own, every picture goes in on a new last line.
+	if MarkdownPictureCaretDefault && len(p.spec.InsertPrepKeys) == 0 && files > 1 {
+		p.spec.InsertPrepKeys = mdDefaultPrepKeys
+		if p.spec.InsertSettle == 0 {
+			p.spec.InsertSettle = mdDefaultSettle
+		}
+	}
 	known := map[string]bool{}
 	for _, u := range markdownImageURLs(p.mdText(obj)) {
 		known[u] = true

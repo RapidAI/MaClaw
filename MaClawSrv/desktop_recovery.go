@@ -78,7 +78,13 @@ var (
 	desktopRecLineages   = map[string]string{}             // recKey -> lineage
 	desktopRecRunLineage = map[string]string{}             // runID -> "sk\x01lineage"
 	desktopRecRunSteps   = map[string]bool{}               // runID -> made a desktop step
+	// desktopRecCheckScopes: runID -> the scope its goal_check measured with,
+	// so the run's end can measure a reopened goal again the same way.
+	desktopRecCheckScopes = map[string]agentruntime.Scope{}
 )
+
+// desktopRecReopenWhy marks a check goal a later step reopened.
+const desktopRecReopenWhy = "changed after its verification; run goal_check again"
 
 func desktopRecKey(scope agentruntime.Scope) string {
 	o := desktopOwner(scope)
@@ -503,7 +509,7 @@ func desktopRecoveryBefore(request agentruntime.TurnRequest, scope agentruntime.
 	for _, g := range gs {
 		if g.State == recovery.StateDone {
 			if desktopRecReopens[action] {
-				eng.Reopen(sk, g.Key, "changed after its verification; run goal_check again")
+				eng.Reopen(sk, g.Key, desktopRecReopenWhy)
 			} else {
 				continue
 			}
@@ -1032,6 +1038,14 @@ func desktopGoalCheck(ctx context.Context, request agentruntime.TurnRequest, sco
 		_ = json.Unmarshal([]byte(g.Spec), &cs)
 	}
 	desktopRecNoteRunGoal(scope.RunID, sk+"\x01"+key)
+	if scope.RunID != "" {
+		desktopRecStateMu.Lock()
+		if len(desktopRecCheckScopes) > 4096 {
+			desktopRecCheckScopes = map[string]agentruntime.Scope{}
+		}
+		desktopRecCheckScopes[scope.RunID] = scope
+		desktopRecStateMu.Unlock()
+	}
 	facts, missed, good := desktopRecMeasure(ctx, scope, cs)
 	if g.Count == 0 && len(missed) > 0 {
 		// The baseline before any work: not an attempt.
@@ -1193,7 +1207,50 @@ func desktopRecoveryEndRun(runID string) {
 	delete(desktopRecRuns, runID)
 	delete(desktopRecRunLineage, runID)
 	delete(desktopRecRunSteps, runID)
+	delete(desktopRecCheckScopes, runID)
 }
+
+// desktopRecRecheckAtEnd measures again, at the run's completion, every
+// check goal of this run that a later step reopened. Bash steps after a
+// passing goal_check (taking screenshots, reading files) reopened the snake
+// game's goal and the run ended "partial" although all 6 criteria still
+// held (Nov 11 10:57). The result is a real measurement either way: met
+// closes the goal as done, not met leaves it open with what is missing.
+func desktopRecRecheckAtEnd(ctx context.Context, runID string) {
+	if runID == "" {
+		return
+	}
+	desktopRecStateMu.Lock()
+	scope, ok := desktopRecCheckScopes[runID]
+	keys := append([]string(nil), desktopRecRuns[runID]...)
+	desktopRecStateMu.Unlock()
+	if !ok {
+		return
+	}
+	eng := desktopRecovery()
+	for _, k := range keys {
+		sk, key, _ := strings.Cut(k, "\x01")
+		g := eng.Status(sk, key)
+		if g == nil || g.State == recovery.StateDone || g.Reason != desktopRecReopenWhy || g.Spec == "" || !strings.HasPrefix(key, "check|") {
+			continue
+		}
+		var cs []desktopRecCriterion
+		if json.Unmarshal([]byte(g.Spec), &cs) != nil || len(cs) == 0 {
+			continue
+		}
+		facts, missed, _ := desktopRecMeasureAtEnd(ctx, scope, cs)
+		complete := len(missed) == 0
+		o := recovery.Observation{Goal: key, Surface: "check", Method: "check", Strategy: desktopRecCheckStrategy(g), Run: runID, OK: complete, Complete: complete, Facts: facts}
+		if !complete {
+			o.Error = "not met: " + strings.Join(missed, "; ")
+		}
+		v := eng.Observe(sk, o)
+		log.Printf("[recovery] run-end recheck run=%s goal=%s complete=%v verdict=%s state=%s", runID, key, complete, v.Kind, v.State)
+	}
+}
+
+// desktopRecMeasureAtEnd is a test seam over desktopRecMeasure.
+var desktopRecMeasureAtEnd = desktopRecMeasure
 
 func desktopRecSomeDone(best map[string]float64) bool {
 	for k, v := range best {

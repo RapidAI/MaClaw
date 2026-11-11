@@ -314,6 +314,10 @@ func TestRecoveryCaretEditorEndToEndThroughInvokeTool(t *testing.T) {
 	ridCaret2 := recRunID("run-recov-caret-2")
 	ridCaret1 := recRunID("run-recov-caret-1")
 	recoveryTestEnv(t)
+	// This test exercises recovery finding the caret fix itself; the
+	// d99 default would otherwise prevent the regression it diagnoses.
+	browser.MarkdownPictureCaretDefault = false
+	t.Cleanup(func() { browser.MarkdownPictureCaretDefault = true })
 	d := recChrome(t)
 	srv, site := recCaretServer(t)
 	operateDesktopFunc = recPublishOp(srv, d)
