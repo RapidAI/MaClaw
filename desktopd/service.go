@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -205,6 +206,9 @@ func (s *Service) createUnlocked(ctx context.Context, spec Spec) (Desktop, error
 	if err != nil {
 		return Desktop{}, err
 	}
+	// Every create/update path keeps the CPU floor (no-op when the spec was
+	// already sized by shareSpec, which is never below it).
+	spec.CPUs = sharedCPUs(spec.CPUs, 1, runtime.NumCPU())
 	// spec.Image stays the requested image (for example maclaw-gui:2) for the
 	// whole call. The image docker actually runs may be this user's private
 	// state image; that is resolved last and only used for docker run.
