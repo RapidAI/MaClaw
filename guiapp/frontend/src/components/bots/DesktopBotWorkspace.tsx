@@ -518,6 +518,42 @@ async function readDesktopBotTurn(
     return { kind: 'read', told, instruction, persona: personaRaw, pace: decided, understood };
 }
 
+// DESKTOP_BOT_SEND_FIRST_MS: how long a new order may wait for its reading
+// before the person's own words go to the bot as the order. The reading is a
+// model call with a 90 s budget; on a slow model (qwen4-max, papers 11-12
+// 06:00: three messages sat in 「安排中」 about a minute before any reached
+// Hub) the bubble looked stuck while nothing had been sent. The worker
+// understands the words itself, and a late reading is not applied. A
+// primary bot keeps waiting: its reading may hand the work to a teammate.
+export const DESKTOP_BOT_SEND_FIRST_MS = 8000;
+
+async function readDesktopBotTurnOrSend(
+    content: string,
+    phase: BotPhase,
+    lang: string,
+    earlier: string[],
+    persona: string,
+    catalog: string,
+    sendFirstMs: number,
+): Promise<BotReading & { sentFirst?: boolean }> {
+    const reading = readDesktopBotTurn(content, phase, lang, earlier, persona, catalog);
+    if (sendFirstMs <= 0 || !content.trim()) return reading;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const first = new Promise<BotReading & { sentFirst?: boolean }>(resolve => {
+        timer = setTimeout(() => resolve({ kind: 'read', told: '', instruction: content.trim(), persona: '', pace: 'direct', understood: {}, sentFirst: true }), sendFirstMs);
+    });
+    try {
+        return await Promise.race([reading, first]);
+    } finally {
+        if (timer) clearTimeout(timer);
+        reading.catch(() => undefined);
+    }
+}
+
+function botIsPrimary(botId: string, bots: DesktopBot[]): boolean {
+    return bots.some(bot => bot.id === botId && bot.primary === true);
+}
+
 // The reading failed. Say so in this language and leave the words parked, so
 // one click either reads again or sends exactly what was typed.
 function noReadingReply(kind: NoReading, words: { orderMissing: string; scheduleMissing: string; readingLost: string }, content: string, phase: BotPhase) {
@@ -4979,7 +5015,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 try {
                     // The reading may take long (its own budget serves the
                     // work); the receipt timer above covers the person.
-                    const reading = await readDesktopBotTurn(content, turnPhase, lang, earlier, personaForBot(ownerId, botId), desktopBotCatalog(botId, botsRef.current));
+                    const reading = await readDesktopBotTurnOrSend(content, turnPhase, lang, earlier, personaForBot(ownerId, botId), desktopBotCatalog(botId, botsRef.current), botIsPrimary(botId, botsRef.current) ? 0 : DESKTOP_BOT_SEND_FIRST_MS);
                     if (reading.kind !== 'read') {
                         // This turn has not started. It stops here with the
                         // sentence that was typed, which is why the reading
@@ -6098,7 +6134,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         let told = '';
                         let instruction = '';
                         let understood: Record<string, unknown> = {};
-                        const reading = await readDesktopBotTurn(content, turnPhase, lang, earlier, personaForBot(ownerId, botId), desktopBotCatalog(botId, botsRef.current));
+                        const reading = await readDesktopBotTurnOrSend(content, turnPhase, lang, earlier, personaForBot(ownerId, botId), desktopBotCatalog(botId, botsRef.current), botIsPrimary(botId, botsRef.current) ? 0 : DESKTOP_BOT_SEND_FIRST_MS);
                         if (userIdRef.current !== ownerId || slot.drop) return;
                         if (reading.kind !== 'read') {
                             // Nothing is queued and nothing was sent: the queue

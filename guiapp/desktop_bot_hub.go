@@ -1484,6 +1484,12 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 	var err error
 	var outageSince time.Time
 	outageTries := 0
+	reconnecting := false
+	defer func() {
+		if reconnecting {
+			a.publishDesktopBotStatus(botID, "", "")
+		}
+	}()
 	for attempt := 1; attempt <= desktopBotAdmitAttempts; attempt++ {
 		out.ClientMessageID = ""
 		status, err = a.desktopBotExchange(admitCtx, http.MethodPost, path, body, &out, 30*time.Minute, map[string]string{"Prefer": "respond-async"})
@@ -1494,6 +1500,12 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 				outageSince = time.Now()
 			}
 			if time.Since(outageSince) < desktopBotAdmitOutageWindow {
+				// Say what the wait is: not 「安排中」 but the server being
+				// reconnected (a Hub redeploy takes ~20 s).
+				if !reconnecting {
+					reconnecting = true
+					a.publishDesktopBotStatus(botID, "", desktopBotReconnectingLine)
+				}
 				botlog.Write(botID, "gui.admit_wait_hub", err,
 					"http", strconv.Itoa(status),
 					"tries", strconv.Itoa(outageTries+1),
@@ -1573,6 +1585,10 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 	)
 	return a.desktopRelayFromWire(out.Text, out.SendToUser, out.NovncURL, out.AttentionReason, out.AskUserInputType, out.AskUserSecretName, out.AskUserQuestion, out.AskUserOptionsJSON, out.Handoff, out.Images, out.Files, out.Error, out.TaskOutcome)
 }
+
+// desktopBotReconnectingLine is the status while Hub cannot be reached and
+// the same turn waits to be sent again.
+const desktopBotReconnectingLine = "服务器暂时连不上，正在重新连接；连上后这条会自动发出"
 
 // desktopBotAdmitAttempts is how many times one admission is tried. The
 // first answer that is lost — a 502 from the proxy in front of Hub, a
