@@ -1160,7 +1160,7 @@ func TestFallbackChainUsesBrowserSearchHook(t *testing.T) {
 	}
 }
 
-func TestFallbackChainPrefersGoogleBrowserForNamedSite(t *testing.T) {
+func TestFallbackChainPrefersConfiguredBrowserForNamedSite(t *testing.T) {
 	setupDownloadTestLog(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -1189,8 +1189,8 @@ func TestFallbackChainPrefersGoogleBrowserForNamedSite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(engines) == 0 || engines[0] != "google" {
-		t.Fatalf("OpenReview query should try Google browser first, got %v", engines)
+	if len(engines) == 0 || engines[0] != "bing_cn" {
+		t.Fatalf("OpenReview query should try the configured Bing browser first, got %v", engines)
 	}
 	if len(results) != 1 || results[0].URL != "https://openreview.net/forum?id=1" {
 		t.Fatalf("results = %+v", results)
@@ -1215,10 +1215,10 @@ func TestFallbackChainTriesSecondBrowserWhenNamedSiteStillMissing(t *testing.T) 
 	var engines []string
 	SetBrowserSearchProvider(func(_ context.Context, engineID, _ string, _ int, _ bool) ([]BrowserSearchHit, error) {
 		engines = append(engines, engineID)
-		if engineID == "google" {
+		if engineID == "bing_cn" {
 			return []BrowserSearchHit{{Title: "Wiki", URL: "https://en.wikipedia.org/wiki/Open_review"}}, nil
 		}
-		return []BrowserSearchHit{{Title: "Paper", URL: "https://openreview.net/forum?id=bing"}}, nil
+		return []BrowserSearchHit{{Title: "Paper", URL: "https://openreview.net/forum?id=google"}}, nil
 	})
 	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
 
@@ -1226,10 +1226,94 @@ func TestFallbackChainTriesSecondBrowserWhenNamedSiteStillMissing(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(engines) < 2 || engines[0] != "google" || engines[1] != "bing_cn" {
-		t.Fatalf("engines = %v, want google then bing_cn", engines)
+	if len(engines) < 2 || engines[0] != "bing_cn" || engines[1] != "google" {
+		t.Fatalf("engines = %v, want bing_cn then google", engines)
 	}
-	if len(results) == 0 || results[0].URL != "https://openreview.net/forum?id=bing" {
+	if len(results) == 0 || results[0].URL != "https://openreview.net/forum?id=google" {
 		t.Fatalf("results = %+v", results)
+	}
+}
+
+func TestFallbackChainHonorsRegisteredStrategy(t *testing.T) {
+	setupDownloadTestLog(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	for _, p := range []*string{&defaultBingSearchURL, &defaultBaiduSearchURL, &defaultLegacySearchURL} {
+		orig := *p
+		*p = srv.URL
+		t.Cleanup(func() { *p = orig })
+	}
+	lastGoodEndpointMu.Lock()
+	lastGoodEndpointName = ""
+	lastGoodEndpointMu.Unlock()
+
+	var engines []string
+	SetBrowserSearchProvider(func(_ context.Context, engineID, _ string, _ int, _ bool) ([]BrowserSearchHit, error) {
+		engines = append(engines, engineID)
+		return []BrowserSearchHit{{Title: "Paper", URL: "https://openreview.net/forum?id=x"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+	SetWebSearchStrategyProvider(func() corelib.WebSearchStrategy {
+		return corelib.WebSearchStrategy{
+			Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+			Engines: []corelib.WebSearchEngineConfig{
+				{ID: "google", Enabled: false, Priority: 1, Transport: corelib.WebSearchTransportBrowser},
+			},
+			BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn",
+		}
+	})
+	t.Cleanup(func() { SetWebSearchStrategyProvider(nil) })
+
+	results, err := searchDirectFallbackChain(context.Background(), "openreview iclr", 3, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(engines) != 1 || engines[0] != "bing_cn" {
+		t.Fatalf("engines = %v, want only the configured bing_cn fallback (google disabled)", engines)
+	}
+	if len(results) == 0 || results[0].URL != "https://openreview.net/forum?id=x" {
+		t.Fatalf("results = %+v", results)
+	}
+}
+
+func TestFallbackChainSkipsBrowserWhenStrategyDisablesIt(t *testing.T) {
+	setupDownloadTestLog(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	for _, p := range []*string{&defaultBingSearchURL, &defaultBaiduSearchURL, &defaultLegacySearchURL} {
+		orig := *p
+		*p = srv.URL
+		t.Cleanup(func() { *p = orig })
+	}
+	lastGoodEndpointMu.Lock()
+	lastGoodEndpointName = ""
+	lastGoodEndpointMu.Unlock()
+
+	var engines []string
+	SetBrowserSearchProvider(func(_ context.Context, engineID, _ string, _ int, _ bool) ([]BrowserSearchHit, error) {
+		engines = append(engines, engineID)
+		return []BrowserSearchHit{{Title: "Paper", URL: "https://openreview.net/forum?id=x"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+	SetWebSearchStrategyProvider(func() corelib.WebSearchStrategy {
+		return corelib.WebSearchStrategy{
+			Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+			Engines: []corelib.WebSearchEngineConfig{
+				{ID: "google", Enabled: false, Priority: 1, Transport: corelib.WebSearchTransportBrowser},
+			},
+			BrowserFallbackEnabled: false,
+		}
+	})
+	t.Cleanup(func() { SetWebSearchStrategyProvider(nil) })
+
+	if _, err := searchDirectFallbackChain(context.Background(), "openreview iclr", 3, ""); err == nil {
+		t.Fatal("expected an error: browser fallback is disabled and every endpoint failed")
+	}
+	if len(engines) != 0 {
+		t.Fatalf("browser engines = %v, want no browser attempts when the strategy disables fallback", engines)
 	}
 }

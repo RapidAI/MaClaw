@@ -28,6 +28,9 @@ const (
 	motifLesson     motif = "lesson"     // 教学课件: masthead band
 	motifFinance    motif = "finance"    // 财务年报: navy panel, gold rules, data wall
 	motifAurora     motif = "aurora"     // 深色科技: dark glow cover, light content
+	motifEdge       motif = "edge"       // 高层侧栏: deep gradient rail, ghost ring
+	motifPeak       motif = "peak"       // 棱角动感: angled parallelogram ribbons
+	motifOrbit      motif = "orbit"      // 环形轨道: layered rings, open field
 )
 
 type bodyKind int
@@ -49,7 +52,7 @@ func normalizeMotif(raw string, coverDark bool) (motif, error) {
 		return motifReport, nil
 	case motifReport, motifSplit, motifInk, motifDashboard, motifPoster, motifSketch,
 		motifBoard, motifCraft, motifDefense, motifConsulting, motifOfficial, motifLesson,
-		motifFinance, motifAurora:
+		motifFinance, motifAurora, motifEdge, motifPeak, motifOrbit:
 		return motif(strings.ToLower(strings.TrimSpace(raw))), nil
 	default:
 		return "", fmt.Errorf("ppt_style_motif_invalid")
@@ -64,7 +67,7 @@ func motifBody(m motif) bodyKind {
 		return bodyOutline
 	case motifBoard, motifCraft:
 		return bodyNotes
-	case motifSplit:
+	case motifSplit, motifEdge:
 		return bodyRail
 	default:
 		return bodyFilled
@@ -99,6 +102,12 @@ func paintMotifCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker 
 		paintFinanceCover(slide, theme, title, subtitle, kicker, page, total)
 	case motifAurora:
 		paintAuroraCover(slide, theme, title, subtitle, kicker, page, total)
+	case motifEdge:
+		paintEdgeCover(slide, theme, title, subtitle, kicker, page, total)
+	case motifPeak:
+		paintPeakCover(slide, theme, title, subtitle, kicker, page, total)
+	case motifOrbit:
+		paintOrbitCover(slide, theme, title, subtitle, kicker, page, total)
 	default:
 		paintReportCover(slide, theme, title, subtitle, kicker, page, total)
 	}
@@ -133,9 +142,17 @@ func paintMotifChrome(slide *ppt.Slide, theme deckTheme, kicker, title, footer s
 		return paintFinanceChrome(slide, theme, kicker, title, footer, page, total)
 	case motifAurora:
 		return paintAuroraChrome(slide, theme, kicker, title, footer, page, total)
+	case motifEdge:
+		return paintEdgeChrome(slide, theme, kicker, title, footer, page, total)
+	case motifPeak:
+		return paintPeakChrome(slide, theme, kicker, title, footer, page, total)
+	case motifOrbit:
+		return paintOrbitChrome(slide, theme, kicker, title, footer, page, total)
 	default:
-		rect(slide, 0, 0, emuIn(0.14), deckSlideHeight, theme.accent)
+		gradRect(slide, 0, 0, emuIn(0.14), deckSlideHeight, theme.accent, theme.navy2, 90)
 		rect(slide, 0, 0, emuIn(0.14), emuIn(0.42), theme.navy2)
+		ring(slide, deckSlideWidth-emuIn(0.95), emuIn(0.38), emuIn(0.42), blend(theme.accent, theme.paper, 0.55))
+		shapeBadge(slide, deckSlideWidth-emuIn(1.06), emuIn(0.86), emuIn(0.12), ppt.AutoShapeDiamond, theme.gold)
 		rect(slide, emuIn(0.55), emuIn(6.96), deckSlideWidth-emuIn(0.97), emuIn(0.01), blend(theme.slate, theme.paper, 0.78))
 		return paintContentTitle(slide, theme, kicker, title, footer, page, total, 0.55, theme.accent, true)
 	}
@@ -169,6 +186,12 @@ func paintMotifSection(slide *ppt.Slide, theme deckTheme, title, subtitle, kicke
 		paintFinanceSection(slide, theme, title, subtitle, kicker, page, total, sectionNo)
 	case motifAurora:
 		paintAuroraSection(slide, theme, title, subtitle, kicker, page, total, sectionNo)
+	case motifEdge:
+		paintEdgeSection(slide, theme, title, subtitle, kicker, page, total, sectionNo)
+	case motifPeak:
+		paintPeakSection(slide, theme, title, subtitle, kicker, page, total, sectionNo)
+	case motifOrbit:
+		paintOrbitSection(slide, theme, title, subtitle, kicker, page, total, sectionNo)
 	default:
 		paintReportSection(slide, theme, title, subtitle, kicker, page, total, sectionNo)
 	}
@@ -176,8 +199,14 @@ func paintMotifSection(slide *ppt.Slide, theme deckTheme, title, subtitle, kicke
 
 func paintReportCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
 	paintSolidBackground(slide, theme.paper)
-	rect(slide, 0, 0, emuIn(0.22), deckSlideHeight, theme.accent)
+	// A lit rail: the accent fades into navy2 as it descends, so the edge
+	// reads as a lit strip rather than a flat cutout.
+	gradRect(slide, 0, 0, emuIn(0.22), deckSlideHeight, theme.accent, theme.navy2, 90)
 	rect(slide, 0, 0, emuIn(0.22), emuIn(0.22), theme.navy2)
+	// Ghost geometry behind the title field: one pale ring and its quarter
+	// diamond — quiet depth that stays under the type.
+	ring(slide, emuIn(11.55), emuIn(0.62), emuIn(1.15), blend(theme.accent, theme.paper, 0.82))
+	shapeBadge(slide, emuIn(12.18), emuIn(0.86), emuIn(0.2), ppt.AutoShapeDiamond, blend(theme.gold, theme.paper, 0.35))
 	titleY := 0.72
 	if kicker != "" {
 		deckText(slide, emuIn(0.7), emuIn(0.42), emuIn(11), emuIn(0.26), kicker, 13, true, textOn(theme.navy2, theme.paper, theme), ppt.HorizontalLeft)
@@ -185,6 +214,8 @@ func paintReportCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker
 	}
 	_, subY := placeCoverTitle(slide, 0.7, titleY, 11.6, 1.45, title, 44, textOn(theme.ink, theme.paper, theme), ppt.HorizontalLeft)
 	deckText(slide, emuIn(0.7), emuIn(subY), emuIn(11.6), emuIn(0.55), subtitle, 16, false, textOn(theme.slate, theme.paper, theme), ppt.HorizontalLeft)
+	// A soft light band lifts the evidence cards off the paper.
+	gradRect(slide, 0, emuIn(3.55), deckSlideWidth, emuIn(3.45), blend(theme.card, theme.paper, 0.55), theme.paper, 90)
 	// Three evidence cards are the report motif: rounded field, color chip,
 	// quiet ghost rules.
 	stripes := []ppt.Color{theme.accent, theme.navy2, theme.gold}
@@ -203,9 +234,12 @@ func paintReportCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker
 
 func paintSplitCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
 	const split = 6.15
-	rect(slide, 0, 0, emuIn(split), deckSlideHeight, theme.navy)
+	gradRect(slide, 0, 0, emuIn(split), deckSlideHeight, theme.navy, theme.navy2, 55)
 	rect(slide, emuIn(split), 0, deckSlideWidth-emuIn(split), deckSlideHeight, theme.paper)
-	rect(slide, emuIn(split), 0, emuIn(0.14), deckSlideHeight, theme.accent)
+	gradRect(slide, emuIn(split), 0, emuIn(0.14), deckSlideHeight, theme.accent, blend(theme.accent, theme.navy, 0.4), 90)
+	// Faint momentum marks descend the dark field.
+	chevRow(slide, emuIn(0.42), emuIn(6.55), emuIn(0.5), emuIn(0.2), emuIn(0.14), 3, theme.accent, theme.navy)
+	ring(slide, emuIn(5.15), emuIn(5.7), emuIn(0.85), blend(theme.white, theme.navy, 0.78))
 	if kicker != "" {
 		deckText(slide, emuIn(0.42), emuIn(0.48), emuIn(5.2), emuIn(0.28), kicker, 13, true, textOn(theme.gold, theme.navy, theme), ppt.HorizontalLeft)
 	}
@@ -372,7 +406,10 @@ func paintCraftCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker 
 
 func paintDefenseCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
 	paintSolidBackground(slide, theme.paper)
-	rect(slide, 0, 0, deckSlideWidth, emuIn(1.85), theme.navy)
+	gradRect(slide, 0, 0, deckSlideWidth, emuIn(1.85), theme.navy, theme.navy2, 15)
+	// A quiet academic mark at the band's right: nested triangle and diamond.
+	tri(slide, emuIn(12.0), emuIn(0.45), emuIn(0.55), emuIn(0.48), blend(theme.white, theme.navy, 0.8))
+	shapeBadge(slide, emuIn(12.18), emuIn(1.05), emuIn(0.18), ppt.AutoShapeDiamond, theme.accent)
 	if kicker != "" {
 		deckText(slide, emuIn(0.55), emuIn(0.18), emuIn(10), emuIn(0.26), kicker, 14, true, textOn(theme.white, theme.navy, theme), ppt.HorizontalLeft)
 	}
@@ -422,24 +459,28 @@ func paintConsultingMotifCover(slide *ppt.Slide, theme deckTheme, title, subtitl
 func paintOfficialCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
 	const panel = 7.35
 	paintSolidBackground(slide, theme.paper)
-	rect(slide, 0, 0, emuIn(panel), deckSlideHeight, theme.accent)
+	gradRect(slide, 0, 0, emuIn(panel), deckSlideHeight, theme.accent, theme.navy, 90)
 	rect(slide, emuIn(panel), 0, emuIn(0.06), deckSlideHeight, theme.gold)
 	strokeFrame(slide, emuIn(0.38), emuIn(0.38), emuIn(panel-0.76), deckSlideHeight-emuIn(0.76), emuIn(0.02), theme.gold)
 	strokeFrame(slide, emuIn(0.52), emuIn(0.52), emuIn(panel-1.04), deckSlideHeight-emuIn(1.04), emuIn(0.012), theme.gold)
+	shapeBadge(slide, emuIn(panel-1.5), emuIn(0.85), emuIn(0.3), ppt.AutoShapeStar5, blend(theme.gold, theme.accent, 0.18))
 	if kicker != "" {
 		deckText(slide, emuIn(0.85), emuIn(1.55), emuIn(5.6), emuIn(0.3), kicker, 14, true, textOn(theme.gold, theme.accent, theme), ppt.HorizontalLeft)
 	}
 	placeCoverTitle(slide, 0.85, 2.05, 5.6, 2.4, title, 36, textOn(theme.white, theme.accent, theme), ppt.HorizontalLeft)
 	oval(slide, emuIn(0.9), emuIn(5.55), emuIn(0.72), emuIn(0.72), theme.gold)
-	shapeBadge(slide, emuIn(1.08), emuIn(5.37), emuIn(0.36), ppt.AutoShapeDonut, theme.accent)
+	ring(slide, emuIn(1.08), emuIn(5.37), emuIn(0.36), theme.accent)
 	deckText(slide, emuIn(panel+0.4), emuIn(2.15), emuIn(5.3), emuIn(2.2), subtitle, 18, false, textOn(theme.ink, theme.paper, theme), ppt.HorizontalLeft)
 	deckText(slide, emuIn(panel+0.4), emuIn(6.7), emuIn(4), emuIn(0.3), pageMark(page, total), 12, false, textOn(theme.mute, theme.paper, theme), ppt.HorizontalLeft)
 }
 
 func paintLessonCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
 	paintSolidBackground(slide, theme.paper)
-	rect(slide, 0, 0, deckSlideWidth, emuIn(2.35), theme.navy)
+	gradRect(slide, 0, 0, deckSlideWidth, emuIn(2.35), theme.navy, theme.navy2, 20)
 	rect(slide, 0, emuIn(2.35), deckSlideWidth, emuIn(0.1), theme.accent)
+	// Small course marks ride the masthead's quiet right side.
+	ring(slide, emuIn(11.9), emuIn(0.5), emuIn(0.62), blend(theme.white, theme.navy, 0.72))
+	shapeBadge(slide, emuIn(12.42), emuIn(1.22), emuIn(0.18), ppt.AutoShapeDiamond, theme.gold)
 	if kicker != "" {
 		deckText(slide, emuIn(0.6), emuIn(0.28), emuIn(11), emuIn(0.28), kicker, 14, true, textOn(theme.gold, theme.navy, theme), ppt.HorizontalLeft)
 	}
@@ -563,8 +604,9 @@ func paintCraftChrome(slide *ppt.Slide, theme deckTheme, kicker, title, footer s
 }
 
 func paintDefenseChrome(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
-	rect(slide, 0, 0, deckSlideWidth, emuIn(0.10), theme.navy)
+	gradRect(slide, 0, 0, deckSlideWidth, emuIn(0.10), theme.navy, theme.navy2, 0)
 	rect(slide, deckSlideWidth-emuIn(2.2), 0, emuIn(2.2), emuIn(0.10), theme.accent)
+	tri(slide, deckSlideWidth-emuIn(0.56), emuIn(0.3), emuIn(0.22), emuIn(0.19), blend(theme.navy, theme.paper, 0.55))
 	box := paintContentTitle(slide, theme, kicker, title, footer, page, total, 0.55, theme.navy, false)
 	ruleY := 0.96
 	if kicker != "" {
@@ -596,8 +638,9 @@ func paintConsultingChrome(slide *ppt.Slide, theme deckTheme, kicker, title, foo
 }
 
 func paintOfficialChrome(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
-	rect(slide, 0, 0, deckSlideWidth, emuIn(0.12), theme.accent)
+	gradRect(slide, 0, 0, deckSlideWidth, emuIn(0.12), theme.accent, theme.navy, 0)
 	rect(slide, 0, emuIn(0.12), deckSlideWidth, emuIn(0.03), theme.gold)
+	shapeBadge(slide, deckSlideWidth-emuIn(0.62), emuIn(0.36), emuIn(0.22), ppt.AutoShapeStar5, blend(theme.gold, theme.paper, 0.3))
 	box := paintContentTitle(slide, theme, kicker, title, footer, page, total, 0.62, theme.accent, false)
 	ruleY := 0.96
 	if kicker != "" {
@@ -610,8 +653,10 @@ func paintOfficialChrome(slide *ppt.Slide, theme deckTheme, kicker, title, foote
 }
 
 func paintLessonChrome(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
-	rect(slide, 0, 0, deckSlideWidth, emuIn(0.16), theme.navy)
+	gradRect(slide, 0, 0, deckSlideWidth, emuIn(0.16), theme.navy, theme.navy2, 0)
 	rect(slide, 0, emuIn(0.16), deckSlideWidth, emuIn(0.04), theme.accent)
+	chev(slide, deckSlideWidth-emuIn(0.72), emuIn(0.34), emuIn(0.3), emuIn(0.16), blend(theme.navy, theme.paper, 0.55))
+	chev(slide, deckSlideWidth-emuIn(0.44), emuIn(0.34), emuIn(0.3), emuIn(0.16), theme.accent)
 	box := paintContentTitle(slide, theme, kicker, title, footer, page, total, 0.62, theme.navy, false)
 	ruleY := 0.96
 	if kicker != "" {
@@ -1455,8 +1500,10 @@ func cardChip(slide *ppt.Slide, x, y int64, color ppt.Color) {
 func paintFinanceCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
 	const panel = 5.1
 	paintSolidBackground(slide, theme.paper)
-	rect(slide, 0, 0, emuIn(panel), deckSlideHeight, theme.navy)
+	gradRect(slide, 0, 0, emuIn(panel), deckSlideHeight, theme.navy, theme.navy2, 90)
 	rect(slide, emuIn(panel), 0, emuIn(0.035), deckSlideHeight, theme.gold)
+	ringWide(slide, emuIn(3.35), emuIn(5.55), emuIn(2.3), emuIn(2.3), blend(theme.white, theme.navy, 0.8))
+	shapeBadge(slide, emuIn(4.3), emuIn(6.35), emuIn(0.22), ppt.AutoShapeDiamond, theme.gold)
 	if kicker != "" {
 		deckText(slide, emuIn(0.55), emuIn(0.85), emuIn(panel-1.0), emuIn(0.3), kicker, 13, true, textOn(theme.gold, theme.navy, theme), ppt.HorizontalLeft)
 	}
@@ -1488,8 +1535,9 @@ func paintFinanceCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicke
 
 func paintFinanceChrome(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
 	const left = 0.55
-	rect(slide, 0, 0, emuIn(0.07), deckSlideHeight, theme.navy)
+	gradRect(slide, 0, 0, emuIn(0.07), deckSlideHeight, theme.navy, theme.navy2, 90)
 	rect(slide, 0, 0, emuIn(0.07), emuIn(0.55), theme.gold)
+	shapeBadge(slide, deckSlideWidth-emuIn(0.62), emuIn(0.34), emuIn(0.2), ppt.AutoShapeDiamond, theme.gold)
 	box := paintContentTitle(slide, theme, kicker, title, footer, page, total, left, theme.navy, true)
 	ruleY := 1.02
 	if kicker != "" {
@@ -1536,12 +1584,19 @@ func paintAuroraGlow(slide *ppt.Slide, theme deckTheme, cx, cy, d float64, stren
 }
 
 func paintAuroraCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
-	paintSolidBackground(slide, theme.navy)
+	gradBg(slide, theme.navy, theme.navy2, 115)
 	// Layered glows: one wide cyan field, a tighter core, and a violet counter
 	// glow low-left. Blends into the navy keep the field soft.
 	paintAuroraGlow(slide, theme, 10.6, 1.4, 6.4, 0.16, theme.accent)
 	paintAuroraGlow(slide, theme, 11.4, 1.1, 3.4, 0.34, theme.accent)
 	paintAuroraGlow(slide, theme, 1.2, 6.6, 4.6, 0.20, theme.gold)
+	// A sparse star field sells the deep-sky field.
+	starPts := [][2]float64{{9.4, 0.7}, {10.9, 2.9}, {12.5, 1.9}, {8.6, 4.4}, {11.9, 4.9}}
+	for i, pt := range starPts {
+		d := 0.07 + float64(i%3)*0.035
+		shapeBadge(slide, emuIn(pt[0]), emuIn(pt[1]), emuIn(d), ppt.AutoShapeStar4, blend(theme.accent, theme.navy, 0.55))
+	}
+	ring(slide, emuIn(9.9), emuIn(5.35), emuIn(0.9), blend(theme.accent, theme.navy, 0.5))
 	if kicker != "" {
 		deckText(slide, emuIn(0.75), emuIn(0.55), emuIn(6), emuIn(0.3), kicker, 13, true, textOn(theme.accent, theme.navy, theme), ppt.HorizontalLeft)
 	}
@@ -1572,7 +1627,7 @@ func paintAuroraChrome(slide *ppt.Slide, theme deckTheme, kicker, title, footer 
 }
 
 func paintAuroraSection(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total, sectionNo int) {
-	paintSolidBackground(slide, theme.navy)
+	gradBg(slide, theme.navy, theme.navy2, 115)
 	paintAuroraGlow(slide, theme, 12.0, 0.8, 5.2, 0.20, theme.accent)
 	paintAuroraGlow(slide, theme, 0.8, 6.9, 3.8, 0.24, theme.gold)
 	titleX := 0.75
@@ -1686,5 +1741,302 @@ func dashedLine(slide *ppt.Slide, x1, y, x2 int64, color ppt.Color, widthPt int,
 	}
 	if arrow {
 		line.SetTailEnd(&ppt.LineEnd{Type: ppt.ArrowTriangle})
+	}
+}
+
+// --- Shaped graphic vocabulary ----------------------------------------------
+//
+// Motifs that need more than rects and rules compose these: arbitrary
+// autoshapes on a rectangle, gradient fills, rings, angled slabs, and small
+// star/diamond accents. The returned shape can still take a shadow, flip, or
+// rotation after the call.
+
+// shapeRect draws a filled autoshape on any rectangle — parallelograms,
+// chevrons, wide triangles, rings that stretch. shapeBadge's fixed-square
+// sibling for decor whose width and height differ.
+func shapeRect(slide *ppt.Slide, x, y, w, h int64, shape ppt.AutoShapeType, color ppt.Color) *ppt.AutoShape {
+	if slide == nil || w <= 0 || h <= 0 {
+		return nil
+	}
+	sh := slide.CreateAutoShape()
+	sh.SetAutoShapeType(shape)
+	sh.SetSolidFill(color)
+	sh.SetBorder(ppt.NewBorder())
+	sh.SetOffsetX(x)
+	sh.SetOffsetY(y)
+	sh.SetWidth(w)
+	sh.SetHeight(h)
+	return sh
+}
+
+// gradRect is rect with a two-stop linear-gradient fill. angle is the OOXML
+// gradient direction in degrees: 0 runs left→right, 90 top→bottom.
+func gradRect(slide *ppt.Slide, x, y, w, h int64, c1, c2 ppt.Color, angle int) {
+	gradShape(slide, x, y, w, h, ppt.AutoShapeRectangle, c1, c2, angle)
+}
+
+// gradShape is shapeRect with a two-stop gradient fill — soft panels and
+// ribbons that read as lit surfaces rather than flat cutouts.
+func gradShape(slide *ppt.Slide, x, y, w, h int64, shape ppt.AutoShapeType, c1, c2 ppt.Color, angle int) {
+	if slide == nil || w <= 0 || h <= 0 {
+		return
+	}
+	sh := slide.CreateAutoShape()
+	sh.SetAutoShapeType(shape)
+	sh.SetFill(ppt.NewFill().SetGradientLinear(c1, c2, angle))
+	sh.SetBorder(ppt.NewBorder())
+	sh.SetOffsetX(x)
+	sh.SetOffsetY(y)
+	sh.SetWidth(w)
+	sh.SetHeight(h)
+}
+
+// gradBg paints the slide background as a two-stop gradient.
+func gradBg(slide *ppt.Slide, c1, c2 ppt.Color, angle int) {
+	if slide == nil {
+		return
+	}
+	slide.SetBackground(ppt.NewFill().SetGradientLinear(c1, c2, angle))
+}
+
+// ring draws a hollow circle — the orbit motif's unit and a light accent for
+// the professional covers. It is a stroked ellipse, not a donut preset: the
+// rasterizer fills a donut's whole bounding box, so previews would show a
+// solid square where PowerPoint shows the ring.
+func ring(slide *ppt.Slide, x, y, d int64, color ppt.Color) {
+	ringWide(slide, x, y, d, d, color)
+}
+
+// ringWide draws a ring that can stretch into an ellipse. The stroke width
+// tracks the smaller axis so a badge ring stays hairline-light while a
+// cover-scale ring keeps visible weight.
+func ringWide(slide *ppt.Slide, x, y, w, h int64, color ppt.Color) {
+	if slide == nil || w <= 0 || h <= 0 {
+		return
+	}
+	sh := slide.CreateAutoShape()
+	sh.SetAutoShapeType(ppt.AutoShapeEllipse)
+	sh.SetFill(ppt.NewFill().SetNoFill())
+	short := min(w, h)
+	widthPt := int(float64(short)/float64(emuIn(1))*1.6 + 0.5)
+	if widthPt < 1 {
+		widthPt = 1
+	} else if widthPt > 7 {
+		widthPt = 7
+	}
+	sh.SetBorder(ppt.NewBorder().SetSolidFill(color).SetWidth(widthPt))
+	sh.SetOffsetX(x)
+	sh.SetOffsetY(y)
+	sh.SetWidth(w)
+	sh.SetHeight(h)
+}
+
+// para draws a parallelogram — the angled slab the peak motif builds ribbons
+// from.
+func para(slide *ppt.Slide, x, y, w, h int64, color ppt.Color) *ppt.AutoShape {
+	return shapeRect(slide, x, y, w, h, ppt.AutoShapeParallelogram, color)
+}
+
+// chev draws a right-pointing chevron.
+func chev(slide *ppt.Slide, x, y, w, h int64, color ppt.Color) {
+	shapeRect(slide, x, y, w, h, ppt.AutoShapeChevron, color)
+}
+
+// tri draws an upright triangle.
+func tri(slide *ppt.Slide, x, y, w, h int64, color ppt.Color) {
+	shapeRect(slide, x, y, w, h, ppt.AutoShapeTriangle, color)
+}
+
+// chevRow draws n chevrons marching right, each paler than the last — a
+// progress or momentum mark.
+func chevRow(slide *ppt.Slide, x, y, w, h, gap int64, n int, color, bg ppt.Color) {
+	for i := 0; i < n; i++ {
+		chev(slide, x+int64(i)*(w+gap), y, w, h, blend(color, bg, float64(i)*0.22))
+	}
+}
+
+// --- Edge: deep-rail executive composition ---------------------------------
+// A lit sidebar column carries the chrome; the body sits on open paper.
+// Professional decks that need gravity — board reports, steering decks.
+
+func paintEdgeCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
+	const panel = 4.0
+	paintSolidBackground(slide, theme.paper)
+	gradRect(slide, 0, 0, emuIn(panel), deckSlideHeight, theme.navy, theme.navy2, 115)
+	rect(slide, emuIn(panel), 0, emuIn(0.05), deckSlideHeight, theme.accent)
+	// Ghost rings and a star break the column's flatness.
+	ring(slide, emuIn(0.62), emuIn(4.9), emuIn(2.6), blend(theme.white, theme.navy, 0.86))
+	ring(slide, emuIn(1.15), emuIn(5.45), emuIn(1.5), blend(theme.accent, theme.navy, 0.55))
+	shapeBadge(slide, emuIn(2.55), emuIn(5.85), emuIn(0.24), ppt.AutoShapeStar4, theme.gold)
+	if kicker != "" {
+		deckText(slide, emuIn(0.62), emuIn(0.55), emuIn(3.0), emuIn(0.75), kicker, 12, true, textOn(theme.gold, theme.navy, theme), ppt.HorizontalLeft)
+	}
+	_, subY := placeCoverTitle(slide, panel+0.55, 1.35, 8.2, 2.6, title, 42, textOn(theme.ink, theme.paper, theme), ppt.HorizontalLeft)
+	fadeRule(slide, emuIn(panel+0.57), emuIn(subY-0.08), emuIn(3.4), 6, theme.accent, theme.paper)
+	deckText(slide, emuIn(panel+0.55), emuIn(subY+0.1), emuIn(8.1), emuIn(1.15), subtitle, 17, false, textOn(theme.slate, theme.paper, theme), ppt.HorizontalLeft)
+	dotGrid(slide, emuIn(panel+0.6), emuIn(6.6), emuIn(0.05), emuIn(0.18), emuIn(0.15), 6, 2, blend(theme.slate, theme.paper, 0.72))
+	paintPageMark(slide, page, total, textOn(theme.mute, theme.paper, theme))
+}
+
+func paintEdgeSection(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total, sectionNo int) {
+	gradBg(slide, theme.navy, theme.navy2, 115)
+	rect(slide, 0, 0, emuIn(0.18), deckSlideHeight, theme.accent)
+	rect(slide, 0, 0, emuIn(0.18), emuIn(0.7), theme.gold)
+	if sectionNo > 0 {
+		deckText(slide, emuIn(0.75), emuIn(4.5), emuIn(4.2), emuIn(2.3), fmt.Sprintf("%02d", sectionNo), 110, true, blend(theme.white, theme.navy, 0.8), ppt.HorizontalLeft)
+	}
+	ringWide(slide, emuIn(10.3), emuIn(0.75), emuIn(3.4), emuIn(3.4), blend(theme.white, theme.navy, 0.88))
+	ring(slide, emuIn(11.6), emuIn(2.05), emuIn(1.05), blend(theme.accent, theme.navy, 0.55))
+	if kicker != "" {
+		deckText(slide, emuIn(0.9), emuIn(1.85), emuIn(10.5), emuIn(0.32), kicker, 14, true, textOn(theme.gold, theme.navy, theme), ppt.HorizontalLeft)
+	}
+	deckText(slide, emuIn(0.9), emuIn(2.32), emuIn(10.8), emuIn(1.6), title, coverTitlePointSize(title, 42, 10.8, 1.6), true, textOn(theme.white, theme.navy, theme), ppt.HorizontalLeft)
+	fadeRule(slide, emuIn(0.92), emuIn(4.15), emuIn(4.6), 7, theme.gold, theme.navy)
+	deckText(slide, emuIn(0.9), emuIn(4.42), emuIn(10.6), emuIn(0.9), subtitle, 18, false, textOn(theme.white, theme.navy, theme), ppt.HorizontalLeft)
+	paintPageMark(slide, page, total, textOn(theme.white, theme.navy, theme))
+}
+
+func paintEdgeChrome(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
+	gradRect(slide, 0, 0, emuIn(0.5), deckSlideHeight, theme.navy, theme.navy2, 90)
+	rect(slide, 0, 0, emuIn(0.5), emuIn(0.5), theme.accent)
+	rect(slide, 0, emuIn(0.5), emuIn(0.5), emuIn(0.06), theme.gold)
+	ring(slide, deckSlideWidth-emuIn(0.98), emuIn(0.36), emuIn(0.44), blend(theme.accent, theme.paper, 0.55))
+	shapeBadge(slide, deckSlideWidth-emuIn(1.08), emuIn(0.86), emuIn(0.12), ppt.AutoShapeStar4, theme.gold)
+	rect(slide, emuIn(0.95), emuIn(6.96), deckSlideWidth-emuIn(1.35), emuIn(0.01), blend(theme.slate, theme.paper, 0.78))
+	return paintContentTitle(slide, theme, kicker, title, footer, page, total, 0.95, theme.accent, true)
+}
+
+func buildEdgeCards(slide *ppt.Slide, theme deckTheme, box contentBox, texts []string) {
+	cols, rows, cardW, cardH, y0, gap := cardGrid(box, len(texts))
+	rails := []ppt.Color{theme.accent, theme.navy, theme.gold, theme.navy2}
+	for i, text := range texts {
+		x, y := cardOrigin(box, cols, cardW, cardH, gap, y0, i)
+		rail := rails[i%len(rails)]
+		bg := modernCard(slide, theme, x, y, cardW, cardH, rail, false)
+		gradRect(slide, x, y, emuIn(0.10), cardH, rail, blend(rail, theme.ink, 0.4), 90)
+		shapeBadge(slide, x+cardW-emuIn(0.36), y+emuIn(0.16), emuIn(0.16), ppt.AutoShapeDiamond, blend(rail, bg, 0.3))
+		paintCardText(slide, theme, bg, x+emuIn(0.10), y, cardW-emuIn(0.14), cardH, i, text, rows)
+	}
+}
+
+// --- Peak: angled parallelogram ribbons ------------------------------------
+// Diagonal slabs give the page momentum — growth plans, launches, sprints.
+
+func paintPeakCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
+	paintSolidBackground(slide, theme.paper)
+	// Two offset slabs form a ribbon band the title rides on; a pale third
+	// slab behind keeps the diagonal rhythm.
+	para(slide, emuIn(-0.9), emuIn(2.15), emuIn(15.1), emuIn(2.35), blend(theme.card, theme.paper, 0.5))
+	gradShape(slide, emuIn(-0.7), emuIn(1.85), emuIn(14.8), emuIn(2.35), ppt.AutoShapeParallelogram, theme.navy, theme.navy2, 0)
+	gradShape(slide, emuIn(-0.5), emuIn(4.28), emuIn(9.2), emuIn(0.34), ppt.AutoShapeParallelogram, theme.accent, blend(theme.accent, theme.paper, 0.3), 0)
+	chevRow(slide, emuIn(10.6), emuIn(0.5), emuIn(0.55), emuIn(0.26), emuIn(0.16), 3, theme.accent, theme.paper)
+	if kicker != "" {
+		deckText(slide, emuIn(0.9), emuIn(0.55), emuIn(9.5), emuIn(0.32), kicker, 13, true, textOn(theme.navy2, theme.paper, theme), ppt.HorizontalLeft)
+	}
+	// The title starts clear of the ribbon's left slant: a parallelogram's
+	// edge leans right as it descends, so text must land past the diagonal.
+	placeCoverTitle(slide, 2.05, 2.12, 10.2, 1.75, title, 40, textOn(theme.white, theme.navy, theme), ppt.HorizontalLeft)
+	deckText(slide, emuIn(1.15), emuIn(4.85), emuIn(10.6), emuIn(0.85), subtitle, 17, false, textOn(theme.slate, theme.paper, theme), ppt.HorizontalLeft)
+	dotGrid(slide, emuIn(0.92), emuIn(6.6), emuIn(0.05), emuIn(0.17), emuIn(0.14), 5, 2, blend(theme.slate, theme.paper, 0.72))
+	paintPageMark(slide, page, total, textOn(theme.mute, theme.paper, theme))
+}
+
+func paintPeakSection(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total, sectionNo int) {
+	gradBg(slide, theme.navy, theme.navy2, 115)
+	// Giant pale chevrons marching across the field set the section's beat.
+	for i := 0; i < 3; i++ {
+		chev(slide, emuIn(-0.4+float64(i)*3.4), emuIn(4.9), emuIn(3.0), emuIn(1.5), blend(theme.white, theme.navy, 0.9-float64(i)*0.06))
+	}
+	if sectionNo > 0 {
+		deckText(slide, emuIn(10.2), emuIn(0.6), emuIn(2.9), emuIn(1.6), fmt.Sprintf("%02d", sectionNo), 88, true, blend(theme.accent, theme.navy, 0.35), ppt.HorizontalRight)
+	}
+	if kicker != "" {
+		deckText(slide, emuIn(0.9), emuIn(1.9), emuIn(10.5), emuIn(0.32), kicker, 14, true, textOn(theme.gold, theme.navy, theme), ppt.HorizontalLeft)
+	}
+	deckText(slide, emuIn(0.9), emuIn(2.36), emuIn(10.8), emuIn(1.6), title, coverTitlePointSize(title, 42, 10.8, 1.6), true, textOn(theme.white, theme.navy, theme), ppt.HorizontalLeft)
+	gradShape(slide, emuIn(0.9), emuIn(4.18), emuIn(2.4), emuIn(0.12), ppt.AutoShapeParallelogram, theme.accent, theme.gold, 0)
+	deckText(slide, emuIn(0.9), emuIn(4.5), emuIn(10.6), emuIn(0.9), subtitle, 18, false, textOn(theme.white, theme.navy, theme), ppt.HorizontalLeft)
+	paintPageMark(slide, page, total, textOn(theme.white, theme.navy, theme))
+}
+
+func paintPeakChrome(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
+	gradShape(slide, 0, 0, emuIn(0.62), emuIn(1.28), ppt.AutoShapeParallelogram, theme.navy, theme.navy2, 90)
+	gradShape(slide, emuIn(0.34), 0, emuIn(0.5), emuIn(0.86), ppt.AutoShapeParallelogram, theme.accent, blend(theme.accent, theme.navy, 0.35), 90)
+	para(slide, deckSlideWidth-emuIn(1.3), deckSlideHeight-emuIn(0.5), emuIn(0.9), emuIn(0.3), blend(theme.card, theme.paper, 0.4))
+	para(slide, deckSlideWidth-emuIn(0.75), deckSlideHeight-emuIn(0.62), emuIn(0.5), emuIn(0.3), theme.accent)
+	return paintContentTitle(slide, theme, kicker, title, footer, page, total, 1.0, theme.accent, false)
+}
+
+func buildPeakCards(slide *ppt.Slide, theme deckTheme, box contentBox, texts []string) {
+	cols, rows, cardW, cardH, y0, gap := cardGrid(box, len(texts))
+	stripes := []ppt.Color{theme.accent, theme.navy2, theme.gold, theme.navy}
+	for i, text := range texts {
+		x, y := cardOrigin(box, cols, cardW, cardH, gap, y0, i)
+		stripe := stripes[i%len(stripes)]
+		bg := modernCard(slide, theme, x, y, cardW, cardH, stripe, false)
+		para(slide, x+cardW-emuIn(0.62), y+emuIn(0.12), emuIn(0.46), emuIn(0.2), blend(stripe, bg, 0.25))
+		paintCardText(slide, theme, bg, x, y, cardW, cardH, i, text, rows)
+	}
+}
+
+// --- Orbit: layered rings ---------------------------------------------------
+// Concentric rings and satellites give a light, exploratory field — vision,
+// innovation, product storytelling.
+
+func paintOrbitCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
+	paintSolidBackground(slide, theme.paper)
+	// The ring cluster is the signature: three nested orbits, a satellite dot,
+	// one small gold ring off-axis.
+	ring(slide, emuIn(9.15), emuIn(0.55), emuIn(3.9), blend(theme.accent, theme.paper, 0.6))
+	ring(slide, emuIn(9.85), emuIn(1.25), emuIn(2.5), blend(theme.navy2, theme.paper, 0.55))
+	ring(slide, emuIn(11.95), emuIn(3.95), emuIn(0.7), theme.gold)
+	oval(slide, emuIn(10.55), emuIn(2.75), emuIn(0.42), emuIn(0.42), theme.accent)
+	oval(slide, emuIn(9.28), emuIn(4.1), emuIn(0.2), emuIn(0.2), theme.navy2)
+	titleY := 0.85
+	if kicker != "" {
+		deckText(slide, emuIn(0.8), emuIn(0.6), emuIn(8.4), emuIn(0.28), kicker, 13, true, textOn(theme.navy2, theme.paper, theme), ppt.HorizontalLeft)
+		titleY = 0.95
+	}
+	_, subY := placeCoverTitle(slide, 0.8, titleY+0.7, 8.2, 1.8, title, 44, textOn(theme.ink, theme.paper, theme), ppt.HorizontalLeft)
+	fadeRule(slide, emuIn(0.82), emuIn(subY-0.06), emuIn(3.6), 6, theme.accent, theme.paper)
+	deckText(slide, emuIn(0.8), emuIn(subY+0.12), emuIn(7.6), emuIn(1.1), subtitle, 17, false, textOn(theme.slate, theme.paper, theme), ppt.HorizontalLeft)
+	dotGrid(slide, emuIn(0.82), emuIn(6.55), emuIn(0.05), emuIn(0.18), emuIn(0.15), 6, 2, blend(theme.slate, theme.paper, 0.72))
+	paintPageMark(slide, page, total, textOn(theme.mute, theme.paper, theme))
+}
+
+func paintOrbitSection(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total, sectionNo int) {
+	gradBg(slide, theme.navy, theme.navy2, 115)
+	ring(slide, emuIn(9.3), emuIn(3.9), emuIn(3.6), blend(theme.white, theme.navy, 0.85))
+	ring(slide, emuIn(10.35), emuIn(4.95), emuIn(1.5), blend(theme.accent, theme.navy, 0.5))
+	oval(slide, emuIn(9.15), emuIn(4.6), emuIn(0.3), emuIn(0.3), theme.gold)
+	if sectionNo > 0 {
+		deckText(slide, emuIn(0.85), emuIn(0.9), emuIn(3.0), emuIn(1.4), fmt.Sprintf("%02d", sectionNo), 80, true, blend(theme.accent, theme.navy, 0.3), ppt.HorizontalLeft)
+	}
+	if kicker != "" {
+		deckText(slide, emuIn(0.9), emuIn(2.35), emuIn(10.5), emuIn(0.32), kicker, 14, true, textOn(theme.gold, theme.navy, theme), ppt.HorizontalLeft)
+	}
+	deckText(slide, emuIn(0.9), emuIn(2.8), emuIn(10.2), emuIn(1.6), title, coverTitlePointSize(title, 42, 10.2, 1.6), true, textOn(theme.white, theme.navy, theme), ppt.HorizontalLeft)
+	oval(slide, emuIn(0.92), emuIn(4.55), emuIn(0.14), emuIn(0.14), theme.accent)
+	deckText(slide, emuIn(1.25), emuIn(4.45), emuIn(10.4), emuIn(0.9), subtitle, 18, false, textOn(theme.white, theme.navy, theme), ppt.HorizontalLeft)
+	paintPageMark(slide, page, total, textOn(theme.white, theme.navy, theme))
+}
+
+func paintOrbitChrome(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
+	ring(slide, deckSlideWidth-emuIn(1.05), emuIn(0.34), emuIn(0.52), blend(theme.accent, theme.paper, 0.45))
+	ring(slide, deckSlideWidth-emuIn(0.62), emuIn(0.5), emuIn(0.26), blend(theme.navy2, theme.paper, 0.4))
+	oval(slide, deckSlideWidth-emuIn(1.32), emuIn(0.78), emuIn(0.1), emuIn(0.1), theme.gold)
+	rect(slide, emuIn(0.55), emuIn(6.96), deckSlideWidth-emuIn(1.0), emuIn(0.01), blend(theme.slate, theme.paper, 0.78))
+	return paintContentTitle(slide, theme, kicker, title, footer, page, total, 0.55, theme.accent, true)
+}
+
+func buildOrbitCards(slide *ppt.Slide, theme deckTheme, box contentBox, texts []string) {
+	cols, rows, cardW, cardH, y0, gap := cardGrid(box, len(texts))
+	stripes := []ppt.Color{theme.accent, theme.navy2, theme.gold, theme.navy}
+	for i, text := range texts {
+		x, y := cardOrigin(box, cols, cardW, cardH, gap, y0, i)
+		stripe := stripes[i%len(stripes)]
+		bg := modernCard(slide, theme, x, y, cardW, cardH, stripe, false)
+		ring(slide, x+cardW-emuIn(0.4), y+emuIn(0.13), emuIn(0.24), blend(stripe, bg, 0.35))
+		paintCardText(slide, theme, bg, x, y, cardW, cardH, i, text, rows)
 	}
 }

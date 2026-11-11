@@ -37,11 +37,21 @@ func withFormulaReleaseDown(t *testing.T) {
 
 func resetSharedFormula(t *testing.T) {
 	t.Helper()
+	// No retry backoff in tests: a straggler background download would
+	// otherwise hold formulaDownloadMu through ~15s of backoff sleeps and
+	// starve the next test's expected refetch.
+	prev := formula.DownloadBackoff
+	formula.DownloadBackoff = 0
+	t.Cleanup(func() { formula.DownloadBackoff = prev })
 	resetSharedFormulaState()
 	t.Cleanup(resetSharedFormulaState)
 }
 
 func resetSharedFormulaState() {
+	// Wait out a straggler download spawned by an earlier test so the next
+	// test starts with the download lock free.
+	formulaDownloadMu.Lock()
+	formulaDownloadMu.Unlock()
 	sharedFormula.mu.Lock()
 	if sharedFormula.mm != nil {
 		sharedFormula.mm.Shutdown()

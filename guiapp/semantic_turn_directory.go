@@ -392,7 +392,7 @@ func semanticDirectorySummaries() map[string]string {
 
 const semanticTurnDirectoryHeading = "## 本回合能力目录\n"
 const semanticTurnDirectoryClose = "[本回合能力目录结束]"
-const semanticDiscoveryDirectoryPreface = "本轮不预选工具。标了「可请愿」的名字，直接调用一次来申请。没有对应名字时，先 search_and_install_skill，再用 craft_tool。不要用另一种工具顶替。文字问题直接回答。\n"
+const semanticDiscoveryDirectoryPreface = "本轮不预选工具。标了「可请愿」的名字，直接调用一次来申请。没有对应名字时，先 search_and_install_skill，再用 craft_tool。不要用另一种工具顶替；工具报告不可用或失败后，改请愿目录里真正对得上的名字不算顶替。文字问题直接回答。\n"
 
 func appendSemanticTurnDirectoryRules(b *strings.Builder, result intent.ClassificationResult) {
 	if b == nil {
@@ -413,6 +413,10 @@ type semanticDirectoryExposure struct {
 	Denied                 map[string]bool
 	ReadPetitionSpent      bool
 	EffectfulPetitionSpent bool
+	// Unavailable is a petitionable name whose backing service cannot serve
+	// this turn at all (an empty knowledge base). The row stays visible as
+	// honest metadata instead of offering a petition that can only fail.
+	Unavailable map[string]string
 	// Catalog is the discovery-only list of installed skills and ready MCP
 	// tools. Those names are petition rows. They are not grants.
 	Catalog []semanticTurnDirectoryEntry
@@ -462,6 +466,8 @@ func writeSemanticTurnDirectory(b *strings.Builder, result intent.Classification
 				fmt.Fprintf(b, "- %s — %s 此名请愿未通过，不要重试。\n", entry.Name, entry.Summary)
 			case exposure.petitionSpent(entry.Name):
 				fmt.Fprintf(b, "- %s — %s 本轮请愿机会已用完，不要调用。\n", entry.Name, entry.Summary)
+			case exposure.Unavailable[entry.Name] != "":
+				fmt.Fprintf(b, "- %s — %s %s\n", entry.Name, entry.Summary, exposure.Unavailable[entry.Name])
 			default:
 				fmt.Fprintf(b, "- %s — %s 可请愿，不在当前函数列表里。\n", entry.Name, entry.Summary)
 			}
@@ -804,6 +810,11 @@ func (c *sharedAgentLoopCallbacks) semanticDirectoryExposure() semanticDirectory
 	exposure.ReadPetitionSpent = c.semanticPetitionConsumed
 	exposure.EffectfulPetitionSpent = c.semanticEffectfulPetitionConsumed
 	exposure.Wait = semanticDirectoryWaitNotes(c)
+	if c.semanticKnowledgeBaseUnavailable() {
+		exposure.Unavailable = map[string]string{
+			"knowledge_search": "本机知识库为空或未配置，请愿它也没有结果。",
+		}
+	}
 	if len(c.semanticPetitionDenied) == 0 {
 		return exposure
 	}

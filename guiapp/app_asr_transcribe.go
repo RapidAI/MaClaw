@@ -25,15 +25,19 @@ import (
 const asrModelIdleUnloadDelay = 5 * time.Minute
 
 var (
-	asrMM     *modelmanager.Manager[asr.ASRModel]
-	asrMMOnce sync.Once
+	// asrMMMu guards asrMM (a mutex, not sync.Once, so tests can swap in a
+	// stub manager and the next access rebuilds the real one).
+	asrMMMu sync.Mutex
+	asrMM   *modelmanager.Manager[asr.ASRModel]
 )
 
 // asrModelManager owns the SenseVoice lifecycle: the model is NOT loaded at
 // startup or on enable — first transcription acquires it, and the manager
 // unloads it after asrModelIdleUnloadDelay of no use.
 func asrModelManager() *modelmanager.Manager[asr.ASRModel] {
-	asrMMOnce.Do(func() {
+	asrMMMu.Lock()
+	defer asrMMMu.Unlock()
+	if asrMM == nil {
 		asrMM = modelmanager.New(modelmanager.Config[asr.ASRModel]{
 			Name: "asr",
 			Load: func() (asr.ASRModel, error) {
@@ -51,7 +55,7 @@ func asrModelManager() *modelmanager.Manager[asr.ASRModel] {
 			Close:       func(m asr.ASRModel) { m.Close() },
 			UnloadDelay: asrModelIdleUnloadDelay,
 		})
-	})
+	}
 	return asrMM
 }
 
@@ -73,9 +77,7 @@ func (a *App) acquireASRModel() (asr.ASRModel, func(), error) {
 // resetASRModel drops the in-memory model so the next transcription loads the
 // weights file currently on disk (a download may have replaced it).
 func resetASRModel() {
-	if asrMM != nil {
-		asrMM.Unload()
-	}
+	asrModelManager().Unload()
 }
 
 const asrRawFallbackMinRMS = 0.0025
@@ -320,7 +322,6 @@ func (a *App) transcribeASR(pcm []float32) (string, error) {
 	defer done()
 	return model.Transcribe(pcm)
 }
-
 
 // TranscribeAudioBase64 accepts base64-encoded WAV audio data and returns
 // the transcribed text using the local SenseVoice ASR model.

@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -3062,6 +3063,20 @@ type sseChunk struct {
 	Usage *Usage `json:"usage,omitempty"`
 }
 
+// unknownOpenAIBlockTypesSeen dedupes the unknown-block-type log line per
+// type per process, so a stream that repeats an unrecognized block does not
+// write one line per chunk.
+var unknownOpenAIBlockTypesSeen sync.Map
+
+func logUnknownOpenAIBlockType(tag, typ string) {
+	if typ == "" {
+		return
+	}
+	if _, seen := unknownOpenAIBlockTypesSeen.LoadOrStore(tag+"\x00"+typ, struct{}{}); !seen {
+		log.Printf("%s ignoring unknown openai content block type %q", tag, typ)
+	}
+}
+
 // openAIDeltaContent extracts the visible text and reasoning text from an
 // OpenAI-compatible stream delta content value. Providers usually stream
 // strings; Mistral's hosted reasoning models stream the content-part array the
@@ -3088,22 +3103,26 @@ func openAIDeltaContent(raw interface{}) (text string, thinking string) {
 			if m == nil {
 				continue
 			}
-			switch stringField(m, "type") {
+			switch typ := strings.ToLower(strings.TrimSpace(stringField(m, "type"))); typ {
 			case "text", "input_text", "output_text":
 				if s := stringField(m, "text"); s != "" {
 					textParts = append(textParts, s)
+				} else if s := stringField(m, "content"); s != "" {
+					textParts = append(textParts, s)
 				}
-			case "thinking":
+			case "thinking", "reasoning", "reasoning_content":
 				if inner := toInterfaceSlice(m["thinking"]); len(inner) > 0 {
 					for _, part := range inner {
 						partMap := toStringInterfaceMap(part)
-						if s := stringField(partMap, "text"); s != "" {
+						if s := firstStringField(partMap, "text", "content"); s != "" {
 							thinkParts = append(thinkParts, s)
 						}
 					}
-				} else if s := stringField(m, "text"); s != "" {
+				} else if s := firstStringField(m, "thinking", "reasoning", "reasoning_content", "text", "content"); s != "" {
 					thinkParts = append(thinkParts, s)
 				}
+			default:
+				logUnknownOpenAIBlockType("[llm-delta]", typ)
 			}
 		}
 		return strings.Join(textParts, "\n"), strings.Join(thinkParts, "\n")

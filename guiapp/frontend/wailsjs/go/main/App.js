@@ -4073,6 +4073,10 @@ export function MaterializeMobileDocumentOriginal(arg1) {
   return window['go']['main']['App']['MaterializeMobileDocumentOriginal'](arg1);
 }
 
+export function MaterializeMobileDocumentOriginalPreview(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['MaterializeMobileDocumentOriginalPreview'](arg1, arg2, arg3, arg4);
+}
+
 export function MaterializeProviderByName(arg1) {
   return window['go']['main']['App']['MaterializeProviderByName'](arg1);
 }

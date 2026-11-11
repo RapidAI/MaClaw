@@ -18,6 +18,9 @@ const (
 	MotifLedger   = "ledger"
 	MotifSidebar  = "sidebar"
 	MotifPlate    = "plate"
+	MotifBaseline = "baseline"
+	MotifRibbon   = "ribbon"
+	MotifApex     = "apex"
 )
 
 // Style is one PDF visual system: a layout motif plus the colors that system paints.
@@ -227,6 +230,51 @@ func builtinStyles() []Style {
 			Keywords:    []string{"手册", "说明书", "操作手册", "指南", "使用说明"},
 			Motif:       MotifPlate, Builtin: true,
 			Colors: StyleColors{Ink: "1C1917", Navy: "292524", Accent: "C2410C", Gold: "A16207", Meta: "57534E", Rule: "C2410C", Quote: "431407", Link: "C2410C", OnDark: "FFF7ED"},
+		},
+		{
+			ID: "swiss", Label: "瑞士网格", LabelEn: "Swiss Grid", LabelHant: "瑞士網格",
+			Summary:     "黑白基线网格与超大标题，适合设计提案与极简报告。",
+			SummaryEn:   "A baseline grid and oversized titles for design proposals.",
+			SummaryHant: "黑白基線網格與超大標題，適合設計提案與極簡報告。",
+			Keywords:    []string{"设计提案", "极简", "作品集", "版式", "瑞士"},
+			Motif:       MotifBaseline, Builtin: true,
+			Colors: StyleColors{Ink: "111111", Navy: "1A1A1A", Accent: "D9261C", Gold: "8A6B1F", Meta: "525252", Rule: "1A1A1A", Quote: "525252", Link: "1A1A1A", OnDark: "FAFAFA"},
+		},
+		{
+			ID: "steel", Label: "石墨钢", LabelEn: "Steel Baseline", LabelHant: "石墨鋼",
+			Summary:     "钢灰基线与克制正文，适合工程文档与技术规格。",
+			SummaryEn:   "Steel-gray baselines and a restrained body for engineering specs.",
+			SummaryHant: "鋼灰基線與克制正文，適合工程文檔與技術規格。",
+			Keywords:    []string{"工程", "技术规格", "规格书", "工程文档", "设备"},
+			Motif:       MotifBaseline, Builtin: true,
+			Colors: StyleColors{Ink: "22262B", Navy: "3E4C59", Accent: "52606D", Gold: "8A6B1F", Meta: "52606D", Rule: "9AA5B1", Quote: "3E4C59", Link: "3E4C59", OnDark: "F5F7FA"},
+		},
+		{
+			ID: "violet", Label: "紫峰企划", LabelEn: "Violet Apex", LabelHant: "紫峰企劃",
+			Summary:     "紫蓝层叠山峰与大标题，适合品牌企划与潮流方案。",
+			SummaryEn:   "Layered violet summits and big titles for brand proposals.",
+			SummaryHant: "紫藍層疊山峰與大標題，適合品牌企劃與潮流方案。",
+			Keywords:    []string{"品牌企划", "潮流", "创意提案", "品牌焕新", "时尚"},
+			Motif:       MotifApex, Builtin: true,
+			Colors: StyleColors{Ink: "1E1B2E", Navy: "3E2C8F", Accent: "7C4DDB", Gold: "8A6B1F", Meta: "5E5A78", Rule: "3E2C8F", Quote: "4A3B8C", Link: "6D43D4", OnDark: "F2ECFF"},
+		},
+		{
+			ID: "ember", Label: "暖橙悬带", LabelEn: "Ember Ribbon", LabelHant: "暖橙懸帶",
+			Summary:     "深棕悬带折角与暖金收边，适合活动企划与产品介绍。",
+			SummaryEn:   "A folded ember ribbon and warm gold edges for campaigns.",
+			SummaryHant: "深棕懸帶折角與暖金收邊，適合活動企劃與產品介紹。",
+			Keywords:    []string{"活动企划", "产品介绍", "营销策划", "发布会", "促销"},
+			Motif:       MotifRibbon, Builtin: true,
+			Colors: StyleColors{Ink: "2B1A12", Navy: "7C2D12", Accent: "D9480F", Gold: "A16207", Meta: "5F3A26", Rule: "7C2D12", Quote: "7C2D12", Link: "C2410C", OnDark: "FFF4E6"},
+		},
+		{
+			ID: "summit", Label: "巅峰报告", LabelEn: "Summit Report", LabelHant: "巔峰報告",
+			Summary:     "靛蓝层叠山峰与金标记，适合年度总结与战略规划。",
+			SummaryEn:   "Indigo summits and gold marks for annual reviews.",
+			SummaryHant: "靛藍層疊山峰與金標記，適合年度總結與戰略規劃。",
+			Keywords:    []string{"年度总结", "战略规划", "年度回顾", "述职", "总结报告"},
+			Motif:       MotifApex, Builtin: true,
+			Colors: StyleColors{Ink: "1C2237", Navy: "1C2A4A", Accent: "2F5DB3", Gold: "A16207", Meta: "4A5570", Rule: "1C2A4A", Quote: "2E4170", Link: "2F5DB3", OnDark: "F0F4FF"},
 		},
 	}
 }
@@ -473,6 +521,12 @@ func normalizeMotif(raw string) (string, error) {
 		return MotifSidebar, nil
 	case MotifPlate, "铭牌", "手册":
 		return MotifPlate, nil
+	case MotifBaseline, "基线", "瑞士":
+		return MotifBaseline, nil
+	case MotifRibbon, "悬带", "飘带":
+		return MotifRibbon, nil
+	case MotifApex, "折角", "山峰":
+		return MotifApex, nil
 	default:
 		return "", fmt.Errorf("pdf_style_motif_invalid")
 	}
@@ -693,6 +747,45 @@ func (s Style) headingLook(prefix string) (size, color, align string) {
 			return "15pt", navy, ""
 		default:
 			return "18pt", ink, ""
+		}
+	case MotifBaseline:
+		switch prefix {
+		case "##### ":
+			return "8pt", gold, ""
+		case "#### ":
+			return "9pt", accent, ""
+		case "### ":
+			return "10.5pt", navy, ""
+		case "## ":
+			return "13.5pt", ink, ""
+		default:
+			return "16pt", ink, ""
+		}
+	case MotifRibbon:
+		switch prefix {
+		case "##### ":
+			return "8.5pt", gold, ""
+		case "#### ":
+			return "9.5pt", accent, ""
+		case "### ":
+			return "11.5pt", accent, ""
+		case "## ":
+			return "14.5pt", navy, ""
+		default:
+			return "18pt", navy, ""
+		}
+	case MotifApex:
+		switch prefix {
+		case "##### ":
+			return "8.5pt", gold, ""
+		case "#### ":
+			return "9.5pt", accent, ""
+		case "### ":
+			return "11.5pt", navy, ""
+		case "## ":
+			return "15pt", accent, ""
+		default:
+			return "18pt", navy, ""
 		}
 	default:
 		switch prefix {

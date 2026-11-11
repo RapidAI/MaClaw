@@ -692,10 +692,11 @@ func restoreRegions(img image.Image) ([]doclayout.Region, error) {
 	if fileCompanionRestoreLayout != nil {
 		return fileCompanionRestoreLayout(img)
 	}
-	eng, err := doclayout.Shared()
+	eng, done, err := doclayout.Acquire()
 	if err != nil || eng == nil {
 		return nil, err
 	}
+	defer done()
 	return eng.Analyze(img)
 }
 
@@ -729,9 +730,12 @@ func restoreTableHTML(img image.Image, box doclayout.Box, lines []agent.ScanText
 	if fileCompanionRestoreTable != nil {
 		html, err = fileCompanionRestoreTable(crop, tableLines)
 	} else if fileCompanionRestoreRecognize == nil && tablestruct.Ready() {
-		eng, openErr := tablestruct.Shared()
+		eng, done, openErr := tablestruct.Acquire()
 		if openErr == nil && eng != nil {
 			html, err = eng.HTML(crop, tableLines)
+		}
+		if done != nil {
+			done()
 		}
 	}
 	if err != nil {

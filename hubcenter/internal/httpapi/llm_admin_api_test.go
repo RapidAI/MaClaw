@@ -839,6 +839,83 @@ func mustJSON(v any) []byte {
 	return raw
 }
 
+// The /test receipt reports content_normalized when the upstream answered
+// with a content-block array (Mistral's hosted shape) that the probe folded
+// into the reply string. A string reply reports false.
+func TestAdminTestProviderMemberContentNormalized(t *testing.T) {
+	const arraySSE = "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"why \"}]}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"po\"}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"ng\"}]},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+			return
+		}
+		mistral := payload["model"] == "mistral-large-latest"
+		if payload["stream"] == true {
+			w.Header().Set("Content-Type", "text/event-stream")
+			if mistral {
+				_, _ = w.Write([]byte(arraySSE))
+				return
+			}
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}\n\ndata: [DONE]\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if mistral {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"why "}]},{"type":"text","text":"pong"}]}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer upstream.Close()
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	if err := svc.SaveRegistry(t.Context(), &llmservice.Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "pool-mistral", Name: "Mistral", APIURL: upstream.URL + "/v1", APIKey: "sk-live", Models: []string{"mistral-large-latest"}},
+			{ID: "pool-plain", Name: "Plain", APIURL: upstream.URL + "/v1", APIKey: "sk-live", Models: []string{"plain"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := adminTestLLMProviderMember(svc, &llmservice.ProxyConfig{NodeID: "hc-1"})
+	post := func(id, body string) map[string]json.RawMessage {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/"+id+"/test", strings.NewReader(body))
+		req.SetPathValue("id", id)
+		h(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", id, rec.Code, rec.Body.String())
+		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(rec.Body.Bytes(), &top); err != nil {
+			t.Fatalf("decode receipt: %v body=%s", err, rec.Body.String())
+		}
+		return top
+	}
+	assertReceipt := func(top map[string]json.RawMessage, wantNormalized bool) {
+		t.Helper()
+		var success bool
+		_ = json.Unmarshal(top["success"], &success)
+		var reply string
+		_ = json.Unmarshal(top["reply"], &reply)
+		var normalized bool
+		if err := json.Unmarshal(top["content_normalized"], &normalized); err != nil {
+			t.Fatalf("content_normalized missing: %s", top["content_normalized"])
+		}
+		if !success || reply != "pong" || normalized != wantNormalized {
+			t.Fatalf("success=%v reply=%q normalized=%v want %v", success, reply, normalized, wantNormalized)
+		}
+	}
+	assertReceipt(post("pool-mistral", `{}`), true)
+	assertReceipt(post("pool-mistral", `{"stream":true}`), true)
+	assertReceipt(post("pool-plain", `{}`), false)
+	assertReceipt(post("pool-plain", `{"stream":true}`), false)
+}
+
 func TestSanitizeProviderTestErrorDropsSecret(t *testing.T) {
 	got := sanitizeProviderTestError(`Get "https://user:sk-live-secret-ABCD@api.example/v1?api_key=sk-live-secret-ABCD": upstream said sk-live-secret-ABCD`, "sk-live-secret-ABCD")
 	if strings.Contains(got, "sk-live") || strings.Contains(got, "user:") {

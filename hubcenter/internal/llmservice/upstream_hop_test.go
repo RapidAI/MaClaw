@@ -331,24 +331,51 @@ func TestHopPeerBaseURLRejectsUnsafeURLs(t *testing.T) {
 
 func TestHopTestReplyRejectsErrorEnvelope(t *testing.T) {
 	t.Parallel()
-	if _, err := hopTestReply([]byte(`{"error":{"message":"nope"}}`)); err == "" {
+	if _, err, _ := hopTestReply([]byte(`{"error":{"message":"nope"}}`)); err == "" {
 		t.Fatal("expected error envelope to fail")
 	}
-	reply, err := hopTestReply([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
-	if err != "" || reply != "pong" {
-		t.Fatalf("reply=%q err=%q", reply, err)
+	reply, err, normalized := hopTestReply([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	if err != "" || reply != "pong" || normalized {
+		t.Fatalf("reply=%q err=%q normalized=%v", reply, err, normalized)
 	}
-	reply, err = hopTestReply([]byte(`{"content":[{"type":"text","text":"pong"}]}`))
-	if err != "" || reply != "pong" {
-		t.Fatalf("anthropic reply=%q err=%q", reply, err)
+	reply, err, normalized = hopTestReply([]byte(`{"content":[{"type":"text","text":"pong"}]}`))
+	if err != "" || reply != "pong" || normalized {
+		t.Fatalf("anthropic reply=%q err=%q normalized=%v", reply, err, normalized)
 	}
-	reply, err = hopTestReply([]byte(`{"output_text":"pong"}`))
+	reply, err, _ = hopTestReply([]byte(`{"output_text":"pong"}`))
 	if err != "" || reply != "pong" {
 		t.Fatalf("responses output_text=%q err=%q", reply, err)
 	}
-	reply, err = hopTestReply([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
+	reply, err, _ = hopTestReply([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
 	if err != "" || reply != "pong" {
 		t.Fatalf("responses output=%q err=%q", reply, err)
+	}
+}
+
+func TestHopTestReplyFoldsContentBlockArray(t *testing.T) {
+	t.Parallel()
+	// Mistral Large 4 returns content as typed blocks. Text joins the reply;
+	// thinking feeds the reasoning fallback; unknown blocks are ignored.
+	// Parts inside one array join with "\n" like corelib's client parser, so
+	// the receipt shows what the client would render.
+	reply, err, normalized := hopTestReply([]byte(`{"choices":[{"message":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"why "}]},{"type":"text","text":"po"},{"type":"text","text":"ng"},{"type":"refusal","text":"skip"}]}}]}`))
+	if err != "" || reply != "po\nng" || !normalized {
+		t.Fatalf("array reply=%q err=%q normalized=%v", reply, err, normalized)
+	}
+	// A thinking-only array answers from the reasoning lane.
+	reply, err, normalized = hopTestReply([]byte(`{"choices":[{"message":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"pong"}]}]}}]}`))
+	if err != "" || reply != "pong" || !normalized {
+		t.Fatalf("thinking-only reply=%q err=%q normalized=%v", reply, err, normalized)
+	}
+	// A thinking string field answers too — same fallback as corelib.
+	reply, err, normalized = hopTestReply([]byte(`{"choices":[{"message":{"thinking":"pong"}}]}`))
+	if err != "" || reply != "pong" || normalized {
+		t.Fatalf("thinking field reply=%q err=%q normalized=%v", reply, err, normalized)
+	}
+	// An empty array carries no content — same as an empty string.
+	reply, err, normalized = hopTestReply([]byte(`{"choices":[{"message":{"content":[],"tool_calls":[{"function":{"name":"ping","arguments":"{}"}}]}}]}`))
+	if err != "model returned no completion content" || reply != "" || !normalized {
+		t.Fatalf("empty array reply=%q err=%q normalized=%v", reply, err, normalized)
 	}
 }
 

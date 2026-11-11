@@ -806,6 +806,190 @@ func TestDiscoveryFailedPetitionIsACatalogMiss(t *testing.T) {
 	}
 }
 
+// TestDiscoveryNeedsLooseTokenResolves is the 北京天气 turn: the model asked
+// needs=["weather"] — an intent word, not a tool name. Exact matching misses
+// and used to arm the unmatched gate, closing web_search for the rest of the
+// turn. The loose resolver maps the token onto the one loadable row it
+// means, so the miss never opens and web_search loads.
+func TestDiscoveryNeedsLooseTokenResolves(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	for _, token := range []string{"weather", "web search", "search engine", "天气预报"} {
+		_, _, cb := turnDirectoryPlannedSurface(t, "北京天气", discovery)
+		cb.userText = "北京天气"
+		got := cb.runSemanticToolsSearch(`{"query":"北京天气","needs":["` + token + `"]}`)
+		if cb.discoveryUnmatchedObligation || cb.loopCtx.discoveryCatalogMiss() {
+			t.Fatalf("needs=[%q] armed the unmatched gate:\n%s", token, got)
+		}
+		if strings.Contains(got, semanticToolsSearchNeedsMissNote) || !strings.Contains(got, "web_search") {
+			t.Fatalf("needs=[%q] did not resolve to web_search:\n%s", token, got)
+		}
+		if !strings.Contains(got, "→web_search") {
+			t.Fatalf("needs=[%q] lacks the resolution note:\n%s", token, got)
+		}
+		have := turnDirectoryHave(cb.BuildToolsForModelRequest("北京天气", 2))
+		if !have["web_search"] {
+			t.Fatalf("needs=[%q] did not load web_search: %v\n%s", token, turnDirectoryNames(cb.BuildToolsForModelRequest("北京天气", 2)), got)
+		}
+	}
+}
+
+// TestDiscoveryNeedsNearMissKeepsPetitionOpen is a needs token that lands
+// near real rows but resolves to none ("search" matches several rows, so it
+// cannot be resolved uniquely). The page is still a miss, yet the unmatched
+// gate must not arm: the model can still petition an exact row, which is how
+// a spelling slip used to kill web_search.
+func TestDiscoveryNeedsNearMissKeepsPetitionOpen(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "查一下资料", discovery)
+	cb.userText = "查一下资料"
+	got := cb.runSemanticToolsSearch(`{"query":"查一下资料","needs":["search"]}`)
+	if !strings.Contains(got, semanticToolsSearchNeedsMissNote) || !strings.Contains(got, "knowledge_search") {
+		t.Fatalf("near miss page = %s", got)
+	}
+	if cb.discoveryUnmatchedObligation || cb.loopCtx.discoveryCatalogMiss() {
+		t.Fatalf("near miss armed the unmatched gate:\n%s", got)
+	}
+	if granted, message := cb.PetitionToolCall("web_search"); !granted || strings.Contains(message, discoveryUnmatchedExtensionMessage) {
+		t.Fatalf("near miss closed web_search: granted=%v message=%q", granted, message)
+	}
+}
+
+// TestDiscoveryNeedsClockStandInStaysNear is the hidden-grant edge: the plan
+// keeps current_datetime so the turn can publish, but it is never a callable
+// function. A "time" token must not resolve to it (the petition can only
+// fail); it degrades to a near miss that leaves the gate open, and the row
+// carries the honest unavailable mark instead of 可请愿.
+func TestDiscoveryNeedsClockStandInStaysNear(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "现在几点", discovery)
+	cb.userText = "现在几点"
+	got := cb.runSemanticToolsSearch(`{"query":"现在几点","needs":["time"]}`)
+	if cb.discoveryUnmatchedObligation || cb.loopCtx.discoveryCatalogMiss() {
+		t.Fatalf("clock token armed the unmatched gate:\n%s", got)
+	}
+	if strings.Contains(got, "→current_datetime") || !strings.Contains(got, "current_datetime") {
+		t.Fatalf("time must not resolve to the hidden stand-in:\n%s", got)
+	}
+	if status := semanticToolsSearchStatus(cb, "current_datetime"); status != "[本轮不可用：不要调用，用已列出的工具完成]" {
+		t.Fatalf("current_datetime status = %q", status)
+	}
+	// The exact name gets the same honest row: it was never callable and
+	// must not look petitionable. The name is in the directory, so the page
+	// is not a catalog miss and the gate stays open.
+	_, _, cb2 := turnDirectoryPlannedSurface(t, "现在几点", discovery)
+	cb2.userText = "现在几点"
+	got = cb2.runSemanticToolsSearch(`{"query":"现在几点","needs":["current_datetime"]}`)
+	if strings.Contains(got, "[可请愿") || !strings.Contains(got, "本轮不可用") {
+		t.Fatalf("hidden stand-in still reads petitionable:\n%s", got)
+	}
+	if cb2.discoveryUnmatchedObligation || cb2.loopCtx.discoveryCatalogMiss() {
+		t.Fatalf("a listed dead row armed the unmatched gate:\n%s", got)
+	}
+}
+
+// TestDiscoveryNeedsGenuineMissStillArms is the unchanged gate: a token with
+// no lexical relation to any directory row is a real capability gap, so the
+// unmatched obligation still closes substitutes for the extension path.
+func TestDiscoveryNeedsGenuineMissStillArms(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	for _, token := range []string{"image.generate", "not_a_catalog_tool", "quantum_compute"} {
+		_, _, cb := turnDirectoryPlannedSurface(t, "生成一张图片", discovery)
+		cb.userText = "生成一张图片"
+		got := cb.runSemanticToolsSearch(`{"query":"生成一张图片","needs":["` + token + `"]}`)
+		if !cb.discoveryUnmatchedObligation || !cb.loopCtx.discoveryCatalogMiss() {
+			t.Fatalf("needs=[%q] did not arm the unmatched gate:\n%s", token, got)
+		}
+		if granted, message := cb.PetitionToolCall("web_search"); granted || message != discoveryUnmatchedExtensionMessage {
+			t.Fatalf("needs=[%q] left web_search open: granted=%v message=%q", token, granted, message)
+		}
+	}
+}
+
+// TestDiscoveryArmedGateBlocksLooseSubstitute is the armed gate plus a
+// vocabulary slip: needs=["weather"] resolves to web_search, but the
+// substitute is blocked until the extension path runs — the page must stay a
+// miss and must not print the resolution as if the name could still load.
+func TestDiscoveryArmedGateBlocksLooseSubstitute(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "生成一张图片", discovery)
+	cb.userText = "生成一张图片"
+	cb.runSemanticToolsSearch(`{"query":"生成一张图片","needs":["image.generate"]}`)
+	if !cb.discoveryUnmatchedObligation {
+		t.Fatal("miss did not arm")
+	}
+	got := cb.runSemanticToolsSearch(`{"query":"天气","needs":["weather"]}`)
+	// The duplicate guard may answer the second miss with the close
+	// instead of a new page; either way the loose substitute must not be
+	// named as if it could load, and the gate stays armed.
+	if strings.Contains(got, "→web_search") {
+		t.Fatalf("armed gate let the loose substitute through:\n%s", got)
+	}
+	if !cb.discoveryUnmatchedObligation {
+		t.Fatal("the second miss disarmed the gate")
+	}
+	if have := turnDirectoryHave(cb.BuildToolsForModelRequest("生成一张图片", 2)); have["web_search"] {
+		t.Fatalf("armed gate granted web_search: %v", turnDirectoryNames(cb.BuildToolsForModelRequest("生成一张图片", 2)))
+	}
+}
+
+// TestDiscoveryKnowledgeSearchUnavailableAnnotated is the qwen turn's second
+// wound: the catalog advertised knowledge_search as petitionable while the
+// local store was empty, and the petition could only fail.
+func TestDiscoveryKnowledgeSearchUnavailableAnnotated(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "查一下资料", discovery)
+	unavailable := true
+	cb.knowledgeUnavailable = &unavailable
+	if status := semanticToolsSearchStatus(cb, "knowledge_search"); !strings.Contains(status, "知识库") || strings.Contains(status, "可请愿") {
+		t.Fatalf("knowledge_search status = %q", status)
+	}
+	if status := semanticToolsSearchStatus(cb, "web_search"); !strings.Contains(status, "可请愿") {
+		t.Fatalf("web_search status = %q", status)
+	}
+	exposure := cb.semanticDirectoryExposure()
+	if exposure.Unavailable["knowledge_search"] == "" {
+		t.Fatal("directory exposure did not mark knowledge_search unavailable")
+	}
+	// The label is enforced, not just cosmetic: an exact needs entry no
+	// longer reaches PetitionToolCall, and the page stays a listed row —
+	// the gate does not arm and no dead function is granted.
+	got := cb.runSemanticToolsSearch(`{"query":"查一下资料","needs":["knowledge_search"]}`)
+	if cb.discoveryUnmatchedObligation || cb.loopCtx.discoveryCatalogMiss() {
+		t.Fatalf("a listed unavailable row armed the gate:\n%s", got)
+	}
+	if have := turnDirectoryHave(cb.BuildToolsForModelRequest("查一下资料", 2)); have["knowledge_search"] {
+		t.Fatalf("unavailable knowledge_search still loaded: %v", turnDirectoryNames(cb.BuildToolsForModelRequest("查一下资料", 2)))
+	}
+	// A vocabulary token for it is a near miss, not a capability gap: the
+	// row names the candidate and carries its unavailable mark, so the
+	// model reads the fact instead of arming the extension path.
+	_, _, cb2 := turnDirectoryPlannedSurface(t, "查一下资料", discovery)
+	cb2.knowledgeUnavailable = &unavailable
+	got = cb2.runSemanticToolsSearch(`{"query":"查一下资料","needs":["knowledge base"]}`)
+	if cb2.discoveryUnmatchedObligation || cb2.loopCtx.discoveryCatalogMiss() {
+		t.Fatalf("empty-KB near miss armed the gate:\n%s", got)
+	}
+	if !strings.Contains(got, "knowledge_search") || strings.Contains(got, "→knowledge_search") {
+		t.Fatalf("empty-KB token must stay a near miss:\n%s", got)
+	}
+	if granted, _ := cb2.PetitionToolCall("web_search"); !granted {
+		t.Fatal("empty-KB near miss closed web_search")
+	}
+}
+
+// TestDiscoveryKnowledgeSearchAvailableByDefault keeps the annotation off
+// when nothing has probed the store: no App means the row stays petitionable.
+func TestDiscoveryKnowledgeSearchAvailableByDefault(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "查一下资料", discovery)
+	if cb.semanticKnowledgeBaseUnavailable() {
+		t.Fatal("no-App callback reported knowledge base unavailable")
+	}
+	if status := semanticToolsSearchStatus(cb, "knowledge_search"); status != "[可请愿]" {
+		t.Fatalf("knowledge_search status = %q", status)
+	}
+}
+
 // TestDiscoveryUnrunnableSkillDoesNotSettleTheMiss is an installed package
 // the runner must not enter. Success stays false, so the catalog miss stays
 // open and web_search is still the substitute the page refused.
@@ -1242,6 +1426,64 @@ func TestDiscoveryToolsSearchMissSurvivesTheUnfilteredDirectory(t *testing.T) {
 	}
 }
 
+// A needs list that mixes a real name with a spelling the directory does
+// not carry must answer both: the matched row loads, and the unmatched
+// token is named instead of vanishing from the page.
+func TestDiscoveryToolsSearchReportsUnmatchedNeedsTokens(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "查一下资料", discovery)
+	got := cb.runSemanticToolsSearch(`{"query":"查资料","needs":["web_search","does_not_exist_tool"]}`)
+	if strings.Contains(got, "needs filter matched nothing") {
+		t.Fatalf("one matched token made the page a miss:\n%s", got)
+	}
+	if !strings.Contains(got, "web_search") {
+		t.Fatalf("the matched name is missing:\n%s", got)
+	}
+	if !strings.Contains(got, "does_not_exist_tool") || !strings.Contains(got, "没有匹配到目录条目") {
+		t.Fatalf("the unmatched token was dropped silently:\n%s", got)
+	}
+}
+
+// A catalog row cut off the first page is still petitionable by name: the
+// page's hidden-name index carries it, and needs on that name must return
+// the petition's outcome page, not the repeated-directory close. The load
+// itself fails without a live inventory; the page has to say so.
+func TestDiscoveryToolsSearchPetitionsAHiddenCatalogName(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "提交工时", discovery)
+	rows := make([]semanticTurnDirectoryEntry, 0, 31)
+	for i := 0; i < 30; i++ {
+		rows = append(rows, semanticTurnDirectoryEntry{
+			Name: fmt.Sprintf("filler_srv__filler_tool_%03d", i), Summary: strings.Repeat("filler row ", 12),
+			CatalogKind: discoveryCatalogKindMCP, ServerID: "filler_srv", ToolName: fmt.Sprintf("filler_tool_%03d", i),
+		})
+	}
+	rows = append(rows, semanticTurnDirectoryEntry{
+		Name: "vendor_srv__write_log", Summary: "写日志",
+		CatalogKind: discoveryCatalogKindMCP, ServerID: "vendor_srv", ToolName: "write_log",
+	})
+	cb.discoveryCatalogLoaded = true
+	cb.discoveryCatalog = rows
+
+	page := cb.runSemanticToolsSearch(`{"query":"提交工时"}`)
+	if strings.Contains(page, "- vendor_srv__write_log — ") {
+		t.Fatalf("the tail row fits on page 0; the fixture no longer cuts:\n%s", page)
+	}
+	if !strings.Contains(page, "vendor_srv__write_log") {
+		t.Fatalf("the hidden-name index dropped the tail row:\n%s", page)
+	}
+	petition := cb.runSemanticToolsSearch(`{"query":"提交工时","needs":["vendor_srv__write_log"]}`)
+	if petition == semanticToolsSearchDiscoveryRepeatExhausted || petition == semanticToolsSearchDirectedExhausted || petition == semanticToolsSearchPetitionRepeatExhausted {
+		t.Fatalf("the first petition for a seen name closed as a repeat:\n%s", petition)
+	}
+	if !strings.Contains(petition, "vendor_srv__write_log") || !strings.Contains(petition, "未装载：vendor_srv__write_log") {
+		t.Fatalf("the petition page did not report the load outcome:\n%s", petition)
+	}
+	if again := cb.runSemanticToolsSearch(`{"query":"提交工时","needs":["vendor_srv__write_log"]}`); !strings.HasPrefix(again, "[system] tools_search already returned") {
+		t.Fatalf("the verbatim repeat was not refused:\n%s", again)
+	}
+}
+
 func TestDiscoveryToolsSearchKeepsTheCallAfterASkillBody(t *testing.T) {
 	alphaDir := writeGuidedSkillDir(t, "SKILL-ALPHA-BODY")
 	alpha := corelib.NLSkillEntry{Name: "Foo Bar", Status: "active", Source: "file", Description: "alpha", SkillDir: alphaDir}
@@ -1669,6 +1911,60 @@ func TestDiscoveryPetitionedWebSearchDoesNotBlockFinishedOffice(t *testing.T) {
 	assertPendingOptionalStep(t, snapshot, string(tool.CapabilityInformationFetchWeb))
 }
 
+// A discovery tools_search batch is a capability load, not a set of
+// obligations. The 2026-11-11 PPT turn petitioned bash, write_file, and
+// browser alongside office, produced the deck, and delivered it — and the
+// speculative loads still hard-exited the run as required_effect_unsettled
+// because their labels' required bits were copied onto the hop. A loaded
+// means the model never dispatched is not owed.
+func TestDiscoveryPetitionedWorkspaceLoadsDoNotBlockFinishedOffice(t *testing.T) {
+	discovery := intent.ModelDiscoveryClassification()
+	_, _, cb := turnDirectoryPlannedSurface(t, "生成庆祝北京建城1200年纪念ppt", discovery)
+	// send_file is not petitioned: LabelOffice already minted the
+	// current-channel delivery leg, and its grant goes live once the
+	// producer runs — the same path the production turn took.
+	for _, name := range []string{"bash", "write_file", "office"} {
+		granted, message := cb.PetitionToolCall(name)
+		if !granted {
+			t.Fatalf("%s petition granted=%v message=%q", name, granted, message)
+		}
+	}
+	surface := cb.semanticSurface
+	if surface == nil || !surface.plan.ObligationsRecorded {
+		t.Fatal("petition did not record obligations")
+	}
+	shell := plannedBaseSelection(surface.plan, tool.CapabilityShellExecuteLocal)
+	write := plannedBaseSelection(surface.plan, tool.CapabilityFSWriteLocal)
+	office := plannedBaseSelection(surface.plan, tool.CapabilityDocumentWriteOffice)
+	if shell == nil || !shell.Optional {
+		t.Fatalf("discovery shell = %#v", shell)
+	}
+	if write == nil || !write.Optional {
+		t.Fatalf("discovery write_file = %#v", write)
+	}
+	if office == nil || office.Optional {
+		t.Fatalf("discovery office = %#v", office)
+	}
+	if !cb.RequiredEffectUnsettled() {
+		t.Fatal("unstarted office was treated as finished")
+	}
+	if surface.completed == nil {
+		surface.completed = map[string]bool{}
+	}
+	surface.completed[office.ID] = true
+	for _, selection := range surface.plan.Selections {
+		if selection.FitProof.MatchedCapability == agentservice.CapabilityArtifactDeliverCurrent {
+			surface.completed[selection.ID] = true
+		}
+	}
+	snapshot := cb.hopRunSnapshot()
+	if cb.RequiredEffectUnsettled() || snapshot.Remaining != 0 {
+		t.Fatalf("finished office still open: remaining=%d unsettled=%v steps=%+v", snapshot.Remaining, cb.RequiredEffectUnsettled(), snapshot.Steps)
+	}
+	assertPendingOptionalStep(t, snapshot, string(tool.CapabilityShellExecuteLocal))
+	assertPendingOptionalStep(t, snapshot, string(tool.CapabilityFSWriteLocal))
+}
+
 func TestTreeConfirmedSearchStaysUnsettled(t *testing.T) {
 	search := intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.95, Reason: "tree confirmed search"}
 	_, surface, cb := turnDirectoryPlannedSurface(t, "搜索北京建城纪年", search)
@@ -1688,6 +1984,7 @@ func TestDiscoveryPetitionedLookupNeedIsNotAnObligation(t *testing.T) {
 	discovery := intent.ModelDiscoveryClassification()
 	ctx := withSemanticPetitionedLabels(context.Background(), []intent.IntentLabel{
 		intent.LabelSearch, intent.LabelWebFetch, intent.LabelOffice, intent.LabelFileRead,
+		intent.LabelFileWrite, intent.LabelShellCommand, intent.LabelBrowser,
 	})
 	needs, managed, err := semanticNeedsFromClassificationContext(ctx, registry, discovery)
 	if err != nil || !managed {
@@ -1698,7 +1995,14 @@ func TestDiscoveryPetitionedLookupNeedIsNotAnObligation(t *testing.T) {
 	}, false)
 	assertBaseNeed(t, needs, tool.CapabilityInformationFetchWeb, nil, false)
 	assertBaseNeed(t, needs, tool.CapabilityDocumentWriteOffice, nil, true)
-	assertBaseNeed(t, needs, tool.CapabilityFSReadLocal, nil, true)
+	// Discovery loads are admissions, not obligations. fs.read, fs.write,
+	// shell, and browser stayed required the same way web_search did, and
+	// an unused speculative load held a delivered deck open as
+	// required_effect_unsettled (2026-11-11).
+	assertBaseNeed(t, needs, tool.CapabilityFSReadLocal, nil, false)
+	assertBaseNeed(t, needs, tool.CapabilityFSWriteLocal, nil, false)
+	assertBaseNeed(t, needs, tool.CapabilityShellExecuteLocal, nil, false)
+	assertBaseNeed(t, needs, tool.CapabilityBrowserControlWeb, nil, false)
 	assertBaseNeed(t, needs, agentservice.CapabilityCurrentTime, nil, false)
 
 	visualNeeds, _, err := semanticNeedsFromClassificationContext(
@@ -2951,14 +3255,18 @@ func TestDiscoveryShellPetitionRouteCorrectionKeepsStartedLocal(t *testing.T) {
 		t.Fatalf("bash petition granted=%v message=%q", granted, message)
 	}
 	parent := cb.semanticSurface
+	// A discovery petition loads the route without owning an obligation: the
+	// shell selection is optional here, so match by capability alone. The
+	// correction protection keys on the running evidence marked below, not
+	// on the required bit.
 	localID := ""
 	for _, selection := range parent.plan.Selections {
-		if selection.FitProof.MatchedCapability == tool.CapabilityShellExecuteLocal && !selection.Optional {
+		if selection.FitProof.MatchedCapability == tool.CapabilityShellExecuteLocal {
 			localID = selection.ID
 		}
 	}
 	if localID == "" {
-		t.Fatal("local route fixture has no required selection")
+		t.Fatal("local route fixture has no selection")
 	}
 	parent.hopEvidence = map[string]HopStepEvidence{
 		hopEvidenceKey(parent, localID): {State: tool.PlanExecutionRunning},

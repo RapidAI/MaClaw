@@ -307,8 +307,11 @@ func TestShouldActivateComputerUseSemanticGate(t *testing.T) {
 	waitUICReady(t, uic)
 	h := &IMMessageHandler{unifiedClassifier: uic}
 
-	if !h.shouldActivateComputerUse("打开word程序，编写一个你（maclaw）的简历。") {
-		t.Fatal("semantic computer-use intent should activate")
+	// Tool routing no longer asks the intent classifier to open desktop
+	// control: wording that merely embeds near the computer_use anchors must
+	// not activate, even when it names a desktop app.
+	if h.shouldActivateComputerUse("打开word程序，编写一个你（maclaw）的简历。") {
+		t.Fatal("classifier similarity alone must not activate computer use")
 	}
 	if h.shouldActivateComputerUse("把昨天那个文件发给我") {
 		t.Fatal("unrelated message must not activate")
@@ -981,7 +984,9 @@ func TestPrepareAgentLoopToolsComputerUseActivation(t *testing.T) {
 		toolDefGen:        NewToolDefinitionGenerator(nil, defs),
 	}
 
-	active := h.prepareAgentLoopTools("u1", "打开word程序，写一份简历", nil, agentLoopPhase{})
+	// The gate opens on an explicit @computer trigger; classifier similarity
+	// to the computer_use anchors no longer opens it by itself.
+	active := h.prepareAgentLoopTools("u1", "@computer 打开word程序，写一份简历", nil, agentLoopPhase{})
 	names := toolNameSetForWorkflowFilterTest(active.Tools)
 	if !names["computer_observe"] || !names["computer_click"] {
 		t.Fatalf("CU tools should be present when intent active: %#v", names)

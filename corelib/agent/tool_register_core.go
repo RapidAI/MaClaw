@@ -415,9 +415,9 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Name:        "ask_user",
 		Description: "Ask the user a structured follow-up question and wait for an answer.",
 		Properties: map[string]interface{}{
-			"question":    map[string]string{"type": "string", "description": "Question to ask"},
-			"options":     map[string]interface{}{"type": "array", "description": "Optional choices", "items": map[string]string{"type": "string"}},
-			"context":     map[string]string{"type": "string", "description": "Optional background context"},
+			"question":       map[string]string{"type": "string", "description": "Question to ask"},
+			"options":        map[string]interface{}{"type": "array", "description": "Optional choices", "items": map[string]string{"type": "string"}},
+			"context":        map[string]string{"type": "string", "description": "Optional background context"},
 			"input_type":     map[string]string{"type": "string", "description": "Input type: text, choice (single), multi_choice (several), confirm (确认/拒绝), secret, or secret_fill"},
 			"allow_multiple": map[string]interface{}{"type": "boolean", "description": "When true with options, use multi_choice so the person can pick several. Prefer this over listing every combination."},
 			"secret_name":    map[string]string{"type": "string", "description": "Environment-style name such as SITE_PASSWORD. Never put the secret value here."},
@@ -565,7 +565,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "office",
-		Description: "Office/PDF/text document tool. Text extraction is one action: read_document (auto-detect .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx, text files, .dwg/.dxf, .glb/.gltf, .epub, .mobi, .adoc/.asciidoc, and .eml; PDF columns and aligned tables are restored; DOCX/PPTX/XLSX also return comments, formulas, revisions, charts, and SmartArt). Other actions: read_excel, write_excel, read_pptx, write_pptx, preview_pptx, generate_pdf. read_excel is spreadsheet-only and read_pptx is PPTX-only. write_pptx renders a designed deck (each theme has its own cover, header, section divider, cards, timeline, comparison, KPI, and quote motif; theme auto or clean/magazine/eink/dashboard/retro/sketch/whiteboard/handmade/research/mckinsey/official/course/finance/aurora/marketing/medical or custom style id, with purpose selecting a style when theme is auto; slide layout auto/bullets/cards/timeline/comparison/section/agenda/kpi/quote/closing). preview_pptx renders a .pptx deck to per-slide PNG/JPEG images on demand.",
+		Description: "Office/PDF/text document tool. Text extraction is one action: read_document (auto-detect .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx, text files, .dwg/.dxf, .glb/.gltf, .epub, .mobi, .adoc/.asciidoc, and .eml; PDF columns and aligned tables are restored; DOCX/PPTX/XLSX also return comments, formulas, revisions, charts, and SmartArt). Other actions: read_excel, write_excel, read_pptx, write_pptx, preview_pptx, generate_pdf. read_excel is spreadsheet-only and read_pptx is PPTX-only. write_pptx renders a designed deck (each theme has its own cover, header, section divider, cards, timeline, comparison, KPI, and quote motif; theme auto or clean/magazine/eink/dashboard/retro/sketch/whiteboard/handmade/research/mckinsey/official/course/finance/aurora/marketing/medical/boardroom/emerald/summit/violet/nova/graphite or custom style id, with purpose selecting a style when theme is auto; slide layout auto/bullets/cards/timeline/comparison/section/agenda/kpi/quote/closing). preview_pptx renders a .pptx deck to per-slide PNG/JPEG images on demand.",
 		Properties: map[string]interface{}{
 			"action":       map[string]string{"type": "string", "description": "read_document/read_doc/read_docx/read_pdf/read_excel/write_excel/read_pptx/write_pptx/preview_pptx/generate_pdf"},
 			"content":      map[string]string{"type": "string", "description": "Markdown body for generate_pdf"},

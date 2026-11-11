@@ -734,6 +734,7 @@ func adminTestLLMProviderMember(svc *llmservice.Service, proxyCfg *llmservice.Pr
 				node: firstNonEmpty(probed.Node, node), latencyMs: probed.LatencyMs, secret: existing.APIKey,
 				toolCalls: probed.ToolCalls, toolsRequested: spec.ToolsSet,
 				output: probed.Output, stream: probed.Stream, streamEnd: probed.StreamEnd,
+				contentNormalized: probed.ContentNormalized,
 			})
 			return
 		}
@@ -762,6 +763,7 @@ func adminTestLLMProviderMember(svc *llmservice.Service, proxyCfg *llmservice.Pr
 			success: probedLocal.errMsg == "", errMsg: probedLocal.errMsg, reply: probedLocal.reply, model: model, node: ran,
 			latencyMs: probedLocal.latencyMs, secret: existing.APIKey, toolCalls: probedLocal.calls, toolsRequested: spec.ToolsSet,
 			output: probedLocal.output, stream: probedLocal.stream, streamEnd: probedLocal.streamEnd,
+			contentNormalized: probedLocal.contentNormalized,
 		})
 	}
 }
@@ -914,6 +916,9 @@ type providerMemberTestResult struct {
 	output         map[string]llmservice.ProbeOutputField
 	stream         bool
 	streamEnd      *bool
+	// contentNormalized is true when the upstream put content as a block
+	// array and the probe folded it into the reply string.
+	contentNormalized bool
 }
 
 func writeProviderMemberTest(w http.ResponseWriter, result providerMemberTestResult) {
@@ -922,6 +927,9 @@ func writeProviderMemberTest(w http.ResponseWriter, result providerMemberTestRes
 		"latency_ms": result.latencyMs,
 		"model":      result.model,
 		"member":     result.member,
+		// content_normalized tells the caller the reply was folded from an
+		// upstream content-block array (Mistral's hosted shape) into a string.
+		"content_normalized": result.contentNormalized,
 	}
 	if strings.TrimSpace(result.node) != "" {
 		payload["node"] = result.node

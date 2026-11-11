@@ -286,29 +286,38 @@ func ParseNonStreamAnthropicResponse(resp *http.Response) (*Response, error) {
 	return parseAnthropicResponseBody(body)
 }
 
-func normalizeOpenAIMessageContent(raw interface{}) (string, interface{}) {
+// normalizeOpenAIMessageContent folds one OpenAI message.content value into
+// visible text and reasoning text. A string returns as-is. An array folds its
+// blocks in order: text blocks (text, input_text, output_text) join the reply,
+// thinking/reasoning blocks join the reasoning lane, and an unknown block
+// type is skipped with one log line. A scalar that is neither falls back to
+// its JSON encoding.
+func normalizeOpenAIMessageContent(raw interface{}) (content string, reasoning string, rawContent interface{}) {
 	switch v := raw.(type) {
 	case nil:
-		return "", nil
+		return "", "", nil
 	case string:
-		return v, v
+		return v, "", v
 	default:
 		items := toInterfaceSlice(v)
-		if len(items) == 0 {
+		// An empty array is still an array: it folds to empty text, matching
+		// the current empty-string reply. Only a non-slice scalar falls back
+		// to its JSON encoding.
+		if _, isArray := v.([]interface{}); !isArray && len(items) == 0 {
 			b, err := json.Marshal(v)
 			if err != nil {
-				return fmt.Sprintf("%v", v), v
+				return fmt.Sprintf("%v", v), "", v
 			}
-			return string(b), v
+			return string(b), "", v
 		}
 		parts := make([]string, 0, len(items))
+		var thinkParts []string
 		for _, item := range items {
 			m := toStringInterfaceMap(item)
 			if m == nil {
 				continue
 			}
-			typ := stringField(m, "type")
-			switch typ {
+			switch typ := strings.ToLower(strings.TrimSpace(stringField(m, "type"))); typ {
 			case "text", "input_text", "output_text":
 				if text := stringField(m, "text"); text != "" {
 					parts = append(parts, text)
@@ -317,9 +326,25 @@ func normalizeOpenAIMessageContent(raw interface{}) (string, interface{}) {
 				if text := stringField(m, "content"); text != "" {
 					parts = append(parts, text)
 				}
+			case "thinking", "reasoning", "reasoning_content":
+				// Mistral nests the fragments:
+				// {"type":"thinking","thinking":[{"type":"text","text":"..."}]}
+				if inner := toInterfaceSlice(m["thinking"]); len(inner) > 0 {
+					for _, part := range inner {
+						if s := firstStringField(toStringInterfaceMap(part), "text", "content"); s != "" {
+							thinkParts = append(thinkParts, s)
+						}
+					}
+					continue
+				}
+				if s := firstStringField(m, "thinking", "reasoning", "reasoning_content", "text", "content"); s != "" {
+					thinkParts = append(thinkParts, s)
+				}
+			default:
+				logUnknownOpenAIBlockType("[llm]", typ)
 			}
 		}
-		return strings.Join(parts, "\n"), v
+		return strings.Join(parts, "\n"), strings.Join(thinkParts, "\n"), v
 	}
 }
 
@@ -330,12 +355,13 @@ func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
 	}
 	result.Choices = make([]Choice, 0, len(wire.Choices))
 	for _, choice := range wire.Choices {
-		content, rawContent := normalizeOpenAIMessageContent(choice.Message.Content)
+		content, blockReasoning, rawContent := normalizeOpenAIMessageContent(choice.Message.Content)
 		visibleContent, taggedReasoning := splitOpenAIThinkingTags(content)
+		explicitReasoning := openAIReasoningText(choice.Message.ReasoningContent, choice.Message.Reasoning, choice.Message.Thinking)
 		msg := Message{
 			Role:             choice.Message.Role,
 			Content:          StripAllExtra(visibleContent),
-			ReasoningContent: StripLeakedReasoningProtocol(mergeOpenAIReasoningText(openAIReasoningText(choice.Message.ReasoningContent, choice.Message.Reasoning, choice.Message.Thinking), taggedReasoning)),
+			ReasoningContent: StripLeakedReasoningProtocol(mergeOpenAIReasoningText(explicitReasoning, mergeOpenAIReasoningText(blockReasoning, taggedReasoning))),
 			ToolCalls:        choice.Message.ToolCalls,
 			RawContent:       rawContent,
 		}

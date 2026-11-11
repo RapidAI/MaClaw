@@ -1497,6 +1497,12 @@ func newVideoNoteTestApp(t *testing.T) *App {
 		fileCompanionNoteModelHook = nil
 		fileCompanionTurnModelHook = nil
 		fileCompanionVideoNoteMediaHook = nil
+		// Close the companion conversation store: on Windows the sqlite
+		// handle would otherwise keep conversations.db locked and fail the
+		// TempDir cleanup.
+		if app.imHandler != nil && app.imHandler.memory != nil {
+			app.imHandler.memory.Stop()
+		}
 	})
 	return app
 }

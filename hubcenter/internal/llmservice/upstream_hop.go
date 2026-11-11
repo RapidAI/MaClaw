@@ -94,6 +94,9 @@ type upstreamHopTestResponse struct {
 	Output    map[string]ProbeOutputField `json:"output,omitempty"`
 	Stream    bool                        `json:"stream,omitempty"`
 	StreamEnd *bool                       `json:"stream_end,omitempty"`
+	// ContentNormalized is true when the upstream put content as a block
+	// array and the probe folded it into the reply string.
+	ContentNormalized bool `json:"content_normalized,omitempty"`
 }
 
 func egressProvider(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string) (*providerForwardResponse, error) {
@@ -608,15 +611,16 @@ func UpstreamHopHandler(cfg *ProxyConfig, authenticate func(*http.Request) error
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(upstreamHopTestResponse{
-				Success:   probed.Err == "",
-				Error:     probed.Err,
-				Reply:     probed.Reply,
-				Model:     model,
-				LatencyMs: probed.LatencyMs,
-				ToolCalls: probed.Calls,
-				Output:    probed.Output,
-				Stream:    probed.Stream,
-				StreamEnd: probed.StreamEnd,
+				Success:           probed.Err == "",
+				Error:             probed.Err,
+				Reply:             probed.Reply,
+				Model:             model,
+				LatencyMs:         probed.LatencyMs,
+				ToolCalls:         probed.Calls,
+				Output:            probed.Output,
+				Stream:            probed.Stream,
+				StreamEnd:         probed.StreamEnd,
+				ContentNormalized: probed.ContentNormalized,
 			})
 		default:
 			writeJSONError(w, http.StatusBadRequest, "unknown hop kind")
@@ -803,6 +807,9 @@ type providerChatProbe struct {
 	Output    map[string]ProbeOutputField
 	Stream    bool
 	StreamEnd *bool
+	// ContentNormalized is true when the upstream put content as a block
+	// array and the probe folded it into the reply string.
+	ContentNormalized bool
 }
 
 func probeProviderChat(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, spec ProviderChatTest) providerChatProbe {
@@ -847,12 +854,12 @@ func probeProviderChat(ctx context.Context, client *http.Client, provider *llmpo
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return providerChatProbe{Err: hopTestHTTPError(resp.StatusCode, resp.Body), LatencyMs: latencyMs, Output: output}
 	}
-	reply, errMsg := hopTestReply(resp.Body)
+	reply, errMsg, normalized := hopTestReply(resp.Body)
 	calls := ParseProviderTestToolCalls(resp.Body)
 	if errMsg == "model returned no completion content" && len(calls) > 0 {
 		errMsg = ""
 	}
-	return providerChatProbe{Reply: reply, Err: errMsg, LatencyMs: latencyMs, Calls: calls, Output: output}
+	return providerChatProbe{Reply: reply, Err: errMsg, LatencyMs: latencyMs, Calls: calls, Output: output, ContentNormalized: normalized}
 }
 
 func probeStreamEnd(stream bool, end bool) *bool {
@@ -915,6 +922,7 @@ func probeProviderChatStream(ctx context.Context, client *http.Client, provider 
 	return providerChatProbe{
 		Reply: parsed.Reply, Err: parsed.Failure(), LatencyMs: latencyMs, Calls: parsed.Calls,
 		Output: output, Stream: true, StreamEnd: probeStreamEnd(true, parsed.End),
+		ContentNormalized: parsed.ContentNormalized,
 	}
 }
 
@@ -1085,7 +1093,10 @@ func hopTestErrorJSONMessage(body []byte) string {
 	return ""
 }
 
-func hopTestReply(body []byte) (reply string, errMsg string) {
+// hopTestReply extracts the probe reply. normalized reports whether the
+// upstream put message.content as a block array that was folded into text —
+// the receipt surfaces that as content_normalized.
+func hopTestReply(body []byte) (reply string, errMsg string, normalized bool) {
 	var envelope struct {
 		Type       string          `json:"type"`
 		Message    string          `json:"message"`
@@ -1093,9 +1104,10 @@ func hopTestReply(body []byte) (reply string, errMsg string) {
 		OutputText string          `json:"output_text"`
 		Choices    []struct {
 			Message struct {
-				Content          string `json:"content"`
+				Content          any    `json:"content"`
 				ReasoningContent string `json:"reasoning_content"`
 				Reasoning        string `json:"reasoning"`
+				Thinking         string `json:"thinking"`
 			} `json:"message"`
 		} `json:"choices"`
 		Content []struct {
@@ -1113,29 +1125,37 @@ func hopTestReply(body []byte) (reply string, errMsg string) {
 		} `json:"output"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return "", "invalid model response: " + err.Error()
+		return "", "invalid model response: " + err.Error(), false
 	}
 	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
 		if msg := hopTestErrorJSONMessage(body); msg != "" {
-			return "", "model returned an error: " + msg
+			return "", "model returned an error: " + msg, false
 		}
-		return "", "model returned an error"
+		return "", "model returned an error", false
 	}
 	if strings.EqualFold(envelope.Type, "error") {
 		errMsg := strings.TrimSpace(envelope.Message)
 		if errMsg == "" {
 			errMsg = "unknown error"
 		}
-		return "", "model returned an error: " + errMsg
+		return "", "model returned an error: " + errMsg, false
 	}
 	if len(envelope.Choices) > 0 {
 		msg := envelope.Choices[0].Message
-		reply = strings.TrimSpace(msg.Content)
+		text, blockReasoning, wasArray := foldOpenAIProbeContent(msg.Content)
+		normalized = wasArray
+		reply = strings.TrimSpace(text)
 		if reply == "" {
 			reply = strings.TrimSpace(msg.ReasoningContent)
 		}
 		if reply == "" {
 			reply = strings.TrimSpace(msg.Reasoning)
+		}
+		if reply == "" {
+			reply = strings.TrimSpace(msg.Thinking)
+		}
+		if reply == "" {
+			reply = strings.TrimSpace(blockReasoning)
 		}
 	}
 	if reply == "" {
@@ -1173,9 +1193,9 @@ func hopTestReply(body []byte) (reply string, errMsg string) {
 		reply = strings.TrimSpace(text.String())
 	}
 	if reply == "" {
-		return "", "model returned no completion content"
+		return "", "model returned no completion content", normalized
 	}
-	return reply, ""
+	return reply, "", normalized
 }
 
 func hopRetryableTestStatus(errMsg string) int {
@@ -1426,6 +1446,9 @@ type ProviderChatTestResult struct {
 	Output    map[string]ProbeOutputField
 	Stream    bool
 	StreamEnd *bool
+	// ContentNormalized is true when the upstream put content as a block
+	// array and the probe folded it into the reply string.
+	ContentNormalized bool
 }
 
 // TestProviderChatWithScope tests locally when this node is in scope,
@@ -1484,6 +1507,7 @@ func TestProviderChat(ctx context.Context, cfg *ProxyConfig, provider *llmpool.P
 	result.Output = probed.Output
 	result.Stream = probed.Stream
 	result.StreamEnd = probed.StreamEnd
+	result.ContentNormalized = probed.ContentNormalized
 	return result
 }
 
@@ -1519,6 +1543,7 @@ func decodeHopMemberTest(body []byte, result ProviderChatTestResult) ProviderCha
 	result.Output = out.Output
 	result.Stream = out.Stream
 	result.StreamEnd = out.StreamEnd
+	result.ContentNormalized = out.ContentNormalized
 	if !out.Success {
 		result.Err = strings.TrimSpace(out.Error)
 		if result.Err == "" {

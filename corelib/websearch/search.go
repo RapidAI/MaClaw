@@ -323,6 +323,45 @@ func getBrowserSearchProvider() BrowserSearchProvider {
 	return browserSearchProvider
 }
 
+// WebSearchStrategyProvider returns the host application's persisted web
+// search strategy. The legacy direct-search chain predates per-call strategy
+// arguments, so it asks the host for the saved strategy when picking browser
+// fallback engines instead of consulting a separate, hardcoded policy.
+type WebSearchStrategyProvider func() corelib.WebSearchStrategy
+
+var (
+	webSearchStrategyProviderMu sync.RWMutex
+	webSearchStrategyProvider   WebSearchStrategyProvider
+)
+
+// SetWebSearchStrategyProvider installs the strategy lookup used by the
+// legacy direct-search chain. Safe to call multiple times; nil restores the
+// built-in defaults.
+func SetWebSearchStrategyProvider(p WebSearchStrategyProvider) {
+	webSearchStrategyProviderMu.Lock()
+	webSearchStrategyProvider = p
+	webSearchStrategyProviderMu.Unlock()
+}
+
+func getWebSearchStrategyProvider() WebSearchStrategyProvider {
+	webSearchStrategyProviderMu.RLock()
+	defer webSearchStrategyProviderMu.RUnlock()
+	return webSearchStrategyProvider
+}
+
+// directChainStrategy resolves the strategy the legacy direct chain applies
+// to browser fallback decisions: the host-provided persisted strategy when
+// one is registered, otherwise the normalized defaults.
+func directChainStrategy() corelib.WebSearchStrategy {
+	if provider := getWebSearchStrategyProvider(); provider != nil {
+		if normalized, err := NormalizeWebSearchStrategy(provider()); err == nil {
+			return normalized
+		}
+	}
+	strategy, _ := NormalizeWebSearchStrategy(corelib.WebSearchStrategy{})
+	return strategy
+}
+
 func searchDirectFallbackChain(ctx context.Context, query string, maxResults int, skipFailureDomain string) ([]SearchResult, error) {
 	return searchDirectFallbackChainFrom(ctx, ctx, query, maxResults, skipFailureDomain)
 }
@@ -333,7 +372,12 @@ func searchDirectFallbackChainFrom(parent, ctx context.Context, query string, ma
 	}
 	endpoints := orderedDirectSearchEndpoints()
 	hint := searchQuerySiteHint(query)
-	hook := getBrowserSearchProvider()
+	var browserStrategy corelib.WebSearchStrategy
+	var browserEngines []string
+	if getBrowserSearchProvider() != nil {
+		browserStrategy = directChainStrategy()
+		browserEngines = remainingBrowserEngineIDs(browserStrategy, nil)
+	}
 	var candidates []SearchResult
 	var failures []string
 	htmlMisses := 0
@@ -341,7 +385,7 @@ func searchDirectFallbackChainFrom(parent, ctx context.Context, query string, ma
 		if skipFailureDomain != "" && endpoint.FailureDomain == skipFailureDomain {
 			continue
 		}
-		if hook != nil && (contextRemaining(ctx) <= strategyBrowserTimeout || htmlMisses >= htmlMissSkipThreshold(hint)) {
+		if len(browserEngines) > 0 && (contextRemaining(ctx) <= browserAttemptTimeout(browserStrategy) || htmlMisses >= htmlMissSkipThreshold(hint)) {
 			failures = append(failures, endpoint.Name+" skipped: reserved time for browser search")
 			continue
 		}
@@ -369,7 +413,7 @@ func searchDirectFallbackChainFrom(parent, ctx context.Context, query string, ma
 			break
 		}
 	}
-	results, err := searchDirectBrowserFallback(parent, ctx, query, maxResults, hint, candidates)
+	results, err := searchDirectBrowserFallback(parent, ctx, query, maxResults, hint, candidates, browserStrategy, browserEngines)
 	if err == nil && len(results) > 0 {
 		return results, nil
 	}
@@ -385,27 +429,23 @@ func searchDirectFallbackChainFrom(parent, ctx context.Context, query string, ma
 	return nil, errors.New(strings.Join(failures, "; "))
 }
 
-func searchDirectBrowserFallback(parent, ctx context.Context, query string, maxResults int, hint string, candidates []SearchResult) ([]SearchResult, error) {
+func searchDirectBrowserFallback(parent, ctx context.Context, query string, maxResults int, hint string, candidates []SearchResult, strategy corelib.WebSearchStrategy, engines []string) ([]SearchResult, error) {
 	hook := getBrowserSearchProvider()
-	if hook == nil {
+	if hook == nil || len(engines) == 0 {
 		return nil, nil
 	}
 	if (parent == nil || parent.Err() != nil) && (ctx == nil || ctx.Err() != nil) {
 		return nil, fmt.Errorf("browser-search skipped: no remaining time")
 	}
 	dlogf("[search] direct endpoints missed; trying browser search fallback")
-	engines := []string{"google", "bing_cn"}
-	if hint == "" {
-		engines = []string{"bing_cn", "google"}
-	}
 	var failures []string
 	for _, engineID := range engines {
-		attemptParent := browserFallbackParent(parent, ctx, corelib.WebSearchStrategy{})
+		attemptParent := browserFallbackParent(parent, ctx, strategy)
 		if attemptParent == nil || attemptParent.Err() != nil {
 			break
 		}
-		attemptCtx, cancel := context.WithTimeout(attemptParent, strategyBrowserTimeout)
-		hits, herr := hook(attemptCtx, engineID, query, maxResults, false)
+		attemptCtx, cancel := context.WithTimeout(attemptParent, browserAttemptTimeout(strategy))
+		hits, herr := hook(attemptCtx, engineID, query, maxResults, strategy.BrowserHumanAssistEnabled)
 		cancel()
 		if herr == nil && len(hits) > 0 {
 			incoming := make([]SearchResult, 0, len(hits))

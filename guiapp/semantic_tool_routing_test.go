@@ -390,8 +390,10 @@ func TestIMSemanticNeedResolverLiveDataKeepsNeedWhenSecondaryIsNonCoding(t *test
 		Primary: intent.LabelLiveData, Secondary: []intent.IntentLabel{intent.LabelNonCoding}, Confidence: .90,
 	})
 	// The declared live_data family is one required invocation plus the
-	// archetype ceiling, and the page-fetch family is planned beside it.
-	if err != nil || !managed || countCapabilityNeeds(needs, "information.search.web") != 5 || countCapabilityNeeds(needs, tool.CapabilityInformationFetchWeb) != 5 {
+	// archetype ceiling. A second required family would push the first wave
+	// past the planner's selection cap, so page-fetch stays petitionable in
+	// the turn directory instead of minting needs.
+	if err != nil || !managed || countCapabilityNeeds(needs, "information.search.web") != 5 || countCapabilityNeeds(needs, tool.CapabilityInformationFetchWeb) != 0 {
 		t.Fatalf("generic secondary discarded live_data need: needs=%#v managed=%v err=%v", needs, managed, err)
 	}
 	if needs[0].Capability != "information.search.web" || needs[0].Qualifiers["freshness"] != "current" {
@@ -405,16 +407,11 @@ func TestIMSemanticNeedResolverHandlesManagedSecondaryLabel(t *testing.T) {
 		Primary: intent.LabelNonCoding, Secondary: []intent.IntentLabel{intent.LabelSearch}, Confidence: .98,
 		ToolNames: []string{"send_to_im", "web_fetch"},
 	})
-	if err != nil || !managed || len(needs) != 5 {
-		t.Fatalf("needs=%#v managed=%v err=%v", needs, managed, err)
-	}
-	if needs[0].Capability != "information.search.web" || needs[0].Qualifiers["freshness"] != "reference" {
-		t.Fatalf("secondary managed label did not select web capability: %#v", needs[0])
-	}
-	for i, need := range needs[1:] {
-		if need.Capability != needs[0].Capability || need.Qualifiers["freshness"] != "reference" {
-			t.Fatalf("repeat sibling %d must share the search capability: %#v", i+2, need)
-		}
+	// Only the primary label mints the first grant wave: the secondary
+	// search stays petitionable in the turn directory rather than becoming
+	// a required grant, and the managed coverage flag still applies.
+	if err != nil || !managed || len(needs) != 0 {
+		t.Fatalf("secondary must not enter the first grant wave: needs=%#v managed=%v err=%v", needs, managed, err)
 	}
 }
 
@@ -1966,12 +1963,27 @@ func TestRecoveredSemanticSurfaceHidesDeliveryAwaitingReceipt(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentity("user-1", "capture primary desktop", "lansenger", "root:receipt", "turn:receipt")
+	// A nil verdict now plans a model-discovery surface (clock stand-in plus
+	// tools_search), so the screenshot turn must carry its classification the
+	// way production does — the entry verdict is always supplied there.
+	screenshotVerdict := intent.ClassificationResult{Primary: intent.LabelScreenshot, Confidence: .98, Layer: 3}
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification("user-1", "capture primary desktop", "lansenger", "root:receipt", "turn:receipt", &screenshotVerdict)
 	if err != nil || !handled || len(defs) < 1 {
 		t.Fatalf("initial surface defs=%#v handled=%v err=%v", defs, handled, err)
 	}
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "lansenger", loopCtx: &LoopContext{DeliveryTarget: &agent.DeliveryTarget{ChannelScope: "lansenger", DestinationID: "user:user-1"}}}
-	if got := cb.ExecuteTool(extractToolName(defs[0]), `{}`); got != toolPayloadPreparedMessage {
+	// The ambient clock grant also renders a function on this surface; defs
+	// order is plan-derived, so the capture must be found by its grant.
+	captureName := ""
+	for name, grant := range surface.grants {
+		if grant.AdapterName == "screenshot" {
+			captureName = name
+		}
+	}
+	if captureName == "" {
+		t.Fatal("capture grant was not materialized")
+	}
+	if got := cb.ExecuteTool(captureName, `{}`); got != toolPayloadPreparedMessage {
 		t.Fatalf("capture result=%q", got)
 	}
 	var deliveryName string
@@ -1994,7 +2006,7 @@ func TestRecoveredSemanticSurfaceHidesDeliveryAwaitingReceipt(t *testing.T) {
 	if record, err := surface.executor.Execution(surface.scope, selectionID); err != nil || record.State != tool.PlanExecutionAwaitingReceipt {
 		t.Fatalf("execution record=%#v err=%v", record, err)
 	}
-	defs, recovered, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentity("user-1", "capture primary desktop", "lansenger", "root:receipt", "turn:receipt")
+	defs, recovered, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification("user-1", "capture primary desktop", "lansenger", "root:receipt", "turn:receipt", &screenshotVerdict)
 	if err != nil || !handled || len(defs) != 0 || recovered == nil {
 		t.Fatalf("recovered defs=%#v handled=%v surface=%#v err=%v", defs, handled, recovered, err)
 	}

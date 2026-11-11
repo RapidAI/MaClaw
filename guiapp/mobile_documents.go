@@ -20,9 +20,14 @@ import (
 	"unicode/utf8"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/sync/singleflight"
 )
 
 const mobileDocumentMaxStoredBytes = 100 << 20
+
+// mobileOriginalMaterializeFlight dedupes concurrent downloads of the same
+// cloud-drive original (preview click, prefetch, companion open).
+var mobileOriginalMaterializeFlight singleflight.Group
 
 // MobileDocumentDraftImage is an illustration extracted from an Office original.
 type MobileDocumentDraftImage struct {
@@ -1433,6 +1438,68 @@ func (a *App) MaterializeMobileDocumentOriginal(draftID string) (string, error) 
 	return a.materializeMobileDocumentOriginal(id, draft)
 }
 
+// MaterializeMobileDocumentOriginalPreview is the cloud-drive preview fast path.
+// The library list payload already carries the original's filename, size, and
+// download URL, so a warm temp file validates without fetching the draft again
+// and a cold cache downloads straight from the hinted URL. Both skip the
+// GetMobileDocumentDraft round trip the plain binding always pays. On failure
+// (stale download URL, renamed original) it falls back to the draft fetch.
+func (a *App) MaterializeMobileDocumentOriginalPreview(draftID, sourceFilename string, sourceSize int64, sourceDownloadURL string) (string, error) {
+	if a == nil {
+		return "", fmt.Errorf("app is not initialized")
+	}
+	id := strings.TrimSpace(draftID)
+	if id == "" {
+		return "", fmt.Errorf("draft id is required")
+	}
+	filename := filepath.Base(strings.TrimSpace(sourceFilename))
+	if filename == "" || filename == string(filepath.Separator) || strings.Trim(filename, ".") == "" {
+		return a.MaterializeMobileDocumentOriginal(id)
+	}
+	hint := &MobileDocumentDraftSummary{
+		ID:                id,
+		HasOriginal:       true,
+		SourceFilename:    filename,
+		SourceSize:        int(sourceSize),
+		SourceDownloadURL: a.mobileOriginalHintSourceURL(sourceDownloadURL),
+	}
+	if path, err := a.materializeMobileDocumentOriginal(id, hint); err == nil {
+		return path, nil
+	}
+	return a.MaterializeMobileDocumentOriginal(id)
+}
+
+// mobileOriginalHintSourceURL keeps the frontend-supplied download URL on the
+// configured Hub. The hinted URL is fetched with the viewer bearer token, so a
+// foreign absolute URL would leak it. Hub-relative paths and absolute URLs on
+// the Hub host pass through; anything else degrades to the default endpoint.
+func (a *App) mobileOriginalHintSourceURL(raw string) string {
+	u := strings.TrimSpace(raw)
+	if u == "" || strings.HasPrefix(u, "//") {
+		return ""
+	}
+	if strings.HasPrefix(u, "/") {
+		return u
+	}
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	hub, err := url.Parse(strings.TrimSpace(cfg.RemoteHubURL))
+	if err != nil || hub.Host == "" || !strings.EqualFold(parsed.Host, hub.Host) {
+		return ""
+	}
+	// An http hint on an https hub would send the token in cleartext.
+	if parsed.Scheme == hub.Scheme || parsed.Scheme == "https" {
+		return u
+	}
+	return ""
+}
+
 func (a *App) materializeMobileDocumentOriginal(id string, draft *MobileDocumentDraftSummary) (string, error) {
 	if draft == nil || !draft.HasOriginal {
 		return "", fmt.Errorf("this draft has no original file on Hub")
@@ -1451,27 +1518,56 @@ func (a *App) materializeMobileDocumentOriginal(id string, draft *MobileDocument
 	}
 	safe := sanitizeMobileOriginalFilename(filename)
 	dest := filepath.Join(dir, safe)
-	if info, statErr := os.Stat(dest); statErr == nil && !info.IsDir() && info.Size() > 0 {
-		if draft.SourceSize <= 0 || info.Size() == int64(draft.SourceSize) {
+	if cachedMobileOriginalPath(dest, draft.SourceSize) {
+		return dest, nil
+	}
+	// Preview, companion, and prefetch opens can race for the same original:
+	// one download per destination wins, the rest reuse its result.
+	v, err, _ := mobileOriginalMaterializeFlight.Do(dest, func() (any, error) {
+		if cachedMobileOriginalPath(dest, draft.SourceSize) {
 			return dest, nil
 		}
-	}
-	_, raw, err := a.downloadMobileDocumentOriginal(draft)
+		// A crashed download leaves its .part behind; sweep anything stale so
+		// the cache dir cannot accumulate partial originals.
+		if entries, readErr := os.ReadDir(dir); readErr == nil {
+			for _, e := range entries {
+				if !strings.HasSuffix(e.Name(), ".part") {
+					continue
+				}
+				if info, infoErr := e.Info(); infoErr == nil && time.Since(info.ModTime()) > time.Hour {
+					_ = os.Remove(filepath.Join(dir, e.Name()))
+				}
+			}
+		}
+		_, raw, err := a.downloadMobileDocumentOriginal(draft)
+		if err != nil {
+			return "", err
+		}
+		tmp := dest + fmt.Sprintf(".%d.part", time.Now().UnixNano())
+		if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+			return "", fmt.Errorf("write temp original: %w", err)
+		}
+		if err := os.Rename(tmp, dest); err != nil {
+			_ = os.Remove(dest)
+			if err2 := os.Rename(tmp, dest); err2 != nil {
+				_ = os.Remove(tmp)
+				return "", fmt.Errorf("write temp original: %w", err2)
+			}
+		}
+		return dest, nil
+	})
 	if err != nil {
 		return "", err
 	}
-	tmp := dest + fmt.Sprintf(".%d.part", time.Now().UnixNano())
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return "", fmt.Errorf("write temp original: %w", err)
+	return v.(string), nil
+}
+
+func cachedMobileOriginalPath(dest string, sourceSize int) bool {
+	info, err := os.Stat(dest)
+	if err != nil || info.IsDir() || info.Size() <= 0 {
+		return false
 	}
-	if err := os.Rename(tmp, dest); err != nil {
-		_ = os.Remove(dest)
-		if err2 := os.Rename(tmp, dest); err2 != nil {
-			_ = os.Remove(tmp)
-			return "", fmt.Errorf("write temp original: %w", err2)
-		}
-	}
-	return dest, nil
+	return sourceSize <= 0 || info.Size() == int64(sourceSize)
 }
 
 // OpenMobileDocumentOriginal downloads the Hub original to a temp file and opens
@@ -1820,7 +1916,9 @@ func sanitizeMobileOriginalFilename(name string) string {
 	)
 	name = replacer.Replace(name)
 	name = strings.TrimSpace(name)
-	if name == "" {
+	// ".." is a valid Base output and would escape the per-draft cache dir;
+	// all-dot names are illegal on Windows too.
+	if name == "" || strings.Trim(name, ".") == "" {
 		return "original.bin"
 	}
 	return name

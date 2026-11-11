@@ -166,9 +166,16 @@ func TestSemanticToolsSearchRepeatedDirectoryCloses(t *testing.T) {
 	if last := semanticToolsSearchLastLine(first); !strings.HasPrefix(last, semanticToolsSearchListedDirectivePrefix) {
 		t.Fatalf("directive must close the page: %q", last)
 	}
+	// A needs list is a petition, not a directory re-read: a first-time set
+	// returns its page even when every row was listed before. Only an exact
+	// repeat of an unanswered petition closes.
 	second := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"fetch models","needs":["web_fetch"]}`)
-	if !strings.Contains(second, "already returned") || strings.Contains(second, "web_fetch —") {
-		t.Fatalf("repeated directory must close without another catalog: %s", second)
+	if !strings.Contains(second, "- web_fetch — ") {
+		t.Fatalf("a new needs set must answer its petition page: %s", second)
+	}
+	repeat := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"fetch models again","needs":["web_fetch"]}`)
+	if !strings.Contains(repeat, "already returned") || strings.Contains(repeat, "web_fetch —") {
+		t.Fatalf("repeating the same needs petition must close: %s", repeat)
 	}
 	third := cb.executeSemanticToolCallWithEpoch(semanticToolsSearchName, `{"query":"bash curl","needs":["bash"]}`, "call-ts", "")
 	if !strings.Contains(third, "- bash — ") {
@@ -2206,4 +2213,53 @@ func equalStringSlices(left, right []string) bool {
 		}
 	}
 	return true
+}
+
+// A cut page must still publish every hidden name. Existence is what the
+// model uses to decide "the write API is absent": post_work_log_add sat on
+// page 2 while the turn reported 腾云没有写接口 (production 2026-11-11).
+// Shown rows plus the unshown-name index must cover the whole directory.
+func TestSemanticToolsSearchCutPageListsEveryHiddenName(t *testing.T) {
+	cb := semanticToolsSearchRegressionCallbacks(60)
+	got := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"list everything"}`)
+	if len(got) > agent.ToolsSearchMaxToolResult {
+		t.Fatalf("page is %d bytes, budget %d", len(got), agent.ToolsSearchMaxToolResult)
+	}
+	if !strings.Contains(got, "next_page_token=") {
+		t.Fatalf("fixture must cut the page: %s", got)
+	}
+	marker := "本页未列出的名字还有 "
+	idx := strings.Index(got, marker)
+	if idx < 0 {
+		t.Fatalf("cut page hides its remaining names:\n%s", got)
+	}
+	indexLine := got[idx:]
+	if end := strings.IndexByte(indexLine, '\n'); end >= 0 {
+		indexLine = indexLine[:end]
+	}
+	if !strings.Contains(indexLine, "不要断言该能力不存在") {
+		t.Fatalf("index line must forbid an absent-capability conclusion: %s", indexLine)
+	}
+	shown := map[string]bool{}
+	for _, name := range semanticSearchResultNames(got) {
+		shown[name] = true
+	}
+	indexed := map[string]bool{}
+	for _, token := range strings.FieldsFunc(indexLine, func(r rune) bool {
+		return r == '、' || r == ' ' || r == '：' || r == '。' || r == '，'
+	}) {
+		token = strings.TrimSpace(token)
+		if strings.HasPrefix(token, "dynamic_") || strings.Contains(token, "__") {
+			indexed[token] = true
+		}
+	}
+	all := uniqueStrings(semanticSearchAllPageNames(t, semanticToolsSearchRegressionCallbacks(60), "list everything"))
+	for _, name := range all {
+		if shown[name] {
+			continue
+		}
+		if !indexed[name] {
+			t.Fatalf("name %q is neither a shown row nor in the hidden-name index on page 1:\n%s", name, indexLine)
+		}
+	}
 }

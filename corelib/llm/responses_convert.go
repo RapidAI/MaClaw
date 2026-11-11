@@ -472,3 +472,13 @@ func stringField(m map[string]interface{}, key string) string {
 	v, _ := m[key].(string)
 	return v
 }
+
+// firstStringField returns the first non-empty string among the keys.
+func firstStringField(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if s := stringField(m, key); s != "" {
+			return s
+		}
+	}
+	return ""
+}

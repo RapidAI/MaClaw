@@ -345,8 +345,8 @@ func TestSemanticEarlyStopIgnoresUnclaimedOptionalLegs(t *testing.T) {
 	surface := cb.semanticSurface
 	optionalLeft := 0
 	for _, selection := range surface.plan.Selections {
-		// Leave the optional bundle search offers uncompleted; complete the rest.
-		if selection.FitProof.MatchedCapability == tool.CapabilityArtifactAcquireRemote || selection.FitProof.MatchedCapability == tool.CapabilityFSReadLocal {
+		// Leave the optional lookup offers uncompleted; complete the rest.
+		if selection.FitProof.MatchedCapability == tool.CapabilityKnowledgeReadLocal || selection.FitProof.MatchedCapability == tool.CapabilityMemoryRecallAgent {
 			optionalLeft++
 			continue
 		}

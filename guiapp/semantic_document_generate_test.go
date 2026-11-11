@@ -468,8 +468,11 @@ func TestIMSemanticWeatherPDFClassifierPlansGovernedChain(t *testing.T) {
 		},
 	})
 
+	// A nil verdict now means model discovery; production always supplies the
+	// entry classification, so this test classifies through the stub first.
+	classification := h.unifiedClassifier.ClassifyContext(context.Background(), intent.MessageContext{Text: "北京天气，输出 格式化pdf报告", UserID: "user"})
 	prepared, handled, err := h.semanticPlanForTurnWithClassification(
-		"user", "北京天气，输出 格式化pdf报告", "desktop", "root-classifier-pdf", "turn-classifier-pdf", nil,
+		"user", "北京天气，输出 格式化pdf报告", "desktop", "root-classifier-pdf", "turn-classifier-pdf", &classification,
 	)
 	if err != nil || !handled || prepared == nil {
 		t.Fatalf("handled=%v err=%v prepared=%#v", handled, err, prepared)

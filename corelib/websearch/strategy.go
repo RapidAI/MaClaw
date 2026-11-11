@@ -417,23 +417,18 @@ func contextRemaining(ctx context.Context) time.Duration {
 	return remaining
 }
 
-func stillNeedsBrowserAttempt(strategy corelib.WebSearchStrategy, attemptedBrowser map[string]bool, hint string) bool {
+func stillNeedsBrowserAttempt(strategy corelib.WebSearchStrategy, attemptedBrowser map[string]bool) bool {
 	if getBrowserSearchProvider() == nil {
 		return false
 	}
-	for _, engine := range strategy.Engines {
-		if engine.Enabled && engine.Transport == corelib.WebSearchTransportBrowser && !attemptedBrowser[engine.ID] {
-			return true
-		}
-	}
-	return len(remainingBrowserFallbackIDs(strategy, attemptedBrowser, hint)) > 0
+	return len(remainingBrowserEngineIDs(strategy, attemptedBrowser)) > 0
 }
 
-func shouldSkipToPreserveBrowserBudget(ctx context.Context, engine corelib.WebSearchEngineConfig, strategy corelib.WebSearchStrategy, attemptedBrowser map[string]bool, hint string) bool {
+func shouldSkipToPreserveBrowserBudget(ctx context.Context, engine corelib.WebSearchEngineConfig, strategy corelib.WebSearchStrategy, attemptedBrowser map[string]bool) bool {
 	if engine.Transport == corelib.WebSearchTransportBrowser {
 		return false
 	}
-	if !stillNeedsBrowserAttempt(strategy, attemptedBrowser, hint) {
+	if !stillNeedsBrowserAttempt(strategy, attemptedBrowser) {
 		return false
 	}
 	return contextRemaining(ctx) <= browserAttemptTimeout(strategy)
@@ -443,7 +438,7 @@ func shouldSkipHTMLAfterConsecutiveMisses(engine corelib.WebSearchEngineConfig, 
 	if engine.Transport != corelib.WebSearchTransportHTTPHTML || htmlUnavailable < htmlMissSkipThreshold(hint) {
 		return false
 	}
-	return stillNeedsBrowserAttempt(strategy, attemptedBrowser, hint)
+	return stillNeedsBrowserAttempt(strategy, attemptedBrowser)
 }
 
 func browserFallbackParent(parent, ctx context.Context, strategy corelib.WebSearchStrategy) context.Context {
@@ -513,7 +508,7 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 		// at a time while the result set remains sparse.
 		for _, engine := range strategy.Engines {
 			enough := len(candidates) >= minInt(maxResults, strategy.MinResultsBeforeHedge) &&
-				(resultsCoverSiteHint(candidates, hint) || !stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint))
+				(resultsCoverSiteHint(candidates, hint) || !stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines))
 			if enough || ctx.Err() != nil {
 				break
 			}
@@ -538,7 +533,7 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 			response.Diagnostics = append(response.Diagnostics, attempt)
 			logSearchAttempt(query, attempt)
 		}
-		if len(candidates) >= minInt(maxResults, strategy.MinResultsBeforeHedge) && (resultsCoverSiteHint(candidates, hint) || !stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint)) {
+		if len(candidates) >= minInt(maxResults, strategy.MinResultsBeforeHedge) && (resultsCoverSiteHint(candidates, hint) || !stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines)) {
 			response.Results = finalizeResults(candidates)
 			response.Degraded = degradedByDiagnostics(response.Diagnostics, false)
 			return response, nil
@@ -561,7 +556,7 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 				logSearchAttempt(query, attempt)
 				continue
 			}
-			if shouldSkipToPreserveBrowserBudget(ctx, engine, strategy, attemptedBrowserEngines, hint) {
+			if shouldSkipToPreserveBrowserBudget(ctx, engine, strategy, attemptedBrowserEngines) {
 				attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "reserved remaining time for browser fallback"}
 				response.Diagnostics = append(response.Diagnostics, attempt)
 				logSearchAttempt(query, attempt)
@@ -577,7 +572,7 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 				attemptedBrowserEngines[engine.ID] = true
 			}
 			preserve := time.Duration(0)
-			if stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint) && engine.Transport != corelib.WebSearchTransportBrowser {
+			if stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines) && engine.Transport != corelib.WebSearchTransportBrowser {
 				preserve = browserAttemptTimeout(strategy)
 			}
 			results, attemptErr, elapsed, retryCount := searchStrategyEnginePreserving(ctx, query, maxResults, engine, strategy.BrowserHumanAssistEnabled, preserve)
@@ -615,7 +610,7 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 			}
 			response.Diagnostics = append(response.Diagnostics, attempt)
 			logSearchAttempt(query, attempt)
-			if len(candidates) >= minInt(maxResults, strategy.MinResultsBeforeHedge) && (resultsCoverSiteHint(candidates, hint) || !stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint)) {
+			if len(candidates) >= minInt(maxResults, strategy.MinResultsBeforeHedge) && (resultsCoverSiteHint(candidates, hint) || !stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines)) {
 				response.Results = candidates
 				response.Degraded = degradedByDiagnostics(response.Diagnostics, retryCount > 0)
 				return response, nil
@@ -627,7 +622,7 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 	}
 
 	if getBrowserSearchProvider() != nil {
-		for _, fallbackID := range remainingBrowserFallbackIDs(strategy, attemptedBrowserEngines, hint) {
+		for _, fallbackID := range remainingBrowserEngineIDs(strategy, attemptedBrowserEngines) {
 			fallbackParent := browserFallbackParent(parent, ctx, strategy)
 			if fallbackParent.Err() != nil {
 				break

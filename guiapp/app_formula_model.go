@@ -65,6 +65,14 @@ func (a *App) SetFormulaEnabled(enabled bool) error {
 		if exists, _ := info["exists"].(bool); !exists {
 			go a.downloadFormulaModelIfStillEnabled()
 		}
+	} else {
+		// Drop resident graphs now; in-flight recognitions finish first —
+		// the manager defers the close until their leases end.
+		sharedFormula.mu.Lock()
+		if sharedFormula.mm != nil {
+			sharedFormula.mm.Unload()
+		}
+		sharedFormula.mu.Unlock()
 	}
 	return nil
 }

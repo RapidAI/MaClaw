@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
+	"github.com/RapidAI/CodeClaw/corelib/modelmanager"
 	"github.com/RapidAI/CodeClaw/corelib/onnxrt"
 	xdraw "golang.org/x/image/draw"
 )
@@ -34,9 +36,14 @@ type Engine struct {
 
 var (
 	sharedMu   sync.Mutex
-	shared     *Engine
+	sharedMM   *modelmanager.Manager[*Engine]
 	sharedPath string
 )
+
+// sharedIdleUnloadDelay releases the UNET graph after this much analysis
+// idle time; the next Acquire reloads it transparently.
+// MACLAW_MODEL_IDLE_UNLOAD_SEC overrides it (0 disables idle unload).
+const sharedIdleUnloadDelay = 5 * time.Minute
 
 // ModelPath is <Maclaw base>/models/table/unet.onnx.
 func ModelPath() (string, error) {
@@ -57,31 +64,45 @@ func Available() bool {
 	return err == nil && st.Mode().IsRegular() && st.Size() == modelBytes
 }
 
-// Shared returns the process engine when the model file is present.
-func Shared() (*Engine, error) {
+// Acquire returns the process engine plus a release function the caller must
+// run when done using it (release schedules the idle unload). The graph loads
+// on the first acquisition and unloads after sharedIdleUnloadDelay of no
+// use; a corrupt or replaced file drops the resident engine so the next
+// acquisition opens the artifact currently on disk.
+func Acquire() (*Engine, func(), error) {
 	path, err := ModelPath()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := verifyFile(path); err != nil {
 		sharedMu.Lock()
-		shared = nil
+		if sharedMM != nil {
+			sharedMM.Unload()
+			sharedMM = nil
+		}
 		sharedPath = ""
 		sharedMu.Unlock()
-		return nil, err
+		return nil, nil, err
 	}
 	sharedMu.Lock()
-	defer sharedMu.Unlock()
-	if shared != nil && sharedPath == path {
-		return shared, nil
+	if sharedMM == nil || sharedPath != path {
+		if sharedMM != nil {
+			sharedMM.Shutdown()
+		}
+		p := path
+		sharedMM = modelmanager.New(modelmanager.Config[*Engine]{
+			Name: "tablestruct",
+			Load: func() (*Engine, error) { return Open(p) },
+			// Graph weights are Go slices; dropping the reference frees them
+			// and the post-unload ReleaseMemory pass returns them to the OS.
+			Close:       nil,
+			UnloadDelay: sharedIdleUnloadDelay,
+		})
+		sharedPath = path
 	}
-	eng, err := Open(path)
-	if err != nil {
-		return nil, err
-	}
-	shared = eng
-	sharedPath = path
-	return eng, nil
+	mm := sharedMM
+	sharedMu.Unlock()
+	return mm.Acquire()
 }
 
 // Open loads the wired UNET graph.

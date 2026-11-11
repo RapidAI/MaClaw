@@ -84,21 +84,25 @@ func TestDiarizationEnabledDefaultsToTrue(t *testing.T) {
 }
 
 func TestResetCAMPlusModelOnlyDropsMatchingCache(t *testing.T) {
-	// Fire the once so the planted manager is not overwritten mid-test.
-	camPlusMMOnce.Do(func() {})
+	camPlusMMMu.Lock()
 	prevMM := camPlusMM
+	camPlusMMMu.Unlock()
 	prevPath, _ := camPlusLoadedPath.Load().(string)
 	t.Cleanup(func() {
+		camPlusMMMu.Lock()
 		camPlusMM = prevMM
+		camPlusMMMu.Unlock()
 		camPlusLoadedPath.Store(prevPath)
 	})
 
 	loadedPath := "D:/models/current.cmpg"
+	camPlusMMMu.Lock()
 	camPlusMM = modelmanager.New(modelmanager.Config[*diarization.CAMPlus]{
 		Name:        "cam++-test",
 		Load:        func() (*diarization.CAMPlus, error) { return &diarization.CAMPlus{}, nil },
 		UnloadDelay: time.Hour,
 	})
+	camPlusMMMu.Unlock()
 	camPlusLoadedPath.Store(loadedPath)
 	if _, done, err := camPlusMM.Acquire(); err != nil {
 		t.Fatalf("plant CAM++ model: %v", err)

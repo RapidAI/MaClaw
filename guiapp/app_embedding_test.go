@@ -112,13 +112,18 @@ func TestSharedEmbeddingEmbedderSerializesConcurrentLoads(t *testing.T) {
 
 func TestSharedEmbeddingEmbedderReloadsWhenPathChanges(t *testing.T) {
 	app := &App{}
+	var firstInner *appEmbeddingTestEmbedder
 	first, err := app.sharedEmbeddingEmbedder("first.gguf", func(string) (embedding.Embedder, error) {
-		return &appEmbeddingTestEmbedder{}, nil
+		firstInner = &appEmbeddingTestEmbedder{}
+		return firstInner, nil
 	})
 	if err != nil {
 		t.Fatalf("first load failed: %v", err)
 	}
-	firstEmb := first.(*appEmbeddingTestEmbedder)
+	lazyFirst, ok := first.(*embedding.LazyEmbedder)
+	if !ok || !lazyFirst.Loaded() || firstInner == nil {
+		t.Fatalf("first embedder = %T inner=%v", first, firstInner)
+	}
 
 	again, err := app.sharedEmbeddingEmbedder("first.gguf", func(string) (embedding.Embedder, error) {
 		t.Fatalf("same path should reuse existing embedder")
@@ -140,7 +145,7 @@ func TestSharedEmbeddingEmbedderReloadsWhenPathChanges(t *testing.T) {
 	if second == first {
 		t.Fatalf("different path should load a new embedder")
 	}
-	if !firstEmb.closed.Load() {
+	if !firstInner.closed.Load() {
 		t.Fatalf("old embedder should be closed after path change")
 	}
 	if app.intentEmbedderPath != "second.gguf" {

@@ -62,6 +62,16 @@ function motifName(motif: string, t: (en: string, zhHans: string, zhHant: string
         return t('Band', '色带', '色帶');
     case 'ledger':
         return t('Ledger', '粗线', '粗線');
+    case 'sidebar':
+        return t('Sidebar', '侧栏', '側欄');
+    case 'plate':
+        return t('Plate', '铭牌', '銘牌');
+    case 'baseline':
+        return t('Baseline', '基线', '基線');
+    case 'ribbon':
+        return t('Ribbon', '悬带', '懸帶');
+    case 'apex':
+        return t('Apex', '折角', '折角');
     default:
         return t('Masthead', '顶栏', '頂欄');
     }
@@ -76,6 +86,12 @@ function PDFStylePreview({ style, label }: { style: PDFStyleCard; label: string 
     return (
         <div className={`pdf-style-page motif-${style.motif || 'masthead'}`} aria-hidden="true">
             {style.motif === 'rail' ? <i className="pdf-style-rail" style={{ background: accent }} /> : null}
+            {style.motif === 'sidebar' ? (
+                <>
+                    <i className="pdf-style-rail" style={{ background: navy }} />
+                    <i className="pdf-style-sidestrip" style={{ background: accent }} />
+                </>
+            ) : null}
             {style.motif === 'frame' ? (
                 <i className="pdf-style-frame" style={{ borderColor: gold }}>
                     <i style={{ borderColor: navy }} />
@@ -88,7 +104,20 @@ function PDFStylePreview({ style, label }: { style: PDFStyleCard; label: string 
                 </>
             ) : null}
             {style.motif === 'ledger' ? <i className="pdf-style-ledger" style={{ background: navy }} /> : null}
-            {style.motif !== 'rail' && style.motif !== 'frame' && style.motif !== 'band' && style.motif !== 'ledger' ? (
+            {style.motif === 'ribbon' ? (
+                <>
+                    <i className="pdf-style-band" style={{ background: navy }} />
+                    <i className="pdf-style-notch" style={{ background: gold }} />
+                </>
+            ) : null}
+            {style.motif === 'apex' ? (
+                <>
+                    <i className="pdf-style-band" style={{ background: accent }} />
+                    <i className="pdf-style-peak" style={{ borderBottomColor: navy }} />
+                </>
+            ) : null}
+            {style.motif === 'baseline' ? <i className="pdf-style-baseline" style={{ background: navy }} /> : null}
+            {style.motif !== 'rail' && style.motif !== 'sidebar' && style.motif !== 'frame' && style.motif !== 'band' && style.motif !== 'ledger' && style.motif !== 'ribbon' && style.motif !== 'apex' && style.motif !== 'baseline' ? (
                 <i className="pdf-style-mast">
                     <i style={{ background: navy }} />
                     <i style={{ background: accent }} />

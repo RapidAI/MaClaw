@@ -621,6 +621,9 @@ type providerProbeResult struct {
 	output    map[string]llmservice.ProbeOutputField
 	stream    bool
 	streamEnd *bool
+	// contentNormalized is true when the upstream put content as a block
+	// array and the probe folded it into the reply string.
+	contentNormalized bool
 }
 
 func runLLMProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfig) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
@@ -673,11 +676,16 @@ func runLLMProviderChatTestBody(ctx context.Context, cfg corelib.MaclawLLMConfig
 	if err != nil {
 		return probeFailed(budget, "invalid model response: "+err.Error(), latencyMs, output, "", nil)
 	}
+	normalized := llmservice.ProviderTestContentNormalized(respBody)
 	calls := llmservice.ParseProviderTestToolCalls(respBody)
 	if strings.TrimSpace(reply) == "" && len(calls) == 0 {
-		return probeFailed(budget, "model returned no completion content", latencyMs, output, reply, calls)
+		result := probeFailed(budget, "model returned no completion content", latencyMs, output, reply, calls)
+		result.contentNormalized = normalized
+		return result
 	}
-	return probeOK(budget, reply, latencyMs, output, calls, nil)
+	result := probeOK(budget, reply, latencyMs, output, calls, nil)
+	result.contentNormalized = normalized
+	return result
 }
 
 // runOpenCodeProviderChatTest uses the proxy forwarder. Zen free models
@@ -756,11 +764,16 @@ func runOpenCodeProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfi
 	if err != nil {
 		return probeFailed(budget, "invalid model response: "+err.Error(), latencyMs, output, "", nil)
 	}
+	normalized := llmservice.ProviderTestContentNormalized(respBody)
 	calls := llmservice.ParseProviderTestToolCalls(respBody)
 	if strings.TrimSpace(reply) == "" && len(calls) == 0 {
-		return probeFailed(budget, "model returned no completion content", latencyMs, output, reply, calls)
+		result := probeFailed(budget, "model returned no completion content", latencyMs, output, reply, calls)
+		result.contentNormalized = normalized
+		return result
 	}
-	return probeOK(budget, reply, latencyMs, output, calls, nil)
+	result := probeOK(budget, reply, latencyMs, output, calls, nil)
+	result.contentNormalized = normalized
+	return result
 }
 
 func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage, budget providerTestBudget) (*http.Request, error) {
@@ -806,9 +819,12 @@ func finishProbeStream(budget providerTestBudget, latencyMs int64, output map[st
 	if errMsg := parsed.Failure(); errMsg != "" {
 		result := probeFailed(budget, errMsg, latencyMs, output, parsed.Reply, parsed.Calls)
 		result.streamEnd = &end
+		result.contentNormalized = parsed.ContentNormalized
 		return result
 	}
-	return probeOK(budget, parsed.Reply, latencyMs, output, parsed.Calls, &end)
+	result := probeOK(budget, parsed.Reply, latencyMs, output, parsed.Calls, &end)
+	result.contentNormalized = parsed.ContentNormalized
+	return result
 }
 
 func openCodeProbeWire(ctx context.Context, cfg corelib.MaclawLLMConfig, provider *llmpool.ProviderConfig, body map[string]any, stream bool) (wire []byte, endpoint, kind string, err error) {

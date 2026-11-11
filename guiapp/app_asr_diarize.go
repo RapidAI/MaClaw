@@ -24,8 +24,10 @@ import (
 const camPlusIdleUnloadDelay = 5 * time.Minute
 
 var (
-	camPlusMM     *modelmanager.Manager[*diarization.CAMPlus]
-	camPlusMMOnce sync.Once
+	// camPlusMMMu guards camPlusMM (a mutex, not sync.Once, so tests can swap
+	// in a stub manager and the next access rebuilds the real one).
+	camPlusMMMu sync.Mutex
+	camPlusMM   *modelmanager.Manager[*diarization.CAMPlus]
 	// camPlusLoadedPath records the path the resident weights were loaded
 	// from, so resetCAMPlusModel only unloads on a matching replacement.
 	camPlusLoadedPath atomic.Value // string
@@ -35,7 +37,9 @@ var (
 // diarization and unload after camPlusIdleUnloadDelay of no use. The model is
 // immutable once loaded; a replaced file takes effect on the next load.
 func camPlusModelManager() *modelmanager.Manager[*diarization.CAMPlus] {
-	camPlusMMOnce.Do(func() {
+	camPlusMMMu.Lock()
+	defer camPlusMMMu.Unlock()
+	if camPlusMM == nil {
 		camPlusMM = modelmanager.New(modelmanager.Config[*diarization.CAMPlus]{
 			Name: "cam++",
 			Load: func() (*diarization.CAMPlus, error) {
@@ -49,7 +53,7 @@ func camPlusModelManager() *modelmanager.Manager[*diarization.CAMPlus] {
 			Close:       nil,
 			UnloadDelay: camPlusIdleUnloadDelay,
 		})
-	})
+	}
 	return camPlusMM
 }
 
@@ -201,15 +205,14 @@ func (a *App) acquireCAMPlusModel() (*diarization.CAMPlus, func(), error) {
 // pointer; the next call loads the artifact currently on disk. A reset for
 // an unrelated path leaves the resident model alone.
 func resetCAMPlusModel(path string) {
-	if camPlusMM == nil {
-		return
-	}
 	if path != "" {
 		if loaded, _ := camPlusLoadedPath.Load().(string); loaded != "" && loaded != path {
 			return
 		}
 	}
-	camPlusMM.Unload()
+	// The accessor also builds the manager on first call — cheap, no model
+	// is loaded — so the pointer is always non-nil here.
+	camPlusModelManager().Unload()
 }
 
 // DiarizeAndTranscribeWAVBytes returns independently transcribed, local

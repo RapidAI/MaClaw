@@ -761,7 +761,7 @@ func TestNewCatalogStylesMapAndRender(t *testing.T) {
 			t.Fatalf("hint %q -> %s, want %s", hint, got, want)
 		}
 	}
-	if len(styleCatalog) != 16 {
+	if len(styleCatalog) != 22 {
 		t.Fatalf("catalog = %d", len(styleCatalog))
 	}
 	ids := map[string]bool{}
@@ -773,14 +773,14 @@ func TestNewCatalogStylesMapAndRender(t *testing.T) {
 		ids[spec.id] = true
 		motifs[string(spec.motif)] = true
 	}
-	if len(motifs) != 14 {
-		t.Fatalf("motifs used = %d, want 14", len(motifs))
+	if len(motifs) != 17 {
+		t.Fatalf("motifs used = %d, want 17", len(motifs))
 	}
 }
 
 func TestWriteFileNewMotifsRenderAllLayouts(t *testing.T) {
 	dir := t.TempDir()
-	for _, theme := range []string{"finance", "aurora", "marketing", "medical"} {
+	for _, theme := range []string{"finance", "aurora", "marketing", "medical", "boardroom", "summit", "nova", "graphite"} {
 		path := filepath.Join(dir, theme+".pptx")
 		outline := Outline{
 			Title: "新版式", Subtitle: "全版式冒烟", Theme: theme,

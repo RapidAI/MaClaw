@@ -35,7 +35,7 @@ func semanticToolsSearchDefinition() map[string]interface{} {
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        semanticToolsSearchName,
-			"description": "Query the task-scoped capability catalog. The query text does not select tools. Pass directory names in needs to load them onto the next request. A name absent from this request's function list cannot be called until that load succeeds. One needs list can name several workspace tools. ssh, browser, delete_file, and record_audio load only when that name is the sole needs entry. computer_use is not loaded onto this request.",
+			"description": "Query the task-scoped capability catalog. The query text does not select tools. The catalog is paged: a cut page still lists the remaining names verbatim — petition those names through needs, or pass page_token to read on. Never declare a capability absent before the whole directory is seen. Pass directory names in needs to load them onto the next request. A name absent from this request's function list cannot be called until that load succeeds. One needs list can name several workspace tools. ssh, browser, delete_file, and record_audio load only when that name is the sole needs entry. computer_use is not loaded onto this request.",
 			"parameters": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -300,7 +300,20 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 		// server__tool spelling and had no name to put in needs.
 		entries = appendDiscoveryCatalogSearchEntries(entries, cb.discoveryCatalogRows())
 	}
+	var resolveNote string
+	var unservedNote string
+	var nearMissCandidates []string
 	if len(needs) > 0 {
+		// needTokens snapshots the petition as sent. needs is rewritten by
+		// the resolutions below; the unserved report still owes the caller
+		// an answer for every token it asked for.
+		needTokens := make([]string, 0, len(needs))
+		for token := range needs {
+			if raw := strings.TrimSpace(string(token)); raw != "" {
+				needTokens = append(needTokens, raw)
+			}
+		}
+		served := map[string]bool{}
 		// Models pass tool names ("web_search") in needs. Those are not
 		// capability ids. A filter that matches nothing must not erase the
 		// directory: production 2026-09-22 崇州天气 heard "no capability in
@@ -326,6 +339,38 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 				}
 			}
 		}
+		if len(filtered) == 0 && len(requestedNames) == 0 && discoverySurface {
+			// A loose token ("weather", "web search", "search engine") is
+			// usually a spelling or vocabulary slip, not a missing
+			// capability. Resolving it to the one loadable row it means
+			// keeps a wrong guess from arming the unmatched gate, which
+			// closes web_search and every fetch/render tool for the rest
+			// of the turn (production 2026-11-11: 北京天气 passed
+			// needs=["weather"], the miss armed the gate, and the turn
+			// finished through search_and_install_skill and a craft_tool
+			// urllib scraper while web_search sat in the directory).
+			loose := resolveDiscoveryNeedsLoose(needs, entries, cb)
+			switch {
+			case len(loose.resolved) > 0:
+				requestedNames = loose.resolved
+				for _, entry := range entries {
+					if loose.resolved[entry.name] {
+						filtered = append(filtered, entry)
+					}
+				}
+				needs = loose.caps
+				resolveNote = "needs 里不匹配目录的名字按意图解析为：" + strings.Join(loose.pairs, "、") + "。\n"
+				for token := range loose.served {
+					served[token] = true
+				}
+			case len(loose.candidates) > 0:
+				// A token that lands near directory rows is still a
+				// vocabulary problem. The page stays a miss but the
+				// unmatched gate must not arm: the model may petition an
+				// exact row, or take the extension path when none fits.
+				nearMissCandidates = loose.candidates
+			}
+		}
 		// Installed skills and MCP tools are catalog rows, not inventory
 		// lines. A needs token that spells one is the petition. Leaving it
 		// out makes the page a miss and points at search_and_install_skill.
@@ -347,6 +392,7 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 				if !ok {
 					continue
 				}
+				served[name] = true
 				summary := strings.TrimSpace(row.Summary)
 				if summary == "" {
 					summary = "已安装。"
@@ -364,14 +410,20 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 			// computer_use is that name: the main conversation cannot publish
 			// it, and treating the token as unknown used to open the catalog
 			// miss and close every other tool. Unknown tokens still miss.
-			if discoverySurface && discoveryNeedsAreLoadableNames(cb, needs) {
+			// A loose-resolved name already proved it is loadable or
+			// callable; it keeps the row-less slot too, so a resolution is
+			// never rewritten back into a miss.
+			loadableTokens := discoveryNeedsAreLoadableNames(cb, needs)
+			if discoverySurface && (loadableTokens || (resolveNote != "" && len(requestedNames) > 0)) {
 				if requestedNames == nil {
 					requestedNames = map[string]bool{}
 				}
-				for token := range needs {
-					name := strings.TrimSpace(string(token))
-					if name != "" {
-						requestedNames[name] = true
+				if resolveNote == "" {
+					for token := range needs {
+						name := strings.TrimSpace(string(token))
+						if name != "" {
+							requestedNames[name] = true
+						}
 					}
 				}
 			} else {
@@ -381,7 +433,28 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 			}
 		} else {
 			entries = filtered
-			needs = resolved
+			// A loose resolution already rewrote needs to the matched
+			// capabilities; only exact matches take the resolved map.
+			if resolveNote == "" {
+				needs = resolved
+			}
+		}
+		// A mixed petition answers the matched tokens and would drop the
+		// rest in silence: the model then reads a partial page as the full
+		// answer. Every token gets a verdict — matched names carry their
+		// row, unmatched ones are named here.
+		if filterNote == "" {
+			var dropped []string
+			for _, raw := range needTokens {
+				if served[raw] || requestedNames[raw] || capabilityOnly[tool.CapabilityID(raw)] {
+					continue
+				}
+				dropped = append(dropped, raw)
+			}
+			if len(dropped) > 0 {
+				sort.Strings(dropped)
+				unservedNote = "needs 里这些名字没有匹配到目录条目，不会装载：" + strings.Join(dropped, "、") + "。\n"
+			}
 		}
 	}
 	// A later needs list can name web_search after the catalog already missed.
@@ -393,6 +466,11 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 		needs = map[tool.CapabilityID]bool{}
 		requestedNames = nil
 		entries = catalog
+		// The blocked names were already resolved for nothing: naming the
+		// substitute beside the extension order reads like it may still load.
+		resolveNote = ""
+		unservedNote = ""
+		nearMissCandidates = nil
 	}
 	collectionDigest := semanticToolsSearchCollectionDigest(entries)
 	// A continuation token is bound to the immutable scope, catalog and exact
@@ -482,10 +560,18 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 			closing: semanticToolsSearchDiscoveryNextStep,
 		}
 	} else if filterNote != "" {
-		if discoverySurface {
-			cb.noteDiscoveryCatalogMiss()
+		switch {
+		case len(nearMissCandidates) > 0:
+			// A near miss is a vocabulary slip, not a capability gap. The
+			// unmatched gate stays disarmed so the model can still petition
+			// an exact row; the extension path is named as the fallback.
+			decision = semanticToolsSearchNearMissDecision(nearMissCandidates)
+		default:
+			if discoverySurface {
+				cb.noteDiscoveryCatalogMiss()
+			}
+			decision = semanticToolsSearchUnmatchedDecision(cb)
 		}
-		decision = semanticToolsSearchUnmatchedDecision(cb)
 	} else if exclusiveAlone != "" {
 		decision = semanticToolsSearchDecision{text: exclusiveAlone + "\n", closing: exclusiveAlone}
 	} else {
@@ -542,6 +628,12 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	if filterNote != "" {
 		header.WriteString(filterNote)
 	}
+	if resolveNote != "" {
+		header.WriteString(resolveNote)
+	}
+	if unservedNote != "" {
+		header.WriteString(unservedNote)
+	}
 	if decision.text != "" {
 		header.WriteString(decision.text)
 	}
@@ -564,7 +656,7 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	// while the inline budget still holds.
 	waiting := semanticToolsSearchConfirmationWaiting(catalog, statusOf)
 	assemble := func(end int) string {
-		return semanticToolsSearchAssemblePage(header.String(), rows, entries, pageStart, end, len(entries), scopeID, catalogDigest, needs, collectionDigest, requestedNames, waiting, statusOf, decision, discoverySurface)
+		return semanticToolsSearchAssemblePage(header.String(), rows, entries, pageStart, end, len(entries), scopeID, catalogDigest, needs, collectionDigest, query, requestedNames, waiting, statusOf, decision, discoverySurface)
 	}
 	pageEnd := pageStart
 	if pageStart < len(rows) {
@@ -586,7 +678,7 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	return rendered
 }
 
-func semanticToolsSearchAssemblePage(header string, rows []string, entries []semanticToolsSearchEntry, pageStart, pageEnd, entryCount int, scopeID, catalogDigest string, needs map[tool.CapabilityID]bool, collectionDigest string, requestedNames map[string]bool, waiting []string, statusOf func(string) string, decision semanticToolsSearchDecision, discoverySurface bool) string {
+func semanticToolsSearchAssemblePage(header string, rows []string, entries []semanticToolsSearchEntry, pageStart, pageEnd, entryCount int, scopeID, catalogDigest string, needs map[tool.CapabilityID]bool, collectionDigest string, query string, requestedNames map[string]bool, waiting []string, statusOf func(string) string, decision semanticToolsSearchDecision, discoverySurface bool) string {
 	if pageEnd < pageStart {
 		pageEnd = pageStart
 	}
@@ -607,6 +699,12 @@ func semanticToolsSearchAssemblePage(header string, rows []string, entries []sem
 			nextToken = semanticToolsSearchPageToken(scopeID, catalogDigest, needs, pageEnd, collectionDigest)
 		}
 		fmt.Fprintf(&out, "next_page_token=%s\n", nextToken)
+		// A cut page must still publish every hidden name. The model only
+		// paginates when it knows something is missing; naming the rest is
+		// what keeps a later-page write tool from being declared absent
+		// (production 2026-11-11: post_work_log_add sat on page 2 while the
+		// turn reported 腾云没有写接口 and fell back to the browser).
+		out.WriteString(semanticToolsSearchUnshownNamesLine(entries[pageEnd:], query, discoverySurface))
 	}
 	// The action line is last. A listed name the caller already asked for is
 	// the only imperative on that page (production 2026-09-27: the petition
@@ -710,6 +808,87 @@ func semanticToolsSearchOneLine(summary string) string {
 	}
 	runes := []rune(summary)
 	return string(runes[:maxRunes-1]) + "…"
+}
+
+// discoveryQueryStrongWords is the search query's vocabulary minus the
+// words too common to rank by. A cut page orders its hidden-name index by
+// these; an empty set keeps the catalog order.
+func discoveryQueryStrongWords(query string) map[string]bool {
+	words := map[string]bool{}
+	for _, word := range discoveryNeedWords(query) {
+		if !semanticToolsSearchWeakWords[word] {
+			words[word] = true
+		}
+	}
+	return words
+}
+
+// semanticToolsSearchUnshownNamesBudget caps the hidden-name index. Names
+// are the discovery payload — summaries stay behind page_token — so the
+// index outranks a few summary rows, but it must never become the page.
+const semanticToolsSearchUnshownNamesBudget = 1200
+
+// semanticToolsSearchUnshownNamesLine lists the names a cut page cannot
+// show, so existence never depends on reaching the next page. Status and
+// summaries still do: the line also says how to read them. When the index
+// itself overflows its budget, names sharing a non-weak word with the
+// query go first — the row the caller was looking for is the one that
+// must not end up behind "等共 N 个".
+func semanticToolsSearchUnshownNamesLine(rest []semanticToolsSearchEntry, query string, discoverySurface bool) string {
+	if len(rest) == 0 {
+		return ""
+	}
+	// The index copies before it orders: rest aliases entries, and
+	// reordering the backing slice would corrupt the next page.
+	ordered := append([]semanticToolsSearchEntry(nil), rest...)
+	if scored := discoveryQueryStrongWords(query); len(scored) > 0 {
+		score := func(name string) int {
+			nameWords := map[string]bool{}
+			for _, word := range discoveryNeedWords(name) {
+				nameWords[word] = true
+			}
+			n := 0
+			for word := range scored {
+				if nameWords[word] {
+					n++
+				}
+			}
+			return n
+		}
+		sort.SliceStable(ordered, func(i, j int) bool {
+			return score(ordered[i].name) > score(ordered[j].name)
+		})
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "本页未列出的名字还有 %d 个：", len(rest))
+	listed := 0
+	for _, entry := range ordered {
+		name := strings.TrimSpace(entry.name)
+		if name == "" {
+			continue
+		}
+		extra := len(name)
+		if listed > 0 {
+			extra += len("、")
+		}
+		if listed > 0 && b.Len()+extra > semanticToolsSearchUnshownNamesBudget {
+			break
+		}
+		if listed > 0 {
+			b.WriteString("、")
+		}
+		b.WriteString(name)
+		listed++
+	}
+	if listed < len(ordered) {
+		fmt.Fprintf(&b, " 等共 %d 个", len(ordered))
+	}
+	if discoverySurface {
+		b.WriteString("。状态和描述用 page_token 翻页查看；其中标记「可请愿」的名字直接写进 needs 也能装载。没见到目标名字时不要断言该能力不存在。\n")
+	} else {
+		b.WriteString("。状态和描述用 page_token 翻页查看。没见到目标名字时不要断言该能力不存在。\n")
+	}
+	return b.String()
 }
 
 // semanticToolsSearchFitEnd estimates the exclusive end of a page so the
@@ -1147,6 +1326,22 @@ func semanticToolsSearchUnmatchedDecision(cb *sharedAgentLoopCallbacks) semantic
 	return semanticToolsSearchDecision{text: semanticToolsSearchUnmatchedNeedsDecision}
 }
 
+// semanticToolsSearchNearMissDecision is the decision of a miss whose tokens
+// still landed near directory rows. It does not arm the unmatched gate: an
+// exact row may still be petitioned, and the extension path is named only as
+// the fallback for a real capability gap.
+func semanticToolsSearchNearMissDecision(candidates []string) semanticToolsSearchDecision {
+	candidates = append([]string(nil), candidates...)
+	sort.Strings(candidates)
+	if len(candidates) > 6 {
+		candidates = candidates[:6]
+	}
+	return semanticToolsSearchDecision{
+		text:    "needs 里的名字不在本回合目录里，但和这些名字接近：" + strings.Join(candidates, "、") + "。对得上就把确切名字放进 needs 再查一次，或直接调用一次请愿。确实没有对得上的能力时，先调用 search_and_install_skill，没有可用 Skill 时再调用 craft_tool。\n",
+		closing: "对得上就请愿目录里的确切名字；确实没有对得上的能力时先 search_and_install_skill，再 craft_tool。",
+	}
+}
+
 func semanticToolsSearchListedDecisionText(listed, _ []string) string {
 	return "本轮决定：已在当前工具面：" + strings.Join(listed, "、") + "。\n"
 }
@@ -1575,6 +1770,416 @@ func parseExactSearchNeeds(raw interface{}) (map[tool.CapabilityID]bool, error) 
 	return needs, nil
 }
 
+// semanticToolsSearchNeedSynonyms maps a whole normalized needs token onto
+// the one directory name it obviously means. These are intents a model
+// spells naturally instead of the tool name; every entry is a deliberate,
+// unambiguous pick. Multi-word spellings go through normalization, so
+// "web search" and "web-search" never need entries here.
+var semanticToolsSearchNeedSynonyms = map[string]string{
+	"weather":       "web_search",
+	"forecast":      "web_search",
+	"news":          "web_search",
+	"google":        "web_search",
+	"bing":          "web_search",
+	"baidu":         "web_search",
+	"internet":      "web_search",
+	"online":        "web_search",
+	"searchengine":  "web_search",
+	"stockprice":    "web_search",
+	"天气":            "web_search",
+	"天气预报":          "web_search",
+	"新闻":            "web_search",
+	"股价":            "web_search",
+	"汇率":            "web_search",
+	"knowledgebase": "knowledge_search",
+	"kb":            "knowledge_search",
+	"知识库":           "knowledge_search",
+	"time":          "current_datetime",
+	"date":          "current_datetime",
+	"clock":         "current_datetime",
+	"时间":            "current_datetime",
+	"日期":            "current_datetime",
+	"excel":         "office",
+	"xlsx":          "office",
+	"spreadsheet":   "office",
+	"ppt":           "office",
+	"pptx":          "office",
+	"powerpoint":    "office",
+	"slides":        "office",
+	"表格":            "office",
+	"pdf":           "generate_pdf",
+	"download":      "download_file",
+	"下载":            "download_file",
+	"fetch":         "web_fetch",
+	"crawl":         "web_fetch",
+	"scrape":        "web_fetch",
+	"抓取":            "web_fetch",
+	"mic":           "record_audio",
+	"microphone":    "record_audio",
+	"record":        "record_audio",
+	"录音":            "record_audio",
+	"transcribe":    "asr",
+	"transcription": "asr",
+	"stt":           "asr",
+	"转写":            "asr",
+	"speak":         "tts_local",
+	"voice":         "tts_local",
+	"朗读":            "tts_local",
+	"screen":        "screenshot",
+	"截屏":            "screenshot",
+	"截图":            "screenshot",
+	"sql":           "database_query",
+	"reminder":      "manage_schedule",
+	"alarm":         "manage_schedule",
+	"schedule":      "manage_schedule",
+	"日程":            "manage_schedule",
+	"提醒":            "manage_schedule",
+	"memo":          "memory",
+	"remember":      "memory",
+	"记住":            "memory",
+	"history":       "session_search",
+	"audit":         "session_search",
+	"历史":            "session_search",
+	"commit":        "git_commit",
+	"push":          "git_commit",
+	"cmd":           "bash",
+	"shell":         "bash",
+	"terminal":      "bash",
+	"命令行":           "bash",
+	"delete":        "delete_file",
+	"删除":            "delete_file",
+	"sendmail":      "mailbox_send",
+	"sendemail":     "mailbox_send",
+	"发邮件":           "mailbox_send",
+	"browse":        "browser",
+	"website":       "browser",
+	"浏览器":           "browser",
+	"网页":            "browser",
+	"email":         "mailbox_query",
+	"mail":          "mailbox_query",
+	"邮件":            "mailbox_query",
+}
+
+// semanticToolsSearchNeedWordSynonyms is the per-word form used when a token
+// carries several words and none of the stronger matches fires ("search
+// engine", "weather forecast"). A word maps only onto an unambiguous intent.
+var semanticToolsSearchNeedWordSynonyms = map[string]string{
+	"weather":  "web_search",
+	"forecast": "web_search",
+	"news":     "web_search",
+	"engine":   "web_search",
+}
+
+// semanticToolsSearchWeakWords are vocabulary shared by so many directory
+// names that a lone overlap is not evidence the token meant that row.
+// "image.generate" sharing "generate" with generate_pdf must stay a genuine
+// catalog miss, not a near miss for the document renderer.
+var semanticToolsSearchWeakWords = map[string]bool{
+	"generate": true, "manage": true, "search": true, "file": true,
+	"files": true, "send": true, "deliver": true, "query": true,
+	"data": true, "read": true, "write": true, "run": true, "save": true,
+	"list": true, "render": true, "play": true, "open": true,
+	"current": true, "local": true, "tool": true, "tools": true,
+	"config": true, "session": true, "text": true, "record": true,
+	"connect": true, "admin": true, "capture": true, "inspect": true,
+	"launch": true, "track": true, "make": true, "create": true,
+	"get": true, "use": true, "check": true, "new": true, "do": true,
+}
+
+// discoveryNeedStopwords are dropped before a token is compared. They carry
+// no intent and would otherwise keep word sets unequal.
+var discoveryNeedStopwords = map[string]bool{
+	"the": true, "a": true, "an": true, "to": true, "of": true,
+	"for": true, "and": true, "or": true, "in": true, "on": true,
+	"at": true, "by": true, "does": true, "please": true, "me": true,
+	"my": true, "i": true, "with": true, "via": true, "from": true,
+}
+
+// discoveryNeedWords splits a needs token or a directory name into the
+// vocabulary loose matching compares. Naive singular-stripping is enough:
+// the tokens are spellings, not free text.
+func discoveryNeedWords(token string) []string {
+	parts := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(token)), func(r rune) bool {
+		return r == '_' || r == '-' || r == ' ' || r == '\t' || r == '/' || r == '.' || r == ':' || r == ',' || r == ';' || r == '(' || r == ')'
+	})
+	words := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" || discoveryNeedStopwords[part] {
+			continue
+		}
+		if len(part) > 3 && strings.HasSuffix(part, "s") && !strings.HasSuffix(part, "ss") {
+			part = strings.TrimSuffix(part, "s")
+		}
+		words = append(words, part)
+	}
+	return words
+}
+
+// discoveryNeedNormalize is the joined vocabulary used for spelling-level
+// equality: "web search", "web-search", and "web_search" all fold to the
+// same string.
+func discoveryNeedNormalize(token string) string {
+	return strings.Join(discoveryNeedWords(token), "")
+}
+
+// resolveDiscoveryNeedsLoose maps needs tokens that matched nothing exactly
+// onto the loadable directory rows they mean. Resolution is deliberately
+// conservative — a synonym, a normalized spelling, an equal word set, or a
+// single unambiguous concept target all point at one name. Tokens that only
+// land near rows are candidates: the caller renders them as a near miss
+// instead of arming the unmatched gate.
+// discoveryNeedsLooseResolution is the outcome of resolving one needs list
+// loosely. served marks the raw tokens that resolved: a petition that
+// resolves some tokens still owes the caller a verdict on the rest.
+type discoveryNeedsLooseResolution struct {
+	resolved   map[string]bool
+	caps       map[tool.CapabilityID]bool
+	pairs      []string
+	candidates []string
+	served     map[string]bool
+}
+
+func resolveDiscoveryNeedsLoose(needs map[tool.CapabilityID]bool, entries []semanticToolsSearchEntry, cb *sharedAgentLoopCallbacks) discoveryNeedsLooseResolution {
+	out := discoveryNeedsLooseResolution{
+		resolved: map[string]bool{},
+		caps:     map[tool.CapabilityID]bool{},
+		served:   map[string]bool{},
+	}
+	candidates := map[string]bool{}
+	for token := range needs {
+		raw := strings.TrimSpace(string(token))
+		if raw == "" {
+			continue
+		}
+		name, near := discoveryNeedLooseMatch(raw, entries, cb)
+		switch {
+		case name != "":
+			if !out.resolved[name] {
+				out.pairs = append(out.pairs, raw+"→"+name)
+			}
+			out.resolved[name] = true
+			out.served[raw] = true
+			if capability, ok := semanticToolsSearchNameCapability(name); ok && capability != "" {
+				out.caps[capability] = true
+			} else {
+				out.caps[tool.CapabilityID(name)] = true
+			}
+		default:
+			for _, candidate := range near {
+				candidates[candidate] = true
+			}
+		}
+	}
+	if len(out.resolved) == 0 {
+		out.resolved = nil
+		out.caps = nil
+		out.served = nil
+		out.candidates = make([]string, 0, len(candidates))
+		for name := range candidates {
+			out.candidates = append(out.candidates, name)
+		}
+		sort.Strings(out.candidates)
+		return out
+	}
+	sort.Strings(out.pairs)
+	return out
+}
+
+// discoveryNeedLooseMatch resolves one unmatched needs token. Only names the
+// turn could actually load are eligible: a synonym that points at a denied
+// or blocked name is not a resolution, and an ambiguous candidate set would
+// only send the next search after the same wrong guess.
+func discoveryNeedLooseMatch(token string, entries []semanticToolsSearchEntry, cb *sharedAgentLoopCallbacks) (string, []string) {
+	norm := discoveryNeedNormalize(token)
+	if norm == "" {
+		return "", nil
+	}
+	// resolvable names a row the turn can actually load or call. A granted
+	// name qualifies: the page's listed-needs directive then tells the model
+	// to call it now. The clock stand-in does not — it is never a callable
+	// function, so resolving to it would end at a dead petition.
+	resolvable := func(name string) bool {
+		if cb == nil {
+			return false
+		}
+		// A name the unmatched gate closed is not a target: resolving to it
+		// would only print a promise the substitution block then retracts.
+		if blocked, _ := cb.discoveryPetitionBlocked(name); blocked {
+			return false
+		}
+		// A denied petition counts as a failed load and arms the gate.
+		// A loose slip must not route the turn back into one; the name can
+		// still be a near candidate whose row carries the denial mark.
+		if _, denied := cb.semanticPetitionDenied[name]; denied {
+			return false
+		}
+		if cb.discoverySearchNeedLoadable(name) {
+			return true
+		}
+		return cb.discoverySearchNeedCallable(name) && !modelDiscoveryHidesGrant(name)
+	}
+	// nearable is the wider candidate set for a near miss. A hidden stand-in
+	// may be named as a look-alike; it just cannot be the resolution. A
+	// petitionable name whose backing service is down (an empty knowledge
+	// base) still belongs in the list: its row then carries the honest
+	// unavailable mark, which is what stops the retry — not silence. A
+	// name the unmatched gate already closed stays out.
+	nearable := func(name string) bool {
+		if cb == nil {
+			return false
+		}
+		if blocked, _ := cb.discoveryPetitionBlocked(name); blocked {
+			return false
+		}
+		if resolvable(name) || cb.discoverySearchNeedCallable(name) {
+			return true
+		}
+		_, petitionable := semanticPetitionableCapabilities[name]
+		return petitionable
+	}
+	if synonym, ok := semanticToolsSearchNeedSynonyms[norm]; ok {
+		if resolvable(synonym) {
+			return synonym, nil
+		}
+		// The token names a real capability the turn cannot serve (an
+		// empty knowledge base, the hidden clock). It is still the best
+		// near candidate: its row carries the reason, and a soft miss
+		// keeps the gate open for the names the turn can load.
+		if nearable(synonym) {
+			return "", []string{synonym}
+		}
+	}
+	words := discoveryNeedWords(token)
+	var exact, near []string
+	seen := map[string]bool{}
+	consider := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] || !nearable(name) {
+			return
+		}
+		seen[name] = true
+		nameNorm := discoveryNeedNormalize(name)
+		switch {
+		case nameNorm == norm, discoveryNeedWordSetEqual(words, name):
+			if resolvable(name) {
+				exact = append(exact, name)
+			} else {
+				near = append(near, name)
+			}
+		case strings.Contains(nameNorm, norm) || strings.Contains(norm, nameNorm),
+			discoveryNeedSharesStrongWord(words, name):
+			near = append(near, name)
+		}
+	}
+	for _, entry := range entries {
+		consider(entry.name)
+	}
+	for name := range semanticPetitionableCapabilities {
+		consider(name)
+	}
+	if cb != nil {
+		for _, row := range cb.discoveryCatalogRows() {
+			consider(row.Name)
+		}
+	}
+	if len(exact) == 1 {
+		return exact[0], nil
+	}
+	if len(exact) > 1 {
+		return "", sortedUniqueStrings(exact)
+	}
+	// A concept token carries no directory vocabulary ("search engine",
+	// "weather forecast"). Per-word synonyms resolve it only when every
+	// mapped word agrees on one target and no name evidence competes.
+	if len(near) == 0 {
+		targets := map[string]bool{}
+		mapped := false
+		for _, word := range words {
+			if target, ok := semanticToolsSearchNeedWordSynonyms[word]; ok {
+				mapped = true
+				targets[target] = true
+			}
+		}
+		if mapped && len(targets) == 1 {
+			for target := range targets {
+				if resolvable(target) {
+					return target, nil
+				}
+				if nearable(target) {
+					return "", []string{target}
+				}
+			}
+		}
+		if len(targets) > 1 {
+			list := make([]string, 0, len(targets))
+			for target := range targets {
+				if nearable(target) {
+					list = append(list, target)
+				}
+			}
+			return "", sortedUniqueStrings(list)
+		}
+		return "", nil
+	}
+	return "", sortedUniqueStrings(near)
+}
+
+// discoveryNeedWordSetEqual reports that a needs token and a directory name
+// carry exactly the same vocabulary ("file search" is search_files).
+func discoveryNeedWordSetEqual(words []string, name string) bool {
+	nameWords := discoveryNeedWords(name)
+	if len(words) == 0 || len(words) != len(nameWords) {
+		return false
+	}
+	set := make(map[string]int, len(words))
+	for _, word := range words {
+		set[word]++
+	}
+	for _, word := range nameWords {
+		set[word]--
+		if set[word] < 0 {
+			return false
+		}
+	}
+	for _, count := range set {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// discoveryNeedSharesStrongWord reports a shared non-weak vocabulary word —
+// evidence the token reached for this row but spelled it differently.
+func discoveryNeedSharesStrongWord(words []string, name string) bool {
+	nameWords := map[string]bool{}
+	for _, word := range discoveryNeedWords(name) {
+		nameWords[word] = true
+	}
+	for _, word := range words {
+		if !semanticToolsSearchWeakWords[word] && nameWords[word] {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedUniqueStrings(values []string) []string {
+	set := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || set[value] {
+			continue
+		}
+		set[value] = true
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func searchPageStart(raw interface{}) (int, error) {
 	if raw == nil {
 		return 0, nil
@@ -1817,14 +2422,41 @@ func semanticSurfaceScopeID(surface *semanticCallSurface) string {
 	}
 	return "semantic-scope:" + tool.SchemaDigest([]byte(strings.Join(parts, "\x00")))
 }
+
+// semanticKnowledgeBaseUnavailable reports that the local knowledge store
+// cannot serve a search this turn: it failed to open or holds no sources.
+// The directory advertises that fact instead of offering a petition that can
+// only fail — production 2026-11-11 petitioned knowledge_search first, got
+// "知识库不可用", and the detour cost the turn its recovery path.
+func (c *sharedAgentLoopCallbacks) semanticKnowledgeBaseUnavailable() bool {
+	if c == nil {
+		return false
+	}
+	if c.knowledgeUnavailable != nil {
+		return *c.knowledgeUnavailable
+	}
+	unavailable := false
+	if c.handler != nil && c.handler.app != nil {
+		unavailable = !veHasKnowledgeSources(c.handler.app)
+	}
+	c.knowledgeUnavailable = &unavailable
+	return unavailable
+}
+
 func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string {
 	if cb == nil {
 		return "[本轮不可用：不要调用，用已列出的工具完成]"
 	}
 	surface := cb.semanticSurface
 	hidden := cb != nil && semanticSurfaceIsModelDiscovery(surface) && modelDiscoveryHidesGrant(name)
+	if hidden {
+		// The clock stand-in stays on the plan so the turn can be published.
+		// It is not a function the model can call, so the row must not read
+		// like a petition target or the settled surface.
+		return "[本轮不可用：不要调用，用已列出的工具完成]"
+	}
 	if surface != nil {
-		if _, ok := surface.grants[name]; ok && !hidden {
+		if _, ok := surface.grants[name]; ok {
 			return "[已在当前工具面]"
 		}
 	}
@@ -1877,7 +2509,7 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 	// the same capability (for example read_file/list_directory). Marking every
 	// alias as planned tells the model to wait for a tool that will never be
 	// rendered and recreates the disappearing-tool failure in discovery.
-	if semanticSurfacePlansTool(surface, name) && !hidden {
+	if semanticSurfacePlansTool(surface, name) {
 		// Timing lives in the surface decision. One sentence cannot say
 		// "appears automatically" for both generate_pdf (next request after
 		// web_search) and send_file (only after generate_pdf is itself listed).
@@ -1887,6 +2519,9 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 		return "[已列入本轮计划：不要直接调用，也不要请愿]"
 	}
 	if _, ok := semanticPetitionableCapabilities[name]; ok {
+		if name == "knowledge_search" && cb.semanticKnowledgeBaseUnavailable() {
+			return "[本机知识库为空或未配置，请愿它也没有结果]"
+		}
 		if _, has := semanticCallbackClassification(cb); has && !cb.semanticTurnAdmits(name) {
 			return "[本轮不可用：不要调用，用已列出的工具完成]"
 		}

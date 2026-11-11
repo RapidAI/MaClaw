@@ -93,7 +93,7 @@ const getBrandInfo = vi.fn();
 const clipboardWrite = vi.fn();
 type ListLibraryResult = { items: Array<Record<string, unknown>>; notice: string; updates?: Array<Record<string, unknown>>; removed?: string[]; removedHosts?: Record<string, string>; notesReply?: boolean; notesReview?: boolean; syncing?: boolean; catalog?: boolean; syncGen?: number; libraryRev?: number };
 const listLibrary = vi.fn<(args: unknown[]) => Promise<ListLibraryResult>>(async () => ({ items: [], notice: "" }));
-const shareDocument = vi.fn(async () => ({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "a.md", visibility: "public", permanent: true }));
+const shareDocument = vi.fn(async () => ({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "a.txt", visibility: "public", permanent: true }));
 const importShare = vi.fn(async (..._args: any[]): Promise<{ id: string; name: string; path: string; source: string; highlights?: string; chatMarks?: string; annotations?: string; drawings?: string }> => ({ id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", path: "C:/library/shared.pdf", source: "cloud" }));
 const listGroups = vi.fn(async () => [] as Array<Record<string, unknown>>);
 const syncShare = vi.fn(async (): Promise<{ revision: number; chatRevision?: number }> => ({ revision: 2 }));
@@ -230,8 +230,8 @@ function renderWindow(options?: { askOnOpen?: boolean }) {
     );
 }
 
-// Markdown tabs open on the rendered preview; the 源码 toggle brings back the
-// source editor. Specs that drive the textarea call these instead of querying
+// HTML tabs open on the source side; the 预览/源码 toggle flips them to the
+// rendered view. Specs that drive a textarea call these instead of querying
 // the editor testid directly.
 function sourceEditorEl(): HTMLTextAreaElement {
     const toggle = screen.queryByTestId("file-companion-preview-toggle");
@@ -382,7 +382,7 @@ beforeEach(() => {
     revokeHost.mockReset();
     revokeHost.mockResolvedValue(undefined);
     shareDocument.mockReset();
-    shareDocument.mockResolvedValue({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "a.md", visibility: "public", permanent: true });
+    shareDocument.mockResolvedValue({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "a.txt", visibility: "public", permanent: true });
     importShare.mockReset();
     importShare.mockResolvedValue({ id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", path: "C:/library/shared.pdf", source: "cloud" });
     listGroups.mockReset();
@@ -729,12 +729,12 @@ describe("FileCompanionWindow", () => {
     });
 
     it("shows a later file instead of leaving the first one on screen", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
-        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: path.endsWith("b.md") ? "beta" : "alpha" }));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: path.endsWith("b.txt") ? "beta" : "alpha" }));
         const runtime = installRuntime();
         renderWindow();
         expect((await sourceEditor() as HTMLTextAreaElement).value).toBe("alpha");
-        runtime.emit("file-companion:open", ["C:/notes/b.md"]);
+        runtime.emit("file-companion:open", ["C:/notes/b.txt"]);
         await waitFor(() => {
             expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("beta");
         });
@@ -1680,8 +1680,8 @@ describe("FileCompanionWindow", () => {
         await act(async () => { await Promise.resolve(); });
         runtime.emit("file-companion:show", null);
         expect(choose).not.toHaveBeenCalled();
-        await act(async () => { releaseBoot({ paths: ["C:/notes/a.md"] }); });
-        await screen.findByTestId("file-companion-tab-a.md");
+        await act(async () => { releaseBoot({ paths: ["C:/notes/a.txt"] }); });
+        await screen.findByTestId("file-companion-tab-a.txt");
         expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("alpha");
         expect(choose).not.toHaveBeenCalled();
     });
@@ -1717,29 +1717,29 @@ describe("FileCompanionWindow", () => {
     it("does not ask when a file is delivered as the window becomes ready", async () => {
         boot.mockResolvedValue({ paths: [] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
-        ready.mockResolvedValue(["C:/notes/a.md"]);
+        ready.mockResolvedValue(["C:/notes/a.txt"]);
         installRuntime();
         renderWindow();
-        await screen.findByTestId("file-companion-tab-a.md");
+        await screen.findByTestId("file-companion-tab-a.txt");
         expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("alpha");
         expect(choose).not.toHaveBeenCalled();
     });
 
     it("shows the file that arrived after the boot read", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
-        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: path.endsWith("b.md") ? "beta" : "alpha" }));
-        ready.mockResolvedValue(["C:/notes/b.md"]);
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: path.endsWith("b.txt") ? "beta" : "alpha" }));
+        ready.mockResolvedValue(["C:/notes/b.txt"]);
         installRuntime();
         renderWindow();
-        await screen.findByTestId("file-companion-tab-a.md");
-        await screen.findByTestId("file-companion-tab-b.md");
+        await screen.findByTestId("file-companion-tab-a.txt");
+        await screen.findByTestId("file-companion-tab-b.txt");
         expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("beta");
         const files = screen.getByTestId("file-companion-titlebar-files");
         const chooseButton = screen.getByTestId("file-companion-choose");
         expect(chooseButton.closest("[data-testid='file-companion-titlebar']")).toBe(screen.getByTestId("file-companion-titlebar"));
         expect(files.compareDocumentPosition(chooseButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(files.contains(chooseButton)).toBe(false);
-        expect(screen.getByTestId("file-companion-tab-a.md").parentElement).toBe(screen.getByTestId("file-companion-titlebar-tabs"));
+        expect(screen.getByTestId("file-companion-tab-a.txt").parentElement).toBe(screen.getByTestId("file-companion-titlebar-tabs"));
         expect(choose).not.toHaveBeenCalled();
     });
 
@@ -1747,7 +1747,7 @@ describe("FileCompanionWindow", () => {
         boot.mockResolvedValue({ paths: [] });
         let releaseFirst: (value: ReturnType<typeof doc>) => void = () => undefined;
         open.mockImplementation((path: string) => {
-            if (String(path).endsWith("a.md")) return new Promise((resolve) => { releaseFirst = resolve; });
+            if (String(path).endsWith("a.txt")) return new Promise((resolve) => { releaseFirst = resolve; });
             return Promise.resolve(doc(String(path), { editable: true, readOnly: false, content: "beta" }));
         });
         installRuntime();
@@ -1755,35 +1755,35 @@ describe("FileCompanionWindow", () => {
         await screen.findByTestId("file-companion-open-menu");
         expect(choose).not.toHaveBeenCalled();
         await screen.findByTestId("file-companion-empty");
-        choose.mockResolvedValue(["C:/notes/a.md", "C:/notes/b.md"]);
+        choose.mockResolvedValue(["C:/notes/a.txt", "C:/notes/b.txt"]);
         pickLocalFile();
         await waitFor(() => expect(open).toHaveBeenCalled());
-        expect(open.mock.calls.map((call) => call[0])).toEqual(["C:/notes/a.md"]);
+        expect(open.mock.calls.map((call) => call[0])).toEqual(["C:/notes/a.txt"]);
         await act(async () => {
-            releaseFirst(doc("C:/notes/a.md", { editable: true, readOnly: false, content: "alpha" }));
+            releaseFirst(doc("C:/notes/a.txt", { editable: true, readOnly: false, content: "alpha" }));
         });
-        await screen.findByTestId("file-companion-tab-b.md");
-        expect(open.mock.calls.map((call) => call[0])).toEqual(["C:/notes/a.md", "C:/notes/b.md"]);
+        await screen.findByTestId("file-companion-tab-b.txt");
+        expect(open.mock.calls.map((call) => call[0])).toEqual(["C:/notes/a.txt", "C:/notes/b.txt"]);
         expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("beta");
     });
 
     it("keeps a file that finishes opening after another tab is closed", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         let releaseNext: (value: ReturnType<typeof doc>) => void = () => undefined;
         open.mockImplementation((path: string) => {
-            if (String(path).endsWith("b.md")) return new Promise((resolve) => { releaseNext = resolve; });
+            if (String(path).endsWith("b.txt")) return new Promise((resolve) => { releaseNext = resolve; });
             return Promise.resolve(doc(String(path), { editable: true, readOnly: false, content: "alpha" }));
         });
         const runtime = installRuntime();
         renderWindow();
-        await screen.findByTestId("file-companion-tab-a.md");
-        runtime.emit("file-companion:open", ["C:/notes/b.md"]);
-        fireEvent.click(screen.getByLabelText("关闭 a.md"));
-        expect(screen.queryByTestId("file-companion-tab-a.md")).toBeNull();
+        await screen.findByTestId("file-companion-tab-a.txt");
+        runtime.emit("file-companion:open", ["C:/notes/b.txt"]);
+        fireEvent.click(screen.getByLabelText("关闭 a.txt"));
+        expect(screen.queryByTestId("file-companion-tab-a.txt")).toBeNull();
         await act(async () => {
-            releaseNext(doc("C:/notes/b.md", { editable: true, readOnly: false, content: "beta" }));
+            releaseNext(doc("C:/notes/b.txt", { editable: true, readOnly: false, content: "beta" }));
         });
-        await screen.findByTestId("file-companion-tab-b.md");
+        await screen.findByTestId("file-companion-tab-b.txt");
         expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("beta");
     });
 
@@ -1814,34 +1814,34 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-open-local"));
         await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
         expect(screen.getByTestId("file-companion-empty")).toBeTruthy();
-        choose.mockResolvedValue(["C:/notes/a.md"]);
+        choose.mockResolvedValue(["C:/notes/a.txt"]);
         pickLocalFile();
-        await screen.findByTestId("file-companion-tab-a.md");
+        await screen.findByTestId("file-companion-tab-a.txt");
         expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("alpha");
     });
 
     it("opens another file from the last tab", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
-        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: path.endsWith("c.md") ? "gamma" : "alpha" }));
-        choose.mockResolvedValue(["C:/notes/c.md"]);
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: path.endsWith("c.txt") ? "gamma" : "alpha" }));
+        choose.mockResolvedValue(["C:/notes/c.txt"]);
         installRuntime();
         renderWindow();
-        await screen.findByTestId("file-companion-tab-a.md");
+        await screen.findByTestId("file-companion-tab-a.txt");
         pickLocalFile();
-        await screen.findByTestId("file-companion-tab-c.md");
+        await screen.findByTestId("file-companion-tab-c.txt");
         const strip = screen.getByTestId("file-companion-titlebar-files");
         const chooseButton = screen.getByTestId("file-companion-choose");
         expect(chooseButton.closest("[data-testid='file-companion-titlebar']")).toBe(screen.getByTestId("file-companion-titlebar"));
         expect(strip.compareDocumentPosition(chooseButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("gamma");
-        fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
+        fireEvent.click(screen.getByTestId("file-companion-tab-a.txt"));
         expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("alpha");
     });
 
     it("shows the file picked from the dialog while another file is open", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
-        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: path.endsWith("c.md") ? "gamma" : "alpha" }));
-        choose.mockResolvedValue(["C:/notes/c.md"]);
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: path.endsWith("c.txt") ? "gamma" : "alpha" }));
+        choose.mockResolvedValue(["C:/notes/c.txt"]);
         installRuntime();
         renderWindow();
         expect((await sourceEditor() as HTMLTextAreaElement).value).toBe("alpha");
@@ -1951,11 +1951,11 @@ describe("FileCompanionWindow", () => {
     });
 
     it("hides the companion window from the title bar and keeps the open file", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
         installRuntime();
         renderWindow();
-        await screen.findByTestId("file-companion-tab-a.md");
+        await screen.findByTestId("file-companion-tab-a.txt");
         expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("alpha");
         const choose = screen.getByTestId("file-companion-choose");
         const close = screen.getByTestId("file-companion-close");
@@ -1976,7 +1976,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(close);
         expect(hideWindow).toHaveBeenCalledTimes(1);
         expect(quit).not.toHaveBeenCalled();
-        expect(screen.getByTestId("file-companion-tab-a.md")).toBeTruthy();
+        expect(screen.getByTestId("file-companion-tab-a.txt")).toBeTruthy();
         expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("alpha");
     });
 
@@ -6961,7 +6961,7 @@ describe("FileCompanionWindow", () => {
     });
 
     it("shows a read-only editor and the no-write-permission note", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/locked.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/locked.txt"] });
         open.mockImplementation(async (path: string) => doc(path, {
             editable: false,
             readOnly: true,
@@ -7029,7 +7029,7 @@ describe("FileCompanionWindow", () => {
     });
 
     it("reloads the editor after a selection rewrite", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         let opens = 0;
         open.mockImplementation(async (path: string) => {
             opens += 1;
@@ -7040,9 +7040,9 @@ describe("FileCompanionWindow", () => {
         const editor = await sourceEditor() as HTMLTextAreaElement;
         expect(editor.value).toContain("alpha beta");
         runtime.emit("ai-assistant-response", JSON.stringify({
-            session_key: "file-companion:a.md",
+            session_key: "file-companion:a.txt",
             text: "gamma",
-            local_file_path: "C:/notes/a.md",
+            local_file_path: "C:/notes/a.txt",
             request_id: "rewrite",
         }));
         await waitFor(() => {
@@ -7051,7 +7051,7 @@ describe("FileCompanionWindow", () => {
     });
 
     it("keeps unsaved edits when a rewrite lands on disk", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         let opens = 0;
         open.mockImplementation(async (path: string) => {
             opens += 1;
@@ -7067,9 +7067,9 @@ describe("FileCompanionWindow", () => {
         const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "alpha local" } });
         runtime.emit("ai-assistant-response", JSON.stringify({
-            session_key: "file-companion:a.md",
+            session_key: "file-companion:a.txt",
             text: "rewritten",
-            local_file_path: "C:/notes/a.md",
+            local_file_path: "C:/notes/a.txt",
             request_id: "rewrite-dirty",
         }));
         await waitFor(() => {
@@ -7081,7 +7081,7 @@ describe("FileCompanionWindow", () => {
     it("keeps a draft typed while the send is still saving", async () => {
         const pendingSaves: Array<(value: { saved: boolean; diskHash: string }) => void> = [];
         save.mockImplementation(() => new Promise((resolve) => { pendingSaves.push(resolve); }));
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1", loadedHash: "h1" }));
         installRuntime();
         renderWindow();
@@ -7109,7 +7109,7 @@ describe("FileCompanionWindow", () => {
     });
 
     it("saves a dirty editor before sending", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1", loadedHash: "h1" }));
         installRuntime();
         renderWindow();
@@ -7118,7 +7118,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "改这一段" } });
         fireEvent.click(screen.getByTestId("file-companion-send"));
         await waitFor(() => expect(send).toHaveBeenCalled());
-        expect(save).toHaveBeenCalledWith("C:/notes/a.md", "v2", "h1");
+        expect(save).toHaveBeenCalledWith("C:/notes/a.txt", "v2", "h1");
         expect(save.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
     });
 
@@ -7159,8 +7159,8 @@ describe("FileCompanionWindow", () => {
         }));
     });
 
-    it("clears the selection when a markdown edit collapses it", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+    it("clears the selection when an edit collapses it", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha beta alpha" }));
         installRuntime();
         renderWindow();
@@ -7236,7 +7236,7 @@ describe("FileCompanionWindow", () => {
     });
 
     it("does not send while a dirty edit is still in conflict", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1", loadedHash: "h1" }));
         save.mockResolvedValue({ saved: false, conflict: true, diskHash: "disk" });
         installRuntime();
@@ -7260,7 +7260,7 @@ describe("FileCompanionWindow", () => {
     });
 
     it("does not send when the file conflicts while the send is waiting to save", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         let opens = 0;
         open.mockImplementation(async (path: string) => {
             opens += 1;
@@ -7272,13 +7272,13 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
-        await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.md", "v2", "h1"), { timeout: 2000 });
+        await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.txt", "v2", "h1"), { timeout: 2000 });
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "请改写" } });
         fireEvent.click(screen.getByTestId("file-companion-send"));
         runtime.emit("ai-assistant-response", JSON.stringify({
-            session_key: "file-companion:a.md",
+            session_key: "file-companion:a.txt",
             text: "note",
-            local_file_path: "C:/notes/a.md",
+            local_file_path: "C:/notes/a.txt",
             request_id: "reload-while-saving",
         }));
         await waitFor(() => {
@@ -7286,7 +7286,7 @@ describe("FileCompanionWindow", () => {
         });
         release({ saved: true, diskHash: "h2" });
         await waitFor(() => {
-            expect(screen.getByTestId("file-companion-tab-a.md").textContent ?? "").not.toContain("*");
+            expect(screen.getByTestId("file-companion-tab-a.txt").textContent ?? "").not.toContain("*");
         });
         expect(send).not.toHaveBeenCalled();
         expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("v2");
@@ -7306,54 +7306,54 @@ describe("FileCompanionWindow", () => {
         const runtime = installRuntime();
         renderWindow();
         await screen.findByTestId("file-companion-empty");
-        runtime.emit("file-companion:open", ["C:/notes/a.md"]);
-        runtime.emit("file-companion:open", ["C:/notes/a.md"]);
+        runtime.emit("file-companion:open", ["C:/notes/a.txt"]);
+        runtime.emit("file-companion:open", ["C:/notes/a.txt"]);
         expect((await sourceEditor() as HTMLTextAreaElement).value).toBe("new");
         await act(async () => {
-            releaseFirst(doc("C:/notes/a.md", { editable: true, readOnly: false, content: "old", loadedHash: "h-old" }));
+            releaseFirst(doc("C:/notes/a.txt", { editable: true, readOnly: false, content: "old", loadedHash: "h-old" }));
             await Promise.resolve();
             await Promise.resolve();
         });
         expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("new");
         fireEvent.change(sourceEditorEl(), { target: { value: "typed" } });
-        await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.md", "typed", "h-new"), { timeout: 2000 });
+        await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.txt", "typed", "h-new"), { timeout: 2000 });
     });
 
     it("saves a dirty tab as soon as the user leaves it", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt", "C:/notes/b.txt"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1", loadedHash: "h1" }));
         installRuntime();
         renderWindow();
         const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
         expect(save).not.toHaveBeenCalled();
-        fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
+        fireEvent.click(screen.getByTestId("file-companion-tab-b.txt"));
         await act(async () => {
             await Promise.resolve();
             await Promise.resolve();
         });
-        expect(save).toHaveBeenCalledWith("C:/notes/a.md", "v2", "h1");
+        expect(save).toHaveBeenCalledWith("C:/notes/a.txt", "v2", "h1");
     });
 
     it("saves a dirty tab when that tab is closed", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1", loadedHash: "h1" }));
         installRuntime();
         renderWindow();
         const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
         expect(save).not.toHaveBeenCalled();
-        fireEvent.click(screen.getByLabelText("关闭 a.md"));
+        fireEvent.click(screen.getByLabelText("关闭 a.txt"));
         await act(async () => {
             await Promise.resolve();
             await Promise.resolve();
         });
-        expect(save).toHaveBeenCalledWith("C:/notes/a.md", "v2", "h1");
+        expect(save).toHaveBeenCalledWith("C:/notes/a.txt", "v2", "h1");
         expect(screen.getByTestId("file-companion-empty")).toBeTruthy();
     });
 
     it("puts the saved text back when an older reload arrives before the write finishes", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         let opens = 0;
         open.mockImplementation(async (path: string) => {
             opens += 1;
@@ -7366,8 +7366,8 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
-        await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.md", "v2", "h1"), { timeout: 2000 });
-        runtime.emit("file-companion:open", ["C:/notes/a.md"]);
+        await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.txt", "v2", "h1"), { timeout: 2000 });
+        runtime.emit("file-companion:open", ["C:/notes/a.txt"]);
         await waitFor(() => {
             expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("stale");
         });
@@ -7379,7 +7379,7 @@ describe("FileCompanionWindow", () => {
     });
 
     it("reads the file again when a save lands while it is opening", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         let releaseOpen: (value: ReturnType<typeof doc>) => void = () => undefined;
         let opens = 0;
         open.mockImplementation((path: string) => {
@@ -7394,15 +7394,15 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
-        await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.md", "v2", "h1"), { timeout: 2000 });
-        runtime.emit("file-companion:open", ["C:/notes/a.md"]);
+        await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.txt", "v2", "h1"), { timeout: 2000 });
+        runtime.emit("file-companion:open", ["C:/notes/a.txt"]);
         await act(async () => {
             releaseSave({ saved: true, diskHash: "h2" });
             await Promise.resolve();
             await Promise.resolve();
         });
         await act(async () => {
-            releaseOpen(doc("C:/notes/a.md", { editable: true, readOnly: false, content: "old", loadedHash: "h-old" }));
+            releaseOpen(doc("C:/notes/a.txt", { editable: true, readOnly: false, content: "old", loadedHash: "h-old" }));
             await Promise.resolve();
             await Promise.resolve();
         });
@@ -7502,7 +7502,7 @@ describe("FileCompanionWindow", () => {
     });
 
     it("keeps a later edit when an autosave finishes late", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1", loadedHash: "h1" }));
         let release: (value: { saved: boolean; diskHash: string }) => void = () => undefined;
         save.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
@@ -7510,30 +7510,10 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         const editor = await sourceEditor() as HTMLTextAreaElement;
         fireEvent.change(editor, { target: { value: "v2" } });
-        await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.md", "v2", "h1"), { timeout: 2000 });
+        await waitFor(() => expect(save).toHaveBeenCalledWith("C:/notes/a.txt", "v2", "h1"), { timeout: 2000 });
         fireEvent.change(sourceEditorEl(), { target: { value: "v3" } });
         release({ saved: true, diskHash: "h2" });
         await waitFor(() => expect(save.mock.calls.some((call) => call[1] === "v3")).toBe(true), { timeout: 2000 });
-    });
-
-    it("renders a completed heading in place and keeps the active line as source", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
-        open.mockImplementation(async (path: string) => doc(path, {
-            editable: true,
-            readOnly: false,
-            content: "intro\n# Title\nkeep",
-        }));
-        installRuntime();
-        renderWindow();
-        const editor = await sourceEditor() as HTMLTextAreaElement;
-        expect(editor.value).toBe("intro");
-        expect(screen.getByTestId("file-companion-atx-line").textContent).toContain("Title");
-        fireEvent.change(editor, { target: { value: "intro2" } });
-        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("intro2");
-        expect(screen.getByTestId("file-companion-atx-line").textContent).toContain("Title");
-        fireEvent.click(screen.getByTestId("file-companion-atx-line"));
-        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("intro2\n# Title\nkeep");
-        expect(screen.queryByTestId("file-companion-atx-line")).toBeNull();
     });
 
     it("tooltips the full path and maps missing, directory, and unreadable tabs", async () => {
@@ -7591,25 +7571,8 @@ describe("FileCompanionWindow", () => {
         expect(screen.queryByTestId("file-companion-preview-toggle")).toBeNull();
     });
 
-    it("renders a leading heading outside the source editor", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
-        open.mockImplementation(async (path: string) => doc(path, {
-            editable: true,
-            readOnly: false,
-            content: "# Title\nkeep",
-        }));
-        installRuntime();
-        renderWindow();
-        const editor = await sourceEditor() as HTMLTextAreaElement;
-        expect(editor.value).toBe("keep");
-        expect(screen.getByTestId("file-companion-atx-line").textContent).toContain("Title");
-        fireEvent.click(screen.getByTestId("file-companion-atx-line"));
-        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("# Title\nkeep");
-        expect(screen.queryByTestId("file-companion-atx-line")).toBeNull();
-    });
-
     it("keeps the editor visible when a save fails", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1", loadedHash: "h1" }));
         save.mockRejectedValue(new Error("file is not writable"));
         installRuntime();
@@ -7624,8 +7587,8 @@ describe("FileCompanionWindow", () => {
     });
 
     it("shows a host sentence when send rejects with a plain string", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
-        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha", sessionId: "a.md" }));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha", sessionId: "a.txt" }));
         send.mockRejectedValue("只有视频或音频可以生成笔记");
         installRuntime();
         renderWindow();
@@ -7639,7 +7602,7 @@ describe("FileCompanionWindow", () => {
     });
 
     it("does not overwrite on Ctrl+S while the file is in conflict", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "v1", loadedHash: "h1" }));
         save.mockResolvedValue({ saved: false, conflict: true, diskHash: "disk" });
         installRuntime();
@@ -7671,7 +7634,7 @@ describe("FileCompanionWindow", () => {
         expect((await sourceEditor() as HTMLTextAreaElement).value).toContain("Hello");
     });
 
-    it("opens a Markdown file rendered and switches to the source editor", async () => {
+    it("opens a Markdown file fully rendered with no editor or toggle", async () => {
         boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
         open.mockImplementation(async (path: string) => doc(path, {
             editable: true,
@@ -7680,18 +7643,17 @@ describe("FileCompanionWindow", () => {
         }));
         installRuntime();
         renderWindow();
-        const preview = await screen.findByTestId("file-companion-preview");
+        const preview = await screen.findByTestId("file-companion-preview") as HTMLElement;
         expect(preview.textContent).toContain("Title");
         expect(preview.textContent).toContain("keep");
+        // The rendered pane scrolls vertically — markdown reads as a pure
+        // preview kind with no source or editing view behind it.
+        expect(preview.style.overflow).toBe("auto");
         expect(screen.queryByTestId("file-companion-editor")).toBeNull();
-        const editor = await sourceEditor();
-        expect(editor.value).toContain("keep");
-        expect(screen.queryByTestId("file-companion-preview")).toBeNull();
-        fireEvent.click(screen.getByTestId("file-companion-preview-toggle"));
-        expect(await screen.findByTestId("file-companion-preview")).toBeTruthy();
+        expect(screen.queryByTestId("file-companion-preview-toggle")).toBeNull();
     });
 
-    it("opens a very long markdown file in the source editor", async () => {
+    it("opens a very long markdown file fully rendered", async () => {
         boot.mockResolvedValue({ paths: ["C:/notes/long.md"] });
         const body = Array.from({ length: 2100 }, (_, index) => `line ${index}`).join("\n");
         open.mockImplementation(async (path: string) => doc(path, {
@@ -7701,58 +7663,43 @@ describe("FileCompanionWindow", () => {
         }));
         installRuntime();
         renderWindow();
-        const editor = await sourceEditor();
-        expect(editor.value).toContain("line 0");
-        expect(screen.queryByTestId("file-companion-preview")).toBeNull();
+        const preview = await screen.findByTestId("file-companion-preview");
+        expect(preview.textContent).toContain("line 0");
+        expect(preview.textContent).toContain("line 2099");
+        expect(screen.queryByTestId("file-companion-editor")).toBeNull();
+    });
+
+    it("keeps a markdown preview across reloads", async () => {
+        let content = "# small\nbody";
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content }));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-preview");
+        content = "# updated\nmore";
+        runtime.emit("file-companion:open", ["C:/notes/a.md"]);
+        await waitFor(() => expect(screen.getByTestId("file-companion-preview").textContent).toContain("updated"));
+        content = Array.from({ length: 2100 }, (_, index) => `line ${index}`).join("\n");
+        runtime.emit("file-companion:open", ["C:/notes/a.md"]);
+        await waitFor(() => expect(screen.getByTestId("file-companion-preview").textContent).toContain("line 2099"));
+        expect(screen.queryByTestId("file-companion-editor")).toBeNull();
+    });
+
+    it("keeps an HTML preview across a reload", async () => {
+        boot.mockResolvedValue({ paths: ["C:/page.html"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            editable: true,
+            readOnly: false,
+            content: "<html><body>Hello</body></html>",
+        }));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-preview-toggle");
         fireEvent.click(screen.getByTestId("file-companion-preview-toggle"));
-        expect(await screen.findByTestId("file-companion-preview")).toBeTruthy();
-    });
-
-    it("keeps a fenced heading in the source and renders the heading after the fence", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
-        open.mockImplementation(async (path: string) => doc(path, {
-            editable: true,
-            readOnly: false,
-            content: "```\n# Hidden\n```\n# Shown\nkeep",
-        }));
-        installRuntime();
-        renderWindow();
-        const editor = await sourceEditor() as HTMLTextAreaElement;
-        expect(editor.value).toContain("# Hidden");
-        expect(editor.value).not.toContain("# Shown");
-        expect(screen.getByTestId("file-companion-atx-line").textContent).toContain("Shown");
-    });
-
-    it("keeps a heading inside a longer fence that contains a shorter marker", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
-        open.mockImplementation(async (path: string) => doc(path, {
-            editable: true,
-            readOnly: false,
-            content: "````\n```\n# Hidden\n````\n# Shown\nkeep",
-        }));
-        installRuntime();
-        renderWindow();
-        const editor = await sourceEditor() as HTMLTextAreaElement;
-        expect(editor.value).toContain("# Hidden");
-        expect(editor.value).not.toContain("# Shown");
-        expect(screen.getByTestId("file-companion-atx-line").textContent).toContain("Shown");
-    });
-
-    it("resets the heading caret when switching files", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });
-        open.mockImplementation(async (path: string) => doc(path, {
-            editable: true,
-            readOnly: false,
-            content: path.endsWith("a.md") ? "# One\nkeep" : "# Two\nbody",
-        }));
-        installRuntime();
-        renderWindow();
-        expect((await sourceEditor() as HTMLTextAreaElement).value).toBe("keep");
-        fireEvent.click(screen.getByTestId("file-companion-atx-line"));
-        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("# One\nkeep");
-        fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
-        expect((sourceEditorEl() as HTMLTextAreaElement).value).toBe("body");
-        expect(screen.getByTestId("file-companion-atx-line").textContent).toContain("Two");
+        await screen.findByTestId("html-preview-panel");
+        runtime.emit("file-companion:open", ["C:/page.html"]);
+        await waitFor(() => expect(screen.getByTestId("html-preview-panel")).toBeTruthy());
+        expect(screen.queryByTestId("file-companion-editor")).toBeNull();
     });
 
     it("clamps the chat column so the preview keeps room", () => {
@@ -7882,8 +7829,8 @@ describe("FileCompanionWindow", () => {
     });
 
     it("sends a paper turn and shows an openable result without preview", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
-        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha", sessionId: "a.md" }));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha", sessionId: "a.txt" }));
         let release: (value?: unknown) => void = () => undefined;
         send.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
         const runtime = installRuntime();
@@ -7898,22 +7845,22 @@ describe("FileCompanionWindow", () => {
         });
         expect(send).toHaveBeenCalledTimes(1);
         const sent = send.mock.calls[0][0] as Record<string, unknown>;
-        expect(sent.path).toBe("C:/notes/a.md");
+        expect(sent.path).toBe("C:/notes/a.txt");
         expect(sent.text).toBe("论文解读");
         expect(sent.purpose).toBe("paper");
         expect(sent.selection).toBeUndefined();
         expect(sent.selection_start).toBeUndefined();
         expect((screen.getByTestId("file-companion-input") as HTMLTextAreaElement).value).toBe("草稿不要发出去");
         const requestID = String(sent.request_id);
-        runtime.emit("ai-assistant-token", JSON.stringify({ session_key: "file-companion:a.md", text: "SECRET_MARKDOWN", request_id: requestID }));
+        runtime.emit("ai-assistant-token", JSON.stringify({ session_key: "file-companion:a.txt", text: "SECRET_MARKDOWN", request_id: requestID }));
         await waitFor(() => {
             expect(screen.getByTestId("file-companion-answer").textContent).toContain("正在生成论文解读");
         });
         expect(screen.getByTestId("file-companion-answer").textContent).not.toContain("SECRET_MARKDOWN");
         runtime.emit("ai-assistant-response", JSON.stringify({
-            session_key: "file-companion:a.md",
+            session_key: "file-companion:a.txt",
             text: "SECRET_MARKDOWN\n\nhttps://example.com/data",
-            local_file_path: "C:/maclaw/data/file-companion/results/a.md/a-论文解读.pdf",
+            local_file_path: "C:/maclaw/data/file-companion/results/a.txt/a-论文解读.pdf",
             request_id: requestID,
         }));
         await act(async () => { release(); await Promise.resolve(); });
@@ -7926,10 +7873,10 @@ describe("FileCompanionWindow", () => {
         expect(screen.getByTestId("task-result-view-btn").textContent).toBe("查看文档");
         expect(open).toHaveBeenCalledTimes(1);
         fireEvent.click(screen.getByTestId("task-result-view-btn"));
-        expect(openResult).toHaveBeenCalledWith("C:/maclaw/data/file-companion/results/a.md/a-论文解读.pdf");
+        expect(openResult).toHaveBeenCalledWith("C:/maclaw/data/file-companion/results/a.txt/a-论文解读.pdf");
         fireEvent.click(screen.getByTestId("file-companion-paper-save"));
         await waitFor(() => {
-            expect(saveResult).toHaveBeenCalledWith("C:/maclaw/data/file-companion/results/a.md/a-论文解读.pdf");
+            expect(saveResult).toHaveBeenCalledWith("C:/maclaw/data/file-companion/results/a.txt/a-论文解读.pdf");
         });
         await waitFor(() => {
             expect(screen.getByTestId("file-companion-paper-save").textContent).toBe("已保存");
@@ -7937,8 +7884,8 @@ describe("FileCompanionWindow", () => {
     });
 
     it("treats a typed paper command as the same paper turn as the button", async () => {
-        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
-        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha", sessionId: "a.md" }));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.txt"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha", sessionId: "a.txt" }));
         let release: (value?: unknown) => void = () => undefined;
         send.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
         const runtime = installRuntime();
@@ -7957,15 +7904,15 @@ describe("FileCompanionWindow", () => {
             expect(screen.getByTestId("file-companion-paper").textContent).toBe("正在解读…");
         });
         const requestID = String(sent.request_id);
-        runtime.emit("ai-assistant-token", JSON.stringify({ session_key: "file-companion:a.md", text: "SECRET_MARKDOWN", request_id: requestID }));
+        runtime.emit("ai-assistant-token", JSON.stringify({ session_key: "file-companion:a.txt", text: "SECRET_MARKDOWN", request_id: requestID }));
         await waitFor(() => {
             expect(screen.getByTestId("file-companion-answer").textContent).toContain("正在生成论文解读");
         });
         expect(screen.getByTestId("file-companion-answer").textContent).not.toContain("SECRET_MARKDOWN");
         runtime.emit("ai-assistant-response", JSON.stringify({
-            session_key: "file-companion:a.md",
+            session_key: "file-companion:a.txt",
             text: "SECRET_MARKDOWN",
-            local_file_path: "C:/maclaw/data/file-companion/results/a.md/a-论文解读.pdf",
+            local_file_path: "C:/maclaw/data/file-companion/results/a.txt/a-论文解读.pdf",
             request_id: requestID,
         }));
         await act(async () => { release(); await Promise.resolve(); });

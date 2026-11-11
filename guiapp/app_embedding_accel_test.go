@@ -25,8 +25,12 @@ func TestEmbedAccelUsesLiveInstanceViaInterface(t *testing.T) {
 	emb := &accelTestEmbedder{}
 	app := &App{}
 	got, err := app.sharedEmbeddingEmbedder("m.gguf", func(string) (embedding.Embedder, error) { return emb, nil })
-	if err != nil || got != emb {
-		t.Fatalf("load: %v %v", got, err)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	lazy, ok := got.(*embedding.LazyEmbedder)
+	if !ok || !lazy.Loaded() {
+		t.Fatalf("shared embedder = %T loaded=%v", got, ok && lazy.Loaded())
 	}
 	if len(emb.applied) != 1 {
 		t.Fatalf("ApplyAccel must run on load for any AccelEmbedder, calls=%v", emb.applied)

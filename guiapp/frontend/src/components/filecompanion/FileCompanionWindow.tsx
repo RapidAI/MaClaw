@@ -65,7 +65,6 @@ import { useToast } from "../Toast";
 import { companionDiscussionCounts, companionHostShares, companionLibrarySnapshotKey, companionLibrarySync, companionMineShares, companionNoteDecision, companionNoteKey, companionNotePost, companionNotesFrom, companionNotesRevisionWins, companionShareHosts, companionShareNotes, companionSharePathKey, companionInstalledSharePath, companionShouldPullShareMarks, companionShouldPullShareChat, companionShareChatBehind, companionZipKeepsAppliedMarks, companionShareMarksBehind, companionShareDocumentCatchUp, companionWithdrawnNotice, sameCompanionMineShare, takeCompanionLibraryList, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionPlaceDialog, CompanionShareDialog, type CompanionShareHost, type CompanionShareNote, type CompanionShareRow, type CompanionShareUpdate } from "./FileCompanionLibrary";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
-import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
 import { MessageContentRenderer } from "../ai/MessageContentRenderer";
 import { reasoningTrailMarkdownOptions, renderContentWithCodeBlocks, renderInlineMarkdown } from "../ai/aiAssistantMarkdown";
 import { lightTheme } from "../ai/aiAssistantPanelTheme";
@@ -398,7 +397,7 @@ type CompanionTab = {
     shareMine?: boolean;
     notes?: CompanionShareNote[];
     saveError: string;
-    /** Rendered view for HTML / Markdown tabs; source editing when false. */
+    /** Rendered view for HTML tabs; source editing when false. */
     preview: boolean;
     kind?: "web";
     frameUrl?: string;
@@ -735,98 +734,15 @@ function tabFromDoc(doc: CompanionDoc, fallbackPath: string): CompanionTab {
         confirmOverwrite: false,
         previewEpoch: 0,
         saveError: "",
-        preview: filePreviewKindFromName(name) === "markdown" && markdownPreviewFits(content) && content.trim() !== "",
+        preview: false,
         notes: notesFromDoc(doc),
     };
 }
 
-function isAtxHeading(line: string): boolean {
-    return /^#{1,6}\s+\S/.test(line);
-}
-
-const AtxHeadingLine = memo(function AtxHeadingLine({ line, index, onActivate }: { line: string; index: number; onActivate: (index: number) => void }) {
-    const { previewTheme } = useCompanionAppearance();
-    return (
-        <div onClick={() => onActivate(index)} data-testid="file-companion-atx-line">
-            <MarkdownPreview content={line} theme={previewTheme} />
-        </div>
-    );
-});
-
-const markdownSegmentLineCap = 2000;
-
-// The rendered pane parses every line into blocks. Past the editor's own
-// fancy cap a plain textarea is the faster default — 预览 still opens it.
-function markdownPreviewFits(content: string): boolean {
-    let newlines = 0;
-    for (let i = 0; i < content.length; i += 1) {
-        if (content.charCodeAt(i) !== 10) continue;
-        newlines += 1;
-        if (newlines >= markdownSegmentLineCap) return false;
-    }
-    return true;
-}
-
-type MarkdownSegment =
-    | { kind: "edit"; start: number; text: string }
-    | { kind: "heading"; index: number; line: string };
-
-function fenceMarker(line: string): { char: "`" | "~"; length: number; closes: boolean } | null {
-    const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
-    if (!match) return null;
-    const char = match[2][0] as "`" | "~";
-    const rest = match[3];
-    if (char === "`" && rest.includes("`")) return null;
-    return { char, length: match[2].length, closes: rest.trim() === "" };
-}
-
-function fencedLines(lines: string[]): boolean[] {
-    const fenced = new Array<boolean>(lines.length).fill(false);
-    let open: { char: "`" | "~"; length: number } | null = null;
-    for (let i = 0; i < lines.length; i += 1) {
-        const marker = fenceMarker(lines[i]);
-        if (open) {
-            fenced[i] = true;
-            if (marker && marker.char === open.char && marker.closes && marker.length >= open.length) open = null;
-            continue;
-        }
-        if (marker) {
-            fenced[i] = true;
-            open = { char: marker.char, length: marker.length };
-        }
-    }
-    return fenced;
-}
-
-function completedHeadingLines(value: string): Set<number> | null {
-    let newlines = 0;
-    for (let i = 0; i < value.length; i += 1) {
-        if (value.charCodeAt(i) !== 10) continue;
-        newlines += 1;
-        if (newlines >= markdownSegmentLineCap) return null;
-    }
-    const lines = value.split("\n");
-    const fenced = fencedLines(lines);
-    const headings = new Set<number>();
-    for (let index = 0; index < lines.length; index += 1) {
-        if (!fenced[index] && isAtxHeading(lines[index])) headings.add(index);
-    }
-    return headings;
-}
-
-function lineIsCompletedHeading(value: string, line: number, known?: Set<number> | null): boolean {
-    if (line < 0) return false;
-    if (known !== undefined) return known !== null && known.has(line);
-    const headings = completedHeadingLines(value);
-    return headings !== null && headings.has(line);
-}
-
-function normalizedLineStart(value: string, line: number): number {
-    const lines = value.replace(/\r\n/g, "\n").split("\n");
-    let offset = 0;
-    const last = Math.max(0, Math.min(line, lines.length));
-    for (let i = 0; i < last; i += 1) offset += lines[i].length + 1;
-    return offset;
+// The rendered view survives a reload only while the fresh doc still has text
+// to render; an emptied file drops back to the source side.
+function keepsPreviewAcrossReload(next: CompanionTab, wasPreviewing: boolean): boolean {
+    return wasPreviewing && next.content.trim() !== "";
 }
 
 function selectionOffset(text: string, selectionStart: number): number {
@@ -840,180 +756,12 @@ function selectionFromEditor(text: string, start: number, end: number): { select
     return { selection, selectionStart: selectionOffset(text, start) };
 }
 
-function documentSelection(documentText: string, segmentStart: number, segmentText: string, start: number, end: number): { selection: string; selectionStart: number } {
-    const picked = selectionFromEditor(segmentText, start, end);
-    if (!picked.selection) return picked;
-    return { selection: picked.selection, selectionStart: normalizedLineStart(documentText, segmentStart) + picked.selectionStart };
-}
-
 function sameSelectionAnchor(content: string, selection: string, selectionStart: number): boolean {
     if (!selection) return selectionStart < 0;
     if (selectionStart < 0) return false;
     const normSelection = selection.replace(/\r\n/g, "\n");
     const normContent = content.replace(/\r\n/g, "\n");
     return normContent.slice(selectionStart, selectionStart + normSelection.length) === normSelection;
-}
-
-function caretColumn(text: string, selectionStart: number): { line: number; column: number } {
-    const start = Number.isFinite(selectionStart) ? selectionStart : text.length;
-    const before = text.slice(0, start);
-    return { line: before.split("\n").length - 1, column: start - (before.lastIndexOf("\n") + 1) };
-}
-
-function markdownSegments(value: string, activeLine: number): MarkdownSegment[] {
-    const lines = value.split("\n");
-    if (lines.length > markdownSegmentLineCap) {
-        return [{ kind: "edit", start: 0, text: value }];
-    }
-    const fenced = fencedLines(lines);
-    const heading = (index: number) => !fenced[index] && isAtxHeading(lines[index]) && index !== activeLine;
-    const segments: MarkdownSegment[] = [];
-    let index = 0;
-    while (index < lines.length) {
-        if (heading(index)) {
-            segments.push({ kind: "heading", index, line: lines[index] });
-            index += 1;
-            continue;
-        }
-        const start = index;
-        const chunk: string[] = [];
-        while (index < lines.length && !heading(index)) {
-            chunk.push(lines[index]);
-            index += 1;
-        }
-        segments.push({ kind: "edit", start, text: chunk.join("\n") });
-    }
-    if (segments.length === 0) {
-        segments.push({ kind: "edit", start: 0, text: value });
-    }
-    return segments;
-}
-
-function editorSegmentStart(segments: MarkdownSegment[], activeLine: number): number {
-    let first = -1;
-    for (const segment of segments) {
-        if (segment.kind !== "edit") continue;
-        if (first < 0) first = segment.start;
-        const count = segment.text.split("\n").length;
-        if (activeLine >= segment.start && activeLine < segment.start + count) return segment.start;
-    }
-    return first;
-}
-
-function spliceSegment(documentText: string, start: number, previous: string, next: string): string {
-    const lines = documentText.split("\n");
-    const removed = previous.split("\n").length;
-    return lines.slice(0, start).concat(next.split("\n"), lines.slice(start + removed)).join("\n");
-}
-
-function MarkdownSourceEditor({
-    value,
-    onChange,
-    onSelect,
-    readOnly,
-}: {
-    value: string;
-    onChange: (value: string) => void;
-    onSelect: (selection: string, selectionStart: number) => void;
-    readOnly?: boolean;
-}) {
-    const [activeLine, setActiveLine] = useState(-1);
-    const editorRef = useRef<HTMLTextAreaElement | null>(null);
-    const pendingFocus = useRef<{ line: number; offset: number } | null>(null);
-    const seenValue = useRef(value);
-    const valueChanged = seenValue.current !== value;
-    seenValue.current = value;
-    const segments = useMemo(() => markdownSegments(value, activeLine), [value, activeLine]);
-    const editorStart = useMemo(() => editorSegmentStart(segments, activeLine), [segments, activeLine]);
-    const completedHeadings = useMemo(() => completedHeadingLines(value), [value]);
-    useEffect(() => {
-        const pending = pendingFocus.current;
-        const el = editorRef.current;
-        if (!pending || !el) return;
-        pendingFocus.current = null;
-        const lines = el.value.split("\n");
-        const local = pending.line - editorStart;
-        let pos = 0;
-        if (local >= 0 && local < lines.length) {
-            for (let i = 0; i < local; i += 1) pos += lines[i].length + 1;
-            const offset = pending.offset < 0 ? lines[local].length : Math.min(pending.offset, lines[local].length);
-            pos += offset;
-        } else if (pending.offset < 0) {
-            pos = el.value.length;
-        }
-        el.focus();
-        el.setSelectionRange(pos, pos);
-    }, [activeLine, editorStart, value]);
-    const placeCaret = (segmentStart: number, text: string, selectionStart: number, nextDocument: string) => {
-        const caret = caretColumn(text, selectionStart);
-        const nextLine = segmentStart + caret.line;
-        const nextHeadings = nextDocument === value ? completedHeadings : undefined;
-        if (nextLine !== activeLine && (lineIsCompletedHeading(value, activeLine, completedHeadings) || lineIsCompletedHeading(nextDocument, nextLine, nextHeadings))) {
-            pendingFocus.current = { line: nextLine, offset: caret.column };
-        }
-        if (nextLine !== activeLine) setActiveLine(nextLine);
-    };
-    const activate = useCallback((index: number) => {
-        pendingFocus.current = { line: index, offset: 0 };
-        setActiveLine(index);
-    }, []);
-    return (
-        <div data-testid="file-companion-markdown">
-            {segments.map((segment) => {
-                if (segment.kind === "heading") {
-                    return <AtxHeadingLine key={`h-${segment.index}`} line={segment.line} index={segment.index} onActivate={activate} />;
-                }
-                const count = segment.text.split("\n").length;
-                const primary = segment.start === editorStart;
-                return (
-                    <textarea
-                        key={`e-${segment.start}`}
-                        ref={primary ? editorRef : undefined}
-                        data-testid={primary ? "file-companion-editor" : undefined}
-                        value={segment.text}
-                        readOnly={Boolean(readOnly)}
-                        spellCheck={false}
-                        onChange={(event) => {
-                            if (readOnly) return;
-                            const el = event.target;
-                            const nextDocument = spliceSegment(value, segment.start, segment.text, el.value);
-                            placeCaret(segment.start, el.value, el.selectionStart, nextDocument);
-                            onChange(nextDocument);
-                            const picked = documentSelection(nextDocument, segment.start, el.value, el.selectionStart, el.selectionEnd);
-                            onSelect(picked.selection, picked.selectionStart);
-                        }}
-                        onSelect={(event) => {
-                            const el = event.currentTarget;
-                            if (valueChanged && el.selectionStart === el.selectionEnd) return;
-                            placeCaret(segment.start, el.value, el.selectionStart, value);
-                            const picked = documentSelection(value, segment.start, el.value, el.selectionStart, el.selectionEnd);
-                            onSelect(picked.selection, picked.selectionStart);
-                        }}
-                        onKeyDown={(event) => {
-                            if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
-                            if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-                            const el = event.currentTarget;
-                            if (el.selectionStart !== el.selectionEnd) return;
-                            const local = el.value.slice(0, el.selectionStart).split("\n").length - 1;
-                            const lineCount = el.value.split("\n").length;
-                            if (event.key === "ArrowUp" && local === 0 && segment.start > 0) {
-                                event.preventDefault();
-                                pendingFocus.current = { line: segment.start - 1, offset: -1 };
-                                setActiveLine(segment.start - 1);
-                                return;
-                            }
-                            if (event.key === "ArrowDown" && local === lineCount - 1 && segment.start + lineCount < value.split("\n").length) {
-                                event.preventDefault();
-                                pendingFocus.current = { line: segment.start + lineCount, offset: 0 };
-                                setActiveLine(segment.start + lineCount);
-                            }
-                        }}
-                        style={{ width: "100%", minHeight: segments.length === 1 ? 220 : Math.max(44, count * 22), border: "1px solid var(--theme-border, #e2e8f0)", borderRadius: 8, padding: 12, font: "14px/1.5 ui-monospace, monospace", resize: "vertical", background: "var(--theme-surface, #ffffff)", color: "var(--theme-text-primary, #1e293b)" }}
-                    />
-                );
-            })}
-        </div>
-    );
 }
 
 // 22px is the title-bar size: it leaves 4px of air inside the 30px icon-only
@@ -3915,7 +3663,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             ...next,
                             draft: tab.draft,
                             previewEpoch: tab.previewEpoch + 1,
-                            preview: tab.preview,
+                            preview: keepsPreviewAcrossReload(next, tab.preview),
                         };
                     }
                     const keepSelection = sameSelectionAnchor(next.content, tab.selection, tab.selectionStart);
@@ -3929,7 +3677,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         selection: keepSelection ? tab.selection : "",
                         selectionStart: keepSelection ? tab.selectionStart : -1,
                         previewEpoch: tab.previewEpoch,
-                        preview: tab.preview,
+                        preview: keepsPreviewAcrossReload(next, tab.preview),
                     };
                 });
             });
@@ -5178,14 +4926,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         runtime?.EventsOn?.("file-companion:convert-done", onDone);
         return () => { runtime?.EventsOff?.("file-companion:convert-done"); };
     }, []);
-    const textEditorKind = kind === "markdown" || kind === "text" || kind === "code" || kind === "html";
+    // Markdown reads rendered-only in the companion — it is a preview kind, not
+    // an editable kind. The content check keeps a file that failed the text
+    // sniff on the unsupported notice instead of a blank pane.
+    const textEditorKind = kind === "text" || kind === "code" || kind === "html";
     const showEditor = Boolean(activeTab && !isWebTab && !activeTab.error && textEditorKind && (activeTab.editable || activeTab.content || activeTab.readOnlyReason));
-    const previewToggleKind = kind === "html" || kind === "markdown";
-    // HTML/Markdown previews render the same text the editor would; a file that
-    // failed the text sniff has nothing to show in either mode, so it keeps the
-    // unsupported notice instead of a blank pane.
-    const showPreview = Boolean(activeTab && !isWebTab && !activeTab.error && (kind === "pptx" || kind === "docx" || kind === "pdf" || kind === "xlsx" || kind === "office" || kind === "image" || kind === "video" || kind === "audio" || kind === "latex" || (previewToggleKind && showEditor)));
-    const emptyFile = Boolean(activeTab && !isWebTab && !activeTab.error && !showEditor && activeTab.size <= 0);
+    const previewToggleKind = kind === "html";
+    const showPreview = Boolean(activeTab && !isWebTab && !activeTab.error && (kind === "pptx" || kind === "docx" || kind === "pdf" || kind === "xlsx" || kind === "office" || kind === "image" || kind === "video" || kind === "audio" || kind === "latex" || (kind === "markdown" && Boolean(activeTab.content)) || (previewToggleKind && showEditor)));
+    const emptyFile = Boolean(activeTab && !isWebTab && !activeTab.error && !showEditor && activeTab.size <= 0 && !activeTab.content);
     const renderedPreviewing = Boolean(activeTab && previewToggleKind && activeTab.preview);
     const showSource = showEditor && !renderedPreviewing;
     const showPreviewPane = showPreview && !emptyFile && (!previewToggleKind || renderedPreviewing);
@@ -7196,16 +6944,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 {activeTab.preview ? cs("源码") : cs("预览")}
                             </button>
                         ) : null}
-                        {!holdPlayer && showSource && kind === "markdown" ? (
-                            <MarkdownSourceEditor
-                                key={activeTab.path}
-                                value={activeTab.content}
-                                readOnly={!activeTab.editable}
-                                onChange={(content) => updateActive({ content, dirty: true, conflict: false, saveError: "" })}
-                                onSelect={rememberSelection}
-                            />
-                        ) : null}
-                        {!holdPlayer && showSource && kind !== "markdown" ? (
+                        {!holdPlayer && showSource ? (
                             <textarea
                                 data-testid="file-companion-editor"
                                 value={activeTab.content}
@@ -7226,7 +6965,10 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 style={{ flex: 1, minHeight: 180, border: "1px solid var(--theme-border, #e2e8f0)", borderRadius: 8, padding: 12, background: "var(--theme-surface, #ffffff)", color: "var(--theme-text-primary, #1e293b)" }}
                             />
                         ) : null}
-                        {!holdPlayer && activeTab.readOnlyReason === "permission" ? <p data-testid="file-companion-readonly-note">{cs("没有写入权限")}</p> : null}
+                        {/* Write-permission only matters where an editor could
+                            appear; preview-only kinds like markdown are always
+                            read-only regardless. */}
+                        {!holdPlayer && textEditorKind && activeTab.readOnlyReason === "permission" ? <p data-testid="file-companion-readonly-note">{cs("没有写入权限")}</p> : null}
                         {!holdPlayer && activeTab.readOnlyReason === "too-large" ? <p data-testid="file-companion-readonly-note">{cs("文件过大，为避免截断写回，已禁止保存")}</p> : null}
                         {!holdPlayer && emptyFile ? <div data-testid="file-companion-empty-file">{cs("文件是空的")}</div> : null}
                         {!holdPlayer && unsupported ? (
@@ -7265,7 +7007,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                             </div>
                         ) : null}
                         {!holdPlayer && showPreviewPane ? (
-                            <div data-testid="file-companion-preview" style={{ flex: 1, minHeight: 160, overflow: "auto" }}>
+                            <div data-testid="file-companion-preview" style={{ flex: 1, minHeight: 160, overflow: kind === "markdown" || kind === "office" || kind === "xlsx" ? "auto" : undefined }}>
                                 <FilePreviewView
                                     key={`${activeTab.path}:${activeTab.previewEpoch}`}
                                     file={previewFile}

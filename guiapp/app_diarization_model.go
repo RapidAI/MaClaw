@@ -32,6 +32,11 @@ func (a *App) SetDiarizationEnabled(enabled bool) error {
 	if enabled && !modelStatusExists(a.CheckDiarizationModel()) {
 		go a.backgroundPreloadDiarizationModel()
 	}
+	if !enabled {
+		// Drop resident weights now; in-flight diarizations finish first —
+		// the manager defers the close until their leases end.
+		resetCAMPlusModel("")
+	}
 	return nil
 }
 

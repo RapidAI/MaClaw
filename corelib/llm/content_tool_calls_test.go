@@ -1664,6 +1664,46 @@ func TestParseSSEStream_MistralHostedThinkingArrayDeltas(t *testing.T) {
 	}
 }
 
+// Mistral Large 4 answers non-stream chat with message.content as a block
+// array: thinking parts feed reasoning_content, text parts join the reply,
+// unknown block types are ignored, and tool_calls pass through unchanged.
+func TestParseNonStreamOpenAIResponseBody_MistralHostedContentArray(t *testing.T) {
+	body := []byte(`{"id":"m-1","choices":[{"message":{"role":"assistant","content":[` +
+		`{"type":"thinking","thinking":[{"type":"text","text":"T1"},{"type":"text","text":"T2"}]},` +
+		`{"type":"text","text":"OK"},` +
+		`{"type":"refusal","text":"skip"}]},` +
+		`"finish_reason":"stop"}]}`)
+	resp, err := ParseNonStreamOpenAIResponseBody(body)
+	if err != nil {
+		t.Fatalf("ParseNonStreamOpenAIResponseBody: %v", err)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1", len(resp.Choices))
+	}
+	msg := resp.Choices[0].Message
+	if msg.Content != "OK" {
+		t.Fatalf("content = %q, want OK", msg.Content)
+	}
+	if msg.ReasoningContent != "T1\nT2" {
+		t.Fatalf("reasoning_content = %q, want %q", msg.ReasoningContent, "T1\nT2")
+	}
+	if _, isArray := msg.RawContent.([]interface{}); !isArray {
+		t.Fatalf("raw content = %#v, want the wire array", msg.RawContent)
+	}
+
+	withCall := []byte(`{"id":"m-2","choices":[{"message":{"role":"assistant","content":[],` +
+		`"tool_calls":[{"id":"c1","type":"function","function":{"name":"ping","arguments":"{}"}}]},` +
+		`"finish_reason":"tool_calls"}]}`)
+	resp, err = ParseNonStreamOpenAIResponseBody(withCall)
+	if err != nil {
+		t.Fatalf("ParseNonStreamOpenAIResponseBody tool call: %v", err)
+	}
+	msg = resp.Choices[0].Message
+	if msg.Content != "" || len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Function.Name != "ping" {
+		t.Fatalf("empty array tool call = content %q calls %#v", msg.Content, msg.ToolCalls)
+	}
+}
+
 func TestParseSSEToResponse_MistralHostedThinkingArrayDeltas(t *testing.T) {
 	body := []byte(
 		`data: {"id":"m-1","choices":[{"delta":{"content":""},"finish_reason":null}]}` + "\n\n" +

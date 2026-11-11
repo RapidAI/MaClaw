@@ -2045,6 +2045,11 @@ type sharedAgentLoopCallbacks struct {
 	// discoveryMissAcquisitionBase is the length of remoteAcquisitionPaths
 	// at the moment the miss was recorded. Earlier fetches stay deliverable.
 	discoveryMissAcquisitionBase int
+	// knowledgeUnavailable caches this turn's knowledge-base probe: the
+	// store cannot serve a search when it failed to open or holds no
+	// sources. The catalog needs the answer on every page, so the SQLite
+	// open happens once per loop.
+	knowledgeUnavailable *bool
 	// semanticToolsSearchShown records directory rows already returned this
 	// turn. A later lookup whose rows are all in this set cannot change the
 	// surface, so discovery closes instead of spending another model round.
@@ -2062,7 +2067,14 @@ type sharedAgentLoopCallbacks struct {
 	// page. An unfiltered directory and a later miss share every row.
 	// The miss tail is the skill-search step. Row identity alone drops it.
 	semanticToolsSearchTails map[string]struct{}
-	toolCalls                int
+	// semanticToolsSearchPetitions records the canonical needs sets a
+	// discovery lookup already answered. A needs list is a petition, not a
+	// directory re-read: the first request for a set must return its page
+	// even when every row was listed earlier, because the header carries
+	// this petition's outcome (load notes, skips, per-name refusals). Only
+	// an exact repeat of a set that changed nothing is refused.
+	semanticToolsSearchPetitions map[string]struct{}
+	toolCalls                    int
 	// moaPreset is set for the duration of one agent loop after /moa or auto arming.
 	moaPreset *moa.ResolvedPreset
 	moaAuto   bool
@@ -6299,6 +6311,15 @@ const semanticToolsSearchDiscoveryRepeatExhausted = "[system] tools_search alrea
 // save turn back to web_fetch.
 const semanticToolsSearchDirectedExhausted = "[system] tools_search already returned this directory. Call the listed tool named in the previous result. Do not repeat this lookup."
 
+// semanticToolsSearchPetitionRepeatExhausted is the close for a needs list
+// this turn already answered with an unchanged surface. The shared
+// "call the listed tool" sentence is false here: nothing was listed for
+// this petition, and a still-可请愿 name was not admitted — saying so is
+// what unblocks the turn (production 2026-11-11: needs=["memory"] was
+// refused twice with "call the listed tool" while memory never joined the
+// function list, and the turn gave up on recall entirely).
+const semanticToolsSearchPetitionRepeatExhausted = "[system] tools_search already returned this needs petition and the tool surface is unchanged. 已在当前工具面的名字直接调用；仍标「可请愿」的名字说明本轮请愿未通过。不要重复同一个 needs。"
+
 // runSemanticToolsSearch executes the discovery meta-tool under its turn
 // budget. The budget is a callback counter, not a grant. Counting a lookup
 // does not spend a capability. On a discovery turn, admitDiscoverySearchNeeds
@@ -6337,8 +6358,35 @@ func (c *sharedAgentLoopCallbacks) runSemanticToolsSearch(argsJSON string) strin
 	// row but ends with the skill-search step. Any other new tail (a changed
 	// "现在调用" line) is still the same lookup and closes.
 	missPage := strings.Contains(result, semanticToolsSearchNeedsMissNote)
-	if semanticToolsSearchLinesSeen(c.semanticToolsSearchShown, lines) && (tail == "" || tailSeen || !missPage) && (!hasDirective || directiveSeen) {
-		return c.semanticToolsSearchClosedMessage()
+	allSeen := semanticToolsSearchLinesSeen(c.semanticToolsSearchShown, lines)
+	// A needs list is a petition, not a directory re-read. Row identity
+	// alone cannot close it: the page header carries this petition's
+	// outcome even when every row was listed before. Only an exact repeat
+	// of a needs set whose surface stayed the same is refused. A miss
+	// page resolved no name, so it stays a plain directory read.
+	needsKey := ""
+	if !missPage {
+		needsKey = semanticToolsSearchNeedsKey(argsJSON)
+	}
+	if needsKey == "" {
+		if allSeen && (tail == "" || tailSeen || !missPage) && (!hasDirective || directiveSeen) {
+			return c.semanticToolsSearchClosedMessage()
+		}
+	} else {
+		if c.semanticToolsSearchPetitions == nil {
+			c.semanticToolsSearchPetitions = map[string]struct{}{}
+		}
+		if _, repeat := c.semanticToolsSearchPetitions[needsKey]; repeat && allSeen {
+			// On a discovery surface the generic directory close is already
+			// honest ("do not repeat this lookup"). The petition-specific
+			// close exists for the managed surface, whose generic message
+			// lies about a listed tool when the petition admitted nothing.
+			if semanticSurfaceIsModelDiscovery(c.semanticSurface) || len(c.semanticToolsSearchDirectives) > 0 {
+				return c.semanticToolsSearchClosedMessage()
+			}
+			return semanticToolsSearchPetitionRepeatExhausted
+		}
+		c.semanticToolsSearchPetitions[needsKey] = struct{}{}
 	}
 	if tail != "" {
 		if c.semanticToolsSearchTails == nil {
@@ -6429,6 +6477,12 @@ func (c *sharedAgentLoopCallbacks) admitDiscoverySearchNeeds(names []string) (st
 	admitted := false
 	held := false
 	var skippedExclusive []string
+	// notLoaded names the petitions this list did not admit. The page must
+	// say so: without the line a refused name still renders 「可请愿」,
+	// identical to a name never asked for, and the model petitions it
+	// again (production 2026-11-11: memory stayed petitionable on every
+	// page while the turn never admitted it).
+	var notLoaded []string
 	for _, name := range cleaned {
 		// The main conversation is not the desktop operator. Naming
 		// computer_use here used to look like a catalog miss and close
@@ -6454,6 +6508,7 @@ func (c *sharedAgentLoopCallbacks) admitDiscoverySearchNeeds(names []string) (st
 			continue
 		}
 		if !c.discoverySearchNeedLoadable(name) {
+			notLoaded = append(notLoaded, name)
 			continue
 		}
 		if c.discoverySearchNeedCallable(name) {
@@ -6467,6 +6522,7 @@ func (c *sharedAgentLoopCallbacks) admitDiscoverySearchNeeds(names []string) (st
 		// still petitions. A list that loads nothing is the miss.
 		if discoveryPictureCreationUtterance(c.userText) && discoverySubstituteTool(name) {
 			failed++
+			notLoaded = append(notLoaded, name)
 			log.Printf("[semantic-routing] discovery tools_search did not load %q: picture request does not use a substitute", name)
 			continue
 		}
@@ -6507,6 +6563,7 @@ func (c *sharedAgentLoopCallbacks) admitDiscoverySearchNeeds(names []string) (st
 			continue
 		}
 		failed++
+		notLoaded = append(notLoaded, name)
 		log.Printf("[semantic-routing] discovery tools_search did not load %q: granted=%v message=%q", name, granted, message)
 	}
 	// A requested name that is already a plan selection keeps this turn
@@ -6517,6 +6574,11 @@ func (c *sharedAgentLoopCallbacks) admitDiscoverySearchNeeds(names []string) (st
 	// A selection this list did not name does not keep the turn open.
 	if failed > 0 && !admitted && !held {
 		c.noteDiscoveryCatalogMiss()
+	}
+	if len(notLoaded) > 0 {
+		sorted := append([]string(nil), notLoaded...)
+		sort.Strings(sorted)
+		notes = append(notes, "未装载："+strings.Join(sorted, "、")+"。这些名字本轮请愿不通过，不要用同一个 needs 重试。")
 	}
 	return strings.Join(notes, "\n"), admitted, discoveryExclusiveRetryNote(skippedExclusive), held
 }
@@ -6602,6 +6664,12 @@ func (c *sharedAgentLoopCallbacks) discoverySearchNeedLoadable(name string) bool
 	if blocked, _ := c.discoveryPetitionBlocked(name); blocked {
 		return false
 	}
+	// An empty or unopened local knowledge base cannot serve a search. The
+	// row stays in the directory with its unavailable mark; loading the
+	// name would only produce a dead petition.
+	if name == "knowledge_search" && c.semanticKnowledgeBaseUnavailable() {
+		return false
+	}
 	if _, ok := semanticPetitionableCapabilities[name]; ok {
 		return c.semanticTurnAdmits(name)
 	}
@@ -6643,6 +6711,33 @@ func semanticToolsSearchDirectiveKey(result string) (string, bool) {
 		line = line[:end]
 	}
 	return line, true
+}
+
+// semanticToolsSearchNeedsKey is the canonical identity of one needs
+// petition: the sorted raw tokens exactly as sent. It keys
+// semanticToolsSearchPetitions, so only a verbatim repeat is refused — a
+// different subset is a different petition with its own outcome page.
+func semanticToolsSearchNeedsKey(argsJSON string) string {
+	var probe struct {
+		Needs []interface{} `json:"needs"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &probe); err != nil || len(probe.Needs) == 0 {
+		return ""
+	}
+	tokens := make([]string, 0, len(probe.Needs))
+	for _, raw := range probe.Needs {
+		token, ok := raw.(string)
+		if !ok {
+			return ""
+		}
+		token = strings.TrimSpace(token)
+		if token == "" {
+			return ""
+		}
+		tokens = append(tokens, token)
+	}
+	sort.Strings(tokens)
+	return strings.Join(tokens, "\x00")
 }
 
 func semanticToolsSearchDirectoryLines(result string) []string {

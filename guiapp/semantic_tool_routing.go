@@ -1533,7 +1533,9 @@ func semanticNeedsFromClassificationContext(ctx context.Context, registry *tool.
 			seenNeed[need.ID] = true
 		}
 	}
-	for _, label := range semanticPetitionedLabels(ctx) {
+	petitionedLabels := semanticPetitionedLabels(ctx)
+	discoveryTurn := intent.ClassificationIsModelDiscovery(result)
+	for _, label := range petitionedLabels {
 		if label == "" || label == result.Primary {
 			continue
 		}
@@ -1553,16 +1555,30 @@ func semanticNeedsFromClassificationContext(ctx context.Context, registry *tool.
 		if err != nil {
 			return nil, false, err
 		}
-		// A discovery petition loads the directory row. It does not adopt the
-		// rule's required bit. LabelSearch is required for a classifier
-		// verdict; copying that bit hard-exits after the producing tool
-		// already finished (2026-11-05: office published a PPT, send_file
-		// committed, web_search still pending). An id this plan already
-		// recorded keeps its own bit: a chart's current-web search stays
-		// required when a later lookup petition names the same need.
-		// Office, write, and file read stay required. A non-discovery
-		// search is not relaxed here.
-		relaxLookup := intent.ClassificationIsModelDiscovery(result) && discoveryPetitionLookupLabel(label)
+		// A discovery petition loads the directory row. It is not the
+		// classifier's verdict that the capability is the task, so the
+		// rule's required bit does not follow the load. LabelSearch used to
+		// copy it onto the hop: office had published a PPT and send_file
+		// had committed, and the pending search still hard-exited the run
+		// (2026-11-05). Every other label carried the same defect —
+		// 2026-11-11: speculative bash/write_file/browser loads kept an
+		// already delivered deck open as required_effect_unsettled, and the
+		// model has no call that discharges an obligation it never owed.
+		// Discovery admits every name it lists without a per-class budget,
+		// so batch toolbelt loads are normal there; a managed turn spends
+		// one petition per class and its required bit is a deliberate
+		// spend, not relaxed here.
+		//
+		// The bit survives only where the label mints a channel-facing
+		// contract — a delivery into a conversation, a mailbox send or
+		// delete whose frozen draft awaits the user, an account configure
+		// the user must see land, a scheduled dispatch. Those labels are
+		// contract units (office plus its delivery leg, a screenshot plus
+		// its image send) whose missing effect the host can name. An id
+		// this plan already recorded keeps its own bit: a chart's
+		// current-web search stays required when a later lookup petition
+		// names the same need.
+		relaxPetition := discoveryTurn && !discoveryPetitionContractLabel(label)
 		appended := false
 		for _, need := range added.Needs {
 			if need.ID != "" && seenNeed[need.ID] {
@@ -1571,7 +1587,7 @@ func semanticNeedsFromClassificationContext(ctx context.Context, registry *tool.
 			if need.ID != "" {
 				seenNeed[need.ID] = true
 			}
-			if relaxLookup && tool.IsLookupCapability(need.Capability) {
+			if relaxPetition {
 				need.Required = false
 			}
 			resolution.Needs = append(resolution.Needs, need)
@@ -1584,28 +1600,54 @@ func semanticNeedsFromClassificationContext(ctx context.Context, registry *tool.
 	// The clock selection only exists so a discovery surface can be published.
 	// It is not the user's request, and a required clock hard-exits the turn
 	// when the model petitions a different tool instead.
-	if intent.ClassificationIsModelDiscovery(result) {
+	if discoveryTurn {
 		for i := range resolution.Needs {
 			if resolution.Needs[i].Capability == agentservice.CapabilityCurrentTime {
 				resolution.Needs[i].Required = false
 			}
 		}
 	}
-	if len(semanticPetitionedLabels(ctx)) > 0 {
+	if len(petitionedLabels) > 0 {
 		sort.Slice(resolution.Needs, func(i, j int) bool { return resolution.Needs[i].ID < resolution.Needs[j].ID })
 	}
 	return resolution.Needs, resolution.Managed, nil
 }
 
-// discoveryPetitionLookupLabel is a directory load, not a producing task.
-// live_data_visual stays out: its search is how the chart gets its data.
-func discoveryPetitionLookupLabel(label intent.IntentLabel) bool {
-	switch label {
-	case intent.LabelSearch, intent.LabelLiveData, intent.LabelWebFetch:
-		return true
-	default:
-		return false
+// discoveryPetitionContractLabel reports whether the petitioned label's
+// rule templates mint a channel-facing effect. That label is a contract
+// unit — its producer legs and its delivery legs settle together — so the
+// petition keeps the template's obligation even on a discovery surface.
+// live_data_visual qualifies through its image delivery, which is how its
+// search leg stays required: the search is how the chart gets its data.
+// Any other petitioned label loads means the model may still choose not
+// to use; a load is not an obligation.
+func discoveryPetitionContractLabel(label intent.IntentLabel) bool {
+	for _, template := range imSemanticIntentRuleSet[label] {
+		if discoveryPetitionContractCapability(template.Capability) {
+			return true
+		}
 	}
+	return false
+}
+
+// discoveryPetitionContractCapability reports the channel-facing effects a
+// discovery petition still owes: an artifact delivery into a channel, a
+// mailbox send or delete whose frozen draft awaits the user, an account
+// configure the user must see land, a scheduled dispatch. An unexecuted
+// one is a missing effect the user notices; an unused means is not. The
+// match is the whole namespace, so a bare "artifact.deliver" minted by a
+// future rule template is still a contract.
+func discoveryPetitionContractCapability(capability tool.CapabilityID) bool {
+	id := strings.TrimSpace(string(capability))
+	for _, ns := range [...]string{
+		"artifact.deliver", "message.send", "message.delete",
+		"message.configure", "schedule.dispatch",
+	} {
+		if id == ns || strings.HasPrefix(id, ns+".") {
+			return true
+		}
+	}
+	return false
 }
 
 var semanticArchetypeBundles = agentservice.SemanticArchetypeBundles()

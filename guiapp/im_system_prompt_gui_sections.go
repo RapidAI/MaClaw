@@ -105,6 +105,7 @@ func appendDiscoveryManagedSurfaceRules(b *strings.Builder) {
 - 这一轮不预选工具。一开始的函数是 tools_search、search_and_install_skill、craft_tool，以及主机的对话控制。bash、write_file、office、generate_pdf 不在第一波里。
 - 目录里标了「可请愿」的名字是真实工具。它就是用户要的那种能力时，直接调用那个名字来请愿，包括 bash、write_file、office、generate_pdf。一次回复可以调用多个工具。获批后该名字出现在下一请求的函数列表里，再按那个 schema 调用。
 - 目录里已经有对得上的名字时，不要改用别的工具。没有对得上的名字时，先调用 search_and_install_skill，再用 craft_tool。craft_tool 已经在函数列表里，直接调用。
+- 请愿或调用过的工具报告不可用、为空或失败时，它不算「对得上的名字」：可以改请愿目录里另一个真正对得上的名字。顶替是指用别的工具假装完成同一个动作，不是失败后换用真正对得上的能力。
 - 不要凭记忆调用 manage_skill、call_mcp_tool、discover_tool、previous_turn_tool，也不要复用历史里的 invoke_* 名称。
 - 标了等待用户确认的名字不要调用，也不要改用别的工具完成。标记「已列入本轮计划/已用尽/不可用/此名请愿未通过」的名字不要重试。此名请愿未通过只关掉这一个名字。
 - 工具结果里点名建议的工具按目录里的那个名字请愿。那是主机指的路，不是缺工具。

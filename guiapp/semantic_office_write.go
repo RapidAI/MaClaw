@@ -51,7 +51,7 @@ func semanticTrustedOfficeWriteDefinition() map[string]interface{} {
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        semanticTrustedOfficeWriteAdapter,
-			"description": "Write a spreadsheet or a presentation deck into a workspace path. Spreadsheet: path + sheets. Presentation (.pptx): path + title + optional subtitle/theme/purpose + slides. theme is clean, magazine, eink, dashboard, retro, sketch, whiteboard, handmade, research, mckinsey, official, course, finance, aurora, marketing, medical, a custom style id, or auto (when the user or prompt specifies a style or theme=<id>, pass that exact id in theme). Each slide takes title, optional kicker, optional layout (auto/bullets/cards/timeline/comparison/section/agenda/kpi/quote/closing), bullets, notes, optional images, and optional native editable charts (bar/column/bar_h/line/radar/pie/area — PowerPoint chart objects, not pictures). Mix layouts across slides (agenda, section, cards, timeline, comparison, kpi, charts, quote, closing) so the deck has visual rhythm and follows the chosen style's motif. Pass either sheets or slides, never both; omit the unused key entirely.",
+			"description": "Write a spreadsheet or a presentation deck into a workspace path. Spreadsheet: path + sheets. Presentation (.pptx): path + title + optional subtitle/theme/purpose + slides. theme is clean, magazine, eink, dashboard, retro, sketch, whiteboard, handmade, research, mckinsey, official, course, finance, aurora, marketing, medical, boardroom, emerald, summit, violet, nova, graphite, a custom style id, or auto (when the user or prompt specifies a style or theme=<id>, pass that exact id in theme). Each slide takes title, optional kicker, optional layout (auto/bullets/cards/timeline/comparison/section/agenda/kpi/quote/closing), bullets, notes, optional images, and optional native editable charts (bar/column/bar_h/line/radar/pie/area — PowerPoint chart objects, not pictures). Mix layouts across slides (agenda, section, cards, timeline, comparison, kpi, charts, quote, closing) so the deck has visual rhythm and follows the chosen style's motif. Pass either sheets or slides, never both; omit the unused key entirely.",
 			"parameters":  semanticTrustedOfficeWriteInvocationSchema(),
 		},
 	}
@@ -85,7 +85,7 @@ func semanticTrustedOfficeWriteInvocationSchema() map[string]interface{} {
 			"subtitle": map[string]interface{}{"type": "string"},
 			"theme": map[string]interface{}{
 				"type":        "string",
-				"description": "Style id: clean, magazine, eink, dashboard, retro, sketch, whiteboard, handmade, research, mckinsey, official, course, finance, aurora, marketing, medical, any custom style id, or auto. Legacy aliases (business, academic, warm, launch, tech, education, ceremony, minimal, modern, consulting) and Chinese labels also resolve. An explicit id wins; when the user specifies a style or theme=<id>, pass that exact id.",
+				"description": "Style id: clean, magazine, eink, dashboard, retro, sketch, whiteboard, handmade, research, mckinsey, official, course, finance, aurora, marketing, medical, boardroom, emerald, summit, violet, nova, graphite, any custom style id, or auto. Legacy aliases (business, academic, warm, launch, tech, education, ceremony, minimal, modern, consulting) and Chinese labels also resolve. An explicit id wins; when the user specifies a style or theme=<id>, pass that exact id.",
 			},
 			"purpose": map[string]interface{}{
 				"type":        "string",

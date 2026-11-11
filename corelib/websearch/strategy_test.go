@@ -824,8 +824,8 @@ func TestSearchWithStrategyFallsBackToBrowserWhenHTTPEnginesTimeOut(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(engines, []string{"google"}) {
-		t.Fatalf("browser engines = %v, want [google] for an OpenReview query", engines)
+	if !reflect.DeepEqual(engines, []string{"bing_cn"}) {
+		t.Fatalf("browser engines = %v, want the configured [bing_cn] fallback for an OpenReview query", engines)
 	}
 	if len(response.Results) != 1 || response.Results[0].URL != "https://openreview.net/forum?id=abc" {
 		t.Fatalf("results = %#v", response.Results)
@@ -973,8 +973,8 @@ func TestSearchWithStrategyContinuesToBrowserWhenHTMLMissesNamedSite(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(engines, []string{"google"}) {
-		t.Fatalf("browser engines = %v, want google fallback for a named site miss", engines)
+	if !reflect.DeepEqual(engines, []string{"bing_cn"}) {
+		t.Fatalf("browser engines = %v, want the configured bing_cn fallback for a named site miss", engines)
 	}
 	if len(response.Results) == 0 || response.Results[0].URL != "https://openreview.net/forum?id=xyz" {
 		t.Fatalf("OpenReview hit should be ranked first: %#v", response.Results)
@@ -1079,7 +1079,7 @@ func TestSearchWithStrategyTriesSecondBrowserWhenNamedSiteStillMissing(t *testin
 		Engines: []corelib.WebSearchEngineConfig{{
 			ID: "google", Enabled: true, Priority: 1, Transport: corelib.WebSearchTransportBrowser,
 		}},
-		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "google", MinResultsBeforeHedge: 3,
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 3,
 	}
 	response, err := SearchWithStrategyCtx(context.Background(), "openreview iclr", 8, strategy)
 	if err != nil {
@@ -1111,10 +1111,11 @@ func TestSearchWithStrategyFallbackRetriesSecondBrowserWhenFirstMissesNamedSite(
 
 	strategy := corelib.WebSearchStrategy{
 		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
-		Engines: []corelib.WebSearchEngineConfig{{
-			ID: "duckduckgo", Enabled: true, Priority: 1,
-			Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL,
-		}},
+		Engines: []corelib.WebSearchEngineConfig{
+			{ID: "duckduckgo", Enabled: true, Priority: 1,
+				Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL},
+			{ID: "google", Enabled: true, Priority: 2, Transport: corelib.WebSearchTransportBrowser},
+		},
 		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 1,
 	}
 	response, err := SearchWithStrategyCtx(context.Background(), "openreview", 8, strategy)
@@ -1157,7 +1158,7 @@ func TestSearchWithStrategySkipsHTMLAfterBrowserMissesNamedSite(t *testing.T) {
 			{ID: "google", Enabled: true, Priority: 1, Transport: corelib.WebSearchTransportBrowser},
 			{ID: "duckduckgo", Enabled: true, Priority: 2, Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL},
 		},
-		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "google", MinResultsBeforeHedge: 3,
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 3,
 	}
 	response, err := SearchWithStrategyCtx(context.Background(), "openreview", 8, strategy)
 	if err != nil {
@@ -1204,10 +1205,11 @@ func TestSearchWithStrategySecondBrowserGetsFreshBudgetAfterFirst(t *testing.T) 
 
 	strategy := corelib.WebSearchStrategy{
 		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
-		Engines: []corelib.WebSearchEngineConfig{{
-			ID: "duckduckgo", Enabled: true, Priority: 1,
-			Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL,
-		}},
+		Engines: []corelib.WebSearchEngineConfig{
+			{ID: "duckduckgo", Enabled: true, Priority: 1,
+				Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL},
+			{ID: "google", Enabled: true, Priority: 2, Transport: corelib.WebSearchTransportBrowser},
+		},
 		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 1,
 	}
 	response, err := SearchWithStrategyCtx(context.Background(), "openreview", 8, strategy)

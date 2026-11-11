@@ -33,14 +33,13 @@ func defaultBrowserFallbackEngineID(preset string) string {
 	return "bing_cn"
 }
 
-func remainingBrowserFallbackIDs(strategy corelib.WebSearchStrategy, attempted map[string]bool, hint string) []string {
-	if !strategy.BrowserFallbackEnabled {
-		return nil
-	}
-	configured := strategy.BrowserFallbackEngineID
-	if configured == "" {
-		configured = defaultBrowserFallbackEngineID(strategy.Preset)
-	}
+// remainingBrowserEngineIDs lists the browser searches the strategy still
+// owes, in fallback-phase order: the explicitly configured final fallback
+// engine first, then enabled browser engines the main loop never reached (in
+// the user's order). An engine only appears when the user opted into it —
+// either by enabling it or by choosing it as the fallback — so the enabled
+// toggles and the fallback selector are authoritative over browser traffic.
+func remainingBrowserEngineIDs(strategy corelib.WebSearchStrategy, attempted map[string]bool) []string {
 	var ids []string
 	seen := map[string]bool{}
 	add := func(id string) {
@@ -50,13 +49,17 @@ func remainingBrowserFallbackIDs(strategy corelib.WebSearchStrategy, attempted m
 		seen[id] = true
 		ids = append(ids, id)
 	}
-	if hint != "" && !attempted["google"] {
-		add("google")
+	if strategy.BrowserFallbackEnabled {
+		configured := strategy.BrowserFallbackEngineID
+		if configured == "" {
+			configured = defaultBrowserFallbackEngineID(strategy.Preset)
+		}
+		add(configured)
 	}
-	add(configured)
-	if hint != "" {
-		add("google")
-		add("bing_cn")
+	for _, engine := range strategy.Engines {
+		if engine.Enabled && engine.Transport == corelib.WebSearchTransportBrowser {
+			add(engine.ID)
+		}
 	}
 	return ids
 }

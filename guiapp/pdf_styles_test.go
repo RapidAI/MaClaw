@@ -32,6 +32,22 @@ func listPDFStylesForTest(t *testing.T, app *App) []docgen.StyleInfo {
 	return listed.Styles
 }
 
+// expectPDFStyleCounts checks the list carries every builtin style plus
+// exactly wantCustom custom entries. The builtin count is read from the list
+// itself, so the assertion does not pin the catalog size.
+func expectPDFStyleCounts(t *testing.T, infos []docgen.StyleInfo, wantCustom int) {
+	t.Helper()
+	builtin := 0
+	for _, info := range infos {
+		if info.Builtin {
+			builtin++
+		}
+	}
+	if builtin == 0 || len(infos) != builtin+wantCustom {
+		t.Fatalf("styles = %d builtin %d custom-want %d", len(infos), builtin, wantCustom)
+	}
+}
+
 func TestPDFStyleSelectionPersistsAndDefaultsToGazette(t *testing.T) {
 	t.Cleanup(func() {
 		_ = docgen.SetCustomStyles(nil)
@@ -39,7 +55,8 @@ func TestPDFStyleSelectionPersistsAndDefaultsToGazette(t *testing.T) {
 	})
 	app := &App{testHomeDir: t.TempDir()}
 	infos := listPDFStylesForTest(t, app)
-	if len(infos) != 5 || infos[0].ID != "gazette" || !infos[0].Active || infos[0].Motif != docgen.MotifMasthead {
+	expectPDFStyleCounts(t, infos, 0)
+	if infos[0].ID != "gazette" || !infos[0].Active || infos[0].Motif != docgen.MotifMasthead {
 		t.Fatalf("default list = %+v", infos)
 	}
 	if err := app.SetPDFStyle("atlas"); err != nil {
@@ -112,9 +129,7 @@ func TestParseAndStoreGeneratedPDFStyle(t *testing.T) {
 		t.Fatalf("active changed to %s", docgen.ActiveStyle().ID)
 	}
 	infos := listPDFStylesForTest(t, app)
-	if len(infos) != 6 {
-		t.Fatalf("len = %d", len(infos))
-	}
+	expectPDFStyleCounts(t, infos, 1)
 	if err := app.DeletePDFStyle("harbor"); err != nil {
 		t.Fatal(err)
 	}
@@ -143,9 +158,7 @@ func TestPDFStyleLoadSkipsDuplicateAndKeepsActiveBuiltin(t *testing.T) {
 		t.Fatal(err)
 	}
 	infos := listPDFStylesForTest(t, app)
-	if len(infos) != 6 {
-		t.Fatalf("len = %d", len(infos))
-	}
+	expectPDFStyleCounts(t, infos, 1)
 	if docgen.ActiveStyle().ID != "atlas" {
 		t.Fatalf("active = %s", docgen.ActiveStyle().ID)
 	}
@@ -385,11 +398,11 @@ func TestParseGeneratedPDFStyleNamesACutOffObject(t *testing.T) {
 	}
 	badMotif := `{"id":"wave-1","label":"浪","summary":"一种说明","keywords":["波浪"],"motif":"wave","colors":{"ink":"1C1917","navy":"0E2A47","accent":"C2410C","gold":"A16207","meta":"3F3F46","rule":"C2410C","quote":"7C2D12","link":"1D4ED8","on_dark":"F8FAFC"}}` + "\n{"
 	_, err = parseGeneratedPDFStyle(badMotif)
-	if err == nil || err.Error() != "版式必须是顶栏、立柱、双框、色带、粗线之一" {
+	if err == nil || err.Error() != "版式必须是顶栏、立柱、双框、色带、粗线、侧栏、铭牌、基线、悬带、折角之一" {
 		t.Fatalf("complete style error hidden by a later brace: %v", err)
 	}
 	_, err = parseGeneratedPDFStyle("注意 {\n" + badMotif)
-	if err == nil || err.Error() != "版式必须是顶栏、立柱、双框、色带、粗线之一" {
+	if err == nil || err.Error() != "版式必须是顶栏、立柱、双框、色带、粗线、侧栏、铭牌、基线、悬带、折角之一" {
 		t.Fatalf("unclosed prose hid the style error: %v", err)
 	}
 }
@@ -561,7 +574,8 @@ func TestListPDFStylesKeepsBuiltinsWhenTheFileCannotBeParsed(t *testing.T) {
 		if listed.Warning != pdfStyleCorruptWarning {
 			t.Fatalf("body %q warning %q", body, listed.Warning)
 		}
-		if len(listed.Styles) != 5 || listed.Styles[0].ID != "gazette" || !listed.Styles[0].Active {
+		expectPDFStyleCounts(t, listed.Styles, 0)
+		if listed.Styles[0].ID != "gazette" || !listed.Styles[0].Active {
 			t.Fatalf("body %q list %+v", body, listed.Styles)
 		}
 		if docgen.ActiveStyle().ID != "gazette" {
@@ -720,7 +734,11 @@ func TestPDFStyleReadRepairsAnInterruptedReplace(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if listed.Warning != "" || len(listed.Styles) != 5 || !listed.Styles[0].Active {
+		if listed.Warning != "" {
+			t.Fatalf("warning %q", listed.Warning)
+		}
+		expectPDFStyleCounts(t, listed.Styles, 0)
+		if !listed.Styles[0].Active {
 			t.Fatalf("list %+v warning %q", listed.Styles, listed.Warning)
 		}
 		if _, statErr := os.Stat(app.pdfStylePath() + ".bad"); !os.IsNotExist(statErr) {
@@ -761,7 +779,8 @@ func TestPDFStyleReadRepairsAnInterruptedReplace(t *testing.T) {
 			t.Fatal(err)
 		}
 		infos := listPDFStylesForTest(t, app)
-		if len(infos) != 6 || docgen.ActiveStyle().ID != "atlas" {
+		expectPDFStyleCounts(t, infos, 1)
+		if docgen.ActiveStyle().ID != "atlas" {
 			t.Fatalf("recovered %+v active %s", infos, docgen.ActiveStyle().ID)
 		}
 		if _, ok := docgen.LookupStyle("harbor"); !ok {
@@ -792,7 +811,8 @@ func TestPDFStyleReadRepairsAnInterruptedReplace(t *testing.T) {
 			t.Fatal(err)
 		}
 		infos := listPDFStylesForTest(t, app)
-		if len(infos) != 5 || docgen.ActiveStyle().ID != "ledger" {
+		expectPDFStyleCounts(t, infos, 0)
+		if docgen.ActiveStyle().ID != "ledger" {
 			t.Fatalf("list %+v active %s", infos, docgen.ActiveStyle().ID)
 		}
 		if _, ok := docgen.LookupStyle("harbor"); ok {
@@ -819,7 +839,8 @@ func TestPDFStyleReadRepairsAnInterruptedReplace(t *testing.T) {
 			t.Fatal(err)
 		}
 		infos := listPDFStylesForTest(t, app)
-		if len(infos) != 6 || docgen.ActiveStyle().ID != "atlas" {
+		expectPDFStyleCounts(t, infos, 1)
+		if docgen.ActiveStyle().ID != "atlas" {
 			t.Fatalf("list %+v active %s", infos, docgen.ActiveStyle().ID)
 		}
 		if _, statErr := os.Stat(app.pdfStylePath() + ".tmp"); statErr != nil {

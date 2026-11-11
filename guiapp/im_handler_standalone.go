@@ -21,6 +21,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -96,6 +97,14 @@ func NewIMMessageHandlerStandalone(cfg StandaloneConfig) *IMMessageHandler {
 	timeout := cfg.ResponseHeaderTimeout
 	if timeout == 0 {
 		timeout = time.Duration(corelib.DefaultLLMTimeoutSec) * time.Second
+	}
+	if cfg.WebSearchStrategyFunc != nil {
+		// Legacy direct-search entry points (SearchCtx/provider path) resolve
+		// their browser fallback engines through this process-wide provider.
+		// Hosts that inject a strategy func expect it to govern every search,
+		// not just the per-call strategy path. Nil leaves the existing
+		// provider (NewApp registers the desktop one) or defaults untouched.
+		websearch.SetWebSearchStrategyProvider(cfg.WebSearchStrategyFunc)
 	}
 
 	chatTransport := &http.Transport{

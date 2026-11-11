@@ -92,7 +92,10 @@ func (a *App) taskExpertSuggestDeps() taskExpertSuggestDeps {
 			if a == nil {
 				return nil, nil, embeddingUnavailable
 			}
-			return embedNewTaskExpertVectors(a.intentEmbedder, query, docs, newTaskTypeLocalTimeout)
+			a.embeddingMu.Lock()
+			emb := a.intentEmbedder
+			a.embeddingMu.Unlock()
+			return embedNewTaskExpertVectors(emb, query, docs, newTaskTypeLocalTimeout)
 		},
 	}
 	// No assistant model means the embedding reason is the abstain. A closure

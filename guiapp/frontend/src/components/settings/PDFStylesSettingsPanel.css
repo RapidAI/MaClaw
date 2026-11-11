@@ -83,7 +83,10 @@
 .pdf-style-ledger,
 .pdf-style-rail,
 .pdf-style-frame,
-.pdf-style-notch {
+.pdf-style-notch,
+.pdf-style-peak,
+.pdf-style-baseline,
+.pdf-style-sidestrip {
     position: absolute;
     display: block;
 }
@@ -147,6 +150,30 @@
     right: 16px;
     left: 16px;
     height: 4px;
+}
+
+.pdf-style-peak {
+    top: 0;
+    right: 14px;
+    width: 0;
+    height: 0;
+    border-right: 11px solid transparent;
+    border-bottom: 16px solid;
+    border-left: 11px solid transparent;
+}
+
+.pdf-style-baseline {
+    top: 10px;
+    left: 16px;
+    width: 7px;
+    height: 7px;
+}
+
+.pdf-style-sidestrip {
+    top: 0;
+    bottom: 0;
+    left: 8px;
+    width: 2px;
 }
 
 .pdf-style-copy {

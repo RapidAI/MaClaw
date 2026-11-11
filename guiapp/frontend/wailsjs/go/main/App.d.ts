@@ -2032,6 +2032,8 @@ export function MarkNotificationRead(arg1:string):Promise<void>;
 
 export function MaterializeMobileDocumentOriginal(arg1:string):Promise<string>;
 
+export function MaterializeMobileDocumentOriginalPreview(arg1:string,arg2:string,arg3:number,arg4:string):Promise<string>;
+
 export function MaterializeProviderByName(arg1:string):Promise<corelib.MaclawLLMConfig>;
 
 export function MaximiseAndSaveGeometry():Promise<boolean>;

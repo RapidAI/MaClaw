@@ -32,6 +32,10 @@ func (a *App) SetASREnabled(enabled bool) error {
 		if !info["exists"].(bool) {
 			go a.downloadASRModelIfStillEnabled()
 		}
+	} else {
+		// Drop resident weights now; in-flight transcriptions finish first —
+		// the manager defers the close until their leases end.
+		resetASRModel()
 	}
 	return nil
 }

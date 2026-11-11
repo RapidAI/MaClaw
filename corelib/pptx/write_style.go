@@ -238,6 +238,66 @@ var styleCatalog = []styleSpec{
 		accent: "14B8A6", gold: "7ED0C5", white: "FFFFFF", mute: "5F7E7A",
 		slate: "2E5551", card: "FFFFFF", onDark: "F6FBFA", onDarkMute: "B9DFDB",
 	},
+	{
+		id: "boardroom", label: "董事深蓝", summary: "深色渐变侧栏，幽灵圆环和金标。适合高层汇报。",
+		labelEn: "Boardroom Edge", labelHant: "董事深藍",
+		summaryEn: "Deep gradient sidebar, ghost rings, gold marks.", summaryHant: "深色漸變側欄，幽靈圓環和金標。",
+		aliases: []string{"boardroom", "edge", "深蓝侧栏", "董事深蓝", "高层"}, motif: motifEdge,
+		keywords: []string{"高层汇报", "总裁报告", "领导汇报", "经营分析会", "月度经营会", "决策汇报", "boardroom", "steering committee"},
+		paper:    "FFFFFF", ink: "0F172A", navy: "0A1F38", navy2: "17375C",
+		accent: "2F7DE1", gold: "C9A24B", white: "FFFFFF", mute: "64748B",
+		slate: "334155", card: "F5F8FC", onDark: "F1F7FF", onDarkMute: "B9CCE8",
+	},
+	{
+		id: "emerald", label: "翡翠商务", summary: "深绿侧栏配暖金标记。适合 ESG 与可持续发展。",
+		labelEn: "Emerald Edge", labelHant: "翡翠商務",
+		summaryEn: "Deep green sidebar, warm gold marks.", summaryHant: "深綠側欄配暖金標記。",
+		aliases: []string{"emerald", "翡翠", "翡翠绿", "翡翠商务"}, motif: motifEdge,
+		keywords: []string{"可持续发展", "ESG", "碳中和", "绿色金融", "生态环保", "新能源", "双碳", "sustainability", "green finance"},
+		paper:    "FFFFFF", ink: "132019", navy: "0B3527", navy2: "145943",
+		accent: "0B8A5F", gold: "C28A2E", white: "FFFFFF", mute: "5F7A70",
+		slate: "2E4A40", card: "F2F8F5", onDark: "EAF7F0", onDarkMute: "A8CDBB",
+	},
+	{
+		id: "summit", label: "峰橙动感", summary: "斜切橙蓝飘带，层层V形箭头。适合冲刺与增长。",
+		labelEn: "Summit Peak", labelHant: "峰橙動感",
+		summaryEn: "Angled orange-navy ribbons, marching chevrons.", summaryHant: "斜切橙藍飄帶，層層V形箭頭。",
+		aliases: []string{"summit", "peak", "峰橙", "峰橙动感", "动感"}, motif: motifPeak,
+		keywords: []string{"业绩冲刺", "增长冲刺", "销售动员", "冲刺动员", "攻坚计划", "目标冲刺", "百日攻坚", "summit"},
+		paper:    "FFFFFF", ink: "1F2937", navy: "1C2A4A", navy2: "2E4170",
+		accent: "E8611A", gold: "F5B52F", white: "FFFFFF", mute: "6B7280",
+		slate: "374151", card: "FFF6EE", onDark: "FFF3E8", onDarkMute: "C7D2EC",
+	},
+	{
+		id: "violet", label: "紫罗兰企划", summary: "紫蓝斜切飘带，潮流色层叠。适合品牌焕新企划。",
+		labelEn: "Violet Peak", labelHant: "紫羅蘭企劃",
+		summaryEn: "Violet angled ribbons, layered trend colors.", summaryHant: "紫藍斜切飄帶，潮流色層疊。",
+		aliases: []string{"violet", "紫罗兰", "紫色企划", "紫罗兰企划"}, motif: motifPeak,
+		keywords: []string{"品牌焕新", "潮流趋势", "新品企划", "艺术节", "紫色", "快闪活动", "violet"},
+		paper:    "FFFFFF", ink: "1E1B2E", navy: "2A1B5E", navy2: "46308F",
+		accent: "7C4DDB", gold: "F0A93B", white: "FFFFFF", mute: "6E6A85",
+		slate: "3E3857", card: "F6F3FE", onDark: "F2ECFF", onDarkMute: "C9B9F0",
+	},
+	{
+		id: "nova", label: "星环探索", summary: "层叠圆环和卫星点，开阔留白。适合愿景与创新。",
+		labelEn: "Nova Orbit", labelHant: "星環探索",
+		summaryEn: "Layered rings, satellite dots, open field.", summaryHant: "層疊圓環和衛星點，開闊留白。",
+		aliases: []string{"nova", "orbit", "星环", "星环探索", "环"}, motif: motifOrbit,
+		keywords: []string{"创新探索", "未来展望", "愿景规划", "航天科普", "探索之旅", "战略愿景", "nova"},
+		paper:    "FBFDFF", ink: "0C2237", navy: "0B2E4F", navy2: "15689E",
+		accent: "1FA2B4", gold: "E8A33D", white: "FFFFFF", mute: "5C7A92",
+		slate: "2C4A63", card: "F2F9FC", onDark: "EAFBFF", onDarkMute: "A9CBE8",
+	},
+	{
+		id: "graphite", label: "石墨灰调", summary: "高级灰纸面配青铜点缀，大字留白。适合质感演讲。",
+		labelEn: "Graphite Ink", labelHant: "石墨灰調",
+		summaryEn: "Greige field, bronze accents, oversized type.", summaryHant: "高級灰紙面配青銅點綴，大字留白。",
+		aliases: []string{"graphite", "石墨", "高级灰", "黑白灰", "石墨灰调"}, motif: motifInk,
+		keywords: []string{"高级灰", "黑白灰", "轻奢", "极简主义", "质感大片", "性冷淡风", "graphite"},
+		paper:    "F6F6F3", ink: "23272E", navy: "2B2F36", navy2: "4B5563",
+		accent: "B45309", gold: "9A8F80", white: "FFFFFF", mute: "6B7280",
+		slate: "3F4652", card: "FDFCF9", onDark: "F5F3EE", onDarkMute: "A8ACB3",
+	},
 }
 
 var (
@@ -1422,6 +1482,12 @@ func buildCards(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box conten
 		buildFinanceCards(slide, theme, box, texts)
 	case motifAurora:
 		buildAuroraCards(slide, theme, box, texts)
+	case motifEdge:
+		buildEdgeCards(slide, theme, box, texts)
+	case motifPeak:
+		buildPeakCards(slide, theme, box, texts)
+	case motifOrbit:
+		buildOrbitCards(slide, theme, box, texts)
 	default:
 		buildFilledCards(slide, theme, box, texts)
 	}

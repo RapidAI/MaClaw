@@ -15,6 +15,9 @@ type ProbeStream struct {
 	Calls []ProviderToolCall
 	End   bool
 	Err   string
+	// ContentNormalized is true when a delta or message put content as a
+	// block array and the probe folded it into text.
+	ContentNormalized bool
 }
 
 // Failure is the probe error for this stream, or empty when the stream
@@ -60,6 +63,7 @@ func ParseProbeStream(body []byte, kind string) ProbeStream {
 	framed := false
 	googleCalls := map[string]struct{}{}
 	var legacy probeToolAcc
+	var normalized bool
 	forEachProbeSSE(body, func(event, data string) {
 		framed = true
 		data = strings.TrimSpace(data)
@@ -89,7 +93,7 @@ func ParseProbeStream(body []byte, kind string) ProbeStream {
 				out.End = true
 			}
 		default:
-			if probeOpenAIEvent(data, &text, &reasoning, calls, &order, &legacy) {
+			if probeOpenAIEvent(data, &text, &reasoning, calls, &order, &legacy, &normalized) {
 				out.End = true
 			}
 		}
@@ -109,6 +113,7 @@ func ParseProbeStream(body []byte, kind string) ProbeStream {
 		reply = strings.TrimSpace(reasoning.String())
 	}
 	out.Reply = reply
+	out.ContentNormalized = normalized
 	for _, idx := range order {
 		call := calls[idx]
 		if call == nil {
@@ -277,11 +282,13 @@ func probeStreamErrorText(raw json.RawMessage) string {
 // probeOpenAIEvent reports whether this chunk carries a legal finish_reason.
 // [DONE] is still an end marker. A missing or unknown reason does not end the
 // stream: a clean close after only a partial delta stays unfinished.
-func probeOpenAIEvent(payload string, text, reasoning *strings.Builder, calls map[int]*probeToolAcc, order *[]int, legacy *probeToolAcc) bool {
+func probeOpenAIEvent(payload string, text, reasoning *strings.Builder, calls map[int]*probeToolAcc, order *[]int, legacy *probeToolAcc, normalized *bool) bool {
 	var chunk struct {
 		Choices []struct {
 			Delta struct {
-				Content          string `json:"content"`
+				// content is usually a string; Mistral's hosted models send
+				// the content-part array [{"type":"thinking",...},{"type":"text",...}].
+				Content          any    `json:"content"`
 				ReasoningContent string `json:"reasoning_content"`
 				Reasoning        string `json:"reasoning"`
 				Thinking         string `json:"thinking"`
@@ -304,7 +311,7 @@ func probeOpenAIEvent(payload string, text, reasoning *strings.Builder, calls ma
 			// live parser's string field.
 			FinishReason string `json:"finish_reason"`
 			Message      struct {
-				Content   string `json:"content"`
+				Content   any `json:"content"`
 				ToolCalls []struct {
 					Function struct {
 						Name      string          `json:"name"`
@@ -318,13 +325,21 @@ func probeOpenAIEvent(payload string, text, reasoning *strings.Builder, calls ma
 		return false
 	}
 	choice := chunk.Choices[0]
-	if choice.Delta.Content != "" {
-		text.WriteString(choice.Delta.Content)
-	} else if choice.Message.Content != "" {
-		text.WriteString(choice.Message.Content)
+	deltaText, deltaReasoning, deltaArray := foldOpenAIProbeContent(choice.Delta.Content)
+	msgText, msgReasoning, msgArray := foldOpenAIProbeContent(choice.Message.Content)
+	if normalized != nil && (deltaArray || msgArray) {
+		*normalized = true
+	}
+	if deltaText != "" {
+		text.WriteString(deltaText)
+	} else if msgText != "" {
+		text.WriteString(msgText)
 	}
 	// Same priority as openAIReasoningText: reasoning_content, then reasoning,
-	// then thinking.
+	// then thinking. Folded content-block reasoning fills in only when no
+	// explicit delta field carried a thought this chunk, and the message
+	// field — a fallback for a chunk that looks like a final completion —
+	// only feeds it when the delta carried nothing.
 	switch {
 	case choice.Delta.ReasoningContent != "":
 		reasoning.WriteString(choice.Delta.ReasoningContent)
@@ -332,6 +347,10 @@ func probeOpenAIEvent(payload string, text, reasoning *strings.Builder, calls ma
 		reasoning.WriteString(choice.Delta.Reasoning)
 	case choice.Delta.Thinking != "":
 		reasoning.WriteString(choice.Delta.Thinking)
+	case deltaReasoning != "":
+		reasoning.WriteString(deltaReasoning)
+	default:
+		reasoning.WriteString(msgReasoning)
 	}
 	if legacy != nil && choice.Delta.FunctionCall != nil {
 		fc := choice.Delta.FunctionCall

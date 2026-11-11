@@ -211,7 +211,10 @@ func (a *App) GetVectorSearchStatus() VectorSearchStatus {
 	}
 
 	// Embedder runtime check.
-	if lazy, ok := a.intentEmbedder.(*embedding.LazyEmbedder); ok {
+	a.embeddingMu.Lock()
+	emb := a.intentEmbedder
+	a.embeddingMu.Unlock()
+	if lazy, ok := emb.(*embedding.LazyEmbedder); ok {
 		status.EmbedderLoaded = lazy.Loaded()
 	}
 	if a.memoryStore != nil {
@@ -281,6 +284,14 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 		}
 		// Allow re-activation if user re-enables vector search later.
 		a.embeddingActivated.Store(false)
+		// Drop the resident weights now instead of waiting for the idle
+		// timer; the facade reloads transparently if the interrupt path
+		// embeds again.
+		a.embeddingMu.Lock()
+		if lazy, ok := a.intentEmbedder.(*embedding.LazyEmbedder); ok {
+			lazy.Unload()
+		}
+		a.embeddingMu.Unlock()
 		// Do NOT clear a.gateIntentClassifier or a.unifiedClassifier.
 		// initEarlyClassifier created conservative classifier instances that
 		// fail closed until semantic channels are available. Clearing them

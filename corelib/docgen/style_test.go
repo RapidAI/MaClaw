@@ -24,7 +24,7 @@ func resetPDFStyles(t *testing.T) {
 func TestBuiltinPDFStylesAreSixteenDistinctVoices(t *testing.T) {
 	resetPDFStyles(t)
 	styles := builtinStyles()
-	if len(styles) != 16 {
+	if len(styles) != 21 {
 		t.Fatalf("styles = %d", len(styles))
 	}
 	if ActiveStyle().ID != styles[0].ID || styles[0].ID != "gazette" {
@@ -53,11 +53,11 @@ func TestBuiltinPDFStylesAreSixteenDistinctVoices(t *testing.T) {
 			t.Fatalf("%s accent too pale", style.ID)
 		}
 	}
-	if len(seenMotif) != 7 {
-		t.Fatalf("motifs used = %d, want all 7", len(seenMotif))
+	if len(seenMotif) != 10 {
+		t.Fatalf("motifs used = %d, want all 10", len(seenMotif))
 	}
 	infos := ListStyleInfo()
-	if len(infos) != 16 || !infos[0].Active || infos[0].ID != "gazette" {
+	if len(infos) != 21 || !infos[0].Active || infos[0].ID != "gazette" {
 		t.Fatalf("list = %+v", infos[0])
 	}
 }

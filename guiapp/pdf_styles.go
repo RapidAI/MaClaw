@@ -773,7 +773,7 @@ func pdfStyleClientError(err error) error {
 	}
 	switch {
 	case strings.Contains(err.Error(), "pdf_style_motif_invalid"):
-		return fmt.Errorf("版式必须是顶栏、立柱、双框、色带、粗线、侧栏、铭牌之一")
+		return fmt.Errorf("版式必须是顶栏、立柱、双框、色带、粗线、侧栏、铭牌、基线、悬带、折角之一")
 	case strings.Contains(err.Error(), "pdf_style_id_invalid"), strings.Contains(err.Error(), "pdf_style_id_taken"):
 		return fmt.Errorf("风格编号不可用")
 	case strings.Contains(err.Error(), "pdf_style_label_invalid"):
@@ -791,11 +791,11 @@ func pdfStyleClientError(err error) error {
 
 const pdfStyleSystemPrompt = `你是正式文档的版式设计师。根据用户需求设计一套可复用的 PDF 风格。只输出一个 JSON 对象，不要解释。
 字段：
-id：英文小写和短横线，2-32 字符，不要用 gazette、brief、dossier、atlas、ledger、official、academic、weekly、medical、legal、tech、course、finance、plan、minutes、manual
+id：英文小写和短横线，2-32 字符，不要用 gazette、brief、dossier、atlas、ledger、official、academic、weekly、medical、legal、tech、course、finance、plan、minutes、manual、swiss、steel、violet、ember、summit
 label：不超过 8 个汉字
 summary：不超过 28 个字，说明这套版式适合什么文书、主色是什么
 keywords：2 到 6 个中文词，每个至少 2 个字
-motif：版式，必须是 masthead、rail、frame、band、ledger、sidebar、plate 之一。masthead 是整页顶栏加朱红粗线，rail 是左侧色柱，frame 是金线双框和居中标题，band 是顶部细带加短色标，ledger 是粗线压题、标题更紧，sidebar 是左侧窄色柱加分节标题，plate 是顶部色板加四角饰线
+motif：版式，必须是 masthead、rail、frame、band、ledger、sidebar、plate、baseline、ribbon、apex 之一。masthead 是整页顶栏加朱红粗线，rail 是左侧色柱，frame 是金线双框和居中标题，band 是顶部细带加短色标，ledger 是粗线压题、标题更紧，sidebar 是左侧窄色柱加分节标题，plate 是顶部色板加四角饰线，baseline 是瑞士基线网格加方形标，ribbon 是悬带折角加金收边，apex 是层叠山峰加金色标记
 colors：6 位十六进制，不要带 #。必须包含 ink、navy、accent、gold、meta、rule、quote、link、on_dark
 页面底色保持白色。ink、navy、meta、quote、link 必须在白底上清楚，不要用浅灰。accent 和 rule 要饱和。on_dark 是深色顶栏上的浅色字。`
 

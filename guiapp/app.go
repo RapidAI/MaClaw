@@ -69,6 +69,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/user"
+	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -741,6 +742,11 @@ func NewApp() *App {
 		toolVersionCache:  NewToolVersionCache(),
 		notifCache:        newNotificationCache(),
 	}
+	// The legacy direct-search chain (embedded hub mobile search, provider
+	// paths) selects browser fallback engines under the same persisted
+	// strategy as the main web_search path. Reading it per call keeps saved
+	// changes effective without restarting.
+	websearch.SetWebSearchStrategyProvider(app.effectiveWebSearchStrategy)
 	// The extractor reads this provider on every request, so persisted setting
 	// changes apply immediately. Env variables still override it for emergency
 	// rollback before a GUI configuration can be loaded.
@@ -2854,6 +2860,7 @@ func (a *App) startup(ctx context.Context) {
 	startPerfSampler()
 	// Return freed heap to the OS once the app has been idle for a while so
 	// RSS drops after work finishes instead of only when a model unloads.
+	applyMemoryLimit()
 	startIdleMemoryReleaser()
 	a.ctx = ctx
 	// `MaClaw.exe --quit` only reaches OnStartup when no running instance was

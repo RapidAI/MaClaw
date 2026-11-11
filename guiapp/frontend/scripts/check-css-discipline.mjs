@@ -46,7 +46,7 @@ const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
 // measured 3253 inline styles. Refreshed 3260 -> 3275 (2026-10-31): the
 // handoff/collab pass measured 3263 inline styles.
 const IMPORTANT_BASELINE = 1596
-const INLINE_STYLE_BASELINE = 3290 // 2026-11-11: +8 direct-publish batch
+const INLINE_STYLE_BASELINE = 3296 // 2026-11-11: +6 remote-assistant batch
 
 function countImportant(css) {
     return (css.match(/!important/g) || []).length

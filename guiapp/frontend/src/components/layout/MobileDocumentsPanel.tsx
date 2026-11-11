@@ -194,6 +194,41 @@ function callGetLibraryItem(id: string): Promise<MobileLibraryItem> {
   if (!app?.GetMobileLibraryItem) return Promise.reject(new Error('Desktop binding missing GetMobileLibraryItem — rebuild GUI after pull.'));
   return app.GetMobileLibraryItem(id);
 }
+
+// Selection-time detail cache keyed by id + updated_at: a list refresh with a
+// newer timestamp invalidates automatically. The audio processing poller keeps
+// the uncached call so its status stays live. Entries also age out so a stale
+// snapshot cannot pin the preview for the whole session.
+const MOBILE_CACHE_ENTRY_TTL_MS = 3 * 60 * 1000;
+type MobileLibraryItemCacheEntry = { promise: Promise<MobileLibraryItem>; resolvedAt?: number };
+const mobileLibraryItemCache = new Map<string, MobileLibraryItemCacheEntry>();
+const MOBILE_LIBRARY_ITEM_CACHE_MAX = 16;
+
+function callGetLibraryItemCached(item: Pick<MobileLibraryItem, 'id' | 'updated_at'>): Promise<MobileLibraryItem> {
+  const stamp = String(item.updated_at || '').trim();
+  if (!stamp) return callGetLibraryItem(item.id);
+  const key = `${item.id}\0${stamp}`;
+  const hit = mobileLibraryItemCache.get(key);
+  if (hit && (hit.resolvedAt === undefined || Date.now() - hit.resolvedAt <= MOBILE_CACHE_ENTRY_TTL_MS)) {
+    return hit.promise;
+  }
+  if (hit) mobileLibraryItemCache.delete(key);
+  const entry: MobileLibraryItemCacheEntry = {
+    promise: Promise.resolve(callGetLibraryItem(item.id)).then((full) => {
+      entry.resolvedAt = Date.now();
+      return full;
+    }).catch((err: unknown) => {
+      if (mobileLibraryItemCache.get(key) === entry) mobileLibraryItemCache.delete(key);
+      throw err;
+    }),
+  };
+  if (mobileLibraryItemCache.size >= MOBILE_LIBRARY_ITEM_CACHE_MAX) {
+    const oldest = mobileLibraryItemCache.keys().next().value;
+    if (oldest !== undefined) mobileLibraryItemCache.delete(oldest);
+  }
+  mobileLibraryItemCache.set(key, entry);
+  return entry.promise;
+}
 function callProcessMeetingRecording(id: string): Promise<MobileLibraryItem> {
   const app = (window as any)?.go?.main?.App;
   if (!app?.ProcessMobileMeetingRecording) return Promise.reject(new Error('Desktop binding missing ProcessMobileMeetingRecording — rebuild GUI after pull.'));
@@ -310,16 +345,99 @@ function callSaveOriginal(id: string): Promise<string> {
   return app.SaveMobileDocumentOriginal(id);
 }
 
-function callMaterializeOriginal(id: string): Promise<string> {
+// Session cache so picking the same file (or an effect re-run after the item
+// detail merges in) does not re-download or even re-stat the materialized
+// original. Keyed like the Go-side temp cache: id + filename + size. `path` on
+// a settled entry lets a re-selected file skip the loading spinner entirely —
+// its iframe mounts on the first render.
+type MobileOriginalCacheEntry = { promise: Promise<string>; path?: string; resolvedAt?: number };
+const mobileOriginalPathCache = new Map<string, MobileOriginalCacheEntry>();
+const MOBILE_ORIGINAL_PATH_CACHE_MAX = 32;
+
+function mobileOriginalCacheKey(item: Pick<MobileLibraryItem, 'id' | 'source_filename' | 'source_size'>): string {
+  return `${item.id}\0${item.source_filename || ''}\0${item.source_size || 0}`;
+}
+
+// Entries age out: a deleted temp file or a hub-side replace under the same
+// name/size must not keep serving a dead path. Re-checking is a stat-only IPC.
+function mobileOriginalEntryLive(entry: MobileOriginalCacheEntry | undefined): entry is MobileOriginalCacheEntry {
+  return Boolean(entry && (entry.path === undefined || entry.resolvedAt === undefined || Date.now() - entry.resolvedAt <= MOBILE_CACHE_ENTRY_TTL_MS));
+}
+
+function mobileOriginalResolvedPath(item: Pick<MobileLibraryItem, 'id' | 'source_filename' | 'source_size'>): string | undefined {
+  const key = mobileOriginalCacheKey(item);
+  const entry = mobileOriginalPathCache.get(key);
+  if (!mobileOriginalEntryLive(entry)) {
+    if (entry) mobileOriginalPathCache.delete(key);
+    return undefined;
+  }
+  return entry.path;
+}
+
+function callMaterializeOriginal(item: Pick<MobileLibraryItem, 'id' | 'source_filename' | 'source_size' | 'source_download_url'>): Promise<string> {
+  const key = mobileOriginalCacheKey(item);
+  const hit = mobileOriginalPathCache.get(key);
+  if (mobileOriginalEntryLive(hit)) return hit.promise;
+  if (hit) mobileOriginalPathCache.delete(key);
   const app = (window as any)?.go?.main?.App;
-  if (!app?.MaterializeMobileDocumentOriginal) {
+  let pending: Promise<string> | undefined;
+  if (app?.MaterializeMobileDocumentOriginalPreview) {
+    // Fast path: the list payload's filename/size/download URL lets Go skip
+    // the draft fetch entirely on a warm cache and go straight to the source
+    // download on a cold one.
+    pending = app.MaterializeMobileDocumentOriginalPreview(
+      item.id,
+      String(item.source_filename || ''),
+      Number(item.source_size || 0),
+      String(item.source_download_url || ''),
+    );
+  } else if (app?.MaterializeMobileDocumentOriginal) {
+    pending = app.MaterializeMobileDocumentOriginal(item.id);
+  }
+  if (!pending) {
     return Promise.reject(
       new Error(
         'Desktop binding missing MaterializeMobileDocumentOriginal — rebuild GUI after pull.',
       ),
     );
   }
-  return app.MaterializeMobileDocumentOriginal(id);
+  const entry: MobileOriginalCacheEntry = {
+    promise: Promise.resolve(pending).then((path: string) => {
+      entry.path = String(path || '');
+      entry.resolvedAt = Date.now();
+      return path;
+    }).catch((err: unknown) => {
+      if (mobileOriginalPathCache.get(key) === entry) mobileOriginalPathCache.delete(key);
+      throw err;
+    }),
+  };
+  if (mobileOriginalPathCache.size >= MOBILE_ORIGINAL_PATH_CACHE_MAX) {
+    const oldest = mobileOriginalPathCache.keys().next().value;
+    if (oldest !== undefined) mobileOriginalPathCache.delete(oldest);
+  }
+  mobileOriginalPathCache.set(key, entry);
+  return entry.promise;
+}
+
+// Hover/focus prefetch: start downloading the original before the click lands.
+// Skips unknown or large sources so sweeping the list cannot pull huge files.
+const MOBILE_ORIGINAL_PREFETCH_MAX_BYTES = 24 << 20;
+const MOBILE_ORIGINAL_PREFETCH_CONCURRENT = 3;
+let mobileOriginalPrefetchInFlight = 0;
+
+function prefetchMobileOriginal(item: MobileLibraryItem | null | undefined) {
+  if (!item?.has_original || !item.id || isAudioItem(item)) return;
+  if (mobileOriginalPrefetchInFlight >= MOBILE_ORIGINAL_PREFETCH_CONCURRENT) return;
+  const size = Number(item.source_size || 0);
+  if (size <= 0 || size > MOBILE_ORIGINAL_PREFETCH_MAX_BYTES) return;
+  const name = item.source_filename || `${item.title || 'document'}.md`;
+  const kind = filePreviewKindFromName(name);
+  const body = item.markdown || item.preview || '';
+  if (!previewShouldMaterialize(kind, Boolean(body.trim()))) return;
+  mobileOriginalPrefetchInFlight += 1;
+  void callMaterializeOriginal(item)
+    .catch(() => undefined)
+    .finally(() => { mobileOriginalPrefetchInFlight -= 1; });
 }
 
 function callOpenInCompanion(id: string): Promise<string> {
@@ -373,7 +491,9 @@ function callGetDraftImage(draftId: string, imageId: string): Promise<MobileDocI
     .GetMobileDocumentDraftImage(draftId, imageId)
     .then((payload: MobileDocImagePayload) => payload)
     .catch((err: unknown) => {
-      mobileDocImageCache.delete(key);
+      // Delete only our own entry: an evicted-and-replaced image must not
+      // clobber the newer promise under the same key.
+      if (mobileDocImageCache.get(key) === p) mobileDocImageCache.delete(key);
       throw err;
     });
   // Simple FIFO bound: drop oldest entries when over cap (Map preserves insertion order).
@@ -562,10 +682,10 @@ function MobileDraftFilePreview({ item, lang }: { item: MobileLibraryItem; lang:
   const fileName = item.source_filename || `${item.title || 'document'}.md`;
   const kind = filePreviewKindFromName(fileName);
   const rawMarkdown = item.markdown || item.preview || '';
-  const [absPath, setAbsPath] = useState('');
-  const [content, setContent] = useState(rawMarkdown);
   const needsOriginal = Boolean(item.has_original && item.id) && previewShouldMaterialize(kind, Boolean(rawMarkdown.trim()));
-  const [loading, setLoading] = useState(needsOriginal);
+  const [absPath, setAbsPath] = useState(() => (needsOriginal ? mobileOriginalResolvedPath(item) || '' : ''));
+  const [content, setContent] = useState(rawMarkdown);
+  const [loading, setLoading] = useState(needsOriginal && mobileOriginalResolvedPath(item) === undefined);
   const theme = libraryPreviewTheme();
 
   useEffect(() => {
@@ -574,9 +694,10 @@ function MobileDraftFilePreview({ item, lang }: { item: MobileLibraryItem; lang:
     const name = item.source_filename || `${item.title || 'document'}.md`;
     const nextKind = filePreviewKindFromName(name);
     const wantsFile = Boolean(item.has_original && item.id) && previewShouldMaterialize(nextKind, Boolean(body.trim()));
-    setAbsPath('');
+    const cachedPath = wantsFile ? mobileOriginalResolvedPath(item) : undefined;
+    setAbsPath(cachedPath || '');
     setContent(body);
-    setLoading(wantsFile);
+    setLoading(Boolean(wantsFile && cachedPath === undefined));
 
     const resolveImages = (markdown: string) => rewriteMarkdownImageUrls(markdown, async (draftId, imageId) => {
       const payload = await callGetDraftImage(draftId, imageId);
@@ -590,7 +711,7 @@ function MobileDraftFilePreview({ item, lang }: { item: MobileLibraryItem; lang:
       try {
         let path = '';
         if (wantsFile && item.id) {
-          path = String(await callMaterializeOriginal(item.id) || '').trim();
+          path = String(await callMaterializeOriginal(item) || '').trim();
         }
         let nextContent = body;
         if (path && (nextKind === 'code' || nextKind === 'text' || nextKind === 'html')) {
@@ -616,7 +737,7 @@ function MobileDraftFilePreview({ item, lang }: { item: MobileLibraryItem; lang:
     return () => {
       cancelled = true;
     };
-  }, [item.has_original, item.id, item.markdown, item.preview, item.source_filename, item.title]);
+  }, [item.has_original, item.id, item.markdown, item.preview, item.source_filename, item.source_size, item.source_download_url, item.title]);
 
   if (loading) {
     return (
@@ -943,7 +1064,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
       revealCloudItem(found);
       setSelected(found);
       try {
-        const full = await callGetLibraryItem(found.id);
+        const full = await callGetLibraryItemCached(found);
         if (!stillCurrent()) return true;
         const merged = { ...found, ...full };
         revealCloudItem(merged);
@@ -1157,7 +1278,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
     revealCloudItem(d);
     setSelected(d);
     try {
-      const full = await callGetLibraryItem(d.id);
+      const full = await callGetLibraryItemCached(d);
       if (selectionGenRef.current !== gen || selectionIdRef.current !== d.id) return;
       const merged = { ...d, ...full };
       revealCloudItem(merged);
@@ -2048,6 +2169,8 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
           className="mobile-documents-list-item mdoc-list-item"
           type="button"
           onClick={() => void selectDraft(d)}
+          onMouseEnter={() => prefetchMobileOriginal(d)}
+          onFocus={() => prefetchMobileOriginal(d)}
         >
           <CloudDriveFileIcon item={d} />
           <span className="mdoc-item-main">

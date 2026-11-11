@@ -35,6 +35,38 @@
 - `maclaw-data-srv.exe` is an independent long-running service, unrelated to the
   desktop lifecycle.
 
+## Known test quirks
+
+- `TestKnowledgeSearchToolUsesLocalStore` is timing-flaky: an async
+  `toolKnowledgeImportFiles` call can double-import the same file, producing an
+  extra duplicate-card group. Re-run before assuming a regression.
+- `go test` may also emit pre-existing `sync.Once` copycheck warnings in
+  `coding_toolchain_paths_test.go` / `coding_workbench_msvc_test.go`, unrelated
+  to semantic-routing work.
+- Windows file-lock TempDir flakes (reproduced on a clean baseline): tests
+  that leave `conversations.db` (sqlite) or `logs/sdk_diag.log` open fail
+  `TempDir RemoveAll cleanup` with "being used by another process", and
+  `TestFileCompanionVideoNoteFrames` can miss a just-written session json.
+  `newVideoNoteTestApp` now stops `imHandler.memory` in cleanup for the db
+  case; the rest are still open.
+- A full-package `guiapp` run can wedge in `ensureRemoteInfra`'s
+  `sync.Once` vs `remoteSessionsMu` (ABBA across tests); the same tests pass
+  in isolation.
+
+## Model memory lifecycle
+
+- Heavy models live behind `corelib/modelmanager`: first `Acquire` loads,
+  `done` schedules idle unload, `Unload`/`Shutdown` drop weights now (deferred
+  until in-flight leases end). Wired so far: Qwen3 embedding (`LazyEmbedder`
+  facade), SenseVoice ASR, CAM++ diarization, FormulaNet, PP-DocLayoutV3,
+  tablestruct UNET, TTS, OCR, YOLO. Never `Peek` a model for inference —
+  acquire a lease.
+- `MACLAW_MODEL_IDLE_UNLOAD_SEC` overrides every manager's idle delay
+  (0 disables auto-unload); `MACLAW_MODEL_FREE_OS_MEMORY=off` skips the
+  post-unload `debug.FreeOSMemory`; `MACLAW_IDLE_MEM_RELEASE=off` disables the
+  guiapp 10-minute-idle heap release; `MACLAW_GO_MEMLIMIT_MB` sets a soft Go
+  heap cap (same knob as MaClawSrv).
+
 ## Logs
 
 - `~/.maclaw/logs/maclaw.log` — shared by main app, companion, and quit relays.
