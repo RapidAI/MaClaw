@@ -71,6 +71,18 @@ func applyTaskOutcome(run *Run, msg *Message) string {
 			msg.Content = notice + "\n" + msg.Content
 		}
 	}
+	// A measured task's final reply is its report to the person. Clients
+	// show only send_to_user, so a run that never called it ended in
+	// silence: the person saw the acknowledgement and then nothing (papers
+	// 2026-11-11: Bot 3's 「这件没做成…桌面始终未能唤醒」 and Bot 2's post links
+	// never appeared). The reply, with its outcome notice, becomes the
+	// sentence. A question to the person keeps its own path.
+	if outcome != TaskOutcomeAwaitingUser && strings.TrimSpace(msg.Metadata["send_to_user"]) == "" && strings.TrimSpace(msg.Content) != "" {
+		msg.Metadata["send_to_user"] = strings.TrimSpace(msg.Content)
+		if strings.TrimSpace(msg.Metadata["send_to_user_kind"]) == "" {
+			msg.Metadata["send_to_user_kind"] = "report"
+		}
+	}
 	return outcome
 }
 
