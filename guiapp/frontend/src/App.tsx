@@ -181,7 +181,7 @@ import { miniAppLabels, pickMiniAppLabel } from './i18n/maclawMiniAppLabels';
 import { ToolConfiguration } from './components/tools/ToolConfiguration';
 import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscriptionUrls, getModelDisplayName, localizeModelNote, type ProviderEndpoint } from './config/providerCatalog';
 import { TOOL_NAMES, getToolLabel, isToolTab, normalizeToolTab } from './config/toolCatalog';
-import { getSettingsTabOptions, resolveSettingsTabId, type SettingsTabId } from './config/settingsTabs';
+import { getSettingsTabOptions, resolveSettingsTabId, type SettingsTabId, type SettingsTabVisibility } from './config/settingsTabs';
 import { OPEN_SETTINGS_EVENT } from './utils/settingsNavigation';
 import { grantSolo, settingsNavIsSolo, type SoloSettingsTab } from './utils/settingsSolo';
 import { OPEN_FILE_LIBRARY_EVENT } from './utils/fileLibraryNavigation';
@@ -1226,11 +1226,19 @@ function App() {
         || favoriteEmployeeIds.length > 0;
     const veAuthorized = veNavigationAvailable;
     const veSettingsAuthorized = digitalEmployeeAuthorizationUsable;
+    // Bot Catalog / Agent Groups / Shared Pages are desktop-bot features; the
+    // rail grant poll (useSidebarHubAccess) publishes this flag.
+    const botAccessEnabled = useBotAccessEnabled();
+    // Shared visibility gates for every settings-tab resolution below.
+    const settingsTabVisibility = useMemo<SettingsTabVisibility>(
+        () => ({ hideVirtualEmployee: !veNavigationAvailable, hideDesktopBotTabs: !botAccessEnabled }),
+        [veNavigationAvailable, botAccessEnabled],
+    );
     // Sync setState only — startTransition deferred paint and caused intermittent blank settings.
     const selectSettingsTab = useCallback((tab: SettingsTabId) => {
         setSettingsNavSoloTab('');
-        setSettingsTab(resolveSettingsTabId(tab, { hideVirtualEmployee: !veNavigationAvailable }));
-    }, [veNavigationAvailable]);
+        setSettingsTab(resolveSettingsTabId(tab, settingsTabVisibility));
+    }, [settingsTabVisibility]);
     const patchConfigFieldsForSettings = useCallback(
         (patch: Record<string, any>) => callBackend(() => PatchConfigFields(patch)),
         [],
@@ -1242,14 +1250,14 @@ function App() {
     useEffect(() => {
         const openSettings = (e: Event) => {
             const detail = (e as CustomEvent<{ tab?: string; hideSettingsNav?: boolean }>).detail;
-            const tab = resolveSettingsTabId(detail?.tab, { hideVirtualEmployee: !veNavigationAvailable });
+            const tab = resolveSettingsTabId(detail?.tab, settingsTabVisibility);
             setNavTabNow('settings');
             selectSettingsTab(tab);
             setSettingsNavSoloTab(grantSolo(tab, detail?.hideSettingsNav === true));
         };
         window.addEventListener(OPEN_SETTINGS_EVENT, openSettings);
         return () => window.removeEventListener(OPEN_SETTINGS_EVENT, openSettings);
-    }, [setNavTabNow, selectSettingsTab, veNavigationAvailable]);
+    }, [setNavTabNow, selectSettingsTab, settingsTabVisibility]);
     useEffect(() => {
         if (navTab === 'settings' && settingsNavSoloTab === settingsTab) return;
         if (settingsNavSoloTab !== '') setSettingsNavSoloTab('');
@@ -3169,10 +3177,11 @@ function App() {
 
     useEffect(() => {
         // Keep settingsTab aligned with the tabs actually shown in the rail
-        // (e.g. virtualEmployee may be hidden when DE navigation is unavailable).
-        const next = resolveSettingsTabId(settingsTab, { hideVirtualEmployee: !veNavigationAvailable });
+        // (virtualEmployee hides without DE navigation; the desktop-bot tabs
+        // hide when Hub revokes Bot access).
+        const next = resolveSettingsTabId(settingsTab, settingsTabVisibility);
         if (next !== settingsTab) setSettingsTab(next);
-    }, [settingsTab, veNavigationAvailable]);
+    }, [settingsTab, settingsTabVisibility]);
 
     const handleSkillContext = (e: React.MouseEvent, skillName: string) => {
         e.preventDefault();
@@ -5159,7 +5168,7 @@ function App() {
     // transcript is not counted. The push runs again once the main window is
     // ready, so a count that arrived before the taskbar button existed is
     // not dropped. Pushes are cosmetic and never block on failure.
-    const taskbarBotAccess = useBotAccessEnabled();
+    const taskbarBotAccess = botAccessEnabled;
     const taskbarBotTasks = useInProgressBotTaskCount(
         config === null ? '' : desktopBotAccountId(config),
         config !== null && taskbarBotAccess,
@@ -5946,12 +5955,12 @@ ${instruction}`;
     // Placing these after the loading gate caused: "Rendered more hooks than during
     // the previous render" → full black screen when env-check finished.
     const settingsTabOptions = useMemo(
-        () => getSettingsTabOptions(lang, { hideVirtualEmployee: !veNavigationAvailable }),
-        [lang, veNavigationAvailable],
+        () => getSettingsTabOptions(lang, settingsTabVisibility),
+        [lang, settingsTabVisibility],
     );
     const resolvedSettingsTab = useMemo(
-        () => resolveSettingsTabId(settingsTab, { hideVirtualEmployee: !veNavigationAvailable }),
-        [settingsTab, veNavigationAvailable],
+        () => resolveSettingsTabId(settingsTab, settingsTabVisibility),
+        [settingsTab, settingsTabVisibility],
     );
 
     if (isLoading) {
@@ -6378,6 +6387,7 @@ ${instruction}`;
                             qqBotQRError={qqBotQRError}
                             setQQBotQRError={setQQBotQRError}
                             veNavigationAvailable={veNavigationAvailable}
+                            desktopBotTabsAvailable={botAccessEnabled}
                             veSettingsAuthorized={veSettingsAuthorized}
                             virtualEmployeeLayoutClassName={virtualEmployeeLayoutClassName}
                             userFavoriteEmployeeIds={userFavoriteEmployeeIds}

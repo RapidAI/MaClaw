@@ -91,6 +91,7 @@ export function SharedPagesPanel({ lang }: { lang: string }) {
     };
 
     const remove = async (id: string) => {
+        if (!window.confirm(t("Delete this page? This cannot be undone.", "删除该页面？此操作不可撤销。"))) return;
         setBusy(true); setError("");
         try {
             await DeleteSharedPage(id);

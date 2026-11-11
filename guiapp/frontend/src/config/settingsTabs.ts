@@ -44,14 +44,28 @@ export function isSettingsContentTabId(id: string): id is SettingsTabId {
     return settingsContentTabIdSet.has(id);
 }
 
+/** Feature gates that hide rail entries and redirect their tab ids. */
+export interface SettingsTabVisibility {
+    hideVirtualEmployee?: boolean;
+    hideDesktopBotTabs?: boolean;
+}
+
+/** Tabs whose panels only work while Hub desktop-bot access is granted. */
+const DESKTOP_BOT_SETTINGS_TAB_IDS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
+    'botCatalog',
+    'agentGroup',
+    'sharedPages',
+]);
+
 /** Normalize an arbitrary tab id to a renderable settings tab. */
 export function resolveSettingsTabId(
     id: string | undefined | null,
-    options: { hideVirtualEmployee?: boolean } = {},
+    options: SettingsTabVisibility = {},
 ): SettingsTabId {
     const raw = String(id || 'general').trim();
     if (!isSettingsContentTabId(raw)) return 'general';
     if (options.hideVirtualEmployee && raw === 'virtualEmployee') return 'general';
+    if (options.hideDesktopBotTabs && DESKTOP_BOT_SETTINGS_TAB_IDS.has(raw)) return 'general';
     return raw;
 }
 
@@ -155,7 +169,7 @@ const settingsTabIcons: Record<SettingsTabId, string> = {
 
 const textForLang = localizeText;
 
-export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmployee?: boolean } = {}): SettingsTabOption[] => {
+export const getSettingsTabOptions = (lang: string, options: SettingsTabVisibility = {}): SettingsTabOption[] => {
     const tabs: SettingsTabOption[] = [
         {
             id: 'general' as const,
@@ -335,5 +349,6 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
     ];
     let filtered = tabs;
     if (options.hideVirtualEmployee) filtered = filtered.filter(tab => tab.id !== 'virtualEmployee');
+    if (options.hideDesktopBotTabs) filtered = filtered.filter(tab => !DESKTOP_BOT_SETTINGS_TAB_IDS.has(tab.id));
     return filtered.map((tab) => attachSettingsTabGroup(lang, tab));
 };

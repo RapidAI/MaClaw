@@ -181,7 +181,7 @@ describe('SettingsTabsRail', () => {
             '服务兑换', 'Token 银行', '安全策略', '系统', '资产管理',
         ]);
         expect(labeled.find((group) => group.label === '集成与接入')?.items).toEqual([
-            '数字员工', 'IM', '邮箱', '硬件接入',
+            '数字员工', 'IM', '邮箱', 'GitHub', '硬件接入',
         ]);
         const systemIndex = labeled.findIndex((group) => group.label === '系统');
         const integrationIndex = labeled.findIndex((group) => group.label === '集成与接入');

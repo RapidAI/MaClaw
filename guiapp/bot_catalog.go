@@ -20,8 +20,9 @@ type botCatalogPaths struct {
 }
 
 var (
-	botCatalogMu    sync.Mutex
-	botCatalogStore *botcatalog.AssignmentStore
+	botCatalogMu      sync.Mutex
+	botCatalogStore   *botcatalog.AssignmentStore
+	botCatalogDataDir string
 )
 
 func (a *App) resolveBotCatalogPaths() botCatalogPaths {
@@ -73,7 +74,7 @@ func (a *App) botCatalogAssignmentStore() (*botcatalog.AssignmentStore, error) {
 	}
 	botCatalogMu.Lock()
 	defer botCatalogMu.Unlock()
-	if botCatalogStore != nil {
+	if botCatalogStore != nil && botCatalogDataDir == paths.dataDir {
 		return botCatalogStore, nil
 	}
 	store, err := botcatalog.OpenAssignments(paths.dataDir)
@@ -81,6 +82,7 @@ func (a *App) botCatalogAssignmentStore() (*botcatalog.AssignmentStore, error) {
 		return nil, err
 	}
 	botCatalogStore = store
+	botCatalogDataDir = paths.dataDir
 	return store, nil
 }
 

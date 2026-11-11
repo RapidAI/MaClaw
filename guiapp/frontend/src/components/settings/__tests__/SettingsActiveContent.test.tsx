@@ -113,6 +113,7 @@ const baseProps = {
     qqBotQRError: '',
     setQQBotQRError: vi.fn(),
     veNavigationAvailable: false,
+    desktopBotTabsAvailable: false,
     veSettingsAuthorized: false,
     virtualEmployeeLayoutClassName: 'settings-ve-layout',
     userFavoriteEmployeeIds: [] as string[],

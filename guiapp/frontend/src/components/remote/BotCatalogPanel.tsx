@@ -41,13 +41,13 @@ export function BotCatalogPanel({ lang }: { lang: string }) {
                     title: String(b.title || b.id || ""),
                 })).filter((b) => b.id);
                 setBots(opts);
-                if (!botID && opts[0]) setBotID(opts[0].id);
+                setBotID((prev) => prev || (opts[0] ? opts[0].id : ""));
             } catch {
                 if (!cancelled) setBots([]);
             }
         })();
         return () => { cancelled = true; };
-    }, [botID]);
+    }, []);
 
     const load = useCallback(async () => {
         if (!botID) { setItems([]); return; }
@@ -63,7 +63,11 @@ export function BotCatalogPanel({ lang }: { lang: string }) {
         }
     }, [botID, query]);
 
-    useEffect(() => { void load(); }, [load]);
+    // Debounce: query edits should not fire a backend call per keystroke.
+    useEffect(() => {
+        const timer = window.setTimeout(() => { void load(); }, 250);
+        return () => window.clearTimeout(timer);
+    }, [load]);
 
     const toggle = async (item: CatalogItem) => {
         if (!botID || busy) return;

@@ -77,6 +77,21 @@ describe('getSettingsTabOptions', () => {
         expect(getSettingsTabOptions('en').find((tab) => tab.id === 'tokenBank')?.label).toBe('Token Bank');
     });
 
+    it('hides the desktop-bot tabs when bot access is unavailable', () => {
+        const ids = getSettingsTabOptions('zh-Hans', { hideDesktopBotTabs: true }).map((tab) => tab.id);
+
+        expect(ids).not.toContain('botCatalog');
+        expect(ids).not.toContain('agentGroup');
+        expect(ids).not.toContain('sharedPages');
+        expect(ids).toContain('memory');
+        expect(ids).toContain('knowledge');
+        expect(ids).toContain('virtualEmployee');
+
+        const both = getSettingsTabOptions('zh-Hans', { hideDesktopBotTabs: true, hideVirtualEmployee: true }).map((tab) => tab.id);
+        expect(both).not.toContain('virtualEmployee');
+        expect(both).not.toContain('sharedPages');
+    });
+
     it('keeps memory, knowledge, MIS data, and migration in Data & Memory', () => {
         const zh = getSettingsTabOptions('zh-Hans');
         const data = zh.filter((tab) => tab.group === 'data').map((tab) => tab.id);
@@ -123,5 +138,10 @@ describe('resolveSettingsTabId', () => {
         expect(resolveSettingsTabId('not-a-tab')).toBe('general');
         expect(resolveSettingsTabId('virtualEmployee', { hideVirtualEmployee: true })).toBe('general');
         expect(resolveSettingsTabId('virtualEmployee', { hideVirtualEmployee: false })).toBe('virtualEmployee');
+        expect(resolveSettingsTabId('botCatalog', { hideDesktopBotTabs: true })).toBe('general');
+        expect(resolveSettingsTabId('agentGroup', { hideDesktopBotTabs: true })).toBe('general');
+        expect(resolveSettingsTabId('sharedPages', { hideDesktopBotTabs: true })).toBe('general');
+        expect(resolveSettingsTabId('sharedPages', { hideDesktopBotTabs: false })).toBe('sharedPages');
+        expect(resolveSettingsTabId('sharedPages')).toBe('sharedPages');
     });
 });

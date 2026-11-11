@@ -134,6 +134,7 @@ export type SettingsActiveContentProps = {
     qqBotQRError: string;
     setQQBotQRError: Dispatch<SetStateAction<string>>;
     veNavigationAvailable: boolean;
+    desktopBotTabsAvailable: boolean;
     veSettingsAuthorized: boolean;
     virtualEmployeeLayoutClassName: string;
     userFavoriteEmployeeIds: string[];
@@ -243,6 +244,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         qqBotQRError,
         setQQBotQRError,
         veNavigationAvailable,
+        desktopBotTabsAvailable,
         veSettingsAuthorized,
         virtualEmployeeLayoutClassName,
         userFavoriteEmployeeIds,
@@ -272,7 +274,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
     } = props;
 
     // Resolve before switch so invalid / currently-hidden tabs never paint an empty body.
-    const activeTab = resolveSettingsTabId(settingsTab, { hideVirtualEmployee: !veNavigationAvailable });
+    const activeTab = resolveSettingsTabId(settingsTab, { hideVirtualEmployee: !veNavigationAvailable, hideDesktopBotTabs: !desktopBotTabsAvailable });
 
     // Per-tab fine-grained DTO: merge only the keys this panel needs (backend
     // GetSettingsTabConfig). Avoids re-shipping full AppConfig on every tab switch.
