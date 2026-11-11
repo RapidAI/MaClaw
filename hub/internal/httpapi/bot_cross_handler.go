@@ -188,6 +188,16 @@ func GetBotMailFileHandler(svc *botmgmt.Service, identity botAuthenticator) http
 			writeBotUserError(w, r, principal, err, "")
 			return
 		}
+		if f.Ref != "" {
+			tenant, owner := botFileOwner(principal.TenantID, principal.UserID)
+			m, err := botFiles.Get(tenant, owner, f.Ref)
+			if err != nil {
+				writeBotFileError(w, err, 0)
+				return
+			}
+			writeJSON(w, http.StatusOK, botFileInfo(m))
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"name": f.Name, "mime": f.MIME, "size": f.Size, "sha256": f.SHA, "data": base64.StdEncoding.EncodeToString(data)})
 	}
 }

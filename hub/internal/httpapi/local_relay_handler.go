@@ -70,6 +70,8 @@ type localRelayRequest struct {
 	Host       string `json:"host"`
 	Port       int    `json:"port"`
 	ID         string `json:"id"`
+	// Ref is a file in the bot file store (op fetch_to_local).
+	Ref string `json:"ref"`
 }
 
 func writeRelayFailure(w http.ResponseWriter, err error) {
@@ -176,6 +178,29 @@ func PostLocalRelayHandler(bots *botmgmt.Service) http.HandlerFunc {
 			max := int64(sum.MaxTransferMB) << 20
 			g := localRelay.Mint(localrelay.Grant{Key: key, BotID: botID, BotName: botName, RunID: base.RunID, Kind: localrelay.KindToLocal, LocalPath: resp.Path, Name: resp.Name, MaxSize: max, Remote: base.Remote})
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": g.ID, "token": g.Token, "folder": resp.Path, "name": resp.Name, "max_bytes": max})
+		case "fetch_to_local":
+			// The cloud file is already in Hub's bot file store; the person's
+			// computer pulls it over HTTP (Range, resume) into the folder.
+			if botFiles == nil {
+				writeRelayFailure(w, &localrelay.Err{Code: localrelay.CodeFailed, Message: "this server has no file store"})
+				return
+			}
+			tenant, fileOwner := botFileOwner(in.TenantID, owner)
+			m, err := botFiles.Get(tenant, fileOwner, strings.TrimSpace(in.Ref))
+			if err != nil {
+				writeRelayFailure(w, &localrelay.Err{Code: localrelay.CodeNotFound, Message: "the uploaded file is not on the server: " + err.Error()})
+				return
+			}
+			link, _ := botFiles.SignedPath(m)
+			req := base
+			req.Path, req.Name, req.Size, req.URL, req.Ref, req.SHA256 = in.Path, firstNonBlank(in.Name, m.Name), m.Size, link, m.ID, m.SHA256
+			resp, err := localRelay.Fetch(ctx, key, req, 9*time.Minute)
+			if err != nil {
+				writeRelayFailure(w, err)
+				return
+			}
+			out := map[string]any{"ok": true, "state": firstNonBlank(resp.State, "done"), "path": resp.Path, "name": resp.Name, "size": m.Size}
+			writeJSON(w, http.StatusOK, out)
 		case "grant_forward", "grant_socks":
 			sum, err := ping()
 			if err != nil {

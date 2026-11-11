@@ -607,6 +607,9 @@ func PostDesktopNotifyHandler(bots *botmgmt.Service) http.HandlerFunc {
 				Name string `json:"name"`
 				MIME string `json:"mime"`
 				Data string `json:"data"`
+				// Ref: a file already in the bot file store (large files);
+				// it must belong to this user.
+				Ref string `json:"ref"`
 			} `json:"files"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 36<<20)).Decode(&in); err != nil {
@@ -623,6 +626,23 @@ func PostDesktopNotifyHandler(bots *botmgmt.Service) http.HandlerFunc {
 		for _, f := range in.Files {
 			if len(files) >= 3 {
 				break
+			}
+			if ref := strings.TrimSpace(f.Ref); ref != "" {
+				if botFiles == nil {
+					continue
+				}
+				tenant, owner := botFileOwner(in.TenantID, in.UserID)
+				m, err := botFiles.Get(tenant, owner, ref)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, "BOT_FILE_NOT_FOUND", "the stored file "+ref+" is not available: "+err.Error())
+					return
+				}
+				name := strings.TrimSpace(f.Name)
+				if name == "" {
+					name = m.Name
+				}
+				files = append(files, botmgmt.BotMailFile{Name: name, MIME: m.MIME, Size: int(m.Size), SHA: m.SHA256, Ref: m.ID})
+				continue
 			}
 			raw, err := base64.StdEncoding.DecodeString(f.Data)
 			if err != nil {
@@ -1117,6 +1137,9 @@ func PostDesktopSayHandler(bots *botmgmt.Service) http.HandlerFunc {
 				Name string `json:"name"`
 				MIME string `json:"mime"`
 				Data string `json:"data"`
+				// Ref: a file already in the bot file store (large files);
+				// it must belong to this user.
+				Ref string `json:"ref"`
 			} `json:"files"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 36<<20)).Decode(&in); err != nil {
@@ -1127,6 +1150,23 @@ func PostDesktopSayHandler(bots *botmgmt.Service) http.HandlerFunc {
 		for _, f := range in.Files {
 			if len(files) >= 3 {
 				break
+			}
+			if ref := strings.TrimSpace(f.Ref); ref != "" {
+				if botFiles == nil {
+					continue
+				}
+				tenant, owner := botFileOwner(in.TenantID, in.UserID)
+				m, err := botFiles.Get(tenant, owner, ref)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, "BOT_FILE_NOT_FOUND", "the stored file "+ref+" is not available: "+err.Error())
+					return
+				}
+				name := strings.TrimSpace(f.Name)
+				if name == "" {
+					name = m.Name
+				}
+				files = append(files, botmgmt.BotMailFile{Name: name, MIME: m.MIME, Size: int(m.Size), SHA: m.SHA256, Ref: m.ID})
+				continue
 			}
 			raw, err := base64.StdEncoding.DecodeString(f.Data)
 			if err != nil {

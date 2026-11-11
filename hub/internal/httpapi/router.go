@@ -395,6 +395,7 @@ func NewRouter(
 	// Hub starts delegated work and wakes idle bots itself; off only when
 	// an operator sets MACLAW_HUB_BOT_DISPATCH=off.
 	botSvc.MailFileDir = strings.TrimSpace(os.Getenv("MACLAW_HUB_BOT_MAIL_DIR"))
+	botFiles = newBotFileStore(botSvc.MailFileDir)
 	botSvc.BotDispatch = !strings.EqualFold(strings.TrimSpace(os.Getenv("MACLAW_HUB_BOT_DISPATCH")), "off")
 	if botSvc.BotDispatch {
 		// Boot scan: resume pending cross-bot work for every tenant once the
@@ -442,6 +443,12 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/desktop-services/assignments", PostDesktopAssignmentsHandler(botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/assignment-review", PostDesktopAssignmentReviewHandler(botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/say", PostDesktopSayHandler(botSvc))
+	mux.HandleFunc("POST /api/v1/desktop-services/files", PostBotFileCreateHandler(botSvc))
+	mux.HandleFunc("PUT /api/v1/desktop-services/files/{id}/data", PutBotFileDataHandler())
+	mux.HandleFunc("GET /api/v1/desktop-services/files/{id}/status", GetBotFileStatusHandler())
+	mux.HandleFunc("POST /api/v1/desktop-services/files/{id}/link", PostBotFileLinkHandler())
+	mux.HandleFunc("GET /api/v1/bot-files/{id}", GetBotFileHandler(identity))
+	mux.HandleFunc("POST /api/v1/bot-files/{id}/link", PostBotFileRefreshHandler(identity))
 	mux.HandleFunc("POST /api/v1/desktop-services/app", PostDesktopAppHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/open", PostDesktopOpenHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/install", PostDesktopInstallHandler(desktopPool))

@@ -28,6 +28,9 @@ type BotMailFile struct {
 	MIME string `json:"mime,omitempty"`
 	Size int    `json:"size"`
 	SHA  string `json:"sha256"`
+	// Ref names a large file kept in Hub's bot file store instead of the
+	// mail files; the person's app downloads it through a signed link.
+	Ref string `json:"ref,omitempty"`
 }
 
 func cleanMailFiles(in []BotMailFile) []BotMailFile {
@@ -37,7 +40,7 @@ func cleanMailFiles(in []BotMailFile) []BotMailFile {
 		if name == "" || len(f.SHA) != 64 || len(out) >= mailFilesPerNote {
 			continue
 		}
-		out = append(out, BotMailFile{Name: name, MIME: strings.TrimSpace(f.MIME), Size: f.Size, SHA: strings.ToLower(f.SHA)})
+		out = append(out, BotMailFile{Name: name, MIME: strings.TrimSpace(f.MIME), Size: f.Size, SHA: strings.ToLower(f.SHA), Ref: strings.TrimSpace(f.Ref)})
 	}
 	if len(out) == 0 {
 		return nil
@@ -127,6 +130,10 @@ func (s *Service) ReadBotMailFile(ctx context.Context, tenantID, userID, botID, 
 		for _, f := range n.Files {
 			if f.Name != strings.TrimSpace(name) && f.SHA != strings.TrimSpace(name) {
 				continue
+			}
+			if f.Ref != "" {
+				// The bytes are in the bot file store; the caller links them.
+				return f, nil, nil
 			}
 			data, err := os.ReadFile(filepath.Join(s.mailFileDir(tenantID), f.SHA))
 			if err != nil {
