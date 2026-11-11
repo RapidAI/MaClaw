@@ -92,6 +92,7 @@ type Service struct {
 	// request (imagePullRetryAfter backoff, see image_source.go).
 	pulls        imagePulls
 	userGates    sync.Map
+	fileGates    sync.Map // per-file locks under the shared user gate (withUserFile)
 	installGates sync.Map
 	// activity counts apt and bash still inside this process. Sleep and the
 	// historical reaper both leave that user running.
@@ -464,6 +465,11 @@ func (s *Service) OpenSession(ctx context.Context, spec Spec) (Session, error) {
 	// remove it.
 	return s.flightSession(sessionFlightKey(spec), ctx, func(ctx context.Context) (Session, error) {
 		var session Session
+		if spec.BotID != "" && s.dockerRuntime() {
+			if opened, done, err := s.openBotSessionShared(ctx, spec); done {
+				return opened, err
+			}
+		}
 		err := s.withUser(spec.TenantID, spec.UserID, func() error {
 			var openErr error
 			session, openErr = s.openSessionUnlocked(ctx, spec)
@@ -473,7 +479,78 @@ func (s *Service) OpenSession(ctx context.Context, spec Spec) (Session, error) {
 	})
 }
 
+// botOpenExclusiveWait is how long an isolated bot's session open looks for
+// a gap with no other call of its container before it opens the bot's own
+// screen on the shared side of the gate instead.
+var botOpenExclusiveWait = 3 * time.Second
+
+// openBotSessionShared opens an isolated bot's screen without the exclusive
+// container gate when that gate is not free within botOpenExclusiveWait and
+// the container is already running. The writer side polls for a moment with
+// no reader, and while sibling bots keep a bash or a screenshot in flight
+// there may be no such moment: on papers 2026-11-12 06:01-06:04 two of three
+// bots of one owner got "this bot's desktop is not open yet" for 1.5 min
+// because their opens never found a gap. A running container needs no
+// create, start or remove to add a screen; the supervisor ensure of a bot
+// key serializes its own start, so it is as safe as the other shared calls.
+// done=false means the caller takes the exclusive path (free gate, or a
+// stopped or missing container that needs create/start).
+func (s *Service) openBotSessionShared(ctx context.Context, spec Spec) (Session, bool, error) {
+	key := spec.TenantID + "\x00" + spec.UserID
+	value, _ := s.userGates.LoadOrStore(key, &sync.RWMutex{})
+	gate := value.(*sync.RWMutex)
+	deadline := time.Now().Add(botOpenExclusiveWait)
+	for time.Now().Before(deadline) {
+		if gate.TryLock() {
+			defer gate.Unlock()
+			session, err := s.openSessionUnlocked(ctx, spec)
+			return session, true, err
+		}
+		if ctx.Err() != nil {
+			return Session{}, true, ctx.Err()
+		}
+		time.Sleep(userGateRetry)
+	}
+	var session Session
+	shared := false
+	err := s.withUserRead(spec.TenantID, spec.UserID, func() error {
+		name := containerName(spec.TenantID, spec.UserID)
+		if name == "" {
+			return nil
+		}
+		out, err := s.docker(ctx, "inspect", "--format", "{{.State.Running}}", name)
+		if err != nil || strings.TrimSpace(out) != "true" {
+			return nil // not running: needs the exclusive create/start path
+		}
+		shared = true
+		var openErr error
+		session, openErr = s.openSessionWith(ctx, spec, func(ctx context.Context, spec Spec) (RestoreResult, error) {
+			botKey, err := specKey(spec)
+			if err != nil {
+				return RestoreResult{}, err
+			}
+			ensured, err := s.docker(ctx, "exec", name, "python3", "/desktop_supervisor.py", "ensure", botKey)
+			if err != nil {
+				return RestoreResult{}, err
+			}
+			return RestoreResult{Container: name, EnsureOut: ensured}, nil
+		})
+		return openErr
+	})
+	if !shared {
+		return Session{}, false, nil
+	}
+	if err == nil {
+		log.Printf("[desktopd] bot screen opened on the shared gate tenant=%s user=%s bot=%s", spec.TenantID, spec.UserID, spec.BotID)
+	}
+	return session, true, err
+}
+
 func (s *Service) openSessionUnlocked(ctx context.Context, spec Spec) (Session, error) {
+	return s.openSessionWith(ctx, spec, s.runtime().Restore)
+}
+
+func (s *Service) openSessionWith(ctx context.Context, spec Spec, restore func(context.Context, Spec) (RestoreResult, error)) (Session, error) {
 	// Fail before create when the public name is missing, so a half-configured
 	// host does not start a container it cannot hand out.
 	base, err := s.publicBase()
@@ -482,7 +559,7 @@ func (s *Service) openSessionUnlocked(ctx context.Context, spec Spec) (Session, 
 	}
 	spec, _ = normalize(spec)
 	spec = s.shareSpec(spec)
-	restored, err := s.runtime().Restore(ctx, spec)
+	restored, err := restore(ctx, spec)
 	if err != nil {
 		return Session{}, err
 	}
@@ -807,6 +884,25 @@ func (s *Service) withUserRead(tenantID, userID string, fn func() error) error {
 	gate.(*sync.RWMutex).RLock()
 	defer gate.(*sync.RWMutex).RUnlock()
 	return fn()
+}
+
+// withUserFile is the shared side of the user gate plus one lock per file.
+// A file write, edit or upload changes one path, so it excludes other file
+// calls on that path (an edit's read and write stay one step) but not the
+// container's other calls. On the exclusive side it waited for a moment with
+// no other call at all, which sibling bots of one container may never leave:
+// papers 2026-11-12 06:1x, a 1 KB file_write of one bot took 1m31s behind
+// another bot's 1m31s bash.
+func (s *Service) withUserFile(tenantID, userID, filePath string, fn func() error) error {
+	if s == nil {
+		return fn()
+	}
+	return s.withUserRead(tenantID, userID, func() error {
+		lock, _ := s.fileGates.LoadOrStore(tenantID+"\x00"+userID+"\x00"+filePath, &sync.Mutex{})
+		lock.(*sync.Mutex).Lock()
+		defer lock.(*sync.Mutex).Unlock()
+		return fn()
+	})
 }
 
 // withUserInstall serializes the whole apt/dpkg sequence for one user. It is

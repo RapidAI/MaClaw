@@ -165,7 +165,7 @@ func (s *Service) WriteFile(ctx context.Context, tenantID, userID, filePath, con
 	var output string
 	var container string
 	var onDesktop bool
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserFile(spec.TenantID, spec.UserID, filePath, func() error {
 		c, desk, cErr := s.toolContainer(ctx, spec)
 		if cErr != nil {
 			return cErr
@@ -208,7 +208,7 @@ func (s *Service) EditFile(ctx context.Context, tenantID, userID, filePath, old,
 	var exitCode int
 	// Read and write share one user lock. Releasing it between them lets
 	// another command from this user replace the file before the edit lands.
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserFile(spec.TenantID, spec.UserID, filePath, func() error {
 		c, desk, cErr := s.toolContainer(ctx, spec)
 		if cErr != nil {
 			return cErr
@@ -440,7 +440,7 @@ func (s *Service) UploadFile(ctx context.Context, tenantID, userID, filePath str
 	counted := &countingReader{r: io.LimitReader(body, desktop.UploadMax+1)}
 	var container string
 	var onDesktop bool
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserFile(spec.TenantID, spec.UserID, filePath, func() error {
 		c, desk, cErr := s.toolContainer(ctx, spec)
 		if cErr != nil {
 			return cErr
