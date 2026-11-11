@@ -7044,7 +7044,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 </p>
                             ) : null}
                             {collab.features.say ? (
-                                <BotSaidInline items={saidForChat(collab.said, selected.id, !!selected.primary, saidSince(messages.map(m => m.id)))} bots={bots} lookOf={lookOf} lang={lang} />
+                                <BotSaidInline items={saidForChat(collab.said, selected.id, !!selected.primary, saidSince(messages.map(m => m.id)), bots.map(b => b.id))} bots={bots} lookOf={lookOf} lang={lang} />
                             ) : null}
                             </div>
                         </div>

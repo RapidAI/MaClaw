@@ -22,6 +22,9 @@ describe('botCollab helpers', () => {
         const items = [said('1', 'a'), said('2', 'b'), said('3', 'a', 'room', 'r1')];
         expect(saidForChat(items, 'm', true).map(i => i.id)).toEqual(['1', '2']);
         expect(saidForChat(items, 'a', false).map(i => i.id)).toEqual(['1']);
+        // A bot with its own chat is heard only there, not again in the main bot's.
+        expect(saidForChat(items, 'm', true, 0, ['m', 'a']).map(i => i.id)).toEqual(['2']);
+        expect(saidForChat(items, 'a', false, 0, ['m', 'a']).map(i => i.id)).toEqual(['1']);
     });
     it('finds who answered after the last human message', () => {
         expect(answeredSinceLast([said('1', 'a'), said('2', 'human', 'room'), said('3', 'b'), said('4', 'a')])).toEqual(['b', 'a']);

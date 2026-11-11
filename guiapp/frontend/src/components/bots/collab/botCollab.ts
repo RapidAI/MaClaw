@@ -163,12 +163,18 @@ export function humanPrompt(a: Assignment, bots: BotRef[], lang = 'zh-Hans'): { 
     return null;
 }
 
-/** Messages to show in one bot's chat: its own direct messages; the main bot's chat shows every bot's. */
-export function saidForChat(items: SaidItem[], botId: string, isPrimary: boolean, sinceMs = 0): SaidItem[] {
+/**
+ * Messages to show in one bot's chat: its own direct messages. The main bot's
+ * chat also shows what a bot without a chat of its own said; a bot that has
+ * its own chat (ownChats) is heard only there (11-11 20:36: Bot 2's progress
+ * note showed in Bot 2's chat and again in Bot 1's, the main bot).
+ */
+export function saidForChat(items: SaidItem[], botId: string, isPrimary: boolean, sinceMs = 0, ownChats?: string[]): SaidItem[] {
     // The inline block renders below the transcript, so only what was said
     // after the chat's latest message belongs there. 10-31: a 10-28 15:26
     // 「今天适合喝乌龙茶…」 say stayed pinned under every newer reply.
-    return items.filter(i => i.kind === 'say' && i.target === 'human' && (isPrimary || i.from === botId)
+    const own = new Set(ownChats || []);
+    return items.filter(i => i.kind === 'say' && i.target === 'human' && (i.from === botId || (isPrimary && !own.has(i.from)))
         && (!sinceMs || Date.parse(String(i.created_at || '')) > sinceMs));
 }
 
