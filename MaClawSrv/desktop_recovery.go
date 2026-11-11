@@ -301,6 +301,14 @@ type desktopRecAttempt struct {
 	settled                             sync.Once
 	deadline                            time.Duration
 	note                                string
+	// recheck: the goal was stopped by an earlier run's unconfirmed write;
+	// this new run of the same instruction may try again only after the
+	// ledger guard reads the post list and does not find that post
+	// (recheckTitle is the stopped attempt's title hash, recheckOK the
+	// guard's answer).
+	recheck      bool
+	recheckTitle string
+	recheckOK    bool
 
 	mu       sync.Mutex
 	lease    *recovery.Lease
@@ -380,6 +388,28 @@ func desktopRecPublishGoal(sk, lineage, site, title string) string {
 		}
 	}
 	return base + "|12"
+}
+
+func desktopRecRanGoal(g *recovery.Goal, run string) bool {
+	for _, r := range g.Runs {
+		if r == run {
+			return true
+		}
+	}
+	return false
+}
+
+// desktopRecPendingRecheck: the pending publish attempt of this run waits
+// for a post-list check of a stopped goal's unconfirmed post (its title
+// hash); ok records the check's answer.
+func desktopRecPendingRecheck(scope agentruntime.Scope) (*desktopRecAttempt, string, bool) {
+	desktopRecStateMu.Lock()
+	defer desktopRecStateMu.Unlock()
+	att := desktopRecPendingAtt[desktopRecKey(scope)]
+	if att == nil || !att.recheck {
+		return nil, "", false
+	}
+	return att, att.recheckTitle, true
 }
 
 // desktopRecPublishCheck refuses a requirement lower than the pinned one.
@@ -485,7 +515,14 @@ func desktopRecoveryBefore(request agentruntime.TurnRequest, scope agentruntime.
 		desktopRecNoteRunGoal(scope.RunID, sk+"\x01"+goal)
 		// A cheap precheck; the attempt itself is admitted atomically when
 		// the pipeline acquires the goal (desktopRecoveryStartPublish).
-		if err := eng.Gate(sk, goal, "publish", att.strategy); err != nil {
+		if g != nil && g.State == recovery.StateStopped && !att.trial && !desktopRecRanGoal(g, scope.RunID) {
+			// The person asked again (a new run of the same instruction):
+			// the earlier unconfirmed post is looked up in the account's
+			// post list before anything is filled (desktopPublishLedgerGuard).
+			var ps desktopRecPublishSpec
+			_ = json.Unmarshal([]byte(g.Spec), &ps)
+			att.recheck, att.recheckTitle = true, ps.Title
+		} else if err := eng.Gate(sk, goal, "publish", att.strategy); err != nil {
 			return nil, err
 		}
 		desktopRecStateMu.Lock()
@@ -625,6 +662,11 @@ func desktopRecoveryStartPublish(scope agentruntime.Scope, spec *browser.Publish
 			log.Printf("[recovery] publish goal re-keyed %s -> %s (pipeline target)", att.goal, goal)
 			att.goal, att.surface = goal, "site:"+site+"|publish"
 			desktopRecNoteRunGoal(scope.RunID, att.sk+"\x01"+goal)
+		}
+	}
+	if att.recheck && att.recheckOK {
+		if eng.ReopenStopped(att.sk, att.goal, scope.RunID, "reopened: the earlier unconfirmed post is not in the account's post list") {
+			log.Printf("[recovery] publish goal %s reopened for run %s after a post-list check", att.goal, scope.RunID)
 		}
 	}
 	req, _ := json.Marshal(desktopRecPublishSpec{Pictures: len(spec.Files), Body: len([]rune(strings.TrimSpace(spec.Body))), Title: desktopRecHash(spec.Title)})

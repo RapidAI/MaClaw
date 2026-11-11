@@ -356,6 +356,9 @@ func desktopPublishLedgerGuard(scope agentruntime.Scope, session *browser.Browse
 	entries := desktopLedgerEntries(key)
 	host := desktopLedgerHost(firstNonEmptyStr(spec.EditorURL, session.CurrentURL()))
 	now := desktopLedgerNow()
+	if att, th, ok := desktopRecPendingRecheck(scope); ok {
+		return desktopPublishStoppedRecheck(scope, session, spec, args, entries, host, now, att, th)
+	}
 	if !desktopArgBool(args, "republish") {
 		// A submit that was never confirmed is not proof the post is up
 		// (run_6fa834e0: CSDN refused the near-empty post, the ledger said
@@ -449,4 +452,65 @@ func desktopLedgerKeysForRun(runID string) []string {
 		return []string{v.(string)}
 	}
 	return nil
+}
+
+// desktopPublishStoppedRecheck: an earlier run of the same instruction
+// clicked submit and never saw the result, so its goal was stopped. When
+// the person asks again, the account's post list decides: the earlier post
+// (by its own title, even if this call renames it) is there → report it,
+// nothing is posted; it is not there → this attempt may post. Without a
+// readable post list nothing is filled.
+func desktopPublishStoppedRecheck(scope agentruntime.Scope, session *browser.BrowserAgentSession, spec browser.PublishSpec, args map[string]any, entries []desktopLedgerEntry, host string, now time.Time, att *desktopRecAttempt, titleHash string) (string, bool, error) {
+	if spec.VerifyURL == "" && spec.VerifyAPI == "" {
+		return "", true, fmt.Errorf("publish refused: an earlier run's submit on this site was never confirmed; pass verify_url (the account's post list) so it can be ruled out first (nothing was filled or posted)")
+	}
+	titles := []string{}
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		if e.Kind != "posted" || now.Sub(e.At) > desktopRepostWindow || (host != "" && e.Host != "" && e.Host != host) {
+			continue
+		}
+		if titleHash != "" && desktopRecHash(e.Title) == titleHash {
+			titles = append(titles, e.Title)
+			break
+		}
+	}
+	if len(titles) == 0 {
+		if titleHash != "" && titleHash != desktopRecHash(spec.Title) {
+			return "", true, fmt.Errorf("publish refused: an earlier run's submit on this site was never confirmed and its title is not on record, so a duplicate cannot be ruled out; open the account's post list, tell the person what is there (nothing was filled or posted)")
+		}
+		titles = append(titles, spec.Title)
+	}
+	if !desktopSameTitle(titles[0], spec.Title) {
+		titles = append(titles, spec.Title)
+	}
+	for _, t := range titles {
+		look := spec
+		look.Title = t
+		rep, err := browser.FindPosted(session.PublishDriver(), look)
+		if err != nil {
+			return "", true, fmt.Errorf("publish refused: an earlier run's submit of 「%s」 was never confirmed and the post list could not be read to rule out a duplicate (%v); nothing was filled or posted", t, err)
+		}
+		found := rep != nil && rep.State == browser.PublishLive
+		link := ""
+		if rep != nil {
+			link = rep.ResultURL
+		}
+		desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{Kind: "checked", Host: host, Title: t, URL: link, Run: scope.RunID, Found: found, Detail: "stopped_recheck"})
+		if found {
+			desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{Kind: "posted", Host: host, Title: t, URL: link, Run: scope.RunID, Detail: "found_in_list"})
+			out := "publish skipped: the earlier submit 「" + t + "」 did go out — it is in the account's post list"
+			if link != "" {
+				out += ", link " + link
+			}
+			return out + ". Nothing was filled or posted. Report that it is live.", true, nil
+		}
+	}
+	if desktopArgBool(args, "check_posted") {
+		return "publish check_posted: the earlier unconfirmed submit 「" + titles[0] + "」 is not in the account's post list (read-only check). Nothing was filled or posted. To post it, call publish again without check_posted, with the full body and picture files.", true, nil
+	}
+	desktopRecStateMu.Lock()
+	att.recheckOK = true
+	desktopRecStateMu.Unlock()
+	return "", false, nil
 }

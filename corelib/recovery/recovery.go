@@ -824,6 +824,30 @@ func (e *Engine) Reopen(scope, goal, why string) {
 	})
 }
 
+// ReopenStopped lets a new run of the same instruction try a goal that was
+// stopped because its consequential write went out unconfirmed — only after
+// the caller has read the real state and found the write did not take
+// effect (e.g. the post is not in the account's post list). A run that
+// already worked on the goal, or a goal held by a live attempt, is not
+// reopened.
+func (e *Engine) ReopenStopped(scope, goal, run, why string) bool {
+	reopened := false
+	_ = e.tx(scope, goal, func(f *scopeFile, g *Goal, now time.Time) (*Goal, bool, error) {
+		if g == nil || g.State != StateStopped || g.Lease != nil || run == "" {
+			return nil, false, nil
+		}
+		for _, r := range g.Runs {
+			if r == run {
+				return nil, false, nil
+			}
+		}
+		g.State, g.Reason, g.Updated = StateActive, why, now
+		reopened = true
+		return g, true, nil
+	})
+	return reopened
+}
+
 // observe decides what one attempt means (inside the transaction).
 func (e *Engine) observe(f *scopeFile, g *Goal, o Observation, now time.Time, count bool) Verdict {
 	if o.Surface != "" {

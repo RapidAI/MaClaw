@@ -271,3 +271,34 @@ func TestConfigFromEnv(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 }
+
+// papers 11-11: the person sent the same instruction again after an
+// unconfirmed submit; once the caller has read the real state, a new run
+// may try again — the run that stopped it, or a held goal, may not.
+func TestReopenStoppedOnlyForANewRun(t *testing.T) {
+	e, _ := newEngine(t, DefaultConfig())
+	l, _, err := e.Acquire(sc, AttemptRequest{Goal: "g", Surface: "site:x|publish", Method: "publish", Run: "run1", Consequential: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := obs("g", "", false, "no evidence after submit", nil)
+	o.Side = "unconfirmed"
+	if v := e.Finish(sc, l.ID, o); v.State != StateStopped {
+		t.Fatalf("%+v", v)
+	}
+	if e.ReopenStopped(sc, "g", "run1", "x") {
+		t.Fatal("the run that stopped it reopened it")
+	}
+	if e.ReopenStopped(sc, "g", "", "x") {
+		t.Fatal("no run")
+	}
+	if !e.ReopenStopped(sc, "g", "run2", "post not in list") {
+		t.Fatal("new run not reopened")
+	}
+	if err := e.Gate(sc, "g", "publish", ""); err != nil {
+		t.Fatalf("reopened goal still refused: %v", err)
+	}
+	if e.ReopenStopped(sc, "g", "run3", "x") {
+		t.Fatal("an active goal is not 'reopened'")
+	}
+}
