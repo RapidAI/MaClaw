@@ -465,6 +465,7 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 	}
 	desktopNoteStepResult(desktopOwner(scope), err)
 	desktopNoteWorkStep(desktopOwner(scope), actionName, err)
+	desktopRunProgressSay(desktopOwner(scope), actionName, out, err)
 	desktopExperienceRecord(scope, desktopRunSite(desktopOwner(scope)), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	failWarn := desktopFailClassRecord(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	desktopNotePublishAttempt(desktopOwner(scope), actionName, args)
