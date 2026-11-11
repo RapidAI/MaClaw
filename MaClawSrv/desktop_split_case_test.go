@@ -110,7 +110,8 @@ func TestDesktopBotSplitCases(t *testing.T) {
 			"history":      "上一轮",
 			"transcript":   "工具记录",
 		})
-		if err != nil || text != "ok" {
+		// The run's project-folder note may lead the first result.
+		if err != nil || !strings.HasSuffix(text, "ok") {
 			t.Fatalf("text=%q err=%v", text, err)
 		}
 		mu.Lock()
@@ -139,7 +140,7 @@ func TestDesktopBotSplitCases(t *testing.T) {
 		if err := json.Unmarshal(body["args"], &args); err != nil {
 			t.Fatal(err)
 		}
-		if len(args) != 1 || args["command"] != "ls /home/desktop" {
+		if cmd, _ := args["command"].(string); len(args) != 1 || !strings.HasSuffix(cmd, "&& ls /home/desktop") {
 			t.Fatalf("args = %#v", args)
 		}
 		raw, _ := json.Marshal(body)

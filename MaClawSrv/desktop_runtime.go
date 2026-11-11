@@ -102,7 +102,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"A probe with no filter that finds no element ref includes one desktop image so you can see the page. If a filter matches nothing, probe again without it. The next web step is still an element ref, not a pixel click. " +
 			"For other applications, action=app_open with program starts that program in a window on this desktop. xfce4-terminal is already installed. xterm is another terminal when it is installed. app_open is not a shell. The new window does not use the Chinese input method, so ASCII typed into it is literal. Then action=app_list, then action=app_run with steps focus, type, key, or click. One type step can contain several lines. The terminal is a shell, so write the source as a heredoc in that step and compile on the next line. app_run focus only activates a window that is already open. exit status 1 from focus means that window is not open; start it with app_open. " +
 			"action=install with packages installs those Debian packages in this desktop container. " +
-			"action=file_read, file_write, file_edit, and file_list use a path inside this container, such as /home/desktop/Desktop/a.c or ~/Desktop/a.c. action=bash runs one command in this container and returns its output. A one-off script is file_write, then bash. " +
+			"action=file_read, file_write, file_edit, and file_list use a path inside this container. Each run has its own project folder (named in the first file or bash result): bash starts there and a relative path such as a.c resolves there. Keep code, logs and temporary files in it; the Desktop and the home folder are the person's, so write there only when the person asked for that place (user_location=true). action=bash runs one command in this container and returns its output. A one-off script is file_write, then bash. " +
 			"A job expected to run for minutes or more (training, a remote compile, a large download, anything started with nohup or background=true) must be started in the background: action=bash with background=true (or the same command you would have waited on). That starts it detached, stores its status, and a watcher polls pid, logs and metrics on a timer; this turn then ends. Do not block this run waiting for it to finish. Progress, stalls, failures and completion are sent to this chat with evidence from the last poll. action=job_status (optional job_id=) and job_list look at that state without waiting. " +
 			"A machine outside this desktop uses the ssh tool: connect, then exec or exec_background. A command that should keep running uses exec_background, then check_task. action=bash stays inside this container. " +
 			"action=screenshot returns an image of the whole desktop; its pixel coordinates are the ones app_run click uses. " +
@@ -141,7 +141,8 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"parent_id":          map[string]any{"type": "string", "description": "delegate: the assignment this one follows from."},
 				"reviewer":           map[string]any{"type": "string", "description": "delegate: a teammate bot that reviews the result (name, partial name or id)."},
 				"reason":             map[string]any{"type": "string", "description": "request_takeover: one short sentence for the person, what they need to do on this desktop (log in, enter the 2FA code, solve the captcha)."},
-				"path":               map[string]any{"type": "string", "description": "Container path. file_read, file_write, file_edit, and file_list use it as the file. action=deliver attaches that existing file, such as /home/desktop/Desktop/北京天气.pdf. /home/desktop/Desktop/a.c and ~/Desktop/a.c are the same folder."},
+				"path":               map[string]any{"type": "string", "description": "Container path. file_read, file_write, file_edit, and file_list use it as the file; a relative path is inside this run's project folder. action=deliver attaches that existing file, such as report.pdf in the project folder. ~/x is /home/desktop/x."},
+				"user_location":      map[string]any{"type": "boolean", "description": "file_write: true only when the person asked for the file at that place (for example on their Desktop). Otherwise a write to the Desktop or home folder goes to this run's project folder."},
 				"old_string":         map[string]any{"type": "string", "description": "Exact passage file_edit replaces. It must occur once."},
 				"new_string":         map[string]any{"type": "string", "description": "Replacement text for file_edit."},
 				"command":            map[string]any{"type": "string", "description": "Command for action=bash. It runs in this container and the result is its output. A minutes-long job uses background=true so this turn does not wait."},
@@ -760,6 +761,8 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			return "", fmt.Errorf("%s", desktopbot.PlanPhaseNextStep)
 		}
 		defer beginDesktopActivity(scope.RunID, "正在交付")()
+		// A relative or moved path is the one this run's folder holds.
+		_ = desktopApplyWorkdir(scope, action, args)
 		return deliverDesktopDocument(ctx, scope, args)
 	}
 	if action == "request_takeover" {
@@ -840,8 +843,18 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 				return "", err
 			}
 		}
+		workNote := desktopApplyWorkdir(scope, action, args)
+		withNote := func(text string, err error) (string, error) {
+			if err == nil && workNote != "" {
+				text = workNote + text
+			}
+			return text, err
+		}
+		// The row names this step on the Hub path too; without it the row kept
+		// whatever the last screen step or wake said.
+		defer beginDesktopActivity(scope.RunID, desktopContainerPhrase(action))()
 		if desktopHubExecutesTool() {
-			return runDesktopHubTool(ctx, scope, action, args)
+			return withNote(runDesktopHubTool(ctx, scope, action, args))
 		}
 		userKey, keyErr := desktopUserKey(scope)
 		if keyErr != nil {
@@ -850,8 +863,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		if _, err := ensureDesktopRound(ctx, scope, userKey, false); err != nil {
 			return "", err
 		}
-		defer beginDesktopActivity(scope.RunID, desktopContainerPhrase(action))()
-		return operateDesktopContainer(ctx, scope, action, args)
+		return withNote(operateDesktopContainer(ctx, scope, action, args))
 	}
 	var installPackages []string
 	if action == "install" {
@@ -4199,10 +4211,16 @@ func desktopWakeForStep(ctx context.Context, scope agentruntime.Scope, userKey s
 	// queueing on the gate below). The step's own label comes back after.
 	prev := loadDesktopActivity(scope.RunID)
 	labelled := make(chan struct{})
-	timer := time.AfterFunc(desktopWakeLabelAfter, func() {
+	label := func() {
 		setDesktopActivity(scope.RunID, "正在唤醒电脑")
 		close(labelled)
-	})
+	}
+	var timer *time.Timer
+	if desktopWakeLabelAfter <= 0 {
+		label()
+	} else {
+		timer = time.AfterFunc(desktopWakeLabelAfter, label)
+	}
 	// Same gate the run admission holds: a wake never races a stop that is
 	// still writing the website login.
 	owner := desktopOwner(scope)
@@ -4210,7 +4228,7 @@ func desktopWakeForStep(ctx context.Context, scope agentruntime.Scope, userKey s
 	gate.Lock()
 	endpoint, err := desktopSession(ctx, scope, userKey)
 	gate.Unlock()
-	if !timer.Stop() {
+	if timer == nil || !timer.Stop() {
 		<-labelled
 		if prev == "" || prev == "正在唤醒电脑" {
 			prev = desktopActivityThinking

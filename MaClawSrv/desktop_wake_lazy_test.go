@@ -25,6 +25,10 @@ func TestRunAdmissionLeavesTheDesktopAsleepUntilAStepNeedsIt(t *testing.T) {
 		desktopRuns = map[string]int{}
 		desktopRunsMu.Unlock()
 	})
+	// The label shows only for a slow wake; zero shows it at once.
+	oldAfter := desktopWakeLabelAfter
+	desktopWakeLabelAfter = 0
+	t.Cleanup(func() { desktopWakeLabelAfter = oldAfter })
 	release := occupyUserDesktop(context.Background(), "tenant", "lazy", "")
 	defer release()
 	if opened != 0 {
