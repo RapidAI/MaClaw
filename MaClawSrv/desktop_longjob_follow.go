@@ -59,11 +59,23 @@ func desktopLongJobWatchReply(reply string) string {
 	if reply == "" || strings.Contains(reply, desktopLongJobSilentToken) {
 		return ""
 	}
-	// A server-started turn's reply goes out as text: nothing is attached.
 	return correctDesktopAttachClaim(reply, 0)
 }
 
+// desktopLongJobWatchReplyWith: attached is how many files go out with it.
+func desktopLongJobWatchReplyWith(reply string, attached int) string {
+	reply = strings.TrimSpace(reply)
+	if reply == "" || strings.Contains(reply, desktopLongJobSilentToken) {
+		return ""
+	}
+	return correctDesktopAttachClaim(reply, attached)
+}
+
 func desktopLongJobFollowRun(ctx context.Context, p agentservice.Principal, j *desktopLongJob, runID string, dec desktopLongJobDecision) {
+	desktopLongJobFollowRunFiles(ctx, p, j, runID, dec, nil)
+}
+
+func desktopLongJobFollowRunFiles(ctx context.Context, p agentservice.Principal, j *desktopLongJob, runID string, dec desktopLongJobDecision, files *desktopWatchFiles) {
 	if j == nil || strings.TrimSpace(runID) == "" {
 		return
 	}
@@ -88,15 +100,21 @@ func desktopLongJobFollowRun(ctx context.Context, p agentservice.Principal, j *d
 			log.Printf("[desktop-longjob] job=%s watch run %s ended %s", jobID, runID, status)
 			return
 		}
-		if desktopLongJobRunSaid(instanceID, runID) {
+		attached := files.take()
+		spoke := desktopLongJobRunSaid(instanceID, runID)
+		if spoke && len(attached) == 0 {
 			log.Printf("[desktop-longjob] job=%s watch run %s (%s) spoke itself", jobID, runID, dec)
 			return
 		}
-		text := desktopLongJobWatchReply(reply)
-		if text == "" {
+		text := ""
+		if !spoke {
+			text = desktopLongJobWatchReplyWith(reply, len(attached))
+		}
+		if text == "" && len(attached) == 0 {
 			log.Printf("[desktop-longjob] job=%s watch run %s (%s): nothing new, silent", jobID, runID, dec)
 			return
 		}
+		text = desktopWatchFilesText(text, attached)
 		cur := desktopLongJobGet(jobID)
 		if cur == nil {
 			cur = j
@@ -109,11 +127,24 @@ func desktopLongJobFollowRun(ctx context.Context, p agentservice.Principal, j *d
 			"text":        text,
 			"key":         desktopMessageKey(instanceID+"|"+runID, "watch-reply", text),
 		}
-		if err := desktopLongJobSayFunc(context.WithoutCancel(ctx), body); err != nil && !strings.Contains(err.Error(), "ALREADY_SAID") && !strings.Contains(err.Error(), "409") {
+		if len(attached) > 0 {
+			body["files"] = desktopWatchFilesBody(attached)
+		}
+		err = desktopLongJobSayFunc(context.WithoutCancel(ctx), body)
+		if err != nil && len(attached) > 0 && desktopSayRefusedFiles(err) {
+			// An older Hub reads a small say body only: say the text and
+			// name the files that stayed on the computer.
+			delete(body, "files")
+			body["text"] = correctDesktopAttachClaim(text, 0) + "\n" + desktopWatchFilesMissed(attached)
+			body["key"] = desktopMessageKey(instanceID+"|"+runID, "watch-reply-nofiles", text)
+			err = desktopLongJobSayFunc(context.WithoutCancel(ctx), body)
+			attached = nil
+		}
+		if err != nil && !strings.Contains(err.Error(), "ALREADY_SAID") && !strings.Contains(err.Error(), "409") {
 			log.Printf("[desktop-longjob] job=%s watch run %s reply not delivered: %v", jobID, runID, err)
 			return
 		}
-		log.Printf("[desktop-longjob] job=%s watch run %s (%s) reply delivered len=%d", jobID, runID, dec, len([]rune(text)))
+		log.Printf("[desktop-longjob] job=%s watch run %s (%s) reply delivered len=%d files=%d", jobID, runID, dec, len([]rune(text)), len(attached))
 		if cur != nil {
 			cur.LastNotice = desktopLongJobNow()
 			_ = desktopLongJobSave(cur)

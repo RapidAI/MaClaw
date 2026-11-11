@@ -1243,10 +1243,14 @@ func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopL
 		}
 	}
 	in := agentservice.SendMessageInput{Content: desktopLongJobWatchPrompt(j, dec), SessionID: j.SessionID, Metadata: map[string]string{"long_job_id": j.ID, "long_job_watch": string(dec)}}
+	// The turn gets its own file slot, so action=deliver works here too; the
+	// follower says the files with the turn's reply (desktop_longjob_files.go).
+	files := &desktopWatchFiles{}
+	in.PrepareExecution = files.prepare
 	_, run, err := svc.SendMessageAsync(context.WithoutCancel(ctx), principal, j.InstanceID, in)
 	if err == nil && run != nil {
 		desktopLongJobNoteWatchRun(run.ID, j.ID)
-		go desktopLongJobFollowRun(context.WithoutCancel(ctx), principal, j, run.ID, dec)
+		go desktopLongJobFollowRunFiles(context.WithoutCancel(ctx), principal, j, run.ID, dec, files)
 	}
 	return err
 }

@@ -712,3 +712,60 @@ func TestD114JobStartedInWatcherTurnIsNextRound(t *testing.T) {
 		t.Fatalf("resume prompt lacks policy")
 	}
 }
+
+// papers 11-12 01:09: a resume turn's REPORT.md could not reach the chat.
+// Now the turn has a slot; its delivered files go out with its reply, and
+// an older Hub that refuses the larger body still gets the text.
+func TestD115WatchTurnFilesGoWithTheReply(t *testing.T) {
+	d100Env(t)
+	desktopLongJobSleep = func(ctx context.Context, d time.Duration) bool { return true }
+	var sent []map[string]any
+	oldSay, oldGet := desktopLongJobSayFunc, desktopLongJobRunGetter
+	t.Cleanup(func() { desktopLongJobSayFunc, desktopLongJobRunGetter = oldSay, oldGet })
+	refuse := false
+	desktopLongJobSayFunc = func(ctx context.Context, body map[string]any) error {
+		if refuse && body["files"] != nil {
+			return errors.New("hub say: status 400: invalid say request")
+		}
+		sent = append(sent, body)
+		return nil
+	}
+	reply := "评估完成，报告已附在这条消息里。"
+	desktopLongJobRunGetter = func(ctx context.Context, p agentservice.Principal, inst, sess, run string) (agentservice.RunStatus, string, error) {
+		return agentservice.RunStatusSucceeded, reply, nil
+	}
+	deliver := func() *desktopWatchFiles {
+		w := &desktopWatchFiles{}
+		ctx := w.prepare(context.Background())
+		if err := noteDesktopFile(ctx, "REPORT.md", "text/markdown", []byte("# F1 0.79")); err != nil {
+			t.Fatalf("deliver in a watcher turn: %v", err)
+		}
+		return w
+	}
+	j := &desktopLongJob{ID: "job_f", InstanceID: "inst_1", SessionID: "s1", UserID: "u1::desk::bot_1", TenantID: "t"}
+	desktopLongJobFollowRunFiles(context.Background(), agentservice.Principal{}, j, "run_f1", longJobResume, deliver())
+	if len(sent) != 1 {
+		t.Fatalf("sent %v", sent)
+	}
+	files, _ := sent[0]["files"].([]map[string]string)
+	if len(files) != 1 || files[0]["name"] != "REPORT.md" || files[0]["data"] == "" || sent[0]["text"] != reply {
+		t.Fatalf("say %v", sent[0])
+	}
+	// The turn spoke itself: only its files are said, once.
+	sent = nil
+	desktopSayRuns.allow("inst_1|run_f2|", false, time.Now())
+	desktopLongJobFollowRunFiles(context.Background(), agentservice.Principal{}, j, "run_f2", longJobResume, deliver())
+	if len(sent) != 1 || !strings.Contains(sent[0]["text"].(string), "REPORT.md") || sent[0]["files"] == nil {
+		t.Fatalf("spoke-itself files %v", sent)
+	}
+	// An older Hub: text only, with the files named and the claim corrected.
+	sent, refuse = nil, true
+	desktopLongJobFollowRunFiles(context.Background(), agentservice.Principal{}, j, "run_f3", longJobResume, deliver())
+	if len(sent) != 1 || sent[0]["files"] != nil {
+		t.Fatalf("fallback %v", sent)
+	}
+	text := sent[0]["text"].(string)
+	if !strings.Contains(text, "还在电脑上：REPORT.md") || !strings.Contains(text, desktopAttachCorrection) {
+		t.Fatalf("fallback text %q", text)
+	}
+}
