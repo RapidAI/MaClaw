@@ -72,3 +72,18 @@ func TestTrimRemoteControlTextKeepsShortMessages(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestRemoteControlTurnDisplayTextMarksOrigin(t *testing.T) {
+	// The controlled desktop shows the controller's message as a user row;
+	// the bracket marks it did not come from this keyboard (like the ACP
+	// Mode B prefix).
+	got := remoteControlTurnDisplayText("生成pdf")
+	if !strings.HasPrefix(got, "〔") || !strings.Contains(got, "生成pdf") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEmitAIAssistantForegroundRoundStartedNoWailsContext(t *testing.T) {
+	// Without a Wails lifecycle context the emit is a no-op, not a panic.
+	(&App{}).emitAIAssistantForegroundRoundStarted("req-1", "desktop-user", "hi", "〔远控〕hi")
+}

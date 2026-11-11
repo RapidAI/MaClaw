@@ -53,6 +53,23 @@
   `sync.Once` vs `remoteSessionsMu` (ABBA across tests); the same tests pass
   in isolation.
 
+## Assistant chat event protocol (guiapp)
+
+- The panel renders assistant output only into an `ActiveRound` keyed by
+  `request_id`. UI-initiated sends create the round in
+  `useAIAssistant.sendMessage`; **backend-initiated turns must first emit
+  `ai-assistant-foreground-round-started`** (`AIAssistantStreamEvent` with
+  `request_id`/`session_key`/`display_text`) or every
+  `ai-assistant-token/progress/response` is dropped as unmatched.
+- Emit via `App.emitAIAssistantStreamEvent(name, event)` — the shared marshal
+  + `emitEvent` transport. Round-start callers today: session-round and goal
+  continuations, horizon, ACP Mode B (`mirrorACPToGUI`), and remote-control
+  sends (`runAIAssistantMessageAsyncForUser` when `req.RemoteControl`).
+- `session_key` routes to the task tab (`desktop-user:<projectPath>`); a
+  non-matching session becomes an offscreen live round adopted when its tab
+  is opened. `display_text` is the user-row text (external origins use a
+  `〔…〕` prefix, e.g. `〔远控〕`, `〔VS Code / ACP〕`).
+
 ## Model memory lifecycle
 
 - Heavy models live behind `corelib/modelmanager`: first `Acquire` loads,

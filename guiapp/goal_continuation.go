@@ -1,7 +1,6 @@
 package guiapp
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -1709,15 +1708,10 @@ func (e *GoalContinuationEngine) emitAssistantStreamEvent(name, requestID, userI
 }
 
 func (e *GoalContinuationEngine) emitAssistantStreamEventWithDisplayText(name, requestID, userID, text, displayText string) {
-	if e == nil || e.app == nil || e.app.ctx == nil {
+	if e == nil {
 		return
 	}
-	payload, err := json.Marshal(AIAssistantStreamEvent{RequestID: requestID, Text: text, SessionKey: userID, DisplayText: displayText})
-	if err != nil {
-		log.Printf("[goal-continuation] marshal %s event failed: %v", name, err)
-		return
-	}
-	e.app.emitEvent(name, string(payload))
+	e.app.emitAIAssistantStreamEvent(name, AIAssistantStreamEvent{RequestID: requestID, Text: text, SessionKey: userID, DisplayText: displayText})
 }
 
 func buildContinuationDisplayText(g *goal.Goal) string {

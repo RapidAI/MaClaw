@@ -487,16 +487,12 @@ func (h *IMMessageHandler) emitHorizonEvent(name, requestID, userID, text string
 	if sess := h.loadHorizonSessionOrRunning(userID); sess != nil {
 		scope = sess.eventScopeID
 	}
-	payload, err := json.Marshal(AIAssistantStreamEvent{
+	h.app.emitAIAssistantStreamEvent(name, AIAssistantStreamEvent{
 		RequestID:    requestID,
 		Text:         text,
 		SessionKey:   userID,
 		EventScopeID: scope,
 	})
-	if err != nil {
-		return
-	}
-	h.app.emitEvent(name, string(payload))
 }
 
 func (h *IMMessageHandler) emitHorizonAssistantReply(sess *horizonSession, text string) {
@@ -518,16 +514,13 @@ func (h *IMMessageHandler) emitHorizonAssistantReply(sess *horizonSession, text 
 	scope := sess.eventScopeID
 	sess.mu.Unlock()
 	requestID := fmt.Sprintf("horizon-%s-%d", strings.TrimSpace(taskID), seq)
-	roundEvt, err := json.Marshal(AIAssistantStreamEvent{
+	h.app.emitAIAssistantStreamEvent("ai-assistant-foreground-round-started", AIAssistantStreamEvent{
 		RequestID:    requestID,
 		Text:         text,
 		SessionKey:   ownerID,
 		DisplayText:  "\u3010Horizon\u3011",
 		EventScopeID: scope,
 	})
-	if err == nil {
-		h.app.emitEvent("ai-assistant-foreground-round-started", string(roundEvt))
-	}
 	h.app.emitAIAssistantResponse(requestID, &IMAgentResponse{
 		Text:         text,
 		RequestID:    requestID,

@@ -1,7 +1,6 @@
 package guiapp
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -365,20 +364,15 @@ func (h *IMMessageHandler) emitSessionRoundStarted(requestID, userID, prompt, di
 }
 
 func (h *IMMessageHandler) emitSessionRoundEvent(name, requestID, userID, text, displayText string) {
-	if h == nil || h.app == nil || h.app.ctx == nil {
+	if h == nil {
 		return
 	}
-	payload, err := json.Marshal(AIAssistantStreamEvent{
+	h.app.emitAIAssistantStreamEvent(name, AIAssistantStreamEvent{
 		RequestID:   requestID,
 		Text:        text,
 		SessionKey:  userID,
 		DisplayText: displayText,
 	})
-	if err != nil {
-		log.Printf("[session-round] marshal %s failed: %v", name, err)
-		return
-	}
-	h.app.emitEvent(name, string(payload))
 }
 
 func isSessionRoundContinuation(text string) bool {

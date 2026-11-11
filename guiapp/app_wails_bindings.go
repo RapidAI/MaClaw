@@ -3128,6 +3128,13 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	if req.StartNewTask && a.isDesktopCodingWorkbenchSession(userID, projectPath) {
 		a.revokeDesktopCodingTaskRelation(userID)
 	}
+	// A remote-control turn starts on the backend: the panel never sent this
+	// request, so it has no in-flight round for the request_id. Announce the
+	// round first (same protocol as session-round/goal continuation and ACP
+	// Mode B) or every token/progress below is dropped as unmatched.
+	if req.RemoteControl {
+		a.emitAIAssistantForegroundRoundStarted(requestID, userID, text, remoteControlTurnDisplayText(text))
+	}
 	streamEvents = newAIAssistantStreamEventEmitter(a, requestID, userID)
 	emitEvent := func(name, value string) {
 		streamEvents.emit(name, value)
@@ -3400,11 +3407,46 @@ func (a *App) emitStreamingToken(requestID, sessionKey, text string) {
 	if strings.HasPrefix(strings.TrimSpace(requestID), "desktop-bot-") {
 		return
 	}
-	payload, err := json.Marshal(AIAssistantStreamEvent{RequestID: requestID, Text: text, SessionKey: sessionKey})
-	if err != nil {
+	a.emitAIAssistantStreamEvent("ai-assistant-token", AIAssistantStreamEvent{RequestID: requestID, Text: text, SessionKey: sessionKey})
+}
+
+// emitAIAssistantStreamEvent is the shared transport for assistant stream
+// events. The panel routes each payload to a task tab by session_key and to
+// a live round by request_id.
+func (a *App) emitAIAssistantStreamEvent(name string, event AIAssistantStreamEvent) {
+	if a == nil || a.ctx == nil {
 		return
 	}
-	a.emitEvent("ai-assistant-token", string(payload))
+	payload, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("[AI assistant] marshal %s event failed: %v", name, err)
+		return
+	}
+	a.emitEvent(name, string(payload))
+}
+
+// emitAIAssistantForegroundRoundStarted announces a backend-initiated turn so
+// the panel can open a round (user row + assistant placeholder) before its
+// tokens/progress arrive. Without it the frontend drops every stream event
+// whose request_id matches no round. Same event the session-round, goal, and
+// horizon continuations emit; ACP Mode B does this in mirrorACPToGUI.
+func (a *App) emitAIAssistantForegroundRoundStarted(requestID, sessionKey, prompt, displayText string) {
+	if requestID == "" {
+		return
+	}
+	a.emitAIAssistantStreamEvent("ai-assistant-foreground-round-started", AIAssistantStreamEvent{
+		RequestID:   requestID,
+		Text:        prompt,
+		SessionKey:  sessionKey,
+		DisplayText: displayText,
+	})
+}
+
+// remoteControlTurnDisplayText is the user row shown on the controlled
+// desktop for a message typed on the controller. The bracket marks the
+// external origin, like the ACP Mode B prefix.
+func remoteControlTurnDisplayText(text string) string {
+	return "〔远控〕" + text
 }
 
 // emitAIAssistantResponse emits the final response for an async agent loop
@@ -3478,8 +3520,7 @@ func (a *App) SendBtwQuery(query string, requestID string) (*IMAgentResponse, er
 	// Stream tokens and progress via dedicated /btw event channels so they
 	// don't interfere with the main chat's streaming events.
 	emitEvent := func(name, value string) {
-		payload, _ := json.Marshal(AIAssistantStreamEvent{RequestID: requestID, Text: value})
-		a.emitEvent(name, string(payload))
+		a.emitAIAssistantStreamEvent(name, AIAssistantStreamEvent{RequestID: requestID, Text: value})
 	}
 	onProgress := func(text string) {
 		emitEvent("ai-btw-progress", text)

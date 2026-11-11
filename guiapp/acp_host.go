@@ -1073,42 +1073,29 @@ func (a *App) mirrorACPToGUI(role, text, requestID, sessionKey, projectPath stri
 	// Emit immediately: useAIAssistant accepts acp- rounds without active-tab
 	// match, so a delay only raced early tokens/progress against an empty
 	// in-flight map. Project-tab open still runs via acp-mode-b-message above.
-	roundEvt, err := json.Marshal(AIAssistantStreamEvent{
+	a.emitAIAssistantStreamEvent("ai-assistant-foreground-round-started", AIAssistantStreamEvent{
 		RequestID:   requestID,
 		Text:        text,
 		SessionKey:  uiSession,
 		DisplayText: display,
 	})
-	if err == nil {
-		a.emitEvent("ai-assistant-foreground-round-started", string(roundEvt))
-	}
 	a.appendACPRoundToUIState(display, requestID, uiSession)
 }
 
 func (a *App) mirrorACPToken(requestID, sessionKey, delta string) {
-	uiSession := acpMirrorUISessionKey("", sessionKey)
-	payload, err := json.Marshal(AIAssistantStreamEvent{
+	a.emitAIAssistantStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
 		RequestID:  requestID,
 		Text:       delta,
-		SessionKey: uiSession,
+		SessionKey: acpMirrorUISessionKey("", sessionKey),
 	})
-	if err != nil {
-		return
-	}
-	a.emitEvent("ai-assistant-token", string(payload))
 }
 
 func (a *App) mirrorACPProgress(requestID, sessionKey, text string) {
-	uiSession := acpMirrorUISessionKey("", sessionKey)
-	payload, err := json.Marshal(AIAssistantStreamEvent{
+	a.emitAIAssistantStreamEvent("ai-assistant-progress", AIAssistantStreamEvent{
 		RequestID:  requestID,
 		Text:       text,
-		SessionKey: uiSession,
+		SessionKey: acpMirrorUISessionKey("", sessionKey),
 	})
-	if err != nil {
-		return
-	}
-	a.emitEvent("ai-assistant-progress", string(payload))
 }
 
 func (a *App) mirrorACPFinal(requestID, sessionKey string, resp *IMAgentResponse) {

@@ -2670,6 +2670,49 @@ describe('useAIAssistant property tests', () => {
         expect(assistantMessages(result.current.messages)[0].content).toBe('');
     });
 
+    it('shows remote-control turns as foreground chat on the controlled desktop', async () => {
+        const session = 'desktop-user:C:/work/tasks/remote';
+        const { result } = renderAssistantHook({ activeSessionKey: session });
+        const requestId = 'desktop-ai-1700000000123456';
+        const displayText = '〔远控〕北京天气，生成pdf';
+
+        // The controlled desktop never sent this message: the backend must
+        // announce the round or every stream event below is dropped as
+        // unmatched, leaving the task chat empty while the task runs.
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: requestId,
+                session_key: session,
+                text: '北京天气，生成pdf',
+                display_text: displayText,
+            });
+        });
+
+        expect(result.current.sending).toBe(true);
+        const userRows = result.current.messages.filter(message => message.role === 'user');
+        expect(userRows).toHaveLength(1);
+        expect(userRows[0].content).toBe(displayText);
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: requestId, session_key: session, text: '正在生成PDF' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: requestId, session_key: session, text: 'Coding Agent: 写入文件' });
+        });
+        expect(assistantMessages(result.current.messages)[0].content).toBe('正在生成PDF');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-stream-done', { request_id: requestId, session_key: session });
+            emitRuntimeEvent('ai-assistant-response', {
+                request_id: requestId,
+                session_key: session,
+                text: '已生成北京天气.pdf',
+                error: '',
+            });
+        });
+        expect(result.current.sending).toBe(false);
+        expect(assistantMessages(result.current.messages).at(-1)?.content).toBe('已生成北京天气.pdf');
+    });
+
     it('stays busy across a quiet continuation until the next round or the hold expires', async () => {
         vi.useFakeTimers();
         try {
