@@ -464,3 +464,19 @@ func TestD108QuietJobInsideEstimateIsNotStalled(t *testing.T) {
 		t.Fatalf("past estimate: %s", j.Status)
 	}
 }
+
+func TestD108BotReestimateMovesEstimateEnd(t *testing.T) {
+	now := time.Date(2026, 11, 11, 23, 3, 0, 0, time.Local)
+	j := &desktopLongJob{Started: now.Add(-13 * time.Minute), EstimateEnd: now.Add(7 * time.Minute)}
+	if !desktopLongJobSetCheck(j, map[string]any{"next_check_minutes": 46.0}, now) {
+		t.Fatal("not set")
+	}
+	if !j.EstimateEnd.Equal(j.NextCheck) {
+		t.Fatalf("estimate %v next %v", j.EstimateEnd, j.NextCheck)
+	}
+	early := j.EstimateEnd
+	desktopLongJobSetCheck(j, map[string]any{"next_check_minutes": 5.0}, now)
+	if !j.EstimateEnd.Equal(early) {
+		t.Fatalf("a short check pulled the estimate in: %v", j.EstimateEnd)
+	}
+}

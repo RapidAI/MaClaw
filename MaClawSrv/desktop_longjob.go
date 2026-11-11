@@ -720,7 +720,11 @@ func desktopLongJobPollAndStore(ctx context.Context, j *desktopLongJob) error {
 		// many jobs write progress to their own files (papers 11-11 23:05:
 		// BERT training logged to its run folder, job.log stayed at "training
 		// start", and the bot was told it had stalled with 34 minutes to go).
-		inEstimate := !j.EstimateEnd.IsZero() && now.Before(j.EstimateEnd)
+		end := j.EstimateEnd
+		if j.CheckSet && j.NextCheck.After(end) {
+			end = j.NextCheck
+		}
+		inEstimate := !end.IsZero() && now.Before(end)
 		if !j.LastChange.IsZero() && now.Sub(j.LastChange) >= j.stallBound() && !inEstimate {
 			j.Status = "stalled"
 		} else {
@@ -926,7 +930,9 @@ func desktopLongJobSetCheck(j *desktopLongJob, args map[string]any, now time.Tim
 	if j.CheckReason == "" {
 		j.CheckReason = "bot 自己估算的查看时间"
 	}
-	if j.EstimateEnd.IsZero() {
+	// The bot's newer estimate moves the end out (papers 11-11: the first
+	// estimate said 23:10, the bot re-measured at 23:03 and said 23:49).
+	if j.EstimateEnd.IsZero() || j.NextCheck.After(j.EstimateEnd) {
 		j.EstimateEnd = j.NextCheck
 	}
 	return true
