@@ -76,8 +76,24 @@ func (s *Service) SayFromInstance(ctx context.Context, tenantID, userID, instanc
 	return s.Say(ctx, tenantID, userID, from, room, text, key)
 }
 
+// SayFilesFromInstance is SayFromInstance with files already stored by
+// StoreBotMailFile: a turn MaClawSrv started itself (a background-job check
+// or resume) has no chat reply, so its deliverables ride on the said note
+// and the GUI fetches them like a teammate's shared files.
+func (s *Service) SayFilesFromInstance(ctx context.Context, tenantID, userID, instanceID, room, text, key string, files []BotMailFile) (BotCrossNote, error) {
+	from, err := s.botForInstance(ctx, tenantID, userID, instanceID)
+	if err != nil {
+		return BotCrossNote{}, err
+	}
+	return s.sayWith(ctx, tenantID, userID, from, room, text, key, files)
+}
+
 // Say records one message from bot from to the person or a room.
 func (s *Service) Say(ctx context.Context, tenantID, userID, from, room, text, key string) (BotCrossNote, error) {
+	return s.sayWith(ctx, tenantID, userID, from, room, text, key, nil)
+}
+
+func (s *Service) sayWith(ctx context.Context, tenantID, userID, from, room, text, key string, files []BotMailFile) (BotCrossNote, error) {
 	if s == nil {
 		return BotCrossNote{}, ErrSettingsUnavailable
 	}
@@ -147,7 +163,7 @@ func (s *Service) Say(ctx context.Context, tenantID, userID, from, room, text, k
 	if recent >= sayPerHour {
 		return BotCrossNote{}, ErrRateLimited
 	}
-	note := BotCrossNote{ID: newCrossNoteID(), Owner: userID, From: from, Target: target, Kind: "say", Key: strings.TrimSpace(key), Text: text, CreatedAt: now.UTC().Format(time.RFC3339)}
+	note := BotCrossNote{ID: newCrossNoteID(), Owner: userID, From: from, Target: target, Kind: "say", Key: strings.TrimSpace(key), Text: text, Files: files, CreatedAt: now.UTC().Format(time.RFC3339)}
 	var answered []string
 	if room != "" {
 		answered = RoomAnsweredBy(rec.CrossNotes, userID, target)

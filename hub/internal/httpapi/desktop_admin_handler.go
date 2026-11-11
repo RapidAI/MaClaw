@@ -1111,12 +1111,32 @@ func PostDesktopSayHandler(bots *botmgmt.Service) http.HandlerFunc {
 			Room       string `json:"room"`
 			Text       string `json:"text"`
 			Key        string `json:"key"`
+			// Files: a server-started turn's deliverables, base64; at most
+			// 3 x 8 MB like a notify. Stored before the note is written.
+			Files []struct {
+				Name string `json:"name"`
+				MIME string `json:"mime"`
+				Data string `json:"data"`
+			} `json:"files"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 36<<20)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid say request")
 			return
 		}
-		note, err := bots.SayFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, in.Room, in.Text, in.Key)
+		var files []botmgmt.BotMailFile
+		for _, f := range in.Files {
+			if len(files) >= 3 {
+				break
+			}
+			raw, err := base64.StdEncoding.DecodeString(f.Data)
+			if err != nil {
+				continue
+			}
+			if stored, err := bots.StoreBotMailFile(in.TenantID, f.Name, f.MIME, raw); err == nil {
+				files = append(files, stored)
+			}
+		}
+		note, err := bots.SayFilesFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, in.Room, in.Text, in.Key, files)
 		var said *botmgmt.AlreadySaidError
 		var worker *botmgmt.WorkerSayError
 		switch {
