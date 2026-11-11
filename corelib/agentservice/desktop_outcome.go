@@ -57,7 +57,8 @@ func (c *coreAgentCallbacks) ReviewDesktopOutcome(userText, draft string, histor
 	if decision, handled := c.reviewDemoSkill(ctx, userText, draft, evidence, history, image); handled {
 		return decision
 	}
-	ok, gap, err := agent.JudgeDesktopOutcomeWithReply(ctx, c.llmCfg, c.httpClient, userText, draft, evidence, image)
+	items := c.desktopDeliverableItems()
+	ok, gap, err := agent.JudgeDesktopOutcomeWithChecklist(ctx, c.llmCfg, c.httpClient, userText, draft, evidence, image, items)
 	if err != nil {
 		// A failed or unparseable check says nothing about the result:
 		// keep the worker's reply (seen live: "not json" replaced a
@@ -76,6 +77,11 @@ func (c *coreAgentCallbacks) ReviewDesktopOutcome(userText, draft string, histor
 				// Files already reached the person; a gap text in place
 				// of the report would hide what was sent.
 				log.Printf("[desktop-outcome] replace=skipped delivered=true misses=%d gap=%q", c.desktopOutcomeMissContinues, desktopOutcomeGapForLog(gap))
+				if len(items) > 0 && strings.TrimSpace(draft) != "" {
+					// The files stay; the reply names what the checklist
+					// still misses instead of claiming everything.
+					return agent.DesktopOutcomeDecision{Replace: strings.TrimSpace(draft) + "\n\n还没核对到的交付：" + gap}
+				}
 				return agent.DesktopOutcomeDecision{}
 			}
 			log.Printf("[desktop-outcome] replace=true misses=%d gap=%q", c.desktopOutcomeMissContinues, desktopOutcomeGapForLog(gap))

@@ -333,3 +333,30 @@ func TestD102OnlyClicksAndScreensForAnHourIsAStall(t *testing.T) {
 		t.Fatalf("wandering run stopped=%v at %s", stopped, now.Format("15:04"))
 	}
 }
+
+func TestD103RepeatedMeasurementIsNotProgress(t *testing.T) {
+	base := time.Date(2026, 11, 11, 20, 0, 0, 0, time.Local)
+	now := watchdogTestClock(t, base)
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u::desk::bot_x", InstanceID: "inst_x", RunID: "run_d103_shape"}
+	t.Cleanup(func() { desktopWatchdogEnd(scope.RunID) })
+	step := func(m int, cmd, out string) {
+		*now = base.Add(time.Duration(m) * time.Minute)
+		args := map[string]any{"action": "bash", "command": cmd}
+		desktopWatchdogBefore(scope, "bash", args)
+		desktopWatchdogResult(scope, "bash", args, out, nil)
+	}
+	step(1, "python3 diff.py a b", "changed pixels: 3200 of 1024000")
+	first, _ := desktopWatchdogSnapshot(scope.RunID)
+	for m := 2; m < 12; m++ {
+		step(m, "python3 diff.py a"+itoa(m)+" b", "changed pixels: "+itoa(m*7)+" of 1024000")
+	}
+	snap, _ := desktopWatchdogSnapshot(scope.RunID)
+	if !snap.lastProgress.Equal(first.lastProgress) {
+		t.Fatalf("re-measurement counted as progress: %v vs %v", snap.lastProgress, first.lastProgress)
+	}
+	step(12, "ls", "snake.py README.txt")
+	snap, _ = desktopWatchdogSnapshot(scope.RunID)
+	if snap.lastProgress.Equal(first.lastProgress) {
+		t.Fatal("new output not counted")
+	}
+}

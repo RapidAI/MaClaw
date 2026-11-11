@@ -529,18 +529,21 @@ type coreAgentCallbacks struct {
 	// an early reminder cannot use up the repair rounds.
 	desktopOutcomeIdleContinues int
 	desktopOutcomeMissContinues int
-	sessionMetadata             map[string]string
-	trustedDestinationID        string
-	inboundChannelScope         string
-	scheduleDispatchBindings    *ScheduleDispatchBindingStore
-	lastAdministeredScheduleID  string
-	delegateSubtask             func(context.Context, Principal, string) (string, error)
-	delegateChild               bool
-	trustedSSH                  func(context.Context, Principal, string) (string, error)
-	trustedBrowser              func(context.Context, Principal, string, string) (string, error)
-	trustedComputerUse          func(context.Context, Principal, string) (string, error)
-	executor                    *CoreAgentExecutor
-	mailboxHost                 *mailbox.Host
+	// deliverables is the run's explicit-deliverables checklist, read by a
+	// model at the start of an execute-phase desktop turn.
+	deliverables               *desktopDeliverablesState
+	sessionMetadata            map[string]string
+	trustedDestinationID       string
+	inboundChannelScope        string
+	scheduleDispatchBindings   *ScheduleDispatchBindingStore
+	lastAdministeredScheduleID string
+	delegateSubtask            func(context.Context, Principal, string) (string, error)
+	delegateChild              bool
+	trustedSSH                 func(context.Context, Principal, string) (string, error)
+	trustedBrowser             func(context.Context, Principal, string, string) (string, error)
+	trustedComputerUse         func(context.Context, Principal, string) (string, error)
+	executor                   *CoreAgentExecutor
+	mailboxHost                *mailbox.Host
 	// dispatcherOnce builds the Phase 2 pilot ToolDispatcher at most once per
 	// callback; dispatcher stays nil unless MACLAW_TOOL_DISPATCHER=on.
 	dispatcherOnce sync.Once
@@ -802,6 +805,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		runID:              req.RunID,
 	}
 	cb.bindRequestHostCapabilities()
+	cb.startDesktopDeliverables()
 	if runtimeStore != nil && runtimeAttempt != nil {
 		attemptCopy := *runtimeAttempt
 		cb.runtimeStore = runtimeStore
@@ -2965,6 +2969,7 @@ func (c *coreAgentCallbacks) finishBotToolResult(name, argsJSON string, result a
 		c.conversationGate().Observe(name, 0, result.Result, connectorCallURL(args))
 	}
 	c.noteCloudProgress(name, result.Result)
+	result = c.withDeliverablesNote(name, result)
 	if utf8.RuneCountInString(result.Result) <= desktopbot.ToolResultSpillRunes {
 		return result
 	}

@@ -277,7 +277,7 @@ func desktopWatchdogResult(scope agentruntime.Scope, action string, args map[str
 				why, strong = "指标推进："+desktopRuneHead(lines[len(lines)-1], 120), true
 				w.stageN++
 				w.stageWhy = why
-			} else if fresh {
+			} else if fresh && watchdogNewShape(w, action, norm) {
 				why, strong = action+" 有新的输出", true
 			}
 		case look:
@@ -819,4 +819,25 @@ func desktopPostedNotice(runID, content string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+var watchdogNumberRe = regexp.MustCompile(`[0-9]+(\.[0-9]+)?`)
+
+// watchdogNewShape reports output whose form, numbers aside, this run has
+// not printed before. Re-running a check that prints the same lines with
+// other numbers (a pixel diff, a pid probe, a file count) measures, it does
+// not move the task: Bot 2 spent ~30 steps on "N px changed" after its
+// screenshot existed, and each one counted as progress (papers 11-11
+// 20:38-20:53). Measured results are judged before this, as metrics.
+func watchdogNewShape(w *watchdogRun, action, norm string) bool {
+	shape := watchdogNumberRe.ReplaceAllString(strings.Join(strings.Fields(norm), " "), "N")
+	sum := sha1.Sum([]byte("shape|" + action + "|" + shape))
+	k := "s:" + hex.EncodeToString(sum[:8])
+	if w.seen[k] {
+		return false
+	}
+	if len(w.seen) < 8192 {
+		w.seen[k] = true
+	}
+	return true
 }

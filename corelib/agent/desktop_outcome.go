@@ -122,7 +122,14 @@ func desktopOutcomeUserContent(cfg corelib.MaclawLLMConfig, userText, evidence s
 }
 
 func desktopOutcomeUserContentWithReply(cfg corelib.MaclawLLMConfig, userText, reply, evidence string, image *ToolModelImage) interface{} {
+	return desktopOutcomeUserContentChecklist(cfg, userText, nil, reply, evidence, image)
+}
+
+func desktopOutcomeUserContentChecklist(cfg corelib.MaclawLLMConfig, userText string, items []string, reply, evidence string, image *ToolModelImage) interface{} {
 	text := "用户要求：\n" + clipDesktopOutcome(userText, 800) + "\n\n"
+	if len(items) > 0 {
+		text += desktopDeliverablesJudgeBlock(items) + "\n\n"
+	}
 	if r := strings.TrimSpace(reply); r != "" {
 		text += "要交给用户的回复正文（只说明回复里写了什么；要求本身就是在对话里回答或说一句话时，据此判断；它不能证明桌面上做成了任何事）：\n" + clipDesktopOutcome(r, 1200) + "\n\n"
 	}
