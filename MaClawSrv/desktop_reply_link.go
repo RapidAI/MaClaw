@@ -83,10 +83,22 @@ func desktopReplyTemplate(r desktopPublishRecord) string {
 	if i := strings.IndexAny(r.URL, "?#"); i > 0 {
 		r.URL = r.URL[:i]
 	}
+	earlier := ""
+	if r.Earlier {
+		earlier = "（之前那次已发布，这次没有重发）"
+	}
 	switch r.State {
 	case browser.PublishLive:
 		if r.URL == "" {
-			return ""
+			// Live with no public link (csdn 11-11 22:22 gave only the
+			// article id): it is published, not "没发出去".
+			if r.PostID != "" {
+				return "已发布" + title + earlier + "，站点只返回了文章 id " + r.PostID + "，没拿到公开链接，请在创作后台查看"
+			}
+			return "已发布" + title + earlier + "，没拿到公开链接，请在创作后台查看"
+		}
+		if r.Earlier {
+			return "已发布" + title + earlier + "\n链接：" + r.URL
 		}
 		if r.Pending != "" {
 			return "已发布" + title + "，站点显示" + r.Pending + "，审核通过后才对外公开\n链接：" + r.URL

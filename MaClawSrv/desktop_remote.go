@@ -430,8 +430,27 @@ type desktopAccount struct {
 // MaClawSrv connection token may belong to a different service tenant.
 var desktopUserByInstance sync.Map
 
+// desktopPrincipalByInstance maps an instance to the MaClawSrv principal
+// that owns its runs (the caller's own account, not the desktop's Hub
+// account). A background job's watcher starts its follow-up turn as that
+// principal; without it no job of a Hub bot could resume (papers 11-11:
+// 32 of 32 jobs had no principal, "resume not started").
+var desktopPrincipalByInstance sync.Map
+
+func desktopInstancePrincipal(instanceID string) (desktopAccount, bool) {
+	value, ok := desktopPrincipalByInstance.Load(strings.TrimSpace(instanceID))
+	if !ok {
+		return desktopAccount{}, false
+	}
+	a, _ := value.(desktopAccount)
+	return a, a.UserID != ""
+}
+
 func rememberDesktopOwner(instanceID string, metadata map[string]string, fallbackUser, fallbackTenant string) (string, string) {
 	instanceID = strings.TrimSpace(instanceID)
+	if instanceID != "" && strings.TrimSpace(fallbackUser) != "" {
+		desktopPrincipalByInstance.Store(instanceID, desktopAccount{TenantID: strings.TrimSpace(fallbackTenant), UserID: strings.TrimSpace(fallbackUser)})
+	}
 	account := desktopAccount{
 		TenantID: strings.TrimSpace(fallbackTenant),
 		UserID:   strings.TrimSpace(fallbackUser),

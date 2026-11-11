@@ -36,6 +36,8 @@ type desktopPublishRecord struct {
 	// Errors and NetLog: the last calls' errors and the page's writes,
 	// truncated, kept so a failed publish can be diagnosed afterwards.
 	// Drafts: editor pages this run's calls ended on (their own drafts).
+	// Earlier: an earlier run of the same request published this site.
+	Earlier bool      `json:"earlier,omitempty"`
 	Drafts  []string  `json:"drafts,omitempty"`
 	Errors  []string  `json:"errors,omitempty"`
 	NetLog  []string  `json:"net_log,omitempty"`

@@ -377,6 +377,7 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 		npErr = desktopAfterPublishCheck(desktopOwner(scope), actionName, args)
 	}
 	desktopNoteTaskSpec(scope.RunID, desktopMessageText(request))
+	desktopSeedEarlierPosts(request, scope)
 	if npErr == nil {
 		npErr = desktopDriftCheck(desktopOwner(scope), actionName, args, desktopMessageText(request))
 	}

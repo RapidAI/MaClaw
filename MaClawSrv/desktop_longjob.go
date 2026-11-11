@@ -540,6 +540,8 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 	}
 	if principal.TenantID != scope.TenantID || principal.UserID != scope.UserID {
 		j.PrincipalTenant, j.PrincipalUser = principal.TenantID, principal.UserID
+	} else if a, ok := desktopInstancePrincipal(scope.InstanceID); ok {
+		j.PrincipalTenant, j.PrincipalUser = a.TenantID, a.UserID
 	}
 	j.ReportedStatus = "running"
 	desktopLongJobSetCheck(j, args, j.Started)
@@ -1129,6 +1131,11 @@ func desktopLongJobTailLines(tail string, n, max int) string {
 // a run is already working there (that run polls the job itself).
 func desktopLongJobResume(ctx context.Context, j *desktopLongJob) error {
 	svc := desktopLongJobService
+	if j.PrincipalUser == "" {
+		if a, ok := desktopInstancePrincipal(j.InstanceID); ok {
+			j.PrincipalTenant, j.PrincipalUser = a.TenantID, a.UserID
+		}
+	}
 	if svc == nil || j.PrincipalUser == "" {
 		return fmt.Errorf("no service principal for this job")
 	}

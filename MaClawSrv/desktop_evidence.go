@@ -146,6 +146,23 @@ func desktopRunVerifiedPosts(runID string) []desktopLedgerEntry {
 	return out
 }
 
+// desktopSiteDoneWithoutLink: the site is published for this run without
+// a public link in the ledger: this run's post the site confirmed by id
+// only, or an earlier run of the same request. "" when neither.
+func desktopSiteDoneWithoutLink(runID string, p *browser.SiteProfile) string {
+	if desktopStrIn(desktopCarriedSites(runID), p.ID) {
+		return "(published by an earlier run of this request)"
+	}
+	for _, key := range desktopLedgerKeysForRun(runID) {
+		for _, e := range desktopLedgerEntries(key) {
+			if e.Kind == "posted" && e.Run == runID && e.Detail == string(browser.PublishLive) && desktopProfileHasHost(p, e.Host) {
+				return "(published, the site gave no public link)"
+			}
+		}
+	}
+	return ""
+}
+
 // desktopProfileHasHost: the post's host belongs to the site profile.
 func desktopProfileHasHost(p *browser.SiteProfile, host string) bool {
 	if p == nil || host == "" {
@@ -194,6 +211,9 @@ func desktopReconcileOutcome(runID, outcome, why string) (string, string) {
 				break
 			}
 		}
+		if hit == "" {
+			hit = desktopSiteDoneWithoutLink(runID, p)
+		}
 		if hit != "" {
 			done = append(done, p.ID+" "+hit)
 		} else {
@@ -220,6 +240,12 @@ func desktopPostCorrection(runID, content string) string {
 	}
 	var lines []string
 	for _, e := range desktopRunVerifiedPosts(runID) {
+		// A post the reply already gives with its link is not denied: the
+		// denial is about another site (11-11 22:27 repeated zhihu's link
+		// above a reply whose 没发出去 was csdn's).
+		if e.URL != "" && strings.Contains(content, e.URL) {
+			continue
+		}
 		line := "更正：已发布并确认 —— " + e.Host
 		if e.Title != "" {
 			line += "《" + e.Title + "》"
