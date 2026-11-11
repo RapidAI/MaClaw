@@ -23,17 +23,30 @@ import (
 // botFiles is Hub's store for large bot deliveries (see package botfiles).
 var botFiles *botfiles.Store
 
-// newBotFileStore places the store next to the bot mail files unless
-// MACLAW_HUB_BOT_FILES_DIR says otherwise, and starts its sweeper.
-func newBotFileStore(mailDir string) *botfiles.Store {
-	dir := ""
+// BotFilesDirName is the store's folder under Hub's data dir.
+const BotFilesDirName = "bot-files"
+
+// botFileStoreDir picks the store's folder. MACLAW_HUB_BOT_FILES_DIR wins
+// (botfiles.FromEnv); then a sibling of an operator-set bot mail dir; then
+// Hub's persistent runtime data dir (the SQLite database's folder, e.g.
+// /data/soft/hub/data on papers), so stored files survive restarts. Only
+// without any data dir does it fall back to a temp folder.
+func botFileStoreDir(mailDir, dataDir string) string {
 	if strings.TrimSpace(mailDir) != "" {
-		dir = filepath.Join(filepath.Dir(filepath.Clean(mailDir)), "maclaw-bot-files")
-	} else {
-		// Like the mail files: a temp dir unless the operator sets one.
-		dir = filepath.Join(os.TempDir(), "maclaw-bot-files")
+		return filepath.Join(filepath.Dir(filepath.Clean(mailDir)), "maclaw-bot-files")
 	}
-	s := botfiles.FromEnv(dir)
+	if dataDir = strings.TrimSpace(dataDir); dataDir != "" {
+		if abs, err := filepath.Abs(dataDir); err == nil {
+			dataDir = abs
+		}
+		return filepath.Join(dataDir, BotFilesDirName)
+	}
+	return filepath.Join(os.TempDir(), "maclaw-bot-files")
+}
+
+// newBotFileStore builds the store and starts its sweeper.
+func newBotFileStore(mailDir, dataDir string) *botfiles.Store {
+	s := botfiles.FromEnv(botFileStoreDir(mailDir, dataDir))
 	s.Sweep()
 	s.StartSweeper(10*time.Minute, nil)
 	log.Printf("[bot-files] store=%s max_file=%d MB", s.Dir, s.MaxFile()>>20)

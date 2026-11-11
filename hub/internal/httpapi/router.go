@@ -395,7 +395,7 @@ func NewRouter(
 	// Hub starts delegated work and wakes idle bots itself; off only when
 	// an operator sets MACLAW_HUB_BOT_DISPATCH=off.
 	botSvc.MailFileDir = strings.TrimSpace(os.Getenv("MACLAW_HUB_BOT_MAIL_DIR"))
-	botFiles = newBotFileStore(botSvc.MailFileDir)
+	botFiles = newBotFileStore(botSvc.MailFileDir, runtimeDataDir)
 	botSvc.BotDispatch = !strings.EqualFold(strings.TrimSpace(os.Getenv("MACLAW_HUB_BOT_DISPATCH")), "off")
 	if botSvc.BotDispatch {
 		// Boot scan: resume pending cross-bot work for every tenant once the

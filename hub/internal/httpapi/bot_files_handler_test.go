@@ -6,10 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/botfiles"
+	"github.com/RapidAI/CodeClaw/hub/internal/config"
 )
 
 func botFilesTestServer(t *testing.T) *httptest.Server {
@@ -118,5 +122,46 @@ func TestBotFileUploadAndOwnerDownloadWithRange(t *testing.T) {
 	code, out = doJSON(t, "POST", srv.URL+"/api/v1/bot-files/"+id+"/link", map[string]string{"Authorization": "Bearer alice-tok", "X-Machine-ID": "m1"}, nil)
 	if code != 200 || out["url"] == "" || out["bot_id"] != "bot-a" {
 		t.Fatalf("refresh %d %v", code, out)
+	}
+}
+
+func TestBotFileStoreDirIsPersistentByDefault(t *testing.T) {
+	t.Setenv("MACLAW_HUB_BOT_FILES_DIR", "")
+	dataDir := t.TempDir()
+	// Hub's sqlite DSN decides the runtime data dir, like papers'
+	// ./data/codeclaw-hub.db under /data/soft/hub.
+	cfg := &config.Config{}
+	cfg.Database.Driver = "sqlite"
+	cfg.Database.DSN = filepath.Join(dataDir, "codeclaw-hub.db")
+	runtime := resolveHubRuntimeDataDir(cfg, "")
+	s := newBotFileStore("", runtime)
+	if want := filepath.Join(dataDir, BotFilesDirName); s.Dir != want {
+		t.Fatalf("store dir %q, want %q", s.Dir, want)
+	}
+	if strings.HasPrefix(s.Dir, os.TempDir()) && !strings.HasPrefix(dataDir, os.TempDir()) {
+		t.Fatal("store fell back to a temp folder")
+	}
+	// A relative DSN resolves against the working dir to an absolute path.
+	if got := botFileStoreDir("", "data"); !filepath.IsAbs(got) || filepath.Base(filepath.Dir(got)) != "data" {
+		t.Fatalf("relative data dir: %q", got)
+	}
+	// An operator-set mail dir keeps its sibling; the env var wins over all.
+	if got := botFileStoreDir("/srv/hub/mail", runtime); got != filepath.Join("/srv/hub", "maclaw-bot-files") {
+		t.Fatalf("mail sibling: %q", got)
+	}
+	t.Setenv("MACLAW_HUB_BOT_FILES_DIR", filepath.Join(dataDir, "custom"))
+	if s := newBotFileStore("", runtime); s.Dir != filepath.Join(dataDir, "custom") {
+		t.Fatalf("env dir: %q", s.Dir)
+	}
+	// Files written there are found again by a new store (a Hub restart).
+	t.Setenv("MACLAW_HUB_BOT_FILES_DIR", "")
+	m, tok, err := s.Create("tenant_default", "alice", "", "", "a.bin", "", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Append(m.ID, tok, 0, strings.NewReader("abc"))
+	again := botfiles.FromEnv(filepath.Join(dataDir, BotFilesDirName))
+	if _, err := again.Get("tenant_default", "alice", m.ID); err != nil {
+		t.Fatalf("after restart: %v", err)
 	}
 }

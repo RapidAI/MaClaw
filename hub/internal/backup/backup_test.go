@@ -218,6 +218,38 @@ func TestCreateExcludesBackupOutputDirectoryContents(t *testing.T) {
 	assertNoEntry(t, manifest, "data/backups/notes.json")
 }
 
+func TestCreateSkipsTransientBotFileStore(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	if err := os.MkdirAll(filepath.Join(dataDir, "bot-files", "bf_x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dataDir, "hub.db")
+	seedSQLite(t, dbPath)
+	writeFile(t, filepath.Join(dataDir, "bot-files", "bf_x", "data"), "large delivery")
+	writeFile(t, filepath.Join(dataDir, "keep.json"), "{}")
+	cfg := config.Default()
+	cfg.Database.DSN = dbPath
+	archivePath := filepath.Join(root, "out", "b.tar.gz")
+	if _, err := Create(context.Background(), cfg, CreateOptions{OutputPath: archivePath}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := Inspect(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoEntry(t, manifest, "data/bot-files/bf_x/data")
+	found := false
+	for _, e := range manifest.Entries {
+		if e.Path == "data/keep.json" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("ordinary data file missing from the backup")
+	}
+}
+
 func TestCreateRejectsOutputBesideLiveDatabase(t *testing.T) {
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "data")

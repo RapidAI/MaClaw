@@ -383,6 +383,10 @@ func addExtraFile(add func(src, dst, kind string) error, dataDir, path, kind str
 	}
 	return add(absPath, filepath.ToSlash(filepath.Join("external", kind, filepath.Base(absPath))), kind)
 }
+
+// botFilesDirName is httpapi.BotFilesDirName (the bot file store).
+const botFilesDirName = "bot-files"
+
 func addDataDir(tw *tar.Writer, dataDir, dbDSN, outputPath, cloudWorkspaceRoot string, includeLogs bool, manifest *Manifest) error {
 	absDataDir, err := filepath.Abs(dataDir)
 	if err != nil {
@@ -406,6 +410,12 @@ func addDataDir(tw *tar.Writer, dataDir, dbDSN, outputPath, cloudWorkspaceRoot s
 		if d.IsDir() {
 			absPath, absErr := filepath.Abs(path)
 			if absErr == nil && sameFilePath(absPath, absCloudWorkspaceRoot) {
+				return filepath.SkipDir
+			}
+			// Large bot deliveries kept a few days for download (httpapi
+			// bot file store, data/bot-files) are transient and can be
+			// many GB; they are not part of a Hub backup.
+			if absErr == nil && sameFilePath(absPath, filepath.Join(absDataDir, botFilesDirName)) {
 				return filepath.SkipDir
 			}
 			// Never archive the directory that contains the output archive.
