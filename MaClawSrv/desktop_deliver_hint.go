@@ -16,7 +16,7 @@ func desktopDeliverSizeHint(args map[string]any, err error) error {
 		!strings.Contains(err.Error(), "file is too large") {
 		return err
 	}
-	return fmt.Errorf("%w (deliver limit is %d bytes per file, %d on a desktop service not yet updated; shrink it under the limit the error names, e.g. recompress pictures as JPEG at about 1000 px wide or save a document without embedded pictures, then check the size with ls -l and deliver again)", err, desktop.FileBytesMax, desktopDeliverOldMax)
+	return fmt.Errorf("%w (one reply carries files up to %d bytes in total; a single larger file up to %d bytes is sent as its own message automatically when delivered by path. Deliver it with path=<file>; do not shrink or re-render it)", err, desktop.FileBytesMax, desktopDeliverLargeMax)
 }
 
 // desktopDeliverOldMax: the per-file cap of desktop services built before

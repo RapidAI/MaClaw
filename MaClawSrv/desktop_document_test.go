@@ -180,6 +180,13 @@ func TestDeliverReadsTheDesktopFile(t *testing.T) {
 	desktopRemoteFile = func(_ context.Context, _, _, _, _, _, _, _ string) (string, error) {
 		return base64.StdEncoding.EncodeToString(make([]byte, desktop.FileBytesMax+1)), nil
 	}
+	// Over the inline budget the file goes by its own message; past that
+	// message's cap it is refused with the limit named.
+	prevLarge := desktopDeliverLargeBash
+	defer func() { desktopDeliverLargeBash = prevLarge }()
+	desktopDeliverLargeBash = func(context.Context, agentruntime.Scope, string) (string, error) {
+		return "MCLDL_BIG 9999999\n", nil
+	}
 	ctx, slot = withDesktopShotSlot(context.Background())
 	_, err = mod.InvokeTool(ctx, turn, "desktop", map[string]any{
 		"action": "deliver",

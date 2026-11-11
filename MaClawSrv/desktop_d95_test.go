@@ -267,7 +267,7 @@ func TestDesktopD95RecoverNothingWaiting(t *testing.T) {
 
 func TestDesktopD95DeliverHintNamesBothCaps(t *testing.T) {
 	err := desktopDeliverSizeHint(map[string]any{"action": "deliver"}, errors.New("HTTP 400: file is too large"))
-	if !strings.Contains(err.Error(), "525000") || !strings.Contains(err.Error(), "150000") {
+	if !strings.Contains(err.Error(), "525000") || !strings.Contains(err.Error(), "8388608") {
 		t.Fatalf("hint: %v", err)
 	}
 	if desktop.FileBytesMax < 300_000 {

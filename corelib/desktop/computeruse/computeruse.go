@@ -567,6 +567,9 @@ func parseOpenAI(kind string, m map[string]any) (Step, error) {
 			step.Path = append(step.Path, [2]float64{x, y})
 		}
 	default:
+		if kind == "" {
+			return step, fmt.Errorf(`each step needs "action" (one of click, double_click, right_click, move, drag, scroll, type, key, wait, screenshot), e.g. {"action":"click","x":100,"y":200} or {"action":"key","key":"ctrl+s"}`)
+		}
 		return step, fmt.Errorf("action type %q is not allowed", kind)
 	}
 	return step, checkStep(step)
@@ -842,8 +845,32 @@ func KeyInserts(key string) bool { return browser.KeyInsertsText(key) }
 // such as {"key":"ctrl+v"} or {"click":{"x":10,"y":20}}, as native actions.
 // Without this they carry neither action nor type and fail as action "".
 func shorthandStep(m map[string]any) map[string]any {
+	if a, ok := m["action"].(string); ok && strings.TrimSpace(a) == "" {
+		// An empty action field says nothing; read the step's other fields.
+		rest := make(map[string]any, len(m))
+		for name, v := range m {
+			if name != "action" {
+				rest[name] = v
+			}
+		}
+		m = rest
+	}
 	if _, ok := m["action"]; ok {
 		return m
+	}
+	// Other names models use for the action (papers 2026-11-12 06:19:
+	// qwen4-max-preview sent app_run steps twice without "action" and got
+	// 'action type "" is not allowed').
+	for _, alias := range []string{"op", "name", "step", "kind", "cmd", "command", "action_type", "event"} {
+		if a, ok := m[alias].(string); ok && strings.TrimSpace(a) != "" {
+			out := map[string]any{"action": strings.TrimSpace(a)}
+			for name, v := range m {
+				if name != alias {
+					out[name] = v
+				}
+			}
+			return out
+		}
 	}
 	if _, ok := m["type"]; ok {
 		return m
@@ -865,6 +892,25 @@ func shorthandStep(m map[string]any) map[string]any {
 			out[name] = v
 		}
 		return out
+	}
+	// Nothing names the action: infer it from the fields alone.
+	_, hasX := m["x"]
+	_, hasCoord := m["coordinate"]
+	if _, ok := m["type"]; !ok {
+		if t, ok := m["text"].(string); ok && t != "" && !hasX && !hasCoord {
+			out := map[string]any{"action": "type"}
+			for name, v := range m {
+				out[name] = v
+			}
+			return out
+		}
+		if hasX || hasCoord {
+			out := map[string]any{"action": "click"}
+			for name, v := range m {
+				out[name] = v
+			}
+			return out
+		}
 	}
 	return m
 }

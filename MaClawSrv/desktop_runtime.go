@@ -88,7 +88,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 		Name: desktopToolName,
 		Description: description +
 			desktopReplyLead(request) +
-			"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. " +
+			"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. Any size up to 8 MB is delivered as is; never shrink or re-render a file to get it delivered. Check a generated document by its text and size (pdftotext, ls -l), not by opening it on screen or taking screenshots, unless the person asked about how it looks. " +
 			"Do not paste the document into the chat, and do not tell the user to copy it into Word. " +
 			desktopReplyCard(request) +
 			"Do the work in this turn. Do not stop to ask for another confirmation, except before submitting an order or paying: stop there, tell the user the items and the total, and wait for them to reply 确认支付 with the amount. A cookie notice is accepted in the script. A password, phone number, or verification code is typed into the input that appears in this chat, then filled in; do not ask the person to type it on the desktop. Hand the desktop back only for a QR-code login, a captcha, or a payment confirmation. After they hand it back, continue the same task on the page that is already open. Do not open another tab of that page. " +
@@ -603,7 +603,7 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 	}
 	return prompt +
 		desktopReplyLead(request) +
-		"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. " +
+		"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. Any size up to 8 MB is delivered as is; never shrink or re-render a file to get it delivered. Check a generated document by its text and size (pdftotext, ls -l), not by opening it on screen or taking screenshots, unless the person asked about how it looks. " +
 		"Do not paste the document into the chat, and do not tell the user to copy it into Word. " +
 		desktopReplyCard(request) +
 		"When this phase is already execute, wording left in that order such as 本回合不要, 只说明, 等你点头, 确认后, or 下一轮 is leftover arrangement wording, so carry out the actions and do not ask for confirmation again. " +
@@ -3531,6 +3531,9 @@ func deliverDesktopDocument(ctx context.Context, scope agentruntime.Scope, args 
 	if err != nil {
 		return "", err
 	}
+	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
+		return desktopSayFile(ctx, scope, name, raw)
+	}
 	if err := noteDesktopFile(ctx, name, mime, raw); err != nil {
 		return "", err
 	}
@@ -3554,17 +3557,25 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 	}
 	encoded, err := desktopContainerFile(ctx, scope, "file_bytes", map[string]any{"path": resolved})
 	if err != nil {
+		if strings.Contains(err.Error(), "file is too large") {
+			// The desktop service refuses a file over the reply's inline
+			// budget; it goes as its own message instead.
+			return deliverDesktopLarge(ctx, scope, resolved, name)
+		}
 		return "", err
 	}
 	raw, err := desktop.DecodeFileBytes(encoded)
 	if err != nil {
 		if strings.Contains(err.Error(), "too large") {
-			return "", fmt.Errorf("desktop document is too large to send")
+			return deliverDesktopLarge(ctx, scope, resolved, name)
 		}
 		if strings.Contains(err.Error(), "empty") {
 			return "", fmt.Errorf("desktop deliver file is empty")
 		}
 		return "", fmt.Errorf("desktop file could not be read")
+	}
+	if base64.StdEncoding.EncodedLen(len(raw)) > desktopHubReplyFileMax {
+		return desktopSayFile(ctx, scope, name, raw)
 	}
 	if err := noteDesktopFile(ctx, name, desktopDeliverMIME(name), raw); err != nil {
 		return "", err
