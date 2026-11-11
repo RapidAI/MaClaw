@@ -716,7 +716,12 @@ func desktopLongJobPollAndStore(ctx context.Context, j *desktopLongJob) error {
 	}
 	switch {
 	case p.Alive:
-		if !j.LastChange.IsZero() && now.Sub(j.LastChange) >= j.stallBound() {
+		// A quiet log is not a stall while the job is inside its own estimate:
+		// many jobs write progress to their own files (papers 11-11 23:05:
+		// BERT training logged to its run folder, job.log stayed at "training
+		// start", and the bot was told it had stalled with 34 minutes to go).
+		inEstimate := !j.EstimateEnd.IsZero() && now.Before(j.EstimateEnd)
+		if !j.LastChange.IsZero() && now.Sub(j.LastChange) >= j.stallBound() && !inEstimate {
 			j.Status = "stalled"
 		} else {
 			j.Status = "running"

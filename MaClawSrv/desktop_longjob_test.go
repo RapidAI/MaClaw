@@ -437,3 +437,30 @@ func TestD103RunningJobIsQuietUntilItsCheck(t *testing.T) {
 		t.Fatalf("overdue twice: %s", d)
 	}
 }
+
+// papers 2026-11-11 23:05: a quiet job.log inside the model's own estimate
+// is not a stall; past the estimate it is.
+func TestD108QuietJobInsideEstimateIsNotStalled(t *testing.T) {
+	d100Env(t)
+	now := time.Date(2026, 11, 11, 23, 5, 0, 0, time.Local)
+	desktopLongJobNow = func() time.Time { return now }
+	t.Cleanup(func() { desktopLongJobNow = time.Now })
+	desktopLongJobExec = func(ctx context.Context, scope agentruntime.Scope, command string) (string, error) {
+		return "LONGJOB_ALIVE pid=7\nLONGJOB_LOG_BYTES=5\nLONGJOB_LOG_TAIL\ntraining start\n", nil
+	}
+	j := &desktopLongJob{ID: "job_quiet", Status: "running", Alive: true, Started: now.Add(-16 * time.Minute), LastChange: now.Add(-16 * time.Minute), StallAfter: 15 * time.Minute, EstimateEnd: now.Add(40 * time.Minute)}
+	j.Fingerprint = desktopLongJobFingerprint(desktopLongJobParsePoll("LONGJOB_ALIVE pid=7\nLONGJOB_LOG_BYTES=5\nLONGJOB_LOG_TAIL\ntraining start\n"))
+	if err := desktopLongJobPollAndStore(context.Background(), j); err != nil {
+		t.Fatal(err)
+	}
+	if j.Status != "running" {
+		t.Fatalf("inside estimate: %s", j.Status)
+	}
+	j.EstimateEnd = now.Add(-time.Minute)
+	if err := desktopLongJobPollAndStore(context.Background(), j); err != nil {
+		t.Fatal(err)
+	}
+	if j.Status != "stalled" {
+		t.Fatalf("past estimate: %s", j.Status)
+	}
+}
