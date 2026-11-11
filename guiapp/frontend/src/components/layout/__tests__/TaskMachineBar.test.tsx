@@ -26,6 +26,8 @@ function remote(overrides: Partial<Remote> = {}): Remote {
         detailPath: '',
         detailLoading: false,
         detailBusy: false,
+        awaitingReply: false,
+        awaitingStop: false,
         creating: false,
         refresh: vi.fn(),
         selectLocal: vi.fn(),
@@ -57,6 +59,26 @@ describe('TaskMachineBar', () => {
         expect(screen.getByTestId('task-machine-tab-local').textContent).toContain('本机');
         expect(screen.getByTestId('task-machine-tab-g1').textContent).toContain('家里');
         expect(screen.getByTestId('task-machine-add').textContent).toBe('+');
+    });
+
+    it('marks an offline granted machine with a labelled dot, not tab text', () => {
+        const control = remote({
+            state: {
+                machine_id: 'mac-a',
+                machines: [],
+                grants: [
+                    { id: 'g1', machine_id: 'mac-b', machine_name: '家里', permission: 'view', status: 'active', online: false, same_account: true },
+                ],
+                pending: [], invites: [], controlled: [],
+            },
+        });
+        render(<TaskMachineBar lang="zh-CN" remote={control} onCloseGrant={vi.fn()} />);
+        const dot = screen.getByTestId('task-machine-offline-g1');
+        expect(dot.getAttribute('aria-label')).toContain('离线');
+        expect(dot.getAttribute('data-online')).toBe('false');
+        // The strip stays compact: the offline state lives on the dot and its
+        // tooltip, not as a text chip inside the tab.
+        expect(screen.getByTestId('task-machine-tab-g1').textContent).not.toContain('离线');
     });
 
     it('invites another account and keeps a waiting row', async () => {

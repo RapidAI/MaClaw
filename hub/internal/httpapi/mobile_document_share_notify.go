@@ -69,6 +69,9 @@ func companionShareNotifyRecipients(ctx context.Context, identity *auth.Identity
 		if !ok {
 			return nil, ""
 		}
+		// The admin is a member too: a document a member publishes into the
+		// group is also news for the person who runs it.
+		add(group.OwnerID)
 		for _, member := range members {
 			if member.Status != "accepted" {
 				continue

@@ -745,7 +745,7 @@ func CompanionDocumentSharesHandler(identity *auth.IdentityService) http.Handler
 		case http.MethodGet:
 			writeCompanionShareList(w, r, identity, principal, ownerID)
 		case http.MethodPost:
-			createCompanionShare(w, r, principal, ownerID)
+			createCompanionShare(w, r, identity, principal, ownerID)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET or POST")
 		}
@@ -754,7 +754,7 @@ func CompanionDocumentSharesHandler(identity *auth.IdentityService) http.Handler
 
 func writeCompanionShareList(w http.ResponseWriter, r *http.Request, identity *auth.IdentityService, principal *auth.ViewerPrincipal, ownerID string) {
 	contacts := companionViewerContactSet(identity, r.Context(), principal)
-	groups := companionAcceptedGroupIDs(ownerID, contacts)
+	groups := companionReadableGroupIDs(ownerID, contacts)
 	loadCompanionDocShares()
 	now := time.Now().UTC()
 	// The seq lets a polling participant learn "nothing changed" from a
@@ -852,7 +852,7 @@ func CompanionDocumentShareChangesHandler(identity *auth.IdentityService) http.H
 			return
 		}
 		contacts := companionViewerContactSet(identity, r.Context(), principal)
-		groups := companionAcceptedGroupIDs(ownerID, contacts)
+		groups := companionReadableGroupIDs(ownerID, contacts)
 		loadCompanionDocShares()
 		now := time.Now().UTC()
 		type changeRow struct {
@@ -994,7 +994,7 @@ func writeCompanionShareDuplicate(w http.ResponseWriter, r *http.Request, share 
 	})
 }
 
-func createCompanionShare(w http.ResponseWriter, r *http.Request, principal *auth.ViewerPrincipal, ownerID string) {
+func createCompanionShare(w http.ResponseWriter, r *http.Request, identity *auth.IdentityService, principal *auth.ViewerPrincipal, ownerID string) {
 	r.Body = http.MaxBytesReader(w, r.Body, int64(mobileDocumentOriginalMaxBytes)+1<<20)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "文件过大")
@@ -1027,7 +1027,8 @@ func createCompanionShare(w http.ResponseWriter, r *http.Request, principal *aut
 	case "group":
 		password = ""
 		groupID = strings.TrimSpace(r.FormValue("target"))
-		if !companionGroupTokenPattern.MatchString(groupID) || !companionGroupIsAdmin(ownerID, groupID) {
+		// Any accepted member can publish into the group, not only the admin.
+		if !companionGroupTokenPattern.MatchString(groupID) || !companionGroupPublishAccess(ownerID, groupID, companionViewerContactSet(identity, r.Context(), principal)) {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "请选择群组")
 			return
 		}
@@ -1261,7 +1262,7 @@ func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.Ha
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PATCH")
 			return
 		}
-		_, ownerID, ok := companionRequireViewer(w, r, identity)
+		principal, ownerID, ok := companionRequireViewer(w, r, identity)
 		if !ok {
 			return
 		}
@@ -1311,7 +1312,8 @@ func CompanionDocumentShareUpdateHandler(identity *auth.IdentityService) http.Ha
 		case "group":
 			password = ""
 			groupID = strings.TrimSpace(body.Target)
-			if !companionGroupTokenPattern.MatchString(groupID) || !companionGroupIsAdmin(ownerID, groupID) {
+			// Any accepted member can publish into the group, not only the admin.
+			if !companionGroupTokenPattern.MatchString(groupID) || !companionGroupPublishAccess(ownerID, groupID, companionViewerContactSet(identity, r.Context(), principal)) {
 				writeError(w, http.StatusBadRequest, "BAD_REQUEST", "请选择群组")
 				return
 			}
@@ -1489,7 +1491,7 @@ func CompanionDocumentShareImportHandler(identity *auth.IdentityService) http.Ha
 		durable := false
 		if ownerID != "" {
 			contacts := companionViewerContactSet(identity, r.Context(), principal)
-			groups := companionAcceptedGroupIDs(ownerID, contacts)
+			groups := companionReadableGroupIDs(ownerID, contacts)
 			status, message := companionShareReadAccess(share, ownerID, contacts, groups, body.Password)
 			if status != 0 {
 				companionDocShares.Unlock()
@@ -1834,7 +1836,7 @@ func CompanionDocumentShareMarksHandler(identity *auth.IdentityService) http.Han
 		}
 		if ownerID != "" {
 			contacts := companionViewerContactSet(identity, r.Context(), principal)
-			groups := companionAcceptedGroupIDs(ownerID, contacts)
+			groups := companionReadableGroupIDs(ownerID, contacts)
 			if status, message := companionShareReadAccess(share, ownerID, contacts, groups, ""); status != 0 {
 				companionDocShares.Unlock()
 				code := "SHARE_FORBIDDEN"
@@ -2076,7 +2078,7 @@ func CompanionDocumentShareChatHandler(identity *auth.IdentityService) http.Hand
 		}
 		if ownerID != "" {
 			contacts := companionViewerContactSet(identity, r.Context(), principal)
-			groups := companionAcceptedGroupIDs(ownerID, contacts)
+			groups := companionReadableGroupIDs(ownerID, contacts)
 			if status, message := companionShareReadAccess(share, ownerID, contacts, groups, ""); status != 0 {
 				companionDocShares.Unlock()
 				code := "SHARE_FORBIDDEN"
@@ -2280,7 +2282,7 @@ func CompanionDocumentShareFigureHandler(identity *auth.IdentityService) http.Ha
 		}
 		if ownerID != "" {
 			contacts := companionViewerContactSet(identity, r.Context(), principal)
-			groups := companionAcceptedGroupIDs(ownerID, contacts)
+			groups := companionReadableGroupIDs(ownerID, contacts)
 			if status, message := companionShareReadAccess(share, ownerID, contacts, groups, ""); status != 0 {
 				companionDocShares.Unlock()
 				code := "SHARE_FORBIDDEN"
@@ -2510,7 +2512,7 @@ func CompanionDocumentShareNotesHandler(identity *auth.IdentityService) http.Han
 		var groups map[string]struct{}
 		if ownerID != "" {
 			contacts = companionViewerContactSet(identity, r.Context(), principal)
-			groups = companionAcceptedGroupIDs(ownerID, contacts)
+			groups = companionReadableGroupIDs(ownerID, contacts)
 		}
 		loadCompanionDocShares()
 		companionDocShares.Lock()
@@ -2679,7 +2681,7 @@ func CompanionDocumentShareNoteReviewHandler(identity *auth.IdentityService) htt
 			return
 		}
 		contacts := companionViewerContactSet(identity, r.Context(), principal)
-		groups := companionAcceptedGroupIDs(ownerID, contacts)
+		groups := companionReadableGroupIDs(ownerID, contacts)
 		loadCompanionDocShares()
 		companionDocShares.Lock()
 		share, found := companionDocShares.items[token]

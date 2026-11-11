@@ -6,18 +6,17 @@ import "testing"
 
 func TestCaptionDragBlocked(t *testing.T) {
 	cases := []struct {
-		name                       string
-		fullscreen, zoomed, covers bool
-		want                       bool
+		name       string
+		fullscreen bool
+		want       bool
 	}{
-		{name: "normal", want: false},
-		{name: "fullscreen", fullscreen: true, want: true},
-		{name: "zoomed", zoomed: true, want: true},
-		{name: "clamped work area", covers: true, want: true},
-		{name: "smaller than work area", covers: false, want: false},
+		{name: "normal window moves", want: false},
+		{name: "maximised restores then moves", want: false},
+		{name: "clamped work-area frame moves", want: false},
+		{name: "fullscreen stays put", fullscreen: true, want: true},
 	}
 	for _, c := range cases {
-		got := captionDragBlocked(c.fullscreen, c.zoomed, c.covers)
+		got := captionDragBlocked(c.fullscreen)
 		if got != c.want {
 			t.Errorf("%s: got %v want %v", c.name, got, c.want)
 		}

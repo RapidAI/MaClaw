@@ -6,6 +6,45 @@ export type RemoteAssistantTranscriptMessage = {
     reasoning?: string;
 };
 
+/** Compact workflow snapshot mirrored from the remote task row. */
+export type RemoteAssistantWorkflow = {
+    type?: string;
+    phase?: string;
+    status?: string;
+    pending_review?: boolean;
+};
+
+export type RemoteAssistantArtifact = {
+    title: string;
+    preview?: string;
+    sourceType?: string;
+    updatedAt?: string;
+};
+
+/**
+ * Live status mirrored from the remote task snapshot. Everything here comes
+ * from the get_task poll, so it refreshes on the same cadence (3s while the
+ * task runs) rather than streaming.
+ */
+export type RemoteAssistantActivity = {
+    /** A send was accepted but the remote transcript has not answered yet. */
+    awaitingReply?: boolean;
+    /** The in-flight op is a stop, not a send — graded "stopping" label. */
+    stopping?: boolean;
+    /** active_workflow snapshot on the remote task row. */
+    workflow?: RemoteAssistantWorkflow | null;
+    /** workflow_type of the remote task, e.g. "coding". */
+    workflowType?: string;
+    /** RFC3339 heartbeat from the remote task row's last_activity. */
+    lastActivityAt?: string;
+    /** Tail of the newest assistant reasoning, for the expandable body. */
+    reasoningTail?: string;
+    /** Recent artifacts the remote task produced. */
+    artifacts?: RemoteAssistantArtifact[];
+    /** Local timestamp when this run was first observed, for elapsed time. */
+    busySince?: number;
+};
+
 export type RemoteAssistantSession = {
     grantId: string;
     machineName: string;
@@ -18,6 +57,8 @@ export type RemoteAssistantSession = {
     loading?: boolean;
     /** The other computer is working on the open task. */
     busy?: boolean;
+    /** Live status mirrored from the remote task snapshot. */
+    activity?: RemoteAssistantActivity;
     messages: RemoteAssistantTranscriptMessage[];
 };
 
@@ -92,6 +133,7 @@ function sessionKey(session: RemoteAssistantSession | null) {
         session.machineName,
         session.taskName,
         session.error,
+        session.activity ? JSON.stringify(session.activity) : '',
         session.messages.map(message => `${message.role}\n${message.content}\n${message.reasoning || ''}`).join('\n--\n'),
     ].join('\n');
 }

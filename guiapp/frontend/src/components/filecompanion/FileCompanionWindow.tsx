@@ -1002,9 +1002,9 @@ function MarkdownSourceEditor({
     );
 }
 
-// 20px is the title-bar size: it leaves 4px of air inside the 30px icon-only
+// 22px is the title-bar size: it leaves 4px of air inside the 30px icon-only
 // squares. Compact rows such as the 打开 menu pass their own smaller size.
-function CompanionActionIcon({ name, size = 20 }: { name: "paper" | "knowledge" | "cloud" | "hide" | "markdown" | "latex" | "pdf" | "check" | "file" | "fullscreen" | "restore" | "project" | "library" | "convert" | "note" | "stop" | "share" | "groups"; size?: number }) {
+function CompanionActionIcon({ name, size = 22 }: { name: "paper" | "knowledge" | "cloud" | "sync" | "hide" | "markdown" | "latex" | "pdf" | "check" | "open" | "fullscreen" | "restore" | "project" | "library" | "convert" | "note" | "stop" | "share" | "groups"; size?: number }) {
     const common = {
         fill: "none",
         stroke: "currentColor",
@@ -1023,18 +1023,20 @@ function CompanionActionIcon({ name, size = 20 }: { name: "paper" | "knowledge" 
             )}
             {name === "latex" && (
                 <>
-                    <path {...common} d="M4.2 17.4 9 6.2 13.8 17.4" />
-                    <path {...common} d="M6.4 13.2h5.2" />
-                    <path {...common} d="m15.4 17.6 3.6-5.2" />
-                    <path {...common} d="m15.4 12.4 3.6 5.2" />
+                    <path {...common} d="M3.6 6.4h5.2" />
+                    <path {...common} d="M6.2 6.4v7.8" />
+                    <path {...common} d="M13.6 10.4h-3.4v5.4h3.4" />
+                    <path {...common} d="M10.2 13h3" />
+                    <path {...common} d="m14.9 10.4 4.6 6.6" />
+                    <path {...common} d="m19.5 10.4-4.6 6.6" />
                 </>
             )}
             {name === "project" && (
                 <>
-                    <path {...common} d="M4.5 8.2h15v11.2h-15z" />
-                    <path {...common} d="M4.5 8.2 8 4.6h8l3.5 3.6" />
-                    <path {...common} d="M12 11.2v5.2" />
-                    <path {...common} d="m9.6 14.2 2.4 2.3 2.4-2.3" />
+                    <path {...common} d="M12 3.4 20.2 8v8L12 20.6 3.8 16V8z" />
+                    <path {...common} d="M3.8 8 12 12.6l8.2-4.6" />
+                    <path {...common} d="M12 12.6v8" />
+                    <path {...common} d="m7.9 5.7 8.2 4.6" />
                 </>
             )}
             {name === "pdf" && (
@@ -1054,9 +1056,11 @@ function CompanionActionIcon({ name, size = 20 }: { name: "paper" | "knowledge" 
             )}
             {name === "share" && (
                 <>
-                    <path {...common} d="M6.5 12.2h11a3.5 3.5 0 0 0 .2-7 5.5 5.5 0 0 0-10.6 1.5A3.2 3.2 0 0 0 6.5 12.2Z" />
-                    <path {...common} d="M12 20.5v-8.2" />
-                    <path {...common} d="m9.3 14.8 2.7-2.7 2.7 2.7" />
+                    <circle {...common} cx="18" cy="5.4" r="2.7" />
+                    <circle {...common} cx="6" cy="12" r="2.7" />
+                    <circle {...common} cx="18" cy="18.6" r="2.7" />
+                    <path {...common} d="m8.4 10.8 7-4" />
+                    <path {...common} d="m8.4 13.2 7 4" />
                 </>
             )}
             {name === "groups" && (
@@ -1075,44 +1079,55 @@ function CompanionActionIcon({ name, size = 20 }: { name: "paper" | "knowledge" 
                     <path {...common} d="M13.3 3.5V8h4.2" />
                     <path {...common} d="M9 11.5h3.6" />
                     <path {...common} d="M9 14.5h2.2" />
-                    <circle {...common} cx="16.3" cy="16.5" r="2.5" />
-                    <path {...common} d="m18.1 18.3 2.1 2.1" />
+                    <circle {...common} cx="16.3" cy="16.3" r="2.7" />
+                    <path {...common} d="m18.3 18.3 2 2" />
                 </>
             )}
             {name === "library" && (
                 <>
-                    <path {...common} d="M5 8.2h14v11.2H5z" />
-                    <path {...common} d="M8 8.2V5.2h8v3" />
-                    <path {...common} d="M8 12h8" />
-                    <path {...common} d="M8 15.2h5" />
+                    <path {...common} d="M4.2 19.6h15.6" />
+                    <path {...common} d="M5.8 8h6.8v11.6H5.8z" />
+                    <path {...common} d="M9.2 8v11.6" />
+                    <path {...common} d="M14.4 19.6 17.3 9.5l2.3.7-3 9.4z" />
                 </>
             )}
-            {name === "file" && (
+            {name === "open" && (
                 <>
-                    <path {...common} d="M6.5 3.5h6.8L17.5 8v12.5h-11z" />
-                    <path {...common} d="M13.3 3.5V8h4.2" />
+                    <path {...common} d="M4 17.5V6.8a2 2 0 0 1 2-2h3.4a2 2 0 0 1 1.6.8l.9 1.2h8.1a2 2 0 0 1 2 2v1.7" />
+                    <path {...common} d="M4.8 10.5h15a1.8 1.8 0 0 1 1.7 2.3l-1.6 5a2 2 0 0 1-1.9 1.4H5.3a1.8 1.8 0 0 1-1.8-2.2z" />
                 </>
             )}
             {name === "convert" && (
                 <>
-                    <path {...common} d="M7 4.5h6.2L17 8.2V19.5H7z" />
-                    <path {...common} d="M13.2 4.5V8.2H17" />
-                    <path {...common} d="M9.2 14.8a2.5 2.5 0 1 0 .6-1.9" />
-                    <path {...common} d="M9.1 11.2v2h2" />
+                    <path {...common} d="M7 4.4h6.2L17 8.2v11.4H7z" />
+                    <path {...common} d="M13.2 4.4v3.8H17" />
+                    <path {...common} d="M9.4 13.2h5" />
+                    <path {...common} d="m12.7 11.4 1.8 1.8-1.8 1.8" />
+                    <path {...common} d="M14.6 16.9h-5" />
+                    <path {...common} d="m11.3 15.1-1.8 1.8 1.8 1.8" />
                 </>
             )}
             {name === "knowledge" && (
                 <>
                     <path {...common} d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" />
-                    <path {...common} d="M12 7v6" />
-                    <path {...common} d="m9 10 3 3 3-3" />
+                    <path {...common} d="M12 5.4v6.6" />
+                    <path {...common} d="m9.6 9.7 2.4 2.4 2.4-2.4" />
                 </>
             )}
             {name === "cloud" && (
                 <>
                     <path {...common} d="M6.5 12.2h11a3.5 3.5 0 0 0 .2-7 5.5 5.5 0 0 0-10.6 1.5A3.2 3.2 0 0 0 6.5 12.2Z" />
-                    <path {...common} d="M12 21.5V19" />
-                    <path {...common} d="m9.3 19 2.7-2.7 2.7 2.7" />
+                    <path {...common} d="M12 21.6V16.6" />
+                    <path {...common} d="m9.3 18.9 2.7-2.7 2.7 2.7" />
+                </>
+            )}
+            {name === "sync" && (
+                <>
+                    <path {...common} d="M6.5 12.2h11a3.5 3.5 0 0 0 .2-7 5.5 5.5 0 0 0-10.6 1.5A3.2 3.2 0 0 0 6.5 12.2Z" />
+                    <path {...common} d="M9.6 21.4v-4.9" />
+                    <path {...common} d="m7.7 18.4 1.9-1.9 1.9 1.9" />
+                    <path {...common} d="M14.4 15.7v4.4" />
+                    <path {...common} d="m12.5 18.2 1.9 1.9 1.9-1.9" />
                 </>
             )}
             {name === "hide" && (
@@ -1179,7 +1194,7 @@ function CompanionBubbleAction({
                 onClick();
             }}
         >
-            {state === "ok" ? <CompanionActionIcon name="check" size={14} /> : <CompanionActionIcon name={name} size={14} />}
+            {state === "ok" ? <CompanionActionIcon name="check" size={16} /> : <CompanionActionIcon name={name} size={16} />}
         </button>
     );
 }
@@ -4285,7 +4300,14 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
         runtime?.EventsOn?.("file-companion:window-shown", onHostWindow);
         runtime?.EventsOn?.("ai-assistant-response", onResponse);
         runtime?.OnFileDrop?.((_x, _y, paths) => {
+            if (paths.length === 0) return;
             paths.forEach((path) => { void openPath(path, true); });
+            // 文档管理 and 阅读群组 cover the reader. A drop still means
+            // "open", so the document view comes back for the dropped file.
+            // A drop is not a pointer event, so the 打开 menu would not close
+            // itself; a download in flight still pins it open.
+            setView("read");
+            if (!arxivBusyRef.current && !sharePasswordRef.current && !arxivSearchRef.current) setOpenMenu(false);
         }, true);
         // One read per window. A development remount shares it, so the first
         // call cannot drain the list and leave the second call empty.
@@ -6654,7 +6676,10 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         disabled={!tabEnds.canLeft}
                         onClick={() => nudgeTabs(-1)}
                     >
-                        {"<<"}
+                        <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="m9 3.5-3.5 4.5L9 12.5" />
+                            <path d="m12.5 3.5L9 8l3.5 4.5" />
+                        </svg>
                     </button>
                 ) : null}
                 <div className="file-companion-titlebar-tabs" data-testid="file-companion-titlebar-tabs" role="tablist" aria-label={cs("打开的文档")} ref={tabsScrollRef}>
@@ -6701,9 +6726,11 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                     : hostSharesByPathRef.current.has(companionSharePathKey(tab.path)) ? cs("主持人") : cs("收到的分享")}
                             >
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-                                    <path d="M6.5 12.2h11a3.5 3.5 0 0 0 .2-7 5.5 5.5 0 0 0-10.6 1.5A3.2 3.2 0 0 0 6.5 12.2Z" />
-                                    <path d="M12 20.5v-8.2" />
-                                    <path d="m9.3 14.8 2.7-2.7 2.7 2.7" />
+                                    <circle cx="18" cy="5.4" r="2.7" />
+                                    <circle cx="6" cy="12" r="2.7" />
+                                    <circle cx="18" cy="18.6" r="2.7" />
+                                    <path d="m8.4 10.8 7-4" />
+                                    <path d="m8.4 13.2 7 4" />
                                 </svg>
                             </span>
                         ) : null}
@@ -6746,7 +6773,10 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         disabled={!tabEnds.canRight}
                         onClick={() => nudgeTabs(1)}
                     >
-                        {">>"}
+                        <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="m3.5 3.5 3.5 4.5-3.5 4.5" />
+                            <path d="m7 3.5 3.5 4.5L7 12.5" />
+                        </svg>
                     </button>
                 ) : null}
                 </div>
@@ -6800,11 +6830,31 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 }}
                             >
                                 <span className="file-companion-open-hero-icon" aria-hidden="true">
-                                    <CompanionActionIcon name="file" size={18} />
+                                    <CompanionActionIcon name="open" size={20} />
                                 </span>
                                 <span className="file-companion-open-hero-text">
                                     <span className="file-companion-open-hero-title">{cs("打开文档或导入项目")}</span>
                                     <span className="file-companion-open-hero-sub">{cs("支持一次选择多个文件")}</span>
+                                </span>
+                            </button>
+                            <button
+                                type="button"
+                                className="file-companion-open-hero"
+                                data-testid="file-companion-open-library"
+                                disabled={arxivBusy || chooseBusy}
+                                onClick={() => {
+                                    if (sharePasswordRef.current || arxivSearchRef.current) return;
+                                    closeOpenMenu(false);
+                                    setChatExportDestPath("");
+                                    setView("library");
+                                }}
+                            >
+                                <span className="file-companion-open-hero-icon" aria-hidden="true">
+                                    <CompanionActionIcon name="library" size={20} />
+                                </span>
+                                <span className="file-companion-open-hero-text">
+                                    <span className="file-companion-open-hero-title">{cs("文档管理")}</span>
+                                    <span className="file-companion-open-hero-sub">{cs("本机文档与云端项目")}</span>
                                 </span>
                             </button>
                             <div className="file-companion-open-sep" />
@@ -6928,7 +6978,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                                 title={cs("同步 — 把最新标注和聊天推到这份分享")}
                                 onClick={() => { runSharePush(activeTab.path); }}
                             >
-                                <CompanionActionIcon name="cloud" />
+                                <CompanionActionIcon name="sync" />
                                 <span className="file-companion-sr">{cs("同步")}</span>
                             </button>
                         ) : (
@@ -7440,6 +7490,10 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                     activePath={active}
                     showToast={showToast}
                     onOpen={(path) => { void openPath(path, false, false, 0, true); setView("read"); }}
+                    // The 打开文档 button adds to the list without leaving
+                    // 文档管理. The document opens in a background tab the
+                    // same way the title bar's picker opens it.
+                    onAddLocal={(path) => openPath(path, false, false, 0, true)}
                     onExit={() => setView("read")}
                     onShareUpdated={(update) => { applyShareUpdateRef.current(update); }}
                     onListed={(listed) => applyLibraryListRef.current(listed)}
@@ -7638,7 +7692,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         <div className="file-companion-arxiv-search-bar">
                             <div className="file-companion-arxiv-search-row">
                                 <span className="file-companion-arxiv-search-glyph" aria-hidden="true">
-                                    <CompanionActionIcon name="paper" size={15} />
+                                    <CompanionActionIcon name="paper" size={16} />
                                 </span>
                                 <textarea
                                     ref={arxivSearchInputRef}

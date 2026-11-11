@@ -41,6 +41,7 @@ export type RemoteTaskArtifact = {
     title?: string;
     preview?: string;
     source_type?: string;
+    updated_at?: string;
 };
 
 export type RemoteTaskDetail = {
@@ -107,6 +108,7 @@ export function useTaskRemoteControl() {
     const [detailPath, setDetailPath] = useState('');
     const [detailLoading, setDetailLoading] = useState(false);
     const [awaitingReply, setAwaitingReply] = useState(false);
+    const [awaitingStop, setAwaitingStop] = useState(false);
     const [creating, setCreating] = useState(false);
     const taskGen = useRef(0);
     const detailGen = useRef(0);
@@ -127,6 +129,9 @@ export function useTaskRemoteControl() {
     // non-user tail means the other computer answered; until then the chat
     // keeps an explicit "working" indicator.
     const awaitBaseline = useRef(-1);
+    // Which op armed the reply wait. A stop clears as soon as the list says
+    // idle — a stopped task may never append another transcript row.
+    const awaitOp = useRef('');
     detailRef.current = detail;
     // A later poll must not wipe an error the user just caused, and a state
     // poll must not clear an error that belongs to the task list.
@@ -211,7 +216,7 @@ export function useTaskRemoteControl() {
             setDetail(null);
             setDetailLoading(true);
             // A send waiting for a reply belongs to the previous task.
-            awaitBaseline.current = -1;
+            awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
             setAwaitingReply(false);
         }
         if (!appBinding('RemoteControlOp')) {
@@ -240,7 +245,7 @@ export function useTaskRemoteControl() {
             if (awaitBaseline.current >= 0 && parsed.messages.length > awaitBaseline.current) {
                 const last = parsed.messages[parsed.messages.length - 1];
                 if (last && last.role !== 'user') {
-                    awaitBaseline.current = -1;
+                    awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
                     setAwaitingReply(false);
                 }
             }
@@ -300,7 +305,7 @@ export function useTaskRemoteControl() {
             setDetailPath('');
             setDetailLoading(false);
             setAwaitingReply(false);
-            awaitBaseline.current = -1;
+            awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
             setCreating(false);
             return;
         }
@@ -308,7 +313,7 @@ export function useTaskRemoteControl() {
             setLoading(false);
             setDetailLoading(false);
             setAwaitingReply(false);
-            awaitBaseline.current = -1;
+            awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
             setCreating(false);
             return;
         }
@@ -349,8 +354,8 @@ export function useTaskRemoteControl() {
         const timer = window.setInterval(() => {
             if (document.hidden) return;
             const running = openTaskRunningNow();
-            if (awaitBaseline.current >= 0 && !running && Date.now() > fastFollowUntil.current) {
-                awaitBaseline.current = -1;
+            if (awaitBaseline.current >= 0 && !running && (awaitOp.current === 'stop_task' || Date.now() > fastFollowUntil.current)) {
+                awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
                 setAwaitingReply(false);
             }
             if (Date.now() < fastFollowUntil.current || awaitBaseline.current >= 0 || running) {
@@ -451,6 +456,8 @@ export function useTaskRemoteControl() {
         const expectsReply = op === 'send_message' || op === 'stop_task';
         if (expectsReply) {
             awaitBaseline.current = detailRef.current?.messages.length ?? 0;
+            awaitOp.current = op === 'stop_task' ? 'stop_task' : 'send_message';
+            setAwaitingStop(op === 'stop_task');
             setAwaitingReply(true);
             fastFollowUntil.current = Date.now() + 120000;
         }
@@ -468,7 +475,7 @@ export function useTaskRemoteControl() {
         } catch (err) {
             if (selectedIdRef.current !== grantId) return false;
             if (expectsReply) {
-                awaitBaseline.current = -1;
+                awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
                 setAwaitingReply(false);
                 fastFollowUntil.current = 0;
             }
@@ -505,6 +512,10 @@ export function useTaskRemoteControl() {
         detailPath,
         detailLoading,
         detailBusy,
+        // A send was accepted but the remote transcript has not answered yet,
+        // so the panel can tell "waiting to start" apart from "running".
+        awaitingReply,
+        awaitingStop,
         creating,
         refresh,
         selectLocal: () => {
@@ -519,7 +530,7 @@ export function useTaskRemoteControl() {
             setDetailPath('');
             setDetailLoading(false);
             setAwaitingReply(false);
-            awaitBaseline.current = -1;
+            awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
         },
         selectGrant: (id: string) => {
             if (selectedIdRef.current === id) return;
@@ -535,7 +546,7 @@ export function useTaskRemoteControl() {
             setDetailPath('');
             setDetailLoading(false);
             setAwaitingReply(false);
-            awaitBaseline.current = -1;
+            awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
         },
         setCreating,
         grantSameAccount: async (machineID: string, permission: RemotePermission) => {
@@ -570,7 +581,7 @@ export function useTaskRemoteControl() {
                 setDetailPath('');
                 setDetailLoading(false);
                 setAwaitingReply(false);
-                awaitBaseline.current = -1;
+                awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
             }
             return value !== null;
         },
@@ -583,7 +594,7 @@ export function useTaskRemoteControl() {
             setDetailPath('');
             setDetailLoading(false);
             setAwaitingReply(false);
-            awaitBaseline.current = -1;
+            awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
         },
         createTask: async (name: string) => {
             const ok = await run('create_task', { name });

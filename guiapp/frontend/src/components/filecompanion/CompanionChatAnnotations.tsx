@@ -85,7 +85,7 @@ function sameAnchorLayout(current: Record<string, AnchorLayout>, next: Record<st
     return true;
 }
 
-function NoteGlyph({ kind }: { kind: "note" | "check" | "copy" | "close" | "discard" }) {
+function NoteGlyph({ kind }: { kind: "note" | "pen" | "check" | "copy" | "close" | "discard" }) {
     const common = {
         className: "companion-pdf-menu-glyph",
         viewBox: "0 0 24 24",
@@ -107,11 +107,19 @@ function NoteGlyph({ kind }: { kind: "note" | "check" | "copy" | "close" | "disc
     }
     if (kind === "close") return <svg {...common}><path d="m6 6 12 12M18 6 6 18" /></svg>;
     if (kind === "discard") return <svg {...common}><path d="M6 6h12M9 6V4h6v2M8 6l1 14h6l1-14" /></svg>;
+    if (kind === "pen") {
+        return (
+            <svg {...common}>
+                <path d="m14 5 5 5-8.5 8.5a2 2 0 0 1-2.8 0l-2.2-2.2a2 2 0 0 1 0-2.8z" />
+                <path d="m8.5 10.5 5 5" />
+            </svg>
+        );
+    }
     return (
         <svg {...common}>
-            <path d="m14 5 5 5-8.5 8.5a2 2 0 0 1-2.8 0l-2.2-2.2a2 2 0 0 1 0-2.8z" />
-            <path d="m8.5 10.5 5 5" />
-            <path d="M5 20h14" />
+            <path d="M4.5 4.5h15v11h-8.5L7 19.5v-4H4.5z" />
+            <path d="M7.5 8.5h9" />
+            <path d="M7.5 11.5h6" />
         </svg>
     );
 }
@@ -443,7 +451,7 @@ function ChatAnnotationCard({
                                             finishEdit(true);
                                         }}
                                     >
-                                        <NoteGlyph kind="note" />
+                                        <NoteGlyph kind="pen" />
                                     </button>
                                 ) : null}
                                 <button

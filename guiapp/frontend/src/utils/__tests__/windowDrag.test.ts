@@ -93,7 +93,7 @@ describe('startNativeWindowDrag', () => {
         expect(beginWindowDrag).toHaveBeenCalledTimes(1);
     });
 
-    it('does not start a move while the shell is maximised or fullscreen', () => {
+    it('does not start a move while the shell is move-locked', () => {
         const app = document.createElement('div');
         app.id = 'App';
         app.setAttribute('data-window-move-locked', 'true');
@@ -245,7 +245,7 @@ describe('installWindowDragHandler', () => {
         expect(beginWindowDrag).not.toHaveBeenCalled();
     });
 
-    it('does not move a maximised shell, then moves again after restore', () => {
+    it('does not move a locked shell, then moves again after the lock clears', () => {
         const app = document.createElement('div');
         app.id = 'App';
         app.setAttribute('data-window-move-locked', 'true');
@@ -289,7 +289,51 @@ describe('installWindowDragHandler', () => {
         }
     });
 
-    it('does not resume a press that started while fullscreen after the lock clears', () => {
+    it('does not resume a press that started while locked after the lock clears', () => {
+        const app = document.createElement('div');
+        app.id = 'App';
+        app.setAttribute('data-window-move-locked', 'true');
+        document.body.appendChild(app);
+        try {
+            dispatchMouse('mousedown', {
+                button: 0,
+                detail: 1,
+                buttons: 1,
+                screenX: 80,
+                screenY: 8,
+                target: dragRegion,
+            });
+            app.removeAttribute('data-window-move-locked');
+            dispatchMouse('mousemove', {
+                buttons: 1,
+                screenX: 80 + DRAG_THRESHOLD_PX + 20,
+                screenY: 8,
+            });
+            expect(wailsInvoke).not.toHaveBeenCalled();
+            expect(isWindowDragLocked()).toBe(false);
+        } finally {
+            app.remove();
+        }
+    });
+
+    it('treats data-maximized as draggable; only data-window-move-locked pins the shell', () => {
+        const app = document.createElement('div');
+        app.id = 'App';
+        app.setAttribute('data-maximized', 'true');
+        document.body.appendChild(app);
+        try {
+            // A maximised window must stay draggable so Windows can perform
+            // restore-then-move onto another monitor.
+            expect(isWindowDragLocked()).toBe(false);
+            app.setAttribute('data-window-move-locked', 'true');
+            expect(isWindowDragLocked()).toBe(true);
+        } finally {
+            app.remove();
+        }
+        expect(isWindowDragLocked()).toBe(false);
+    });
+
+    it('starts a native drag on a maximised shell so Windows restores then moves', () => {
         const app = document.createElement('div');
         app.id = 'App';
         app.setAttribute('data-maximized', 'true');
@@ -303,30 +347,16 @@ describe('installWindowDragHandler', () => {
                 screenY: 8,
                 target: dragRegion,
             });
-            app.removeAttribute('data-maximized');
             dispatchMouse('mousemove', {
                 buttons: 1,
-                screenX: 80 + DRAG_THRESHOLD_PX + 20,
+                screenX: 80 + DRAG_THRESHOLD_PX + 12,
                 screenY: 8,
             });
-            expect(wailsInvoke).not.toHaveBeenCalled();
-            expect(isWindowDragLocked()).toBe(false);
+            expect(wailsInvoke).toHaveBeenCalledWith('drag');
+            expect(wailsInvoke).toHaveBeenCalledTimes(1);
         } finally {
             app.remove();
         }
-    });
-
-    it('treats data-maximized as a move lock', () => {
-        const app = document.createElement('div');
-        app.id = 'App';
-        app.setAttribute('data-maximized', 'true');
-        document.body.appendChild(app);
-        try {
-            expect(isWindowDragLocked()).toBe(true);
-        } finally {
-            app.remove();
-        }
-        expect(isWindowDragLocked()).toBe(false);
     });
 
     it('leaves double-click free to restore instead of starting a move', () => {

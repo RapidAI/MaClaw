@@ -560,6 +560,11 @@ func companionGroupAcceptedUserIDs(ctx context.Context, identity *auth.IdentityS
 	if !ok {
 		return out
 	}
+	// The admin is a member too: members can publish into the group, and the
+	// owner must be able to open those shares and hold a host seat on them.
+	if owner := strings.TrimSpace(group.OwnerID); owner != "" {
+		out[owner] = struct{}{}
+	}
 	for _, member := range members {
 		if member.Status != "accepted" {
 			continue

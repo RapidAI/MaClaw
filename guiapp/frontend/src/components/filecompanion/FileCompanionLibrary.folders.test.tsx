@@ -13,6 +13,7 @@ const deleteFolder = vi.fn();
 const moveItem = vi.fn();
 const setDefault = vi.fn();
 const folderForPath = vi.fn();
+const chooseFiles = vi.fn();
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
     AddFileCompanionGroupMember: vi.fn(),
@@ -40,6 +41,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     TransferFileCompanionShareHost: vi.fn(),
     RevokeFileCompanionShareHost: vi.fn(),
     FileCompanionExportProject: vi.fn(),
+    ChooseFileCompanionFiles: (...args: unknown[]) => chooseFiles(...args),
 }));
 
 vi.mock("../../../wailsjs/runtime", () => ({
@@ -82,6 +84,7 @@ afterEach(() => {
     moveItem.mockReset();
     setDefault.mockReset();
     folderForPath.mockReset();
+    chooseFiles.mockReset();
 });
 
 describe("companion library folders and file-name filter", () => {
@@ -598,6 +601,39 @@ describe("companion library folders and file-name filter", () => {
         fireEvent.click(screen.getByTestId("file-companion-place-confirm"));
         await waitFor(() => expect(moveItem).toHaveBeenCalledWith("", "C:/notes/alpha.md", "fld_paper"));
         await screen.findByTestId("file-companion-library-card-local:a");
+    });
+
+    it("picks local files with 打开文档 and reloads the list without leaving 文档管理", async () => {
+        listCatalog.mockResolvedValue({ rev: 1, folders: [], placements: {} });
+        const onAddLocal = vi.fn(async () => undefined);
+        const onOpen = vi.fn();
+        chooseFiles.mockResolvedValue(["C:/notes/gamma.md", "C:/notes/delta.md"]);
+        listLibrary.mockResolvedValue({ items: papers, notice: "" });
+        render(
+            <DialogProvider>
+                <CompanionLibraryView
+                    lang="zh-Hans"
+                    activePath=""
+                    showToast={() => undefined}
+                    onOpen={onOpen}
+                    onAddLocal={onAddLocal}
+                    onExit={() => undefined}
+                    onShareProject={() => undefined}
+                    onEditShare={() => undefined}
+                    onImportLink={() => undefined}
+                />
+            </DialogProvider>,
+        );
+        await screen.findByTestId("file-companion-library-card-local:a");
+        const calls = listLibrary.mock.calls.length;
+        fireEvent.click(screen.getByTestId("file-companion-library-open-local"));
+        await waitFor(() => expect(onAddLocal).toHaveBeenCalledTimes(2));
+        expect(onAddLocal).toHaveBeenNthCalledWith(1, "C:/notes/gamma.md");
+        expect(onAddLocal).toHaveBeenNthCalledWith(2, "C:/notes/delta.md");
+        // Adding stays in 文档管理: rows come from a fresh list, not onOpen.
+        expect(onOpen).not.toHaveBeenCalled();
+        await waitFor(() => expect(listLibrary.mock.calls.length).toBeGreaterThan(calls));
+        expect(screen.getByTestId("file-companion-library-panel")).toBeTruthy();
     });
 });
 

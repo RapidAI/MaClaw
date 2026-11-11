@@ -22,6 +22,10 @@ type FileCompanionGroup struct {
 	Admin   bool                       `json:"admin"`
 	Icon    string                     `json:"icon,omitempty"`
 	Members []FileCompanionGroupMember `json:"members"`
+	// Remote marks a group that lives on another Hub: this person joined it
+	// through a relayed invitation, so the group opens its documents but a
+	// new share cannot be published to it from here.
+	Remote bool `json:"remote,omitempty"`
 }
 
 // FileCompanionGroupMember is one invited or accepted reader.

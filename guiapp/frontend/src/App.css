@@ -29841,6 +29841,44 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     color: var(--theme-text-muted);
 }
 .aap-remote-empty-hint { color: var(--theme-text-muted); }
+.aap-remote-activity { margin: 5px 0 7px; }
+.aap-remote-activity-meta {
+    margin: -2px 2px 6px;
+    font-size: 11px;
+    color: var(--theme-text-muted);
+}
+.aap-remote-activity-thinking { white-space: pre-wrap; }
+.aap-remote-artifacts-inline { margin-top: 8px; }
+.aap-remote-artifacts-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--theme-text-muted);
+    margin-bottom: 4px;
+}
+.aap-remote-artifacts {
+    margin: 4px 0 7px;
+    padding: 6px 9px;
+    font-size: 12px;
+    color: var(--theme-text-secondary);
+    background: var(--theme-surface-muted);
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+}
+.aap-remote-artifacts-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--theme-text-muted);
+    margin-bottom: 4px;
+}
+.aap-remote-artifacts-count { opacity: 0.75; font-weight: 500; }
+.aap-remote-artifact-list { display: flex; flex-direction: column; gap: 2px; }
+.aap-remote-artifact { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.aap-remote-artifact-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aap-remote-artifact-time { flex: 0 0 auto; font-size: 11px; opacity: 0.72; }
 .aap-wf-sub { font-size: 0.75rem; opacity: 0.7; }
 .aap-expert-icon { font-size: 36px; line-height: 1; }
 .aap-expert-desc { font-size: 0.8rem; max-width: 420px; line-height: 1.5; }
@@ -30686,6 +30724,15 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   min-width: 0;
   border-bottom: 1px solid var(--theme-border);
 }
+/* The strip scrolls with the scrollbar hidden; a wrapper hosts the fade
+   overlays that reveal where more tabs are waiting. */
+.mc-task-pane .mc-task-machine-tablist-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+}
 .mc-task-pane .mc-task-machine-tablist {
   display: flex;
   align-items: flex-end;
@@ -30696,6 +30743,25 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   scrollbar-width: none;
 }
 .mc-task-pane .mc-task-machine-tablist::-webkit-scrollbar { display: none; }
+.mc-task-pane .mc-task-machine-tab-fade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 18px;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 1;
+  transition: opacity 0.15s ease;
+}
+.mc-task-pane .mc-task-machine-tab-fade[data-show='true'] { opacity: 1; }
+.mc-task-pane .mc-task-machine-tab-fade--left {
+  left: 0;
+  background: linear-gradient(to right, var(--theme-surface), transparent);
+}
+.mc-task-pane .mc-task-machine-tab-fade--right {
+  right: 0;
+  background: linear-gradient(to left, var(--theme-surface), transparent);
+}
 .mc-task-pane .mc-task-machine-tablist > .mc-task-machine-tab,
 .mc-task-pane .mc-task-machine-tab-wrap {
   flex: 0 0 auto;
@@ -30712,12 +30778,15 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-task-pane .mc-task-machine-tab {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border-radius: 7px 7px 0 0;
   font-size: 12.5px;
   font-weight: 500;
   letter-spacing: -0.011em;
   line-height: 1;
-  padding: 8px 12px 9px;
+  padding: 8px 10px 9px;
   margin: 0;
 }
 .mc-task-pane .mc-task-machine-tab:hover {
@@ -30743,8 +30812,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   box-shadow: none;
   font-weight: 700;
 }
-.mc-task-pane .mc-task-machine-tab-wrap.is-active .mc-task-machine-tab-close,
-.mc-task-pane .mc-task-machine-tab.is-active i {
+.mc-task-pane .mc-task-machine-tab-wrap.is-active .mc-task-machine-tab-close {
   color: var(--mc-accent, #2e75cb);
 }
 .mc-task-pane .mc-task-machine-tab:active:not(.is-active) {
@@ -30758,22 +30826,28 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-task-pane .mc-task-machine-tab > span {
   display: inline-block;
-  max-width: 9em;
+  max-width: 8em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
 }
+/* Offline tabs read quieter: gray name text with the dot as the live signal. */
+.mc-task-pane .mc-task-machine-tab[data-offline='true'] {
+  color: var(--theme-text-tertiary);
+}
+.mc-task-pane .mc-task-machine-tab-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--theme-success);
+}
+.mc-task-pane .mc-task-machine-tab-dot[data-online='false'] {
+  background: color-mix(in srgb, var(--theme-text-muted) 55%, var(--theme-surface));
+}
 .mc-task-pane .mc-task-machine-tab-wrap .mc-task-machine-tab {
   padding-right: 2px;
-}
-.mc-task-pane .mc-task-machine-tab i {
-  margin-left: 6px;
-  font-style: normal;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0;
-  color: var(--theme-text-muted);
 }
 .mc-task-pane .mc-task-machine-tab-close {
   border-radius: 4px;
@@ -31145,7 +31219,8 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   .mc-task-pane .mc-task-machine-add .mc-task-machine-primary,
   .mc-task-pane .mc-task-machine-add input,
   .mc-task-pane .mc-task-machine-create input,
-  .mc-task-pane .mc-task-machine-send input {
+  .mc-task-pane .mc-task-machine-send input,
+  .mc-task-pane .mc-task-machine-tab-fade {
     transition: none;
   }
 }
@@ -35348,30 +35423,19 @@ input.cwshare-url {
   border-radius: var(--radius-sm);
   background: var(--theme-surface, #fff);
   color: var(--theme-text-primary, #1c2834);
-  font: 13px/1.4 "Segoe UI", "Microsoft YaHei", sans-serif;
+  font: var(--font-size-sm, 12.5px)/1.4 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
 }
 .companion-pdf-bookmark-editor input:focus {
   border-color: var(--theme-primary, #2e75cb);
   outline: none;
 }
-.companion-pdf-bookmark-editor-actions {
+/* Editor action rows only lay out the buttons; the look is
+   .companion-pdf-menu-btn, shared with the resizable annotation editor. */
+.companion-pdf-bookmark-editor-actions,
+.companion-pdf-menu-editor-actions {
   display: flex;
   gap: 6px;
   justify-content: flex-end;
-}
-.companion-pdf-bookmark-editor-actions button {
-  min-height: 26px;
-  padding: 4px 8px;
-  border: 1px solid var(--theme-border, #d5e0ef);
-  border-radius: var(--radius-sm);
-  background: var(--theme-surface, #fff);
-  color: var(--theme-text-primary, #24364e);
-  font: 500 13px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
-  cursor: pointer;
-}
-.companion-pdf-bookmark-editor-actions button:disabled {
-  opacity: 0.45;
-  cursor: default;
 }
 .companion-pdf-menu-colors--bookmarks {
   flex-wrap: wrap;
@@ -35454,10 +35518,18 @@ mark.companion-preview-find[data-find-active="true"] {
   background: var(--theme-surface, #fff);
   box-shadow: var(--shadow-lg, 0 8px 28px -6px rgba(30, 58, 95, 0.18));
   color: var(--theme-text-primary, #24364e);
-  font: 13px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif;
+  font: var(--font-size-sm, 12.5px)/1.45 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
   --wails-draggable: no-drag;
 }
-/* Note fields use the menu's 13px face. A bare control would keep the document size. */
+/* An open writing field can outgrow the menu's 280px cap: the reader drags
+   the editor's corner to size it, so the menu may stretch to the window edge.
+   The editor's own max bounds keep it on screen. */
+.companion-pdf-menu--editing {
+  max-width: calc(100vw - var(--pdf-menu-x, 8px) - 16px);
+  max-height: calc(100vh - var(--pdf-menu-y, 8px) - 16px);
+  overflow-y: auto;
+}
+/* Note fields inherit the menu face so writing matches the surrounding UI. */
 .companion-pdf-menu-field {
   box-sizing: border-box;
   width: 100%;
@@ -35468,15 +35540,74 @@ mark.companion-preview-find[data-find-active="true"] {
   border-radius: var(--radius-sm);
   background: var(--theme-surface, #fff);
   color: var(--theme-text-primary, #24364e);
-  font: 13px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif;
+  font: inherit;
   resize: vertical;
 }
 .companion-pdf-menu-field:focus {
   border-color: var(--theme-primary, #2e75cb);
   outline: none;
 }
-.companion-pdf-menu button:not(.companion-pdf-menu-item, .companion-pdf-menu-color) {
-  font: 500 13px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
+/* The annotation editor is a resizable box: drag the bottom-right corner to
+   grow or shrink the writing area. The extra bottom padding keeps the grip
+   clear of the action row, and the menu's own custom properties cap the box
+   at the window edge nearest the click. */
+.companion-pdf-menu-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-sizing: border-box;
+  min-width: 220px;
+  min-height: 110px;
+  /* The caps also cover the menu's own 5px padding on each side so a dragged
+     edge stops inside the window instead of forcing a menu scrollbar. */
+  max-width: calc(100vw - var(--pdf-menu-x, 8px) - 26px);
+  max-height: calc(100vh - var(--pdf-menu-y, 8px) - 26px);
+  padding: 6px 8px 14px;
+  resize: both;
+  overflow: auto;
+}
+.companion-pdf-menu-editor .companion-pdf-menu-field {
+  flex: 1 1 auto;
+  min-height: 56px;
+  resize: none;
+}
+.companion-pdf-menu button:not(.companion-pdf-menu-item, .companion-pdf-menu-color, .companion-pdf-menu-btn) {
+  font: 500 var(--font-size-sm, 12.5px)/1.2 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
+}
+/* Menu editor actions share the small companion buttons: compact, quiet, and
+   one soft accent for the commit action. "accent", not "primary": the office
+   theme repaints button[class*='primary'] solid and hides the label. */
+.companion-pdf-menu-btn {
+  min-height: 24px;
+  padding: 3px 10px;
+  border: 1px solid var(--theme-border, #d5e0ef);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface, #fff);
+  color: var(--theme-text-primary, #24364e);
+  font: 500 var(--font-size-xs, 11.5px)/1.2 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+.companion-pdf-menu-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 40%, var(--theme-border, #d5e0ef));
+  color: var(--theme-primary, #2e75cb);
+}
+.companion-pdf-menu-btn:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary, #2e75cb) 40%, transparent);
+}
+.companion-pdf-menu-btn--accent {
+  border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 38%, var(--theme-border, #d5e0ef));
+  background: var(--theme-primary-soft, rgba(47, 120, 208, 0.10));
+  color: var(--theme-primary, #2e75cb);
+}
+.companion-pdf-menu-btn--accent:hover:not(:disabled) {
+  background: var(--theme-primary, #2e75cb);
+  color: #fff;
+}
+.companion-pdf-menu-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 /* The selection is the reason the menu opened: show it, but keep it to one
    line so the menu stays compact and the actions keep a stable height. */
@@ -35486,7 +35617,7 @@ mark.companion-preview-find[data-find-active="true"] {
   border-radius: var(--radius-sm);
   background: var(--theme-surface-muted, #f1f6fc);
   color: var(--theme-text-secondary, #46586f);
-  font: 12px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif;
+  font: var(--font-size-xs, 11.5px)/1.45 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -35505,7 +35636,7 @@ mark.companion-preview-find[data-find-active="true"] {
   gap: 6px;
   margin: 2px 8px 4px;
   color: var(--theme-text-muted, #5b6b80);
-  font: 600 11px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
+  font: 600 var(--font-size-2xs, 11px)/1.2 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
   letter-spacing: 0.02em;
 }
 .companion-pdf-menu-glyph {
@@ -35526,7 +35657,7 @@ mark.companion-preview-find[data-find-active="true"] {
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--theme-text-primary, #24364e);
-  font: 500 13px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
+  font: 500 var(--font-size-sm, 12.5px)/1.2 var(--font-ui, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif);
   text-align: left;
   cursor: pointer;
   transition: background var(--transition-fast), color var(--transition-fast);
@@ -35550,7 +35681,7 @@ mark.companion-preview-find[data-find-active="true"] {
 .companion-pdf-menu-item-hint {
   flex: 0 0 auto;
   color: var(--theme-text-muted, #5b6b80);
-  font-size: 11px;
+  font-size: var(--font-size-2xs, 11px);
   font-weight: 500;
 }
 /* Named accent, not "primary": button[class*='primary'] in the office theme
@@ -37982,8 +38113,8 @@ body.companion-pdf-translation-dragging * {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   margin-top: 7px;
   color: var(--theme-text-muted, #64748b);
 }
@@ -38766,8 +38897,8 @@ body.companion-pdf-translation-dragging * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 0;
   border-radius: var(--radius-sm);

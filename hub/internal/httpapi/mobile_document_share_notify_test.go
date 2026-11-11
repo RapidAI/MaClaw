@@ -68,6 +68,44 @@ func TestCompanionShareNotificationReachesAcceptedGroupMembers(t *testing.T) {
 	}
 }
 
+// Members can publish into a group too, and the person who runs the group is
+// part of its audience: the admin hears about a paper a member shared even
+// though it is not their link.
+func TestCompanionShareNotificationReachesGroupOwnerWhenMemberPublishes(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	svc := newCompanionGroupNotificationService(t)
+	withCompanionGroupNotifier(t, identity, svc)
+
+	adminToken, admin := issueViewerToken(t, identity, "member-pub-admin@example.com")
+	memberToken, member := issueViewerToken(t, identity, "member-pub-member@example.com")
+	groupID := createCompanionGroupAs(t, identity, adminToken, "成员发布组")
+	addCompanionGroupMemberAs(t, identity, adminToken, groupID, member.Email)
+	postCompanionInviteDecision(t, identity, memberToken, groupID, "accept")
+
+	rec := postCompanionShareAs(t, identity, memberToken, "group", "", "0", groupID, "成员分享.pdf", []byte("%PDF-member-pub"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("member share: %d %s", rec.Code, rec.Body.String())
+	}
+	token := companionShareTokenFrom(t, rec)
+	var notice *notification.Notification
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := svc.FindBySource(context.Background(), companionShareNotificationSource, token)
+		if err == nil && got != nil {
+			notice = got
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if notice == nil {
+		t.Fatal("the member's share raised no notification")
+	}
+	if len(notice.AudienceIDs) != 1 || notice.AudienceIDs[0] != admin.UserID || notice.AudienceIDs[0] == member.UserID {
+		t.Fatalf("audience = %v (admin %s member %s)", notice.AudienceIDs, admin.UserID, member.UserID)
+	}
+}
+
 func TestCompanionShareNotificationReachesPersonAndIsRevoked(t *testing.T) {
 	resetCompanionDocShares(t)
 	identity, _, _ := newHTTPAPITestServices(t)

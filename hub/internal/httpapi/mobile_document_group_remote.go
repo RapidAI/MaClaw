@@ -718,11 +718,14 @@ func companionRemoteGroupViews(ownerID string, contacts map[string]struct{}) []m
 		seen[invite.GroupID] = struct{}{}
 		created := invite.InvitedAt.UTC().Format(time.RFC3339)
 		out = append(out, map[string]any{
-			"id":         invite.GroupID,
-			"name":       invite.Name,
-			"icon":       "book",
-			"owner":      invite.Owner,
-			"admin":      false,
+			"id":    invite.GroupID,
+			"name":  invite.Name,
+			"icon":  "book",
+			"owner": invite.Owner,
+			"admin": false,
+			// The group lives on another Hub. It opens the documents shared
+			// inside it, but a new share cannot be published to it from here.
+			"remote":     true,
 			"created_at": created,
 		})
 	}

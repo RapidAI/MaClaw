@@ -3,14 +3,14 @@
 // transcript: copy the quote, paint it with one of the four highlight colours,
 // or clear a highlight the reader right-clicked on.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { companionFill, companionSay, getCompanionUiLang } from "../../i18n/mnCompanion";
 import { capPdfAnnotationDraft } from "./chatAnnotations";
 import { CHAT_MARK_COLORS, type ChatMarkColor } from "./chatMarks";
 
 export type ChatMenuState = { x: number; y: number };
 
-type ChatMenuGlyphKind = "copy" | "highlight" | "erase" | "note";
+type ChatMenuGlyphKind = "copy" | "highlight" | "erase" | "note" | "pen" | "trash";
 
 function ChatMenuGlyph({ kind }: { kind: ChatMenuGlyphKind }) {
     if (kind === "highlight") {
@@ -24,18 +24,37 @@ function ChatMenuGlyph({ kind }: { kind: ChatMenuGlyphKind }) {
     if (kind === "erase") {
         return (
             <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="m14 5 5 5-8.5 8.5a2 2 0 0 1-2.8 0l-2.2-2.2a2 2 0 0 1 0-2.8z" />
-                <path d="m8.5 10.5 5 5" />
-                <path d="M5 20h14" />
+                <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" />
+                <path d="M22 21H7" />
+                <path d="m5 11 9 9" />
+            </svg>
+        );
+    }
+    if (kind === "trash") {
+        return (
+            <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M5.5 6h13" />
+                <path d="M9.5 6V4.3h5V6" />
+                <path d="m7.2 6 .8 13a1.8 1.8 0 0 0 1.8 1.7h4.4a1.8 1.8 0 0 0 1.8-1.7l.8-13" />
+                <path d="M10.2 9.5v8" />
+                <path d="M13.8 9.5v8" />
             </svg>
         );
     }
     if (kind === "note") {
         return (
             <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M4.5 4.5h15v11h-8.5L7 19.5v-4H4.5z" />
+                <path d="M7.5 8.5h9" />
+                <path d="M7.5 11.5h6" />
+            </svg>
+        );
+    }
+    if (kind === "pen") {
+        return (
+            <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="m14 5 5 5-8.5 8.5a2 2 0 0 1-2.8 0l-2.2-2.2a2 2 0 0 1 0-2.8z" />
                 <path d="m8.5 10.5 5 5" />
-                <path d="M5 20h14" />
             </svg>
         );
     }
@@ -230,11 +249,11 @@ export function CompanionChatMarkMenu({
     return (
         <div
             ref={rootRef}
-            className="companion-pdf-menu"
+            className={annotationOpen ? "companion-pdf-menu companion-pdf-menu--editing" : "companion-pdf-menu"}
             data-testid="chat-highlight-menu"
             role="menu"
             aria-label={say("选中文本操作")}
-            style={{ left: place.left, top: place.top }}
+            style={{ left: place.left, top: place.top, "--pdf-menu-x": `${place.left}px`, "--pdf-menu-y": `${place.top}px` } as CSSProperties}
             onMouseDown={(event) => event.stopPropagation()}
             onContextMenu={(event) => {
                 // The writing field is where a reader pastes. Taking its
@@ -269,7 +288,7 @@ export function CompanionChatMarkMenu({
             {canAnnotate ? (
                 <div className="companion-pdf-menu-group">
                     {annotationOpen ? (
-                        <div data-testid="chat-annotation-editor" style={{ display: "grid", gap: 6, padding: 8, minWidth: 220 }}>
+                        <div data-testid="chat-annotation-editor" className="companion-pdf-menu-editor">
                             <textarea
                                 className="companion-pdf-menu-field"
                                 data-testid="chat-annotation-input"
@@ -302,9 +321,9 @@ export function CompanionChatMarkMenu({
                                     }
                                 }}
                             />
-                            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-                                <button type="button" data-testid="chat-annotation-cancel" onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => { setAnnotationOpen(false); setAnnotationText(""); }}>{say("取消")}</button>
-                                <button type="button" data-testid="chat-annotation-save" disabled={!annotationText.trim()} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={submitAnnotation}>{say("保存批注")}</button>
+                            <div className="companion-pdf-menu-editor-actions">
+                                <button type="button" className="companion-pdf-menu-btn" data-testid="chat-annotation-cancel" onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => { setAnnotationOpen(false); setAnnotationText(""); }}>{say("取消")}</button>
+                                <button type="button" className="companion-pdf-menu-btn companion-pdf-menu-btn--accent" data-testid="chat-annotation-save" disabled={!annotationText.trim()} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={submitAnnotation}>{say("保存批注")}</button>
                             </div>
                         </div>
                     ) : (
@@ -385,8 +404,8 @@ export function CompanionChatMarkMenu({
                                 }}
                             />
                             <div className="companion-pdf-bookmark-editor-actions">
-                                <button type="button" data-testid="chat-annotation-name-cancel" onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => setNoteEditor(false)}>{say("取消")}</button>
-                                <button type="button" data-testid="chat-annotation-name-save" disabled={!noteDraft.trim()} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={submitRename}>{say("确定")}</button>
+                                <button type="button" className="companion-pdf-menu-btn" data-testid="chat-annotation-name-cancel" onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => setNoteEditor(false)}>{say("取消")}</button>
+                                <button type="button" className="companion-pdf-menu-btn companion-pdf-menu-btn--accent" data-testid="chat-annotation-name-save" disabled={!noteDraft.trim()} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={submitRename}>{say("确定")}</button>
                             </div>
                         </div>
                     ) : (
@@ -402,13 +421,13 @@ export function CompanionChatMarkMenu({
                                         setNoteEditor(true);
                                     })}
                                 >
-                                    <ChatMenuGlyph kind="note" />
+                                    <ChatMenuGlyph kind="pen" />
                                     <span className="companion-pdf-menu-item-label">{say("批注改名")}</span>
                                 </button>
                             ) : null}
                             {canDeleteAnnotation ? (
                                 <button type="button" role="menuitem" data-testid="chat-annotation-delete" className="companion-pdf-menu-item companion-pdf-menu-item--danger" {...activate(onDeleteAnnotation)}>
-                                    <ChatMenuGlyph kind="erase" />
+                                    <ChatMenuGlyph kind="trash" />
                                     <span className="companion-pdf-menu-item-label">{say("删除批注")}</span>
                                 </button>
                             ) : null}

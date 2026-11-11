@@ -256,4 +256,11 @@ func TestCompanionGroupHomeInviteListsRemoteShares(t *testing.T) {
 	if !strings.Contains(received, token) || !strings.Contains(received, originURL) || !strings.Contains(received, secret) {
 		t.Fatalf("received shares: %s", received)
 	}
+
+	// The joined remote group is listed with its marker so the client knows
+	// it can open the documents but cannot publish a new share to it.
+	listed := listCompanionGroups(t, identity, readerToken)
+	if !strings.Contains(listed, groupID) || !strings.Contains(listed, `"remote":true`) {
+		t.Fatalf("group list missing the remote marker: %s", listed)
+	}
 }

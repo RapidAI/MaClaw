@@ -290,17 +290,6 @@ func companionViewerContactSet(identity *auth.IdentityService, ctx context.Conte
 	return set
 }
 
-func companionGroupIsAdmin(ownerID, groupID string) bool {
-	if !companionGroupTokenPattern.MatchString(groupID) || ownerID == "" {
-		return false
-	}
-	loadCompanionDocGroups()
-	companionDocGroups.Lock()
-	defer companionDocGroups.Unlock()
-	group, ok := companionDocGroups.items[groupID]
-	return ok && group.OwnerID == ownerID
-}
-
 func companionMemberIsCaller(member companionDocGroupMember, ownerID string, contacts map[string]struct{}) bool {
 	if member.Status != "accepted" {
 		return false
@@ -311,7 +300,11 @@ func companionMemberIsCaller(member companionDocGroupMember, ownerID string, con
 	return member.Contact != "" && containsContact(contacts, member.Contact)
 }
 
-func companionAcceptedGroupIDs(ownerID string, contacts map[string]struct{}) map[string]struct{} {
+// companionReadableGroupIDs is the set of groups whose shares this viewer may
+// open: every group they own plus every group they already joined. Members can
+// publish into a group too, so the owner needs the same lookup to see what was
+// shared to their own group.
+func companionReadableGroupIDs(ownerID string, contacts map[string]struct{}) map[string]struct{} {
 	out := map[string]struct{}{}
 	if ownerID == "" {
 		return out
@@ -320,6 +313,10 @@ func companionAcceptedGroupIDs(ownerID string, contacts map[string]struct{}) map
 	companionDocGroups.Lock()
 	defer companionDocGroups.Unlock()
 	for id, group := range companionDocGroups.items {
+		if group.OwnerID == ownerID {
+			out[id] = struct{}{}
+			continue
+		}
 		for _, member := range group.Members {
 			if companionMemberIsCaller(member, ownerID, contacts) {
 				out[id] = struct{}{}
@@ -328,6 +325,32 @@ func companionAcceptedGroupIDs(ownerID string, contacts map[string]struct{}) map
 		}
 	}
 	return out
+}
+
+// companionGroupPublishAccess is true when the caller may put a document into
+// the group: the admin, or a member who already accepted the invitation. A
+// pending invite is not membership yet, and a group that lives on another Hub
+// cannot be published to from here.
+func companionGroupPublishAccess(ownerID, groupID string, contacts map[string]struct{}) bool {
+	if !companionGroupTokenPattern.MatchString(groupID) || ownerID == "" {
+		return false
+	}
+	loadCompanionDocGroups()
+	companionDocGroups.Lock()
+	defer companionDocGroups.Unlock()
+	group, ok := companionDocGroups.items[groupID]
+	if !ok {
+		return false
+	}
+	if group.OwnerID == ownerID {
+		return true
+	}
+	for _, member := range group.Members {
+		if companionMemberIsCaller(member, ownerID, contacts) {
+			return true
+		}
+	}
+	return false
 }
 
 func companionShareReadAccess(share companionDocShare, ownerID string, contacts, groups map[string]struct{}, password string) (int, string) {

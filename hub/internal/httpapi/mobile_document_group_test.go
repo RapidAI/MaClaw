@@ -857,6 +857,124 @@ func TestCompanionDocumentGroupRenameIconLeaveAndDissolve(t *testing.T) {
 	}
 }
 
+// An accepted member can publish a document into the group, not just read what
+// the admin shared. A pending invite is not membership yet: they see the bell
+// entry but cannot put anything into the group.
+func TestCompanionDocumentGroupMemberPublishesShare(t *testing.T) {
+	resetCompanionDocShares(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	ownerToken, _ := issueViewerToken(t, identity, "pub-owner@example.com")
+	memberToken, _ := issueViewerToken(t, identity, "pub-member@example.com")
+	peerToken, _ := issueViewerToken(t, identity, "pub-peer@example.com")
+	pendingToken, _ := issueViewerToken(t, identity, "pub-pending@example.com")
+	strangerToken, _ := issueViewerToken(t, identity, "pub-stranger@example.com")
+
+	create := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/groups", strings.NewReader(`{"name":"共读组"}`))
+	create.Header.Set("Authorization", "Bearer "+ownerToken)
+	createRec := httptest.NewRecorder()
+	CompanionDocumentGroupsHandler(identity).ServeHTTP(createRec, create)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create group: %d %s", createRec.Code, createRec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	groupID, _ := created["id"].(string)
+
+	for _, contact := range []string{"pub-member@example.com", "pub-peer@example.com", "pub-pending@example.com"} {
+		add := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/groups/"+groupID+"/members", strings.NewReader(`{"contact":"`+contact+`"}`))
+		add.SetPathValue("id", groupID)
+		add.Header.Set("Authorization", "Bearer "+ownerToken)
+		addRec := httptest.NewRecorder()
+		CompanionDocumentGroupMembersHandler(identity).ServeHTTP(addRec, add)
+		if addRec.Code != http.StatusOK {
+			t.Fatalf("add %s: %d %s", contact, addRec.Code, addRec.Body.String())
+		}
+	}
+
+	// A pending invite is not membership: neither publishing nor picking the
+	// group works until the person accepts.
+	pendingShare := postCompanionShareAs(t, identity, pendingToken, "group", "", "0", groupID, "抢先.pdf", []byte("%PDF-pending"))
+	if pendingShare.Code != http.StatusBadRequest || !strings.Contains(pendingShare.Body.String(), "请选择群组") {
+		t.Fatalf("pending publish: %d %s", pendingShare.Code, pendingShare.Body.String())
+	}
+	strangerShare := postCompanionShareAs(t, identity, strangerToken, "group", "", "0", groupID, "外人.pdf", []byte("%PDF-stranger"))
+	if strangerShare.Code != http.StatusBadRequest || !strings.Contains(strangerShare.Body.String(), "请选择群组") {
+		t.Fatalf("stranger publish: %d %s", strangerShare.Code, strangerShare.Body.String())
+	}
+
+	for _, viewer := range []string{memberToken, peerToken} {
+		accept := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/groups/"+groupID+"/accept", nil)
+		accept.SetPathValue("id", groupID)
+		accept.Header.Set("Authorization", "Bearer "+viewer)
+		acceptRec := httptest.NewRecorder()
+		CompanionDocumentGroupAcceptHandler(identity).ServeHTTP(acceptRec, accept)
+		if acceptRec.Code != http.StatusOK {
+			t.Fatalf("accept: %d %s", acceptRec.Code, acceptRec.Body.String())
+		}
+	}
+
+	memberShare := postCompanionShareAs(t, identity, memberToken, "group", "", "0", groupID, "成员共享.pdf", []byte("%PDF-member"))
+	if memberShare.Code != http.StatusOK {
+		t.Fatalf("member publish: %d %s", memberShare.Code, memberShare.Body.String())
+	}
+	var shared map[string]any
+	if err := json.Unmarshal(memberShare.Body.Bytes(), &shared); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := shared["token"].(string)
+	if shared["visibility"] != "group" {
+		t.Fatalf("share view: %s", memberShare.Body.String())
+	}
+
+	// Everyone in the group sees the member's document: the admin, the other
+	// accepted member, and the publisher's own row stays under mine.
+	if body := listCompanionShares(t, identity, ownerToken); !strings.Contains(body, token) {
+		t.Fatalf("admin missing the member's share: %s", body)
+	}
+	if body := listCompanionShares(t, identity, peerToken); !strings.Contains(body, token) {
+		t.Fatalf("peer missing the member's share: %s", body)
+	}
+	if body := listCompanionShares(t, identity, strangerToken); strings.Contains(body, token) {
+		t.Fatalf("stranger saw the group share: %s", body)
+	}
+	if body := listCompanionShares(t, identity, pendingToken); strings.Contains(body, token) {
+		t.Fatalf("pending member saw the group share: %s", body)
+	}
+
+	// The publisher edits the audience of their own link. Pointing it at a
+	// group they joined is the same publish access as creating it.
+	patch := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/shares/"+token, strings.NewReader(`{"visibility":"group","target":"`+groupID+`","days":0}`))
+	patch.SetPathValue("token", token)
+	patch.Header.Set("Authorization", "Bearer "+memberToken)
+	patchRec := httptest.NewRecorder()
+	CompanionDocumentShareUpdateHandler(identity).ServeHTTP(patchRec, patch)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("member patch: %d %s", patchRec.Code, patchRec.Body.String())
+	}
+
+	// After leaving, the member keeps their link but cannot publish again.
+	leave := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/groups/"+groupID+"/leave", strings.NewReader(`{}`))
+	leave.SetPathValue("id", groupID)
+	leave.Header.Set("Authorization", "Bearer "+memberToken)
+	leaveRec := httptest.NewRecorder()
+	CompanionDocumentGroupLeaveHandler(identity).ServeHTTP(leaveRec, leave)
+	if leaveRec.Code != http.StatusOK {
+		t.Fatalf("leave: %d %s", leaveRec.Code, leaveRec.Body.String())
+	}
+	if body := listCompanionShares(t, identity, memberToken); !strings.Contains(body, token) {
+		t.Fatalf("leaver lost their own share: %s", body)
+	}
+	if body := listCompanionShares(t, identity, peerToken); !strings.Contains(body, token) {
+		t.Fatalf("leaver's share dropped for the group: %s", body)
+	}
+	again := postCompanionShareAs(t, identity, memberToken, "group", "", "0", groupID, "退出后再发.pdf", []byte("%PDF-again"))
+	if again.Code != http.StatusBadRequest || !strings.Contains(again.Body.String(), "请选择群组") {
+		t.Fatalf("publish after leave: %d %s", again.Code, again.Body.String())
+	}
+}
+
 func postCompanionNote(t *testing.T, identity *auth.IdentityService, viewer, token, text string) *httptest.ResponseRecorder {
 	t.Helper()
 	return postCompanionNoteReply(t, identity, viewer, token, text, "")

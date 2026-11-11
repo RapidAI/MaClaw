@@ -1915,8 +1915,10 @@ describe("FileCompanionWindow", () => {
         const left = screen.getByTestId("file-companion-tabs-left");
         const right = screen.getByTestId("file-companion-tabs-right");
         const files = screen.getByTestId("file-companion-titlebar-files");
-        expect(left.textContent).toBe("<<");
-        expect(right.textContent).toBe(">>");
+        expect(left.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+        expect(right.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+        expect(left.getAttribute("aria-label")).toBe("向左移动文件标签");
+        expect(right.getAttribute("aria-label")).toBe("向右移动文件标签");
         expect(left.closest("[role='tablist']")).toBeNull();
         expect(right.closest("[role='tablist']")).toBeNull();
         expect(files.contains(left)).toBe(true);
@@ -3806,6 +3808,42 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(screen.getByTestId("file-companion-library-share").textContent).toBe("分享到云端"));
         fireEvent.click(screen.getByTestId("file-companion-library-sync"));
         await waitFor(() => expect(syncShare).toHaveBeenCalledWith("C:/notes/a.md", JSON.stringify({ highlights: [], chatMarks: [], chatAnnotations: [], annotations: [], drawings: [], bookmarks: [] })));
+    });
+
+    it("offers a joined group as a share audience, not only groups this person manages", async () => {
+        const groupID = "cg_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        // A group this reader only belongs to: admin is false, the owner is
+        // someone else. It must still be a share target.
+        listGroups.mockResolvedValue([{ id: groupID, name: "论文组", owner: "host@example.com", admin: false, members: [] }]);
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        fireEvent.click(screen.getByTestId("file-companion-share-open"));
+        await screen.findByTestId("file-companion-share-dialog");
+        fireEvent.click(screen.getByTestId("file-companion-share-group"));
+        const picker = await screen.findByTestId("file-companion-share-group-pick");
+        await waitFor(() => expect(picker.textContent).toContain("论文组"));
+        fireEvent.change(picker, { target: { value: groupID } });
+        fireEvent.click(screen.getByTestId("file-companion-library-share"));
+        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "group", "", groupID, expect.any(String), 0));
+    });
+
+    it("does not offer a group that lives on another Hub as a share audience", async () => {
+        const groupID = "cg_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        listGroups.mockResolvedValue([{ id: groupID, name: "远程组", owner: "host@example.com", admin: false, remote: true, members: [] }]);
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        fireEvent.click(screen.getByTestId("file-companion-share-open"));
+        await screen.findByTestId("file-companion-share-dialog");
+        fireEvent.click(screen.getByTestId("file-companion-share-group"));
+        // A remote group cannot accept a share from this Hub, so the picker
+        // shows the empty hint instead of a dead option.
+        await waitFor(() => expect(screen.queryByTestId("file-companion-share-group-pick")).toBeNull());
     });
 
     it("selects a newly created group and clears the selection when it is dissolved", async () => {
@@ -6667,6 +6705,34 @@ describe("FileCompanionWindow", () => {
         expect(screen.getByTestId("file-companion-drop-error").textContent).toContain("不支持打开文件夹");
         expect(screen.queryByTestId("file-companion-tab-notes")).toBeNull();
         expect(screen.getByTestId("file-companion-empty")).toBeTruthy();
+    });
+
+    it("dropping a file over 文档管理 opens it in the reader", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({ items: [{ id: "local:a", name: "a.md", path: "C:/notes/a.md", source: "local", openedAt: "2026-10-25T00:00:00Z" }], notice: "" });
+        const drop = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-panel");
+        act(() => drop.fire(["C:/notes/new.md"]));
+        await waitFor(() => expect(open).toHaveBeenCalledWith("C:/notes/new.md"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-library-panel")).toBeNull());
+        expect(await screen.findByTestId("file-companion-tab-new.md")).toBeTruthy();
+    });
+
+    it("opens 文档管理 from the 打开 menu and closes the menu", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({ items: [], notice: "" });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        fireEvent.click(await screen.findByTestId("file-companion-open-library"));
+        await screen.findByTestId("file-companion-library-panel");
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
     });
 
     it("pptx, docx, and pdf are handed to the existing preview panels", async () => {

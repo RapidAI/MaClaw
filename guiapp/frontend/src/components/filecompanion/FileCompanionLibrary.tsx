@@ -26,6 +26,7 @@ import {
     TransferFileCompanionShareHost,
     RevokeFileCompanionShareHost,
     FileCompanionExportProject,
+    ChooseFileCompanionFiles,
 } from "../../../wailsjs/go/main/App";
 import { useDialog } from "../CustomDialog";
 import { cloudDriveSystemIconKey, cloudDriveSystemIconSettled, cloudDriveSystemIconURL, ensureCloudDriveSystemIcon, forgetCloudDriveSystemIcon, promoteCloudDriveSystemIcons, subscribeCloudDriveSystemIcon } from "../layout/cloudDriveSystemIcons";
@@ -256,6 +257,9 @@ type CompanionGroup = {
     admin: boolean;
     icon: CompanionGroupIcon;
     members: CompanionGroupMember[];
+    // remote marks a group that lives on another Hub. It opens the documents
+    // shared inside it, but a new share cannot be published to it from here.
+    remote: boolean;
 };
 
 type GroupEdit = { name: string; icon: string };
@@ -391,6 +395,7 @@ function readGroups(raw: unknown): CompanionGroup[] {
             admin: boolOf(group, "admin", "Admin"),
             icon: companionGroupIcon(textOf(group, "icon", "Icon")),
             members,
+            remote: boolOf(group, "remote", "Remote"),
         };
     }).filter((group): group is CompanionGroup => group !== null);
 }
@@ -453,9 +458,11 @@ function LibraryGlyph({ name, size = 14 }: { name: LibraryGlyphName; size?: numb
         <svg className="file-companion-library-glyph" data-icon={name} width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             {name === "share" ? (
                 <>
-                    <path {...stroke} d="M6.5 12.2h11a3.5 3.5 0 0 0 .2-7 5.5 5.5 0 0 0-10.6 1.5A3.2 3.2 0 0 0 6.5 12.2Z" />
-                    <path {...stroke} d="M12 20.5v-8.2" />
-                    <path {...stroke} d="m9.3 14.8 2.7-2.7 2.7 2.7" />
+                    <circle {...stroke} cx="18" cy="5.4" r="2.7" />
+                    <circle {...stroke} cx="6" cy="12" r="2.7" />
+                    <circle {...stroke} cx="18" cy="18.6" r="2.7" />
+                    <path {...stroke} d="m8.4 10.8 7-4" />
+                    <path {...stroke} d="m8.4 13.2 7 4" />
                 </>
             ) : null}
             {name === "globe" ? (
@@ -1842,6 +1849,7 @@ export function CompanionLibraryView({
     activePath,
     showToast,
     onOpen,
+    onAddLocal,
     onExit,
     onShareUpdated,
     onListed,
@@ -1857,6 +1865,9 @@ export function CompanionLibraryView({
     activePath: string;
     showToast: LibraryToast;
     onOpen: (path: string) => void;
+    // 打开文档 picks local files and adds them to the list while staying in
+    // 文档管理. The host window opens each path the way its own picker does.
+    onAddLocal?: (path: string) => void | Promise<unknown>;
     onExit: () => void;
     onShareUpdated?: (update: CompanionShareUpdate) => void;
     onListed?: (listed: unknown) => boolean | void;
@@ -1901,6 +1912,8 @@ export function CompanionLibraryView({
     const [viewShares, setViewShares] = useState<{ name: string; shares: CompanionLibraryItem[] } | null>(null);
     const [revokeBusy, setRevokeBusy] = useState(false);
     const [shareGroupNames, setShareGroupNames] = useState<Record<string, string>>({});
+    const [addBusy, setAddBusy] = useState(false);
+    const addBusyRef = useRef(false);
     const revokeBusyRef = useRef(false);
     const { showConfirm } = useDialog();
     const updatedRef = useRef(onShareUpdated);
@@ -1995,6 +2008,31 @@ export function CompanionLibraryView({
             setLoading(false);
         }
     }, [libraryDeleteGen, applyList]);
+
+    // 打开文档 in the header adds the picked files to this list without
+    // leaving 文档管理. onAddLocal opens each in a background tab; the reload
+    // then paints the new rows instead of waiting for the next poll.
+    const addLocalFiles = async () => {
+        if (!onAddLocal || addBusyRef.current) return;
+        addBusyRef.current = true;
+        setAddBusy(true);
+        let opened = false;
+        try {
+            const paths = await ChooseFileCompanionFiles();
+            for (const path of Array.isArray(paths) ? paths : []) {
+                await onAddLocal(path);
+                opened = true;
+            }
+        } catch {
+            // A cancelled picker or one unreadable file leaves the list as it was.
+        } finally {
+            // A path that failed after earlier ones opened still refreshes:
+            // the rows already added must paint without the next poll.
+            if (opened) await reload();
+            addBusyRef.current = false;
+            setAddBusy(false);
+        }
+    };
 
     useEffect(() => {
         void reload();
@@ -3025,6 +3063,18 @@ export function CompanionLibraryView({
                         </p>
                     </div>
                     <div className="file-companion-dialog-head-actions">
+                        {onAddLocal ? (
+                            <button
+                                type="button"
+                                className="file-companion-dialog-secondary"
+                                data-testid="file-companion-library-open-local"
+                                disabled={addBusy}
+                                title={cs("选择本地文档加入文档管理")}
+                                onClick={() => { void addLocalFiles(); }}
+                            >
+                                {addBusy ? cs("打开中…") : cs("打开文档")}
+                            </button>
+                        ) : null}
                         <button
                             type="button"
                             className="file-companion-dialog-secondary"
@@ -3876,7 +3926,7 @@ export function CompanionGroupsDialog({
                                         </span>
                                         <span className="file-companion-groups-item-text">
                                             <strong>{group.name}</strong>
-                                            <small>{group.admin ? cs("管理员") : (group.owner || cs("成员"))}{group.members.length > 0 ? companionFill(getCompanionUiLang(), " · ${count} 人", { count: group.members.length }) : ""}</small>
+                                            <small>{group.admin ? cs("管理员") : (group.owner || cs("成员"))}{group.remote ? ` · ${cs("远程群组")}` : ""}{group.members.length > 0 ? companionFill(getCompanionUiLang(), " · ${count} 人", { count: group.members.length }) : ""}</small>
                                         </span>
                                     </button>
                                 );
@@ -3898,7 +3948,7 @@ export function CompanionGroupsDialog({
                                     </span>
                                     <div className="file-companion-library-group-title">
                                         <strong>{selected.name}</strong>
-                                        <small>{selected.admin ? cs("你是管理员") : companionFill(getCompanionUiLang(), "成员 · ${owner}", { owner: selected.owner || cs("群主") })}</small>
+                                        <small>{selected.admin ? cs("你是管理员") : companionFill(getCompanionUiLang(), "成员 · ${owner}", { owner: selected.owner || cs("群主") })}{!selected.admin && selected.remote ? ` · ${cs("远程群组")}` : ""}</small>
                                     </div>
                                 </div>
 
@@ -4412,7 +4462,7 @@ export function CompanionShareDialog({
                             />
                         ) : null}
                         {visibility === "group" ? (
-                            groups.some((group) => group.admin) ? (
+                            groups.some((group) => !group.remote) ? (
                                 <select
                                     className="file-companion-dialog-input"
                                     data-testid="file-companion-share-group-pick"
@@ -4421,11 +4471,11 @@ export function CompanionShareDialog({
                                     onChange={(event) => setGroupID(event.target.value)}
                                 >
                                     <option value="">{cs("选择群组")}</option>
-                                    {groups.filter((group) => group.admin).map((group) => (
-                                        <option key={group.id} value={group.id}>{group.name}</option>
+                                    {groups.filter((group) => !group.remote).map((group) => (
+                                        <option key={group.id} value={group.id}>{group.admin ? group.name : `${group.name}（${group.owner || cs("成员")}）`}</option>
                                     ))}
                                 </select>
-                            ) : <p className="file-companion-dialog-hint">{cs("还没有管理的群组，先在「阅读群组」里创建一个。")}</p>
+                            ) : <p className="file-companion-dialog-hint">{cs("还没有可分享的群组，先在「阅读群组」里创建或加入一个。")}</p>
                         ) : null}
                         {otherShares.length > 0 ? (
                             <p className="file-companion-dialog-hint" data-testid="file-companion-share-existing">

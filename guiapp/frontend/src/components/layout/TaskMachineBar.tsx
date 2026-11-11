@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { localizeText } from '../../i18n';
 import type { RemotePermission, useTaskRemoteControl } from './useTaskRemoteControl';
 import { bindRemoteAssistantActions, publishRemoteAssistantSession } from './remoteAssistantSession';
@@ -15,6 +15,17 @@ function permissionLabel(lang: string, permission: string) {
     return permission === 'operate'
         ? localizeText(lang, 'Can operate', '可操作', '可操作')
         : localizeText(lang, 'View only', '仅查看', '僅查看');
+}
+
+// The live panel expands on the newest thinking; the transcript itself keeps
+// full messages. Keep only the tail so a long thought does not flood it.
+function remoteReasoningTail(messages: { reasoning_content?: string }[] | undefined, limit = 900) {
+    for (let i = (messages?.length || 0) - 1; i >= 0; i--) {
+        const reasoning = (messages?.[i]?.reasoning_content || '').trim();
+        // Code points, not UTF-16 units — an emoji at the cut must not split.
+        if (reasoning) return reasoning.length > limit ? Array.from(reasoning).slice(-limit).join('') : reasoning;
+    }
+    return '';
 }
 
 // Mounted only while the add-machine dialog is open: the focus trap belongs to
@@ -184,6 +195,8 @@ export function TaskMachineBar({
     const detailPath = remote.detailPath;
     const detailLoading = remote.detailLoading;
     const detailBusy = remote.detailBusy;
+    const awaitingReply = remote.awaitingReply;
+    const awaitingStop = remote.awaitingStop;
     const remoteTasks = remote.tasks;
     const operate = remote.operate;
     const error = remote.error;
@@ -191,18 +204,32 @@ export function TaskMachineBar({
     const stopTask = remote.stopTask;
     const closeDetail = remote.closeDetail;
     const chatError = (remote.errorKind === 'action' || remote.errorKind === 'conversation') && !!detailPath ? error : '';
+    // Local wall time for "elapsed" on the live panel. It resets when the run
+    // ends or the open task changes, so it never survives into another run.
+    const busySinceRef = useRef<{ path: string; at: number }>({ path: '', at: 0 });
     useEffect(() => {
         if (!selected || !detailPath) {
+            busySinceRef.current = { path: '', at: 0 };
             publishRemoteAssistantSession(null);
             bindRemoteAssistantActions(null);
             return;
         }
+        if (detailBusy) {
+            if (busySinceRef.current.path !== detailPath) {
+                busySinceRef.current = { path: detailPath, at: Date.now() };
+            }
+        } else {
+            busySinceRef.current = { path: '', at: 0 };
+        }
+        // The task-list row carries the fresher heartbeat; the detail
+        // snapshot only updates when the conversation poll lands.
+        const openTaskRow = remoteTasks.find(item => item.project_path === detailPath);
         publishRemoteAssistantSession({
             grantId: selected.id,
             machineName: selected.machine_name || selected.machine_id || '',
             projectPath: detailPath,
             taskName: detail?.task?.name
-                || remoteTasks.find(item => item.project_path === detailPath)?.name
+                || openTaskRow?.name
                 || detailPath,
             canSend: !!operate && selected.online !== false,
             offline: selected.online === false,
@@ -211,6 +238,24 @@ export function TaskMachineBar({
             // must not read as "still loading" forever.
             loading: selected.online !== false && (detailLoading || !detail),
             busy: !!detailBusy && selected.online !== false,
+            activity: {
+                awaitingReply: !!awaitingReply && selected.online !== false,
+                stopping: !!awaitingStop && selected.online !== false,
+                // The list row polls on its own cadence and often lands the
+                // workflow snapshot before get_task does; use it as fallback.
+                workflow: detail?.task?.active_workflow ?? openTaskRow?.active_workflow ?? null,
+                workflowType: detail?.task?.workflow_type || openTaskRow?.workflow_type || '',
+                lastActivityAt: openTaskRow?.last_activity || detail?.task?.last_activity || '',
+                reasoningTail: remoteReasoningTail(detail?.messages),
+                // RecentArtifacts arrives newest-first from the desktop.
+                artifacts: (detail?.artifacts || []).slice(0, 6).map(artifact => ({
+                    title: (artifact.title || artifact.source_type || '').trim(),
+                    preview: (artifact.preview || '').trim(),
+                    sourceType: artifact.source_type || '',
+                    updatedAt: artifact.updated_at || '',
+                })).filter(artifact => artifact.title !== ''),
+                busySince: detailBusy && busySinceRef.current.at ? busySinceRef.current.at : undefined,
+            },
             messages: (detail?.messages || []).map(message => {
                 const content = (message.content || '').trim();
                 const reasoning = (message.reasoning_content || '').trim();
@@ -226,7 +271,7 @@ export function TaskMachineBar({
             stop: () => stopTask(detailPath),
             close: closeDetail,
         });
-    }, [chatError, closeDetail, detail, detailBusy, detailLoading, detailPath, operate, remoteTasks, selected, sendMessage, stopTask]);
+    }, [awaitingReply, awaitingStop, chatError, closeDetail, detail, detailBusy, detailLoading, detailPath, operate, remoteTasks, selected, sendMessage, stopTask]);
     useEffect(() => () => {
         publishRemoteAssistantSession(null);
         bindRemoteAssistantActions(null);
@@ -248,46 +293,98 @@ export function TaskMachineBar({
     // only keeps it when that form is not open, so the same text is not shown twice.
     const errorInDetail = !!chatError;
     const errorInCreate = !!(remote.error && selected && remote.creating && !errorInDetail);
+    // The tab strip scrolls horizontally with the scrollbar hidden, so the
+    // edges fade in wherever more tabs are waiting and the active tab walks
+    // itself into view when it is selected.
+    const tablistRef = useRef<HTMLDivElement | null>(null);
+    const activeTabRef = useRef<HTMLButtonElement | null>(null);
+    const [tabFades, setTabFades] = useState({ left: false, right: false });
+    const updateTabFades = useCallback(() => {
+        const el = tablistRef.current;
+        if (!el) return;
+        const maxScroll = el.scrollWidth - el.clientWidth;
+        setTabFades({ left: el.scrollLeft > 1, right: el.scrollLeft < maxScroll - 1 });
+    }, []);
+    useEffect(() => {
+        updateTabFades();
+        const el = tablistRef.current;
+        if (!el || typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(() => updateTabFades());
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, [remote.state.grants, updateTabFades]);
+    useEffect(() => {
+        const el = activeTabRef.current;
+        if (!el || typeof el.scrollIntoView !== 'function') return;
+        el.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+    }, [selected?.id]);
+    // Vertical wheel input scrolls the strip sideways (trackpads and wheels
+    // send deltaY; React's onWheel is passive, so this needs a raw listener).
+    useEffect(() => {
+        const el = tablistRef.current;
+        if (!el) return;
+        const onWheel = (event: WheelEvent) => {
+            if (event.deltaY && !event.deltaX) {
+                event.preventDefault();
+                el.scrollLeft += event.deltaY;
+                updateTabFades();
+            }
+        };
+        el.addEventListener('wheel', onWheel, { passive: false });
+        return () => el.removeEventListener('wheel', onWheel);
+    }, [updateTabFades]);
 
     return (
         <div className="mc-task-machine-bar" data-testid="task-machine-bar">
             <div className="mc-task-machine-tabs">
-                <div className="mc-task-machine-tablist" role="tablist" aria-label={localizeText(lang, 'Machines', '机器', '機器')}>
-                <button
-                    type="button"
-                    role="tab"
-                    aria-selected={!selected}
-                    className={`mc-task-machine-tab${!selected ? ' is-active' : ''}`}
-                    data-testid="task-machine-tab-local"
-                    onClick={remote.selectLocal}
-                >
-                    {localizeText(lang, 'This computer', '本机', '本機')}
-                </button>
-                {remote.state.grants.map(grant => (
-                    <span key={grant.id} className={`mc-task-machine-tab-wrap${selected?.id === grant.id ? ' is-active' : ''}`}>
-                        <button
-                            type="button"
-                            role="tab"
-                            aria-selected={selected?.id === grant.id}
-                            className={`mc-task-machine-tab${selected?.id === grant.id ? ' is-active' : ''}`}
-                            data-testid={`task-machine-tab-${grant.id}`}
-                            title={grant.online === false ? localizeText(lang, 'Offline', '离线', '離線') : permissionLabel(lang, grant.permission)}
-                            onClick={() => remote.selectGrant(grant.id)}
-                        >
-                            <span>{grant.machine_name || grant.machine_id}</span>
-                            {grant.online === false ? <i data-testid={`task-machine-offline-${grant.id}`}>{localizeText(lang, 'Offline', '离线', '離線')}</i> : null}
-                        </button>
-                        <button
-                            type="button"
-                            className="mc-task-machine-tab-close"
-                            aria-label={localizeText(lang, `End remote control of ${grant.machine_name || grant.machine_id}`, `结束对${grant.machine_name || grant.machine_id}的远控`, `結束對${grant.machine_name || grant.machine_id}的遠控`)}
-                            data-testid={`task-machine-close-${grant.id}`}
-                            onClick={() => onCloseGrant(grant.id, grant.machine_name || grant.machine_id || '')}
-                        >
-                            ×
-                        </button>
-                    </span>
-                ))}
+                <div className="mc-task-machine-tablist-wrap">
+                    <div className="mc-task-machine-tablist" role="tablist" aria-label={localizeText(lang, 'Machines', '机器', '機器')} ref={tablistRef} onScroll={updateTabFades}>
+                    <button
+                        type="button"
+                        role="tab"
+                        aria-selected={!selected}
+                        className={`mc-task-machine-tab${!selected ? ' is-active' : ''}`}
+                        data-testid="task-machine-tab-local"
+                        onClick={remote.selectLocal}
+                    >
+                        {localizeText(lang, 'This computer', '本机', '本機')}
+                    </button>
+                    {remote.state.grants.map(grant => (
+                        <span key={grant.id} className={`mc-task-machine-tab-wrap${selected?.id === grant.id ? ' is-active' : ''}`}>
+                            <button
+                                type="button"
+                                role="tab"
+                                aria-selected={selected?.id === grant.id}
+                                className={`mc-task-machine-tab${selected?.id === grant.id ? ' is-active' : ''}`}
+                                data-testid={`task-machine-tab-${grant.id}`}
+                                data-offline={grant.online === false ? 'true' : undefined}
+                                title={grant.online === false ? localizeText(lang, 'Offline', '离线', '離線') : permissionLabel(lang, grant.permission)}
+                                ref={selected?.id === grant.id ? activeTabRef : undefined}
+                                onClick={() => remote.selectGrant(grant.id)}
+                            >
+                                <span
+                                    className="mc-task-machine-tab-dot"
+                                    data-online={grant.online === false ? 'false' : 'true'}
+                                    role={grant.online === false ? 'img' : undefined}
+                                    aria-label={grant.online === false ? localizeText(lang, 'Offline', '离线', '離線') : undefined}
+                                    data-testid={grant.online === false ? `task-machine-offline-${grant.id}` : undefined}
+                                />
+                                <span>{grant.machine_name || grant.machine_id}</span>
+                            </button>
+                            <button
+                                type="button"
+                                className="mc-task-machine-tab-close"
+                                aria-label={localizeText(lang, `End remote control of ${grant.machine_name || grant.machine_id}`, `结束对${grant.machine_name || grant.machine_id}的远控`, `結束對${grant.machine_name || grant.machine_id}的遠控`)}
+                                data-testid={`task-machine-close-${grant.id}`}
+                                onClick={() => onCloseGrant(grant.id, grant.machine_name || grant.machine_id || '')}
+                            >
+                                ×
+                            </button>
+                        </span>
+                    ))}
+                    </div>
+                    <span className="mc-task-machine-tab-fade mc-task-machine-tab-fade--left" data-show={tabFades.left ? 'true' : 'false'} aria-hidden="true" />
+                    <span className="mc-task-machine-tab-fade mc-task-machine-tab-fade--right" data-show={tabFades.right ? 'true' : 'false'} aria-hidden="true" />
                 </div>
                 {remote.error && remoteActivity && !errorInDetail && !errorInCreate ? (
                     <span className="mc-task-machine-error" data-testid="task-machine-error" role="alert" title={remote.error}>{remote.error}</span>

@@ -384,13 +384,18 @@ function App() {
     const audioDevices = useAudioDevices();
     const [aiPanelMaximized, setAiPanelMaximized] = useState(false);
     const aiPanelMaximizedWindowRef = useRef(false);
+    // State mirror of aiPanelMaximizedWindowRef for data-window-move-locked:
+    // the ref stays the synchronous source of truth for the restore logic.
+    const [aiPanelOwnsWindowMaximize, setAiPanelOwnsWindowMaximize] = useState(false);
     const aiPanelMaximizeSeqRef = useRef(0);
     const [windowMaximized, setWindowMaximized] = useState(false);
+    const [windowFullscreen, setWindowFullscreen] = useState(false);
     const restoreAIPanelOwnedWindowMaximize = useCallback(() => {
         // Only undo a native maximize this panel applied. If the window was
         // already maximized, restoring the assistant must keep that size.
         if (!aiPanelMaximizedWindowRef.current) return false;
         aiPanelMaximizedWindowRef.current = false;
+        setAiPanelOwnsWindowMaximize(false);
         if (!windowMaximizeRestore.restoreNormal()) {
             try {
                 WindowUnmaximise();
@@ -413,9 +418,38 @@ function App() {
                 void callBackend(() => ClampMaximizedWindowToWorkArea()).catch(() => undefined);
             }, 80);
         };
+        // Best-effort "window still fills the monitor work area" check. The
+        // clamped pseudo-max frame (zoomed bit cleared, rect = work area)
+        // must keep its ownership claim; a truly restored frame must not.
+        // screen tracks the monitor the window sits on.
+        const frameCoversWorkAreaApprox = () => {
+            const slack = 8; // CSS px, covers rounding and invisible borders
+            return window.outerWidth >= screen.availWidth - slack
+                && window.outerHeight >= screen.availHeight - slack;
+        };
         const applyWindowState = (isMax: boolean, isFs: boolean) => {
             const maximised = !!(isMax || isFs);
             setWindowMaximized(maximised);
+            // Fullscreen is tracked apart from maximise: a maximised shell
+            // must stay draggable (Windows restores it, then moves it, so the
+            // window can be pulled onto another monitor), while real
+            // fullscreen keeps data-window-move-locked armed.
+            setWindowFullscreen(!!isFs);
+            // A native restore that did not come through the panel's own
+            // restore path (Win+Down, OS snap) leaves its ownership claim —
+            // and its saved restore rect — stale. Release it so the move lock
+            // clears on the now-normal window and a later panel restore does
+            // not yank the window back to the old rect. The panel's own
+            // restore clears the ref before unmaximising, so it never trips
+            // this branch.
+            //
+            // A frame that still covers the work area is kept: the work-area
+            // clamp can clear WS_MAXIMIZE without restoring, so IsZoomed is
+            // not by itself proof the window left its maximised footprint.
+            if (!maximised && aiPanelMaximizedWindowRef.current && !frameCoversWorkAreaApprox()) {
+                aiPanelMaximizedWindowRef.current = false;
+                setAiPanelOwnsWindowMaximize(false);
+            }
             // Clamp when maximised (mount / toggle / resize / DPI).
             if (maximised) {
                 requestClamp();
@@ -2109,6 +2143,7 @@ function App() {
             if (maximizeSeq !== aiPanelMaximizeSeqRef.current || navTabRef.current !== 'ai') return;
             if (alreadyMaximized) return;
             aiPanelMaximizedWindowRef.current = true;
+            setAiPanelOwnsWindowMaximize(true);
             // Native maximize waits ~80ms before clamping. Await it so a fast
             // restore cannot be overwritten by the delayed maximize.
             await toggleMaximiseAndClampWorkArea();
@@ -6019,7 +6054,7 @@ ${instruction}`;
             <DataMigrationOverlay />
             <PetCompanionSurface />
             <div className="app-scale-layer">
-                <div id="App" data-nav-tab={navTab} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined} data-window-move-locked={windowMaximized || aiPanelMaximized ? "true" : undefined}>
+                <div id="App" data-nav-tab={navTab} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined} data-window-move-locked={windowFullscreen || aiPanelOwnsWindowMaximize ? "true" : undefined}>
             <AppSidebarShell
                 navTab={navTab}
                 settingsTab={resolvedSettingsTab}

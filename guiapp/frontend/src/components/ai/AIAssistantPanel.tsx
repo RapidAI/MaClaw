@@ -42,6 +42,7 @@ import { useContinueEditTaskResultDraft } from "./useContinueEditTaskResultDraft
 import { useAssistantPreviewResize } from "./useAssistantPreviewResize";
 import { getAssistantInitLabel } from "./aiAssistantStatusLabels";
 import { AssistantConversationBody } from "./AssistantConversationBody";
+import { RemoteAssistantActivity } from "./RemoteAssistantActivity";
 import { AssistantTitleBar } from "./AssistantTitleBar";
 import { AssistantTitleBarNotifications } from "./AssistantTitleBarNotifications";
 import { chatTaskInSession, codingStepsAllPassed, executionSecondaryChromeStyle, formatTaskCreatedAt, handleTaskExecutionHeaderDoubleClick, openChatWorkForSession, resolveTaskExecutionStatus } from "./assistantTaskExecutionChrome";
@@ -5436,10 +5437,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             </Fragment>
         ));
     }, [lang, remoteTranscript, t]);
-    const remoteBusyLabel = useMemo(
-        () => localizeText(lang, "Working on the other computer…", "对方正在执行…", "對方正在執行…"),
-        [lang],
-    );
     const remoteEmptyContent = useMemo(() => {
         if (!remoteChat) return undefined;
         if (remoteChat.loading) {
@@ -5465,6 +5462,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 </span>
             );
         }
+        // The live activity panel owns the bottom of an empty busy transcript;
+        // an idle "connected" hint beside it reads as a contradiction.
+        if (remoteChat.busy) return null;
         return (
             <span data-testid="remote-chat-idle" className="aap-remote-empty-hint">
                 {localizeText(lang, "Connected. Messages sent here run on that computer.", "已连接远端任务，输入的消息会在对方电脑上执行。", "已連接遠端任務，輸入的訊息會在對方電腦上執行。")}
@@ -7543,7 +7543,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             <AssistantTitleBarNotifications active={panelActive && !wizardScreen} inline={false} lang={lang} theme={t} />
                         </div>
                         {remoteChat ? <>
-                        <button className="task-pause-btn" data-action="cancel" type="button" onClick={() => { void handleCancel(); }} disabled={!remoteChat.canSend} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>
+                        <button className="task-pause-btn" data-action="cancel" type="button" onClick={() => { void handleCancel(); }} disabled={!remoteChat.canSend || !!remoteChat.activity?.stopping} aria-busy={!!remoteChat.activity?.stopping} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{remoteChat.activity?.stopping ? localizeText(lang, "Stopping…", "正在停止…", "正在停止…") : localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>
                         <button className="task-share-btn" data-testid="remote-task-chat-close" type="button" onClick={() => remoteAssistantClose()}>{localizeText(lang, "Close", "关闭", "關閉")}</button>
                         </> : startupWarmup ? null : <>
                         {skillRecordingHere ? <button className="task-skill-pause-btn" data-testid="skill-recording-pause-btn" type="button" onClick={handleToggleSkillRecording} disabled={skillRecordingBusy} aria-busy={skillRecordingBusy} aria-label={localizeText(lang, "Pause skill recording", "暂停 Skill 录制", "暫停 Skill 錄製")} title={localizeText(lang, `Pause skill recording (${skillRecordingCount} steps)`, `暂停 Skill 录制（已记录 ${skillRecordingCount} 步）`, `暫停 Skill 錄製（已記錄 ${skillRecordingCount} 步）`)}><span className="aiti-recording-dot" aria-hidden="true" /><span className="task-skill-pause-label">{localizeText(lang, "Pause", "暂停", "暫停")}</span></button> : null}
@@ -7568,7 +7568,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     ) : null}
                     {remoteChat || !showPureCodingEmptyState ? null : pureCodingEmptyContent}
                     <CodingAgentPreviewFocusContext.Provider value={focusCodeFile}>
-                    <AssistantConversationBody emptyContent={remoteChat ? remoteEmptyContent : (isPureCodingEnvironment ? null : undefined)} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={remoteChat ? remoteTranscript : (displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES)} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={remoteChat ? [] : pinnedNews} ready={remoteChat ? true : ready} renderedOtherMessages={remoteChat ? remoteRenderedMessages : renderedOtherMessages} renderedProgressMessages={remoteChat ? null : renderedProgressMessages} liveActivityLabel={remoteChat ? (remoteChat.busy && !remoteChat.loading ? remoteBusyLabel : undefined) : standaloneLiveActivityLabel} liveActivityObject={remoteChat ? undefined : (standaloneLiveActivityLabel ? liveReasoningObject : undefined)} busyAccessory={remoteChat || hideWorkingTrail ? null : codingWorkingTrail} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
+                    <AssistantConversationBody emptyContent={remoteChat ? remoteEmptyContent : (isPureCodingEnvironment ? null : undefined)} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={remoteChat ? remoteTranscript : (displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES)} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={remoteChat ? [] : pinnedNews} ready={remoteChat ? true : ready} renderedOtherMessages={remoteChat ? remoteRenderedMessages : renderedOtherMessages} renderedProgressMessages={remoteChat ? null : renderedProgressMessages} liveActivityLabel={remoteChat ? undefined : standaloneLiveActivityLabel} liveActivityObject={remoteChat ? undefined : (standaloneLiveActivityLabel ? liveReasoningObject : undefined)} busyAccessory={remoteChat ? <RemoteAssistantActivity session={remoteChat} lang={lang} theme={t} /> : (hideWorkingTrail ? null : codingWorkingTrail)} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />
                     </CodingAgentPreviewFocusContext.Provider>
                     <div ref={outputEndRef} />
                 </div></div>)}

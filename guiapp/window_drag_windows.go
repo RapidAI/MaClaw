@@ -3,8 +3,6 @@
 package guiapp
 
 import (
-	"unsafe"
-
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -34,39 +32,24 @@ const (
 
 var procGetAsyncKeyState = floatUser32.NewProc("GetAsyncKeyState")
 
-// captionDragBlocked reports that a title-bar move would leave the fullscreen
-// frame. zoomed is WS_MAXIMIZE. Clamp's SetWindowPos can clear that bit while
-// the outer rect still matches the monitor work area. GetWindowPlacement's
-// showCmd follows the live zoom state, so it is SW_SHOWNORMAL after that
-// clear and cannot be used as the signal. A smaller rect may move.
-func captionDragBlocked(fullscreen, zoomed, coversWork bool) bool {
-	return fullscreen || zoomed || coversWork
-}
-
-func mainWindowCoversWorkArea() bool {
-	hwnd := findMainWindowHWND()
-	if hwnd == 0 {
-		return false
-	}
-	work, haveWork := monitorWorkAreaForHWND(hwnd)
-	if !haveWork {
-		return false
-	}
-	var cur workAreaRect
-	if r, _, _ := procGetWindowRectWA.Call(hwnd, uintptr(unsafe.Pointer(&cur))); r == 0 {
-		return false
-	}
-	return rectsNear(cur, work)
+// captionDragBlocked reports that a title-bar move must be refused. Only a
+// real fullscreen frame is pinned: on a maximised window a caption drag
+// performs the standard Windows restore-then-move, which lets users drag the
+// window to another monitor on low-resolution screens that start maximised.
+// The same applies to a clamped frame whose SetWindowPos cleared WS_MAXIMIZE
+// while the rect still matches the work area — it simply moves.
+func captionDragBlocked(fullscreen bool) bool {
+	return fullscreen
 }
 
 // BeginWindowDrag is a fallback native window move for the main window.
 // Preferred path is frontend window.WailsInvoke("drag"), which runs on the
 // WebView host thread (required for ReleaseCapture to release WebView2's
 // capture). This binding may run off the UI thread, so it is less reliable.
-// Caption drag on a maximised or clamped-fullscreen frame restores it and
-// then moves, so that frame stays put until double-click or the restore button.
+// Caption drag on a maximised frame performs restore-then-move, so only real
+// fullscreen is refused.
 func (a *App) BeginWindowDrag() {
-	if a.ctx == nil || runtime.WindowIsFullscreen(a.ctx) || runtime.WindowIsMaximised(a.ctx) || mainWindowCoversWorkArea() {
+	if a.ctx == nil || captionDragBlocked(runtime.WindowIsFullscreen(a.ctx)) {
 		return
 	}
 	// Key race guard: only enter the native modal move loop while the left

@@ -653,8 +653,12 @@ describe("companion pdf reader", () => {
             fireEvent.mouseDown(screen.getByTestId("pdf-annotate"));
             const editor = screen.getByTestId("pdf-annotation-input") as HTMLTextAreaElement;
             expect(editor.classList.contains("companion-pdf-menu-field")).toBe(true);
+            // The writing box is the resizable one and widens the menu.
+            expect(screen.getByTestId("pdf-annotation-editor").classList.contains("companion-pdf-menu-editor")).toBe(true);
+            expect(screen.getByTestId("pdf-highlight-menu").classList.contains("companion-pdf-menu--editing")).toBe(true);
             fireEvent.keyDown(editor, { key: "Escape" });
             expect(screen.queryByTestId("pdf-annotation-input")).toBeNull();
+            expect(screen.getByTestId("pdf-highlight-menu").classList.contains("companion-pdf-menu--editing")).toBe(false);
 
             fireEvent.mouseDown(screen.getByTestId("pdf-annotate"));
             fireEvent.change(screen.getByTestId("pdf-annotation-input"), { target: { value: "这里的假设需要检验" } });

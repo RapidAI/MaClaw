@@ -626,7 +626,7 @@ function markAt(marks: PdfMark[], page: number, x: number, y: number): PdfMark |
     return null;
 }
 
-type PdfMenuGlyphKind = "highlight" | "translate" | "copy" | "check" | "close" | "erase" | "note" | "bookmark" | "discard";
+type PdfMenuGlyphKind = "highlight" | "translate" | "copy" | "check" | "close" | "erase" | "note" | "pen" | "trash" | "bookmark" | "discard";
 
 function PdfMenuGlyph({ kind }: { kind: PdfMenuGlyphKind }) {
     if (kind === "highlight") {
@@ -679,6 +679,34 @@ function PdfMenuGlyph({ kind }: { kind: PdfMenuGlyphKind }) {
             </svg>
         );
     }
+    if (kind === "erase") {
+        return (
+            <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" />
+                <path d="M22 21H7" />
+                <path d="m5 11 9 9" />
+            </svg>
+        );
+    }
+    if (kind === "trash") {
+        return (
+            <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M5.5 6h13" />
+                <path d="M9.5 6V4.3h5V6" />
+                <path d="m7.2 6 .8 13a1.8 1.8 0 0 0 1.8 1.7h4.4a1.8 1.8 0 0 0 1.8-1.7l.8-13" />
+                <path d="M10.2 9.5v8" />
+                <path d="M13.8 9.5v8" />
+            </svg>
+        );
+    }
+    if (kind === "pen") {
+        return (
+            <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="m14 5 5 5-8.5 8.5a2 2 0 0 1-2.8 0l-2.2-2.2a2 2 0 0 1 0-2.8z" />
+                <path d="m8.5 10.5 5 5" />
+            </svg>
+        );
+    }
     if (kind === "discard") {
         return (
             <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -689,9 +717,9 @@ function PdfMenuGlyph({ kind }: { kind: PdfMenuGlyphKind }) {
     }
     return (
         <svg className="companion-pdf-menu-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="m14 5 5 5-8.5 8.5a2 2 0 0 1-2.8 0l-2.2-2.2a2 2 0 0 1 0-2.8z" />
-            <path d="m8.5 10.5 5 5" />
-            <path d="M5 20h14" />
+            <path d="M4.5 4.5h15v11h-8.5L7 19.5v-4H4.5z" />
+            <path d="M7.5 8.5h9" />
+            <path d="M7.5 11.5h6" />
         </svg>
     );
 }
@@ -938,8 +966,8 @@ function PdfSelectionMenu({
                 ))}
             </div>
             <div className="companion-pdf-bookmark-editor-actions">
-                <button type="button" data-testid="pdf-bookmark-cancel" onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => setBookmarkEditor("")}>{pdfReaderText(lang, "Cancel", "取消", "Болих")}</button>
-                <button type="button" data-testid="pdf-bookmark-save" disabled={!bookmarkDraft.trim()} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={submitBookmark}>{pdfReaderText(lang, "Save", "确认", "Баталгаажуулах")}</button>
+                <button type="button" className="companion-pdf-menu-btn" data-testid="pdf-bookmark-cancel" onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => setBookmarkEditor("")}>{pdfReaderText(lang, "Cancel", "取消", "Болих")}</button>
+                <button type="button" className="companion-pdf-menu-btn companion-pdf-menu-btn--accent" data-testid="pdf-bookmark-save" disabled={!bookmarkDraft.trim()} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={submitBookmark}>{pdfReaderText(lang, "Save", "确认", "Баталгаажуулах")}</button>
             </div>
         </div>
     );
@@ -974,8 +1002,8 @@ function PdfSelectionMenu({
                 }}
             />
             <div className="companion-pdf-bookmark-editor-actions">
-                <button type="button" data-testid="pdf-note-name-cancel" onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => setNoteEditor(false)}>{pdfReaderText(lang, "Cancel", "取消", "Болих")}</button>
-                <button type="button" data-testid="pdf-note-name-save" disabled={!noteDraft.trim()} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={submitNoteRename}>{pdfReaderText(lang, "Save", "确认", "Баталгаажуулах")}</button>
+                <button type="button" className="companion-pdf-menu-btn" data-testid="pdf-note-name-cancel" onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => setNoteEditor(false)}>{pdfReaderText(lang, "Cancel", "取消", "Болих")}</button>
+                <button type="button" className="companion-pdf-menu-btn companion-pdf-menu-btn--accent" data-testid="pdf-note-name-save" disabled={!noteDraft.trim()} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={submitNoteRename}>{pdfReaderText(lang, "Save", "确认", "Баталгаажуулах")}</button>
             </div>
         </div>
     );
@@ -983,7 +1011,7 @@ function PdfSelectionMenu({
     return (
         <div
             ref={rootRef}
-            className="companion-pdf-menu"
+            className={annotationOpen ? "companion-pdf-menu companion-pdf-menu--editing" : "companion-pdf-menu"}
             data-testid="pdf-highlight-menu"
             role="menu"
             aria-label={state.hitBookmarkId
@@ -991,7 +1019,7 @@ function PdfSelectionMenu({
                 : state.hitNoteKind === "annotation"
                     ? pdfReaderText(lang, "Note actions", "批注操作", "Тэмдэглэлийн үйлдэл")
                     : tailText(lang, "Selection actions", "选中文本操作")}
-            style={{ left: place.left, top: place.top }}
+            style={{ left: place.left, top: place.top, "--pdf-menu-x": `${place.left}px`, "--pdf-menu-y": `${place.top}px` } as React.CSSProperties}
             onMouseDown={(event) => event.stopPropagation()}
             onContextMenu={(event) => {
                 event.preventDefault();
@@ -1030,7 +1058,7 @@ function PdfSelectionMenu({
             {canAnnotate ? (
                 <div className="companion-pdf-menu-group">
                     {annotationOpen ? (
-                        <div data-testid="pdf-annotation-editor" style={{ display: "grid", gap: 6, padding: "8px", minWidth: 220 }}>
+                        <div data-testid="pdf-annotation-editor" className="companion-pdf-menu-editor">
                             <textarea
                                 className="companion-pdf-menu-field"
                                 data-testid="pdf-annotation-input"
@@ -1069,21 +1097,21 @@ function PdfSelectionMenu({
                                     }
                                 }}
                             />
-                            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                            <div className="companion-pdf-menu-editor-actions">
                                 <button
                                     type="button"
+                                    className="companion-pdf-menu-btn"
                                     data-testid="pdf-annotation-cancel"
                                     onClick={() => { setAnnotationOpen(false); setAnnotationText(""); }}
                                     onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
-                                    style={{ padding: "4px 8px" }}
                                 >{tailText(lang, "Cancel", "取消")}</button>
                                 <button
                                     type="button"
+                                    className="companion-pdf-menu-btn companion-pdf-menu-btn--accent"
                                     data-testid="pdf-annotation-save"
                                     disabled={!annotationText.trim()}
                                     onClick={submitAnnotation}
                                     onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
-                                    style={{ padding: "4px 8px" }}
                                 >{tailText(lang, "Save note", "保存批注")}</button>
                             </div>
                         </div>
@@ -1106,11 +1134,11 @@ function PdfSelectionMenu({
                     {bookmarkEditor === "rename" ? bookmarkForm : (
                         <>
                             <button type="button" role="menuitem" data-testid="pdf-bookmark-rename" className="companion-pdf-menu-item" {...activate(openBookmarkRename)}>
-                                <PdfMenuGlyph kind="note" />
+                                <PdfMenuGlyph kind="pen" />
                                 <span className="companion-pdf-menu-item-label">{pdfReaderText(lang, "Rename", "改名", "Нэр солих")}</span>
                             </button>
                             <button type="button" role="menuitem" data-testid="pdf-bookmark-delete" className="companion-pdf-menu-item companion-pdf-menu-item--danger" {...activate(onDeleteBookmark)}>
-                                <PdfMenuGlyph kind="erase" />
+                                <PdfMenuGlyph kind="trash" />
                                 <span className="companion-pdf-menu-item-label">{pdfReaderText(lang, "Delete bookmark", "删除书签", "Хавчуурга устгах")}</span>
                             </button>
                         </>
@@ -1164,7 +1192,7 @@ function PdfSelectionMenu({
                                             setNoteDraft(noteName);
                                         })}
                                     >
-                                        <PdfMenuGlyph kind="note" />
+                                        <PdfMenuGlyph kind="pen" />
                                         <span className="companion-pdf-menu-item-label">{pdfReaderText(lang, "Rename note", "批注改名", "Тэмдэглэлийн нэр солих")}</span>
                                     </button>
                                 )
@@ -1176,7 +1204,7 @@ function PdfSelectionMenu({
                                 className="companion-pdf-menu-item companion-pdf-menu-item--danger"
                                 {...activate(onClearNote)}
                             >
-                                <PdfMenuGlyph kind="erase" />
+                                <PdfMenuGlyph kind={state.hitNoteKind === "annotation" ? "trash" : "erase"} />
                                 <span className="companion-pdf-menu-item-label">{state.hitNoteKind === "annotation" ? tailText(lang, "Delete note", "删除批注") : tailText(lang, "Remove translation", "取消翻译")}</span>
                             </button>
                         </>
@@ -1665,7 +1693,7 @@ function PdfTranslationCard({
                                             finishEdit(true);
                                         }}
                                     >
-                                        <PdfMenuGlyph kind="note" />
+                                        <PdfMenuGlyph kind="pen" />
                                     </button>
                                 ) : null}
                                 <button
@@ -2251,9 +2279,9 @@ const PdfPageView = React.memo(function PdfPageView({
                             >
                                 {annotation ? (
                                     <svg className="companion-pdf-translation-icon-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                        <path d="m14 5 5 5-8.5 8.5a2 2 0 0 1-2.8 0l-2.2-2.2a2 2 0 0 1 0-2.8z" />
-                                        <path d="m8.5 10.5 5 5" />
-                                        <path d="M5 20h14" />
+                                        <path d="M4.5 4.5h15v11h-8.5L7 19.5v-4H4.5z" />
+                                        <path d="M7.5 8.5h9" />
+                                        <path d="M7.5 11.5h6" />
                                     </svg>
                                 ) : (
                                     <svg className="companion-pdf-translation-icon-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -3106,9 +3134,9 @@ function PdfReaderRail({
                                     <span className="companion-pdf-bookmark-page">{page}</span>
                                     <span className="companion-pdf-note-swatch" aria-hidden="true">
                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" focusable="false">
-                                            <path d="m14 5 5 5-8.5 8.5a2 2 0 0 1-2.8 0l-2.2-2.2a2 2 0 0 1 0-2.8z" />
-                                            <path d="m8.5 10.5 5 5" />
-                                            <path d="M5 20h14" />
+                                            <path d="M4.5 4.5h15v11h-8.5L7 19.5v-4H4.5z" />
+                                            <path d="M7.5 8.5h9" />
+                                            <path d="M7.5 11.5h6" />
                                         </svg>
                                     </span>
                                     <span className="companion-pdf-note-name">{pdfAnnotationName(note)}</span>

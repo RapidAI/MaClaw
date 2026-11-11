@@ -897,8 +897,9 @@ func (f *Frontend) processMessage(message string, sender *edge.ICoreWebView2, ar
 
 	if message == "drag" {
 		// Caption drag restores a maximised window as soon as the pointer
-		// moves. Clamp can clear WS_MAXIMIZE while the outer rect still
-		// matches the work area; that frame stays put until an explicit restore.
+		// moves — the standard Windows restore-then-move gesture, which lets
+		// users drag the window to another monitor on low-resolution screens
+		// that start maximised. Only real fullscreen pins the frame.
 		if !f.mainWindow.captionDragBlocked() {
 			err := f.startDrag()
 			if err != nil {
