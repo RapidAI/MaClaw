@@ -1,6 +1,7 @@
 package botmgmt
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -22,4 +23,14 @@ func TestDesktopResultUnfetchedOnlyWhileNotAcked(t *testing.T) {
 	}
 	// A quiet finish (no sentence) never starts the wait.
 	s.sayUnfetchedResultLater("t", "u", "bot_1", "run_2", Reply{Text: "prose only"})
+}
+
+func TestUnfetchedAttachmentNoteNamesFiles(t *testing.T) {
+	note, has := unfetchedAttachmentNote(Reply{Files: []ReplyFile{{Name: "snake.html"}}, Images: []ReplyImage{{MIME: "image/png"}}})
+	if !has || !strings.Contains(note, "snake.html") || !strings.Contains(note, "1 张图片") {
+		t.Fatalf("note %q has %v", note, has)
+	}
+	if n, h := unfetchedAttachmentNote(Reply{Text: "x"}); n != "" || h {
+		t.Fatalf("text-only %q %v", n, h)
+	}
 }
