@@ -98,17 +98,14 @@ func (s *Service) UpdateInstance(ctx context.Context, p Principal, instanceID st
 }
 
 func (s *Service) DeleteInstance(ctx context.Context, p Principal, instanceID string) error {
-	_ = ctx
 	inst, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID)
 	if err != nil {
 		return err
 	}
-	busy, err := s.hasRunningRuns(p.TenantID, p.UserID, instanceID, "")
-	if err != nil {
+	// A delete is an explicit request to remove the instance. A running
+	// run must not leave the person stuck: stop those runs, then remove it.
+	if err := s.stopRunningRunsForDelete(ctx, p, instanceID); err != nil {
 		return err
-	}
-	if busy {
-		return ErrInstanceBusy
 	}
 	if err := s.store.DeleteInstance(p.TenantID, p.UserID, instanceID); err != nil {
 		return err

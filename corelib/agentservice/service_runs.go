@@ -248,6 +248,50 @@ func (s *Service) hasRunningRuns(tenantID, userID, instanceID, sessionID string)
 	return false, nil
 }
 
+// stopRunningRunsForDelete cancels every running run on this instance so
+// DeleteInstance can remove it. CancelRun already records a live or orphaned
+// run as cancelled. A run still marked running (just admitted, cancel not
+// registered yet) is recorded the same way, and its executor is cancelled if
+// it appears in the meantime.
+func (s *Service) stopRunningRunsForDelete(ctx context.Context, p Principal, instanceID string) error {
+	runs, err := s.store.ListRuns(p.TenantID, p.UserID, instanceID)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if run.Status != RunStatusRunning {
+			continue
+		}
+		if _, err := s.CancelRun(ctx, p, instanceID, run.ID); err != nil && !errors.Is(err, ErrRunNotRunning) && !errors.Is(err, ErrRunNotFound) {
+			return err
+		}
+	}
+	runs, err = s.store.ListRuns(p.TenantID, p.UserID, instanceID)
+	if err != nil {
+		return err
+	}
+	now := s.now()
+	for _, run := range runs {
+		if run.Status != RunStatusRunning {
+			continue
+		}
+		if cancel, ok := s.takeRunCancel(run.ID); ok && cancel != nil {
+			cancel()
+		}
+		s.pauses.release(run.ID)
+		s.reapRunSupplements(run.ID)
+		run.Status = RunStatusCancelled
+		run.Error = "run cancelled"
+		completed := now
+		run.CompletedAt = &completed
+		run.DurationMs = completed.Sub(run.StartedAt).Milliseconds()
+		if err := s.store.SaveRun(run); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Service) collectRunningRunBlockers(tenantID, userID string) ([]DeleteBlocker, error) {
 	instances, err := s.store.ListInstances(tenantID, userID)
 	if err != nil {
