@@ -1043,20 +1043,11 @@ func (a *App) AppendDesktopBotSupplement(botID, runID, supplement string) (*Desk
 		return nil, err
 	}
 	botlog.Write(botID, "gui.supplement_dispatched", nil, "run", target.RunID, "supplement", sent.SupplementID)
-	// The GUI shows the model's own sentence for a steer; this word is only
-	// a placeholder until it lands (never a canned 在办).
-	message := "好，我按这个改。"
-	if desktopBotLooksEnglish(supplement) {
-		message = "Got it, I'll work that in."
-	}
-	if names := desktopBotMaterialNames(supplement); len(names) > 0 {
-		// The GUI replaces this with a WriteDesktopBotAck sentence when it arrives.
-		_ = names
-		message = "收到。"
-		if desktopBotLooksEnglish(desktopBotWordsBeforeMaterials(supplement)) {
-			message = "Got it."
-		}
-	}
+	// No stock sentence: the GUI writes the bot's own line for a steer with
+	// WriteDesktopBotAck (kind supplement: the running job and how this
+	// changes it), and shows a neutral word only if every model attempt
+	// failed. A canned acknowledgement here read as a template reply.
+	message := ""
 	return &DesktopBotSupplementReceipt{Accepted: true, Stage: desktopBotSupplementQueued, RunID: target.RunID, SupplementID: sent.SupplementID, Message: message}, nil
 }
 

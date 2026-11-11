@@ -1399,7 +1399,9 @@ export function applySupplementOutcomes(userId: string, botId: string, runId: st
         if (!hit) return item;
         changed = true;
         if (hit.state === 'applied') {
-            return { ...item, content: '补充已生效。', supplementOutcome: 'applied' as const };
+            // The bot's own line about the change stays; replacing it with a
+            // stock status read as a template reply (Bot 3, 11-11).
+            return { ...item, content: String(item.content || '').trim() ? item.content : '补充已生效。', supplementOutcome: 'applied' as const };
         }
         if (hit.state !== 'missed') return item;
         const words = String(hit.content || item.noReading?.text || '').trim();

@@ -390,7 +390,13 @@ func desktopPublishLedgerGuard(scope agentruntime.Scope, session *browser.Browse
 	if !pending && !desktopArgBool(args, "check_posted") {
 		return "", false, nil
 	}
+	checkOnly := desktopArgBool(args, "check_posted")
 	if spec.VerifyURL == "" && spec.VerifyAPI == "" {
+		if checkOnly {
+			// check_posted is read-only: without a post list to read it
+			// answers, it never falls through to filling or submitting.
+			return "", true, fmt.Errorf("publish check_posted is read-only and needs verify_url (the account's post list) to look for 「%s」; nothing was filled or posted", spec.Title)
+		}
 		if pending {
 			return "", true, fmt.Errorf("publish refused: the person was handed this editor to publish and it is not known whether they did; open the account's post list, look for 「%s」, then call publish again with check_posted=true and verify_url set (nothing was filled or posted)", spec.Title)
 		}
@@ -411,8 +417,13 @@ func desktopPublishLedgerGuard(scope agentruntime.Scope, session *browser.Browse
 		}
 		return out + ". Nothing was filled or posted. Report that it is live.", true, nil
 	}
-	if err != nil && pending {
+	if err != nil && (pending || checkOnly) {
 		return "", true, fmt.Errorf("publish refused: could not read the post list to rule out a duplicate (%v); nothing was filled or posted", err)
+	}
+	if checkOnly {
+		// Read-only, papers 11-11 run_50546ca1: a check_posted call with
+		// only a title went on to fill and submit the editor.
+		return "publish check_posted: 「" + spec.Title + "」 is not in the account's post list (read-only check). Nothing was filled or posted. To post it, call publish again without check_posted, with the full body and picture files.", true, nil
 	}
 	return "", false, nil
 }

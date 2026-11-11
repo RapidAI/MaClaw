@@ -95,7 +95,7 @@ import {
     WatchDesktopBot,
     WakeDesktopBot,
 } from '../../../wailsjs/go/main/App';
-import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, desktopBotAck, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotReceiptAck, desktopBotStoppingLine, desktopBotVariedFallback, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
+import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, desktopBotAck, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotReceiptAck, desktopBotStoppingLine, desktopBotVariedFallback, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
@@ -5208,27 +5208,49 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     if (matches.length > 0) {
                         const targetID = matches.length === 1 ? String(matches[0].candidate.run_id || '') : '';
                         const receipt = await AppendDesktopBotSupplement(botId, targetID, String(matches[0].verdict?.instruction || content.trim())) as { accepted?: boolean; stage?: string; message?: string; supplement_id?: string } | null;
-                        const note = String(receipt?.message || localizeText(lang, "Got it, I'll work that in.", '好，我按这个改，弄好告诉你。'));
+                        const note = String(receipt?.message || '');
                         const supplementFiles = splitAckMaterials(content).paths;
                         if (receipt?.stage === 'queued') {
                             // Only the receipt's ids go on the bubble. The
                             // terminal answer (applied / missed) arrives later
                             // from the run itself and lands on these ids.
                             const supplementId = String(receipt.supplement_id || '').trim();
+                            // One message, one ack: the model's sentence is
+                            // already above, so the receipt bubble goes away.
+                            const ackShown = !!sentence && sentence !== content.trim() && !supplementFiles.length;
+                            const ackCtx: DesktopBotAckContext = {
+                                kind: 'supplement',
+                                message: content,
+                                lang,
+                                persona: personaForBot(ownerId, botId),
+                                files: supplementFiles.map(item => item.split('/').pop() || item),
+                                running_task: String(matches[0].candidate.task_text || ''),
+                                instruction: String(matches[0].verdict?.instruction || ''),
+                            };
+                            // No stock sentence for a steer: the bot's own
+                            // line (the running job and how this changes it)
+                            // is written within what is left of the first
+                            // reply's budget; a neutral word only when the
+                            // model gave nothing, and a late line still
+                            // replaces it in the same bubble.
+                            let line = '';
+                            if (!ackShown) {
+                                ackSaid = true;
+                                if (!receiptPosted) line = await desktopBotAck(ackCtx, undefined, Math.max(ackLeftMs(), 1));
+                            }
                             const settled = messagesForBot(ownerId, botId).map(item => item.id === assistantMessage.id ? {
                                 ...item,
-                                content: note,
+                                content: line || note,
                                 pending: false,
                                 ack: true,
                                 understood: true,
                                 supplementId: supplementId || undefined,
                                 supplementRunId: targetID || undefined,
                             } : item);
-                            // One message, one ack: the model's sentence is
-                            // already above, so the receipt bubble goes away.
-                            const ackShown = !!sentence && sentence !== content.trim() && !supplementFiles.length;
-                            const kept = ackShown ? settled.filter(item => item.id !== assistantMessage.id) : settled;
-                            const folded = ackShown ? kept : foldPlanConfirmation(kept, kept.findIndex(item => item.id === assistantMessage.id));
+                            // With a stock receipt already up, the written
+                            // line takes the receipt's place instead.
+                            const kept = ackShown || receiptPosted ? settled.filter(item => item.id !== assistantMessage.id) : settled;
+                            const folded = ackShown || receiptPosted ? kept : foldPlanConfirmation(kept, kept.findIndex(item => item.id === assistantMessage.id));
                             // Storage alone leaves the open chat on the typing
                             // bubble, so the person never sees that these words
                             // joined the job already running.
@@ -5238,19 +5260,27 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             pending.settled = true;
                             pendingRef.current.delete(ticket);
                             drainIfIdle(botId);
-                            if (!ackShown && !receiptPosted) {
-                                // The files are already with the run; the
-                                // receipt's word is swapped for a written line.
-                                void desktopBotAck({
-                                    kind: 'supplement',
-                                    message: content,
-                                    lang,
-                                    persona: personaForBot(ownerId, botId),
-                                    files: supplementFiles.map(item => item.split('/').pop() || item),
-                                    running_task: String(matches[0].candidate.task_text || ''),
-                                }).then(line => {
+                            if (!ackShown && (receiptPosted || desktopBotIsPlaceholderAck(line, lang))) {
+                                // Past the budget (stock receipt up, or the
+                                // neutral word shown): one more short try,
+                                // replacing in place only with a real line.
+                                void desktopBotAck(ackCtx, undefined, DESKTOP_BOT_FIRST_ACK_BUDGET_MS).then(late => {
                                     if (userIdRef.current !== ownerId) return;
-                                    commit(botId, messagesForBot(ownerId, botId).map(item => item.id === assistantMessage.id ? { ...item, content: line } : item));
+                                    const stored = messagesForBot(ownerId, botId);
+                                    if (desktopBotIsPlaceholderAck(late, lang)) {
+                                        if (!receiptPosted) return;
+                                        // The model gave nothing: the receipt
+                                        // ("reading it") becomes the neutral word.
+                                        const at = receiptIndex(stored);
+                                        if (at < 0) return;
+                                        commit(botId, stored.map((item, i) => i === at ? { ...item, content: desktopBotNeutralAck(ackCtx) } : item));
+                                        return;
+                                    }
+                                    if (receiptPosted) {
+                                        commit(botId, putAckLine(stored, late));
+                                        return;
+                                    }
+                                    commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, content: late } : item));
                                 });
                             }
                             return;
@@ -5860,9 +5890,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (live.length === 0) return;
             const runId = live.length === 1 ? String(live[0].run_id || '') : '';
             const receipt = await AppendDesktopBotSupplement(botId, runId, order) as { stage?: string; message?: string; supplement_id?: string } | null;
-            const note = String(receipt?.message || localizeText(langNow, "Got it, I'll work that in.", '好，我按这个改，弄好告诉你。'));
             const supplementId = String(receipt?.supplement_id || '').trim();
-            commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: note, ack: true, supplementId: supplementId || undefined, supplementRunId: runId || undefined }]);
+            const runningTask = String((live.length === 1 ? (live[0] as { task_text?: string }).task_text : '') || '');
+            const optionCtx: DesktopBotAckContext = { kind: 'supplement', message: order, lang: langNow, persona: personaForBot(ownerId, botId), running_task: runningTask };
+            // The bot's own line for the change, not a stock sentence; a
+            // neutral word only when the model gave nothing, replaced in the
+            // same bubble by a late line.
+            const line = receipt?.stage === 'queued' ? await desktopBotAck(optionCtx, undefined, DESKTOP_BOT_FIRST_ACK_BUDGET_MS) : String(receipt?.message || '');
+            if (userIdRef.current !== ownerId) return;
+            const noteId = messageID();
+            commit(botId, [...messagesForBot(ownerId, botId), { id: noteId, role: 'assistant', content: line || desktopBotNeutralAck(optionCtx), ack: true, supplementId: supplementId || undefined, supplementRunId: runId || undefined }]);
+            if (receipt?.stage === 'queued' && desktopBotIsPlaceholderAck(line, langNow)) {
+                void desktopBotAck(optionCtx, undefined, DESKTOP_BOT_FIRST_ACK_BUDGET_MS).then(late => {
+                    if (userIdRef.current !== ownerId || desktopBotIsPlaceholderAck(late, langNow)) return;
+                    commit(botId, messagesForBot(ownerId, botId).map(item => item.id === noteId ? { ...item, content: late } : item));
+                });
+            }
         } catch {
             commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: localizeText(langNow, "Couldn't pass that on. Type it and I'll adjust.", '没能转给正在做的任务，你直接打一句，我按你说的改。'), ack: true }]);
         }

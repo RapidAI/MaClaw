@@ -5568,7 +5568,8 @@ describe('DesktopBotWorkspace', () => {
         applySupplementOutcomes('alice', 'bot_1', 'run-9', [{ id: 'sup-9', state: 'applied' }]);
         const sup = messagesForBot('alice', 'bot_1').find(item => item.id === 'm-sup');
         expect(sup?.supplementOutcome).toBe('applied');
-        expect(sup?.content).toBe('补充已生效。');
+        // The bot's own line stays; only the outcome is marked.
+        expect(sup?.content).toBe('已收到，会在当前任务的下一步生效。');
         expect(sup?.failed).toBeUndefined();
         expect(sup?.noReading).toBeUndefined();
     });

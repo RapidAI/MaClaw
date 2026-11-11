@@ -315,7 +315,7 @@ func desktopLedgerRunPost(entries []desktopLedgerEntry, runID string) (desktopLe
 }
 
 // desktopOutcomeSaysNotDone: the reply already tells the person it is not done.
-var desktopOutcomeSaysNotDone = regexp.MustCompile(`没做成|没做完|未完成|没有完成|还没完成|没发出|未发布|没有发布|没发布|未提交|没有提交|未确认|还差`)
+var desktopOutcomeSaysNotDone = regexp.MustCompile(`没做成|没做完|未完成|没有完成|还没完成|没发出|未发布|没有发布|没发布|未提交|没有提交|未确认|还差|未执行|没有执行|没执行|没能完成|没有启动|没启动`)
 
 // desktopApplyOutcome marks a reply whose task is not done (blocked,
 // partial, not_submitted, unconfirmed, awaiting_user) and, unless the reply
@@ -365,6 +365,18 @@ func desktopRunOutcome(runID string, msg *agentservice.Message) (string, string)
 	if outcome == "" && steps && msg != nil && msg.Metadata["response_source"] == "ask_user" {
 		return "awaiting_user", "waiting for the person's answer"
 	}
+	if outcome == "" && steps && msg != nil && msg.Metadata["response_source"] != "ask_user" {
+		// Nothing was done and the last step failed: the run stopped on a
+		// failure, so it is blocked, never a quiet success (desktop_outage.go).
+		if why, ok := desktopRunNeverWorked(runID); ok {
+			return agentservice.TaskOutcomeBlocked, why
+		}
+		// Some work done, the last step failed and the reply itself says
+		// it is not done: a failure reply always carries an outcome.
+		if strings.TrimSpace(msg.Content) != "" && desktopOutcomeSaysNotDone.MatchString(msg.Content) && !desktopRunWorked(runID) {
+			return agentservice.TaskOutcomePartial, "the last step failed"
+		}
+	}
 	if outcome == "" && msg != nil && strings.TrimSpace(msg.Content) != "" && desktopRunWorked(runID) && !desktopOutcomeSaysNotDone.MatchString(msg.Content) {
 		// A run that did its work and answered without a measured gap is
 		// done: every finished desktop run carries an outcome.
@@ -398,10 +410,20 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 	}
 	outcome, why := desktopRunOutcome(runID, &msg)
 	if outcome == "" {
+		desktopSideTake(runID)
 		return nil
 	}
 	out := map[string]string{agentservice.TaskOutcomeKey: outcome}
 	n := desktopOutcomeNotice(outcome, why, msg.Content)
+	if outcome != agentservice.TaskOutcomeDone && outcome != "awaiting_user" {
+		// The cause and what the run left behind (a draft, a click on
+		// publish), even when the reply already says it is not done.
+		if side := desktopSideNotice(runID); side != "" {
+			n = strings.TrimSpace(n + "\n" + side)
+		}
+	} else {
+		desktopSideTake(runID)
+	}
 	if fix := desktopPostCorrection(runID, msg.Content); fix != "" {
 		n = strings.TrimSpace(fix + "\n" + n)
 	} else if posted := desktopPostedNotice(runID, msg.Content); posted != "" {

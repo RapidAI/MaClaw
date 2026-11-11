@@ -248,6 +248,7 @@ func desktopRecordPublish(scope agentruntime.Scope, spec browser.PublishSpec, re
 		}
 	})
 
+	desktopSideNotePublish(scope.RunID, spec, rep)
 	if rec.posted() {
 		// The post outlives the run: a resumed or new run must not post it again.
 		desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{Kind: "posted", Host: desktopLedgerHost(firstNonEmptyStr(spec.EditorURL, rec.URL)), Title: spec.Title, URL: rec.URL, Run: scope.RunID, Detail: string(rec.State)})

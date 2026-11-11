@@ -122,6 +122,14 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 	if out, done, err := desktopPublishLedgerGuard(scope, session, spec, args); done {
 		return out, err
 	}
+	if strings.TrimSpace(spec.Body) == "" && len(spec.Files) == 0 && spec.TrialPictures <= 0 {
+		return "", fmt.Errorf("publish not started: no body and no picture files were passed, so there is nothing to post; prepare the full body and pictures first (nothing was filled or posted)")
+	}
+	if spec.TrialPictures <= 0 {
+		if why := browser.PlaceholderTitleProblem(spec.Title); why != "" {
+			return "", fmt.Errorf("publish not started: %s (nothing was filled or posted)", why)
+		}
+	}
 	// The pictures a run planned stay planned: a retry that passes fewer
 	// files would publish without them (BILI-cv53625427 dropped all three
 	// on its third call and passed read-back).

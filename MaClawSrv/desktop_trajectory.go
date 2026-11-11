@@ -114,18 +114,21 @@ type desktopRunState struct {
 	dir          string
 	scope        agentruntime.Scope
 	cloud        bool
-	lastSig      string            // signature of the previous desktop call
-	repeat       int               // identical consecutive calls ending with lastSig
-	failures     map[string]int    // intent|error class -> count in this run
-	blocked      map[string]string // intent class -> error class that blocked it
-	site         string            // host of the page the last browser step was on
-	lastEventEnd time.Time         // end of the previous desktop call (event think_ms)
-	lastLease    string            // last lease reported by bot_state (event stream)
-	lastClipLen  int               // runes of the last clipboard_set text (rich-body verify)
-	expSites     map[string]bool   // sites whose experience was shown in this run
-	progress     *desktopProgress  // budget / no-progress coaching
-	lastFailed   bool              // the last executed step ended with an error (desktop_escape.go)
-	refusals     int               // guard refusals since the last executed step
+	lastSig      string               // signature of the previous desktop call
+	repeat       int                  // identical consecutive calls ending with lastSig
+	failures     map[string]int       // intent|error class -> count in this run
+	blocked      map[string]string    // intent class -> error class that blocked it
+	site         string               // host of the page the last browser step was on
+	lastEventEnd time.Time            // end of the previous desktop call (event think_ms)
+	lastLease    string               // last lease reported by bot_state (event stream)
+	lastClipLen  int                  // runes of the last clipboard_set text (rich-body verify)
+	expSites     map[string]bool      // sites whose experience was shown in this run
+	progress     *desktopProgress     // budget / no-progress coaching
+	lastFailed   bool                 // the last executed step ended with an error (desktop_escape.go)
+	refusals     int                  // guard refusals since the last executed step
+	workOK       int                  // steps that did work (not just looked) and succeeded (desktop_outage.go)
+	lastErr      string               // error of the last executed step, clipped
+	blockedAt    map[string]time.Time // intent class -> when an infra_timeout block was set (expires, desktop_outage.go)
 }
 
 func desktopRunNoteSite(scope agentruntime.Scope, site string) {

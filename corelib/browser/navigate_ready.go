@@ -55,7 +55,23 @@ type PageReadyState struct {
 	Title       string `json:"title"`
 	TextLen     int    `json:"tl"`
 	Wall        string `json:"wall"`
+	// ContentType of the document: an image, video, PDF or plain-text
+	// resource opened directly has no interactive element and no sign-in.
+	ContentType string `json:"ct"`
 }
+
+// rawResource: the page is a raw file (picture, video, PDF, text), not a
+// site page; it is never a login wall (papers 11-11: a raw.githubusercontent
+// .com png was classed login_wall "blank").
+func (st PageReadyState) rawResource() bool {
+	ct := strings.ToLower(strings.TrimSpace(st.ContentType))
+	if ct != "" && ct != "text/html" && !strings.Contains(ct, "xhtml") {
+		return true
+	}
+	return rawResourceURLRe.MatchString(st.URL)
+}
+
+var rawResourceURLRe = regexp.MustCompile(`(?i)\.(png|jpe?g|gif|webp|svg|bmp|ico|avif|mp4|webm|pdf|txt|csv|json)(\?[^#]*)?(#.*)?$`)
 
 // pageReadyExpr counts visible interactive elements and looks for wall
 // signals. It returns a JSON string so the Go side has one parse path.
@@ -73,7 +89,7 @@ const pageReadyExpr = `(() => {
   let wall = '';
   if (/安全验证|请完成验证|人机验证|滑动验证|拖动滑块|captcha|are you a robot|verify you are human/i.test(head)) wall = 'captcha';
   else if (document.querySelector('input[type=password]') && /登录|注册|sign ?in|log ?in/i.test(head + ' ' + document.title)) wall = 'login_form';
-  return JSON.stringify({rs: document.readyState, n, url: location.href, title: document.title || '', tl: body.length, wall});
+  return JSON.stringify({rs: document.readyState, n, url: location.href, title: document.title || '', tl: body.length, wall, ct: document.contentType || ''});
 })()`
 
 // pageReady reads the readiness state of the current page.
@@ -114,7 +130,7 @@ func (s *Session) waitPageReadyOnce(timeout time.Duration) (PageReadyState, bool
 			if st.Wall != "" || loginWallURL(st.URL) != "" {
 				return st, true
 			}
-			if st.ReadyState == "complete" && st.Interactive > 0 {
+			if st.ReadyState == "complete" && (st.Interactive > 0 || st.rawResource()) {
 				return st, true
 			}
 		}
@@ -171,7 +187,7 @@ func (s *Session) waitPageReady() (NavReadyReport, bool) {
 	start := time.Now()
 	st, ok := s.waitPageReadyOnce(timeout)
 	rep := NavReadyReport{State: st, Ready: ok}
-	if !ok || (st.Interactive == 0 && st.Wall == "" && loginWallURL(st.URL) == "") {
+	if !ok || (st.Interactive == 0 && st.Wall == "" && loginWallURL(st.URL) == "" && !st.rawResource()) {
 		s.mu.Lock()
 		client := s.client
 		s.mu.Unlock()
@@ -189,7 +205,7 @@ func (s *Session) waitPageReady() (NavReadyReport, bool) {
 		rep.Wall = rep.State.Wall
 	case loginWallURL(rep.State.URL) != "":
 		rep.Wall = "login_url"
-	case rep.State.Interactive == 0 && rep.State.TextLen < 20 && rep.Waited >= blankWall && !localPageURL(rep.State.URL):
+	case rep.State.Interactive == 0 && rep.State.TextLen < 20 && rep.Waited >= blankWall && !localPageURL(rep.State.URL) && !rep.State.rawResource():
 		// A blank local page (an image preview, a dev server) has no
 		// sign-in; only remote sites get the person called in (XHS-7).
 		rep.Wall = "blank"

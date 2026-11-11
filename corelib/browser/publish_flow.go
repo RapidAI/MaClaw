@@ -233,6 +233,21 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		p.rep.Stuck = "spec"
 		return p.rep, fmt.Errorf("publish not started: %s", why)
 	}
+	if spec.TrialPictures <= 0 {
+		// A real post (not a trial upload) needs real content (papers
+		// 11-11 run_50546ca1: a call with only a title submitted the
+		// Zhihu editor with 「测试2」 and an empty body).
+		if why := PlaceholderTitleProblem(spec.Title); why != "" {
+			p.rep.State = PublishNotSubmitted
+			p.rep.Stuck = "spec"
+			return p.rep, fmt.Errorf("publish not started: %s (nothing was filled or posted)", why)
+		}
+		if strings.TrimSpace(spec.Body) == "" && len(spec.Files) == 0 {
+			p.rep.State = PublishNotSubmitted
+			p.rep.Stuck = "spec"
+			return p.rep, fmt.Errorf("publish not started: no body and no pictures were passed, so there is nothing to post; prepare the full body (and picture files) first and pass them as body/files (nothing was filled or posted)")
+		}
+	}
 	if why := ParagraphProblem(spec.Body); why != "" {
 		p.rep.State = PublishNotSubmitted
 		p.rep.Stuck = "spec"
@@ -2187,6 +2202,19 @@ func TitleProblem(title string) string {
 		return "the title starts with a Markdown heading mark (#); pass the plain title text"
 	case strings.Contains(t, "\n"):
 		return "the title has a line break; pass one line"
+	}
+	return ""
+}
+
+// placeholderTitleRe: a stand-in, not a title (测试, 测试2, test, abc…).
+var placeholderTitleRe = regexp.MustCompile(`(?i)^(测试|测试一下|试试|test|testing|abc|asdf|qwe|xxx+|demo|title|标题|无标题|untitled|tmp|temp|hello|你好)[\s_\-]*\d*$`)
+
+// PlaceholderTitleProblem: a title that is a test stand-in. Trial uploads
+// (TrialPictures) may use one; a real post may not.
+func PlaceholderTitleProblem(title string) string {
+	t := strings.TrimSpace(title)
+	if t != "" && placeholderTitleRe.MatchString(t) {
+		return fmt.Sprintf("the title %q is a placeholder, not the article's title; pass the real title", t)
 	}
 	return ""
 }

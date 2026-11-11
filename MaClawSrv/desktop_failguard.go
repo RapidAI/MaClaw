@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 )
@@ -108,8 +109,28 @@ func desktopFailClassCheck(scope agentruntime.Scope, action string, args map[str
 	intent := desktopIntentClassFor(scope, action, args)
 	st.mu.Lock()
 	class := st.blocked[intent]
+	if class == "infra_timeout" {
+		if at, ok := st.blockedAt[intent]; ok && time.Since(at) >= desktopInfraBlockTTL {
+			// Infrastructure blocks expire: the service may well be back.
+			delete(st.blocked, intent)
+			delete(st.blockedAt, intent)
+			for key := range st.failures {
+				if strings.HasPrefix(key, intent+"|") && strings.HasSuffix(key, "|infra_timeout") {
+					delete(st.failures, key)
+				}
+			}
+			class = ""
+			log.Printf("[desktop-guard] intent=%s infra block expired after %s", intent, desktopInfraBlockTTL)
+		}
+	}
 	st.mu.Unlock()
 	if class == "" {
+		return nil
+	}
+	if class == "infra_timeout" && desktopOutageWasSeen(scope.RunID) && desktopHealTake(scope.RunID) {
+		// The block came from a desktop service outage, not from this
+		// method: the call itself waits for the service (desktop_outage.go).
+		log.Printf("[desktop-guard] intent=%s infra-blocked during a desktop service outage: let through", intent)
 		return nil
 	}
 	if class == "infra_timeout" && desktopHealActions[action] && desktopRouteEverFailed(scope.RunID) && desktopHealTake(scope.RunID) {
@@ -153,6 +174,10 @@ func desktopFailClassRecord(scope agentruntime.Scope, action string, args map[st
 	if class == "" {
 		return ""
 	}
+	if desktopColdStart(err) {
+		// The bot's screen was still opening: nothing about the method.
+		return ""
+	}
 	intent := desktopIntentClassFor(scope, action, args)
 	st.mu.Lock()
 	if st.failures == nil {
@@ -164,6 +189,12 @@ func desktopFailClassRecord(scope agentruntime.Scope, action string, args map[st
 	n := st.failures[key]
 	if n >= desktopFailClassLimit {
 		st.blocked[intent] = class
+		if class == "infra_timeout" {
+			if st.blockedAt == nil {
+				st.blockedAt = map[string]time.Time{}
+			}
+			st.blockedAt[intent] = time.Now()
+		}
 	}
 	st.mu.Unlock()
 	log.Printf("[desktop-guard] intent=%s error_class=%s count=%d", intent, class, n)
