@@ -384,3 +384,34 @@ except SystemExit as exc:
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}
 }
+
+func TestSupervisorReleasesAndPrunesGoneBots(t *testing.T) {
+	out := runSupervisorPython(t, `
+owner = "ab" * 8
+running = set()
+busy = set()
+stopped = []
+sup.desktop_running = lambda key: key in running
+sup.bot_busy = lambda key: key in busy
+def stop(key):
+    stopped.append(key[-2:]); running.discard(key)
+sup.stop_desktop = stop
+users = {owner: {"display": 20}}
+keys = [owner + "%016x" % i for i in range(1, 6)]
+for i, k in enumerate(keys):
+    users[k] = {"display": 21 + i, "bot": True}
+sup.save_registry({"users": users})
+running.add(keys[0])   # deleted bot whose screen is still open
+busy.add(keys[1])      # deleted bot a task is still using
+print(sup.release_bot(keys[0]), sup.release_bot(keys[1]))
+running.add(keys[2])   # existing bot, running
+# keys[3] exists (kept); keys[4] is gone and idle
+got = sup.prune_bots({keys[2], keys[3]})
+reg = sup.load_registry()["users"]
+print([g["display"] for g in got], sorted(v["display"] for v in reg.values()), stopped)
+`, botOwner)
+	want := "{'released': True, 'busy': False, 'display': 21} {'released': False, 'busy': True}\n[25] [20, 22, 23, 24] ['01']"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}

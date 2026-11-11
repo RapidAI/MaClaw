@@ -111,6 +111,21 @@ func (c botDesktopControl) PeekDesktopView(ctx context.Context, tenantID, userID
 	return c.pool.PeekDesktopView(ctx, tenantID, userID)
 }
 
+// ReleaseBotDesktop and PruneBotDesktops implement botmgmt.DesktopBotReleaser.
+func (c botDesktopControl) ReleaseBotDesktop(ctx context.Context, tenantID, ownerUserID, botID string) error {
+	if c.pool == nil {
+		return nil
+	}
+	return c.pool.ReleaseBotDesktop(ctx, tenantID, ownerUserID, botID)
+}
+
+func (c botDesktopControl) PruneBotDesktops(ctx context.Context, tenantID, ownerUserID string, keep []string) error {
+	if c.pool == nil {
+		return nil
+	}
+	return c.pool.PruneBotDesktops(ctx, tenantID, ownerUserID, keep)
+}
+
 func (c botDesktopControl) Stop(ctx context.Context, tenantID, userID string) error {
 	if c.pool == nil {
 		return nil

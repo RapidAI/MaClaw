@@ -617,6 +617,18 @@ def main(argv):
             return 2
         stop_desktop(key)
         return 0
+    if len(argv) == 3 and argv[1] == "release-bot":
+        key = argv[2]
+        if not valid_key(key) or not is_bot_key(key):
+            print("invalid bot key", file=sys.stderr)
+            return 2
+        result = release_bot(key)
+        print(json.dumps(result))
+        return 3 if result.get("busy") else 0
+    if len(argv) == 3 and argv[1] == "prune-bots":
+        keep = set() if argv[2] == "-" else {k for k in argv[2].split(",") if valid_key(k)}
+        print(json.dumps({"released": prune_bots(keep)}))
+        return 0
     if len(argv) == 3 and argv[1] == "screen":
         key = argv[2]
         if not valid_key(key):
@@ -5589,6 +5601,53 @@ def reclaim_bot_display(users, current):
     del users[victim]
     log_event("display_reclaim", key=victim, display=number, kind="bot", to=current)
     return number
+
+
+def release_bot(key):
+    """Give a deleted or re-created bot's display number back now.
+
+    The bot no longer exists, so its registry entry (number and screen
+    token) goes; a screen still open is stopped first, its browser login
+    written as on any stop. A bot a run or a person is using is never
+    touched: the caller gets busy and may retry. Its files under /desktops
+    stay. Reclaiming on exhaustion (reclaim_bot_display) stays the fallback.
+    """
+    with desktop_lock():
+        if bot_busy(key):
+            return {"released": False, "busy": True}
+        if desktop_running(key):
+            stop_desktop(key)
+        registry = load_registry()
+        users = registry.setdefault("users", {})
+        entry = users.pop(key, None)
+        if entry is None:
+            return {"released": False, "busy": False}
+        save_registry(registry)
+        log_event("display_release", key=key, display=(entry or {}).get("display"), kind="bot")
+        return {"released": True, "busy": False, "display": (entry or {}).get("display")}
+
+
+def prune_bots(keep):
+    """Drop the entries of bots that no longer exist (not in keep).
+
+    Only stopped, idle bot entries go; the owner, every kept bot, and any
+    screen still running or busy stay, whatever the list says.
+    """
+    released = []
+    with desktop_lock():
+        registry = load_registry()
+        users = registry.setdefault("users", {})
+        for key in list(users):
+            if key in keep or not is_bot_key(key):
+                continue
+            if desktop_running(key) or bot_busy(key):
+                continue
+            entry = users.pop(key, None) or {}
+            released.append({"key": key, "display": entry.get("display")})
+            log_event("display_release", key=key, display=entry.get("display"), kind="bot", reason="prune")
+        if released:
+            save_registry(registry)
+    return released
 
 
 def ensure_bot(key):

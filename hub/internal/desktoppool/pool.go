@@ -518,6 +518,41 @@ func (p *Pool) StopDesktop(ctx context.Context, tenantID, userID string) (Deskto
 	return p.stopOnServer(ctx, server, tenantID, userID)
 }
 
+// ReleaseBotDesktop gives a deleted bot's display number back on the owner's
+// Docker service (desktopd /v1/desktops/bot-release). A bot still in use is
+// refused there and keeps its number.
+func (p *Pool) ReleaseBotDesktop(ctx context.Context, tenantID, ownerUserID, botID string) error {
+	server, err := p.resolve(ctx, tenantID, ownerUserID)
+	if err != nil {
+		return err
+	}
+	body := map[string]string{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(ownerUserID),
+		"bot_id":    strings.TrimSpace(botID),
+	}
+	return p.call(ctx, server, http.MethodPost, "/v1/desktops/bot-release", body, nil)
+}
+
+// PruneBotDesktops drops the display entries of the owner's bots that no
+// longer exist (desktopd /v1/desktops/bot-prune). keep is every bot the
+// owner still has; running or busy screens are never touched there.
+func (p *Pool) PruneBotDesktops(ctx context.Context, tenantID, ownerUserID string, keep []string) error {
+	server, err := p.resolve(ctx, tenantID, ownerUserID)
+	if err != nil {
+		return err
+	}
+	if keep == nil {
+		keep = []string{}
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(ownerUserID),
+		"keep_bots": keep,
+	}
+	return p.call(ctx, server, http.MethodPost, "/v1/desktops/bot-prune", body, nil)
+}
+
 // stopOnServer stops the desktop on one specific Docker service, independent
 // of the current assignment.
 func (p *Pool) stopOnServer(ctx context.Context, server Server, tenantID, userID string) (Desktop, error) {
@@ -988,13 +1023,13 @@ func (p *Pool) EnsureReason(ctx context.Context, tenantID, userID, reason string
 		reason = WakeReasonBot
 	}
 	body := map[string]string{
-		"tenant_id":    store.NormalizeTenantID(tenantID),
-		"user_id":      strings.TrimSpace(userID),
-		"image":        server.Image,
-		"memory":       server.Memory,
-		"cpus":         server.CPUs,
-		"shm_size":     server.ShmSize,
-		"wake_reason":  reason,
+		"tenant_id":   store.NormalizeTenantID(tenantID),
+		"user_id":     strings.TrimSpace(userID),
+		"image":       server.Image,
+		"memory":      server.Memory,
+		"cpus":        server.CPUs,
+		"shm_size":    server.ShmSize,
+		"wake_reason": reason,
 	}
 	var out struct {
 		Status string `json:"status"`

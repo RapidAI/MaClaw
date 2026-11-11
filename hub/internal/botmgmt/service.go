@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -484,7 +485,41 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 	if stopHeld && !shared && s.Desktop != nil {
 		_ = s.Desktop.Stop(ctx, tenantID, bot.OwnerUserID)
 	}
+	var keep []string
+	for _, item := range rec.Bots {
+		if item.OwnerUserID == bot.OwnerUserID && strings.TrimSpace(item.ID) != "" {
+			keep = append(keep, item.ID)
+		}
+	}
+	s.releaseBotDesktopLater(tenantID, bot.OwnerUserID, bot.ID, keep)
 	return nil
+}
+
+// DesktopBotReleaser gives a deleted bot's display number back on the
+// desktop service (botmgmt's DesktopControl may implement it).
+type DesktopBotReleaser interface {
+	ReleaseBotDesktop(ctx context.Context, tenantID, ownerUserID, botID string) error
+	PruneBotDesktops(ctx context.Context, tenantID, ownerUserID string, keep []string) error
+}
+
+// releaseBotDesktopLater frees a deleted bot's display number now, and the
+// numbers of any other bot of this owner that no longer exists (a bot
+// re-created under a new id). Before this, the numbers stayed taken until
+// the 30-number pool ran out (papers 2026-11-11). It runs off the request;
+// a failure only leaves the supervisor's reclaim-on-exhaustion fallback.
+func (s *Service) releaseBotDesktopLater(tenantID, ownerUserID, botID string, keep []string) {
+	rel, ok := s.Desktop.(DesktopBotReleaser)
+	if !ok || rel == nil || strings.TrimSpace(ownerUserID) == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		err := rel.ReleaseBotDesktop(ctx, tenantID, ownerUserID, botID)
+		traceBot(botID, "desktop_release", err)
+		err = rel.PruneBotDesktops(ctx, tenantID, ownerUserID, keep)
+		traceBot(botID, "desktop_prune", err, "keep", strconv.Itoa(len(keep)))
+	}()
 }
 
 func (s *Service) load(ctx context.Context, tenantID string) (record, error) {

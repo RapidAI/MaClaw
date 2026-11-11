@@ -495,6 +495,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 	}
 	mux.HandleFunc("POST /v1/desktops/restart", computerOp("restart"))
 	mux.HandleFunc("POST /v1/desktops/reset", computerOp("reset"))
+	registerBotRelease(mux, svc, authOK)
 	mux.HandleFunc("POST /v1/desktops/stop", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
