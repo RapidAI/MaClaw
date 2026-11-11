@@ -244,6 +244,7 @@ import {
     type LatexTemplate,
 } from './utils/latexTemplates';
 import { openNewTaskWizard } from './components/ai/task-config/openNewTaskWizard';
+import { BotLocalAccessPrompt } from './components/bots/BotLocalAccessPrompt';
 import type { PendingExpertOpen } from './components/ai/usePendingAssistantTabOpen';
 
 const APP_VERSION = appVersion
@@ -6079,6 +6080,7 @@ ${instruction}`;
             style={{ ['--ui-scale' as any]: String(uiZoom) } as React.CSSProperties}
         >
             <DataMigrationOverlay />
+            <BotLocalAccessPrompt lang={lang} />
             <PetCompanionSurface />
             <div className="app-scale-layer">
                 <div id="App" data-nav-tab={navTab} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined} data-window-move-locked={windowFullscreen || aiPanelOwnsWindowMaximize ? "true" : undefined}>

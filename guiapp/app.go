@@ -3132,6 +3132,7 @@ func (a *App) finishDomReady(ctx context.Context) {
 	a.frontendDOMReady.Store(true)
 	perfMarkDOMReady()
 	go a.startTeamInbox()
+	go a.startLocalRelay()
 	bootLog("wails OnDomReady htmlReady=%v (about:blank also fires this)", a.frontendHTMLReady.Load())
 	log.Printf("[domReady] err=none wails navigation completed htmlReady=%v warmup_done=%v", a.frontendHTMLReady.Load(), a.warmupDone.Load())
 	if !a.frontendHTMLReady.Load() {
@@ -3426,6 +3427,7 @@ func (a *App) persistSessionsForShutdown() {
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	a.stopLocalRelay()
 	// Retire the companion on every shutdown path, including Wails-initiated
 	// quits that bypass requestAppQuit. The relay fires once per process.
 	a.signalFileCompanionQuit()

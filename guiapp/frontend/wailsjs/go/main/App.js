@@ -6570,3 +6570,23 @@ export function ActivateBotCatalogAssignments(arg1) {
 export function SyncSharedPageToHub(arg1, arg2) {
   return window['go']['main']['App']['SyncSharedPageToHub'](arg1, arg2);
 }
+
+export function GetBotLocalAccess() {
+  return window['go']['main']['App']['GetBotLocalAccess']();
+}
+
+export function SaveBotLocalAccess(arg1) {
+  return window['go']['main']['App']['SaveBotLocalAccess'](arg1);
+}
+
+export function PickBotLocalAccessFolder() {
+  return window['go']['main']['App']['PickBotLocalAccessFolder']();
+}
+
+export function AnswerBotLocalAccessPrompt(arg1, arg2) {
+  return window['go']['main']['App']['AnswerBotLocalAccessPrompt'](arg1, arg2);
+}
+
+export function GetPendingBotLocalAccessPrompts() {
+  return window['go']['main']['App']['GetPendingBotLocalAccessPrompts']();
+}

@@ -4229,3 +4229,19 @@ button.desktop-bot-feed__file {
 .desktop-bot-chat__chip--path::before { content: "📄"; margin-right: 4px; }
 .desktop-bot-chat__chip--commit { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .desktop-bot-chat__chip:hover { border-color: currentColor; }
+
+/* Local relay: Bot 管理 → 设置 → 本地访问, transfer chips, and the access question. */
+.bot-local-dialog__group { margin: 4px 0 12px 24px; display: flex; flex-direction: column; gap: 6px; }
+.bot-local-dialog__group.is-disabled { opacity: 0.55; }
+.bot-local-dialog__roots { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.bot-local-dialog__root { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bot-local-dialog__path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.bot-local-dialog__write { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
+.bot-local-dialog__remove { padding: 2px 8px; font-size: 12px; }
+.bot-local-dialog__field { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.bot-local-dialog__field input[type="number"] { width: 90px; }
+.bot-local-dialog__field--block { flex-direction: column; align-items: stretch; }
+.desktop-bot-local-transfers { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0; }
+.bot-local-prompt-backdrop { z-index: 10050; }
+.bot-local-prompt { max-width: 460px; }
+.bot-local-prompt__action { font-weight: 600; word-break: break-all; }

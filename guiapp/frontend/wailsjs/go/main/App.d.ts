@@ -3246,3 +3246,13 @@ export function GetBotCatalogRuntime(arg1:string):Promise<BotCatalogRuntime>;
 export function ActivateBotCatalogAssignments(arg1:string):Promise<void>;
 
 export function SyncSharedPageToHub(arg1:string,arg2:string):Promise<void>;
+
+export function GetBotLocalAccess():Promise<any>;
+
+export function SaveBotLocalAccess(arg1:any):Promise<any>;
+
+export function PickBotLocalAccessFolder():Promise<string>;
+
+export function AnswerBotLocalAccessPrompt(arg1:string,arg2:string):Promise<void>;
+
+export function GetPendingBotLocalAccessPrompts():Promise<Array<any>>;

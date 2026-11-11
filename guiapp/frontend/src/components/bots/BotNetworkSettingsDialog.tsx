@@ -23,9 +23,9 @@ export function normalizeDesktopProxyMode(raw: string | undefined | null): Deskt
     return 'smart';
 }
 
-export type BotSettingsTab = 'model' | 'network' | 'computer';
+export type BotSettingsTab = 'model' | 'network' | 'computer' | 'local';
 
-export type BotSettingsTabsLabels = { model: string; network: string; computer: string };
+export type BotSettingsTabsLabels = { model: string; network: string; computer: string; local?: string };
 
 function ModelTabIcon() {
     return (
@@ -56,6 +56,15 @@ function ComputerTabIcon() {
     );
 }
 
+function LocalTabIcon() {
+    return (
+        <svg className="bot-settings-tabs__icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2 4.2h4l1.3 1.5H14v6.6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
+            <path d="M8 7.6v3.6M6.4 9.6 8 11.2l1.6-1.6" />
+        </svg>
+    );
+}
+
 /** The tab strip shared by the tabs of the Settings dialog. Each tab saves on its own. */
 export function BotSettingsTabs({ active, labels, disabled, onSelect }: {
     active: BotSettingsTab;
@@ -67,6 +76,7 @@ export function BotSettingsTabs({ active, labels, disabled, onSelect }: {
         { id: 'model', icon: <ModelTabIcon /> },
         { id: 'network', icon: <NetworkTabIcon /> },
         { id: 'computer', icon: <ComputerTabIcon /> },
+        ...(labels.local ? [{ id: 'local' as BotSettingsTab, icon: <LocalTabIcon /> }] : []),
     ];
 
     // A tablist is one stop in the tab order; arrow keys move between its tabs.

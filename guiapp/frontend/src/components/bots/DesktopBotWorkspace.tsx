@@ -176,6 +176,8 @@ import { appearancesForUser, botNameTaken, captureBotLookRevisions, defaultAppea
 import { BotLLMSettingsDialog, type BotLLMProviderOption, type BotLLMSettingsSubmit } from './BotLLMSettingsDialog';
 import { BotComputerSettingsDialog, type DesktopComputerAction, type DesktopComputerState } from './BotComputerSettingsDialog';
 import { BotStyleDialog } from './BotStyleDialog';
+import { BotLocalAccessSettingsDialog } from './BotLocalAccessSettingsDialog';
+import { DesktopBotLocalTransfers } from './DesktopBotLocalTransfers';
 import { BotNetworkSettingsDialog, BotSettingsTabs, type BotSettingsTab, type DesktopProxyModeState, type DesktopProxyModeValue } from './BotNetworkSettingsDialog';
 import { TaskResultArtifacts } from '../ai/assistantTaskArtifacts';
 import { BotFilePreview } from './BotFilePreview';
@@ -1014,6 +1016,7 @@ function copy(lang: string) {
             netSmartHint: 'Mainland China sites (JD, Taobao, Baidu…) go direct, everything else through the proxy. Recommended.',
             netLocked: 'Your administrator fixed this setting for the organization, so it cannot be changed here.',
             settingsTabComputer: 'Computer',
+            settingsTabLocal: 'This computer',
             pcTitle: 'Cloud computer',
             pcShared: 'You and all of your bots share this one computer. Restarting or resetting it affects every bot at the same time.',
             pcRestart: 'Restart computer',
@@ -1237,6 +1240,7 @@ function copy(lang: string) {
             netSmartHint: '國內網站（京東、淘寶、百度等）直連，其餘經代理。建議使用。',
             netLocked: '管理員已統一設定此項，這裡無法修改。',
             settingsTabComputer: '電腦',
+            settingsTabLocal: '本地訪問',
             pcTitle: '雲端電腦',
             pcShared: '這台電腦由你和你所有的 Bot 共用，重新啟動或重設會同時影響所有 Bot。',
             pcRestart: '重新啟動電腦',
@@ -1458,6 +1462,7 @@ function copy(lang: string) {
         netSmartHint: '国内网站（京东、淘宝、百度等）直连，其余走代理。推荐。',
         netLocked: '管理员已统一设置该项，这里无法修改。',
         settingsTabComputer: '电脑',
+        settingsTabLocal: '本地访问',
         pcTitle: '云电脑',
         pcShared: '这台电脑由你和你所有的 Bot 共用，重启或重置会同时影响所有 Bot。',
         pcRestart: '重启电脑',
@@ -2304,6 +2309,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // Settings dialog: the Model tab is the model dialog above, the Network tab
     // the desktop proxy mode. Each tab loads and saves on its own.
     const [netOpen, setNetOpen] = useState(false);
+    const [localOpen, setLocalOpen] = useState(false);
     const [netState, setNetState] = useState<DesktopProxyModeState | null>(null);
     const [netSaving, setNetSaving] = useState(false);
     const [netNotice, setNetNotice] = useState('');
@@ -4273,6 +4279,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
 
     const switchSettingsTab = (tab: BotSettingsTab) => {
+        if (tab === 'local') {
+            setLlmOpen(false);
+            setNetOpen(false);
+            setPcOpen(false);
+            setLocalOpen(true);
+            return;
+        }
+        setLocalOpen(false);
         if (tab === 'computer') {
             void openComputerSettings();
             return;
@@ -4285,7 +4299,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setNetOpen(false);
         void openLLMSettings();
     };
-    const settingsTabLabels = { model: text.settingsTabModel, network: text.settingsTabNetwork, computer: text.settingsTabComputer };
+    const settingsTabLabels = { model: text.settingsTabModel, network: text.settingsTabNetwork, computer: text.settingsTabComputer, local: text.settingsTabLocal };
 
     const submitNetwork = async (mode: DesktopProxyModeValue) => {
         if (netSaving) return;
@@ -7316,6 +7330,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             holdSend={(materialsByBot[selected.id] || []).some(item => item.status === 'uploading' || item.status === 'error')}
                         />
                         <p className="desktop-bot-chat__hint">{secretForSelected ? text.secretHint : text.composerHint}</p>
+                        <DesktopBotLocalTransfers botId={selected.id} lang={lang} />
                     </>
                 ) : (
                     <p className="desktop-bot-chat__pick" data-testid="desktop-bot-pick">{text.pick}</p>
@@ -7748,6 +7763,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     tabs={<BotSettingsTabs active="network" labels={settingsTabLabels} disabled={netSaving} onSelect={switchSettingsTab} />}
                     onClose={() => setNetOpen(false)}
                     onSubmit={mode => { void submitNetwork(mode); }}
+                />
+            ) : null}
+            {localOpen ? (
+                <BotLocalAccessSettingsDialog
+                    heading={text.settingsTitle}
+                    lang={lang}
+                    tabs={<BotSettingsTabs active="local" labels={settingsTabLabels} onSelect={switchSettingsTab} />}
+                    onClose={() => setLocalOpen(false)}
                 />
             ) : null}
             {pcOpen && pcState ? (
