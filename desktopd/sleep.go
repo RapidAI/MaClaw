@@ -248,6 +248,9 @@ func (s *Service) Ensure(ctx context.Context, spec Spec) error {
 	// announce too, and they do not start the container again.
 	s.noteWake(spec.TenantID, spec.UserID)
 	defer s.clearWake(spec.TenantID, spec.UserID)
+	if done, err := s.ensureWithoutExclusiveGate(ctx, spec); done {
+		return err
+	}
 	return s.flightErr(ensureFlightKey(spec), ctx, func(ctx context.Context) error {
 		return s.withUser(spec.TenantID, spec.UserID, func() error {
 			return s.runtime().Ensure(ctx, spec)
@@ -424,4 +427,37 @@ func knownSleepVolume(name string) bool {
 		}
 	}
 	return false
+}
+
+// ensureWithoutExclusiveGate is Ensure's shared-gate fast path. Hub calls
+// Ensure before every screenshot and session open; on a running container
+// that needs no recreate (or a missing one, which Ensure never creates)
+// there is nothing to do, and taking the exclusive gate for that only queued
+// this call (and, behind it, every other bot of the container) behind
+// whatever bash or install was running. The check runs under the read side,
+// so a concurrent sleep or recreate (which hold the write side) is either
+// finished or not started yet when it looks. done=false: take the slow path.
+func (s *Service) ensureWithoutExclusiveGate(ctx context.Context, spec Spec) (done bool, err error) {
+	if !s.dockerRuntime() {
+		return false, nil
+	}
+	started := s.now()
+	_ = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+		current, inspectErr := s.inspect(ctx, containerName(spec.TenantID, spec.UserID))
+		switch {
+		case inspectErr != nil:
+			return nil
+		case !current.Exists:
+			// Missing stays missing so a file or bash call does not create a desktop.
+			done = true
+		case current.Running && s.recreateReason(current, spec) == "":
+			s.markComputerRunning(spec)
+			done = true
+		}
+		return nil
+	})
+	if done {
+		return true, s.warmBudget(started)
+	}
+	return false, nil
 }

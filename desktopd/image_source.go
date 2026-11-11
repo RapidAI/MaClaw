@@ -134,8 +134,34 @@ func (s *Service) pullTimeout() time.Duration {
 }
 
 func (s *Service) imagePresent(ctx context.Context, image string) bool {
-	_, err := s.docker(ctx, "image", "inspect", "--format", "{{.Id}}", image)
-	return err == nil
+	out, err := s.docker(ctx, "image", "inspect", "--format", "{{.Id}}", image)
+	if err == nil {
+		return true
+	}
+	if imageMissingErr(out, err) {
+		return false
+	}
+	// The inspect itself failed (the request was cancelled or timed out,
+	// docker was busy): that says nothing about the image. Ask once more on
+	// a fresh, short context. On papers 2026-11-11 a cancelled request
+	// context made every check say "missing", so a present image was
+	// "pulled" and contract-checked 50 times in a morning.
+	retry, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	out, err = s.docker(retry, "image", "inspect", "--format", "{{.Id}}", image)
+	if err == nil {
+		return true
+	}
+	return !imageMissingErr(out, err)
+}
+
+// imageMissingErr: docker said the image does not exist.
+func imageMissingErr(out string, err error) bool {
+	msg := strings.ToLower(out)
+	if err != nil {
+		msg += " " + strings.ToLower(err.Error())
+	}
+	return strings.Contains(msg, "no such image") || strings.Contains(msg, "no such object")
 }
 
 // installImage makes sure the requested image exists before a desktop is

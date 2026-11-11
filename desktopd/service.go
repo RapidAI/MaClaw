@@ -386,6 +386,12 @@ func (s *Service) Stop(ctx context.Context, tenantID, userID string) (Desktop, e
 	if err != nil {
 		return Desktop{}, err
 	}
+	if spec.BotID != "" && s.dockerRuntime() {
+		// A bot display is never stopped here (stopUnlocked returns "idle"
+		// without touching the container), so it must not wait for — or
+		// hold — the container's user gate that every other bot's calls use.
+		return s.stopUnlocked(ctx, spec)
+	}
 	// The container's screens are gone; their gate tokens must not open
 	// /mcp for whatever runs there next.
 	desktopGates.forget(spec.TenantID, spec.UserID)
@@ -757,9 +763,27 @@ func (s *Service) withUser(tenantID, userID string, fn func() error) error {
 	}
 	key := tenantID + "\x00" + userID
 	gate, _ := s.userGates.LoadOrStore(key, &sync.RWMutex{})
-	gate.(*sync.RWMutex).Lock()
+	lockWithoutQueueing(gate.(*sync.RWMutex))
 	defer gate.(*sync.RWMutex).Unlock()
 	return fn()
+}
+
+// userGateRetry is how often a writer looks for a moment with no reader.
+var userGateRetry = 20 * time.Millisecond
+
+// lockWithoutQueueing takes the write side without parking on the mutex.
+// sync.RWMutex blocks every new reader as soon as a writer waits, so one
+// long bash of one isolated bot (an RLock held for a minute) plus one
+// waiting Ensure, Stop or session open used to freeze every other bot of
+// the same container until that bash ended (papers 2026-11-11 10:08-10:12:
+// a 5 s screenshot and a 2 s file_edit took 90 s and 28 s while three bots
+// shared one container). Polling TryLock never registers a waiting writer,
+// so readers keep flowing; the writer gets the gate in the next gap between
+// calls, which bots leave every few seconds while the model thinks.
+func lockWithoutQueueing(gate *sync.RWMutex) {
+	for !gate.TryLock() {
+		time.Sleep(userGateRetry)
+	}
 }
 
 // withUserRead is the shared side of the same gate. The runtime executes one

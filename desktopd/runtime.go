@@ -76,6 +76,11 @@ func (s *Service) runtime() Runtime {
 	return DockerRuntime{s: s}
 }
 
+// dockerRuntime: requests run on this host's Docker (no machine runtime).
+func (s *Service) dockerRuntime() bool {
+	return s == nil || s.Machines == nil
+}
+
 // Ensure is today's wake. A missing container stays missing so a file or
 // bash call does not create one. Session open uses Restore.
 func (d DockerRuntime) Ensure(ctx context.Context, spec Spec) error {
