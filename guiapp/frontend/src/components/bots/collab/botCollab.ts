@@ -226,3 +226,21 @@ export function attentionOf(room: Room, bot: BotRef): Attention {
 }
 
 export const ATTENTION_LABEL: Record<Attention, string> = { all: '每条都听', mentions: '被@才听', off: '不听' };
+
+/**
+ * applyBotStatusLine keeps one live status line per bot. An empty line from
+ * a run clears only that run's line, so a finished run cannot wipe a newer
+ * run's status.
+ */
+export function applyBotStatusLine(prev: Record<string, { text: string; runId: string }>, botId: string, runId: string, line: string): Record<string, { text: string; runId: string }> {
+    const current = prev[botId];
+    if (!line) {
+        if (!current) return prev;
+        if (runId && current.runId && current.runId !== runId) return prev;
+        const next = { ...prev };
+        delete next[botId];
+        return next;
+    }
+    if (current && current.text === line && current.runId === runId) return prev;
+    return { ...prev, [botId]: { text: line, runId } };
+}

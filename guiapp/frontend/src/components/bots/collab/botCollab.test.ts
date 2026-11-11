@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { answeredSinceLast, applyMention, attentionOf, humanPrompt, mentionCandidates, mentionQuery, saidForChat, statusRowText, stateLabel, type Assignment, type SaidItem } from './botCollab';
+import { answeredSinceLast, applyBotStatusLine, applyMention, attentionOf, humanPrompt, mentionCandidates, mentionQuery, saidForChat, statusRowText, stateLabel, type Assignment, type SaidItem } from './botCollab';
 
 const bots = [{ id: 'm', title: '主管', primary: true }, { id: 'a', title: '小A' }, { id: 'b', title: '小B' }, { id: 'c', title: '小C' }, { id: 'd', title: '小D' }];
 const asg = (id: string, target: string, state: string, extra: Partial<Assignment> = {}): Assignment =>
@@ -62,5 +62,16 @@ describe('live step in the header', () => {
     it('shows each busy bot with its current step', () => {
         const row = statusRowText([], bots, 3, 'zh-Hans', [{ bot: 'a', phase: 'execute', task: '正在登录 CSDN' }, { bot: 'b', phase: 'execute', task: '正在发布 小红书' }]);
         expect(row).toBe('小A 正在登录 CSDN；小B 正在发布 小红书');
+    });
+});
+
+describe('applyBotStatusLine', () => {
+    it('keeps one line per bot and clears only its own run', () => {
+        let st = applyBotStatusLine({}, 'a', 'run_1', '单号 run_1 · 第 3 步');
+        st = applyBotStatusLine(st, 'b', 'run_2', '单号 run_2 · 后台任务运行中，下次查看 21:40');
+        expect(st.a.text).toBe('单号 run_1 · 第 3 步');
+        expect(applyBotStatusLine(st, 'a', 'run_old', '')).toBe(st);
+        expect(applyBotStatusLine(st, 'a', 'run_1', '').a).toBeUndefined();
+        expect(applyBotStatusLine(st, 'a', 'run_1', '').b.text).toContain('下次查看');
     });
 });

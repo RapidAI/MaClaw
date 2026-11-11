@@ -50,6 +50,9 @@ type desktopAdmitState struct {
 	// persisted: a restart learns it again from the next run read. Empty
 	// means the run has not named a step.
 	activity string
+	// statusLine is MaClawSrv's live status for the bot's status area (run
+	// id, step, latest progress, background job, next check). Not persisted.
+	statusLine string
 	// seen is the last time the watcher read this run as still going. Not
 	// persisted. A run nobody has been able to read for a while is not taken
 	// as driving the desktop (see botDesktopInUse), so a dead MaClawSrv does
@@ -105,6 +108,7 @@ type desktopRunView struct {
 	DesktopHandoff  bool   `json:"desktop_handoff"`
 	AttentionReason string `json:"attention_reason"`
 	Activity        string `json:"activity,omitempty"`
+	StatusLine      string `json:"status_line,omitempty"`
 	ProgressWhere   string `json:"progress_where,omitempty"`
 	ProgressNext    string `json:"progress_next,omitempty"`
 	ProgressOpen    string `json:"progress_open,omitempty"`
@@ -530,6 +534,7 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 				firstTerminal = time.Time{}
 				s.noteDesktopRunSeen(state)
 				s.rememberDesktopRunActivity(state, view.Activity)
+				s.rememberDesktopRunStatusLine(state, view.StatusLine)
 				s.rememberDesktopRunProgress(state, view)
 				writePoll("status:"+view.Status, nil,
 					"instance", job.InstanceID,
@@ -674,6 +679,41 @@ func (s *Service) rememberDesktopRunActivity(state *desktopAdmitState, activity 
 	state.mu.Lock()
 	state.activity = activity
 	state.mu.Unlock()
+}
+
+// desktopRunStatusLineMax bounds the status text kept for a run.
+const desktopRunStatusLineMax = 300
+
+func (s *Service) rememberDesktopRunStatusLine(state *desktopAdmitState, line string) {
+	if state == nil {
+		return
+	}
+	line = strings.Join(strings.Fields(line), " ")
+	if r := []rune(line); len(r) > desktopRunStatusLineMax {
+		line = string(r[:desktopRunStatusLineMax])
+	}
+	state.mu.Lock()
+	state.statusLine = line
+	state.mu.Unlock()
+}
+
+// DesktopRunStatusLine is the live status cached for a run still going.
+func (s *Service) DesktopRunStatusLine(tenantID, userID, botID, runID string) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	state := s.desktopAdmits[desktopAdmitKey(tenantID, userID, botID, runID)]
+	s.mu.Unlock()
+	if state == nil {
+		return ""
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.done {
+		return ""
+	}
+	return state.statusLine
 }
 
 // DesktopRunActivity is the step phrase cached for a run that is still going.

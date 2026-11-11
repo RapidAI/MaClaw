@@ -303,6 +303,9 @@ func TestD102StatusIsSaidAndHeartbeatOnlyWhenNothingMoved(t *testing.T) {
 }
 
 func TestD102LongJobHeartbeatWhenUnchanged(t *testing.T) {
+	prevHB := desktopLongJobHeartbeatEvery
+	desktopLongJobHeartbeatEvery = time.Hour
+	t.Cleanup(func() { desktopLongJobHeartbeatEvery = prevHB })
 	now := watchdogTestClock(t, time.Date(2026, 11, 11, 15, 0, 0, 0, time.Local))
 	j := &desktopLongJob{ID: "job_hb", Status: "stalled", Alive: true, Fingerprint: "fp", Started: now.Add(-time.Hour), LastChange: now.Add(-40 * time.Minute)}
 	if dec := desktopLongJobDecide(j, "stalled", "fp", now.Add(-desktopLongJobHeartbeatEvery+time.Minute)); dec != longJobSilent {
@@ -361,5 +364,25 @@ func TestD103RepeatedMeasurementIsNotProgress(t *testing.T) {
 	snap, _ = desktopWatchdogSnapshot(scope.RunID)
 	if snap.lastProgress.Equal(first.lastProgress) {
 		t.Fatal("new output not counted")
+	}
+}
+
+func TestD103StatusLineCarriesRunJobAndNextCheck(t *testing.T) {
+	d100Env(t)
+	now := time.Date(2026, 11, 11, 21, 0, 0, 0, time.Local)
+	desktopLongJobNow = func() time.Time { return now }
+	t.Cleanup(func() { desktopLongJobNow = time.Now })
+	_ = watchdogTestClock(t, now)
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u::desk::bot_x", InstanceID: "inst_x", RunID: "run_51717e07-8e68"}
+	t.Cleanup(func() { desktopWatchdogEnd(scope.RunID) })
+	args := map[string]any{"action": "bash", "command": "ls"}
+	desktopWatchdogBefore(scope, "bash", args)
+	desktopWatchdogResult(scope, "bash", args, "epoch 2/10 acc=0.91", nil)
+	_ = desktopLongJobSave(&desktopLongJob{ID: "job_s1", SourceRun: scope.RunID, Status: "running", Alive: true, Started: now.Add(-25 * time.Minute), NextCheck: now.Add(10 * time.Minute), CheckReason: "每个 epoch 约 12 分钟"})
+	line := desktopRunStatusLine(scope.RunID)
+	for _, want := range []string{"单号 run_51717e07", "第 1 步", "指标推进", "后台任务运行中（已 25 分钟）", "下次查看 21:10", "每个 epoch 约 12 分钟"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("status line misses %q: %s", want, line)
+		}
 	}
 }

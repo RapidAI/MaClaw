@@ -184,7 +184,7 @@ import { useBotCollab } from './collab/useBotCollab';
 import { BotCollabStatus } from './collab/BotCollabStatus';
 import { BotSaidInline } from './collab/BotSaidInline';
 import { BotRoomsDialog } from './collab/BotRoomsDialog';
-import { saidForChat, saidSince } from './collab/botCollab';
+import { applyBotStatusLine, saidForChat, saidSince } from './collab/botCollab';
 import './DesktopBotWorkspace.css';
 import { DemoSkillPanel } from './DemoSkillPanel';
 import { isChineseLang, isTraditionalLang, localizeText, normalizeLang } from '../../i18n';
@@ -2240,6 +2240,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [listNotice, setListNotice] = useState('');
     const [askingByBot, setAskingByBot] = useState<Record<string, string>>({});
     const [activityByBot, setActivityByBot] = useState<Record<string, { text: string; runId: string }>>({});
+    // Live run status from MaClawSrv (run id, step, latest progress,
+    // background job, next watcher check). Shown in the status row, never
+    // as a chat message (Daniel 11-11 21:10).
+    const [statusByBot, setStatusByBot] = useState<Record<string, { text: string; runId: string }>>({});
     const [listFailed, setListFailed] = useState(false);
     // The picture follows the panel, not the desktop address. 'auto' is a screen
     // handoff, 'user' is the identity chip / 人类接管, 'off' is 收起. Unset stays closed.
@@ -3323,6 +3327,25 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             });
         };
         const off = EventsOn('desktop-bot-activity', handler);
+        return () => { if (typeof off === 'function') off(); };
+    }, []);
+
+    useEffect(() => {
+        const handler = (payload: unknown) => {
+            let data: Record<string, unknown>;
+            try {
+                data = (typeof payload === 'string' ? JSON.parse(payload) : payload) as Record<string, unknown>;
+            } catch {
+                return;
+            }
+            if (!data || typeof data !== 'object') return;
+            const botId = String(data.bot_id || '').trim();
+            if (!botId) return;
+            const runId = String(data.run_id || '').trim();
+            const line = String(data.status_line || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+            setStatusByBot(prev => applyBotStatusLine(prev, botId, runId, line));
+        };
+        const off = EventsOn('desktop-bot-status', handler);
         return () => { if (typeof off === 'function') off(); };
     }, []);
 
@@ -7061,6 +7084,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             <p className="desktop-bot-chat__processing" data-testid="desktop-bot-processing" role="status">
                                 <button type="button" className="desktop-bot-chat__processing-mark" data-testid="desktop-bot-pause" aria-label={text.stopWork} onClick={() => answerDesktopControl(selected.id, '', 'stop', 'quiet', 'pause-button')} />
                                 <span className="desktop-bot-chat__processing-label">{desktopBotWorkingLabel(askingByBot[selected.id] || '', activityByBot[selected.id]?.text || '')}</span>
+                                {statusByBot[selected.id]?.text ? (
+                                    <span className="desktop-bot-chat__processing-status" data-testid="desktop-bot-status-line">{statusByBot[selected.id].text}</span>
+                                ) : null}
                             </p>
                         ) : null}
                         <DesktopBotComposer

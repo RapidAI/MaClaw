@@ -1695,6 +1695,21 @@ func (a *App) publishDesktopBotActivity(botID, runID, activity string) {
 	a.publishDesktopActivityRemote(botID, runID, activity)
 }
 
+// publishDesktopBotStatus sends a run's live status line (run id, step,
+// latest progress, background job, next check) to the bot's status area. It
+// is never a chat message (Daniel 11-11 21:10).
+func (a *App) publishDesktopBotStatus(botID, runID, line string) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return
+	}
+	raw, err := json.Marshal(map[string]string{"bot_id": botID, "run_id": strings.TrimSpace(runID), "status_line": strings.TrimSpace(line)})
+	if err != nil {
+		return
+	}
+	a.emitEvent("desktop-bot-status", string(raw))
+}
+
 // desktopPersonStillAsked is a question, a secret, or a choice the person can
 // answer. A placeholder such as 无变化 is not one, and neither is the input
 // type that every ask carries. Those must not keep a failed desktop up.
@@ -1762,9 +1777,14 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 	// stay hidden for the repeat window, so a changed state is written now.
 	lastState := ""
 	lastActivity := ""
+	lastStatus := ""
 	// A second job of this bot can already be reporting its own step.
 	// Clearing without the run id would wipe that step when this wait ends.
 	defer func() {
+		if lastStatus != "" {
+			lastStatus = ""
+			a.publishDesktopBotStatus(botID, runID, "")
+		}
 		if lastActivity == "" {
 			return
 		}
@@ -1805,6 +1825,7 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 			Accepted           bool              `json:"accepted"`
 			Status             string            `json:"status"`
 			Activity           string            `json:"activity"`
+			StatusLine         string            `json:"status_line"`
 		}
 		// Derived from ctx, not Background: this read must be interruptible
 		// when the turn is abandoned. A Background parent leaves each poll
@@ -1856,6 +1877,10 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 			if activity != lastActivity {
 				lastActivity = activity
 				a.publishDesktopBotActivity(botID, runID, activity)
+			}
+			if line := strings.TrimSpace(out.StatusLine); line != lastStatus {
+				lastStatus = line
+				a.publishDesktopBotStatus(botID, runID, line)
 			}
 			if sleepErr := sleepDesktopBotPoll(ctx, desktopBotPollInterval); sleepErr != nil {
 				botlog.Write(botID, "gui.run_poll", sleepErr, "run", runID, "polls", strconv.Itoa(polls))

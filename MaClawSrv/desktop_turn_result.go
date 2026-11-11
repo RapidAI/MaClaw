@@ -100,7 +100,10 @@ type desktopRunAPI struct {
 	// Activity is the step this run is in right now. It is empty once the
 	// run has a finished reply. The words are a fixed phrase, never the
 	// text the step typed.
-	Activity      string `json:"activity,omitempty"`
+	Activity string `json:"activity,omitempty"`
+	// StatusLine is the live status for the bot's status area: run id,
+	// step, latest progress, background job and its next check.
+	StatusLine    string `json:"status_line,omitempty"`
 	ProgressWhere string `json:"progress_where,omitempty"`
 	ProgressNext  string `json:"progress_next,omitempty"`
 	ProgressOpen  string `json:"progress_open,omitempty"`
@@ -115,10 +118,14 @@ func desktopRunAPIBody(dataRoot string, run *agentservice.Run) any {
 	activity := loadDesktopActivity(run.ID)
 	result, ok := loadDesktopTurnResult(run.ID)
 	where, next, open, path, hasProgress := desktopProgressFields(run, result.Message)
-	if !ok && activity == "" && !hasProgress {
+	status := ""
+	if !ok && run.Status == agentservice.RunStatusRunning {
+		status = desktopRunStatusLine(run.ID)
+	}
+	if !ok && activity == "" && !hasProgress && status == "" {
 		return sanitized
 	}
-	body := desktopRunAPI{Run: sanitized, Activity: activity}
+	body := desktopRunAPI{Run: sanitized, Activity: activity, StatusLine: status}
 	if hasProgress {
 		body.ProgressWhere = where
 		body.ProgressNext = next

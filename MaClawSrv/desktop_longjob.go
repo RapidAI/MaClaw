@@ -47,7 +47,7 @@ var (
 	desktopLongJobCheckMin       = desktopEnvMinutes("MACLAW_LONGJOB_CHECK_MIN_MINUTES", 2*time.Minute)
 	desktopLongJobCheckMax       = desktopEnvMinutes("MACLAW_LONGJOB_CHECK_MAX_MINUTES", 6*time.Hour)
 	desktopLongJobCheckDefault   = desktopEnvMinutes("MACLAW_LONGJOB_CHECK_DEFAULT_MINUTES", 15*time.Minute)
-	desktopLongJobHeartbeatEvery = desktopEnvMinutes("MACLAW_LONGJOB_STALL_REPEAT_MINUTES", time.Hour)
+	desktopLongJobHeartbeatEvery = desktopEnvMinutes("MACLAW_LONGJOB_STALL_REPEAT_MINUTES", 0)
 )
 
 var desktopLongJobNow = time.Now
@@ -772,7 +772,9 @@ func desktopLongJobDecide(j *desktopLongJob, prevStatus, prevFP string, prevNoti
 		if j.Status != prevStatus {
 			return longJobResume
 		}
-		if j.Status == "stalled" && j.Alive && !prevNotice.IsZero() && now.Sub(prevNotice) >= desktopLongJobHeartbeatEvery {
+		// A still-stalled job is not repeated in chat (Daniel 11-11 21:10):
+		// the status area shows it; chat had the stall once.
+		if desktopLongJobHeartbeatEvery > 0 && j.Status == "stalled" && j.Alive && !prevNotice.IsZero() && now.Sub(prevNotice) >= desktopLongJobHeartbeatEvery {
 			return longJobHeartbeat
 		}
 		return longJobSilent
