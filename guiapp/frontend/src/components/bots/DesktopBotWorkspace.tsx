@@ -1044,6 +1044,8 @@ function copy(lang: string) {
             llmModelLoading: 'Loading the model list…',
             llmModelEmpty: 'This provider has no models to pick from yet.',
             llmNoProviders: 'No provider on this computer has a key yet. Add one under Settings → Providers first.',
+            llmRoleSection: 'Model configuration',
+            llmRoleHint: 'Foreground, background, computer use, and grounding. These apply to every bot on this account.',
             llmCustomMark: (detail: string) => detail ? `Using your own model: ${detail}` : 'Using your own model',
         };
         return (normalizeLang(lang) === 'mn' ? localizeBotCopy(lang, english) : english) as typeof english;
@@ -1265,6 +1267,8 @@ function copy(lang: string) {
             llmModelLoading: '正在取得模型清單…',
             llmModelEmpty: '這個服務商暫時沒有可選模型。',
             llmNoProviders: '這台電腦還沒有填好 key 的服務商。先到設定 → 服務商新增一個。',
+            llmRoleSection: '模型配置',
+            llmRoleHint: '前台交互、後台執行、電腦操作和定位模型。這個帳號底下的所有 Bot 共用。',
             llmCustomMark: (detail: string) => detail ? `正在使用自訂模型：${detail}` : '正在使用自訂模型',
         };
     }
@@ -1484,6 +1488,8 @@ function copy(lang: string) {
         llmModelLoading: '正在获取模型列表…',
         llmModelEmpty: '这个服务商暂时没有可选模型。',
         llmNoProviders: '这台电脑还没有填好 key 的服务商。先到设置 → 服务商添加一个。',
+        llmRoleSection: '模型配置',
+        llmRoleHint: '前台交互、后台执行、电脑操作和定位模型。这个账号下的所有 Bot 共用。',
         llmCustomMark: (detail: string) => detail ? `正在使用自定义模型：${detail}` : '正在使用自定义模型',
     };
 }
@@ -7583,6 +7589,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         modelLoading: text.llmModelLoading,
                         modelEmpty: text.llmModelEmpty,
                         noProviders: text.llmNoProviders,
+                        roleSection: text.llmRoleSection,
+                        roleHint: text.llmRoleHint,
                         save: text.save,
                         cancel: text.cancel,
                         close: text.close,
@@ -7595,6 +7603,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     initialModel={llmModel}
                     notice={llmNotice}
                     saving={llmSaving}
+                    lang={lang}
                     onClose={() => setLlmOpen(false)}
                     onSubmit={payload => { void submitLLM(payload); }}
                 />

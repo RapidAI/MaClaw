@@ -1100,6 +1100,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
 
             <LLMProfileAssignments
                 lang={lang}
+                section="profiles"
                 onSaved={handleProfilesSaved}
                 providerListRevision={providerListRevision}
                 agentProviderSwitch={agentProviderSwitch}

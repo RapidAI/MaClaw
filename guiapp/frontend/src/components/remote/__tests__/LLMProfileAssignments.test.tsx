@@ -249,16 +249,22 @@ describe("LLMProfileAssignments", () => {
         expect(footerSaveButton().disabled).toBe(false);
     });
 
-    it("previews the foreground follow from the unsaved assistant draft", async () => {
+    it("does not show bot role rows on the LLM Config assignments panel", async () => {
         getState.mockResolvedValue({
             ...state,
             foreground: { model: "gpt-5", inherit_hub: true, provider_id: "assistant", provider_name: "OpenAI", configured: true },
         });
-        render(<LLMProfileAssignments lang="en" agentProviderSwitch={{ providerName: "DeepSeek", model: "deepseek-v4-flash", token: 15 }} />);
+        render(<LLMProfileAssignments lang="en" />);
 
-        await waitFor(() => expect((screen.getByLabelText("Assistant model") as HTMLInputElement).value).toBe("deepseek-v4-flash"));
-        expect(screen.getByText("Effective after save: DeepSeek · deepseek-v4-flash")).toBeTruthy();
-        expect(screen.queryByText("Effective now: OpenAI · gpt-5")).toBeNull();
+        await screen.findByRole("heading", { name: "Model assignments" });
+        expect(screen.getByText("AI assistant")).toBeTruthy();
+        expect(screen.getByText("Coding Agent")).toBeTruthy();
+        expect(screen.getByText("Caption model")).toBeTruthy();
+        expect(screen.queryByRole("checkbox", { name: "Foreground follows Hub" })).toBeNull();
+        expect(screen.queryByRole("checkbox", { name: "Background follows Hub" })).toBeNull();
+        expect(screen.queryByRole("checkbox", { name: "Computer use follows Hub" })).toBeNull();
+        expect(screen.queryByRole("checkbox", { name: "Grounding model not used" })).toBeNull();
+        expect(screen.queryByTestId("bot-role-assignments")).toBeNull();
     });
 
     it("lets a later directory refresh replace a handoff that did not change the draft", async () => {
@@ -920,7 +926,7 @@ describe("LLMProfileAssignments", () => {
             computer_use: { model: "auto", inherit_hub: true, provider_name: "Hub", configured: true },
         });
         saveProfiles.mockResolvedValue(undefined);
-        render(<LLMProfileAssignments lang="en" />);
+        render(<LLMProfileAssignments lang="en" section="roles" />);
 
         const foregroundFollow = await screen.findByRole("checkbox", { name: "Foreground follows Hub" }) as HTMLInputElement;
         const backgroundFollow = screen.getByRole("checkbox", { name: "Background follows Hub" }) as HTMLInputElement;
@@ -940,6 +946,9 @@ describe("LLMProfileAssignments", () => {
         expect(draft.foreground.inherit_hub).toBe(false);
         expect(draft.foreground.model).toBe("auto");
         expect(draft.horizon.manager.model).toBe("keep-horizon");
+        expect(screen.queryByText("AI assistant")).toBeNull();
+        expect(screen.queryByText("Coding Agent")).toBeNull();
+        expect(screen.queryByText("Caption model")).toBeNull();
     });
 
     it("matches backend vision-model rules for caption warnings", () => {

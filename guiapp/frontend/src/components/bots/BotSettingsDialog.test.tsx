@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BotLLMSettingsDialog, type BotLLMProviderOption } from './BotLLMSettingsDialog';
 import {
     BotNetworkSettingsDialog,
@@ -12,10 +12,40 @@ import {
     type DesktopProxyModeState,
 } from './BotNetworkSettingsDialog';
 
+const { saveProfiles } = vi.hoisted(() => ({ saveProfiles: vi.fn(async (..._args: unknown[]) => undefined) }));
+
 vi.mock('../../../wailsjs/go/main/App', () => ({
     // Never settles: the cached provider list is what these tests read, and a
     // late answer would land after the test has already asserted.
     FetchProviderModels: () => new Promise(() => { /* pending */ }),
+    GetMaclawLLMProfilePanelState: () => Promise.resolve({
+        providers: [{ id: 'hub', name: 'MaClaw Official', model: 'auto', models: ['auto'], is_hub_service: true, connection_test_passed: true }],
+        profiles: {
+            version: 1,
+            assistant: { provider_id: 'hub', model: 'auto' },
+            coding: { inherit_assistant: true },
+            foreground: { inherit_hub: true },
+            background: { inherit_hub: true },
+            computer_use: { inherit_hub: true },
+            grounder: { inherit_hub: true },
+        },
+        hub_role_models: { foreground: 'auto', background: 'worker', computer_use: 'auto' },
+        assistant: { provider_id: 'hub', provider_name: 'MaClaw Official', model: 'auto', health: 'configured' },
+        coding: { inherit_assistant: true, provider_id: 'hub', model: 'auto', health: 'configured' },
+        foreground: { model: 'auto', inherit_hub: true, provider_name: 'Hub', configured: true },
+        background: { model: 'worker', inherit_hub: true, provider_name: 'Hub', configured: true },
+        computer_use: { model: 'auto', inherit_hub: true, provider_name: 'Hub', configured: true },
+        grounder: { inherit_hub: true },
+        revision: 'rev-1',
+    }),
+    SaveMaclawLLMProfiles: (...args: unknown[]) => saveProfiles(...args),
+    TestMaclawLLMProfile: () => Promise.resolve({}),
+    FetchMaclawLLMProfileModels: () => Promise.resolve([]),
+}));
+
+vi.mock('../../../wailsjs/runtime', () => ({
+    EventsOn: () => {},
+    EventsOff: () => {},
 }));
 
 const llmLabels = {
@@ -29,6 +59,8 @@ const llmLabels = {
     modelLoading: '正在获取模型列表…',
     modelEmpty: '这个服务商暂时没有可选模型。',
     noProviders: '这台电脑上没有可用的服务商。',
+    roleSection: '模型配置',
+    roleHint: '前台交互、后台执行、电脑操作和定位模型。这个账号下的所有 Bot 共用。',
     save: '保存',
     cancel: '取消',
     close: '关闭',
@@ -120,6 +152,8 @@ describe('Bot settings tabs', () => {
 });
 
 describe('Bot model settings dialog', () => {
+    beforeEach(() => { saveProfiles.mockClear(); });
+
     function renderDialog(overrides: Partial<Parameters<typeof BotLLMSettingsDialog>[0]> = {}) {
         const onSubmit = vi.fn();
         const utils = render(
@@ -180,6 +214,47 @@ describe('Bot model settings dialog', () => {
         expect(card.className).toContain('is-disabled');
         fireEvent.click(within(card).getByText(llmLabels.useProvider));
         expect(screen.getByTestId('bot-llm-mode-custom')).toHaveProperty('checked', false);
+    });
+
+    it('shows the shared role models in a 模型配置 section', async () => {
+        renderDialog({ lang: 'zh-Hans' });
+        const section = await screen.findByTestId('bot-llm-role-section');
+        expect(within(section).getByText('模型配置')).toBeTruthy();
+        expect(await screen.findByTestId('bot-role-foreground')).toBeTruthy();
+        expect(screen.getByTestId('bot-role-background')).toBeTruthy();
+        expect(screen.getByTestId('bot-role-computer_use')).toBeTruthy();
+        expect(screen.getByTestId('bot-role-grounder')).toBeTruthy();
+        expect(screen.getByRole('checkbox', { name: '前台跟随 Hub' })).toHaveProperty('checked', true);
+        expect(screen.getByRole('checkbox', { name: '后台跟随 Hub' })).toHaveProperty('checked', true);
+        expect(screen.getByRole('checkbox', { name: '电脑操作跟随 Hub' })).toHaveProperty('checked', true);
+        expect(screen.getByRole('checkbox', { name: '不使用定位模型' })).toHaveProperty('checked', true);
+        // One-line labels: the hint sits beside the title, not in a following paragraph.
+        const label = screen.getByTestId('bot-role-foreground').querySelector('.bot-role-assignments__label') as HTMLElement;
+        expect(label.className).toContain('bot-role-assignments__label');
+        expect(label.querySelector('p')).toBeNull();
+        expect(within(label).getByText('前台交互')).toBeTruthy();
+        expect(within(label).getByText('规划与对话')).toBeTruthy();
+    });
+
+    it('saves a pinned role through the existing profile API and keeps assistant assignments', async () => {
+        const { onSubmit } = renderDialog({ lang: 'en' });
+        const follow = await screen.findByRole('checkbox', { name: 'Foreground follows Hub' }) as HTMLInputElement;
+        fireEvent.click(follow);
+        fireEvent.click(screen.getByTestId('bot-role-assignments-save'));
+        await waitFor(() => expect(saveProfiles).toHaveBeenCalled());
+        const draft = saveProfiles.mock.calls[0][0] as unknown as { foreground: { inherit_hub?: boolean; model?: string }; assistant: { provider_id?: string; model?: string } };
+        expect(draft.foreground.inherit_hub).toBe(false);
+        expect(draft.foreground.model).toBe('auto');
+        expect(draft.assistant.provider_id).toBe('hub');
+        expect(draft.assistant.model).toBe('auto');
+        expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('does not submit the provider setting when Enter is pressed in a role row', async () => {
+        const { onSubmit } = renderDialog({ lang: 'en' });
+        const follow = await screen.findByRole('checkbox', { name: 'Foreground follows Hub' });
+        fireEvent.keyDown(follow, { key: 'Enter' });
+        expect(onSubmit).not.toHaveBeenCalled();
     });
 });
 
@@ -373,5 +448,10 @@ describe('bot settings dialog stylesheet', () => {
     // on the controls inside, not on the frame.
     it('does not paint a focus ring around the dialog frame', () => {
         expect(bodyOf('.modal-content.custom-dialog.bot-llm-dialog')).toMatch(/^\s*outline:\s*none\s*;/m);
+    });
+
+    it('keeps role labels on one line and ellipsizes a long hint', () => {
+        expect(bodyOf('.bot-role-assignments__label')).toMatch(/white-space:\s*nowrap/);
+        expect(bodyOf('.bot-role-assignments__hint')).toMatch(/text-overflow:\s*ellipsis/);
     });
 });

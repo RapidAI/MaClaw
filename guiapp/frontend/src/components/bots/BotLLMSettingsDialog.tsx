@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { LLMProfileAssignments, type LLMProfileAssignmentsHandle } from '../remote/LLMProfileAssignments';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { useModalFocusTrap } from '../../hooks/useModalFocusTrap';
 import { buildSidebarModelOptions } from '../../utils/sidebarModelOptions';
@@ -37,6 +38,8 @@ export type BotLLMSettingsDialogLabels = {
     modelLoading: string;
     modelEmpty: string;
     noProviders: string;
+    roleSection: string;
+    roleHint: string;
     save: string;
     cancel: string;
     close: string;
@@ -57,6 +60,7 @@ type BotLLMSettingsDialogProps = {
     heading?: string;
     /** Tab strip rendered under the header (Settings dialog). */
     tabs?: ReactNode;
+    lang?: string;
 };
 
 /**
@@ -78,6 +82,7 @@ export function BotLLMSettingsDialog({
     onSubmit,
     heading,
     tabs,
+    lang,
 }: BotLLMSettingsDialogProps) {
     const titleId = useId();
     const providerId = useId();
@@ -121,6 +126,7 @@ export function BotLLMSettingsDialog({
     const [modelsLoading, setModelsLoading] = useState(() => willFetchModels(firstProvider));
     const modelsSeq = useRef(0);
     const dialogRef = useRef<HTMLDivElement | null>(null);
+    const roleAssignmentsRef = useRef<LLMProfileAssignmentsHandle>(null);
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !saving });
     const { onKeyDown } = useModalFocusTrap(dialogRef, { onEscape: () => { if (!saving) onClose(); } });
 
@@ -181,7 +187,17 @@ export function BotLLMSettingsDialog({
     };
 
     const submit = () => {
+        void submitAll();
+    };
+
+    // Role rows live in this same dialog but save through a different API.
+    // Flush them first so the footer Save cannot close over an unsaved role draft.
+    const submitAll = async () => {
         if (!canSave) return;
+        if (roleAssignmentsRef.current?.dirty) {
+            const saved = await roleAssignmentsRef.current.save();
+            if (!saved) return;
+        }
         if (mode === 'default') {
             onSubmit({ mode: 'default', model: '' });
             return;
@@ -198,6 +214,7 @@ export function BotLLMSettingsDialog({
             const native = event.nativeEvent as KeyboardEvent;
             if (native.isComposing || native.keyCode === 229) return;
             if (event.target instanceof HTMLButtonElement) return;
+            if (event.target instanceof Element && event.target.closest('[data-testid="bot-role-assignments"]')) return;
             event.preventDefault();
             event.stopPropagation();
             submit();
@@ -313,6 +330,17 @@ export function BotLLMSettingsDialog({
                             </div>
                         ) : null}
                     </div>
+
+                    <section className="bot-llm-dialog__roles" data-testid="bot-llm-role-section">
+                        <h4 className="bot-llm-dialog__section">{labels.roleSection}</h4>
+                        <p className="bot-llm-dialog__hint">{labels.roleHint}</p>
+                        <LLMProfileAssignments
+                            lang={lang}
+                            section="roles"
+                            assignmentsRef={roleAssignmentsRef}
+                            disabled={saving}
+                        />
+                    </section>
 
                     {notice ? <p className="bot-llm-dialog__notice" role="status">{notice}</p> : null}
                 </div>
