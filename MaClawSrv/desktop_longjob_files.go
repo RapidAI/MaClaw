@@ -82,12 +82,14 @@ func desktopWatchFilesMissed(files []agent.MessageAttachment) string {
 	return "（附件没能随这条消息发出，文件还在电脑上：" + desktopWatchFileNames(files) + "）"
 }
 
-// desktopSayRefusedFiles: an older Hub refuses a say body larger than 64 KB
-// as an invalid request.
+// desktopSayRefusedFiles: the say with files did not land. An older Hub
+// refuses a body over 64 KB (invalid say request, or it drops the
+// connection mid-upload), so any failure other than "already said" is
+// retried as text that names the files.
 func desktopSayRefusedFiles(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "invalid say request") || strings.Contains(msg, "413") || strings.Contains(msg, "status 400")
+	return !strings.Contains(msg, "ALREADY_SAID") && !strings.Contains(msg, "409")
 }
