@@ -858,7 +858,11 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		// whatever the last screen step or wake said.
 		defer beginDesktopActivity(scope.RunID, desktopContainerPhrase(action))()
 		if desktopHubExecutesTool() {
-			return withNote(runDesktopHubTool(ctx, scope, action, args))
+			out, err := withNote(runDesktopHubTool(ctx, scope, action, args))
+			if err == nil && action == "bash" {
+				out += desktopWaitPollNote(scope, desktopArg(args, "command"))
+			}
+			return out, err
 		}
 		userKey, keyErr := desktopUserKey(scope)
 		if keyErr != nil {
