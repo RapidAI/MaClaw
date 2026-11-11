@@ -518,13 +518,15 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 	defer releaseDesktop()
 	allowMessageResponseWrite(w)
 	shotCtx, shot := withDesktopShotSlot(r.Context())
+	noteDesktopRequest(shot, in.Content)
 	run, msg, err := s.svc.PostMessage(shotCtx, p, shotID, r.PathValue("sessionId"), in)
 	if err == nil {
 		dropUnaskedDesktopShot(shot, in.Content, msg)
 		if msg != nil && run != nil {
 			msg.Content = desktopReplyAfterDelegation(shotID, run.ID, run.SessionID, msg.Content)
 		}
-		publishDesktopReply(msg, shot)
+		images, files := publishDesktopReply(msg, shot)
+		desktopPictureNote(shot, msg, images, files)
 	} else if msg != nil {
 		msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
 	}
@@ -563,6 +565,9 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, r
 		release, occupyOwned = occupyUserDesktopRun(ctx, tenantID, userID, instanceID)
 		next, slot := withDesktopShotSlot(ctx)
 		shot = slot
+		if len(request) > 0 {
+			noteDesktopRequest(slot, request[0])
+		}
 		botlog.Write(botID, "srv.desktop_prepare", nil, "instance", instanceID)
 		return next
 	}
@@ -601,6 +606,7 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, r
 				dropUnaskedDesktopShot(shot, request[0], msg)
 			}
 			images, files = publishDesktopReply(msg, shot)
+			desktopPictureNote(shot, msg, images, files)
 		} else if msg != nil {
 			msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
 		}

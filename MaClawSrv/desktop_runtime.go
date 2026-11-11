@@ -663,6 +663,9 @@ type desktopRoundWake struct {
 	// userKey is the desktop (owner, or owner plus bot when isolated) whose
 	// browser binding this round used. finishDesktopRound drops only that one.
 	userKey string
+	// scope is the step scope that woke this round (its desktop user names
+	// the bot's own display), so the run's end can look at that screen.
+	scope agentruntime.Scope
 }
 
 func desktopBlockedByPerson(scope agentruntime.Scope) error {
@@ -2552,6 +2555,7 @@ func ensureDesktopRound(ctx context.Context, scope agentruntime.Scope, userKey s
 		wake.endpoint = endpoint
 		wake.have = true
 		wake.woken = true
+		wake.scope = scope
 	}
 	return endpoint, nil
 }
@@ -3312,6 +3316,11 @@ type desktopShotSlot struct {
 	file      agent.MessageAttachment
 	fileReady bool
 	savedPath string
+	// request is the person's message, so the run's end knows whether a
+	// picture was asked for (desktop_deliverable.go).
+	request string
+	// shotMissing says why a requested picture is not on the reply.
+	shotMissing string
 }
 
 type desktopShotSlotKey struct{}

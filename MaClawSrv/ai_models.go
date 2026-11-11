@@ -402,6 +402,9 @@ func (s *HTTPServer) decorateAssistantMessageMetadata(ctx context.Context, p age
 	// What the task really reached, measured by the desktop goal ledger
 	// (the run's status stays "succeeded" when its execution ended normally).
 	out := desktopTaskOutcomeMetadata(run.ID, msg)
+	// A picture the person asked for is looked at now, while this round's
+	// desktop is still bound (it is released when PostMessage returns).
+	ensureDesktopPictureDelivered(ctx, run.ID, out[agentservice.TaskOutcomeKey])
 	if s == nil || s.aiModels == nil || strings.TrimSpace(msg.Content) == "" {
 		return out
 	}
