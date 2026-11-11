@@ -39,6 +39,9 @@ const (
 	OpCheckDial = "check_dial"
 	// OpDial connects to Host:Port; the stream then carries the connection.
 	OpDial = "dial"
+	// OpFetch: the computer downloads a file from Hub's file store (URL)
+	// into a folder, with resume. One answer after approval, one when done.
+	OpFetch = "fetch"
 )
 
 // Error codes in Response.Code. The bot tool turns them into plain sentences.
@@ -78,6 +81,10 @@ type Request struct {
 	Port int    `json:"port,omitempty"`
 	// Remote is the cloud-side path of a transfer, shown to the person.
 	Remote string `json:"remote,omitempty"`
+	// URL, Ref and SHA256 name a file in Hub's file store (OpFetch).
+	URL    string `json:"url,omitempty"`
+	Ref    string `json:"ref,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 // Entry is one row of a folder listing.
@@ -113,6 +120,8 @@ type Response struct {
 	Entries   []Entry  `json:"entries,omitempty"`
 	Truncated bool     `json:"truncated,omitempty"`
 	Summary   *Summary `json:"summary,omitempty"`
+	// State is "running" when Hub stopped waiting for a fetch that goes on.
+	State string `json:"state,omitempty"`
 }
 
 // Err is a Response failure carried as a Go error.

@@ -470,3 +470,35 @@ func (b *Broker) ServeConnect(w http.ResponseWriter, r *http.Request) {
 		up, down = Pipe(client, st)
 	}
 }
+
+// Fetch asks the person's computer to download a stored file (OpFetch).
+// It waits up to wait for the download to finish; after that the answer is
+// State "running" with the folder, and the computer carries on.
+func (b *Broker) Fetch(ctx context.Context, key string, req Request, wait time.Duration) (Response, error) {
+	req.Op = OpFetch
+	st, first, err := b.Open(ctx, key, req)
+	if err != nil {
+		return first, err
+	}
+	defer st.Close()
+	if wait <= 0 {
+		wait = 10 * time.Minute
+	}
+	_ = st.SetReadDeadline(time.Now().Add(wait))
+	var final Response
+	if err := ReadLine(st, &final); err != nil {
+		if ctx.Err() == nil && isTimeout(err) {
+			first.State = "running"
+			return first, nil
+		}
+		if ctx.Err() != nil {
+			first.State = "running"
+			return first, nil
+		}
+		return Response{}, &Err{Code: CodeFailed, Message: "the link to the person's computer broke during the download; it resumes when the bot asks again"}
+	}
+	if err := final.AsErr(); err != nil {
+		return final, err
+	}
+	return final, nil
+}

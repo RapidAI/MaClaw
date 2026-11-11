@@ -83,6 +83,11 @@ type Agent struct {
 	Lookup func(string) ([]net.IP, error)
 	// Dial connects to a checked address; nil uses net.Dialer.
 	Dial func(ctx context.Context, addr string) (net.Conn, error)
+	// Fetch downloads from Hub's file store; nil refuses OpFetch.
+	Fetch Fetcher
+	// RefreshLink returns a new signed path for a stored file whose link
+	// expired; may be nil.
+	RefreshLink func(ctx context.Context, ref string) (string, error)
 
 	mu     sync.Mutex
 	grants map[string]time.Time
@@ -249,6 +254,11 @@ func (a *Agent) handle(ctx context.Context, stream net.Conn, req Request) error 
 			return errFilesOff
 		}
 		return a.write(ctx, stream, s, req)
+	case OpFetch:
+		if !s.FilesEnabled {
+			return errFilesOff
+		}
+		return a.fetch(ctx, stream, s, req)
 	case OpCheckDial, OpDial:
 		if !s.NetworkEnabled {
 			return errNetOff
