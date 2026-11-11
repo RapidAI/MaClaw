@@ -244,3 +244,17 @@ export function applyBotStatusLine(prev: Record<string, { text: string; runId: s
     if (current && current.text === line && current.runId === runId) return prev;
     return { ...prev, [botId]: { text: line, runId } };
 }
+
+/** A wake label older than this is stale: the row falls back. */
+export const DESKTOP_WAKE_LABEL_MAX_MS = 120000;
+
+/**
+ * shownDesktopBotActivity is the step label to show. 「正在唤醒电脑」 that
+ * has not changed for DESKTOP_WAKE_LABEL_MAX_MS is dropped (11-11 21:56: the
+ * header kept it while the bot's live screen was already streaming).
+ */
+export function shownDesktopBotActivity(a: { text: string; at?: number } | undefined, now = Date.now()): string {
+    if (!a || !a.text) return '';
+    if (a.text.startsWith('正在唤醒') && a.at && now - a.at > DESKTOP_WAKE_LABEL_MAX_MS) return '';
+    return a.text;
+}

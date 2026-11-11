@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { answeredSinceLast, applyBotStatusLine, applyMention, attentionOf, humanPrompt, mentionCandidates, mentionQuery, saidForChat, statusRowText, stateLabel, type Assignment, type SaidItem } from './botCollab';
+import { answeredSinceLast, applyBotStatusLine, shownDesktopBotActivity, applyMention, attentionOf, humanPrompt, mentionCandidates, mentionQuery, saidForChat, statusRowText, stateLabel, type Assignment, type SaidItem } from './botCollab';
 
 const bots = [{ id: 'm', title: '主管', primary: true }, { id: 'a', title: '小A' }, { id: 'b', title: '小B' }, { id: 'c', title: '小C' }, { id: 'd', title: '小D' }];
 const asg = (id: string, target: string, state: string, extra: Partial<Assignment> = {}): Assignment =>
@@ -73,5 +73,14 @@ describe('applyBotStatusLine', () => {
         expect(applyBotStatusLine(st, 'a', 'run_old', '')).toBe(st);
         expect(applyBotStatusLine(st, 'a', 'run_1', '').a).toBeUndefined();
         expect(applyBotStatusLine(st, 'a', 'run_1', '').b.text).toContain('下次查看');
+    });
+});
+
+describe('shownDesktopBotActivity', () => {
+    it('drops a stale wake label only', () => {
+        expect(shownDesktopBotActivity({ text: '正在唤醒电脑', at: 1000 }, 2000)).toBe('正在唤醒电脑');
+        expect(shownDesktopBotActivity({ text: '正在唤醒电脑', at: 1000 }, 1000 + 121000)).toBe('');
+        expect(shownDesktopBotActivity({ text: '正在执行命令', at: 1000 }, 1000 + 999999)).toBe('正在执行命令');
+        expect(shownDesktopBotActivity(undefined)).toBe('');
     });
 });

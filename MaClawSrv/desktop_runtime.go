@@ -4185,11 +4185,24 @@ func desktopStylePrompt(request agentruntime.TurnRequest, ids ...promptparts.ID)
 	return st.Character() + promptparts.Render(st.Overrides(), ids...)
 }
 
+// desktopWakeLabelAfter is how long a wake may take before the row says so.
+var desktopWakeLabelAfter = 3 * time.Second
+
 // desktopWakeForStep is the one place a step wakes the computer: the row
 // reads 正在唤醒电脑 while it starts, and a failure comes back in words the
 // bot can pass on (the raw cause stays in the log).
 func desktopWakeForStep(ctx context.Context, scope agentruntime.Scope, userKey string) (desktopEndpoint, error) {
-	done := beginDesktopActivity(scope.RunID, "正在唤醒电脑")
+	// The row says 正在唤醒电脑 only when the computer is really slow to
+	// answer: a session that is already open returns at once, and showing
+	// the wake label for it left 「正在唤醒电脑」 on a bot whose live screen
+	// was already streaming (papers 11-11 21:56, three bots of one owner
+	// queueing on the gate below). The step's own label comes back after.
+	prev := loadDesktopActivity(scope.RunID)
+	labelled := make(chan struct{})
+	timer := time.AfterFunc(desktopWakeLabelAfter, func() {
+		setDesktopActivity(scope.RunID, "正在唤醒电脑")
+		close(labelled)
+	})
 	// Same gate the run admission holds: a wake never races a stop that is
 	// still writing the website login.
 	owner := desktopOwner(scope)
@@ -4197,7 +4210,13 @@ func desktopWakeForStep(ctx context.Context, scope agentruntime.Scope, userKey s
 	gate.Lock()
 	endpoint, err := desktopSession(ctx, scope, userKey)
 	gate.Unlock()
-	done()
+	if !timer.Stop() {
+		<-labelled
+		if prev == "" || prev == "正在唤醒电脑" {
+			prev = desktopActivityThinking
+		}
+		setDesktopActivity(scope.RunID, prev)
+	}
 	if err != nil {
 		log.Printf("[desktop] wake failed run=%s: %v", scope.RunID, err)
 		return desktopEndpoint{}, desktopWakeError{cause: err}

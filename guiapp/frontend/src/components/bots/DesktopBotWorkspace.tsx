@@ -184,7 +184,7 @@ import { useBotCollab } from './collab/useBotCollab';
 import { BotCollabStatus } from './collab/BotCollabStatus';
 import { BotSaidInline } from './collab/BotSaidInline';
 import { BotRoomsDialog } from './collab/BotRoomsDialog';
-import { applyBotStatusLine, saidForChat, saidSince } from './collab/botCollab';
+import { applyBotStatusLine, saidForChat, saidSince, shownDesktopBotActivity } from './collab/botCollab';
 import './DesktopBotWorkspace.css';
 import { DemoSkillPanel } from './DemoSkillPanel';
 import { isChineseLang, isTraditionalLang, localizeText, normalizeLang } from '../../i18n';
@@ -2256,7 +2256,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [command, setCommand] = useState('');
     const [listNotice, setListNotice] = useState('');
     const [askingByBot, setAskingByBot] = useState<Record<string, string>>({});
-    const [activityByBot, setActivityByBot] = useState<Record<string, { text: string; runId: string }>>({});
+    const [activityByBot, setActivityByBot] = useState<Record<string, { text: string; runId: string; at?: number }>>({});
     // Live run status from MaClawSrv (run id, step, latest progress,
     // background job, next watcher check). Shown in the status row, never
     // as a chat message (Daniel 11-11 21:10).
@@ -3340,7 +3340,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 }
                 const activity = desktopBotActivityText(raw);
                 if (!activity || (current?.text === activity && current.runId === runId)) return prev;
-                return { ...prev, [botId]: { text: activity, runId } };
+                return { ...prev, [botId]: { text: activity, runId, at: Date.now() } };
             });
         };
         const off = EventsOn('desktop-bot-activity', handler);
@@ -6955,7 +6955,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <button type="button" className="btn-secondary desktop-bot-chat__rooms-btn" data-testid="bot-rooms-open" onClick={() => setRoomsOpen(true)}>群聊</button>
                             ) : null}
                         </header>
-                        {collab.features.assignments ? <BotCollabStatus assignments={collab.assignments} bots={bots} lang={lang} busy={bots.flatMap(bot => { const phase = busyPhase(bot.id, messagesByBot[bot.id] || messagesForBot(userId, bot.id)); return phase === 'execute' || phase === 'plan' ? [{ bot: bot.id, phase, task: activityByBot[bot.id]?.text || '' }] : []; })} /> : null}
+                        {collab.features.assignments ? <BotCollabStatus assignments={collab.assignments} bots={bots} lang={lang} busy={bots.flatMap(bot => { const phase = busyPhase(bot.id, messagesByBot[bot.id] || messagesForBot(userId, bot.id)); return phase === 'execute' || phase === 'plan' ? [{ bot: bot.id, phase, task: shownDesktopBotActivity(activityByBot[bot.id]) }] : []; })} /> : null}
                         <div
                             ref={logRef}
                             className="desktop-bot-chat__log"
@@ -7110,9 +7110,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         {botPending(selected.id) ? (
                             <p className="desktop-bot-chat__processing" data-testid="desktop-bot-processing" role="status">
                                 <button type="button" className="desktop-bot-chat__processing-mark" data-testid="desktop-bot-pause" aria-label={text.stopWork} onClick={() => answerDesktopControl(selected.id, '', 'stop', 'quiet', 'pause-button')} />
-                                <span className="desktop-bot-chat__processing-label">{desktopBotWorkingLabel(askingByBot[selected.id] || '', activityByBot[selected.id]?.text || '')}</span>
+                                <span className="desktop-bot-chat__processing-label">{desktopBotWorkingLabel(askingByBot[selected.id] || '', shownDesktopBotActivity(activityByBot[selected.id]))}</span>
                                 {statusByBot[selected.id]?.text ? (
-                                    <span className="desktop-bot-chat__processing-status" data-testid="desktop-bot-status-line">{statusByBot[selected.id].text}</span>
+                                    <span className="desktop-bot-chat__processing-status" data-testid="desktop-bot-status-line" title={statusByBot[selected.id].text}>{statusByBot[selected.id].text}</span>
                                 ) : null}
                             </p>
                         ) : null}

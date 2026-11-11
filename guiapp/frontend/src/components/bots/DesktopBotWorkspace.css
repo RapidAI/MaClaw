@@ -1426,7 +1426,10 @@
 }
 
 .desktop-bot-chat__processing-label {
-    flex: 0 1 auto;
+    /* The step label never wraps (「正在唤醒电 / 脑」, 11-11 21:56); the
+       status detail beside it gives way instead. */
+    white-space: nowrap;
+    flex: 0 0 auto;
     width: max-content;
     max-width: 100%;
     min-width: 0;
@@ -4068,6 +4071,7 @@ button.desktop-bot-feed__file {
 /* Live run status (run id, step, background job, next check): the status
    row, not a chat message. */
 .desktop-bot-chat__processing-status {
+    flex: 1 1 auto;
     margin-left: 8px;
     opacity: 0.7;
     font-size: 0.9em;
