@@ -1134,6 +1134,9 @@ func desktopLongJobResume(ctx context.Context, j *desktopLongJob) error {
 	if j.PrincipalUser == "" {
 		if a, ok := desktopInstancePrincipal(j.InstanceID); ok {
 			j.PrincipalTenant, j.PrincipalUser = a.TenantID, a.UserID
+		} else if p, ok := svc.InstanceOwner(j.InstanceID); ok {
+			// After a restart: the instance's owner from the service store.
+			j.PrincipalTenant, j.PrincipalUser = p.TenantID, p.UserID
 		}
 	}
 	if svc == nil || j.PrincipalUser == "" {
