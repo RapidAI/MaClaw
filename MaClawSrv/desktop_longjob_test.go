@@ -647,3 +647,68 @@ func TestD113AttachClaimNeedsAnAttachment(t *testing.T) {
 		t.Fatalf("watch reply: %q", got)
 	}
 }
+
+// Daniel 11-12 02:11: judge the result and decide autonomously whether to
+// iterate, bounded.
+func TestD114IterationGateIsMeasuredAndBounded(t *testing.T) {
+	d100Env(t)
+	f := func(v float64) *float64 { return &v }
+	r1 := &desktopLongJob{ID: "job_r1", Status: "done", Started: time.Now()}
+	_ = desktopLongJobSave(r1)
+	if _, refuse := desktopLongJobIterationGate(r1); !strings.Contains(refuse, "round_metric") {
+		t.Fatalf("unrecorded round allowed: %q", refuse)
+	}
+	if !desktopLongJobRecordRound(r1, map[string]any{"round_metric": "0.795", "round_metric_name": "test_f1", "decision": "continue", "reason": "加类别权重"}) {
+		t.Fatal("not recorded")
+	}
+	_ = desktopLongJobSave(r1)
+	if round, refuse := desktopLongJobIterationGate(r1); refuse != "" || round != 2 {
+		t.Fatalf("round 2 refused: %d %q", round, refuse)
+	}
+	r2 := &desktopLongJob{ID: "job_r2", Lineage: "job_r1", Round: 2, Status: "done", RoundMetric: f(0.797), RoundMetricName: "test_f1", Decision: "continue", Started: time.Now()}
+	r3 := &desktopLongJob{ID: "job_r3", Lineage: "job_r1", Round: 3, Status: "done", RoundMetric: f(0.798), RoundMetricName: "test_f1", Decision: "continue", Started: time.Now()}
+	_ = desktopLongJobSave(r2)
+	_ = desktopLongJobSave(r3)
+	if _, refuse := desktopLongJobIterationGate(r3); !strings.Contains(refuse, "没有明显提升") {
+		t.Fatalf("diminishing returns not stopped: %q", refuse)
+	}
+	r3.RoundMetric = f(0.83)
+	_ = desktopLongJobSave(r3)
+	if _, refuse := desktopLongJobIterationGate(r3); refuse != "" {
+		t.Fatalf("real gain refused: %q", refuse)
+	}
+	r4 := &desktopLongJob{ID: "job_r4", Lineage: "job_r1", Round: 4, Status: "done", RoundMetric: f(0.86), RoundMetricName: "test_f1", Decision: "continue", Started: time.Now()}
+	_ = desktopLongJobSave(r4)
+	if _, refuse := desktopLongJobIterationGate(r4); !strings.Contains(refuse, "上限") {
+		t.Fatalf("max rounds not enforced: %q", refuse)
+	}
+	stop := &desktopLongJob{ID: "job_s", Status: "done", RoundMetric: f(0.9), RoundMetricName: "f1", Decision: "stop"}
+	if _, refuse := desktopLongJobIterationGate(stop); !strings.Contains(refuse, "stop") {
+		t.Fatalf("stop decision ignored: %q", refuse)
+	}
+	failed := &desktopLongJob{ID: "job_f", Status: "failed", Decision: "continue", DecisionReason: "OOM，batch 64→32"}
+	_ = desktopLongJobSave(failed)
+	if _, refuse := desktopLongJobIterationGate(failed); refuse != "" {
+		t.Fatalf("failed round with a plan refused: %q", refuse)
+	}
+	if line := desktopLongJobRoundsLine(r4); !strings.Contains(line, "第2轮") || !strings.Contains(line, "test_f1=0.797") {
+		t.Fatalf("rounds line %q", line)
+	}
+	if desktopIterGain("val_loss", 0.5, 0.4) <= 0 || desktopIterGain("f1", 0.5, 0.4) >= 0 {
+		t.Fatal("metric direction")
+	}
+}
+
+func TestD114JobStartedInWatcherTurnIsNextRound(t *testing.T) {
+	d100Env(t)
+	parent := &desktopLongJob{ID: "job_p", Status: "done", Started: time.Now()}
+	_ = desktopLongJobSave(parent)
+	desktopLongJobNoteWatchRun("run_w", "job_p")
+	_, err := desktopLongJobStart(context.Background(), agentruntime.Scope{RunID: "run_w", InstanceID: "i", SessionID: "s"}, agentruntime.Scope{}, map[string]any{"command": "python train.py"})
+	if err == nil || !strings.Contains(err.Error(), "round_metric") {
+		t.Fatalf("unrecorded parent started a round: %v", err)
+	}
+	if p := desktopLongJobWatchPrompt(parent, longJobResume); !strings.Contains(p, "自主决定是否继续改进") {
+		t.Fatalf("resume prompt lacks policy")
+	}
+}

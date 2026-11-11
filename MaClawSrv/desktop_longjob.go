@@ -135,6 +135,15 @@ type desktopLongJob struct {
 	// DeadlineSaid: the person was told the estimate runs past the
 	// command's own time limit.
 	DeadlineSaid bool `json:"deadline_said,omitempty"`
+	// Experiment rounds (desktop_longjob_iterate.go): Lineage is the first
+	// round's job id, Round counts from 1; the bot records each round's
+	// main metric and its decision.
+	Lineage         string   `json:"lineage,omitempty"`
+	Round           int      `json:"round,omitempty"`
+	RoundMetric     *float64 `json:"round_metric,omitempty"`
+	RoundMetricName string   `json:"round_metric_name,omitempty"`
+	Decision        string   `json:"decision,omitempty"`
+	DecisionReason  string   `json:"decision_reason,omitempty"`
 }
 
 func (j *desktopLongJob) stallBound() time.Duration {
@@ -517,6 +526,15 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 	if cmd == "" {
 		return "", fmt.Errorf("job start needs command")
 	}
+	var lineage string
+	round := 0
+	if parent := desktopLongJobWatchParent(scope.RunID); parent != nil {
+		r, refuse := desktopLongJobIterationGate(parent)
+		if refuse != "" {
+			return "", fmt.Errorf("%s", refuse)
+		}
+		lineage, round = desktopLongJobLineage(parent), r
+	}
 	id := strings.ReplaceAll(agentservice.NewID("job"), "-", "")
 	dir := desktopLongJobScratch(scope, id)
 	j := &desktopLongJob{
@@ -537,6 +555,8 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 		LastChange: desktopLongJobNow(),
 		NextPoll:   desktopLongJobNow().Add(time.Minute),
 		StallAfter: desktopLongJobStallAfter,
+		Lineage:    lineage,
+		Round:      round,
 	}
 	if _, bot := desktop.SplitDesktopUser(scope.UserID); bot != "" {
 		j.BotID = bot
@@ -652,6 +672,9 @@ func desktopLongJobStatus(ctx context.Context, scope agentruntime.Scope, args ma
 	if (j.Status == "running" || j.Status == "stalled") && desktopLongJobSetCheck(j, args, desktopLongJobNow()) {
 		_ = desktopLongJobSave(j)
 	}
+	if desktopLongJobRecordRound(j, args) {
+		_ = desktopLongJobSave(j)
+	}
 	if strings.TrimSpace(scope.SessionID) != "" && scope.SessionID == j.SessionID && j.Status != "running" {
 		// The live run in this conversation read the stall, failure or
 		// finish itself; it tells the person in its own reply.
@@ -691,6 +714,9 @@ func desktopLongJobView(j *desktopLongJob) string {
 		j.ID, j.Command, j.Status, alive, j.PID, exit, age, j.LogFile)
 	if !j.NextCheck.IsZero() && (j.Status == "running" || j.Status == "stalled") {
 		text += "\n下次查看: " + j.NextCheck.Format("15:04") + "（" + j.CheckReason + "）"
+	}
+	if j.Lineage != "" || j.RoundMetric != nil || j.Decision != "" || j.Status == "done" || j.Status == "failed" {
+		text += "\n" + desktopLongJobRoundsLine(j)
 	}
 	if l := desktopLongJobLimitLine(j); l != "" && (j.Status == "running" || j.Status == "stalled") {
 		text += "\n" + l
@@ -1219,6 +1245,7 @@ func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopL
 	in := agentservice.SendMessageInput{Content: desktopLongJobWatchPrompt(j, dec), SessionID: j.SessionID, Metadata: map[string]string{"long_job_id": j.ID, "long_job_watch": string(dec)}}
 	_, run, err := svc.SendMessageAsync(context.WithoutCancel(ctx), principal, j.InstanceID, in)
 	if err == nil && run != nil {
+		desktopLongJobNoteWatchRun(run.ID, j.ID)
 		go desktopLongJobFollowRun(context.WithoutCancel(ctx), principal, j, run.ID, dec)
 	}
 	return err
@@ -1236,7 +1263,7 @@ func desktopLongJobWatchPrompt(j *desktopLongJob, dec desktopLongJobDecision) st
 	goal := "若与上次通知相比没有新的进展，就结束，不要调用 send_to_user。"
 	switch dec {
 	case longJobResume:
-		goal = "这不是新任务，不要重新启动同一个命令。这个人已经收到了这次轮询的状态和最后输出。用这些证据判断：结束了就核对结果（指标、产物）并告诉这个人；结果是训练、评估、基准或其它实验的数字时，报告里必须有结果评估：与基线或目标对比，检查结果是否可信（验证集与测试集的差距、类别不平衡、过拟合迹象、抽几条样本实际推理），明确说能否使用，并给出建议（继续训练、调整数据或超参、或停止）和理由；失败或停滞就查明原因并换一种做法继续，并说明。你的最后回复会转给这个人（已用 action=say 说过就不再转）；没有要说的新内容时最后回复只写 NO_UPDATE。不要把已经说过的再说一遍。"
+		goal = "这不是新任务，不要重新启动同一个命令。这个人已经收到了这次轮询的状态和最后输出。用这些证据判断：结束了就核对结果（指标、产物）并告诉这个人；结果是训练、评估、基准或其它实验的数字时，报告里必须有结果评估：与基线或目标对比，检查结果是否可信（验证集与测试集的差距、类别不平衡、过拟合迹象、抽几条样本实际推理），明确说能否使用，并给出建议（继续训练、调整数据或超参、或停止）和理由；" + desktopIterPolicy + "失败或停滞就查明原因并换一种做法继续，并说明。你的最后回复会转给这个人（已用 action=say 说过就不再转）；没有要说的新内容时最后回复只写 NO_UPDATE。不要把已经说过的再说一遍。"
 	case longJobNotice:
 		goal = "这不是新任务，不要重新启动该命令。这是按预计时间安排的查看，出现了新的阶段结果、已经远超预计时间，或预计会超过命令自带的时限。用 send_to_user 简短告诉这个人这一阶段的结果（指标或日志要点）或比预计晚了多少，附上这次轮询的证据（进程存活与否、最近日志）。不要报步数。对剩余时间有更好的估计时，用 action=job_status，next_check_minutes 和 check_reason 设定下次查看。"
 	}

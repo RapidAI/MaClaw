@@ -20,10 +20,11 @@ import (
 // check still asked for a new screenshot of the delivered image. The items
 // come from a model reading the request, never from keyword rules.
 
-const desktopDeliverablesMax = 6
+const desktopDeliverablesMax = 8
 
 const desktopDeliverablesSystem = "从用户这条要求里列出用户明确要求交给他、发给他、发布或展示给他的交付物（例如：某个文件、截图、链接、发布后的帖子、一段答案或数字）。" +
 	"用户打不开这台电脑上的文件：要求里要做出来给他看的文件或截图（即使只说保存、给出路径），也是交给他的交付物，写成发到聊天里。" +
+	"用户写了成功标准、验收条件或数值目标时，每条可核对的标准也列一项，以「标准：」开头，结束前要逐条核对。" +
 	"要求是训练、评估、基准测试、调参或其它实验时，另加一项「结果评估：对比基线或目标、检查结果是否可信（如验证集与测试集差距、类别不平衡、过拟合、抽样推理）、说明能否使用，并建议继续训练/调整数据或超参/停止及理由」，写进最后的报告。" +
 	"只列用户明确要的，不要推测，不要列步骤或中间产物。每项用一句不超过 40 字的中文，写清是什么、交到哪里。" +
 	"用户只是让做一件事、没有要求交付任何东西时返回空列表。只回复 JSON：{\"items\":[\"...\"]}"
