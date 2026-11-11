@@ -24,11 +24,18 @@ import (
 // progress, what it is doing now and what is next. When nothing changed it
 // stays quiet, except one heartbeat per desktopRunHeartbeatEvery that says
 // honestly that nothing has moved. Nothing is said for a short run.
+//
+// Policy (Daniel 11-11 20:38, too frequent): the first note no sooner than
+// desktopRunProgressEvery after the run started, then at most one per
+// desktopRunProgressEvery, and only on a meaningful change — a new measured
+// result (epoch/step/metric line) or a changed goal check. Step counts, a
+// new screen or new command output are not news. A stall warning (no
+// measurable progress for half the stall window) is said once per stall,
+// whatever the interval; the end of the run is its final reply.
 var (
-	desktopRunProgressEvery  = 10 * time.Minute
-	desktopRunHeartbeatEvery = 30 * time.Minute
-	desktopRunProgressMu     sync.Mutex
-	desktopRunProgressSeen   = map[string]*desktopRunProgressState{}
+	desktopRunProgressEvery = desktopEnvMinutes("MACLAW_RUN_STATUS_MINUTES", 30*time.Minute)
+	desktopRunProgressMu    sync.Mutex
+	desktopRunProgressSeen  = map[string]*desktopRunProgressState{}
 )
 
 type desktopRunProgressState struct {
@@ -36,6 +43,7 @@ type desktopRunProgressState struct {
 	lastFP         string
 	metrics        string
 	saying         bool
+	stallSaid      bool
 }
 
 // desktopRunProgressSay is the per-step hook: it keeps the measured lines a
@@ -94,25 +102,33 @@ func desktopRunStatusTick(scope agentruntime.Scope, now time.Time) {
 	}
 	fp := metrics
 	if tracked {
-		fp = strconv.Itoa(snap.progressN) + "|" + strconv.Itoa(len(snap.wrote)) + "|" + metrics
+		fp = strconv.Itoa(snap.stageN) + "|" + metrics
 	}
 	age := now.Sub(st.first)
 	since := now.Sub(st.lastSay)
-	changed := fp != st.lastFP && (metrics != "" || (tracked && snap.progressN > 0))
-	heartbeat := !st.lastSay.IsZero() && !changed && since >= desktopRunHeartbeatEvery
-	due := !st.saying && age >= desktopRunProgressEvery && (st.lastSay.IsZero() || since >= desktopRunProgressEvery) && (changed || heartbeat)
+	if tracked && !snap.stallWarned {
+		st.stallSaid = false
+	}
+	stall := tracked && snap.stallWarned && !st.stallSaid
+	changed := fp != st.lastFP && (metrics != "" || (tracked && snap.stageN > 0))
+	due := !st.saying && (stall || (age >= desktopRunProgressEvery && (st.lastSay.IsZero() || since >= desktopRunProgressEvery) && changed))
 	if !due {
 		desktopRunProgressMu.Unlock()
 		return
 	}
 	prevSay, prevFP := st.lastSay, st.lastFP
-	st.lastSay, st.lastFP, st.saying = now, fp, true
+	st.saying = true
+	if stall {
+		st.stallSaid = true
+	} else {
+		st.lastSay, st.lastFP = now, fp
+	}
 	desktopRunProgressMu.Unlock()
-
+	heartbeat := stall
 	text := desktopRunStatusText(scope, snap, tracked, metrics, age, heartbeat, now)
 	key := fp
-	if heartbeat {
-		key += "|hb" + strconv.FormatInt(now.Unix()/int64(desktopRunHeartbeatEvery/time.Second), 10)
+	if stall {
+		key = "stall|" + snap.lastProgress.Format(time.RFC3339)
 	}
 	sum := sha1.Sum([]byte(key))
 	j := &desktopLongJob{
@@ -132,7 +148,11 @@ func desktopRunStatusTick(scope agentruntime.Scope, now time.Time) {
 			st.saying = false
 			if err != nil {
 				// Nothing reached the person: the next step or sweep says it.
-				st.lastSay, st.lastFP = prevSay, prevFP
+				if stall {
+					st.stallSaid = false
+				} else {
+					st.lastSay, st.lastFP = prevSay, prevFP
+				}
 			}
 		}
 		desktopRunProgressMu.Unlock()
@@ -146,21 +166,16 @@ func desktopRunStatusTick(scope agentruntime.Scope, now time.Time) {
 // facts only.
 func desktopRunStatusText(scope agentruntime.Scope, snap desktopWatchdogSnap, tracked bool, metrics string, age time.Duration, heartbeat bool, now time.Time) string {
 	var b strings.Builder
-	b.WriteString("进度（这件还在做，已 " + strconv.Itoa(int(age.Minutes())) + " 分钟）：")
-	if tracked {
-		b.WriteString("已做 " + strconv.Itoa(snap.steps) + " 步（成功 " + strconv.Itoa(snap.ok) + " 步）")
-		if len(snap.wrote) > 0 {
-			files := snap.wrote
-			if len(files) > 4 {
-				files = files[len(files)-4:]
-			}
-			b.WriteString("，写出文件 " + strings.Join(files, "、"))
+	if heartbeat {
+		b.WriteString("可能卡住了（这件已做 " + strconv.Itoa(int(age.Minutes())) + " 分钟）：自 " + snap.lastProgress.Format("15:04") + " 起没有可测的进展。")
+		if snap.stageWhy != "" {
+			b.WriteString("最近的结果：" + snap.stageWhy + "。")
 		}
-		b.WriteString("。")
-		if heartbeat || snap.progressWhy == "" {
-			b.WriteString("自 " + snap.lastProgress.Format("15:04") + " 起没有新的可测进展；超过 " + strconv.Itoa(int(watchdogStallAfter.Minutes())) + " 分钟仍没有进展我会停下并告诉你卡在哪。")
-		} else {
-			b.WriteString("最近一次进展 " + snap.lastProgress.Format("15:04") + "：" + snap.progressWhy + "。")
+		b.WriteString("再过 " + strconv.Itoa(int((watchdogStallAfter - now.Sub(snap.lastProgress)).Round(time.Minute).Minutes())) + " 分钟仍没有进展我会停下，并告诉你卡在哪、还剩什么。")
+	} else {
+		b.WriteString("进度（这件还在做，已 " + strconv.Itoa(int(age.Minutes())) + " 分钟）：")
+		if tracked && snap.stageWhy != "" {
+			b.WriteString(snap.stageWhy + "（" + snap.lastProgress.Format("15:04") + "）。")
 		}
 	}
 	if metrics != "" {

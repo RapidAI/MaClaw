@@ -81,6 +81,11 @@ type watchdogRun struct {
 	lastStrong   time.Time
 	progressWhy  string
 	progressN    int
+	// stageN/stageWhy: meaningful progress the person hears about — a new
+	// measured metric/epoch line or a changed goal check, not a step count,
+	// a new screen or new command output.
+	stageN   int
+	stageWhy string
 	// seen: normalized results already observed in this run.
 	seen        map[string]bool
 	lastMetrics string
@@ -262,12 +267,16 @@ func desktopWatchdogResult(scope agentruntime.Scope, action string, args map[str
 			if g := strings.TrimSpace(norm); g != "" && g != w.lastGoal {
 				w.lastGoal = g
 				why, strong = "目标检查结果有变化", true
+				w.stageN++
+				w.stageWhy = why
 			}
 		case action == "bash" || action == "job_status":
 			if m := desktopRunProgressLines(out); m != "" && m != w.lastMetrics {
 				w.lastMetrics = m
 				lines := strings.Split(m, "\n")
 				why, strong = "指标推进："+desktopRuneHead(lines[len(lines)-1], 120), true
+				w.stageN++
+				w.stageWhy = why
 			} else if fresh {
 				why, strong = action+" 有新的输出", true
 			}
@@ -284,6 +293,8 @@ func desktopWatchdogResult(scope agentruntime.Scope, action string, args map[str
 	}
 	w.lastAction = action
 	if why != "" {
+		// Moving again: a later stall is warned about again.
+		delete(w.warned, "stall")
 		if strong {
 			w.lastStrong = watchdogNow()
 		}
@@ -487,6 +498,9 @@ type desktopWatchdogSnap struct {
 	started, lastProgress time.Time
 	steps, ok, progressN  int
 	progressWhy, metrics  string
+	stageN                int
+	stageWhy              string
+	stallWarned           bool
 	wrote                 []string
 	stop                  string
 }
@@ -498,7 +512,7 @@ func desktopWatchdogSnapshot(runID string) (desktopWatchdogSnap, bool) {
 	if !ok {
 		return desktopWatchdogSnap{}, false
 	}
-	return desktopWatchdogSnap{started: w.started, lastProgress: w.lastProgress, steps: w.steps, ok: w.ok, progressN: w.progressN, progressWhy: w.progressWhy, metrics: w.lastMetrics, wrote: append([]string(nil), w.wrote...), stop: w.stop}, true
+	return desktopWatchdogSnap{started: w.started, lastProgress: w.lastProgress, steps: w.steps, ok: w.ok, progressN: w.progressN, progressWhy: w.progressWhy, metrics: w.lastMetrics, wrote: append([]string(nil), w.wrote...), stop: w.stop, stageN: w.stageN, stageWhy: w.stageWhy, stallWarned: w.warned["stall"]}, true
 }
 
 // desktopWatchdogGrant gives a run that is still progressing more model

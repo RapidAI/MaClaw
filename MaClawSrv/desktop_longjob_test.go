@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -41,8 +42,10 @@ func TestD100LongJobDetection(t *testing.T) {
 	if !desktopLongJobShouldStart(map[string]any{"command": "python train.py --epochs 10"}) {
 		t.Fatal("train intent")
 	}
-	if !desktopLongJobShouldStart(map[string]any{"command": "nohup python job.py &"}) {
-		t.Fatal("nohup")
+	// A command that backgrounds its own process returns at once: it is a
+	// plain step, not a job the wrapper could track (papers 11-11 20:33).
+	if desktopLongJobShouldStart(map[string]any{"command": "nohup python job.py &"}) {
+		t.Fatal("self-detached command wrapped as a job")
 	}
 	if !desktopLongJobShouldStart(map[string]any{"command": "sleep 5", "expect_minutes": 30}) {
 		t.Fatal("expect_minutes")
@@ -117,7 +120,9 @@ func TestD100StartAndPollAndDecisions(t *testing.T) {
 		talked++
 		return nil
 	}
-	// First poll with a milestone: notice (no prior notice).
+	// First poll with a milestone, past the first-notice wait: notice.
+	j.Started = desktopLongJobNow().Add(-desktopLongJobNoticeEvery - time.Minute)
+	_ = desktopLongJobSave(j)
 	if _, err := desktopLongJobWatchTick(context.Background(), j.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -307,8 +312,6 @@ func TestD101DetectionJudgesCommandWordsOnly(t *testing.T) {
 	long := []string{
 		"python train.py --epochs 10",
 		"cd ~/clf && ./venv/bin/python src/train_transformer.py > logs/t.log 2>&1",
-		"sshpass -p x ssh -p 99 u@h 'cd ~/clf && nohup ./venv/bin/python src/train.py > l 2>&1 &'",
-		"nohup python job.py &",
 		"git clone https://github.com/x/y",
 		"cmake --build build -j8",
 		"timeout 3600 torchrun --nproc 2 finetune.py",
@@ -319,6 +322,12 @@ func TestD101DetectionJudgesCommandWordsOnly(t *testing.T) {
 		}
 	}
 	short := []string{
+		// Self-detached: the process is already in the background.
+		"sshpass -p x ssh -p 99 u@h 'cd ~/clf && nohup ./venv/bin/python src/train.py > l 2>&1 &'",
+		"nohup python job.py &",
+		"cd ~/Desktop/app && nohup python3 app.py > run.log 2>&1 & sleep 3; pgrep -af app.py; cat run.log",
+		// A heredoc inside the remote command is data.
+		"ssh -p 99 u@h 'cat > ~/clf/src/common.py <<\"PYEOF\"\nimport os\nos.system(\"python train.py &\")\nPYEOF\necho written'",
 		"cd /tmp/dp && cat > xhs.md <<'EOF'\n今天的论文讲怎么训练和下载模型，train 了 3 个 epoch\nEOF\nwc -c xhs.md",
 		"sleep 780; sshpass -p x ssh u@h 'tail -5 ~/clf/logs/train_transformer.log'",
 		"for f in train dev test; do wc -l $f.csv; done",
@@ -332,5 +341,37 @@ func TestD101DetectionJudgesCommandWordsOnly(t *testing.T) {
 		if desktopLongJobCommand(c) {
 			t.Errorf("should stay a plain step: %s", c)
 		}
+	}
+}
+
+func TestD103InternalJobCallsDoNotReplayTheStartingStep(t *testing.T) {
+	ctx := agentruntime.WithToolCallID(context.Background(), "call_1")
+	a := desktopLongJobInternalCall(ctx)
+	b := desktopLongJobInternalCall(ctx)
+	ida, idb := agentruntime.ToolCallID(a), agentruntime.ToolCallID(b)
+	if ida == "call_1" || idb == "call_1" || ida == idb || !desktopLongJobInternal(a) {
+		t.Fatalf("ids %q %q", ida, idb)
+	}
+	// The journal answers a repeated id from its slot without running it.
+	runs := 0
+	send := func(desktopToolCall, desktopToolExec) (desktopToolOutcome, error) {
+		runs++
+		return desktopToolOutcome{Text: "out" + strconv.Itoa(runs)}, nil
+	}
+	for _, id := range []string{"call_1", ida, idb} {
+		if _, err := dispatchDesktopTool(desktopToolCall{RunID: "run_d103", ToolCallID: id, Action: "bash"}, desktopToolExec{}, send); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runs != 3 {
+		t.Fatalf("internal calls replayed: %d runs", runs)
+	}
+	dropDesktopToolResults("run_d103")
+}
+
+func TestD103RemoteJobIsFollowedToItsEnd(t *testing.T) {
+	out := desktopLongJobInjectRemoteNohup("ssh -p 99 u@h 'cd ~/clf && ./venv/bin/python src/train_bert.py --epochs 3 > reports/l 2>&1'")
+	if !strings.Contains(out, "nohup bash -lc") || !strings.Contains(out, "wait $p") || !strings.Contains(out, "exit $rc") || strings.Contains(out, "& echo $!'") {
+		t.Fatalf("remote job not followed: %s", out)
 	}
 }

@@ -214,6 +214,8 @@ func TestD102CeilingStopsHonestlyAndLeavesTheJob(t *testing.T) {
 }
 
 func TestD102StatusIsSaidAndHeartbeatOnlyWhenNothingMoved(t *testing.T) {
+	// Daniel 11-11 20:38: first note after 30 min, at most one per 30 min,
+	// only on a meaningful change; a stall warning once.
 	base := time.Date(2026, 11, 11, 15, 0, 0, 0, time.Local)
 	now := watchdogTestClock(t, base)
 	said := make(chan string, 8)
@@ -222,11 +224,13 @@ func TestD102StatusIsSaidAndHeartbeatOnlyWhenNothingMoved(t *testing.T) {
 	t.Cleanup(func() { desktopLongJobSayFunc = prev })
 	scope := agentruntime.Scope{TenantID: "tenant_default", UserID: "u_1::desk::bot_1", InstanceID: "inst_1", RunID: "run_d102_status"}
 	t.Cleanup(func() { desktopWatchdogEnd(scope.RunID) })
-	step := func(out string) {
-		args := map[string]any{"action": "bash", "command": "tail log"}
-		desktopWatchdogBefore(scope, "bash", args)
-		desktopWatchdogResult(scope, "bash", args, out, nil)
-		desktopRunProgressSay(scope, "bash", out, nil)
+	n := 0
+	step := func(action, out string) {
+		n++
+		args := map[string]any{"action": action, "n": n}
+		desktopWatchdogBefore(scope, action, args)
+		desktopWatchdogResult(scope, action, args, out, nil)
+		desktopRunProgressSay(scope, action, out, nil)
 	}
 	wait := func() string {
 		select {
@@ -243,36 +247,65 @@ func TestD102StatusIsSaidAndHeartbeatOnlyWhenNothingMoved(t *testing.T) {
 		case <-time.After(80 * time.Millisecond):
 		}
 	}
-	step("epoch 1 step 10/803 loss=0.5")
-	quiet("short run")
-	*now = base.Add(11 * time.Minute)
-	step("epoch 1 step 300/803 loss=0.3")
-	if s := wait(); !strings.Contains(s, "已 11 分钟") || !strings.Contains(s, "最近一次进展 15:11") || !strings.Contains(s, "step 300/803") {
+	at := func(m int) { *now = base.Add(time.Duration(m) * time.Minute) }
+	for m := 1; m < 30; m += 2 {
+		at(m)
+		step("bash", "epoch 1 step "+itoa(m*10)+"/803 loss=0.5")
+		step("click", "clicked "+itoa(m))
+		step("screenshot", "screen "+itoa(m))
+	}
+	quiet("before 30 minutes")
+	at(31)
+	step("bash", "epoch 1 step 400/803 loss=0.3")
+	if s := wait(); !strings.Contains(s, "已 30 分钟") || !strings.Contains(s, "指标推进") || !strings.Contains(s, "step 400/803") || strings.Contains(s, "步（成功") {
 		t.Fatalf("status %q", s)
 	}
-	// Then one long step (a foreground build) that returns nothing for a
-	// long time: no line until the heartbeat window passes.
-	desktopWatchdogBefore(scope, "bash", map[string]any{"action": "bash", "command": "make -j8"})
-	for m := 12; m < 41; m++ {
-		*now = base.Add(time.Duration(m) * time.Minute)
-		desktopWatchdogSweepOnce(*now)
+	at(45)
+	step("bash", "epoch 1 step 600/803 loss=0.2")
+	quiet("within the interval")
+	// The change held back by the interval is said once the interval is up.
+	at(62)
+	step("screenshot", "screen 62")
+	if s := wait(); !strings.Contains(s, "step 600/803") {
+		t.Fatalf("held-back status %q", s)
+	}
+	// New output and screens, but no new measured result: not news.
+	for m := 63; m < 93; m += 3 {
+		at(m)
+		step("screenshot", "screen "+itoa(m))
+		step("bash", "listing "+itoa(m))
+	}
+	at(93)
+	step("bash", "listing 93")
+	step("screenshot", "screen 93")
+	step("bash", "epoch 1 step 600/803 loss=0.2")
+	quiet("no meaningful change")
+	at(94)
+	step("bash", "epoch 2 step 10/803 loss=0.19")
+	if s := wait(); !strings.Contains(s, "epoch 2 step 10/803") {
+		t.Fatalf("second status %q", s)
+	}
+	// Then nothing changes: one stall warning, not a stream.
+	for m := 95; m < 110; m++ {
+		at(m)
+		args := map[string]any{"action": "wait", "n": m}
+		desktopWatchdogBefore(scope, "wait", args)
+		desktopWatchdogResult(scope, "wait", args, "", nil)
 		desktopRunStatusTick(scope, *now)
 	}
-	quiet("unchanged within the heartbeat window")
-	*now = base.Add(42 * time.Minute)
-	desktopRunStatusTick(scope, *now)
-	if s := wait(); !strings.Contains(s, "没有新的可测进展") {
-		t.Fatalf("heartbeat %q", s)
+	if s := wait(); !strings.Contains(s, "可能卡住了") || !strings.Contains(s, "没有可测的进展") {
+		t.Fatalf("stall warning %q", s)
 	}
+	quiet("stall warned twice")
 }
 
 func TestD102LongJobHeartbeatWhenUnchanged(t *testing.T) {
 	now := watchdogTestClock(t, time.Date(2026, 11, 11, 15, 0, 0, 0, time.Local))
 	j := &desktopLongJob{ID: "job_hb", Status: "stalled", Alive: true, Fingerprint: "fp", Started: now.Add(-time.Hour), LastChange: now.Add(-40 * time.Minute)}
-	if dec := desktopLongJobDecide(j, "stalled", "fp", now.Add(-10*time.Minute)); dec != longJobSilent {
+	if dec := desktopLongJobDecide(j, "stalled", "fp", now.Add(-desktopLongJobHeartbeatEvery+time.Minute)); dec != longJobSilent {
 		t.Fatalf("spam within the window: %s", dec)
 	}
-	dec := desktopLongJobDecide(j, "stalled", "fp", now.Add(-31*time.Minute))
+	dec := desktopLongJobDecide(j, "stalled", "fp", now.Add(-desktopLongJobHeartbeatEvery-time.Minute))
 	if dec != longJobHeartbeat {
 		t.Fatalf("no heartbeat: %s", dec)
 	}

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
@@ -29,11 +30,21 @@ import (
 // not cancel the job.
 
 const (
-	desktopLongJobTaskType    = "watch"
-	desktopLongJobTaskPrefix  = "watch-job:"
-	desktopLongJobTickEvery   = 30 * time.Second
-	desktopLongJobStallAfter  = 15 * time.Minute
-	desktopLongJobNoticeEvery = 10 * time.Minute
+	desktopLongJobTaskType   = "watch"
+	desktopLongJobTaskPrefix = "watch-job:"
+	desktopLongJobTickEvery  = 30 * time.Second
+	desktopLongJobStallAfter = 15 * time.Minute
+)
+
+// A running job's progress line goes out at most once per
+// desktopLongJobNoticeEvery (first one no sooner than that after the start)
+// and only when its measured lines (epoch, step, loss, metrics) changed: a
+// new log line is not news (Daniel 11-11 20:38: too frequent). Finish,
+// failure and stall go out at once; a job still stuck is repeated once per
+// desktopLongJobHeartbeatEvery.
+var (
+	desktopLongJobNoticeEvery    = desktopEnvMinutes("MACLAW_LONGJOB_NOTICE_MINUTES", 30*time.Minute)
+	desktopLongJobHeartbeatEvery = desktopEnvMinutes("MACLAW_LONGJOB_STALL_REPEAT_MINUTES", time.Hour)
 )
 
 var desktopLongJobNow = time.Now
@@ -106,6 +117,8 @@ type desktopLongJob struct {
 	// polled the job) was told. A stall, failure or finish is reported until
 	// one report gets through, not once per status change.
 	ReportedStatus string `json:"reported_status,omitempty"`
+	// ReportedMetrics: the measured lines the person was last told.
+	ReportedMetrics string `json:"reported_metrics,omitempty"`
 }
 
 func (j *desktopLongJob) stallBound() time.Duration {
@@ -229,7 +242,9 @@ func desktopLongJobSegments(cmd string, depth int) []string {
 	}
 	// Remote and nested shells: judge the quoted command too.
 	for _, q := range desktopLongJobInnerCommands(cmd) {
-		segs = append(segs, desktopLongJobSegments(q, depth+1)...)
+		// A heredoc inside the quoted remote command is data too (papers
+		// 11-11 20:35: ssh host 'cat > common.py <<"PYEOF" …' became a job).
+		segs = append(segs, desktopLongJobSegments(desktopLongJobStripHeredocs(q), depth+1)...)
 	}
 	return segs
 }
@@ -276,15 +291,23 @@ func desktopLongJobSegmentLong(seg string) bool {
 	if body == "" {
 		return false
 	}
+	if detached {
+		// The command already puts its process in the background and
+		// returns at once: the wrapper would only see its own shell end
+		// (papers 11-11 20:33: `nohup python3 snake.py &` — a launched game
+		// — became a job that "failed", the step took 1m57s and returned
+		// no output; Bot 1's nohup training was reported 已结束 while it
+		// still ran). It runs as a plain step; the bot checks the log.
+		return false
+	}
 	if desktopLongJobBuildRe.MatchString(body) {
 		return true
 	}
 	fields := strings.Fields(body)
 	if desktopLongJobRunnerRe.MatchString(fields[0]) {
 		// A runner counts when what it runs is training (script name or
-		// arguments), or when it is being detached.
-		rest := strings.Join(fields[1:], " ")
-		return detached || desktopLongJobScriptRe.MatchString(rest)
+		// arguments).
+		return desktopLongJobScriptRe.MatchString(strings.Join(fields[1:], " "))
 	}
 	return false
 }
@@ -325,7 +348,14 @@ func desktopLongJobInjectRemoteNohup(cmd string) string {
 	if inner == "" {
 		return cmd
 	}
-	wrapped := "nohup bash -lc " + desktopLongJobQuote(inner) + " >/tmp/maclaw-job.log 2>&1 & echo $!"
+	// The remote job is detached so it survives a dropped ssh, but this
+	// session follows it to the end: the local wrapper stays alive exactly as
+	// long as the remote job, streams its log and carries its exit code.
+	// Returning at once (echo $!) left the watcher a job that "finished" in a
+	// second while training went on unwatched (papers 11-11 20:39-20:45).
+	rlog := "/tmp/maclaw-job-$$.log"
+	wrapped := "nohup bash -lc " + desktopLongJobQuote(inner) + " >" + rlog + " 2>&1 & p=$!; echo LONGJOB_REMOTE_PID=$p; " +
+		"tail -f " + rlog + " & t=$!; wait $p; rc=$?; sleep 1; kill $t 2>/dev/null; exit $rc"
 	if q[0] == '\'' {
 		return cmd[:loc[0]] + desktopLongJobQuote(wrapped) + cmd[loc[1]:]
 	}
@@ -708,8 +738,6 @@ const (
 	longJobHeartbeat desktopLongJobDecision = "heartbeat"
 )
 
-var desktopLongJobHeartbeatEvery = 30 * time.Minute
-
 func desktopLongJobDecide(j *desktopLongJob, prevStatus, prevFP string, prevNotice time.Time) desktopLongJobDecision {
 	if j == nil {
 		return longJobSilent
@@ -728,17 +756,15 @@ func desktopLongJobDecide(j *desktopLongJob, prevStatus, prevFP string, prevNoti
 	if !j.Alive {
 		return longJobResume
 	}
-	if prevNotice.IsZero() {
-		return longJobNotice
+	last := prevNotice
+	if last.IsZero() {
+		last = j.Started
 	}
-	if now.Sub(prevNotice) >= desktopLongJobNoticeEvery && j.Fingerprint != prevFP {
-		return longJobNotice
+	if now.Sub(last) < desktopLongJobNoticeEvery {
+		return longJobSilent
 	}
-	if desktopLongJobMileRe.MatchString(j.LastTail) && j.Fingerprint != prevFP && now.Sub(prevNotice) >= desktopLongJobNoticeEvery/2 {
+	if m := desktopRunProgressLines(j.LastTail); m != "" && m != j.ReportedMetrics {
 		return longJobNotice
-	}
-	if now.Sub(prevNotice) >= desktopLongJobHeartbeatEvery {
-		return longJobHeartbeat
 	}
 	return longJobSilent
 }
@@ -779,6 +805,7 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 	}
 	j.LastNotice = desktopLongJobNow()
 	j.ReportedStatus = j.Status
+	j.ReportedMetrics = desktopRunProgressLines(j.LastTail)
 	_ = desktopLongJobSave(j)
 	if j.Status == "done" || j.Status == "failed" {
 		desktopLongJobStopWatch(j)
@@ -954,7 +981,23 @@ func desktopLongJobWatchPrompt(j *desktopLongJob, dec desktopLongJobDecision) st
 
 func desktopLongJobExecDefault(ctx context.Context, scope agentruntime.Scope, command string) (string, error) {
 	args := map[string]any{"action": "bash", "command": command}
-	return operateDesktopBody(withDesktopLongJobInternal(ctx), scope, args)
+	return operateDesktopBody(desktopLongJobInternalCall(ctx), scope, args)
+}
+
+var desktopLongJobCallSeq atomic.Int64
+
+// desktopLongJobInternalCall marks a start/poll script as internal and gives
+// it its own machine-call id. The model's tool-call id names the journal slot
+// of the step that started the job; reusing it made every grace poll replay
+// the start output ("LONGJOB_STARTED …", no alive/exit lines), so each
+// wrapped job was judged failed with an unknown exit code within seconds
+// (papers 11-11 20:33 and 20:39-20:45).
+func desktopLongJobInternalCall(ctx context.Context) context.Context {
+	ctx = withDesktopLongJobInternal(ctx)
+	if parent := agentruntime.ToolCallID(ctx); parent != "" {
+		ctx = agentruntime.WithToolCallID(ctx, parent+"~job"+strconv.FormatInt(desktopLongJobCallSeq.Add(1), 10))
+	}
+	return ctx
 }
 
 func desktopLongJobEnsureWatch(j *desktopLongJob) string {
