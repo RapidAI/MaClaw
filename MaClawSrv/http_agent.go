@@ -305,6 +305,9 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 	if err == nil {
 		imageCount = attachDesktopShot(msg, shot)
 		fileCount = attachDesktopFile(msg, shot)
+		if msg != nil {
+			msg.Content = correctDesktopAttachClaim(msg.Content, len(msg.Attachments))
+		}
 	}
 	handoff, attention := takeDesktopTurn(desktopTenantID, desktopUserID, shotID)
 	if err != nil {

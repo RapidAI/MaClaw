@@ -59,7 +59,8 @@ func desktopLongJobWatchReply(reply string) string {
 	if reply == "" || strings.Contains(reply, desktopLongJobSilentToken) {
 		return ""
 	}
-	return reply
+	// A server-started turn's reply goes out as text: nothing is attached.
+	return correctDesktopAttachClaim(reply, 0)
 }
 
 func desktopLongJobFollowRun(ctx context.Context, p agentservice.Principal, j *desktopLongJob, runID string, dec desktopLongJobDecision) {

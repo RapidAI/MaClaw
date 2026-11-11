@@ -631,3 +631,19 @@ func TestD112DeliverWithoutReplySlotSaysWhy(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+func TestD113AttachClaimNeedsAnAttachment(t *testing.T) {
+	claim := "游戏已运行。两个文件都附在这条消息里。"
+	if got := correctDesktopAttachClaim(claim, 0); !strings.Contains(got, "更正") {
+		t.Fatalf("no correction: %q", got)
+	}
+	if got := correctDesktopAttachClaim(claim, 2); got != claim {
+		t.Fatalf("attached reply changed: %q", got)
+	}
+	if got := correctDesktopAttachClaim("报告在 ~/x/REPORT.md", 0); strings.Contains(got, "更正") {
+		t.Fatalf("no claim corrected: %q", got)
+	}
+	if got := desktopLongJobWatchReply("报告见附件"); !strings.Contains(got, "更正") {
+		t.Fatalf("watch reply: %q", got)
+	}
+}

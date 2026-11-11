@@ -3459,6 +3459,7 @@ func publishDesktopReply(msg *agentservice.Message, slot *desktopShotSlot) (imag
 	if msg != nil {
 		msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(slot))
 		msg.Content = replaceLeakedMonologue(msg.Content)
+		msg.Content = correctDesktopAttachClaim(msg.Content, len(msg.Attachments))
 	}
 	return images, files
 }
