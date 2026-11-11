@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +41,15 @@ const localRelayToolName = "local_computer"
 //go:embed localrelay_helper/maclaw_relay.py
 var localRelayHelperSource string
 
+// localRelayHelperPacked is the helper, zlib-compressed and base64 encoded.
+var localRelayHelperPacked = func() string {
+	var buf bytes.Buffer
+	zw, _ := zlib.NewWriterLevel(&buf, zlib.BestCompression)
+	_, _ = zw.Write([]byte(localRelayHelperSource))
+	_ = zw.Close()
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}()
+
 var localRelayHelperSum = func() string {
 	sum := sha256.Sum256([]byte(localRelayHelperSource))
 	return hex.EncodeToString(sum[:])[:12]
@@ -47,7 +58,7 @@ var localRelayHelperSum = func() string {
 // localRelayHome is the desktop home; tests point it at a temp folder.
 var localRelayHome = desktopHomeDir
 
-func localRelayDir() string   { return path.Join(localRelayHome, ".maclaw", "relay") }
+func localRelayDir() string      { return path.Join(localRelayHome, ".maclaw", "relay") }
 func localRelayStateDir() string { return path.Join(localRelayDir(), "state") }
 func localRelayHelper() string {
 	return path.Join(localRelayDir(), "maclaw_relay_"+localRelayHelperSum+".py")
@@ -87,6 +98,7 @@ type localRelayReply struct {
 	IdleMin   int                 `json:"idle_minutes"`
 	Closed    bool                `json:"closed"`
 	Grants    []localrelay.Grant  `json:"grants"`
+	State     string              `json:"state"`
 }
 
 func localRelayPostHub(ctx context.Context, body map[string]any) (localRelayReply, error) {
@@ -397,7 +409,8 @@ func localRelayScript(id, token, run string) string {
 	helper := localRelayHelper()
 	var b strings.Builder
 	fmt.Fprintf(&b, "set -e; umask 077; mkdir -p %s %s\n", shellQuote(localRelayDir()), shellQuote(localRelayStateDir()))
-	fmt.Fprintf(&b, "if [ ! -f %s ]; then cat > %s.tmp <<'MACLAW_RELAY_EOF'\n%s\nMACLAW_RELAY_EOF\nmv %s.tmp %s; fi\n", shellQuote(helper), shellQuote(helper), strings.TrimRight(localRelayHelperSource, "\n"), shellQuote(helper), shellQuote(helper))
+	// zlib+base64 keeps the whole install inside one bash command (16 KB).
+	fmt.Fprintf(&b, "if [ ! -f %s ]; then python3 -c 'import base64,sys,zlib;sys.stdout.buffer.write(zlib.decompress(base64.b64decode(sys.stdin.read())))' > %s.tmp <<'MACLAW_RELAY_EOF'\n%s\nMACLAW_RELAY_EOF\nmv %s.tmp %s; fi\n", shellQuote(helper), shellQuote(helper), localRelayHelperPacked, shellQuote(helper), shellQuote(helper))
 	if token != "" {
 		fmt.Fprintf(&b, "printf '%%s' %s > %s\n", shellQuote(token), shellQuote(localRelayTokenFile(id)))
 	}
@@ -411,16 +424,17 @@ func localRelayStateFile(id string) string { return path.Join(localRelayStateDir
 var localRelayResultRe = regexp.MustCompile(`(?m)^MACLAW_RELAY_RESULT (\{.*\})\s*$`)
 
 type localRelayState struct {
-	State string `json:"state"`
-	Done  int64  `json:"done"`
-	Total int64  `json:"total"`
-	Path  string `json:"path"`
-	Local string `json:"local"`
-	Port  int    `json:"port"`
-	PID   int    `json:"pid"`
-	Code  string `json:"code"`
-	Error string `json:"error"`
-	Conns int    `json:"conns"`
+	State  string `json:"state"`
+	Done   int64  `json:"done"`
+	Total  int64  `json:"total"`
+	Path   string `json:"path"`
+	Local  string `json:"local"`
+	Port   int    `json:"port"`
+	PID    int    `json:"pid"`
+	Code   string `json:"code"`
+	Error  string `json:"error"`
+	Conns  int    `json:"conns"`
+	SHA256 string `json:"sha256"`
 }
 
 func parseLocalRelayResult(out string) (localRelayState, bool) {
@@ -435,7 +449,8 @@ func parseLocalRelayResult(out string) (localRelayState, bool) {
 	return st, true
 }
 
-var localRelayIDRe = regexp.MustCompile(`^lr_[0-9a-f]{6,32}$`)
+// lr_… are relay grants; bf_… are uploads into Hub's bot file store.
+var localRelayIDRe = regexp.MustCompile(`^(lr_[0-9a-f]{6,32}|bf_[0-9a-f]{23})$`)
 
 func localRelayHelperRun(ctx context.Context, scope agentruntime.Scope, id, token, args string, wait int) (localRelayState, error) {
 	if !localRelayIDRe.MatchString(id) {
@@ -503,15 +518,38 @@ func localRelayDownload(ctx context.Context, scope agentruntime.Scope, remote, f
 	if strings.TrimSpace(name) == "" {
 		name = path.Base(src)
 	}
+	// Ask the person's computer first (folder, size limit, approval), so
+	// nothing is uploaded that it would refuse.
 	r, err := localRelayCall(ctx, scope, "grant_to_local", map[string]any{"path": folder, "name": name, "remote": src})
 	if err != nil {
 		return "", err
 	}
-	st, err := localRelayHelperRun(ctx, scope, r.ID, r.Token, fmt.Sprintf("put --file %s --max %d", shellQuote(src), r.MaxBytes), 75)
+	// The bytes go through Hub's file store; the computer pulls them over
+	// HTTP with resume (the same path as large chat deliveries).
+	ref, size, serr := botFileStoreFromDesktop(ctx, scope, src, name, 20*time.Minute)
+	if serr != nil && strings.Contains(serr.Error(), "no bot file store yet") {
+		// An older Hub: stream through the relay instead.
+		st, err := localRelayHelperRun(ctx, scope, r.ID, r.Token, fmt.Sprintf("put --file %s --max %d", shellQuote(src), r.MaxBytes), 75)
+		if err != nil {
+			return "", err
+		}
+		return localRelayTransferText(r.ID, "download", src, st)
+	}
+	_, _ = localRelayCall(context.WithoutCancel(ctx), scope, "close", map[string]any{"id": r.ID})
+	if serr != nil {
+		return "", serr
+	}
+	if r.MaxBytes > 0 && size > r.MaxBytes {
+		return "", fmt.Errorf("%s is %s, above the %s limit set on the person's computer", src, desktopHumanSize(int(size)), desktopHumanSize(int(r.MaxBytes)))
+	}
+	f, err := localRelayCall(ctx, scope, "fetch_to_local", map[string]any{"ref": ref, "path": folder, "name": name, "remote": src})
 	if err != nil {
 		return "", err
 	}
-	return localRelayTransferText(r.ID, "download", src, st)
+	if f.State == "running" {
+		return fmt.Sprintf("%s (%s) is uploaded; the person's computer is downloading it into %s now and shows the progress there. It resumes by itself if the connection breaks.", path.Base(src), desktopHumanSize(int(size)), f.Path), nil
+	}
+	return fmt.Sprintf("Saved %s (%s) on the person's computer at %s.", path.Base(src), desktopHumanSize(int(size)), f.Path), nil
 }
 
 func localRelayTransferText(id, kind, from string, st localRelayState) (string, error) {

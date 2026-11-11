@@ -2,7 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +26,7 @@ import (
 // relayRig wires the real broker, the real GUI agent and the real Python
 // helper: only Hub's JSON surface is emulated and bash runs on this host.
 type relayRig struct {
+	files  *fakeFileStore
 	broker *localrelay.Broker
 	agent  *localrelay.Agent
 	key    string
@@ -57,10 +62,26 @@ func newRelayRig(t *testing.T) *relayRig {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+localrelay.ConnectPath, r.broker.ServeConnect)
+	r.files = &fakeFileStore{data: map[string][]byte{}, size: map[string]int64{}}
+	r.files.routes(mux)
 	srv := httptest.NewServer(mux)
 	t.Setenv("MACLAW_RELAY_HUB_URL", srv.URL)
+	r.agent.Fetch = localrelay.HTTPFetcher(srv.Client(), srv.URL, nil)
 
-	oldHome, oldPost, oldBash := localRelayHome, localRelayPost, localRelayBash
+	oldHome, oldPost, oldBash, oldFileHub := localRelayHome, localRelayPost, localRelayBash, botFileHub
+	botFileHub = func(ctx context.Context, method, apiPath string, headers map[string]string, body io.Reader, size int64) ([]byte, int, error) {
+		req, _ := http.NewRequestWithContext(ctx, method, srv.URL+apiPath, body)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		return raw, resp.StatusCode, nil
+	}
 	localRelayHome = r.cloud
 	localRelayPost = r.hub
 	localRelayBash = func(ctx context.Context, _ agentruntime.Scope, command string) (string, error) {
@@ -68,7 +89,7 @@ func newRelayRig(t *testing.T) *relayRig {
 		return string(out), err
 	}
 	t.Cleanup(func() {
-		localRelayHome, localRelayPost, localRelayBash = oldHome, oldPost, oldBash
+		localRelayHome, localRelayPost, localRelayBash, botFileHub = oldHome, oldPost, oldBash, oldFileHub
 		// Stop helpers left listening by a failed test.
 		exec.Command("pkill", "-f", r.cloud).Run()
 		srv.Close()
@@ -116,6 +137,18 @@ func (r *relayRig) hub(ctx context.Context, body map[string]any) (localRelayRepl
 		}
 		g = r.broker.Mint(g)
 		return localRelayReply{OK: true, ID: g.ID, Token: g.Token, IdleMin: g.IdleMin}, nil
+	case "fetch_to_local":
+		ref := str("ref")
+		r.files.mu.Lock()
+		size := r.files.size[ref]
+		r.files.mu.Unlock()
+		req := base
+		req.Path, req.Name, req.Size, req.URL, req.Ref = str("path"), str("name"), size, "/dl/"+ref, ref
+		resp, err := r.broker.Fetch(ctx, r.key, req, time.Minute)
+		if err != nil {
+			return fail(err)
+		}
+		return localRelayReply{OK: true, State: resp.State, Path: resp.Path, Name: resp.Name, Size: size}, nil
 	case "close":
 		return localRelayReply{OK: true, Closed: r.broker.Revoke(r.key, str("id"))}, nil
 	case "grants":
@@ -300,4 +333,62 @@ func TestLocalRelayHubURLFromContainer(t *testing.T) {
 	if got := localRelayHubURL(); got != "https://hub.example.com" {
 		t.Fatalf("got %s", got)
 	}
+}
+
+// fakeFileStore emulates Hub's bot file store routes the helper and
+// MaClawSrv use (create, resumable PUT, status) plus a plain download.
+type fakeFileStore struct {
+	mu   sync.Mutex
+	data map[string][]byte
+	size map[string]int64
+	n    int
+}
+
+func (f *fakeFileStore) routes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/v1/desktop-services/files", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Size int64 `json:"size"`
+		}
+		json.NewDecoder(r.Body).Decode(&in)
+		f.mu.Lock()
+		f.n++
+		id := fmt.Sprintf("bf_%023x", f.n)
+		f.data[id], f.size[id] = nil, in.Size
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "id": id, "upload_token": "tok-" + id})
+	})
+	status := func(w http.ResponseWriter, id string, code int) {
+		f.mu.Lock()
+		got, size := int64(len(f.data[id])), f.size[id]
+		f.mu.Unlock()
+		w.WriteHeader(code)
+		json.NewEncoder(w).Encode(map[string]any{"ok": code == 200, "received": got, "size": size, "complete": got == size})
+	}
+	mux.HandleFunc("GET /api/v1/desktop-services/files/{id}/status", func(w http.ResponseWriter, r *http.Request) {
+		status(w, r.PathValue("id"), 200)
+	})
+	mux.HandleFunc("PUT /api/v1/desktop-services/files/{id}/data", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if r.Header.Get("X-Upload-Token") != "tok-"+id {
+			w.WriteHeader(403)
+			return
+		}
+		off, _ := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
+		body, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		if off != int64(len(f.data[id])) {
+			f.mu.Unlock()
+			status(w, id, 409)
+			return
+		}
+		f.data[id] = append(f.data[id], body...)
+		f.mu.Unlock()
+		status(w, id, 200)
+	})
+	mux.HandleFunc("GET /dl/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		b := f.data[r.PathValue("id")]
+		f.mu.Unlock()
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(b))
+	})
 }

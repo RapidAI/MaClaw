@@ -2,8 +2,10 @@
 # MaClaw local relay helper, cloud desktop side. MaClawSrv writes and runs it.
 # Modes: get (person's file -> here), put (here -> person's computer),
 # forward (127.0.0.1:port -> one LAN host:port), socks (SOCKS5 to LAN hosts),
-# stdio HOST PORT (ssh ProxyCommand through a socks grant).
+# stdio HOST PORT (ssh ProxyCommand through a socks grant),
+# store (a file here -> Hub's bot file store, resumable, for large files).
 import argparse, base64, json, os, socket, ssl, subprocess, sys, threading, time
+import http.client
 from urllib.parse import urlsplit
 
 CONNECT = '/api/v1/desktop-services/relay/connect'
@@ -29,7 +31,7 @@ def save(state_file, **kw):
 def token_of(a):
     with open(a.token_file) as f:
         t = f.read().strip()
-    if a.mode in ('get', 'put'):
+    if a.mode in ('get', 'put', 'store'):
         try:
             os.unlink(a.token_file)
         except OSError:
@@ -154,6 +156,93 @@ def do_put(a):
     if not final.get('ok'):
         raise RelayError(final.get('code') or 'failed', final.get('error') or 'the person\'s computer did not confirm the saved file')
     save(a.state, state='done', done=done, total=size, path=final.get('path'))
+
+
+STORE_CHUNK = 16 << 20
+
+
+def store_call(a, method, path, token, body=None, length=0):
+    u = urlsplit(a.url)
+    port = u.port or (443 if u.scheme == 'https' else 80)
+    if u.scheme == 'https':
+        c = http.client.HTTPSConnection(u.hostname, port, timeout=120, context=ssl.create_default_context())
+    else:
+        c = http.client.HTTPConnection(u.hostname, port, timeout=120)
+    headers = {'X-Upload-Token': token}
+    if body is not None:
+        headers['Content-Length'] = str(length)
+        headers['Content-Type'] = 'application/octet-stream'
+    c.request(method, u.path.rstrip('/') + path, body=body, headers=headers)
+    r = c.getresponse()
+    raw = r.read()
+    c.close()
+    try:
+        out = json.loads(raw.decode('utf-8') or '{}')
+    except Exception:
+        out = {}
+    return r.status, out
+
+
+class Slice(object):
+    """Reads at most n bytes of f, so one PUT carries one chunk."""
+    def __init__(self, f, n):
+        self.f, self.left = f, n
+
+    def read(self, k=-1):
+        if self.left <= 0:
+            return b''
+        if k is None or k < 0 or k > self.left:
+            k = self.left
+        b = self.f.read(min(k, 1 << 20))
+        self.left -= len(b)
+        return b
+
+
+def do_store(a):
+    token = token_of(a)
+    size = os.path.getsize(a.file)
+    base = '/api/v1/desktop-services/files/%s' % a.id
+    st, out = store_call(a, 'GET', base + '/status', token)
+    if st != 200:
+        raise RelayError(out.get('code') or 'http_%d' % st, out.get('error') or 'the file store refused the upload (HTTP %d)' % st)
+    if int(out.get('size') or 0) != size:
+        raise RelayError('changed', 'the file is %d bytes now, %d when the upload started; send it again' % (size, int(out.get('size') or 0)))
+    done = int(out.get('received') or 0)
+    sha = out.get('sha256') or ''
+    complete = bool(out.get('complete'))
+    fails = 0
+    with open(a.file, 'rb') as f:
+        while not complete:
+            n = min(STORE_CHUNK, size - done)
+            f.seek(done)
+            try:
+                st, out = store_call(a, 'PUT', base + '/data?offset=%d' % done, token, Slice(f, n), n)
+            except Exception as e:
+                st, out = 0, {'error': repr(e)}
+            if st == 200:
+                done = int(out.get('received') or done)
+                complete = bool(out.get('complete'))
+                sha = out.get('sha256') or sha
+                fails = 0
+                save(a.state, state='running', done=done, total=size, path=a.file)
+                continue
+            if st == 409 and 'received' in out:
+                done = int(out.get('received') or 0)
+                continue
+            if st in (403, 404, 410, 413, 507):
+                raise RelayError(out.get('code') or 'http_%d' % st, out.get('error') or 'the file store refused the upload (HTTP %d)' % st)
+            fails += 1
+            if fails > 8:
+                raise RelayError('failed', 'uploaded %d of %d bytes; the server kept failing: %s' % (done, size, out.get('error') or 'HTTP %d' % st))
+            time.sleep(min(2 ** fails, 30))
+            try:
+                st2, o2 = store_call(a, 'GET', base + '/status', token)
+                if st2 == 200:
+                    done = int(o2.get('received') or done)
+                    complete = bool(o2.get('complete'))
+            except Exception:
+                pass
+    save(a.state, state='done', done=size, total=size, path=a.file, sha256=sha)
 
 
 def pump(src, dst, first=b''):
@@ -310,7 +399,7 @@ def detach(a, argv):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('mode', choices=['get', 'put', 'forward', 'socks', 'stdio'])
+    p.add_argument('mode', choices=['get', 'put', 'forward', 'socks', 'stdio', 'store'])
     p.add_argument('host', nargs='?')
     p.add_argument('hport', nargs='?', type=int)
     p.add_argument('--url', required=True)
@@ -319,6 +408,7 @@ def main():
     p.add_argument('--out', default='')
     p.add_argument('--file', default='')
     p.add_argument('--max', type=int, default=0)
+    p.add_argument('--id', default='')
     p.add_argument('--port', type=int, default=0)
     p.add_argument('--wait', type=float, default=75)
     p.add_argument('--detach', action='store_true')
@@ -330,6 +420,8 @@ def main():
             do_get(a)
         elif a.mode == 'put':
             do_put(a)
+        elif a.mode == 'store':
+            do_store(a)
         elif a.mode == 'stdio':
             a.port = a.hport
             do_stdio(a)

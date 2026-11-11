@@ -58,18 +58,40 @@ func desktopShellQuote(s string) string {
 
 // desktopDeliverTooLargeError names the exact limits and the remedy.
 func desktopDeliverTooLargeError(size int) error {
-	return fmt.Errorf("desktop document is too large to send: %d bytes; a file is sent up to %d bytes (%d MB). Do not shrink or re-render it to get it delivered: tell the person the file's path on the computer and its size in your final reply", size, desktopDeliverLargeMax, desktopDeliverLargeMax>>20)
+	return fmt.Errorf("desktop document is too large to send: %d bytes; this server's Hub has no large-file store, so a file is sent up to %d bytes (%d MB). Do not shrink or re-render it to get it delivered: tell the person the file's path on the computer and its size in your final reply", size, desktopDeliverLargeMax, desktopDeliverLargeMax>>20)
 }
+
+// desktopSayUploadBytes is botFileUploadBytes; tests swap it.
+var desktopSayUploadBytes = botFileUploadBytes
+
+// desktopDeliverViaStore is deliverDesktopViaStore; tests swap it.
+var desktopDeliverViaStore = deliverDesktopViaStore
 
 // deliverDesktopLarge fetches a file over the inline budget in pieces and
 // sends it to the person as its own message.
 func deliverDesktopLarge(ctx context.Context, scope agentruntime.Scope, resolved, name string) (string, error) {
+	return deliverDesktopLargeAt(ctx, scope, resolved, name, botFileInlineMax())
+}
+
+// deliverDesktopLargeAt: a file over inlineMax goes through Hub's bot file
+// store (any size up to the store's cap) and the message carries a
+// reference; a smaller one is read in pieces and sent inline. When Hub has
+// no store yet, files up to desktopDeliverLargeMax still go inline.
+func deliverDesktopLargeAt(ctx context.Context, scope agentruntime.Scope, resolved, name string, inlineMax int) (string, error) {
 	q := desktopShellQuote(resolved)
 	out, err := desktopDeliverLargeBash(ctx, scope, fmt.Sprintf(
-		`s=$(stat -c %%s -- %s) || exit 3; if [ "$s" -gt %d ]; then echo "MCLDL_BIG $s"; exit 0; fi; d=$(mktemp -d /tmp/maclaw-deliver.XXXXXXXX) && split -b %d -d -a 3 -- %s "$d/p." && echo "MCLDL $d $s"`,
-		q, desktopDeliverLargeMax, desktopDeliverPieceBytes, q))
+		`s=$(stat -c %%s -- %s) || exit 3; if [ "$s" -gt %d ]; then echo "MCLDL_STORE $s"; exit 0; fi; if [ "$s" -gt %d ]; then echo "MCLDL_BIG $s"; exit 0; fi; d=$(mktemp -d /tmp/maclaw-deliver.XXXXXXXX) && split -b %d -d -a 3 -- %s "$d/p." && echo "MCLDL $d $s"`,
+		q, inlineMax, desktopDeliverLargeMax, desktopDeliverPieceBytes, q))
 	if err != nil {
 		return "", fmt.Errorf("desktop file could not be read: %v", err)
+	}
+	if i := strings.Index(out, "MCLDL_STORE "); i >= 0 {
+		size, _ := strconv.Atoi(strings.Fields(out[i+len("MCLDL_STORE "):])[0])
+		text, serr := desktopDeliverViaStore(ctx, scope, resolved, name)
+		if serr != nil && strings.Contains(serr.Error(), "no bot file store yet") && size <= desktopDeliverLargeMax && inlineMax < desktopDeliverLargeMax {
+			return deliverDesktopLargeAt(ctx, scope, resolved, name, desktopDeliverLargeMax)
+		}
+		return text, serr
 	}
 	if i := strings.Index(out, "MCLDL_BIG "); i >= 0 {
 		size, _ := strconv.Atoi(strings.Fields(out[i+len("MCLDL_BIG "):])[0])
@@ -114,6 +136,17 @@ const desktopHubReplyFileMax = 200_000
 
 // desktopSayFile sends one file to the person as its own chat message.
 func desktopSayFile(ctx context.Context, scope agentruntime.Scope, name string, raw []byte) (string, error) {
+	if len(raw) > botFileInlineMax() {
+		// Over the inline size: the bytes go to Hub's file store and the
+		// message carries a reference the person's app downloads.
+		ref, err := desktopSayUploadBytes(ctx, scope, name, desktopDeliverMIME(name), raw)
+		if err == nil {
+			return desktopSayFileRef(ctx, scope, name, ref, int64(len(raw)))
+		}
+		if !strings.Contains(err.Error(), "no bot file store yet") || len(raw) > desktopDeliverLargeMax {
+			return "", fmt.Errorf("desktop document (%d bytes) could not be sent: %v. Do not shrink it: tell the person its path on the computer in your final reply", len(raw), err)
+		}
+	}
 	tenant := strings.TrimSpace(scope.TenantID)
 	owner := desktopOwnerUserID(scope.UserID)
 	if inst := strings.TrimSpace(scope.InstanceID); inst == "" || owner == "" {

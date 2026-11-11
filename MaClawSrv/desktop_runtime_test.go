@@ -47,8 +47,12 @@ func TestDesktopModuleAdvertisesToolWhenConfigured(t *testing.T) {
 		t.Fatalf("tools=%v", tools)
 	}
 	modules := srvDesktopRuntimeModules()
-	if len(modules) != 1 || modules[0].Descriptor().ModuleID != desktopRuntimeModuleID || !modules[0].Descriptor().HeadlessSupport {
+	// The desktop module first, then the local relay (local_computer).
+	if len(modules) != 2 || modules[0].Descriptor().ModuleID != desktopRuntimeModuleID || !modules[0].Descriptor().HeadlessSupport {
 		t.Fatalf("modules=%v", modules)
+	}
+	if _, ok := modules[1].(localRelayModule); !ok {
+		t.Fatalf("modules[1]=%T", modules[1])
 	}
 }
 
