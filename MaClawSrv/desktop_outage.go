@@ -36,7 +36,7 @@ import (
 // failure count as before, worded as the infrastructure.
 
 // desktopOutageErrRe: the call never reached the desktop.
-var desktopOutageErrRe = regexp.MustCompile(`(?i)desktop service is unreachable: .*dial tcp [^ ]*: (connect: )?(connection refused|i/o timeout|no route to host|network is unreachable)|desktop service is unreachable: .*dial tcp: lookup |desktop is not open yet|docker service request failed: .*dial tcp [^ ]*: (connect: )?connection refused`)
+var desktopOutageErrRe = regexp.MustCompile(`(?i)desktop service is unreachable: .*dial tcp [^ ]*: (connect: )?(connection refused|i/o timeout|no route to host|network is unreachable)|desktop service is unreachable: .*dial tcp: lookup |desktop is not open yet|docker service request failed: .*dial tcp [^ ]*: (connect: )?connection refused|docker service rejected the desktop request \(HTTP 502\): .*502 Bad Gateway`)
 
 // desktopInfraBlockTTL: an infra_timeout block lifts by itself after this.
 var desktopInfraBlockTTL = 2 * time.Minute
