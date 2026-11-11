@@ -35,6 +35,7 @@ func TestTaskOutcomeIsTruthfulEndToEnd(t *testing.T) {
 		{name: "partial", reply: "好了", hook: map[string]string{TaskOutcomeKey: TaskOutcomePartial}, outcome: TaskOutcomePartial, waiting: true},
 		{name: "not submitted", reply: "好了", hook: map[string]string{TaskOutcomeKey: TaskOutcomeNotSubmitted}, outcome: TaskOutcomeNotSubmitted, waiting: true},
 		{name: "verified success", reply: "已发布：https://example.org/1", hook: map[string]string{TaskOutcomeKey: TaskOutcomeDone}, outcome: TaskOutcomeDone},
+		{name: "background job still running", reply: "已经启动训练。", hook: map[string]string{TaskOutcomeKey: TaskOutcomeRunning, TaskOutcomeNoticeKey: "后台任务还在跑，我会定时查看进度并告诉你。"}, outcome: TaskOutcomeRunning, prefix: "后台任务还在跑，我会定时查看进度并告诉你。\n已经启动训练。"},
 		{name: "question-only chat", reply: "你想发到哪个网站？", source: "ask_user", waiting: true},
 		{name: "plain answer", reply: "今天是周二。"},
 		{name: "unknown value dropped", reply: "ok", hook: map[string]string{TaskOutcomeKey: "kinda_done", TaskOutcomeNoticeKey: "x"}},

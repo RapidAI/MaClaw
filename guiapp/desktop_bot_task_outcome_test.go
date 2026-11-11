@@ -23,6 +23,7 @@ func TestDesktopTaskOutcomeDecidesCompletion(t *testing.T) {
 		{"not_submitted", "not_submitted", false},
 		{"unconfirmed", "unconfirmed", false},
 		{"awaiting_user", "awaiting_user", false},
+		{"running", "running", false},
 		{"ordinary question", "", true},
 		{"older hub", "", true},
 		{"unknown value", "mostly", true},
@@ -84,8 +85,12 @@ func TestDesktopTaskOutcomeDecidesCompletion(t *testing.T) {
 			}
 
 			// A scheduled run that did not finish its task is reported.
-			if !tc.complete && !desktopScheduleReports("无变化", desktopBotRelayResult{Text: "无变化", TaskOutcome: want}, nil) {
+			// A handed-off job is left to the watcher, not reported as a stall.
+			if !tc.complete && tc.outcome != "running" && !desktopScheduleReports("无变化", desktopBotRelayResult{Text: "无变化", TaskOutcome: want}, nil) {
 				t.Fatal("scheduled run with an unfinished task stayed quiet")
+			}
+			if tc.outcome == "running" && desktopScheduleReports("无变化", desktopBotRelayResult{Text: "无变化", TaskOutcome: want}, nil) {
+				t.Fatal("a running handoff was reported as an unfinished stall")
 			}
 		})
 	}

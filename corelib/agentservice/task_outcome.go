@@ -22,12 +22,13 @@ const (
 	TaskOutcomeNotSubmitted = "not_submitted"
 	TaskOutcomeUnconfirmed  = "unconfirmed"
 	TaskOutcomeAwaitingUser = "awaiting_user"
+	TaskOutcomeRunning      = "running"
 )
 
 // ValidTaskOutcome reports whether s is one of the defined outcomes.
 func ValidTaskOutcome(s string) bool {
 	switch s {
-	case TaskOutcomeDone, TaskOutcomePartial, TaskOutcomeBlocked, TaskOutcomeNotSubmitted, TaskOutcomeUnconfirmed, TaskOutcomeAwaitingUser:
+	case TaskOutcomeDone, TaskOutcomePartial, TaskOutcomeBlocked, TaskOutcomeNotSubmitted, TaskOutcomeUnconfirmed, TaskOutcomeAwaitingUser, TaskOutcomeRunning:
 		return true
 	}
 	return false
@@ -35,7 +36,7 @@ func ValidTaskOutcome(s string) bool {
 
 // TaskOutcomeNeedsUser: the task is not done and the person must act.
 func TaskOutcomeNeedsUser(s string) bool {
-	return ValidTaskOutcome(s) && s != TaskOutcomeDone
+	return ValidTaskOutcome(s) && s != TaskOutcomeDone && s != TaskOutcomeRunning
 }
 
 // applyTaskOutcome moves a host-measured outcome from the assistant

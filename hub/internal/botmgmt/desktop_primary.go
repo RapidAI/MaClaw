@@ -827,6 +827,10 @@ func (s *Service) reportDelegateRunEnd(tenantID, userID, botID, runID, status st
 	if delegate == "" {
 		return
 	}
+	if runErr == nil && desktopTaskOutcome(reply.TaskOutcome) == "running" {
+		// The interactive run only handed the job off; the watcher still owns it.
+		return
+	}
 	if runErr == nil && status != "failed" && status != "error" && runFiledOpenState(rec.CrossNotes, userID, botID, delegate, runID) {
 		// The bot already reported waiting_human or needs_login for this run.
 		// A generic "done" after it would flip the assignment to completed and

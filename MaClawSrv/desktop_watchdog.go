@@ -411,6 +411,7 @@ func desktopOutcomeNotice(outcome, why, content string) string {
 		"blocked":       "这件没做成，我已经停下，没有再重复尝试。",
 		"not_submitted": "这件还没提交，内容没有发出去。",
 		"unconfirmed":   "提交后没能确认结果，我没有重复提交，请以页面上的实际状态为准。",
+		"running":       "后台任务还在跑，我会定时查看进度并告诉你。",
 	}[outcome]
 	if line != "" && why != "" {
 		line += "（依据：" + why + "）"
@@ -422,6 +423,11 @@ func desktopOutcomeNotice(outcome, why, content string) string {
 // that worked on the desktop and ended with a question — awaiting_user. A
 // question-only chat (no desktop step) has no outcome.
 func desktopRunOutcome(runID string, msg *agentservice.Message) (string, string) {
+	if oc, why, ok := desktopLongJobOutcome(runID); ok {
+		// The work was handed off: a time-limit on this chat turn is not
+		// a failure of the background job, which the watcher still polls.
+		return oc, why
+	}
 	outcome, why := desktopRunOutcomeMeasured(runID, msg)
 	// A run the watchdog ended (time or step budget, a loop, failures) is
 	// not done, whatever its last step was (macmini training, Nov 11 11:09,

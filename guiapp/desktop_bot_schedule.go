@@ -450,7 +450,7 @@ func desktopScheduleReports(text string, result desktopBotRelayResult, runErr er
 		Done:        strings.TrimSpace(result.SendToUser) != "" && !desktopbot.NotContent(result.SendToUser) && !desktopTaskOutcomeNotDone(result.TaskOutcome),
 	})
 	// A scheduled run whose task is not done is reported, never left quiet.
-	return decision.Report || result.UserControl || strings.TrimSpace(result.AttentionReason) != "" || desktopTaskOutcomeNotDone(result.TaskOutcome)
+	return decision.Report || result.UserControl || strings.TrimSpace(result.AttentionReason) != "" || desktopTaskOutcomeNeedsReport(result.TaskOutcome)
 }
 
 func (a *App) reportDesktopBotSchedule(task *scheduler.ScheduledTask, text string, result desktopBotRelayResult, runErr error) {

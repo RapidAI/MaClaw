@@ -15,7 +15,7 @@ const desktopTaskOutcomeKey = "task_outcome"
 // treated as absent, never as a status).
 func desktopTaskOutcome(v string) string {
 	switch v = strings.TrimSpace(v); v {
-	case "done", "partial", "blocked", "not_submitted", "unconfirmed", "awaiting_user":
+	case "done", "partial", "blocked", "not_submitted", "unconfirmed", "awaiting_user", "running":
 		return v
 	}
 	return ""
@@ -55,6 +55,7 @@ func desktopOutcomeStatusLine(outcome string, hant, en bool) string {
 		"not_submitted": {"还没有提交，内容没有发出去。", "還沒有提交，內容沒有發出去。", "It was not submitted; nothing went out."},
 		"unconfirmed":   {"提交了，但没能确认结果，请以页面上的实际状态为准。", "提交了，但沒能確認結果，請以頁面上的實際狀態為準。", "It was submitted, but the result could not be confirmed; check the page."},
 		"awaiting_user": {"还没做完，在等你回复。", "還沒做完，在等你回覆。", "Not finished; it is waiting for your answer."},
+		"running":       {"后台任务还在跑，我会定时查看进度并告诉你。", "後台任務還在跑，我會定時查看進度並告訴你。", "A background job is still running; I will check in and tell you."},
 	}[desktopTaskOutcome(outcome)]
 	if !ok {
 		return ""

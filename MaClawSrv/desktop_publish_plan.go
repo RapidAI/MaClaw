@@ -36,9 +36,9 @@ var desktopPublishPlan = map[desktopPublishPhase]struct {
 	allowed map[string]bool
 	next    string
 }{
-	phaseResearch: {allow("probe", "script", "navigate", "bash", "file_read", "file_write", "file_edit", "file_list", "skill_list", "skill_run", "wait", "request_takeover", "publish", "check_inbox", "batch", "app_open"),
+	phaseResearch: {allow("probe", "script", "navigate", "bash", "job_status", "job_list", "file_read", "file_write", "file_edit", "file_list", "skill_list", "skill_run", "wait", "request_takeover", "publish", "check_inbox", "batch", "app_open"),
 		"read pages as text (probe/script/fetch with bash), prepare the title, the full body with [[img:N]] anchors and the picture files under /tmp, then call action=publish; it opens the site's editor itself"},
-	phaseCompose: {allow("bash", "file_read", "file_write", "file_edit", "file_list", "navigate", "probe", "request_takeover", "publish", "app_open"),
+	phaseCompose: {allow("bash", "job_status", "job_list", "file_read", "file_write", "file_edit", "file_list", "navigate", "probe", "request_takeover", "publish", "app_open"),
 		"the editor is open: put everything in with action=publish (title=, body=, files=, verify_url=); it uploads, fills, submits and reads the post back"},
 	phaseSubmitted:  {allow(), "the submit was clicked but publish found no sign of the post, not even in the post list: the run is over; answer that it was submitted but not confirmed, do not publish again"},
 	phaseLive:       {allow(), "the post is published and verified: give the final answer now with the link"},
@@ -71,7 +71,7 @@ func desktopPublishPlanCheck(phase desktopPublishPhase, action string, args map[
 	// blocked here leaves the file on the desktop and the bot handing it to
 	// another bot instead. Whether a publish task may attach a file at all is
 	// desktopUnaskedFileCheck's and desktopAfterPublishDeliverCheck's call.
-	if action == "deliver" {
+	if action == "deliver" || action == "job_status" || action == "job_list" {
 		return nil
 	}
 	// An action name that is no action at all (Bot 1 step 44, Nov 11: the

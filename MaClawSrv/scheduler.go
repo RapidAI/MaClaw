@@ -52,6 +52,7 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 		}
 	}
 
+	bindDesktopLongJobService(svc)
 	enabled, _ := getenvBoolStrict("MACLAW_ENABLE_SCHEDULER", false)
 	if !enabled {
 		return nil
@@ -97,6 +98,7 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 	}
 
 	setSrvSchedulerManager(mgr)
+	bindDesktopLongJobService(svc)
 	taskExecutor := buildSrvScheduledTaskExecutor(svc, executor)
 	mgr.StartWithExecutor(taskExecutor)
 	log.Printf("[MaClawSrv] scheduler started (data: %s)", schPath)
@@ -115,6 +117,9 @@ func buildSrvScheduledTaskExecutor(svc *agentservice.Service, executor *agentser
 
 	return func(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
 		log.Printf("[MaClawSrv-Scheduler] firing task %s: %s", task.Name, scheduler.TruncateStr(task.Action, 100))
+		if out, err, ok := desktopLongJobHandleScheduled(ctx, task); ok {
+			return out, err
+		}
 
 		actionText := scheduledTaskPrompt(task.Action)
 

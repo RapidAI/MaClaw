@@ -42,9 +42,9 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"batch", "rich_fill", "speculate", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode", "recover", "goal_check"}
+var desktopExecuteActions = []string{"batch", "rich_fill", "speculate", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "job_status", "job_list", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode", "recover", "goal_check"}
 
-var desktopPlanActions = []string{"probe", "screenshot", "speculate", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode", "recover", "goal_check"}
+var desktopPlanActions = []string{"probe", "screenshot", "speculate", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode", "job_status", "job_list", "recover", "goal_check"}
 
 func desktopActionAllowed(action string) bool {
 	for _, allowed := range desktopExecuteActions {
@@ -103,6 +103,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"For other applications, action=app_open with program starts that program in a window on this desktop. xfce4-terminal is already installed. xterm is another terminal when it is installed. app_open is not a shell. The new window does not use the Chinese input method, so ASCII typed into it is literal. Then action=app_list, then action=app_run with steps focus, type, key, or click. One type step can contain several lines. The terminal is a shell, so write the source as a heredoc in that step and compile on the next line. app_run focus only activates a window that is already open. exit status 1 from focus means that window is not open; start it with app_open. " +
 			"action=install with packages installs those Debian packages in this desktop container. " +
 			"action=file_read, file_write, file_edit, and file_list use a path inside this container, such as /home/desktop/Desktop/a.c or ~/Desktop/a.c. action=bash runs one command in this container and returns its output. A one-off script is file_write, then bash. " +
+			"A job expected to run for minutes or more (training, a remote compile, a large download, anything started with nohup or background=true) must be started in the background: action=bash with background=true (or the same command you would have waited on). That starts it detached, stores its status, and a watcher polls pid, logs and metrics on a timer; this turn then ends. Do not block this run waiting for it to finish. Progress, stalls, failures and completion are sent to this chat with evidence from the last poll. action=job_status (optional job_id=) and job_list look at that state without waiting. " +
 			"A machine outside this desktop uses the ssh tool: connect, then exec or exec_background. A command that should keep running uses exec_background, then check_task. action=bash stays inside this container. " +
 			"action=screenshot returns an image of the whole desktop; its pixel coordinates are the ones app_run click uses. " +
 			desktopScreenVisionPrompt(desktopTurnSeesImages(request)) +
@@ -143,7 +144,10 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"path":             map[string]any{"type": "string", "description": "Container path. file_read, file_write, file_edit, and file_list use it as the file. action=deliver attaches that existing file, such as /home/desktop/Desktop/北京天气.pdf. /home/desktop/Desktop/a.c and ~/Desktop/a.c are the same folder."},
 				"old_string":       map[string]any{"type": "string", "description": "Exact passage file_edit replaces. It must occur once."},
 				"new_string":       map[string]any{"type": "string", "description": "Replacement text for file_edit."},
-				"command":          map[string]any{"type": "string", "description": "Command for action=bash. It runs in this container and the result is its output."},
+				"command":          map[string]any{"type": "string", "description": "Command for action=bash. It runs in this container and the result is its output. A minutes-long job uses background=true so this turn does not wait."},
+				"background":       map[string]any{"type": "boolean", "description": "action=bash: start the command detached and let the watcher poll it. Use this for training, a compile, a download, or any job expected to run minutes or more."},
+				"expect_minutes":   map[string]any{"type": "integer", "description": "action=bash: how many minutes the command is expected to run. 2 or more starts it in the background."},
+				"job_id":           map[string]any{"type": "string", "description": "action=job_status: the background job to inspect. Default is this bot's latest job."},
 				"program":          map[string]any{"type": "string", "description": "Program for action=app_open. One name or an absolute path, such as xfce4-terminal. Not a shell and not a browser."},
 				"args":             map[string]any{"type": "array", "description": "Arguments for action=app_open. Not a shell command.", "items": map[string]any{"type": "string"}},
 				"packages":         map[string]any{"type": "array", "description": "Debian package names for action=install, such as libreoffice", "items": map[string]any{"type": "string"}},
@@ -386,16 +390,17 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 		return "", recErr
 	}
 	opArgs, opCtx := args, ctx
-	if recAtt != nil && recAtt.deadline > 0 {
+	if recAtt != nil && recAtt.deadline > 0 && !(actionName == "bash" && desktopLongJobShouldStart(args)) {
 		// A step under a check goal may only use the time its goals
 		// reserved for it; the reservation is settled at the step's real
 		// end, even when that is after this call stopped waiting.
+		// A background long job is handed off; its process is not that reservation.
 		stepStart := time.Now()
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, recAtt.deadline)
 		defer cancel()
 		opCtx = withDesktopStepEnd(ctx, func() { recAtt.settle(time.Since(stepStart)) })
-		if actionName == "bash" {
+		if actionName == "bash" && !desktopLongJobShouldStart(args) {
 			opArgs = make(map[string]any, len(args))
 			for k, v := range args {
 				opArgs[k] = v
@@ -797,6 +802,17 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	}
 	if action == "skill_run" && desktopArg(args, "name") == "" {
 		return "", fmt.Errorf("desktop skill_run requires name")
+	}
+	if action == "job_status" {
+		defer beginDesktopActivity(scope.RunID, "正在查看后台任务")()
+		return desktopLongJobStatus(ctx, scope, args)
+	}
+	if action == "job_list" {
+		return desktopLongJobList(scope), nil
+	}
+	if action == "bash" && !desktopLongJobInternal(ctx) && desktopLongJobShouldStart(args) {
+		defer beginDesktopActivity(scope.RunID, "正在后台启动任务")()
+		return desktopLongJobStart(ctx, scope, args)
 	}
 	if action == "bash" && desktopBashLaunchesGUI(desktopArg(args, "command")) {
 		return operateDesktopBashGUI(ctx, scope, args)

@@ -67,8 +67,9 @@ type desktopBotRelayResult struct {
 	RunError string
 	// TaskOutcome is MaClawSrv's measured task outcome relayed by Hub
 	// ("done", "partial", "blocked", "not_submitted", "unconfirmed",
-	// "awaiting_user"; empty from an older Hub or MaClawSrv). Anything but
-	// "done" means the task is not finished, whatever the run status says.
+	// "awaiting_user", "running"; empty from an older Hub or MaClawSrv).
+	// Anything but "done" means the task is not finished, whatever the run
+	// status says. "running" is a handed-off job the watcher still owns.
 	TaskOutcome string
 }
 

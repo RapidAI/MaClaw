@@ -29,6 +29,7 @@ func TestDesktopRunTaskOutcomeReachesEveryReader(t *testing.T) {
 		{name: "not_submitted", status: "succeeded", content: "好了", msgMeta: map[string]string{"task_outcome": "not_submitted"}, want: "not_submitted", notDone: true},
 		{name: "unconfirmed from run metadata after a restart", status: "succeeded", content: "发好了", runMeta: map[string]string{"task_outcome": "unconfirmed"}, want: "unconfirmed", notDone: true},
 		{name: "awaiting_user", status: "succeeded", content: "要发到哪个账号？", msgMeta: map[string]string{"task_outcome": "awaiting_user", "response_source": "ask_user", "ask_user_question": "要发到哪个账号？"}, want: "awaiting_user", notDone: true},
+		{name: "running", status: "succeeded", content: "后台任务还在跑，我会定时查看进度并告诉你。\n已经启动训练。", msgMeta: map[string]string{"task_outcome": "running"}, want: "running", notDone: true},
 		{name: "ordinary question", status: "succeeded", content: "你想发到哪个网站？", msgMeta: map[string]string{"response_source": "ask_user", "ask_user_question": "你想发到哪个网站？"}},
 		{name: "older srv", status: "succeeded", content: "完成了"},
 		{name: "unknown value", status: "succeeded", content: "完成了", msgMeta: map[string]string{"task_outcome": "kinda"}},
@@ -159,6 +160,34 @@ func TestDelegatedRunEndHonoursTaskOutcome(t *testing.T) {
 		items, err := svc.BotMailbox(ctx, "tenant-a", "alice", "main", nil, false)
 		if err != nil || len(items) != 1 || items[0].Topic != tc.topic {
 			t.Fatalf("outcome %q: %#v %v", tc.outcome, items, err)
+		}
+	}
+}
+
+func TestDelegatedRunEndLeavesRunningJobOpen(t *testing.T) {
+	svc := primaryFixture(t, []Bot{
+		{ID: "bot_main", Name: "主", OwnerUserID: "alice", InstanceID: "inst_main", CreatedAt: "2026-01-01T00:00:00Z"},
+		{ID: "bot_pub", Name: "发布员", OwnerUserID: "alice", InstanceID: "inst_pub", CreatedAt: "2026-02-01T00:00:00Z"},
+	})
+	ctx := context.Background()
+	d, err := svc.PostBotCrossTalk(ctx, "tenant-a", "alice", "bot_main", BotCrossNote{Kind: "delegate", Target: "bot_pub", Text: "训练", Order: "训练分类器"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed, err := svc.ClaimBotCrossStart(ctx, "tenant-a", "alice", "bot_pub", d.ID); err != nil || !claimed {
+		t.Fatalf("claim %v %v", claimed, err)
+	}
+	if _, err := svc.NoteBotCrossRun(ctx, "tenant-a", "alice", "bot_pub", d.ID, "run_7"); err != nil {
+		t.Fatal(err)
+	}
+	svc.reportDelegateRunEnd("tenant-a", "alice", "bot_pub", "run_7", "succeeded", Reply{Text: "已经启动训练。", TaskOutcome: desktopTaskOutcome("running")}, nil)
+	items, err := svc.BotMailbox(ctx, "tenant-a", "alice", "main", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		if it.Topic == "done" || it.Topic == "blocked" {
+			t.Fatalf("running handoff reported as %s: %+v", it.Topic, it)
 		}
 	}
 }
