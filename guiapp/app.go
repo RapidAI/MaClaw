@@ -210,6 +210,10 @@ type App struct {
 	// processHooks replaces exec, exit, and main startup at the process boundary.
 	fileCompanion *fileCompanionRuntime
 	processHooks  desktopProcessHooks
+	// companionQuitSignaled fires the open-file --quit relay at most once.
+	// Both the requestQuit prepare hook and OnShutdown signal it — whichever
+	// runs first — so a Wails-initiated shutdown also retires the companion.
+	companionQuitSignaled atomic.Bool
 	// fileCompanionNotesReply caches whether the Hub records host replies. It
 	// stays false until a list request succeeds on a Hub that supports them,
 	// so an updated desktop talking to an older Hub keeps answering locally.
@@ -343,6 +347,10 @@ type App struct {
 	copilotDeviceCode        string                      // in-progress GitHub Copilot device code
 	copilotPollInterval      int                         // Copilot device code poll interval
 	copilotPollCtx           context.Context             // Copilot device code polling context
+	githubLogin              *githubLoginFlow            // in-progress GitHub account device login
+	githubOwnedGen           uint64                      // oauth generation owned by the GitHub login above
+	githubTokenOnce          sync.Once                   // seeds githubTokenCache lazily on first use
+	githubTokenCache         atomic.Value                // string: connected account OAuth token ("" = none)
 	kimiLogin                *kimiCodeLogin              // in-progress Kimi Code device login
 	kimiOwnedGen             uint64                      // oauth generation owned by the Kimi login above
 	qoderLogin               *qoderLoginFlow             // in-progress Qoder device login
@@ -2833,7 +2841,7 @@ func releaseIMSyncLock(mu *sync.Mutex, stop func()) {
 func (a *App) startup(ctx context.Context) {
 	// Quit flushes through this hook before its deadline starts. Register it
 	// before the --quit fast path so that launch also writes the resume slot.
-	appExit.setPrepareExit(a.persistSessionsForShutdown)
+	appExit.setPrepareExit(a.prepareProcessExit)
 	// Sampled before any slow startup work. A language choice that lands while
 	// config is still loading must keep the sidecar, or the companion follows
 	// the previous language after the main window has already switched.
@@ -2892,6 +2900,9 @@ func (a *App) startup(ctx context.Context) {
 	a.migrateSharedAgentLoopOnce()
 	// Initialize independent credential store (OAuth tokens separated from config.json).
 	a.credentialStore = oauth.NewFileCredentialStore(oauth.DefaultCredentialStorePath())
+	// A connected GitHub account upgrades every GitHub-backed feature (skill
+	// search, update checks) to the user's own API quota.
+	skill.RegisterGitHubTokenProvider(a.githubAccessToken)
 	// Migrate data to custom data_dir if configured and not yet migrated.
 	a.migrateToCustomDataDir()
 	// A reading-group invitation has to reach this person even when the
@@ -3357,6 +3368,16 @@ func (a *App) SetCodingFontFamily(id string) error {
 	return err
 }
 
+// prepareProcessExit runs before the quit deadline. The companion quit
+// relay goes first so that process exits in parallel with the session
+// flush: TerminateProcess does not take children with it, and the companion
+// owns no tray icon — without the relay a tray quit left a window-less
+// companion process behind.
+func (a *App) prepareProcessExit() {
+	a.signalFileCompanionQuit()
+	a.persistSessionsForShutdown()
+}
+
 // persistSessionsForShutdown writes the resume slot and the debounced
 // conversation / coding-workbench state before slower shutdown work. Quit
 // force-kills the process a few seconds later, so this has to be first.
@@ -3395,6 +3416,9 @@ func (a *App) persistSessionsForShutdown() {
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	// Retire the companion on every shutdown path, including Wails-initiated
+	// quits that bypass requestAppQuit. The relay fires once per process.
+	a.signalFileCompanionQuit()
 	// Persist resume state before the slower teardown. Tray quit force-kills
 	// the process a few seconds after shutdown starts, and the serial-port
 	// and network steps below can use that whole window.

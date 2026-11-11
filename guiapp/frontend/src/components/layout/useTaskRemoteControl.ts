@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EventsOn } from '../../../wailsjs/runtime';
+import { publishRemoteMachineTarget } from './remoteAssistantSession';
 import { taskStatusBucketFor, type TaskManagementItem } from './SidebarTaskManagement';
 
 export type RemotePermission = 'view' | 'operate';
@@ -109,7 +110,6 @@ export function useTaskRemoteControl() {
     const [detailLoading, setDetailLoading] = useState(false);
     const [awaitingReply, setAwaitingReply] = useState(false);
     const [awaitingStop, setAwaitingStop] = useState(false);
-    const [creating, setCreating] = useState(false);
     const taskGen = useRef(0);
     const detailGen = useRef(0);
     const tasksForGrant = useRef('');
@@ -294,6 +294,24 @@ export function useTaskRemoteControl() {
     const online = !!selected && selected.online !== false;
     const operate = selected?.permission === 'operate' && online;
 
+    // Publish controlled machines as new-task destinations for the wizard.
+    useEffect(() => {
+        publishRemoteMachineTarget({
+            machines: state.grants.map(grant => ({
+                grantId: grant.id,
+                machineName: (grant.machine_name || '').trim() || grant.machine_id || grant.id,
+                online: grant.online !== false,
+                operate: grant.permission === 'operate',
+            })),
+            selectedGrantId: selectedId,
+        });
+    }, [selectedId, state.grants]);
+
+    // The remote-control host (sidebar) going away means no destinations.
+    useEffect(() => () => {
+        publishRemoteMachineTarget({ machines: [], selectedGrantId: '' });
+    }, []);
+
     useEffect(() => {
         if (!selectedId) {
             taskGen.current += 1;
@@ -306,7 +324,6 @@ export function useTaskRemoteControl() {
             setDetailLoading(false);
             setAwaitingReply(false);
             awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
-            setCreating(false);
             return;
         }
         if (!online) {
@@ -314,7 +331,6 @@ export function useTaskRemoteControl() {
             setDetailLoading(false);
             setAwaitingReply(false);
             awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
-            setCreating(false);
             return;
         }
         if (tasksForGrant.current !== selectedId) {
@@ -433,22 +449,22 @@ export function useTaskRemoteControl() {
         }
     }, [loadTasks, openTask]);
 
-    const run = useCallback(async (op: string, body: Record<string, unknown>) => {
-        if (!selected) return false;
+    const run = useCallback(async (op: string, body: Record<string, unknown>): Promise<string | null> => {
+        if (!selected) return null;
         const grantId = selected.id;
         const openPath = detailPath;
         if (selected.permission !== 'operate' && op !== 'list_tasks' && op !== 'get_task') {
             ownError('action', '当前权限只能查看');
-            return false;
+            return null;
         }
         if (selected.online === false) {
             ownError('action', '对方离线');
-            return false;
+            return null;
         }
         const fn = appBinding('RemoteControlOp');
         if (!fn) {
             ownError('action', '远控尚未就绪');
-            return false;
+            return null;
         }
         // Arm the working indicator before the call itself: the Hub round
         // trip already takes a moment, and the baseline must be read before
@@ -462,25 +478,26 @@ export function useTaskRemoteControl() {
             fastFollowUntil.current = Date.now() + 120000;
         }
         try {
-            await fn(grantId, op, JSON.stringify(body));
+            const raw = await fn(grantId, op, JSON.stringify(body));
+            const text = typeof raw === 'string' ? raw : '{}';
             // The person may have closed the conversation or changed machines
             // while this call was in flight. Do not paint that result back.
-            if (selectedIdRef.current !== grantId) return true;
+            if (selectedIdRef.current !== grantId) return text;
             ownError('', '');
             // The list and conversation refresh after the other computer
             // accepts the operation. Stop waits on this promise, so it must
             // not also wait for those reads.
             void refreshAfterRemoteOp(grantId, openPath, op);
-            return true;
+            return text;
         } catch (err) {
-            if (selectedIdRef.current !== grantId) return false;
+            if (selectedIdRef.current !== grantId) return null;
             if (expectsReply) {
                 awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
                 setAwaitingReply(false);
                 fastFollowUntil.current = 0;
             }
             ownError('action', errorText(err, '远控操作失败'));
-            return false;
+            return null;
         }
     }, [detailPath, refreshAfterRemoteOp, selected]);
 
@@ -516,7 +533,6 @@ export function useTaskRemoteControl() {
         // so the panel can tell "waiting to start" apart from "running".
         awaitingReply,
         awaitingStop,
-        creating,
         refresh,
         selectLocal: () => {
             detailGen.current += 1;
@@ -541,14 +557,12 @@ export function useTaskRemoteControl() {
             setSelectedId(id);
             setTasks([]);
             setLoading(true);
-            setCreating(false);
             setDetail(null);
             setDetailPath('');
             setDetailLoading(false);
             setAwaitingReply(false);
             awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
         },
-        setCreating,
         grantSameAccount: async (machineID: string, permission: RemotePermission) => {
             const value = await mutate('GrantRemoteControlSameAccount', [machineID, permission]);
             const record = value && typeof value === 'object' ? value as { id?: string; ID?: string } : null;
@@ -596,15 +610,35 @@ export function useTaskRemoteControl() {
             setAwaitingReply(false);
             awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
         },
-        createTask: async (name: string) => {
-            const ok = await run('create_task', { name });
-            if (ok) setCreating(false);
-            return ok;
+        // Open a task on any controlled machine (used by the new-task wizard
+        // after a remote create): switches machine tab when needed, then opens.
+        openTaskForGrant: (grantId: string, projectPath: string) => {
+            const grant = state.grants.find(g => g.id === grantId);
+            if (grant == null || grant.online === false) return;
+            if (selectedIdRef.current !== grantId) {
+                detailGen.current += 1;
+                taskGen.current += 1;
+                tasksForGrant.current = '';
+                ownError('', '');
+                setSelectedId(grantId);
+                setTasks([]);
+                setLoading(true);
+                setDetail(null);
+                setDetailPath('');
+                setDetailLoading(false);
+                setAwaitingReply(false);
+                awaitBaseline.current = -1; awaitOp.current = ''; setAwaitingStop(false);
+                selectedIdRef.current = grantId;
+            }
+            void openTask(grantId, projectPath);
+            // Pull the task list too: a task created seconds ago only
+            // reaches the row snapshot through this read, not the 12s poll.
+            void loadTasks(grantId);
         },
-        sendMessage: async (projectPath: string, text: string) => run('send_message', { project_path: projectPath, text }),
-        stopTask: async (projectPath: string) => run('stop_task', { project_path: projectPath }),
-        renameTask: async (projectPath: string, name: string) => run('rename_task', { project_path: projectPath, name }),
-        pinTask: async (projectPath: string, pinned: boolean) => run('pin_task', { project_path: projectPath, pinned }),
+        sendMessage: async (projectPath: string, text: string) => (await run('send_message', { project_path: projectPath, text })) !== null,
+        stopTask: async (projectPath: string) => (await run('stop_task', { project_path: projectPath })) !== null,
+        renameTask: async (projectPath: string, name: string) => (await run('rename_task', { project_path: projectPath, name })) !== null,
+        pinTask: async (projectPath: string, pinned: boolean) => (await run('pin_task', { project_path: projectPath, pinned })) !== null,
         operate,
     };
 }

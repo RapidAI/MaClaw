@@ -16,12 +16,14 @@ import {
     withExpert,
     withLocalWorkspace,
     withCloudWorkspace,
+    withMachine,
     withRemoteWorkspace,
     withLatexTemplate,
     withWorkflow,
     workspaceKindsForExpert,
     workspaceSummaryLabel,
     WORKFLOW_AUTO,
+    type MachineTarget,
     type RemoteTarget,
     type RunWindow,
     type TaskDraft,
@@ -43,7 +45,15 @@ export type { ExpertOption } from "./ExpertPickerPopover";
 export type { WorkflowOption } from "./WorkflowPickerPopover";
 export type { CloudWorkspaceOption } from "./WorkspacePickerPopover";
 
-type ConfigMenu = 'type' | 'expert' | 'workflow' | 'workspace' | 'latex' | 'window';
+type ConfigMenu = 'machine' | 'type' | 'expert' | 'workflow' | 'workspace' | 'latex' | 'window';
+
+/** 远控被控机器候选（远控 grant；operate=false 的机器只能查看）。 */
+export interface RemoteMachineOption {
+    grantId: string;
+    machineName: string;
+    online: boolean;
+    operate: boolean;
+}
 
 export interface TaskConfigBarProps {
     draft: TaskDraft;
@@ -76,6 +86,11 @@ export interface TaskConfigBarProps {
     /** Reload the catalogue when the template menu opens. */
     onPrepareLatexTemplates?: () => void;
     /**
+     * 远控被控机器候选。非空即显示「位置」chip（本机/远程·机器名）；
+     * 空或缺省 = 无远控主机，位置恒为本机且不显示该 chip。
+     */
+    remoteMachines?: RemoteMachineOption[];
+    /**
      * 展示形态：chip（默认，圆角描边按钮）| bare（无边框轻量文字，用于
      * 输入卡片下方的配置条，视觉退居次位）。
      */
@@ -88,6 +103,8 @@ const CHIP_RADIUS = 15;
 /** 维度名前面的图标。类型、工作流随当前值变化；工作空间用显示器，避免和种类徽标里的文件夹/云/服务器重复。 */
 function configLeadIcon(key: ConfigMenu, draft: TaskDraft, workflowLocked: boolean): TaskConfigIconName {
     switch (key) {
+        case 'machine':
+            return 'monitor';
         case 'type':
             return draft.taskType === 'coding' ? 'code' : 'chat';
         case 'expert':
@@ -129,6 +146,7 @@ export function TaskConfigBar({
     onShowAllWorkflows,
     latexTemplates,
     onPrepareLatexTemplates,
+    remoteMachines,
     variant = "chip",
 }: TaskConfigBarProps) {
     const bare = variant === "bare";
@@ -145,6 +163,7 @@ export function TaskConfigBar({
         if (focusTimer.current !== null) window.clearTimeout(focusTimer.current);
     }, []);
     const chipRefs = {
+        machine: useRef<HTMLButtonElement | null>(null),
         type: useRef<HTMLButtonElement | null>(null),
         expert: useRef<HTMLButtonElement | null>(null),
         workflow: useRef<HTMLButtonElement | null>(null),
@@ -159,6 +178,9 @@ export function TaskConfigBar({
     const workflowLocked = !canSpecifyWorkflow(draft);
     const expertLocked = !canSpecifyExpert(draft);
     const localPathMissing = needsLocalPath(draft);
+    // 远控机器目标：专家/工作流/工作空间/定时在对方电脑上不可配——锁定。
+    const remoteMachineLocked = draft.machine != null;
+    const showMachineChip = remoteMachines != null && remoteMachines.length > 0;
     // 专家任务不携带工作空间（§7）：指定专家时云端/远程位置锁定。
     const expertWorkspaceLocked = !workspaceKindsForExpert(draft).includes('cloud');
     const showLatexTemplate = expertNeedsSetup(draft);
@@ -210,6 +232,7 @@ export function TaskConfigBar({
     };
 
     const accent = t.btnColor;
+    const REMOTE_LOCKED_TITLE = tailText(lang ?? "", "Not configurable for a task on that computer", "远程机器上的任务不可配置此项");
     const leadIconSize = bare ? 13 : 14;
     const leadIconStyle: CSSProperties = { color: t.textMuted };
 
@@ -254,7 +277,7 @@ export function TaskConfigBar({
         testId: string,
         keyLabel: string,
         value: ReactNode,
-        options: { active?: boolean; locked?: boolean; warning?: boolean; title?: string } = {},
+        options: { active?: boolean; locked?: boolean; warning?: boolean; title?: string; noMenu?: boolean } = {},
     ) => {
         const valueColor = options.warning ? (t.errorText || "#ef4444") : options.active ? accent : t.text;
         const lead = configLeadIcon(key, draft, workflowLocked);
@@ -266,7 +289,7 @@ export function TaskConfigBar({
                 disabled={disabled}
                 aria-expanded={menu === key}
                 title={options.title}
-                onClick={() => openMenu(key)}
+                onClick={() => { if (!options.noMenu) openMenu(key) }}
                 style={{
                     ...chipBase,
                     ...(options.active ? chipActive : {}),
@@ -330,6 +353,12 @@ export function TaskConfigBar({
                 </button>
             ) : (
                 <>
+                    {showMachineChip && renderChip('machine', "task-config-chip-machine", tailText(lang ?? "", "Location", "位置"), (
+                        (draft.machine?.machineName?.trim() ? draft.machine.machineName : tailText(lang ?? "", "This computer", "本机"))
+                    ), {
+                        active: draft.machine != null,
+                        title: tailText(lang ?? "", "Which computer runs this task", "任务在哪台电脑上执行"),
+                    })}
                     {renderChip('type', "task-config-chip-type", tailText(lang ?? "", "Type", "类型"), draft.taskType === 'chat' ? (tailText(lang ?? "", "Chat", "会话")) : (tailText(lang ?? "", "Coding", "编程")), {
                         active: draft.taskType === 'coding',
                         title: tailText(lang ?? "", "Chat / Coding", "会话 / 编程"),
@@ -345,18 +374,22 @@ export function TaskConfigBar({
                         </span>
                     ), {
                         active: expertSpecified,
-                        locked: expertLocked,
-                        title: expertLocked ? (tailText(lang ?? "", "Workflow chosen", "已选择工作流，专家保持通用")) : undefined,
+                        locked: expertLocked || remoteMachineLocked,
+                        noMenu: remoteMachineLocked,
+                        title: remoteMachineLocked ? (REMOTE_LOCKED_TITLE) : expertLocked ? (tailText(lang ?? "", "Workflow chosen", "已选择工作流，专家保持通用")) : undefined,
                     })}
                     {showLatexTemplate ? renderChip('latex', "task-config-chip-latex-template", tailText(lang ?? "", "Template", "模板"), latexTemplateLabel, {
                         active: latexTemplateId !== LATEX_BLANK_TEMPLATE_ID,
                         title: tailText(lang ?? "", "Blank template by default. Pick an installed LaTeX template.", "默认空白模板，可改选已安装的 LaTeX 模板"),
                     }) : renderChip('workflow', "task-config-chip-workflow", tailText(lang ?? "", "Workflow", "工作流"), workflowLocked ? (tailText(lang ?? "", "By expert", "由专家决定")) : (draft.workflowTemplateId === null ? (tailText(lang ?? "", "None", "无")) : draft.workflowTemplateId === WORKFLOW_AUTO ? (tailText(lang ?? "", "Auto", "自动判断")) : (workflows.find((w) => w.id === draft.workflowTemplateId)?.title || draft.workflowTemplateId)), {
                         active: isWorkflowChosen(draft),
-                        locked: workflowLocked,
-                        title: workflowLocked ? (tailText(lang ?? "", "Expert specified", "已指定专家，工作流由专家决定")) : undefined,
+                        locked: workflowLocked || remoteMachineLocked,
+                        noMenu: remoteMachineLocked,
+                        title: remoteMachineLocked ? (REMOTE_LOCKED_TITLE) : workflowLocked ? (tailText(lang ?? "", "Expert specified", "已指定专家，工作流由专家决定")) : undefined,
                     })}
-                    {renderChip('workspace', "task-config-chip-workspace", tailText(lang ?? "", "Workspace", "工作空间"), (
+                    {renderChip('workspace', "task-config-chip-workspace", tailText(lang ?? "", "Workspace", "工作空间"), remoteMachineLocked ? (
+                        tailText(lang ?? "", "Default on that computer", "对方电脑默认")
+                    ) : (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, maxWidth: "100%" }}>
                             <WorkspaceTypeBadge
                                 kind={draft.workspace.kind}
@@ -372,21 +405,38 @@ export function TaskConfigBar({
                             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{workspaceLabel}</span>
                         </span>
                     ), {
-                        active: draft.workspace.kind !== 'local' || localPathMissing,
-                        warning: localPathMissing,
-                        title: localPathMissing
-                            ? (tailText(lang ?? "", "Coding tasks need a local directory", "编程任务需要选择本地目录"))
-                            : expertSpecified
-                                ? (tailText(lang ?? "", "Choose a local working directory", "可选择本地工作目录"))
-                                : undefined,
+                        active: !remoteMachineLocked && (draft.workspace.kind !== 'local' || localPathMissing),
+                        warning: !remoteMachineLocked && localPathMissing,
+                        locked: remoteMachineLocked,
+                        noMenu: remoteMachineLocked,
+                        title: remoteMachineLocked
+                            ? (REMOTE_LOCKED_TITLE)
+                            : localPathMissing
+                                ? (tailText(lang ?? "", "Coding tasks need a local directory", "编程任务需要选择本地目录"))
+                                : expertSpecified
+                                    ? (tailText(lang ?? "", "Choose a local working directory", "可选择本地工作目录"))
+                                    : undefined,
                     })}
                     {renderChip('window', "task-config-chip-window", tailText(lang ?? "", "Window", "运行时段"), runWindowChipLabel(draft.runWindow, (lang || (isZh ? "zh-Hans" : "en"))), {
                         active: scheduledWindow,
-                        title: tailText(lang ?? "", "Run now, or set a start and optional end", "立即执行，或设定开始和结束时间"),
+                        locked: remoteMachineLocked,
+                        noMenu: remoteMachineLocked,
+                        title: remoteMachineLocked ? (REMOTE_LOCKED_TITLE) : tailText(lang ?? "", "Run now, or set a start and optional end", "立即执行，或设定开始和结束时间"),
                     })}
                 </>
             )}
 
+            {menu === 'machine' && remoteMachines != null && (
+                <MachinePickerPopover
+                    anchor={chipRefs.machine.current}
+                    theme={t}
+                    lang={lang}
+                    machines={remoteMachines}
+                    current={draft.machine}
+                    onSelect={(target) => { onChange(withMachine(draft, target)); closeMenu('machine'); }}
+                    onClose={() => closeMenu('machine')}
+                />
+            )}
             {menu === 'type' && (
                 <TypePickerPopover
                     anchor={chipRefs.type.current}
@@ -719,6 +769,118 @@ function TypePickerPopover({
                     </div>
                 );
             })}
+            </div>
+        </TaskConfigPopoverShell>
+    );
+}
+
+
+/** 位置弹层：本机 + 各远控被控机器（离线/仅查看不可选）。 */
+function MachinePickerPopover({
+    anchor,
+    theme: t,
+    lang,
+    machines,
+    current,
+    onSelect,
+    onClose,
+}: {
+    anchor: HTMLElement | null;
+    theme: Theme;
+    lang?: string;
+    machines: RemoteMachineOption[];
+    current?: MachineTarget | null;
+    onSelect: (target: MachineTarget | null) => void;
+    onClose: () => void;
+}) {
+    const isZh = !!lang?.startsWith("zh");
+    const localSelected = current == null;
+    const row = (
+        testId: string,
+        icon: TaskConfigIconName,
+        title: string,
+        desc: string,
+        selected: boolean,
+        enabled: boolean,
+        onPick: () => void,
+    ) => {
+        const item: CSSProperties = {
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "9px 10px",
+            borderRadius: 10,
+            cursor: enabled ? "pointer" : "not-allowed",
+            opacity: enabled ? 1 : 0.5,
+            fontSize: 13.5,
+            color: selected ? t.btnColor : t.text,
+            fontWeight: selected ? 600 : 400,
+            background: selected ? `color-mix(in srgb, ${t.btnColor} 9%, ${t.bg})` : "transparent",
+            fontFamily: "system-ui, -apple-system, sans-serif",
+            userSelect: "none",
+        };
+        const iconBox: CSSProperties = {
+            width: 28,
+            height: 28,
+            borderRadius: 8,
+            background: `color-mix(in srgb, ${t.btnColor} 7%, ${t.fieldBg})`,
+            color: t.btnColor,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flex: "0 0 28px",
+        };
+        return (
+            <div
+                key={testId}
+                role="button"
+                tabIndex={enabled ? 0 : -1}
+                data-testid={testId}
+                className="mc-taskcfg-item"
+                style={item}
+                onClick={() => { if (enabled) onPick(); }}
+                onKeyDown={enabled ? popoverItemKeyDown(onPick) : undefined}
+            >
+                <span style={iconBox}><TaskConfigIcon name={icon} size={15} /></span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                    {title}
+                    <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: selected ? t.btnColor : t.textMuted, marginTop: 1 }}>
+                        {desc}
+                    </span>
+                </span>
+                {selected && <TaskConfigIcon name="check" size={14} />}
+            </div>
+        );
+    };
+    return (
+        <TaskConfigPopoverShell anchor={anchor} theme={t} onClose={onClose} width={400} data-testid="task-config-popover-machine">
+            <div style={{ padding: "6px 8px 10px", overflowY: "auto" }}>
+                {row(
+                    "machine-item-local",
+                    "home",
+                    tailText(lang ?? "", "This computer", "本机"),
+                    tailText(lang ?? "", "Create and run the task here", "在本机创建并执行任务"),
+                    localSelected,
+                    true,
+                    () => onSelect(null),
+                )}
+                {machines.map((m) => {
+                    const enabled = m.online && m.operate;
+                    const desc = !m.online
+                        ? tailText(lang ?? "", "Offline", "离线")
+                        : !m.operate
+                            ? tailText(lang ?? "", "View only", "仅查看")
+                            : tailText(lang ?? "", "Create and run on this computer", "在对方电脑上创建并执行");
+                    return row(
+                        `machine-item-${m.grantId}`,
+                        "monitor",
+                        m.machineName || (isZh ? "远程电脑" : "Remote computer"),
+                        desc,
+                        current?.grantId === m.grantId,
+                        enabled,
+                        () => onSelect({ grantId: m.grantId, machineName: m.machineName }),
+                    );
+                })}
             </div>
         </TaskConfigPopoverShell>
     );

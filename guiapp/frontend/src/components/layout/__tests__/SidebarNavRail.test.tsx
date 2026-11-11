@@ -1123,7 +1123,7 @@ describe('SidebarNavRail library menu', () => {
 });
 
 describe('SidebarNavRail connect menu', () => {
-    it('opens only IM, 邮箱 and 硬件 under 连接 and requests a solo settings page', () => {
+    it('opens only IM, 邮箱, GitHub and 硬件 under 连接 and requests a solo settings page', () => {
         const props = renderRail({ lang: 'zh-Hans' });
         const connect = screen.getByTestId('sidebar-connect-nav');
         const files = screen.getByTestId('sidebar-files-nav');
@@ -1135,8 +1135,9 @@ describe('SidebarNavRail connect menu', () => {
         expect(screen.getByTestId('connect-popup-menu')).toBeTruthy();
         expect(screen.getByTestId('connect-menu-im').textContent).toContain('IM');
         expect(screen.getByTestId('connect-menu-email').textContent).toContain('邮箱');
+        expect(screen.getByTestId('connect-menu-github').textContent).toContain('GitHub');
         expect(screen.getByTestId('connect-menu-hardware').textContent).toContain('硬件');
-        expect(screen.getAllByRole('menuitem').filter(item => item.getAttribute('data-testid')?.startsWith('connect-menu'))).toHaveLength(3);
+        expect(screen.getAllByRole('menuitem').filter(item => item.getAttribute('data-testid')?.startsWith('connect-menu'))).toHaveLength(4);
 
         const events: Array<Record<string, unknown>> = [];
         const listener = (event: Event) => {
@@ -1148,10 +1149,13 @@ describe('SidebarNavRail connect menu', () => {
             fireEvent.click(screen.getByTestId('sidebar-connect-nav'));
             fireEvent.click(screen.getByTestId('connect-menu-email'));
             fireEvent.click(screen.getByTestId('sidebar-connect-nav'));
+            fireEvent.click(screen.getByTestId('connect-menu-github'));
+            fireEvent.click(screen.getByTestId('sidebar-connect-nav'));
             fireEvent.click(screen.getByTestId('connect-menu-hardware'));
             expect(events).toEqual([
                 { tab: 'im', hideSettingsNav: true },
                 { tab: 'email', hideSettingsNav: true },
+                { tab: 'github', hideSettingsNav: true },
                 { tab: 'hardware', hideSettingsNav: true },
             ]);
             expect(props.switchTool).not.toHaveBeenCalled();
@@ -1194,7 +1198,7 @@ describe('SidebarNavRail connect menu', () => {
         expect(screen.getByTestId('sidebar-connect-nav').textContent).toContain('連接');
         fireEvent.click(screen.getByTestId('sidebar-connect-nav'));
         expect(screen.getByTestId('connect-menu-email').textContent).toContain('郵箱');
-        expect(screen.getByTestId('sidebar-connect-nav').getAttribute('title')).toBe('連接即時通訊、郵箱和硬體');
+        expect(screen.getByTestId('sidebar-connect-nav').getAttribute('title')).toBe('連接即時通訊、郵箱、GitHub 和硬體');
 
         const events: Array<Record<string, unknown>> = [];
         const listener = (event: Event) => {

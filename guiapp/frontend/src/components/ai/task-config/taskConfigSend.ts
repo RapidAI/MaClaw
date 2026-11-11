@@ -167,6 +167,19 @@ export interface TaskConfigSendBindings {
      * shared expert transcript back on the previous paper.
      */
     abandonFreshLatexTask?: (projectPath: string) => Promise<unknown>;
+    /**
+     * 远控被控机器目标（draft.machine）：create_task 在对方电脑上建任务，
+     * send_message 发首条指令。resolve {projectPath, warning?}——warning 表示
+     * 任务已建但首条指令未发出。
+     */
+    createRemoteMachineTask?: (args: {
+        grantId: string;
+        name: string;
+        mode: string;
+        text: string;
+    }) => Promise<{ projectPath: string; warning?: string }>;
+    /** 打开对方电脑上刚创建的任务（展示远程会话）。 */
+    openRemoteMachineTask?: (args: { grantId: string; projectPath: string }) => void;
 }
 
 export type TaskConfigSendResult =
@@ -213,6 +226,30 @@ export async function runTaskConfigSend(args: {
     if (!trimmed) return { ok: false, error: tailText(lang, "Enter a task first", "请先输入任务内容") };
     if (!shouldCreateUnifiedTask(draft) && args.force !== true) return { ok: true };
     const opts = draftToTaskCreateOptions(trimmed, draft);
+    // 远控被控机器目标：remote_control create_task 建任务 + send_message 发
+    // 首条指令，随后打开对方电脑上的任务——不走本机 CreateTaskUnified。
+    const machine = draft.machine || null;
+    if (machine?.grantId) {
+        if (!bindings.createRemoteMachineTask) {
+            return { ok: false, error: tailText(lang, "Remote control is not ready", "远程控制尚未就绪") };
+        }
+        try {
+            const created = await bindings.createRemoteMachineTask({
+                grantId: machine.grantId,
+                name: opts.name,
+                mode: draft.taskType === "coding" ? "coding_dev" : "chat",
+                text: initialMessage,
+            });
+            const remotePath = (created.projectPath || "").trim();
+            if (!remotePath) {
+                return { ok: false, error: tailText(lang, "Failed to create task on that computer", "未能在对方电脑上创建任务") };
+            }
+            bindings.openRemoteMachineTask?.({ grantId: machine.grantId, projectPath: remotePath });
+            return { ok: true, ...(created.warning ? { warning: created.warning } : {}) };
+        } catch (err) {
+            return { ok: false, error: errorMessage(err) || tailText(lang, "Failed to create task on that computer", "未能在对方电脑上创建任务") };
+        }
+    }
     let projectPath = "";
     let warning = "";
     let ownConversation = false;

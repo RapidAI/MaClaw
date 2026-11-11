@@ -48,5 +48,6 @@ export const PPTStylesSettingsPanel = lazy(() => import('./components/settings/P
 export const PDFStylesSettingsPanel = lazy(() => import('./components/settings/PDFStylesSettingsPanel').then((module) => ({ default: module.PDFStylesSettingsPanel })));
 export const IMSettingsPanel = lazy(() => import('./components/settings/IMSettingsPanel').then((module) => ({ default: module.IMSettingsPanel })));
 export const EmailSettingsPanel = lazy(() => import('./components/settings/EmailSettingsPanel').then((module) => ({ default: module.EmailSettingsPanel })));
+export const GitHubSettingsPanel = lazy(() => import('./components/settings/GitHubSettingsPanel').then((module) => ({ default: module.GitHubSettingsPanel })));
 export const ThirdPartyAccessSettings = lazy(() => import('./components/settings/ThirdPartyAccessSettings').then((module) => ({ default: module.ThirdPartyAccessSettings })));
 export const BuddySettingsSection = lazy(() => import('./components/settings/BuddySettingsSection').then((module) => ({ default: module.BuddySettingsSection })));

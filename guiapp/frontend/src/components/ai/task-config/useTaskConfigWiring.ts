@@ -32,7 +32,8 @@ import { builtinExpertIcon, expertDefinitionFromInstallResult, expertTabId, over
 import { extractErrorMessage } from "../participantAddError";
 import { applyComposeActionToText, goalCreateCommand, hopCreateCommand, isBtwCommandText, isConversationBranchCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
 import { buildOutgoingMessageMulti } from "../useAIAssistant";
-import { defaultTaskDraft, draftFromWizardSeed, hasWizardSeedContent, isDraftDefault, withCloudWorkspace, withExpert, withTaskType, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
+import { defaultTaskDraft, draftFromWizardSeed, hasWizardSeedContent, isDraftDefault, withCloudWorkspace, withExpert, withMachine, withTaskType, type MachineTarget, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
+import { remoteMachineTargetSnapshot, remoteOpenTask, useRemoteMachineTarget } from "../../layout/remoteAssistantSession";
 import { suggestedExpertForDraft, type NewTaskExpertSuggestion } from "./taskExpertSuggest";
 import { mismatchedTaskType, taskTypeMismatchCopy, type NewTaskTypeSuggestion } from "./taskTypeSuggest";
 import { isRunWindowScheduled, runWindowCreatedNotice, runWindowCreateRequest, validateRunWindow } from "./runWindow";
@@ -56,7 +57,7 @@ function sameLatexTemplateList(left: LatexTemplate[], right: LatexTemplate[]): b
     return true;
 }
 import type { CloudWorkspaceOption } from "./WorkspacePickerPopover";
-import type { ExpertOption, WorkflowOption } from "./TaskConfigBar";
+import type { ExpertOption, RemoteMachineOption, WorkflowOption } from "./TaskConfigBar";
 import { tailText } from "../../../i18n/mnTail"
 
 /** Emoji for a launched expert. Catalog first, then the built-in set. */
@@ -88,6 +89,15 @@ function cloudWorkspaceStateLabel(status: unknown, isZh: boolean | string): stri
         case "failed": return tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Error", "异常");
         default: return raw || (tailText((typeof isZh === "string" ? isZh : (isZh ? "zh-Hans" : "en")), "Unknown", "未知"));
     }
+}
+
+type RemoteControlOpBinding = (grantId: string, op: string, body: string) => Promise<string>;
+
+/** RemoteControlOp is not in the generated wailsjs typings yet — look it up. */
+function remoteControlOpBinding(): RemoteControlOpBinding | null {
+    const fn = (window as unknown as { go?: { main?: { App?: { RemoteControlOp?: unknown } } } })
+        .go?.main?.App?.RemoteControlOp;
+    return typeof fn === 'function' ? (fn as RemoteControlOpBinding) : null;
 }
 
 /**
@@ -174,6 +184,8 @@ export interface TaskConfigPanelModel {
     sending: boolean;
     error: string;
     defaultExpanded: boolean;
+    /** 远控被控机器候选；非空时配置条显示「位置」chip。 */
+    remoteMachines?: RemoteMachineOption[];
 }
 
 export interface TaskConfigWiring {
@@ -226,6 +238,8 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     const taskConfigSendingRef = useRef(false);
     // The new-task screen is showing. The conversation underneath stays mounted.
     const [wizardOverlay, setWizardOverlay] = useState(false);
+    // 远控被控机器候选（SidebarTaskManagement 的 useTaskRemoteControl 发布）。
+    const machineTarget = useRemoteMachineTarget();
     const wizardOverlayRef = useRef(false);
     wizardOverlayRef.current = wizardOverlay;
     /** Unsent composer captured when the welcome page covers a live turn. */
@@ -522,7 +536,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     // and a cloud or remote workspace stay as they are.
     const alignTaskExpertWithCommand = useCallback(async (command: string, draft: TaskDraft): Promise<TaskDraft> => {
         const text = (command || "").trim();
-        if (!text || (draft.expertId || "").trim() || draft.workflowTemplateId !== null || draft.workspace.kind !== "local") {
+        if (!text || (draft.expertId || "").trim() || draft.workflowTemplateId !== null || draft.workspace.kind !== "local" || draft.machine != null) {
             return draft;
         }
         let suggestion: NewTaskExpertSuggestion | null = null;
@@ -642,6 +656,27 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                             nav.projectPath,
                         );
                     },
+                    createRemoteMachineTask: async ({ grantId, name, mode, text }) => {
+                        const fn = remoteControlOpBinding();
+                        if (!fn) throw new Error(tailText(lang ?? "", "Remote control is not ready", "远程控制尚未就绪"));
+                        const raw = await fn(grantId, 'create_task', JSON.stringify({ name, mode }));
+                        let projectPath = '';
+                        try {
+                            projectPath = String(JSON.parse(raw || '{}')?.task?.project_path || '').trim();
+                        } catch { projectPath = ''; }
+                        if (!projectPath) throw new Error(tailText(lang ?? "", "Failed to create task on that computer", "未能在对方电脑上创建任务"));
+                        let warning = '';
+                        if (text.trim()) {
+                            try {
+                                await fn(grantId, 'send_message', JSON.stringify({ project_path: projectPath, text }));
+                            } catch (err) {
+                                warning = tailText(lang ?? "", "Task created on that computer, but the first instruction was not sent", "任务已在对方电脑创建，但首条指令未发出");
+                                console.warn("[task-config] remote first message failed", err);
+                            }
+                        }
+                        return { projectPath, warning };
+                    },
+                    openRemoteMachineTask: ({ grantId, projectPath }) => remoteOpenTask(grantId, projectPath),
                     materializeLatexDocument: async ({ projectPath, templateId, templateName, userText }) => {
                         let failure = "";
                         const document = await createLatexDocumentForTask(projectPath, templateId, "", lang || "zh-Hans", (message) => {
@@ -782,7 +817,9 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         const typed = (text || "").trim();
         const named = (taskName || typed || fileName).trim();
         if (!named) return Promise.resolve(false);
-        const initialMessage = filePaths.length > 0 ? buildOutgoingMessageMulti(text, filePaths) : text || named;
+        // 远控机器目标：本地附件路径在对方电脑上不存在，不能拼进首条消息。
+        const remoteTarget = taskConfigDraftRef.current.machine != null;
+        const initialMessage = (!remoteTarget && filePaths.length > 0) ? buildOutgoingMessageMulti(text, filePaths) : text || named;
         // Classify the instruction, not a filename standing in for an empty composer.
         const classifyText = (taskName || typed).trim();
         if (isRunWindowScheduled(taskConfigDraftRef.current)) {
@@ -953,13 +990,20 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         if (!localTab) return;
         const separate = !isLocalTabActive;
         const applySeed = () => {
-            if (!hasWizardSeedContent(seed)) return;
-            setTaskConfigDraft(draftFromWizardSeed(seed));
-            setTaskConfigError("");
-            // A template must not keep leftover guide text as its first message.
-            // The other tab's composer is a different box and stays put.
-            if (separate) clearGuideDraft?.();
-            else clearComposerDraft({ clearAttachments: true });
+            if (hasWizardSeedContent(seed)) {
+                setTaskConfigDraft(draftFromWizardSeed(seed));
+                setTaskConfigError("");
+                // A template must not keep leftover guide text as its first message.
+                // The other tab's composer is a different box and stays put.
+                if (separate) clearGuideDraft?.();
+                else clearComposerDraft({ clearAttachments: true });
+            }
+            // 位置默认跟随任务栏机器页签：远控机器页签选中 = 默认在该机执行，
+            // 本机页签或无可用远控 = 本机。
+            const target = remoteMachineTargetSnapshot();
+            const sel = target.machines.find(m => m.grantId === target.selectedGrantId && m.operate && m.online);
+            const machine: MachineTarget | null = sel ? { grantId: sel.grantId, machineName: sel.machineName } : null;
+            setTaskConfigDraft(d => (d.machine?.grantId === machine?.grantId ? d : withMachine(d, machine)));
         };
         const focusGuide = () => {
             window.requestAnimationFrame(() => {
@@ -1096,6 +1140,16 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     }, [replacePendingAttachments, replaceSelectedFilePaths, retireLocalWizardFlag, showComposerText]);
     dismissWizardOverlayRef.current = dismissWizardOverlay;
 
+    // 远控授权被撤销/机器离线/降级为仅查看时，清掉草稿里失效的机器目标，回退本机。
+    useEffect(() => {
+        const m = taskConfigDraft.machine;
+        if (!m?.grantId) return;
+        const live = machineTarget.machines.find(x => x.grantId === m.grantId);
+        if (!live || !live.operate || !live.online) {
+            setTaskConfigDraft(d => (d.machine ? withMachine(d, null) : d));
+        }
+    }, [machineTarget.machines, taskConfigDraft.machine]);
+
     const taskConfig = useMemo<TaskConfigPanelModel>(() => ({
         draft: taskConfigDraft,
         onDraftChange: setTaskConfigDraft,
@@ -1114,10 +1168,16 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         sending: taskConfigSending,
         error: taskConfigError,
         defaultExpanded: isNewTaskWizardTabActive(),
+        remoteMachines: machineTarget.machines.map(m => ({
+            grantId: m.grantId,
+            machineName: m.machineName,
+            online: m.online,
+            operate: m.operate,
+        })),
     }), [
         taskConfigDraft, taskConfigExperts, taskConfigWorkflows, taskConfigLatexTemplates, loadTaskConfigLatexTemplates, taskConfigCloudWorkspaces, taskConfigRecentPaths,
         handleTaskConfigBrowseLocal, handleTaskConfigCreateCloud, handleTaskConfigRenameCloud, inputLocked, wizardOverlay, taskConfigSending, taskConfigError,
-        isNewTaskWizardTabActive,
+        isNewTaskWizardTabActive, machineTarget.machines,
     ]);
 
     return { taskConfig, handleSendWithTaskConfig, handleWelcomePromptSendWithTaskConfig, launchNewTaskFromText, wizardOverlay, dismissWizardOverlay };

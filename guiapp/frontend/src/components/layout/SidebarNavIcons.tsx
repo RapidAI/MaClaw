@@ -187,6 +187,12 @@ export const ConnectMenuMailIcon = () => (
     </svg>
 );
 
+export const ConnectMenuGitHubIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" /><path d="M8.5 14c-2.2-2.2-1.5-5.8.7-7.2M15.5 14c2.2-2.2 1.5-5.8-.7-7.2M8.5 14c0 2.2 1.5 3.7 3.5 3.7s3.5-1.5 3.5-3.7M8.5 14c-1.1.4-1.9 1.4-2.2 2.9M15.5 14c1.1.4 1.9 1.4 2.2 2.9" />
+    </svg>
+);
+
 export const ConnectMenuHardwareIcon = () => (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <rect x="6.5" y="6.5" width="11" height="11" rx="1.5" /><circle cx="12" cy="12" r="2" /><path d="M9.5 6.5v-3M14.5 6.5v-3M9.5 20.5v-3M14.5 20.5v-3M6.5 9.5h-3M6.5 14.5h-3M20.5 9.5h-3M20.5 14.5h-3" />

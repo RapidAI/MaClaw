@@ -44,6 +44,7 @@ import {
     PDFStylesSettingsPanel,
     IMSettingsPanel,
     EmailSettingsPanel,
+    GitHubSettingsPanel,
     ThirdPartyAccessSettings,
     BuddySettingsSection,
 } from '../../appLazyComponents';
@@ -547,6 +548,16 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
             break;
         case 'email':
             body = <EmailSettingsPanel lang={lang} />;
+            break;
+        case 'github':
+            body = wrapPanel('settings-content settings-panel', (
+                <GitHubSettingsPanel
+                    config={config}
+                    lang={lang}
+                    saveRemoteConfigField={saveRemoteConfigField}
+                    showToastMessage={showToastMessage}
+                />
+            ));
             break;
         case 'tokenBank':
             body = (

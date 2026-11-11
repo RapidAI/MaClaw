@@ -596,6 +596,77 @@ func TestLaunchFileCompanionFromCompanionProcessDoesNotSpawn(t *testing.T) {
 	}
 }
 
+func TestFileCompanionSecondInstanceQuitRequestsQuit(t *testing.T) {
+	app := &App{}
+	app.seedFileCompanionPaths(nil)
+	app.FileCompanionUIReady()
+	var quits int
+	app.processHooks.requestQuit = func(context.Context) { quits++ }
+	var shown int
+	app.processHooks.showWindow = func() { shown++ }
+
+	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", "--quit"}})
+
+	if quits != 1 {
+		t.Fatalf("quit requests = %d, want 1", quits)
+	}
+	if shown != 0 {
+		t.Fatal("quit relay revealed the companion window")
+	}
+	if len(app.fileCompanion.emitted) != 0 {
+		t.Fatalf("quit relay emitted document paths: %#v", app.fileCompanion.emitted)
+	}
+}
+
+func TestSignalFileCompanionQuitSpawnsOpenFileQuitOnce(t *testing.T) {
+	app := &App{}
+	var argv []string
+	app.processHooks.startProcess = func(got []string) error {
+		argv = append([]string(nil), got...)
+		return nil
+	}
+	app.signalFileCompanionQuit()
+	if len(argv) != 3 || argv[1] != "open-file" || argv[2] != "--quit" {
+		t.Fatalf("relay argv = %#v", argv)
+	}
+	// The relay fires once per process even when OnShutdown repeats it.
+	argv = nil
+	app.signalFileCompanionQuit()
+	if argv != nil {
+		t.Fatal("quit relay spawned a second process")
+	}
+}
+
+func TestSignalFileCompanionQuitSkipsTheCompanionItself(t *testing.T) {
+	app := &App{}
+	app.seedFileCompanionPaths(nil)
+	spawned := false
+	app.processHooks.startProcess = func([]string) error {
+		spawned = true
+		return nil
+	}
+	app.signalFileCompanionQuit()
+	if spawned {
+		t.Fatal("companion relayed a quit to itself")
+	}
+}
+
+func TestFileCompanionStartupQuitRelayExitsWithoutWindow(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	launch := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file", "--quit"}, goruntime.GOOS)
+	opts := &options.App{SingleInstanceLock: &options.SingleInstanceLock{}}
+	applyDesktopLaunchOptions(app, opts, launch)
+	if !opts.StartHidden {
+		t.Fatal("quit relay must not show a window")
+	}
+	var quits int
+	app.processHooks.requestQuit = func(context.Context) { quits++ }
+	app.fileCompanionStartup(context.Background())
+	if quits != 1 {
+		t.Fatalf("quit requests = %d, want 1", quits)
+	}
+}
+
 func TestLaunchFileCompanionDoesNotTouchAssistantSession(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	var argv []string

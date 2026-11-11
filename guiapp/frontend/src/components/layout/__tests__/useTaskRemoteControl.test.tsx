@@ -2,6 +2,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTaskRemoteControl } from '../useTaskRemoteControl';
+import { remoteMachineTargetSnapshot } from '../remoteAssistantSession';
 
 vi.mock('../../../wailsjs/runtime', () => ({
     EventsOn: vi.fn(() => () => {}),
@@ -157,4 +158,74 @@ describe('useTaskRemoteControl', () => {
         });
         expect(result.current.error).toBe('会话挂了');
     });
+
+    it('opens a task on another machine tab via openTaskForGrant', async () => {
+        const op = vi.fn((_grantId: string, op: string) => {
+            if (op === 'get_task') {
+                return Promise.resolve(JSON.stringify({ task: { project_path: 'D:/new', name: '新任务' }, messages: [], artifacts: [] }));
+            }
+            if (op === 'list_tasks') {
+                return Promise.resolve(JSON.stringify({ tasks: [{ id: 'tn', name: '新任务', project_path: 'D:/new' }] }));
+            }
+            return Promise.resolve('{}');
+        });
+        setBindings({ ListRemoteControlState: vi.fn(async () => JSON.parse(JSON.stringify(remoteState()))), RemoteControlOp: op });
+        const { result } = renderHook(() => useTaskRemoteControl());
+        await act(async () => {});
+        act(() => result.current.selectGrant('ga'));
+        await act(async () => {});
+
+        // The wizard finished creating on machine B while A's tab was open:
+        // the bar switches to B and opens the fresh task there.
+        act(() => result.current.openTaskForGrant('gb', 'D:/new'));
+        await waitFor(() => expect(result.current.detailPath).toBe('D:/new'));
+        expect(result.current.selected?.id).toBe('gb');
+        expect(op).toHaveBeenCalledWith('gb', 'get_task', JSON.stringify({ project_path: 'D:/new' }));
+    });
+
+    it('openTaskForGrant ignores offline machines', async () => {
+        const offline = remoteState({
+            grants: [{ id: 'go', machine_id: 'mac-o', machine_name: 'O机', permission: 'operate', status: 'active', online: false }],
+        });
+        const op = vi.fn(() => Promise.resolve('{}'));
+        setBindings({ ListRemoteControlState: vi.fn(async () => JSON.parse(JSON.stringify(offline))), RemoteControlOp: op });
+        const { result } = renderHook(() => useTaskRemoteControl());
+        await act(async () => {});
+
+        act(() => result.current.openTaskForGrant('go', 'D:/x'));
+        await act(async () => {});
+        expect(result.current.detailPath).toBe('');
+        expect(op).not.toHaveBeenCalled();
+    });
+
+    it('publishes controlled machines as new-task destinations', async () => {
+        await setup();
+        const target = remoteMachineTargetSnapshot();
+        expect(target.machines.map(m => m.grantId)).toEqual(['ga', 'gb']);
+        expect(target.machines.every(m => m.operate && m.online)).toBe(true);
+        expect(target.machines[0].machineName).toBe('A机');
+    });
+
+    it('refuses to send a message on a view-only grant', async () => {
+        const viewOnly = remoteState({
+            grants: [{ id: 'gv', machine_id: 'mac-v', machine_name: 'V机', permission: 'view', status: 'active', online: true }],
+        });
+        const op = vi.fn((_grantId: string, op: string) => {
+            if (op === 'list_tasks') return Promise.resolve(JSON.stringify({ tasks: [] }));
+            return Promise.resolve('{}');
+        });
+        setBindings({ ListRemoteControlState: vi.fn(async () => JSON.parse(JSON.stringify(viewOnly))), RemoteControlOp: op });
+        const { result } = renderHook(() => useTaskRemoteControl());
+        await act(async () => {});
+        act(() => result.current.selectGrant('gv'));
+        await act(async () => {});
+
+        await act(async () => {
+            expect(await result.current.sendMessage('D:/x', 'hi')).toBe(false);
+        });
+
+        expect(op.mock.calls.some(call => call[1] === 'send_message')).toBe(false);
+        expect(result.current.error).toBe('当前权限只能查看');
+    });
 });
+

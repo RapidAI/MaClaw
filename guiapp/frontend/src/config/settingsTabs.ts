@@ -1,6 +1,6 @@
 import { localizeText } from '../i18n';
 
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'latex' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'pdfStyles' | 'embedding' | 'memory' | 'botCatalog' | 'agentGroup' | 'sharedPages' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'email' | 'tokenBank' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'latex' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'pdfStyles' | 'embedding' | 'memory' | 'botCatalog' | 'agentGroup' | 'sharedPages' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'email' | 'github' | 'tokenBank' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
 
 /**
  * Tabs that actually render a settings body panel (rail + SettingsActiveContent).
@@ -29,6 +29,7 @@ export const SETTINGS_CONTENT_TAB_IDS = [
     'virtualEmployee',
     'im',
     'email',
+    'github',
     'hardware',
     'redeem',
     'tokenBank',
@@ -103,6 +104,7 @@ const settingsTabGroupById: Partial<Record<SettingsTabId, SettingsTabGroupId>> =
     virtualEmployee: 'integration',
     im: 'integration',
     email: 'integration',
+    github: 'integration',
     hardware: 'integration',
 };
 
@@ -142,6 +144,7 @@ const settingsTabIcons: Record<SettingsTabId, string> = {
     virtualEmployee: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="5" r="3"/><path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5"/></svg>',
     im: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h12v8H9l-2 2v-2H2z" /><path d="M5 6.5h6M5 8.5h4"/></svg>',
     email: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3.5" width="12" height="9" rx="1.2"/><path d="m3 5 5 4 5-4"/></svg>',
+    github: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.5"/><path d="M5.5 9.5c-1.5-1.5-1-4 .5-5M10.5 9.5c1.5-1.5 1-4-.5-5M5.5 9.5c0 1.5 1 2.5 2.5 2.5s2.5-1 2.5-2.5M5.5 9.5c-.8.3-1.3 1-1.5 2M10.5 9.5c.8.3 1.3 1 1.5 2"/></svg>',
     tokenBank: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.2 8 3.5l5.5 2.7L8 8.9z"/><path d="M2.5 9.1 8 11.8l5.5-2.7"/><path d="M2.5 12 8 14.5 13.5 12"/></svg>',
     security: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5L3 3.5v4c0 3.5 2.5 5.5 5 7 2.5-1.5 5-3.5 5-7v-4z"/></svg>',
     migration: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l-2.5 2 2.5 2"/><path d="M12 6l2.5 2-2.5 2"/><path d="M1.5 8h5M9.5 8h5"/></svg>',
@@ -286,6 +289,12 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
             label: textForLang(lang, 'Email', '邮箱', '郵箱'),
             desc: textForLang(lang, 'Configure receive and send accounts', '配置收件与发件帐号', '設定收件與發件帳號'),
             icon: settingsTabIcons.email,
+        },
+        {
+            id: 'github' as const,
+            label: 'GitHub',
+            desc: textForLang(lang, 'Connect a GitHub account for skill search, update checks and code cloning', '连接 GitHub 账号，用于技能搜索、更新检测与代码克隆', '連接 GitHub 帳號，用於技能搜尋、更新檢測與程式碼複製'),
+            icon: settingsTabIcons.github,
         },
         {
             id: 'hardware' as const,

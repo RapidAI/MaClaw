@@ -39,6 +39,14 @@ export interface WorkspaceTarget {
 
 export type TaskType = 'chat' | 'coding';
 
+/** 远控被控机器目标。设置后任务在对方电脑上创建并执行（remote_control create_task/send_message）。 */
+export interface MachineTarget {
+    /** 远控授权 grant id。 */
+    grantId: string;
+    /** 被控机器名（仅展示用）。 */
+    machineName: string;
+}
+
 /** 新建任务的运行时段。立即为默认；定时才写入计划任务。 */
 export interface RunWindow {
     mode: 'immediate' | 'scheduled';
@@ -67,6 +75,8 @@ export interface TaskDraft {
     latexTemplateName: string | null;
     /** 缺省视为立即执行。 */
     runWindow?: RunWindow;
+    /** 任务执行位置：null/未设置 = 本机；否则在远控被控机器上创建并执行。 */
+    machine?: MachineTarget | null;
 }
 
 /** 从模板库、工作流页、专家卡片或任务右键菜单带入新建任务页的预填。 */
@@ -103,6 +113,7 @@ export function defaultTaskDraft(): TaskDraft {
         latexTemplateId: null,
         latexTemplateName: null,
         runWindow: immediateRunWindow(),
+        machine: null,
     };
 }
 
@@ -147,7 +158,28 @@ export function isDraftDefault(draft: TaskDraft): boolean {
         && !isExpertSpecified(draft)
         && !isWorkflowChosen(draft)
         && draft.workspace.kind === 'local'
-        && !draft.workspace.localPath;
+        && !draft.workspace.localPath
+        && !draft.machine;
+}
+
+/**
+ * 选择任务执行位置：null = 本机；否则在远控被控机器上创建并执行。
+ * 远控 create_task 不支持专家/工作流/工作空间/定时——全部归约为默认。
+ */
+export function withMachine(draft: TaskDraft, machine: MachineTarget | null): TaskDraft {
+    if (!machine || !machine.grantId) return { ...draft, machine: null };
+    return {
+        ...draft,
+        machine,
+        expertId: null,
+        expertName: null,
+        workflowTemplateId: null,
+        workflowParams: {},
+        latexTemplateId: null,
+        latexTemplateName: null,
+        workspace: { kind: 'local' },
+        runWindow: immediateRunWindow(),
+    };
 }
 
 /** 指定专家（id = null 表示回到通用专家）；指定专家把工作流回到「无」，

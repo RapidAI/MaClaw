@@ -15,6 +15,7 @@ import {
     expertNeedsSetup,
     hasWizardSeedContent,
     withExpert,
+    withMachine,
     withLatexTemplate,
     withLocalWorkspace,
     withRemoteWorkspace,
@@ -24,7 +25,7 @@ import {
     WORKFLOW_AUTO,
     type TaskDraft,
 } from '../taskDraft';
-import { TaskConfigBar, type ExpertOption, type WorkflowOption } from '../TaskConfigBar';
+import { TaskConfigBar, type ExpertOption, type RemoteMachineOption, type WorkflowOption } from '../TaskConfigBar';
 import { LATEX_BLANK_TEMPLATE_ID, LATEX_EXPERT_ID } from '../../../../utils/latexTemplates';
 import { nextDefaultCloudWorkspaceName } from '../WorkspacePickerPopover';
 import { RemoteServerForm } from '../RemoteServerPopover';
@@ -1100,5 +1101,77 @@ describe('TaskConfigBar variant', () => {
         expect(labelIcon.style.color).toBe('rgb(138, 148, 166)');
         const typeIcon = typeChip.querySelector('[data-icon="code"]') as SVGElement;
         expect(typeIcon.style.color).toBe('rgb(138, 148, 166)');
+    });
+});
+
+describe('machine (位置) chip', () => {
+    const machines: RemoteMachineOption[] = [
+        { grantId: 'gb', machineName: 'B机', online: true, operate: true },
+        { grantId: 'gv', machineName: 'V机', online: true, operate: false },
+        { grantId: 'go', machineName: 'O机', online: false, operate: true },
+    ];
+
+    it('is hidden when no controlled machine is available', () => {
+        renderBar(defaultTaskDraft(), vi.fn(), { variant: 'bare', defaultExpanded: true });
+        expect(screen.queryByTestId('task-config-chip-machine')).toBeNull();
+        renderBar(defaultTaskDraft(), vi.fn(), { variant: 'bare', defaultExpanded: true, remoteMachines: [] });
+        expect(screen.queryByTestId('task-config-chip-machine')).toBeNull();
+    });
+
+    it('shows 本机 by default and lists remote machines with states', async () => {
+        renderStatefulBar(undefined, { variant: 'bare', defaultExpanded: true, remoteMachines: machines });
+        const chip = screen.getByTestId('task-config-chip-machine');
+        expect(screen.getByTestId('task-config-chip-machine-value').textContent).toBe('本机');
+        fireEvent.click(chip);
+        const popover = await screen.findByTestId('task-config-popover-machine');
+        expect(popover.textContent).toContain('本机');
+        expect(popover.textContent).toContain('B机');
+        expect(popover.textContent).toContain('V机');
+        expect(popover.textContent).toContain('O机');
+        // 离线/仅查看不可选：行内给出原因
+        expect(popover.textContent).toContain('离线');
+        expect(popover.textContent).toContain('仅查看');
+    });
+
+    it('selecting a machine shows its name and locks non-remote-capable chips', async () => {
+        renderStatefulBar(undefined, { variant: 'bare', defaultExpanded: true, remoteMachines: machines });
+        fireEvent.click(screen.getByTestId('task-config-chip-machine'));
+        fireEvent.click(await screen.findByTestId('machine-item-gb'));
+        await waitFor(() => {
+            expect(screen.getByTestId('task-config-chip-machine-value').textContent).toBe('B机');
+        });
+        // 远程目标：工作空间/运行时段锁定且不再开弹层
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        expect(screen.queryByTestId('task-config-popover-workspace')).toBeNull();
+        fireEvent.click(screen.getByTestId('task-config-chip-window'));
+        expect(screen.queryByTestId('task-config-popover-window')).toBeNull();
+        // 专家 chip 也不可开
+        fireEvent.click(screen.getByTestId('task-config-chip-expert'));
+        expect(screen.queryByTestId('task-config-popover-expert')).toBeNull();
+        // 但位置 chip 仍可切回本机
+        fireEvent.click(screen.getByTestId('task-config-chip-machine'));
+        fireEvent.click(await screen.findByTestId('machine-item-local'));
+        await waitFor(() => {
+            expect(screen.getByTestId('task-config-chip-machine-value').textContent).toBe('本机');
+        });
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        await screen.findByTestId('task-config-popover-workspace');
+    });
+
+    it('view-only machine cannot be picked', async () => {
+        renderStatefulBar(undefined, { variant: 'bare', defaultExpanded: true, remoteMachines: machines });
+        fireEvent.click(screen.getByTestId('task-config-chip-machine'));
+        fireEvent.click(await screen.findByTestId('machine-item-gv'));
+        await act(async () => {});
+        expect(screen.getByTestId('task-config-chip-machine-value').textContent).toBe('本机');
+    });
+
+    it('a machine draft survives draft normalization', () => {
+        const draft = withMachine(defaultTaskDraft(), { grantId: 'gb', machineName: 'B机' });
+        expect(draft.machine?.grantId).toBe('gb');
+        expect(draft.expertId).toBeNull();
+        expect(draft.workflowTemplateId).toBeNull();
+        expect(draft.workspace.kind).toBe('local');
+        expect(draft.runWindow?.mode).toBe('immediate');
     });
 });

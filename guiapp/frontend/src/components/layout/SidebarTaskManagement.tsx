@@ -5323,7 +5323,7 @@ export const SidebarTaskManagement = ({
     const newTaskFromWorkdirFolder = (menu: WorkdirFolderContextMenu) => {
         if (remoteRef.current.selected) {
             setWorkdirContextMenu(null);
-            if (remoteRef.current.operate) remoteRef.current.setCreating(true);
+            if (remoteRef.current.operate) window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
             return;
         }
         // Rows in the order the folder shows them, so an archive tie follows the top row.
@@ -5676,10 +5676,9 @@ export const SidebarTaskManagement = ({
                 data-testid="task-pane-new-task-wizard"
                 onClick={() => {
                     const gate = remoteRef.current;
-                    if (gate.selected) {
-                        if (gate.operate) gate.setCreating(true);
-                        return;
-                    }
+                    // 远程机器页签选中且可操作：仍走标准新建任务向导——
+                    // 向导「位置」chip 默认跟随当前机器页签（远程·机器名）。
+                    if (gate.selected && !gate.operate) return;
                     window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
                 }}
                 disabled={creatingTask || (!!remote.selected && !remote.operate)}

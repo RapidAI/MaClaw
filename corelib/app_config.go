@@ -98,6 +98,9 @@ type AppConfig struct {
 	RemoteHeartbeatSec        int    `json:"remote_heartbeat_sec"`
 	RemoteNickname            string `json:"remote_nickname,omitempty"`
 	RemoteClientID            string `json:"remote_client_id"`
+	// GitHubClientID overrides the built-in OAuth client_id for the GitHub
+	// connection (设置 → GitHub). Empty uses the bundled device-flow app.
+	GitHubClientID string `json:"github_client_id,omitempty"`
 	DefaultLaunchMode         string `json:"default_launch_mode"`
 	// MaClaw LLM configuration
 	MaclawLLMUrl             string              `json:"maclaw_llm_url"`

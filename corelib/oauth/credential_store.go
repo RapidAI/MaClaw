@@ -54,6 +54,14 @@ type StoredCredential struct {
 	// was minted against; the chat headers reuse the same pair.
 	MachineID string `json:"machine_id,omitempty"`
 	DeviceID  string `json:"device_id,omitempty"`
+	// Account identity fields for connections where the credential IS the
+	// account (GitHub connection): captured once at login so the settings UI
+	// can render status without a network call.
+	Login       string `json:"login,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	AvatarURL   string `json:"avatar_url,omitempty"`
+	HTMLURL     string `json:"html_url,omitempty"`
+	Scopes      string `json:"scopes,omitempty"`
 }
 
 // IsExpired 检查 credential 是否已过期或即将过期（含 5 分钟 margin）。

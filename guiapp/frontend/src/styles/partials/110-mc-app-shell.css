@@ -874,7 +874,9 @@
   right: 0;
   background: linear-gradient(to left, var(--theme-surface), transparent);
 }
-.mc-task-pane .mc-task-machine-tablist > .mc-task-machine-tab,
+/* The local tab is a direct child of .mc-task-machine-tabs (pinned outside
+   the scroll strip); grant tabs live inside wraps in the scrollable list. */
+.mc-task-pane .mc-task-machine-tabs > .mc-task-machine-tab,
 .mc-task-pane .mc-task-machine-tab-wrap {
   flex: 0 0 auto;
 }
@@ -978,6 +980,32 @@
   background: transparent;
   font-size: 16px;
   font-weight: 400;
+}
+/* Edge scrollers appear only while the strip overflows (see the tabFades
+   state); they keep hidden tabs reachable without a visible scrollbar. */
+.mc-task-pane .mc-task-machine-tab-nav {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--theme-text-muted);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 8px 4px 9px;
+  margin: 0;
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+}
+.mc-task-pane .mc-task-machine-tab-nav:hover:not(:disabled) {
+  color: var(--theme-text-primary);
+  background: color-mix(in srgb, var(--theme-text-primary) 4%, transparent);
+}
+.mc-task-pane .mc-task-machine-tab-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 .mc-task-pane .mc-task-machine-tabs .mc-task-machine-error {
   flex: 0 1 auto;

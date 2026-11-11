@@ -16,6 +16,7 @@ export const SETTINGS_TABS_NEEDING_CONFIG = [
     'llmCache',
     'virtualEmployee',
     'im',
+    'github',
     'security',
     'system',
     'hardware',

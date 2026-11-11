@@ -28,11 +28,9 @@ function remote(overrides: Partial<Remote> = {}): Remote {
         detailBusy: false,
         awaitingReply: false,
         awaitingStop: false,
-        creating: false,
         refresh: vi.fn(),
         selectLocal: vi.fn(),
         selectGrant: vi.fn(),
-        setCreating: vi.fn(),
         grantSameAccount: vi.fn().mockResolvedValue(undefined),
         invite: vi.fn().mockResolvedValue(undefined),
         accept: vi.fn(),
@@ -41,7 +39,7 @@ function remote(overrides: Partial<Remote> = {}): Remote {
         revoke: vi.fn().mockResolvedValue(undefined),
         openTask: vi.fn(),
         closeDetail: vi.fn(),
-        createTask: vi.fn().mockResolvedValue(undefined),
+        openTaskForGrant: vi.fn(),
         sendMessage: vi.fn().mockResolvedValue(undefined),
         stopTask: vi.fn(),
         renameTask: vi.fn(),
@@ -57,8 +55,43 @@ describe('TaskMachineBar', () => {
     it('puts this computer, granted machines, and add on the task-list row', () => {
         render(<TaskMachineBar lang="zh-CN" remote={remote()} onCloseGrant={vi.fn()} />);
         expect(screen.getByTestId('task-machine-tab-local').textContent).toContain('本机');
-        expect(screen.getByTestId('task-machine-tab-g1').textContent).toContain('家里');
+        const grantTab = screen.getByTestId('task-machine-tab-g1');
+        expect(grantTab.textContent).toContain('机器1');
+        expect(grantTab.getAttribute('title')).toBe('家里 · 仅查看');
+        expect(grantTab.getAttribute('aria-label')).toBe('家里');
         expect(screen.getByTestId('task-machine-add').textContent).toBe('+');
+    });
+
+    it('offers edge scrollers once the tab strip overflows', () => {
+        render(<TaskMachineBar lang="zh-CN" remote={remote()} onCloseGrant={vi.fn()} />);
+        expect(screen.queryByTestId('task-machine-scroll-left')).toBeNull();
+        const local = screen.getByTestId('task-machine-tab-local');
+        expect(local.closest('.mc-task-machine-tablist')).toBeNull();
+        const list = document.querySelector('.mc-task-machine-tablist') as HTMLElement;
+        Object.defineProperty(list, 'scrollWidth', { value: 500, configurable: true });
+        Object.defineProperty(list, 'clientWidth', { value: 100, configurable: true });
+        fireEvent.scroll(list);
+        const left = screen.getByTestId('task-machine-scroll-left') as HTMLButtonElement;
+        const right = screen.getByTestId('task-machine-scroll-right') as HTMLButtonElement;
+        expect(left.disabled).toBe(true);
+        expect(right.disabled).toBe(false);
+        const scrollBy = vi.fn();
+        list.scrollBy = scrollBy;
+        fireEvent.click(right);
+        expect(scrollBy).toHaveBeenCalledWith(expect.objectContaining({ left: expect.any(Number) }));
+    });
+
+    it('moves focus across machine tabs with arrow keys', () => {
+        render(<TaskMachineBar lang="zh-CN" remote={remote()} onCloseGrant={vi.fn()} />);
+        const local = screen.getByTestId('task-machine-tab-local');
+        const grant = screen.getByTestId('task-machine-tab-g1');
+        local.focus();
+        fireEvent.keyDown(local, { key: 'ArrowRight' });
+        expect(document.activeElement).toBe(grant);
+        fireEvent.keyDown(grant, { key: 'ArrowRight' });
+        expect(document.activeElement).toBe(local);
+        fireEvent.keyDown(local, { key: 'ArrowLeft' });
+        expect(document.activeElement).toBe(grant);
     });
 
     it('marks an offline granted machine with a labelled dot, not tab text', () => {

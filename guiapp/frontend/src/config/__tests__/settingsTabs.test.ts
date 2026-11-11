@@ -80,17 +80,17 @@ describe('getSettingsTabOptions', () => {
     it('keeps memory, knowledge, MIS data, and migration in Data & Memory', () => {
         const zh = getSettingsTabOptions('zh-Hans');
         const data = zh.filter((tab) => tab.group === 'data').map((tab) => tab.id);
-        expect(data).toEqual(['memory', 'knowledge', 'misData', 'migration']);
+        expect(data).toEqual(['memory', 'botCatalog', 'agentGroup', 'sharedPages', 'knowledge', 'misData', 'migration']);
 
         const migration = zh.find((tab) => tab.id === 'migration');
         expect(migration?.label).toBe('迁出与迁入');
         expect(migration?.groupLabel).toBe('数据与记忆');
     });
 
-    it('groups employees, IM, email, and hardware under Integrations', () => {
+    it('groups employees, IM, email, GitHub, and hardware under Integrations', () => {
         const zh = getSettingsTabOptions('zh-Hans');
         const integration = zh.filter((tab) => tab.group === 'integration').map((tab) => tab.id);
-        expect(integration).toEqual(['virtualEmployee', 'im', 'email', 'hardware']);
+        expect(integration).toEqual(['virtualEmployee', 'im', 'email', 'github', 'hardware']);
 
         const im = zh.find((tab) => tab.id === 'im');
         expect(im?.groupLabel).toBe('集成与接入');
@@ -101,7 +101,7 @@ describe('getSettingsTabOptions', () => {
         expect(getSettingsTabOptions('en').find((tab) => tab.id === 'email')?.label).toBe('Email');
 
         const hidden = getSettingsTabOptions('zh-Hans', { hideVirtualEmployee: true });
-        expect(hidden.filter((tab) => tab.group === 'integration').map((tab) => tab.id)).toEqual(['im', 'email', 'hardware']);
+        expect(hidden.filter((tab) => tab.group === 'integration').map((tab) => tab.id)).toEqual(['im', 'email', 'github', 'hardware']);
         expect(hidden.find((tab) => tab.id === 'assetManagement')?.group).toBe('system');
     });
 

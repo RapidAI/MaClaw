@@ -18,7 +18,7 @@ import type { PromptHistoryAttachment } from "./promptHistory";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import { CODING_TASK_COMMAND_MAX_LEN, type PureCodingAgentMode } from "./codingTaskMode";
-import { TaskConfigBar, type CloudWorkspaceOption, type ExpertOption, type WorkflowOption } from "./task-config/TaskConfigBar";
+import { TaskConfigBar, type CloudWorkspaceOption, type ExpertOption, type RemoteMachineOption, type WorkflowOption } from "./task-config/TaskConfigBar";
 import type { TaskDraft } from "./task-config/taskDraft";
 import type { LatexTemplate } from "../../utils/latexTemplates";
 import {
@@ -489,6 +489,8 @@ export interface WelcomeTaskConfig {
     error?: string;
     /** New-task wizard tab: expand the four config chips by default. */
     defaultExpanded?: boolean;
+    /** 远控被控机器候选；非空时配置条显示「位置」chip（本机/远程·机器名）。 */
+    remoteMachines?: RemoteMachineOption[];
 }
 
 export function AssistantWelcomeView({
@@ -1687,6 +1689,7 @@ export function AssistantWelcomeView({
                             onRenameCloud={taskConfig.onRenameCloud}
                             onOpenMarket={taskConfig.onOpenMarket}
                             defaultExpanded={taskConfig.defaultExpanded}
+                            remoteMachines={taskConfig.remoteMachines}
                             variant="bare"
                         />
                     </div>

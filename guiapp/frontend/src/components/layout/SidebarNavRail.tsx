@@ -2,7 +2,7 @@ import { useCallback, useState, useEffect, useRef } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
-import { BotRailIcon, CheckinRailIcon, ConnectMenuHardwareIcon, ConnectMenuIMIcon, ConnectMenuMailIcon, SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon, ExpertRailIcon, WorkflowIcon, ToolsRailIcon, InviteGiftIcon } from './SidebarNavIcons';
+import { BotRailIcon, CheckinRailIcon, ConnectMenuGitHubIcon, ConnectMenuHardwareIcon, ConnectMenuIMIcon, ConnectMenuMailIcon, SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon, ExpertRailIcon, WorkflowIcon, ToolsRailIcon, InviteGiftIcon } from './SidebarNavIcons';
 import { SidebarBrandHeader, SidebarPrimaryNav, useNavMenuToggles, visibleProFeatureTabs, type ProFeatureTab } from './SidebarNavRailPieces';
 import { openSettingsTab } from '../../utils/settingsNavigation';
 import { connectSoloActive } from '../../utils/settingsSolo';
@@ -147,7 +147,7 @@ export const SidebarNavRail = ({
     const botTitle = text('A bot is a digital assistant stationed on the remote computer around the clock.', 'Bot为24小时驻守远程电脑上的数字助理。', 'Bot為24小時駐守遠端電腦上的數位助理。');
     const connectorsLabel = text('Connectors', '连接器', '連接器');
     const connectLabel = text('Connect', '连接', '連接');
-    const connectTitle = text('Connect chat, email and hardware', '连接即时通讯、邮箱和硬件', '連接即時通訊、郵箱和硬體');
+    const connectTitle = text('Connect chat, email, GitHub and hardware', '连接即时通讯、邮箱、GitHub 和硬件', '連接即時通訊、郵箱、GitHub 和硬體');
     const connectEmailLabel = text('Email', '邮箱', '郵箱');
     const connectHardwareLabel = text('Hardware', '硬件', '硬體');
     const connectSolo = connectSoloActive(navTab, settingsNavSoloTab || '');
@@ -222,12 +222,13 @@ export const SidebarNavRail = ({
     const connectMenuItems: SystemMenuItem[] = [
         { id: 'im', icon: <ConnectMenuIMIcon />, label: 'IM', visible: true },
         { id: 'email', icon: <ConnectMenuMailIcon />, label: connectEmailLabel, visible: true },
+        { id: 'github', icon: <ConnectMenuGitHubIcon />, label: 'GitHub', visible: true },
         { id: 'hardware', icon: <ConnectMenuHardwareIcon />, label: connectHardwareLabel, visible: true },
     ];
     const selectConnectMenuItem = (id: string) => {
-        openSettingsTab(id === 'email' ? 'email' : id === 'hardware' ? 'hardware' : 'im', { hideSettingsNav: true });
+        openSettingsTab(id === 'email' ? 'email' : id === 'github' ? 'github' : id === 'hardware' ? 'hardware' : 'im', { hideSettingsNav: true });
     };
-    const connectActiveId = navTab === 'settings' && (settingsTab === 'im' || settingsTab === 'email' || settingsTab === 'hardware') ? settingsTab : undefined;
+    const connectActiveId = navTab === 'settings' && (settingsTab === 'im' || settingsTab === 'email' || settingsTab === 'github' || settingsTab === 'hardware') ? settingsTab : undefined;
     return (
         <div className="mc-nav-rail" style={{
             width: `${SIDEBAR_NAV_RAIL_WIDTH}px`,

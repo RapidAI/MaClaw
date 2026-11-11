@@ -155,6 +155,8 @@ export function CancelDownload(arg1:string):Promise<void>;
 
 export function CancelGitHubCopilotOAuth():Promise<void>;
 
+export function CancelGitHubOAuth():Promise<void>;
+
 export function CancelKimiCodeOAuth():Promise<void>;
 
 export function CancelQoderOAuth():Promise<void>;
@@ -2849,6 +2851,18 @@ export function StartLobsterAIOAuth():Promise<{auth_url:string; browser_opened:b
 export function StartZhipuCodingOAuth():Promise<{auth_url:string; browser_opened:boolean}>;
 
 export function StartGitHubCopilotOAuth():Promise<main.GitHubCopilotDeviceInfo>;
+
+export function StartGitHubOAuth():Promise<main.GitHubDeviceInfo>;
+
+export function WaitGitHubOAuth():Promise<main.GitHubConnectionStatus>;
+
+export function GetGitHubConnection(arg1:boolean):Promise<main.GitHubConnectionStatus>;
+
+export function DisconnectGitHub():Promise<void>;
+
+export function GitHubAPIRequest(arg1:string,arg2:string):Promise<string>;
+
+export function GitHubCloneRepository(arg1:string,arg2:string):Promise<main.GitHubCloneResult>;
 
 export function StartMaclawAppApprovalWorkflow(arg1:main.MaclawAppApprovalWorkflowStartInput):Promise<Record<string, any>>;
 

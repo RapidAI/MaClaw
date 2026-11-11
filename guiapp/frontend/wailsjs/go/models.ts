@@ -2321,6 +2321,7 @@ export namespace corelib {
 	    remote_heartbeat_sec: number;
 	    remote_nickname?: string;
 	    remote_client_id: string;
+	    github_client_id?: string;
 	    default_launch_mode: string;
 	    maclaw_llm_url: string;
 	    maclaw_llm_key: string;
@@ -2623,6 +2624,7 @@ export namespace corelib {
 	        this.remote_heartbeat_sec = source["remote_heartbeat_sec"];
 	        this.remote_nickname = source["remote_nickname"];
 	        this.remote_client_id = source["remote_client_id"];
+	        this.github_client_id = source["github_client_id"];
 	        this.default_launch_mode = source["default_launch_mode"];
 	        this.maclaw_llm_url = source["maclaw_llm_url"];
 	        this.maclaw_llm_key = source["maclaw_llm_key"];
@@ -11072,6 +11074,48 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	export class GitHubCloneResult {
+	    output: string;
+	    dest_dir: string;
+	    repo_url: string;
+
+	    static createFrom(source: any = {}) {
+	        return new GitHubCloneResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.output = source["output"];
+	        this.dest_dir = source["dest_dir"];
+	        this.repo_url = source["repo_url"];
+	    }
+	}
+	export class GitHubConnectionStatus {
+	    connected: boolean;
+	    login?: string;
+	    name?: string;
+	    avatar_url?: string;
+	    html_url?: string;
+	    scopes?: string;
+	    client_id: string;
+	    custom_client_id: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new GitHubConnectionStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connected = source["connected"];
+	        this.login = source["login"];
+	        this.name = source["name"];
+	        this.avatar_url = source["avatar_url"];
+	        this.html_url = source["html_url"];
+	        this.scopes = source["scopes"];
+	        this.client_id = source["client_id"];
+	        this.custom_client_id = source["custom_client_id"];
+	    }
+	}
 	export class GitHubCopilotDeviceInfo {
 	    user_code: string;
 	    verification_uri: string;
@@ -11084,6 +11128,22 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.user_code = source["user_code"];
 	        this.verification_uri = source["verification_uri"];
+	    }
+	}
+	export class GitHubDeviceInfo {
+	    user_code: string;
+	    verification_uri: string;
+	    browser_opened: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new GitHubDeviceInfo(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.user_code = source["user_code"];
+	        this.verification_uri = source["verification_uri"];
+	        this.browser_opened = source["browser_opened"];
 	    }
 	}
 	export class GossipPost {

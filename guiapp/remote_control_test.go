@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -16,6 +17,22 @@ func TestExecuteRemoteControlRecoveredWithoutApp(t *testing.T) {
 func TestExecuteRemoteControlRejectsUnknownOp(t *testing.T) {
 	_, err := (&App{}).executeRemoteControl("drop_database", nil)
 	if err == nil || !strings.Contains(err.Error(), "不支持") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestExecuteRemoteControlCreateTaskRequiresName(t *testing.T) {
+	_, err := (&App{}).executeRemoteControl("create_task", json.RawMessage(`{"name":"  "}`))
+	if err == nil || !strings.Contains(err.Error(), "任务名称") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestExecuteRemoteControlCreateTaskRejectsSSHMode(t *testing.T) {
+	// SSH targets cannot be configured through remote control; the whitelist
+	// rejects before CreateTaskWithMode runs.
+	_, err := (&App{}).executeRemoteControl("create_task", json.RawMessage(`{"name":"x","mode":"ssh_host"}`))
+	if err == nil || !strings.Contains(err.Error(), "任务模式") {
 		t.Fatalf("err = %v", err)
 	}
 }

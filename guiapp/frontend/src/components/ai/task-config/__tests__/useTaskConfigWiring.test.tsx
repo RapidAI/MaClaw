@@ -2,7 +2,8 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CloudWorkspaceEntitlement, CreateCloudWorkspace, CreateLatexDocument, CreateRunWindowTask, CreateTaskUnified, ListLatexTemplates, RenameCloudWorkspace, SetTabWorkingDir, SuggestNewTaskExpert, SuggestNewTaskType } from '../../../../../wailsjs/go/main/App';
 import { useTaskConfigWiring, type TaskConfigWiringOptions } from '../useTaskConfigWiring';
-import { defaultTaskDraft, withCloudWorkspace, withExpert, withLocalWorkspace, withRemoteWorkspace, withRunWindow, withWorkflow, WORKFLOW_AUTO } from '../taskDraft';
+import { defaultTaskDraft, withCloudWorkspace, withExpert, withLocalWorkspace, withMachine, withRemoteWorkspace, withRunWindow, withWorkflow, WORKFLOW_AUTO } from '../taskDraft';
+import { bindRemoteTaskOpener, publishRemoteMachineTarget } from '../../../layout/remoteAssistantSession';
 import { LATEX_EXPERT_ID } from '../../../../utils/latexTemplates';
 import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH } from '../../../../constants/events';
 
@@ -1700,5 +1701,85 @@ describe('useTaskConfigWiring expert suggestion', () => {
                 expertName: 'PPT 制作专家',
             }),
         }));
+    });
+});
+
+describe('useTaskConfigWiring remote machine target', () => {
+    const MACHINE = { grantId: 'g1', machineName: '办公电脑', online: true, operate: true };
+
+    const publish = (machines: Array<typeof MACHINE>, selectedGrantId = 'g1') => {
+        publishRemoteMachineTarget({ machines, selectedGrantId });
+    };
+
+    afterEach(() => {
+        cleanup();
+        publishRemoteMachineTarget({ machines: [], selectedGrantId: '' });
+        bindRemoteTaskOpener(null);
+        delete (window as unknown as { go?: unknown }).go;
+        vi.mocked(CreateTaskUnified).mockReset();
+    });
+
+    it('falls back to local when the picked grant is downgraded to view-only', async () => {
+        publish([MACHINE]);
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({ localGuideVisible: true })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withMachine(defaultTaskDraft(), { grantId: 'g1', machineName: '办公电脑' }));
+        });
+        expect(result.current.taskConfig.draft.machine?.grantId).toBe('g1');
+        act(() => {
+            publish([{ ...MACHINE, operate: false }]);
+        });
+        await waitFor(() => expect(result.current.taskConfig.draft.machine).toBeNull());
+    });
+
+    it('falls back to local when the picked machine goes offline', async () => {
+        publish([MACHINE]);
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({ localGuideVisible: true })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withMachine(defaultTaskDraft(), { grantId: 'g1', machineName: '办公电脑' }));
+        });
+        act(() => {
+            publish([{ ...MACHINE, online: false }]);
+        });
+        await waitFor(() => expect(result.current.taskConfig.draft.machine).toBeNull());
+    });
+
+    it('creates remotely and keeps local attachment paths out of the first message', async () => {
+        const ops: Array<{ grantId: string; op: string; body: string }> = [];
+        (window as unknown as { go: unknown }).go = {
+            main: {
+                App: {
+                    RemoteControlOp: vi.fn(async (grantId: string, op: string, body: string) => {
+                        ops.push({ grantId, op, body });
+                        if (op === 'create_task') return JSON.stringify({ task: { project_path: 'D:/remote/task-1' } });
+                        return '{}';
+                    }),
+                },
+            },
+        };
+        const openSpy = vi.fn();
+        bindRemoteTaskOpener(openSpy);
+        publish([MACHINE]);
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+            localGuideVisible: true,
+            inputValue: '分析这个文件',
+            pendingAttachments: [{ filePath: 'D:/cases/contract.pdf' }],
+        })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withMachine(defaultTaskDraft(), { grantId: 'g1', machineName: '办公电脑' }));
+        });
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(ops.some(o => o.op === 'create_task')).toBe(true));
+        const send = ops.find(o => o.op === 'send_message');
+        expect(send).toBeTruthy();
+        expect(send?.grantId).toBe('g1');
+        const body = JSON.parse(send?.body || '{}');
+        expect(body.project_path).toBe('D:/remote/task-1');
+        expect(String(body.text || '')).toContain('分析这个文件');
+        expect(String(body.text || '')).not.toContain('D:/cases/contract.pdf');
+        expect(openSpy).toHaveBeenCalledWith('g1', 'D:/remote/task-1');
+        expect(vi.mocked(CreateTaskUnified)).not.toHaveBeenCalled();
     });
 });

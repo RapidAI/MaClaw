@@ -298,6 +298,10 @@ export function CancelGitHubCopilotOAuth() {
   return window['go']['main']['App']['CancelGitHubCopilotOAuth']();
 }
 
+export function CancelGitHubOAuth() {
+  return window['go']['main']['App']['CancelGitHubOAuth']();
+}
+
 export function CancelKimiCodeOAuth() {
   return window['go']['main']['App']['CancelKimiCodeOAuth']();
 }
@@ -5721,6 +5725,30 @@ export function StartZhipuCodingOAuth() {
 
 export function StartGitHubCopilotOAuth() {
   return window['go']['main']['App']['StartGitHubCopilotOAuth']();
+}
+
+export function StartGitHubOAuth() {
+  return window['go']['main']['App']['StartGitHubOAuth']();
+}
+
+export function WaitGitHubOAuth() {
+  return window['go']['main']['App']['WaitGitHubOAuth']();
+}
+
+export function GetGitHubConnection(arg1) {
+  return window['go']['main']['App']['GetGitHubConnection'](arg1);
+}
+
+export function DisconnectGitHub() {
+  return window['go']['main']['App']['DisconnectGitHub']();
+}
+
+export function GitHubAPIRequest(arg1, arg2) {
+  return window['go']['main']['App']['GitHubAPIRequest'](arg1, arg2);
+}
+
+export function GitHubCloneRepository(arg1, arg2) {
+  return window['go']['main']['App']['GitHubCloneRepository'](arg1, arg2);
 }
 
 export function StartMaclawAppApprovalWorkflow(arg1) {

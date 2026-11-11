@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
     defaultTaskDraft,
+    isDraftDefault,
     withCloudWorkspace,
+    withMachine,
     withExpert,
     withLatexTemplate,
     withLocalWorkspace,
@@ -388,5 +390,77 @@ describe('runTaskConfigSend interception', () => {
             projectPath: 'D:/tasks/unified-task',
             agentMode: 'coding_dev',
         }));
+    });
+});
+
+describe('remote machine target', () => {
+    const machine = { grantId: 'gb', machineName: 'B机' };
+
+    it('a machine target is a non-default draft routed to unified interception', () => {
+        const draft = withMachine(defaultTaskDraft(), machine);
+        expect(isDraftDefault(draft)).toBe(false);
+        expect(shouldCreateUnifiedTask(draft)).toBe(true);
+        expect(draft.machine).toEqual(machine);
+        // remote-control create_task cannot carry expert/workflow/workspace/window
+        expect(draft.expertId).toBeNull();
+        expect(draft.workflowTemplateId).toBeNull();
+        expect(draft.workspace.kind).toBe('local');
+        expect(draft.runWindow?.mode).toBe('immediate');
+    });
+
+    it('withMachine(null) returns to a default local draft', () => {
+        const draft = withMachine(withMachine(defaultTaskDraft(), machine), null);
+        expect(draft.machine).toBeNull();
+        expect(isDraftDefault(draft)).toBe(true);
+    });
+
+    it('creates on the remote machine and opens it without touching local create', async () => {
+        const createRemoteMachineTask = vi.fn().mockResolvedValue({ projectPath: 'D:/remote/t1' });
+        const openRemoteMachineTask = vi.fn();
+        const bindings = makeBindings({ createRemoteMachineTask, openRemoteMachineTask });
+        const draft = withMachine(withTaskType(defaultTaskDraft(), 'coding'), machine);
+        const result = await runTaskConfigSend({ text: '整理这个仓库', draft, bindings });
+        expect(result.ok).toBe(true);
+        expect(createRemoteMachineTask).toHaveBeenCalledWith(expect.objectContaining({
+            grantId: 'gb',
+            mode: 'coding_dev',
+            text: '整理这个仓库',
+        }));
+        expect(bindings.createTaskUnified).not.toHaveBeenCalled();
+        expect(openRemoteMachineTask).toHaveBeenCalledWith({ grantId: 'gb', projectPath: 'D:/remote/t1' });
+        expect(bindings.openTaskLaunch).not.toHaveBeenCalled();
+    });
+
+    it('chat type maps to chat mode on the remote machine', async () => {
+        const createRemoteMachineTask = vi.fn().mockResolvedValue({ projectPath: 'D:/remote/t2' });
+        const bindings = makeBindings({ createRemoteMachineTask, openRemoteMachineTask: vi.fn() });
+        const draft = withMachine(defaultTaskDraft(), machine);
+        const result = await runTaskConfigSend({ text: '写个总结', draft, bindings });
+        expect(result.ok).toBe(true);
+        expect(createRemoteMachineTask).toHaveBeenCalledWith(expect.objectContaining({ mode: 'chat' }));
+    });
+
+    it('first-message failure returns warning but still opens the remote task', async () => {
+        const createRemoteMachineTask = vi.fn().mockResolvedValue({
+            projectPath: 'D:/remote/t3',
+            warning: '任务已在对方电脑创建，但首条指令未发出',
+        });
+        const openRemoteMachineTask = vi.fn();
+        const bindings = makeBindings({ createRemoteMachineTask, openRemoteMachineTask });
+        const draft = withMachine(defaultTaskDraft(), machine);
+        const result = await runTaskConfigSend({ text: 'hello', draft, bindings });
+        expect(result).toMatchObject({ ok: true, warning: '任务已在对方电脑创建，但首条指令未发出' });
+        expect(openRemoteMachineTask).toHaveBeenCalledWith({ grantId: 'gb', projectPath: 'D:/remote/t3' });
+    });
+
+    it('remote create failure surfaces the error and never opens', async () => {
+        const createRemoteMachineTask = vi.fn().mockRejectedValue(new Error('对方离线'));
+        const openRemoteMachineTask = vi.fn();
+        const bindings = makeBindings({ createRemoteMachineTask, openRemoteMachineTask });
+        const draft = withMachine(defaultTaskDraft(), machine);
+        const result = await runTaskConfigSend({ text: 'hello', draft, bindings });
+        expect(result.ok).toBe(false);
+        expect(openRemoteMachineTask).not.toHaveBeenCalled();
+        expect(bindings.openTaskLaunch).not.toHaveBeenCalled();
     });
 });

@@ -17,6 +17,11 @@ const (
 	// companionPaperOpenArg opens the downloaded PDF and asks which 文档管理
 	// folder it belongs in. open-file does not ask.
 	companionPaperOpenArg = "companion-paper-open"
+	// fileCompanionQuitArg relays a quit to the companion process through its
+	// own single-instance channel (`MaClaw open-file --quit`). It is dashed so
+	// an "Open with" document — always an absolute path — can never be
+	// mistaken for the relay token.
+	fileCompanionQuitArg = "--quit"
 )
 
 // desktopLaunch classifies one process argv. Mode is "main" or "file-companion".
@@ -33,6 +38,10 @@ type desktopLaunch struct {
 	Notice string
 	// Place is set only for a browser add. The companion asks for a folder.
 	Place bool
+	// Quit is the open-file --quit relay: a companion launch whose only
+	// arguments are quit tokens. Paths stays empty; the running companion
+	// quits instead of opening a document.
+	Quit bool
 }
 
 // fileCompanionLockID is the companion single-instance id. It appends a suffix
@@ -65,10 +74,19 @@ func classifyDesktopLaunchForOS(args []string, goos string) desktopLaunch {
 	// directory. CommandLineToArgvW has already removed quotes, so a
 	// relative path is a document, not another way to spell the mode.
 	if filtered[0] == fileCompanionOpenArg || filtered[0] == companionPaperOpenArg {
+		paths := pathsAfterLaunchMode(user, filtered[0])
+		if companionPathsRequestQuit(paths) {
+			return desktopLaunch{
+				Mode:     desktopLaunchFileCompanion,
+				LockID:   fileCompanionLockID(),
+				Explicit: true,
+				Quit:     true,
+			}
+		}
 		return desktopLaunch{
 			Mode:     desktopLaunchFileCompanion,
 			LockID:   fileCompanionLockID(),
-			Paths:    pathsAfterLaunchMode(user, filtered[0]),
+			Paths:    paths,
 			Explicit: true,
 			Place:    filtered[0] == companionPaperOpenArg,
 		}
@@ -133,6 +151,22 @@ func filterDesktopLaunchNoise(user []string) []string {
 // paths, not launch serials.
 func pathsAfterOpenFile(user []string) []string {
 	return pathsAfterLaunchMode(user, fileCompanionOpenArg)
+}
+
+// companionPathsRequestQuit reports that the companion launch is only a quit
+// relay: at least one argument after the mode token and every one of them is
+// a dashed quit token. A bare "quit" stays a relative document name; a token
+// mixed with real paths is treated as a (missing) document, not a quit.
+func companionPathsRequestQuit(paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	for _, path := range paths {
+		if path != "--quit" && path != "-quit" {
+			return false
+		}
+	}
+	return true
 }
 
 func pathsAfterLaunchMode(user []string, mode string) []string {

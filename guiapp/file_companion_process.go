@@ -41,6 +41,9 @@ type desktopProcessHooks struct {
 	exitProcess    func(code int)
 	showWindow     func()
 	runMainStartup func(*App)
+	// requestQuit replaces requestAppQuit for companion-quit tests. Production
+	// leaves it nil and uses the process-wide exit controller.
+	requestQuit func(context.Context)
 	// chooseFiles replaces the system file dialog. Tests set it. Production
 	// leaves it nil and uses the native dialog.
 	chooseFiles func() ([]string, error)
@@ -50,6 +53,10 @@ type fileCompanionRuntime struct {
 	mu sync.Mutex
 
 	process bool
+	// quitLaunch is set when this process is itself the `open-file --quit`
+	// relay that took the companion lock: no running companion received the
+	// handoff, so startup exits without showing the window.
+	quitLaunch bool
 
 	latchOpen        bool
 	latchNotes       []string
@@ -591,6 +598,50 @@ func (a *App) seedFileCompanionPlace(paths []string) {
 	a.enqueueFileCompanionOpen(paths, true)
 }
 
+// signalFileCompanionQuit asks a running file-companion process to quit by
+// launching `exe open-file --quit`. The companion's single-instance channel
+// hands the token to the running instance, which leaves through the same
+// exit controller; when no companion is running the relay takes the lock
+// itself, stays hidden, and exits from its startup check. The relay covers
+// companions this process did not spawn (Explorer "Open with" starts one
+// directly): Windows does not kill children on TerminateProcess and the
+// companion owns no tray icon, so a tray quit used to leave a window-less
+// companion process behind.
+func (a *App) signalFileCompanionQuit() {
+	if a == nil || a.isFileCompanionProcess() || !a.companionQuitSignaled.CompareAndSwap(false, true) {
+		return
+	}
+	exe, err := companionExecutable()
+	if err != nil {
+		logFileCompanion("quit relay: %v", err)
+		return
+	}
+	if err := a.startCompanionProcess([]string{exe, fileCompanionOpenArg, fileCompanionQuitArg}); err != nil {
+		logFileCompanion("quit relay spawn: %v", err)
+	}
+}
+
+// requestCompanionQuit quits this companion through the same exit controller
+// as the main app: graceful Wails shutdown under the hard-exit watchdog.
+func (a *App) requestCompanionQuit() {
+	if a == nil {
+		return
+	}
+	if a.processHooks.requestQuit != nil {
+		a.processHooks.requestQuit(a.ctx)
+		return
+	}
+	requestAppQuit(a.ctx)
+}
+
+func (a *App) seedFileCompanionQuit() {
+	st := a.companionRuntime()
+	st.mu.Lock()
+	st.process = true
+	st.quitLaunch = true
+	st.mu.Unlock()
+}
+
 func (a *App) seedFileCompanionNotice(code string) {
 	if !companionPaperNoticeCode(code) {
 		return
@@ -776,6 +827,14 @@ func (a *App) onFileCompanionSecondInstance(data options.SecondInstanceData) {
 	if launch.Mode != desktopLaunchFileCompanion {
 		return
 	}
+	if launch.Quit {
+		// The main process relays `open-file --quit` when it exits: tray
+		// quit, --quit, updater restart. Quit through the shared controller
+		// so this window cannot outlive the product without a tray icon.
+		logFileCompanion("second instance quit request")
+		a.requestCompanionQuit()
+		return
+	}
 	if launch.Notice != "" {
 		logFileCompanion("second instance notice=%s", launch.Notice)
 		a.presentCompanionPaperNotice(launch.Notice)
@@ -905,17 +964,25 @@ func applyDesktopLaunchOptions(app *App, opts *options.App, launch desktopLaunch
 		return
 	}
 	if launch.Mode == desktopLaunchFileCompanion {
-		if launch.Notice != "" {
+		switch {
+		case launch.Quit:
+			app.seedFileCompanionQuit()
+			// A quit relay that takes the lock itself must not flash a
+			// window; it exits from fileCompanionStartup's quit check.
+			opts.StartHidden = true
+		case launch.Notice != "":
 			app.seedFileCompanionNotice(launch.Notice)
-		} else if launch.Place {
+		case launch.Place:
 			app.seedFileCompanionPlace(launch.Paths)
-		} else {
+		default:
 			app.seedFileCompanionPaths(launch.Paths)
 		}
 		opts.Width = 1280
 		opts.Height = 800
 		opts.WindowStartState = options.Normal
-		opts.StartHidden = false
+		if !launch.Quit {
+			opts.StartHidden = false
+		}
 		// Alt+F4 and the native close box hide this window. The title-bar
 		// button calls runtime WindowHide itself; Quit would drop the open tabs.
 		opts.HideWindowOnClose = true
@@ -974,11 +1041,20 @@ func (a *App) fileCompanionStartup(ctx context.Context) {
 		return
 	}
 	a.ctx = ctx
-	a.installMermaidPDFRaster()
 	st := a.companionRuntime()
 	st.mu.Lock()
+	quitLaunch := st.quitLaunch
 	st.process = true
 	st.mu.Unlock()
+	if quitLaunch {
+		// `open-file --quit` reaches OnStartup only when no companion held
+		// the lock to receive the handoff. There is nothing to quit, so do
+		// not open a window — the same fast path the main --quit uses.
+		logFileCompanion("quit relay without a running companion; exiting")
+		a.requestCompanionQuit()
+		return
+	}
+	a.installMermaidPDFRaster()
 	if _, err := a.LoadConfig(); err != nil {
 		logFileCompanion("config load: %v", err)
 	}

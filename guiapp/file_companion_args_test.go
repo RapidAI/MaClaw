@@ -189,6 +189,40 @@ func TestClassifyDesktopLaunchImplicitFilesAndDirectories(t *testing.T) {
 	}
 }
 
+func TestClassifyDesktopLaunchOpenFileQuitIsARelay(t *testing.T) {
+	for _, args := range [][]string{
+		{"MaClaw", "open-file", "--quit"},
+		{"MaClaw", "open-file", "-quit"},
+		{"MaClaw", "open-file", "--quit", "--quit"},
+	} {
+		got := classifyDesktopLaunchForOS(args, "windows")
+		if got.Mode != desktopLaunchFileCompanion || got.LockID != fileCompanionLockID() || !got.Quit {
+			t.Fatalf("%q = %#v, want a file-companion quit relay", args, got)
+		}
+		if len(got.Paths) != 0 {
+			t.Fatalf("%q paths = %#v, quit relay carries no documents", args, got.Paths)
+		}
+	}
+
+	// A token mixed with real paths is a document launch, not a quit.
+	mixed := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file", "--quit", "notes.md"}, "windows")
+	if mixed.Quit || len(mixed.Paths) != 2 || mixed.Paths[0] != "--quit" {
+		t.Fatalf("mixed quit+doc = %#v", mixed)
+	}
+
+	// Bare "quit" stays a relative filename; only dashed tokens relay.
+	bare := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file", "quit"}, "windows")
+	if bare.Quit || len(bare.Paths) != 1 || bare.Paths[0] != "quit" {
+		t.Fatalf("bare quit file = %#v", bare)
+	}
+
+	// Plain open-file is not a quit.
+	plain := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file"}, "windows")
+	if plain.Quit {
+		t.Fatalf("empty open-file = %#v", plain)
+	}
+}
+
 func TestCompanionPaperOpenAsksForAFolder(t *testing.T) {
 	got := classifyDesktopLaunchForOS([]string{"MaClaw", companionPaperOpenArg, `C:\papers\2510.16079.pdf`}, "windows")
 	if got.Mode != desktopLaunchFileCompanion || !got.Explicit || !got.Place || got.Notice != "" {

@@ -249,6 +249,7 @@ func (a *App) executeRemoteControl(op string, body json.RawMessage) (any, error)
 	case "create_task":
 		var req struct {
 			Name string `json:"name"`
+			Mode string `json:"mode"`
 		}
 		if err := json.Unmarshal(body, &req); err != nil {
 			return nil, errors.New("远控请求无效")
@@ -257,7 +258,18 @@ func (a *App) executeRemoteControl(op string, body json.RawMessage) (any, error)
 		if name == "" {
 			return nil, errors.New("请填写任务名称")
 		}
-		created := a.CreateTask(name, "")
+		// Only local modes make sense on a controlled machine: SSH remote
+		// targets can not be configured through remote control.
+		var mode string
+		switch strings.ToLower(strings.TrimSpace(req.Mode)) {
+		case "", "chat":
+			mode = ""
+		case "coding_dev", "coding", "code", "programming":
+			mode = "coding_dev"
+		default:
+			return nil, errors.New("不支持的任务模式")
+		}
+		created := a.CreateTaskWithMode(name, "", mode)
 		if strings.TrimSpace(created.ProjectPath) == "" {
 			return nil, errors.New("没有建成这个任务")
 		}

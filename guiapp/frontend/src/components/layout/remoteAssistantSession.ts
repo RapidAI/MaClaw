@@ -246,3 +246,68 @@ export function remoteAssistantClose() {
 export function remoteAssistantSessionSnapshot() {
     return current;
 }
+
+// --- Remote machine target (which computer a new task runs on) ---
+
+/** A controlled machine offered as a new-task destination. */
+export type RemoteMachineTarget = {
+    grantId: string;
+    machineName: string;
+    online: boolean;
+    /** operate permission — view-only grants cannot create tasks. */
+    operate: boolean;
+};
+
+export type RemoteMachineTargetSnapshot = {
+    machines: RemoteMachineTarget[];
+    /** Grant of the machine tab currently selected in the task sidebar. */
+    selectedGrantId: string;
+};
+
+let machineTarget: RemoteMachineTargetSnapshot = { machines: [], selectedGrantId: '' };
+const machineTargetListeners = new Set<() => void>();
+
+function sameMachineTarget(a: RemoteMachineTargetSnapshot, b: RemoteMachineTargetSnapshot) {
+    if (a.selectedGrantId !== b.selectedGrantId || a.machines.length !== b.machines.length) return false;
+    return a.machines.every((m, i) => {
+        const o = b.machines[i];
+        return o && m.grantId === o.grantId && m.machineName === o.machineName && m.online === o.online && m.operate === o.operate;
+    });
+}
+
+/** Published by useTaskRemoteControl whenever grants or the selection change. */
+export function publishRemoteMachineTarget(next: RemoteMachineTargetSnapshot) {
+    if (sameMachineTarget(machineTarget, next)) return;
+    machineTarget = next;
+    machineTargetListeners.forEach(listener => listener());
+}
+
+/** Imperative read for send paths that run outside React. */
+export function remoteMachineTargetSnapshot(): RemoteMachineTargetSnapshot {
+    return machineTarget;
+}
+
+export function useRemoteMachineTarget(): RemoteMachineTargetSnapshot {
+    return useSyncExternalStore(
+        (listener: () => void) => {
+            machineTargetListeners.add(listener);
+            return () => machineTargetListeners.delete(listener);
+        },
+        () => machineTarget,
+        () => machineTarget,
+    );
+}
+
+// --- Remote task opener ---
+
+let taskOpener: ((grantId: string, projectPath: string) => void) | null = null;
+
+/** Bound by the component owning useTaskRemoteControl (TaskMachineBar). */
+export function bindRemoteTaskOpener(fn: ((grantId: string, projectPath: string) => void) | null) {
+    taskOpener = fn;
+}
+
+/** Opens a task on the named controlled machine; no-op when nothing is bound. */
+export function remoteOpenTask(grantId: string, projectPath: string) {
+    taskOpener?.(grantId, projectPath);
+}

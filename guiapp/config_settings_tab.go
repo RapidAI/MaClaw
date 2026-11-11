@@ -111,6 +111,7 @@ var settingsTabFieldKeys = map[string][]string{
 	"pdfStyles":        {},
 	"tokenBank":        {},
 	"email":            {},
+	"github":           {"github_client_id"},
 	"virtualEmployee":  {"remote_machine_id", "favorite_employees", "favorite_employee_names"},
 	"im": {
 		"qqbot_enabled",

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { localizeText } from '../../i18n';
 import type { RemotePermission, useTaskRemoteControl } from './useTaskRemoteControl';
-import { bindRemoteAssistantActions, publishRemoteAssistantSession } from './remoteAssistantSession';
+import { bindRemoteAssistantActions, publishRemoteAssistantSession, bindRemoteTaskOpener } from './remoteAssistantSession';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { useModalFocusTrap } from '../../hooks/useModalFocusTrap';
 
@@ -15,6 +15,19 @@ function permissionLabel(lang: string, permission: string) {
     return permission === 'operate'
         ? localizeText(lang, 'Can operate', '可操作', '可操作')
         : localizeText(lang, 'View only', '仅查看', '僅查看');
+}
+
+// A granted tab shows a compact handle — a few full computer names would
+// eat the whole strip. The tooltip (and aria-label) still carries it.
+function machineTabShortLabel(lang: string, index: number) {
+    return localizeText(lang, `M${index + 1}`, `机器${index + 1}`, `機器${index + 1}`);
+}
+
+// Matches the prefers-reduced-motion block in the shell styles: smooth
+// scrolling is motion too.
+function prefersReducedMotion() {
+    return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 // The live panel expands on the newest thinking; the transcript itself keeps
@@ -184,12 +197,8 @@ export function TaskMachineBar({
     const [adding, setAdding] = useState(false);
     const [permission, setPermission] = useState<RemotePermission>('view');
     const [account, setAccount] = useState('');
-    const [createName, setCreateName] = useState('');
     const [acting, setActing] = useState(false);
     const actingRef = useRef(false);
-    // The create box stays mounted across machine tabs. Don't carry a name
-    // typed for one computer onto the next.
-    useEffect(() => { setCreateName(''); }, [remote.selected?.id]);
     const selected = remote.selected;
     const detail = remote.detail;
     const detailPath = remote.detailPath;
@@ -276,6 +285,15 @@ export function TaskMachineBar({
         publishRemoteAssistantSession(null);
         bindRemoteAssistantActions(null);
     }, []);
+    // The new-task wizard can create on any controlled machine; it asks this
+    // bridge to switch to that machine's tab and open the fresh task. Bound
+    // once: remote's identity changes every render, so dispatch through a ref.
+    const remoteRef = useRef(remote);
+    remoteRef.current = remote;
+    useEffect(() => {
+        bindRemoteTaskOpener((grantId, projectPath) => remoteRef.current.openTaskForGrant(grantId, projectPath));
+        return () => bindRemoteTaskOpener(null);
+    }, []);
     const runAction = async (work: () => Promise<unknown>) => {
         if (actingRef.current) return;
         actingRef.current = true;
@@ -292,18 +310,35 @@ export function TaskMachineBar({
     // A failure belongs next to the form the person is using. The tab row
     // only keeps it when that form is not open, so the same text is not shown twice.
     const errorInDetail = !!chatError;
-    const errorInCreate = !!(remote.error && selected && remote.creating && !errorInDetail);
     // The tab strip scrolls horizontally with the scrollbar hidden, so the
     // edges fade in wherever more tabs are waiting and the active tab walks
     // itself into view when it is selected.
     const tablistRef = useRef<HTMLDivElement | null>(null);
     const activeTabRef = useRef<HTMLButtonElement | null>(null);
-    const [tabFades, setTabFades] = useState({ left: false, right: false });
+    const [tabFades, setTabFades] = useState({ left: false, right: false, overflow: false });
     const updateTabFades = useCallback(() => {
         const el = tablistRef.current;
         if (!el) return;
         const maxScroll = el.scrollWidth - el.clientWidth;
-        setTabFades({ left: el.scrollLeft > 1, right: el.scrollLeft < maxScroll - 1 });
+        const next = { left: el.scrollLeft > 1, right: el.scrollLeft < maxScroll - 1, overflow: maxScroll > 1 };
+        // Scroll events fire per frame; skip the render when nothing moved.
+        setTabFades(prev => prev.left === next.left && prev.right === next.right && prev.overflow === next.overflow ? prev : next);
+    }, []);
+    const scrollTabs = useCallback((direction: -1 | 1) => {
+        const el = tablistRef.current;
+        if (!el) return;
+        el.scrollBy({ left: direction * Math.max(80, el.clientWidth * 0.7), behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+    }, []);
+    // A tablist moves focus with the arrow keys; activation stays on
+    // click/Enter. Focus scrolls an off-screen tab into view on its own.
+    const onTabsKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]'));
+        const index = tabs.indexOf(document.activeElement as HTMLElement);
+        if (index < 0) return;
+        event.preventDefault();
+        const step = event.key === 'ArrowRight' ? 1 : -1;
+        tabs[(index + step + tabs.length) % tabs.length]?.focus();
     }, []);
     useEffect(() => {
         updateTabFades();
@@ -316,7 +351,7 @@ export function TaskMachineBar({
     useEffect(() => {
         const el = activeTabRef.current;
         if (!el || typeof el.scrollIntoView !== 'function') return;
-        el.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+        el.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', inline: 'nearest', block: 'nearest' });
     }, [selected?.id]);
     // Vertical wheel input scrolls the strip sideways (trackpads and wheels
     // send deltaY; React's onWheel is passive, so this needs a raw listener).
@@ -336,29 +371,50 @@ export function TaskMachineBar({
 
     return (
         <div className="mc-task-machine-bar" data-testid="task-machine-bar">
-            <div className="mc-task-machine-tabs">
-                <div className="mc-task-machine-tablist-wrap">
-                    <div className="mc-task-machine-tablist" role="tablist" aria-label={localizeText(lang, 'Machines', '机器', '機器')} ref={tablistRef} onScroll={updateTabFades}>
+            {/* The local tab lives outside the scroll strip so it can never
+                be scrolled away; the ‹ › buttons only move the grant tabs. */}
+            <div className="mc-task-machine-tabs" role="tablist" aria-label={localizeText(lang, 'Machines', '机器', '機器')} onKeyDown={onTabsKeyDown}>
+                <button
+                    type="button"
+                    role="tab"
+                    aria-selected={!selected}
+                    className={`mc-task-machine-tab${!selected ? ' is-active' : ''}`}
+                    data-testid="task-machine-tab-local"
+                    onClick={remote.selectLocal}
+                >
+                    {localizeText(lang, 'MyPC', '本机', '本機')}
+                </button>
+                {tabFades.overflow ? (
                     <button
                         type="button"
-                        role="tab"
-                        aria-selected={!selected}
-                        className={`mc-task-machine-tab${!selected ? ' is-active' : ''}`}
-                        data-testid="task-machine-tab-local"
-                        onClick={remote.selectLocal}
+                        className="mc-task-machine-tab-nav mc-task-machine-tab-nav--left"
+                        data-testid="task-machine-scroll-left"
+                        aria-label={localizeText(lang, 'Scroll machines left', '向左滚动机器标签', '向左滾動機器標籤')}
+                        disabled={!tabFades.left}
+                        onClick={() => scrollTabs(-1)}
                     >
-                        {localizeText(lang, 'This computer', '本机', '本機')}
+                        ‹
                     </button>
-                    {remote.state.grants.map(grant => (
+                ) : null}
+                <div className="mc-task-machine-tablist-wrap">
+                    <div className="mc-task-machine-tablist" ref={tablistRef} onScroll={updateTabFades}>
+                    {remote.state.grants.map((grant, index) => {
+                        const machineName = grant.machine_name || grant.machine_id || '';
+                        const tabStatus = grant.online === false
+                            ? localizeText(lang, 'Offline', '离线', '離線')
+                            : permissionLabel(lang, grant.permission);
+                        const shortLabel = machineTabShortLabel(lang, index);
+                        return (
                         <span key={grant.id} className={`mc-task-machine-tab-wrap${selected?.id === grant.id ? ' is-active' : ''}`}>
                             <button
                                 type="button"
                                 role="tab"
                                 aria-selected={selected?.id === grant.id}
+                                aria-label={machineName || shortLabel}
                                 className={`mc-task-machine-tab${selected?.id === grant.id ? ' is-active' : ''}`}
                                 data-testid={`task-machine-tab-${grant.id}`}
                                 data-offline={grant.online === false ? 'true' : undefined}
-                                title={grant.online === false ? localizeText(lang, 'Offline', '离线', '離線') : permissionLabel(lang, grant.permission)}
+                                title={machineName ? `${machineName} · ${tabStatus}` : tabStatus}
                                 ref={selected?.id === grant.id ? activeTabRef : undefined}
                                 onClick={() => remote.selectGrant(grant.id)}
                             >
@@ -369,24 +425,38 @@ export function TaskMachineBar({
                                     aria-label={grant.online === false ? localizeText(lang, 'Offline', '离线', '離線') : undefined}
                                     data-testid={grant.online === false ? `task-machine-offline-${grant.id}` : undefined}
                                 />
-                                <span>{grant.machine_name || grant.machine_id}</span>
+                                <span>{shortLabel}</span>
                             </button>
                             <button
                                 type="button"
                                 className="mc-task-machine-tab-close"
-                                aria-label={localizeText(lang, `End remote control of ${grant.machine_name || grant.machine_id}`, `结束对${grant.machine_name || grant.machine_id}的远控`, `結束對${grant.machine_name || grant.machine_id}的遠控`)}
+                                aria-label={localizeText(lang, `End remote control of ${machineName || shortLabel}`, `结束对${machineName || shortLabel}的远控`, `結束對${machineName || shortLabel}的遠控`)}
+                                title={localizeText(lang, 'End remote control', '结束远控', '結束遠控')}
                                 data-testid={`task-machine-close-${grant.id}`}
-                                onClick={() => onCloseGrant(grant.id, grant.machine_name || grant.machine_id || '')}
+                                onClick={() => onCloseGrant(grant.id, machineName || shortLabel)}
                             >
                                 ×
                             </button>
                         </span>
-                    ))}
+                        );
+                    })}
                     </div>
                     <span className="mc-task-machine-tab-fade mc-task-machine-tab-fade--left" data-show={tabFades.left ? 'true' : 'false'} aria-hidden="true" />
                     <span className="mc-task-machine-tab-fade mc-task-machine-tab-fade--right" data-show={tabFades.right ? 'true' : 'false'} aria-hidden="true" />
                 </div>
-                {remote.error && remoteActivity && !errorInDetail && !errorInCreate ? (
+                {tabFades.overflow ? (
+                    <button
+                        type="button"
+                        className="mc-task-machine-tab-nav mc-task-machine-tab-nav--right"
+                        data-testid="task-machine-scroll-right"
+                        aria-label={localizeText(lang, 'Scroll machines right', '向右滚动机器标签', '向右滾動機器標籤')}
+                        disabled={!tabFades.right}
+                        onClick={() => scrollTabs(1)}
+                    >
+                        ›
+                    </button>
+                ) : null}
+                {remote.error && remoteActivity && !errorInDetail ? (
                     <span className="mc-task-machine-error" data-testid="task-machine-error" role="alert" title={remote.error}>{remote.error}</span>
                 ) : null}
                 <button
@@ -396,6 +466,7 @@ export function TaskMachineBar({
                     aria-expanded={adding}
                     aria-haspopup="dialog"
                     aria-label={localizeText(lang, 'Add a machine', '添加机器', '新增機器')}
+                    title={localizeText(lang, 'Add a machine', '添加机器', '新增機器')}
                     onClick={() => {
                         if (!adding) void remote.refresh();
                         setAdding(open => !open);
@@ -444,31 +515,6 @@ export function TaskMachineBar({
                         </section>
                     ) : null}
                 </div>
-            ) : null}
-            {selected && remote.operate && remote.creating ? (
-                <form
-                    className="mc-task-machine-create"
-                    data-testid="task-machine-create"
-                    onSubmit={(event) => {
-                        event.preventDefault();
-                        const name = createName.trim();
-                        if (!name || acting) return;
-                        void runAction(async () => {
-                            const ok = await remote.createTask(name);
-                            if (ok) setCreateName('');
-                        });
-                    }}
-                >
-                    {errorInCreate ? <p className="mc-task-machine-error" data-testid="task-machine-error" role="alert">{remote.error}</p> : null}
-                    <input
-                        data-testid="task-machine-create-name"
-                        value={createName}
-                        placeholder={localizeText(lang, 'Task name on that computer', '在对方电脑上的任务名', '在對方電腦上的任務名')}
-                        onKeyDown={(event) => { if (confirmKeyIsIme(event)) event.preventDefault(); }}
-                        onChange={(event) => setCreateName(event.target.value)}
-                    />
-                    <button type="submit" disabled={acting}>{localizeText(lang, 'Create there', '在对方新建', '在對方新建')}</button>
-                </form>
             ) : null}
             {adding ? (
                 <AddMachineDialog
