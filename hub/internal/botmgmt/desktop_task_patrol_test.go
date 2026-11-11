@@ -14,7 +14,7 @@ func TestPatrolPicksStallAndNoReceipt(t *testing.T) {
 	svc.desktopAdmits = map[string]*desktopAdmitState{
 		desktopAdmitKey("tenant-a", "alice", "bot_a", "run_stall"): {
 			runID: "run_stall", botID: "bot_a", userID: "alice", status: "running",
-			started: now.Add(-20 * time.Minute), activity: "点击",
+			started: now.Add(-30 * time.Minute), activity: "点击",
 		},
 		desktopAdmitKey("tenant-a", "alice", "bot_a", "run_ok"): {
 			runID: "run_ok", botID: "bot_a", userID: "alice", status: "succeeded",
@@ -25,7 +25,7 @@ func TestPatrolPicksStallAndNoReceipt(t *testing.T) {
 	svc.mu.Unlock()
 	svc.patrolMu.Lock()
 	svc.patrolSight = map[string]*patrolSight{
-		"tenant-a\x00alice\x00run_stall": {fingerprint: "running|点击|||||", changed: now.Add(-16 * time.Minute), notified: map[string]bool{}},
+		"tenant-a\x00alice\x00run_stall": {fingerprint: "running|点击|||||", changed: now.Add(-patrolStallAfter - time.Minute), notified: map[string]bool{}},
 		"tenant-a\x00alice\x00run_ok":    {fingerprint: "succeeded||||||", changed: now.Add(-1 * time.Minute), notified: map[string]bool{}},
 	}
 	svc.patrolMu.Unlock()

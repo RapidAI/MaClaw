@@ -232,12 +232,19 @@ func (m desktopRuntimeModule) InvokeTool(ctx context.Context, request agentrunti
 	if scopeErr != nil || strings.TrimSpace(name) != desktopToolName {
 		return m.invokeDesktopTool(ctx, request, name, args)
 	}
-	warn, stop := desktopWatchdogBefore(scope, strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args)
+	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		// The person stopped or cancelled the run: no step runs after it.
+		desktopWatchdogStopByUser(scope.RunID)
+		return "", errWatchdogStop
+	}
+	warn, stop := desktopWatchdogBefore(scope, action, args)
 	if stop != nil {
 		return "", stop
 	}
 	out, err := m.invokeDesktopTool(ctx, request, name, args)
 	desktopWatchdogAfter(scope, err)
+	desktopWatchdogResult(scope, action, args, out, err)
 	if err == nil {
 		out += warn
 	} else if warn != "" {

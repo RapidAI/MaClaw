@@ -16,3 +16,17 @@ func (c *coreAgentCallbacks) EarlyStop() (bool, string, string) {
 	}
 	return false, "", ""
 }
+
+// RunIterationGrant lets the hosting server give a run that is still making
+// measurable progress more loop iterations when its iteration budget runs
+// out, so a long task is ended by a stall, a loop or the person's stop, not
+// by a fixed count. It returns 0 to let the budget end the turn.
+var RunIterationGrant func(runID string, used, toolCalls int) int
+
+// ExtendIterationBudget implements agent.IterationBudgetExtender.
+func (c *coreAgentCallbacks) ExtendIterationBudget(used, toolCalls int) int {
+	if c == nil || RunIterationGrant == nil || c.runID == "" {
+		return 0
+	}
+	return RunIterationGrant(c.runID, used, toolCalls)
+}

@@ -703,23 +703,31 @@ const (
 	longJobSilent desktopLongJobDecision = "silent"
 	longJobNotice desktopLongJobDecision = "notice"
 	longJobResume desktopLongJobDecision = "resume"
+	// longJobHeartbeat: nothing changed for desktopLongJobHeartbeatEvery;
+	// one honest line that the job is still there and has not moved.
+	longJobHeartbeat desktopLongJobDecision = "heartbeat"
 )
+
+var desktopLongJobHeartbeatEvery = 30 * time.Minute
 
 func desktopLongJobDecide(j *desktopLongJob, prevStatus, prevFP string, prevNotice time.Time) desktopLongJobDecision {
 	if j == nil {
 		return longJobSilent
 	}
+	now := desktopLongJobNow()
 	switch j.Status {
 	case "done", "failed", "stalled":
 		if j.Status != prevStatus {
 			return longJobResume
+		}
+		if j.Status == "stalled" && j.Alive && !prevNotice.IsZero() && now.Sub(prevNotice) >= desktopLongJobHeartbeatEvery {
+			return longJobHeartbeat
 		}
 		return longJobSilent
 	}
 	if !j.Alive {
 		return longJobResume
 	}
-	now := desktopLongJobNow()
 	if prevNotice.IsZero() {
 		return longJobNotice
 	}
@@ -728,6 +736,9 @@ func desktopLongJobDecide(j *desktopLongJob, prevStatus, prevFP string, prevNoti
 	}
 	if desktopLongJobMileRe.MatchString(j.LastTail) && j.Fingerprint != prevFP && now.Sub(prevNotice) >= desktopLongJobNoticeEvery/2 {
 		return longJobNotice
+	}
+	if now.Sub(prevNotice) >= desktopLongJobHeartbeatEvery {
+		return longJobHeartbeat
 	}
 	return longJobSilent
 }
@@ -785,7 +796,15 @@ func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec deskt
 	if j == nil || strings.TrimSpace(j.InstanceID) == "" {
 		return nil
 	}
-	if err := desktopLongJobSay(ctx, j, desktopLongJobNoticeText(j, dec)); err != nil {
+	sayJob := j
+	if dec == longJobHeartbeat {
+		// Same status and output as the last line: its own key, so Hub's
+		// dedupe does not swallow it, one per heartbeat window.
+		cp := *j
+		cp.Fingerprint += "|hb" + strconv.FormatInt(desktopLongJobNow().Unix()/int64(desktopLongJobHeartbeatEvery/time.Second), 10)
+		sayJob = &cp
+	}
+	if err := desktopLongJobSay(ctx, sayJob, desktopLongJobNoticeText(j, dec)); err != nil {
 		return err
 	}
 	if dec == longJobResume {
@@ -848,6 +867,13 @@ func desktopLongJobNoticeText(j *desktopLongJob, dec desktopLongJobDecision) str
 		if !j.Alive {
 			head = "后台任务的进程已不在"
 		}
+	}
+	if dec == longJobHeartbeat {
+		since := j.LastChange
+		if since.IsZero() {
+			since = j.Started
+		}
+		head = "后台任务还在，自 " + since.Format("15:04") + " 起没有新的输出（不是新进展）"
 	}
 	age := desktopLongJobNow().Sub(j.Started).Round(time.Minute)
 	text := head + "（任务 " + desktopLongJobShortID(j.ID) + "，已运行 " + age.String() + "，最近一次检查 " + j.LastPoll.Format("15:04") + "）。"

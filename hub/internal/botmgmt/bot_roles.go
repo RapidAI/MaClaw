@@ -89,7 +89,9 @@ func (s *Service) routerReceiveFinding(f watchFinding) {
 func routerWordFinding(f watchFinding) string {
 	switch f.Reason {
 	case "stalled":
-		return "这件我停住了：很久没有进展，我先收手，页面保持原样。你说一声我接着做。"
+		// The watcher only sees that the run's status has not changed; it
+		// does not stop the run, so it must not say it stopped.
+		return "这件还在进行，但已经有一阵没看到新的进展。我没有停下它；如果确实卡住，会停下并告诉你卡在哪、还剩什么。"
 	case "no_receipt":
 		return "这件做完了，桌面上就是结果，你看一眼。"
 	case "attention":

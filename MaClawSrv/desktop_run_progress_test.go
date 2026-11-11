@@ -19,10 +19,13 @@ func TestD101LiveRunProgressIsSaid(t *testing.T) {
 	t.Cleanup(func() { desktopLongJobNow = time.Now; desktopLongJobSayFunc = prev })
 	scope := agentruntime.Scope{TenantID: "tenant_default", UserID: "u_1::desk::bot_1", InstanceID: "inst_1", RunID: "run_progress_1"}
 	desktopRunProgressSay(scope, "bash", "15:00 epoch 1 step 100/803 loss=0.31", nil)
-	now = base.Add(11 * time.Minute)
+	now = base.Add(9 * time.Minute)
+	// A screenshot's text is not a measurement; a publish failure is not progress.
 	desktopRunProgressSay(scope, "screenshot", "epoch 1 step 400/803 loss=0.25", nil)
 	desktopRunProgressSay(scope, "bash", "published: failed to load picture", nil)
-	desktopRunProgressSay(scope, "bash", "Warning: added host\n15:11 epoch 1 step 450/803 loss=0.24", nil)
+	desktopRunProgressSay(scope, "bash", "Warning: added host\n15:09 epoch 1 step 450/803 loss=0.24", nil)
+	now = base.Add(11 * time.Minute)
+	desktopRunProgressSay(scope, "screenshot", "", nil)
 	select {
 	case b := <-said:
 		text, _ := b["text"].(string)

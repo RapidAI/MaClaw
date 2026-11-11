@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,16 +25,37 @@ import (
 // run never ends silently or loops until the hard limit.
 
 const (
-	watchdogLoopWarn    = 4 // same call this many times in the window: warn
+	watchdogLoopWarn    = 4 // same call with the same result this many times in the window: warn
 	watchdogLoopStop    = 6 // ... and stop
 	watchdogLoopWindow  = 12
 	watchdogErrStop     = 8 // consecutive failed steps
 	watchdogRefuseStop  = 10
-	watchdogMaxSteps    = 160
-	watchdogMaxWall     = 60 * time.Minute
-	watchdogStallAfter  = 15 * time.Minute
 	watchdogSweepPeriod = time.Minute
 )
+
+// A run is not stopped by the clock while it is making real progress
+// (Daniel, Nov 11 16:32: 只要在推进就可以不停，除非用户主动要求). It stops on a
+// genuine stall (no measurable progress for watchdogStallAfter), a loop,
+// repeated failures, the person's stop, or — only as a runaway guard — the
+// very high ceilings below. All three are configurable.
+var (
+	watchdogStallAfter = desktopEnvMinutes("MACLAW_RUN_STALL_MINUTES", 20*time.Minute)
+	watchdogMaxWall    = desktopEnvMinutes("MACLAW_RUN_MAX_MINUTES", 12*time.Hour)
+	watchdogMaxSteps   = desktopEnvInt("MACLAW_RUN_MAX_STEPS", 2000, 50, 1000000)
+	// watchdogWeakOnly: clicks that succeed and screens that change are
+	// progress, but a run with only those (no file, goal check, log line
+	// or metric) for this long is wandering, not working.
+	watchdogWeakOnly = desktopEnvMinutes("MACLAW_RUN_WEAK_PROGRESS_MINUTES", time.Hour)
+	// watchdogNow is the clock; tests move it.
+	watchdogNow = time.Now
+)
+
+func desktopEnvMinutes(name string, def time.Duration) time.Duration {
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name))); err == nil && v > 0 {
+		return time.Duration(v) * time.Minute
+	}
+	return def
+}
 
 type watchdogRun struct {
 	started  time.Time
@@ -50,6 +73,26 @@ type watchdogRun struct {
 	wrote []string
 	// ok: steps that succeeded.
 	ok int
+	// lastProgress is when a step last changed something measurable
+	// (state, a file, a goal check, a log or metric, the screen after an
+	// action); progressWhy says what. A run is stalled when it has not
+	// progressed for watchdogStallAfter, whatever its age.
+	lastProgress time.Time
+	lastStrong   time.Time
+	progressWhy  string
+	progressN    int
+	// seen: normalized results already observed in this run.
+	seen        map[string]bool
+	lastMetrics string
+	lastGoal    string
+	lastAction  string
+	lastLook    bool
+	// pending: the call Before saw whose result has not been reported.
+	pending  string
+	inflight bool
+	// still: the last few steps that changed nothing, for the stall reply.
+	still []string
+	scope agentruntime.Scope
 }
 
 var (
@@ -74,8 +117,8 @@ func watchdogSig(action string, args map[string]any) string {
 func watchdogGet(runID string) *watchdogRun {
 	w, ok := watchdogRuns[runID]
 	if !ok {
-		now := time.Now()
-		w = &watchdogRun{started: now, lastStep: now, warned: map[string]bool{}}
+		now := watchdogNow()
+		w = &watchdogRun{started: now, lastStep: now, lastProgress: now, lastStrong: now, warned: map[string]bool{}, seen: map[string]bool{}}
 		watchdogRuns[runID] = w
 	}
 	return w
@@ -92,8 +135,21 @@ func desktopWatchdogBefore(scope agentruntime.Scope, action string, args map[str
 	watchdogMu.Lock()
 	defer watchdogMu.Unlock()
 	w := watchdogGet(scope.RunID)
+	w.scope = scope
+	now := watchdogNow()
+	if w.lastProgress.IsZero() {
+		w.lastProgress = w.started
+	}
+	if w.lastStrong.IsZero() {
+		w.lastStrong = w.started
+	}
+	if w.pending != "" {
+		// The last call never reported a result: it moved nothing.
+		watchdogPushSig(w, w.pending)
+	}
 	w.steps++
-	w.lastStep = time.Now()
+	w.lastStep = now
+	w.pending, w.inflight = sig, true
 	if action == "file_write" || action == "file_edit" || action == "deliver" {
 		if p := strings.TrimSpace(desktopArg(args, "path")); p != "" && len(w.wrote) < 50 {
 			seen := false
@@ -105,36 +161,151 @@ func desktopWatchdogBefore(scope agentruntime.Scope, action string, args map[str
 			}
 		}
 	}
-	w.sigs = append(w.sigs, sig)
-	if len(w.sigs) > watchdogLoopWindow {
-		w.sigs = w.sigs[len(w.sigs)-watchdogLoopWindow:]
-	}
-	same := 0
+	// same: how often this exact call already ran in the window without
+	// moving anything, plus this one. A call that keeps returning new
+	// output (tailing a training log) is not a loop.
+	same := 1
 	for _, s := range w.sigs {
 		if s == sig {
 			same++
 		}
 	}
 	switch {
+	case w.stop != "":
 	case same >= watchdogLoopStop:
 		w.stop = "loop"
+	case now.Sub(w.lastProgress) >= watchdogStallAfter, now.Sub(w.lastStrong) >= watchdogWeakOnly:
+		w.stop = "stalled"
 	case w.steps >= watchdogMaxSteps:
 		w.stop = "steps"
-	case time.Since(w.started) >= watchdogMaxWall:
+	case now.Sub(w.started) >= watchdogMaxWall:
 		w.stop = "wall"
 	}
 	if w.stop != "" {
-		log.Printf("[watchdog] run=%s stop=%s steps=%d", scope.RunID, w.stop, w.steps)
+		w.pending, w.inflight = "", false
+		log.Printf("[watchdog] run=%s stop=%s steps=%d since_progress=%s", scope.RunID, w.stop, w.steps, now.Sub(w.lastProgress).Round(time.Second))
 		return "", errWatchdogStop
 	}
 	if same >= watchdogLoopWarn && !w.warned["loop:"+sig] {
 		w.warned["loop:"+sig] = true
-		return "\nWATCHDOG: this exact " + action + " call has now run " + itoa(same) + " times in this run without moving the task on. Do not repeat it: use a different method, or end the turn and say plainly what is blocking.", nil
+		return "\nWATCHDOG: this exact " + action + " call has now run " + itoa(same) + " times in this run with the same result. Do not repeat it: use a different method, or end the turn and say plainly what is blocking.", nil
+	}
+	if idle := now.Sub(w.lastProgress); idle >= watchdogStallAfter/2 && !w.warned["stall"] {
+		w.warned["stall"] = true
+		return "\nWATCHDOG: nothing measurable has changed for " + itoa(int(idle.Minutes())) + " minutes (no new state, file, goal-check result, log line or screen). If the task is stuck, stop and say where and why; at " + itoa(int(watchdogStallAfter.Minutes())) + " minutes without progress this run is ended.", nil
 	}
 	return "", nil
 }
 
-var errWatchdogStop = watchdogError("refused: watchdog_stop — this run is being ended by the watchdog (looping, repeated failures or over its budget). Do not call any more tools; give your final result now in one or two short first-person sentences: what is done, what is not, and what you need.")
+func watchdogPushSig(w *watchdogRun, sig string) {
+	w.sigs = append(w.sigs, sig)
+	if len(w.sigs) > watchdogLoopWindow {
+		w.sigs = w.sigs[len(w.sigs)-watchdogLoopWindow:]
+	}
+}
+
+// desktopWatchdogStopByUser ends a run the person stopped or cancelled: no
+// further step runs, whatever progress it was making.
+func desktopWatchdogStopByUser(runID string) {
+	if runID == "" {
+		return
+	}
+	watchdogMu.Lock()
+	defer watchdogMu.Unlock()
+	w := watchdogGet(runID)
+	if w.stop == "" {
+		w.stop = "user"
+		log.Printf("[watchdog] run=%s stop=user", runID)
+	}
+}
+
+// watchdogTimeRe: clock times and dates, which change in any output and are
+// not progress by themselves.
+var watchdogTimeRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]?|\b\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?\b|\b1[6-9]\d{8}(\d{3})?\b`)
+
+// desktopWatchdogResult judges whether a finished step made measurable
+// progress. Progress: a successful step whose result is new in this run
+// (changed state), a new or changed file, a changed goal check, a new
+// measured log/metric line, or a new screen right after an action.
+func desktopWatchdogResult(scope agentruntime.Scope, action string, args map[string]any, out string, err error) {
+	if scope.RunID == "" {
+		return
+	}
+	action = strings.ToLower(strings.TrimSpace(action))
+	watchdogMu.Lock()
+	defer watchdogMu.Unlock()
+	w := watchdogGet(scope.RunID)
+	sig := w.pending
+	w.pending, w.inflight = "", false
+	if sig == "" {
+		sig = watchdogSig(action, args)
+	}
+	why, strong := "", false
+	if err == nil {
+		norm := watchdogTimeRe.ReplaceAllString(out, "#")
+		sum := sha1.Sum([]byte(action + "|" + norm))
+		h := hex.EncodeToString(sum[:8])
+		fresh := !w.seen[h]
+		if len(w.seen) < 8192 {
+			w.seen[h] = true
+		}
+		look := desktopLookActions[action]
+		switch {
+		case action == "file_write" || action == "file_edit" || action == "deliver":
+			ps := sha1.Sum([]byte(action + "|" + desktopArg(args, "path") + "|" + desktopArg(args, "content") + "|" + desktopArg(args, "new_text")))
+			k := "w:" + hex.EncodeToString(ps[:8])
+			if !w.seen[k] {
+				w.seen[k] = true
+				why, strong = "写出文件 "+desktopRuneHead(strings.TrimSpace(desktopArg(args, "path")), 80), true
+			}
+		case action == "goal_check":
+			if g := strings.TrimSpace(norm); g != "" && g != w.lastGoal {
+				w.lastGoal = g
+				why, strong = "目标检查结果有变化", true
+			}
+		case action == "bash" || action == "job_status":
+			if m := desktopRunProgressLines(out); m != "" && m != w.lastMetrics {
+				w.lastMetrics = m
+				lines := strings.Split(m, "\n")
+				why, strong = "指标推进："+desktopRuneHead(lines[len(lines)-1], 120), true
+			} else if fresh {
+				why, strong = action+" 有新的输出", true
+			}
+		case look:
+			if fresh && w.lastAction != "" && !w.lastLook {
+				why = "操作后屏幕有新状态"
+			}
+		default:
+			if fresh {
+				why = action + " 成功"
+			}
+		}
+		w.lastLook = look
+	}
+	w.lastAction = action
+	if why != "" {
+		if strong {
+			w.lastStrong = watchdogNow()
+		}
+		w.lastProgress = watchdogNow()
+		w.progressWhy = why
+		w.progressN++
+		w.still = nil
+		watchdogPushSig(w, "+")
+		return
+	}
+	watchdogPushSig(w, sig)
+	label := action
+	if err != nil {
+		label += "（失败）"
+	}
+	w.still = append(w.still, label)
+	if len(w.still) > 6 {
+		w.still = w.still[len(w.still)-6:]
+	}
+}
+
+var errWatchdogStop = watchdogError("refused: watchdog_stop — this run is being ended by the watchdog (stopped by the person, no measurable progress for a long time, looping, repeated failures, or its runaway ceiling). Do not call any more tools; give your final result now in a few short first-person sentences: what is done (with measured evidence such as metrics or files), where it got stuck and why, what is left, and whether a background job is still running and how its result will reach the person.")
 
 type watchdogError string
 
@@ -184,7 +355,7 @@ func desktopWatchdogVerdict(runID string) (string, bool) {
 	// gets one turn after the stop to say what is done and what is not,
 	// which only it knows (a training stage, a metric). A run that keeps
 	// calling tools ends here. Loops and failures end at once.
-	if !w.graced && (w.stop == "wall" || w.stop == "steps") {
+	if !w.graced && (w.stop == "wall" || w.stop == "steps" || w.stop == "stalled") {
 		w.graced = true
 		return "", false
 	}
@@ -206,27 +377,46 @@ var desktopWatchdogWhy = map[string]string{
 	"loop":    "同一步反复执行没有推进",
 	"errors":  "接连几步失败",
 	"refused": "接连几步被拒绝",
-	"stalled": "很久没有进展",
-	"steps":   "步数用完",
-	"wall":    "超过了单次任务的时间上限",
+	"stalled": "很久没有可测的进展",
+	"steps":   "到了单次任务的步数安全上限",
+	"wall":    "到了单次任务的安全时间上限",
+	"user":    "任务被取消",
 }
 
 // desktopWatchdogReplyFor is the stop reply with what the run concretely
 // left behind (steps, time, files) and that the rest is not done.
 func desktopWatchdogReplyFor(w *watchdogRun) string {
 	text := desktopWatchdogReply(w.stop)
-	if w.stop != "wall" && w.stop != "steps" {
+	if w.stop != "wall" && w.stop != "steps" && w.stop != "stalled" {
 		return text
 	}
-	mins := int(time.Since(w.started).Minutes())
-	text = "这件还没做完：" + desktopWatchdogWhy[w.stop] + "，我先停下了，没有重复提交任何东西。"
+	mins := int(watchdogNow().Sub(w.started).Minutes())
+	if w.stop == "stalled" {
+		idle := int(watchdogNow().Sub(w.lastProgress).Minutes())
+		text = "这件我停住了：已经 " + itoa(idle) + " 分钟没有可测的进展，我先停下，没有重复提交任何东西。"
+		if len(w.still) > 0 {
+			text += "卡在这里：最近 " + itoa(len(w.still)) + " 步（" + strings.Join(w.still, "、") + "）结果都没有变化。"
+		}
+	} else {
+		limit := itoa(watchdogMaxSteps) + " 步"
+		if w.stop == "wall" {
+			limit = itoa(int(watchdogMaxWall.Hours())) + " 小时"
+		}
+		text = "这件还没做完：" + desktopWatchdogWhy[w.stop] + "（" + limit + "），我先停下了，没有重复提交任何东西。"
+	}
 	text += "已做 " + itoa(w.steps) + " 步（成功 " + itoa(w.ok) + " 步），用时约 " + itoa(mins) + " 分钟。"
+	if w.progressWhy != "" {
+		text += "最后一次可测的进展在 " + w.lastProgress.Format("15:04") + "：" + w.progressWhy + "。"
+	}
 	if len(w.wrote) > 0 {
 		files := w.wrote
 		if len(files) > 8 {
 			files = files[len(files)-8:]
 		}
 		text += "已写出的文件：" + strings.Join(files, "、") + "。"
+	}
+	if j := desktopLongJobForRun(w.scope.RunID); j != nil && (j.Status == "running" || j.Status == "stalled") {
+		text += "后台任务没有被停掉，还在跑：" + desktopLongJobLabel(j.Command) + "（任务 " + desktopLongJobShortID(j.ID) + "），有进展、结束或失败时我会告诉你。"
 	}
 	return text + "剩下的部分还没做，要继续的话跟我说一声，我从这里接着做。"
 }
@@ -239,7 +429,9 @@ func desktopWatchdogReply(why string) string {
 	case "errors", "refused":
 		return "这件我没做成：接连几步都失败了，我先停下，没有重复提交任何东西。你看一下桌面，告诉我怎么继续。"
 	case "stalled":
-		return "这件我停住了：很久没有进展，我先收手，页面保持原样。你说一声我接着做。"
+		return "这件我停住了：很久没有可测的进展，我先收手，页面保持原样。你说一声我接着做。"
+	case "user":
+		return "这件已经停下（任务被取消），之后没有再操作，也没有重复提交任何东西。"
 	}
 	return "这件花的时间太长了，我先停在当前进度，没有重复提交任何东西。要继续的话跟我说一声。"
 }
@@ -248,6 +440,9 @@ func desktopWatchdogEnd(runID string) {
 	watchdogMu.Lock()
 	delete(watchdogRuns, runID)
 	watchdogMu.Unlock()
+	desktopRunProgressMu.Lock()
+	delete(desktopRunProgressSeen, runID)
+	desktopRunProgressMu.Unlock()
 }
 
 // desktopWatchdogLoop flags runs that took no step for a long time (a hung
@@ -255,20 +450,73 @@ func desktopWatchdogEnd(runID string) {
 func desktopWatchdogLoop() {
 	t := time.NewTicker(watchdogSweepPeriod)
 	defer t.Stop()
-	for now := range t.C {
-		watchdogMu.Lock()
-		for id, w := range watchdogRuns {
-			if now.Sub(w.lastStep) > 6*time.Hour {
-				delete(watchdogRuns, id)
-				continue
-			}
-			if w.stop == "" && now.Sub(w.lastStep) > watchdogStallAfter {
-				w.stop = "stalled"
-				log.Printf("[watchdog] run=%s stalled %s without a step", id, now.Sub(w.lastStep).Round(time.Second))
-			}
-		}
-		watchdogMu.Unlock()
+	for range t.C {
+		desktopWatchdogSweepOnce(watchdogNow())
 	}
+}
+
+// desktopWatchdogSweepOnce flags stalled runs and gives each live run its
+// periodic status (desktop_run_progress.go), also while one long step runs.
+func desktopWatchdogSweepOnce(now time.Time) {
+	var live []agentruntime.Scope
+	watchdogMu.Lock()
+	for id, w := range watchdogRuns {
+		if now.Sub(w.lastStep) > watchdogMaxWall+time.Hour {
+			delete(watchdogRuns, id)
+			continue
+		}
+		idle := now.Sub(w.lastProgress)
+		// A step still running is judged when it returns; only a step
+		// hung far past the stall window flags the run.
+		if w.stop == "" && ((!w.inflight && idle > watchdogStallAfter) || (w.inflight && now.Sub(w.lastStep) > 3*watchdogStallAfter)) {
+			w.stop = "stalled"
+			log.Printf("[watchdog] run=%s stalled %s without measurable progress", id, idle.Round(time.Second))
+		}
+		if w.stop == "" && w.scope.RunID != "" {
+			live = append(live, w.scope)
+		}
+	}
+	watchdogMu.Unlock()
+	for _, sc := range live {
+		desktopRunStatusTick(sc, now)
+	}
+}
+
+// desktopWatchdogSnapshot is what the status line reports for a run.
+type desktopWatchdogSnap struct {
+	started, lastProgress time.Time
+	steps, ok, progressN  int
+	progressWhy, metrics  string
+	wrote                 []string
+	stop                  string
+}
+
+func desktopWatchdogSnapshot(runID string) (desktopWatchdogSnap, bool) {
+	watchdogMu.Lock()
+	defer watchdogMu.Unlock()
+	w, ok := watchdogRuns[runID]
+	if !ok {
+		return desktopWatchdogSnap{}, false
+	}
+	return desktopWatchdogSnap{started: w.started, lastProgress: w.lastProgress, steps: w.steps, ok: w.ok, progressN: w.progressN, progressWhy: w.progressWhy, metrics: w.lastMetrics, wrote: append([]string(nil), w.wrote...), stop: w.stop}, true
+}
+
+// desktopWatchdogGrant gives a run that is still progressing more model
+// iterations, so the loop's iteration budget is no clock either. A stopped,
+// stalled or runaway run gets none.
+func desktopWatchdogGrant(runID string, used, toolCalls int) int {
+	watchdogMu.Lock()
+	defer watchdogMu.Unlock()
+	w, ok := watchdogRuns[runID]
+	if !ok || w.stop != "" || toolCalls <= 0 {
+		return 0
+	}
+	now := watchdogNow()
+	if now.Sub(w.lastProgress) >= watchdogStallAfter || w.steps >= watchdogMaxSteps || now.Sub(w.started) >= watchdogMaxWall {
+		return 0
+	}
+	log.Printf("[watchdog] run=%s still progressing (%s); %d more iterations after %d", runID, w.progressWhy, 100, used)
+	return 100
 }
 
 // desktopEnsureReceipt makes every finished desktop run end with exactly one
@@ -434,10 +682,14 @@ func desktopRunOutcome(runID string, msg *agentservice.Message) (string, string)
 	// was recorded done after its time limit). A more specific not-done
 	// cause found above stays.
 	if stop, ok := desktopWatchdogStopped(runID); ok && (outcome == "" || outcome == agentservice.TaskOutcomeDone) {
-		if desktopRunEverWorked(runID) {
-			return agentservice.TaskOutcomePartial, "stopped: " + desktopWatchdogWhy[stop]
+		why := "stopped: " + desktopWatchdogWhy[stop]
+		if snap, ok := desktopWatchdogSnapshot(runID); ok && snap.progressWhy != "" {
+			why += "；最后一次可测的进展 " + snap.lastProgress.Format("15:04") + "：" + snap.progressWhy
 		}
-		return agentservice.TaskOutcomeBlocked, "stopped: " + desktopWatchdogWhy[stop]
+		if desktopRunEverWorked(runID) {
+			return agentservice.TaskOutcomePartial, why
+		}
+		return agentservice.TaskOutcomeBlocked, why
 	}
 	return outcome, why
 }

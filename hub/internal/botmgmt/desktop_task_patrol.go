@@ -12,8 +12,12 @@ import (
 // finding per run and reason; never spam.
 
 const (
-	patrolEvery      = time.Minute
-	patrolStallAfter = 15 * time.Minute
+	patrolEvery = time.Minute
+	// srv ends a run only after 20 minutes without measurable progress
+	// (MaClawSrv desktop_watchdog.go) and says the run's status itself; this
+	// watcher stays behind that window so it never contradicts a run that
+	// is still progressing.
+	patrolStallAfter = 25 * time.Minute
 	patrolQuietAge   = 2 * time.Minute // brand-new runs stay quiet
 )
 

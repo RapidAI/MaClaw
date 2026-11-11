@@ -4,7 +4,11 @@ import "github.com/RapidAI/CodeClaw/corelib/agentservice"
 
 // A publish with a final state ends the run with its templated reply: the
 // model gets no further turn in which to retry, wander or narrate.
-func init() { agentservice.RunGoalReached = desktopPublishSettled }
+func init() {
+	agentservice.RunGoalReached = desktopPublishSettled
+	// A run that still progresses is not ended by the iteration count.
+	agentservice.RunIterationGrant = desktopWatchdogGrant
+}
 
 func desktopPublishSettled(runID string) (string, bool) {
 	// A request naming several sites is settled only when every site is.

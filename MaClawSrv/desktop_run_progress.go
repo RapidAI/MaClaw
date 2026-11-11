@@ -12,56 +12,109 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // A live run that keeps checking a long job itself (papers 2026-11-11: Bot 1
 // trained on the Mac mini for an hour, tailing the log every 90 s) told the
-// person nothing until it ended. desktopRunProgressSay posts the measured
-// progress lines a run's own step read (epoch, step, loss, metrics) to the
-// person through Hub's say, at most every desktopRunProgressEvery, once the
-// run has been working for that long. Nothing is said for a short run.
+// person nothing until it ended. Runs now have no clock limit while they
+// progress, so every run that is still working says a short status through
+// Hub's say at most every desktopRunProgressEvery once it has worked that
+// long: what is done (steps, files, measured lines), the last measured
+// progress, what it is doing now and what is next. When nothing changed it
+// stays quiet, except one heartbeat per desktopRunHeartbeatEvery that says
+// honestly that nothing has moved. Nothing is said for a short run.
 var (
-	desktopRunProgressEvery = 10 * time.Minute
-	desktopRunProgressMu    sync.Mutex
-	desktopRunProgressSeen  = map[string]*desktopRunProgressState{}
+	desktopRunProgressEvery  = 10 * time.Minute
+	desktopRunHeartbeatEvery = 30 * time.Minute
+	desktopRunProgressMu     sync.Mutex
+	desktopRunProgressSeen   = map[string]*desktopRunProgressState{}
 )
 
 type desktopRunProgressState struct {
 	first, lastSay time.Time
-	lastText       string
+	lastFP         string
+	metrics        string
+	saying         bool
 }
 
+// desktopRunProgressSay is the per-step hook: it keeps the measured lines a
+// step read and gives the run its status when one is due.
 func desktopRunProgressSay(scope agentruntime.Scope, action, out string, err error) {
-	if err != nil || strings.TrimSpace(scope.RunID) == "" || strings.TrimSpace(scope.InstanceID) == "" {
+	if strings.TrimSpace(scope.RunID) == "" || strings.TrimSpace(scope.InstanceID) == "" {
 		return
 	}
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "bash", "job_status":
-	default:
-		return
+	lines := ""
+	if err == nil {
+		switch strings.ToLower(strings.TrimSpace(action)) {
+		case "bash", "job_status":
+			lines = desktopRunProgressLines(out)
+		}
 	}
-	lines := desktopRunProgressLines(out)
 	now := desktopLongJobNow()
 	desktopRunProgressMu.Lock()
+	st := desktopRunProgressGetLocked(scope.RunID, now)
+	if lines != "" {
+		st.metrics = lines
+	}
+	desktopRunProgressMu.Unlock()
+	desktopRunStatusTick(scope, now)
+}
+
+func desktopRunProgressGetLocked(runID string, now time.Time) *desktopRunProgressState {
 	if len(desktopRunProgressSeen) > 512 {
 		desktopRunProgressSeen = map[string]*desktopRunProgressState{}
 	}
-	st := desktopRunProgressSeen[scope.RunID]
+	st := desktopRunProgressSeen[runID]
 	if st == nil {
 		st = &desktopRunProgressState{first: now}
-		desktopRunProgressSeen[scope.RunID] = st
+		if snap, ok := desktopWatchdogSnapshot(runID); ok && !snap.started.IsZero() && snap.started.Before(now) {
+			st.first = snap.started
+		}
+		desktopRunProgressSeen[runID] = st
 	}
-	due := lines != "" && lines != st.lastText && now.Sub(st.first) >= desktopRunProgressEvery &&
-		(st.lastSay.IsZero() || now.Sub(st.lastSay) >= desktopRunProgressEvery)
-	if due {
-		st.lastSay, st.lastText = now, lines
-	}
-	first := st.first
-	desktopRunProgressMu.Unlock()
-	if !due {
+	return st
+}
+
+// desktopRunStatusTick says the run's status when one is due (per step and
+// from the watchdog sweep, so a run inside one long step is heard too).
+func desktopRunStatusTick(scope agentruntime.Scope, now time.Time) {
+	if strings.TrimSpace(scope.RunID) == "" || strings.TrimSpace(scope.InstanceID) == "" {
 		return
 	}
-	sum := sha1.Sum([]byte(lines))
+	snap, tracked := desktopWatchdogSnapshot(scope.RunID)
+	if tracked && snap.stop != "" {
+		return
+	}
+	desktopRunProgressMu.Lock()
+	st := desktopRunProgressGetLocked(scope.RunID, now)
+	metrics := st.metrics
+	if metrics == "" && tracked {
+		metrics = snap.metrics
+	}
+	fp := metrics
+	if tracked {
+		fp = strconv.Itoa(snap.progressN) + "|" + strconv.Itoa(len(snap.wrote)) + "|" + metrics
+	}
+	age := now.Sub(st.first)
+	since := now.Sub(st.lastSay)
+	changed := fp != st.lastFP && (metrics != "" || (tracked && snap.progressN > 0))
+	heartbeat := !st.lastSay.IsZero() && !changed && since >= desktopRunHeartbeatEvery
+	due := !st.saying && age >= desktopRunProgressEvery && (st.lastSay.IsZero() || since >= desktopRunProgressEvery) && (changed || heartbeat)
+	if !due {
+		desktopRunProgressMu.Unlock()
+		return
+	}
+	prevSay, prevFP := st.lastSay, st.lastFP
+	st.lastSay, st.lastFP, st.saying = now, fp, true
+	desktopRunProgressMu.Unlock()
+
+	text := desktopRunStatusText(scope, snap, tracked, metrics, age, heartbeat, now)
+	key := fp
+	if heartbeat {
+		key += "|hb" + strconv.FormatInt(now.Unix()/int64(desktopRunHeartbeatEvery/time.Second), 10)
+	}
+	sum := sha1.Sum([]byte(key))
 	j := &desktopLongJob{
 		ID:          scope.RunID,
 		TenantID:    scope.TenantID,
@@ -70,19 +123,60 @@ func desktopRunProgressSay(scope agentruntime.Scope, action, out string, err err
 		Status:      "running",
 		Fingerprint: hex.EncodeToString(sum[:8]),
 	}
-	text := "进度（这件还在做，已 " + strconv.Itoa(int(now.Sub(first).Minutes())) + " 分钟，下面是刚读到的输出）：\n" + lines
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := desktopLongJobSay(ctx, j, text); err != nil {
-			log.Printf("[desktop-progress] run=%s progress not said: %v", scope.RunID, err)
-			desktopRunProgressMu.Lock()
-			if st := desktopRunProgressSeen[scope.RunID]; st != nil {
-				st.lastSay, st.lastText = time.Time{}, ""
+		err := desktopLongJobSay(ctx, j, text)
+		desktopRunProgressMu.Lock()
+		if st := desktopRunProgressSeen[scope.RunID]; st != nil {
+			st.saying = false
+			if err != nil {
+				// Nothing reached the person: the next step or sweep says it.
+				st.lastSay, st.lastFP = prevSay, prevFP
 			}
-			desktopRunProgressMu.Unlock()
+		}
+		desktopRunProgressMu.Unlock()
+		if err != nil {
+			log.Printf("[desktop-progress] run=%s status not said: %v", scope.RunID, err)
 		}
 	}()
+}
+
+// desktopRunStatusText: done, last progress, now and next, from measured
+// facts only.
+func desktopRunStatusText(scope agentruntime.Scope, snap desktopWatchdogSnap, tracked bool, metrics string, age time.Duration, heartbeat bool, now time.Time) string {
+	var b strings.Builder
+	b.WriteString("进度（这件还在做，已 " + strconv.Itoa(int(age.Minutes())) + " 分钟）：")
+	if tracked {
+		b.WriteString("已做 " + strconv.Itoa(snap.steps) + " 步（成功 " + strconv.Itoa(snap.ok) + " 步）")
+		if len(snap.wrote) > 0 {
+			files := snap.wrote
+			if len(files) > 4 {
+				files = files[len(files)-4:]
+			}
+			b.WriteString("，写出文件 " + strings.Join(files, "、"))
+		}
+		b.WriteString("。")
+		if heartbeat || snap.progressWhy == "" {
+			b.WriteString("自 " + snap.lastProgress.Format("15:04") + " 起没有新的可测进展；超过 " + strconv.Itoa(int(watchdogStallAfter.Minutes())) + " 分钟仍没有进展我会停下并告诉你卡在哪。")
+		} else {
+			b.WriteString("最近一次进展 " + snap.lastProgress.Format("15:04") + "：" + snap.progressWhy + "。")
+		}
+	}
+	if metrics != "" {
+		b.WriteString("\n刚读到的输出：\n" + metrics)
+	}
+	if act := strings.TrimSpace(loadDesktopActivity(scope.RunID)); act != "" {
+		b.WriteString("\n现在：" + act)
+	}
+	if strings.TrimSpace(scope.SessionID) != "" {
+		if pc, ok := desktopbot.RecallProgress(scope.SessionID); ok {
+			if next := strings.TrimSpace(pc.Sections.NextStep); next != "" {
+				b.WriteString("\n下一步：" + desktopRuneHead(desktopLongJobSecretRe.ReplaceAllString(next, "$1***"), 160))
+			}
+		}
+	}
+	return b.String()
 }
 
 // desktopRunProgressLines keeps the last few measured-progress lines.
