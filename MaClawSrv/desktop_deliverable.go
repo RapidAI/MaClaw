@@ -41,7 +41,12 @@ func desktopSlotHasPicture(slot *desktopShotSlot) bool {
 	if slot.ready && slot.shot.Data != "" {
 		return true
 	}
-	return slot.fileReady && strings.HasPrefix(strings.ToLower(slot.file.MimeType), "image/")
+	for _, f := range slot.files {
+		if strings.HasPrefix(strings.ToLower(f.MimeType), "image/") {
+			return true
+		}
+	}
+	return false
 }
 
 // ensureDesktopPictureDelivered runs at the run's completion, while the

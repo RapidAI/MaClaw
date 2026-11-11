@@ -98,6 +98,8 @@ func netWriteKind(u string, headers map[string]any) string {
 type netFailure struct {
 	at   time.Time
 	what string
+	// kind is the failed write's kind (netWriteKind); "" when unknown.
+	kind string
 }
 
 var netWriteMethods = map[string]bool{"POST": true, "PUT": true, "PATCH": true, "DELETE": true}
@@ -174,7 +176,7 @@ func (t *netTracker) on(ev CDPEvent) {
 			t.json[p.RequestID] = true
 		}
 		if what, ok := t.open[p.RequestID]; ok && p.Response.Status >= 400 {
-			t.failures = append(t.failures, netFailure{time.Now(), what + " → HTTP " + itoa(p.Response.Status)})
+			t.failures = append(t.failures, netFailure{time.Now(), what + " → HTTP " + itoa(p.Response.Status), t.kindOf(p.RequestID)})
 		}
 	case "Network.loadingFinished":
 		if what, ok := t.open[p.RequestID]; ok {
@@ -203,7 +205,7 @@ func (t *netTracker) on(ev CDPEvent) {
 				w.done, w.ok = true, false
 			}
 			if !p.Canceled {
-				t.failures = append(t.failures, netFailure{time.Now(), what + " → " + p.ErrorText})
+				t.failures = append(t.failures, netFailure{time.Now(), what + " → " + p.ErrorText, t.kindOf(p.RequestID)})
 			}
 		}
 	}
@@ -225,6 +227,42 @@ func (t *netTracker) idleFor() (int, time.Duration) {
 		last = t.fetched
 	}
 	return len(t.open), time.Since(last)
+}
+
+// kindOf is the kind of a logged write (caller holds t.mu).
+func (t *netTracker) kindOf(id string) string {
+	if w := t.find(id); w != nil {
+		return w.kind
+	}
+	return ""
+}
+
+// uploadFailedSince lists picture/file uploads that failed after since.
+// Other writes the page makes meanwhile (Zhihu's background
+// POST /api/v3/oauth/sign_in → 400 on a signed-in editor, Nov 11) are not a
+// picture's upload and must not fail it.
+func (t *netTracker) uploadFailedSince(since time.Time) []string {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []string
+	for _, f := range t.failures {
+		if f.kind == netKindUpload && f.at.After(since) {
+			out = append(out, f.what)
+		}
+	}
+	return out
+}
+
+// uploadFailureText names the failed uploads, or every failed write when no
+// upload is among them (the caller already counted an upload failure).
+func (t *netTracker) uploadFailureText(since time.Time) string {
+	if f := t.uploadFailedSince(since); len(f) > 0 {
+		return strings.Join(f, "; ")
+	}
+	return strings.Join(t.failedSince(since), "; ")
 }
 
 // failedSince lists writing requests that failed after since.
@@ -338,7 +376,7 @@ func (t *netTracker) readAnswer(id, what string) {
 	}
 	if why := jsonRefusal(r.Body); why != "" {
 		t.mu.Lock()
-		t.refusals = append(t.refusals, netFailure{time.Now(), what + " → " + why})
+		t.refusals = append(t.refusals, netFailure{at: time.Now(), what: what + " → " + why, kind: t.kindOf(id)})
 		t.answer(id, "refused: "+why)
 		t.mu.Unlock()
 		return

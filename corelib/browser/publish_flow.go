@@ -824,7 +824,7 @@ func (p *publishRun) waitUpload(t0 time.Time, before uploadState, images bool, h
 		}
 		started, ok, failed, open := p.net.uploadStats(t0)
 		if failed > 0 {
-			return "", true, fmt.Errorf("the site's upload via %s failed (%d of %d request(s)): %s; nothing was submitted", how, failed, started, strings.Join(p.net.failedSince(t0), "; "))
+			return "", true, fmt.Errorf("the site's upload via %s failed (%d of %d request(s)): %s; nothing was submitted", how, failed, started, p.net.uploadFailureText(t0))
 		}
 		if started > 0 && open == 0 && ok >= minInt(want, 1) && (ok >= want || time.Now().After(startBy)) {
 			p.uploadVia = how
@@ -1991,7 +1991,7 @@ func (p *publishRun) pasteImages() (string, error) {
 	if p.net != nil {
 		started, ok, failed, _ := p.net.uploadStats(t0)
 		if failed > 0 {
-			return "", fmt.Errorf("pasted %d picture(s) but the site's upload failed (%s); nothing was submitted", pasted, strings.Join(p.net.failedSince(t0), "; "))
+			return "", fmt.Errorf("pasted %d picture(s) but the site's upload failed (%s); nothing was submitted", pasted, p.net.uploadFailureText(t0))
 		}
 		return fmt.Sprintf("pasted %d image(s) into the body; editor imgs %d->%d; upload requests %d (ok %d)", pasted, b, a, started, ok), nil
 	}

@@ -3313,8 +3313,10 @@ type desktopShotSlot struct {
 	mu        sync.Mutex
 	shot      agent.MessageAttachment
 	ready     bool
-	file      agent.MessageAttachment
-	fileReady bool
+	// files are this request's delivered files in order. Their encoded
+	// total stays within desktop.FileDeliverBase64Max: the reply body Hub and
+	// the GUI read is sized for one screenshot plus that much.
+	files     []agent.MessageAttachment
 	savedPath string
 	// request is the person's message, so the run's end knows whether a
 	// picture was asked for (desktop_deliverable.go).
@@ -3553,9 +3555,23 @@ func noteDesktopFile(ctx context.Context, name, mime string, raw []byte) error {
 		Size:     int64(len(raw)),
 	}
 	slot.mu.Lock()
-	slot.file = file
-	slot.fileReady = true
-	slot.mu.Unlock()
+	defer slot.mu.Unlock()
+	// A second deliver used to replace the first: four snake screenshots
+	// delivered one by one reached the chat as one (Nov 11). Each file is
+	// kept; the same name delivered again replaces its earlier copy.
+	kept := make([]agent.MessageAttachment, 0, len(slot.files)+1)
+	total := len(encoded)
+	for _, f := range slot.files {
+		if f.FileName == name {
+			continue
+		}
+		kept = append(kept, f)
+		total += len(f.Data)
+	}
+	if total > desktop.FileDeliverBase64Max {
+		return fmt.Errorf("desktop document is too large to send together with the %d file(s) already attached to this reply; send fewer or smaller files", len(kept))
+	}
+	slot.files = append(kept, file)
 	return nil
 }
 
@@ -3605,25 +3621,28 @@ func attachDesktopShot(msg *agentservice.Message, slot *desktopShotSlot) int {
 	return 1
 }
 
-// attachDesktopFile moves this request's document onto the reply. The slot
+// attachDesktopFile moves this request's documents onto the reply. The slot
 // is emptied either way, including when the reply has no message.
 func attachDesktopFile(msg *agentservice.Message, slot *desktopShotSlot) int {
 	if slot == nil {
 		return 0
 	}
 	slot.mu.Lock()
-	file, ok := slot.file, slot.fileReady
-	slot.file = agent.MessageAttachment{}
-	slot.fileReady = false
+	files := slot.files
+	slot.files = nil
 	slot.mu.Unlock()
-	if !ok || msg == nil || file.Data == "" {
+	if msg == nil {
 		return 0
 	}
-	next := make([]agent.MessageAttachment, len(msg.Attachments)+1)
-	copy(next, msg.Attachments)
-	next[len(msg.Attachments)] = file
-	msg.Attachments = next
-	return 1
+	n := 0
+	for _, file := range files {
+		if file.Data == "" {
+			continue
+		}
+		msg.Attachments = append(append([]agent.MessageAttachment(nil), msg.Attachments...), file)
+		n++
+	}
+	return n
 }
 
 // desktopScreenshotEncode keeps the display's pixel grid. app_run clicks use

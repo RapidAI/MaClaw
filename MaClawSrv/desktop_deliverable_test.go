@@ -123,3 +123,31 @@ func TestD98DeliveredImageFileCounts(t *testing.T) {
 	})
 	ensureDesktopPictureDelivered(ctx, "run_d98e", "done")
 }
+
+// Snake, Nov 11 10:38: four deliver calls, one file reached the chat.
+func TestD98EveryDeliveredFileRides(t *testing.T) {
+	ctx, slot := withDesktopShotSlot(context.Background())
+	for _, n := range []string{"a.png", "b.png", "c.png", "b.png"} {
+		if err := noteDesktopFile(ctx, n, "image/png", []byte("\x89PNG\r\n\x1a\n"+n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	msg := &agentservice.Message{Content: "好了"}
+	if n := attachDesktopFile(msg, slot); n != 3 || len(msg.Attachments) != 3 {
+		t.Fatalf("attached %d: %+v", n, msg.Attachments)
+	}
+	if attachDesktopFile(&agentservice.Message{}, slot) != 0 {
+		t.Fatal("slot not emptied")
+	}
+}
+
+func TestD98DeliveredFilesShareOneBudget(t *testing.T) {
+	ctx, _ := withDesktopShotSlot(context.Background())
+	big := make([]byte, 400_000)
+	if err := noteDesktopFile(ctx, "a.pdf", "application/pdf", big); err != nil {
+		t.Fatal(err)
+	}
+	if err := noteDesktopFile(ctx, "b.pdf", "application/pdf", big); err == nil || !strings.Contains(err.Error(), "together with") {
+		t.Fatalf("err = %v", err)
+	}
+}

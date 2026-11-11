@@ -161,7 +161,7 @@ func (p *publishRun) waitMarkdownLink(obj string, k int, known map[string]bool, 
 		time.Sleep(500 * time.Millisecond)
 		ok, _, failed, _ := p.net.uploadStats(t0)
 		if failed > 0 {
-			return "", fmt.Errorf("the site's upload failed: %s", strings.Join(p.net.failedSince(t0), "; "))
+			return "", fmt.Errorf("the site's upload failed: %s", p.net.uploadFailureText(t0))
 		}
 		text := p.mdText(obj)
 		for i, u := range have {

@@ -364,7 +364,7 @@ func (p *publishRun) checkStructure(obj, where string) (string, error) {
 				return sum, fmt.Errorf("%s: %d picture(s) are not stored by the site yet; publishing now would drop them", where, pending)
 			}
 		} else {
-			if fails := p.net.failedSince(start.Add(-publishUploadLookback)); len(fails) > 0 {
+			if fails := p.net.uploadFailedSince(start.Add(-publishUploadLookback)); len(fails) > 0 {
 				return sum, fmt.Errorf("%s: %d picture(s) not stored: the site's upload failed (%s)", where, pending, strings.Join(fails, "; "))
 			}
 			if n, since := p.net.idleFor(); n == 0 && since > publishUploadIdle {
