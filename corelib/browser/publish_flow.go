@@ -1033,7 +1033,52 @@ func clipRunes(s string, n int) string {
 }
 
 func (p *publishRun) fillTitle() (string, error) {
-	return p.fill("title", p.titleExpr(), p.spec.Title, false)
+	out, err := p.fill("title", p.titleExpr(), p.spec.Title, false)
+	if err != nil {
+		return out, err
+	}
+	if n, max := p.titleOverLimit(); max > 0 && n > max {
+		// A submit with an over-long title is refused by the page without
+		// leaving the editor (11-11 22:25: a 31-character title on a page
+		// counting 31/20 ended as an unconfirmed submit).
+		return out, fmt.Errorf("the page allows at most %d characters in the title and it now holds %d (the page shows %d/%d): call publish again with a title= of %d characters or fewer", max, n, n, max, max)
+	}
+	return out, nil
+}
+
+// titleLimitJS reads the title field's own limit: a maxlength, or an
+// "n/max" counter next to the field (up to three levels up).
+const titleLimitJS = `function() {
+	const ml = parseInt(this.getAttribute && this.getAttribute('maxlength') || '', 10);
+	const val = (this.value !== undefined ? this.value : this.innerText || '');
+	const len = [...val].length;
+	if (ml > 0) return JSON.stringify({n: len, max: ml});
+	let el = this;
+	for (let i = 0; i < 3 && el && el.parentElement; i++) {
+		el = el.parentElement;
+		const t = (el.innerText || '').slice(0, 400);
+		const m = t.match(/(\d{1,4})\s*\/\s*(\d{1,4})(?!\d)/);
+		// Only a counter of this field: its first number is the title's length.
+		if (m && Math.abs(parseInt(m[1], 10) - len) <= 1) return JSON.stringify({n: parseInt(m[1], 10), max: parseInt(m[2], 10)});
+	}
+	return '';
+}`
+
+// titleOverLimit returns the title length and the page's limit (0: none).
+func (p *publishRun) titleOverLimit() (int, int) {
+	obj, _ := p.element(p.titleExpr())
+	if obj == "" {
+		return 0, 0
+	}
+	v, _ := p.call(obj, titleLimitJS)
+	var out struct {
+		N   int `json:"n"`
+		Max int `json:"max"`
+	}
+	if v == "" || json.Unmarshal([]byte(v), &out) != nil || out.Max < 4 || out.Max > 2000 {
+		return 0, 0
+	}
+	return out.N, out.Max
 }
 
 func (p *publishRun) fillBody() (string, error) {
