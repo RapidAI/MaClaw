@@ -52,6 +52,7 @@ type CommandRunner func(ctx context.Context, stdin io.Reader, args ...string) (o
 type Service struct {
 	// botOwners: see stopOwnerOnlyWhileBotsBusy.
 	botOwners     sync.Map
+	botShare      botShare
 	Run           Runner
 	RunCommand    CommandRunner
 	AdvertiseHost string
@@ -476,6 +477,7 @@ func (s *Service) openSessionUnlocked(ctx context.Context, spec Spec) (Session, 
 		return Session{}, err
 	}
 	spec, _ = normalize(spec)
+	spec = s.shareSpec(spec)
 	restored, err := s.runtime().Restore(ctx, spec)
 	if err != nil {
 		return Session{}, err
