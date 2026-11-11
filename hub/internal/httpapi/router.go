@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/localrelay"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/capability"
@@ -450,6 +451,8 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/desktop-services/screenshot", PostDesktopScreenshotHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/ctl", PostDesktopCtlHandler(desktopPool, botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/tool", PostDesktopToolHandler(desktopPool))
+	mux.HandleFunc("POST /api/v1/desktop-services/relay", PostLocalRelayHandler(botSvc))
+	mux.HandleFunc("GET "+localrelay.ConnectPath, LocalRelayConnectHandler())
 	mux.HandleFunc("POST /api/v1/desktop-services/proxy-mode", PostDesktopProxyModeHandler(desktopPool))
 	mux.HandleFunc("GET /api/admin/desktop-services/proxy-mode", requireTenantAdmin(GetDesktopProxyModeAdminHandler(desktopPool)))
 	mux.HandleFunc("PUT /api/admin/desktop-services/proxy-mode", requireTenantAdmin(PutDesktopProxyModeAdminHandler(desktopPool)))
@@ -498,6 +501,7 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/v1/bots/{id}/style", BotStyleHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/style/rollback", BotStyleHandler(botSvc, identity))
 	mux.HandleFunc("DELETE /api/v1/bots/{id}", DeleteBotUserHandler(botSvc, identity))
+	mux.HandleFunc("GET "+localrelay.LinkPath, GetLocalRelayLinkHandler(identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/messages", PostBotMessageHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/runs/{runID}/supplement", PostBotRunSupplementHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/followup", PostBotFollowUpHandler(botSvc, identity))
