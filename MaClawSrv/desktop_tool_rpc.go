@@ -318,10 +318,6 @@ func runDesktopHubTool(ctx context.Context, scope agentruntime.Scope, action str
 		Action:     strings.TrimSpace(action),
 		Args:       desktopToolArgs(args),
 	}
-	scratchNote := ""
-	if strings.EqualFold(strings.TrimSpace(action), "bash") {
-		scratchNote = desktopBotScratch(scope, call.Args)
-	}
 	if desktopToolNeedsDisplay(action) {
 		call.Display = desktopRoundDisplay(scope)
 		if call.Display == "" {
@@ -345,9 +341,6 @@ func runDesktopHubTool(ctx context.Context, scope agentruntime.Scope, action str
 		return "", err
 	}
 	text := strings.TrimSpace(outcome.Text)
-	if scratchNote != "" {
-		text = scratchNote + text
-	}
 	if id := strings.TrimSpace(outcome.AttachmentID); id != "" {
 		if text == "" {
 			return id, nil

@@ -206,21 +206,32 @@ func TestDesktopD97ColdStartNotCountedAndInfraBlockExpires(t *testing.T) {
 	}
 }
 
-// Isolated bots get their own scratch folder; the owner's desktop does not.
+// Every run gets its own scratch folder under its bot's (11-12: parallel
+// runs of one bot overwrote each other's files in /tmp/maclaw-<bot>).
 func TestDesktopD97PerBotScratch(t *testing.T) {
 	req := d97Env(t)
 	args := map[string]any{"command": "ls /tmp"}
 	note := desktopBotScratch(req.Scope, args)
-	if !strings.Contains(note, "/tmp/maclaw-bot_e0e4") || !strings.Contains(args["command"].(string), "export TMPDIR=/tmp/maclaw-bot_e0e4; ls /tmp") {
-		t.Fatalf("note=%q cmd=%q", note, args["command"])
+	dir := desktopBotScratchDir(req.Scope)
+	if !strings.HasPrefix(dir, "/tmp/maclaw-bot_e0e4/run-") || !strings.Contains(note, dir) || !strings.Contains(args["command"].(string), "export TMPDIR="+dir+"; ls /tmp") {
+		t.Fatalf("dir=%q note=%q cmd=%q", dir, note, args["command"])
 	}
 	if again := desktopBotScratch(req.Scope, map[string]any{"command": "pwd"}); again != "" {
 		t.Fatal("folder named once per run")
 	}
+	noRun := req.Scope
+	noRun.RunID = ""
+	if got := desktopBotScratchDir(noRun); got != "/tmp/maclaw-bot_e0e4" {
+		t.Fatalf("no run id keeps the per-bot folder: %q", got)
+	}
 	owner := req.Scope
 	owner.UserID = "daniel"
+	if got := desktopBotScratchDir(owner); !strings.HasPrefix(got, "/tmp/maclaw-main/run-") {
+		t.Fatalf("owner desktop run folder: %q", got)
+	}
+	owner.RunID = ""
 	if desktopBotScratchDir(owner) != "" {
-		t.Fatal("owner desktop keeps /tmp")
+		t.Fatal("owner desktop without a run keeps /tmp")
 	}
 }
 

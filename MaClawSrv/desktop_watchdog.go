@@ -202,6 +202,30 @@ func desktopWatchdogBefore(scope agentruntime.Scope, action string, args map[str
 	return "", nil
 }
 
+// desktopWatchdogCredit moves the run's progress clocks forward by d: time a
+// step spent queued for the screen behind another task is not a stall.
+func desktopWatchdogCredit(runID string, d time.Duration) {
+	if runID == "" || d <= 0 {
+		return
+	}
+	watchdogMu.Lock()
+	defer watchdogMu.Unlock()
+	w, ok := watchdogRuns[runID]
+	if !ok {
+		return
+	}
+	now := watchdogNow()
+	shift := func(t time.Time) time.Time {
+		if t = t.Add(d); t.After(now) {
+			return now
+		}
+		return t
+	}
+	w.lastProgress = shift(w.lastProgress)
+	w.lastStrong = shift(w.lastStrong)
+	w.lastStep = shift(w.lastStep)
+}
+
 func watchdogPushSig(w *watchdogRun, sig string) {
 	w.sigs = append(w.sigs, sig)
 	if len(w.sigs) > watchdogLoopWindow {
@@ -448,6 +472,7 @@ func desktopWatchdogReply(why string) string {
 }
 
 func desktopWatchdogEnd(runID string) {
+	desktopScreenLeaseEndRun(runID, "run_end")
 	watchdogMu.Lock()
 	delete(watchdogRuns, runID)
 	watchdogMu.Unlock()

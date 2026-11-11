@@ -801,7 +801,7 @@ func desktopUnaskedFileCheck(action string, args map[string]any, request string)
 	if !bad {
 		return nil
 	}
-	return fmt.Errorf("refused: unasked_file — this is a publish task and the request did not ask for a file: the published link is the result. Keep drafts and pictures under /tmp or the task folder; do not save receipts or copies to the person's folders or attach them")
+	return fmt.Errorf("refused: unasked_file — this is a publish task and the request did not ask for a file: the published link is the result. Keep drafts and pictures in this run's scratch folder ($TMPDIR) or the task folder; do not save receipts or copies to the person's folders or attach them")
 }
 
 // desktopPublishAskRegexp: a request to post somewhere. No site list is

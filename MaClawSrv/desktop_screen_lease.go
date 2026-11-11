@@ -1,0 +1,445 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+)
+
+// Screen lease (Daniel 11-12 06:29 「改」).
+//
+// One bot can run several tasks at once. Their shell, file, training and code
+// steps run side by side, but they share one screen and one browser: two runs
+// clicking, typing or switching tabs at the same time wreck each other's flow.
+// So a step that uses the screen or the browser first takes the lease of that
+// screen (the desktop user key: an isolated bot's own display, or the owner's
+// shared desktop). Another run of the same screen waits in FIFO order; its
+// non-screen steps never wait.
+//
+// Granularity: the lease belongs to the RUN, not to a single click. Once a
+// run holds it, its next screen steps go straight through, so a login, a
+// form or a publish flow is not interleaved with another task between
+// steps. It passes on when:
+//   - the run ends (round finish or the run's receipt), or
+//   - another run is waiting and the holder has had no screen step in flight
+//     for screenLeaseIdle (it is thinking for long or doing non-screen work), or
+//   - another run is waiting and the holder has held it for screenLeaseMaxHold
+//     (taken only between its steps, never mid-step), or
+//   - the holder's step has been in flight for screenLeaseStale (a hung or
+//     crashed step must not keep the screen forever).
+// A waiter gives up after screenLeaseMaxWait with an error the model reads.
+// A run that gets the screen back after another task used it is told to
+// look again before reusing earlier refs.
+// MACLAW_SCREEN_LEASE=off turns the lease off.
+
+var (
+	screenLeaseIdle    = desktopEnvSeconds("MACLAW_SCREEN_LEASE_IDLE_SECONDS", 120*time.Second)
+	screenLeaseMaxHold = desktopEnvMinutes("MACLAW_SCREEN_LEASE_MAX_HOLD_MINUTES", 15*time.Minute)
+	screenLeaseStale   = desktopEnvMinutes("MACLAW_SCREEN_LEASE_STALE_MINUTES", 20*time.Minute)
+	screenLeaseMaxWait = desktopEnvMinutes("MACLAW_SCREEN_LEASE_WAIT_MINUTES", 30*time.Minute)
+	screenLeaseTick    = 2 * time.Second
+	screenLeaseNow     = time.Now
+)
+
+// desktopScreenWaitPhrase is the working-row text while a run waits.
+const desktopScreenWaitPhrase = "正在等待屏幕"
+
+// desktopScreenLeaseOn is false in this package's tests (most tests start
+// many runs on one user without ending them); the lease tests turn it on.
+var desktopScreenLeaseOn = true
+
+func desktopScreenLeaseEnabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("MACLAW_SCREEN_LEASE")))
+	return desktopScreenLeaseOn && v != "off" && v != "0" && v != "false"
+}
+
+// desktopScreenLeaseNonScreen are the actions that never touch the screen or
+// the browser. Every other action (including an unknown one) takes the lease.
+var desktopScreenLeaseNonScreen = map[string]bool{
+	"file_read": true, "file_write": true, "file_edit": true, "file_list": true,
+	"bash": true, "install": true, "http": true, "deliver": true, "skill_list": true,
+	"job_status": true, "job_list": true, "request_takeover": true,
+	"notify_main": true, "report": true, "say": true, "check_inbox": true, "delegate": true,
+	"list_assignments": true, "accept_result": true, "return_result": true,
+	"shop_compare_offers": true, "proxy_mode": true, "recover": true, "goal_check": true,
+}
+
+// desktopScreenLeaseNeeded reports a step that uses the screen or browser.
+// A bash that starts a GUI program draws on the screen too.
+func desktopScreenLeaseNeeded(action string, args map[string]any) bool {
+	action = strings.ToLower(strings.TrimSpace(action))
+	if action == "" {
+		return false
+	}
+	if action == "bash" {
+		return desktopBashLaunchesGUI(desktopArg(args, "command"))
+	}
+	return !desktopScreenLeaseNonScreen[action]
+}
+
+type screenLeaseWaiter struct {
+	run     string
+	ch      chan struct{}
+	granted bool
+	aborted bool
+	since   time.Time
+}
+
+type screenLease struct {
+	holder        string
+	since         time.Time // holder got it
+	lastUse       time.Time // holder's last screen step ended (or began)
+	inflight      int
+	inflightSince time.Time
+	prev          string          // holder before the current one
+	held          map[string]bool // runs that held this screen
+	waiters       []*screenLeaseWaiter
+}
+
+type screenLeases struct {
+	mu     sync.Mutex
+	leases map[string]*screenLease
+	// waiting: run id -> screen key, for the status line.
+	waiting map[string]string
+}
+
+var desktopScreenLeases = &screenLeases{leases: map[string]*screenLease{}, waiting: map[string]string{}}
+
+func (m *screenLeases) get(key string) *screenLease {
+	l := m.leases[key]
+	if l == nil {
+		l = &screenLease{held: map[string]bool{}}
+		m.leases[key] = l
+	}
+	return l
+}
+
+// gc drops an idle entry so the map does not grow with old screens.
+func (m *screenLeases) gc(key string, l *screenLease) {
+	if l.holder == "" && len(l.waiters) == 0 && len(l.held) == 0 {
+		delete(m.leases, key)
+	}
+}
+
+// promote hands the screen to the first waiter when it is free or the holder
+// may be passed over. Called with m.mu held.
+func (m *screenLeases) promote(key string, l *screenLease, now time.Time) {
+	if len(l.waiters) == 0 {
+		return
+	}
+	if l.holder != "" {
+		why := ""
+		switch {
+		case l.inflight > 0 && now.Sub(l.inflightSince) >= screenLeaseStale:
+			why = "stale_step"
+		case l.inflight == 0 && now.Sub(l.lastUse) >= screenLeaseIdle:
+			why = "idle"
+		case l.inflight == 0 && now.Sub(l.since) >= screenLeaseMaxHold:
+			why = "max_hold"
+		}
+		if why == "" {
+			return
+		}
+		log.Printf("[screen-lease] screen=%s passed from run=%s reason=%s held=%s waiting=%d", screenLeaseKeyLabel(key), l.holder, why, now.Sub(l.since).Round(time.Second), len(l.waiters))
+		l.prev, l.holder, l.inflight = l.holder, "", 0
+	}
+	head := l.waiters[0]
+	l.holder, l.since, l.lastUse = head.run, now, now
+	l.held[head.run] = true
+	kept := l.waiters[:0]
+	for _, w := range l.waiters {
+		if w.run == head.run {
+			w.granted = true
+			if l.inflight == 0 {
+				l.inflightSince = now
+			}
+			l.inflight++
+			delete(m.waiting, w.run)
+			close(w.ch)
+			continue
+		}
+		kept = append(kept, w)
+	}
+	l.waiters = kept
+}
+
+// screenLeaseKeyLabel keeps log lines short; the key is no secret.
+func screenLeaseKeyLabel(key string) string {
+	if len(key) > 40 {
+		return key[:40]
+	}
+	return key
+}
+
+// acquire takes the screen for one step of run. It returns the release for
+// that step, how long the run waited, and a note for the model when another
+// task used the screen since this run's last look.
+func (m *screenLeases) acquire(ctx context.Context, key, run string, onWait func(holder string, pos int)) (func(), time.Duration, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	start := screenLeaseNow()
+	m.mu.Lock()
+	l := m.get(key)
+	if l.holder == run {
+		if l.inflight == 0 {
+			l.inflightSince = start
+		}
+		l.inflight++
+		m.mu.Unlock()
+		return m.releaser(key, run), 0, "", nil
+	}
+	if l.holder == "" && len(l.waiters) == 0 {
+		prev := l.prev
+		note := m.takeLocked(l, run, start)
+		m.mu.Unlock()
+		log.Printf("[screen-lease] screen=%s run=%s acquired (free; previous holder %q)", screenLeaseKeyLabel(key), run, prev)
+		return m.releaser(key, run), 0, note, nil
+	}
+	w := &screenLeaseWaiter{run: run, ch: make(chan struct{}), since: start}
+	l.waiters = append(l.waiters, w)
+	m.waiting[run] = key
+	m.promote(key, l, start)
+	if w.granted {
+		note := m.grantedNoteLocked(l, run, 0)
+		m.mu.Unlock()
+		return m.releaser(key, run), 0, note, nil
+	}
+	holder, pos := l.holder, len(l.waiters)
+	m.mu.Unlock()
+	log.Printf("[screen-lease] screen=%s run=%s waits: run=%s has the screen, queue position %d", screenLeaseKeyLabel(key), run, holder, pos)
+	if onWait != nil {
+		onWait(holder, pos)
+	}
+	tick := time.NewTicker(screenLeaseTick)
+	defer tick.Stop()
+	for {
+		select {
+		case <-w.ch:
+			waited := screenLeaseNow().Sub(start)
+			m.mu.Lock()
+			if w.aborted {
+				m.mu.Unlock()
+				return func() {}, waited, "", fmt.Errorf("screen_busy: this run ended while it waited for the screen")
+			}
+			note := m.grantedNoteLocked(m.get(key), run, waited)
+			m.mu.Unlock()
+			log.Printf("[screen-lease] screen=%s run=%s acquired after waiting %s", screenLeaseKeyLabel(key), run, waited.Round(time.Second))
+			return m.releaser(key, run), waited, note, nil
+		case <-ctx.Done():
+			waited := screenLeaseNow().Sub(start)
+			m.abandon(key, w)
+			log.Printf("[screen-lease] screen=%s run=%s stopped waiting (%v) after %s", screenLeaseKeyLabel(key), run, ctx.Err(), waited.Round(time.Second))
+			return func() {}, waited, "", ctx.Err()
+		case <-tick.C:
+			now := screenLeaseNow()
+			m.mu.Lock()
+			l := m.get(key)
+			m.promote(key, l, now)
+			granted := w.granted
+			timedOut := !granted && now.Sub(start) >= screenLeaseMaxWait
+			holder := l.holder
+			m.mu.Unlock()
+			if granted {
+				continue // the closed channel answers on the next turn
+			}
+			if timedOut {
+				m.abandon(key, w)
+				log.Printf("[screen-lease] screen=%s run=%s gave up after %s: run=%s still has the screen", screenLeaseKeyLabel(key), run, now.Sub(start).Round(time.Second), holder)
+				return func() {}, now.Sub(start), "", fmt.Errorf("screen_busy: another task of this bot has been using the screen for %d minutes. Do the parts that need no screen (bash, files) now, or end this turn and say plainly that this step waits for the other task", int(now.Sub(start).Minutes()))
+			}
+		}
+	}
+}
+
+// takeLocked gives a free screen to run.
+func (m *screenLeases) takeLocked(l *screenLease, run string, now time.Time) string {
+	l.holder, l.since, l.lastUse, l.inflight, l.inflightSince = run, now, now, 1, now
+	note := ""
+	if l.held[run] && l.prev != "" && l.prev != run {
+		note = desktopScreenLeaseNote(0)
+	}
+	l.held[run] = true
+	return note
+}
+
+func (m *screenLeases) grantedNoteLocked(l *screenLease, run string, waited time.Duration) string {
+	if l.prev != "" && l.prev != run && (waited > 0 || l.held[run]) {
+		return desktopScreenLeaseNote(waited)
+	}
+	return ""
+}
+
+func desktopScreenLeaseNote(waited time.Duration) string {
+	if waited >= time.Second {
+		return fmt.Sprintf("(another task of this bot was using the screen; this step waited %ds for it. Windows, tabs or the page may have changed since your last look: check the screen before reusing earlier refs or coordinates.)\n", int(waited.Round(time.Second).Seconds()))
+	}
+	return "(another task of this bot used the screen since your last look. Windows, tabs or the page may have changed: check the screen before reusing earlier refs or coordinates.)\n"
+}
+
+// abandon removes a waiter that stopped waiting. A grant that raced with the
+// stop is handed back.
+func (m *screenLeases) abandon(key string, w *screenLeaseWaiter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l := m.get(key)
+	if w.granted {
+		if l.holder == w.run && l.inflight > 0 {
+			l.inflight--
+			l.lastUse = screenLeaseNow()
+			if l.inflight == 0 && len(l.waiters) > 0 {
+				// It never used the screen: the next waiter need not wait out the idle time.
+				l.prev, l.holder = l.holder, ""
+			}
+		}
+	} else {
+		kept := l.waiters[:0]
+		for _, x := range l.waiters {
+			if x != w {
+				kept = append(kept, x)
+			}
+		}
+		l.waiters = kept
+	}
+	if m.waiting[w.run] == key {
+		delete(m.waiting, w.run)
+	}
+	m.promote(key, l, screenLeaseNow())
+	m.gc(key, l)
+}
+
+// releaser ends one step. The run keeps the screen; it passes on by the
+// rules above. A step that was passed over (stale) changes nothing.
+func (m *screenLeases) releaser(key, run string) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			l := m.get(key)
+			if l.holder != run {
+				return
+			}
+			if l.inflight > 0 {
+				l.inflight--
+			}
+			now := screenLeaseNow()
+			l.lastUse = now
+			m.promote(key, l, now)
+		})
+	}
+}
+
+// endRun frees every screen the run holds and drops its waits. Safe to call
+// more than once and for a run that never used the screen.
+func (m *screenLeases) endRun(run, why string) {
+	run = strings.TrimSpace(run)
+	if run == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := screenLeaseNow()
+	delete(m.waiting, run)
+	for key, l := range m.leases {
+		if l.holder == run {
+			log.Printf("[screen-lease] screen=%s run=%s released (%s) after %s, waiting=%d", screenLeaseKeyLabel(key), run, why, now.Sub(l.since).Round(time.Second), len(l.waiters))
+			l.prev, l.holder, l.inflight = run, "", 0
+		}
+		kept := l.waiters[:0]
+		for _, w := range l.waiters {
+			if w.run == run {
+				w.aborted = true
+				close(w.ch)
+				continue
+			}
+			kept = append(kept, w)
+		}
+		l.waiters = kept
+		delete(l.held, run)
+		if l.prev == run && l.holder == "" && len(l.waiters) == 0 {
+			l.prev = ""
+		}
+		m.promote(key, l, now)
+		m.gc(key, l)
+	}
+}
+
+// waitingFor reports whether run is queued for a screen, and who holds it.
+func (m *screenLeases) waitingFor(run string) (string, int, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key, ok := m.waiting[strings.TrimSpace(run)]
+	if !ok {
+		return "", 0, false
+	}
+	l := m.leases[key]
+	if l == nil {
+		return "", 0, false
+	}
+	for i, w := range l.waiters {
+		if w.run == run {
+			return l.holder, i + 1, true
+		}
+	}
+	return l.holder, 0, true
+}
+
+// desktopScreenLeaseEndRun is called when a run ends (or its round finishes).
+func desktopScreenLeaseEndRun(runID, why string) {
+	desktopScreenLeases.endRun(runID, why)
+}
+
+// desktopScreenLeaseStatus is the status-line text of a run that waits.
+func desktopScreenLeaseStatus(runID string) string {
+	_, pos, ok := desktopScreenLeases.waitingFor(runID)
+	if !ok {
+		return ""
+	}
+	if pos > 1 {
+		return fmt.Sprintf("等待屏幕：另一任务正在使用（排第 %d）", pos)
+	}
+	return "等待屏幕：另一任务正在使用"
+}
+
+// desktopScreenLeaseStep takes the screen for one desktop step of a run when
+// that step needs it. The returned release must run when the step returns.
+func desktopScreenLeaseStep(ctx context.Context, key, runID, action string, args map[string]any) (func(), string, error) {
+	runID, key = strings.TrimSpace(runID), strings.TrimSpace(key)
+	if runID == "" || key == "" || !desktopScreenLeaseEnabled() || !desktopScreenLeaseNeeded(action, args) {
+		return func() {}, "", nil
+	}
+	prevActivity := loadDesktopActivity(runID)
+	waitedOnce := false
+	release, waited, note, err := desktopScreenLeases.acquire(ctx, key, runID, func(holder string, pos int) {
+		waitedOnce = true
+		setDesktopActivity(runID, desktopScreenWaitPhrase)
+	})
+	if waitedOnce && loadDesktopActivity(runID) == desktopScreenWaitPhrase {
+		if prevActivity == "" || prevActivity == desktopScreenWaitPhrase {
+			prevActivity = desktopActivityThinking
+		}
+		setDesktopActivity(runID, prevActivity)
+	}
+	if waited > 0 {
+		// Queueing for the screen is not a stall of this run.
+		desktopWatchdogCredit(runID, waited)
+	}
+	return release, note, err
+}
+
+// desktopScreenKey names the screen a step of this scope uses: the isolated
+// bot's own display, or the owner's shared desktop ("" when unknown).
+func desktopScreenKey(scope agentruntime.Scope) string {
+	key, err := desktopUserKey(desktopOwner(scope))
+	if err != nil {
+		return ""
+	}
+	return key
+}

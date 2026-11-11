@@ -245,7 +245,19 @@ func (m desktopRuntimeModule) InvokeTool(ctx context.Context, request agentrunti
 	if stop != nil {
 		return "", stop
 	}
+	// A screen or browser step waits here while another task of the same
+	// screen has it (desktop_screen_lease.go); other steps never wait.
+	release, leaseNote, leaseErr := desktopScreenLeaseStep(ctx, desktopScreenKey(scope), scope.RunID, action, args)
+	if leaseErr != nil {
+		desktopWatchdogAfter(scope, leaseErr)
+		desktopWatchdogResult(scope, action, args, "", leaseErr)
+		return "", leaseErr
+	}
 	out, err := m.invokeDesktopTool(ctx, request, name, args)
+	release()
+	if err == nil && leaseNote != "" {
+		out = leaseNote + out
+	}
 	desktopWatchdogAfter(scope, err)
 	desktopWatchdogResult(scope, action, args, out, err)
 	if err == nil {
@@ -848,6 +860,11 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			}
 		}
 		workNote := desktopApplyWorkdir(scope, action, args)
+		if action == "bash" {
+			// This run's own TMPDIR (desktop_scratch.go), on the Hub path
+			// and the local container path alike.
+			workNote = desktopBotScratch(scope, args) + workNote
+		}
 		withNote := func(text string, err error) (string, error) {
 			if err == nil && workNote != "" {
 				text = workNote + text
@@ -2632,6 +2649,8 @@ func finishDesktopRound(tenantID, userID, runID string) {
 	}
 	dropDesktopToolResults(runID)
 	forgetDesktopOutage(runID)
+	desktopScreenLeaseEndRun(runID, "round_end")
+	forgetDesktopScratch(runID)
 	if key == "" {
 		// A round that never recorded its desktop: the owner's desktop.
 		key, _ = desktop.UserKey(tenantID, userID)

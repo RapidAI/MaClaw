@@ -185,7 +185,9 @@ func desktopRunStatusText(scope agentruntime.Scope, snap desktopWatchdogSnap, tr
 	if metrics != "" {
 		b.WriteString("\n刚读到的输出：\n" + metrics)
 	}
-	if act := strings.TrimSpace(loadDesktopActivity(scope.RunID)); act != "" {
+	if wait := desktopScreenLeaseStatus(scope.RunID); wait != "" {
+		b.WriteString("\n现在：" + wait)
+	} else if act := strings.TrimSpace(loadDesktopActivity(scope.RunID)); act != "" {
 		b.WriteString("\n现在：" + act)
 	}
 	if strings.TrimSpace(scope.SessionID) != "" {

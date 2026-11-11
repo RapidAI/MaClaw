@@ -41,6 +41,7 @@ var desktopActivityPhrases = map[string]struct{}{
 	"正在发布":                  {},
 	"正在上传文件":                {},
 	"正在填写":                  {},
+	desktopScreenWaitPhrase: {},
 	desktopActivityThinking: {},
 }
 
