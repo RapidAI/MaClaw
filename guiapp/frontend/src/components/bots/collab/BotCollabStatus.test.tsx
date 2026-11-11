@@ -38,3 +38,20 @@ describe('BotSaidInline', () => {
         expect(el.textContent).toContain('做完了');
     });
 });
+
+describe('BotSaidInline files', () => {
+    it('shows a said note\'s files as chips that open from Hub', async () => {
+        const { render, screen, fireEvent } = await import('@testing-library/react');
+        const { BotSaidInline } = await import('./BotSaidInline');
+        const opened: string[] = [];
+        render(<BotSaidInline
+            items={[{ id: 'n1', from: 'b1', target: 'human', kind: 'say', text: '训练结束，**报告**见附件', created_at: '', files: [{ name: 'REPORT.md', size: 3, sha256: 'abc' }] }]}
+            bots={[{ id: 'b1', title: 'Bot 1' } as any]}
+            lookOf={() => ({} as any)}
+            onOpenFile={async (note, name) => { opened.push(note + '/' + name); }}
+        />);
+        fireEvent.click(screen.getByTestId('bot-said-file-n1-REPORT.md'));
+        expect(opened).toEqual(['n1/REPORT.md']);
+        expect(screen.queryByText(/\*\*报告\*\*/)).toBeNull();
+    });
+});

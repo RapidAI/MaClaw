@@ -373,6 +373,24 @@ function App() {
             if (desktopDeliveryPullAt.current === now) desktopDeliveryPullAt.current = now - 20000;
         });
     }, [config?.remote_hub_url, navTab]);
+    // A run this process is not waiting on (sent before a GUI restart or
+    // upgrade, papers 11-11 22:06: Bot 2's snake run finished at 22:10 after
+    // the GUI was upgraded mid-run) is only picked up by a pull. Pulling only
+    // on a tab change left it unfetched until Hub's 2-minute safeguard said it
+    // as text and the screenshots never showed. So pull on a timer too.
+    useEffect(() => {
+        if (!config?.remote_hub_url) return;
+        const timer = window.setInterval(() => {
+            const now = Date.now();
+            const every = navTab === 'bots' ? 20000 : 60000;
+            if (now - desktopDeliveryPullAt.current < every) return;
+            desktopDeliveryPullAt.current = now;
+            void PullDesktopBotDeliveries().catch(() => {
+                if (desktopDeliveryPullAt.current === now) desktopDeliveryPullAt.current = now - every;
+            });
+        }, 10000);
+        return () => window.clearInterval(timer);
+    }, [config?.remote_hub_url, navTab]);
     // A notification request can originate from a page whose notification panel
     // is not mounted yet. Keep it pending until the AI surface has rendered.
     const [pendingSystemNotifications, setPendingSystemNotifications] = useState(false);

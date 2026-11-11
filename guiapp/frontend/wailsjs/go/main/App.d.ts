@@ -3197,7 +3197,7 @@ export function RollbackDesktopBotStyle(arg1:string,arg2:number):Promise<{bot_id
 
 export function GetBotCollabFeatures():Promise<{assignments:boolean,peer_review:boolean,say:boolean,rooms:boolean}>;
 
-export function ListBotSaid(arg1:string):Promise<Array<{id:string,from:string,target:string,kind:string,text:string,created_at:string}>>;
+export function ListBotSaid(arg1:string):Promise<Array<{id:string,from:string,target:string,kind:string,text:string,created_at:string,files?:Array<{name:string,mime?:string,size:number,sha256:string}>}>>;
 
 export function ListBotAssignments():Promise<Array<{id:string,owner_bot:string,target_bot:string,task:string,state:string,parent_id?:string,created_at:string,last_report?:string,artifacts?:Array<string>,open_question?:string,review?:string,review_note?:string,reviewer?:string}>>;
 

@@ -28,6 +28,9 @@ type BotSaidItem struct {
 	Kind      string `json:"kind"`
 	Text      string `json:"text"`
 	CreatedAt string `json:"created_at"`
+	// Files a server-started turn (background-job check or resume) said
+	// with this message; fetch with FetchDesktopBotMailFile(id, name).
+	Files []DesktopBotMailFile `json:"files,omitempty"`
 }
 
 // BotAssignment is one delegated task as the Hub reads it.
