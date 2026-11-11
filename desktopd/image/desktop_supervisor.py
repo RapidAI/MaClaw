@@ -5555,6 +5555,42 @@ def running_bot_keys():
     return [key for key in users if is_bot_key(key) and desktop_running(key)]
 
 
+def reclaim_bot_display(users, current):
+    """Free the display number of the least recently used stopped bot.
+
+    A bot's registry entry outlives its screen: an idle or evicted bot keeps
+    its number, and a re-provisioned bot gets a new key. With only
+    DISPLAY_MAX - DISPLAY_MIN numbers, a long-lived container ran out and
+    every new bot failed to open ("no free desktop display", papers
+    2026-11-11 14:34, 31 entries for :20-:50, two of them running). A
+    stopped, idle bot loses its registry entry (number and screen token, as
+    the owner path does for other users); its files under /desktops stay,
+    and its next ensure gives it a free number and a new token. The entry is
+    removed, not left without a number, so nothing falls back to the
+    owner's :20 for it. The owner and a running, busy or taken-over bot are
+    never touched.
+    """
+    candidates = []
+    for other, item in users.items():
+        if other == current or not is_bot_key(other) or not isinstance(item, dict):
+            continue
+        try:
+            number = int(item.get("display") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not (DISPLAY_MIN < number <= DISPLAY_MAX):
+            continue
+        if desktop_running(other) or bot_busy(other):
+            continue
+        candidates.append((int(item.get("last_used") or 0), other, number))
+    if not candidates:
+        return 0
+    _, victim, number = min(candidates)
+    del users[victim]
+    log_event("display_reclaim", key=victim, display=number, kind="bot", to=current)
+    return number
+
+
 def ensure_bot(key):
     registry = load_registry()
     users = registry.setdefault("users", {})
@@ -5572,6 +5608,10 @@ def ensure_bot(key):
                 except (TypeError, ValueError):
                     pass
         free = [d for d in range(DISPLAY_MIN + 1, DISPLAY_MAX + 1) if d not in used]
+        if not free:
+            reclaimed = reclaim_bot_display(users, key)
+            if reclaimed:
+                free = [reclaimed]
         if not free:
             raise SystemExit("no free desktop display")
         entry = dict(entry or {})

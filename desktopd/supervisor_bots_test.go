@@ -333,3 +333,54 @@ print(sup.page_shows_signed_in({"url": "https://x.com/i/flow/login", "state": "c
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}
 }
+
+// A long-lived container ran out of display numbers: every bot that ever
+// opened kept its entry (papers 2026-11-11, :20-:50 all taken, a new bot
+// failed with "no free desktop display"). The least recently used stopped,
+// idle bot gives its number up; running, busy and taken-over bots and the
+// owner keep theirs.
+func TestSupervisorBotReclaimsAStoppedBotsDisplay(t *testing.T) {
+	out := runSupervisorPython(t, `
+owner = "ab" * 8
+started = []
+running = set()
+busy = set()
+sup.ensure_gates = lambda: None
+sup.ensure_watch = lambda key, display: None
+sup.ensure_bot_panel = lambda key, display: None
+sup.evict_bots = lambda key: None
+sup.touch_bot_file = lambda *a, **k: None
+sup.desktop_running = lambda key: key in running
+sup.bot_busy = lambda key: key in busy
+def start(key, display):
+    started.append((key[-2:], display)); running.add(key)
+sup.start_bot_desktop = start
+users = {owner: {"display": 20, "token": "aa" * 16, "last_used": 1}}
+bots = []
+for i, d in enumerate(range(21, 51)):
+    k = owner + "%016x" % (i + 1)
+    bots.append(k)
+    users[k] = {"display": d, "token": "bb" * 16, "last_used": 1000 + i, "bot": True}
+running.add(bots[0])          # oldest, but its screen runs
+busy.add(bots[1])             # second oldest, a task used it just now
+sup.save_registry({"users": users})
+new = owner + "ff" * 8
+got = sup.ensure(new)
+reg = sup.load_registry()["users"]
+print(got["display"], bots[2] in reg, bots[0] in reg, bots[1] in reg, reg[owner]["display"], reg[new]["display"])
+print(started)
+# Everything left runs or is busy: no number is taken from a working bot.
+for k in bots[3:]:
+    running.add(k)
+running.add(new)
+try:
+    sup.ensure(owner + "ee" * 8)
+    print("opened")
+except SystemExit as exc:
+    print("refused:", exc)
+`, botOwner)
+	want := ":23 False True True 20 23\n[('ff', 23)]\nrefused: no free desktop display"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
