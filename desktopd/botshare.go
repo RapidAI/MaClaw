@@ -63,14 +63,24 @@ func (b *botShare) note(owner, bot string, now time.Time) int {
 }
 
 // sharedCPUs is the container CPU limit for base with n active bots.
+//
+// DESKTOPD_CPUS_FLOOR (default 3, Daniel 11-12 02:12 「容器改为3核」) is the
+// least any owner container gets, new or updated on reopen, before the
+// per-bot growth; it is capped by the host like the growth.
 func sharedCPUs(base string, n int, hostCPUs int) string {
 	each := envFloat("DESKTOPD_BOT_CPUS_EACH", 0.75)
 	value, err := strconv.ParseFloat(strings.TrimSpace(base), 64)
-	if err != nil || value <= 0 || each <= 0 || n <= 1 {
+	if err != nil || value <= 0 {
 		return base
 	}
-	want := value + each*float64(n-1)
 	limit := float64(hostCPUs) - envFloat("DESKTOPD_HOST_CPU_RESERVE", 0.5)
+	want := value
+	if floor := envFloat("DESKTOPD_CPUS_FLOOR", 3); floor > want {
+		want = floor
+	}
+	if each > 0 && n > 1 {
+		want += each * float64(n-1)
+	}
 	if want > limit {
 		want = limit
 	}

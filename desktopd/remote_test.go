@@ -236,6 +236,7 @@ func TestDesktopImageKeepsTheBrowserAndTheDomainIsAPIOnly(t *testing.T) {
 }
 
 func TestSessionUsesAdvertisedHostNotContainerIP(t *testing.T) {
+	t.Setenv("DESKTOPD_CPUS_FLOOR", "0")
 	var runArgs []string
 	svc := &Service{AdvertiseHost: "docker.example", Run: func(_ context.Context, args ...string) (string, error) {
 		runArgs = append(runArgs, strings.Join(args, " "))
