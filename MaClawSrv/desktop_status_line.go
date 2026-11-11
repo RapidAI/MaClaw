@@ -53,7 +53,7 @@ func desktopLongJobStatusPhrase(j *desktopLongJob, now time.Time) string {
 	case "stalled":
 		return "后台任务还在，但 " + j.stallBound().Round(time.Minute).String() + " 没有新日志"
 	case "done":
-		return "后台任务已结束（退出码 0）"
+		return desktopLongJobDoneHead(j)
 	default:
 		return "后台任务失败"
 	}

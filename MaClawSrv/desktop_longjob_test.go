@@ -480,3 +480,85 @@ func TestD108BotReestimateMovesEstimateEnd(t *testing.T) {
 		t.Fatalf("a short check pulled the estimate in: %v", j.EstimateEnd)
 	}
 }
+
+func TestD111ReportedStallWithQuietLogStillGetsItsCheck(t *testing.T) {
+	now := time.Date(2026, 11, 12, 0, 5, 0, 0, time.Local)
+	desktopLongJobNow = func() time.Time { return now }
+	t.Cleanup(func() { desktopLongJobNow = time.Now })
+	j := &desktopLongJob{Status: "stalled", Alive: true, SessionID: "s1", Started: now.Add(-75 * time.Minute), NextCheck: now.Add(-16 * time.Minute), LastTail: "=== bert training start ==="}
+	if d := desktopLongJobDecide(j, "stalled", "", now.Add(-time.Hour)); d != longJobCheck {
+		t.Fatalf("stalled quiet log at check: %s", d)
+	}
+	j.LastTail = "epoch 1/3 loss=0.3"
+	if d := desktopLongJobDecide(j, "stalled", "", now.Add(-time.Hour)); d != longJobSilent {
+		t.Fatalf("measurable stalled log: %s", d)
+	}
+}
+
+// papers 11-11 23:49: job.log had no measurable progress (metrics in the
+// job's own files); the estimated check is a bot turn, not a canned line.
+func TestD111QuietLogCheckIsABotTurn(t *testing.T) {
+	now := time.Date(2026, 11, 11, 23, 50, 0, 0, time.Local)
+	desktopLongJobNow = func() time.Time { return now }
+	t.Cleanup(func() { desktopLongJobNow = time.Now })
+	j := &desktopLongJob{Status: "running", Alive: true, SessionID: "s1", Started: now.Add(-time.Hour), NextCheck: now.Add(-time.Second), EstimateEnd: now.Add(-40 * time.Minute), LastTail: "=== baseline start ===\nbaseline_rc=0\n=== bert training start ==="}
+	if d := desktopLongJobDecide(j, "running", "", time.Time{}); d != longJobCheck {
+		t.Fatalf("quiet log at check: %s", d)
+	}
+	j.NextCheck = now.Add(time.Minute)
+	if d := desktopLongJobDecide(j, "running", "", time.Time{}); d != longJobSilent {
+		t.Fatalf("before check: %s", d)
+	}
+	p := desktopLongJobWatchPrompt(j, longJobCheck)
+	if !strings.Contains(p, "只读命令") || !strings.Contains(p, "action=job_status") {
+		t.Fatalf("prompt: %s", p)
+	}
+}
+
+func TestD111InnerStepFailureIsNotDone(t *testing.T) {
+	j := &desktopLongJob{Status: "done", LastTail: "baseline_rc=0\n=== bert ===\ntrain_rc=1\neval_rc=0"}
+	if got := desktopLongJobDoneHead(j); !strings.Contains(got, "train_rc=1") || strings.Contains(got, "eval_rc") {
+		t.Fatalf("head %q", got)
+	}
+	if got := desktopLongJobNoticeText(j, longJobResume); !strings.Contains(got, "没成功") {
+		t.Fatalf("notice %q", got)
+	}
+	if got := desktopLongJobStatusPhrase(j, time.Now()); !strings.Contains(got, "train_rc=1") {
+		t.Fatalf("status %q", got)
+	}
+	ok := &desktopLongJob{Status: "done", LastTail: "train_rc=0\nPIPELINE_DONE"}
+	if got := desktopLongJobDoneHead(ok); strings.Contains(got, "没成功") {
+		t.Fatalf("clean run %q", got)
+	}
+	if f := desktopLongJobInnerFailures("x [exit 2] y"); len(f) != 1 || f[0] != "[exit 2]" {
+		t.Fatalf("bracket %v", f)
+	}
+}
+
+func TestD111CommandTimeLimit(t *testing.T) {
+	cases := map[string]time.Duration{
+		"timeout 7200 /root/.mm/rsh 'bash run_all.sh'": 2 * time.Hour,
+		"cd x && timeout -k 10 30m python train.py":    30 * time.Minute,
+		"python train.py --timeout 5":                  0,
+		"bash -lc 'timeout 1.5h make'":                 90 * time.Minute,
+	}
+	for cmd, want := range cases {
+		if got := desktopLongJobTimeLimit(cmd); got != want {
+			t.Fatalf("%q: %s want %s", cmd, got, want)
+		}
+	}
+	now := time.Date(2026, 11, 11, 23, 50, 0, 0, time.Local)
+	j := &desktopLongJob{Command: "timeout 7200 rsh x", Status: "running", Alive: true, Started: now.Add(-time.Hour), EstimateEnd: now.Add(3 * time.Hour), NextCheck: now.Add(-time.Second), LastTail: "step 250/1206 loss=0.33", ReportedMetrics: desktopRunProgressLines("step 250/1206 loss=0.33")}
+	desktopLongJobNow = func() time.Time { return now }
+	t.Cleanup(func() { desktopLongJobNow = time.Now })
+	if !strings.Contains(desktopLongJobView(j), "会超过时限") {
+		t.Fatalf("view: %s", desktopLongJobView(j))
+	}
+	if d := desktopLongJobDecide(j, "running", "", time.Time{}); d != longJobNotice {
+		t.Fatalf("past own limit: %s", d)
+	}
+	j.DeadlineSaid = true
+	if d := desktopLongJobDecide(j, "running", "", time.Time{}); d != longJobSilent {
+		t.Fatalf("limit said twice: %s", d)
+	}
+}
