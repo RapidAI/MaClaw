@@ -32,6 +32,9 @@ export interface DesktopBotAckContext {
     // What is left of the first reply's end-to-end budget (see
     // DESKTOP_BOT_FIRST_ACK_BUDGET_MS); the Go writer stops there too.
     budget_ms?: number;
+    // late: this line upgrades a stock receipt already on screen, so the
+    // backend gives it a longer budget than a first reply.
+    late?: boolean;
 }
 
 export type DesktopBotAckWriter = (ctx: DesktopBotAckContext) => Promise<string>;
@@ -53,6 +56,10 @@ export function desktopBotNeutralAck(ctx: Pick<DesktopBotAckContext, 'kind' | 'l
 // so the person hears back at once; a later understanding line still
 // replaces that receipt in place.
 export const DESKTOP_BOT_FIRST_ACK_BUDGET_MS = 4000;
+
+// A late line that replaces the stock receipt may take this long: the person
+// already heard back, and a slow model could not fit the first 4 s.
+export const DESKTOP_BOT_LATE_ACK_BUDGET_MS = 45000;
 
 // The receipt said when the reading is still running at the budget. It
 // claims nothing about the task: the reading may yet turn it into a question

@@ -42,6 +42,10 @@ type DesktopBotAckRequest struct {
 	// counted by the GUI from the moment the command arrived (the reading
 	// already spent the rest). Zero means the default budget.
 	BudgetMs int `json:"budget_ms,omitempty"`
+	// Late marks a line that upgrades a stock receipt already on screen. The
+	// person already heard back, so it gets desktopBotLateReplyBudget rather
+	// than the first few seconds.
+	Late bool `json:"late,omitempty"`
 }
 
 // DesktopBotStatus is the one structured state payload behind every
@@ -120,6 +124,9 @@ func desktopBotFirstReplyBudgetFor(req DesktopBotAckRequest) time.Duration {
 		return 0
 	}
 	budget := desktopBotFirstReplyBudget
+	if req.Late {
+		return desktopBotLateReplyBudget
+	}
 	if req.BudgetMs > 0 {
 		if left := time.Duration(req.BudgetMs) * time.Millisecond; budget <= 0 || left < budget {
 			budget = left
@@ -127,6 +134,12 @@ func desktopBotFirstReplyBudgetFor(req DesktopBotAckRequest) time.Duration {
 	}
 	return budget
 }
+
+// desktopBotLateReplyBudget bounds a late line that replaces the stock
+// receipt. A slow model (papers 2026-11-12: qwen4-max-preview at 11-40 s a
+// call) never fit the 4 s first-reply budget, so the receipt
+// 「收到，正在看。」 stayed as the bot's only first reply.
+var desktopBotLateReplyBudget = 45 * time.Second
 
 func desktopBotFirstReplyKind(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
@@ -139,6 +152,79 @@ func desktopBotFirstReplyKind(kind string) bool {
 // writeDesktopBotAck is WriteDesktopBotAck under a caller deadline: a caller
 // that cannot wait (continuation notices) gives up and the attempts stop.
 func (a *App) writeDesktopBotAck(parent context.Context, req DesktopBotAckRequest) (string, error) {
+	if desktopBotFirstReplyKind(req.Kind) {
+		if line, err := a.raceDesktopBotAck(parent, req); line != "" || parent.Err() != nil {
+			return line, err
+		}
+	}
+	return a.writeDesktopBotAckInOrder(parent, req)
+}
+
+// raceDesktopBotAck runs the person's own model and the Hub's shared model at
+// once for a first reply and takes the first usable line. Asked in turn, a
+// slow or hung own model used the whole few-second budget and the Hub model
+// was never tried. An empty line means neither answered; the caller then
+// tries the ordered attempts with whatever time is left.
+func (a *App) raceDesktopBotAck(parent context.Context, req DesktopBotAckRequest) (string, error) {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	type result struct {
+		line string
+		err  error
+	}
+	picks := []int{0, 2}
+	out := make(chan result, len(picks))
+	for _, i := range picks {
+		go func(i int) {
+			line, err := a.desktopBotAckAttempt(ctx, req, i)
+			out <- result{line, err}
+		}(i)
+	}
+	var lastErr error
+	for range picks {
+		r := <-out
+		if r.line != "" {
+			return r.line, nil
+		}
+		lastErr = r.err
+	}
+	return "", lastErr
+}
+
+// desktopBotAckAttempt is one entry of desktopBotAckAttempts under parent.
+func (a *App) desktopBotAckAttempt(parent context.Context, req DesktopBotAckRequest, i int) (string, error) {
+	attempt := desktopBotAckAttempts[i]
+	timeoutSec := attempt.timeoutSec
+	if deadline, ok := parent.Deadline(); ok {
+		if left := int(time.Until(deadline) / time.Second); left < timeoutSec {
+			timeoutSec = left
+		}
+		if timeoutSec < 1 {
+			timeoutSec = 1
+		}
+	}
+	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutSec+2)*time.Second)
+	defer cancel()
+	raw, err := desktopBotUnderstandLLM(ctx, a, desktopBotUnderstandRequest{
+		systemPrompt: desktopBotAckSystem + desktopBotStyleParts(),
+		userPrompt:   desktopBotAckUser(req),
+		timeoutSec:   timeoutSec,
+		fallback:     attempt.fallback,
+		hub:          attempt.hub,
+		tag:          "desktop-bot-ack",
+	})
+	if err == nil {
+		if line := desktopBotAckLine(raw, req); line != "" {
+			log.Printf("[desktop-bot-ack] kind=%s attempt=%d len=%d", req.Kind, i+1, utf8.RuneCountInString(line))
+			return line, nil
+		}
+		err = fmt.Errorf("ack was empty or unusable (raw_len=%d)", utf8.RuneCountInString(raw))
+	}
+	log.Printf("[desktop-bot-ack] kind=%s attempt=%d err=%v", req.Kind, i+1, err)
+	return "", err
+}
+
+func (a *App) writeDesktopBotAckInOrder(parent context.Context, req DesktopBotAckRequest) (string, error) {
 	user := desktopBotAckUser(req)
 	var lastErr error
 	quotaOut := false

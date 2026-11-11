@@ -95,7 +95,7 @@ import {
     WatchDesktopBot,
     WakeDesktopBot,
 } from '../../../wailsjs/go/main/App';
-import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, desktopBotAck, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotReceiptAck, desktopBotStoppingLine, desktopBotVariedFallback, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
+import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, DESKTOP_BOT_LATE_ACK_BUDGET_MS, desktopBotAck, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotReceiptAck, desktopBotStoppingLine, desktopBotVariedFallback, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
@@ -535,18 +535,30 @@ async function readDesktopBotTurnOrSend(
     persona: string,
     catalog: string,
     sendFirstMs: number,
+    onLateTold?: (told: string) => void,
 ): Promise<BotReading & { sentFirst?: boolean }> {
     const reading = readDesktopBotTurn(content, phase, lang, earlier, persona, catalog);
     if (sendFirstMs <= 0 || !content.trim()) return reading;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let sentFirst = false;
     const first = new Promise<BotReading & { sentFirst?: boolean }>(resolve => {
-        timer = setTimeout(() => resolve({ kind: 'read', told: '', instruction: content.trim(), persona: '', pace: 'direct', understood: {}, sentFirst: true }), sendFirstMs);
+        timer = setTimeout(() => {
+            sentFirst = true;
+            resolve({ kind: 'read', told: '', instruction: content.trim(), persona: '', pace: 'direct', understood: {}, sentFirst: true });
+        }, sendFirstMs);
     });
+    // The work already went out with the typed words. A reading that comes
+    // back later still has the bot's own sentence: it may replace the stock
+    // receipt, but its instruction is not sent again.
+    reading.then(late => {
+        if (!sentFirst || !onLateTold || late.kind !== 'read') return;
+        const told = String(late.told || '').trim();
+        if (told && told !== 'STOP_WORK' && told !== content.trim() && (late.pace === 'direct' || late.pace === 'confirm')) onLateTold(told);
+    }, () => undefined);
     try {
         return await Promise.race([reading, first]);
     } finally {
         if (timer) clearTimeout(timer);
-        reading.catch(() => undefined);
     }
 }
 
@@ -4939,6 +4951,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         // ackSaid: a first reply (the reading's sentence or a written line)
         // is already on its way, so the receipt is not needed.
         let ackSaid = false;
+        // upgradeReceipt asks for a model line when the receipt goes up after
+        // the turn decided it had nothing worth saying first.
+        let upgradeReceipt: (() => void) | null = null;
         const receiptIndex = (stored: DesktopBotMessage[]) => stored.findIndex(item => item.ack && desktopBotIsPlaceholderAck(item.content, lang));
         const putAckLine = (stored: DesktopBotMessage[], line: string, chips?: string[], anchorId?: string) => {
             const receiptAt = receiptIndex(stored);
@@ -4965,6 +4980,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 receiptPosted = true;
                 const receipt: DesktopBotMessage = { id: messageID(), role: 'assistant', content: desktopBotReceiptAck(lang), ack: true, understood: true };
                 commit(botId, [...stored.slice(0, at), receipt, ...stored.slice(at)]);
+                // The turn already went on without a first line of its own:
+                // ask for one now so the receipt does not stay the only reply.
+                const upgrade = upgradeReceipt;
+                upgradeReceipt = null;
+                if (upgrade) upgrade();
             }, DESKTOP_BOT_FIRST_ACK_BUDGET_MS);
         }
         // A line written after the work started upgrades the receipt in
@@ -4975,8 +4995,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const postLaterAck = (botId: string, anchorId: string, ctx: DesktopBotAckContext, chips?: string[]) => {
             ackSaid = true;
             const left = ackLeftMs();
-            const budget = left > 0 ? left : (receiptPosted ? DESKTOP_BOT_FIRST_ACK_BUDGET_MS : left);
-            void desktopBotAck(ctx, undefined, budget).then(line => {
+            const late = left <= 0 && receiptPosted;
+            const budget = left > 0 ? left : (late ? DESKTOP_BOT_LATE_ACK_BUDGET_MS : left);
+            void desktopBotAck(late ? { ...ctx, late: true } : ctx, undefined, budget).then(line => {
                 if (userIdRef.current !== ownerId) return;
                 const stored = messagesForBot(ownerId, botId);
                 if (receiptPosted && desktopBotIsPlaceholderAck(line, lang)) return;
@@ -5021,7 +5042,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 try {
                     // The reading may take long (its own budget serves the
                     // work); the receipt timer above covers the person.
-                    const reading = await readDesktopBotTurnOrSend(content, turnPhase, lang, earlier, personaForBot(ownerId, botId), desktopBotCatalog(botId, botsRef.current), botIsPrimary(botId, botsRef.current) ? 0 : DESKTOP_BOT_SEND_FIRST_MS);
+                    const reading = await readDesktopBotTurnOrSend(content, turnPhase, lang, earlier, personaForBot(ownerId, botId), desktopBotCatalog(botId, botsRef.current), botIsPrimary(botId, botsRef.current) ? 0 : DESKTOP_BOT_SEND_FIRST_MS, lateTold => {
+                        if (userIdRef.current !== ownerId) return;
+                        const stored = messagesForBot(ownerId, botId);
+                        if (receiptIndex(stored) < 0) return;
+                        ackSaid = true;
+                        commit(botId, putAckLine(stored, lateTold));
+                    });
                     if (reading.kind !== 'read') {
                         // This turn has not started. It stops here with the
                         // sentence that was typed, which is why the reading
@@ -5262,11 +5289,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // that receipt in place so the person sees the understanding
             // that arrived, without a second first-reply bubble.
             const sentence = told.trim();
-            const earlyAckPosted = !sentence && !verbatim && sendPhase === 'execute' && worthSaying;
+            // A stock receipt already on screen is always upgraded: left
+            // alone it was the bot's only, mechanical first reply.
+            const earlyAckPosted = !sentence && !verbatim && sendPhase === 'execute' && (worthSaying || receiptPosted);
             const acceptAckCtx: DesktopBotAckContext = {
                 kind: 'accept', message: content, lang, persona: personaForBot(ownerId, botId),
                 goal: str(u.goal, u.Goal), instruction,
             };
+            if (!earlyAckPosted && !sentence && !verbatim && sendPhase === 'execute' && !receiptPosted) {
+                upgradeReceipt = () => postLaterAck(botId, assistantMessage.id, { ...acceptAckCtx, files: ackFiles.map(item => item.split('/').pop() || item) }, options.length >= 2 ? options : undefined);
+            }
             if (earlyAckPosted) {
                 postLaterAck(botId, assistantMessage.id, {
                     kind: 'accept',
