@@ -2263,7 +2263,7 @@ describe('DesktopBotWorkspace', () => {
         // 快速重复点删除项也只弹一个确认框（removeLock 顶住）。
         clickBotAction('bot_1', 'delete');
         const remove = clickBotAction('bot_1', 'delete');
-        expect(screen.getAllByRole('dialog')).toHaveLength(1);
+        expect(await screen.findAllByRole('dialog')).toHaveLength(1);
         expect(remove.textContent).toBe('删除');
         expect(remove.querySelector('svg')).toBeTruthy();
         expect(deleteBot).not.toHaveBeenCalled();
@@ -2286,6 +2286,10 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(await screen.findByText('值班'));
         clickBotAction('bot_1', 'delete');
         await confirmBotDelete();
+        const alert = await screen.findByRole('dialog');
+        expect(alert.textContent).toContain('无法删除 Bot');
+        expect(alert.textContent).toContain('MaClawSrv 不可达');
+        fireEvent.click(within(alert).getByRole('button', { name: /OK|确定/ }));
         expect((await screen.findByTestId('desktop-bot-list-error')).textContent).toBe('MaClawSrv 不可达');
         expect(screen.getByTestId('desktop-bot-bot_1')).toBeTruthy();
         deleteBot.mockResolvedValueOnce(undefined);
@@ -2293,6 +2297,39 @@ describe('DesktopBotWorkspace', () => {
         await confirmBotDelete();
         expect(await screen.findByTestId('desktop-bot-empty')).toBeTruthy();
         expect(deleteBot).toHaveBeenCalledTimes(2);
+    });
+
+    it('warns that deleting a bot will stop its running task', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        listTaskRuns.mockResolvedValue([{ run_id: 'run_1', status: 'running', task: '训练模型' }]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        clickBotAction('bot_1', 'delete');
+        const dialog = await screen.findByRole('dialog');
+        expect(dialog.textContent).toContain('确定删除 Bot');
+        expect(dialog.textContent).toContain('值班');
+        expect(dialog.textContent).toContain('正在运行的任务');
+        expect(dialog.textContent).toContain('删除将停止该任务');
+        fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        expect(deleteBot).not.toHaveBeenCalled();
+        expect(screen.getByTestId('desktop-bot-bot_1')).toBeTruthy();
+    });
+
+    it('explains a running-task delete failure in an alert and keeps the bot', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        deleteBot.mockRejectedValueOnce(new Error('this bot has a running task'));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        clickBotAction('bot_1', 'delete');
+        await confirmBotDelete();
+        const alert = await screen.findByRole('dialog');
+        expect(alert.textContent).toContain('无法删除 Bot');
+        expect(alert.textContent).toContain('有正在运行的任务');
+        expect(alert.textContent).toContain('没能停下来');
+        fireEvent.click(within(alert).getByRole('button', { name: /OK|确定/ }));
+        expect((await screen.findByTestId('desktop-bot-list-error')).textContent).toContain('有正在运行的任务');
+        expect(screen.getByTestId('desktop-bot-bot_1')).toBeTruthy();
     });
 
     it('clears local history when the page closes before delete returns', async () => {

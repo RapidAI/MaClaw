@@ -187,4 +187,13 @@ func TestAdminBotErrorShowsUpstreamStatusButUserErrorDoesNot(t *testing.T) {
 		!strings.Contains(busy.Body.String(), "turn-1") {
 		t.Fatalf("busy status=%d body=%s", busy.Code, busy.Body.String())
 	}
+
+	task := httptest.NewRecorder()
+	writeBotUserError(task, req, &auth.MachinePrincipal{TenantID: "t_demo", UserID: "u_demo"}, botmgmt.ErrBotBusy, "")
+	if task.Code != http.StatusConflict ||
+		!strings.Contains(task.Body.String(), "BOT_HAS_RUNNING_TASK") ||
+		!strings.Contains(task.Body.String(), "this bot has a running task") ||
+		strings.Contains(task.Body.String(), "MACLAWSRV_REQUEST_FAILED") {
+		t.Fatalf("running-task status=%d body=%s", task.Code, task.Body.String())
+	}
 }

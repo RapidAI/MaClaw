@@ -2172,3 +2172,106 @@ func TestUserWakeHoldSurvivesRestartButExpires(t *testing.T) {
 	}
 }
 
+func TestDeleteBotStopsRunningRunsThenDeletes(t *testing.T) {
+	var deletes, cancels int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/token":
+			_, _ = w.Write([]byte(`{"access_token":"bearer-alice","principal":{"user_id":"user_alice"}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/instances/inst_alice":
+			deletes++
+			if deletes == 1 {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"code":"instance_busy","error":"instance has running runs"}`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/instances/inst_alice/runs":
+			_, _ = w.Write([]byte(`{"items":[{"id":"run_busy","status":"running"}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/instances/inst_alice/runs/run_busy/cancel":
+			cancels++
+			_, _ = w.Write([]byte(`{"id":"run_busy","status":"cancelled"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	settings := &memSettings{}
+	raw, err := json.Marshal(record{
+		BaseURL:     srv.URL,
+		AccessToken: "secret-token",
+		AdminSecret: "admin-secret",
+		Principals: []ownerPrincipal{{
+			HubUserID: "alice", TenantID: "maclaw-tenant", UserID: "user_alice", APIKey: "key-alice", APISecret: "sec-alice",
+		}},
+		Bots: []Bot{
+			{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	svc.HTTP = srv.Client()
+	if err := svc.DeleteBot(context.Background(), "tenant-a", "bot_alice"); err != nil {
+		t.Fatalf("DeleteBot: %v", err)
+	}
+	if deletes != 2 || cancels != 1 {
+		t.Fatalf("deletes=%d cancels=%d, want 2 deletes after one cancel", deletes, cancels)
+	}
+	after, err := svc.View(context.Background(), "tenant-a")
+	if err != nil || len(after.Bots) != 0 {
+		t.Fatalf("bot should be gone after the running run was stopped: %#v err=%v", after, err)
+	}
+}
+
+func TestDeleteBotReportsWhenRunningTaskCannotBeStopped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/token":
+			_, _ = w.Write([]byte(`{"access_token":"bearer-alice","principal":{"user_id":"user_alice"}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/instances/inst_alice":
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"instance_busy","error":"instance has running runs"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/instances/inst_alice/runs":
+			_, _ = w.Write([]byte(`{"items":[{"id":"run_busy","status":"running"}]}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel"):
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"instance_busy","error":"instance has running runs"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	settings := &memSettings{}
+	raw, err := json.Marshal(record{
+		BaseURL:     srv.URL,
+		AccessToken: "secret-token",
+		AdminSecret: "admin-secret",
+		Principals: []ownerPrincipal{{
+			HubUserID: "alice", TenantID: "maclaw-tenant", UserID: "user_alice", APIKey: "key-alice", APISecret: "sec-alice",
+		}},
+		Bots: []Bot{
+			{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	svc.HTTP = srv.Client()
+	err = svc.DeleteBot(context.Background(), "tenant-a", "bot_alice")
+	if !errors.Is(err, ErrBotBusy) {
+		t.Fatalf("err=%v, want ErrBotBusy", err)
+	}
+	after, viewErr := svc.View(context.Background(), "tenant-a")
+	if viewErr != nil || len(after.Bots) != 1 || after.Bots[0].ID != "bot_alice" {
+		t.Fatalf("bot should remain when the running task cannot be stopped: %#v err=%v", after, viewErr)
+	}
+}

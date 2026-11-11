@@ -32,7 +32,11 @@ var (
 	// itself, is not there. It is not wrapped in ErrSrv, because callers such
 	// as bot deletion treat a missing instance as success.
 	ErrSrvNotFound = errors.New("maclawsrv instance not found")
-	ErrDisabled    = errors.New("bot feature is disabled")
+	// ErrBotBusy is a bot that still has a running task after Hub asked
+	// MaClawSrv to stop it. The GUI must show this reason; a generic 502
+	// looks like the delete never happened.
+	ErrBotBusy  = errors.New("this bot has a running task")
+	ErrDisabled = errors.New("bot feature is disabled")
 	// ErrDesktopBusy is one cloud desktop already running a command for this
 	// user. A second execute is refused. The same client message is not a
 	// second execute: MaClawSrv replays that key.
@@ -450,7 +454,7 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.doAuth(ctx, rec, token, http.MethodDelete, "/api/v1/instances/"+url.PathEscape(bot.InstanceID), nil, nil); err != nil && !errors.Is(err, ErrSrvNotFound) {
+	if err := s.deleteInstanceAfterStoppingRuns(ctx, rec, token, bot.InstanceID); err != nil && !errors.Is(err, ErrSrvNotFound) {
 		return err
 	}
 	rec.Bots = append(rec.Bots[:index], rec.Bots[index+1:]...)
@@ -562,6 +566,87 @@ func (s *Service) save(ctx context.Context, tenantID string, rec record) error {
 
 func (s *Service) do(ctx context.Context, rec record, method, path string, body any, dest any) error {
 	return s.call(ctx, rec, s.sharedBearer(ctx, rec), "", method, path, body, dest)
+}
+
+// instanceHasRunningRuns reports a 409 from MaClawSrv whose body says the
+// instance still has a running run. Bot deletion can resolve that by
+// cancelling those runs and trying again.
+func instanceHasRunningRuns(err error) bool {
+	var statusErr *upstream.StatusError
+	if !errors.As(err, &statusErr) || statusErr.Status != http.StatusConflict {
+		return false
+	}
+	text := strings.ToLower(statusErr.Detail + " " + statusErr.Error())
+	return strings.Contains(text, "running run") || strings.Contains(text, "instance_busy") || strings.Contains(text, "instance has running")
+}
+
+func runAlreadyStopped(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, ErrSrvNotFound) {
+		return true
+	}
+	var statusErr *upstream.StatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	if statusErr.Status != http.StatusConflict && statusErr.Status != http.StatusNotFound {
+		return false
+	}
+	text := strings.ToLower(statusErr.Detail + " " + statusErr.Error())
+	return strings.Contains(text, "not running") || strings.Contains(text, "not_found") || strings.Contains(text, "not found")
+}
+
+// deleteInstanceAfterStoppingRuns removes the MaClawSrv instance for a
+// deleted bot. If MaClawSrv refuses because a run is still going, the runs
+// are cancelled and the delete is tried once more. A 404 is success: the
+// instance is already gone.
+func (s *Service) deleteInstanceAfterStoppingRuns(ctx context.Context, rec record, token, instanceID string) error {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return nil
+	}
+	path := "/api/v1/instances/" + url.PathEscape(instanceID)
+	err := s.doAuth(ctx, rec, token, http.MethodDelete, path, nil, nil)
+	if err == nil || errors.Is(err, ErrSrvNotFound) || !instanceHasRunningRuns(err) {
+		return err
+	}
+	if stopErr := s.stopInstanceRuns(ctx, rec, token, instanceID); stopErr != nil {
+		return fmt.Errorf("%w: %s", ErrBotBusy, stopErr.Error())
+	}
+	err = s.doAuth(ctx, rec, token, http.MethodDelete, path, nil, nil)
+	if instanceHasRunningRuns(err) {
+		return ErrBotBusy
+	}
+	return err
+}
+
+func (s *Service) stopInstanceRuns(ctx context.Context, rec record, token, instanceID string) error {
+	var out struct {
+		Items []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"items"`
+	}
+	listPath := "/api/v1/instances/" + url.PathEscape(instanceID) + "/runs?status=running"
+	if err := s.doAuth(ctx, rec, token, http.MethodGet, listPath, nil, &out); err != nil {
+		return err
+	}
+	var first error
+	for _, run := range out.Items {
+		runID := strings.TrimSpace(run.ID)
+		if runID == "" {
+			continue
+		}
+		cancelPath := "/api/v1/instances/" + url.PathEscape(instanceID) + "/runs/" + url.PathEscape(runID) + "/cancel"
+		if err := s.doAuth(ctx, rec, token, http.MethodPost, cancelPath, nil, nil); err != nil && !runAlreadyStopped(err) {
+			if first == nil {
+				first = err
+			}
+		}
+	}
+	return first
 }
 
 func (s *Service) doAuth(ctx context.Context, rec record, bearer, method, path string, body any, dest any) error {

@@ -807,6 +807,9 @@ function copy(lang: string) {
             remove: 'Delete',
             removeTitle: 'Delete bot',
             removeAsk: (name: string) => `Delete bot "${name}"? This cannot be undone.`,
+            removeAskRunning: (name: string) => `Delete bot "${name}"? This bot has a running task. Deleting it will stop that task. This cannot be undone.`,
+            removeFailedTitle: 'Could not delete bot',
+            removeFailedBusy: 'This bot has a running task, and it could not be stopped. Stop the task and try again.',
             name: 'Name',
             color: 'Color',
             shape: 'Shape',
@@ -1025,6 +1028,9 @@ function copy(lang: string) {
             remove: '刪除',
             removeTitle: '刪除 Bot',
             removeAsk: (name: string) => `確定刪除 Bot「${name}」？此操作不可撤銷。`,
+            removeAskRunning: (name: string) => `確定刪除 Bot「${name}」？它有正在執行的任務，刪除將停止該任務。此操作不可撤銷。`,
+            removeFailedTitle: '無法刪除 Bot',
+            removeFailedBusy: '這個 Bot 有正在執行的任務，而且沒能停下來。請先停止任務，再刪除。',
             name: '名稱',
             color: '顏色',
             shape: '形狀',
@@ -1241,6 +1247,9 @@ function copy(lang: string) {
         remove: '删除',
         removeTitle: '删除 Bot',
         removeAsk: (name: string) => `确定删除 Bot「${name}」？此操作不可撤销。`,
+        removeAskRunning: (name: string) => `确定删除 Bot「${name}」？它有正在运行的任务，删除将停止该任务。此操作不可撤销。`,
+        removeFailedTitle: '无法删除 Bot',
+        removeFailedBusy: '这个 Bot 有正在运行的任务，而且没能停下来。请先停止任务，再删除。',
         name: '名称',
         color: '颜色',
         shape: '形状',
@@ -2031,9 +2040,17 @@ function botCallMessage(error: unknown): string {
     return '';
 }
 
+function deleteBotFailureMessage(error: unknown, busyText: string, unavailable: string): string {
+    const raw = botCallMessage(error);
+    if (/running (?:run|task)|instance has running|instance_busy|BOT_HAS_RUNNING_TASK/i.test(raw)) {
+        return busyText;
+    }
+    return raw || unavailable;
+}
+
 export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: string }) {
     const text = copy(lang);
-    const { showConfirm } = useDialog();
+    const { showConfirm, showAlert } = useDialog();
     const [bots, setBots] = useState<DesktopBot[]>([]);
     const botsRef = useRef(bots);
     botsRef.current = bots;
@@ -4282,7 +4299,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         try {
             const bot = bots.find(item => item.id === botId);
             const name = (bot?.title || '').trim() || botId;
-            const confirmed = await showConfirm(text.removeAsk(name), text.removeTitle, {
+            let running = false;
+            try {
+                const runs = await ListDesktopBotActiveRuns(botId);
+                running = Array.isArray(runs) && runs.length > 0;
+            } catch {
+                running = false;
+            }
+            if (gen !== loadGen.current) return;
+            const confirmed = await showConfirm(running ? text.removeAskRunning(name) : text.removeAsk(name), text.removeTitle, {
                 confirmText: text.remove,
                 cancelText: text.cancel,
                 confirmVariant: 'danger',
@@ -4293,7 +4318,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 await DeleteDesktopBot(botId);
             } catch (error) {
                 if (gen !== loadGen.current) return;
-                setListNotice(error instanceof Error && error.message ? error.message : text.unavailable);
+                const message = deleteBotFailureMessage(error, text.removeFailedBusy, text.unavailable);
+                setListNotice(message);
+                await showAlert(message, text.removeFailedTitle);
                 return;
             }
             // Storage is keyed by the account that confirmed. The live queue is
