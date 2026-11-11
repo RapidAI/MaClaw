@@ -1726,6 +1726,11 @@ function openBotFile(event: { preventDefault: () => void; stopPropagation: () =>
 // bytes on every client). A failure is thrown to the chip, which shows it.
 async function openFeedFile(noteId: string, name: string): Promise<void> {
     const file = await FetchDesktopBotMailFile(noteId, name);
+    if (file?.local_path) {
+        // A large file: this app downloaded it from Hub into the bot's folder.
+        await OpenFileOrShowInFolder(file.local_path).catch(() => ShowItemInFolder(file.local_path as string));
+        return;
+    }
     if (!file || !file.data) throw new Error('Hub 上没有这个文件');
     saveDesktopFile({ name: file.name || name, mime: file.mime || 'application/octet-stream', data: file.data } as DesktopBotFile);
 }

@@ -129,6 +129,9 @@ func (a *App) startLocalRelay() {
 		Remember: rememberLocalRelayApproval,
 		Ask:      a.askLocalRelay,
 		Notify:   func(ev localrelay.TransferEvent) { a.emitEvent(localRelayTransferEvent, ev) },
+		// Cloud files reach this computer from Hub's file store over HTTP.
+		Fetch:       a.botFileFetcher(),
+		RefreshLink: a.botFileRefresh,
 	}
 	agent := localRelayState.agent
 	localRelayState.mu.Unlock()

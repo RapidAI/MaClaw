@@ -87,6 +87,7 @@ func (a *App) ListBotSaid(room string) ([]BotSaidItem, error) {
 	if err := a.desktopBotCall(context.Background(), http.MethodGet, path, nil, &out, botCollabWait); err != nil {
 		return nil, err
 	}
+	a.autoSaveBotFiles(out.Items)
 	return out.Items, nil
 }
 

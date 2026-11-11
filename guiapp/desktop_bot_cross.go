@@ -323,6 +323,9 @@ type DesktopBotMailFile struct {
 	MIME   string `json:"mime,omitempty"`
 	Size   int    `json:"size"`
 	SHA256 string `json:"sha256"`
+	// Ref: a large file kept in Hub's bot file store; this app downloads
+	// it into the bot's folder (see bot_files_download.go).
+	Ref string `json:"ref,omitempty"`
 }
 
 // DesktopBotCrossPost is the result of one primary handoff.
@@ -543,6 +546,9 @@ type DesktopBotMailFileData struct {
 	Name string `json:"name"`
 	MIME string `json:"mime"`
 	Data string `json:"data"`
+	// LocalPath is set instead of Data for a large file this app saved.
+	LocalPath string `json:"local_path,omitempty"`
+	Size      int64  `json:"size,omitempty"`
 }
 
 // FetchDesktopBotMailFile returns a file a bot shared with a Hub message, so
@@ -554,17 +560,7 @@ func (a *App) FetchDesktopBotMailFile(noteID, name string) (DesktopBotMailFileDa
 	if noteID == "" || name == "" {
 		return DesktopBotMailFileData{}, errDesktopBotID
 	}
-	gotName, mime, raw, err := a.desktopBotMailFile(noteID, name)
-	if err != nil {
-		return DesktopBotMailFileData{}, err
-	}
-	if strings.TrimSpace(gotName) == "" {
-		gotName = name
-	}
-	if strings.TrimSpace(mime) == "" {
-		mime = "application/octet-stream"
-	}
-	return DesktopBotMailFileData{Name: gotName, MIME: mime, Data: base64.StdEncoding.EncodeToString(raw)}, nil
+	return a.fetchMailFileForChat(noteID, name)
 }
 
 // PullDesktopBotCrossNotes returns this user's notes. It does not consume them.
