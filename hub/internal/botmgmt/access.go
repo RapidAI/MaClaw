@@ -244,7 +244,10 @@ func replyImageData(raw string) (string, bool) {
 // type. A path-like name, or a payload that is not base64, stays off the
 // reply. A screenshot stays on Images.
 func replyFiles(attachments []replyAttachment) []ReplyFile {
-	const maxFile = 200_000
+	// The same cap MaClawSrv attaches files under (desktop.FileDeliverBase64Max).
+	// 200 000 here dropped a 365 KB PDF that MaClawSrv had attached, while
+	// the bot said it was attached (papers 2026-11-12 06:28, Bot 4).
+	maxFile := desktop.FileDeliverBase64Max
 	for i := len(attachments) - 1; i >= 0; i-- {
 		item := attachments[i]
 		if strings.TrimSpace(item.Type) != "file" {
