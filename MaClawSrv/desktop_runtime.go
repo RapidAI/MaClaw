@@ -724,6 +724,7 @@ func desktopStepKey(runID, toolCallID string) string {
 }
 
 func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[string]any) (out string, err error) {
+	principal := scope
 	scope = desktopOwner(scope)
 	if person, pinned := desktopPinnedPerson(ctx); pinned {
 		scope.UserID = person.UserID
@@ -812,7 +813,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	}
 	if action == "bash" && !desktopLongJobInternal(ctx) && desktopLongJobShouldStart(args) {
 		defer beginDesktopActivity(scope.RunID, "正在后台启动任务")()
-		return desktopLongJobStart(ctx, scope, args)
+		return desktopLongJobStart(ctx, scope, principal, args)
 	}
 	if action == "bash" && desktopBashLaunchesGUI(desktopArg(args, "command")) {
 		return operateDesktopBashGUI(ctx, scope, args)

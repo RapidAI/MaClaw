@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"path"
 	"regexp"
 	"strconv"
@@ -32,7 +33,7 @@ const (
 	desktopLongJobTaskPrefix  = "watch-job:"
 	desktopLongJobTickEvery   = 30 * time.Second
 	desktopLongJobStallAfter  = 15 * time.Minute
-	desktopLongJobNoticeEvery = 5 * time.Minute
+	desktopLongJobNoticeEvery = 10 * time.Minute
 )
 
 var desktopLongJobNow = time.Now
@@ -96,6 +97,15 @@ type desktopLongJob struct {
 	LastNotice  time.Time     `json:"last_notice,omitempty"`
 	NextPoll    time.Time     `json:"next_poll,omitempty"`
 	StallAfter  time.Duration `json:"stall_after,omitempty"`
+	// PrincipalTenant/User own the bot's runs on this server. TenantID and
+	// UserID above are the desktop (Hub) account, which is not a principal
+	// here: a resume posted with it found no instance (papers 2026-11-11).
+	PrincipalTenant string `json:"principal_tenant,omitempty"`
+	PrincipalUser   string `json:"principal_user,omitempty"`
+	// ReportedStatus is the last status the person (or the live run that
+	// polled the job) was told. A stall, failure or finish is reported until
+	// one report gets through, not once per status change.
+	ReportedStatus string `json:"reported_status,omitempty"`
 }
 
 func (j *desktopLongJob) stallBound() time.Duration {
@@ -155,16 +165,126 @@ var (
 	desktopLongJobMileRe   = regexp.MustCompile(`(?i)(epoch\s*\d|step\s+\d|iter(ation)?\s*\d|loss\s*[:=]|acc(uracy)?\s*[:=]|val_|f1\s*[:=]|auc\s*[:=]|\beta\b|checkpoint|saved (to|model)|oom|exception|traceback|error:|failed|finished|training complete|completed successfully)`)
 )
 
+// desktopLongJobCommand reports whether cmd runs a genuinely long external
+// job (training, a build, a big download) or detaches one. Only the command
+// words count: text written through a heredoc, echo or cat, a loop over
+// names like "train dev test", or a sleep/tail wait never does (papers
+// 2026-11-11: a 小红书 draft written with cat <<EOF mentioned 训练 and the
+// publish run ended "running"; "sleep 780; tail log" waits became jobs).
 func desktopLongJobCommand(cmd string) bool {
-	cmd = strings.TrimSpace(cmd)
+	cmd = strings.TrimSpace(desktopLongJobStripHeredocs(cmd))
 	if cmd == "" {
 		return false
 	}
-	if desktopLongJobDetachRe.MatchString(cmd) {
+	for _, seg := range desktopLongJobSegments(cmd, 0) {
+		if desktopLongJobSegmentLong(seg) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	desktopLongJobHeredocRe = regexp.MustCompile(`<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?`)
+	desktopLongJobSplitRe   = regexp.MustCompile(`\s*(?:&&|\|\||;|\n|\|)\s*`)
+	desktopLongJobRunnerRe  = regexp.MustCompile(`(?i)^(?:\S*/)?(?:python[0-9.]*|torchrun|deepspeed|accelerate|bash|sh)$`)
+	desktopLongJobScriptRe  = regexp.MustCompile(`(?i)(train|finetune|fine-?tune|训练|微调)`)
+	desktopLongJobBuildRe   = regexp.MustCompile(`(?i)^(?:cmake\s+--build|cargo\s+build|mvn\s+(?:package|install)|\S*gradlew?\s+build|make\s+-j|ninja\s|npm\s+run\s+build|docker\s+build|huggingface-cli\s+download|hf\s+download|git\s+clone|rsync\s|wget\s|ollama\s+pull)`)
+	desktopLongJobPrefixRe  = regexp.MustCompile(`^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+|nohup\s+|nice(?:\s+-n\s*-?\d+)?\s+|time\s+|timeout\s+(?:-\S+\s+)*\d+[smh]?\s+|env\s+|exec\s+|setsid\s+|stdbuf\s+\S+\s+)+`)
+)
+
+// desktopLongJobStripHeredocs drops heredoc bodies: they are data.
+func desktopLongJobStripHeredocs(cmd string) string {
+	lines := strings.Split(cmd, "\n")
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); i++ {
+		out = append(out, lines[i])
+		m := desktopLongJobHeredocRe.FindStringSubmatch(lines[i])
+		if m == nil {
+			continue
+		}
+		for i+1 < len(lines) && strings.TrimSpace(lines[i+1]) != m[1] {
+			i++
+		}
+		if i+1 < len(lines) {
+			i++
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// desktopLongJobSegments splits cmd into simple commands, unwrapping the
+// quoted remote command of ssh (and bash -c) so it is judged by its words.
+func desktopLongJobSegments(cmd string, depth int) []string {
+	var segs []string
+	for _, seg := range desktopLongJobSplitRe.Split(desktopLongJobMaskQuotes(cmd), -1) {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		segs = append(segs, seg)
+	}
+	if depth > 2 {
+		return segs
+	}
+	// Remote and nested shells: judge the quoted command too.
+	for _, q := range desktopLongJobInnerCommands(cmd) {
+		segs = append(segs, desktopLongJobSegments(q, depth+1)...)
+	}
+	return segs
+}
+
+var desktopLongJobInnerRe = regexp.MustCompile(`(?:\bssh\b[^'"]*?|\b(?:bash|sh)\s+-l?c\s+)(?:'([^']*)'|"([^"]*)")`)
+
+func desktopLongJobInnerCommands(cmd string) []string {
+	var out []string
+	for _, m := range desktopLongJobInnerRe.FindAllStringSubmatch(cmd, -1) {
+		if m[1] != "" {
+			out = append(out, m[1])
+		} else if m[2] != "" {
+			out = append(out, m[2])
+		}
+	}
+	return out
+}
+
+// desktopLongJobMaskQuotes blanks quoted text so separators and words inside
+// quotes (an echo'd sentence, a python -c program) are not commands.
+func desktopLongJobMaskQuotes(cmd string) string {
+	b := []rune(cmd)
+	var q rune
+	for i, r := range b {
+		switch {
+		case q == 0 && (r == '\'' || r == '"'):
+			q = r
+		case q != 0 && r == q:
+			q = 0
+		case q != 0:
+			b[i] = 'x'
+		}
+	}
+	return string(b)
+}
+
+func desktopLongJobSegmentLong(seg string) bool {
+	seg = strings.TrimSpace(strings.TrimLeft(seg, "({ "))
+	if desktopLongJobShortRe.MatchString(seg) {
+		return false
+	}
+	detached := strings.HasSuffix(seg, "&") || strings.HasPrefix(seg, "nohup ") || strings.HasPrefix(seg, "setsid ") || strings.HasPrefix(seg, "systemd-run ") || strings.HasPrefix(seg, "tmux new") || strings.HasPrefix(seg, "screen -dm")
+	body := strings.TrimSpace(desktopLongJobPrefixRe.ReplaceAllString(seg, ""))
+	if body == "" {
+		return false
+	}
+	if desktopLongJobBuildRe.MatchString(body) {
 		return true
 	}
-	if desktopLongJobIntentRe.MatchString(cmd) && !desktopLongJobShortRe.MatchString(cmd) {
-		return true
+	fields := strings.Fields(body)
+	if desktopLongJobRunnerRe.MatchString(fields[0]) {
+		// A runner counts when what it runs is training (script name or
+		// arguments), or when it is being detached.
+		rest := strings.Join(fields[1:], " ")
+		return detached || desktopLongJobScriptRe.MatchString(rest)
 	}
 	return false
 }
@@ -323,7 +443,30 @@ func desktopLongJobInterval(age time.Duration) time.Duration {
 	}
 }
 
-func desktopLongJobStart(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+// desktopLongJobGrace: the start waits this long, polling, before handing
+// the job off. A command that ends inside it is an ordinary bash step and
+// its output comes back inline (papers 2026-11-11: a 1 s sed on a remote
+// README was "training" by name, became a job and cost a job_status round
+// trip each time). Tests replace it.
+var desktopLongJobGrace = []time.Duration{2 * time.Second, 3 * time.Second, 5 * time.Second, 10 * time.Second}
+
+var desktopLongJobSleep = func(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// desktopLongJobStart starts cmd detached. principal is the run's own scope
+// (before the desktop account replaced its user), kept for the resume.
+func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scope, args map[string]any) (string, error) {
 	cmd := strings.TrimSpace(desktopArg(args, "command"))
 	if cmd == "" {
 		return "", fmt.Errorf("job start needs command")
@@ -352,6 +495,10 @@ func desktopLongJobStart(ctx context.Context, scope agentruntime.Scope, args map
 	if _, bot := desktop.SplitDesktopUser(scope.UserID); bot != "" {
 		j.BotID = bot
 	}
+	if principal.TenantID != scope.TenantID || principal.UserID != scope.UserID {
+		j.PrincipalTenant, j.PrincipalUser = principal.TenantID, principal.UserID
+	}
+	j.ReportedStatus = "running"
 	script := desktopLongJobStartScript(cmd, dir, j.LogFile, j.PidFile, j.ExitFile)
 	out, err := desktopLongJobRun(ctx, scope, script)
 	if err != nil {
@@ -368,6 +515,9 @@ func desktopLongJobStart(ctx context.Context, scope agentruntime.Scope, args map
 	if exit != "" {
 		j.ExitFile = exit
 	}
+	if inline, err, ended := desktopLongJobGraceWait(ctx, j); ended {
+		return inline, err
+	}
 	j.ScheduleID = desktopLongJobEnsureWatch(j)
 	if err := desktopLongJobSave(j); err != nil {
 		return "", err
@@ -379,6 +529,53 @@ func desktopLongJobStart(ctx context.Context, scope agentruntime.Scope, args map
 		"日志: " + j.LogFile + "\n" +
 		"状态会单独保存，定时巡查看进程是否存活、日志和指标是否在推进；有进展、停滞、失败或结束时会告诉你，并附上最近一次轮询的证据。\n" +
 		"请结束这一轮，不要再用 bash 等待它跑完。需要立刻查看可用 action=job_status，job_id=" + j.ID + "。", nil
+}
+
+// desktopLongJobGraceWait polls the fresh job for a few seconds. A job that
+// already ended is stored as reported and returned like a plain bash step:
+// its output, and an error for a non-zero exit.
+func desktopLongJobGraceWait(ctx context.Context, j *desktopLongJob) (string, error, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for _, d := range desktopLongJobGrace {
+		if !desktopLongJobSleep(ctx, d) {
+			return "", nil, false
+		}
+		if err := desktopLongJobPollAndStore(ctx, j); err != nil {
+			return "", nil, false
+		}
+		if j.Status != "done" && j.Status != "failed" {
+			continue
+		}
+		j.ReportedStatus = j.Status
+		_ = desktopLongJobSave(j)
+		out := strings.TrimSpace(desktopLongJobInlineOutput(ctx, j))
+		if j.Status == "failed" {
+			code := "unknown"
+			if j.ExitCode != nil {
+				code = strconv.Itoa(*j.ExitCode)
+			}
+			if out == "" {
+				out = "(no output)"
+			}
+			return "", fmt.Errorf("%s\n[exit %s]", out, code), true
+		}
+		return out, nil, true
+	}
+	return "", nil, false
+}
+
+func desktopLongJobInlineOutput(ctx context.Context, j *desktopLongJob) string {
+	out, err := desktopLongJobRun(ctx, desktopLongJobScope(j), "tail -c 60000 "+desktopLongJobQuote(j.LogFile)+" 2>/dev/null")
+	if err != nil {
+		return j.LastTail
+	}
+	return out
+}
+
+func desktopLongJobScope(j *desktopLongJob) agentruntime.Scope {
+	return agentruntime.Scope{TenantID: j.TenantID, UserID: j.UserID, InstanceID: j.InstanceID, SessionID: j.SessionID, RunID: j.SourceRun}
 }
 
 func desktopLongJobStatus(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
@@ -395,6 +592,12 @@ func desktopLongJobStatus(ctx context.Context, scope agentruntime.Scope, args ma
 	}
 	if err := desktopLongJobPollAndStore(ctx, j); err != nil {
 		return desktopLongJobView(j) + "\n轮询失败：" + err.Error(), nil
+	}
+	if strings.TrimSpace(scope.SessionID) != "" && scope.SessionID == j.SessionID && j.Status != "running" {
+		// The live run in this conversation read the stall, failure or
+		// finish itself; it tells the person in its own reply.
+		j.ReportedStatus = j.Status
+		_ = desktopLongJobSave(j)
 	}
 	return desktopLongJobView(j), nil
 }
@@ -437,8 +640,7 @@ func desktopLongJobPollAndStore(ctx context.Context, j *desktopLongJob) error {
 	if j == nil {
 		return fmt.Errorf("no job")
 	}
-	scope := agentruntime.Scope{TenantID: j.TenantID, UserID: j.UserID, InstanceID: j.InstanceID, SessionID: j.SessionID, RunID: j.SourceRun}
-	out, err := desktopLongJobRun(ctx, scope, desktopLongJobPollScript(j))
+	out, err := desktopLongJobRun(ctx, desktopLongJobScope(j), desktopLongJobPollScript(j))
 	if err != nil {
 		return err
 	}
@@ -524,7 +726,7 @@ func desktopLongJobDecide(j *desktopLongJob, prevStatus, prevFP string, prevNoti
 	if now.Sub(prevNotice) >= desktopLongJobNoticeEvery && j.Fingerprint != prevFP {
 		return longJobNotice
 	}
-	if desktopLongJobMileRe.MatchString(j.LastTail) && j.Fingerprint != prevFP && now.Sub(prevNotice) >= time.Minute {
+	if desktopLongJobMileRe.MatchString(j.LastTail) && j.Fingerprint != prevFP && now.Sub(prevNotice) >= desktopLongJobNoticeEvery/2 {
 		return longJobNotice
 	}
 	return longJobSilent
@@ -535,43 +737,173 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 	if j == nil {
 		return "", fmt.Errorf("watch: job %s not found", jobID)
 	}
-	if j.Status == "done" || j.Status == "failed" {
+	if (j.Status == "done" || j.Status == "failed") && j.ReportedStatus == j.Status {
 		desktopLongJobStopWatch(j)
 		return desktopLongJobView(j), nil
 	}
 	now := desktopLongJobNow()
-	if !j.NextPoll.IsZero() && now.Before(j.NextPoll.Add(-5*time.Second)) && !j.LastPoll.IsZero() {
+	unreported := j.ReportedStatus != "" && j.ReportedStatus != j.Status
+	if !unreported && !j.NextPoll.IsZero() && now.Before(j.NextPoll.Add(-5*time.Second)) && !j.LastPoll.IsZero() {
 		return "", nil
 	}
-	prevStatus, prevFP, prevNotice := j.Status, j.Fingerprint, j.LastNotice
-	if err := desktopLongJobPollAndStore(ctx, j); err != nil {
-		return "", err
+	prevFP, prevNotice := j.Fingerprint, j.LastNotice
+	prevStatus := j.ReportedStatus
+	if prevStatus == "" {
+		prevStatus = "running"
 	}
-	j = desktopLongJobGet(j.ID)
+	if j.Status == "running" || j.Status == "stalled" {
+		if err := desktopLongJobPollAndStore(ctx, j); err != nil {
+			return "", err
+		}
+		j = desktopLongJobGet(j.ID)
+	}
 	dec := desktopLongJobDecide(j, prevStatus, prevFP, prevNotice)
 	if dec == longJobSilent {
 		return "", nil
 	}
-	j.LastNotice = desktopLongJobNow()
-	_ = desktopLongJobSave(j)
 	if err := desktopLongJobTalk(ctx, j, dec); err != nil {
+		// Nothing reached the person: the next tick reports again.
+		log.Printf("[desktop-longjob] job=%s %s not delivered: %v", j.ID, dec, err)
 		return desktopLongJobView(j), err
 	}
+	j.LastNotice = desktopLongJobNow()
+	j.ReportedStatus = j.Status
+	_ = desktopLongJobSave(j)
 	if j.Status == "done" || j.Status == "failed" {
 		desktopLongJobStopWatch(j)
 	}
 	return desktopLongJobView(j), nil
 }
 
+// desktopLongJobTalkDefault tells the person through Hub's say (the same
+// path a bot's own action=say uses), with the last poll as evidence, so a
+// progress line needs no model turn and cannot be lost in a run nobody
+// polls. On a stall, failure or finish it then resumes the bot in the same
+// conversation, when no run is already working there, so it can diagnose
+// and continue; that run speaks with action=say too.
 func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec desktopLongJobDecision) error {
-	svc := desktopLongJobService
-	if svc == nil || j == nil || strings.TrimSpace(j.InstanceID) == "" {
+	if j == nil || strings.TrimSpace(j.InstanceID) == "" {
 		return nil
 	}
-	principal := agentservice.Principal{TenantID: j.TenantID, UserID: desktopOwnerUserID(j.UserID)}
-	content := desktopLongJobWatchPrompt(j, dec)
-	in := agentservice.SendMessageInput{Content: content, SessionID: j.SessionID, Metadata: map[string]string{"long_job_id": j.ID, "long_job_watch": string(dec)}}
-	_, _, _, err := svc.SendMessage(ctx, principal, j.InstanceID, in)
+	if err := desktopLongJobSay(ctx, j, desktopLongJobNoticeText(j, dec)); err != nil {
+		return err
+	}
+	if dec == longJobResume {
+		if err := desktopLongJobResume(ctx, j); err != nil {
+			log.Printf("[desktop-longjob] job=%s resume not started: %v", j.ID, err)
+		}
+	}
+	return nil
+}
+
+// desktopLongJobSayFunc posts one say; tests replace it.
+var desktopLongJobSayFunc = func(ctx context.Context, body map[string]any) error {
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out := map[string]any{}
+	if desktopRemoteAssign != nil {
+		_, err := desktopRemoteAssign(cctx, "/api/v1/desktop-services/say", body)
+		return err
+	}
+	if client := desktopHubClientFromEnv(); client != nil {
+		return client.post(cctx, "/api/v1/desktop-services/say", body, &out)
+	}
+	return fmt.Errorf("Hub is not configured on this server")
+}
+
+func desktopLongJobSay(ctx context.Context, j *desktopLongJob, text string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	body := map[string]any{
+		"tenant_id":   j.TenantID,
+		"user_id":     desktopOwnerUserID(j.UserID),
+		"instance_id": j.InstanceID,
+		"room":        "",
+		"text":        text,
+		"key":         desktopMessageKey(j.InstanceID+"|"+j.ID, "longjob", j.Status, j.Fingerprint),
+	}
+	err := desktopLongJobSayFunc(ctx, body)
+	if err != nil && (strings.Contains(err.Error(), "ALREADY_SAID") || strings.Contains(err.Error(), "409")) {
+		return nil
+	}
+	return err
+}
+
+// desktopLongJobNoticeText is the honest line from the last poll.
+func desktopLongJobNoticeText(j *desktopLongJob, dec desktopLongJobDecision) string {
+	head := "后台任务进度"
+	switch j.Status {
+	case "done":
+		head = "后台任务已结束（退出码 0），下面是最后的输出"
+	case "failed":
+		code := "未知"
+		if j.ExitCode != nil {
+			code = strconv.Itoa(*j.ExitCode)
+		}
+		head = "后台任务失败了（退出码 " + code + "），下面是最后的输出"
+	case "stalled":
+		head = "后台任务的进程还在，但已经 " + j.stallBound().Round(time.Minute).String() + " 没有新的输出"
+	default:
+		if !j.Alive {
+			head = "后台任务的进程已不在"
+		}
+	}
+	age := desktopLongJobNow().Sub(j.Started).Round(time.Minute)
+	text := head + "（任务 " + desktopLongJobShortID(j.ID) + "，已运行 " + age.String() + "，最近一次检查 " + j.LastPoll.Format("15:04") + "）。"
+	if dec == longJobResume {
+		text += "我接着看一下原因和下一步。"
+	}
+	if tail := desktopLongJobTailLines(j.LastTail, 8, 900); tail != "" {
+		text += "\n" + tail
+	}
+	return text
+}
+
+func desktopLongJobShortID(id string) string {
+	id = strings.TrimPrefix(id, "job_")
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+func desktopLongJobTailLines(tail string, n, max int) string {
+	lines := strings.Split(strings.TrimSpace(tail), "\n")
+	kept := make([]string, 0, n)
+	for i := len(lines) - 1; i >= 0 && len(kept) < n; i-- {
+		l := strings.TrimSpace(lines[i])
+		if l == "" || strings.Contains(l, "Permanently added") {
+			continue
+		}
+		kept = append([]string{l}, kept...)
+	}
+	out := strings.Join(kept, "\n")
+	if r := []rune(out); len(r) > max {
+		out = "…" + string(r[len(r)-max:])
+	}
+	return out
+}
+
+// desktopLongJobResume starts one bot turn in the job's conversation, unless
+// a run is already working there (that run polls the job itself).
+func desktopLongJobResume(ctx context.Context, j *desktopLongJob) error {
+	svc := desktopLongJobService
+	if svc == nil || j.PrincipalUser == "" {
+		return fmt.Errorf("no service principal for this job")
+	}
+	principal := agentservice.Principal{TenantID: j.PrincipalTenant, UserID: j.PrincipalUser}
+	if j.SessionID != "" {
+		runs, err := svc.ListRuns(ctx, principal, j.InstanceID, agentservice.ListRunsInput{Status: agentservice.RunStatusRunning, SessionID: j.SessionID})
+		if err != nil {
+			return err
+		}
+		if len(runs) > 0 {
+			return nil
+		}
+	}
+	in := agentservice.SendMessageInput{Content: desktopLongJobWatchPrompt(j, longJobResume), SessionID: j.SessionID, Metadata: map[string]string{"long_job_id": j.ID, "long_job_watch": string(longJobResume)}}
+	_, _, err := svc.SendMessageAsync(context.WithoutCancel(ctx), principal, j.InstanceID, in)
 	return err
 }
 
@@ -587,7 +919,7 @@ func desktopLongJobWatchPrompt(j *desktopLongJob, dec desktopLongJobDecision) st
 	goal := "若与上次通知相比没有新的进展，就结束，不要调用 send_to_user。"
 	switch dec {
 	case longJobResume:
-		goal = "这不是新任务，不要重新启动该命令。用这次轮询的证据，向这个人如实说明任务已结束、失败或停滞，并做自我纠正或说明下一步。必须调用 send_to_user，不要只把说明留在心里。"
+		goal = "这不是新任务，不要重新启动同一个命令。这个人已经收到了这次轮询的状态和最后输出。用这些证据判断：结束了就核对结果（指标、产物）并用 action=say 简短告诉这个人；失败或停滞就查明原因并换一种做法继续，必要时用 action=say 说明。不要把已经说过的再说一遍。"
 	case longJobNotice:
 		goal = "这不是新任务，不要重新启动该命令。用 send_to_user 告诉这个人当前进度（阶段、指标或日志要点），并附上这次轮询的证据（进程存活与否、最近日志）。"
 	}
@@ -613,7 +945,7 @@ func desktopLongJobEnsureWatch(j *desktopLongJob) string {
 	id, err := mgr.Add(scheduler.ScheduledTask{
 		Name:            name,
 		Action:          "LONGJOB " + j.ID + " 巡查后台任务：检查进程、日志和指标；有进展、停滞、失败或结束时告知这个人。不要重新启动。",
-		TaskType:        desktopLongJobTaskType,
+		TaskType:        scheduler.TaskTypeReminder,
 		Hour:            0,
 		Minute:          0,
 		DayOfWeek:       -1,
@@ -626,6 +958,7 @@ func desktopLongJobEnsureWatch(j *desktopLongJob) string {
 		Status:          "active",
 	})
 	if err != nil {
+		log.Printf("[desktop-longjob] job=%s watch schedule not added: %v", j.ID, err)
 		return ""
 	}
 	return id
@@ -717,7 +1050,7 @@ func desktopLongJobOutcome(runID string) (string, string, bool) {
 	if j == nil || (j.Status != "running" && j.Status != "stalled") {
 		return "", "", false
 	}
-	why := "background job " + j.ID + " " + j.Status
+	why := "后台在跑：" + desktopLongJobLabel(j.Command) + "（任务 " + desktopLongJobShortID(j.ID) + "，" + j.Status + "）"
 	if j.Progress != "" {
 		why += "; " + j.Progress
 	}
@@ -726,3 +1059,17 @@ func desktopLongJobOutcome(runID string) (string, string, bool) {
 	}
 	return "running", why, true
 }
+
+// desktopLongJobLabel names the job for the person: the command without
+// secrets or ssh plumbing, cut short.
+func desktopLongJobLabel(cmd string) string {
+	cmd = desktopLongJobStripHeredocs(cmd)
+	if inner := desktopLongJobInnerCommands(cmd); len(inner) > 0 {
+		cmd = inner[len(inner)-1]
+	}
+	cmd = desktopLongJobSecretRe.ReplaceAllString(cmd, "$1***")
+	cmd = strings.Join(strings.Fields(cmd), " ")
+	return desktopRuneHead(cmd, 80)
+}
+
+var desktopLongJobSecretRe = regexp.MustCompile(`(?i)((?:SSHPASS|PASSWORD|TOKEN|SECRET|API_KEY)\w*=|sshpass\s+-p\s*)('[^']*'|"[^"]*"|\S+)`)

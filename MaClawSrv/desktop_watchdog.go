@@ -411,7 +411,7 @@ func desktopOutcomeNotice(outcome, why, content string) string {
 		"blocked":       "这件没做成，我已经停下，没有再重复尝试。",
 		"not_submitted": "这件还没提交，内容没有发出去。",
 		"unconfirmed":   "提交后没能确认结果，我没有重复提交，请以页面上的实际状态为准。",
-		"running":       "后台任务还在跑，我会定时查看进度并告诉你。",
+		"running":       "后台任务还在跑，我会每 10 分钟左右把进度发给你，结束、失败或卡住时马上告诉你。",
 	}[outcome]
 	if line != "" && why != "" {
 		line += "（依据：" + why + "）"

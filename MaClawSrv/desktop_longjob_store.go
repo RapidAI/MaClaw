@@ -53,7 +53,11 @@ func desktopLongJobLatestFor(scope agentruntime.Scope) *desktopLongJob {
 		if !desktopLongJobSameOwner(j, scope) {
 			continue
 		}
-		if best == nil || j.Started.After(best.Started) {
+		// A job still working outranks a newer one that already ended: the
+		// run is "running" while anything it handed off is.
+		active := j.Status == "running" || j.Status == "stalled"
+		bestActive := best != nil && (best.Status == "running" || best.Status == "stalled")
+		if best == nil || (active && !bestActive) || (active == bestActive && j.Started.After(best.Started)) {
 			best = j
 		}
 	}

@@ -58,6 +58,23 @@ func desktopSideNoteCause(runID, cause string) {
 	}
 }
 
+// desktopSideClearOutage forgets an outage cause once a later desktop step
+// of the run worked: the screen did open, so it is not why the run ended
+// (papers 2026-11-11: Bot 2 waited for its screen at 14:33, then posted to
+// 知乎 and 小红书, and its final reply still said 「原因：这台 bot 的电脑屏幕一直没能打开」).
+func desktopSideClearOutage(runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	desktopSideMu.Lock()
+	defer desktopSideMu.Unlock()
+	switch desktopSideCause[runID] {
+	case desktopOutageCauseCold, desktopOutageCauseHub:
+		delete(desktopSideCause, runID)
+	}
+}
+
 // desktopSideTake returns and forgets the run's cause and side effects.
 func desktopSideTake(runID string) (string, []string) {
 	desktopSideMu.Lock()

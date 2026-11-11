@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,7 +23,11 @@ func d100Env(t *testing.T) {
 	desktopLongJobPath = func() string { return filepath.Join(dir, "jobs.json") }
 	desktopLongJobResetForTest()
 	desktopLongJobTalk = func(context.Context, *desktopLongJob, desktopLongJobDecision) error { return nil }
+	grace, sleep := desktopLongJobGrace, desktopLongJobSleep
+	desktopLongJobGrace = []time.Duration{0, 0}
+	desktopLongJobSleep = func(ctx context.Context, d time.Duration) bool { return true }
 	t.Cleanup(func() {
+		desktopLongJobGrace, desktopLongJobSleep = grace, sleep
 		desktopLongJobTalk = desktopLongJobTalkDefault
 		desktopLongJobExec = nil
 		desktopLongJobResetForTest()
@@ -89,7 +94,7 @@ func TestD100StartAndPollAndDecisions(t *testing.T) {
 		return out, nil
 	}
 	scope := agentruntime.Scope{TenantID: "t", UserID: "u::desk::bot_x", InstanceID: "inst_x", SessionID: "sess_x", RunID: "run_x"}
-	out, err := desktopLongJobStart(context.Background(), scope, map[string]any{"command": "python train.py --epochs 3"})
+	out, err := desktopLongJobStart(context.Background(), scope, agentruntime.Scope{TenantID: "tenant_srv", UserID: "user_srv"}, map[string]any{"command": "python train.py --epochs 3"})
 	if err != nil || !strings.Contains(out, "后台任务已启动") || !strings.Contains(out, "4242") {
 		t.Fatalf("start: %s %v", out, err)
 	}
@@ -97,14 +102,16 @@ func TestD100StartAndPollAndDecisions(t *testing.T) {
 		t.Fatalf("start script: %s", started)
 	}
 	j := desktopLongJobLatestFor(scope)
-	if j == nil || j.PID != "4242" || j.SourceRun != "run_x" {
+	if j == nil || j.PID != "4242" || j.SourceRun != "run_x" || j.PrincipalTenant != "tenant_srv" || j.PrincipalUser != "user_srv" {
 		t.Fatalf("stored %+v", j)
 	}
 	oc, why, ok := desktopLongJobOutcome("run_x")
-	if !ok || oc != "running" || !strings.Contains(why, j.ID) {
+	if !ok || oc != "running" || !strings.Contains(why, desktopLongJobShortID(j.ID)) || !strings.Contains(why, "python train.py") {
 		t.Fatalf("outcome %s %s %v", oc, why, ok)
 	}
 
+	j.NextPoll = desktopLongJobNow().Add(-time.Second)
+	_ = desktopLongJobSave(j)
 	talked := 0
 	desktopLongJobTalk = func(context.Context, *desktopLongJob, desktopLongJobDecision) error {
 		talked++
@@ -183,5 +190,147 @@ func TestD100FailedExitIsFailed(t *testing.T) {
 	}
 	if j.Status != "failed" {
 		t.Fatalf("status %s", j.Status)
+	}
+}
+
+// papers 2026-11-11: a 1 s README check was named "train" and became a job.
+func TestD101ShortCommandReturnsInline(t *testing.T) {
+	d100Env(t)
+	desktopLongJobExec = func(ctx context.Context, scope agentruntime.Scope, command string) (string, error) {
+		switch {
+		case strings.Contains(command, "LONGJOB_STARTED"):
+			return "LONGJOB_STARTED pid=7 log=/tmp/j.log exit_file=/tmp/j.exit", nil
+		case strings.HasPrefix(command, "tail -c"):
+			return "train.jsonl\ndev.jsonl\n", nil
+		}
+		return "LONGJOB_DEAD pid=7\nLONGJOB_EXIT=0\nLONGJOB_LOG_BYTES=5\nLONGJOB_LOG_TAIL\ntrain.jsonl\n", nil
+	}
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u::desk::bot_x", InstanceID: "inst_x", SessionID: "sess_x", RunID: "run_s"}
+	out, err := desktopLongJobStart(context.Background(), scope, scope, map[string]any{"command": "for f in train dev; do ls $f; done"})
+	if err != nil || !strings.Contains(out, "dev.jsonl") || strings.Contains(out, "后台任务已启动") {
+		t.Fatalf("inline: %q %v", out, err)
+	}
+	if _, _, ok := desktopLongJobOutcome("run_s"); ok {
+		t.Fatal("an ended job must not keep the run running")
+	}
+	j := desktopLongJobLatestFor(scope)
+	if j == nil || j.ScheduleID != "" || j.ReportedStatus != "done" {
+		t.Fatalf("stored %+v", j)
+	}
+	// Non-zero exit comes back as an error, like plain bash.
+	desktopLongJobExec = func(ctx context.Context, scope agentruntime.Scope, command string) (string, error) {
+		if strings.Contains(command, "LONGJOB_STARTED") {
+			return "LONGJOB_STARTED pid=8 log=/tmp/k.log exit_file=/tmp/k.exit", nil
+		}
+		if strings.HasPrefix(command, "tail -c") {
+			return "No such file", nil
+		}
+		return "LONGJOB_DEAD pid=8\nLONGJOB_EXIT=2\nLONGJOB_LOG_BYTES=5\nLONGJOB_LOG_TAIL\nNo such file\n", nil
+	}
+	if _, err := desktopLongJobStart(context.Background(), scope, scope, map[string]any{"command": "python train.py"}); err == nil || !strings.Contains(err.Error(), "exit 2") {
+		t.Fatalf("failed inline err %v", err)
+	}
+}
+
+// A finish that could not be told is told on the next tick, not dropped.
+func TestD101UndeliveredFinishRetries(t *testing.T) {
+	d100Env(t)
+	desktopLongJobExec = func(ctx context.Context, scope agentruntime.Scope, command string) (string, error) {
+		return "LONGJOB_DEAD pid=1\nLONGJOB_EXIT=0\nLONGJOB_LOG_BYTES=9\nLONGJOB_LOG_TAIL\nacc=0.91\n", nil
+	}
+	j := &desktopLongJob{ID: "job_r", TenantID: "t", UserID: "u::desk::bot_x", InstanceID: "inst_x", SessionID: "s", Status: "running", ReportedStatus: "running", Alive: true, Started: desktopLongJobNow().Add(-time.Hour), LogFile: "/tmp/r.log"}
+	_ = desktopLongJobSave(j)
+	calls := 0
+	desktopLongJobTalk = func(_ context.Context, _ *desktopLongJob, dec desktopLongJobDecision) error {
+		calls++
+		if dec != longJobResume {
+			t.Fatalf("dec %s", dec)
+		}
+		if calls == 1 {
+			return errors.New("hub down")
+		}
+		return nil
+	}
+	_, _ = desktopLongJobWatchTick(context.Background(), j.ID)
+	if got := desktopLongJobGet(j.ID); got.Status != "done" || got.ReportedStatus != "running" || !got.LastNotice.IsZero() {
+		t.Fatalf("after failed delivery %+v", got)
+	}
+	if _, err := desktopLongJobWatchTick(context.Background(), j.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := desktopLongJobGet(j.ID); calls != 2 || got.ReportedStatus != "done" {
+		t.Fatalf("calls=%d %+v", calls, got)
+	}
+	if _, err := desktopLongJobWatchTick(context.Background(), j.ID); err != nil || calls != 2 {
+		t.Fatalf("told twice: %d %v", calls, err)
+	}
+}
+
+// The notice goes to Hub's say as the desktop owner, with the poll's evidence.
+func TestD101NoticeSaysWithEvidence(t *testing.T) {
+	d100Env(t)
+	var body map[string]any
+	prev := desktopLongJobSayFunc
+	t.Cleanup(func() { desktopLongJobSayFunc = prev })
+	desktopLongJobSayFunc = func(_ context.Context, b map[string]any) error {
+		body = b
+		return errors.New("409 ALREADY_SAID by bot_x")
+	}
+	code := 3
+	j := &desktopLongJob{ID: "job_abcdef123", TenantID: "tenant_default", UserID: "u_1::desk::bot_x", InstanceID: "inst_x", Status: "failed", ExitCode: &code, Started: desktopLongJobNow().Add(-30 * time.Minute), LastPoll: desktopLongJobNow(), LastTail: "Warning: Permanently added host\nTraceback\nValueError: bad label"}
+	if err := desktopLongJobTalkDefault(context.Background(), j, longJobNotice); err != nil {
+		t.Fatalf("ALREADY_SAID is delivered: %v", err)
+	}
+	text, _ := body["text"].(string)
+	if body["user_id"] != "u_1" || body["tenant_id"] != "tenant_default" || body["instance_id"] != "inst_x" || body["key"] == "" {
+		t.Fatalf("body %+v", body)
+	}
+	if !strings.Contains(text, "失败") || !strings.Contains(text, "3") || !strings.Contains(text, "ValueError: bad label") || strings.Contains(text, "Permanently added") {
+		t.Fatalf("text %q", text)
+	}
+}
+
+func TestD101WatchScheduleIsAccepted(t *testing.T) {
+	mgr, err := scheduler.NewManager(filepath.Join(t.TempDir(), "sched.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setSrvSchedulerManager(mgr)
+	t.Cleanup(func() { setSrvSchedulerManager(nil) })
+	j := &desktopLongJob{ID: "job_w", TenantID: "t", UserID: "u::desk::bot_x", InstanceID: "inst_x", BotID: "bot_x"}
+	if id := desktopLongJobEnsureWatch(j); id == "" {
+		t.Fatal("watch-job task was rejected")
+	}
+}
+
+func TestD101DetectionJudgesCommandWordsOnly(t *testing.T) {
+	long := []string{
+		"python train.py --epochs 10",
+		"cd ~/clf && ./venv/bin/python src/train_transformer.py > logs/t.log 2>&1",
+		"sshpass -p x ssh -p 99 u@h 'cd ~/clf && nohup ./venv/bin/python src/train.py > l 2>&1 &'",
+		"nohup python job.py &",
+		"git clone https://github.com/x/y",
+		"cmake --build build -j8",
+		"timeout 3600 torchrun --nproc 2 finetune.py",
+	}
+	for _, c := range long {
+		if !desktopLongJobCommand(c) {
+			t.Errorf("should be long: %s", c)
+		}
+	}
+	short := []string{
+		"cd /tmp/dp && cat > xhs.md <<'EOF'\n今天的论文讲怎么训练和下载模型，train 了 3 个 epoch\nEOF\nwc -c xhs.md",
+		"sleep 780; sshpass -p x ssh u@h 'tail -5 ~/clf/logs/train_transformer.log'",
+		"for f in train dev test; do wc -l $f.csv; done",
+		"grep -E 'epoch|loss' logs/train.log | tail -3",
+		"echo \"开始训练\" > note.txt",
+		"python -c \"import pandas as pd; print(pd.read_csv('train.csv').shape)\"",
+		"python train.py --help",
+		"ls -l /tmp",
+	}
+	for _, c := range short {
+		if desktopLongJobCommand(c) {
+			t.Errorf("should stay a plain step: %s", c)
+		}
 	}
 }

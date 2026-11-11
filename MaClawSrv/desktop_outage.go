@@ -219,15 +219,21 @@ func desktopNoteWorkStep(scope agentruntime.Scope, action string, err error) {
 	if !desktopLookActions[strings.ToLower(strings.TrimSpace(action))] {
 		st.workOK++
 	}
+	desktopSideClearOutage(scope.RunID)
 }
 
 // desktopOutageCause words an outage for the person.
 func desktopOutageCause(err error) string {
 	if desktopColdStart(err) {
-		return "这台 bot 的电脑屏幕一直没能打开"
+		return desktopOutageCauseCold
 	}
-	return "电脑服务（Hub）重启或断开，等了一阵仍连不上"
+	return desktopOutageCauseHub
 }
+
+const (
+	desktopOutageCauseCold = "这台 bot 的电脑屏幕一直没能打开"
+	desktopOutageCauseHub  = "电脑服务（Hub）重启或断开，等了一阵仍连不上"
+)
 
 // desktopRunNeverWorked: the run executed desktop steps, none of them did
 // work, and the last one failed. why names the failure in plain words.
