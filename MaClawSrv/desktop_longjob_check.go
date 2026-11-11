@@ -131,3 +131,35 @@ func desktopLongJobLimitLine(j *desktopLongJob) string {
 	}
 	return s
 }
+
+// desktopLongJobKilledNote explains an exit that means the job was ended
+// from outside, not that its work failed: papers 11-12 00:50, `timeout 7200`
+// ended the local ssh wrapper (exit 124) while the training on the remote
+// machine kept going and finished at 00:58. A wrapper's end is not the end of
+// what it started elsewhere.
+func desktopLongJobKilledNote(j *desktopLongJob) string {
+	if j == nil || j.ExitCode == nil {
+		return ""
+	}
+	var why string
+	switch *j.ExitCode {
+	case 124:
+		why = "退出码 124：被命令自带的 timeout 时限结束，不是任务自己失败"
+	case 137:
+		why = "退出码 137：被 SIGKILL 结束（时限或内存不足），不是任务自己失败"
+	case 143:
+		why = "退出码 143：被 SIGTERM 结束，不是任务自己失败"
+	default:
+		return ""
+	}
+	if desktopLongJobLooksRemote(j.Command) {
+		why += "；它是经 ssh 在另一台机器上跑的，那边的进程可能还在运行或已经跑完，先去那台机器查看再下结论"
+	}
+	return why
+}
+
+var desktopLongJobRemoteRe = regexp.MustCompile(`(?:^|[\s;&|('"/])(?:ssh|sshpass|rsh|mosh|kubectl\s+exec|docker\s+exec)(?:\s|'|"|$)`)
+
+func desktopLongJobLooksRemote(cmd string) bool {
+	return desktopLongJobRemoteRe.MatchString(desktopLongJobStripHeredocs(cmd))
+}

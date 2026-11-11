@@ -599,3 +599,28 @@ func TestD111WatchTurnReplyIsDelivered(t *testing.T) {
 		t.Fatalf("run that said itself got a second message %v", sent)
 	}
 }
+
+// papers 11-12 00:50: exit 124 from the local ssh wrapper; the remote
+// training finished at 00:58.
+func TestD112TimeoutKillIsNotATaskFailure(t *testing.T) {
+	code := 124
+	j := &desktopLongJob{Status: "failed", ExitCode: &code, Command: "timeout 7200 /root/.mm/rsh 'bash $HOME/x/run_all.sh'"}
+	n := desktopLongJobKilledNote(j)
+	if !strings.Contains(n, "timeout") || !strings.Contains(n, "另一台机器") {
+		t.Fatalf("note %q", n)
+	}
+	if got := desktopLongJobNoticeText(j, longJobResume); !strings.Contains(got, "被外部结束") {
+		t.Fatalf("notice %q", got)
+	}
+	if !strings.Contains(desktopLongJobView(j), "说明: ") {
+		t.Fatal("view lacks note")
+	}
+	local := &desktopLongJob{Status: "failed", ExitCode: &code, Command: "timeout 60 python train.py"}
+	if strings.Contains(desktopLongJobKilledNote(local), "另一台机器") {
+		t.Fatal("local job called remote")
+	}
+	one := 1
+	if desktopLongJobKilledNote(&desktopLongJob{ExitCode: &one, Command: "ssh h x"}) != "" {
+		t.Fatal("exit 1 explained as kill")
+	}
+}

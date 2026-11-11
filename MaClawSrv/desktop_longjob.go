@@ -698,6 +698,9 @@ func desktopLongJobView(j *desktopLongJob) string {
 	if f := desktopLongJobInnerFailures(j.LastTail); len(f) > 0 {
 		text += "\n输出中没成功的步骤: " + strings.Join(f, "，")
 	}
+	if n := desktopLongJobKilledNote(j); n != "" && j.Status == "failed" {
+		text += "\n说明: " + n
+	}
 	if j.LastTail != "" {
 		text += "\n--- 最近日志 ---\n" + desktopRuneHead(j.LastTail, 2000)
 	}
@@ -1126,6 +1129,9 @@ func desktopLongJobNoticeText(j *desktopLongJob, dec desktopLongJobDecision) str
 			code = strconv.Itoa(*j.ExitCode)
 		}
 		head = "后台任务失败了（退出码 " + code + "），下面是最后的输出"
+		if n := desktopLongJobKilledNote(j); n != "" {
+			head = "后台任务被外部结束了（" + n + "），下面是最后的输出"
+		}
 	case "stalled":
 		head = "后台任务的进程还在，但已经 " + j.stallBound().Round(time.Minute).String() + " 没有新的输出"
 	default:
