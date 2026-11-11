@@ -372,8 +372,13 @@ func TestShouldActivateComputerUseRequiresAppOperation(t *testing.T) {
 	if h.shouldActivateComputerUse(wrapped) {
 		t.Fatal("ACP wrapper cwd must not count as a desktop operation")
 	}
-	if !h.shouldActivateComputerUse("打开word程序写一份简历") {
-		t.Fatal("opening the Word program should still activate")
+	// Desktop-operation wording alone does not open the fresh-turn gate; the
+	// explicit trigger remains the opt-in.
+	if h.shouldActivateComputerUse("打开word程序写一份简历") {
+		t.Fatal("app-launch wording alone must not open computer use")
+	}
+	if !h.shouldActivateComputerUse("@computer 打开word程序写一份简历") {
+		t.Fatal("explicit trigger should still activate")
 	}
 }
 
@@ -984,9 +989,11 @@ func TestPrepareAgentLoopToolsComputerUseActivation(t *testing.T) {
 		toolDefGen:        NewToolDefinitionGenerator(nil, defs),
 	}
 
-	// The gate opens on an explicit @computer trigger; classifier similarity
-	// to the computer_use anchors no longer opens it by itself.
-	active := h.prepareAgentLoopTools("u1", "@computer 打开word程序，写一份简历", nil, agentLoopPhase{})
+	// Production injects computer_* only into the helper-driving context: on a
+	// main turn an open gate dispatches to the computer helper instead of
+	// expanding this loop's surface. ComputerHelper settles the gate open.
+	cuCtx := &LoopContext{ComputerHelper: true}
+	active := h.prepareAgentLoopTools("u1", "打开word程序，写一份简历", cuCtx, agentLoopPhase{})
 	names := toolNameSetForWorkflowFilterTest(active.Tools)
 	if !names["computer_observe"] || !names["computer_click"] {
 		t.Fatalf("CU tools should be present when intent active: %#v", names)
@@ -1004,9 +1011,8 @@ func TestPrepareAgentLoopToolsComputerUseActivation(t *testing.T) {
 	if inactiveNames["computer_observe"] || inactiveNames["computer_click"] {
 		t.Fatalf("closed gate must drop computer_* tools: %#v", inactiveNames)
 	}
-	if !inactiveNames["gui_click"] {
-		t.Fatalf("legacy gui tools should remain when CU inactive: %#v", inactiveNames)
-	}
+	// A closed gate never forces legacy gui_* in either: the ranker only keeps
+	// them when they score for the request text.
 	// The generic test fixture routes every available definition. Verify that
 	// local-file gating does not force CU tools; their mere presence here is not
 	// an activation signal.

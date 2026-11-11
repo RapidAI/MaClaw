@@ -47,7 +47,7 @@ type BuddyStatus = {
 
 type SoundEvent = { enabled: boolean; effect: number };
 type SoundEventKey = 'running' | 'complete' | 'standby' | 'attention';
-type SoundConfig = {
+export type SoundConfig = {
     master: boolean;
     running: SoundEvent;
     complete: SoundEvent;
@@ -246,209 +246,347 @@ export function BuddySettingsSection({ lang }: { lang: string }) {
         : localizeText(lang, 'Not connected', '未连接', '未連線');
     const staleNote =
         typeof status?.snapshot_age_s === 'number' && status.snapshot_age_s > 60
-            ? ` · ${localizeText(lang, 'stale', '数据陈旧', '資料陳舊')}`
+            ? localizeText(lang, 'stale data', '数据陈旧', '資料陳舊')
             : '';
     const touchNote =
         status?.connected && status.device_touch === false && status.device_key !== true
-            ? ` · ${localizeText(lang, 'touch not detected', '触摸未检测到', '觸控未偵測到')}`
+            ? localizeText(lang, 'touch not detected', '触摸未检测到', '觸控未偵測到')
             : '';
     const audioMissing = status?.connected && status.device_sound === false;
-    const soundNote =
-        status?.connected && status.device_sound === false
-            ? ` · ${localizeText(lang, 'audio unavailable', '音效不可用', '音效不可用')}`
-            : '';
-    const latencyNote =
+    const soundNote = audioMissing ? localizeText(lang, 'audio unavailable', '音效不可用', '音效不可用') : '';
+    const latencyText =
         status?.connected && typeof status.state_latency_ms === 'number' && status.state_latency_ms >= 0
-            ? ` · ${status.state_latency_ms} ms`
+            ? `${status.state_latency_ms} ms`
             : '';
-    const panelNote =
+    const panelText =
         status?.connected && status.device_width && status.device_height
-            ? ` · ${status.device_width}×${status.device_height}${
+            ? `${status.device_width}×${status.device_height}${
                   status.device_round ? localizeText(lang, ' round', ' 圆屏', ' 圓屏') : ''
-              }${status.device_panel ? ` · ${status.device_panel}` : ''}${
-                  status.device_font ? ` · ${status.device_font}` : ''
               }`
             : '';
 
+    const metaChips: string[] = [];
+    if (status?.connected) {
+        if (status.port) metaChips.push(status.port);
+        if (status.device_board) metaChips.push(status.device_board);
+        if (status.device_fw) {
+            metaChips.push(
+                localizeText(lang, `FW ${status.device_fw}`, `固件 ${status.device_fw}`, `韌體 ${status.device_fw}`),
+            );
+        }
+        if (panelText) metaChips.push(panelText);
+        if (status.device_panel) metaChips.push(status.device_panel);
+        if (status.device_font) metaChips.push(status.device_font);
+        if (status.page) metaChips.push(status.page);
+        if (latencyText) metaChips.push(latencyText);
+    }
+
     return (
-        <section className="general-settings-card general-settings-card--compact" aria-labelledby="buddy-settings-title">
-            <div className="buddy-settings">
-                <div>
-                    <h3 id="buddy-settings-title" className="buddy-settings__title">
+        <section className="im-settings-card im-settings-buddy" aria-labelledby="buddy-settings-title">
+            <header className="im-settings-hardware__heading">
+                <span className="im-settings-hardware__heading-badge" aria-hidden="true">
+                    <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.3"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    >
+                        <rect x="1.75" y="2.75" width="12.5" height="9" rx="1.5" />
+                        <path d="M5.5 14.75h5M8 11.75v3" />
+                    </svg>
+                </span>
+                <div className="im-settings-hardware__heading-text">
+                    <strong id="buddy-settings-title">
                         {localizeText(lang, 'USB companion display (Buddy)', 'USB 伴侣屏（Buddy）', 'USB 伴侶螢幕（Buddy）')}
-                    </h3>
-                    <p className="buddy-settings__hint">
+                    </strong>
+                    <span>
                         {localizeText(
                             lang,
                             'Shows task counts on an ESP32-S3 board over USB; shows the pet and weather when nothing is running.',
                             '通过 USB 在 ESP32-S3 小屏上显示任务计数；没有进行中的任务时显示宠物与天气。',
                             '透過 USB 在 ESP32-S3 小螢幕上顯示任務計數；沒有進行中的任務時顯示寵物與天氣。',
                         )}
-                    </p>
+                    </span>
                 </div>
-
-                <label className="buddy-settings__row">
-                    {status === null ? (
-                        <span>{localizeText(lang, 'Reading the link…', '正在读取连接状态…', '正在讀取連線狀態…')}</span>
-                    ) : (
-                        <>
-                            <input
-                                type="checkbox"
-                                checked={status.enabled}
-                                disabled={busy}
-                                onChange={(event) => void toggle(event.target.checked)}
-                            />
-                            <span>{localizeText(lang, 'Enable companion link', '启用伴侣屏连接', '啟用伴侶螢幕連線')}</span>
-                        </>
-                    )}
-                </label>
-
-                <label className="buddy-settings__row">
-                    <span>{localizeText(lang, 'Port', '端口', '連接埠')}</span>
-                    <select
-                        className="buddy-settings__select"
-                        value={selectedPort}
-                        disabled={busy || !status?.enabled}
-                        onChange={(event) => void changePort(event.target.value)}
-                    >
-                        <option value="">{localizeText(lang, 'Auto-detect', '自动检测', '自動偵測')}</option>
-                        {ports.map((port) => (
-                            <option key={port.name} value={port.name}>
-                                {port.name}
-                                {port.description ? ` — ${port.description}` : ''}
-                                {port.is_buddy ? ' ✓' : ''}
-                            </option>
-                        ))}
-                    </select>
-                    <button type="button" disabled={busy} onClick={() => void refresh()}>
-                        {localizeText(lang, 'Refresh', '刷新', '重新整理')}
-                    </button>
-                </label>
-
-                <div className="buddy-settings__status">
-                    {stateText}
-                    {status?.port ? ` · ${status.port}` : ''}
-                    {status?.device_board ? ` · ${status.device_board}` : ''}
-                    {status?.device_fw ? ` · ${status.device_fw}` : ''}
-                    {panelNote}
-                    {latencyNote}
-                    {status?.page ? ` · ${status.page}` : ''}
-                    {touchNote}
-                    {soundNote}
-                    {staleNote}
-                </div>
-
-                <div className="buddy-settings__row">
-                    <button type="button" disabled={busy || !status?.enabled} onClick={() => void refreshWeather()}>
-                        {localizeText(lang, 'Send weather now', '立即推送天气', '立即推送天氣')}
-                    </button>
-                    {weatherNote && <span className="buddy-settings__note">{weatherNote}</span>}
-                </div>
-
-                <div className="buddy-settings__row">
-                    <button type="button" disabled={busy || !status?.enabled} onClick={() => void refreshPet()}>
-                        {localizeText(lang, 'Send pet now', '立即发送宠物', '立即傳送寵物')}
-                    </button>
-                    {petNote && <span className="buddy-settings__note">{petNote}</span>}
-                </div>
-
-                <div className="buddy-settings__group">
-                    <div className="buddy-settings__group-title">
-                        {localizeText(lang, 'Notification sounds', '音效', '音效')}
-                    </div>
-                    {status?.device_touch || status?.device_key ? (
-                        <p className="buddy-settings__hint">
-                            {status?.device_key
-                                ? localizeText(
-                                      lang,
-                                      'Short-press the front key to cycle tasks. Hold it to mute.',
-                                      '短按正面按键切换当前任务，长按切换静音。',
-                                      '短按正面按鍵切換目前任務，長按切換靜音。',
-                                  )
-                                : localizeText(
-                                      lang,
-                                      'Short-press the screen to cycle tasks. Hold it to mute.',
-                                      '短按屏幕切换当前任务，长按切换静音。',
-                                      '短按螢幕切換目前任務，長按切換靜音。',
-                                  )}
-                        </p>
-                    ) : null}
-                    <label className="buddy-settings__row">
+                {status === null ? (
+                    <span className="buddy-settings__loading" role="status">
+                        {localizeText(lang, 'Reading the link…', '正在读取连接状态…', '正在讀取連線狀態…')}
+                    </span>
+                ) : (
+                    <label className="im-settings-hardware__switch">
                         <input
                             type="checkbox"
-                            checked={!!sound?.master}
-                            disabled={!sound || audioMissing}
-                            onChange={(event) =>
-                                sound && void saveSound({ ...sound, master: event.target.checked })
-                            }
+                            checked={status.enabled}
+                            disabled={busy}
+                            aria-label={localizeText(lang, 'Enable companion link', '启用伴侣屏连接', '啟用伴侶螢幕連線')}
+                            onChange={(event) => void toggle(event.target.checked)}
                         />
-                        <span>{localizeText(lang, 'Enable sounds', '启用音效', '啟用音效')}</span>
+                        <span className="im-settings-hardware__switch-track" aria-hidden="true" />
+                        <span className="im-settings-hardware__switch-text">
+                            {localizeText(lang, 'Enable companion link', '启用伴侣屏连接', '啟用伴侶螢幕連線')}
+                        </span>
                     </label>
-                    {SOUND_EVENTS.map((event) => {
-                        const current = sound?.[event.key];
-                        const disabled = !sound || audioMissing || !sound.master || !current?.enabled;
-                        return (
-                            <label className="buddy-settings__row" key={event.key}>
-                                <input
-                                    type="checkbox"
-                                    checked={!!current?.enabled}
-                                    disabled={!sound || audioMissing || !sound.master}
-                                    onChange={(e) =>
-                                        sound &&
-                                        void saveSound(
-                                            withEvent(sound, event.key, { enabled: e.target.checked }),
-                                        )
-                                    }
-                                />
-                                <span>{localizeText(lang, event.en, event.zh, event.tw)}</span>
-                                <select
-                                    className="buddy-settings__select"
-                                    value={current?.effect ?? 0}
-                                    disabled={disabled}
-                                    onChange={(e) =>
-                                        sound &&
-                                        void saveSound(
-                                            withEvent(sound, event.key, {
-                                                effect: Number(e.target.value),
-                                            }),
-                                        )
-                                    }
-                                >
-                                    {Array.from({ length: SOUND_COUNT }, (_, index) => (
-                                        <option key={index} value={index}>
-                                            {effectName(index)}
-                                        </option>
-                                    ))}
-                                </select>
-                            </label>
-                        );
-                    })}
+                )}
+            </header>
+
+            {status?.enabled && (
+                <div className="buddy-settings__toolbar">
+                    <label className="buddy-settings__port">
+                        <span>{localizeText(lang, 'Port', '端口', '連接埠')}</span>
+                        <select
+                            className="buddy-settings__select"
+                            value={selectedPort}
+                            disabled={busy}
+                            aria-label={localizeText(lang, 'Companion port', '伴侣屏端口', '伴侶螢幕連接埠')}
+                            onChange={(event) => void changePort(event.target.value)}
+                        >
+                            <option value="">{localizeText(lang, 'Auto-detect', '自动检测', '自動偵測')}</option>
+                            {ports.map((port) => (
+                                <option key={port.name} value={port.name}>
+                                    {port.is_buddy ? '✓ ' : ''}
+                                    {port.name}
+                                    {port.description ? ` — ${port.description}` : ''}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <button type="button" className="im-settings-button" disabled={busy} onClick={() => void refresh()}>
+                        {localizeText(lang, 'Refresh', '刷新', '重新整理')}
+                    </button>
                 </div>
+            )}
 
-                {typeof status?.missing_glyphs === 'number' && status.missing_glyphs > 0 && (
-                    <div className="buddy-settings__warn">
-                        {localizeText(
-                            lang,
-                            `${status.missing_glyphs} unsupported characters on the device`,
-                            `设备端有 ${status.missing_glyphs} 个字缺字`,
-                            `裝置端有 ${status.missing_glyphs} 個字缺字`,
+            {status && (
+                <div className="buddy-settings__status" data-connected={status.connected}>
+                    <span className="buddy-settings__status-dot" data-connected={status.connected} aria-hidden="true" />
+                    <strong className="buddy-settings__state">{stateText}</strong>
+                    <span className="buddy-settings__meta">
+                        {metaChips.map((chip, index) => (
+                            // The same string can legitimately appear twice
+                            // (e.g. the page name matches a port), so keys stay
+                            // positional instead of content-derived.
+                            <span key={index} className="buddy-settings__chip">
+                                {chip}
+                            </span>
+                        ))}
+                        {soundNote && (
+                            <span className="buddy-settings__chip" data-tone="warning">
+                                {soundNote}
+                            </span>
                         )}
+                        {touchNote && (
+                            <span className="buddy-settings__chip" data-tone="warning">
+                                {touchNote}
+                            </span>
+                        )}
+                        {staleNote && (
+                            <span className="buddy-settings__chip" data-tone="warning">
+                                {staleNote}
+                            </span>
+                        )}
+                    </span>
+                </div>
+            )}
+
+            {status?.enabled && (
+                <div
+                    className="buddy-settings__rows"
+                    role="group"
+                    aria-label={localizeText(lang, 'Manual push', '手动推送', '手動推送')}
+                >
+                    <div className="buddy-settings__row">
+                        <div className="buddy-settings__row-text">
+                            <span>{localizeText(lang, 'Weather', '天气', '天氣')}</span>
+                            <small>
+                                {weatherNote ||
+                                    localizeText(
+                                        lang,
+                                        'Push the latest weather snapshot to the display.',
+                                        '把最新天气推送到屏幕。',
+                                        '把最新天氣推送到螢幕。',
+                                    )}
+                            </small>
+                        </div>
+                        <button
+                            type="button"
+                            className="im-settings-button"
+                            disabled={busy}
+                            onClick={() => void refreshWeather()}
+                        >
+                            {localizeText(lang, 'Send now', '立即推送', '立即推送')}
+                        </button>
                     </div>
-                )}
+                    <div className="buddy-settings__row">
+                        <div className="buddy-settings__row-text">
+                            <span>{localizeText(lang, 'Pet', '宠物', '寵物')}</span>
+                            <small>
+                                {petNote ||
+                                    localizeText(
+                                        lang,
+                                        'Redraw the pet idle screen on the display.',
+                                        '把宠物待机画面重新发送到屏幕。',
+                                        '把寵物待機畫面重新傳送到螢幕。',
+                                    )}
+                            </small>
+                        </div>
+                        <button
+                            type="button"
+                            className="im-settings-button"
+                            disabled={busy}
+                            onClick={() => void refreshPet()}
+                        >
+                            {localizeText(lang, 'Send now', '立即发送', '立即傳送')}
+                        </button>
+                    </div>
+                </div>
+            )}
 
-                {(error || status?.last_error) && (
-                    <div className="buddy-settings__error">{error || status?.last_error}</div>
-                )}
+            {status?.enabled && (
+                <div
+                    className="buddy-settings__group"
+                    role="group"
+                    aria-labelledby="buddy-sound-title"
+                >
+                    <div className="buddy-settings__group-head">
+                        <strong id="buddy-sound-title">{localizeText(lang, 'Notification sounds', '音效', '音效')}</strong>
+                        {status?.device_touch || status?.device_key ? (
+                            <span>
+                                {status?.device_key
+                                    ? localizeText(
+                                          lang,
+                                          'Short-press the front key to cycle tasks. Hold it to mute.',
+                                          '短按正面按键切换当前任务，长按切换静音。',
+                                          '短按正面按鍵切換目前任務，長按切換靜音。',
+                                      )
+                                    : localizeText(
+                                          lang,
+                                          'Short-press the screen to cycle tasks. Hold it to mute.',
+                                          '短按屏幕切换当前任务，长按切换静音。',
+                                          '短按螢幕切換目前任務，長按切換靜音。',
+                                      )}
+                            </span>
+                        ) : null}
+                    </div>
+                    <div className="buddy-settings__rows">
+                        <div className="buddy-settings__row" data-muted={!sound || audioMissing}>
+                            <div className="buddy-settings__row-text">
+                                <span>{localizeText(lang, 'Enable sounds', '启用音效', '啟用音效')}</span>
+                                {audioMissing && (
+                                    <small>
+                                        {localizeText(
+                                            lang,
+                                            'The connected board has no speaker; sound settings are unavailable.',
+                                            '当前设备没有扬声器，音效设置不可用。',
+                                            '目前裝置沒有揚聲器，音效設定不可用。',
+                                        )}
+                                    </small>
+                                )}
+                            </div>
+                            <div className="buddy-settings__row-controls">
+                                <label className="im-settings-hardware__switch">
+                                    <input
+                                        type="checkbox"
+                                        checked={!!sound?.master}
+                                        disabled={!sound || audioMissing}
+                                        aria-label={localizeText(lang, 'Enable sounds', '启用音效', '啟用音效')}
+                                        onChange={(event) =>
+                                            sound && void saveSound({ ...sound, master: event.target.checked })
+                                        }
+                                    />
+                                    <span className="im-settings-hardware__switch-track" aria-hidden="true" />
+                                </label>
+                            </div>
+                        </div>
+                        {SOUND_EVENTS.map((event) => {
+                            const current = sound?.[event.key];
+                            const selectDisabled = !sound || audioMissing || !sound.master || !current?.enabled;
+                            return (
+                                <div
+                                    className="buddy-settings__row"
+                                    data-muted={!sound || audioMissing || !sound.master}
+                                    key={event.key}
+                                >
+                                    <div className="buddy-settings__row-text">
+                                        <span>{localizeText(lang, event.en, event.zh, event.tw)}</span>
+                                    </div>
+                                    <div className="buddy-settings__row-controls">
+                                        <label className="im-settings-hardware__switch">
+                                            <input
+                                                type="checkbox"
+                                                checked={!!current?.enabled}
+                                                disabled={!sound || audioMissing || !sound.master}
+                                                aria-label={localizeText(lang, event.en, event.zh, event.tw)}
+                                                onChange={(e) =>
+                                                    sound &&
+                                                    void saveSound(
+                                                        withEvent(sound, event.key, { enabled: e.target.checked }),
+                                                    )
+                                                }
+                                            />
+                                            <span className="im-settings-hardware__switch-track" aria-hidden="true" />
+                                        </label>
+                                        <select
+                                            className="buddy-settings__select buddy-settings__select--effect"
+                                            value={current?.effect ?? 0}
+                                            disabled={selectDisabled}
+                                            aria-label={`${localizeText(lang, event.en, event.zh, event.tw)} ${localizeText(
+                                                lang,
+                                                'effect',
+                                                '音效',
+                                                '音效',
+                                            )}`}
+                                            onChange={(e) =>
+                                                sound &&
+                                                void saveSound(
+                                                    withEvent(sound, event.key, {
+                                                        effect: Number(e.target.value),
+                                                    }),
+                                                )
+                                            }
+                                        >
+                                            {Array.from({ length: SOUND_COUNT }, (_, index) => (
+                                                <option key={index} value={index}>
+                                                    {effectName(index)}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
 
-                <p className="buddy-settings__footnote">
+            {typeof status?.missing_glyphs === 'number' && status.missing_glyphs > 0 && (
+                <div className="buddy-settings__warn" role="status">
                     {localizeText(
                         lang,
-                        'Disable the link before flashing the board with esptool; the serial port is exclusive.',
-                        '用 esptool 烧录前请先关闭连接：串口是独占的。',
-                        '用 esptool 燒錄前請先關閉連線：序列埠是獨占的。',
+                        `${status.missing_glyphs} unsupported characters on the device`,
+                        `设备端有 ${status.missing_glyphs} 个字缺字`,
+                        `裝置端有 ${status.missing_glyphs} 個字缺字`,
                     )}
-                </p>
-            </div>
+                </div>
+            )}
+
+            {(error || status?.last_error) && (
+                <div className="buddy-settings__error" role="alert">
+                    {error || status?.last_error}
+                </div>
+            )}
+
+            <p className="buddy-settings__footnote">
+                {localizeText(
+                    lang,
+                    'Disable the link before flashing the board with esptool; the serial port is exclusive.',
+                    '用 esptool 烧录前请先关闭连接：串口是独占的。',
+                    '用 esptool 燒錄前請先關閉連線：序列埠是獨占的。',
+                )}
+            </p>
         </section>
     );
 }
