@@ -3310,9 +3310,9 @@ func desktopCapture(ctx context.Context, scope agentruntime.Scope, display strin
 // message handler reads it. A later request has its own slot, so a picture
 // cannot move onto the next reply or onto another instance's reply.
 type desktopShotSlot struct {
-	mu        sync.Mutex
-	shot      agent.MessageAttachment
-	ready     bool
+	mu    sync.Mutex
+	shot  agent.MessageAttachment
+	ready bool
 	// files are this request's delivered files in order. Their encoded
 	// total stays within desktop.FileDeliverBase64Max: the reply body Hub and
 	// the GUI read is sized for one screenshot plus that much.
