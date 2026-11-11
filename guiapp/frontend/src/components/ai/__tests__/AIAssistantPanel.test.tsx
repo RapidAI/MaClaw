@@ -3714,6 +3714,10 @@ describe('AIAssistantPanel property tests', () => {
     it('only focuses an existing task tab for an activation request', async () => {
         const projectPath = 'D:/tasks/cloud-existing-live-tab';
         const base = defaultPanelProps();
+        loadProjectTabConversationMock.mockResolvedValue([
+            { id: 'orig-user', role: 'user', content: 'live transcript row', timestamp: 10 },
+            { id: 'orig-assistant', role: 'assistant', content: 'live transcript reply', timestamp: 11 },
+        ]);
         const firstOpen = {
             projectPath,
             taskTitle: 'Live cloud task',
@@ -3731,7 +3735,8 @@ describe('AIAssistantPanel property tests', () => {
             { wrapper: DialogProvider },
         );
         await waitFor(() => expect(onFirstHandled).toHaveBeenCalled());
-        await waitFor(() => expect(loadProjectConversationHistoryMock).toHaveBeenCalledWith(projectPath));
+        await waitFor(() => expect(loadProjectTabConversationMock).toHaveBeenCalled());
+        await waitFor(() => expect(document.body.textContent || '').toContain('live transcript row'));
         loadProjectTabConversationMock.mockClear();
         loadProjectConversationHistoryMock.mockClear();
 
@@ -3752,6 +3757,9 @@ describe('AIAssistantPanel property tests', () => {
         );
 
         await waitFor(() => expect(onActivationHandled).toHaveBeenCalled());
+        await act(async () => { await Promise.resolve(); });
+        // Activation must not refetch or re-seed a tab that already holds a
+        // transcript — neither the session probe nor the full-history path.
         expect(loadProjectTabConversationMock).not.toHaveBeenCalled();
         expect(loadProjectConversationHistoryMock).not.toHaveBeenCalled();
     });
@@ -9616,7 +9624,7 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.click(getByTestId('ai-cancel-progress'));
         // Stop must target the round that paints this transcript. A bare
         // lookup by the tab key finds nothing and leaves the work running.
-        await waitFor(() => expect(cancelSession).toHaveBeenCalledWith(roundKey));
+        await waitFor(() => expect(cancelSession).toHaveBeenCalledWith(roundKey, false));
         expect(tabKey).not.toBe(roundKey);
     });
 

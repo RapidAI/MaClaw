@@ -62,6 +62,7 @@ const atomicPatchFields = new Set([
     'file_outbound_enabled',
     'image_outbound_enabled',
     'skill_sources_allowed',
+    'github_client_id',
     'maclaw_role_name',
     'maclaw_role_description',
     'im_progress_nudge_enabled',

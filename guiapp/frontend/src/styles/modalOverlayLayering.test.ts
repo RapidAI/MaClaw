@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const srcRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const tokensCss = readFileSync(resolve(srcRoot, 'styles/partials/00-tokens.css'), 'utf8');
 const providerCss = readFileSync(resolve(srcRoot, 'styles/partials/50-pet-provider.css'), 'utf8');
 const settingsCss = readFileSync(resolve(srcRoot, 'styles/partials/30-settings-knowledge.css'), 'utf8');
 const shellCss = readFileSync(resolve(srcRoot, 'styles/partials/20-app-shell.css'), 'utf8');
@@ -20,10 +21,16 @@ function ruleBody(source: string, selector: string): string {
     return match![1];
 }
 
+const zTokens = new Map(
+    [...tokensCss.matchAll(/(--[\w-]+):\s*(\d+)\s*;/g)].map(m => [m[1], Number(m[2])]),
+);
+
 function zIndexOf(source: string, selector: string): number {
-    const value = Number(ruleBody(source, selector).match(/z-index:\s*(\d+)/)?.[1]);
+    const raw = ruleBody(source, selector).match(/z-index:\s*(var\(--[\w-]+\)|\d+)/)?.[1];
+    const token = raw?.match(/^var\((--[\w-]+)\)$/)?.[1];
+    const value = token ? zTokens.get(token) : Number(raw);
     expect(Number.isFinite(value), selector).toBe(true);
-    return value;
+    return value!;
 }
 
 function titleBarZIndex(): number {

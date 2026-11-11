@@ -77,6 +77,30 @@ const responseListeners = vi.hoisted(() => ({
     list: [] as Array<(payload: unknown) => void>,
     byEvent: {} as Record<string, (payload: unknown) => void>,
 }));
+// The GUI's own desktop watch reports the same display the live events
+// describe, so every screen event keeps this in step for WatchDesktopBot.
+const liveWatchView = vi.hoisted(() => ({
+    current: { novnc_url: '', user_control: false, attention_reason: '' } as { novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode?: string },
+}));
+// Mirror screenOf's field mapping (desktopBotResultStore.ts).
+const syncLiveWatchView = (payload: unknown) => {
+    try {
+        const data = (typeof payload === 'string' ? JSON.parse(payload) : payload) as Record<string, unknown> | null;
+        if (!data || typeof data !== 'object') return;
+        const url = String(data.novnc_url || data.NovncURL || data.desktop_handoff_url || data.DesktopHandoffURL || '');
+        const controlKeys = ['user_control', 'desktop_user_control', 'UserControl', 'DesktopUserControl', 'desktop_handoff', 'DesktopHandoff'];
+        const hasControlKey = controlKeys.some(key => Object.prototype.hasOwnProperty.call(data, key));
+        if (data.cleared === true || data.Cleared === true) {
+            liveWatchView.current = { novnc_url: '', user_control: false };
+        } else if (url || hasControlKey) {
+            liveWatchView.current = {
+                novnc_url: url,
+                user_control: controlKeys.some(key => data[key] === true),
+                attention_reason: String(data.attention_reason || data.desktop_attention_reason || data.AttentionReason || ''),
+            };
+        }
+    } catch { /* malformed payloads still reach the handler */ }
+};
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
     SendDesktopBotTask: (...args: unknown[]) => sendTask(...args),
@@ -153,16 +177,28 @@ const browserOpenURL = vi.hoisted(() => vi.fn());
 vi.mock('../../../wailsjs/runtime', () => ({
     BrowserOpenURL: (url: string) => browserOpenURL(url),
     EventsOn: (event: string, handler: (payload: unknown) => void) => {
-        responseListeners.list.push(handler);
-        responseListeners.byEvent[event] = handler;
+        const fn = event === 'desktop-bot-view' || event === 'desktop-bot-report' || event === 'ai-assistant-response'
+            ? (payload: unknown) => {
+                syncLiveWatchView(payload);
+                handler(payload);
+            }
+            : handler;
+        responseListeners.list.push(fn);
+        responseListeners.byEvent[event] = fn;
         return () => {
-            responseListeners.list = responseListeners.list.filter(item => item !== handler);
-            if (responseListeners.byEvent[event] === handler) delete responseListeners.byEvent[event];
+            responseListeners.list = responseListeners.list.filter(item => item !== fn);
+            if (responseListeners.byEvent[event] === fn) delete responseListeners.byEvent[event];
         };
     },
 }));
 
-import { DesktopBotWorkspace, formatCreated, handleDesktopBotReport, handleDesktopBotResult, handleDesktopBotSupplementState, handleDesktopBotView } from './DesktopBotWorkspace';
+import { DesktopBotWorkspace, formatCreated, handleDesktopBotReport as persistDesktopBotReport, handleDesktopBotResult as persistDesktopBotResult, handleDesktopBotSupplementState, handleDesktopBotView as persistDesktopBotView } from './DesktopBotWorkspace';
+
+// Direct store-level calls describe the same desktop the GUI's own watch
+// later reports, so they update liveWatchView exactly like the events do.
+const handleDesktopBotView = (payload: Parameters<typeof persistDesktopBotView>[0]) => { syncLiveWatchView(payload); return persistDesktopBotView(payload); };
+const handleDesktopBotReport = (payload: Parameters<typeof persistDesktopBotReport>[0]) => { syncLiveWatchView(payload); return persistDesktopBotReport(payload); };
+const handleDesktopBotResult = (payload: Parameters<typeof persistDesktopBotResult>[0]) => { syncLiveWatchView(payload); return persistDesktopBotResult(payload); };
 import { appearancesForUser, resetBotLookCacheForTest, saveBotAppearance, setBotLookLoaderForTest } from './botAppearance';
 import type { BotPhase } from './desktopBots';
 import { appendDesktopBotReport, applySupplementOutcomes, messagesForBot, saveBotMessages } from './desktopBots';
@@ -256,7 +292,8 @@ beforeEach(() => {
         return { told: `表述:${text}`, instruction: `指令:${phase}:${text}:${earlier.join('|')}`, pace: 'direct' };
     });
     watchBot.mockReset();
-    watchBot.mockResolvedValue({ novnc_url: '', user_control: false });
+    liveWatchView.current = { novnc_url: '', user_control: false };
+    watchBot.mockImplementation(() => Promise.resolve({ ...liveWatchView.current }));
     getScreen.mockReset();
     getScreen.mockResolvedValue({ novnc_url: '', user_control: false, desktop_mode: 'shared' });
     hubLink.mockReset();
@@ -3449,6 +3486,7 @@ describe('DesktopBotWorkspace', () => {
         expect(await screen.findByTestId('desktop-bot-processing')).toBeTruthy();
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '再截一张桌面' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(understandTask).toHaveBeenCalledTimes(2));
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '停' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
         expect(await screen.findByText('停了。后面还有一件记下的，你要的话我再做。')).toBeTruthy();
@@ -4202,7 +4240,7 @@ describe('DesktopBotWorkspace', () => {
 
     it('shows a retry on the computer card when the desktop picture fails', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
-        watchBot.mockResolvedValue({ novnc_url: '', user_control: false });
+        watchBot.mockRejectedValue(new Error('desktop picture unavailable'));
         vi.useFakeTimers();
         try {
             renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
@@ -4212,24 +4250,24 @@ describe('DesktopBotWorkspace', () => {
             expect(screen.getByTestId('desktop-bot-stage-loading')).toBeTruthy();
             expect(screen.getByText('值班 的屏幕')).toBeTruthy();
             await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
-            expect(screen.getByTestId('desktop-bot-retry')).toBeTruthy();
-            expect(screen.getByTestId('desktop-bot-panel').contains(screen.getByTestId('desktop-bot-retry'))).toBe(true);
+            const wake = screen.getByTestId('desktop-bot-wake');
+            expect(wake).toBeTruthy();
+            expect(screen.getByTestId('desktop-bot-panel').contains(wake)).toBe(true);
             expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
             expect(screen.queryByTestId('desktop-bot-stage')).toBeNull();
             const sends = sendTask.mock.calls.length;
             const epoch = watchBot.mock.calls[0][1];
-            fireEvent.click(screen.getByTestId('desktop-bot-retry'));
+            const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+            wakeBot.mockResolvedValue({ novnc_url: liveDesktop, user_control: false });
+            fireEvent.click(wake);
             await act(async () => { await Promise.resolve(); });
             expect(sendTask.mock.calls.length).toBe(sends);
-            expect(watchBot).toHaveBeenLastCalledWith('bot_1', epoch);
+            expect(wakeBot).toHaveBeenLastCalledWith('bot_1', epoch);
             expect(releaseWatch).not.toHaveBeenCalled();
-            const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
-            watchBot.mockResolvedValue({ novnc_url: liveDesktop, user_control: false });
-            await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+            await act(async () => { await vi.advanceTimersByTimeAsync(0); });
             expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
-            expect(screen.queryByTestId('desktop-bot-retry')).toBeNull();
+            expect(screen.queryByTestId('desktop-bot-wake')).toBeNull();
             expect(sendTask.mock.calls.length).toBe(sends);
-            expect(releaseWatch).not.toHaveBeenCalled();
             fireEvent.click(screen.getByTestId('desktop-bot-stage-close'));
             await act(async () => { await Promise.resolve(); });
             expect(releaseWatch).toHaveBeenCalledWith('bot_1', watchBot.mock.calls[0][1]);
@@ -4263,7 +4301,7 @@ describe('DesktopBotWorkspace', () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
         const cached = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
         getScreen.mockResolvedValue({ novnc_url: cached, user_control: false, desktop_mode: 'shared' });
-        watchBot.mockResolvedValue({ novnc_url: '', user_control: false, desktop_mode: 'shared' });
+        watchBot.mockRejectedValue(new Error('watch failed'));
         vi.useFakeTimers();
         try {
             renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
@@ -4273,7 +4311,7 @@ describe('DesktopBotWorkspace', () => {
             await act(async () => { await Promise.resolve(); });
             expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src')).toContain(cached);
             await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
-            expect(screen.getByTestId('desktop-bot-retry')).toBeTruthy();
+            expect(screen.getByTestId('desktop-bot-wake')).toBeTruthy();
             expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
         } finally {
             vi.useRealTimers();
@@ -4364,7 +4402,7 @@ describe('DesktopBotWorkspace', () => {
     it('does not open the stage again when a retry finishes after it was hidden', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
         const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
-        watchBot.mockResolvedValue({ novnc_url: '', user_control: false });
+        watchBot.mockRejectedValue(new Error('desktop picture unavailable'));
         vi.useFakeTimers();
         try {
             renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
@@ -4372,13 +4410,13 @@ describe('DesktopBotWorkspace', () => {
             fireEvent.click(screen.getByText('值班'));
             fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
             await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
-            expect(screen.getByTestId('desktop-bot-retry')).toBeTruthy();
-            let resolveRetry: (value: { novnc_url: string; user_control: boolean }) => void = () => {};
-            watchBot.mockImplementation(() => new Promise(resolve => { resolveRetry = resolve; }));
-            fireEvent.click(screen.getByTestId('desktop-bot-retry'));
+            expect(screen.getByTestId('desktop-bot-wake')).toBeTruthy();
+            let resolveWake: (value: { novnc_url: string; user_control: boolean }) => void = () => {};
+            wakeBot.mockImplementation(() => new Promise(resolve => { resolveWake = resolve; }));
+            fireEvent.click(screen.getByTestId('desktop-bot-wake'));
             fireEvent.click(screen.getByTestId('desktop-bot-stage-close'));
             await act(async () => { await Promise.resolve(); });
-            resolveRetry({ novnc_url: liveDesktop, user_control: false });
+            resolveWake({ novnc_url: liveDesktop, user_control: false });
             await act(async () => { await Promise.resolve(); });
             expect(screen.queryByTestId('desktop-bot-panel')).toBeNull();
             expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();

@@ -8546,6 +8546,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.SemanticToolScopeRouting = v
+		case "github_client_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.GitHubClientID = strings.TrimSpace(v)
 		case "gossip_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
