@@ -76,3 +76,35 @@ func TestGroundDesktopStepsUsesGrounder(t *testing.T) {
 		t.Fatalf("shots=%d notes=%v", *shots, notes)
 	}
 }
+
+func TestResolveDesktopGrounderUsesHubRoleWhenEnvMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"x\":11,\"y\":22}"}}]}`))
+	}))
+	defer srv.Close()
+	stubDesktopGround(t, corelib.MaclawLLMConfig{}, false)
+	cfg := corelib.AppConfig{
+		MaclawLLMCurrentProvider: "DeepSeek",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Key: "sk-ds", Model: "deepseek-chat", Protocol: "openai"},
+			{Name: "Grounder", URL: srv.URL, Key: "sk-g", Model: "qwen3-vl", Protocol: "openai"},
+		},
+		MaclawHubBotRoles: corelib.MaclawHubBotRoles{
+			Grounder: corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRolePin, Provider: "Grounder"},
+		},
+	}
+	ctx := context.WithValue(context.Background(), desktopAppConfigKey{}, cfg)
+	got, ok := resolveDesktopGrounder(ctx)
+	if !ok || got.ProviderName != "Grounder" || got.Model != "qwen3-vl" {
+		t.Fatalf("role grounder = %+v ok=%v", got, ok)
+	}
+	raw := []any{map[string]any{"action": "left_click", "target": "OK"}}
+	out, notes, err := groundDesktopSteps(ctx, agentruntime.Scope{RunID: "g-role"}, ":1", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := out.([]any)[0].(map[string]any)
+	if step["x"] != 11 || step["y"] != 22 {
+		t.Fatalf("step=%v notes=%v", step, notes)
+	}
+}

@@ -269,6 +269,9 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 	ctx = context.WithValue(ctx, desktopLLMSeesImagesKey{}, desktopTurnSeesImages(request))
 	ctx = context.WithValue(ctx, desktopComputerHelperKey{}, strings.TrimSpace(desktopMessageMeta(request)["computer_helper"]) == "1")
 	ctx = context.WithValue(ctx, desktopPublishApprovedKey{}, desktopTurnPublishApproved(request))
+	if cfg, ok := turnAppConfig(request); ok {
+		ctx = context.WithValue(ctx, desktopAppConfigKey{}, cfg)
+	}
 	scope, cloud, err := desktopScopeForTurn(request)
 	if err != nil {
 		return "", err
@@ -1649,6 +1652,7 @@ func desktopScopeForTurn(request agentruntime.TurnRequest) (agentruntime.Scope, 
 }
 
 type desktopLLMSeesImagesKey struct{}
+type desktopAppConfigKey struct{}
 
 // desktopTurnSeesImages reports whether this turn's chat model accepts images.
 // That is the same switch the GUI uses for Computer Use: a vision model looks
@@ -1658,7 +1662,7 @@ func desktopTurnSeesImages(request agentruntime.TurnRequest) bool {
 	if !ok {
 		return false
 	}
-	llm, err := agentservice.ResolveLLMConfig(cfg)
+	llm, err := agentservice.ResolveLLMRole(cfg, agentservice.LLMRoleComputerUse)
 	if err != nil {
 		return false
 	}

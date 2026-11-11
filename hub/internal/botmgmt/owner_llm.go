@@ -324,6 +324,11 @@ func (s *Service) pushBotOwnerLLM(ctx context.Context, rec record, principal own
 		current.AppConfig["maclaw_llm_current_provider"] = botLLMProviderName
 	}
 	current.AppConfig["maclaw_llm_providers"] = providers
+	if roles := hubBotRolesAppConfig(settings); roles != nil {
+		current.AppConfig["maclaw_hub_bot_roles"] = roles
+	} else {
+		delete(current.AppConfig, "maclaw_hub_bot_roles")
+	}
 	if err := s.doAdmin(ctx, rec, http.MethodPut, path, map[string]any{"app_config": current.AppConfig}, nil); err != nil {
 		return fmt.Errorf("%w: write bot llm config: %s", ErrSrv, err.Error())
 	}

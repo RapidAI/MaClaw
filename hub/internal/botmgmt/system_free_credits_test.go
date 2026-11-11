@@ -22,10 +22,10 @@ func TestSystemFreeCreditsLimitSaveAndUsage(t *testing.T) {
 	svc := NewService(settings)
 
 	limit := 10.5
-	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", nil, &limit); err != nil {
+	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", nil, &limit, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", nil, nil); err != nil {
+	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	match, ok := svc.LookupBotLLMToken(ctx, "tenant-a", "bot-token")
@@ -51,7 +51,7 @@ func TestSystemFreeCreditsLimitSaveAndUsage(t *testing.T) {
 	}
 
 	zero := 0.0
-	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", nil, &zero); err != nil {
+	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", nil, &zero, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.AddSystemFreeCreditsUsed(ctx, "tenant-a", "alice", "req-2", 3); err != nil {
@@ -66,11 +66,11 @@ func TestSystemFreeCreditsLimitSaveAndUsage(t *testing.T) {
 	}
 
 	negative := -1.0
-	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", nil, &negative); err == nil {
+	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", nil, &negative, nil); err == nil {
 		t.Fatal("negative limit accepted")
 	}
 	bad := math.NaN()
-	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", nil, &bad); err == nil {
+	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", nil, &bad, nil); err == nil {
 		t.Fatal("NaN limit accepted")
 	}
 }

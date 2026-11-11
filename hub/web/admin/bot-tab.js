@@ -75,7 +75,7 @@
       remove: '\u5220\u9664',
       failed: '\u64cd\u4f5c\u5931\u8d25',
       llmTitle: 'LLM \u8bbe\u7f6e',
-      llmHint: '\u9ed8\u8ba4\u4f7f\u7528 MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4\uff0c\u6309\u5173\u8054\u7528\u6237\u5728\u670d\u52a1\u5151\u6362\u4e2d\u7684\u989d\u5ea6\u6263\u8d39\u3002\u53ef\u4ee5\u6dfb\u52a0 OpenAI \u6216 Anthropic \u534f\u8bae\u7684\u670d\u52a1\u5546\uff0cMaClawSrv \u7528\u5f53\u524d\u9009\u4e2d\u7684\u670d\u52a1\u5546\u6267\u884c\u64cd\u4f5c\u3002\u4fdd\u5b58\u540e\uff0c\u4e0b\u4e00\u6b21 Bot \u64cd\u4f5c\u4f1a\u5199\u5165 MaClawSrv\u3002',
+      llmHint: '\u9ed8\u8ba4\u4f7f\u7528 MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4\uff0c\u6309\u5173\u8054\u7528\u6237\u5728\u670d\u52a1\u5151\u6362\u4e2d\u7684\u989d\u5ea6\u6263\u8d39\u3002\u53ef\u4ee5\u6dfb\u52a0 OpenAI \u6216 Anthropic \u534f\u8bae\u7684\u670d\u52a1\u5546\uff0cMaClawSrv \u7528\u5f53\u524d\u9009\u4e2d\u7684\u670d\u52a1\u5546\u6267\u884c\u64cd\u4f5c\u3002\u4fdd\u5b58\u540e\uff0c\u4e0b\u4e00\u6b21 Bot \u64cd\u4f5c\u4f1a\u5199\u5165 MaClawSrv\u3002\u4e5f\u53ef\u4ee5\u4e3a\u524d\u53f0\u4ea4\u4e92\u3001\u540e\u53f0\u6267\u884c\u3001\u7535\u8111\u64cd\u4f5c\u548c\u5b9a\u4f4d\u6a21\u578b\u5206\u522b\u6307\u5b9a\u670d\u52a1\u5546\uff1b\u9ed8\u8ba4\u90fd\u8ddf\u968f\u5f53\u524d\u9009\u4e2d\u7684\u670d\u52a1\u5546\uff0c\u5b9a\u4f4d\u6a21\u578b\u9ed8\u8ba4\u4e0d\u4f7f\u7528\u3002',
       llmDefaultHint: '\u6309\u5173\u8054\u7528\u6237\u7684\u5b98\u65b9\u989d\u5ea6\u6263\u8d39',
       llmOfficialName: 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4',
       llmUse: '\u4f7f\u7528',
@@ -101,7 +101,15 @@
       llmReservedName: '\u8fd9\u4e2a\u540d\u79f0\u5df2\u4fdd\u7559',
       llmKeyKeep: '\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\u5df2\u4fdd\u5b58\u7684\u5bc6\u94a5',
       llmBadCurrent: '\u8bf7\u9009\u62e9 MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4\u6216\u4e00\u4e2a\u5df2\u6dfb\u52a0\u7684\u670d\u52a1\u5546',
-      llmKeySet: '\u5bc6\u94a5\u5df2\u4fdd\u5b58'
+      llmKeySet: '\u5bc6\u94a5\u5df2\u4fdd\u5b58',
+      llmRolesTitle: '\u6a21\u578b\u914d\u7f6e',
+      llmRolesHint: '\u9ed8\u8ba4\u90fd\u4f7f\u7528\u5f53\u524d\u9009\u4e2d\u7684\u670d\u52a1\u5546\u3002\u4e5f\u53ef\u4ee5\u4e3a\u524d\u53f0\u4ea4\u4e92\u3001\u540e\u53f0\u6267\u884c\u3001\u7535\u8111\u64cd\u4f5c\u548c\u5b9a\u4f4d\u6a21\u578b\u5206\u522b\u6307\u5b9a\u3002',
+      llmRoleForeground: '\u524d\u53f0\u4ea4\u4e92',
+      llmRoleBackground: '\u540e\u53f0\u6267\u884c',
+      llmRoleComputerUse: '\u7535\u8111\u64cd\u4f5c',
+      llmRoleGrounder: '\u5b9a\u4f4d\u6a21\u578b',
+      llmRoleInherit: '\u8ddf\u968f\u9ed8\u8ba4',
+      llmRoleUnused: '\u4e0d\u4f7f\u7528'
     },
     en: {
       title: 'Bot management',
@@ -176,7 +184,7 @@
       remove: 'Delete',
       failed: 'Request failed',
       llmTitle: 'LLM settings',
-      llmHint: 'MaClawSrv uses the MaClaw official service group by default and deducts the associated user redeemed allowance. Add an OpenAI or Anthropic provider, and MaClawSrv calls the selected one. The next bot action writes the saved settings.',
+      llmHint: 'MaClawSrv uses the MaClaw official service group by default and deducts the associated user redeemed allowance. Add an OpenAI or Anthropic provider, and MaClawSrv calls the selected one. The next bot action writes the saved settings. You can also pick a provider for chat, background jobs, computer use, and the grounding model. Follow default uses the selected provider; the grounding model is off unless you choose one.',
       llmDefaultHint: 'Deducted from the associated user official allowance',
       llmOfficialName: 'MaClaw official service group',
       llmUse: 'Use',
@@ -202,7 +210,15 @@
       llmReservedName: 'This name is reserved',
       llmKeyKeep: 'Leave blank to keep the saved key',
       llmBadCurrent: 'Choose the MaClaw official service group or a provider you added',
-      llmKeySet: 'Key saved'
+      llmKeySet: 'Key saved',
+      llmRolesTitle: 'Model settings',
+      llmRolesHint: 'All roles use the selected provider by default. You can also set chat, background jobs, computer use, and the grounding model separately.',
+      llmRoleForeground: 'Chat',
+      llmRoleBackground: 'Background jobs',
+      llmRoleComputerUse: 'Computer use',
+      llmRoleGrounder: 'Grounding model',
+      llmRoleInherit: 'Follow default',
+      llmRoleUnused: 'Do not use'
     }
   };
 
@@ -334,6 +350,11 @@
       + '#tab-bots input:not([type=checkbox]):not([type=radio]),#tab-bots select{display:block;width:100%;height:36px;margin:0}'
       + '#tab-bots input[type=radio]{width:16px;height:16px;min-height:16px;margin:2px 0 0;flex:0 0 auto;accent-color:#2563eb}'
       + '#tab-bots .bot-llm-list{display:grid;gap:8px}'
+      + '#tab-bots .bot-llm-roles{display:grid;gap:8px;margin-top:4px;padding:10px 12px;border:1px solid #e4e9f2;border-radius:10px;background:#fff}'
+      + '#tab-bots .bot-llm-roles-title{margin:0;font-size:13px;font-weight:650;color:#172033}'
+      + '#tab-bots .bot-llm-roles-hint{margin:0;font-size:12px;line-height:1.45;color:#64748b}'
+      + '#tab-bots .bot-llm-role{display:grid;grid-template-columns:minmax(7em,0.45fr) minmax(0,1fr);gap:8px 12px;align-items:center}'
+      + '#tab-bots .bot-llm-role label{margin:0;text-transform:none;letter-spacing:0;font-size:13px;font-weight:600;color:#172033}'
       + '#tab-bots .bot-llm-choice{display:flex;align-items:flex-start;gap:10px;margin:0;padding:10px 12px;border:1px solid #dbe7ff;border-radius:10px;background:#f8fbff;text-transform:none;letter-spacing:0;font-size:13px;font-weight:400;color:inherit}'
       + '#tab-bots .bot-llm-choice strong{display:block;font-size:13px;font-weight:650;color:#172033}'
       + '#tab-bots .bot-llm-choice small{display:block;margin-top:2px;font-size:11px;line-height:1.45;color:#64748b}'
@@ -403,7 +424,7 @@
       + '#tab-bots #botDesktopHost > section > h3::before{content:"";display:inline-block;width:6px;height:6px;margin-right:7px;border-radius:999px;background:#2563eb;vertical-align:middle}'
       + '#tab-bots #botDesktopHost > section > h3 + p{padding-bottom:11px;border-bottom:1px solid #eef2f7}'
       + '#tab-bots #desktopHint,#tab-bots #desktopAssignHint,#tab-bots #desktopRunHint{margin:0;font-size:11px;line-height:1.5;color:#64748b}'
-      + '@media (max-width:860px){#tab-bots .bot-form,#tab-bots .bot-split,#tab-bots .bot-llm-grid{grid-template-columns:1fr}#tab-bots .bot-fields{grid-template-columns:1fr 1fr}}'
+      + '@media (max-width:860px){#tab-bots .bot-form,#tab-bots .bot-split,#tab-bots .bot-llm-grid,#tab-bots .bot-llm-role{grid-template-columns:1fr}#tab-bots .bot-fields{grid-template-columns:1fr 1fr}}'
       + '@media (max-width:760px){#tab-bots .bot-tr{grid-template-columns:1fr;gap:6px}#tab-bots .bot-th{display:none}#tab-bots .bot-td{white-space:normal;overflow:visible}#tab-bots .bot-td-main{padding-bottom:6px;border-bottom:1px solid #eef2f7}#tab-bots .bot-td-labelled{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;align-items:baseline}#tab-bots .bot-td-labelled::before{content:attr(data-label);font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b;overflow:visible;text-overflow:clip}#tab-bots .bot-fields{grid-template-columns:1fr}}'
       + '</style>'
       + '<div class="bot-page">'
@@ -431,6 +452,7 @@
       + '<div class="item-head"><div><h3 class="item-title" id="botLLMTitle"></h3>'
       + '<p class="item-meta" id="botLLMHint"></p></div><span class="badge" id="botLLMBadge"></span></div>'
       + '<div id="botLLMList" class="bot-llm-list"></div>'
+      + '<div id="botLLMRoles" class="bot-llm-roles"></div>'
       + '<div class="bot-foot"><div class="bot-actions">'
       + '<button type="button" class="btn-secondary" id="botLLMAdd"></button>'
       + '<button type="button" class="btn-primary" id="botLLMSave"></button></div>'
@@ -465,6 +487,7 @@
     byID('botLLMList').addEventListener('input', onLLMListEdit);
     byID('botLLMList').addEventListener('change', onLLMListEdit);
     byID('botLLMList').addEventListener('click', onLLMListClick);
+    byID('botLLMRoles').addEventListener('change', onLLMRoleChange);
     byID('botGlobal').addEventListener('change', toggleGlobal);
     byID('botOrgFilter').addEventListener('compositionstart', function () { orgState().composing = true; });
     byID('botOrgFilter').addEventListener('compositionend', function () {
@@ -1340,15 +1363,67 @@
 
   function llmDraft() {
     var panel = byID('tab-bots');
-    if (!panel._llmDraft) panel._llmDraft = { current: botOfficialGroup, providers: [] };
+    if (!panel._llmDraft) panel._llmDraft = { current: botOfficialGroup, providers: [], roles: defaultLLMRoles() };
     return panel._llmDraft;
+  }
+
+  function defaultLLMRoles() {
+    return {
+      foreground: { mode: 'inherit' },
+      background: { mode: 'inherit' },
+      computer_use: { mode: 'inherit' },
+      grounder: { mode: 'unused' }
+    };
+  }
+
+  function knownLLMProviderID(draft, id) {
+    if (isBotDefaultGroup(id)) return botOfficialGroup;
+    return (draft.providers || []).some(function (item) { return item.id === id; }) ? id : '';
+  }
+
+  function normalizeDraftRole(raw, draft, grounder) {
+    var mode = String((raw && raw.mode) || '').trim().toLowerCase();
+    var provider = knownLLMProviderID(draft, raw && raw.provider);
+    if (mode === 'pin' && provider) return { mode: 'pin', provider: provider };
+    if (mode === 'inherit') return { mode: 'inherit' };
+    if (mode === 'unused' && grounder) return { mode: 'unused' };
+    return { mode: grounder ? 'unused' : 'inherit' };
+  }
+
+  function normalizeDraftRoles(raw, draft) {
+    raw = raw || {};
+    return {
+      foreground: normalizeDraftRole(raw.foreground, draft, false),
+      background: normalizeDraftRole(raw.background, draft, false),
+      computer_use: normalizeDraftRole(raw.computer_use, draft, false),
+      grounder: normalizeDraftRole(raw.grounder, draft, true)
+    };
+  }
+
+  function roleSelectValue(role) {
+    if (role && role.mode === 'pin') {
+      return isBotDefaultGroup(role.provider) ? botOfficialGroup : String(role.provider || '');
+    }
+    if (role && role.mode === 'unused') return '__unused__';
+    return '__inherit__';
+  }
+
+  function roleFromSelect(value, grounder) {
+    var id = String(value || '');
+    if (id === '__unused__' && grounder) return { mode: 'unused' };
+    if (id === '__inherit__' || !id) return { mode: 'inherit' };
+    return { mode: 'pin', provider: isBotDefaultGroup(id) ? botOfficialGroup : id };
+  }
+
+  function coerceDraftRoles(draft) {
+    draft.roles = normalizeDraftRoles(draft.roles, draft);
   }
 
   function draftFromLLM(view) {
     var llm = view && view.llm || {};
     var providers = Array.isArray(llm.providers) ? llm.providers : [];
     var current = String(llm.current || '');
-    return {
+    var draft = {
       current: isBotDefaultGroup(current) ? botOfficialGroup : current,
       providers: providers.map(function (item) {
         return {
@@ -1362,6 +1437,8 @@
         };
       })
     };
+    draft.roles = normalizeDraftRoles(llm.roles, draft);
+    return draft;
   }
 
   function newLLMProviderID() {
@@ -1426,7 +1503,55 @@
     list.innerHTML = '<label class="bot-llm-choice"><input id="botLLMCurrent_maclaw_official_group" type="radio" name="botLLMCurrent" value="' + botOfficialGroup + '"' + (current === botOfficialGroup ? ' checked' : '') + '>'
       + '<span><strong>' + escapeHtml(t.llmOfficialName) + '</strong><small>' + escapeHtml(t.llmDefaultHint) + '</small></span></label>'
       + empty + rows;
+    paintLLMRoles();
     syncLLMBadge();
+  }
+
+  function llmRoleOptions(draft, grounder, selected) {
+    var t = text();
+    var options = [];
+    if (grounder) options.push({ value: '__unused__', label: t.llmRoleUnused });
+    options.push({ value: '__inherit__', label: t.llmRoleInherit });
+    options.push({ value: botOfficialGroup, label: t.llmOfficialName });
+    (draft.providers || []).forEach(function (item) {
+      var name = String(item.name || '').trim() || t.llmName;
+      options.push({ value: item.id, label: name });
+    });
+    return options.map(function (item) {
+      return '<option value="' + escapeHtml(item.value) + '"' + (item.value === selected ? ' selected' : '') + '>' + escapeHtml(item.label) + '</option>';
+    }).join('');
+  }
+
+  function paintLLMRoles() {
+    var root = byID('botLLMRoles');
+    if (!root) return;
+    var t = text();
+    var draft = llmDraft();
+    coerceDraftRoles(draft);
+    var rows = [
+      { key: 'foreground', label: t.llmRoleForeground, grounder: false },
+      { key: 'background', label: t.llmRoleBackground, grounder: false },
+      { key: 'computer_use', label: t.llmRoleComputerUse, grounder: false },
+      { key: 'grounder', label: t.llmRoleGrounder, grounder: true }
+    ].map(function (row) {
+      var selected = roleSelectValue(draft.roles[row.key]);
+      return '<div class="bot-llm-role"><label for="botLLMRole_' + row.key + '">' + escapeHtml(row.label) + '</label>'
+        + '<select id="botLLMRole_' + row.key + '">' + llmRoleOptions(draft, row.grounder, selected) + '</select></div>';
+    }).join('');
+    root.innerHTML = '<div class="bot-llm-roles-title" id="botLLMRolesTitle">' + escapeHtml(t.llmRolesTitle) + '</div>'
+      + '<p class="bot-llm-roles-hint" id="botLLMRolesHint">' + escapeHtml(t.llmRolesHint) + '</p>'
+      + rows;
+  }
+
+  function onLLMRoleChange(event) {
+    var target = event && event.target;
+    if (!target || !target.id || target.id.indexOf('botLLMRole_') !== 0) return;
+    var key = target.id.slice('botLLMRole_'.length);
+    var draft = llmDraft();
+    if (!draft.roles) draft.roles = defaultLLMRoles();
+    draft.roles[key] = roleFromSelect(target.value, key === 'grounder');
+    var panel = byID('tab-bots');
+    if (panel) panel._llmDirty = true;
   }
 
   function llmProviderFromID(id) {
@@ -1466,6 +1591,7 @@
     var draft = llmDraft();
     draft.providers = draft.providers.filter(function (item) { return item.id !== id; });
     if (draft.current === id) draft.current = botOfficialGroup;
+    coerceDraftRoles(draft);
     var panel = byID('tab-bots');
     if (panel) panel._llmDirty = true;
     paintLLM();
@@ -1521,7 +1647,14 @@
     return '';
   }
 
+  function llmRoleRequest(role) {
+    var out = { mode: role && role.mode ? role.mode : 'inherit' };
+    if (out.mode === 'pin') out.provider = isBotDefaultGroup(role.provider) ? botOfficialGroup : String(role.provider || '');
+    return out;
+  }
+
   function llmRequestBody(draft) {
+    var roles = normalizeDraftRoles(draft && draft.roles, draft || {});
     return {
       current: isBotDefaultGroup(draft.current) ? botOfficialGroup : draft.current,
       providers: (draft.providers || []).map(function (item) {
@@ -1535,7 +1668,13 @@
         var key = String(item.key || '').trim();
         if (key) out.key = key;
         return out;
-      })
+      }),
+      roles: {
+        foreground: llmRoleRequest(roles.foreground),
+        background: llmRoleRequest(roles.background),
+        computer_use: llmRoleRequest(roles.computer_use),
+        grounder: llmRoleRequest(roles.grounder)
+      }
     };
   }
 

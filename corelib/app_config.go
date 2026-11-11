@@ -100,8 +100,8 @@ type AppConfig struct {
 	RemoteClientID            string `json:"remote_client_id"`
 	// GitHubClientID overrides the built-in OAuth client_id for the GitHub
 	// connection (设置 → GitHub). Empty uses the bundled device-flow app.
-	GitHubClientID string `json:"github_client_id,omitempty"`
-	DefaultLaunchMode         string `json:"default_launch_mode"`
+	GitHubClientID    string `json:"github_client_id,omitempty"`
+	DefaultLaunchMode string `json:"default_launch_mode"`
 	// MaClaw LLM configuration
 	MaclawLLMUrl             string              `json:"maclaw_llm_url"`
 	MaclawLLMKey             string              `json:"maclaw_llm_key"`
@@ -120,8 +120,13 @@ type AppConfig struct {
 	MaclawLLMProfiles *MaclawLLMProfiles `json:"maclaw_llm_profiles,omitempty"`
 	// HubRoleModels is the last Hub service-status role_models snapshot.
 	// Role rows that follow Hub read it. A local pin does not change it.
-	HubRoleModels  MaclawLLMHubRoleModels `json:"hub_role_models,omitempty"`
-	LLMPromptCache LLMPromptCacheConfig   `json:"llm_prompt_cache,omitempty"`
+	HubRoleModels MaclawLLMHubRoleModels `json:"hub_role_models,omitempty"`
+	// MaclawHubBotRoles is the tenant Bot-management role assignment Hub last
+	// wrote for this MaClawSrv user. It carries no credentials; a pin names a
+	// provider already listed in maclaw_llm_providers (or the official hub-llm
+	// row). Empty or inherit follows MaclawLLMCurrentProvider.
+	MaclawHubBotRoles MaclawHubBotRoles    `json:"maclaw_hub_bot_roles,omitempty"`
+	LLMPromptCache    LLMPromptCacheConfig `json:"llm_prompt_cache,omitempty"`
 	// AnswerCache is retained only as the one-time migration source for legacy
 	// single-bot Lansenger installations. New reply-cache policies live on each
 	// LansengerBotProfile; runtime code must not use this application-wide value
@@ -863,6 +868,30 @@ type MaclawLLMHubRoleModels struct {
 	Foreground  string `json:"foreground,omitempty"`
 	Background  string `json:"background,omitempty"`
 	ComputerUse string `json:"computer_use,omitempty"`
+}
+
+// MaclawHubBotRole modes written by Hub Bot management.
+const (
+	MaclawHubBotRoleInherit = "inherit"
+	MaclawHubBotRolePin     = "pin"
+	MaclawHubBotRoleUnused  = "unused"
+)
+
+// MaclawHubBotRole is one Bot-management role assignment. Mode inherit (or
+// empty) follows the default current provider. Pin requires Provider, which
+// is a provider display name (or hub-llm for the official group). Unused is
+// grounder-only: no grounding model.
+type MaclawHubBotRole struct {
+	Mode     string `json:"mode,omitempty"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// MaclawHubBotRoles is the per-role provider choice Hub writes to MaClawSrv.
+type MaclawHubBotRoles struct {
+	Foreground  MaclawHubBotRole `json:"foreground,omitempty"`
+	Background  MaclawHubBotRole `json:"background,omitempty"`
+	ComputerUse MaclawHubBotRole `json:"computer_use,omitempty"`
+	Grounder    MaclawHubBotRole `json:"grounder,omitempty"`
 }
 
 // MaclawLLMProfiles is the persisted model assignment.

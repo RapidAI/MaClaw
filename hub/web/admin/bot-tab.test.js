@@ -173,7 +173,8 @@ function createHarness(options) {
             model: item.model,
             key_set: !!item.key || !!(prior && prior.key_set)
           };
-        })
+        }),
+        roles: body.roles || { foreground: { mode: 'inherit' }, background: { mode: 'inherit' }, computer_use: { mode: 'inherit' }, grounder: { mode: 'unused' } }
       };
       return Promise.resolve(settings);
     }
@@ -918,6 +919,50 @@ async function testLLMSettingsKeepTheDefaultAndSaveAProvider() {
   assert(harness.toasts.slice(beforeLimit).some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('8') !== -1; }), 'stops at eight providers');
 }
 
+async function testLLMRoleSettingsFollowDefaultAndPinSeparately() {
+  console.log('  Test: LLM role settings default to follow the current provider and can be set separately');
+  const harness = createHarness();
+  harness.settings.llm = {
+    default_service_group: 'maclaw_official_group',
+    current: 'maclaw_official_group',
+    providers: [{ id: 'lp_abcdef0123456789', name: 'OpenAI', protocol: 'openai', url: 'https://api.openai.com/v1', model: 'gpt-4o', key_set: true }]
+  };
+  await harness.open();
+  await flush();
+  const rolesHtml = harness.elements.botLLMRoles._html;
+  assertIncludes(rolesHtml, 'botLLMRole_foreground', 'shows the chat role');
+  assertIncludes(rolesHtml, 'botLLMRole_background', 'shows the background role');
+  assertIncludes(rolesHtml, 'botLLMRole_computer_use', 'shows the computer-use role');
+  assertIncludes(rolesHtml, 'botLLMRole_grounder', 'shows the grounding role');
+  assertIncludes(rolesHtml, '\u8ddf\u968f\u9ed8\u8ba4', 'offers follow-default');
+  assertIncludes(rolesHtml, '\u4e0d\u4f7f\u7528', 'offers unused for the grounder');
+  const grounder = harness.elements.botLLMRole_grounder;
+  assert(grounder && /value="__unused__"[^>]*selected|selected[^>]*value="__unused__"/.test(rolesHtml), 'grounder defaults to unused');
+  const background = harness.elements.botLLMRole_background;
+  background.value = 'lp_abcdef0123456789';
+  harness.elements.botLLMRoles.listeners.change[0]({ target: background });
+  const official = harness.elements.botLLMRole_computer_use;
+  official.value = 'maclaw_official_group';
+  harness.elements.botLLMRoles.listeners.change[0]({ target: official });
+  const follow = harness.elements.botLLMRole_grounder;
+  follow.value = '__inherit__';
+  harness.elements.botLLMRoles.listeners.change[0]({ target: follow });
+  harness.elements.botLLMSave.listeners.click[0]();
+  await flush();
+  const saved = harness.calls.filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; });
+  assert(saved.length === 1, 'saves role settings once');
+  const body = JSON.parse(saved[0].body);
+  assert(body.roles.foreground.mode === 'inherit', 'chat follows the default');
+  assert(body.roles.background.mode === 'pin' && body.roles.background.provider === 'lp_abcdef0123456789', 'pins background to the custom provider');
+  assert(body.roles.computer_use.mode === 'pin' && body.roles.computer_use.provider === 'maclaw_official_group', 'pins computer use to the official group');
+  assert(body.roles.grounder.mode === 'inherit' && !body.roles.grounder.provider, 'grounder can follow the default');
+  const encoded = JSON.stringify(body.roles);
+  assert(encoded.indexOf('sk-') === -1 && encoded.indexOf('key') === -1, 'role payload has no key');
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements.botLLMRemove_lp_abcdef0123456789 });
+  assert(JSON.parse(JSON.stringify(harness.elements['tab-bots']._llmDraft.roles)).background.mode === 'inherit', 'removing a provider falls that role back to follow-default');
+  assert(harness.elements['tab-bots']._llmDraft.roles.computer_use.mode === 'pin', 'keeps a pin to the official group');
+}
+
 async function testReloadAfterDirectoryFailure() {
   console.log('  Test: organization reload recovers from a failed load');
   const harness = createHarness({ failGroups: true });
@@ -959,6 +1004,7 @@ Promise.resolve()
   .then(testDesktopCheckKeepsTheError)
   .then(testBotOwnerUsesDirectoryName)
   .then(testLLMSettingsKeepTheDefaultAndSaveAProvider)
+  .then(testLLMRoleSettingsFollowDefaultAndPinSeparately)
   .then(testReloadAfterDirectoryFailure)
   .then(function () {
     console.log('bot-tab tests: ' + passed + ' passed, ' + failed + ' failed');

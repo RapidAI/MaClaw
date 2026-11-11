@@ -45,7 +45,7 @@ func (e SimpleLLMExecutor) DescribeCapabilities(ctx context.Context, req Execute
 }
 
 func (e SimpleLLMExecutor) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
-	llmCfg, err := ResolveLLMConfig(req.Config)
+	llmCfg, err := ResolveTurnLLMRole(req.Config, req.Message.Metadata, req.Instance.Metadata)
 	if err != nil {
 		return nil, err
 	}

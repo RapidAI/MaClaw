@@ -25,6 +25,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/grounding"
 	"github.com/RapidAI/CodeClaw/corelib/taskengine"
@@ -42,6 +43,27 @@ var desktopGrounderConfig = func() (corelib.MaclawLLMConfig, bool) {
 	}
 	cfg.SupportsVision = true
 	return cfg, grounding.Configured(cfg)
+}
+
+// resolveDesktopGrounder prefers the env escape hatch, then the Hub
+// Bot-management (or GUI profile) grounder role on this user's config.
+func resolveDesktopGrounder(ctx context.Context) (corelib.MaclawLLMConfig, bool) {
+	if cfg, ok := desktopGrounderConfig(); ok {
+		return cfg, true
+	}
+	if ctx == nil {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	app, ok := ctx.Value(desktopAppConfigKey{}).(corelib.AppConfig)
+	if !ok {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	cfg, err := agentservice.ResolveLLMRole(app, agentservice.LLMRoleGrounder)
+	if err != nil || !grounding.Configured(cfg) {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	cfg.SupportsVision = true
+	return cfg, true
 }
 
 // desktopGroundShot captures the image a target is grounded on. Tests
@@ -117,7 +139,7 @@ func groundDesktopSteps(ctx context.Context, scope agentruntime.Scope, display s
 			}
 		}
 	}
-	cfg, ok := desktopGrounderConfig()
+	cfg, ok := resolveDesktopGrounder(ctx)
 	if len(need) > 1 || need[0] != 0 {
 		// The screen changes after each step, so only a leading target can be
 		// grounded on the screenshot taken now.

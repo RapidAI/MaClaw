@@ -48,6 +48,9 @@ type llmSettings struct {
 	// system-free. Zero means that consumption is not limited. Bots do not
 	// draw this from the new-user benefit allowance.
 	SystemFreeCreditsLimit float64 `json:"system_free_credits_limit,omitempty"`
+	// Roles is the optional per-role provider choice. Empty roles mean every
+	// loop follows Current, and the grounder is unused.
+	Roles LLMRoles `json:"roles,omitempty"`
 }
 
 // LLMProviderInput is one provider in an admin save. An empty key keeps the
@@ -71,6 +74,22 @@ type LLMProviderView struct {
 	KeySet   bool   `json:"key_set"`
 }
 
+// LLMRoleAssignment is one Bot-management role choice. Mode is inherit, pin,
+// or unused (grounder only). Provider is a provider id or the official group
+// id when Mode is pin.
+type LLMRoleAssignment struct {
+	Mode     string `json:"mode,omitempty"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// LLMRoles is the optional per-role provider choice for bot turns.
+type LLMRoles struct {
+	Foreground  LLMRoleAssignment `json:"foreground,omitempty"`
+	Background  LLMRoleAssignment `json:"background,omitempty"`
+	ComputerUse LLMRoleAssignment `json:"computer_use,omitempty"`
+	Grounder    LLMRoleAssignment `json:"grounder,omitempty"`
+}
+
 // LLMSettingsView is the admin LLM card. DefaultServiceGroup is the MaClaw
 // official service group. Current is that id, or one provider id.
 type LLMSettingsView struct {
@@ -79,13 +98,17 @@ type LLMSettingsView struct {
 	Providers           []LLMProviderView `json:"providers"`
 	// SystemFreeCreditsLimit is the credits cap for bot system-free usage.
 	// Zero means unlimited.
-	SystemFreeCreditsLimit float64 `json:"system_free_credits_limit"`
+	SystemFreeCreditsLimit float64  `json:"system_free_credits_limit"`
+	Roles                  LLMRoles `json:"roles"`
 }
 
 // SaveLLMSettings replaces the extra providers MaClawSrv may call.
 // The official group stays available. A blank key on a known id keeps the stored key.
 // A nil credits limit keeps the limit already stored.
-func (s *Service) SaveLLMSettings(ctx context.Context, tenantID, current string, inputs []LLMProviderInput, creditsLimit *float64) (SettingsView, error) {
+// A nil roles value keeps the roles already stored (and coerces pins whose
+// provider was removed in this save). A non-nil value, including an empty
+// object, replaces the stored roles.
+func (s *Service) SaveLLMSettings(ctx context.Context, tenantID, current string, inputs []LLMProviderInput, creditsLimit *float64, roles *LLMRoles) (SettingsView, error) {
 	if s == nil || s.System == nil {
 		return SettingsView{}, ErrSettingsUnavailable
 	}
@@ -95,7 +118,7 @@ func (s *Service) SaveLLMSettings(ctx context.Context, tenantID, current string,
 	if err != nil {
 		return SettingsView{}, err
 	}
-	next, err := normalizeLLMSettings(rec.LLM, current, inputs)
+	next, err := normalizeLLMSettings(rec.LLM, current, inputs, roles)
 	if err != nil {
 		return SettingsView{}, err
 	}
@@ -132,11 +155,15 @@ func llmView(settings llmSettings) LLMSettingsView {
 		Current:                current,
 		Providers:              providers,
 		SystemFreeCreditsLimit: settings.SystemFreeCreditsLimit,
+		Roles:                  llmRolesView(settings.Roles),
 	}
 }
 
 func llmIsDefault(settings llmSettings) bool {
 	if len(settings.Providers) > 0 {
+		return false
+	}
+	if !llmRolesAreDefault(settings.Roles) {
 		return false
 	}
 	return isBotDefaultServiceGroup(settings.Current)
@@ -172,6 +199,7 @@ func llmConfigStamp(settings llmSettings) string {
 		sum := sha256.Sum256([]byte(item.Key))
 		_, _ = io.WriteString(hash, hex.EncodeToString(sum[:])+"\n")
 	}
+	_, _ = io.WriteString(hash, llmRolesStamp(settings.Roles))
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
@@ -206,7 +234,7 @@ func selectedBotLLMProvider(settings llmSettings) (llmProvider, bool) {
 	return llmProvider{}, false
 }
 
-func normalizeLLMSettings(prev llmSettings, current string, inputs []LLMProviderInput) (llmSettings, error) {
+func normalizeLLMSettings(prev llmSettings, current string, inputs []LLMProviderInput, roles *LLMRoles) (llmSettings, error) {
 	if inputs == nil {
 		inputs = []LLMProviderInput{}
 	}
@@ -246,7 +274,11 @@ func normalizeLLMSettings(prev llmSettings, current string, inputs []LLMProvider
 			return llmSettings{}, fmt.Errorf("%w: llm current provider was not found", ErrInvalidInput)
 		}
 	}
-	return llmSettings{Current: current, Providers: out}, nil
+	normalized, err := normalizeLLMRoles(prev.Roles, roles, out)
+	if err != nil {
+		return llmSettings{}, err
+	}
+	return llmSettings{Current: current, Providers: out, Roles: normalized}, nil
 }
 
 func normalizeLLMProvider(in LLMProviderInput, prev map[string]llmProvider) (llmProvider, error) {
@@ -296,4 +328,154 @@ func newLLMProviderID() string {
 		return "lp_" + hex.EncodeToString(sum[:8])
 	}
 	return "lp_" + hex.EncodeToString(buf[:])
+}
+
+func llmRolesView(roles LLMRoles) LLMRoles {
+	return LLMRoles{
+		Foreground:  llmRoleView(roles.Foreground, false),
+		Background:  llmRoleView(roles.Background, false),
+		ComputerUse: llmRoleView(roles.ComputerUse, false),
+		Grounder:    llmRoleView(roles.Grounder, true),
+	}
+}
+
+func llmRoleView(role LLMRoleAssignment, grounder bool) LLMRoleAssignment {
+	mode := strings.ToLower(strings.TrimSpace(role.Mode))
+	provider := strings.TrimSpace(role.Provider)
+	switch mode {
+	case corelib.MaclawHubBotRolePin:
+		if isBotDefaultServiceGroup(provider) {
+			provider = llmDefaultServiceGroup
+		}
+		return LLMRoleAssignment{Mode: corelib.MaclawHubBotRolePin, Provider: provider}
+	case corelib.MaclawHubBotRoleInherit:
+		return LLMRoleAssignment{Mode: corelib.MaclawHubBotRoleInherit}
+	case corelib.MaclawHubBotRoleUnused:
+		if grounder {
+			return LLMRoleAssignment{Mode: corelib.MaclawHubBotRoleUnused}
+		}
+		return LLMRoleAssignment{Mode: corelib.MaclawHubBotRoleInherit}
+	default:
+		if grounder {
+			return LLMRoleAssignment{Mode: corelib.MaclawHubBotRoleUnused}
+		}
+		return LLMRoleAssignment{Mode: corelib.MaclawHubBotRoleInherit}
+	}
+}
+
+func llmRolesAreDefault(roles LLMRoles) bool {
+	return llmRoleIsDefault(roles.Foreground, false) &&
+		llmRoleIsDefault(roles.Background, false) &&
+		llmRoleIsDefault(roles.ComputerUse, false) &&
+		llmRoleIsDefault(roles.Grounder, true)
+}
+
+func llmRoleIsDefault(role LLMRoleAssignment, grounder bool) bool {
+	mode := strings.ToLower(strings.TrimSpace(role.Mode))
+	if grounder {
+		return mode == "" || mode == corelib.MaclawHubBotRoleUnused
+	}
+	return mode == "" || mode == corelib.MaclawHubBotRoleInherit
+}
+
+func llmRolesStamp(roles LLMRoles) string {
+	roles = llmRolesView(roles)
+	return "fg:" + roles.Foreground.Mode + ":" + roles.Foreground.Provider +
+		"\nbg:" + roles.Background.Mode + ":" + roles.Background.Provider +
+		"\ncu:" + roles.ComputerUse.Mode + ":" + roles.ComputerUse.Provider +
+		"\ngr:" + roles.Grounder.Mode + ":" + roles.Grounder.Provider + "\n"
+}
+
+func normalizeLLMRoles(prev LLMRoles, in *LLMRoles, providers []llmProvider) (LLMRoles, error) {
+	src := prev
+	if in != nil {
+		src = *in
+	}
+	fg, err := normalizeLLMRole(src.Foreground, providers, false)
+	if err != nil {
+		return LLMRoles{}, err
+	}
+	bg, err := normalizeLLMRole(src.Background, providers, false)
+	if err != nil {
+		return LLMRoles{}, err
+	}
+	cu, err := normalizeLLMRole(src.ComputerUse, providers, false)
+	if err != nil {
+		return LLMRoles{}, err
+	}
+	gr, err := normalizeLLMRole(src.Grounder, providers, true)
+	if err != nil {
+		return LLMRoles{}, err
+	}
+	return LLMRoles{Foreground: fg, Background: bg, ComputerUse: cu, Grounder: gr}, nil
+}
+
+func normalizeLLMRole(in LLMRoleAssignment, providers []llmProvider, grounder bool) (LLMRoleAssignment, error) {
+	mode := strings.ToLower(strings.TrimSpace(in.Mode))
+	provider := strings.TrimSpace(in.Provider)
+	switch mode {
+	case "", corelib.MaclawHubBotRoleInherit:
+		if grounder && mode == "" {
+			return LLMRoleAssignment{Mode: corelib.MaclawHubBotRoleUnused}, nil
+		}
+		return LLMRoleAssignment{Mode: corelib.MaclawHubBotRoleInherit}, nil
+	case corelib.MaclawHubBotRoleUnused:
+		if !grounder {
+			return LLMRoleAssignment{Mode: corelib.MaclawHubBotRoleInherit}, nil
+		}
+		return LLMRoleAssignment{Mode: corelib.MaclawHubBotRoleUnused}, nil
+	case corelib.MaclawHubBotRolePin:
+		if isBotDefaultServiceGroup(provider) {
+			return LLMRoleAssignment{Mode: corelib.MaclawHubBotRolePin, Provider: llmDefaultServiceGroup}, nil
+		}
+		for _, item := range providers {
+			if item.ID == provider {
+				return LLMRoleAssignment{Mode: corelib.MaclawHubBotRolePin, Provider: item.ID}, nil
+			}
+		}
+		// The pinned provider was removed in this save: fall back rather than
+		// reject the whole settings write.
+		if grounder {
+			return LLMRoleAssignment{Mode: corelib.MaclawHubBotRoleUnused}, nil
+		}
+		return LLMRoleAssignment{Mode: corelib.MaclawHubBotRoleInherit}, nil
+	default:
+		return LLMRoleAssignment{}, fmt.Errorf("%w: llm role mode is invalid", ErrInvalidInput)
+	}
+}
+
+// hubBotRolesAppConfig is the MaClawSrv payload for maclaw_hub_bot_roles.
+// It names providers (never keys). A default assignment is omitted so the
+// writer can delete the config key.
+func hubBotRolesAppConfig(settings llmSettings) map[string]any {
+	if llmRolesAreDefault(settings.Roles) {
+		return nil
+	}
+	roles := llmRolesView(settings.Roles)
+	return map[string]any{
+		"foreground":   hubBotRoleAppConfig(settings, roles.Foreground),
+		"background":   hubBotRoleAppConfig(settings, roles.Background),
+		"computer_use": hubBotRoleAppConfig(settings, roles.ComputerUse),
+		"grounder":     hubBotRoleAppConfig(settings, roles.Grounder),
+	}
+}
+
+func hubBotRoleAppConfig(settings llmSettings, role LLMRoleAssignment) map[string]any {
+	out := map[string]any{"mode": role.Mode}
+	if role.Mode == corelib.MaclawHubBotRolePin {
+		out["provider"] = roleProviderName(settings, role.Provider)
+	}
+	return out
+}
+
+func roleProviderName(settings llmSettings, id string) string {
+	if isBotDefaultServiceGroup(id) {
+		return botLLMProviderName
+	}
+	for _, item := range settings.Providers {
+		if item.ID == id {
+			return item.Name
+		}
+	}
+	return strings.TrimSpace(id)
 }

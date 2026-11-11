@@ -835,7 +835,7 @@ func TestBotMessagePushesSelectedAnthropicProvider(t *testing.T) {
 	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{{
 		ID: "lp_claude0000000001", Name: "Claude", Protocol: "anthropic",
 		URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5",
-	}}, nil); err != nil {
+	}}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.PostMessage(ctx, "tenant-a", "alice", "bot_alice", "back"); err != nil {

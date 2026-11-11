@@ -249,7 +249,7 @@ func TestOwnerLLMOverrideRestoresAfterAdministratorChangesDefault(t *testing.T) 
 	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "lp_newcom000000001", []LLMProviderInput{
 		{ID: "lp_admin0000000001", Name: "Admin Pick", Protocol: "anthropic", URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5"},
 		{ID: "lp_newcom000000001", Name: "Newcomer", Protocol: "openai", URL: "https://api.new.example/v1", Key: "sk-new", Model: "new-1"},
-	}, nil); err != nil {
+	}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "default"}); err != nil {
@@ -353,5 +353,69 @@ func TestOwnerLLMOverrideKeepsStoredKeyWhenBlank(t *testing.T) {
 	}
 	if got := recorder.last(t)["maclaw_llm_key"]; got != "sk-mine-secret" {
 		t.Fatalf("blank key did not keep the stored one: %v", got)
+	}
+}
+
+func TestPushBotOwnerLLMWritesRoleProviderNamesWithoutKeys(t *testing.T) {
+	rec := ownerLLMTestRecordWithAdminDefault()
+	rec.LLM.Roles = LLMRoles{
+		Background:  LLMRoleAssignment{Mode: "pin", Provider: "lp_admin0000000001"},
+		ComputerUse: LLMRoleAssignment{Mode: "pin", Provider: "maclaw_official_group"},
+		Grounder:    LLMRoleAssignment{Mode: "inherit"},
+	}
+	svc, recorder := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, rec)
+	ctx := context.Background()
+	loaded, err := svc.load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.writeBotOwnerLLM(ctx, "tenant-a", loaded, "alice", true); err != nil {
+		t.Fatal(err)
+	}
+	cfg := recorder.last(t)
+	raw, err := json.Marshal(cfg["maclaw_hub_bot_roles"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "sk-ant") || strings.Contains(string(raw), "lp_admin") {
+		t.Fatalf("roles payload leaked a key or stored provider id: %s", raw)
+	}
+	roles, _ := cfg["maclaw_hub_bot_roles"].(map[string]any)
+	if roles == nil {
+		t.Fatal("expected maclaw_hub_bot_roles to be written")
+	}
+	bg, _ := roles["background"].(map[string]any)
+	cu, _ := roles["computer_use"].(map[string]any)
+	gr, _ := roles["grounder"].(map[string]any)
+	fg, _ := roles["foreground"].(map[string]any)
+	if bg["mode"] != "pin" || bg["provider"] != "Admin Pick" {
+		t.Fatalf("background role = %#v", bg)
+	}
+	if cu["mode"] != "pin" || cu["provider"] != "hub-llm" {
+		t.Fatalf("computer_use role = %#v", cu)
+	}
+	if gr["mode"] != "inherit" || gr["provider"] != nil {
+		t.Fatalf("grounder role = %#v", gr)
+	}
+	if fg["mode"] != "inherit" {
+		t.Fatalf("foreground role = %#v", fg)
+	}
+
+	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "lp_admin0000000001", []LLMProviderInput{{
+		ID: "lp_admin0000000001", Name: "Admin Pick", Protocol: "anthropic",
+		URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5",
+	}}, nil, &LLMRoles{}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = svc.load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.writeBotOwnerLLM(ctx, "tenant-a", loaded, "alice", true); err != nil {
+		t.Fatal(err)
+	}
+	back := recorder.last(t)
+	if _, ok := back["maclaw_hub_bot_roles"]; ok {
+		t.Fatalf("default roles should remove maclaw_hub_bot_roles, got %#v", back["maclaw_hub_bot_roles"])
 	}
 }

@@ -13,7 +13,7 @@ func TestSaveLLMSettingsKeepsKeyOutOfTheView(t *testing.T) {
 	view, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{{
 		ID: "lp_abcdef0123456789", Name: "Claude", Protocol: "Anthropic",
 		URL: "https://api.anthropic.com/", Key: "sk-ant-secret", Model: "claude-sonnet-4-5",
-	}}, nil)
+	}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestSaveLLMSettingsKeepsKeyOutOfTheView(t *testing.T) {
 	again, err := svc.SaveLLMSettings(ctx, "tenant-a", got.ID, []LLMProviderInput{{
 		ID: got.ID, Name: "Claude", Protocol: "anthropic",
 		URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5",
-	}}, nil)
+	}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,20 +63,20 @@ func TestSaveLLMSettingsRejectsProtocolNameAndMissingKey(t *testing.T) {
 		{ID: "not-an-id", Name: "Other", Protocol: "openai", URL: "https://llm.example/v1", Model: "m"},
 	}
 	for _, in := range cases {
-		if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{in}, nil); err == nil {
+		if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{in}, nil, nil); err == nil {
 			t.Fatalf("accepted %#v", in)
 		}
 	}
 	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "missing", []LLMProviderInput{{
 		ID: "lp_abcdef0123456789", Name: "Other", Protocol: "openai",
 		URL: "https://llm.example/v1", Key: "sk-1", Model: "m",
-	}}, nil); err == nil {
+	}}, nil, nil); err == nil {
 		t.Fatal("accepted an unknown current provider")
 	}
 	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{
 		{Name: "智谱编程", Protocol: "anthropic", URL: "https://open.bigmodel.cn/api/anthropic", Key: "sk-1", Model: "glm"},
 		{Name: "Zhipu GLM Coding", Protocol: "anthropic", URL: "https://open.bigmodel.cn/api/anthropic", Key: "sk-2", Model: "glm"},
-	}, nil); err == nil || !strings.Contains(err.Error(), "llm provider name is duplicated") {
+	}, nil, nil); err == nil || !strings.Contains(err.Error(), "llm provider name is duplicated") {
 		t.Fatalf("aliased names: %v", err)
 	}
 }
@@ -90,7 +90,7 @@ func TestSaveLLMSettingsKeepsTheConnection(t *testing.T) {
 	view, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{{
 		ID: "lp_abcdef0123456789", Name: "Claude", Protocol: "anthropic",
 		URL: "https://api.anthropic.com", Key: "sk-ant-secret", Model: "claude-sonnet-4-5",
-	}}, nil)
+	}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,5 +110,126 @@ func TestSaveLLMSettingsKeepsTheConnection(t *testing.T) {
 	}
 	if !strings.Contains(raw, "token-1") || !strings.Contains(raw, "sk-ant-secret") {
 		t.Fatalf("stored record dropped a secret: %s", raw)
+	}
+}
+
+func TestSaveLLMSettingsRolesDefaultAndKeepOnOmit(t *testing.T) {
+	svc := NewService(&memSettings{})
+	ctx := context.Background()
+	view, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{{
+		ID: "lp_claude0000000001", Name: "Claude", Protocol: "anthropic",
+		URL: "https://api.anthropic.com", Key: "sk-ant-secret", Model: "claude-sonnet-4-5",
+	}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.LLM.Roles.Foreground.Mode != "inherit" ||
+		view.LLM.Roles.Background.Mode != "inherit" ||
+		view.LLM.Roles.ComputerUse.Mode != "inherit" ||
+		view.LLM.Roles.Grounder.Mode != "unused" {
+		t.Fatalf("default roles = %#v", view.LLM.Roles)
+	}
+	pinned := LLMRoles{
+		Foreground:  LLMRoleAssignment{Mode: "inherit"},
+		Background:  LLMRoleAssignment{Mode: "pin", Provider: "lp_claude0000000001"},
+		ComputerUse: LLMRoleAssignment{Mode: "pin", Provider: "maclaw_official_group"},
+		Grounder:    LLMRoleAssignment{Mode: "inherit"},
+	}
+	saved, err := svc.SaveLLMSettings(ctx, "tenant-a", "lp_claude0000000001", []LLMProviderInput{{
+		ID: "lp_claude0000000001", Name: "Claude", Protocol: "anthropic",
+		URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5",
+	}}, nil, &pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.LLM.Roles.Background.Provider != "lp_claude0000000001" ||
+		saved.LLM.Roles.ComputerUse.Provider != "maclaw_official_group" ||
+		saved.LLM.Roles.Grounder.Mode != "inherit" {
+		t.Fatalf("pinned roles = %#v", saved.LLM.Roles)
+	}
+	// An older client that omits roles must not wipe them.
+	kept, err := svc.SaveLLMSettings(ctx, "tenant-a", "lp_claude0000000001", []LLMProviderInput{{
+		ID: "lp_claude0000000001", Name: "Claude", Protocol: "anthropic",
+		URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5",
+	}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.LLM.Roles.Background.Provider != "lp_claude0000000001" || kept.LLM.Roles.Grounder.Mode != "inherit" {
+		t.Fatalf("omitted roles dropped the stored assignment: %#v", kept.LLM.Roles)
+	}
+	reset := LLMRoles{}
+	cleared, err := svc.SaveLLMSettings(ctx, "tenant-a", "lp_claude0000000001", []LLMProviderInput{{
+		ID: "lp_claude0000000001", Name: "Claude", Protocol: "anthropic",
+		URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5",
+	}}, nil, &reset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.LLM.Roles.Background.Mode != "inherit" || cleared.LLM.Roles.Grounder.Mode != "unused" {
+		t.Fatalf("empty roles should reset: %#v", cleared.LLM.Roles)
+	}
+}
+
+func TestSaveLLMSettingsCoercesRemovedRolePins(t *testing.T) {
+	svc := NewService(&memSettings{})
+	ctx := context.Background()
+	pinned := LLMRoles{
+		Background: LLMRoleAssignment{Mode: "pin", Provider: "lp_claude0000000001"},
+		Grounder:   LLMRoleAssignment{Mode: "pin", Provider: "lp_claude0000000001"},
+	}
+	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{{
+		ID: "lp_claude0000000001", Name: "Claude", Protocol: "anthropic",
+		URL: "https://api.anthropic.com", Key: "sk-ant-secret", Model: "claude-sonnet-4-5",
+	}}, nil, &pinned); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.LLM.Roles.Background.Mode != "inherit" || cleared.LLM.Roles.Grounder.Mode != "unused" {
+		t.Fatalf("removed provider left dangling pins: %#v", cleared.LLM.Roles)
+	}
+}
+
+func TestSaveLLMSettingsRejectsInvalidRoleMode(t *testing.T) {
+	svc := NewService(&memSettings{})
+	ctx := context.Background()
+	bad := LLMRoles{Foreground: LLMRoleAssignment{Mode: "always"}}
+	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", nil, nil, &bad); err == nil || !strings.Contains(err.Error(), "llm role mode is invalid") {
+		t.Fatalf("invalid mode: %v", err)
+	}
+}
+
+func TestLLMConfigStampIncludesRolesAndOmitsKeys(t *testing.T) {
+	base := llmSettings{Current: "maclaw_official_group"}
+	if llmConfigStamp(base) != "" {
+		t.Fatalf("default stamp should be empty: %q", llmConfigStamp(base))
+	}
+	withRoles := llmSettings{
+		Current: "maclaw_official_group",
+		Roles: LLMRoles{
+			Background: LLMRoleAssignment{Mode: "pin", Provider: "maclaw_official_group"},
+		},
+	}
+	first := llmConfigStamp(withRoles)
+	if first == "" {
+		t.Fatal("role-only change should get a stamp so MaClawSrv is rewritten")
+	}
+	withRoles.Roles.Grounder = LLMRoleAssignment{Mode: "inherit"}
+	if llmConfigStamp(withRoles) == first {
+		t.Fatal("grounder change must change the stamp")
+	}
+	secret := llmSettings{
+		Current: "lp_claude0000000001",
+		Providers: []llmProvider{{
+			ID: "lp_claude0000000001", Name: "Claude", Protocol: "anthropic",
+			URL: "https://api.anthropic.com", Key: "sk-ant-secret", Model: "claude-sonnet-4-5",
+		}},
+	}
+	stamp := llmConfigStamp(secret)
+	if stamp == "" || strings.Contains(stamp, "sk-ant") || strings.Contains(llmRolesStamp(secret.Roles), "sk-ant") {
+		t.Fatalf("stamp leaked a key: %q", stamp)
 	}
 }

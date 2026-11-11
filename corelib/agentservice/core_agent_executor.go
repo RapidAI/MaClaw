@@ -689,7 +689,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		return &ExecuteResult{Content: text, OutputType: "text/plain"}, nil
 	}
 	recordUserCheckoutConfirmation(req)
-	llmCfg, err := ResolveLLMConfig(req.Config)
+	llmCfg, err := ResolveTurnLLMRole(req.Config, req.Message.Metadata, req.Instance.Metadata)
 	if err != nil {
 		return nil, err
 	}
