@@ -214,6 +214,9 @@ func TestD102CeilingStopsHonestlyAndLeavesTheJob(t *testing.T) {
 }
 
 func TestD102StatusIsSaidAndHeartbeatOnlyWhenNothingMoved(t *testing.T) {
+	prevEvery := desktopRunProgressEvery
+	desktopRunProgressEvery = 30 * time.Minute
+	t.Cleanup(func() { desktopRunProgressEvery = prevEvery })
 	// Daniel 11-11 20:38: first note after 30 min, at most one per 30 min,
 	// only on a meaningful change; a stall warning once.
 	base := time.Date(2026, 11, 11, 15, 0, 0, 0, time.Local)

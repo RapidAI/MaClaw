@@ -33,7 +33,11 @@ import (
 // measurable progress for half the stall window) is said once per stall,
 // whatever the interval; the end of the run is its final reply.
 var (
-	desktopRunProgressEvery = desktopEnvMinutes("MACLAW_RUN_STATUS_MINUTES", 30*time.Minute)
+	// 0 (default, Daniel 11-11 21:01): no interval status notes; a running
+	// job is reported by its watcher at estimated checks and a run warns
+	// once when it stalls. A positive value restores change-based notes at
+	// most once per that many minutes.
+	desktopRunProgressEvery = desktopEnvMinutes("MACLAW_RUN_STATUS_MINUTES", 0)
 	desktopRunProgressMu    sync.Mutex
 	desktopRunProgressSeen  = map[string]*desktopRunProgressState{}
 )
@@ -111,7 +115,7 @@ func desktopRunStatusTick(scope agentruntime.Scope, now time.Time) {
 	}
 	stall := tracked && snap.stallWarned && !st.stallSaid
 	changed := fp != st.lastFP && (metrics != "" || (tracked && snap.stageN > 0))
-	due := !st.saying && (stall || (age >= desktopRunProgressEvery && (st.lastSay.IsZero() || since >= desktopRunProgressEvery) && changed))
+	due := !st.saying && (stall || (desktopRunProgressEvery > 0 && age >= desktopRunProgressEvery && (st.lastSay.IsZero() || since >= desktopRunProgressEvery) && changed))
 	if !due {
 		desktopRunProgressMu.Unlock()
 		return

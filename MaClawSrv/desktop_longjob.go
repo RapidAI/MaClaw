@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"path"
@@ -43,7 +44,9 @@ const (
 // failure and stall go out at once; a job still stuck is repeated once per
 // desktopLongJobHeartbeatEvery.
 var (
-	desktopLongJobNoticeEvery    = desktopEnvMinutes("MACLAW_LONGJOB_NOTICE_MINUTES", 30*time.Minute)
+	desktopLongJobCheckMin       = desktopEnvMinutes("MACLAW_LONGJOB_CHECK_MIN_MINUTES", 2*time.Minute)
+	desktopLongJobCheckMax       = desktopEnvMinutes("MACLAW_LONGJOB_CHECK_MAX_MINUTES", 6*time.Hour)
+	desktopLongJobCheckDefault   = desktopEnvMinutes("MACLAW_LONGJOB_CHECK_DEFAULT_MINUTES", 15*time.Minute)
 	desktopLongJobHeartbeatEvery = desktopEnvMinutes("MACLAW_LONGJOB_STALL_REPEAT_MINUTES", time.Hour)
 )
 
@@ -119,6 +122,16 @@ type desktopLongJob struct {
 	ReportedStatus string `json:"reported_status,omitempty"`
 	// ReportedMetrics: the measured lines the person was last told.
 	ReportedMetrics string `json:"reported_metrics,omitempty"`
+	// NextCheck is when the watcher next reads the job for the person: an
+	// estimate from the job's own progress (time per epoch/step × what is
+	// left), the bot's own check_minutes, or a default that backs off. Polls
+	// in between only look for an end or a stall, silently.
+	NextCheck   time.Time `json:"next_check,omitempty"`
+	CheckReason string    `json:"check_reason,omitempty"`
+	CheckSet    bool      `json:"check_set,omitempty"` // the bot set NextCheck
+	CheckMisses int       `json:"check_misses,omitempty"`
+	EstimateEnd time.Time `json:"estimate_end,omitempty"`
+	OverdueSaid bool      `json:"overdue_said,omitempty"`
 }
 
 func (j *desktopLongJob) stallBound() time.Duration {
@@ -529,6 +542,7 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 		j.PrincipalTenant, j.PrincipalUser = principal.TenantID, principal.UserID
 	}
 	j.ReportedStatus = "running"
+	desktopLongJobSetCheck(j, args, j.Started)
 	script := desktopLongJobStartScript(cmd, dir, j.LogFile, j.PidFile, j.ExitFile)
 	out, err := desktopLongJobRun(ctx, scope, script)
 	if err != nil {
@@ -548,6 +562,9 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 	if inline, err, ended := desktopLongJobGraceWait(ctx, j); ended {
 		return inline, err
 	}
+	if j.NextCheck.IsZero() {
+		desktopLongJobPlanCheck(j, desktopLongJobNow())
+	}
 	j.ScheduleID = desktopLongJobEnsureWatch(j)
 	if err := desktopLongJobSave(j); err != nil {
 		return "", err
@@ -557,7 +574,8 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 		"任务 ID: " + j.ID + "\n" +
 		"PID: " + j.PID + "\n" +
 		"日志: " + j.LogFile + "\n" +
-		"状态会单独保存，定时巡查看进程是否存活、日志和指标是否在推进；有进展、停滞、失败或结束时会告诉你，并附上最近一次轮询的证据。\n" +
+		"下次查看: " + j.NextCheck.Format("15:04") + "（" + j.CheckReason + "）。\n" +
+		"巡查只在有阶段结果、结束、失败或停滞时告诉用户，不按固定间隔播报。你对耗时有更好的估计时，用 action=job_status，job_id=" + j.ID + "，next_check_minutes=分钟数，check_reason=理由 调整下次查看时间（2 分钟到 6 小时）。\n" +
 		"请结束这一轮，不要再用 bash 等待它跑完。需要立刻查看可用 action=job_status，job_id=" + j.ID + "。", nil
 }
 
@@ -623,6 +641,9 @@ func desktopLongJobStatus(ctx context.Context, scope agentruntime.Scope, args ma
 	if err := desktopLongJobPollAndStore(ctx, j); err != nil {
 		return desktopLongJobView(j) + "\n轮询失败：" + err.Error(), nil
 	}
+	if j.Status == "running" && desktopLongJobSetCheck(j, args, desktopLongJobNow()) {
+		_ = desktopLongJobSave(j)
+	}
 	if strings.TrimSpace(scope.SessionID) != "" && scope.SessionID == j.SessionID && j.Status != "running" {
 		// The live run in this conversation read the stall, failure or
 		// finish itself; it tells the person in its own reply.
@@ -660,6 +681,9 @@ func desktopLongJobView(j *desktopLongJob) string {
 	age := desktopLongJobNow().Sub(j.Started).Round(time.Second)
 	text := fmt.Sprintf("任务 %s\n命令: %s\n状态: %s\n进程存活: %s\nPID: %s\n退出码: %s\n已运行: %s\n日志: %s",
 		j.ID, j.Command, j.Status, alive, j.PID, exit, age, j.LogFile)
+	if !j.NextCheck.IsZero() && (j.Status == "running" || j.Status == "stalled") {
+		text += "\n下次查看: " + j.NextCheck.Format("15:04") + "（" + j.CheckReason + "）"
+	}
 	if j.LastTail != "" {
 		text += "\n--- 最近日志 ---\n" + desktopRuneHead(j.LastTail, 2000)
 	}
@@ -756,17 +780,160 @@ func desktopLongJobDecide(j *desktopLongJob, prevStatus, prevFP string, prevNoti
 	if !j.Alive {
 		return longJobResume
 	}
-	last := prevNotice
-	if last.IsZero() {
-		last = j.Started
-	}
-	if now.Sub(last) < desktopLongJobNoticeEvery {
+	// No fixed-interval updates: the person hears about a running job only
+	// at its estimated check, and only for a new stage result, or once when
+	// it is far past its estimate.
+	if j.NextCheck.IsZero() || now.Before(j.NextCheck) {
 		return longJobSilent
 	}
 	if m := desktopRunProgressLines(j.LastTail); m != "" && m != j.ReportedMetrics {
 		return longJobNotice
 	}
+	if desktopLongJobOverdue(j, now) {
+		return longJobNotice
+	}
 	return longJobSilent
+}
+
+var desktopLongJobFracRe = regexp.MustCompile(`(?:^|[^0-9./])([0-9]{1,7})\s*/\s*([0-9]{1,7})(?:[^0-9./]|$)`)
+var desktopLongJobPctRe = regexp.MustCompile(`(?:^|[^0-9.])([0-9]{1,3}(?:\.[0-9]+)?)\s*%`)
+
+// desktopLongJobProgress reads how far a job is from the last log line that
+// states it: nested counters such as "epoch 2/10 … step 400/803" or
+// "[12/100]", or a percentage. units is the outer counter's total (0 for a
+// percentage). Notation, not commands: any job that prints its progress.
+func desktopLongJobProgress(tail string) (frac float64, units int, ok bool) {
+	lines := strings.Split(strings.TrimSpace(tail), "\n")
+	for i := len(lines) - 1; i >= 0 && i >= len(lines)-40; i-- {
+		line := lines[i]
+		var pairs [][2]int
+		for _, m := range desktopLongJobFracRe.FindAllStringSubmatch(line, 4) {
+			a, _ := strconv.Atoi(m[1])
+			b, _ := strconv.Atoi(m[2])
+			if b >= 2 && a <= b {
+				pairs = append(pairs, [2]int{a, b})
+			}
+		}
+		if len(pairs) > 0 {
+			// Outer counters name the unit in progress; the innermost
+			// counts what is done inside it.
+			f := float64(pairs[len(pairs)-1][0]) / float64(pairs[len(pairs)-1][1])
+			for k := len(pairs) - 2; k >= 0; k-- {
+				cur := pairs[k][0] - 1
+				if cur < 0 {
+					cur = 0
+				}
+				f = (float64(cur) + f) / float64(pairs[k][1])
+			}
+			if f > 0 && f < 1 {
+				return f, pairs[0][1], true
+			}
+			continue
+		}
+		if m := desktopLongJobPctRe.FindAllStringSubmatch(line, -1); len(m) > 0 {
+			v, err := strconv.ParseFloat(m[len(m)-1][1], 64)
+			if err == nil && v > 0 && v < 100 {
+				return v / 100, 0, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+func desktopLongJobClampCheck(d time.Duration) time.Duration {
+	if d < desktopLongJobCheckMin {
+		return desktopLongJobCheckMin
+	}
+	if d > desktopLongJobCheckMax {
+		return desktopLongJobCheckMax
+	}
+	return d
+}
+
+// desktopLongJobPlanCheck sets the next check from the job's observed rate:
+// the end of the current outer unit (an epoch) when there are few units,
+// else half of what is left; without a progress signal, a default that
+// doubles after each check that found nothing new.
+func desktopLongJobPlanCheck(j *desktopLongJob, now time.Time) {
+	elapsed := now.Sub(j.Started)
+	if f, units, ok := desktopLongJobProgress(j.LastTail); ok && elapsed > 0 {
+		total := time.Duration(float64(elapsed) / f)
+		left := total - elapsed
+		next := left / 2
+		why := fmt.Sprintf("按日志进度 %.0f%%，已用 %s，预计还要 %s", f*100, elapsed.Round(time.Minute), left.Round(time.Minute))
+		if units >= 2 && units <= 1000 {
+			per := total / time.Duration(units)
+			done := time.Duration(f * float64(units))
+			if toNext := time.Duration(float64(per)*(float64(done)+1)) - elapsed; toNext > 0 {
+				next = toNext
+				why += fmt.Sprintf("；每个单元约 %s，下一个单元结束时查看", per.Round(time.Minute))
+			}
+		}
+		if next > left {
+			next = left
+		}
+		j.NextCheck = now.Add(desktopLongJobClampCheck(next + 30*time.Second))
+		j.EstimateEnd = j.Started.Add(total)
+		j.CheckReason = why
+		return
+	}
+	d := desktopLongJobCheckDefault
+	for i := 0; i < j.CheckMisses && d < desktopLongJobCheckMax; i++ {
+		d *= 2
+	}
+	j.NextCheck = now.Add(desktopLongJobClampCheck(d))
+	j.CheckReason = "日志里没有可估算的进度，按默认间隔查看"
+}
+
+// desktopLongJobSetCheck is the bot's own estimate (check_minutes /
+// next_check_minutes), bounded.
+func desktopLongJobSetCheck(j *desktopLongJob, args map[string]any, now time.Time) bool {
+	mins := 0.0
+	for _, key := range []string{"next_check_minutes", "check_minutes"} {
+		var f float64
+		switch v := args[key].(type) {
+		case float64:
+			f = v
+		case int:
+			f = float64(v)
+		case int64:
+			f = float64(v)
+		case json.Number:
+			f, _ = v.Float64()
+		case string:
+			f, _ = strconv.ParseFloat(strings.TrimSpace(v), 64)
+		}
+		if f > 0 {
+			mins = f
+			break
+		}
+	}
+	if mins <= 0 {
+		return false
+	}
+	j.NextCheck = now.Add(desktopLongJobClampCheck(time.Duration(mins * float64(time.Minute))))
+	j.CheckSet = true
+	j.CheckReason = strings.TrimSpace(desktopArg(args, "check_reason"))
+	if j.CheckReason == "" {
+		j.CheckReason = "bot 自己估算的查看时间"
+	}
+	if j.EstimateEnd.IsZero() {
+		j.EstimateEnd = j.NextCheck
+	}
+	return true
+}
+
+// desktopLongJobOverdue: running far past its estimate (half again, at
+// least 30 minutes), said once.
+func desktopLongJobOverdue(j *desktopLongJob, now time.Time) bool {
+	if j.OverdueSaid || j.EstimateEnd.IsZero() {
+		return false
+	}
+	slack := j.EstimateEnd.Sub(j.Started) / 2
+	if slack < 30*time.Minute {
+		slack = 30 * time.Minute
+	}
+	return now.After(j.EstimateEnd.Add(slack))
 }
 
 func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) {
@@ -795,6 +962,24 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 		j = desktopLongJobGet(j.ID)
 	}
 	dec := desktopLongJobDecide(j, prevStatus, prevFP, prevNotice)
+	if j.Status == "running" && !j.NextCheck.IsZero() && !now.Before(j.NextCheck) {
+		// The check happened: plan the next one silently.
+		overdue := desktopLongJobOverdue(j, now)
+		if dec == longJobSilent {
+			j.CheckMisses++
+		} else {
+			j.CheckMisses = 0
+		}
+		j.CheckSet = false
+		desktopLongJobPlanCheck(j, now)
+		if overdue && dec == longJobNotice {
+			j.OverdueSaid = true
+		}
+		_ = desktopLongJobSave(j)
+	} else if j.Status == "running" && j.NextCheck.IsZero() {
+		desktopLongJobPlanCheck(j, now)
+		_ = desktopLongJobSave(j)
+	}
 	if dec == longJobSilent {
 		return "", nil
 	}
@@ -974,7 +1159,7 @@ func desktopLongJobWatchPrompt(j *desktopLongJob, dec desktopLongJobDecision) st
 	case longJobResume:
 		goal = "这不是新任务，不要重新启动同一个命令。这个人已经收到了这次轮询的状态和最后输出。用这些证据判断：结束了就核对结果（指标、产物）并用 action=say 简短告诉这个人；失败或停滞就查明原因并换一种做法继续，必要时用 action=say 说明。不要把已经说过的再说一遍。"
 	case longJobNotice:
-		goal = "这不是新任务，不要重新启动该命令。用 send_to_user 告诉这个人当前进度（阶段、指标或日志要点），并附上这次轮询的证据（进程存活与否、最近日志）。"
+		goal = "这不是新任务，不要重新启动该命令。这是按预计时间安排的查看，出现了新的阶段结果或已经远超预计时间。用 send_to_user 简短告诉这个人这一阶段的结果（指标或日志要点）或比预计晚了多少，附上这次轮询的证据（进程存活与否、最近日志）。不要报步数。对剩余时间有更好的估计时，用 action=job_status，next_check_minutes 和 check_reason 设定下次查看。"
 	}
 	return "这一轮是后台长任务的定时巡查，没有人在等一句套话。\n" + goal + "\n\n" + desktopLongJobView(j)
 }

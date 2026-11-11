@@ -121,7 +121,7 @@ func TestD100StartAndPollAndDecisions(t *testing.T) {
 		return nil
 	}
 	// First poll with a milestone, past the first-notice wait: notice.
-	j.Started = desktopLongJobNow().Add(-desktopLongJobNoticeEvery - time.Minute)
+	j.NextCheck = desktopLongJobNow().Add(-time.Second)
 	_ = desktopLongJobSave(j)
 	if _, err := desktopLongJobWatchTick(context.Background(), j.ID); err != nil {
 		t.Fatal(err)
@@ -373,5 +373,67 @@ func TestD103RemoteJobIsFollowedToItsEnd(t *testing.T) {
 	out := desktopLongJobInjectRemoteNohup("ssh -p 99 u@h 'cd ~/clf && ./venv/bin/python src/train_bert.py --epochs 3 > reports/l 2>&1'")
 	if !strings.Contains(out, "nohup bash -lc") || !strings.Contains(out, "wait $p") || !strings.Contains(out, "exit $rc") || strings.Contains(out, "& echo $!'") {
 		t.Fatalf("remote job not followed: %s", out)
+	}
+}
+
+func TestD103CheckIsPlannedFromObservedProgress(t *testing.T) {
+	now := time.Date(2026, 11, 11, 21, 0, 0, 0, time.Local)
+	// 2 of 10 epochs in 20 minutes: next epoch ends in ~10 minutes.
+	j := &desktopLongJob{Started: now.Add(-20 * time.Minute), LastTail: "loading\nepoch 2/10 loss=0.31 acc=0.88"}
+	desktopLongJobPlanCheck(j, now)
+	if d := j.NextCheck.Sub(now); d < 9*time.Minute || d > 12*time.Minute {
+		t.Fatalf("next check in %s (%s)", d, j.CheckReason)
+	}
+	if e := j.EstimateEnd.Sub(j.Started); e < 95*time.Minute || e > 105*time.Minute {
+		t.Fatalf("estimate %s", e)
+	}
+	// Nested counters: epoch 1/2, step 400/800 = 25%.
+	if f, units, ok := desktopLongJobProgress("epoch 1/2 step 400/800 loss 0.4"); !ok || units != 2 || f < 0.24 || f > 0.26 {
+		t.Fatalf("nested %v %d %v", f, units, ok)
+	}
+	if f, _, ok := desktopLongJobProgress("downloading  45.5% 1.2MB/s"); !ok || f < 0.45 || f > 0.46 {
+		t.Fatalf("pct %v %v", f, ok)
+	}
+	// No progress signal: default, doubling after empty checks, bounded.
+	k := &desktopLongJob{Started: now.Add(-time.Minute), LastTail: "starting"}
+	desktopLongJobPlanCheck(k, now)
+	if k.NextCheck.Sub(now) != desktopLongJobCheckDefault {
+		t.Fatalf("default %s", k.NextCheck.Sub(now))
+	}
+	k.CheckMisses = 20
+	desktopLongJobPlanCheck(k, now)
+	if k.NextCheck.Sub(now) != desktopLongJobCheckMax {
+		t.Fatalf("max %s", k.NextCheck.Sub(now))
+	}
+	// The bot's own estimate, bounded.
+	b := &desktopLongJob{Started: now}
+	if !desktopLongJobSetCheck(b, map[string]any{"next_check_minutes": 0.5, "check_reason": "每轮约 30 秒"}, now) || b.NextCheck.Sub(now) != desktopLongJobCheckMin || b.CheckReason != "每轮约 30 秒" {
+		t.Fatalf("bot check %s %q", b.NextCheck.Sub(now), b.CheckReason)
+	}
+}
+
+func TestD103RunningJobIsQuietUntilItsCheck(t *testing.T) {
+	now := time.Date(2026, 11, 11, 21, 0, 0, 0, time.Local)
+	desktopLongJobNow = func() time.Time { return now }
+	t.Cleanup(func() { desktopLongJobNow = time.Now })
+	j := &desktopLongJob{Status: "running", Alive: true, Started: now.Add(-3 * time.Hour), NextCheck: now.Add(time.Minute), LastTail: "epoch 3/10 acc=0.9"}
+	if d := desktopLongJobDecide(j, "running", "", time.Time{}); d != longJobSilent {
+		t.Fatalf("before check: %s", d)
+	}
+	j.NextCheck = now.Add(-time.Second)
+	if d := desktopLongJobDecide(j, "running", "", time.Time{}); d != longJobNotice {
+		t.Fatalf("stage result at check: %s", d)
+	}
+	j.ReportedMetrics = desktopRunProgressLines(j.LastTail)
+	if d := desktopLongJobDecide(j, "running", "", time.Time{}); d != longJobSilent {
+		t.Fatalf("nothing new at check: %s", d)
+	}
+	j.EstimateEnd = now.Add(-2 * time.Hour)
+	if d := desktopLongJobDecide(j, "running", "", time.Time{}); d != longJobNotice {
+		t.Fatalf("far past estimate: %s", d)
+	}
+	j.OverdueSaid = true
+	if d := desktopLongJobDecide(j, "running", "", time.Time{}); d != longJobSilent {
+		t.Fatalf("overdue twice: %s", d)
 	}
 }

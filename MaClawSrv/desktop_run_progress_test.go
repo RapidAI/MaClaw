@@ -10,6 +10,9 @@ import (
 )
 
 func TestD101LiveRunProgressIsSaid(t *testing.T) {
+	prevEvery := desktopRunProgressEvery
+	desktopRunProgressEvery = 30 * time.Minute
+	t.Cleanup(func() { desktopRunProgressEvery = prevEvery })
 	base := time.Date(2026, 11, 11, 15, 0, 0, 0, time.Local)
 	now := base
 	desktopLongJobNow = func() time.Time { return now }
