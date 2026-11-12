@@ -147,12 +147,16 @@ func TestOwnerLLMOverrideRoundTripRestoresSystemFreeDefault(t *testing.T) {
 		t.Fatalf("view after custom = %#v", view)
 	}
 	applied := recorder.last(t)
-	if applied["maclaw_llm_url"] != "https://api.mine.example/v1" ||
-		applied["maclaw_llm_key"] != "sk-mine-secret" ||
-		applied["maclaw_llm_model"] != "mine-large" ||
-		applied["maclaw_llm_protocol"] != "openai" ||
-		applied["maclaw_llm_current_provider"] != "MyProv" {
-		t.Fatalf("custom config = %#v", applied)
+	// The service route stays the current provider. The owner's provider is a
+	// role pin, so an unset role still follows the service.
+	if applied["maclaw_llm_url"] != ownerLLMTestEndpoint ||
+		applied["maclaw_llm_key"] != "viewer-token-1" ||
+		applied["maclaw_llm_model"] != botLLMModel ||
+		applied["maclaw_llm_current_provider"] != botLLMProviderName {
+		t.Fatalf("service route = %#v", applied)
+	}
+	if _, ok := applied["maclaw_llm_protocol"]; ok {
+		t.Fatalf("service route kept a custom protocol: %#v", applied["maclaw_llm_protocol"])
 	}
 	// The provider has to exist by name in the same array, otherwise
 	// current_provider dangles and MaClawSrv refuses the instance.
@@ -233,8 +237,10 @@ func TestOwnerLLMOverrideRestoresAdministratorDefault(t *testing.T) {
 	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", ownerLLMTestCustomInput("sk-mine-secret")); err != nil {
 		t.Fatal(err)
 	}
-	if custom := recorder.last(t); custom["maclaw_llm_current_provider"] != "MyProv" {
-		t.Fatalf("custom did not win over administrator default = %#v", custom)
+	custom := recorder.last(t)
+	assertSameRolePin(t, custom, "foreground", "MyProv", "mine-large")
+	if custom["maclaw_llm_current_provider"] != "Admin Pick" {
+		t.Fatalf("unset rows should keep the administrator route = %#v", custom["maclaw_llm_current_provider"])
 	}
 
 	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "default"}); err != nil {
@@ -369,8 +375,9 @@ func TestOwnerLLMOverrideKeepsStoredKeyWhenBlank(t *testing.T) {
 	if !view.KeySet || view.Model != "mine-larger" {
 		t.Fatalf("view = %#v", view)
 	}
-	if got := recorder.last(t)["maclaw_llm_key"]; got != "sk-mine-secret" {
-		t.Fatalf("blank key did not keep the stored one: %v", got)
+	entry, ok := ownerLLMProviderEntry(t, recorder.last(t), "MyProv")
+	if !ok || entry["key"] != "sk-mine-secret" {
+		t.Fatalf("blank key did not keep the stored one: %#v", entry)
 	}
 }
 
@@ -538,11 +545,11 @@ func TestSavePrincipalLLMRolesAreTheOnlySrvSource(t *testing.T) {
 		t.Fatalf("view = %#v", view)
 	}
 	pushed := recorder.last(t)
-	if _, ok := pushed["maclaw_hub_bot_roles"]; ok {
-		t.Fatalf("custom mode still wrote administrator role pins: %#v", pushed["maclaw_hub_bot_roles"])
-	}
-	if pushed["maclaw_bot_llm_mode"] != "custom" || pushed["maclaw_llm_current_provider"] != "MyProv" || pushed["maclaw_llm_model"] != "mine-fg" {
+	if pushed["maclaw_bot_llm_mode"] != "custom" || pushed["maclaw_llm_current_provider"] != "Admin Pick" {
 		t.Fatalf("flat custom config = %#v", pushed)
+	}
+	if _, ok := pushed["maclaw_hub_bot_roles"]; !ok {
+		t.Fatal("custom mode removed administrator role pins")
 	}
 	assertSameRolePin(t, pushed, "foreground", "MyProv", "mine-fg")
 	assertSameRolePin(t, pushed, "background", "MyProv", "mine-bg")
@@ -572,6 +579,55 @@ func TestSavePrincipalLLMRolesAreTheOnlySrvSource(t *testing.T) {
 	gr, err := agentservice.ResolveLLMRole(cfg, agentservice.LLMRoleGrounder)
 	if err != nil || gr.Model != "mine-ground" {
 		t.Fatalf("grounder resolve = %+v err=%v", gr, err)
+	}
+}
+
+func TestOfficialForegroundIsDefaultForTheOldDialog(t *testing.T) {
+	svc, _ := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, record{})
+	view, err := svc.SavePrincipalLLM(context.Background(), "tenant-a", "alice", PrincipalLLMInput{
+		Mode: "custom",
+		Roles: &PrincipalLLMRolesInput{
+			Foreground:  PrincipalLLMRoleInput{Official: true, Model: "official-mid"},
+			Background:  PrincipalLLMRoleInput{Inherit: true},
+			ComputerUse: PrincipalLLMRoleInput{Inherit: true},
+			Grounder:    PrincipalLLMRoleInput{Unused: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Choice != "custom" || view.Mode != "default" || view.Name != "" {
+		t.Fatalf("old dialog would try to select hub-llm: %#v", view)
+	}
+}
+
+func TestBlankKeyCanMoveAStoredProviderBetweenRoles(t *testing.T) {
+	svc, _ := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, record{})
+	ctx := context.Background()
+	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", ownerLLMTestCustomInput("sk-mine-secret")); err != nil {
+		t.Fatal(err)
+	}
+	view, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{
+		Mode: "custom",
+		Roles: &PrincipalLLMRolesInput{
+			Foreground:  PrincipalLLMRoleInput{Inherit: true},
+			Background:  PrincipalLLMRoleInput{Name: "MyProv", URL: "https://api.mine.example/v1", Model: "mine-large"},
+			ComputerUse: PrincipalLLMRoleInput{Inherit: true},
+			Grounder:    PrincipalLLMRoleInput{Unused: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !view.Roles.Background.KeySet || view.Roles.Background.Name != "MyProv" || !view.Roles.Foreground.Inherit {
+		t.Fatalf("moved provider = %#v", view.Roles)
+	}
+	stored, err := svc.load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.OwnerBotLLMs["alice"].Background.Key != "sk-mine-secret" {
+		t.Fatalf("key was not reused: %#v", stored.OwnerBotLLMs["alice"].Background)
 	}
 }
 

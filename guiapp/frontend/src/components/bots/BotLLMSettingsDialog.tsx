@@ -24,6 +24,7 @@ export type BotLLMProviderOption = {
 export type BotLLMRoleSetting = {
     unused?: boolean;
     official?: boolean;
+    inherit?: boolean;
     name?: string;
     url?: string;
     model?: string;
@@ -41,6 +42,7 @@ export type BotLLMRolesSetting = {
 export type BotLLMRoleSubmit = {
     unused?: boolean;
     official?: boolean;
+    inherit?: boolean;
     name?: string;
     url?: string;
     key?: string;
@@ -78,6 +80,7 @@ export type BotLLMSettingsDialogLabels = {
     modelLoading: string;
     modelEmpty: string;
     noProviders: string;
+    roleSaveHint: string;
     save: string;
     cancel: string;
     close: string;
@@ -89,6 +92,7 @@ type RoleDraft = {
     providerName: string;
     model: string;
     unused: boolean;
+    inherit: boolean;
 };
 
 type BotLLMSettingsDialogProps = {
@@ -99,6 +103,7 @@ type BotLLMSettingsDialogProps = {
     initialName: string;
     initialModel: string;
     initialRoles?: BotLLMRolesSetting | null;
+    needsRoleSave?: boolean;
     /** Save failure shown inside the dialog; the dialog stays open for another try. */
     notice: string;
     saving: boolean;
@@ -146,6 +151,7 @@ export function BotLLMSettingsDialog({
     initialName,
     initialModel,
     initialRoles,
+    needsRoleSave = false,
     notice,
     saving,
     onClose,
@@ -183,6 +189,7 @@ export function BotLLMSettingsDialog({
                 providerName: name,
                 model: seedModel(provider, prev[key].model),
                 unused: false,
+                inherit: false,
             },
         }));
     };
@@ -202,10 +209,10 @@ export function BotLLMSettingsDialog({
             return;
         }
         const roles = {
-            foreground: rolePayload(drafts.foreground, options),
-            background: rolePayload(drafts.background, options),
-            computer_use: rolePayload(drafts.computer_use, options),
-            grounder: drafts.grounder.unused ? { unused: true } : rolePayload(drafts.grounder, options),
+            foreground: rolePayload(drafts.foreground, options, false),
+            background: rolePayload(drafts.background, options, false),
+            computer_use: rolePayload(drafts.computer_use, options, false),
+            grounder: rolePayload(drafts.grounder, options, true),
         };
         const foreground = roles.foreground;
         onSubmit({
@@ -273,6 +280,7 @@ export function BotLLMSettingsDialog({
                 <div className="modal-body custom-dialog__body">
                     {heading ? <h4 className="bot-llm-dialog__section">{labels.title}</h4> : null}
                     <p className="bot-llm-dialog__hint">{labels.sharedHint}</p>
+                    {needsRoleSave ? <p className="bot-llm-dialog__notice" role="status">{labels.roleSaveHint}</p> : null}
 
                     <div
                         className={`bot-llm-dialog__option${mode === 'default' ? ' is-selected' : ''}`}
@@ -518,7 +526,9 @@ function RoleModelSelect({
     );
 }
 
-function rolePayload(draft: RoleDraft, options: BotLLMProviderOption[]): BotLLMRoleSubmit {
+function rolePayload(draft: RoleDraft, options: BotLLMProviderOption[], grounder: boolean): BotLLMRoleSubmit {
+    if (grounder && draft.unused) return { unused: true };
+    if (draft.inherit) return grounder ? { unused: true } : { inherit: true };
     const provider = options.find(item => item.name === draft.providerName) ?? options[0];
     if (!provider) return { model: draft.model };
     if (provider.isHubService) return { official: true, model: draft.model };
@@ -596,18 +606,21 @@ function initialDrafts(options: BotLLMProviderOption[], mode: 'default' | 'custo
 
 function draftFor(role: BotLLMRoleSetting | undefined, options: BotLLMProviderOption[], grounder: boolean): RoleDraft {
     const first = options[0];
-    const blank: RoleDraft = { providerName: first?.name ?? '', model: seedModel(first, first?.model ?? ''), unused: grounder };
-    if (!role || (grounder && (role.unused || (!role.official && !role.name?.trim() && !role.model?.trim())))) {
+    const blank: RoleDraft = { providerName: first?.name ?? '', model: seedModel(first, first?.model ?? ''), unused: grounder, inherit: false };
+    if (role?.inherit && !grounder) {
+        return { ...blank, unused: false, inherit: true };
+    }
+    if (!role || (grounder && (role.unused || role.inherit || (!role.official && !role.name?.trim() && !role.model?.trim())))) {
         return blank;
     }
     if (role.official) {
         const hub = options.find(item => item.isHubService) ?? first;
         const model = role.model?.trim() || seedModel(hub, '');
-        return { providerName: hub?.name ?? '', model, unused: false };
+        return { providerName: hub?.name ?? '', model, unused: false, inherit: false };
     }
     const name = role.name?.trim() ?? '';
     const match = options.find(item => item.name === name) ?? first;
     const model = role.model?.trim() || seedModel(match, '');
-    if (!match) return { providerName: '', model, unused: false };
-    return { providerName: match.name, model: model || seedModel(match, ''), unused: false };
+    if (!match) return { providerName: '', model, unused: false, inherit: false };
+    return { providerName: match.name, model: model || seedModel(match, ''), unused: false, inherit: false };
 }

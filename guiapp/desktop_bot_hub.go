@@ -483,19 +483,23 @@ func (a *App) DeleteDesktopBot(botID string) error {
 // reads one provider keeps working. Roles is the choice itself when Mode is
 // custom; it is absent in default mode.
 type DesktopBotLLM struct {
-	Mode    string              `json:"mode"`
-	Name    string              `json:"name,omitempty"`
-	URL     string              `json:"url,omitempty"`
-	Model   string              `json:"model,omitempty"`
-	KeySet  bool                `json:"key_set"`
-	Roles   *DesktopBotLLMRoles `json:"roles,omitempty"`
-	Warning string              `json:"warning,omitempty"`
+	Mode          string              `json:"mode"`
+	Name          string              `json:"name,omitempty"`
+	URL           string              `json:"url,omitempty"`
+	Model         string              `json:"model,omitempty"`
+	KeySet        bool                `json:"key_set"`
+	Roles         *DesktopBotLLMRoles `json:"roles,omitempty"`
+	Stored        bool                `json:"stored"`
+	Choice        string              `json:"choice,omitempty"`
+	NeedsRoleSave bool                `json:"needs_role_save,omitempty"`
+	Warning       string              `json:"warning,omitempty"`
 }
 
 // DesktopBotLLMRole is one role as the settings UI reads it back.
 type DesktopBotLLMRole struct {
 	Unused   bool   `json:"unused,omitempty"`
 	Official bool   `json:"official,omitempty"`
+	Inherit  bool   `json:"inherit,omitempty"`
 	Name     string `json:"name,omitempty"`
 	URL      string `json:"url,omitempty"`
 	Model    string `json:"model,omitempty"`
@@ -531,6 +535,7 @@ type DesktopBotLLMInput struct {
 type DesktopBotLLMRoleInput struct {
 	Unused   bool   `json:"unused,omitempty"`
 	Official bool   `json:"official,omitempty"`
+	Inherit  bool   `json:"inherit,omitempty"`
 	Name     string `json:"name,omitempty"`
 	URL      string `json:"url,omitempty"`
 	Key      string `json:"key,omitempty"`
@@ -568,32 +573,65 @@ func (a *App) GetDesktopBotCredits() (*DesktopBotCredits, error) {
 	return &out, nil
 }
 
-// GetDesktopBotLLM reads the model setting this user's bots run on.
-// The first successful read also copies any local role pins into that setting,
-// once, so a choice made in the old role rows is not dropped.
+// GetDesktopBotLLM reads the model setting this user's bots run on and
+// refreshes the local cache. It does not migrate local pins; that runs from
+// SyncDesktopBotLLM so a credits poll cannot upload them.
 func (a *App) GetDesktopBotLLM() (*DesktopBotLLM, error) {
+	view, err := a.fetchDesktopBotLLM()
+	if err != nil {
+		if cached, ok := a.desktopBotLLMChoice(a.configuredRemoteUserID()); ok {
+			return &cached, nil
+		}
+		return nil, err
+	}
+	a.rememberDesktopBotLLM(a.configuredRemoteUserID(), view)
+	return &view, nil
+}
+
+func (a *App) fetchDesktopBotLLM() (DesktopBotLLM, error) {
 	var out DesktopBotLLM
 	if err := a.desktopBotCall(context.Background(), http.MethodGet, "/api/v1/bots/llm", nil, &out, 20*time.Second); err != nil {
-		return nil, err
+		return DesktopBotLLM{}, err
+	}
+	if strings.TrimSpace(out.Choice) == "" {
+		out.Choice = out.Mode
 	}
 	if strings.TrimSpace(out.Mode) == "" {
 		out.Mode = "default"
 	}
-	return a.migrateDesktopBotLLMRoles(out)
+	if strings.TrimSpace(out.Choice) == "" {
+		out.Choice = out.Mode
+	}
+	return out, nil
 }
 
 // SaveDesktopBotLLM applies a provider to every bot of this user and returns
 // the setting as stored. A non-empty Warning means the choice was kept but not
 // written to all of them yet; the bots pick it up on their next run.
 func (a *App) SaveDesktopBotLLM(in DesktopBotLLMInput) (*DesktopBotLLM, error) {
+	out, err := a.putDesktopBotLLM(in)
+	if err != nil {
+		return nil, err
+	}
+	a.rememberDesktopBotLLM(a.configuredRemoteUserID(), out)
+	return &out, nil
+}
+
+func (a *App) putDesktopBotLLM(in DesktopBotLLMInput) (DesktopBotLLM, error) {
 	var out DesktopBotLLM
 	if err := a.desktopBotCall(context.Background(), http.MethodPut, "/api/v1/bots/llm", in, &out, 30*time.Second); err != nil {
-		return nil, err
+		return DesktopBotLLM{}, err
+	}
+	if strings.TrimSpace(out.Choice) == "" {
+		out.Choice = out.Mode
 	}
 	if strings.TrimSpace(out.Mode) == "" {
 		out.Mode = "default"
 	}
-	return &out, nil
+	if strings.TrimSpace(out.Choice) == "" {
+		out.Choice = out.Mode
+	}
+	return out, nil
 }
 
 // DesktopProxyMode is the network route of this user's cloud desktop:

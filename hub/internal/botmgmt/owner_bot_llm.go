@@ -25,26 +25,35 @@ type ownerBotLLM struct {
 
 // persistedOwnerBotLLM returns the stored choice, migrating a legacy
 // single-provider override the first time this owner is read.
-func (s *Service) persistedOwnerBotLLM(ctx context.Context, tenantID, hubUserID string) (ownerBotLLM, error) {
+func (s *Service) persistedOwnerBotLLM(ctx context.Context, tenantID, hubUserID string) (ownerBotLLM, bool, error) {
 	if s == nil || s.System == nil {
-		return ownerBotLLM{}, ErrSettingsUnavailable
+		return ownerBotLLM{}, false, ErrSettingsUnavailable
 	}
 	hubUserID = strings.TrimSpace(hubUserID)
 	if hubUserID == "" {
-		return ownerBotLLM{}, fmt.Errorf("%w: hub user id is required", ErrInvalidInput)
+		return ownerBotLLM{}, false, fmt.Errorf("%w: hub user id is required", ErrInvalidInput)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, err := s.load(ctx, tenantID)
 	if err != nil {
-		return ownerBotLLM{}, err
+		return ownerBotLLM{}, false, err
 	}
 	if migrateOwnerBotLLM(&rec, hubUserID) {
 		if err := s.save(ctx, tenantID, rec); err != nil {
-			return ownerBotLLM{}, err
+			return ownerBotLLM{}, false, err
 		}
 	}
-	return ownerBotLLMOf(rec, hubUserID), nil
+	_, stored := ownerBotLLMEntry(rec, hubUserID)
+	return ownerBotLLMOf(rec, hubUserID), stored, nil
+}
+
+func ownerBotLLMEntry(rec record, hubUserID string) (*ownerBotLLM, bool) {
+	if rec.OwnerBotLLMs == nil {
+		return nil, false
+	}
+	choice := rec.OwnerBotLLMs[strings.TrimSpace(hubUserID)]
+	return choice, choice != nil
 }
 
 // migrateOwnerBotLLM copies a legacy single-provider override into the role
@@ -150,9 +159,9 @@ func cloneOwnerLLMOverride(in *ownerLLMOverride) *ownerLLMOverride {
 	return &cp
 }
 
-func (choice ownerBotLLM) view() PrincipalLLMView {
+func (choice ownerBotLLM) view(stored bool) PrincipalLLMView {
 	if choice.Mode != corelib.MaclawBotLLMModeCustom {
-		return PrincipalLLMView{Mode: corelib.MaclawBotLLMModeDefault}
+		return PrincipalLLMView{Mode: corelib.MaclawBotLLMModeDefault, Choice: corelib.MaclawBotLLMModeDefault, Stored: stored}
 	}
 	roles := &PrincipalLLMRolesView{
 		Foreground:  roleView(choice.Foreground, false),
@@ -160,21 +169,32 @@ func (choice ownerBotLLM) view() PrincipalLLMView {
 		ComputerUse: roleView(choice.ComputerUse, false),
 		Grounder:    roleView(choice.Grounder, true),
 	}
-	view := PrincipalLLMView{Mode: corelib.MaclawBotLLMModeCustom, Roles: roles}
-	// Older GUIs read one provider. Foreground is that provider. When the
-	// three main roles differ, a save from that GUI collapses them.
-	fg := roles.Foreground
-	if fg.Official {
-		view.Name = botLLMProviderName
-		view.Model = fg.Model
-		view.KeySet = true
+	view := PrincipalLLMView{
+		Mode: corelib.MaclawBotLLMModeCustom, Choice: corelib.MaclawBotLLMModeCustom,
+		Roles: roles, Stored: stored,
+	}
+	// Older GUIs read one provider. A concrete provider is selectable. An
+	// official foreground is the Hub route, which that dialog cannot pick, so
+	// the legacy fields say default while Choice keeps the real mode.
+	if concrete := firstConcreteRole(choice); concrete != nil && (choice.Foreground == nil || !choice.Foreground.Official) {
+		view.Name = concrete.Name
+		view.URL = concrete.URL
+		view.Model = concrete.Model
+		view.KeySet = strings.TrimSpace(concrete.Key) != ""
 		return view
 	}
-	view.Name = fg.Name
-	view.URL = fg.URL
-	view.Model = fg.Model
-	view.KeySet = fg.KeySet
+	view.Mode = corelib.MaclawBotLLMModeDefault
 	return view
+}
+
+func firstConcreteRole(choice ownerBotLLM) *ownerLLMOverride {
+	for _, role := range []*ownerLLMOverride{choice.Foreground, choice.Background, choice.ComputerUse, choice.Grounder} {
+		if role == nil || role.Official || strings.TrimSpace(role.Name) == "" {
+			continue
+		}
+		return role
+	}
+	return nil
 }
 
 func roleView(role *ownerLLMOverride, grounder bool) PrincipalLLMRoleView {
@@ -182,7 +202,7 @@ func roleView(role *ownerLLMOverride, grounder bool) PrincipalLLMRoleView {
 		if grounder {
 			return PrincipalLLMRoleView{Unused: true}
 		}
-		return PrincipalLLMRoleView{}
+		return PrincipalLLMRoleView{Inherit: true}
 	}
 	if role.Official {
 		return PrincipalLLMRoleView{Official: true, Model: strings.TrimSpace(role.Model), KeySet: true}
@@ -209,7 +229,7 @@ func normalizeOwnerBotLLM(in PrincipalLLMInput, prev ownerBotLLM, providers []ll
 		return ownerBotLLM{}, fmt.Errorf("%w: llm mode must be default or custom", ErrInvalidInput)
 	}
 	if in.Roles == nil {
-		one, err := normalizeCustomProvider(in, prev.Foreground, providers)
+		one, err := normalizeCustomProvider(in, prev, prev.Foreground, providers)
 		if err != nil {
 			return ownerBotLLM{}, err
 		}
@@ -220,19 +240,19 @@ func normalizeOwnerBotLLM(in PrincipalLLMInput, prev ownerBotLLM, providers []ll
 			ComputerUse: cloneOwnerLLMOverride(one),
 		}, nil
 	}
-	fg, err := normalizeOwnerLLMRole("foreground", in.Roles.Foreground, prev.Foreground, providers, false)
+	fg, err := normalizeOwnerLLMRole("foreground", in.Roles.Foreground, prev, providers, false)
 	if err != nil {
 		return ownerBotLLM{}, err
 	}
-	bg, err := normalizeOwnerLLMRole("background", in.Roles.Background, prev.Background, providers, false)
+	bg, err := normalizeOwnerLLMRole("background", in.Roles.Background, prev, providers, false)
 	if err != nil {
 		return ownerBotLLM{}, err
 	}
-	cu, err := normalizeOwnerLLMRole("computer_use", in.Roles.ComputerUse, prev.ComputerUse, providers, false)
+	cu, err := normalizeOwnerLLMRole("computer_use", in.Roles.ComputerUse, prev, providers, false)
 	if err != nil {
 		return ownerBotLLM{}, err
 	}
-	gr, err := normalizeOwnerLLMRole("grounder", in.Roles.Grounder, prev.Grounder, providers, true)
+	gr, err := normalizeOwnerLLMRole("grounder", in.Roles.Grounder, prev, providers, true)
 	if err != nil {
 		return ownerBotLLM{}, err
 	}
@@ -248,15 +268,15 @@ func normalizeOwnerBotLLM(in PrincipalLLMInput, prev ownerBotLLM, providers []ll
 	}, nil
 }
 
-func normalizeOwnerLLMRole(role string, in PrincipalLLMRoleInput, prev *ownerLLMOverride, providers []llmProvider, grounder bool) (*ownerLLMOverride, error) {
-	if in.Unused || (grounder && !in.Official && strings.TrimSpace(in.Name) == "" && strings.TrimSpace(in.Model) == "") {
+func normalizeOwnerLLMRole(role string, in PrincipalLLMRoleInput, prev ownerBotLLM, providers []llmProvider, grounder bool) (*ownerLLMOverride, error) {
+	if in.Inherit || in.Unused || (grounder && !in.Official && strings.TrimSpace(in.Name) == "" && strings.TrimSpace(in.Model) == "") {
 		if !grounder && in.Unused {
 			return nil, fmt.Errorf("%w: only the grounding model can be unused", ErrInvalidInput)
 		}
 		return nil, nil
 	}
 	if !grounder && strings.TrimSpace(in.Name) == "" && !in.Official && strings.TrimSpace(in.Model) == "" {
-		return nil, fmt.Errorf("%w: llm role %s is required", ErrInvalidInput, role)
+		return nil, nil
 	}
 	if in.Official {
 		model := strings.TrimSpace(in.Model)
@@ -268,11 +288,39 @@ func normalizeOwnerLLMRole(role string, in PrincipalLLMRoleInput, prev *ownerLLM
 	one, err := normalizeCustomProvider(PrincipalLLMInput{
 		Mode: "custom", Name: in.Name, URL: in.URL, Key: in.Key, Model: in.Model,
 		Protocol: in.Protocol, WireAPI: in.WireAPI,
-	}, prev, providers)
+	}, prev, roleOverride(prev, role), providers)
 	if err != nil {
 		return nil, err
 	}
 	return one, nil
+}
+
+func roleOverride(choice ownerBotLLM, role string) *ownerLLMOverride {
+	switch role {
+	case "background":
+		return choice.Background
+	case "computer_use":
+		return choice.ComputerUse
+	case "grounder":
+		return choice.Grounder
+	default:
+		return choice.Foreground
+	}
+}
+
+// storedProviderKey is a key Hub already holds for this provider name on any
+// role. A later save can move that provider between roles without sending the
+// key again.
+func storedProviderKey(choice ownerBotLLM, name string) string {
+	for _, role := range []*ownerLLMOverride{choice.Foreground, choice.Background, choice.ComputerUse, choice.Grounder} {
+		if role == nil || role.Official || !corelib.MaclawLLMProviderNameEqual(role.Name, name) {
+			continue
+		}
+		if key := strings.TrimSpace(role.Key); key != "" {
+			return key
+		}
+	}
+	return ""
 }
 
 func consistentRoleProviders(roles ...*ownerLLMOverride) error {
@@ -331,15 +379,19 @@ func customRoleProfiles(existing any, choice ownerBotLLM) map[string]any {
 			profiles[key] = value
 		}
 	}
-	profiles["foreground"] = roleProfilePin(choice.Foreground)
-	profiles["background"] = roleProfilePin(choice.Background)
-	profiles["computer_use"] = roleProfilePin(choice.ComputerUse)
-	if choice.Grounder != nil {
-		profiles["grounder"] = roleProfilePin(choice.Grounder)
-	} else {
-		delete(profiles, "grounder")
-	}
+	setRolePin(profiles, "foreground", choice.Foreground)
+	setRolePin(profiles, "background", choice.Background)
+	setRolePin(profiles, "computer_use", choice.ComputerUse)
+	setRolePin(profiles, "grounder", choice.Grounder)
 	return profiles
+}
+
+func setRolePin(profiles map[string]any, key string, role *ownerLLMOverride) {
+	if role == nil {
+		delete(profiles, key)
+		return
+	}
+	profiles[key] = roleProfilePin(role)
 }
 
 func clearRoleProfiles(app map[string]any) {
@@ -392,6 +444,23 @@ func appendCustomRoleProviders(providers []map[string]any, choice ownerBotLLM) [
 		providers = append(providers, entry)
 	}
 	return providers
+}
+
+func applyServiceBotLLMFlat(app map[string]any, settings llmSettings, endpoint, viewerToken string) {
+	selected, custom := selectedBotLLMProvider(settings)
+	if custom {
+		app["maclaw_llm_url"] = selected.URL
+		app["maclaw_llm_key"] = selected.Key
+		app["maclaw_llm_model"] = selected.Model
+		app["maclaw_llm_protocol"] = selected.Protocol
+		app["maclaw_llm_current_provider"] = selected.Name
+		return
+	}
+	app["maclaw_llm_url"] = endpoint
+	app["maclaw_llm_key"] = viewerToken
+	app["maclaw_llm_model"] = botLLMModel
+	delete(app, "maclaw_llm_protocol")
+	app["maclaw_llm_current_provider"] = botLLMProviderName
 }
 
 func applyCustomFlat(app map[string]any, choice ownerBotLLM, endpoint, viewerToken string) {

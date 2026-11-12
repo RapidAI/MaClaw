@@ -51,7 +51,7 @@ func (s *Service) writeBotOwnerLLM(ctx context.Context, tenantID string, rec rec
 	if endpoint == "" {
 		return fmt.Errorf("%w: hub public url is not configured", ErrSrv)
 	}
-	choice, err := s.persistedOwnerBotLLM(ctx, tenantID, hubUserID)
+	choice, _, err := s.persistedOwnerBotLLM(ctx, tenantID, hubUserID)
 	if err != nil {
 		return err
 	}
@@ -295,38 +295,23 @@ func (s *Service) pushBotOwnerLLM(ctx context.Context, rec record, principal own
 		})
 	}
 	if choice.Mode == corelib.MaclawBotLLMModeCustom {
-		// Custom roles are the only source. The flat fields follow foreground
-		// so a caller that still asks for "the" model matches that role, and
-		// the administrator role pins are removed rather than left beside them.
+		// Explicit rows are profile pins. Rows left unset follow the service,
+		// so the flat provider and the administrator role pins stay in place.
 		providers = appendCustomRoleProviders(providers, choice)
-		applyCustomFlat(current.AppConfig, choice, endpoint, viewerToken)
-		current.AppConfig["maclaw_llm_providers"] = providers
+	}
+	applyServiceBotLLMFlat(current.AppConfig, settings, endpoint, viewerToken)
+	current.AppConfig["maclaw_llm_providers"] = providers
+	if choice.Mode == corelib.MaclawBotLLMModeCustom {
 		current.AppConfig["maclaw_llm_profiles"] = customRoleProfiles(current.AppConfig["maclaw_llm_profiles"], choice)
 		current.AppConfig["maclaw_bot_llm_mode"] = corelib.MaclawBotLLMModeCustom
-		delete(current.AppConfig, "maclaw_hub_bot_roles")
 	} else {
-		selected, custom := selectedBotLLMProvider(settings)
-		if custom {
-			current.AppConfig["maclaw_llm_url"] = selected.URL
-			current.AppConfig["maclaw_llm_key"] = selected.Key
-			current.AppConfig["maclaw_llm_model"] = selected.Model
-			current.AppConfig["maclaw_llm_protocol"] = selected.Protocol
-			current.AppConfig["maclaw_llm_current_provider"] = selected.Name
-		} else {
-			current.AppConfig["maclaw_llm_url"] = endpoint
-			current.AppConfig["maclaw_llm_key"] = viewerToken
-			current.AppConfig["maclaw_llm_model"] = botLLMModel
-			delete(current.AppConfig, "maclaw_llm_protocol")
-			current.AppConfig["maclaw_llm_current_provider"] = botLLMProviderName
-		}
-		current.AppConfig["maclaw_llm_providers"] = providers
 		current.AppConfig["maclaw_bot_llm_mode"] = corelib.MaclawBotLLMModeDefault
 		clearRoleProfiles(current.AppConfig)
-		if roles := hubBotRolesAppConfig(settings); roles != nil {
-			current.AppConfig["maclaw_hub_bot_roles"] = roles
-		} else {
-			delete(current.AppConfig, "maclaw_hub_bot_roles")
-		}
+	}
+	if roles := hubBotRolesAppConfig(settings); roles != nil {
+		current.AppConfig["maclaw_hub_bot_roles"] = roles
+	} else {
+		delete(current.AppConfig, "maclaw_hub_bot_roles")
 	}
 	if err := s.doAdmin(ctx, rec, http.MethodPut, path, map[string]any{"app_config": current.AppConfig}, nil); err != nil {
 		return fmt.Errorf("%w: write bot llm config: %s", ErrSrv, err.Error())

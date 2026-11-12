@@ -1,161 +1,251 @@
 package guiapp
 
 import (
+	"encoding/json"
+	"fmt"
+	"log"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-// migrateDesktopBotLLMRoles copies local bot role pins into the Hub choice
-// once. Pins win over a legacy single provider that Hub already expanded into
-// the three main roles. Roles still following Hub keep that expanded provider
-// when one exists, and otherwise use the official Hub model. The grounder
-// stays unused unless it was itself pinned.
-//
-// A failed upload leaves the marker unset so the next read tries again. When
-// there is nothing to copy, or a pin names a provider this computer no longer
-// has, the marker is set and the Hub choice is left as it is.
-func (a *App) migrateDesktopBotLLMRoles(current DesktopBotLLM) (*DesktopBotLLM, error) {
+var errBotLLMApp = fmt.Errorf("app is nil")
+
+// SyncDesktopBotLLM reads the Hub bot-model choice and, once per Hub account,
+// reconciles local role pins with it. A choice Hub already stored wins: local
+// pins are cleared and not uploaded. Pins are copied up only when Hub has
+// never stored a choice. API keys are not uploaded here; a pin that needs one
+// stays on this computer until the owner saves the Model tab.
+func (a *App) SyncDesktopBotLLM() (*DesktopBotLLM, error) {
 	if a == nil {
-		return &current, nil
+		return nil, errBotLLMApp
 	}
+	a.botLLMMu.Lock()
+	defer a.botLLMMu.Unlock()
+	view, err := a.fetchDesktopBotLLM()
+	if err != nil {
+		if cached, ok := a.desktopBotLLMChoiceLocked(a.configuredRemoteUserID()); ok {
+			return &cached, nil
+		}
+		return nil, err
+	}
+	return a.reconcileDesktopBotLLMLocked(view)
+}
+
+func (a *App) reconcileDesktopBotLLMLocked(view DesktopBotLLM) (*DesktopBotLLM, error) {
+	owner := a.configuredRemoteUserID()
 	cfg, err := a.LoadConfig()
 	if err != nil {
-		return &current, nil
+		a.rememberDesktopBotLLMLocked(owner, view)
+		return &view, nil
 	}
-	if cfg.DesktopBotLLMRolesMigrated {
-		return &current, nil
+	if owner != "" && desktopBotLLMAccount(cfg, owner).Migrated {
+		a.rememberDesktopBotLLMLocked(owner, view)
+		return &view, nil
 	}
-	input, apply := planLocalBotRoleMigration(cfg, current)
-	next := current
-	if apply {
-		saved, saveErr := a.SaveDesktopBotLLM(input)
+	plan := planLocalBotRoleMigration(cfg, view)
+	next := view
+	if plan.Upload {
+		savedView, saveErr := a.putDesktopBotLLM(plan.Input)
+		saved := &savedView
 		if saveErr != nil {
-			return &current, nil
+			log.Printf("[bot-llm] could not store role rows: %s", saveErr.Error())
+			display := overlayPendingRoles(view, cfg, plan.Pending)
+			display.NeedsRoleSave = true
+			a.rememberDesktopBotLLMLocked(owner, view)
+			return &display, nil
 		}
 		if saved != nil {
 			next = *saved
 		}
-	}
-	cfg.DesktopBotLLMRolesMigrated = true
-	if err := a.SaveConfig(cfg); err != nil {
-		return &next, nil
-	}
-	return &next, nil
-}
-
-// planLocalBotRoleMigration reports the custom save that preserves local role
-// pins. apply is false when no role was pinned, or when a pin cannot be
-// resolved to a provider on this computer.
-func planLocalBotRoleMigration(cfg corelib.AppConfig, server DesktopBotLLM) (DesktopBotLLMInput, bool) {
-	if !localBotRoleRowsSet(cfg.MaclawLLMProfiles) {
-		return DesktopBotLLMInput{}, false
-	}
-	profiles := cfg.MaclawLLMProfiles
-	fg, ok := migratedMainRole(maclawLLMRoleForeground, profiles.Foreground, cfg, server)
-	if !ok {
-		return DesktopBotLLMInput{}, false
-	}
-	bg, ok := migratedMainRole(maclawLLMRoleBackground, profiles.Background, cfg, server)
-	if !ok {
-		return DesktopBotLLMInput{}, false
-	}
-	cu, ok := migratedMainRole(maclawLLMRoleComputerUse, profiles.ComputerUse, cfg, server)
-	if !ok {
-		return DesktopBotLLMInput{}, false
-	}
-	gr, ok := migratedGrounderRole(profiles.Grounder, cfg.MaclawLLMProviders)
-	if !ok {
-		return DesktopBotLLMInput{}, false
-	}
-	input := DesktopBotLLMInput{
-		Mode: "custom",
-		Roles: &DesktopBotLLMRolesInput{
-			Foreground: fg, Background: bg, ComputerUse: cu, Grounder: gr,
-		},
-	}
-	// Older hubs ignore Roles and read the single provider. Foreground is that
-	// provider when it is not the official route.
-	if !fg.Official {
-		input.Name = fg.Name
-		input.URL = fg.URL
-		input.Key = fg.Key
-		input.Model = fg.Model
-		input.Protocol = fg.Protocol
-		input.WireAPI = fg.WireAPI
-	}
-	return input, true
-}
-
-func localBotRoleRowsSet(profiles *corelib.MaclawLLMProfiles) bool {
-	if profiles == nil {
-		return false
-	}
-	for _, assignment := range []corelib.MaclawLLMRoleAssignment{
-		profiles.Foreground, profiles.Background, profiles.ComputerUse, profiles.Grounder,
-	} {
-		if roleAssignmentPinned(assignment) {
-			return true
+		if next.Roles == nil {
+			log.Printf("[bot-llm] hub did not return role rows; local pins were left in place")
+			a.rememberDesktopBotLLMLocked(owner, view)
+			return &view, nil
 		}
+		view = next
 	}
-	return false
+	for _, reason := range plan.Reasons {
+		log.Printf("[bot-llm] %s", reason)
+	}
+	mark := plan.Mark && len(plan.Pending) == 0 && (plan.Upload == false || next.Roles != nil)
+	if plan.Upload && next.Roles == nil {
+		mark = false
+	}
+	if err := a.patchDesktopBotLLMAccount(owner, mark, plan.Clear, view); err != nil {
+		log.Printf("[bot-llm] could not record the bot model view: %s", err.Error())
+	} else {
+		a.rememberDesktopBotLLMLocked(owner, view)
+	}
+	display := next
+	if len(plan.Pending) > 0 {
+		display = overlayPendingRoles(view, cfg, plan.Pending)
+		display.NeedsRoleSave = true
+	}
+	return &display, nil
+}
+
+type localBotRoleMigration struct {
+	Upload  bool
+	Input   DesktopBotLLMInput
+	Clear   []string
+	Pending []string
+	Reasons []string
+	Mark    bool
+}
+
+func planLocalBotRoleMigration(cfg corelib.AppConfig, server DesktopBotLLM) localBotRoleMigration {
+	profiles := cfg.MaclawLLMProfiles
+	pinned := pinnedRoleNames(profiles)
+	if server.Stored {
+		plan := localBotRoleMigration{Mark: true, Clear: pinned}
+		return plan
+	}
+	if len(pinned) == 0 {
+		return localBotRoleMigration{Mark: true}
+	}
+	roles := DesktopBotLLMRolesInput{
+		Foreground:  DesktopBotLLMRoleInput{Inherit: true},
+		Background:  DesktopBotLLMRoleInput{Inherit: true},
+		ComputerUse: DesktopBotLLMRoleInput{Inherit: true},
+		Grounder:    DesktopBotLLMRoleInput{Unused: true},
+	}
+	var clear, pending, reasons []string
+	consider := func(name string, assignment corelib.MaclawLLMRoleAssignment, grounder bool) {
+		if !roleAssignmentPinned(assignment) {
+			return
+		}
+		uploaded, reason := classifyLocalPin(name, assignment, cfg.MaclawLLMProviders)
+		if reason != "" {
+			reasons = append(reasons, reason)
+			pending = append(pending, name)
+			return
+		}
+		input := uploaded
+		switch name {
+		case maclawLLMRoleForeground:
+			roles.Foreground = input
+		case maclawLLMRoleBackground:
+			roles.Background = input
+		case maclawLLMRoleComputerUse:
+			roles.ComputerUse = input
+		case maclawLLMRoleGrounder:
+			roles.Grounder = input
+		}
+		clear = append(clear, name)
+		_ = grounder
+	}
+	if profiles != nil {
+		consider(maclawLLMRoleForeground, profiles.Foreground, false)
+		consider(maclawLLMRoleBackground, profiles.Background, false)
+		consider(maclawLLMRoleComputerUse, profiles.ComputerUse, false)
+		consider(maclawLLMRoleGrounder, profiles.Grounder, true)
+	}
+	if len(clear) == 0 {
+		return localBotRoleMigration{Pending: pending, Reasons: reasons}
+	}
+	return localBotRoleMigration{
+		Upload: true,
+		Input: DesktopBotLLMInput{
+			Mode:  "custom",
+			Roles: &roles,
+		},
+		Clear:   clear,
+		Pending: pending,
+		Reasons: reasons,
+		Mark:    len(pending) == 0,
+	}
+}
+
+// classifyLocalPin reports a key-free role Hub can store. A provider that
+// needs an API key is left pending: automatic migration does not upload keys.
+func classifyLocalPin(role string, assignment corelib.MaclawLLMRoleAssignment, providers []corelib.MaclawLLMProvider) (DesktopBotLLMRoleInput, string) {
+	provider, ok := providerForRolePin(providers, assignment)
+	model := normalizeDesktopRoleModel(assignment.Model)
+	if !ok {
+		return DesktopBotLLMRoleInput{}, "role " + role + " kept locally: provider is not on this computer"
+	}
+	if provider.IsHubService || isHubServiceProviderName(provider.Name) {
+		return DesktopBotLLMRoleInput{Official: true, Model: model}, ""
+	}
+	if strings.TrimSpace(provider.Key) == "" {
+		return DesktopBotLLMRoleInput{}, "role " + role + " kept locally: provider " + strings.TrimSpace(provider.Name) + " has no API key until you save"
+	}
+	return DesktopBotLLMRoleInput{}, "role " + role + " kept locally: provider " + strings.TrimSpace(provider.Name) + " key is sent only when you save"
+}
+
+func pinnedRoleNames(profiles *corelib.MaclawLLMProfiles) []string {
+	if profiles == nil {
+		return nil
+	}
+	var names []string
+	if roleAssignmentPinned(profiles.Foreground) {
+		names = append(names, maclawLLMRoleForeground)
+	}
+	if roleAssignmentPinned(profiles.Background) {
+		names = append(names, maclawLLMRoleBackground)
+	}
+	if roleAssignmentPinned(profiles.ComputerUse) {
+		names = append(names, maclawLLMRoleComputerUse)
+	}
+	if roleAssignmentPinned(profiles.Grounder) {
+		names = append(names, maclawLLMRoleGrounder)
+	}
+	return names
 }
 
 func roleAssignmentPinned(assignment corelib.MaclawLLMRoleAssignment) bool {
 	return !assignment.InheritsHub() && strings.TrimSpace(assignment.Model) != ""
 }
 
-func migratedMainRole(role string, assignment corelib.MaclawLLMRoleAssignment, cfg corelib.AppConfig, server DesktopBotLLM) (DesktopBotLLMRoleInput, bool) {
-	if roleAssignmentPinned(assignment) {
-		return roleInputFromPin(assignment, cfg.MaclawLLMProviders)
+func overlayPendingRoles(view DesktopBotLLM, cfg corelib.AppConfig, pending []string) DesktopBotLLM {
+	if cfg.MaclawLLMProfiles == nil || len(pending) == 0 {
+		view.NeedsRoleSave = len(pending) > 0
+		return view
 	}
-	if server.Mode == "custom" && server.Roles != nil {
-		stored := server.Roles.Foreground
-		switch role {
+	if view.Roles == nil {
+		view.Roles = &DesktopBotLLMRoles{}
+	}
+	view.Choice = "custom"
+	for _, name := range pending {
+		assignment := roleAssignmentByName(*cfg.MaclawLLMProfiles, name)
+		provider, ok := providerForRolePin(cfg.MaclawLLMProviders, assignment)
+		role := DesktopBotLLMRole{Model: normalizeDesktopRoleModel(assignment.Model)}
+		if ok {
+			role.Name = provider.Name
+			role.URL = provider.URL
+			role.Protocol = provider.Protocol
+			role.WireAPI = provider.WireAPI
+			if provider.IsHubService || isHubServiceProviderName(provider.Name) {
+				role.Official = true
+			}
+		}
+		switch name {
+		case maclawLLMRoleForeground:
+			view.Roles.Foreground = role
 		case maclawLLMRoleBackground:
-			stored = server.Roles.Background
+			view.Roles.Background = role
 		case maclawLLMRoleComputerUse:
-			stored = server.Roles.ComputerUse
-		}
-		if in, ok := roleInputFromServer(stored); ok {
-			return in, true
-		}
-	}
-	if server.Mode == "custom" && server.Roles == nil {
-		if in, ok := roleInputFromLegacyServer(server); ok {
-			return in, true
+			view.Roles.ComputerUse = role
+		case maclawLLMRoleGrounder:
+			view.Roles.Grounder = role
 		}
 	}
-	model := normalizeDesktopRoleModel(hubRoleModel(cfg.HubRoleModels, role))
-	if model == "" {
-		model = hubServiceAutoModel
-	}
-	return DesktopBotLLMRoleInput{Official: true, Model: model}, true
+	view.NeedsRoleSave = true
+	return view
 }
 
-func migratedGrounderRole(assignment corelib.MaclawLLMRoleAssignment, providers []corelib.MaclawLLMProvider) (DesktopBotLLMRoleInput, bool) {
-	if !roleAssignmentPinned(assignment) {
-		return DesktopBotLLMRoleInput{Unused: true}, true
+func roleAssignmentByName(profiles corelib.MaclawLLMProfiles, name string) corelib.MaclawLLMRoleAssignment {
+	switch name {
+	case maclawLLMRoleBackground:
+		return profiles.Background
+	case maclawLLMRoleComputerUse:
+		return profiles.ComputerUse
+	case maclawLLMRoleGrounder:
+		return profiles.Grounder
+	default:
+		return profiles.Foreground
 	}
-	return roleInputFromPin(assignment, providers)
-}
-
-func roleInputFromPin(assignment corelib.MaclawLLMRoleAssignment, providers []corelib.MaclawLLMProvider) (DesktopBotLLMRoleInput, bool) {
-	provider, ok := providerForRolePin(providers, assignment)
-	if !ok {
-		return DesktopBotLLMRoleInput{}, false
-	}
-	model := normalizeDesktopRoleModel(assignment.Model)
-	if provider.IsHubService || isHubServiceProviderName(provider.Name) {
-		return DesktopBotLLMRoleInput{Official: true, Model: model}, true
-	}
-	if strings.TrimSpace(provider.Key) == "" || strings.TrimSpace(provider.URL) == "" || strings.TrimSpace(provider.Name) == "" {
-		return DesktopBotLLMRoleInput{}, false
-	}
-	return DesktopBotLLMRoleInput{
-		Name: provider.Name, URL: provider.URL, Key: provider.Key, Model: model,
-		Protocol: provider.Protocol, WireAPI: provider.WireAPI,
-	}, true
 }
 
 func providerForRolePin(providers []corelib.MaclawLLMProvider, assignment corelib.MaclawLLMRoleAssignment) (corelib.MaclawLLMProvider, bool) {
@@ -176,30 +266,121 @@ func providerForRolePin(providers []corelib.MaclawLLMProvider, assignment coreli
 	return corelib.MaclawLLMProvider{}, false
 }
 
-func roleInputFromServer(role DesktopBotLLMRole) (DesktopBotLLMRoleInput, bool) {
-	if role.Unused {
-		return DesktopBotLLMRoleInput{}, false
+func (a *App) patchDesktopBotLLMAccount(owner string, migrated bool, clear []string, view DesktopBotLLM) error {
+	if a == nil || owner == "" && len(clear) == 0 {
+		return nil
 	}
-	if role.Official && strings.TrimSpace(role.Model) != "" {
-		return DesktopBotLLMRoleInput{Official: true, Model: strings.TrimSpace(role.Model)}, true
-	}
-	if strings.TrimSpace(role.Name) == "" || strings.TrimSpace(role.Model) == "" {
-		return DesktopBotLLMRoleInput{}, false
-	}
-	return DesktopBotLLMRoleInput{
-		Name: role.Name, URL: role.URL, Model: role.Model,
-		Protocol: role.Protocol, WireAPI: role.WireAPI,
-	}, true
+	return a.mutateConfig(func(cfg *corelib.AppConfig) {
+		if cfg.MaclawLLMProfiles != nil && len(clear) > 0 {
+			profiles := *cfg.MaclawLLMProfiles
+			for _, name := range clear {
+				switch name {
+				case maclawLLMRoleForeground:
+					profiles.Foreground = corelib.MaclawLLMRoleAssignment{}
+				case maclawLLMRoleBackground:
+					profiles.Background = corelib.MaclawLLMRoleAssignment{}
+				case maclawLLMRoleComputerUse:
+					profiles.ComputerUse = corelib.MaclawLLMRoleAssignment{}
+				case maclawLLMRoleGrounder:
+					profiles.Grounder = corelib.MaclawLLMRoleAssignment{}
+				}
+			}
+			cfg.MaclawLLMProfiles = &profiles
+		}
+		if owner == "" {
+			return
+		}
+		if cfg.DesktopBotLLMAccounts == nil {
+			cfg.DesktopBotLLMAccounts = map[string]corelib.DesktopBotLLMAccount{}
+		}
+		account := cfg.DesktopBotLLMAccounts[owner]
+		if migrated {
+			account.Migrated = true
+		}
+		raw, err := json.Marshal(viewWithoutHint(view))
+		if err == nil {
+			account.ChoiceJSON = string(raw)
+		}
+		cfg.DesktopBotLLMAccounts[owner] = account
+	}, configMutateOpts{caller: "desktop-bot-llm"})
 }
 
-func roleInputFromLegacyServer(server DesktopBotLLM) (DesktopBotLLMRoleInput, bool) {
-	name := strings.TrimSpace(server.Name)
-	model := strings.TrimSpace(server.Model)
-	if name == "" || model == "" {
-		return DesktopBotLLMRoleInput{}, false
+func viewWithoutHint(view DesktopBotLLM) DesktopBotLLM {
+	view.NeedsRoleSave = false
+	view.Warning = ""
+	return view
+}
+
+func desktopBotLLMAccount(cfg corelib.AppConfig, owner string) corelib.DesktopBotLLMAccount {
+	if cfg.DesktopBotLLMAccounts == nil {
+		return corelib.DesktopBotLLMAccount{}
 	}
-	if strings.EqualFold(name, "hub-llm") {
-		return DesktopBotLLMRoleInput{Official: true, Model: model}, true
+	return cfg.DesktopBotLLMAccounts[owner]
+}
+
+func (a *App) rememberDesktopBotLLMLocked(owner string, view DesktopBotLLM) {
+	if a.botLLMChoice == nil {
+		a.botLLMChoice = map[string]DesktopBotLLM{}
 	}
-	return DesktopBotLLMRoleInput{Name: name, URL: server.URL, Model: model}, true
+	a.botLLMChoice[owner] = viewWithoutHint(view)
+}
+
+func (a *App) rememberDesktopBotLLM(owner string, view DesktopBotLLM) {
+	a.botLLMMu.Lock()
+	a.rememberDesktopBotLLMLocked(owner, view)
+	a.botLLMMu.Unlock()
+	if a == nil || owner == "" {
+		return
+	}
+	raw, err := json.Marshal(viewWithoutHint(view))
+	if err != nil {
+		return
+	}
+	_, _ = a.mutateConfigMaybe(func(cfg *corelib.AppConfig) bool {
+		if cfg.DesktopBotLLMAccounts == nil {
+			cfg.DesktopBotLLMAccounts = map[string]corelib.DesktopBotLLMAccount{}
+		}
+		account := cfg.DesktopBotLLMAccounts[owner]
+		if account.ChoiceJSON == string(raw) {
+			return false
+		}
+		account.ChoiceJSON = string(raw)
+		cfg.DesktopBotLLMAccounts[owner] = account
+		return true
+	}, configMutateOpts{caller: "desktop-bot-llm-cache"})
+}
+
+func (a *App) desktopBotLLMChoiceLocked(owner string) (DesktopBotLLM, bool) {
+	if a != nil && a.botLLMChoice != nil {
+		if view, ok := a.botLLMChoice[owner]; ok && (view.Choice != "" || view.Mode != "" || view.Stored) {
+			return view, true
+		}
+	}
+	return DesktopBotLLM{}, false
+}
+
+func (a *App) desktopBotLLMChoice(owner string) (DesktopBotLLM, bool) {
+	if a == nil {
+		return DesktopBotLLM{}, false
+	}
+	a.botLLMMu.Lock()
+	view, ok := a.desktopBotLLMChoiceLocked(owner)
+	a.botLLMMu.Unlock()
+	if ok {
+		return view, true
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return DesktopBotLLM{}, false
+	}
+	account := desktopBotLLMAccount(cfg, owner)
+	if account.ChoiceJSON == "" {
+		return DesktopBotLLM{}, false
+	}
+	var cached DesktopBotLLM
+	if err := json.Unmarshal([]byte(account.ChoiceJSON), &cached); err != nil {
+		return DesktopBotLLM{}, false
+	}
+	a.rememberDesktopBotLLM(owner, cached)
+	return cached, true
 }

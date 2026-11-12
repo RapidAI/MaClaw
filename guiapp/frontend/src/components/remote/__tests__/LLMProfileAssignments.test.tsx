@@ -913,45 +913,12 @@ describe("LLMProfileAssignments", () => {
         expect(screen.queryByRole("button", { name: "Test connection and image support" })).toBeNull();
     });
 
-    it("defaults the three loop roles to follow Hub and can pin one", async () => {
-        getState.mockResolvedValue({
-            ...state,
-            profiles: {
-                ...state.profiles,
-                horizon: { manager: { model: "keep-horizon" } },
-            },
-            hub_role_models: { foreground: "auto", background: "worker", computer_use: "auto" },
-            foreground: { model: "auto", inherit_hub: true, provider_name: "Hub", configured: true },
-            background: { model: "worker", inherit_hub: true, provider_name: "Hub", configured: true },
-            computer_use: { model: "auto", inherit_hub: true, provider_name: "Hub", configured: true },
-        });
-        saveProfiles.mockResolvedValue(undefined);
+    it("does not render bot role rows in model assignments", async () => {
+        getState.mockResolvedValue(state);
         render(<LLMProfileAssignments lang="en" section="roles" />);
-
-        const foregroundFollow = await screen.findByRole("checkbox", { name: "Foreground follows Hub" }) as HTMLInputElement;
-        const backgroundFollow = screen.getByRole("checkbox", { name: "Background follows Hub" }) as HTMLInputElement;
-        const computerUseFollow = screen.getByRole("checkbox", { name: "Computer use follows Hub" }) as HTMLInputElement;
-        expect(foregroundFollow.checked).toBe(true);
-        expect(backgroundFollow.checked).toBe(true);
-        expect(computerUseFollow.checked).toBe(true);
-        expect(screen.getByText(/Hub · worker/)).toBeTruthy();
-
-        fireEvent.click(screen.getByRole("checkbox", { name: "Foreground follows Hub" }));
-        fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-        await waitFor(() => expect(saveProfiles).toHaveBeenCalled());
-        const draft = saveProfiles.mock.calls[0][0] as {
-            foreground: { inherit_hub?: boolean; provider_id?: string; model?: string };
-            horizon: { manager: { model: string } };
-        };
-        expect(draft.foreground.inherit_hub).toBe(false);
-        // No Hub provider in this directory: the pin seeds the effective
-        // provider (the assistant's) and its default model.
-        expect(draft.foreground.provider_id).toBe("assistant");
-        expect(draft.foreground.model).toBe("gpt-5");
-        expect(draft.horizon.manager.model).toBe("keep-horizon");
-        expect(screen.queryByText("AI assistant")).toBeNull();
-        expect(screen.queryByText("Coding Agent")).toBeNull();
-        expect(screen.queryByText("Caption model")).toBeNull();
+        await screen.findByRole("heading", { name: "Model assignments" });
+        expect(screen.queryByRole("checkbox", { name: "Foreground follows Hub" })).toBeNull();
+        expect(screen.getByText("AI assistant")).toBeTruthy();
     });
 
     it("matches backend vision-model rules for caption warnings", () => {

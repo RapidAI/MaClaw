@@ -99,8 +99,6 @@ const cloneProfiles = (profiles: PanelState["profiles"]): PanelState["profiles"]
     grounder: { ...(profiles.grounder || {}) },
 });
 
-const roleInheritsHub = (role?: RoleAssignment) => role?.inherit_hub !== false;
-
 export function captionModelMissingVision(provider?: Provider, model?: string): boolean {
     if (!String(model || "").trim()) return false;
     return modelVisionStatus(provider, model) !== "supported";
@@ -350,7 +348,6 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     );
     const dirty = !!state && !!draft && JSON.stringify(cloneProfiles(state.profiles)) !== JSON.stringify(draft);
     dirtyRef.current = dirty;
-    const isRoles = section === "roles";
     const controlsLocked = disabled || saving;
 
     useEffect(() => {
@@ -548,47 +545,6 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         });
         invalidateProbeResults("coding");
     };
-    const roleProviderSeeds = (role: RoleKey, current: RoleAssignment) => {
-        const hubProvider = providers.find(provider => provider.is_hub_service);
-        if (!String(current.provider_id || "").trim()) {
-            current.provider_id = String(hubProvider?.id || assistant?.provider_id || providers[0]?.id || "").trim();
-        }
-        if (!String(current.model || "").trim()) {
-            const provider = providerByID.get(providerLookupKey(current.provider_id));
-            const hub = state?.hub_role_models;
-            const hubModel = role === "grounder" ? "" : role === "computer_use" ? hub?.computer_use : hub?.[role];
-            current.model = provider?.is_hub_service
-                ? (capabilityBandName(String(hubModel || provider?.model || "")) || "auto")
-                : String(provider?.model || assistant?.model || "").trim();
-        }
-    };
-    const setRoleInherit = (role: RoleKey, inherit: boolean) => {
-        setDraft(prev => {
-            if (!prev) return prev;
-            const current = { ...(prev[role] || {}) };
-            current.inherit_hub = inherit;
-            if (!inherit) roleProviderSeeds(role, current);
-            return { ...prev, [role]: current };
-        });
-    };
-    const setRoleProvider = (role: RoleKey, providerID: string) => {
-        setDraft(prev => {
-            if (!prev) return prev;
-            const provider = providerByID.get(providerLookupKey(providerID));
-            const models = providerModels(providerID);
-            const preferredRaw = String(provider?.model || "").trim();
-            const preferred = provider?.is_hub_service
-                ? (capabilityBandName(preferredRaw) || "auto")
-                : preferredRaw;
-            const preferredMatch = preferred
-                ? models.find(model => model.toLowerCase() === preferred.toLowerCase())
-                : "";
-            return { ...prev, [role]: { ...(prev[role] || {}), inherit_hub: false, provider_id: providerID, model: preferredMatch || models[0] || "" } };
-        });
-    };
-    const setRoleModel = (role: RoleKey, model: string) => {
-        setDraft(prev => prev ? { ...prev, [role]: { ...(prev[role] || {}), inherit_hub: false, model } } : prev);
-    };
     const save = async (): Promise<boolean> => {
         if (!state || !draft || saving || disabled) return false;
         setSaving(true);
@@ -765,16 +721,6 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         );
     };
 
-    // A pinned role picks any eligible provider. A legacy model-only pin has
-    // no provider id; it resolves to the Hub provider when one exists,
-    // otherwise to the assistant provider, so the picker shows that effective
-    // provider.
-    const roleEffectiveProviderID = (assignment: RoleAssignment) => {
-        const pinned = String(assignment.provider_id || "").trim();
-        if (pinned) return pinned;
-        const hubProvider = providers.find(provider => provider.is_hub_service);
-        return String(hubProvider?.id || assistant?.provider_id || "").trim();
-    };
     const header = (
         <div className="llm-profile-assignments__head">
             <h3 id="llm-profile-assignments-title" className="llm-profile-assignments__title">{t("Model assignments", "模型分配")}</h3>
@@ -784,128 +730,28 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
             </div>
         </div>
     );
-    const wrapSection = (body: ReactNode) => isRoles ? (
-        <div className="bot-role-assignments" role="region" data-testid="bot-role-assignments" aria-busy={loading || undefined}>
-            {body}
-        </div>
-    ) : (
+    const wrapSection = (body: ReactNode) => (
         <div className="llm-config-card llm-profile-assignments" role="region" aria-labelledby="llm-profile-assignments-title">
             {header}
             {body}
         </div>
     );
 
-    if (loading) return wrapSection(<div role="status" className={isRoles ? "bot-role-assignments__state" : "llm-profile-assignments__state"}>{t("Loading model assignments…", "正在加载模型分配…")}</div>);
-    if (!state || !draft) return wrapSection(<div role="alert" className={isRoles ? "bot-role-assignments__state bot-role-assignments__state--error" : "llm-profile-assignments__state llm-profile-assignments__state--error"}>{error || t("Could not load model assignments.", "无法加载模型分配。")}</div>);
+    if (loading) return wrapSection(<div role="status" className="llm-profile-assignments__state">{t("Loading model assignments…", "正在加载模型分配…")}</div>);
+    if (!state || !draft) return wrapSection(<div role="alert" className="llm-profile-assignments__state llm-profile-assignments__state--error">{error || t("Could not load model assignments.", "无法加载模型分配。")}</div>);
 
     const captionVision = visionSelection("caption");
     const assistantSwitchModelLabel = modelFieldValue(assistant?.provider_id, assistant?.model).trim();
     const assistantSwitchName = presetProviderDisplayName(lang, assistantSwitchHint?.name);
-    const roleRows = ([
-        ["foreground", t("Foreground", "前台交互", "前台互動"), t("Planning and chat", "规划与对话", "規劃與對話"), t("Foreground follows Hub", "前台跟随 Hub", "前台跟隨 Hub")],
-        ["background", t("Background", "后台执行", "後台執行"), t("Worker loops", "后台任务循环", "後台任務循環"), t("Background follows Hub", "后台跟随 Hub", "後台跟隨 Hub")],
-        ["computer_use", t("Computer use", "电脑操作", "電腦操作"), t("Screenshots and clicks", "截图与点击", "截圖與點擊"), t("Computer use follows Hub", "电脑操作跟随 Hub", "電腦操作跟隨 Hub")],
-        ["grounder", t("Grounding model", "定位模型", "定位模型"), t("Optional. Finds the click point when Computer Use names a target in words (e.g. UI-TARS, Qwen-VL). If unset or it fails, the Computer Use model clicks by itself.", "可选。电脑操作用文字描述点击目标时，由它给出坐标（如 UI-TARS、Qwen-VL）。不设置或定位失败时，由电脑操作模型自己点击。", "可選。電腦操作用文字描述點擊目標時，由它給出座標（如 UI-TARS、Qwen-VL）。不設定或定位失敗時，由電腦操作模型自己點擊。"), t("Grounding model not used", "不使用定位模型", "不使用定位模型")],
-    ] as const).map(([key, title, hint, aria]) => {
-        const assignment = draft[key] || {};
-        const inherits = roleInheritsHub(assignment);
-        const summary = key === "foreground" ? state.foreground : key === "background" ? state.background : key === "grounder" ? state.grounder : state.computer_use;
-        const isGrounder = key === "grounder";
-        const hubModel = isGrounder ? undefined : state.hub_role_models?.[key];
-        const shown = isGrounder ? t("Not used (single model)", "不使用（单模型）", "不使用（單模型）") : String(summary?.model || hubModel || "auto");
-        const hubProvider = providers.find(provider => provider.is_hub_service);
-        const summaryProviderID = String(summary?.provider_id || "").trim();
-        const foregroundUsesAssistant = key === "foreground" && inherits && summaryProviderID !== "" && summaryProviderID !== String(hubProvider?.id || "").trim();
-        const followLabel = isGrounder ? t("Not used", "不使用", "不使用") : foregroundUsesAssistant ? t("Follow AI assistant", "跟随普通 AI 助手", "跟隨普通 AI 助手") : t("Follow Hub", "跟随 Hub", "跟隨 Hub");
-        const effective = foregroundUsesAssistant && assistantSelectionPending
-            ? <>{t("Effective after save: ", "保存后生效：")}{followingAssistantProviderName} · {followingAssistantModel}</>
-            : <>{t("Effective now: ", "当前生效：", "目前生效：")}{!isGrounder && summary?.provider_name ? `${presetProviderDisplayName(lang, summary.provider_name)} · ` : ""}{shown}</>;
-        const pinnedProviderID = roleEffectiveProviderID(assignment);
-        const modelPicker = inherits
-            ? <div aria-live="polite" className={isRoles ? "bot-role-assignments__effective" : undefined} style={isRoles ? undefined : { color: colors.textSecondary, fontSize: "0.74rem" }}>{effective}</div>
-            : (
-                <div className="bot-role-assignments__fields">
-                    <div className="bot-role-assignments__field">
-                        <span className="bot-role-assignments__field-label">{t("Provider", "服务商", "服務商")}</span>
-                        <select
-                            aria-label={`${title} ${t("provider", "服务商", "服務商")}`}
-                            value={pinnedProviderID}
-                            disabled={controlsLocked}
-                            onChange={e => setRoleProvider(key, e.target.value)}
-                            data-testid={isRoles ? `bot-role-${key}-provider` : undefined}
-                            style={{ ...inputStyle, cursor: "pointer" }}
-                        >
-                            {pinnedProviderID === "" ? <option value="">{t("Select provider", "选择服务商")}</option> : null}
-                            {pinnedProviderID !== "" && !providerByID.has(providerLookupKey(pinnedProviderID))
-                                ? <option value={pinnedProviderID}>{pinnedProviderID}</option> : null}
-                            {providers.map(provider => <option key={provider.id} value={provider.id}>{presetProviderDisplayName(lang, provider.name)}</option>)}
-                        </select>
-                    </div>
-                    <div className="bot-role-assignments__field">
-                        <span className="bot-role-assignments__field-label">{t("Model", "模型", "模型")}</span>
-                        <SuggestCombobox
-                            listboxId={`${key}-role-models`}
-                            ariaLabel={`${title} ${t("model", "模型", "模型")}`}
-                            value={modelFieldValue(pinnedProviderID, String(assignment.model || ""))}
-                            options={providerModels(pinnedProviderID)}
-                            onChange={model => setRoleModel(key, model)}
-                            placeholder={t("Select or enter model ID", "选择或输入模型 ID", "選擇或輸入模型 ID")}
-                            disabled={controlsLocked}
-                            openOnEnter
-                            toggleLabel={t("Show model list", "显示模型列表", "顯示模型列表")}
-                            emptyText={t("No matching models", "没有匹配的模型", "沒有匹配的模型")}
-                            inputStyle={inputStyle}
-                        />
-                    </div>
-                </div>
-            );
-        if (isRoles) {
-            return (
-                <div key={key} className={"bot-role-assignments__row" + (inherits ? "" : " is-customized")} data-testid={`bot-role-${key}`}>
-                    <div className="bot-role-assignments__head">
-                        <div className="bot-role-assignments__label" title={hint}>
-                            <span className="bot-role-assignments__title">{title}</span>
-                            <span className="bot-role-assignments__hint">{hint}</span>
-                        </div>
-                        <label className="bot-role-assignments__follow">
-                            <input type="checkbox" aria-label={aria} checked={inherits} disabled={controlsLocked} onChange={e => setRoleInherit(key, e.target.checked)} />
-                            {followLabel}
-                        </label>
-                    </div>
-                    {modelPicker}
-                </div>
-            );
-        }
-        return (
-            <div key={key} style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 14, alignItems: "start" }}>
-                <div style={{ minWidth: 0 }}><strong style={{ fontSize: "0.78rem", color: colors.text }}>{title}</strong><p style={{ margin: "3px 0 0", color: colors.textMuted, fontSize: "0.68rem", lineHeight: 1.35 }}>{hint}</p></div>
-                <div style={{ minWidth: 0 }}>
-                    <label style={{ display: "inline-flex", gap: 7, alignItems: "center", cursor: "pointer", fontSize: "0.75rem", color: colors.text, marginBottom: inherits ? 6 : 10 }}>
-                        <input type="checkbox" aria-label={aria} checked={inherits} disabled={controlsLocked} onChange={e => setRoleInherit(key, e.target.checked)} />
-                        {followLabel}
-                    </label>
-                    {modelPicker}
-                </div>
-            </div>
-        );
-    });
-    const footer = (!isRoles || dirty || error) ? (
-        <div className={isRoles ? "bot-role-assignments__footer" : "llm-profile-footer"}>
-            {dirty && <span className={isRoles ? "bot-role-assignments__unsaved" : "llm-profile-footer__unsaved"}>{t("Unsaved changes", "有未保存更改")}</span>}
-            {dirty && <button type="button" onClick={refreshDraft} disabled={controlsLocked} className={isRoles ? "btn-secondary" : "llm-config-btn"}>{t("Discard", "放弃更改")}</button>}
-            {(dirty || !isRoles) && <button type="button" disabled={!dirty || controlsLocked} onClick={() => void save()} className={isRoles ? "btn-primary" : "llm-config-btn llm-config-btn--primary"} data-testid={isRoles ? "bot-role-assignments-save" : undefined}>
+    const footer = (
+        <div className="llm-profile-footer">
+            {dirty && <span className="llm-profile-footer__unsaved">{t("Unsaved changes", "有未保存更改")}</span>}
+            {dirty && <button type="button" onClick={refreshDraft} disabled={controlsLocked} className="llm-config-btn">{t("Discard", "放弃更改")}</button>}
+            <button type="button" disabled={!dirty || controlsLocked} onClick={() => void save()} className="llm-config-btn llm-config-btn--primary">
                 {saving ? t("Saving…", "正在保存…") : t("Save changes", "保存更改")}
-            </button>}
+            </button>
         </div>
-    ) : null;
-
-    if (isRoles) {
-        return wrapSection(<>
-            {roleRows}
-            {error && <div role="alert" className="bot-llm-dialog__notice"><span>{error}</span>{dirty && <button type="button" className="btn-secondary" style={{ marginLeft: 8 }} onClick={refreshDraft}>{t("Refresh draft", "刷新草稿")}</button>}</div>}
-            {footer}
-        </>);
-    }
+    );
 
     return wrapSection(<>
         {providers.length === 0 && <div role="status" className="llm-profile-assignments__state llm-profile-assignments__state--soft">

@@ -56,6 +56,7 @@ import {
     GetDesktopBotBusy,
     GetDesktopBotSupplements,
     GetDesktopBotLLM,
+    SyncDesktopBotLLM,
     GetDesktopProxyMode,
     GetDesktopComputer,
     RestartDesktopComputer,
@@ -299,8 +300,9 @@ function customModelDetail(choice: { name?: string; model?: string } | null | un
     return `${name} · ${model}`;
 }
 
-function modelRouteFrom(choice: { mode?: string; name?: string; model?: string } | null | undefined): { route: 'default' | 'custom'; detail: string } {
-    if (choice?.mode !== 'custom') return { route: 'default', detail: '' };
+function modelRouteFrom(choice: { mode?: string; choice?: string; name?: string; model?: string } | null | undefined): { route: 'default' | 'custom'; detail: string } {
+    const mode = choice?.choice || choice?.mode;
+    if (mode !== 'custom') return { route: 'default', detail: '' };
     return { route: 'custom', detail: customModelDetail(choice) };
 }
 
@@ -313,6 +315,7 @@ function roleSettingFrom(raw: unknown): BotLLMRoleSetting {
     return {
         unused: role.unused === true || role.Unused === true,
         official: role.official === true || role.Official === true,
+        inherit: role.inherit === true || role.Inherit === true,
         name: text('name', 'Name'),
         url: text('url', 'URL'),
         model: text('model', 'Model'),
@@ -1067,6 +1070,7 @@ function copy(lang: string) {
             llmModelLoading: 'Loading the model list…',
             llmModelEmpty: 'This provider has no models to pick from yet.',
             llmNoProviders: 'No provider on this computer has a key yet. Add one under Settings → Providers first.',
+            llmRoleSaveHint: 'Some roles are still only on this computer. Save once to apply them to your bots.',
             llmCustomMark: (detail: string) => detail ? `Using your own model: ${detail}` : 'Using your own model',
         };
         return (normalizeLang(lang) === 'mn' ? localizeBotCopy(lang, english) : english) as typeof english;
@@ -1290,6 +1294,7 @@ function copy(lang: string) {
             llmModelLoading: '正在取得模型清單…',
             llmModelEmpty: '這個服務商暫時沒有可選模型。',
             llmNoProviders: '這台電腦還沒有填好 key 的服務商。先到設定 → 服務商新增一個。',
+            llmRoleSaveHint: '有些角色還只在這台電腦上。儲存一次後才會交給 Bot。',
             llmCustomMark: (detail: string) => detail ? `正在使用自訂模型：${detail}` : '正在使用自訂模型',
         };
     }
@@ -1511,6 +1516,7 @@ function copy(lang: string) {
         llmModelLoading: '正在获取模型列表…',
         llmModelEmpty: '这个服务商暂时没有可选模型。',
         llmNoProviders: '这台电脑还没有填好 key 的服务商。先到设置 → 服务商添加一个。',
+        llmRoleSaveHint: '有些角色还只在这台电脑上。保存一次后才会交给 Bot。',
         llmCustomMark: (detail: string) => detail ? `正在使用自定义模型：${detail}` : '正在使用自定义模型',
     };
 }
@@ -2321,6 +2327,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [llmName, setLlmName] = useState('');
     const [llmModel, setLlmModel] = useState('');
     const [llmRoles, setLlmRoles] = useState<BotLLMRolesSetting | null>(null);
+    const [llmNeedsRoleSave, setLlmNeedsRoleSave] = useState(false);
     const [llmSaving, setLlmSaving] = useState(false);
     const [llmNotice, setLlmNotice] = useState('');
     // Settings dialog: the Model tab is the model dialog above, the Network tab
@@ -4289,6 +4296,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         };
     }, [userId, creditEpoch]);
 
+    // Reconcile local role pins once per account. This is not the credits poll:
+    // that read only refreshes the cached choice.
+    useEffect(() => {
+        let cancelled = false;
+        void SyncDesktopBotLLM().then(current => {
+            if (cancelled || !current) return;
+            const route = modelRouteFrom(current);
+            setCreditRoute(route.route);
+            setCustomModelDetailText(route.detail);
+            setLlmNeedsRoleSave(current.needs_role_save === true);
+        }).catch(() => {
+            // The next settings open tries again.
+        });
+        return () => { cancelled = true; };
+    }, [userId]);
+
     // Both halves of the model dialog load together: without the provider list
     // the saved choice cannot be shown as selected, and without the saved choice
     // the list has nothing to point at. Either failing leaves nothing to show.
@@ -4298,11 +4321,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setLlmNotice('');
         try {
             const [current, rawProviders] = await Promise.all([
-                GetDesktopBotLLM(),
+                SyncDesktopBotLLM(),
                 GetMaclawLLMProviders() as Promise<{ providers?: DesktopProviderWire[]; Providers?: DesktopProviderWire[] } | null>,
             ]);
             if (gen !== loadGen.current) return;
             const entries = rawProviders?.providers ?? rawProviders?.Providers ?? [];
+            setLlmNeedsRoleSave(current?.needs_role_save === true);
             const route = modelRouteFrom(current);
             // The dialog and the header read the same response. A failed poll
             // must not leave the mark blank once this read has the choice.
@@ -7285,6 +7309,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         modelLoading: text.llmModelLoading,
                         modelEmpty: text.llmModelEmpty,
                         noProviders: text.llmNoProviders,
+                        roleSaveHint: text.llmRoleSaveHint,
                         save: text.save,
                         cancel: text.cancel,
                         close: text.close,
@@ -7296,6 +7321,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     initialName={llmName}
                     initialModel={llmModel}
                     initialRoles={llmRoles}
+                    needsRoleSave={llmNeedsRoleSave}
                     notice={llmNotice}
                     saving={llmSaving}
                     lang={lang}

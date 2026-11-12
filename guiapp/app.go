@@ -108,6 +108,10 @@ type App struct {
 	// ephemeral and must never be persisted alongside credentials.
 	llmProfileHealthMu sync.Mutex
 	llmProfileHealth   map[string]maclawLLMProfileHealthRecord
+	// botLLMMu serializes the bot-model cache and the one-time local-pin migration.
+	// Concurrent settings reads must not upload the same pins twice.
+	botLLMMu     sync.Mutex
+	botLLMChoice map[string]DesktopBotLLM
 	// llmProfileHealthProbeMu serializes periodic and user-triggered profile
 	// health checks. Probing two providers can take up to the request timeout;
 	// serializing prevents concurrent token refreshes against the same provider.

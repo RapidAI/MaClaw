@@ -141,6 +141,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     PreviewTaskResultFile: (path: string) => previewFile(path),
     ReadDesktopBotShot: (path: string) => readShot(path),
     GetDesktopBotLLM: () => getBotLLM(),
+    SyncDesktopBotLLM: () => getBotLLM(),
     GetDesktopBotCredits: () => getBotCredits(),
     GetHubLLMServiceStatus: () => getHubCredits(),
     RefreshHubLLMServiceStatus: () => refreshHubCredits(),

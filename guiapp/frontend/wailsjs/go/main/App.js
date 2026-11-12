@@ -5315,6 +5315,10 @@ export function GetDesktopBotLLM() {
   return window['go']['main']['App']['GetDesktopBotLLM']();
 }
 
+export function SyncDesktopBotLLM() {
+  return window['go']['main']['App']['SyncDesktopBotLLM']();
+}
+
 export function SaveDesktopBotLLM(arg1) {
   return window['go']['main']['App']['SaveDesktopBotLLM'](arg1);
 }

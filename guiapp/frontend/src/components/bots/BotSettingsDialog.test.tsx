@@ -60,6 +60,7 @@ const llmLabels = {
     modelLoading: '正在获取模型列表…',
     modelEmpty: '这个服务商暂时没有可选模型。',
     noProviders: '这台电脑上没有可用的服务商。',
+    roleSaveHint: '有些角色还只在这台电脑上。保存一次后才会交给 Bot。',
     save: '保存',
     cancel: '取消',
     close: '关闭',

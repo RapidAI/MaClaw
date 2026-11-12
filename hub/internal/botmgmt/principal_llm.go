@@ -59,6 +59,7 @@ type PrincipalLLMInput struct {
 type PrincipalLLMRoleInput struct {
 	Unused   bool   `json:"unused"`
 	Official bool   `json:"official"`
+	Inherit  bool   `json:"inherit"`
 	Name     string `json:"name"`
 	URL      string `json:"url"`
 	Key      string `json:"key"`
@@ -89,6 +90,14 @@ type PrincipalLLMView struct {
 	Model  string                 `json:"model,omitempty"`
 	KeySet bool                   `json:"key_set"`
 	Roles  *PrincipalLLMRolesView `json:"roles,omitempty"`
+	// Stored is false only when this owner has never saved a choice and has
+	// no legacy single-provider override. The desktop uses that to decide
+	// whether local pins may still be copied up.
+	Stored bool `json:"stored"`
+	// Choice is the real mode. Mode is the legacy single-provider projection:
+	// an official foreground has no provider an older dialog can select, so
+	// Mode is default in that case while Choice stays custom.
+	Choice string `json:"choice,omitempty"`
 	// Warning reports that the choice was stored but could not be written to
 	// MaClawSrv yet, so it still applies on the owner's next bot open.
 	Warning string `json:"warning,omitempty"`
@@ -98,6 +107,7 @@ type PrincipalLLMView struct {
 type PrincipalLLMRoleView struct {
 	Unused   bool   `json:"unused,omitempty"`
 	Official bool   `json:"official,omitempty"`
+	Inherit  bool   `json:"inherit,omitempty"`
 	Name     string `json:"name,omitempty"`
 	URL      string `json:"url,omitempty"`
 	Model    string `json:"model,omitempty"`
@@ -151,11 +161,11 @@ func effectiveOwnerLLMOverride(rec record, hubUserID string) *ownerLLMOverride {
 // the owner's bots actually run: their own roles, or the service default.
 // A legacy single-provider override is migrated into those roles on this read.
 func (s *Service) GetPrincipalLLM(ctx context.Context, tenantID, hubUserID string) (PrincipalLLMView, error) {
-	choice, err := s.persistedOwnerBotLLM(ctx, tenantID, hubUserID)
+	choice, stored, err := s.persistedOwnerBotLLM(ctx, tenantID, hubUserID)
 	if err != nil {
 		return PrincipalLLMView{}, err
 	}
-	return choice.view(), nil
+	return choice.view(stored), nil
 }
 
 // SavePrincipalLLM stores an owner's role choice and writes it to that
@@ -192,7 +202,7 @@ func (s *Service) SavePrincipalLLM(ctx context.Context, tenantID, hubUserID stri
 	}
 	s.mu.Unlock()
 
-	view := next.view()
+	view := next.view(true)
 	if pushErr := s.pushPrincipalLLM(ctx, tenantID, hubUserID); pushErr != nil {
 		view.Warning = pushErr.Error()
 	}
@@ -219,7 +229,7 @@ func (s *Service) pushPrincipalLLM(ctx context.Context, tenantID, hubUserID stri
 
 // normalizeCustomProvider validates one provider role against the tenant list.
 // A blank key keeps the previous key only when the provider name is unchanged.
-func normalizeCustomProvider(in PrincipalLLMInput, prev *ownerLLMOverride, providers []llmProvider) (*ownerLLMOverride, error) {
+func normalizeCustomProvider(in PrincipalLLMInput, choice ownerBotLLM, prev *ownerLLMOverride, providers []llmProvider) (*ownerLLMOverride, error) {
 	name := strings.TrimSpace(in.Name)
 	if name == "" || name != in.Name {
 		return nil, fmt.Errorf("%w: llm provider name is required", ErrInvalidInput)
@@ -260,10 +270,13 @@ func normalizeCustomProvider(in PrincipalLLMInput, prev *ownerLLMOverride, provi
 		return nil, fmt.Errorf("%w: llm provider key is invalid", ErrInvalidInput)
 	}
 	if key == "" {
-		if prev == nil || prev.Official || !corelib.MaclawLLMProviderNameEqual(prev.Name, name) || strings.TrimSpace(prev.Key) == "" {
+		key = storedProviderKey(choice, name)
+		if key == "" && prev != nil && !prev.Official && corelib.MaclawLLMProviderNameEqual(prev.Name, name) {
+			key = strings.TrimSpace(prev.Key)
+		}
+		if key == "" {
 			return nil, fmt.Errorf("%w: llm provider key is required", ErrInvalidInput)
 		}
-		key = prev.Key
 	}
 	return &ownerLLMOverride{
 		Name: name, URL: rawURL, Key: key, Model: model, Protocol: protocol, WireAPI: wireAPI,

@@ -185,8 +185,9 @@ func TestResolveLLMRoleModeSelectsOneSource(t *testing.T) {
 	if err != nil || custom.Model != "deepseek-reasoner" || custom.Key != "sk-ds" {
 		t.Fatalf("custom mode = %+v err=%v", custom, err)
 	}
-	if _, err := ResolveLLMRole(cfg, LLMRoleForeground); err == nil {
-		t.Fatal("custom mode without a foreground pin should fail closed")
+	fg, err := ResolveLLMRole(cfg, LLMRoleForeground)
+	if err != nil || fg.ProviderName != "DeepSeek" || fg.Model != "deepseek-chat" {
+		t.Fatalf("unset custom foreground should follow the service, got %+v err=%v", fg, err)
 	}
 	if _, err := ResolveLLMRole(cfg, LLMRoleGrounder); err != ErrGrounderUnused {
 		t.Fatalf("custom grounder without a pin = %v", err)
