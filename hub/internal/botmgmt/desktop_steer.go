@@ -13,8 +13,9 @@ import (
 // answer. On timeout or error the message is a new task.
 var desktopIntakeBudget = 2 * time.Second
 
-// DesktopSchedule is a timer the server decided and the machine that owns
-// the clock arms. Hub does not keep that clock.
+// DesktopSchedule is a timer MaClawSrv decided and armed on its own clock
+// during bot-intake. Hub returns it so the GUI can show the ack. Hub does
+// not keep a second clock, and the GUI must not start the turn.
 type DesktopSchedule struct {
 	Name            string `json:"name,omitempty"`
 	Mode            string `json:"mode,omitempty"`

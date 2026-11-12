@@ -255,7 +255,8 @@ func runServer(ctx context.Context) error {
 		}()
 	}
 
-	// Initialize optional scheduler (MACLAW_ENABLE_SCHEDULER=true).
+	// Desktop-bot timers always start. MACLAW_ENABLE_SCHEDULER=true also
+	// starts every other scheduled task.
 	schMgr := initScheduler(dataRoot, svc, executor)
 	if schMgr != nil {
 		defer func() {

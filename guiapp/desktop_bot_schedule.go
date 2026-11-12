@@ -456,9 +456,10 @@ func cancelDesktopBotSchedules(mgr *scheduler.Manager, owner, botID, name string
 	return n
 }
 
-// executeDesktopBotScheduledTask does not start the round. The server
-// Manager fires a desktop-bot due time. The GUI being closed is not what
-// keeps 08:00 from running, and this process must not start a second one.
+// executeDesktopBotScheduledTask does not start the round. MaClawSrv Intake
+// writes the row onto the host clock and that clock calls SendMessage.
+// A local fire would be a second run of the same timer. Closing this
+// process does not skip 08:00.
 func (a *App) executeDesktopBotScheduledTask(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
 	if task == nil || strings.TrimSpace(task.DesktopBotID) == "" {
 		return "", fmt.Errorf("desktop bot id is required")

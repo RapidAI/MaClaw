@@ -106,6 +106,11 @@ type Manager struct {
 	// runningTasks tracks in-flight executor goroutines so they can be
 	// cancelled on Stop(). Key is task ID, value is the cancel function.
 	runningTasks map[string]context.CancelFunc
+
+	// eligible, when set, is the only rows the clock may start. Nil means
+	// every due row. TriggerNow is not filtered: an operator can still run
+	// one row by hand. The function must not lock the manager.
+	eligible func(*ScheduledTask) bool
 }
 
 // NewManager creates a manager that stores tasks in SQLite next to path.
@@ -253,6 +258,18 @@ func (m *Manager) StartWithExecutor(fn TaskExecutor) {
 	m.Start()
 }
 
+// SetEligible limits which rows the clock starts. Nil allows every due row.
+// Set it before Start. A row the clock skips keeps its next-run time, so a
+// later clock that allows it can still fire that occurrence.
+func (m *Manager) SetEligible(fn func(*ScheduledTask) bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.eligible = fn
+	m.mu.Unlock()
+}
+
 // SetOnChange sets an optional callback invoked after task state changes
 // (e.g. after a task fires or expires), useful for notifying the frontend.
 func (m *Manager) SetOnChange(fn func()) {
@@ -269,7 +286,7 @@ func (m *Manager) Start() {
 		return
 	}
 	m.running = true
-	catchUps := m.pendingCatchUps
+	catchUps := m.allowedCatchUps(m.pendingCatchUps)
 	m.pendingCatchUps = nil
 	executor := m.executor
 	m.mu.Unlock()
@@ -352,11 +369,46 @@ func (m *Manager) fireDue(now time.Time) {
 	m.mu.RLock()
 	dueIDs := dueTaskIDs(m.tasks, now)
 	executor := m.executor
+	allow := m.eligible
+	var snapshot []ScheduledTask
+	if allow != nil {
+		snapshot = append([]ScheduledTask(nil), m.tasks...)
+	}
 	m.mu.RUnlock()
 
 	for _, id := range dueIDs {
+		if allow != nil && !idAllowed(allow, snapshot, id) {
+			continue
+		}
 		go m.fireByID(id, executor, now)
 	}
+}
+
+// allowedCatchUps drops catch-up ids the clock is not allowed to start.
+// Caller holds m.mu.
+func (m *Manager) allowedCatchUps(ids []string) []string {
+	if m.eligible == nil || len(ids) == 0 {
+		return append([]string(nil), ids...)
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if idAllowed(m.eligible, m.tasks, id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func idAllowed(allow func(*ScheduledTask) bool, tasks []ScheduledTask, id string) bool {
+	if allow == nil {
+		return true
+	}
+	for i := range tasks {
+		if tasks[i].ID == id {
+			return allow(&tasks[i])
+		}
+	}
+	return false
 }
 
 // purgeExpired drops rows closedWindow rejects. A paused row with a passed

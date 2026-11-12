@@ -28,8 +28,9 @@ type BotIntakeInput struct {
 	Running []BotIntakeRun `json:"running,omitempty"`
 }
 
-// BotIntakeSchedule is a timer the caller arms. The decision that there
-// is a timer is made here; the machine that owns the clock arms it.
+// BotIntakeSchedule is a timer. The decision is made here. MaClawSrv writes
+// the row onto its own clock and fires it. The GUI may show a copy; it does
+// not start the turn.
 type BotIntakeSchedule struct {
 	Name            string `json:"name,omitempty"`
 	Mode            string `json:"mode,omitempty"`

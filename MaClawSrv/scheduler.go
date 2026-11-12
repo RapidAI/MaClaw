@@ -17,11 +17,13 @@ func scheduledTaskPrompt(action string) string {
 	return desktopbot.RoutineQuietPrompt + "\n" + strings.TrimSpace(action)
 }
 
-// initScheduler creates and starts the scheduled task manager if enabled via
-// MACLAW_ENABLE_SCHEDULER=true. The executor sends task actions through the
-// agentservice.Service.PostMessage path, using a system principal.
+// initScheduler starts the host clock. Desktop-bot rows always run: a chat
+// message that Intake classifies as a schedule is stored here and fired
+// here, including when the GUI is closed. MACLAW_ENABLE_SCHEDULER still
+// gates every other row and the manage_schedule tool. The flag is not
+// required for a desktop bot's own timer.
 //
-// Returns nil if scheduler is disabled or initialization fails.
+// Returns nil only when the task store cannot be opened.
 func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentservice.CoreAgentExecutor) *scheduler.Manager {
 	// The step journal is not the scheduler. Bind it even when the flag is off,
 	// and clear it when this process has no service database.
@@ -53,14 +55,14 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 	}
 
 	bindDesktopLongJobService(svc)
-	enabled, _ := getenvBoolStrict("MACLAW_ENABLE_SCHEDULER", false)
-	if !enabled {
-		return nil
+	enabled, err := getenvBoolStrict("MACLAW_ENABLE_SCHEDULER", false)
+	if err != nil {
+		log.Printf("[MaClawSrv] WARNING: MACLAW_ENABLE_SCHEDULER: %v", err)
+		enabled = false
 	}
 
 	schPath := filepath.Join(dataRoot, "scheduled_tasks.json")
 	var mgr *scheduler.Manager
-	var err error
 	if svc != nil && svc.ScheduledTaskStore() != nil {
 		// The JSON file is the pre-migration copy. Rows live in the service
 		// database this worker already opened. One manager, not one per user.
@@ -80,10 +82,11 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 		return nil
 	}
 
-	// Expose manage_schedule to agents (list_targets / create with group_name resolve).
-	// im_message is wired independently in main (does not require the scheduler).
-	// The context handler binds each task to the calling agent instance.
-	if executor != nil {
+	// Expose manage_schedule only with the general scheduler. im_message is
+	// wired independently in main. The context handler binds each task to
+	// the calling agent instance. Desktop-bot rows do not use this tool:
+	// Intake writes them, and the clock below fires them either way.
+	if enabled && executor != nil {
 		executor.ScheduleHandler = newSrvManageScheduleHandler(svc, mgr)
 		executor.ScheduleHandlerContext = func(_ context.Context, principal agentservice.Principal, instanceID string, args map[string]interface{}) string {
 			if strings.TrimSpace(instanceID) == "" {
@@ -99,10 +102,25 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 
 	setSrvSchedulerManager(mgr)
 	bindDesktopLongJobService(svc)
+	if !enabled {
+		// Other rows stay stored and keep their next-run time. Turning the
+		// flag on later still fires the occurrence this clock did not take.
+		mgr.SetEligible(desktopBotScheduleEligible)
+		log.Printf("[MaClawSrv] desktop-bot clock started; other scheduled tasks stay idle until MACLAW_ENABLE_SCHEDULER=true (data: %s)", schPath)
+	}
 	taskExecutor := buildSrvScheduledTaskExecutor(svc, executor)
 	mgr.StartWithExecutor(taskExecutor)
-	log.Printf("[MaClawSrv] scheduler started (data: %s)", schPath)
+	if enabled {
+		log.Printf("[MaClawSrv] scheduler started (data: %s)", schPath)
+	}
 	return mgr
+}
+
+// desktopBotScheduleEligible is the clock filter while the general
+// scheduler is off. A desktop bot row has a bot id. Long-job watches also
+// carry one; the executor tells those apart before starting a bot turn.
+func desktopBotScheduleEligible(task *scheduler.ScheduledTask) bool {
+	return task != nil && strings.TrimSpace(task.DesktopBotID) != ""
 }
 
 // buildSrvScheduledTaskExecutor creates a TaskExecutor for MaClawSrv.
@@ -119,6 +137,11 @@ func buildSrvScheduledTaskExecutor(svc *agentservice.Service, executor *agentser
 		log.Printf("[MaClawSrv-Scheduler] firing task %s: %s", task.Name, scheduler.TruncateStr(task.Action, 100))
 		if out, err, ok := desktopLongJobHandleScheduled(ctx, task); ok {
 			return out, err
+		}
+		// A desktop bot timer is one bot turn. The GUI clock does not start
+		// a second one. A row with no bot id keeps the general path.
+		if task != nil && strings.TrimSpace(task.DesktopBotID) != "" {
+			return runDesktopBotSchedule(ctx, svc, task)
 		}
 
 		actionText := scheduledTaskPrompt(task.Action)

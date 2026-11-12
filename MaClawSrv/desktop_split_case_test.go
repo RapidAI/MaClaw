@@ -257,9 +257,16 @@ func TestDesktopBotSplitCases(t *testing.T) {
 		if err != nil || enabled {
 			t.Fatalf("scheduler flag enabled=%v err=%v", enabled, err)
 		}
-		if initScheduler(t.TempDir(), nil, nil) != nil {
-			t.Fatal("the default flag started a manager")
+		clock := initScheduler(t.TempDir(), nil, nil)
+		if clock == nil {
+			t.Fatal("desktop-bot clock did not start with the flag off")
 		}
+		t.Cleanup(func() {
+			clock.Stop()
+			if getSrvSchedulerManager() == clock {
+				setSrvSchedulerManager(nil)
+			}
+		})
 		sessionCalls := 0
 		prev := desktopRemoteSession
 		desktopRemoteSession = func(context.Context, string, string) (desktopEndpoint, error) {

@@ -127,7 +127,7 @@ maclaw 取 Grok Bot 这一侧。计算是第 4 节那台 Firecracker：空闲就
 今天已经有一半。模型循环在 MaClawSrv 的 `SendMessage` 里，对话在服务端的 sqlite。另一半还拴在客户端上：
 
 - `guiapp/desktop_bot_hub.go` 的 `finishDesktopBotTask`、`relayDesktopBot`、`waitDesktopBotRun` 在 GUI 进程里等这一轮。关掉 GUI，这次等待的 context 取消。
-- 桌面 bot 的日程在 GUI 里触发。`guiapp/app_scheduled_task_executor.go` 调用 `executeDesktopBotScheduledTask`。GUI 不在，到点的那一轮不起。
+- 桌面 bot 的日程由 MaClawSrv 的时钟触发。Intake 把这一行写进服务端库，到点 `SendMessage` 起一轮。`executeDesktopBotScheduledTask` 留在 GUI 里并且是空操作，避免同一行再起一轮。GUI 关着，到点的那一轮仍起。不需要把 `MACLAW_ENABLE_SCHEDULER` 打开；那个开关只放行没有 bot id 的其它定时任务。
 - 截图和交付文件先落在 GUI 这台机器上。
 - Hub 的 `AdmitDesktopMessage` 在共享桌面模式下先打开云桌面，再把消息交给 MaClawSrv。容器被当成这一轮的宿主。
 
@@ -437,7 +437,7 @@ isolated bot（`desktop_mode=isolated`，默认仍是 `shared`）不新开容器
 | 空闲几分钟，文件上云，内存和磁盘整机快照，关机；下次工具调用原地恢复 | 默认不回收；可选 24h `docker stop`；没有整机快照 | 见第 5 节。今天的停容器不是这四步 |
 | 下次工具调用唤醒，登录和工具还在，对话在服务端 | `session` 会 `docker start` + 冷启动 XFCE/Chrome；对话本来就在服务端 | 没有 waking 状态，调用方只能干等；file/bash 不会唤醒；没有快照恢复 |
 | 有消息才醒，默认睡觉；agent 进程和电脑分开睡 | 回合在 `SendMessage` 里结束，没有按用户常驻的 agent 进程；电脑容器默认一直跑；`desktopSession` 在多数桌面动作之前就把整机拉起；日程在进程旁的 json 里，到点走同一条会打开桌面的路径 | 见第 30 节。工人按事件从库装载。电脑只在第一个要它的工具上醒。到点的一轮不用电脑就不醒 |
-| 状态和计算分开：循环在服务端，容器只是工具执行器 | 模型循环已在 MaClawSrv；GUI 仍握着等待、日程触发和截图落盘。关掉 GUI，这次等待取消，到点的桌面日程不起 | 见文首。工具调用不带对话。GUI 只是表面。容器可换 |
+| 状态和计算分开：循环在服务端，容器只是工具执行器 | 模型循环已在 MaClawSrv。桌面 bot 日程到点由 MaClawSrv 起一轮，不经过 GUI。关掉 GUI 不取消这一轮。GUI 仍握着这一轮的等待和截图落盘 | 见文首。工具调用不带对话。GUI 只是表面。容器可换 |
 | 每用户一台 Firecracker，里面一个 Debian 容器 | 只有 Docker 容器，控制面直接 `docker exec` | 见第 4 节。Firecracker 要 `/dev/kvm`。Hub 仍不碰虚拟机的接口 |
 | 先便宜、先可靠地选工具 | 前台把查找写成桌面工单；工人把活收进 `desktop`，`computer` 与 `probe` 同一枚举 | 没有阶梯，没有「有 API 就不上桌面」的拒绝，没有升级指标。见第 17 节 |
 | 操作电脑先读结构，像素和人是退路 | 浏览器有 DOM `probe`，桌面有 AT-SPI，像素和交接也在 | 三条路并在一个工具里。`probe` 不合并无障碍树；应用点击常常是元素中心的像素；交接不走单一出口。见第 18 节 |
@@ -3534,7 +3534,7 @@ shell、对外发送、删除、付款在执行前由另一个模型看一次。
 | Hub 的 `desktopAdmits`：一轮没结束就有一条内存记录和随后的跟踪 | `hub/internal/botmgmt/desktop_admit.go` | 只活这一轮。这一轮结束就删。空占位超过 30 秒已会丢掉，保持 |
 | Hub 的 `handoff`：noVNC 令牌在内存里 2 小时 | `hub/internal/botmgmt/handoff.go` | 人在看屏幕时电脑是醒的（第 4.4 节）。令牌过期不负责停容器，也不刷新 `last_used`。停容器仍走第 5 节 |
 | MaClawSrv 的 `desktopBindings`：按用户键留着互斥锁和浏览器会话 | `MaClawSrv/desktop_runtime.go` | 这一轮结束就丢掉。电脑睡了之后，下一次工具重新 `Ensure`，不复用已经断掉的 CDP |
-| 日程管理器：一个进程里一条 30 秒的循环，任务在 `scheduled_tasks.json`。默认 `MACLAW_ENABLE_SCHEDULER` 关闭。到点走 `SendMessage` | `MaClawSrv/scheduler.go`，`corelib/scheduler/task.go` | 这就是第 30.3 节的运行器，宿主上一份。30 秒是它发现「到 08:00 了」的方式。到点起一个工人。这一轮没有机器工具就不 `Ensure` |
+| 日程管理器：一个进程里一条 30 秒的循环。桌面 bot 的行在服务端库里，Intake 写入，到点走 `SendMessage`。`MACLAW_ENABLE_SCHEDULER` 默认关闭，只拦住没有 bot id 的其它行 | `MaClawSrv/scheduler.go`，`MaClawSrv/desktop_schedule.go`，`corelib/scheduler/task.go` | 这就是第 30.3 节的运行器，宿主上一份。30 秒是它发现「到 08:00 了」的方式。到点起一个工人。GUI 不另起一轮。这一轮没有机器工具就不 `Ensure` |
 | agent 回合 | `Service.SendMessage` 在请求里跑完就返回 | 已经是按事件的。保持。缺的是电脑那一侧：`operateDesktop` 在 `skill_list` 之外会先 `desktopSession`，这一步会把整台电脑拉起来 |
 
 `desktopd` 里的代理指标循环、Hub 里按小时扫的回收，是宿主上各一条，不按用户复制。
