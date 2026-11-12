@@ -5151,10 +5151,6 @@ export function ClassifyDesktopWorkStop(arg1, arg2) {
   return window['go']['main']['App']['ClassifyDesktopWorkStop'](arg1, arg2);
 }
 
-export function ClassifyDesktopFollowUp(arg1, arg2, arg3) {
-  return window['go']['main']['App']['ClassifyDesktopFollowUp'](arg1, arg2, arg3);
-}
-
 export function EvaluateDesktopTaskSupplement(arg1, arg2, arg3) {
   return window['go']['main']['App']['EvaluateDesktopTaskSupplement'](arg1, arg2, arg3);
 }

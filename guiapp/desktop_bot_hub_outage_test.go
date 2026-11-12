@@ -117,3 +117,42 @@ func TestRelayDesktopBotSendsContinueSession(t *testing.T) {
 		t.Fatalf("result session = %q", got.Session)
 	}
 }
+
+// TestRelayDesktopBotPassesServerRoute: the page names no conversation; Hub
+// routed the turn and says so, and the page is told right after admission.
+func TestRelayDesktopBotPassesServerRoute(t *testing.T) {
+	resetActiveDesktopRuns(t)
+	resetDesktopAdmitCancel()
+	var routed []map[string]any
+	desktopBotRoutedSink = func(p map[string]any) { routed = append(routed, p) }
+	t.Cleanup(func() {
+		desktopBotExchangeOverride = nil
+		desktopBotRoutedSink = nil
+	})
+	var gotBody map[string]any
+	desktopBotExchangeOverride = func(_ context.Context, method, path string, body any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+		if method == http.MethodPost && strings.HasSuffix(path, "/messages") {
+			gotBody, _ = body.(map[string]any)
+			fillDesktopBotDest(t, dest, map[string]any{
+				"accepted": true, "run_id": "run-r", "status": "running", "client_message_id": "turn-routed",
+				"session": "bot_3#t-old", "routed_via": "content", "routed_title": "整理上周订单报表",
+			})
+			return http.StatusAccepted, nil
+		}
+		fillDesktopBotDest(t, dest, map[string]any{"text": "改好了", "status": "succeeded"})
+		return http.StatusOK, nil
+	}
+	got, err := (&App{}).relayDesktopBot(context.Background(), "bot_3", "把报表金额改成两位小数", "execute", "turn-routed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, named := gotBody["continue_session"]; named {
+		t.Fatalf("page decided a conversation: %#v", gotBody)
+	}
+	if got.Session != "bot_3#t-old" || got.RoutedVia != "content" || got.RoutedTitle != "整理上周订单报表" {
+		t.Fatalf("result = %+v", got)
+	}
+	if len(routed) != 1 || routed[0]["request_id"] != "turn-routed" || routed[0]["title"] != "整理上周订单报表" {
+		t.Fatalf("routed notice = %v", routed)
+	}
+}

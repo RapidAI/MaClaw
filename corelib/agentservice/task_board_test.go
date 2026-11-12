@@ -59,9 +59,9 @@ func TestThreadTurnSeesSiblingBoardNotTranscripts(t *testing.T) {
 }
 
 func TestTaskBoardIsBounded(t *testing.T) {
-	var entries []taskBoardEntry
+	var entries []BotThread
 	for i := 0; i < 20; i++ {
-		entries = append(entries, taskBoardEntry{title: strings.Repeat("任", 80), status: "succeeded", result: strings.Repeat("果", 240)})
+		entries = append(entries, BotThread{Title: strings.Repeat("任", 80), Status: "succeeded", Result: strings.Repeat("果", 240)})
 	}
 	out := renderTaskBoard(entries)
 	if n := len([]rune(out)); n > taskBoardMaxRunes {

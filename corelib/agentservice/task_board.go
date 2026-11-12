@@ -1,6 +1,7 @@
 package agentservice
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -40,27 +41,50 @@ func botOfClientSessionKey(key string) string {
 	return ""
 }
 
-type taskBoardEntry struct {
-	key     string
-	title   string
-	status  string
-	step    string
-	result  string
-	updated time.Time
+// BotThread is one of a bot's conversations as the server registry sees
+// it: the bot's main conversation or one of its per-run threads. It is a
+// view over the persisted sessions, runs and messages (no second store),
+// so it survives srv restarts, device changes and cleared chats.
+type BotThread struct {
+	Session   string    `json:"session"`
+	Main      bool      `json:"main,omitempty"`
+	Title     string    `json:"title"`
+	Goal      string    `json:"goal,omitempty"`
+	Status    string    `json:"status"`
+	Step      string    `json:"step,omitempty"`
+	Result    string    `json:"result,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UserID    string    `json:"user_id,omitempty"`
 }
 
-// taskBoardFor lists this bot's other conversations, newest first, bounded.
-func (s *Service) taskBoardFor(p Principal, instanceID string, sess Session, now time.Time) []taskBoardEntry {
-	if s == nil || s.store == nil {
+// Registry bounds: what any reader may see of a bot's past tasks.
+const (
+	botThreadRetention = 7 * 24 * time.Hour
+	botThreadMaxPerBot = 50
+)
+
+// BotThreadQuery narrows the registry view.
+type BotThreadQuery struct {
+	MaxAge         time.Duration // 0: botThreadRetention; never above it
+	Limit          int           // 0 or above botThreadMaxPerBot: botThreadMaxPerBot
+	ExcludeRunning bool
+	ThreadsOnly    bool   // leave out the bot's main conversation
+	ExcludeSession string // a client_session_key to leave out (the asking turn)
+}
+
+func (s *Service) botThreads(p Principal, instanceID, bot string, q BotThreadQuery, now time.Time) []BotThread {
+	bot = strings.TrimSpace(bot)
+	if s == nil || s.store == nil || bot == "" || botOfClientSessionKey(bot) != bot {
 		return nil
 	}
-	selfKey := ""
-	if sess.Metadata != nil {
-		selfKey = strings.TrimSpace(sess.Metadata["client_session_key"])
+	maxAge := q.MaxAge
+	if maxAge <= 0 || maxAge > botThreadRetention {
+		maxAge = botThreadRetention
 	}
-	bot := botOfClientSessionKey(selfKey)
-	if bot == "" {
-		return nil
+	limit := q.Limit
+	if limit <= 0 || limit > botThreadMaxPerBot {
+		limit = botThreadMaxPerBot
 	}
 	sessions, err := s.store.ListSessions(p.TenantID, p.UserID, instanceID)
 	if err != nil {
@@ -68,19 +92,26 @@ func (s *Service) taskBoardFor(p Principal, instanceID string, sess Session, now
 	}
 	runs, _ := s.store.ListRuns(p.TenantID, p.UserID, instanceID)
 	latestRun := map[string]Run{}
+	firstRun := map[string]Run{}
 	for _, run := range runs {
-		prev, ok := latestRun[run.SessionID]
-		if !ok || run.StartedAt.After(prev.StartedAt) {
+		if prev, ok := latestRun[run.SessionID]; !ok || run.StartedAt.After(prev.StartedAt) {
 			latestRun[run.SessionID] = run
 		}
+		if prev, ok := firstRun[run.SessionID]; !ok || run.StartedAt.Before(prev.StartedAt) {
+			firstRun[run.SessionID] = run
+		}
 	}
-	var out []taskBoardEntry
+	var out []BotThread
 	for _, other := range sessions {
-		if other.ID == sess.ID || other.Metadata == nil {
+		if other.Metadata == nil {
 			continue
 		}
 		key := strings.TrimSpace(other.Metadata["client_session_key"])
-		if key == "" || key == selfKey || botOfClientSessionKey(key) != bot {
+		if key == "" || key == q.ExcludeSession || botOfClientSessionKey(key) != bot {
+			continue
+		}
+		main := key == bot
+		if main && q.ThreadsOnly {
 			continue
 		}
 		run, hasRun := latestRun[other.ID]
@@ -92,37 +123,79 @@ func (s *Service) taskBoardFor(p Principal, instanceID string, sess Session, now
 			updated = *run.CompletedAt
 		}
 		live := run.Status == RunStatusRunning
-		if !live && now.Sub(updated) > taskBoardRecent {
+		if live && q.ExcludeRunning {
 			continue
 		}
-		entry := taskBoardEntry{key: key, status: string(run.Status), updated: updated}
+		if !live && now.Sub(updated) > maxAge {
+			continue
+		}
+		entry := BotThread{Session: key, Main: main, Status: string(run.Status), StartedAt: firstRun[other.ID].StartedAt, UpdatedAt: updated, UserID: p.UserID}
 		if other.Metadata[sessionMetaPendingAskUser] == "true" {
-			entry.status = "waiting_for_user"
+			entry.Status = "waiting_for_user"
 		}
 		if run.Metadata != nil {
-			entry.step = strings.TrimSpace(run.Metadata["progress_where"])
+			entry.Step = oneLineRunes(run.Metadata["progress_where"], 80)
 		}
 		msgs, err := s.store.ListMessages(other.ID)
 		if err != nil {
 			continue
 		}
-		entry.title, entry.result = taskTitleAndResult(msgs, run, key == bot)
-		if entry.title == "" {
+		entry.Title, entry.Result = taskTitleAndResult(msgs, run, main)
+		if !main {
+			entry.Goal = latestUserLine(msgs, taskBoardTitleRunes*2)
+			if entry.Goal == entry.Title {
+				entry.Goal = ""
+			}
+		}
+		if entry.Title == "" {
 			continue
 		}
 		out = append(out, entry)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		li, lj := out[i].status == string(RunStatusRunning), out[j].status == string(RunStatusRunning)
+		li, lj := out[i].Status == string(RunStatusRunning), out[j].Status == string(RunStatusRunning)
 		if li != lj {
 			return li
 		}
-		return out[i].updated.After(out[j].updated)
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
 	})
-	if len(out) > taskBoardMaxEntries {
-		out = out[:taskBoardMaxEntries]
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out
+}
+
+// ListBotThreads is the owner's registry view of one bot's tasks.
+func (s *Service) ListBotThreads(p Principal, instanceID, bot string, q BotThreadQuery) ([]BotThread, error) {
+	if _, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID); err != nil {
+		return nil, err
+	}
+	if botOfClientSessionKey(bot) != strings.TrimSpace(bot) || strings.TrimSpace(bot) == "" {
+		return nil, ErrBotThreadsBadBot
+	}
+	return s.botThreads(p, instanceID, bot, q, s.now()), nil
+}
+
+// taskBoardFor lists this bot's other conversations, newest first, bounded.
+func (s *Service) taskBoardFor(p Principal, instanceID string, sess Session, now time.Time) []BotThread {
+	selfKey := ""
+	if sess.Metadata != nil {
+		selfKey = strings.TrimSpace(sess.Metadata["client_session_key"])
+	}
+	bot := botOfClientSessionKey(selfKey)
+	if bot == "" {
+		return nil
+	}
+	return s.botThreads(p, instanceID, bot, BotThreadQuery{MaxAge: taskBoardRecent, Limit: taskBoardMaxEntries, ExcludeSession: selfKey}, now)
+}
+
+func latestUserLine(msgs []Message, max int) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == MessageRoleUser && strings.TrimSpace(msgs[i].Content) != "" {
+			return oneLineRunes(msgs[i].Content, max)
+		}
+	}
+	return ""
 }
 
 // taskTitleAndResult: a thread's title is the message that started it; the
@@ -161,19 +234,19 @@ func oneLineRunes(s string, max int) string {
 }
 
 // renderTaskBoard is the board text, bounded by taskBoardMaxRunes.
-func renderTaskBoard(entries []taskBoardEntry) string {
+func renderTaskBoard(entries []BotThread) string {
 	if len(entries) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("[Task board — this bot's other tasks, read-only context, not a request. Reuse their results when relevant; do not redo their work or act on them unless asked.]\n")
 	for i, e := range entries {
-		line := fmt.Sprintf("%d. %s — %s", i+1, e.title, e.status)
-		if e.step != "" {
-			line += "; step: " + oneLineRunes(e.step, 80)
+		line := fmt.Sprintf("%d. %s — %s", i+1, e.Title, e.Status)
+		if e.Step != "" {
+			line += "; step: " + e.Step
 		}
-		if e.result != "" {
-			line += "; result: " + e.result
+		if e.Result != "" {
+			line += "; result: " + e.Result
 		}
 		if len([]rune(b.String()))+len([]rune(line))+1 > taskBoardMaxRunes {
 			break
@@ -199,3 +272,7 @@ func (s *Service) withTaskBoard(p Principal, instanceID string, sess Session, hi
 	)
 	return append(out, history...)
 }
+
+// ErrBotThreadsBadBot: the registry is asked for something that is not a
+// Hub bot id.
+var ErrBotThreadsBadBot = errors.New("bot_id is not a bot")

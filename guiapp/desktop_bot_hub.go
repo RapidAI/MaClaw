@@ -75,6 +75,28 @@ type desktopBotRelayResult struct {
 	TaskOutcome string
 	// Session is the srv conversation Hub admitted this turn into.
 	Session string
+	// RoutedVia/RoutedTitle are the server's routing decision when the page
+	// named no conversation ("sticky" or "content", and the task's title).
+	// The page only shows them.
+	RoutedVia   string
+	RoutedTitle string
+}
+
+// desktopBotRoutedSink is set by tests to observe the routing notice.
+var desktopBotRoutedSink func(payload map[string]any)
+
+// emitDesktopBotRouted tells the page, right after Hub admitted the turn,
+// which earlier task the server sent it to, so the line shows while the
+// run works rather than when it ends.
+func (a *App) emitDesktopBotRouted(botID, requestID, session, via, title string) {
+	if strings.TrimSpace(via) == "" {
+		return
+	}
+	payload := map[string]any{"bot_id": botID, "request_id": requestID, "session": session, "via": via, "title": title}
+	if desktopBotRoutedSink != nil {
+		desktopBotRoutedSink(payload)
+	}
+	a.emitEvent("desktop-bot-routed", payload)
 }
 
 // desktopBotRelayOverride is set by tests. Production posts to Hub.
@@ -1325,6 +1347,7 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 	// copy of the same result (delivery or sync) is recognised as this one.
 	resp.RunID = strings.TrimSpace(run.RunID)
 	resp.Conversation = strings.TrimSpace(result.Session)
+	resp.RoutedVia, resp.RoutedTitle = result.RoutedVia, result.RoutedTitle
 	a.emitAIAssistantResponse(requestID, resp)
 	if err == nil && strings.TrimSpace(run.RunID) != "" {
 		noteDesktopRunShown(botID, run.RunID)
@@ -1529,6 +1552,8 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		// answer may be sent again.
 		ClientMessageID string `json:"client_message_id"`
 		Session         string `json:"session"`
+		RoutedVia       string `json:"routed_via"`
+		RoutedTitle     string `json:"routed_title"`
 	}
 	body := map[string]any{"content": text, "client_message_id": requestID}
 	if phase = strings.TrimSpace(phase); phase != "" {
@@ -1644,8 +1669,10 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 			return desktopBotRelayResult{}, err
 		}
 		a.noteArmedDesktopBotCross(botID, runID)
+		a.emitDesktopBotRouted(botID, requestID, strings.TrimSpace(out.Session), strings.TrimSpace(out.RoutedVia), strings.TrimSpace(out.RoutedTitle))
 		result, waitErr := a.waitDesktopBotRun(ctx, botID, runID)
 		result.Session = strings.TrimSpace(out.Session)
+		result.RoutedVia, result.RoutedTitle = strings.TrimSpace(out.RoutedVia), strings.TrimSpace(out.RoutedTitle)
 		return result, waitErr
 	}
 	botlog.Write(botID, "gui.admit", nil,

@@ -265,6 +265,8 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 					"status":            "running",
 					"client_message_id": admission.ClientMessageID,
 					"session":           admission.Session,
+					"routed_via":        admission.RoutedVia,
+					"routed_title":      admission.RoutedTitle,
 				})
 				return
 			}

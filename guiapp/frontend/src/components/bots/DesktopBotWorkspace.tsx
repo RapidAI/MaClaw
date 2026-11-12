@@ -43,7 +43,6 @@ import {
     LogFrontendDiagnostic,
     CreateDesktopBot,
     CancelDesktopBotRun,
-    ClassifyDesktopFollowUp,
     AppendDesktopBotSupplement,
     RouteDesktopBotFollowUp,
     UploadDesktopBotMaterialChunk,
@@ -98,7 +97,7 @@ import {
 } from '../../../wailsjs/go/main/App';
 import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, DESKTOP_BOT_LATE_ACK_BUDGET_MS, desktopBotAck, desktopBotFoldFallback, desktopBotWithFoldHead, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotStoppingLine, desktopBotUnderstandingLabel, desktopBotVariedFallback, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
-import { continueSessionForSend, contentRoutingApplies, desktopThreadOf, DESKTOP_FOLLOWUP_BUDGET_MS, recentThreadCandidates } from './desktopContinueSession';
+import { continueSessionForSend, desktopThreadOf, routedLine } from './desktopContinueSession';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
 import { wakeFailureReason } from './desktopWake';
@@ -2361,11 +2360,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [continueForceByBot, setContinueForceByBot] = useState<Record<string, { session?: string; main?: boolean }>>({});
     const continueForceByBotRef = useRef(continueForceByBot);
     continueForceByBotRef.current = continueForceByBot;
-    // Content routing started when a line is sent, keyed by bot and words,
-    // and awaited just before that line is dispatched (it runs beside the
-    // reading and the first reply).
-    type FollowUpRoute = { session?: string; title?: string; confidence?: number } | null | undefined;
-    const followUpRouteRef = useRef(new Map<string, { at: number; route: Promise<FollowUpRoute> }>());
     const [listFailed, setListFailed] = useState(false);
     // The picture follows the panel, not the desktop address. 'auto' is a screen
     // handoff, 'user' is the identity chip / 人类接管, 'off' is 收起. Unset stays closed.
@@ -3778,6 +3772,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         conversationAt: String(data.conversation || data.Conversation || item.conversation || '').trim() ? Date.now() : item.conversationAt,
                     } : item);
                     commit(botId, foldPlanConfirmation(next, next.findIndex(item => item.id === pending.messageId)));
+                    markRoutedTurn(botId, requestId, String(data.conversation || ''), String(data.routed_title || ''), String(data.routed_via || ''), pending.messageId);
                     if (!result.silent) reportDesktopBotCrossResult(userId, botId, result.content);
                     // A failed run reads as the runtime wrote it; say it in the persona.
                     if (result.failed && !ask) {
@@ -3830,6 +3825,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             commit(pending.botId, next);
         };
         const off = EventsOn('desktop-bot-view', handler);
+        return () => { if (typeof off === 'function') off(); };
+    }, [userId]);
+
+    // The server's routing decision for a turn (Hub sticky window or srv
+    // content routing): shown on the person's line, never decided here.
+    useEffect(() => {
+        const off = EventsOn('desktop-bot-routed', (payload: unknown) => {
+            const data = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
+            markRoutedTurn(String(data.bot_id || ''), String(data.request_id || ''), String(data.session || ''), String(data.title || ''), String(data.via || ''));
+        });
         return () => { if (typeof off === 'function') off(); };
     }, [userId]);
 
@@ -5612,32 +5617,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     }
                 }
             }
-            // Content routing: with no explicit choice, a line the classifier
-            // confidently tied to an earlier task goes to that task's thread.
-            // Unsure, no answer in time, or a stale entry: main, as before.
-            if (contentRoutingApplies(botId, continueSession)) {
-                const routeKey = `${botId}\0${content.trim()}`;
-                const started = followUpRouteRef.current.get(routeKey);
-                if (started) {
-                    followUpRouteRef.current.delete(routeKey);
-                    const route = await started.route;
-                    const session = desktopThreadOf(botId, route?.session);
-                    if (session && !pending.settled && !ownerLeft()) {
-                        continueSession = session;
-                        const stored = messagesForBot(ownerId, botId);
-                        let at = stored.findIndex(item => item.id === userMessage.id);
-                        if (at < 0) {
-                            for (let i = stored.length - 1; i >= 0; i--) {
-                                if (stored[i].role === 'user' && String(stored[i].content || '').trim() === content.trim() && !stored[i].routedTo) { at = i; break; }
-                            }
-                        }
-                        if (at >= 0) {
-                            const title = String(route?.title || '').trim();
-                            commit(botId, stored.map((item, i) => i === at ? { ...item, routedTo: session, routedTitle: title || undefined } : item));
-                        }
-                    }
-                }
-            }
             // "继续" while that job is already running again (for example right
             // after a hand-back) is not a new order: say it is continuing.
             if (mode === 'now' && sendPhase === 'execute' && desktopRunByBotRef.current[botId] && isBareContinue(content)) {
@@ -6236,7 +6215,24 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
     };
 
-    // Undo of a content route: the routed turn is stopped when it is still
+    // markRoutedTurn puts the server's route on the person's line of the
+    // turn named by requestId (pending or settled).
+    const markRoutedTurn = (botId: string, requestId: string, session: string, title: string, via: string, messageId?: string) => {
+        const thread = desktopThreadOf(botId, session);
+        if (!botId || !requestId || !thread || (via !== 'content' && via !== 'sticky')) return;
+        const id = messageId || pendingRef.current.get(requestId)?.messageId;
+        const stored = messagesForBot(userId, botId);
+        const at = stored.findIndex(item => (id && item.id === id) || item.requestId === requestId);
+        if (at < 0) return;
+        for (let i = at - 1; i >= 0; i--) {
+            if (stored[i].role !== 'user') continue;
+            if (stored[i].routedTo === thread) return;
+            commit(botId, stored.map((item, j) => j === i ? { ...item, routedTo: thread, routedTitle: title.trim() || undefined } : item));
+            return;
+        }
+    };
+
+    // Undo of a server route: the routed turn is stopped when it is still
     // running, and the same words go again as a new matter in main.
     const undoFollowUpRoute = async (botId: string, message: DesktopBotMessage) => {
         const ownerId = userId;
@@ -6267,18 +6263,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const forced = continueIn
             ? { session: continueIn }
             : continueForceByBotRef.current[botId];
-        const continueSession = continueSessionForSend(botId, messagesForBot(userId, botId), Date.now(), forced);
-        if (contentRoutingApplies(botId, continueSession, forced)) {
-            const candidates = recentThreadCandidates(botId, messagesForBot(userId, botId), Date.now());
-            const routes = followUpRouteRef.current;
-            for (const [key, item] of routes) if (Date.now() - item.at > 5 * 60 * 1000) routes.delete(key);
-            if (candidates.length > 0) {
-                routes.set(`${botId}\0${content}`, {
-                    at: Date.now(),
-                    route: withinBudget(ClassifyDesktopFollowUp(content, candidates, lang) as Promise<FollowUpRoute>, DESKTOP_FOLLOWUP_BUDGET_MS).catch(() => undefined),
-                });
-            }
-        }
+        // Only the person's explicit choice travels; the server routes the rest.
+        const continueSession = continueSessionForSend(botId, forced);
         setContinueForceByBot(current => {
             if (!current[botId]) return current;
             const next = { ...current };
@@ -7343,9 +7329,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     </div>
                                     {message.role === 'user' && message.routedTo && !message.routedUndone ? (
                                         <div className="desktop-bot-chat__routed" data-testid="desktop-bot-routed">
-                                            <span>{lang.startsWith('zh')
-                                                ? (message.routedTitle ? `接着「${message.routedTitle}」这件事` : '接着之前的任务')
-                                                : (message.routedTitle ? `Continuing “${message.routedTitle}”` : 'Continuing an earlier task')}</span>
+                                            <span>{routedLine(lang, message.routedTitle)}</span>
                                             <button
                                                 type="button"
                                                 className="desktop-bot-chat__continue-clear"
@@ -7460,9 +7444,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 ) : null}
                             </p>
                         ) : null}
-                        {desktopThreadOf(selected.id, continueSessionForSend(selected.id, messages, Date.now(), continueForceByBot[selected.id])) ? (
+                        {desktopThreadOf(selected.id, continueSessionForSend(selected.id, continueForceByBot[selected.id])) ? (
                             <div className="desktop-bot-chat__continue" data-testid="desktop-bot-continue">
-                                <span>{lang.startsWith('zh') ? '接着刚才的任务说' : 'Continuing the last task'}</span>
+                                <span>{lang.startsWith('zh') ? '接着你选的任务说' : 'Continuing the task you picked'}</span>
                                 <button
                                     type="button"
                                     className="desktop-bot-chat__continue-clear"

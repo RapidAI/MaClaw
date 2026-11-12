@@ -120,6 +120,10 @@ type IMAgentResponse struct {
 	// (the bot id, or a per-run thread). The page sends it back as
 	// continue_session when the person follows up in that task.
 	Conversation string `json:"conversation,omitempty"`
+	// RoutedVia/RoutedTitle: how the server picked Conversation when the
+	// page named none ("sticky"/"content") and that task's title.
+	RoutedVia    string `json:"routed_via,omitempty"`
+	RoutedTitle  string `json:"routed_title,omitempty"`
 	EventScopeID string `json:"event_scope_id,omitempty"`
 	// DesktopHandoffURL is the noVNC page for this user's cloud desktop.
 	DesktopHandoffURL string `json:"desktop_handoff_url,omitempty"`

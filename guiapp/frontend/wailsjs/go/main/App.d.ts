@@ -2568,8 +2568,6 @@ export function UnderstandDesktopBotTask(arg1:string,arg2:string,arg3:string,arg
 
 export function ClassifyDesktopWorkStop(arg1:string,arg2:string):Promise<string>;
 
-export function ClassifyDesktopFollowUp(arg1:string,arg2:Array<{session:string,title:string,goal?:string,result?:string}>,arg3:string):Promise<{session:string,title?:string,confidence:number,reason?:string}>;
-
 export function EvaluateDesktopTaskSupplement(arg1:string,arg2:string,arg3:string):Promise<{is_supplement:boolean,decision?:string,reason?:string,instruction?:string}>;
 
 export function UploadDesktopBotMaterialChunk(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number,arg6:string):Promise<{upload_id:string,name:string,received:number,total:number,done:boolean,path?:string}>;

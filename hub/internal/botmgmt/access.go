@@ -380,6 +380,11 @@ type BotAdmission struct {
 	// id, or a per-run thread). The GUI echoes it back as continue_session
 	// when the person is following up in that conversation.
 	Session string
+	// RoutedVia says how the server chose Session when the client named
+	// none: "sticky" or "content" (main otherwise); RoutedTitle names the
+	// task it went to, for the client to show.
+	RoutedVia   string
+	RoutedTitle string
 }
 
 // PostMessagePhase is PostMessage with the bot turn phase. An empty phase
@@ -459,6 +464,28 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		traceBot(botID, "configured", err, "dur_ms", traceMS(time.Since(pipelineStarted)))
 		return BotAdmission{}, err
 	}
+	// Routing is decided here, not by the client: with no explicit
+	// continue_session, the sticky window and then srv's content routing
+	// over the bot's persisted threads pick the conversation.
+	var route desktopRoute
+	var fresh record
+	var token string
+	haveToken := false
+	if !hubStartedTurn(clientMessageID) && desktopCanonicalContinue(botID, continueSession) == "" {
+		if sticky, replay := s.peekDesktopRouteState(tenantID, userID, botID, clientMessageID); !replay {
+			step := time.Now()
+			if f, tk, err := s.ownerToken(ctx, tenantID, userID); err == nil {
+				fresh, token, haveToken = f, tk, true
+				route = s.routeDesktopMessage(ctx, tenantID, userID, &fresh, &token, instanceID, botID, content, sticky)
+			} else if sticky != "" {
+				route = desktopRoute{Session: sticky, Via: "sticky"}
+			}
+			traceBot(botID, "route_done", nil, "via", route.Via, "dur_ms", traceMS(time.Since(step)))
+			if route.Via == "content" && desktopSessionIsThread(botID, route.Session) {
+				continueSession = route.Session
+			}
+		}
+	}
 	// One non-terminal admit per user. The reserve is visible to the next
 	// scan before the lock drops. The long message post stays outside it.
 	releaseTurn, claim, busyErr := s.claimDesktopTurnPref(tenantID, userID, botID, clientMessageID, content, phase, continueSession)
@@ -513,7 +540,10 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	// The token exchange is a remote call: keep it off s.mu, so one slow
 	// MaClawSrv cannot stall every other user's command.
 	step = time.Now()
-	fresh, token, tokenErr := s.ownerToken(ctx, tenantID, userID)
+	var tokenErr error
+	if !haveToken {
+		fresh, token, tokenErr = s.ownerToken(ctx, tenantID, userID)
+	}
 	traceBot(botID, "owner_token", tokenErr, "dur_ms", traceMS(time.Since(step)))
 	if tokenErr != nil {
 		s.restoreDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
@@ -642,7 +672,8 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			"phase", phase,
 			"dur_ms", traceMS(time.Since(pipelineStarted)),
 		)
-		return BotAdmission{Accepted: true, RunID: payload.Run.ID, ClientMessageID: clientMessageID, Session: claim.session}, nil
+		via, title := routedFor(route, botID, claim.session)
+		return BotAdmission{Accepted: true, RunID: payload.Run.ID, ClientMessageID: clientMessageID, Session: claim.session, RoutedVia: via, RoutedTitle: title}, nil
 	}
 	if !isolated && payload.DesktopHandoff && !opened && strings.TrimSpace(novnc) == "" {
 		// The worker asked this person to look. That open is the handoff,
@@ -675,7 +706,8 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"ask", traceYes(reply.AskUserQuestion != "" || reply.AskUserSecretName != ""),
 		"dur_ms", traceMS(time.Since(pipelineStarted)),
 	)
-	return BotAdmission{Settled: true, Reply: reply, ClientMessageID: clientMessageID, Session: claim.session}, nil
+	via, title := routedFor(route, botID, claim.session)
+	return BotAdmission{Settled: true, Reply: reply, ClientMessageID: clientMessageID, Session: claim.session, RoutedVia: via, RoutedTitle: title}, nil
 }
 
 // desktopCommandBody is the MaClawSrv message result, whether it arrived on
