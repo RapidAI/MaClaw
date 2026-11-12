@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -125,6 +126,41 @@ func desktopAdmitKey(tenantID, userID, botID, runID string) string {
 	return strings.TrimSpace(tenantID) + "\x00" + strings.TrimSpace(userID) + "\x00" + strings.TrimSpace(botID) + "\x00" + strings.TrimSpace(runID)
 }
 
+// desktopReserveKey is the empty-run reserve of one message post. Each post
+// has its own, so several posts to one bot can be in flight together (Daniel
+// 11-12: one bot runs several tasks in parallel). The \x01 mark keeps it apart
+// from any run id; prefix scans on desktopAdmitKey(..., "") still see it. A
+// post without a turn key keeps the old single per-bot reserve.
+func desktopReserveKey(tenantID, userID, botID, clientMessageID string) string {
+	clientMessageID = strings.TrimSpace(clientMessageID)
+	if clientMessageID == "" {
+		return desktopAdmitKey(tenantID, userID, botID, "")
+	}
+	return desktopAdmitKey(tenantID, userID, botID, "") + "\x01" + clientMessageID
+}
+
+// defaultBotParallelRuns is how many runs one bot may have going at once.
+// MaClawSrv gives each run its own scratch folder and hands the screen to one
+// run at a time (66a5049f), so parallel runs do not trample each other.
+const defaultBotParallelRuns = 3
+
+// botParallelRuns is the per-bot cap: Service.BotParallelRuns, else
+// MACLAW_BOT_PARALLEL_RUNS, else 3. 1 restores one run per bot.
+func (s *Service) botParallelRuns() int {
+	if s != nil && s.BotParallelRuns > 0 {
+		return s.BotParallelRuns
+	}
+	if raw := strings.TrimSpace(os.Getenv("MACLAW_BOT_PARALLEL_RUNS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 1 {
+			if n > 10 {
+				n = 10
+			}
+			return n
+		}
+	}
+	return defaultBotParallelRuns
+}
+
 // desktopReserveAbandoned reports an empty-run reserve whose post is no longer
 // waiting and has been sitting longer than desktopAdmitAbandonAfter. Callers
 // hold state.mu. A post still in flight is never abandoned.
@@ -172,7 +208,8 @@ func (s *Service) dropAbandonedDesktopReserves(tenantID, userID, botID string, n
 // The lock covers only the ledger. openDesktop, the owner token, and the
 // message post happen after it returns. The same client message does not
 // reserve a second time and is not refused: MaClawSrv replays that key.
-// Any other non-terminal admit for this user refuses the post. The returned
+// Another bot's non-terminal admit on the same desktop refuses the post; this
+// bot's own runs refuse it only at the per-bot cap (botParallelRuns). The returned
 // function drops the empty reserve when the post ends without a real run id.
 func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, task, phase string) (func(), error) {
 	noop := func() {}
@@ -201,9 +238,11 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 	s.dropAbandonedDesktopReserves(tenantID, userID, "", now)
 	userPrefix := desktopTenantPrefix(tenantID) + userID + "\x00"
 	botPrefix := desktopAdmitKey(tenantID, userID, botID, "")
+	reserveKey := desktopReserveKey(tenantID, userID, botID, clientMessageID)
 	var sameEmpty *desktopAdmitState
 	sameReal := false
 	otherLive := false
+	ownLive := 0
 	for key, state := range s.desktopAdmits {
 		if state == nil || !strings.HasPrefix(key, userPrefix) {
 			continue
@@ -226,7 +265,11 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 			sameReal = true
 			continue
 		}
-		if !sameBot && desktopOf(desktopAdmitBot(key, userPrefix)) != mine {
+		if sameBot {
+			ownLive++ // this bot's other runs count toward its cap
+			continue
+		}
+		if desktopOf(desktopAdmitBot(key, userPrefix)) != mine {
 			continue // another bot's own desktop
 		}
 		otherBot := desktopAdmitBot(key, userPrefix)
@@ -235,7 +278,7 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 		}
 		otherLive = true
 	}
-	if otherLive {
+	if otherLive || (!sameReal && sameEmpty == nil && ownLive >= s.botParallelRuns()) {
 		s.mu.Unlock()
 		return noop, ErrDesktopBusy
 	}
@@ -247,7 +290,7 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 		sameEmpty.mu.Unlock()
 		hold = true
 	} else if !sameReal {
-		s.desktopAdmits[botPrefix] = &desktopAdmitState{
+		s.desktopAdmits[reserveKey] = &desktopAdmitState{
 			task:            clipDesktopRunes(task, 500),
 			status:          "running",
 			userID:          userID,
@@ -260,7 +303,7 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 		hold = true
 	}
 	s.mu.Unlock()
-	return func() { s.releaseDesktopTurn(botPrefix, clientMessageID, hold) }, nil
+	return func() { s.releaseDesktopTurn(reserveKey, clientMessageID, hold) }, nil
 }
 
 // releaseDesktopTurn drops the empty reserve this post was holding. A real
@@ -419,8 +462,14 @@ func (s *Service) followAdmittedDesktopRun(job admittedDesktopFollow) {
 	// The empty reserve and the real run change hands under this same lock.
 	// A gap would let a second execute through, and leaving the empty key
 	// would keep the desktop busy after the run id is known.
-	emptyKey := desktopAdmitKey(job.TenantID, job.UserID, job.BotID, "")
-	if empty := s.desktopAdmits[emptyKey]; empty != nil {
+	for _, emptyKey := range []string{
+		desktopReserveKey(job.TenantID, job.UserID, job.BotID, job.ClientMessageID),
+		desktopAdmitKey(job.TenantID, job.UserID, job.BotID, ""),
+	} {
+		empty := s.desktopAdmits[emptyKey]
+		if empty == nil {
+			continue
+		}
 		empty.mu.Lock()
 		dropEmpty := strings.TrimSpace(empty.runID) == "" &&
 			(job.ClientMessageID == "" || empty.clientMessageID == "" || empty.clientMessageID == job.ClientMessageID)

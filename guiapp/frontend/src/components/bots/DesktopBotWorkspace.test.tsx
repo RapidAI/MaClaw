@@ -1,7 +1,7 @@
 ﻿// @vitest-environment jsdom
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { ReactElement } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { DialogProvider } from '../CustomDialog';
@@ -192,7 +192,7 @@ vi.mock('../../../wailsjs/runtime', () => ({
     },
 }));
 
-import { DesktopBotWorkspace, formatCreated, handleDesktopBotReport as persistDesktopBotReport, handleDesktopBotResult as persistDesktopBotResult, handleDesktopBotSupplementState, handleDesktopBotView as persistDesktopBotView } from './DesktopBotWorkspace';
+import { DesktopBotWorkspace, setDesktopBotParallelRuns, formatCreated, handleDesktopBotReport as persistDesktopBotReport, handleDesktopBotResult as persistDesktopBotResult, handleDesktopBotSupplementState, handleDesktopBotView as persistDesktopBotView } from './DesktopBotWorkspace';
 
 // Direct store-level calls describe the same desktop the GUI's own watch
 // later reports, so they update liveWatchView exactly like the events do.
@@ -2799,6 +2799,33 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByText('下载 ../secret.pdf')).toBeNull();
     });
 
+    it('clears the busy row whichever path delivers the final reply', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 1', description: '共用桌面', instance_id: 'inst_1' }]);
+        sendTask.mockImplementation(async (botId: string) => ({
+            request_id: 'desktop-bot-final',
+            deferred: true,
+            session_key: `alice:${botId}`,
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('Bot 1'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '做两页 PDF' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('做两页 PDF')).toBeTruthy();
+        await waitFor(() => expect(sendTask).toHaveBeenCalled());
+        expect(await screen.findByTestId('desktop-bot-processing')).toBeTruthy();
+        // The result reaches the transcript through the store (as a timer pull
+        // or a restart recovery does), not through this turn's live claim.
+        handleDesktopBotResult({
+            request_id: 'desktop-bot-final',
+            session_key: 'alice:bot_1',
+            text: '两页 PDF 做好了',
+            send_to_user: '两页 PDF 做好了',
+        });
+        act(() => { window.dispatchEvent(new CustomEvent('maclaw-bot-synced', { detail: { userId: 'alice', botId: 'bot_1' } })); });
+        expect(await screen.findByText('两页 PDF 做好了')).toBeTruthy();
+        await waitFor(() => expect(screen.queryByTestId('desktop-bot-processing')).toBeNull());
+    });
+
     it('splits a reply into beats and corrects an attachment that never arrived', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 1', description: '共用桌面', instance_id: 'inst_1' }]);
         sendTask.mockImplementation(async (botId: string) => ({
@@ -3601,6 +3628,8 @@ describe('DesktopBotWorkspace', () => {
     });
 
     it('stops an admitting run locally and cancels it when the run id arrives', async () => {
+        setDesktopBotParallelRuns(1);
+        onTestFinished(() => setDesktopBotParallelRuns(3));
         listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 2', description: '共用桌面', instance_id: 'inst_1' }]);
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(await screen.findByText('Bot 2'));
@@ -5766,7 +5795,25 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByText(/等手上的做完/)).toBeNull();
     });
 
+    it('starts a second job beside the one already running when the bot is under its cap', async () => {
+        listBotTasks.mockResolvedValue([{ run_id: 'run-1', bot_id: 'bot_1', status: 'running', task: '早报' }]);
+        sendTask.mockResolvedValue({ request_id: 'req-parallel', deferred: true, session_key: 'alice:bot_1' });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
+        expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
+        act(() => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', run_driving: true });
+        });
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+        expect(screen.queryByText('好，这个等手上的做完我就做。')).toBeNull();
+    });
+
     it('waits for the desktop that is already driving, then sends the order once', async () => {
+        setDesktopBotParallelRuns(1);
+        onTestFinished(() => setDesktopBotParallelRuns(3));
         listBotTasks.mockResolvedValue([{ run_id: 'run-1', bot_id: 'bot_1', status: 'running', task: '早报' }]);
         sendTask.mockResolvedValue({ request_id: 'req-queued', deferred: true, session_key: 'alice:bot_1' });
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);

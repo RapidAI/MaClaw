@@ -2,6 +2,7 @@ package botmgmt
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -54,6 +55,7 @@ func TestAdmitDesktopMessageRefusesASecondExecute(t *testing.T) {
 	}))
 	defer srv.Close()
 	svc := newTurnKeyService(t, srv)
+	svc.BotParallelRuns = 1 // these cases are about the cap itself
 
 	firstDone := make(chan error, 1)
 	go func() {
@@ -117,7 +119,7 @@ func TestAdmitDesktopMessageRefusesASecondExecute(t *testing.T) {
 	mu.Unlock()
 
 	svc.mu.Lock()
-	empty := svc.desktopAdmits[desktopAdmitKey("tenant-a", "alice", "bot_alice", "")]
+	empty := svc.desktopAdmits[desktopReserveKey("tenant-a", "alice", "bot_alice", "turn-a")]
 	real := svc.desktopAdmits[desktopAdmitKey("tenant-a", "alice", "bot_alice", "run_busy")]
 	pins := svc.desktopTaskPins("tenant-a")
 	svc.mu.Unlock()
@@ -174,6 +176,7 @@ func TestAbandonedEmptyReserveDoesNotStayBusy(t *testing.T) {
 	}))
 	defer srv.Close()
 	svc := newTurnKeyService(t, srv)
+	svc.BotParallelRuns = 1 // these cases are about the cap itself
 	old := time.Now().Add(-31 * time.Second)
 	emptyKey := desktopAdmitKey("tenant-a", "alice", "bot_alice", "")
 	svc.desktopAdmits = map[string]*desktopAdmitState{
@@ -224,6 +227,7 @@ func TestPostingEmptyReserveStillCountsAsBusy(t *testing.T) {
 	}))
 	defer srv.Close()
 	svc := newTurnKeyService(t, srv)
+	svc.BotParallelRuns = 1 // these cases are about the cap itself
 	old := time.Now().Add(-31 * time.Second)
 	svc.desktopAdmits = map[string]*desktopAdmitState{
 		desktopAdmitKey("tenant-a", "alice", "bot_alice", ""): {
@@ -278,6 +282,7 @@ func TestFailedAdmitDropsTheEmptyReserve(t *testing.T) {
 	}))
 	defer srv.Close()
 	svc := newTurnKeyService(t, srv)
+	svc.BotParallelRuns = 1 // these cases are about the cap itself
 	if _, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开", "execute", "turn-fail"); err == nil {
 		t.Fatal("expected the message post to fail")
 	}
@@ -319,6 +324,7 @@ func TestRestoredRunReplaysTheStoredClientMessage(t *testing.T) {
 
 	restarted := NewService(first.System)
 	restarted.HTTP = srv.Client()
+	restarted.BotParallelRuns = 1
 	restarted.admitPollInterval = 10 * time.Millisecond
 	restarted.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
 	if _, err := restarted.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开", "execute", "turn-other"); !errors.Is(err, ErrDesktopBusy) {
@@ -339,5 +345,70 @@ func TestRestoredRunReplaysTheStoredClientMessage(t *testing.T) {
 	srvSvc.mu.Unlock()
 	if after != before+1 || !strings.Contains(body, `"client_message_id":"turn-restore"`) {
 		t.Fatalf("replay posts before=%d after=%d body=%s", before, after, body)
+	}
+}
+
+// TestOneBotAdmitsParallelRunsUpToItsCap: Daniel 11-12, one bot runs several
+// tasks at once. Each post has its own reserve and run; the cap refuses the
+// next one, and another bot on the same shared desktop is still refused.
+func TestOneBotAdmitsParallelRunsUpToItsCap(t *testing.T) {
+	settings := &memSettings{}
+	raw, _ := json.Marshal(record{Bots: []Bot{
+		{ID: "bot_p", OwnerUserID: "alice"},
+		{ID: "bot_q", OwnerUserID: "alice"},
+	}})
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	svc.BotParallelRuns = 2
+	releaseA, err := svc.claimDesktopTurn("tenant-a", "alice", "bot_p", "k-a", "任务一", "execute")
+	if err != nil {
+		t.Fatalf("first run refused: %v", err)
+	}
+	releaseB, err := svc.claimDesktopTurn("tenant-a", "alice", "bot_p", "k-b", "任务二", "execute")
+	if err != nil {
+		t.Fatalf("second run under the cap refused: %v", err)
+	}
+	if _, err := svc.claimDesktopTurn("tenant-a", "alice", "bot_p", "k-c", "任务三", "execute"); !errors.Is(err, ErrDesktopBusy) {
+		t.Fatalf("run over the cap err = %v", err)
+	}
+	if _, err := svc.claimDesktopTurn("tenant-a", "alice", "bot_q", "k-q", "别的 bot", "execute"); !errors.Is(err, ErrDesktopBusy) {
+		t.Fatalf("other bot on the shared desktop err = %v", err)
+	}
+	// The same turn key again is a replay, not a new run.
+	if _, err := svc.claimDesktopTurn("tenant-a", "alice", "bot_p", "k-a", "任务一", "execute"); err != nil {
+		t.Fatalf("replay refused: %v", err)
+	}
+	svc.mu.Lock()
+	_, a := svc.desktopAdmits[desktopReserveKey("tenant-a", "alice", "bot_p", "k-a")]
+	_, b := svc.desktopAdmits[desktopReserveKey("tenant-a", "alice", "bot_p", "k-b")]
+	svc.mu.Unlock()
+	if !a || !b {
+		t.Fatalf("each post keeps its own reserve: a=%v b=%v", a, b)
+	}
+	releaseA()
+	releaseA()
+	releaseB()
+	if _, err := svc.claimDesktopTurn("tenant-a", "alice", "bot_p", "k-d", "任务四", "execute"); err != nil {
+		t.Fatalf("run after the others ended refused: %v", err)
+	}
+}
+
+func TestBotParallelRunsFromEnv(t *testing.T) {
+	t.Setenv("MACLAW_BOT_PARALLEL_RUNS", "")
+	if got := (&Service{}).botParallelRuns(); got != defaultBotParallelRuns {
+		t.Fatalf("default = %d", got)
+	}
+	t.Setenv("MACLAW_BOT_PARALLEL_RUNS", "1")
+	if got := (&Service{}).botParallelRuns(); got != 1 {
+		t.Fatalf("env 1 = %d", got)
+	}
+	t.Setenv("MACLAW_BOT_PARALLEL_RUNS", "50")
+	if got := (&Service{}).botParallelRuns(); got != 10 {
+		t.Fatalf("env 50 = %d", got)
+	}
+	if got := (&Service{BotParallelRuns: 2}).botParallelRuns(); got != 2 {
+		t.Fatalf("field = %d", got)
 	}
 }

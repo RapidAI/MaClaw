@@ -1752,6 +1752,14 @@ function saveDesktopFile(file: DesktopBotFile) {
 
 type PendingSend = { botId: string; messageId: string; settled: boolean; admitted: boolean };
 
+// Hub's default per-bot cap on concurrent runs (MACLAW_BOT_PARALLEL_RUNS). A
+// send over Hub's real cap is refused and waits like before.
+let DESKTOP_BOT_PARALLEL_RUNS = 3;
+
+export function setDesktopBotParallelRuns(n: number) {
+    DESKTOP_BOT_PARALLEL_RUNS = Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
+}
+
 // The desktop panel follows the user's intent. 'auto' is set by live events
 // so the stage stops flashing away, 'user' by the identity chip / 接管, and
 // 'off' by 收起 — an auto event never reopens a panel the person collapsed.
@@ -2332,6 +2340,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // understandingByBot: the first reply is still being written past its
     // budget. The status row says so; no stock chat line stands in for it.
     const [understandingByBot, setUnderstandingByBot] = useState<Record<string, number>>({});
+    const [, setTurnEpoch] = useState(0);
     const markUnderstanding = (botId: string, on: boolean) => setUnderstandingByBot(prev => {
         const count = Math.max(0, (prev[botId] || 0) + (on ? 1 : -1));
         if ((prev[botId] || 0) === count) return prev;
@@ -2527,6 +2536,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const messages = selected ? (messagesByBot[selected.id] || []) : [];
     // pendingRef is the turn this process admitted. Message age is only the
     // escape hatch after a reload, when that map is empty.
+    // Runs of this bot this window is following right now. Hub admits up to
+    // DESKTOP_BOT_PARALLEL_RUNS of them at once (MACLAW_BOT_PARALLEL_RUNS).
+    const liveRunsOf = (botId: string, except?: PendingSend) =>
+        [...pendingRef.current.values()].filter(value => {
+            if (value === except || value.botId !== botId || !value.admitted || value.settled) return false;
+            const bubble = (messagesByBot[botId] || []).find(item => item.id === value.messageId);
+            return !bubble || (bubble.pending === true && !pendingReplyIsStale(bubble));
+        }).length;
     const turnLive = (botId: string) =>
         [...pendingRef.current.values()].some(value => value.botId === botId && !value.settled);
     const botPending = (botId: string) => {
@@ -2534,6 +2551,40 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const items = messagesByBot[botId] || messagesForBot(userId, botId);
         return items.some(message => message.role === 'assistant' && message.pending && !pendingReplyIsStale(message));
     };
+    // Every final-reply path ends the busy row (papers 11-12 06:28, Bot 4's
+    // reply arrived and the row kept 「正在一点点推进」): the live push settles
+    // its own turn, but a result applied by the store (a result whose id the
+    // turn had not bound, the timer pull, a restart, a delivery report) only
+    // settles the stored bubble. Once an admitted turn's bubble is no longer
+    // pending, or is gone, that turn is over: drop it and, when it was the
+    // bot's last, clear the step and status line it left behind.
+    useEffect(() => {
+        const ended = new Set<string>();
+        for (const [key, value] of pendingRef.current) {
+            if (value.settled || !value.admitted || !value.messageId) continue;
+            const items = messagesByBot[value.botId];
+            if (!items) continue;
+            const bubble = items.find(item => item.id === value.messageId);
+            if (bubble && bubble.pending) continue;
+            value.settled = true;
+            pendingRef.current.delete(key);
+            ended.add(value.botId);
+        }
+        if (!ended.size) return;
+        // pendingRef is not state: re-render so the row reads it again.
+        setTurnEpoch(value => value + 1);
+        const idle = [...ended].filter(botId => ![...pendingRef.current.values()].some(value => value.botId === botId && !value.settled));
+        if (!idle.length) return;
+        const drop = <T,>(prev: Record<string, T>) => {
+            if (!idle.some(botId => botId in prev)) return prev;
+            const next = { ...prev };
+            for (const botId of idle) delete next[botId];
+            return next;
+        };
+        setActivityByBot(drop);
+        setStatusByBot(drop);
+        setUnderstandingByBot(drop);
+    }, [messagesByBot]);
     // Local flags only. A fresh run lookup can hang, and this check decides
     // whether the next line is worth a stop classification.
     const desktopWorkActive = (botId: string) => {
@@ -5553,7 +5604,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 upgradeLine(ownerId, botId, assistantMessage.id, 'continuing', sentence, content.trim());
                 return;
             }
-            if (mode === 'now' && sendPhase === 'execute' && desktopRunByBotRef.current[botId]) {
+            // One bot runs up to DESKTOP_BOT_PARALLEL_RUNS jobs side by side
+            // (Hub admits them; MaClawSrv gives each its own scratch folder and
+            // hands the screen over in turn). Only a bot at that cap queues.
+            if (mode === 'now' && sendPhase === 'execute' && desktopRunByBotRef.current[botId] && Math.max(1, liveRunsOf(botId, pending)) >= DESKTOP_BOT_PARALLEL_RUNS) {
                 pending.settled = true;
                 pendingRef.current.delete(ticket);
                 clearLiveBotTurn(ownerId, botId, assistantMessage.id);
@@ -7288,7 +7342,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         {botPending(selected.id) ? (
                             <p className="desktop-bot-chat__processing" data-testid="desktop-bot-processing" role="status">
                                 <button type="button" className="desktop-bot-chat__processing-mark" data-testid="desktop-bot-pause" aria-label={text.stopWork} onClick={() => answerDesktopControl(selected.id, '', 'stop', 'quiet', 'pause-button')} />
-                                <span className="desktop-bot-chat__processing-label">{understandingByBot[selected.id] && !askingByBot[selected.id] ? desktopBotUnderstandingLabel(lang) : desktopBotWorkingLabel(askingByBot[selected.id] || '', shownDesktopBotActivity(activityByBot[selected.id]))}</span>
+                                <span className="desktop-bot-chat__processing-label">{understandingByBot[selected.id] && !askingByBot[selected.id] ? desktopBotUnderstandingLabel(lang) : desktopBotWorkingLabel(askingByBot[selected.id] || '', shownDesktopBotActivity(activityByBot[selected.id]))}{liveRunsOf(selected.id) > 1 ? <span className="desktop-bot-chat__processing-count" data-testid="desktop-bot-run-count">{lang.startsWith('zh') ? ` · ${liveRunsOf(selected.id)} 件同时在做` : ` · ${liveRunsOf(selected.id)} jobs at once`}</span> : null}</span>
                                 {statusByBot[selected.id]?.text ? (
                                     <span className="desktop-bot-chat__processing-status" data-testid="desktop-bot-status-line" title={statusByBot[selected.id].text}>{statusByBot[selected.id].text}</span>
                                 ) : null}

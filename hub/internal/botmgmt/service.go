@@ -226,6 +226,9 @@ type Service struct {
 	// beforeDesktopStop is a test hook. It runs after a command drops its
 	// count and before that stop takes the user's gate.
 	beforeDesktopStop func()
+	// BotParallelRuns caps how many runs one bot may have going at once
+	// (0: MACLAW_BOT_PARALLEL_RUNS or 3; see botParallelRuns).
+	BotParallelRuns int
 	// admitPollInterval and admitReadyGrace shorten the background run
 	// follow-up in tests. Production waits one second between reads and
 	// gives the result a few seconds to land after the run becomes terminal.
