@@ -1,7 +1,7 @@
 import { WriteDesktopBotAck } from '../../../wailsjs/go/main/App';
 import { normalizeLang } from '../../i18n/langSelect';
 
-export type DesktopBotAckKind = 'accept' | 'supplement' | 'files' | 'stopping' | 'stopped' | 'idle' | 'pause' | 'queued' | 'stop_failed' | 'continuing' | 'status_notice' | 'error' | 'interrupted';
+export type DesktopBotAckKind = 'accept' | 'supplement' | 'change' | 'parallel' | 'files' | 'stopping' | 'stopped' | 'idle' | 'pause' | 'queued' | 'stop_failed' | 'continuing' | 'status_notice' | 'error' | 'interrupted';
 
 // The structured state behind a status line. Facts only; the composer in
 // guiapp (desktop_bot_ack.go) writes the sentence from it and the chat.
@@ -60,6 +60,43 @@ export const DESKTOP_BOT_FIRST_ACK_BUDGET_MS = 4000;
 // A late line that replaces the stock receipt may take this long: the person
 // already heard back, and a slow model could not fit the first 4 s.
 export const DESKTOP_BOT_LATE_ACK_BUDGET_MS = 45000;
+
+// desktopBotUnderstandingLabel is the status-row phrase shown while the
+// first reply is still being written past DESKTOP_BOT_FIRST_ACK_BUDGET_MS.
+// No chat line stands in for it (Daniel 11-12, rule 1): a stock receipt such
+// as 「收到，正在看。」 in the chat read as a template reply, so the wait is
+// shown where live status belongs and the model's own line follows.
+export function desktopBotUnderstandingLabel(lang: string): string {
+    const code = normalizeLang(lang);
+    if (code === 'en') return 'Reading your message';
+    if (code === 'mn') return 'Таны мессежийг уншиж байна';
+    if (code === 'zh-Hant') return '正在理解你的話';
+    return '正在理解你的话';
+}
+
+// desktopBotFoldHead mirrors guiapp desktopBotFoldHead: the fixed start of a
+// reply to a message sent while a job runs, saying how it was folded in.
+export function desktopBotFoldHead(kind: string, lang: string): string {
+    const en = normalizeLang(lang) === 'en';
+    switch (kind) {
+        case 'supplement': return en ? 'Added: ' : '加进去了：';
+        case 'change': return en ? 'OK, changing it: ' : '好，改一下：';
+        case 'parallel': return en ? "That's a separate job, starting it as its own task: " : '这是另一件事，我另开一个任务：';
+        case 'queued': return en ? "That's a separate job, next after this one: " : '这是另一件事，等手上这件做完就开始：';
+        default: return '';
+    }
+}
+
+// desktopBotFoldFallback is said only when no model wrote the fold line in
+// time. It is not a stock sentence: it names the decision and repeats what
+// was folded in, so the person still sees exactly what happened to their
+// words. A model line arriving later replaces it in place.
+export function desktopBotFoldFallback(kind: string, lang: string, words: string): string {
+    const head = desktopBotFoldHead(kind, lang) || desktopBotFoldHead('supplement', lang);
+    const body = String(words || '').replace(/^【改变做法】/, '').replace(/\s+/g, ' ').trim();
+    const clipped = Array.from(body).length > 40 ? Array.from(body).slice(0, 40).join('') + '…' : body;
+    return (head + clipped).trim();
+}
 
 // The receipt said when the reading is still running at the budget. It
 // claims nothing about the task: the reading may yet turn it into a question
@@ -218,3 +255,13 @@ export function desktopBotVariedFallback(kind: string, lang: string, fallback: s
     return pool.find(line => !said.has(plainLine(line))) || fallback;
 }
 
+
+// desktopBotWithFoldHead puts the fold head in front of a line the model
+// already wrote (for example the reading's sentence), unless it starts so.
+export function desktopBotWithFoldHead(kind: string, lang: string, line: string): string {
+    const head = desktopBotFoldHead(kind, lang);
+    const text = String(line || '').trim();
+    if (!head || !text) return text;
+    const bare = head.replace(/[\s：:]+$/, '');
+    return text.startsWith(bare) ? text : head + text;
+}

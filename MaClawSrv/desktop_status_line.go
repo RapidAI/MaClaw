@@ -32,6 +32,9 @@ func desktopRunStatusLine(runID string) string {
 			parts = append(parts, "自 "+snap.lastProgress.Format("15:04")+" 起没有可测的进展")
 		}
 	}
+	if note := desktopSupplementStatusPhrase(runID); note != "" {
+		parts = append(parts, note)
+	}
 	if j := desktopLongJobForRun(runID); j != nil {
 		parts = append(parts, desktopLongJobStatusPhrase(j, desktopLongJobNow()))
 	}

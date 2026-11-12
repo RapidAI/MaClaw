@@ -63,7 +63,7 @@ const cancelRun = vi.hoisted(() => vi.fn(async (_botId?: string, _runId?: string
 const armAdmitCancel = vi.hoisted(() => vi.fn(async (_botId?: string) => undefined));
 type DesktopBusyMock = { seq: number; marks: Array<{ owner_id?: string; bot_id: string; count: number }>; runs?: string[] };
 const getDesktopBusy = vi.hoisted(() => vi.fn(async (_owner?: string): Promise<DesktopBusyMock> => ({ seq: 0, marks: [] })));
-const evaluateSupplement = vi.hoisted(() => vi.fn(async (_taskText?: string, _content?: string, _lang?: string): Promise<{ is_supplement?: boolean; instruction?: string } | null> => null));
+const evaluateSupplement = vi.hoisted(() => vi.fn(async (_taskText?: string, _content?: string, _lang?: string): Promise<{ is_supplement?: boolean; decision?: string; instruction?: string } | null> => null));
 const appendSupplement = vi.hoisted(() => vi.fn(async (_botId?: string, _runId?: string, _instruction?: string): Promise<{ accepted?: boolean; stage?: string; message?: string; supplement_id?: string } | null> => null));
 const getSupplements = vi.hoisted(() => vi.fn(async (_botId?: string, _runId?: string): Promise<Array<{ id: string; state: string; content?: string }>> => []));
 const pullCross = vi.hoisted(() => vi.fn(async () => [] as Array<Record<string, unknown>>));
@@ -1599,8 +1599,10 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '只要前5条' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
         await waitFor(() => expect(appendSupplement).toHaveBeenCalledWith('bot_1', 'run-head', '只要前5条'));
-        // One message, one ack: the model's own sentence, not also the receipt word.
-        await waitFor(() => expect(screen.getAllByText(told('只要前5条'))).toHaveLength(1));
+        // One message, one ack: the model's own sentence behind the fold
+        // head that says the words joined the running job, not also the
+        // receipt word.
+        await waitFor(() => expect(screen.getAllByText('加进去了：' + told('只要前5条'))).toHaveLength(1));
         expect(screen.queryByText('已收到，会在换工具头的下一步生效。')).toBeNull();
         expect(evaluateSupplement.mock.calls.map(call => call[0])).toEqual(['优化 arm64', '换工具头']);
         expect(sendTask).toHaveBeenCalledTimes(1);
@@ -1630,6 +1632,48 @@ describe('DesktopBotWorkspace', () => {
         await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
         expect(appendSupplement).not.toHaveBeenCalled();
         expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('在 mac mini 上优化推理', 'plan', ['打开示例网站']), 'execute');
+    });
+
+    it('says a mid-task message is a separate job when the fold check decides new', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        let counter = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            counter += 1;
+            return { request_id: `desktop-bot-new${counter}`, deferred: true, session_key: `alice:${botId}` };
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+        listActiveRuns.mockResolvedValue([{ run_id: 'run-arm', task_text: '优化 arm64' }]);
+        evaluateSupplement.mockResolvedValue({ is_supplement: false, decision: 'new' });
+
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '查一下北京天气' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('这是另一件事，我另开一个任务：' + told('查一下北京天气'))).toBeTruthy();
+        expect(screen.queryByText(told('查一下北京天气'))).toBeNull();
+        expect(appendSupplement).not.toHaveBeenCalled();
+    });
+
+    it('stops the running job when a mid-task message asks to stop', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        sendTask.mockImplementation(async (botId: string) => ({ request_id: 'desktop-bot-stopme', deferred: true, session_key: `alice:${botId}` }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+        listActiveRuns.mockResolvedValue([{ run_id: 'run-arm', task_text: '打开示例网站' }]);
+        evaluateSupplement.mockResolvedValue({ is_supplement: false, decision: 'stop' });
+
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '算了这个先别弄了' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(evaluateSupplement).toHaveBeenCalled());
+        await new Promise(resolve => setTimeout(resolve, 50));
+        expect(sendTask).toHaveBeenCalledTimes(1);
+        expect(appendSupplement).not.toHaveBeenCalled();
+        expect(screen.queryByText(told('算了这个先别弄了'))).toBeNull();
     });
 
     it('asks which job a follow-up belongs to when more than one run matches', async () => {
@@ -3019,9 +3063,13 @@ describe('DesktopBotWorkspace', () => {
             fireEvent.click(screen.getByTestId('desktop-bot-send'));
             await act(async () => { await vi.advanceTimersByTimeAsync(3900); });
             expect(screen.queryByText('收到，正在看。')).toBeNull();
+            expect(screen.getByTestId('desktop-bot-processing').textContent).not.toContain('正在理解你的话');
             await act(async () => { await vi.advanceTimersByTimeAsync(200); });
-            // The receipt claims no understanding, and the work has not been held for it.
-            expect(screen.getAllByText('收到，正在看。')).toHaveLength(1);
+            // Past the budget the status row says it is reading the message;
+            // no stock chat line stands in for the reply, and the work has
+            // not been held for it.
+            expect(screen.queryByText('收到，正在看。')).toBeNull();
+            expect(screen.getByTestId('desktop-bot-processing').textContent).toContain('正在理解你的话');
             expect(sendTask).not.toHaveBeenCalled();
             await act(async () => {
                 finishReading({ told: '我去 dailypapers 挑今天最热的论文，做成图文摘要后发到你的 CSDN。', instruction: `指令:execute:${ask}`, pace: 'direct' });
@@ -3029,8 +3077,9 @@ describe('DesktopBotWorkspace', () => {
             });
             expect(sendTask).toHaveBeenCalledWith('bot_1', `指令:execute:${ask}`, 'execute');
             await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
-            // The late understanding replaces the receipt in place; no second first-reply bubble, and no stock line after it.
+            // The late understanding is the one first reply; no stock line before or after it.
             expect(screen.getAllByText('我去 dailypapers 挑今天最热的论文，做成图文摘要后发到你的 CSDN。')).toHaveLength(1);
+            expect(screen.queryByTestId('desktop-bot-processing')?.textContent || '').not.toContain('正在理解你的话');
             expect(screen.queryByText('好，这就去办。')).toBeNull();
             expect(screen.queryByText('收到，正在看。')).toBeNull();
         } finally {

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { desktopBotAck, desktopBotIsPlaceholderAck, DESKTOP_BOT_FIRST_ACK_BUDGET_MS } from './desktopBotAck';
+import { desktopBotAck, desktopBotFoldFallback, desktopBotIsPlaceholderAck, desktopBotWithFoldHead, DESKTOP_BOT_FIRST_ACK_BUDGET_MS } from './desktopBotAck';
 
 // Bot 3, 2026-11-11 08:33 (UTC+8): a follow-up 「用公开中文有害文本数据集」 to a
 // running job was answered with the stock 「好，我按这个改。」. A steer is
@@ -29,6 +29,14 @@ describe('steer (supplement) acknowledgement', () => {
         expect(desktopBotIsPlaceholderAck(line, 'zh-Hans')).toBe(false);
     });
 
+    it('says how the words were folded in even when no model wrote the line', () => {
+        expect(desktopBotFoldFallback('supplement', 'zh-Hans', '只要前5条')).toBe('加进去了：只要前5条');
+        expect(desktopBotFoldFallback('change', 'zh-Hans', '【改变做法】改发CSDN')).toBe('好，改一下：改发CSDN');
+        expect(desktopBotIsPlaceholderAck(desktopBotFoldFallback('supplement', 'zh-Hans', 'x'), 'zh-Hans')).toBe(false);
+        expect(desktopBotWithFoldHead('parallel', 'zh-Hans', '我先查天气。')).toBe('这是另一件事，我另开一个任务：我先查天气。');
+        expect(desktopBotWithFoldHead('supplement', 'zh-Hans', '加进去了：只要前5条')).toBe('加进去了：只要前5条');
+    });
+
     it('falls back to a neutral word only when the model fails, so a late line can replace it', async () => {
         const failed = await desktopBotAck({ kind: 'supplement', message: 'x', lang: 'zh-Hans' }, async () => { throw new Error('down'); }, 50);
         expect(desktopBotIsPlaceholderAck(failed, 'zh-Hans')).toBe(true);
@@ -36,8 +44,8 @@ describe('steer (supplement) acknowledgement', () => {
         expect(desktopBotIsPlaceholderAck(slow, 'zh-Hans')).toBe(true);
     });
 
-    it('replaces a placeholder in the same bubble with a late line', () => {
-        expect(workspace).toContain('one more short try');
+    it('replaces the fold fallback in the same bubble with a late line', () => {
+        expect(workspace).toContain('desktopBotFoldFallback(kind, lang, folded)');
         expect(workspace).toMatch(/item\.id === assistantMessage\.id \? \{ \.\.\.item, content: late \}/);
         expect(workspace).toMatch(/item\.id === noteId \? \{ \.\.\.item, content: late \}/);
     });

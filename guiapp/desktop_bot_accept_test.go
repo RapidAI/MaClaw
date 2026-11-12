@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestDesktopBotAcceptToldKeepsOnlyTheModelsOwnSentence(t *testing.T) {
@@ -64,38 +67,56 @@ func TestDesktopBotHasMaterials(t *testing.T) {
 }
 
 func TestWriteDesktopBotAckRetriesOnFallbackAndRejectsEcho(t *testing.T) {
-	prev, prevAttempts := desktopBotUnderstandLLM, desktopBotAckAttempts
-	defer func() { desktopBotUnderstandLLM, desktopBotAckAttempts = prev, prevAttempts }()
+	prev, prevAttempts, prevModels := desktopBotUnderstandLLM, desktopBotAckAttempts, desktopBotAckModels
+	defer func() {
+		desktopBotUnderstandLLM, desktopBotAckAttempts, desktopBotAckModels = prev, prevAttempts, prevModels
+	}()
+	desktopBotAckModels = func(*App) (corelib.MaclawLLMConfig, *corelib.MaclawLLMConfig) { return corelib.MaclawLLMConfig{}, nil }
+	var mu sync.Mutex
 	var seen []desktopBotUnderstandRequest
-	answers := []string{"附件是文档。", "收到《2608.06216-回答.pdf》，拿来写知乎摘要。"}
+	// Every quick attempt parrots the message; only the person's model asked
+	// again with its thinking on writes a real line.
 	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+		mu.Lock()
 		seen = append(seen, req)
-		out := answers[0]
-		answers = answers[1:]
-		return out, nil
+		mu.Unlock()
+		if req.fallback {
+			return "收到《2608.06216-回答.pdf》，拿来写知乎摘要。", nil
+		}
+		return "附件是文档。", nil
 	}
 	line, err := (&App{}).WriteDesktopBotAck(DesktopBotAckRequest{Kind: "accept", Message: ackPDF, Lang: "zh-Hans", Goal: "写知乎摘要", Persona: "码卡龙"})
 	if err != nil || line != "收到《2608.06216-回答.pdf》，拿来写知乎摘要。" {
 		t.Fatalf("line %q err %v", line, err)
 	}
-	if len(seen) != 2 || seen[0].fallback || seen[0].hub || !seen[1].fallback || seen[1].hub || seen[0].tag != "desktop-bot-ack" || seen[0].timeoutSec > 10 || seen[1].timeoutSec > 12 {
-		t.Fatalf("attempts %+v", seen)
-	}
-	for _, want := range []string{"files: 2608.06216-回答.pdf", "goal: 写知乎摘要", "persona: 码卡龙", "kind: accept"} {
-		if !strings.Contains(seen[0].userPrompt, want) {
-			t.Fatalf("prompt lacks %q:\n%s", want, seen[0].userPrompt)
+	fallbackSeen, hubSeen := false, false
+	for _, req := range seen {
+		if req.tag != "desktop-bot-ack" || req.timeoutSec > 15 {
+			t.Fatalf("attempt %+v", req)
 		}
+		fallbackSeen = fallbackSeen || req.fallback
+		hubSeen = hubSeen || req.hub
+		for _, want := range []string{"files: 2608.06216-回答.pdf", "goal: 写知乎摘要", "persona: 码卡龙", "kind: accept"} {
+			if !strings.Contains(req.userPrompt, want) {
+				t.Fatalf("prompt lacks %q:\n%s", want, req.userPrompt)
+			}
+		}
+	}
+	if !fallbackSeen || !hubSeen {
+		t.Fatalf("attempts %+v", seen)
 	}
 	var tries []desktopBotUnderstandRequest
 	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+		mu.Lock()
 		tries = append(tries, req)
+		mu.Unlock()
 		return "", errors.New("timeout")
 	}
 	if _, err := (&App{}).WriteDesktopBotAck(DesktopBotAckRequest{Kind: "supplement", Message: "x"}); err == nil {
 		t.Fatal("all-failed ack returned no error")
 	}
-	if len(tries) != 3 || !tries[2].hub {
-		t.Fatalf("hub must be the last attempt only: %+v", tries)
+	if len(tries) < 3 || !tries[len(tries)-1].hub {
+		t.Fatalf("hub must be the last ordered attempt: %+v", tries)
 	}
 }
 

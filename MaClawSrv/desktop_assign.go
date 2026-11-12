@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 )
@@ -116,7 +117,33 @@ func desktopSayHint() string {
 	if !desktopSayOn() {
 		return ""
 	}
-	return " action=say with message (and room for a group room) speaks to the person directly, in your own voice as yourself (first person, like a colleague talking, not a relay or a system notice); say only what is new to them (Hub refuses a repeat of what another bot already said). Only a router speaks: when you are working an assignment another bot gave you, never say; report to that bot instead. One say per run: put the result in that one message. A later say in the same run is refused unless it carries update=true for information the person has not had yet."
+	return " action=say with message (and room for a group room) speaks to the person directly, in your own voice as yourself (first person, like a colleague talking, not a relay or a system notice); say only what is new to them (Hub refuses a repeat of what another bot already said). Only a router speaks: when you are working an assignment another bot gave you, never say; report to that bot instead. One say per run: put the result in that one message. A later say in the same run is refused unless it carries update=true for information the person has not had yet. Live progress (what you are doing now, step counts, \"正在…\") is shown in the person's status line automatically and is never a say: say only a stage result they can use, a changed plan, a blocker or a decision you need from them, or a failure; the final result is your final reply."
+}
+
+// desktopSayProgressOnly reports a say that only narrates what the run is
+// doing ("正在整理表格", "I'm now opening the site"). Live progress belongs
+// in the status line, not the chat (Daniel 11-12, rule 2). A line carrying a
+// result (a number, link, file, a question or a decision) is not progress.
+func desktopSayProgressOnly(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "" || utf8.RuneCountInString(t) > 80 {
+		return false
+	}
+	lower := strings.ToLower(t)
+	progress := false
+	for _, head := range []string{"正在", "我正在", "我现在去", "我先去", "现在开始", "开始处理", "继续处理", "还在处理", "处理中", "进行中", "i'm now ", "i am now ", "now working on", "working on it", "still working", "starting to "} {
+		if strings.HasPrefix(lower, head) {
+			progress = true
+			break
+		}
+	}
+	if !progress {
+		return false
+	}
+	if strings.ContainsAny(t, "?？0123456789%") || strings.Contains(lower, "http") || strings.Contains(t, "/") || strings.Contains(t, "需要你") || strings.Contains(t, "失败") || strings.Contains(t, "卡住") {
+		return false
+	}
+	return true
 }
 
 func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[string]any) (string, error) {
@@ -126,6 +153,9 @@ func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[
 	text := strings.TrimSpace(firstNonEmptyString(desktopArg(args, "message"), desktopArg(args, "text")))
 	if text == "" {
 		return "", fmt.Errorf("say needs message")
+	}
+	if desktopSayProgressOnly(text) {
+		return "NOT SENT progress_only: what you are doing now is already shown in the person's status line. Keep working; say only a result, a changed plan, a blocker or decision you need from them, or a failure.", nil
 	}
 	inst, ok := turnInstance(request)
 	if !ok {

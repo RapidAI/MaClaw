@@ -69,6 +69,12 @@ type LLMClassifyRequest struct {
 	// empty), ignoring the person's own settings. Use it only as a last
 	// attempt after their own model failed.
 	HubOnly bool
+
+	// Override, when set, is the exact model config to call. Role and HubOnly
+	// are then ignored. The first-reply race uses it for the fastest model it
+	// picked (desktopBotFastAckConfig), so a slow chosen model cannot hold the
+	// bot's first line.
+	Override *corelib.MaclawLLMConfig
 }
 
 // LLMClassifyResult holds the response from a lightweight LLM call.
@@ -120,14 +126,14 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 	// sibling is taken from that base, so a fallback stays on the same
 	// provider the person chose for this role.
 	cfg := h.getMaclawLLMConfig()
-	if role := strings.TrimSpace(req.Role); role != "" && h.app != nil && !req.HubOnly {
+	if role := strings.TrimSpace(req.Role); role != "" && h.app != nil && !req.HubOnly && req.Override == nil {
 		if resolved, err := h.app.ResolveMaclawLLMRole(role); err == nil && strings.TrimSpace(resolved.Model) != "" {
 			cfg = resolved
 		} else if err != nil {
 			log.Printf("[%s] role %s resolve failed, using assistant: %v", req.Tag, role, err)
 		}
 	}
-	if req.HubOnly && h.app != nil {
+	if req.HubOnly && h.app != nil && req.Override == nil {
 		role := strings.TrimSpace(req.Role)
 		if role == "" {
 			role = maclawLLMRoleForeground
@@ -138,11 +144,14 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 		}
 		cfg = resolved
 	}
+	if req.Override != nil {
+		cfg = *req.Override
+	}
 	// When PreferLightweight is set, try to use a non-reasoning model for
 	// classification tasks. Reasoning models (deepseek-reasoner, o1, etc.)
 	// generate chain-of-thought before answering, adding 1-2s latency for
 	// simple classification tasks that only need "continue" or "new".
-	if req.PreferLightweight {
+	if req.PreferLightweight && req.Override == nil {
 		if lightCfg := h.getLightweightLLMConfigFromBase(cfg); lightCfg.URL != "" && lightCfg.Model != "" {
 			cfg = lightCfg
 		}

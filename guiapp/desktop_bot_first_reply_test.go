@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -174,14 +175,21 @@ func TestWriteDesktopBotAckAcceptUsesThePartnerLine(t *testing.T) {
 	prev := desktopBotUnderstandLLM
 	t.Cleanup(func() { desktopBotUnderstandLLM = prev })
 	var calls int32
+	var mu sync.Mutex
 	var system, user string
 	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
 		atomic.AddInt32(&calls, 1)
+		mu.Lock()
 		system, user = req.systemPrompt, req.userPrompt
+		mu.Unlock()
 		return "我去挑一篇正热的论文，做成图文摘要发到 CSDN，发好告诉你。", nil
 	}
 	line, err := (&App{}).WriteDesktopBotAck(DesktopBotAckRequest{Kind: "accept", Message: "搜索一篇dailypapers中的热门论文，做图文摘要后发到csdn", Lang: "zh-Hans", Goal: "热门论文图文摘要发CSDN", Instruction: "目标：从 huggingface.co/papers 选一篇热门论文，写图文摘要并发布到 CSDN。"})
-	if err != nil || line != "我去挑一篇正热的论文，做成图文摘要发到 CSDN，发好告诉你。" || atomic.LoadInt32(&calls) != 1 {
+	mu.Lock()
+	defer mu.Unlock()
+	// The first reply races the models it can reach (own, fast, Hub); one
+	// line comes back whichever answered first.
+	if n := atomic.LoadInt32(&calls); err != nil || line != "我去挑一篇正热的论文，做成图文摘要发到 CSDN，发好告诉你。" || n < 1 || n > 3 {
 		t.Fatalf("line %q err %v calls %d", line, err, calls)
 	}
 	if !strings.Contains(system, "working partner") || !strings.Contains(user, "goal: 热门论文图文摘要发CSDN") {

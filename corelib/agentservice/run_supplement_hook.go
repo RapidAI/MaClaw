@@ -20,6 +20,39 @@ import (
 // tokens and diluting attention for the rest of the run.
 const supplementMarker = "\x1fMACLAW_SUPPLEMENT_SUMMARY\x1f"
 
+// runSupplementAppliedObserver, when set, hears every supplement the moment a
+// run's loop folds it into the conversation. MaClawSrv uses it to show the
+// person, in the run's status line, that their added words were taken in
+// (Daniel 11-12: an interjection is never applied silently).
+var (
+	runSupplementObserverMu      sync.RWMutex
+	runSupplementAppliedObserver func(botID, runID string, applied []RunSupplement)
+)
+
+// SetRunSupplementAppliedObserver installs (or, with nil, removes) the
+// observer. It is called with copies; it must return quickly.
+func SetRunSupplementAppliedObserver(fn func(botID, runID string, applied []RunSupplement)) {
+	runSupplementObserverMu.Lock()
+	runSupplementAppliedObserver = fn
+	runSupplementObserverMu.Unlock()
+}
+
+func notifyRunSupplementApplied(botID, runID string, taken []*RunSupplement) {
+	runSupplementObserverMu.RLock()
+	fn := runSupplementAppliedObserver
+	runSupplementObserverMu.RUnlock()
+	if fn == nil || len(taken) == 0 {
+		return
+	}
+	out := make([]RunSupplement, 0, len(taken))
+	for _, item := range taken {
+		if item != nil {
+			out = append(out, *item)
+		}
+	}
+	fn(botID, runID, out)
+}
+
 // supplementHook is one per executed turn. It must never be shared between
 // runs: its merged set describes one run's supplements only, and sharing it
 // across concurrent runs would silently move one person's input into a
@@ -109,6 +142,7 @@ func (h *supplementHook) TransformConversation(conversation []interface{}) []int
 			"total", strconv.Itoa(len(h.merged)),
 		)
 	}
+	notifyRunSupplementApplied(h.botID, h.runID, taken)
 	return out
 }
 
@@ -164,5 +198,7 @@ func formatSupplementSummary(items []string) string {
 	}
 	b.WriteString("\nThese are additions to the task already in progress, not a new request.")
 	b.WriteString(" Apply them to the steps still ahead; completed work stays done unless one of these lines changes it.")
+	b.WriteString(" A line starting with 【改变做法】 changes the direction of the task: drop or redo the steps it overrides.")
+	b.WriteString(" Your final reply says in one short sentence how each of these lines was applied (or why one could not be).")
 	return b.String()
 }

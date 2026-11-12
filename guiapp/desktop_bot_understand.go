@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
@@ -160,6 +161,12 @@ type desktopBotUnderstandRequest struct {
 	// lightweight sibling) has failed. An unset own model already resolves
 	// to the Hub service through the assistant profile.
 	hub bool
+	// override is the exact model to call (the first-reply race's fast pick);
+	// fallback and hub are then ignored.
+	override *corelib.MaclawLLMConfig
+	// maxOut caps this call's output when positive (a one-line ack needs
+	// about a hundred tokens, not a reading's object).
+	maxOut int
 }
 
 // desktopBotUnderstandFunc is the no-tool model call. Tests replace it.
@@ -245,6 +252,17 @@ func desktopBotUnderstandClassifyRequest(req desktopBotUnderstandRequest) LLMCla
 		out.Tag = out.Tag + "-hub"
 		out.PreferLightweight = true
 		out.HubOnly = true
+	}
+	if req.override != nil {
+		out.Tag = out.Tag + "-fast"
+		out.Override = req.override
+		out.HubOnly = false
+		out.PreferLightweight = false
+		out.NoThinking = true
+	}
+	if req.maxOut > 0 {
+		out.NoThinking = true
+		out.MaxOutputTokens = req.maxOut
 	}
 	return out
 }
@@ -965,13 +983,63 @@ func clipMaterialLines(suffix string, max int) string {
 	return b.String()
 }
 
-// DesktopTaskSupplementEval is the verdict on whether a new user message is
-// supplementary info for the in-flight background task or a new task.
+// DesktopTaskSupplementEval is the verdict on a message sent while a task is
+// running: fold it into that task, change that task, stop it, start it as a
+// separate task, or answer it as chat. Decision is the one field the GUI acts
+// on; IsSupplement stays true for supplement and change so older callers keep
+// folding those into the run.
 type DesktopTaskSupplementEval struct {
 	IsSupplement bool   `json:"is_supplement"`
+	Decision     string `json:"decision,omitempty"`
 	Reason       string `json:"reason,omitempty"`
 	Instruction  string `json:"instruction,omitempty"`
 }
+
+// Decisions for a message sent while a task runs (Daniel 11-12, rule 3).
+const (
+	desktopFoldSupplement = "supplement"
+	desktopFoldChange     = "change"
+	desktopFoldStop       = "stop"
+	desktopFoldNew        = "new"
+	desktopFoldChat       = "chat"
+)
+
+// normalizeDesktopTaskSupplementEval fills Decision from IsSupplement for a
+// model that answered the old shape, and IsSupplement from Decision.
+func normalizeDesktopTaskSupplementEval(eval *DesktopTaskSupplementEval, newMessage string) *DesktopTaskSupplementEval {
+	if eval == nil {
+		return nil
+	}
+	d := strings.ToLower(strings.TrimSpace(eval.Decision))
+	switch d {
+	case desktopFoldSupplement, desktopFoldChange, desktopFoldStop, desktopFoldNew, desktopFoldChat:
+	case "new_task", "parallel", "separate":
+		d = desktopFoldNew
+	case "modify", "replace", "redirect":
+		d = desktopFoldChange
+	case "small_talk", "query", "question":
+		d = desktopFoldChat
+	default:
+		if eval.IsSupplement {
+			d = desktopFoldSupplement
+		} else {
+			d = desktopFoldNew
+		}
+	}
+	eval.Decision = d
+	eval.IsSupplement = d == desktopFoldSupplement || d == desktopFoldChange
+	if eval.IsSupplement && strings.TrimSpace(eval.Instruction) == "" {
+		eval.Instruction = newMessage
+	}
+	if d == desktopFoldChange && !strings.HasPrefix(strings.TrimSpace(eval.Instruction), desktopFoldChangeMark) {
+		eval.Instruction = desktopFoldChangeMark + strings.TrimSpace(eval.Instruction)
+	}
+	return eval
+}
+
+// desktopFoldChangeMark opens a supplement that redirects the run, so the
+// worker reads it as a change of plan rather than one more detail.
+const desktopFoldChangeMark = "【改变做法】"
 
 // desktopSupplementDisabled reports the kill switch from design doc §3.1f:
 // MACLAW_SUPPLEMENT=off turns the whole supplement feature off, and every
@@ -984,73 +1052,100 @@ func desktopSupplementDisabled() bool {
 }
 
 const desktopTaskSupplementSystem = `You are an evaluator for a cloud desktop AI assistant. An active task is currently executing in the background on the cloud desktop. The user has just sent a new message.
-Determine whether the new message is:
-1. A supplement, refinement, additional constraint, filter, format requirement, or modification to the currently running active task (e.g. "只要前5条", "按日期倒序", "也带上截图", "保存为markdown", "格式改成表格", "顺便也把作者名字记下来").
-2. A completely new, independent task (e.g. "打开另一个网站", "查询天气", "还需要在另一台机器上做另一件事", an unrelated request). A different job is a new task even when the active one is still running. Words like 还, 另外, 同时, or also do not make it a supplement unless they change the active task itself.
-3. Small talk or a general query (e.g. "你好", "你是谁").
+Decide what the new message does to the running task. decision is one of:
+- "supplement": it adds to or refines the running task without changing its goal: a constraint, filter, format, extra detail or material (e.g. "只要前5条", "按日期倒序", "也带上截图", "保存为markdown", "顺便也把作者名字记下来").
+- "change": it changes what the running task should do or how, so the work already under way must take a new direction (e.g. "别发知乎了，改发CSDN", "换成另一篇论文", "不用做图了，直接写文字").
+- "stop": it asks to stop, cancel or abandon the running task (e.g. "停", "算了别做了", "取消").
+- "new": a different, independent job (e.g. "打开另一个网站", "查询天气", an unrelated request). A different job is new even when the active one is still running. Words like 还, 另外, 同时, or also do not make it a supplement unless they change the active task itself.
+- "chat": small talk or a general question that needs no work (e.g. "你好", "你是谁", "进展怎么样").
 
 Return JSON with:
-- "is_supplement": true only if it changes the active task; false if it is a new task or small talk. A new task must not be injected into the active one.
+- "decision": one of supplement, change, stop, new, chat.
+- "is_supplement": true only for supplement or change.
 - "reason": brief explanation.
-- "instruction": if is_supplement is true, a concise directive summarizing the supplemental requirement to inject into the ongoing execution; otherwise empty string.`
+- "instruction": for supplement or change, a concise directive to inject into the ongoing execution; otherwise empty string.`
 
-// EvaluateDesktopTaskSupplement decides whether a message sent while a task is running
-// is supplementary information for the running task or an independent new task.
+// desktopTaskSupplementBudget bounds the whole decision. It runs while the
+// person waits for the answer to their message, so it races the same fast
+// models as the first reply (desktopBotAckModels) and keeps the first one
+// that returns a usable verdict.
+var desktopTaskSupplementBudget = 6 * time.Second
+
+// EvaluateDesktopTaskSupplement decides what a message sent while a task is
+// running does to that task (see DesktopTaskSupplementEval).
 func (a *App) EvaluateDesktopTaskSupplement(activeTask, newMessage, lang string) (*DesktopTaskSupplementEval, error) {
 	activeTask = strings.TrimSpace(activeTask)
 	newMessage = strings.TrimSpace(newMessage)
 	if activeTask == "" || newMessage == "" {
-		return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "empty input"}, nil
+		return &DesktopTaskSupplementEval{IsSupplement: false, Decision: desktopFoldNew, Reason: "empty input"}, nil
 	}
 	if newMessage == desktopBotConfirmTask || newMessage == desktopBotReturnTask || desktopBotFilledTask.MatchString(newMessage) || desktopBotSavedTask.MatchString(newMessage) {
-		return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "protocol command"}, nil
+		return &DesktopTaskSupplementEval{IsSupplement: false, Decision: desktopFoldNew, Reason: "protocol command"}, nil
 	}
 	// Kill switch (§3.1f): with the feature off the classifier short-circuits
 	// to "new task", so the caller sends the words through the ordinary
 	// SendDesktopBotTask path and nothing is ever offered to a running turn.
 	if desktopSupplementDisabled() {
-		return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "supplement disabled"}, nil
+		return &DesktopTaskSupplementEval{IsSupplement: false, Decision: desktopFoldNew, Reason: "supplement disabled"}, nil
 	}
 	// Files attached while a job runs are materials for that job. The words
 	// go in whole so the ~/素材/ paths reach the worker unchanged.
 	if desktopBotHasMaterials(newMessage) {
-		return &DesktopTaskSupplementEval{IsSupplement: true, Reason: "materials attached", Instruction: newMessage}, nil
+		return &DesktopTaskSupplementEval{IsSupplement: true, Decision: desktopFoldSupplement, Reason: "materials attached", Instruction: newMessage}, nil
 	}
+	userPrompt := fmt.Sprintf("active running task:\n%s\n\nnew message:\n%s\n\nlanguage:\n%s",
+		clipRunes(activeTask, 500), clipRunes(newMessage, 500), lang)
+	if eval := a.raceDesktopTaskSupplement(userPrompt, newMessage); eval != nil {
+		return eval, nil
+	}
+	return normalizeDesktopTaskSupplementEval(heuristicDesktopTaskSupplement(activeTask, newMessage), newMessage), nil
+}
 
-	if a != nil {
-		if hub := a.hubClient(); hub != nil {
-			if handler := hub.ensureIMHandler(); handler != nil {
-				userPrompt := fmt.Sprintf("active running task:\n%s\n\nnew message:\n%s\n\nlanguage:\n%s",
-					clipRunes(activeTask, 500), clipRunes(newMessage, 500), lang)
-				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-				res, err := handler.LLMClassify(ctx, LLMClassifyRequest{
-					SystemPrompt:      desktopTaskSupplementSystem,
-					UserMessage:       userPrompt,
-					TimeoutSec:        12,
-					Tag:               "desktop-bot-eval-supplement",
-					PreferLightweight: true,
-					Role:              maclawLLMRoleForeground,
-				})
-				if err == nil && res != nil {
-					content := desktopBotUnderstandText(res.Text, res.Reasoning)
-					if content != "" {
-						var eval DesktopTaskSupplementEval
-						for _, block := range desktopBotJSONObjects(content) {
-							if err := json.Unmarshal([]byte(block), &eval); err == nil {
-								if eval.IsSupplement && eval.Instruction == "" {
-									eval.Instruction = newMessage
-								}
-								return &eval, nil
-							}
-						}
-					}
+// raceDesktopTaskSupplement asks the person's foreground model, the fast
+// racer and the Hub model at once and returns the first parseable verdict,
+// or nil when none answered inside desktopTaskSupplementBudget.
+func (a *App) raceDesktopTaskSupplement(userPrompt, newMessage string) *DesktopTaskSupplementEval {
+	ctx, cancel := context.WithTimeout(context.Background(), desktopTaskSupplementBudget)
+	defer cancel()
+	_, fast := desktopBotAckModels(a)
+	reqs := []desktopBotUnderstandRequest{
+		{systemPrompt: desktopTaskSupplementSystem, userPrompt: userPrompt, tag: "desktop-bot-eval-supplement", maxOut: 400},
+		{systemPrompt: desktopTaskSupplementSystem, userPrompt: userPrompt, tag: "desktop-bot-eval-supplement", hub: true, maxOut: 400},
+	}
+	if fast != nil {
+		reqs = append(reqs, desktopBotUnderstandRequest{systemPrompt: desktopTaskSupplementSystem, userPrompt: userPrompt, tag: "desktop-bot-eval-supplement", override: fast, maxOut: 400})
+	}
+	timeoutSec := int(desktopTaskSupplementBudget / time.Second)
+	out := make(chan *DesktopTaskSupplementEval, len(reqs))
+	for _, req := range reqs {
+		req.timeoutSec = timeoutSec
+		go func(req desktopBotUnderstandRequest) {
+			raw, err := desktopBotUnderstandLLM(ctx, a, req)
+			if err != nil {
+				out <- nil
+				return
+			}
+			for _, block := range desktopBotJSONObjects(raw) {
+				var eval DesktopTaskSupplementEval
+				if json.Unmarshal([]byte(block), &eval) == nil && (eval.Decision != "" || strings.Contains(block, "is_supplement")) {
+					out <- normalizeDesktopTaskSupplementEval(&eval, newMessage)
+					return
 				}
 			}
+			out <- nil
+		}(req)
+	}
+	for range reqs {
+		select {
+		case eval := <-out:
+			if eval != nil {
+				return eval
+			}
+		case <-ctx.Done():
+			return nil
 		}
 	}
-
-	return heuristicDesktopTaskSupplement(activeTask, newMessage), nil
+	return nil
 }
 
 func heuristicDesktopTaskSupplement(activeTask, newMessage string) *DesktopTaskSupplementEval {
@@ -1059,7 +1154,7 @@ func heuristicDesktopTaskSupplement(activeTask, newMessage string) *DesktopTaskS
 		return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "explicit new task"}
 	}
 	if lower == "你好" || lower == "您好" || lower == "hello" || lower == "hi" || lower == "谢谢" || lower == "多谢" || lower == "thanks" || lower == "thank you" || lower == "你是谁" || lower == "你是谁呀" || lower == "你是谁？" {
-		return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "small talk"}
+		return &DesktopTaskSupplementEval{IsSupplement: false, Decision: desktopFoldChat, Reason: "small talk"}
 	}
 	// Short words such as 也, 还, 另外, 同时, 按, and 截图 show up in a
 	// different job just as often as in a correction. Matching them here

@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime/promptparts"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -16,7 +18,7 @@ import (
 // it takes a job, adds files to a running job, or keeps files for later.
 // The GUI has already started the work; this sentence only follows it.
 type DesktopBotAckRequest struct {
-	// Kind is accept, supplement, files, stopping, stopped, idle, pause, queued,
+	// Kind is accept, supplement, change, parallel, files, stopping, stopped, idle, pause, queued,
 	// stop_failed, continuing, status_notice, error or interrupted.
 	Kind        string   `json:"kind"`
 	Message     string   `json:"message"`
@@ -64,10 +66,12 @@ const desktopBotAckSystem = `You are one desktop bot speaking to the person who 
 Speak as a person would: short (one or two sentences, at most about 40 Chinese characters or 25 English words), natural, warm but plain. No customer-service phrases, no exclamation-mark enthusiasm, no emoji, no lists, no markdown. Do not repeat their message back. Do not ask them to confirm.
 Use the kept persona's name and tone when one is given.
 kind accept: you are their working partner and have just taken this job; the work is starting. In your own words, show you understood it: what they want to end up with, the one or two requirements that matter from the goal and work card, and briefly how you will go about it. Do not copy or reorder their words, do not claim any part is done yet, and do not add goals they did not ask for. When an assumption, options or files are given, include them.
-kind supplement: they added an instruction or material to the job you are already doing (named under job already running) and that job keeps going. As their working partner, show you understood: name that job in a few words and say concretely how this changes what you will do in it (what you will now use, do differently or stop doing). Use only what their message and the running job say; do not invent requirements, do not claim it is already done, and never answer with a bare 好的/收到/我按这个改.
+kind supplement: they added an instruction or material to the job you are already doing (named under job already running) and that job keeps going. As their working partner, show you understood: name that job in a few words and say concretely how this changes what you will do in it (what you will now use, do differently or stop doing). Use only what their message and the running job say; do not invent requirements, do not claim it is already done, and never answer with a bare 好的/收到/我按这个改. Your line is shown after a fixed opening that already says it was added (加进去了：), so start directly with the job.
+kind change: they changed what the job already running (named under job already running) should do, and that job keeps going in the new direction. Say concretely what you will now do differently in it, using only their message and the running job; never answer with a bare 好的/收到. Your line follows a fixed opening (好，改一下：), so start directly with the change.
+kind parallel: they asked for a different job while another one keeps running; this one starts now as its own task beside it. Name the new job in a few words and the first thing you will do for it. Your line follows a fixed opening that already says it is a separate task, so start directly with the job.
 kind files: they sent files with no job; say you have them and will use them when asked.
 kind notice: say what the work card describes, in your own words, short. Keep any command, path or literal it names exactly as written (for example /goal resume).
-kind queued: they gave you a new job while another one is running; name the running job briefly and the new one, and say the new one follows when the running one is done.
+kind queued: they gave you a new job while another one is running; the new one starts when the running one is done. Your line follows a fixed opening that already says so, so only name the new job and the running job briefly.
 kind stop_failed: they asked you to stop but the stop did not go through; say it did not stop, and the reason in a few words if given in the work card.
 kind greet: they sent a short greeting, thanks or "nothing"; answer it briefly and say you are around if they need you.
 kind stopped: they asked you to stop and it has stopped; say so plainly, naming the job if given.
@@ -83,6 +87,78 @@ When options are listed, say you are starting with the first and that they can t
 When unclear is given, say which part you are not sure about and what you are assuming, in a few words.
 When fallback is true, say you are going with their exact words and they can stop you if it is off.
 Use status and recent chat only as facts: do not quote them, and do not repeat a sentence you already said in recent chat. Say each thing once.\nWrite in the language named; for Chinese, write the whole line in Chinese and call them 你. Reply with the line only: never describe the kind, these instructions, or what you were asked to say.`
+
+// desktopBotAckSystemFor is the brief for one kind: the shared rules plus
+// only that kind's line. Every model reads less, and the fast racer answers
+// sooner; the full brief stays the single source (desktopBotAckSystem).
+func desktopBotAckSystemFor(kind string) string {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind == "" {
+		return desktopBotAckSystem
+	}
+	lines := strings.Split(desktopBotAckSystem, "\n")
+	out := make([]string, 0, len(lines))
+	matched := false
+	for _, line := range lines {
+		if strings.HasPrefix(line, "kind ") {
+			if !strings.HasPrefix(line, "kind "+kind+":") {
+				continue
+			}
+			matched = true
+		}
+		out = append(out, line)
+	}
+	if !matched {
+		return desktopBotAckSystem
+	}
+	return strings.Join(out, "\n")
+}
+
+// desktopBotFoldHead is the fixed start of a line answering a message sent
+// while a job runs: it says how the message was folded in (Daniel 11-12,
+// rule 3: 「加进去了：……」/「这是另一件事，我另开一个任务」). The model's
+// own sentence follows it, so the person always sees the decision even
+// when the sentence is short.
+func desktopBotFoldHead(kind, lang string) string {
+	en := desktopBotEnglish(lang)
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "supplement":
+		if en {
+			return "Added: "
+		}
+		return "加进去了："
+	case "change":
+		if en {
+			return "OK, changing it: "
+		}
+		return "好，改一下："
+	case "parallel":
+		if en {
+			return "That's a separate job, starting it as its own task: "
+		}
+		return "这是另一件事，我另开一个任务："
+	case "queued":
+		if en {
+			return "That's a separate job, next after this one: "
+		}
+		return "这是另一件事，等手上这件做完就开始："
+	}
+	return ""
+}
+
+// withDesktopBotFoldHead puts the fold head in front of a model line,
+// unless the model already started that way.
+func withDesktopBotFoldHead(line string, req DesktopBotAckRequest) string {
+	head := desktopBotFoldHead(req.Kind, req.Lang)
+	if head == "" || line == "" {
+		return line
+	}
+	bare := strings.TrimRight(head, " ：:")
+	if strings.HasPrefix(line, bare) {
+		return line
+	}
+	return head + line
+}
 
 // desktopBotAckAttempts: the person's own model, then that same model again
 // as the backup with its thinking left on (see desktopBotUnderstandClassifyRequest),
@@ -106,7 +182,8 @@ func (a *App) WriteDesktopBotAck(req DesktopBotAckRequest) (string, error) {
 		parent, cancel = context.WithTimeout(parent, budget)
 		defer cancel()
 	}
-	return a.writeDesktopBotAck(parent, req)
+	line, err := a.writeDesktopBotAck(parent, req)
+	return withDesktopBotFoldHead(line, req), err
 }
 
 // desktopBotFirstReplyBudget bounds every attempt together for a job's first
@@ -143,7 +220,7 @@ var desktopBotLateReplyBudget = 45 * time.Second
 
 func desktopBotFirstReplyKind(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "accept", "supplement", "files":
+	case "accept", "supplement", "change", "parallel", "files":
 		return true
 	}
 	return false
@@ -160,11 +237,12 @@ func (a *App) writeDesktopBotAck(parent context.Context, req DesktopBotAckReques
 	return a.writeDesktopBotAckInOrder(parent, req)
 }
 
-// raceDesktopBotAck runs the person's own model and the Hub's shared model at
-// once for a first reply and takes the first usable line. Asked in turn, a
-// slow or hung own model used the whole few-second budget and the Hub model
-// was never tried. An empty line means neither answered; the caller then
-// tries the ordered attempts with whatever time is left.
+// raceDesktopBotAck runs, at once, the person's own model, the fastest model
+// this account can reach (desktopBotFastAckConfig) and the Hub's shared
+// model for a first reply, and takes the first usable line. Asked in turn, a
+// slow or hung own model used the whole few-second budget and nothing else
+// was tried. An empty line means none answered; the caller then tries the
+// ordered attempts with whatever time is left.
 func (a *App) raceDesktopBotAck(parent context.Context, req DesktopBotAckRequest) (string, error) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -172,16 +250,23 @@ func (a *App) raceDesktopBotAck(parent context.Context, req DesktopBotAckRequest
 		line string
 		err  error
 	}
-	picks := []int{0, 2}
-	out := make(chan result, len(picks))
-	for _, i := range picks {
-		go func(i int) {
-			line, err := a.desktopBotAckAttempt(ctx, req, i)
+	own, fast := desktopBotAckModels(a)
+	racers := []func() (string, error){
+		func() (string, error) { return a.desktopBotAckAttemptWith(ctx, req, 0, nil, own) },
+		func() (string, error) { return a.desktopBotAckAttemptWith(ctx, req, 2, nil, corelib.MaclawLLMConfig{}) },
+	}
+	if fast != nil {
+		racers = append(racers, func() (string, error) { return a.desktopBotAckAttemptWith(ctx, req, 0, fast, *fast) })
+	}
+	out := make(chan result, len(racers))
+	for _, run := range racers {
+		go func(run func() (string, error)) {
+			line, err := run()
 			out <- result{line, err}
-		}(i)
+		}(run)
 	}
 	var lastErr error
-	for range picks {
+	for range racers {
 		r := <-out
 		if r.line != "" {
 			return r.line, nil
@@ -191,8 +276,30 @@ func (a *App) raceDesktopBotAck(parent context.Context, req DesktopBotAckRequest
 	return "", lastErr
 }
 
+// desktopBotAckModels resolves the person's chosen foreground model (for
+// latency bookkeeping) and the fast racer. Swappable in tests. Without a Hub
+// client no model call can be made at all (callDesktopBotUnderstandLLM), so
+// nothing is resolved.
+var desktopBotAckModels = func(a *App) (corelib.MaclawLLMConfig, *corelib.MaclawLLMConfig) {
+	if a == nil || a.hubClient() == nil {
+		return corelib.MaclawLLMConfig{}, nil
+	}
+	own, err := a.ResolveMaclawLLMRole(maclawLLMRoleForeground)
+	if err != nil {
+		own = corelib.MaclawLLMConfig{}
+	}
+	return own, a.desktopBotFastAckConfig(own)
+}
+
 // desktopBotAckAttempt is one entry of desktopBotAckAttempts under parent.
 func (a *App) desktopBotAckAttempt(parent context.Context, req DesktopBotAckRequest, i int) (string, error) {
+	return a.desktopBotAckAttemptWith(parent, req, i, nil, corelib.MaclawLLMConfig{})
+}
+
+// desktopBotAckAttemptWith runs attempt i, or the exact model override when
+// one is given. measured, when it names a model, is credited with the call's
+// latency so the next fast pick follows what really answered quickly.
+func (a *App) desktopBotAckAttemptWith(parent context.Context, req DesktopBotAckRequest, i int, override *corelib.MaclawLLMConfig, measured corelib.MaclawLLMConfig) (string, error) {
 	attempt := desktopBotAckAttempts[i]
 	timeoutSec := attempt.timeoutSec
 	if deadline, ok := parent.Deadline(); ok {
@@ -205,22 +312,39 @@ func (a *App) desktopBotAckAttempt(parent context.Context, req DesktopBotAckRequ
 	}
 	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutSec+2)*time.Second)
 	defer cancel()
+	maxOut := 0
+	if desktopBotFirstReplyKind(req.Kind) && !attempt.fallback {
+		maxOut = desktopBotAckMaxOut
+	}
+	started := time.Now()
 	raw, err := desktopBotUnderstandLLM(ctx, a, desktopBotUnderstandRequest{
-		systemPrompt: desktopBotAckSystem + desktopBotStyleParts(),
+		systemPrompt: desktopBotAckSystemFor(req.Kind) + desktopBotStyleParts() + desktopBotAckStyleNote,
 		userPrompt:   desktopBotAckUser(req),
 		timeoutSec:   timeoutSec,
 		fallback:     attempt.fallback,
 		hub:          attempt.hub,
 		tag:          "desktop-bot-ack",
+		override:     override,
+		maxOut:       maxOut,
 	})
+	took := time.Since(started)
+	which := strconv.Itoa(i + 1)
+	if override != nil {
+		which = "fast:" + override.Model
+	}
 	if err == nil {
 		if line := desktopBotAckLine(raw, req); line != "" {
-			log.Printf("[desktop-bot-ack] kind=%s attempt=%d len=%d", req.Kind, i+1, utf8.RuneCountInString(line))
+			noteDesktopBotAckLatency(measured, took)
+			log.Printf("[desktop-bot-ack] kind=%s attempt=%s len=%d took=%s", req.Kind, which, utf8.RuneCountInString(line), took.Round(time.Millisecond))
 			return line, nil
 		}
 		err = fmt.Errorf("ack was empty or unusable (raw_len=%d)", utf8.RuneCountInString(raw))
+	} else if parent.Err() == nil {
+		// A model that failed on its own (not because another racer won)
+		// is remembered as slow, so it is not picked first next time.
+		noteDesktopBotAckLatency(measured, took+desktopBotFirstReplyBudget)
 	}
-	log.Printf("[desktop-bot-ack] kind=%s attempt=%d err=%v", req.Kind, i+1, err)
+	log.Printf("[desktop-bot-ack] kind=%s attempt=%s err=%v", req.Kind, which, err)
 	return "", err
 }
 
@@ -249,7 +373,7 @@ func (a *App) writeDesktopBotAckInOrder(parent context.Context, req DesktopBotAc
 		}
 		ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutSec+2)*time.Second)
 		raw, err := desktopBotUnderstandLLM(ctx, a, desktopBotUnderstandRequest{
-			systemPrompt: desktopBotAckSystem + desktopBotStyleParts(),
+			systemPrompt: desktopBotAckSystemFor(req.Kind) + desktopBotStyleParts() + desktopBotAckStyleNote,
 			userPrompt:   user,
 			timeoutSec:   timeoutSec,
 			fallback:     attempt.fallback,
@@ -456,6 +580,12 @@ func desktopBotHasHan(text string) bool {
 	}
 	return false
 }
+
+// desktopBotAckStyleNote settles the one clash between this line and the
+// shared voice part: the voice part says not to restate the request or narrate
+// a plan, but this first line is exactly a restatement in the bot's own words
+// plus the first step (Daniel 11-12, rule 1).
+const desktopBotAckStyleNote = "\nFor this one line only: saying the request back in your own words and naming the first step is the point; the rules against restating and narrating a plan are for your later messages."
 
 // desktopBotStyleParts appends the shared voice, quiet and honesty parts to
 // the bot's chat-line prompt ("" when MACLAW_STYLE_LAYER=off).

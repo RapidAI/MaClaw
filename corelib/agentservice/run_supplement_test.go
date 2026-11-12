@@ -206,3 +206,26 @@ func TestRunSupplementMissedSurvivesReapForTheReporter(t *testing.T) {
 		t.Fatalf("a second reap re-reported the same item: %+v", again)
 	}
 }
+
+// The loop taking a supplement in is observable outside the package, so the
+// person can be shown it was applied (never silent).
+func TestRunSupplementAppliedObserverHearsTheApply(t *testing.T) {
+	var gotRun string
+	var got []RunSupplement
+	SetRunSupplementAppliedObserver(func(_ string, runID string, applied []RunSupplement) {
+		gotRun = runID
+		got = applied
+	})
+	t.Cleanup(func() { SetRunSupplementAppliedObserver(nil) })
+	queue := []*RunSupplement{{ID: "sup_1", RunID: "run_x", Content: "只要前5条", State: runSupplementStateApplied}}
+	h := &supplementHook{runID: "run_x", take: func() []*RunSupplement { q := queue; queue = nil; return q }}
+	if out := h.TransformConversation([]interface{}{map[string]string{"role": "user", "content": "task"}}); out == nil {
+		t.Fatal("supplement was not folded in")
+	}
+	if gotRun != "run_x" || len(got) != 1 || got[0].Content != "只要前5条" {
+		t.Fatalf("observer got run=%q items=%v", gotRun, got)
+	}
+	if !strings.Contains(formatSupplementSummary([]string{"x"}), "how each of these lines was applied") {
+		t.Fatal("the run is not asked to say how the supplement was applied")
+	}
+}
