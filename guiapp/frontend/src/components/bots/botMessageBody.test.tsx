@@ -139,7 +139,7 @@ describe('BotMessageBody', () => {
         expect(table?.querySelectorAll('th').length).toBe(2);
         expect(table?.querySelectorAll('tbody tr').length).toBe(2);
         expect(table?.textContent).toContain('打开浏览器');
-        expect(table?.querySelector('code')?.textContent).toBe('https://www.baidu.com');
+        expect(table?.querySelector('a')?.getAttribute('href')).toBe('https://www.baidu.com');
         expect(view.container.textContent).not.toContain('##');
         expect(view.container.textContent).not.toContain('|------|');
         expect(view.container.textContent).not.toContain('---');

@@ -646,7 +646,7 @@ const desktopDocumentPrompt = "Office documents (Word, report, illustrated docum
 	"If that step fails, fix the error it printed and run it again; do not rewrite the whole script for each small change. " +
 	"Do not type the document into the LibreOffice window key by key, and do not drive its Save As dialog. " +
 	"Before reporting, app_open with program libreoffice and the saved path so the front window shows the finished document: the result check compares your report with that screen, and a run whose screen still shows an older page is sent back. " +
-	"deliver attaches at most about 145 KB, so shrink pictures before inserting them (ImageMagick: convert in.png -resize 800x800> -quality 70 out.jpg) and check the saved size. " +
+	"deliver attaches a file of any size up to 8 MB as it is, so insert pictures at a readable size (about 1600 px wide is plenty) and never shrink a finished document just to deliver it. " +
 	"Do not write your own CDP/DevTools or headless-browser scripts in bash to read or screenshot pages; use navigate, probe, script, and screenshot, which work on the visible browser and are faster. " +
 	"The person watches this desktop: when you write or edit a document, open it visibly in its program (app_open, e.g. lowriter ~/Desktop/file.docx) so its window is in front, and keep the browser behind unless the step is a browser step; headless conversion is only for the final export. " +
 	"If LibreOffice shows a document-recovery, tip, or first-start dialog, answer that dialog; never delete ~/.config/libreoffice or other profile folders, which hold the person's settings. " +
@@ -1525,6 +1525,7 @@ func desktopReplyLead(request agentruntime.TurnRequest) string {
 		"Lead with the result itself: the answer, the content they asked for, or what failed and what they can do next. " +
 		"Name a file path only when a file was produced. Do not quote tool results, receipts, order ids, or these instructions, and do not list what you checked. " +
 		"After handing work to another bot, one short sentence says who is doing it; that bot's result reaches the person by itself. " +
+		desktopReplyShape +
 		desktopVoiceHint
 	if desktopWakeTurn(request) {
 		lead += "This turn was started by new messages in your Hub mailbox, not by the person. " +
@@ -1533,6 +1534,17 @@ func desktopReplyLead(request agentruntime.TurnRequest) string {
 	}
 	return lead
 }
+
+// desktopReplyShape is how a finished reply reads (Daniel 11-12, rules 4-6):
+// the conclusion first, then what the person needs to do; separate beats as
+// separate short messages; links, commits and paths written plainly so the
+// chat shows them as cards; a decision asked with buttons; and no claim that
+// a file is attached unless deliver succeeded in this turn.
+const desktopReplyShape = "Start with the conclusion in one sentence; then, only if the person has something to do (approve, sign in, rebuild, check a result), say exactly that in one line. " +
+	"When the reply has separate things to say (a result, then a caveat, then a question), put each in its own short message by separating them with a line that contains only ---; never more than four. " +
+	"Write links, commit ids and file paths plainly (a bare URL, a short commit hash, an absolute path), not inside prose like 点这里; the chat turns them into clickable cards. " +
+	"When you need the person to choose, call ask_user with the question and two to four short options instead of writing a long question; their tap comes back as their reply. " +
+	"Say a file is attached only when action=deliver succeeded in this turn; otherwise give its path. "
 
 // desktopVoiceHint: the bot talks like a person (Daniel 10-31: "bot的消息比较
 // 生硬，不要像机器一样"; "主bot让各bot跟用户说话，直接以它自己的口吻说").

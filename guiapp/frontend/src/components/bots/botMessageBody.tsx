@@ -1,4 +1,4 @@
-import { memo, type ReactNode } from 'react';
+import { createContext, memo, useContext, type MouseEvent, type ReactNode } from 'react';
 import { parseMarkdownTableCells } from '../ai/aiAssistantMarkdownTable';
 
 // Bot replies often arrive as raw Markdown. The transcript stores that text
@@ -27,7 +27,8 @@ function listKind(line: string): 'ol' | 'ul' | null {
 }
 
 export function botMessageIsStructured(text: string): boolean {
-    return text.includes('```')
+    return botMessageHasChips(text)
+        || text.includes('```')
         || /\*\*[^*\n]+\*\*/.test(text)
         || /`[^`\n]+`/.test(text)
         || /(^|\n)\s*(?:[-*]|\d+\.)\s+\S/.test(text)
@@ -95,6 +96,153 @@ function bodyCells(line: string): string[] | null {
     return cells;
 }
 
+// Links, commit ids and file paths in a reply show as small cards the person
+// can click (Daniel 11-12, rule 5). The words stay in the stored text; only the
+// view changes. Paths are matched only under well-known roots so ordinary
+// prose like "a/b" stays text.
+const URL_AT = /https?:\/\/[^\s<>()\[\]{}"'`\u3000-\u303f\uff01-\uff0f\uff1a-\uff20]+/y;
+const MD_LINK_AT = /\[([^\]\n]{1,80})\]\((https?:\/\/[^\s)]+)\)/y;
+const PATH_AT = /(?:~\/|\/(?:Users|home|tmp|var|opt|data|workspace|Volumes|private|mnt|srv)\/|[A-Za-z]:\\)[^\s`"'<>\u3000-\u303f\uff01-\uff0f\uff1a-\uff20]+/y;
+const HASH_AT = /[0-9a-f]{7,40}(?![0-9A-Za-z_])/y;
+const TRAILING_PUNCT = /[.,;:!?'")\]]+$/;
+
+type Chip = { kind: 'link' | 'path' | 'commit'; value: string; label: string; length: number };
+
+function boundaryBefore(text: string, index: number): boolean {
+    return index === 0 || !/[A-Za-z0-9_\/.\-#@]/.test(text[index - 1]);
+}
+
+function shortLink(url: string): string {
+    try {
+        const parsed = new URL(url);
+        const rest = (parsed.pathname + parsed.search).replace(/\/$/, '');
+        const shown = parsed.host.replace(/^www\./, '') + rest;
+        return shown.length > 48 ? shown.slice(0, 47) + '…' : shown;
+    } catch {
+        return url.length > 48 ? url.slice(0, 47) + '…' : url;
+    }
+}
+
+function baseName(path: string): string {
+    const parts = path.replace(/[\\/]+$/, '').split(/[\\/]/);
+    return parts[parts.length - 1] || path;
+}
+
+function chipAt(text: string, index: number): Chip | null {
+    if (text[index] === '[') {
+        MD_LINK_AT.lastIndex = index;
+        const md = MD_LINK_AT.exec(text);
+        if (md) return { kind: 'link', value: md[2], label: md[1], length: md[0].length };
+    }
+    if (!boundaryBefore(text, index)) return null;
+    const ch = text[index];
+    if (ch === 'h') {
+        URL_AT.lastIndex = index;
+        const url = URL_AT.exec(text);
+        if (url) {
+            const value = url[0].replace(TRAILING_PUNCT, '');
+            if (value.length > 'https://'.length) return { kind: 'link', value, label: shortLink(value), length: value.length };
+        }
+    }
+    if (ch === '/' || ch === '~' || /[A-Za-z]/.test(ch)) {
+        PATH_AT.lastIndex = index;
+        const path = PATH_AT.exec(text);
+        if (path) {
+            const value = path[0].replace(TRAILING_PUNCT, '');
+            if (/[\\/][^\\/]+$/.test(value) || /[\\/][^\\/]+[\\/]$/.test(value)) return { kind: 'path', value, label: baseName(value), length: value.length };
+        }
+    }
+    if (/[0-9a-f]/.test(ch)) {
+        HASH_AT.lastIndex = index;
+        const hash = HASH_AT.exec(text);
+        if (hash && /[0-9]/.test(hash[0]) && /[a-f]/.test(hash[0])) return { kind: 'commit', value: hash[0], label: hash[0].slice(0, 9), length: hash[0].length };
+    }
+    return null;
+}
+
+// A whole inline-code span that is just a link, path or commit is a card too.
+function wholeChip(code: string): Chip | null {
+    const chip = chipAt(code, 0);
+    return chip && chip.length === code.length ? chip : null;
+}
+
+export function botMessageHasChips(text: string): boolean {
+    for (let index = 0; index < text.length; index += 1) {
+        if (chipAt(text, index)) return true;
+    }
+    return false;
+}
+
+export type BotChipHandlers = {
+    openLink?: (url: string) => void;
+    openPath?: (event: MouseEvent, path: string) => void;
+};
+
+export const BotChipContext = createContext<BotChipHandlers>({});
+
+function BotChip({ chip }: { chip: Chip }) {
+    const handlers = useContext(BotChipContext);
+    if (chip.kind === 'link') {
+        return (
+            <a
+                className="desktop-bot-chat__chip desktop-bot-chat__chip--link"
+                data-testid="bot-chip-link"
+                href={chip.value}
+                title={chip.value}
+                target="_blank"
+                rel="noreferrer"
+                onClick={event => {
+                    if (!handlers.openLink) return;
+                    event.preventDefault();
+                    handlers.openLink(chip.value);
+                }}
+            >{chip.label}</a>
+        );
+    }
+    if (chip.kind === 'path') {
+        return (
+            <button
+                type="button"
+                className="desktop-bot-chat__chip desktop-bot-chat__chip--path"
+                data-testid="bot-chip-path"
+                title={chip.value}
+                onClick={event => handlers.openPath?.(event, chip.value)}
+            >{chip.label}</button>
+        );
+    }
+    return (
+        <code
+            className="desktop-bot-chat__chip desktop-bot-chat__chip--commit"
+            data-testid="bot-chip-commit"
+            title={chip.value}
+            onClick={() => { void navigator.clipboard?.writeText(chip.value).catch(() => undefined); }}
+        >{chip.label}</code>
+    );
+}
+
+// splitBotBeats cuts a reply into the separate short messages the bot asked
+// for with a line holding only "---" (rule 5). A fence keeps its insides, an
+// empty piece is dropped, and at most four bubbles come out.
+export function splitBotBeats(text: string): string[] {
+    const beats: string[] = [];
+    let current: string[] = [];
+    let fenced = false;
+    for (const line of text.split('\n')) {
+        if (line.trim().startsWith('```')) fenced = !fenced;
+        if (!fenced && line.trim() === '---') {
+            beats.push(current.join('\n').trim());
+            current = [];
+            continue;
+        }
+        current.push(line);
+    }
+    beats.push(current.join('\n').trim());
+    const kept = beats.filter(Boolean);
+    if (kept.length <= 1) return [text];
+    if (kept.length > 4) return [...kept.slice(0, 3), kept.slice(3).join('\n\n')];
+    return kept;
+}
+
 function parseInline(text: string, keyPrefix: string): ReactNode[] {
     const nodes: ReactNode[] = [];
     let start = 0;
@@ -109,7 +257,9 @@ function parseInline(text: string, keyPrefix: string): ReactNode[] {
             const end = text.indexOf('`', index + 1);
             if (end > index + 1) {
                 flush(index);
-                nodes.push(<code key={`${keyPrefix}-c${serial}`}>{text.slice(index + 1, end)}</code>);
+                const code = text.slice(index + 1, end);
+                const chip = wholeChip(code);
+                nodes.push(chip ? <BotChip key={`${keyPrefix}-c${serial}`} chip={chip} /> : <code key={`${keyPrefix}-c${serial}`}>{code}</code>);
                 serial += 1;
                 index = end + 1;
                 start = index;
@@ -142,6 +292,15 @@ function parseInline(text: string, keyPrefix: string): ReactNode[] {
                 start = index;
                 continue;
             }
+        }
+        const chip = chipAt(text, index);
+        if (chip) {
+            flush(index);
+            nodes.push(<BotChip key={`${keyPrefix}-k${serial}`} chip={chip} />);
+            serial += 1;
+            index += chip.length;
+            start = index;
+            continue;
         }
         index += 1;
     }
