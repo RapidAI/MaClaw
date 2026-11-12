@@ -125,8 +125,20 @@ type AppConfig struct {
 	// wrote for this MaClawSrv user. It carries no credentials; a pin names a
 	// provider already listed in maclaw_llm_providers (or the official hub-llm
 	// row). Empty or inherit follows MaclawLLMCurrentProvider.
-	MaclawHubBotRoles MaclawHubBotRoles    `json:"maclaw_hub_bot_roles,omitempty"`
-	LLMPromptCache    LLMPromptCacheConfig `json:"llm_prompt_cache,omitempty"`
+	// Read only when MaclawBotLLMMode is default (or empty, for a config Hub
+	// has not rewritten yet).
+	MaclawHubBotRoles MaclawHubBotRoles `json:"maclaw_hub_bot_roles,omitempty"`
+	// MaclawBotLLMMode is the one switch for how this MaClawSrv user picks a
+	// model per bot role. "custom" reads maclaw_llm_profiles role pins and
+	// nothing else. "default" reads MaclawHubBotRoles and the current provider,
+	// which is the service's choice. Empty keeps the older combined precedence
+	// so a config that Hub has not rewritten still behaves as it did.
+	MaclawBotLLMMode string `json:"maclaw_bot_llm_mode,omitempty"`
+	// DesktopBotLLMRolesMigrated records that this desktop has already copied
+	// any local bot role pins into the Hub bot model, or that there were none.
+	// It is a desktop marker; MaClawSrv does not read it.
+	DesktopBotLLMRolesMigrated bool                 `json:"desktop_bot_llm_roles_migrated,omitempty"`
+	LLMPromptCache             LLMPromptCacheConfig `json:"llm_prompt_cache,omitempty"`
 	// AnswerCache is retained only as the one-time migration source for legacy
 	// single-bot Lansenger installations. New reply-cache policies live on each
 	// LansengerBotProfile; runtime code must not use this application-wide value
@@ -879,6 +891,12 @@ const (
 	MaclawHubBotRoleInherit = "inherit"
 	MaclawHubBotRolePin     = "pin"
 	MaclawHubBotRoleUnused  = "unused"
+	// MaclawBotLLMModeDefault means the service (Hub route or an administrator
+	// role assignment) chooses every bot role.
+	MaclawBotLLMModeDefault = "default"
+	// MaclawBotLLMModeCustom means the owner's per-role pins are the only
+	// source for bot role models.
+	MaclawBotLLMModeCustom = "custom"
 )
 
 // MaclawHubBotRole is one Bot-management role assignment. Mode inherit (or

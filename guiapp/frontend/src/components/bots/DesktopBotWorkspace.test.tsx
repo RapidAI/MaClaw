@@ -39,8 +39,9 @@ const openFile = vi.hoisted(() => vi.fn(async (_path?: string) => undefined));
 const showFile = vi.hoisted(() => vi.fn(async (_path?: string) => undefined));
 const previewFile = vi.hoisted(() => vi.fn(async (_path?: string) => ({ preview_url: '' })));
 const readShot = vi.hoisted(() => vi.fn(async (_path?: string) => ({ mime: 'image/png', data: 'iVBORw0KGgo=' })));
-type BotLLMView = { mode: string; name?: string; url?: string; model?: string; key_set: boolean; warning?: string };
-type BotLLMIn = { mode?: string; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string };
+type BotLLMRole = { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string };
+type BotLLMView = { mode: string; name?: string; url?: string; model?: string; key_set: boolean; warning?: string; roles?: { foreground?: BotLLMRole; background?: BotLLMRole; computer_use?: BotLLMRole; grounder?: BotLLMRole } };
+type BotLLMIn = { mode?: string; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string; roles?: BotLLMView['roles'] };
 const getBotLLM = vi.hoisted(() => vi.fn(async (): Promise<BotLLMView> => ({ mode: 'default', key_set: false })));
 type HubCreditsMock = { active: boolean; credits_total?: number; credits_used?: number; credits_remaining?: number };
 const getHubCredits = vi.hoisted(() => vi.fn(async (): Promise<HubCreditsMock> => ({ active: false })));
@@ -3741,16 +3742,25 @@ describe('DesktopBotWorkspace', () => {
         const dialog = await screen.findByTestId('bot-llm-dialog');
         fireEvent.click(within(dialog).getByTestId('bot-llm-mode-custom'));
         // The provider carries its own model, so the common case needs no typing.
-        expect(within(dialog).getByTestId('bot-llm-model')).toHaveProperty('value', 'qwen-max');
+        expect(within(dialog).getByTestId('bot-role-foreground-model')).toHaveProperty('value', 'qwen-max');
         fireEvent.click(within(dialog).getByTestId('bot-llm-save'));
-        await waitFor(() => expect(saveBotLLM).toHaveBeenCalledWith({
-            mode: 'custom',
+        const qwen = {
             name: 'Qwen',
             url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
             key: 'sk-qwen',
             model: 'qwen-max',
             protocol: 'openai',
             wire_api: '',
+        };
+        await waitFor(() => expect(saveBotLLM).toHaveBeenCalledWith({
+            mode: 'custom',
+            ...qwen,
+            roles: {
+                foreground: qwen,
+                background: qwen,
+                computer_use: qwen,
+                grounder: { unused: true },
+            },
         }));
         await waitFor(() => expect(screen.queryByTestId('bot-llm-dialog')).toBeNull());
     });
@@ -3775,13 +3785,20 @@ describe('DesktopBotWorkspace', () => {
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
         const dialog = await screen.findByTestId('bot-llm-dialog');
-        const model = within(dialog).getByTestId('bot-llm-model') as HTMLSelectElement;
+        const model = within(dialog).getByTestId('bot-role-foreground-model') as HTMLSelectElement;
         expect(model.tagName).toBe('SELECT');
         // Saved model first, then the live catalog, cached models merged in.
         await waitFor(() => expect(Array.from(model.options).map(o => o.value)).toEqual(['qwen-turbo', 'qwen3-max', 'qwen-plus']));
         fireEvent.change(model, { target: { value: 'qwen3-max' } });
         fireEvent.click(within(dialog).getByTestId('bot-llm-save'));
-        await waitFor(() => expect(saveBotLLM).toHaveBeenCalledWith(expect.objectContaining({ mode: 'custom', model: 'qwen3-max' })));
+        await waitFor(() => expect(saveBotLLM).toHaveBeenCalledWith(expect.objectContaining({
+            mode: 'custom',
+            model: 'qwen3-max',
+            roles: expect.objectContaining({
+                foreground: expect.objectContaining({ model: 'qwen3-max' }),
+                background: expect.objectContaining({ model: 'qwen-turbo' }),
+            }),
+        })));
     });
 
     // The dropdown must never flash "no models" while the service is still
@@ -3803,10 +3820,11 @@ describe('DesktopBotWorkspace', () => {
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
         const dialog = await screen.findByTestId('bot-llm-dialog');
-        const model = within(dialog).getByTestId('bot-llm-model') as HTMLSelectElement;
+        fireEvent.click(within(dialog).getByTestId('bot-llm-mode-custom'));
+        const model = within(dialog).getByTestId('bot-role-foreground-model') as HTMLSelectElement;
         expect(Array.from(model.options).map(o => o.value)).toEqual(['qwen-max', 'qwen-plus']);
         expect(model).toHaveProperty('value', 'qwen-max');
-        expect(within(dialog).getByText('正在获取模型列表…')).toBeTruthy();
+        expect(within(dialog).getAllByText('正在获取模型列表…').length).toBeGreaterThan(0);
         expect(within(dialog).queryByText('这个服务商暂时没有可选模型。')).toBeNull();
     });
 
@@ -3826,13 +3844,22 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
         const dialog = await screen.findByTestId('bot-llm-dialog');
         fireEvent.click(within(dialog).getByTestId('bot-llm-mode-custom'));
-        const provider = within(dialog).getByTestId('bot-llm-provider') as HTMLSelectElement;
-        const model = within(dialog).getByTestId('bot-llm-model') as HTMLSelectElement;
+        const provider = within(dialog).getByTestId('bot-role-foreground-provider') as HTMLSelectElement;
+        const model = within(dialog).getByTestId('bot-role-foreground-model') as HTMLSelectElement;
         expect(model).toHaveProperty('value', 'qwen-max');
         fireEvent.change(provider, { target: { value: 'DeepSeek' } });
         expect(model).toHaveProperty('value', 'deepseek-chat');
+        expect(within(dialog).getByTestId('bot-role-background-model')).toHaveProperty('value', 'qwen-max');
         fireEvent.click(within(dialog).getByTestId('bot-llm-save'));
-        await waitFor(() => expect(saveBotLLM).toHaveBeenCalledWith(expect.objectContaining({ mode: 'custom', name: 'DeepSeek', model: 'deepseek-chat' })));
+        await waitFor(() => expect(saveBotLLM).toHaveBeenCalledWith(expect.objectContaining({
+            mode: 'custom',
+            name: 'DeepSeek',
+            model: 'deepseek-chat',
+            roles: expect.objectContaining({
+                foreground: expect.objectContaining({ name: 'DeepSeek', model: 'deepseek-chat' }),
+                background: expect.objectContaining({ name: 'Qwen', model: 'qwen-max' }),
+            }),
+        })));
     });
 
     // A provider with no model anywhere still lets the owner save: the list
@@ -3846,7 +3873,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
         const dialog = await screen.findByTestId('bot-llm-dialog');
         fireEvent.click(within(dialog).getByTestId('bot-llm-mode-custom'));
-        expect(await within(dialog).findByText('这个服务商暂时没有可选模型。')).toBeTruthy();
+        expect((await within(dialog).findAllByText('这个服务商暂时没有可选模型。')).length).toBeGreaterThan(0);
         expect(within(dialog).getByTestId('bot-llm-save')).toHaveProperty('disabled', true);
     });
 
@@ -3861,7 +3888,7 @@ describe('DesktopBotWorkspace', () => {
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
         const dialog = await screen.findByTestId('bot-llm-dialog');
-        const model = within(dialog).getByTestId('bot-llm-model') as HTMLSelectElement;
+        const model = within(dialog).getByTestId('bot-role-foreground-model') as HTMLSelectElement;
         await waitFor(() => expect(Array.from(model.options).map(o => o.value)).toEqual(['hub-alias-1']));
         expect(fetchProviderModels).not.toHaveBeenCalled();
     });
@@ -3879,7 +3906,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(await screen.findByTestId('desktop-bot-llm'));
         const dialog = await screen.findByTestId('bot-llm-dialog');
         await waitFor(() => expect(within(dialog).getByTestId('bot-llm-mode-custom')).toHaveProperty('checked', true));
-        expect(within(dialog).getByTestId('bot-llm-model')).toHaveProperty('value', 'qwen-max');
+        expect(within(dialog).getByTestId('bot-role-foreground-model')).toHaveProperty('value', 'qwen-max');
         fireEvent.click(within(dialog).getByTestId('bot-llm-mode-default'));
         fireEvent.click(within(dialog).getByTestId('bot-llm-save'));
         await waitFor(() => expect(saveBotLLM).toHaveBeenCalledWith({ mode: 'default' }));

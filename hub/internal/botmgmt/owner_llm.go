@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 )
 
@@ -50,9 +51,12 @@ func (s *Service) writeBotOwnerLLM(ctx context.Context, tenantID string, rec rec
 	if endpoint == "" {
 		return fmt.Errorf("%w: hub public url is not configured", ErrSrv)
 	}
+	choice, err := s.persistedOwnerBotLLM(ctx, tenantID, hubUserID)
+	if err != nil {
+		return err
+	}
 	settings := s.llmSettingsSnapshot(ctx, tenantID)
-	override := s.ownerLLMOverrideOf(ctx, tenantID, hubUserID)
-	stamp := ownerLLMStamp(settings, override)
+	stamp := ownerLLMStamp(settings, choice)
 	token, reused, err := s.ownerLLMViewerToken(ctx, tenantID, hubUserID)
 	if err != nil {
 		return err
@@ -65,7 +69,7 @@ func (s *Service) writeBotOwnerLLM(ctx context.Context, tenantID string, rec rec
 	if !force && reused && s.ownerLLMConfigCurrent(ctx, tenantID, hubUserID, token, endpoint, stamp) {
 		return nil
 	}
-	if err := s.pushBotOwnerLLM(ctx, rec, *principal, endpoint, token, settings, override); err != nil {
+	if err := s.pushBotOwnerLLM(ctx, rec, *principal, endpoint, token, settings, choice); err != nil {
 		return err
 	}
 	return s.markOwnerLLMPushed(ctx, tenantID, hubUserID, token, endpoint, stamp)
@@ -260,7 +264,7 @@ func (s *Service) reusableOwnerLLMToken(ctx context.Context, tenantID, hubUserID
 	return token, true
 }
 
-func (s *Service) pushBotOwnerLLM(ctx context.Context, rec record, principal ownerPrincipal, endpoint, viewerToken string, settings llmSettings, override *ownerLLMOverride) error {
+func (s *Service) pushBotOwnerLLM(ctx context.Context, rec record, principal ownerPrincipal, endpoint, viewerToken string, settings llmSettings, choice ownerBotLLM) error {
 	path := "/api/v1/admin/tenants/" + url.PathEscape(principal.TenantID) + "/users/" + url.PathEscape(principal.UserID) + "/config"
 	var current struct {
 		AppConfig map[string]any `json:"app_config"`
@@ -290,44 +294,39 @@ func (s *Service) pushBotOwnerLLM(ctx context.Context, rec record, principal own
 			"protocol": item.Protocol,
 		})
 	}
-	selected, custom := selectedBotLLMProvider(settings)
-	switch {
-	case override != nil:
-		// The selected provider is resolved by name inside this same array, so
-		// the override has to be listed there as well as projected onto the
-		// flat fields. Without the entry the name points at nothing, validation
-		// reports it, and the instance stops accepting commands.
-		providers = append(providers, map[string]any{
-			"name":     override.Name,
-			"url":      override.URL,
-			"key":      override.Key,
-			"model":    override.Model,
-			"protocol": override.Protocol,
-			"wire_api": override.WireAPI,
-		})
-		current.AppConfig["maclaw_llm_url"] = override.URL
-		current.AppConfig["maclaw_llm_key"] = override.Key
-		current.AppConfig["maclaw_llm_model"] = override.Model
-		current.AppConfig["maclaw_llm_protocol"] = override.Protocol
-		current.AppConfig["maclaw_llm_current_provider"] = override.Name
-	case custom:
-		current.AppConfig["maclaw_llm_url"] = selected.URL
-		current.AppConfig["maclaw_llm_key"] = selected.Key
-		current.AppConfig["maclaw_llm_model"] = selected.Model
-		current.AppConfig["maclaw_llm_protocol"] = selected.Protocol
-		current.AppConfig["maclaw_llm_current_provider"] = selected.Name
-	default:
-		current.AppConfig["maclaw_llm_url"] = endpoint
-		current.AppConfig["maclaw_llm_key"] = viewerToken
-		current.AppConfig["maclaw_llm_model"] = botLLMModel
-		delete(current.AppConfig, "maclaw_llm_protocol")
-		current.AppConfig["maclaw_llm_current_provider"] = botLLMProviderName
-	}
-	current.AppConfig["maclaw_llm_providers"] = providers
-	if roles := hubBotRolesAppConfig(settings); roles != nil {
-		current.AppConfig["maclaw_hub_bot_roles"] = roles
-	} else {
+	if choice.Mode == corelib.MaclawBotLLMModeCustom {
+		// Custom roles are the only source. The flat fields follow foreground
+		// so a caller that still asks for "the" model matches that role, and
+		// the administrator role pins are removed rather than left beside them.
+		providers = appendCustomRoleProviders(providers, choice)
+		applyCustomFlat(current.AppConfig, choice, endpoint, viewerToken)
+		current.AppConfig["maclaw_llm_providers"] = providers
+		current.AppConfig["maclaw_llm_profiles"] = customRoleProfiles(current.AppConfig["maclaw_llm_profiles"], choice)
+		current.AppConfig["maclaw_bot_llm_mode"] = corelib.MaclawBotLLMModeCustom
 		delete(current.AppConfig, "maclaw_hub_bot_roles")
+	} else {
+		selected, custom := selectedBotLLMProvider(settings)
+		if custom {
+			current.AppConfig["maclaw_llm_url"] = selected.URL
+			current.AppConfig["maclaw_llm_key"] = selected.Key
+			current.AppConfig["maclaw_llm_model"] = selected.Model
+			current.AppConfig["maclaw_llm_protocol"] = selected.Protocol
+			current.AppConfig["maclaw_llm_current_provider"] = selected.Name
+		} else {
+			current.AppConfig["maclaw_llm_url"] = endpoint
+			current.AppConfig["maclaw_llm_key"] = viewerToken
+			current.AppConfig["maclaw_llm_model"] = botLLMModel
+			delete(current.AppConfig, "maclaw_llm_protocol")
+			current.AppConfig["maclaw_llm_current_provider"] = botLLMProviderName
+		}
+		current.AppConfig["maclaw_llm_providers"] = providers
+		current.AppConfig["maclaw_bot_llm_mode"] = corelib.MaclawBotLLMModeDefault
+		clearRoleProfiles(current.AppConfig)
+		if roles := hubBotRolesAppConfig(settings); roles != nil {
+			current.AppConfig["maclaw_hub_bot_roles"] = roles
+		} else {
+			delete(current.AppConfig, "maclaw_hub_bot_roles")
+		}
 	}
 	if err := s.doAdmin(ctx, rec, http.MethodPut, path, map[string]any{"app_config": current.AppConfig}, nil); err != nil {
 		return fmt.Errorf("%w: write bot llm config: %s", ErrSrv, err.Error())

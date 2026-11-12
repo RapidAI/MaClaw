@@ -10,6 +10,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
 const principalLLMConfigPath = "/api/v1/admin/tenants/maclaw-tenant/users/user_alice/config"
@@ -162,6 +165,15 @@ func TestOwnerLLMOverrideRoundTripRestoresSystemFreeDefault(t *testing.T) {
 	if entry["wire_api"] != "responses" {
 		t.Fatalf("override entry lost wire_api = %#v", entry)
 	}
+	if applied["maclaw_bot_llm_mode"] != corelib.MaclawBotLLMModeCustom {
+		t.Fatalf("custom mode = %#v", applied["maclaw_bot_llm_mode"])
+	}
+	assertSameRolePin(t, applied, "foreground", "MyProv", "mine-large")
+	assertSameRolePin(t, applied, "background", "MyProv", "mine-large")
+	assertSameRolePin(t, applied, "computer_use", "MyProv", "mine-large")
+	if profiles, _ := applied["maclaw_llm_profiles"].(map[string]any); profiles["grounder"] != nil {
+		t.Fatalf("migrated single provider enabled grounder = %#v", profiles["grounder"])
+	}
 	if applied["language"] != "zh" || applied["bot_display_name"] != "duty" {
 		t.Fatalf("unrelated config changed = %#v", applied)
 	}
@@ -187,6 +199,12 @@ func TestOwnerLLMOverrideRoundTripRestoresSystemFreeDefault(t *testing.T) {
 	}
 	if providers, _ := back["maclaw_llm_providers"].([]any); len(providers) != 1 {
 		t.Fatalf("restored providers = %#v", back["maclaw_llm_providers"])
+	}
+	if back["maclaw_bot_llm_mode"] != corelib.MaclawBotLLMModeDefault {
+		t.Fatalf("restored mode = %#v", back["maclaw_bot_llm_mode"])
+	}
+	if _, ok := back["maclaw_llm_profiles"]; ok {
+		t.Fatalf("default left role pins %#v", back["maclaw_llm_profiles"])
 	}
 	if back["language"] != "zh" || back["bot_display_name"] != "duty" {
 		t.Fatalf("restore changed unrelated config = %#v", back)
@@ -417,5 +435,166 @@ func TestPushBotOwnerLLMWritesRoleProviderNamesWithoutKeys(t *testing.T) {
 	back := recorder.last(t)
 	if _, ok := back["maclaw_hub_bot_roles"]; ok {
 		t.Fatalf("default roles should remove maclaw_hub_bot_roles, got %#v", back["maclaw_hub_bot_roles"])
+	}
+}
+
+func assertSameRolePin(t *testing.T, cfg map[string]any, role, provider, model string) {
+	t.Helper()
+	profiles, _ := cfg["maclaw_llm_profiles"].(map[string]any)
+	pin, _ := profiles[role].(map[string]any)
+	if pin == nil {
+		t.Fatalf("role %s pin missing in %#v", role, profiles)
+	}
+	if pin["inherit_hub"] != false || pin["model"] != model || pin["provider_id"] != corelib.MaclawLLMLegacyProviderID(provider) {
+		t.Fatalf("role %s pin = %#v", role, pin)
+	}
+}
+
+func TestOwnerLLMOverrideMigratesIntoRoleRows(t *testing.T) {
+	rec := record{OwnerLLMOverrides: map[string]*ownerLLMOverride{
+		"alice": {Name: "MyProv", URL: "https://api.mine.example/v1", Key: "sk-mine-secret", Model: "mine-large", Protocol: "openai"},
+	}}
+	svc, _ := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, rec)
+	ctx := context.Background()
+	view, err := svc.GetPrincipalLLM(ctx, "tenant-a", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Mode != "custom" || view.Name != "MyProv" || view.Model != "mine-large" || !view.KeySet {
+		t.Fatalf("legacy view = %#v", view)
+	}
+	if view.Roles == nil || view.Roles.Foreground.Model != "mine-large" || view.Roles.Background.Name != "MyProv" || view.Roles.ComputerUse.Model != "mine-large" || !view.Roles.Grounder.Unused {
+		t.Fatalf("migrated roles = %#v", view.Roles)
+	}
+	stored, err := svc.load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.OwnerLLMOverrides != nil {
+		t.Fatalf("legacy override survived migration: %#v", stored.OwnerLLMOverrides)
+	}
+	if stored.OwnerBotLLMs["alice"] == nil || stored.OwnerBotLLMs["alice"].Mode != "custom" || stored.OwnerBotLLMs["alice"].Grounder != nil {
+		t.Fatalf("stored choice = %#v", stored.OwnerBotLLMs["alice"])
+	}
+	// A second read must not invent a different choice.
+	again, err := svc.GetPrincipalLLM(ctx, "tenant-a", "alice")
+	if err != nil || again.Model != view.Model || again.Roles.Background.Model != "mine-large" {
+		t.Fatalf("second read = %#v err=%v", again, err)
+	}
+}
+
+func TestOwnerBotRolesKeepExistingRowsOverLegacyOverride(t *testing.T) {
+	rec := record{
+		OwnerLLMOverrides: map[string]*ownerLLMOverride{
+			"alice": {Name: "Old", URL: "https://old.example/v1", Key: "sk-old", Model: "old-model", Protocol: "openai"},
+		},
+		OwnerBotLLMs: map[string]*ownerBotLLM{
+			"alice": {
+				Mode:        "custom",
+				Foreground:  &ownerLLMOverride{Name: "Kept", URL: "https://kept.example/v1", Key: "sk-kept", Model: "kept-fg", Protocol: "openai"},
+				Background:  &ownerLLMOverride{Name: "Kept", URL: "https://kept.example/v1", Key: "sk-kept", Model: "kept-bg", Protocol: "openai"},
+				ComputerUse: &ownerLLMOverride{Name: "Kept", URL: "https://kept.example/v1", Key: "sk-kept", Model: "kept-cu", Protocol: "openai"},
+			},
+		},
+	}
+	svc, _ := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, rec)
+	view, err := svc.GetPrincipalLLM(context.Background(), "tenant-a", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Name != "Kept" || view.Roles.Foreground.Model != "kept-fg" || view.Roles.Background.Model != "kept-bg" || view.Roles.ComputerUse.Model != "kept-cu" {
+		t.Fatalf("role rows were replaced by the legacy override: %#v", view)
+	}
+	stored, err := svc.load(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.OwnerLLMOverrides != nil {
+		t.Fatalf("legacy override kept beside role rows: %#v", stored.OwnerLLMOverrides)
+	}
+}
+
+func TestSavePrincipalLLMRolesAreTheOnlySrvSource(t *testing.T) {
+	rec := ownerLLMTestRecordWithAdminDefault()
+	rec.LLM.Roles = LLMRoles{
+		Background: LLMRoleAssignment{Mode: "pin", Provider: "lp_admin0000000001"},
+	}
+	svc, recorder := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, rec)
+	ctx := context.Background()
+	in := PrincipalLLMInput{
+		Mode: "custom",
+		Roles: &PrincipalLLMRolesInput{
+			Foreground:  PrincipalLLMRoleInput{Name: "MyProv", URL: "https://api.mine.example/v1", Key: "sk-mine", Model: "mine-fg", Protocol: "openai"},
+			Background:  PrincipalLLMRoleInput{Name: "MyProv", URL: "https://api.mine.example/v1", Key: "sk-mine", Model: "mine-bg"},
+			ComputerUse: PrincipalLLMRoleInput{Official: true, Model: "official-mid"},
+			Grounder:    PrincipalLLMRoleInput{Name: "MyProv", URL: "https://api.mine.example/v1", Key: "sk-mine", Model: "mine-ground"},
+		},
+	}
+	view, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Mode != "custom" || view.Name != "MyProv" || view.Model != "mine-fg" || !view.Roles.ComputerUse.Official || view.Roles.Grounder.Model != "mine-ground" {
+		t.Fatalf("view = %#v", view)
+	}
+	pushed := recorder.last(t)
+	if _, ok := pushed["maclaw_hub_bot_roles"]; ok {
+		t.Fatalf("custom mode still wrote administrator role pins: %#v", pushed["maclaw_hub_bot_roles"])
+	}
+	if pushed["maclaw_bot_llm_mode"] != "custom" || pushed["maclaw_llm_current_provider"] != "MyProv" || pushed["maclaw_llm_model"] != "mine-fg" {
+		t.Fatalf("flat custom config = %#v", pushed)
+	}
+	assertSameRolePin(t, pushed, "foreground", "MyProv", "mine-fg")
+	assertSameRolePin(t, pushed, "background", "MyProv", "mine-bg")
+	assertSameRolePin(t, pushed, "computer_use", "hub-llm", "official-mid")
+	assertSameRolePin(t, pushed, "grounder", "MyProv", "mine-ground")
+
+	raw, err := json.Marshal(pushed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg corelib.AppConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	fg, err := agentservice.ResolveLLMRole(cfg, agentservice.LLMRoleForeground)
+	if err != nil || fg.Model != "mine-fg" || fg.ProviderName != "MyProv" || fg.Key != "sk-mine" {
+		t.Fatalf("foreground resolve = %+v err=%v", fg, err)
+	}
+	bg, err := agentservice.ResolveLLMRole(cfg, agentservice.LLMRoleBackground)
+	if err != nil || bg.Model != "mine-bg" || bg.ProviderName != "MyProv" {
+		t.Fatalf("background resolve = %+v err=%v", bg, err)
+	}
+	cu, err := agentservice.ResolveLLMRole(cfg, agentservice.LLMRoleComputerUse)
+	if err != nil || cu.Model != "official-mid" || cu.ProviderName != "hub-llm" {
+		t.Fatalf("computer use resolve = %+v err=%v", cu, err)
+	}
+	gr, err := agentservice.ResolveLLMRole(cfg, agentservice.LLMRoleGrounder)
+	if err != nil || gr.Model != "mine-ground" {
+		t.Fatalf("grounder resolve = %+v err=%v", gr, err)
+	}
+}
+
+func TestLegacyBotLLMEndpointMapsOntoRoleRows(t *testing.T) {
+	svc, recorder := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, record{})
+	ctx := context.Background()
+	// An older GUI still sends one provider and no roles object.
+	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", ownerLLMTestCustomInput("sk-mine-secret")); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := svc.load(ctx, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	choice := stored.OwnerBotLLMs["alice"]
+	if choice == nil || choice.Foreground.Model != "mine-large" || choice.Background.Model != "mine-large" || choice.ComputerUse.Model != "mine-large" || choice.Grounder != nil {
+		t.Fatalf("legacy body did not fill the three roles: %#v", choice)
+	}
+	// Saving default from that GUI clears the roles again.
+	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.last(t)["maclaw_bot_llm_mode"] != "default" {
+		t.Fatalf("legacy default did not restore the service: %#v", recorder.last(t)["maclaw_bot_llm_mode"])
 	}
 }

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BotLLMSettingsDialog, type BotLLMProviderOption } from './BotLLMSettingsDialog';
 import {
@@ -50,17 +50,16 @@ vi.mock('../../../wailsjs/runtime', () => ({
 
 const llmLabels = {
     title: 'Bot 用的模型',
-    sharedHint: '这个账号下的所有 Bot 都跑同一个模型，这里改了会一起生效。',
+    sharedHint: '这个账号下的所有 Bot 共用这里的模型，改了一起生效。',
     useDefault: '默认',
-    defaultHint: '交回服务自己决定。',
-    useProvider: '从这台电脑的服务商里挑一个',
+    defaultHint: '交回服务自己决定：前台、后台、电脑操作和定位都跟着 Hub 或管理员的默认。',
+    useCustom: '自定义',
+    customHint: '在这台电脑上为每个角色指定服务商和模型。',
     providerLabel: '服务商',
     modelLabel: '模型',
     modelLoading: '正在获取模型列表…',
     modelEmpty: '这个服务商暂时没有可选模型。',
     noProviders: '这台电脑上没有可用的服务商。',
-    roleSection: '模型配置',
-    roleHint: '前台交互、后台执行、电脑操作和定位模型。这个账号下的所有 Bot 共用。',
     save: '保存',
     cancel: '取消',
     close: '关闭',
@@ -168,6 +167,7 @@ describe('Bot model settings dialog', () => {
                 onClose={() => {}}
                 onSubmit={onSubmit}
                 heading="设置"
+                lang="zh-Hans"
                 tabs={<BotSettingsTabs active="model" labels={{ model: '模型', network: '网络', computer: '电脑' }} onSelect={() => {}} />}
                 {...overrides}
             />,
@@ -175,85 +175,101 @@ describe('Bot model settings dialog', () => {
         return { onSubmit, ...utils };
     }
 
+    function chooseCustom() {
+        const card = screen.getByTestId('bot-llm-mode-custom').closest('.bot-llm-dialog__option') as HTMLElement;
+        fireEvent.click(within(card).getByText(llmLabels.useCustom));
+        return card;
+    }
+
     // The card is the control: clicking the description selects it, not just
     // the 16px radio. The selected card also has to look selected.
-    it('selects the provider card from anywhere on the card and shows the state', () => {
+    it('selects the custom card from anywhere on the card and shows the state', () => {
         renderDialog();
         const defaultCard = screen.getByTestId('bot-llm-mode-default').closest('.bot-llm-dialog__option') as HTMLElement;
-        const providerCard = screen.getByTestId('bot-llm-mode-custom').closest('.bot-llm-dialog__option') as HTMLElement;
+        const customCard = screen.getByTestId('bot-llm-mode-custom').closest('.bot-llm-dialog__option') as HTMLElement;
         expect(defaultCard.className).toContain('is-selected');
-        expect(providerCard.className).not.toContain('is-selected');
-        fireEvent.click(within(providerCard).getByText(llmLabels.useProvider));
+        expect(customCard.className).not.toContain('is-selected');
+        expect(screen.queryByTestId('bot-llm-roles')).toBeNull();
+        fireEvent.click(within(customCard).getByText(llmLabels.useCustom));
         expect(screen.getByTestId('bot-llm-mode-custom')).toHaveProperty('checked', true);
-        expect(providerCard.className).toContain('is-selected');
+        expect(customCard.className).toContain('is-selected');
         expect(defaultCard.className).not.toContain('is-selected');
+        expect(customCard.contains(screen.getByTestId('bot-llm-roles'))).toBe(true);
     });
 
-    // Working inside the card's own fields must not be read as "pick this card":
-    // a select change keeps the mode where it is and only moves the model.
-    it('keeps the mode while the owner works inside the card fields', () => {
+    it('keeps the mode while the owner works inside a role row', () => {
         const { onSubmit } = renderDialog({ initialMode: 'custom', initialName: 'DeepSeek', initialModel: 'deepseek-flash' });
-        fireEvent.click(within(screen.getByTestId('bot-llm-provider').closest('.bot-llm-dialog__field') as HTMLElement).getByText('服务商'));
-        fireEvent.click(screen.getByTestId('bot-llm-model'));
-        fireEvent.change(screen.getByTestId('bot-llm-model'), { target: { value: 'deepseek-chat' } });
+        fireEvent.change(screen.getByTestId('bot-role-foreground-model'), { target: { value: 'deepseek-chat' } });
         expect(screen.getByTestId('bot-llm-mode-custom')).toHaveProperty('checked', true);
+        expect(screen.getByTestId('bot-role-background-model')).toHaveProperty('value', 'deepseek-flash');
         fireEvent.click(screen.getByTestId('bot-llm-save'));
-        expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ mode: 'custom', model: 'deepseek-chat' }));
+        expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+            mode: 'custom',
+            model: 'deepseek-chat',
+            roles: expect.objectContaining({
+                foreground: expect.objectContaining({ name: 'DeepSeek', model: 'deepseek-chat' }),
+                background: expect.objectContaining({ model: 'deepseek-flash' }),
+                grounder: { unused: true },
+            }),
+        }));
+        expect(saveProfiles).not.toHaveBeenCalled();
     });
 
-    it('groups the provider and model fields under the selected card', () => {
-        renderDialog();
-        const providerCard = screen.getByTestId('bot-llm-mode-custom').closest('.bot-llm-dialog__option') as HTMLElement;
-        expect(providerCard.querySelector('.bot-llm-dialog__fields')?.contains(screen.getByTestId('bot-llm-provider'))).toBe(true);
-        expect(providerCard.querySelector('.bot-llm-dialog__fields')?.contains(screen.getByTestId('bot-llm-model'))).toBe(true);
+    it('groups the role rows under the custom card', () => {
+        renderDialog({ initialMode: 'custom', initialName: 'DeepSeek', initialModel: 'deepseek-chat' });
+        const customCard = screen.getByTestId('bot-llm-mode-custom').closest('.bot-llm-dialog__option') as HTMLElement;
+        expect(customCard.contains(screen.getByTestId('bot-role-foreground-provider'))).toBe(true);
+        expect(customCard.contains(screen.getByTestId('bot-role-foreground-model'))).toBe(true);
+        expect(screen.queryByRole('checkbox', { name: '前台跟随 Hub' })).toBeNull();
     });
 
     it('marks the card unavailable when there is no provider to pick', () => {
         renderDialog({ providers: [] });
         const card = screen.getByTestId('bot-llm-mode-custom').closest('.bot-llm-dialog__option') as HTMLElement;
         expect(card.className).toContain('is-disabled');
-        fireEvent.click(within(card).getByText(llmLabels.useProvider));
+        fireEvent.click(within(card).getByText(llmLabels.useCustom));
         expect(screen.getByTestId('bot-llm-mode-custom')).toHaveProperty('checked', false);
     });
 
-    it('shows the shared role models in a 模型配置 section', async () => {
-        renderDialog({ lang: 'zh-Hans' });
-        const section = await screen.findByTestId('bot-llm-role-section');
-        expect(within(section).getByText('模型配置')).toBeTruthy();
-        expect(await screen.findByTestId('bot-role-foreground')).toBeTruthy();
+    it('expands the four role rows under 自定义 and leaves the grounder unused', () => {
+        renderDialog();
+        chooseCustom();
+        expect(screen.getByTestId('bot-role-foreground')).toBeTruthy();
         expect(screen.getByTestId('bot-role-background')).toBeTruthy();
         expect(screen.getByTestId('bot-role-computer_use')).toBeTruthy();
         expect(screen.getByTestId('bot-role-grounder')).toBeTruthy();
-        expect(screen.getByRole('checkbox', { name: '前台跟随 Hub' })).toHaveProperty('checked', true);
-        expect(screen.getByRole('checkbox', { name: '后台跟随 Hub' })).toHaveProperty('checked', true);
-        expect(screen.getByRole('checkbox', { name: '电脑操作跟随 Hub' })).toHaveProperty('checked', true);
+        expect(screen.queryByRole('checkbox', { name: '前台跟随 Hub' })).toBeNull();
+        expect(screen.queryByRole('checkbox', { name: '后台跟随 Hub' })).toBeNull();
+        expect(screen.queryByRole('checkbox', { name: '电脑操作跟随 Hub' })).toBeNull();
         expect(screen.getByRole('checkbox', { name: '不使用定位模型' })).toHaveProperty('checked', true);
-        // One-line labels: the hint sits beside the title, not in a following paragraph.
         const label = screen.getByTestId('bot-role-foreground').querySelector('.bot-role-assignments__label') as HTMLElement;
-        expect(label.className).toContain('bot-role-assignments__label');
         expect(label.querySelector('p')).toBeNull();
         expect(within(label).getByText('前台交互')).toBeTruthy();
         expect(within(label).getByText('规划与对话')).toBeTruthy();
     });
 
-    it('saves a pinned role through the existing profile API and keeps assistant assignments', async () => {
-        const { onSubmit } = renderDialog({ lang: 'en' });
-        const follow = await screen.findByRole('checkbox', { name: 'Foreground follows Hub' }) as HTMLInputElement;
-        fireEvent.click(follow);
-        fireEvent.click(screen.getByTestId('bot-role-assignments-save'));
-        await waitFor(() => expect(saveProfiles).toHaveBeenCalled());
-        const draft = saveProfiles.mock.calls[0][0] as unknown as { foreground: { inherit_hub?: boolean; model?: string }; assistant: { provider_id?: string; model?: string } };
-        expect(draft.foreground.inherit_hub).toBe(false);
-        expect(draft.foreground.model).toBe('auto');
-        expect(draft.assistant.provider_id).toBe('hub');
-        expect(draft.assistant.model).toBe('auto');
-        expect(onSubmit).not.toHaveBeenCalled();
+    it('saves the four roles from the dialog footer and does not write local assistant profiles', () => {
+        const { onSubmit } = renderDialog();
+        chooseCustom();
+        fireEvent.click(screen.getByTestId('bot-role-grounder-unused'));
+        fireEvent.click(screen.getByTestId('bot-llm-save'));
+        expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+            mode: 'custom',
+            name: 'DeepSeek',
+            model: 'deepseek-chat',
+            roles: expect.objectContaining({
+                foreground: expect.objectContaining({ name: 'DeepSeek', model: 'deepseek-chat', key: 'sk-ds' }),
+                background: expect.objectContaining({ name: 'DeepSeek', model: 'deepseek-chat' }),
+                computer_use: expect.objectContaining({ name: 'DeepSeek', model: 'deepseek-chat' }),
+                grounder: expect.objectContaining({ name: 'DeepSeek', model: 'deepseek-chat' }),
+            }),
+        }));
+        expect(saveProfiles).not.toHaveBeenCalled();
     });
 
-    it('does not submit the provider setting when Enter is pressed in a role row', async () => {
-        const { onSubmit } = renderDialog({ lang: 'en' });
-        const follow = await screen.findByRole('checkbox', { name: 'Foreground follows Hub' });
-        fireEvent.keyDown(follow, { key: 'Enter' });
+    it('does not submit when Enter is pressed in a role row', () => {
+        const { onSubmit } = renderDialog({ initialMode: 'custom', initialName: 'DeepSeek', initialModel: 'deepseek-chat' });
+        fireEvent.keyDown(screen.getByTestId('bot-role-foreground-provider'), { key: 'Enter' });
         expect(onSubmit).not.toHaveBeenCalled();
     });
 });

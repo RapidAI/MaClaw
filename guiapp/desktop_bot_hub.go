@@ -478,26 +478,73 @@ func (a *App) DeleteDesktopBot(botID string) error {
 // The provider key stays on the server. This struct carries enough to describe
 // the selection to the person who made it, and nothing that would put a
 // credential into the frontend bundle or the chat transcript.
+//
+// Name, URL and Model mirror the foreground role so older code that still
+// reads one provider keeps working. Roles is the choice itself when Mode is
+// custom; it is absent in default mode.
 type DesktopBotLLM struct {
-	Mode    string `json:"mode"`
-	Name    string `json:"name,omitempty"`
-	URL     string `json:"url,omitempty"`
-	Model   string `json:"model,omitempty"`
-	KeySet  bool   `json:"key_set"`
-	Warning string `json:"warning,omitempty"`
+	Mode    string              `json:"mode"`
+	Name    string              `json:"name,omitempty"`
+	URL     string              `json:"url,omitempty"`
+	Model   string              `json:"model,omitempty"`
+	KeySet  bool                `json:"key_set"`
+	Roles   *DesktopBotLLMRoles `json:"roles,omitempty"`
+	Warning string              `json:"warning,omitempty"`
 }
 
-// DesktopBotLLMInput is one save of that setting. A blank Mode, or "default",
-// drops the stored provider and restores the configured default. A blank Key
-// keeps the key already stored for this provider.
+// DesktopBotLLMRole is one role as the settings UI reads it back.
+type DesktopBotLLMRole struct {
+	Unused   bool   `json:"unused,omitempty"`
+	Official bool   `json:"official,omitempty"`
+	Name     string `json:"name,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	WireAPI  string `json:"wire_api,omitempty"`
+	KeySet   bool   `json:"key_set,omitempty"`
+}
+
+// DesktopBotLLMRoles is the four roles of a custom choice.
+type DesktopBotLLMRoles struct {
+	Foreground  DesktopBotLLMRole `json:"foreground"`
+	Background  DesktopBotLLMRole `json:"background"`
+	ComputerUse DesktopBotLLMRole `json:"computer_use"`
+	Grounder    DesktopBotLLMRole `json:"grounder"`
+}
+
+// DesktopBotLLMInput is one save of that setting. Mode "default" returns
+// every role to the service. Mode "custom" with Roles sets each role. Mode
+// "custom" without Roles is the older single-provider body. A blank Key keeps
+// the key already stored for that role's provider when the name is unchanged.
 type DesktopBotLLMInput struct {
-	Mode     string `json:"mode"`
-	Name     string `json:"name"`
-	URL      string `json:"url"`
-	Key      string `json:"key"`
-	Model    string `json:"model"`
-	Protocol string `json:"protocol"`
-	WireAPI  string `json:"wire_api"`
+	Mode     string                   `json:"mode"`
+	Name     string                   `json:"name,omitempty"`
+	URL      string                   `json:"url,omitempty"`
+	Key      string                   `json:"key,omitempty"`
+	Model    string                   `json:"model,omitempty"`
+	Protocol string                   `json:"protocol,omitempty"`
+	WireAPI  string                   `json:"wire_api,omitempty"`
+	Roles    *DesktopBotLLMRolesInput `json:"roles,omitempty"`
+}
+
+// DesktopBotLLMRoleInput is one role in a custom save.
+type DesktopBotLLMRoleInput struct {
+	Unused   bool   `json:"unused,omitempty"`
+	Official bool   `json:"official,omitempty"`
+	Name     string `json:"name,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Key      string `json:"key,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	WireAPI  string `json:"wire_api,omitempty"`
+}
+
+// DesktopBotLLMRolesInput is the four roles sent with a custom save.
+type DesktopBotLLMRolesInput struct {
+	Foreground  DesktopBotLLMRoleInput `json:"foreground"`
+	Background  DesktopBotLLMRoleInput `json:"background"`
+	ComputerUse DesktopBotLLMRoleInput `json:"computer_use"`
+	Grounder    DesktopBotLLMRoleInput `json:"grounder"`
 }
 
 // DesktopBotCredits is the system-free allowance configured for this owner's
@@ -522,6 +569,8 @@ func (a *App) GetDesktopBotCredits() (*DesktopBotCredits, error) {
 }
 
 // GetDesktopBotLLM reads the model setting this user's bots run on.
+// The first successful read also copies any local role pins into that setting,
+// once, so a choice made in the old role rows is not dropped.
 func (a *App) GetDesktopBotLLM() (*DesktopBotLLM, error) {
 	var out DesktopBotLLM
 	if err := a.desktopBotCall(context.Background(), http.MethodGet, "/api/v1/bots/llm", nil, &out, 20*time.Second); err != nil {
@@ -530,7 +579,7 @@ func (a *App) GetDesktopBotLLM() (*DesktopBotLLM, error) {
 	if strings.TrimSpace(out.Mode) == "" {
 		out.Mode = "default"
 	}
-	return &out, nil
+	return a.migrateDesktopBotLLMRoles(out)
 }
 
 // SaveDesktopBotLLM applies a provider to every bot of this user and returns

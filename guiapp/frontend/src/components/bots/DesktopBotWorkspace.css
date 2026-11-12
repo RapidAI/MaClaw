@@ -3700,6 +3700,13 @@ button.desktop-bot-feed__file {
     gap: 10px;
 }
 
+/* 自定义展开的角色行已经在选项卡片里，不再画第二道分隔。 */
+.bot-llm-dialog__roles.is-inline {
+    margin-top: 10px;
+    padding-top: 0;
+    border-top: none;
+}
+
 .bot-role-assignments {
     display: flex;
     flex-direction: column;
