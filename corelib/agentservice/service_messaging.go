@@ -428,6 +428,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	if runs, err := s.store.ListRuns(run.TenantID, run.UserID, run.InstanceID); err == nil {
 		history = dropAbandonedUserTurns(history, runs, userMsg.ID)
 	}
+	history = s.withParentSessionHistory(p, instanceID, sess, history)
 	execMsg := userMsg
 	execMsg.Content = effectiveContent
 	execCtx, cancelExec := context.WithCancel(ctx)

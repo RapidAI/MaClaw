@@ -73,6 +73,8 @@ type desktopBotRelayResult struct {
 	// Anything but "done" means the task is not finished, whatever the run
 	// status says. "running" is a handed-off job the watcher still owns.
 	TaskOutcome string
+	// Session is the srv conversation Hub admitted this turn into.
+	Session string
 }
 
 // desktopBotRelayOverride is set by tests. Production posts to Hub.
@@ -84,6 +86,44 @@ var desktopBotExchangeOverride func(ctx context.Context, method, path string, bo
 
 // desktopBotWatchOverride is set by tests that drive a timeout without Hub.
 var desktopBotWatchOverride func(ctx context.Context, botID string) (novncURL string, userControl bool, attentionReason string, err error)
+
+// desktopContinueByRequest is the srv conversation a send should continue,
+// keyed by the per-turn request id. SendDesktopBotTaskTo records it; the
+// Hub post reads it. An empty value is not stored.
+var desktopContinueByRequest sync.Map
+
+func setDesktopContinueSession(requestID, session string) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+	session = strings.TrimSpace(session)
+	if session == "" {
+		desktopContinueByRequest.Delete(requestID)
+		return
+	}
+	desktopContinueByRequest.Store(requestID, session)
+}
+
+func takeDesktopContinueSession(requestID string) string {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return ""
+	}
+	val, ok := desktopContinueByRequest.Load(requestID)
+	if !ok {
+		return ""
+	}
+	session, _ := val.(string)
+	return strings.TrimSpace(session)
+}
+
+func clearDesktopContinueSession(requestID string) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID != "" {
+		desktopContinueByRequest.Delete(requestID)
+	}
+}
 
 // desktopBotViewSink and desktopBotResultSink record what the relay would
 // show. Production leaves them nil; emitEvent still runs.
@@ -1196,6 +1236,7 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		unregisterActiveDesktopRun(botID, requestID, run.RunID)
 		a.publishDesktopRunDriving(botID)
 		a.publishDesktopRunState(botID, requestID, run.RunID, "done")
+		clearDesktopContinueSession(requestID)
 	}()
 	started := time.Now()
 	ctx, cancel := context.WithCancel(desktopSurfaceContext())
@@ -1283,6 +1324,7 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 	// The page keeps the run id on the settled bubble, so another client's
 	// copy of the same result (delivery or sync) is recognised as this one.
 	resp.RunID = strings.TrimSpace(run.RunID)
+	resp.Conversation = strings.TrimSpace(result.Session)
 	a.emitAIAssistantResponse(requestID, resp)
 	if err == nil && strings.TrimSpace(run.RunID) != "" {
 		noteDesktopRunShown(botID, run.RunID)
@@ -1486,10 +1528,14 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		// key, which is the only condition under which a lost admission
 		// answer may be sent again.
 		ClientMessageID string `json:"client_message_id"`
+		Session         string `json:"session"`
 	}
 	body := map[string]any{"content": text, "client_message_id": requestID}
 	if phase = strings.TrimSpace(phase); phase != "" {
 		body["phase"] = phase
+	}
+	if session := takeDesktopContinueSession(requestID); session != "" {
+		body["continue_session"] = session
 	}
 	path := "/api/v1/bots/" + url.PathEscape(strings.TrimSpace(botID)) + "/messages"
 	// Prefer returns as soon as the run exists. An older Hub ignores it and
@@ -1598,7 +1644,9 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 			return desktopBotRelayResult{}, err
 		}
 		a.noteArmedDesktopBotCross(botID, runID)
-		return a.waitDesktopBotRun(ctx, botID, runID)
+		result, waitErr := a.waitDesktopBotRun(ctx, botID, runID)
+		result.Session = strings.TrimSpace(out.Session)
+		return result, waitErr
 	}
 	botlog.Write(botID, "gui.admit", nil,
 		"mode", "sync",
@@ -1606,7 +1654,9 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		"phase", phase,
 		"text_len", strconv.Itoa(len(strings.TrimSpace(out.Text))),
 	)
-	return a.desktopRelayFromWire(out.Text, out.SendToUser, out.NovncURL, out.AttentionReason, out.AskUserInputType, out.AskUserSecretName, out.AskUserQuestion, out.AskUserOptionsJSON, out.Handoff, out.Images, out.Files, out.Error, out.TaskOutcome)
+	result, wireErr := a.desktopRelayFromWire(out.Text, out.SendToUser, out.NovncURL, out.AttentionReason, out.AskUserInputType, out.AskUserSecretName, out.AskUserQuestion, out.AskUserOptionsJSON, out.Handoff, out.Images, out.Files, out.Error, out.TaskOutcome)
+	result.Session = strings.TrimSpace(out.Session)
+	return result, wireErr
 }
 
 // desktopBotReconnectingLine is the status while Hub cannot be reached and

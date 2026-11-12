@@ -2774,6 +2774,12 @@ func desktopBotLocalSessionKey(userID, instanceID string) string {
 // SendDesktopBotTask sends the command to that bot's MaClawSrv instance through Hub.
 // The GUI does not run the agent. The instance drives the user's cloud desktop.
 func (a *App) SendDesktopBotTask(botID, text, phase string) (*IMAgentResponse, error) {
+	return a.SendDesktopBotTaskTo(botID, text, phase, "")
+}
+
+// SendDesktopBotTaskTo is SendDesktopBotTask with the srv conversation the
+// person is following up in (or the bot id for a new, independent message).
+func (a *App) SendDesktopBotTaskTo(botID, text, phase, continueSession string) (*IMAgentResponse, error) {
 	if a == nil {
 		return nil, fmt.Errorf("AI assistant backend is unavailable")
 	}
@@ -2788,6 +2794,7 @@ func (a *App) SendDesktopBotTask(botID, text, phase string) (*IMAgentResponse, e
 	}
 	phase = strings.TrimSpace(phase)
 	requestID := fmt.Sprintf("desktop-bot-%d", time.Now().UnixNano())
+	setDesktopContinueSession(requestID, continueSession)
 	log.Printf("[desktop bot] enqueue request_id=%s user=%q instance=%q phase=%s text_len=%d", requestID, userID, instanceID, phase, len(text))
 	botlog.Write(botID, "gui.enqueue", nil,
 		"request_id", requestID,

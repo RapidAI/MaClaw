@@ -5139,6 +5139,10 @@ export function SendDesktopBotTask(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendDesktopBotTask'](arg1, arg2, arg3);
 }
 
+export function SendDesktopBotTaskTo(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SendDesktopBotTaskTo'](arg1, arg2, arg3, arg4);
+}
+
 export function UnderstandDesktopBotTask(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['UnderstandDesktopBotTask'](arg1, arg2, arg3, arg4, arg5, arg6);
 }

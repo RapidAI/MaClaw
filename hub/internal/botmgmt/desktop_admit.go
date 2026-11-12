@@ -69,19 +69,53 @@ type desktopAdmitState struct {
 	session string
 }
 
-// desktopAskOwner is a conversation whose run ended with a question.
+// desktopAskOwner is the conversation a later message may continue: a run
+// that ended with a question, or any recently finished task thread.
 type desktopAskOwner struct {
 	session string
 	at      time.Time
+	// asks is true when the run ended by asking the person; that keeps the
+	// next message for longer than a finished thread that did not ask.
+	asks bool
 }
 
 // desktopAskOwnerFor is how long a question keeps the next message.
 const desktopAskOwnerFor = 6 * time.Hour
 
+// desktopRecentThreadFor is how long a finished task thread stays sticky
+// for a follow-up that does not name the conversation itself.
+const desktopRecentThreadFor = 30 * time.Minute
+
 // desktopThreadSession is a per-run conversation of one bot. Runs that go
 // beside the main conversation get one, so their histories do not interleave.
 func desktopThreadSession(botID, clientMessageID string) string {
 	return strings.TrimSpace(botID) + "#t-" + strings.TrimSpace(clientMessageID)
+}
+
+// desktopSessionBelongsToBot reports a srv conversation of this bot: the
+// main one (the bot id) or a thread this bot opened (bot#…).
+func desktopSessionBelongsToBot(botID, session string) bool {
+	botID = strings.TrimSpace(botID)
+	session = strings.TrimSpace(session)
+	return botID != "" && session != "" && (session == botID || strings.HasPrefix(session, botID+"#"))
+}
+
+// desktopSessionIsThread reports a per-run conversation of this bot, not
+// the bot's main one.
+func desktopSessionIsThread(botID, session string) bool {
+	botID = strings.TrimSpace(botID)
+	session = strings.TrimSpace(session)
+	return botID != "" && session != botID && strings.HasPrefix(session, botID+"#")
+}
+
+// desktopCanonicalContinue is a continue_session the caller named, if it
+// is a conversation of this bot. Anything else is ignored.
+func desktopCanonicalContinue(botID, session string) string {
+	session = strings.TrimSpace(session)
+	if !desktopSessionBelongsToBot(botID, session) {
+		return ""
+	}
+	return session
 }
 
 // desktopTurnOf names a turn for hold ownership.
@@ -255,15 +289,26 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 	return release, err
 }
 
-// claimDesktopTurnFor is claimDesktopTurn that also says how many sibling
+// claimDesktopTurnFor is claimDesktopTurnPref with no continue session.
+func (s *Service) claimDesktopTurnFor(tenantID, userID, botID, clientMessageID, task, phase string) (func(), desktopClaim, error) {
+	return s.claimDesktopTurnPref(tenantID, userID, botID, clientMessageID, task, phase, "")
+}
+
+// claimDesktopTurnPref is claimDesktopTurn that also says how many sibling
 // runs are live and which conversation the post goes to:
 //   - the same turn key again keeps the conversation it had;
-//   - a run that ended with a question owns the next message (its answer);
+//   - a continue_session the caller named (the conversation they are
+//     looking at or replying in) is used when it belongs to this bot; the
+//     bot id itself means a new, independent message (main, or a new thread
+//     if main is already busy);
+//   - otherwise a recently finished task thread stays sticky for a short
+//     window, and a run that ended with a question keeps that window longer,
+//     so a follow-up goes back to that thread even when it did not ask;
 //   - otherwise the bot's main conversation, unless a live run is already in
 //     it, in which case the post gets its own thread.
 //
 // Hub-started turns (delegates, wakes) keep their own threads as before.
-func (s *Service) claimDesktopTurnFor(tenantID, userID, botID, clientMessageID, task, phase string) (func(), desktopClaim, error) {
+func (s *Service) claimDesktopTurnPref(tenantID, userID, botID, clientMessageID, task, phase, preferSession string) (func(), desktopClaim, error) {
 	noop := func() {}
 	if s == nil {
 		return noop, desktopClaim{}, ErrSettingsUnavailable
@@ -351,14 +396,22 @@ func (s *Service) claimDesktopTurnFor(tenantID, userID, botID, clientMessageID, 
 		case hubStartedTurn(clientMessageID):
 			claim.session = desktopSessionKey(botID, clientMessageID)
 		default:
-			if owner, ok := s.desktopAskSession[botPrefix]; ok {
-				delete(s.desktopAskSession, botPrefix)
-				if now.Sub(owner.at) <= desktopAskOwnerFor && owner.session != "" {
-					claim.session = owner.session
-				}
-			}
-			if claim.session == "" {
+			prefer := desktopCanonicalContinue(botID, preferSession)
+			switch {
+			case prefer == botID:
+				// A clearly new message: do not follow the sticky thread.
 				if mainBusy && clientMessageID != "" {
+					claim.session = desktopThreadSession(botID, clientMessageID)
+				} else {
+					claim.session = botID
+				}
+				delete(s.desktopAskSession, botPrefix)
+			case prefer != "":
+				claim.session = prefer
+			default:
+				if sticky, ok := s.stickyDesktopSession(botPrefix, now); ok {
+					claim.session = sticky
+				} else if mainBusy && clientMessageID != "" {
 					claim.session = desktopThreadSession(botID, clientMessageID)
 				} else {
 					claim.session = botID
@@ -1335,12 +1388,15 @@ func (s *Service) botDesktopUsers(tenantID, userID string) func(string) string {
 	}
 }
 
-// noteDesktopAskOwner remembers the conversation of a run that ended asking
-// the person, so their next message (the answer) goes back to that run's
-// thread even when other runs started meanwhile. A run that ends without a
-// question gives up the claim if it held it.
+// noteDesktopAskOwner remembers the conversation a later message may
+// continue. A run that ended asking the person keeps the next message for
+// desktopAskOwnerFor. A finished task thread stays sticky for
+// desktopRecentThreadFor, even when it did not ask, so a follow-up about
+// that work goes back to the same thread. A finish in the main conversation
+// that did not ask leaves a recent thread's claim alone.
 func (s *Service) noteDesktopAskOwner(tenantID, userID, botID, session string, reply Reply) {
 	session = strings.TrimSpace(session)
+	botID = strings.TrimSpace(botID)
 	if s == nil || session == "" {
 		return
 	}
@@ -1349,14 +1405,39 @@ func (s *Service) noteDesktopAskOwner(tenantID, userID, botID, session string, r
 	key := desktopAdmitKey(tenantID, userID, botID, "")
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.desktopAskSession == nil {
+		s.desktopAskSession = map[string]desktopAskOwner{}
+	}
 	if asks {
-		if s.desktopAskSession == nil {
-			s.desktopAskSession = map[string]desktopAskOwner{}
-		}
-		s.desktopAskSession[key] = desktopAskOwner{session: session, at: s.now()}
+		s.desktopAskSession[key] = desktopAskOwner{session: session, at: s.now(), asks: true}
+		return
+	}
+	if desktopSessionIsThread(botID, session) {
+		s.desktopAskSession[key] = desktopAskOwner{session: session, at: s.now(), asks: false}
 		return
 	}
 	if owner, ok := s.desktopAskSession[key]; ok && owner.session == session {
 		delete(s.desktopAskSession, key)
 	}
+}
+
+// stickyDesktopSession is the conversation still holding the next message
+// of this bot, if its window has not run out. Callers hold s.mu.
+func (s *Service) stickyDesktopSession(botPrefix string, now time.Time) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	owner, ok := s.desktopAskSession[botPrefix]
+	if !ok || strings.TrimSpace(owner.session) == "" {
+		return "", false
+	}
+	window := desktopRecentThreadFor
+	if owner.asks {
+		window = desktopAskOwnerFor
+	}
+	if now.Sub(owner.at) > window {
+		delete(s.desktopAskSession, botPrefix)
+		return "", false
+	}
+	return owner.session, true
 }

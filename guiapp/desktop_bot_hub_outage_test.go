@@ -82,3 +82,38 @@ func TestDesktopDialFailedOnlyForConnectionsThatNeverOpened(t *testing.T) {
 		t.Fatal("a request that may have been sent was treated as never sent")
 	}
 }
+
+func TestRelayDesktopBotSendsContinueSession(t *testing.T) {
+	resetActiveDesktopRuns(t)
+	resetDesktopAdmitCancel()
+	t.Cleanup(func() {
+		desktopBotExchangeOverride = nil
+		clearDesktopContinueSession("turn-continue")
+	})
+	setDesktopContinueSession("turn-continue", "bot_3#t-k-b")
+	var gotBody map[string]any
+	desktopBotExchangeOverride = func(_ context.Context, method, path string, body any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+		if method == http.MethodPost && strings.HasSuffix(path, "/messages") {
+			if m, ok := body.(map[string]any); ok {
+				gotBody = m
+			}
+			fillDesktopBotDest(t, dest, map[string]any{
+				"accepted": true, "run_id": "run-c", "status": "running",
+				"client_message_id": "turn-continue", "session": "bot_3#t-k-b",
+			})
+			return http.StatusAccepted, nil
+		}
+		fillDesktopBotDest(t, dest, map[string]any{"text": "做好了", "status": "succeeded"})
+		return http.StatusOK, nil
+	}
+	got, err := (&App{}).relayDesktopBot(context.Background(), "bot_3", "把日期也加上", "execute", "turn-continue")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if gotBody["continue_session"] != "bot_3#t-k-b" {
+		t.Fatalf("body = %#v", gotBody)
+	}
+	if got.Session != "bot_3#t-k-b" {
+		t.Fatalf("result session = %q", got.Session)
+	}
+}

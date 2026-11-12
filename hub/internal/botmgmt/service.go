@@ -201,8 +201,8 @@ type Service struct {
 	// persisted: after a restart they are empty and the old rules apply.
 	desktopHoldTurn     map[string]string
 	desktopKeyboardTurn map[string]string
-	// desktopAskSession is, per bot, the conversation of the run that last
-	// ended asking the person; their next message answers it there.
+	// desktopAskSession is, per bot, the conversation a later message may
+	// continue: a question just asked, or a recently finished task thread.
 	desktopAskSession map[string]desktopAskOwner
 	// desktopAdminView is when an admin last opened this user's desktop in
 	// the admin console. While that hold is fresh, a bot command finishing

@@ -11,6 +11,7 @@ import { DialogProvider } from '../CustomDialog';
 // strict parameter list type-checks for all call sites.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sendTask = vi.hoisted(() => vi.fn<(...args: any[]) => any>());
+const continueSessionSent = vi.hoisted(() => vi.fn<(session: string) => void>());
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const understandTask = vi.hoisted(() => vi.fn<(...args: any[]) => any>());
 const classifyWorkStop = vi.hoisted(() => vi.fn<(...args: any[]) => any>());
@@ -104,6 +105,10 @@ const syncLiveWatchView = (payload: unknown) => {
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
     SendDesktopBotTask: (...args: unknown[]) => sendTask(...args),
+    SendDesktopBotTaskTo: (botId: string, text: string, phase: string, continueSession?: string) => {
+        continueSessionSent(String(continueSession || ''));
+        return sendTask(botId, text, phase);
+    },
     UnderstandDesktopBotTask: (content: string, phase: string, lang: string, earlier?: string[], persona?: string, catalog?: string) => understandTask(content, phase, lang, earlier || [], persona || '', catalog || ''),
     ClassifyDesktopWorkStop: (text: string, lang: string) => classifyWorkStop(text, lang),
     ArmDesktopBotSchedule: (...args: unknown[]) => armSchedule(...(args as [])) || 'task-1',
@@ -261,6 +266,7 @@ beforeEach(() => {
     // Most cases check the noVNC URL; the H.264 player has its own case.
     localStorage.setItem('maclaw.desktop.viewer', 'vnc');
     sendTask.mockReset();
+    continueSessionSent.mockReset();
     getSupplements.mockReset();
     getSupplements.mockResolvedValue([]);
     pullCross.mockReset();
@@ -402,6 +408,34 @@ describe('DesktopBotWorkspace', () => {
         });
         expect(await screen.findByText('已在这个浏览器里继续')).toBeTruthy();
         expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+    });
+
+    it('sends a follow-up to a finished thread and a new message to main', async () => {
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_1: [{
+                    id: 'm-thread',
+                    role: 'assistant',
+                    content: '报表在桌上',
+                    pending: false,
+                    conversation: 'bot_1#t-k-b',
+                    conversationAt: Date.now(),
+                }],
+            },
+        }));
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-follow', deferred: true, session_key: 'alice:bot_1' });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        expect(await screen.findByTestId('desktop-bot-continue')).toBeTruthy();
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '把日期也加上' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(continueSessionSent).toHaveBeenCalledWith('bot_1#t-k-b'));
+        fireEvent.click(screen.getByTestId('desktop-bot-continue-clear'));
+        expect(screen.queryByTestId('desktop-bot-continue')).toBeNull();
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '另外一件事' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(continueSessionSent).toHaveBeenCalledWith('bot_1'));
     });
 
     it('sends a choice label as written, including 停下, in that turn phase', async () => {

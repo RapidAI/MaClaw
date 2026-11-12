@@ -2450,6 +2450,29 @@
     opacity: 0.55;
 }
 
+.desktop-bot-chat__continue {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0 0 0.4rem;
+    font-size: 0.8rem;
+    color: var(--desktop-bot-muted, inherit);
+}
+.desktop-bot-chat__continue-clear,
+.desktop-bot-chat__continue-pick {
+    border: 0;
+    background: none;
+    padding: 0;
+    color: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+    font: inherit;
+}
+.desktop-bot-chat__continue-pick {
+    display: block;
+    margin: 0.2rem 0 0.35rem;
+    font-size: 0.8rem;
+}
 .desktop-bot-chat .desktop-bot-chat__hint {
     margin: 6px var(--desktop-bot-gutter, 8%) 14px;
     color: var(--theme-text-muted, #98a2b3);

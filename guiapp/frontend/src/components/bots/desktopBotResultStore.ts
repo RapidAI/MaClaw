@@ -169,6 +169,11 @@ export function handleDesktopBotView(payload: unknown) {
     });
 }
 
+function conversationFrom(data: Record<string, unknown>): string | undefined {
+    const session = String(data.conversation || data.Conversation || '').trim();
+    return session || undefined;
+}
+
 export function handleDesktopBotResult(payload: unknown) {
     let data: Record<string, unknown>;
     try {
@@ -208,6 +213,7 @@ export function handleDesktopBotResult(payload: unknown) {
         files: attached.files,
         localPaths: attached.localPaths,
         runId: String(data.run_id || data.RunID || '').trim() || undefined,
+        conversation: conversationFrom(data),
     });
     if (!result.silent) reportDesktopBotCrossResult(resultUser, resultBot, result.content);
     if (result.failed && !ask && settledId) rewordFailedTurn(resultUser, resultBot, settledId, shown, String(result.content || ''));
@@ -254,6 +260,7 @@ export function handleDesktopBotReport(payload: unknown) {
         localPaths: attached.localPaths,
         phase: reportedTurnPhase(data),
         runId: String(data.run_id || data.RunID || '').trim() || undefined,
+        conversation: conversationFrom(data),
     });
 }
 

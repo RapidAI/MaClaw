@@ -905,6 +905,12 @@ export interface DesktopBotMessage {
     // The Hub run this bubble settled. Another client's copy of the same
     // result carries it too, so the two are recognised as one turn.
     runId?: string;
+    // The srv conversation this turn ran in (the bot id, or a per-run
+    // thread). A follow-up from this chat sends it as continue_session.
+    conversation?: string;
+    // When this conversation was last attached to the bubble, for the
+    // short sticky window on the page.
+    conversationAt?: number;
     // Set on a bubble another client of this person wrote (multi-client
     // sync): the Hub journal's first sequence and that client's id. Such a
     // bubble is shown only; this client never sends or recovers it.
@@ -1332,7 +1338,14 @@ export function notePendingBotDesktop(userId: string, botId: string, patch: { ha
 
 // settlePendingBotReply records the instance result on the pending reply.
 // The bots page may already be closed when MaClawSrv finishes.
-export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; runId?: string }): string {
+
+function withConversation<T extends { conversation?: string; conversationAt?: number }>(previous: DesktopBotMessage, patch: T, now = Date.now()): Pick<DesktopBotMessage, 'conversation' | 'conversationAt'> {
+    const session = String(patch.conversation || previous.conversation || '').trim();
+    if (!session) return {};
+    return { conversation: session, conversationAt: Number(patch.conversationAt || previous.conversationAt || 0) || now };
+}
+
+export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; runId?: string; conversation?: string; conversationAt?: number }): string {
     const current = messagesForBot(userId, botId);
     const index = pendingBotIndex(current, patch.requestId || '');
     if (index < 0) return '';
@@ -1356,6 +1369,7 @@ export function settlePendingBotReply(userId: string, botId: string, patch: { co
         localPaths,
         files: patch.failed || localPaths ? undefined : desktopBotFiles(patch.files),
         runId: (patch.runId || '').trim() || previous.runId,
+        ...withConversation(previous, patch),
     };
     saveBotMessages(userId, botId, foldPlanConfirmation(next, index));
     return previous.id;
@@ -1537,7 +1551,7 @@ export function takeDesktopBotCrossRun(userId: string, botId: string): DesktopBo
 // The same request id is written once, so the open page and the store can
 // both hear the event. A scheduled report passes no phase, so it does not
 // take the confirm control. A destructive delegate passes phase plan.
-export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean; feed?: BotFeedMeta; runId?: string }) {
+export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean; feed?: BotFeedMeta; runId?: string; conversation?: string; conversationAt?: number }) {
     const requestId = (patch.requestId || '').trim();
     const runId = (patch.runId || '').trim();
     const current = messagesForBot(userId, botId);
@@ -1568,6 +1582,7 @@ export function appendDesktopBotReport(userId: string, botId: string, patch: { c
         chat: patch.chat === true ? true : undefined,
         feed: patch.feed,
         runId: runId || undefined,
+        ...withConversation({} as DesktopBotMessage, patch),
     };
     saveBotMessages(userId, botId, [...current, message]);
 }

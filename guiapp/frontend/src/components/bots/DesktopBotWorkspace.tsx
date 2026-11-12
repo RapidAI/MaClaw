@@ -88,7 +88,7 @@ import {
     OpenFileOrShowInFolder,
     ReadDesktopBotShot,
     SaveBotSecret,
-    SendDesktopBotTask,
+    SendDesktopBotTaskTo,
     ShowItemInFolder,
     UnderstandDesktopBotTask,
     ClassifyDesktopWorkStop,
@@ -97,6 +97,7 @@ import {
 } from '../../../wailsjs/go/main/App';
 import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, DESKTOP_BOT_LATE_ACK_BUDGET_MS, desktopBotAck, desktopBotFoldFallback, desktopBotWithFoldHead, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotStoppingLine, desktopBotUnderstandingLabel, desktopBotVariedFallback, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
+import { continueSessionForSend, desktopThreadOf } from './desktopContinueSession';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
 import { wakeFailureReason } from './desktopWake';
@@ -757,7 +758,7 @@ function storedQueuePhase(item: DesktopBotMessage): BotPhase {
 // dispatched is the latest message, so it is not repeated here. A message
 // still waiting in the queue is a later job, not context for this one.
 type PreparedTurn = { told: string; instruction: string; pace: 'confirm' | 'direct'; persona: string; earlier: string[] };
-type QueuedSend = { text: string; phase: BotPhase; verbatim?: boolean; literal?: boolean; prepared?: PreparedTurn; userText?: string; crossNoteId?: string; claimed?: boolean };
+type QueuedSend = { text: string; phase: BotPhase; verbatim?: boolean; literal?: boolean; prepared?: PreparedTurn; userText?: string; crossNoteId?: string; claimed?: boolean; continueSession?: string };
 
 function sameContext(left: string[], right: string[]): boolean {
     return left.length === right.length && left.every((item, index) => item === right[index]);
@@ -2354,6 +2355,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // background job, next watcher check). Shown in the status row, never
     // as a chat message (Daniel 11-11 21:10).
     const [statusByBot, setStatusByBot] = useState<Record<string, { text: string; runId: string }>>({});
+    // A thread the person is following up in, or {main:true} for a clearly
+    // new message. Empty means the last recent thread (or main) decides.
+    const [continueForceByBot, setContinueForceByBot] = useState<Record<string, { session?: string; main?: boolean }>>({});
+    const continueForceByBotRef = useRef(continueForceByBot);
+    continueForceByBotRef.current = continueForceByBot;
     const [listFailed, setListFailed] = useState(false);
     // The picture follows the panel, not the desktop address. 'auto' is a screen
     // handoff, 'user' is the identity chip / 人类接管, 'off' is 收起. Unset stays closed.
@@ -3762,6 +3768,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         localPaths: attached.localPaths,
                         files: attached.files,
                         runId: String(data.run_id || data.RunID || '').trim() || item.runId,
+                        conversation: String(data.conversation || data.Conversation || item.conversation || '').trim() || item.conversation,
+                        conversationAt: String(data.conversation || data.Conversation || item.conversation || '').trim() ? Date.now() : item.conversationAt,
                     } : item);
                     commit(botId, foldPlanConfirmation(next, next.findIndex(item => item.id === pending.messageId)));
                     if (!result.silent) reportDesktopBotCrossResult(userId, botId, result.content);
@@ -4894,7 +4902,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const prior = messagesForBot(userId, botId);
         commit(botId, [...prior, { id: messageID(), role: 'assistant', content: desktopBotTypedConfirmSentence(lang), chat: true }]);
     };
-    const startTask = (botId: string, content: string, phase: BotPhase, mode: 'now' | 'fromQueue', verbatim = false, prepared?: PreparedTurn, literal = false) => {
+    const startTask = (botId: string, content: string, phase: BotPhase, mode: 'now' | 'fromQueue', verbatim = false, prepared?: PreparedTurn, literal = false, continueSession = '') => {
         // A stop watch left from an earlier stop belongs to that stop. It
         // must not release or answer for the job starting now.
         const leftover = stopWatchRef.current.get(botId);
@@ -5628,7 +5636,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 }));
                 upgradeLine(ownerId, botId, assistantMessage.id, 'queued', sentence, content.trim());
                 const queued = queueRef.current.get(botId) || [];
-                queued.push({ text: instruction, phase: sendPhase, verbatim: true, literal, userText: content.trim() });
+                queued.push({ text: instruction, phase: sendPhase, verbatim: true, literal, userText: content.trim(), continueSession });
                 queueRef.current.set(botId, queued);
                 return;
             }
@@ -5661,7 +5669,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             try {
                 // A nil Go struct serializes to null; treat it as an empty result
                 // instead of crashing the send path reading fields off it.
-                const response = (await SendDesktopBotTask(botId, instruction, sendPhase) ?? {}) as { request_id?: string; RequestID?: string; deferred?: boolean; Deferred?: boolean; text?: string; Text?: string; error?: string; Error?: string; send_to_user?: string; SendToUser?: string };
+                const response = (await SendDesktopBotTaskTo(botId, instruction, sendPhase, continueSession) ?? {}) as { request_id?: string; RequestID?: string; deferred?: boolean; Deferred?: boolean; text?: string; Text?: string; error?: string; Error?: string; send_to_user?: string; SendToUser?: string };
                 if (ownerLeft()) {
                     pending.settled = true;
                     pendingRef.current.delete(ticket);
@@ -5867,7 +5875,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 return copy;
             });
             commit(botId, next);
-            startTask(botId, item.text, item.phase, 'fromQueue', item.verbatim === true, item.prepared, item.literal === true);
+            startTask(botId, item.text, item.phase, 'fromQueue', item.verbatim === true, item.prepared, item.literal === true, item.continueSession || '');
         };
         // A handed-off order waits out the turn already on screen. Only this
         // branch is async. Everything else still starts in this turn.
@@ -6196,12 +6204,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
     };
 
-    const send = async (preset?: string, phase: BotPhase = 'plan', verbatim = false, prepared?: PreparedTurn, literal = false) => {
+    const send = async (preset?: string, phase: BotPhase = 'plan', verbatim = false, prepared?: PreparedTurn, literal = false, continueIn?: string) => {
         if (!selected) return;
         if (!preset && secretOpenRef.current) return;
         const botId = selected.id;
         const content = (preset ?? command).trim();
         if (!content) return;
+        const forced = continueIn
+            ? { session: continueIn }
+            : continueForceByBotRef.current[botId];
+        const continueSession = continueSessionForSend(botId, messagesForBot(userId, botId), Date.now(), forced);
+        setContinueForceByBot(current => {
+            if (!current[botId]) return current;
+            const next = { ...current };
+            delete next[botId];
+            return next;
+        });
         // A choice keeps the label. The stop list and the reading do not see it.
         if (literal) verbatim = true;
         if (!literal && !preset && isDesktopBotClearCommand(content)) {
@@ -6465,7 +6483,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             })();
             return;
         }
-        startTask(botId, content, turnPhase, 'now', verbatim, prepared, literal);
+        startTask(botId, content, turnPhase, 'now', verbatim, prepared, literal, continueSession);
         if (!preset) setCommand('');
     };
 
@@ -7258,6 +7276,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             </button>
                                         )) : null}
                                     </div>
+                                    {message.role === 'assistant' && !message.pending && desktopThreadOf(selected.id, message.conversation) ? (
+                                        <button
+                                            type="button"
+                                            className="desktop-bot-chat__continue-pick"
+                                            data-testid="desktop-bot-continue-thread"
+                                            onClick={() => setContinueForceByBot(current => ({ ...current, [selected.id]: { session: message.conversation } }))}
+                                        >{lang.startsWith('zh') ? '继续这个任务' : 'Continue this task'}</button>
+                                    ) : null}
                                     {message.role === 'assistant' && message.options && message.options.length >= 2 && !message.optionsUsed && running ? (
                                         <DesktopBotOptionChips
                                             options={message.options}
@@ -7275,7 +7301,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             lang={lang}
                                             onSubmit={reply => {
                                                 markAskResolved(selected.id, message.id);
-                                                void send(reply, message.phase === 'execute' ? 'execute' : 'plan', true, undefined, true);
+                                                void send(reply, message.phase === 'execute' ? 'execute' : 'plan', true, undefined, true, message.conversation);
                                             }}
                                         />
                                     ) : null}
@@ -7355,6 +7381,18 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     <span className="desktop-bot-chat__processing-status" data-testid="desktop-bot-status-line" title={statusByBot[selected.id].text}>{statusByBot[selected.id].text}</span>
                                 ) : null}
                             </p>
+                        ) : null}
+                        {desktopThreadOf(selected.id, continueSessionForSend(selected.id, messages, Date.now(), continueForceByBot[selected.id])) ? (
+                            <div className="desktop-bot-chat__continue" data-testid="desktop-bot-continue">
+                                <span>{lang.startsWith('zh') ? '接着刚才的任务说' : 'Continuing the last task'}</span>
+                                <button
+                                    type="button"
+                                    className="desktop-bot-chat__continue-clear"
+                                    data-testid="desktop-bot-continue-clear"
+                                    aria-label={lang.startsWith('zh') ? '改为新的事' : 'Start a new message'}
+                                    onClick={() => setContinueForceByBot(current => ({ ...current, [selected.id]: { main: true } }))}
+                                >{lang.startsWith('zh') ? '改为新的事' : 'New message'}</button>
+                            </div>
                         ) : null}
                         <DesktopBotComposer
                             userId={userId}

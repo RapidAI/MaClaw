@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func newParallelService(t *testing.T) *Service {
@@ -71,9 +72,74 @@ func TestParallelRunsGetTheirOwnConversation(t *testing.T) {
 	runAns := adoptRun(t, svc, "k-ans", "run-ans")
 	finishRun(svc, runAns, Reply{SendToUser: "好了"})
 	finishRun(svc, runA, Reply{SendToUser: "做完了"})
-	_, next, err := svc.claimDesktopTurnFor("tenant-a", "alice", "bot_p", "k-next", "新的事", "execute")
+	// A clearly new message names the main conversation (the GUI sends the
+	// bot id when the person is not following up in a finished thread).
+	_, next, err := svc.claimDesktopTurnPref("tenant-a", "alice", "bot_p", "k-next", "新的事", "execute", "bot_p")
 	if err != nil || next.session != "bot_p" || next.siblings != 0 {
 		t.Fatalf("after all ended = %+v, %v", next, err)
+	}
+}
+
+// TestFollowUpAfterFinishedThreadStaysInThatConversation: a run that ended
+// without a question still keeps a follow-up in its thread (sticky window,
+// or a continue_session the caller named). A clearly new message goes to
+// main. After the window, a message with no hint also goes to main.
+func TestFollowUpAfterFinishedThreadStaysInThatConversation(t *testing.T) {
+	svc := newParallelService(t)
+	now := svc.now()
+	svc.Now = func() time.Time { return now }
+
+	_, a, err := svc.claimDesktopTurnFor("tenant-a", "alice", "bot_p", "k-a", "任务一", "execute")
+	if err != nil || a.session != "bot_p" {
+		t.Fatalf("first claim = %+v, %v", a, err)
+	}
+	runA := adoptRun(t, svc, "k-a", "run-a")
+	_, b, err := svc.claimDesktopTurnFor("tenant-a", "alice", "bot_p", "k-b", "任务二", "execute")
+	if err != nil || b.session != desktopThreadSession("bot_p", "k-b") {
+		t.Fatalf("second claim = %+v, %v", b, err)
+	}
+	runB := adoptRun(t, svc, "k-b", "run-b")
+	finishRun(svc, runB, Reply{SendToUser: "做完了，报表在桌上"})
+	finishRun(svc, runA, Reply{SendToUser: "主线也做完了"})
+
+	_, follow, err := svc.claimDesktopTurnFor("tenant-a", "alice", "bot_p", "k-follow", "把日期也加上", "execute")
+	if err != nil || follow.session != b.session {
+		t.Fatalf("follow-up after a finished thread = %+v, %v", follow, err)
+	}
+	runFollow := adoptRun(t, svc, "k-follow", "run-follow")
+	finishRun(svc, runFollow, Reply{SendToUser: "日期加上了"})
+
+	// The GUI named the main conversation: a new, independent message.
+	_, fresh, err := svc.claimDesktopTurnPref("tenant-a", "alice", "bot_p", "k-new", "另外一件事", "execute", "bot_p")
+	if err != nil || fresh.session != "bot_p" {
+		t.Fatalf("independent message = %+v, %v", fresh, err)
+	}
+	runNew := adoptRun(t, svc, "k-new", "run-new")
+	finishRun(svc, runNew, Reply{SendToUser: "新的事也做完了"})
+
+	// Another finished thread, then the sticky window runs out.
+	_, d, err := svc.claimDesktopTurnFor("tenant-a", "alice", "bot_p", "k-d", "主线再来一件", "execute")
+	if err != nil || d.session != "bot_p" {
+		t.Fatalf("main again = %+v, %v", d, err)
+	}
+	runD := adoptRun(t, svc, "k-d", "run-d")
+	_, e, err := svc.claimDesktopTurnFor("tenant-a", "alice", "bot_p", "k-e", "旁边再一件", "execute")
+	if err != nil || e.session != desktopThreadSession("bot_p", "k-e") {
+		t.Fatalf("another thread = %+v, %v", e, err)
+	}
+	runE := adoptRun(t, svc, "k-e", "run-e")
+	finishRun(svc, runE, Reply{SendToUser: "旁边做完了"})
+	finishRun(svc, runD, Reply{SendToUser: "主线做完了"})
+	now = now.Add(desktopRecentThreadFor + time.Minute)
+	_, late, err := svc.claimDesktopTurnFor("tenant-a", "alice", "bot_p", "k-late", "全新的一件", "execute")
+	if err != nil || late.session != "bot_p" {
+		t.Fatalf("after the sticky window = %+v, %v", late, err)
+	}
+
+	// Naming a finished thread still routes there after the window.
+	_, named, err := svc.claimDesktopTurnPref("tenant-a", "alice", "bot_p", "k-named", "再改一处", "execute", b.session)
+	if err != nil || named.session != b.session {
+		t.Fatalf("named thread after the window = %+v, %v", named, err)
 	}
 }
 

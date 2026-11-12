@@ -227,9 +227,11 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 			return
 		}
 		var in struct {
-			Content         string `json:"content"`
-			Phase           string `json:"phase"`
-			ClientMessageID string `json:"client_message_id"`
+			Content          string `json:"content"`
+			Phase            string `json:"phase"`
+			ClientMessageID  string `json:"client_message_id"`
+			ContinueSession  string `json:"continue_session"`
+			ClientSessionKey string `json:"client_session_key"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, botMessageBodyLimit)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
@@ -246,8 +248,12 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 			}
 			clientMessageID = key
 		}
+		continueSession := strings.TrimSpace(in.ContinueSession)
+		if continueSession == "" {
+			continueSession = strings.TrimSpace(in.ClientSessionKey)
+		}
 		if wantsAsyncBotReply(r) {
-			admission, err := svc.AdmitDesktopMessage(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase, clientMessageID)
+			admission, err := svc.AdmitDesktopMessageIn(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase, clientMessageID, continueSession)
 			if err != nil {
 				writeBotUserError(w, r, principal, err, clientMessageID)
 				return
@@ -258,13 +264,14 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 					"run_id":            admission.RunID,
 					"status":            "running",
 					"client_message_id": admission.ClientMessageID,
+					"session":           admission.Session,
 				})
 				return
 			}
 			writeJSON(w, http.StatusOK, admission.Reply)
 			return
 		}
-		reply, err := svc.PostMessagePhase(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase, clientMessageID)
+		reply, err := svc.PostMessagePhaseIn(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase, clientMessageID, continueSession)
 		if err != nil {
 			writeBotUserError(w, r, principal, err, clientMessageID)
 			return

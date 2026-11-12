@@ -116,7 +116,11 @@ type IMAgentResponse struct {
 	RunID                string `json:"run_id,omitempty"`
 	RequestID            string `json:"request_id,omitempty"`
 	SessionKey           string `json:"session_key,omitempty"` // userID for per-tab event routing (desktop only)
-	EventScopeID         string `json:"event_scope_id,omitempty"`
+	// Conversation is the srv conversation this desktop-bot turn ran in
+	// (the bot id, or a per-run thread). The page sends it back as
+	// continue_session when the person follows up in that task.
+	Conversation string `json:"conversation,omitempty"`
+	EventScopeID string `json:"event_scope_id,omitempty"`
 	// DesktopHandoffURL is the noVNC page for this user's cloud desktop.
 	DesktopHandoffURL string `json:"desktop_handoff_url,omitempty"`
 	// DesktopUserControl is true when the bot paused and the person operates the desktop.

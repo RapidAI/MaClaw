@@ -376,6 +376,10 @@ type BotAdmission struct {
 	RunID           string
 	Reply           Reply
 	ClientMessageID string
+	// Session is the srv conversation this post was admitted into (the bot
+	// id, or a per-run thread). The GUI echoes it back as continue_session
+	// when the person is following up in that conversation.
+	Session string
 }
 
 // PostMessagePhase is PostMessage with the bot turn phase. An empty phase
@@ -383,7 +387,14 @@ type BotAdmission struct {
 // working. plan and execute travel as message metadata bot_phase.
 // clientMessageID is the caller's per-turn key; see deliverDesktopMessage.
 func (s *Service) PostMessagePhase(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID string) (Reply, error) {
-	admission, err := s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, false)
+	return s.PostMessagePhaseIn(ctx, tenantID, userID, botID, content, phase, clientMessageID, "")
+}
+
+// PostMessagePhaseIn is PostMessagePhase with a continue_session: the srv
+// conversation the caller is following up in, or the bot id for a new
+// independent message.
+func (s *Service) PostMessagePhaseIn(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string) (Reply, error) {
+	admission, err := s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, continueSession, false)
 	return admission.Reply, err
 }
 
@@ -397,10 +408,15 @@ func (s *Service) PostMessagePhase(ctx context.Context, tenantID, userID, botID,
 // admission answer was lost can send the same key again without doubling
 // the work.
 func (s *Service) AdmitDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID string) (BotAdmission, error) {
-	return s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, true)
+	return s.AdmitDesktopMessageIn(ctx, tenantID, userID, botID, content, phase, clientMessageID, "")
 }
 
-func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID string, admit bool) (BotAdmission, error) {
+// AdmitDesktopMessageIn is AdmitDesktopMessage with a continue_session.
+func (s *Service) AdmitDesktopMessageIn(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string) (BotAdmission, error) {
+	return s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, continueSession, true)
+}
+
+func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string, admit bool) (BotAdmission, error) {
 	content = strings.TrimSpace(content)
 	phase = strings.TrimSpace(phase)
 	if content == "" {
@@ -445,7 +461,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	}
 	// One non-terminal admit per user. The reserve is visible to the next
 	// scan before the lock drops. The long message post stays outside it.
-	releaseTurn, claim, busyErr := s.claimDesktopTurnFor(tenantID, userID, botID, clientMessageID, content, phase)
+	releaseTurn, claim, busyErr := s.claimDesktopTurnPref(tenantID, userID, botID, clientMessageID, content, phase, continueSession)
 	if busyErr != nil {
 		traceBot(botID, "desktop_busy", busyErr, "dur_ms", traceMS(time.Since(pipelineStarted)))
 		return BotAdmission{}, busyErr
@@ -626,7 +642,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			"phase", phase,
 			"dur_ms", traceMS(time.Since(pipelineStarted)),
 		)
-		return BotAdmission{Accepted: true, RunID: payload.Run.ID, ClientMessageID: clientMessageID}, nil
+		return BotAdmission{Accepted: true, RunID: payload.Run.ID, ClientMessageID: clientMessageID, Session: claim.session}, nil
 	}
 	if !isolated && payload.DesktopHandoff && !opened && strings.TrimSpace(novnc) == "" {
 		// The worker asked this person to look. That open is the handoff,
@@ -659,7 +675,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"ask", traceYes(reply.AskUserQuestion != "" || reply.AskUserSecretName != ""),
 		"dur_ms", traceMS(time.Since(pipelineStarted)),
 	)
-	return BotAdmission{Settled: true, Reply: reply, ClientMessageID: clientMessageID}, nil
+	return BotAdmission{Settled: true, Reply: reply, ClientMessageID: clientMessageID, Session: claim.session}, nil
 }
 
 // desktopCommandBody is the MaClawSrv message result, whether it arrived on

@@ -2562,6 +2562,7 @@ export function SendAIAssistantMessage(arg1:main.AIAssistantSendRequest):Promise
 export function SendBtwQuery(arg1:string,arg2:string):Promise<main.IMAgentResponse>;
 
 export function SendDesktopBotTask(arg1:string,arg2:string,arg3:string):Promise<main.IMAgentResponse>;
+export function SendDesktopBotTaskTo(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.IMAgentResponse>;
 
 export function UnderstandDesktopBotTask(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string,arg6?:string):Promise<{told:string,instruction:string,pace?:string,persona?:string,reading?:string,schedule?:{name?:string,mode?:string,interval_minutes?:number,hour?:number,minute?:number,day_of_week?:number},cross?:{kind?:string,target?:string,text?:string,order?:string}}>;
 
