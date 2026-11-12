@@ -61,8 +61,8 @@ func TestDesktopRunBudgetStopsActions(t *testing.T) {
 		desktopRecordStep(context.Background(), scope, args, "ok", nil, time.Millisecond)
 	}
 	err := desktopBudgetCheck(scope, "screenshot")
-	if err == nil || !strings.Contains(err.Error(), "budget spent") {
-		t.Fatalf("third action must be refused, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "lack of progress") {
+		t.Fatalf("third action must be refused (screenshots only are no progress), got %v", err)
 	}
 	if err := desktopBudgetCheck(scope, "request_takeover"); err != nil {
 		t.Fatalf("takeover must stay possible: %v", err)

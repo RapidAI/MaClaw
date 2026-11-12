@@ -101,11 +101,11 @@ func desktopModelLabel(request agentruntime.TurnRequest) string {
 // desktopBudgetLogFields reports this run's step count and budget use.
 func desktopBudgetLogFields(scope agentruntime.Scope) string {
 	st := desktopRunFor(scope)
-	actions, tokens := 0, 0
+	actions, tokens, limit := 0, 0, desktopRunMaxActions()
 	if st != nil {
 		st.mu.Lock()
-		actions, tokens = st.actions, st.imageTokens
+		actions, tokens, limit = st.actions, st.imageTokens, desktopBudgetLimitLocked(st)
 		st.mu.Unlock()
 	}
-	return fmt.Sprintf("step=%d actions=%d/%d image_tokens=%d/%d batch_max=%d", actions, actions, desktopRunMaxActions(), tokens, desktopRunMaxImageTokens(), desktopMaxBatchSteps())
+	return fmt.Sprintf("step=%d actions=%d/%d image_tokens=%d/%d batch_max=%d", actions, actions, limit, tokens, desktopRunMaxImageTokens(), desktopMaxBatchSteps())
 }

@@ -534,6 +534,12 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 			return "", fmt.Errorf("%s", refuse)
 		}
 		lineage, round = desktopLongJobLineage(parent), r
+	} else if prev := desktopLongJobForRun(scope.RunID); prev != nil && prev.Status != "running" && prev.Status != "stalled" &&
+		desktopRoundTrainRe.MatchString(cmd) && desktopRoundTrainRe.MatchString(prev.Command) {
+		// The run itself starts the next training round: same lineage, so the
+		// rounds line shows every round. Not gated here; desktopRoundNote asks
+		// once for the previous round's record.
+		lineage, round = desktopLongJobLineage(prev), desktopLongJobRoundNo(prev)+1
 	}
 	id := strings.ReplaceAll(agentservice.NewID("job"), "-", "")
 	dir := desktopLongJobScratch(scope, id)
@@ -674,6 +680,7 @@ func desktopLongJobStatus(ctx context.Context, scope agentruntime.Scope, args ma
 	}
 	if desktopLongJobRecordRound(j, args) {
 		_ = desktopLongJobSave(j)
+		desktopRoundNoteRecorded(scope.RunID)
 	}
 	if strings.TrimSpace(scope.SessionID) != "" && scope.SessionID == j.SessionID && j.Status != "running" {
 		// The live run in this conversation read the stall, failure or
@@ -1270,6 +1277,12 @@ func desktopLongJobWatchPrompt(j *desktopLongJob, dec desktopLongJobDecision) st
 		goal = "这不是新任务，不要重新启动同一个命令。这个人已经收到了这次轮询的状态和最后输出。用这些证据判断：结束了就核对结果（指标、产物）并告诉这个人；结果是训练、评估、基准或其它实验的数字时，报告里必须有结果评估：与基线或目标对比，检查结果是否可信（验证集与测试集的差距、类别不平衡、过拟合迹象、抽几条样本实际推理），明确说能否使用，并给出建议（继续训练、调整数据或超参、或停止）和理由；" + desktopIterPolicy + "失败或停滞就查明原因并换一种做法继续，并说明。你的最后回复会转给这个人（已用 action=say 说过就不再转）；没有要说的新内容时最后回复只写 NO_UPDATE。不要把已经说过的再说一遍。"
 	case longJobNotice:
 		goal = "这不是新任务，不要重新启动该命令。这是按预计时间安排的查看，出现了新的阶段结果、已经远超预计时间，或预计会超过命令自带的时限。用 send_to_user 简短告诉这个人这一阶段的结果（指标或日志要点）或比预计晚了多少，附上这次轮询的证据（进程存活与否、最近日志）。不要报步数。对剩余时间有更好的估计时，用 action=job_status，next_check_minutes 和 check_reason 设定下次查看。"
+	}
+	if dec == longJobResume && j.RoundMetric == nil && strings.TrimSpace(j.Decision) == "" && j.Status != "running" {
+		if m := desktopRoundMetrics(j.LastTail); m != "" {
+			goal += "srv 从日志末尾读到的指标（请核对）：" + m + "。"
+		}
+		goal += "先记录这一轮：action=job_status，job_id=" + j.ID + "，round_metric、round_metric_name、decision（continue/stop/ask_user）、reason，再决定下一步；最后回复里写明评估：能否使用、验证集与测试集的差距、与基线或前几轮的对比、继续还是停止及理由。"
 	}
 	if dec == longJobCheck {
 		goal = "这不是新任务，不要重新启动该命令，也不要动它的进程。这是按预计时间安排的查看：这个任务的日志里看不到可测的进度，进度写在它自己的文件里（只有你知道在哪）。用一两条只读命令（如 tail 它的训练/运行日志、看进程）查实际进度。只有出现新的阶段结果（指标）、明显变慢、按实测速度会超过命令自带时限、或出错时，才告诉这个人：先用 action=job_status（job_id、next_check_minutes、check_reason）按实测速度设定下次查看，然后你的最后回复就是发给这个人的消息（系统会转给他），简短写结果和证据（指标、速度、预计结束时间），不要写“已告知”之类的话。没有新情况时，同样设定下次查看，最后回复只写 NO_UPDATE。不要报步数。"

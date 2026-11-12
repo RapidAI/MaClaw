@@ -835,14 +835,23 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	}
 	if action == "job_status" {
 		defer beginDesktopActivity(scope.RunID, "正在查看后台任务")()
-		return desktopLongJobStatus(ctx, scope, args)
+		out, err := desktopLongJobStatus(ctx, scope, args)
+		if err == nil {
+			out += desktopRoundNote(scope, "", "", false)
+		}
+		return out, err
 	}
 	if action == "job_list" {
 		return desktopLongJobList(scope), nil
 	}
 	if action == "bash" && !desktopLongJobInternal(ctx) && desktopLongJobShouldStart(args) {
 		defer beginDesktopActivity(scope.RunID, "正在后台启动任务")()
-		return desktopLongJobStart(ctx, scope, principal, args)
+		out, err := desktopLongJobStart(ctx, scope, principal, args)
+		if err == nil {
+			cmd := desktopArg(args, "command")
+			out += desktopRoundNote(scope, cmd, out, desktopRoundTrainRe.MatchString(cmd))
+		}
+		return out, err
 	}
 	if action == "bash" && desktopBashLaunchesGUI(desktopArg(args, "command")) {
 		return operateDesktopBashGUI(ctx, scope, args)
@@ -874,12 +883,15 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		// The row names this step on the Hub path too; without it the row kept
 		// whatever the last screen step or wake said.
 		defer beginDesktopActivity(scope.RunID, desktopContainerPhrase(action))()
-		if desktopHubExecutesTool() {
-			out, err := withNote(runDesktopHubTool(ctx, scope, action, args))
-			if err == nil && action == "bash" {
-				out += desktopWaitPollNote(scope, desktopArg(args, "command"))
+		bashNotes := func(out string, err error) (string, error) {
+			if err == nil && action == "bash" && !desktopLongJobInternal(ctx) {
+				cmd := desktopArg(args, "command")
+				out += desktopWaitPollNote(scope, cmd) + desktopRoundNote(scope, cmd, out, false)
 			}
 			return out, err
+		}
+		if desktopHubExecutesTool() {
+			return bashNotes(withNote(runDesktopHubTool(ctx, scope, action, args)))
 		}
 		userKey, keyErr := desktopUserKey(scope)
 		if keyErr != nil {
@@ -888,7 +900,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		if _, err := ensureDesktopRound(ctx, scope, userKey, false); err != nil {
 			return "", err
 		}
-		return withNote(operateDesktopContainer(ctx, scope, action, args))
+		return bashNotes(withNote(operateDesktopContainer(ctx, scope, action, args)))
 	}
 	var installPackages []string
 	if action == "install" {

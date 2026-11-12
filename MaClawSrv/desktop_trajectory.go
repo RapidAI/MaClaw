@@ -129,6 +129,7 @@ type desktopRunState struct {
 	workOK       int                  // steps that did work (not just looked) and succeeded (desktop_outage.go)
 	lastErr      string               // error of the last executed step, clipped
 	blockedAt    map[string]time.Time // intent class -> when an infra_timeout block was set (expires, desktop_outage.go)
+	budget       desktopBudgetTrack   // progress-aware action budget (desktop_budget_extend.go)
 }
 
 func desktopRunNoteSite(scope agentruntime.Scope, site string) {
@@ -260,8 +261,8 @@ func desktopBudgetCheck(scope agentruntime.Scope, action string) error {
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if max := desktopRunMaxActions(); max > 0 && st.actions >= max {
-		return fmt.Errorf("desktop run budget spent: %d desktop actions in this run (limit %d). Stop operating the desktop now and tell the person what was done and what is left", st.actions, max)
+	if err := desktopBudgetActionsLocked(st); err != nil {
+		return err
 	}
 	if max := desktopRunMaxImageTokens(); max > 0 && st.imageTokens >= max {
 		return fmt.Errorf("desktop run budget spent: screenshots in this run cost about %d image tokens (limit %d). Stop operating the desktop now and tell the person what was done and what is left", st.imageTokens, max)
@@ -315,6 +316,7 @@ func desktopRecordStep(ctx context.Context, scope agentruntime.Scope, args map[s
 	}
 	st.mu.Lock()
 	st.actions++
+	desktopBudgetNoteOutcomeLocked(st, action, plain, err != nil)
 	st.imageTokens += tokens
 	st.seq++
 	step.Seq = st.seq

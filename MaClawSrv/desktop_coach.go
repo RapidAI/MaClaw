@@ -213,7 +213,13 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 		notes = append(notes, fmt.Sprintf("No progress in the last %d actions (nothing on the page changed). Stop repeating probes/screenshots/scripts: pick a different method from the input ladder, or call request_takeover and say what is stuck.", p.idle))
 	}
 
-	if max := desktopRunMaxActions(); max > 0 {
+	// A run that keeps making progress gets more actions at the budget
+	// (desktop_budget_extend.go); telling it to wrap up would end it early.
+	progressing := false
+	if desktopRunExtendActions() > 0 {
+		progressing, _, _ = desktopBudgetProgressingLocked(st)
+	}
+	if max := desktopBudgetLimitLocked(st); max > 0 && !progressing {
 		left := max - st.actions
 		switch {
 		case st.actions*10 >= max*9 && left >= 0:
