@@ -2799,6 +2799,30 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByText('下载 ../secret.pdf')).toBeNull();
     });
 
+    it('splits a reply into beats and corrects an attachment that never arrived', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 1', description: '共用桌面', instance_id: 'inst_1' }]);
+        sendTask.mockImplementation(async (botId: string) => ({
+            request_id: 'desktop-bot-beats',
+            deferred: true,
+            session_key: `alice:${botId}`,
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('Bot 1'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '把天气 PDF 发给我' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('把天气 PDF 发给我')).toBeTruthy();
+        responseListeners.byEvent['ai-assistant-response']?.({
+            request_id: 'desktop-bot-beats',
+            session_key: 'alice:bot_1',
+            text: '天气 PDF 做好了。\n---\n两页 PDF 就附在这条消息里。',
+            send_to_user: '天气 PDF 做好了。\n---\n两页 PDF 就附在这条消息里。',
+        });
+        const beat = await screen.findByTestId('desktop-bot-beat');
+        expect(beat.textContent).toBe('天气 PDF 做好了。');
+        expect(await screen.findByText(/更正：这条消息实际没有收到附件/)).toBeTruthy();
+        expect(screen.getByTestId('desktop-bot-log').textContent).not.toContain('---');
+    });
+
     it('shows a saved document in the result area', async () => {
         const docx = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
         const docPath = 'C:\\Users\\alice\\MaClaw\\bot-files\\自我描述.docx';

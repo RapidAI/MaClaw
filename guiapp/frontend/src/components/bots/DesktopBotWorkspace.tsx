@@ -6,7 +6,7 @@ import { materialTooLarge, materialUploadId, splitMaterials, uploadMaterial, wit
 import { createPortal } from 'react-dom';
 import { Z } from '../ui/zIndex';
 import { useDialog } from '../CustomDialog';
-import { EventsOn } from '../../../wailsjs/runtime';
+import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
 import {
     askFrom,
     askKeepsTurn,
@@ -164,7 +164,8 @@ import {
     type DesktopBotNoReading,
 } from './desktopBots';
 import { botWindowIsForeground, setBotWindowForeground, watchBotReplies } from './botUnread';
-import { BotMessageBody, botMessageIsStructured } from './botMessageBody';
+import { desktopBotCorrectAttachClaim } from './desktopBotDelivery';
+import { BotChipContext, BotMessageBody, botMessageIsStructured, splitBotBeats } from './botMessageBody';
 import { BotFeedLine, botFeedLineInternal, botFeedLineOf } from './botFeedLine';
 import { botChatIsNearBottom, botChatLogStamp, pinBotChatToBottom } from './botChatScroll';
 import { BOT_SYNCED_EVENT, noteDesktopBotCleared } from './desktopBotSync';
@@ -1702,6 +1703,13 @@ const BotShot = memo(function BotShot({ path, alt, openLabel, onOpen }: { path: 
     if (!src) return null;
     return <ChatShot src={src} alt={alt} openLabel={openLabel} onOpen={onOpen} />;
 });
+
+// Cards in a reply: a link opens in the system browser, a path opens the file
+// (or shows it in its folder).
+const botChipHandlers = {
+    openLink: (url: string) => BrowserOpenURL(url),
+    openPath: (event: { preventDefault: () => void; stopPropagation: () => void }, path: string) => openBotFile(event, path),
+};
 
 function openBotFile(event: { preventDefault: () => void; stopPropagation: () => void }, filePath: string) {
     event.preventDefault();
@@ -7096,6 +7104,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             data-testid="desktop-bot-log"
                             onScroll={onLogScroll}
                         >
+                            <BotChipContext.Provider value={botChipHandlers}>
                             <div ref={logBodyRef} className="desktop-bot-chat__log-body">
                             {messages.length === 0 ? (
                                 <p className="desktop-bot-chat__pick" data-testid="desktop-bot-pick">{text.pickEmpty}</p>
@@ -7103,7 +7112,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             {messages.filter(message => !message.pending).map(message => {
                                 const sentMaterials = message.role === 'user' ? splitMaterials(message.content || '') : { text: message.content, paths: [] as string[] };
                                 const rawBody = desktopBotBubbleBody(sentMaterials.text, message.failed === true, message.askUser?.question || '', lang);
-                                const body = message.role === 'assistant' ? stripConfirmedOrderLead(rawBody) : rawBody;
+                                const fullBody = message.role === 'assistant'
+                                    ? desktopBotCorrectAttachClaim(stripConfirmedOrderLead(rawBody), !!(message.files?.length || message.localPaths?.length || message.images?.length || message.shotPaths?.length), lang)
+                                    : rawBody;
+                                // Separate beats the bot split with a "---" line show as separate
+                                // short bubbles; attachments, options and cards stay on the last one.
+                                const beats = message.role === 'assistant' && !message.failed && !message.askUser ? splitBotBeats(fullBody) : [fullBody];
+                                const body = beats[beats.length - 1];
                                 const structured = message.role === 'assistant' && !message.failed && botMessageIsStructured(body);
                                 const feedLine = message.role === 'assistant' && message.chat && !message.askUser && message.phase !== 'plan' && !message.localPaths?.length && !message.files?.length
                                     ? botFeedLineOf(message.content || '', selected.title, { feed: message.feed, failed: message.failed, requestId: message.requestId })
@@ -7115,7 +7130,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     </div>
                                 );
                                 return (
-                                <div key={message.id} className={`desktop-bot-chat__entry desktop-bot-chat__entry--${message.role}`} data-message-role={message.role}>
+                                <Fragment key={message.id}>
+                                {beats.slice(0, -1).map((beat, beatIndex) => (
+                                    <div key={`${message.id}:beat${beatIndex}`} className="desktop-bot-chat__entry desktop-bot-chat__entry--assistant" data-message-role="assistant" data-testid="desktop-bot-beat">
+                                        <div className={`desktop-bot-chat__bubble desktop-bot-chat__bubble--assistant${botMessageIsStructured(beat) ? '' : ' is-plain'}`}>
+                                            {botMessageIsStructured(beat) ? <BotMessageBody text={beat} /> : beat}
+                                        </div>
+                                    </div>
+                                ))}
+                                <div className={`desktop-bot-chat__entry desktop-bot-chat__entry--${message.role}`} data-message-role={message.role}>
                                     <div className={`desktop-bot-chat__bubble desktop-bot-chat__bubble--${message.role}${message.failed ? ' is-failed' : ''}${structured ? '' : ' is-plain'}`}>
                                         {structured ? <BotMessageBody text={body} /> : body}
                                         {sentMaterials.paths.length ? <DesktopBotMaterialChips paths={sentMaterials.paths} /> : null}
@@ -7220,6 +7243,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         </form>
                                     ) : null}
                                 </div>
+                                </Fragment>
                                 );
                             })}
                             {handoffMessage && !agentOperating && !handoffSettled ? (
@@ -7231,6 +7255,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <BotSaidInline items={saidForChat(collab.said, selected.id, !!selected.primary, saidSince(messages.map(m => m.id)), bots.map(b => b.id))} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={openFeedFile} />
                             ) : null}
                             </div>
+                            </BotChipContext.Provider>
                         </div>
                         {creditReadout && creditRoute !== 'custom' && creditReadout.notice ? (
                             <div className="desktop-bot-credit" role="status" data-testid="desktop-bot-credit-notice">
