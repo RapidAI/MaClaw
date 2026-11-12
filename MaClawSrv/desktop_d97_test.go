@@ -23,6 +23,8 @@ const (
 
 func d97Env(t *testing.T) agentruntime.TurnRequest {
 	t.Helper()
+	// Trajectory writes are async and read test globals the cleanup restores.
+	t.Setenv("MACLAW_DESKTOP_TRAJECTORY", "off")
 	recoveryTestEnv(t)
 	oldCtl, oldLedger := desktopRemoteCtl, desktopLedgerDir
 	oldBack, oldRe, oldStep, oldRun := desktopOutageBackoff, desktopOutageReconnect, desktopOutageStepWindow, desktopOutageRunWindow
@@ -37,14 +39,17 @@ func d97Env(t *testing.T) agentruntime.TurnRequest {
 	t.Cleanup(func() {
 		desktopRemoteCtl, desktopLedgerDir = oldCtl, oldLedger
 		desktopOutageBackoff, desktopOutageReconnect, desktopOutageStepWindow, desktopOutageRunWindow = oldBack, oldRe, oldStep, oldRun
+		openBotScreen = defaultOpenBotScreen
+		resetBotScreens()
 	})
+	resetBotScreens()
 	run := fmt.Sprintf("run-d97-%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
 	return recoveryTurn("tenant-d97", desktop.BotDesktopUser("daniel", "bot_e0e4"), run,
 		"目标：登录远程服务器，训练一个文本二分类模型并给出评测结果。")
 }
 
 func TestDesktopD97OutageErrorsRecognised(t *testing.T) {
-	for _, msg := range []string{d97NotOpen, d97Refused,
+	for _, msg := range []string{d97Refused,
 		`desktop wait: desktop service is unreachable: Post "http://127.0.0.1:9399/api/v1/desktop-services/ctl": dial tcp 127.0.0.1:9399: connect: connection refused`,
 		`desktop service is unreachable: Post "http://h/x": dial tcp 10.0.0.1:9399: i/o timeout`,
 	} {
@@ -53,6 +58,8 @@ func TestDesktopD97OutageErrorsRecognised(t *testing.T) {
 		}
 	}
 	for _, msg := range []string{
+		d97NotOpen, // the screen is closed: open it, do not wait 90s
+		"docker service rejected the desktop request (HTTP 400): invalid desktop request: bad command",
 		"desktop service is unreachable", // no client configured: not transient
 		`desktop service is unreachable: Post "http://h/x": read tcp 1.2.3.4:5->6.7.8.9:443: connection reset by peer`, // may have run
 		"bash: exit status 1",
@@ -64,18 +71,25 @@ func TestDesktopD97OutageErrorsRecognised(t *testing.T) {
 	}
 }
 
-// Bot 3: the first bash calls hit "desktop is not open yet". They must wait
-// for the screen (asking Hub for the session) and run, not count twice and
-// block bash for the whole run.
-func TestDesktopD97BashWaitsForBotScreen(t *testing.T) {
+// The first bash hits "desktop is not open yet". Open the screen and run the
+// step once more. Do not spend the outage window or mark infra_timeout.
+func TestDesktopD97BashOpensTheScreenAndRetriesOnce(t *testing.T) {
 	req := d97Env(t)
 	reconnects := 0
-	desktopOutageReconnect = func(context.Context, agentruntime.Scope) string { reconnects++; return "asked for the desktop session again" }
+	desktopOutageReconnect = func(context.Context, agentruntime.Scope) string {
+		reconnects++
+		return "asked for the desktop session again"
+	}
+	opens := 0
+	openBotScreen = func(context.Context, agentruntime.Scope) error {
+		opens++
+		return nil
+	}
 	calls := 0
 	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
 		if desktopArg(args, "action") == "bash" {
 			calls++
-			if calls <= 2 {
+			if calls == 1 {
 				return "", errors.New(d97NotOpen)
 			}
 			return "ssh ok: Linux macmini", nil
@@ -86,10 +100,12 @@ func TestDesktopD97BashWaitsForBotScreen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bash after the screen opened: %v", err)
 	}
-	if calls != 3 || reconnects != 2 || !strings.Contains(out, "ssh ok") || !strings.Contains(out, "nothing had run") {
-		t.Fatalf("calls=%d reconnects=%d out=%q", calls, reconnects, out)
+	if calls != 2 || opens != 2 || reconnects != 0 || !strings.Contains(out, "ssh ok") || strings.Contains(out, "unavailable") {
+		t.Fatalf("calls=%d opens=%d reconnects=%d out=%q", calls, opens, reconnects, out)
 	}
-	// A second bash is not blocked.
+	if desktopOutageWasSeen(req.Scope.RunID) {
+		t.Fatal("a closed screen was waited out as an outage")
+	}
 	out, err = invoke(t, req, map[string]any{"action": "bash", "command": "nvidia-smi"})
 	if err != nil || strings.Contains(out, "blocked") {
 		t.Fatalf("second bash: %q %v", out, err)

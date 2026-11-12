@@ -241,6 +241,14 @@ func (m desktopRuntimeModule) InvokeTool(ctx context.Context, request agentrunti
 		desktopWatchdogStopByUser(scope.RunID)
 		return "", errWatchdogStop
 	}
+	// An isolated bot's screen has to exist before the first action. Opening
+	// it here means a cold container does not answer the first bash with
+	// "not open yet". Owner desktops and headless steps of the owner skip it.
+	if err := ensureBotScreen(ctx, scope, false); err != nil {
+		desktopWatchdogAfter(scope, err)
+		desktopWatchdogResult(scope, action, args, "", err)
+		return "", err
+	}
 	warn, stop := desktopWatchdogBefore(scope, action, args)
 	if stop != nil {
 		return "", stop
@@ -452,6 +460,21 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 				out = "(the browser connection had dropped; it was reconnected and this step ran again)\n" + out
 			} else if desktopTransportFailure(err) {
 				err = fmt.Errorf("%w (the connection was reset and the desktop session requested again; it still fails, so this is the infrastructure)", err)
+			}
+		}
+		if err != nil && ctx.Err() == nil && desktopColdStart(err) {
+			// Exactly one retry. The screen was still closed. Open it and
+			// run this step once more. This is not an outage.
+			first := err
+			if openErr := ensureBotScreen(ctx, scope, true); openErr != nil {
+				err = fmt.Errorf("%s: this bot's screen did not open (%v). Retry this same step once; do not switch method", desktopbot.CodeBotScreenClosed, openErr)
+			} else {
+				out, err = operateDesktopWithTimeout(opCtx, scope, opArgs)
+				if err == nil {
+					out = "(this bot's screen was not open; it was opened and this step ran again)\n" + out
+				} else if desktopColdStart(err) {
+					err = fmt.Errorf("%s: this bot's screen is still not open after one open. Retry this same step once; do not switch method (%w)", desktopbot.CodeBotScreenClosed, first)
+				}
 			}
 		}
 		if err != nil && ctx.Err() == nil && desktopOutageAllowed(desktopOwner(scope), actionName, err) {

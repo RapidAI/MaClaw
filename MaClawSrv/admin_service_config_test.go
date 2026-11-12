@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -256,6 +257,10 @@ func TestRedactSupportBundleValueHandlesCrossPlatformAbsolutePaths(t *testing.T)
 		if got := redactSupportBundleValue("", in); got != want {
 			t.Fatalf("redactSupportBundleValue(%q) = %q, want %q", in, got, want)
 		}
+	}
+	if runtime.GOOS != "windows" {
+		// filepath on this OS does not treat D:\ and D:/ as the same root.
+		return
 	}
 	dataRoot := `D:\workprj\aicoder\data`
 	if got := redactSupportBundleValue(dataRoot, `D:/workprj/aicoder/data/certs/server.pem`); got != `data/certs/server.pem` {
