@@ -81,7 +81,6 @@ func ParseWorkspaceMaxIdle(raw string) (time.Duration, error) {
 // unfinished after WarmStartBudget. It is not a sentence for the person.
 type WarmStartError struct{}
 
-
 // Allowed wake reasons for starting a stopped desktop. Anything else is
 // refused: health checks, listings, bash/file, background reconnects, and
 // leftover Ensure calls must not boot the GUI container.
@@ -278,6 +277,9 @@ func (s *Service) ensureUnlocked(ctx context.Context, spec Spec) error {
 		if _, err := s.createUnlocked(ctx, spec); err != nil {
 			return err
 		}
+		if err := s.openNamedBotScreen(ctx, spec); err != nil {
+			return err
+		}
 		return s.warmBudget(started)
 	}
 	if !current.Running {
@@ -289,7 +291,21 @@ func (s *Service) ensureUnlocked(ctx context.Context, spec Spec) error {
 		}
 	}
 	s.markComputerRunning(spec)
+	// reason=bot-desktop starts this user's container. An isolated bot's own
+	// screen is a second step; without it the first bash answers 400.
+	if err := s.openNamedBotScreen(ctx, spec); err != nil {
+		return err
+	}
 	return s.warmBudget(started)
+}
+
+// openNamedBotScreen opens the bot named on spec. An owner ensure has no bot
+// and does not open anyone's screen.
+func (s *Service) openNamedBotScreen(ctx context.Context, spec Spec) error {
+	if strings.TrimSpace(spec.BotID) == "" {
+		return nil
+	}
+	return s.ensureBotScreen(ctx, spec)
 }
 
 func (s *Service) warmBudget(started time.Time) error {

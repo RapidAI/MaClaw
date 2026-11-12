@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
@@ -30,13 +31,31 @@ func (s *Service) specDisplay(ctx context.Context, spec Spec, requested string) 
 	if spec.BotID == "" {
 		return requested, nil
 	}
+	display, err := s.readBotDisplay(ctx, spec)
+	if err == nil {
+		return display, nil
+	}
+	// The container can be up (ensure-start) while this bot's screen is not.
+	// Open it here, idempotently, instead of answering 400 and leaving the
+	// caller to guess. A second caller of the same bot waits on the same open.
+	if openErr := s.ensureBotScreen(ctx, spec); openErr != nil {
+		return "", fmt.Errorf("%w: this bot's desktop is not open yet", ErrInvalid)
+	}
+	display, err = s.readBotDisplay(ctx, spec)
+	if err != nil {
+		return "", fmt.Errorf("%w: this bot's desktop is not open yet", ErrInvalid)
+	}
+	return display, nil
+}
+
+func (s *Service) readBotDisplay(ctx context.Context, spec Spec) (string, error) {
 	key, err := specKey(spec)
 	if err != nil {
 		return "", err
 	}
 	out, err := s.docker(ctx, "exec", containerName(spec.TenantID, spec.UserID), "python3", "/desktop_supervisor.py", "display", key)
 	if err != nil {
-		return "", fmt.Errorf("%w: this bot's desktop is not open yet", ErrInvalid)
+		return "", err
 	}
 	var status struct {
 		Display string `json:"display"`
@@ -46,6 +65,56 @@ func (s *Service) specDisplay(ctx context.Context, spec Spec, requested string) 
 	}
 	s.noteComputerScreen(spec, status.Display)
 	return status.Display, nil
+}
+
+// How long a just-started container may take before its supervisor accepts
+// "ensure". The ensure command itself blocks until the screen is up; this
+// wait is only for docker exec failing while pid 1 is still coming up.
+var (
+	botScreenOpenWait = 8 * time.Second
+	botScreenOpenGap  = 200 * time.Millisecond
+)
+
+// ensureBotScreen opens one bot's screen inside an already running container.
+// Callers of the same bot share one flight, so three bots starting together
+// open three screens and two callers of one bot open it once.
+func (s *Service) ensureBotScreen(ctx context.Context, spec Spec) error {
+	key, err := specKey(spec)
+	if err != nil {
+		return err
+	}
+	return s.flightErr("botscreen\x00"+key, ctx, func(ctx context.Context) error {
+		name := containerName(spec.TenantID, spec.UserID)
+		deadline := time.Now().Add(botScreenOpenWait)
+		var last error
+		for {
+			out, execErr := s.docker(ctx, "exec", name, "python3", "/desktop_supervisor.py", "ensure", key)
+			if execErr == nil {
+				if _, parseErr := desktop.ParseEnsure(out); parseErr == nil {
+					s.noteBotOwner(spec)
+					return nil
+				} else {
+					last = parseErr
+				}
+			} else {
+				last = execErr
+			}
+			if botScreenOpenWait <= 0 || time.Now().After(deadline) || ctx.Err() != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if last == nil {
+					last = fmt.Errorf("bot screen did not open")
+				}
+				return last
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(botScreenOpenGap):
+			}
+		}
+	})
 }
 
 // stopOwnerOnlyWhileBotsBusy stops only the owner's own display when an

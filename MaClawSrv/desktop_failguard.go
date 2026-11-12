@@ -53,7 +53,7 @@ func desktopIntentClass(action string, args map[string]any) string {
 
 // desktopInfraErrRe: the browser, the desktop or the network did not answer
 // (run_854d0758: "cdp timeout: Page.navigate", "could not open the editor").
-var desktopInfraErrRe = regexp.MustCompile(`cdp timeout|cdp dial|cdp websocket connection failed|discover targets:|bad handshake|i/o timeout|page\.navigate \(id=|could not open the editor|verify page did not load|websocket: |target closed|no such target|connection (refused|reset)|desktop is not open|desktop not open|browser is not (running|reachable)`)
+var desktopInfraErrRe = regexp.MustCompile(`cdp timeout|cdp dial|cdp websocket connection failed|discover targets:|bad handshake|i/o timeout|page\.navigate \(id=|could not open the editor|verify page did not load|websocket: |target closed|no such target|connection (refused|reset)|browser is not (running|reachable)`)
 
 // desktopIntentClassFor is desktopIntentClass with publish blocked per target
 // site: one site timing out says nothing about the others of a multi-site

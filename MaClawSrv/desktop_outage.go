@@ -18,25 +18,29 @@ import (
 // run_69cbb334 and Bot 3 run_ef8bef3b). Two things made both runs reply and
 // go idle without doing the work:
 //
-//   - Bot 3's first two bash calls (the ssh to the person's server) came back
-//     "this bot's desktop is not open yet": the isolated bot's own screen was
-//     still being opened. That counted as infra_timeout twice, so bash — the
-//     only way to reach the server — was blocked for the rest of the run.
+//   - Bot 3's first bash calls came back "this bot's desktop is not open yet".
+//     That is not an outage: the screen is opened before the step (and, if a
+//     400 still arrives, once more) in desktop_screen_open.go. It must not
+//     spend the 90s outage window or count as infra_timeout.
 //   - Hub was redeployed at 08:34:10 and listened again at 08:34:29. Every
 //     desktop call in those 19 seconds failed at the dial ("connect:
 //     connection refused"); within 14 s each method was blocked after two
 //     strikes and the model ended both runs, "succeeded", with nothing done.
 //
-// Neither failure reached the desktop: a refused or timed-out dial sends
-// nothing, and "not open yet" is refused before anything runs. So the step
-// is safe to run again. Before such a failure counts, the step waits for the
-// service to come back (asking Hub for the desktop session each time, which
-// also opens an isolated bot's own screen) and runs again, within a bounded
-// window per step and per run. Only when the window is spent does the
-// failure count as before, worded as the infrastructure.
+// A refused or timed-out dial sends nothing, so that step is safe to run
+// again. Before it counts, the step waits for the service to come back,
+// within a bounded window per step and per run. Only when the window is
+// spent does the failure count as before, worded as the infrastructure.
+// "not open yet" is not this wait: the screen is opened and the step is
+// run once more immediately.
 
-// desktopOutageErrRe: the call never reached the desktop.
-var desktopOutageErrRe = regexp.MustCompile(`(?i)desktop service is unreachable: .*dial tcp [^ ]*: (connect: )?(connection refused|i/o timeout|no route to host|network is unreachable)|desktop service is unreachable: .*dial tcp: lookup |desktop is not open yet|docker service request failed: .*dial tcp [^ ]*: (connect: )?connection refused|docker service rejected the desktop request \(HTTP 502\): .*502 Bad Gateway`)
+// desktopOutageErrRe: the call never reached the desktop because the service
+// itself could not be dialed, or the gateway failed. A deterministic 4xx
+// (the screen is not open, a bad command) is not in this list.
+var desktopOutageErrRe = regexp.MustCompile(`(?i)desktop service is unreachable: .*dial tcp [^ ]*: (connect: )?(connection refused|i/o timeout|no route to host|network is unreachable)|desktop service is unreachable: .*dial tcp: lookup |docker service request failed: .*dial tcp [^ ]*: (connect: )?connection refused|docker service rejected the desktop request \(HTTP 502\): .*502 Bad Gateway`)
+
+// desktopHTTPStatusRe pulls an "HTTP 400" style status out of a service error.
+var desktopHTTPStatusRe = regexp.MustCompile(`HTTP (\d{3})`)
 
 // desktopInfraBlockTTL: an infra_timeout block lifts by itself after this.
 var desktopInfraBlockTTL = 2 * time.Minute
@@ -47,7 +51,24 @@ func desktopColdStart(err error) bool {
 }
 
 func desktopOutageFailure(err error) bool {
-	return err != nil && desktopOutageErrRe.MatchString(err.Error())
+	if err == nil || desktopColdStart(err) || desktopNonRetryableStatus(err) {
+		return false
+	}
+	return desktopOutageErrRe.MatchString(err.Error())
+}
+
+// desktopNonRetryableStatus is an HTTP 4xx. Waiting 90s cannot change it.
+// 5xx stays on the outage path.
+func desktopNonRetryableStatus(err error) bool {
+	if err == nil {
+		return false
+	}
+	match := desktopHTTPStatusRe.FindStringSubmatch(err.Error())
+	if match == nil {
+		return false
+	}
+	code, convErr := strconv.Atoi(match[1])
+	return convErr == nil && code >= 400 && code < 500
 }
 
 func desktopOutageDisabled() bool {
