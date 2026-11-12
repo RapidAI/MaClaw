@@ -207,7 +207,7 @@ type Service struct {
 	// desktopQueues is the per-bot FIFO of messages waiting for a free slot
 	// or for the person to return the keyboard. desktop queue keys are
 	// tenant, user, bot.
-	desktopQueues map[string][]*desktopQueueItem
+	desktopQueues  map[string][]*desktopQueueItem
 	queueDraining  map[string]bool
 	queueDrainOnce sync.Once
 	// queueDrainOff skips the background drain timer. Tests that park a

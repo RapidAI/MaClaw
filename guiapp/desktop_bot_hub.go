@@ -1539,13 +1539,13 @@ func (a *App) emitDesktopBotIntake(botID, requestID, kind, ack string, queued, h
 		return
 	}
 	a.emitEvent("desktop-bot-intake", map[string]any{
-		"bot_id":      strings.TrimSpace(botID),
-		"request_id":  strings.TrimSpace(requestID),
-		"kind":        strings.TrimSpace(kind),
-		"ack":         strings.TrimSpace(ack),
-		"queued":      queued,
-		"held":        held,
-		"run_id":      strings.TrimSpace(runID),
+		"bot_id":     strings.TrimSpace(botID),
+		"request_id": strings.TrimSpace(requestID),
+		"kind":       strings.TrimSpace(kind),
+		"ack":        strings.TrimSpace(ack),
+		"queued":     queued,
+		"held":       held,
+		"run_id":     strings.TrimSpace(runID),
 	})
 }
 
@@ -1610,15 +1610,15 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		// success and on failure; either one proves this Hub forwards the
 		// key, which is the only condition under which a lost admission
 		// answer may be sent again.
-		ClientMessageID string `json:"client_message_id"`
-		Session         string `json:"session"`
-		RoutedVia       string `json:"routed_via"`
-		RoutedTitle     string `json:"routed_title"`
-		Kind            string `json:"kind"`
-		Ack             string `json:"ack"`
-		Queued          bool   `json:"queued"`
-		Held            bool   `json:"held"`
-		Position        int    `json:"position"`
+		ClientMessageID string                  `json:"client_message_id"`
+		Session         string                  `json:"session"`
+		RoutedVia       string                  `json:"routed_via"`
+		RoutedTitle     string                  `json:"routed_title"`
+		Kind            string                  `json:"kind"`
+		Ack             string                  `json:"ack"`
+		Queued          bool                    `json:"queued"`
+		Held            bool                    `json:"held"`
+		Position        int                     `json:"position"`
 		Schedule        *desktopBotWireSchedule `json:"schedule"`
 	}
 	body := map[string]any{"content": text, "client_message_id": requestID}
@@ -3057,4 +3057,3 @@ type DesktopBotFollowUpRoute struct {
 	BotID  string `json:"bot_id,omitempty"`
 	RunID  string `json:"run_id,omitempty"`
 }
-

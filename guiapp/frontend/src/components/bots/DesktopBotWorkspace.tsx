@@ -3821,7 +3821,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const botId = String(data.bot_id || '').trim();
             const requestId = String(data.request_id || '').trim();
             const ack = String(data.ack || '').trim();
-            if (!botId || !ack || desktopBotIsPlaceholderAck(ack, lang)) return;
+            if (!botId) return;
+            if (data.queued === true || data.held === true) noteQueuedRef.current(botId);
+            if (!ack || desktopBotIsPlaceholderAck(ack, lang)) return;
             const stored = messagesForBot(userId, botId);
             const anchor = requestId ? stored.find(item => item.requestId === requestId) : undefined;
             if (stored.some(item => item.ack && item.content === ack)) return;

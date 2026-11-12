@@ -16,13 +16,13 @@ import (
 // message posts and supplements.
 type intakeSrv struct {
 	turnKeySrv
-	mu       sync.Mutex
-	intake   string
-	posts    []string
-	supps    []string
-	cancels  int
-	pauses   int
-	resumes  int
+	mu      sync.Mutex
+	intake  string
+	posts   []string
+	supps   []string
+	cancels int
+	pauses  int
+	resumes int
 }
 
 func (s *intakeSrv) handle(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +227,12 @@ func TestHubHoldsWhileThePersonHasTheKeyboard(t *testing.T) {
 	}
 	if svc.personHasBotKeyboard("tenant-a", "alice", "bot_alice") {
 		t.Fatal("return left the keyboard with the person")
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	joined := strings.Join(fake.posts, "\n")
+	if !strings.Contains(joined, "下一件") || !strings.Contains(joined, "交还后继续") {
+		t.Fatalf("交还 did not release the held message: %v", fake.posts)
 	}
 }
 
