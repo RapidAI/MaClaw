@@ -113,6 +113,24 @@ func resolveProfileRolePin(cfg corelib.AppConfig, role string) (corelib.MaclawLL
 	if assignment.InheritsHub() || model == "" {
 		return corelib.MaclawLLMConfig{}, false, nil
 	}
+	// A pin that names a provider runs on it, like the GUI's
+	// materializePinnedRole. A missing provider fails the role rather than
+	// silently rerouting it.
+	if providerID := strings.TrimSpace(assignment.ProviderID); providerID != "" {
+		for _, provider := range cfg.MaclawLLMProviders {
+			if strings.TrimSpace(provider.ID) != providerID && corelib.MaclawLLMLegacyProviderID(provider.Name) != providerID {
+				continue
+			}
+			resolved, err := ResolveLLMConfig(configWithCurrentProvider(cfg, provider.Name))
+			if err != nil {
+				return corelib.MaclawLLMConfig{}, true, err
+			}
+			resolved.Model = model
+			resolved.SupportsVision = providerSupportsVisionForModel(provider, model)
+			return resolved, true, nil
+		}
+		return corelib.MaclawLLMConfig{}, true, fmt.Errorf("LLM role %q references an unavailable provider", role)
+	}
 	base, err := ResolveLLMConfig(cfg)
 	if err != nil {
 		return corelib.MaclawLLMConfig{}, true, err
@@ -127,6 +145,25 @@ func resolveProfileRolePin(cfg corelib.AppConfig, role string) (corelib.MaclawLL
 	}
 	base.Model = model
 	return base, true, nil
+}
+
+// providerSupportsVisionForModel mirrors the GUI helper: once a provider has
+// a probed vision list it is authoritative; otherwise SupportsVision belongs
+// to the provider's stored default model only.
+func providerSupportsVisionForModel(provider corelib.MaclawLLMProvider, model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	if len(provider.VisionModels) > 0 {
+		for _, visionModel := range provider.VisionModels {
+			if strings.EqualFold(strings.TrimSpace(visionModel), model) {
+				return true
+			}
+		}
+		return false
+	}
+	return provider.SupportsVision && strings.EqualFold(strings.TrimSpace(provider.Model), model)
 }
 
 func findOfficialHubProvider(providers []corelib.MaclawLLMProvider) (corelib.MaclawLLMProvider, bool) {

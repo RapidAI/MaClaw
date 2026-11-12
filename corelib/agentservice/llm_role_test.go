@@ -100,6 +100,36 @@ func TestResolveLLMRoleProfilePinWinsOverAdmin(t *testing.T) {
 	}
 }
 
+func TestResolveLLMRoleProfilePinHonorsProviderID(t *testing.T) {
+	cfg := testRoleProviders()
+	cfg.MaclawLLMProviders[2].ID = "prov-claude" // Claude
+	cfg.MaclawLLMProfiles = &corelib.MaclawLLMProfiles{
+		Background: corelib.MaclawLLMRoleAssignment{InheritHub: inheritFalse(), ProviderID: "prov-claude", Model: "claude-haiku"},
+	}
+	bg, err := ResolveLLMRole(cfg, LLMRoleBackground)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bg.ProviderName != "Claude" || bg.Model != "claude-haiku" || bg.Key != "sk-ant" {
+		t.Fatalf("provider-pinned background = %+v", bg)
+	}
+
+	// A GUI pin may reference a provider that has no durable ID yet: it is
+	// stored as the legacy name-derived ID.
+	cfg.MaclawLLMProviders[2].ID = ""
+	cfg.MaclawLLMProfiles.Background.ProviderID = corelib.MaclawLLMLegacyProviderID("Claude")
+	bg, err = ResolveLLMRole(cfg, LLMRoleBackground)
+	if err != nil || bg.ProviderName != "Claude" {
+		t.Fatalf("legacy-id pin = %+v err=%v", bg, err)
+	}
+
+	// A stale provider id fails the role instead of silently rerouting.
+	cfg.MaclawLLMProfiles.Background.ProviderID = "gone"
+	if _, err := ResolveLLMRole(cfg, LLMRoleBackground); err == nil {
+		t.Fatal("expected a pin referencing a missing provider to fail")
+	}
+}
+
 func TestResolveLLMRoleGrounderInheritFollowsDefault(t *testing.T) {
 	cfg := testRoleProviders()
 	cfg.MaclawHubBotRoles.Grounder = corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRoleInherit}

@@ -542,7 +542,17 @@ func maclawLLMProviderReferencedByProfiles(profiles corelib.MaclawLLMProfiles, p
 	if !profiles.Coding.InheritAssistant && match(profiles.Coding.ProviderID) {
 		return true
 	}
-	return maclawLLMProfileAssigned(profiles.Caption) && match(profiles.Caption.ProviderID)
+	if maclawLLMProfileAssigned(profiles.Caption) && match(profiles.Caption.ProviderID) {
+		return true
+	}
+	for _, role := range []corelib.MaclawLLMRoleAssignment{
+		profiles.Foreground, profiles.Background, profiles.ComputerUse, profiles.Grounder,
+	} {
+		if !role.InheritsHub() && match(role.ProviderID) {
+			return true
+		}
+	}
+	return false
 }
 
 func sameMaclawLLMProfileProviderID(previousID, nextID string, providers []corelib.MaclawLLMProvider) bool {
@@ -2051,7 +2061,7 @@ func validateMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, providers []c
 		{"computer use", profiles.ComputerUse},
 		{"grounder", profiles.Grounder},
 	} {
-		if err := validateMaclawLLMRoleAssignment(role.name, role.assignment); err != nil {
+		if err := validateMaclawLLMRoleAssignment(role.name, role.assignment, providers); err != nil {
 			return err
 		}
 	}
@@ -2120,6 +2130,23 @@ func validateMaclawLLMProfileAssignments(profiles, previous corelib.MaclawLLMPro
 			return err
 		}
 	}
+	for _, role := range []struct {
+		name       string
+		assignment corelib.MaclawLLMRoleAssignment
+		previousID string
+	}{
+		{"foreground", profiles.Foreground, previous.Foreground.ProviderID},
+		{"background", profiles.Background, previous.Background.ProviderID},
+		{"computer use", profiles.ComputerUse, previous.ComputerUse.ProviderID},
+		{"grounder", profiles.Grounder, previous.Grounder.ProviderID},
+	} {
+		if role.assignment.InheritsHub() || strings.TrimSpace(role.assignment.ProviderID) == "" {
+			continue
+		}
+		if err := requireTested(role.name, role.assignment.ProviderID, role.previousID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2151,6 +2178,13 @@ func remapLegacyProfileProviderIDs(profiles *corelib.MaclawLLMProfiles, before, 
 	}
 	if mapped := durableByLegacyID[strings.TrimSpace(profiles.Caption.ProviderID)]; mapped != "" {
 		profiles.Caption.ProviderID = mapped
+	}
+	for _, role := range []*corelib.MaclawLLMRoleAssignment{
+		&profiles.Foreground, &profiles.Background, &profiles.ComputerUse, &profiles.Grounder,
+	} {
+		if mapped := durableByLegacyID[strings.TrimSpace(role.ProviderID)]; mapped != "" {
+			role.ProviderID = mapped
+		}
 	}
 }
 

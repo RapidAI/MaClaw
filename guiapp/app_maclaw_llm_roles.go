@@ -26,7 +26,8 @@ type MaclawLLMRoleSummary struct {
 }
 
 // ResolveMaclawLLMRole resolves one loop role.
-// A local pin (inherit_hub false plus a model) wins and stays on the Hub
+// A local pin (inherit_hub false plus a model) wins. A pin that also names a
+// provider runs on that provider; a legacy model-only pin stays on the Hub
 // provider when one exists. Otherwise the interactive assistant (foreground)
 // uses the assistant profile whenever that profile is not MaClaw official, and
 // uses an explicit official model the user selected over the Hub band.
@@ -65,7 +66,7 @@ func (a *App) resolveMaclawLLMRoleFromConfig(role string, cfg corelib.AppConfig,
 		if model == "" {
 			return corelib.MaclawLLMConfig{}, fmt.Errorf("LLM role %q has no model", role)
 		}
-		resolved, pinErr := a.materializePinnedRole(role, model, providers, profiles)
+		resolved, pinErr := a.materializePinnedRole(role, assignment, providers, profiles)
 		if pinErr != nil {
 			return corelib.MaclawLLMConfig{}, pinErr
 		}
@@ -229,7 +230,19 @@ func findHubServiceProvider(providers []corelib.MaclawLLMProvider) (corelib.Macl
 	return corelib.MaclawLLMProvider{}, false
 }
 
-func (a *App) materializePinnedRole(role, model string, providers []corelib.MaclawLLMProvider, profiles *corelib.MaclawLLMProfiles) (corelib.MaclawLLMConfig, error) {
+// materializePinnedRole resolves a role that does not follow Hub. A pin that
+// names a provider runs on it. A legacy model-only pin keeps the earlier
+// behaviour: the Hub provider when one is configured, otherwise the
+// assistant profile's provider.
+func (a *App) materializePinnedRole(role string, assignment corelib.MaclawLLMRoleAssignment, providers []corelib.MaclawLLMProvider, profiles *corelib.MaclawLLMProfiles) (corelib.MaclawLLMConfig, error) {
+	model := normalizeDesktopRoleModel(assignment.Model)
+	if providerID := strings.TrimSpace(assignment.ProviderID); providerID != "" {
+		provider, ok := resolveMaclawLLMProviderByID(providers, providerID)
+		if !ok {
+			return corelib.MaclawLLMConfig{}, fmt.Errorf("LLM role %q references an unavailable provider", role)
+		}
+		return a.materializeResolvedRole(role, provider, model), nil
+	}
 	if provider, ok := findHubServiceProvider(providers); ok {
 		return a.materializeResolvedRole(role, provider, model), nil
 	}
@@ -270,6 +283,7 @@ func normalizeMaclawLLMRoleAssignment(role *corelib.MaclawLLMRoleAssignment) {
 	if role == nil {
 		return
 	}
+	role.ProviderID = strings.TrimSpace(role.ProviderID)
 	role.Model = normalizeDesktopRoleModel(role.Model)
 	if role.Model == "" {
 		return
@@ -279,12 +293,17 @@ func normalizeMaclawLLMRoleAssignment(role *corelib.MaclawLLMRoleAssignment) {
 	}
 }
 
-func validateMaclawLLMRoleAssignment(name string, role corelib.MaclawLLMRoleAssignment) error {
+func validateMaclawLLMRoleAssignment(name string, role corelib.MaclawLLMRoleAssignment, providers []corelib.MaclawLLMProvider) error {
 	if role.InheritsHub() {
 		return nil
 	}
 	if strings.TrimSpace(role.Model) == "" {
 		return fmt.Errorf("%s model is required when it does not follow Hub", name)
+	}
+	if providerID := strings.TrimSpace(role.ProviderID); providerID != "" {
+		if _, ok := resolveMaclawLLMProviderByID(providers, providerID); !ok {
+			return fmt.Errorf("%s references an unavailable provider", name)
+		}
 	}
 	return nil
 }

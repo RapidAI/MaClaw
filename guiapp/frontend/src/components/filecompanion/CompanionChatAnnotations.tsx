@@ -189,7 +189,10 @@ function ChatAnnotationCard({
         }
         const pop = popRef.current;
         const span = pop?.parentElement;
-        const scroller = span?.closest<HTMLElement>("[data-testid='file-companion-chat-log']");
+        // A note on a document body anchors inside the preview scroller, not
+        // the chat log. Both scrollers answer the same question: does the
+        // card fit under the quote in this viewport.
+        const scroller = span?.closest<HTMLElement>("[data-testid='file-companion-chat-log'], [data-doc-scroller]");
         if (!pop || !span || !scroller) return;
         const measure = () => {
             if (dragVisual.current || resizeVisual.current) return;
@@ -269,7 +272,7 @@ function ChatAnnotationCard({
         const fitInside = (place: ChatAnnotationPlace | null, width: number, height: number): ChatAnnotationPlace | null => {
             apply(place, width, height);
             const pop = span.querySelector<HTMLElement>("[role='dialog']");
-            const scroller = span.closest<HTMLElement>("[data-testid='file-companion-chat-log']");
+            const scroller = span.closest<HTMLElement>("[data-testid='file-companion-chat-log'], [data-doc-scroller]");
             if (!pop || !scroller) return place;
             const popBox = pop.getBoundingClientRect();
             const view = scroller.getBoundingClientRect();

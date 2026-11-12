@@ -38,7 +38,7 @@ func (a *App) resolveMaclawLLMGrounderFrom(profiles corelib.MaclawLLMProfiles, p
 	if profiles.Grounder.InheritsHub() || model == "" {
 		return corelib.MaclawLLMConfig{}, errGrounderNotConfigured
 	}
-	resolved, err := a.materializePinnedRole(maclawLLMRoleGrounder, model, providers, &profiles)
+	resolved, err := a.materializePinnedRole(maclawLLMRoleGrounder, profiles.Grounder, providers, &profiles)
 	if err != nil {
 		return corelib.MaclawLLMConfig{}, err
 	}

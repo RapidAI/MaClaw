@@ -451,6 +451,55 @@ func TestResolveMaclawLLMRolePinUsesAssistantProviderWithoutHub(t *testing.T) {
 	}
 }
 
+func TestResolveMaclawLLMRolePinHonorsProviderID(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       roleTestProviders(),
+		MaclawLLMCurrentProvider: "Local",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:    maclawLLMProfilesVersion,
+			Assistant:  corelib.MaclawLLMProfile{ProviderID: "local", Model: "assistant-model"},
+			Coding:     corelib.MaclawLLMProfile{InheritAssistant: true},
+			Foreground: corelib.MaclawLLMRoleAssignment{InheritHub: boolPtr(false), ProviderID: "local", Model: "vision-model"},
+			Background: corelib.MaclawLLMRoleAssignment{InheritHub: boolPtr(false), ProviderID: "hub", Model: "high"},
+		},
+	})
+
+	fg, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A provider pin wins over the Hub provider a legacy pin would have used.
+	if fg.Model != "vision-model" || fg.ProviderID != "local" || fg.URL != "https://local.example/v1" {
+		t.Fatalf("provider-pinned foreground = %+v", fg)
+	}
+	if !fg.SupportsVision {
+		t.Fatalf("vision-model on local should be vision-capable: %+v", fg)
+	}
+	bg, err := app.ResolveMaclawLLMRole(maclawLLMRoleBackground)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bg.ProviderID != "hub" || bg.Model != "high" {
+		t.Fatalf("hub-pinned background = %+v", bg)
+	}
+}
+
+func TestResolveMaclawLLMRolePinRejectsUnknownProvider(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       roleTestProviders(),
+		MaclawLLMCurrentProvider: "Local",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:    maclawLLMProfilesVersion,
+			Assistant:  corelib.MaclawLLMProfile{ProviderID: "local", Model: "assistant-model"},
+			Coding:     corelib.MaclawLLMProfile{InheritAssistant: true},
+			Foreground: corelib.MaclawLLMRoleAssignment{InheritHub: boolPtr(false), ProviderID: "gone", Model: "x"},
+		},
+	})
+	if _, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground); err == nil {
+		t.Fatal("expected a pin referencing a missing provider to fail")
+	}
+}
+
 func TestApplyHubLLMServiceStatusStoresRoleModelsWithoutTouchingPins(t *testing.T) {
 	inherit := false
 	cfg := corelib.AppConfig{

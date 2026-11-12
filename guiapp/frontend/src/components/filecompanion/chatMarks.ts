@@ -18,7 +18,9 @@ export const CHAT_MARK_COLORS = [
 export type ChatMarkColor = (typeof CHAT_MARK_COLORS)[number]["id"];
 
 export type ChatMark = {
-    /** Index of the message in the tab transcript. */
+    /** Index of the message in the tab transcript. A markdown or office
+     *  document is not a transcript: its body marks keep DOC_MARK_MESSAGE so
+     *  they travel in the same list without colliding with a message index. */
     message: number;
     color: ChatMarkColor;
     /** Character offsets into the message's rendered text. */
@@ -27,6 +29,10 @@ export type ChatMark = {
     /** The text that was selected, so a re-rendered answer can re-anchor. */
     text: string;
 };
+
+// A mark on the document body itself, not on any chat message. The preview
+// host is the element carrying data-chat-message="-1".
+export const DOC_MARK_MESSAGE = -1;
 
 const MAX_MARKS = 2000;
 // The quote is also what re-anchors a mark, so a range longer than this is
@@ -53,6 +59,23 @@ export function chatMarksSaveRevision(): number {
 }
 
 const writeSeq = new Map<string, number>();
+const listeners = new Set<(key: string) => void>();
+
+function emitChatMarks(key: string): void {
+    if (!key) return;
+    for (const listener of [...listeners]) listener(key);
+}
+
+// A received share writes marks without announcing. The open document preview
+// subscribes here so those highlights show up without remounting the page.
+// Announced paints still use CHAT_MARKS_CHANGED_EVENT, which is what uploads
+// them to the shares this document hosts.
+export function subscribeChatMarks(listener: (key: string) => void): () => void {
+    listeners.add(listener);
+    return () => {
+        listeners.delete(listener);
+    };
+}
 
 function saveChatMarksToHost(key: string, marks: ChatMark[]): void {
     const app = (window as unknown as { go?: { main?: { App?: Record<string, unknown> } } }).go?.main?.App;
@@ -83,7 +106,7 @@ function oneMark(value: unknown): ChatMark | null {
     if (!value || typeof value !== "object") return null;
     const raw = value as { message?: unknown; color?: unknown; start?: unknown; end?: unknown; text?: unknown };
     const message = Math.floor(Number(raw.message));
-    if (!Number.isFinite(message) || message < 0 || message > 100000) return null;
+    if (!Number.isFinite(message) || message < DOC_MARK_MESSAGE || message > 100000) return null;
     const color = oneColor(raw.color);
     if (!color) return null;
     const start = Math.floor(Number(raw.start));
@@ -130,6 +153,7 @@ export function saveChatMarks(path: string, value: unknown, announce = false): C
     else store[key] = marks;
     saveRevision += 1;
     saveChatMarksToHost(key, marks);
+    emitChatMarks(key);
     if (announce) {
         try {
             window.dispatchEvent(new CustomEvent(CHAT_MARKS_CHANGED_EVENT, { detail: { path } }));

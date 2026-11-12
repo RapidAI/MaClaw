@@ -853,9 +853,13 @@ type MaclawLLMProfile struct {
 // MaclawLLMRoleAssignment is one desktop loop's model.
 // InheritHub nil or true follows the Hub role snapshot. False is a local pin
 // and requires Model. A *bool is required because false must survive JSON.
+// ProviderID optionally selects which provider the pinned model runs on;
+// empty keeps the legacy behaviour (the Hub provider when one exists,
+// otherwise the assistant provider).
 type MaclawLLMRoleAssignment struct {
 	Model      string `json:"model,omitempty"`
 	InheritHub *bool  `json:"inherit_hub,omitempty"`
+	ProviderID string `json:"provider_id,omitempty"`
 }
 
 // InheritsHub reports the default: missing or true follows Hub.

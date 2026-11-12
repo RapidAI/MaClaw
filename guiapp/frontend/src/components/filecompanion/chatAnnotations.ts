@@ -7,7 +7,7 @@
 // copy in the desktop SQLite database.
 
 import { enqueueCompanionReaderWrite } from "./companionReaderWriteQueue";
-import { CHAT_MARK_TEXT_MAX } from "./chatMarks";
+import { CHAT_MARK_TEXT_MAX, DOC_MARK_MESSAGE } from "./chatMarks";
 import { pdfMarkPathKey } from "./pdfMarks";
 import {
     capPdfAnnotationDraft,
@@ -63,6 +63,21 @@ export function chatAnnotationsSaveRevision(): number {
 }
 
 const writeSeq = new Map<string, number>();
+const listeners = new Set<(key: string) => void>();
+
+function emitChatAnnotations(key: string): void {
+    if (!key) return;
+    for (const listener of [...listeners]) listener(key);
+}
+
+// A received share writes notes without announcing. The open document preview
+// subscribes here so those cards repaint without remounting the page.
+export function subscribeChatAnnotations(listener: (key: string) => void): () => void {
+    listeners.add(listener);
+    return () => {
+        listeners.delete(listener);
+    };
+}
 
 function saveChatAnnotationsToHost(key: string, notes: ChatAnnotation[]): void {
     const app = (window as unknown as { go?: { main?: { App?: Record<string, unknown> } } }).go?.main?.App;
@@ -344,7 +359,7 @@ function oneAnnotation(value: unknown): ChatAnnotation | null {
     };
     const id = String(raw.id || "").trim().slice(0, 80);
     const message = Math.floor(Number(raw.message));
-    if (!id || !Number.isFinite(message) || message < 0 || message > 100000) return null;
+    if (!id || !Number.isFinite(message) || message < DOC_MARK_MESSAGE || message > 100000) return null;
     const start = Math.floor(Number(raw.start));
     const end = Math.floor(Number(raw.end));
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) return null;
@@ -431,6 +446,7 @@ export function saveChatAnnotations(path: string, value: unknown, announce = fal
     else store[key] = notes;
     saveRevision += 1;
     saveChatAnnotationsToHost(key, notes);
+    emitChatAnnotations(key);
     if (announce) {
         try {
             window.dispatchEvent(new CustomEvent(CHAT_ANNOTATIONS_CHANGED_EVENT, { detail: { path } }));

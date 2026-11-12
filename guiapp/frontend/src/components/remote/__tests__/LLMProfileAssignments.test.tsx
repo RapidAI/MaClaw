@@ -940,11 +940,14 @@ describe("LLMProfileAssignments", () => {
         fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
         await waitFor(() => expect(saveProfiles).toHaveBeenCalled());
         const draft = saveProfiles.mock.calls[0][0] as {
-            foreground: { inherit_hub?: boolean; model?: string };
+            foreground: { inherit_hub?: boolean; provider_id?: string; model?: string };
             horizon: { manager: { model: string } };
         };
         expect(draft.foreground.inherit_hub).toBe(false);
-        expect(draft.foreground.model).toBe("auto");
+        // No Hub provider in this directory: the pin seeds the effective
+        // provider (the assistant's) and its default model.
+        expect(draft.foreground.provider_id).toBe("assistant");
+        expect(draft.foreground.model).toBe("gpt-5");
         expect(draft.horizon.manager.model).toBe("keep-horizon");
         expect(screen.queryByText("AI assistant")).toBeNull();
         expect(screen.queryByText("Coding Agent")).toBeNull();

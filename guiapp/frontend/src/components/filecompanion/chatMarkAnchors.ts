@@ -8,7 +8,7 @@
 // highlight without wrapping React's text nodes, so streaming and re-renders
 // cannot corrupt the transcript.
 
-import { CHAT_MARK_COLORS, type ChatMark, type ChatMarkColor } from "./chatMarks";
+import { CHAT_MARK_COLORS, DOC_MARK_MESSAGE, type ChatMark, type ChatMarkColor } from "./chatMarks";
 
 const SKIP_SELECTOR = "button, svg, script, style, noscript, template, [data-chat-mark-skip]";
 
@@ -151,7 +151,7 @@ export function chatSelectionSlices(root: HTMLElement, range: Range): ChatSelect
     if (!root || !range) return slices;
     for (const element of messageElements(root)) {
         const message = Number(element.dataset.chatMessage);
-        if (!Number.isFinite(message) || message < 0) continue;
+        if (!Number.isFinite(message) || message < DOC_MARK_MESSAGE) continue;
         const overlap = overlapOf(element, range);
         if (!overlap) continue;
         const spans = chatTextSpans(element);
@@ -246,7 +246,10 @@ export function chatMessageRoot(element: HTMLElement | null): HTMLElement | null
     return element?.closest<HTMLElement>("[data-chat-message]") ?? null;
 }
 
-const highlightName = (color: ChatMarkColor): string => `companion-chat-${color}`;
+// The CSS Highlight registry is global to the page, so the transcript and a
+// markdown document cannot share a name or one repaint would erase the other.
+// The prefix keeps their buckets apart while the colors stay the same.
+const highlightName = (color: ChatMarkColor, namePrefix: string): string => `${namePrefix}-${color}`;
 
 function highlightRegistry(): HighlightRegistry | null {
     if (typeof CSS === "undefined" || !CSS) return null;
@@ -261,7 +264,7 @@ export function chatHighlightsSupported(): boolean {
 /** Paints every mark that still anchors. Returns false when this WebView has
  *  no Custom Highlight API, so the caller can skip the work entirely. The
  *  text walk runs once per message, not once per mark. */
-export function applyChatHighlights(root: HTMLElement, marks: ChatMark[]): boolean {
+export function applyChatHighlights(root: HTMLElement, marks: ChatMark[], namePrefix = "companion-chat"): boolean {
     const registry = highlightRegistry();
     if (!registry || typeof Highlight !== "function") return false;
     const byMessage = new Map<number, ChatMark[]>();
@@ -286,7 +289,7 @@ export function applyChatHighlights(root: HTMLElement, marks: ChatMark[]): boole
         }
     }
     for (const color of CHAT_MARK_COLORS) {
-        const name = highlightName(color.id);
+        const name = highlightName(color.id, namePrefix);
         const ranges = buckets.get(color.id);
         if (!ranges || ranges.length === 0) {
             registry.delete(name);
@@ -297,8 +300,8 @@ export function applyChatHighlights(root: HTMLElement, marks: ChatMark[]): boole
     return true;
 }
 
-export function clearChatHighlights(): void {
+export function clearChatHighlights(namePrefix = "companion-chat"): void {
     const registry = highlightRegistry();
     if (!registry) return;
-    for (const color of CHAT_MARK_COLORS) registry.delete(highlightName(color.id));
+    for (const color of CHAT_MARK_COLORS) registry.delete(highlightName(color.id, namePrefix));
 }

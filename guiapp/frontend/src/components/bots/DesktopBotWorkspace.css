@@ -3711,6 +3711,13 @@ button.desktop-bot-feed__file {
     border: 1px solid var(--theme-border-subtle, #dde9fa);
     border-radius: 10px;
     background: var(--theme-surface, #fff);
+    transition: border-color var(--transition-fast, 120ms ease), background var(--transition-fast, 120ms ease), box-shadow var(--transition-fast, 120ms ease);
+}
+
+/* 本地指定的角色卡用主题色淡描边和淡底标出来，和上方选项卡片的选中态一致。 */
+.bot-role-assignments__row.is-customized {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 38%, var(--theme-border-subtle, #dde9fa));
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 3%, var(--theme-surface, #fff));
 }
 
 .bot-role-assignments__head {
@@ -3776,6 +3783,24 @@ button.desktop-bot-feed__file {
     color: var(--theme-text-secondary, #546479);
 }
 
+.bot-role-assignments__fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+    gap: 10px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid color-mix(in srgb, var(--theme-border-subtle, #dde9fa) 80%, transparent);
+}
+
+.bot-role-assignments__field-label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--theme-text-secondary, #475467);
+}
+
 .bot-role-assignments__state {
     margin: 0;
     font-size: 12.5px;
@@ -3808,6 +3833,15 @@ button.desktop-bot-feed__file {
 [data-ai-theme='dark'] .bot-role-assignments__row {
     border-color: color-mix(in srgb, var(--theme-text-primary, #c9c9c9) 16%, transparent);
     background: var(--theme-surface, #1c1c1c);
+}
+
+[data-ai-theme='dark'] .bot-role-assignments__row.is-customized {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 55%, transparent);
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 9%, var(--theme-surface, #1c1c1c));
+}
+
+[data-ai-theme='dark'] .bot-role-assignments__fields {
+    border-top-color: color-mix(in srgb, var(--theme-text-primary, #c9c9c9) 12%, transparent);
 }
 
 /* ── 设置弹窗「电脑」标签页：重启 / 重置云电脑 ──────────────────────────

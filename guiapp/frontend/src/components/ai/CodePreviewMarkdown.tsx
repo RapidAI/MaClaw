@@ -3,116 +3,143 @@
  * Supports find/go-to-line via data-line-start / data-line-end on blocks.
  */
 import React, { useMemo } from 'react';
-import { documentMarkdownImageSrc, inlineHasNestedMarkup, MarkdownExternalLink, MarkdownImagePreview, MarkdownLinkedImage, parseMarkdownImageAt, readMarkdownImageAt, readMarkdownLinkAt, readWrappedMarkdownImage, safeHttpURL, visibleMarkdownLinkLabel } from './markdownMedia';
+import ReactMarkdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import type { Plugin } from 'unified';
+import 'katex/dist/katex.min.css';
+import { documentMarkdownImageSrc, MarkdownExternalLink, MarkdownImagePreview, MarkdownLinkedImage, safeHttpURL } from './markdownMedia';
 import type { CodePreviewTheme } from './FileTabBar';
 import { markdownPreviewInkFromBg, type MarkdownPreviewInk } from './markdownPreviewInk';
 
-/** Detect a pipe-delimited table row */
-function isMdPreviewTableRow(line: string): boolean {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('|') && trimmed.length > 1) return true;
-    if (!trimmed.includes('|')) return false;
-    // At least 2 cells when split by unescaped pipes
-    return parseMdPreviewTableCells(trimmed).length >= 2;
+/**
+ * `==mark==` is not GFM, but the previous preview painter highlighted it and
+ * Obsidian-style notes use it. Rewrite `==x==` text spans to an emphasis node
+ * tagged as <mark> so mdast-util-to-hast emits it. Code spans, fenced code and
+ * math are different node types and are never visited.
+ */
+function highlightMarkSyntax(parent: any) {
+    const children = parent?.children;
+    if (!Array.isArray(children)) return;
+    for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        if (child?.type === 'text' && typeof child.value === 'string' && child.value.includes('==')) {
+            const parts = child.value.split(/(==[^=\n]+==)/g);
+            if (parts.length > 1) {
+                const replacement = parts.filter(Boolean).map((part: string) => {
+                    const m = part.match(/^==([^=\n]+)==$/);
+                    return m
+                        ? { type: 'emphasis', children: [{ type: 'text', value: m[1] }], data: { hName: 'mark' } }
+                        : { type: 'text', value: part };
+                });
+                children.splice(i, 1, ...replacement);
+                i += replacement.length - 1;
+                continue;
+            }
+        }
+        highlightMarkSyntax(child);
+    }
 }
 
-/** Detect a separator row like |---|---| or |:---:|---:| */
-function isMdPreviewSeparatorRow(line: string): boolean {
-    const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
-    return /^[\s|:\-]+$/.test(trimmed) && trimmed.includes('-');
-}
+const remarkMarkHighlight: Plugin = () => (tree) => {
+    highlightMarkSyntax(tree);
+};
 
-/** Parse cells from a pipe-delimited row */
-function parseMdPreviewTableCells(line: string): string[] {
-    let trimmed = line.trim();
-    if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
-    if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
-    return trimmed.split('|').map(c => c.trim());
-}
-
-/** Render a markdown table as an HTML <table> */
-function renderMdPreviewTable(tableLines: string[], ink: MarkdownPreviewInk): React.ReactNode | null {
-    const dataRows = tableLines.filter(l => !isMdPreviewSeparatorRow(l));
-    if (dataRows.length === 0 || tableLines.length < 2) return null;
-    // Need a separator or all rows must start with |
-    const hasSeparator = tableLines.some(isMdPreviewSeparatorRow);
-    const allOuterPipes = tableLines.every(l => l.trim().startsWith('|'));
-    if (!hasSeparator && !allOuterPipes) return null;
-
-    const headerCells = parseMdPreviewTableCells(dataRows[0]);
-    if (headerCells.length < 2) return null;
-    const bodyRows = dataRows.slice(1);
-
-    // Parse column alignments from separator row
-    const separatorLine = tableLines.find(isMdPreviewSeparatorRow) || '';
-    const alignments = parseMdPreviewTableCells(separatorLine).map(cell => {
-        const m = cell.trim();
-        const left = m.startsWith(':');
-        const right = m.endsWith(':');
-        if (left && right) return 'center' as const;
-        if (right) return 'right' as const;
-        return 'left' as const;
-    });
-
-    const cellStyle: React.CSSProperties = {
-        border: `1px solid ${ink.rule}`,
-        padding: '6px 10px',
-        fontSize: 13,
-        lineHeight: 1.5,
-        verticalAlign: 'top',
+/**
+ * Two fixups on remark-math output, using source offsets on node positions.
+ *
+ * - A paragraph that is only `$$...$$` parses as inline math. Promote it to a
+ *   display `math` node so the formula gets a block instead of a text run.
+ * - `$5 and $1,200` pairs two prices into "math". When the formula delimiters
+ *   both sit next to digits it is currency; revert it to the source text.
+ */
+const remarkDocMathFixups: Plugin = () => (tree, file) => {
+    const src = String(file.value || '');
+    if (!src.includes('$')) return;
+    const fixupParent = (parent: any) => {
+        const kids = parent?.children;
+        if (!Array.isArray(kids)) return;
+        for (let i = 0; i < kids.length; i++) {
+            const node = kids[i];
+            if (node?.type === 'paragraph') {
+                const inner = (node.children || []).filter((c: any) => !(c?.type === 'text' && !String(c?.value || '').trim()));
+                if (inner.length === 1 && inner[0].type === 'inlineMath') {
+                    const s = inner[0].position?.start?.offset;
+                    if (typeof s === 'number' && src.startsWith('$$', s)) {
+                        // mdast-util-math maps the node through data.hName.
+                        kids[i] = {
+                            type: 'math',
+                            value: inner[0].value,
+                            data: { ...(inner[0].data || {}), hName: 'div', hProperties: { className: ['math', 'math-display'] } },
+                            position: node.position,
+                        };
+                        continue;
+                    }
+                }
+            }
+            if (node?.type === 'inlineMath') {
+                const s = node.position?.start?.offset;
+                const e = node.position?.end?.offset;
+                if (
+                    typeof s === 'number' && typeof e === 'number'
+                    && src[s] === '$' && src[s + 1] !== '$'
+                    && /\d/.test(src[s + 1] || '')
+                    && /\d/.test(src[e] || '')
+                ) {
+                    kids[i] = { type: 'text', value: src.slice(s, e) };
+                    continue;
+                }
+            }
+            fixupParent(node);
+        }
     };
+    fixupParent(tree);
+};
 
-    return (
-        <div className="cpm-table-scroll">
-            <table style={{ borderCollapse: 'collapse', width: '100%', color: ink.body }}>
-                <thead>
-                    <tr>
-                        {headerCells.map((cell, ci) => (
-                            <th key={ci} style={{ ...cellStyle, textAlign: alignments[ci] || 'left', fontWeight: 600, background: ink.wash, color: ink.emphasis }}>
-                                {renderMdInline(cell, ink)}
-                            </th>
-                        ))}
-                    </tr>
-                </thead>
-                {bodyRows.length > 0 && (
-                    <tbody>
-                        {bodyRows.map((row, ri) => {
-                            const cells = parseMdPreviewTableCells(row);
-                            return (
-                                <tr key={ri} style={{ background: ri % 2 === 1 ? ink.wash : undefined }}>
-                                    {headerCells.map((_, ci) => (
-                                        <td key={ci} style={{ ...cellStyle, textAlign: alignments[ci] || 'left' }}>
-                                            {renderMdInline(cells[ci] || '', ink)}
-                                        </td>
-                                    ))}
-                                </tr>
-                            );
-                        })}
-                    </tbody>
-                )}
-            </table>
-        </div>
-    );
+/**
+ * `skipHtml` drops every raw node, which also erases the `<br>` line breaks
+ * document markdown puts inside table cells. A raw node that is only a `br`
+ * tag is inert, so promote it to a real element; other raw HTML stays dropped.
+ */
+const rehypeBareBr: Plugin = () => (tree) => {
+    const walk = (parent: any) => {
+        const kids = parent?.children;
+        if (!Array.isArray(kids)) return;
+        for (let i = 0; i < kids.length; i++) {
+            const node = kids[i];
+            if (node?.type === 'raw' && /^\s*<br\s*\/?>\s*$/i.test(String(node.value || ''))) {
+                kids[i] = { type: 'element', tagName: 'br', properties: {}, children: [] };
+                continue;
+            }
+            walk(node);
+        }
+    };
+    walk(tree);
+};
+
+const EMPTY_MD_MATCH_LINE_INDEXES: number[] = [];
+
+type MdBlockPosition = { start?: { line?: number | null } | null; end?: { line?: number | null } | null };
+
+interface MdPreviewBlockCtx {
+    ink: MarkdownPreviewInk;
+    matchSet: Set<number>;
+    activeMatchLine: number;
 }
 
 /** Wrap a markdown block with line-range attrs for find / go-to-line. */
-function wrapMdFindBlock(
-    key: number,
-    startLine0: number,
-    endLine0: number,
-    matchSet: Set<number>,
-    activeMatchLine: number,
-    child: React.ReactNode,
-): React.ReactNode {
-    const start = Math.max(0, startLine0);
-    const end = Math.max(start, endLine0);
+function wrapMdFindBlock(ctx: MdPreviewBlockCtx, node: MdBlockPosition | undefined | null, child: React.ReactNode, className?: string): React.ReactNode {
+    const start = Math.max(0, node?.start?.line ?? 0);
+    const end = Math.max(start, node?.end?.line ?? start);
     // Fast path when find is closed / no matches — skip the per-line scan.
+    // matchSet / activeMatchLine are 0-based; hast positions are 1-based.
     let isMatch = false;
     let isActive = false;
-    if (matchSet.size > 0 || activeMatchLine >= 0) {
+    if (ctx.matchSet.size > 0 || ctx.activeMatchLine >= 0) {
         for (let L = start; L <= end; L++) {
-            if (matchSet.has(L)) isMatch = true;
-            if (L === activeMatchLine) isActive = true;
+            if (ctx.matchSet.has(L - 1)) isMatch = true;
+            if (L - 1 === ctx.activeMatchLine) isActive = true;
             if (isMatch && isActive) break;
         }
     }
@@ -123,10 +150,10 @@ function wrapMdFindBlock(
             : undefined;
     return (
         <div
-            key={key}
+            className={className}
             data-testid="code-preview-md-block"
-            data-line-start={start + 1}
-            data-line-end={end + 1}
+            data-line-start={start}
+            data-line-end={end}
             data-find-match={isMatch ? 'true' : undefined}
             data-find-active={isActive ? 'true' : undefined}
             style={{
@@ -140,273 +167,146 @@ function wrapMdFindBlock(
     );
 }
 
-const EMPTY_MD_MATCH_LINE_INDEXES: number[] = [];
-
-/** Parsed markdown block before find-highlight wrapping. */
-interface MdParsedBlock {
-    start0: number;
-    end0: number;
-    child: React.ReactNode;
+/** Element children of a hast node, ignoring whitespace-only text. */
+function meaningfulChildren(node: any): any[] {
+    const children = node?.children;
+    if (!Array.isArray(children)) return [];
+    return children.filter((c: any) => c.type === 'element' || (c.type === 'text' && String(c.value || '').trim() !== ''));
 }
 
-/**
- * Parse markdown into line-ranged blocks. Separated from find highlighting so
- * match navigation does not re-run the full markdown/inline parse.
- */
-function parseMarkdownBlocks(content: string, ink: MarkdownPreviewInk): MdParsedBlock[] {
-    const lines = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-    const out: MdParsedBlock[] = [];
-    let i = 0;
-    let tableLines: string[] = [];
-    let tableStart = 0;
+function hastProp(node: any, name: string): string {
+    const value = node?.properties?.[name];
+    return value == null ? '' : String(value);
+}
 
-    const pushBlock = (start0: number, end0: number, child: React.ReactNode) => {
-        out.push({ start0, end0, child });
+/** Language tag on a fenced block: the code child's `language-x` class. */
+function fencedCodeLanguage(node: any): string {
+    const code = (node?.children || []).find((c: any) => c?.type === 'element' && c?.tagName === 'code');
+    const className = code?.properties?.className;
+    const first = Array.isArray(className) ? String(className[0] || '') : String(className || '');
+    return first.replace(/^language-/, '');
+}
+
+function buildMarkdownComponents(ctx: MdPreviewBlockCtx): Components {
+    const { ink } = ctx;
+    const wrap = (node: any, child: React.ReactNode, className?: string) => wrapMdFindBlock(ctx, node?.position, child, className);
+
+    const headingSizes: Record<number, number> = { 1: 22, 2: 18, 3: 15, 4: 14, 5: 13, 6: 12 };
+    const headingMargins: Record<number, string> = { 1: '16px 0 8px', 2: '14px 0 6px', 3: '12px 0 4px', 4: '10px 0 4px', 5: '8px 0 3px', 6: '8px 0 3px' };
+    const heading = ({ level, node, children }: any) => wrap(node, (
+        <div style={{ fontSize: headingSizes[level] || 14, fontWeight: level <= 2 ? 700 : 600, margin: headingMargins[level] || '8px 0 3px', color: ink.emphasis, borderBottom: level <= 2 ? `1px solid ${ink.rule}` : undefined, paddingBottom: level <= 2 ? 4 : undefined }}>
+            {children}
+        </div>
+    ));
+
+    const cellStyle: React.CSSProperties = {
+        border: `1px solid ${ink.rule}`,
+        padding: '6px 10px',
+        fontSize: 13,
+        lineHeight: 1.5,
+        verticalAlign: 'top',
     };
 
-    const flushTable = () => {
-        if (tableLines.length === 0) return;
-        const start0 = tableStart;
-        const end0 = tableStart + tableLines.length - 1;
-        const rendered = renderMdPreviewTable(tableLines, ink);
-        if (rendered) {
-            pushBlock(start0, end0, rendered);
-        } else {
-            for (let ti = 0; ti < tableLines.length; ti++) {
-                const tl = tableLines[ti];
-                pushBlock(start0 + ti, start0 + ti, (
-                    <p style={{ margin: '4px 0', lineHeight: 1.6, color: ink.body }}>{renderMdInline(tl, ink)}</p>
-                ));
-            }
-        }
-        tableLines = [];
-    };
-
-    while (i < lines.length) {
-        const line = lines[i];
-
-        // Code blocks - detect ``` or ~~~ fences (with optional leading whitespace)
-        const fenceMatch = line.match(/^(\s*)(```|~~~)/);
-        if (fenceMatch) {
-            flushTable();
-            const start0 = i;
-            const fence = fenceMatch[2];
-            const fenceLang = line.slice(fenceMatch[0].length).trim();
-            const codeLines: string[] = [];
-            i++;
-            while (i < lines.length) {
-                if (lines[i].trimStart().startsWith(fence) && lines[i].trim() === fence) {
-                    break;
+    return {
+        p: ({ node, children }: any) => {
+            // A paragraph that is only an image (optionally wrapped in a link)
+            // renders as a block figure, not an inline run.
+            const only = meaningfulChildren(node);
+            if (only.length === 1 && only[0].type === 'element') {
+                const el = only[0];
+                if (el.tagName === 'img') {
+                    const src = documentMarkdownImageSrc(hastProp(el, 'src'));
+                    return wrap(node, (
+                        <div className="cpm-img-wrap">
+                            {src
+                                ? <MarkdownImagePreview src={src} alt={hastProp(el, 'alt')} block document />
+                                : hastProp(el, 'alt') || null}
+                        </div>
+                    ));
                 }
-                codeLines.push(lines[i]);
-                i++;
+                if (el.tagName === 'a') {
+                    const inner = meaningfulChildren(el);
+                    if (inner.length === 1 && inner[0].type === 'element' && inner[0].tagName === 'img') {
+                        return wrap(node, (
+                            <div className="cpm-img-wrap">
+                                <MarkdownLinkedImage alt={hastProp(inner[0], 'alt')} src={hastProp(inner[0], 'src')} pageURL={hastProp(el, 'href')} block document linkColor={ink.link} />
+                            </div>
+                        ));
+                    }
+                }
             }
-            if (i < lines.length) i++; // skip closing fence (only if found)
-            const end0 = i - 1;
-            pushBlock(start0, end0, (
+            return wrap(node, <p style={{ margin: '4px 0', lineHeight: 1.6, color: ink.body }}>{children}</p>);
+        },
+        h1: heading,
+        h2: heading,
+        h3: heading,
+        h4: heading,
+        h5: heading,
+        h6: heading,
+        blockquote: ({ node, children }: any) => wrap(node, (
+            <blockquote style={{ borderLeft: `1px solid ${ink.rule}`, paddingLeft: 12, margin: '6px 0', color: ink.muted, fontStyle: 'italic', lineHeight: 1.6 }}>
+                {children}
+            </blockquote>
+        )),
+        pre: ({ node, children }: any) => {
+            const lang = fencedCodeLanguage(node);
+            return wrap(node, (
                 <pre style={{ background: ink.wash, border: `1px solid ${ink.rule}`, borderRadius: 6, padding: '10px 14px', margin: '8px 0', overflow: 'auto', fontSize: 13, lineHeight: 1.5 }}>
-                    <code style={{ color: ink.body, fontFamily: "'Cascadia Code', 'Consolas', monospace" }}>
-                        {fenceLang && <span style={{ color: ink.muted, fontSize: 11, display: 'block', marginBottom: 4 }}>{fenceLang}</span>}
-                        {codeLines.join('\n')}
-                    </code>
+                    {lang && <span style={{ color: ink.muted, fontSize: 11, display: 'block', marginBottom: 4 }}>{lang}</span>}
+                    {children}
                 </pre>
             ));
-            continue;
-        }
-
-        // Table rows: collect consecutive pipe-delimited lines
-        if (isMdPreviewTableRow(line)) {
-            if (tableLines.length === 0) tableStart = i;
-            tableLines.push(line);
-            i++;
-            continue;
-        }
-
-        // Non-table line - flush any pending table
-        flushTable();
-
-        // Headings (# through ######)
-        const headingMatch = line.match(/^(#{1,6})\s+(.+)/);
-        if (headingMatch) {
-            const level = headingMatch[1].length;
-            const sizes: Record<number, number> = { 1: 22, 2: 18, 3: 15, 4: 14, 5: 13, 6: 12 };
-            const margins: Record<number, string> = { 1: '16px 0 8px', 2: '14px 0 6px', 3: '12px 0 4px', 4: '10px 0 4px', 5: '8px 0 3px', 6: '8px 0 3px' };
-            pushBlock(i, i, (
-                <div style={{ fontSize: sizes[level], fontWeight: level <= 2 ? 700 : 600, margin: margins[level], color: ink.emphasis, borderBottom: level <= 2 ? `1px solid ${ink.rule}` : undefined, paddingBottom: level <= 2 ? 4 : undefined }}>
-                    {renderMdInline(headingMatch[2], ink)}
+        },
+        code: ({ inline, className, children }: any) => inline
+            ? <code style={{ background: ink.wash, padding: '1px 4px', borderRadius: 3, fontSize: '0.9em', color: ink.body }}>{children}</code>
+            : <code className={className} style={{ color: ink.body, fontFamily: "'Cascadia Code', 'Consolas', monospace" }}>{children}</code>,
+        ul: ({ node, children }: any) => wrap(node, <ul className="cpm-ul" style={{ color: ink.body }}>{children}</ul>),
+        ol: ({ node, children, start }: any) => wrap(node, <ol className="cpm-ol" start={start} style={{ color: ink.body }}>{children}</ol>),
+        li: ({ children, checked }: any) => (
+            <li className={checked != null ? 'task-list-item' : undefined} style={{ marginBottom: 2, listStyleType: checked != null ? 'none' : undefined, marginLeft: checked != null ? -16 : undefined }}>
+                {children}
+            </li>
+        ),
+        input: ({ checked }: any) => (
+            <input type="checkbox" disabled checked={checked === true} readOnly style={{ marginRight: 6, verticalAlign: 'middle' }} />
+        ),
+        table: ({ node, children }: any) => wrap(node, (
+            <div className="cpm-table-scroll">
+                <table style={{ borderCollapse: 'collapse', width: '100%', color: ink.body }}>{children}</table>
+            </div>
+        )),
+        th: ({ children, style }: any) => (
+            <th style={{ ...cellStyle, ...style, fontWeight: 600, background: ink.wash, color: ink.emphasis }}>{children}</th>
+        ),
+        td: ({ children, style }: any) => <td style={{ ...cellStyle, ...style }}>{children}</td>,
+        tr: ({ children, isHeader, index }: any) => (
+            <tr style={{ background: !isHeader && typeof index === 'number' && index % 2 === 1 ? ink.wash : undefined }}>{children}</tr>
+        ),
+        hr: ({ node }: any) => wrap(node, <hr style={{ border: 'none', borderTop: `1px solid ${ink.rule}`, margin: '12px 0' }} />),
+        a: ({ href, children }: any) => {
+            const safe = safeHttpURL(String(href || ''));
+            if (safe) return <MarkdownExternalLink href={safe} color={ink.link}>{children}</MarkdownExternalLink>;
+            // In-page anchors and relative document paths are not navigable here.
+            return <span style={{ color: ink.link, textDecoration: 'underline' }}>{children}</span>;
+        },
+        img: ({ src, alt }: any) => (
+            <MarkdownImagePreview className="cpm-inline-img" src={String(src || '')} alt={String(alt || '')} document />
+        ),
+        strong: ({ children }: any) => <strong style={{ color: ink.emphasis }}>{children}</strong>,
+        del: ({ children }: any) => <del className="cpm-del">{children}</del>,
+        mark: ({ children }: any) => <mark style={{ background: ink.wash, color: ink.emphasis, padding: '0 2px', borderRadius: 2 }}>{children}</mark>,
+        // Display math arrives as div.math-display; every other div comes from
+        // a plugin, so it is safe to wrap them all for find/go-to-line.
+        div: ({ node, className, children }: any) => {
+            const isMathDisplay = String(className || '').includes('math-display');
+            return wrap(node, (
+                <div className={className} style={isMathDisplay ? { margin: '8px 0', overflowX: 'auto', overflowY: 'hidden' } : undefined}>
+                    {children}
                 </div>
             ));
-            i++;
-            continue;
-        }
-
-        // Multi-line blockquote - collect consecutive > lines
-        if (line.startsWith('>') || line.startsWith('> ')) {
-            const start0 = i;
-            const quoteLines: string[] = [];
-            while (i < lines.length && (lines[i].startsWith('> ') || lines[i] === '>' || lines[i].startsWith('>'))) {
-                quoteLines.push(lines[i].replace(/^>\s?/, ''));
-                i++;
-            }
-            pushBlock(start0, i - 1, (
-                <blockquote style={{ borderLeft: `1px solid ${ink.rule}`, paddingLeft: 12, margin: '6px 0', color: ink.muted, fontStyle: 'italic', lineHeight: 1.6 }}>
-                    {quoteLines.map((ql, qi) => (
-                        <div key={qi}>{ql.trim() === '' ? <br /> : renderMdInline(ql, ink)}</div>
-                    ))}
-                </blockquote>
-            ));
-            continue;
-        }
-
-        // Task list: - [ ] or - [x] or * [ ] or * [x] - collect consecutive items
-        const taskMatch = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.*)/);
-        if (taskMatch) {
-            const start0 = i;
-            const taskItems: { checked: boolean; text: string }[] = [];
-            while (i < lines.length) {
-                const tm = lines[i].match(/^\s*[-*]\s+\[([ xX])\]\s+(.*)/);
-                if (!tm) break;
-                taskItems.push({ checked: tm[1].toLowerCase() === 'x', text: tm[2] });
-                i++;
-            }
-            pushBlock(start0, i - 1, (
-                <div className="cpm-tasks">
-                    {taskItems.map((item, ti) => (
-                        <div key={ti} className="cpm-task-item">
-                            <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 700, color: ink.muted }}>{item.checked ? "DONE" : "TODO"}</span>
-                            <span style={{ textDecoration: item.checked ? 'line-through' : undefined, opacity: item.checked ? 0.7 : 1, color: ink.body }}>{renderMdInline(item.text, ink)}</span>
-                        </div>
-                    ))}
-                </div>
-            ));
-            continue;
-        }
-
-        // Unordered list - collect consecutive items (supports indentation for nesting)
-        if (/^\s*[-*+]\s/.test(line)) {
-            const start0 = i;
-            const listItems: { indent: number; text: string }[] = [];
-            while (i < lines.length && /^\s*[-*+]\s/.test(lines[i])) {
-                const m = lines[i].match(/^(\s*)[-*+]\s+(.*)/);
-                if (m) {
-                    listItems.push({ indent: m[1].length, text: m[2] });
-                }
-                i++;
-            }
-            if (listItems.length === 0) {
-                // Defensive: outer regex matched but no items parsed — treat as paragraph.
-                pushBlock(start0, start0, <p style={{ margin: '4px 0', lineHeight: 1.6, color: ink.body }}>{renderMdInline(line, ink)}</p>);
-                continue;
-            }
-            const baseIndent = Math.min(...listItems.map(it => it.indent));
-            pushBlock(start0, i - 1, (
-                <ul className="cpm-ul">
-                    {listItems.map((item, li) => (
-                        <li key={li} style={{ marginLeft: (item.indent - baseIndent) * 10, marginBottom: 2 }}>
-                            {renderMdInline(item.text, ink)}
-                        </li>
-                    ))}
-                </ul>
-            ));
-            continue;
-        }
-
-        // Ordered list - collect consecutive numbered items
-        if (/^\s*\d+[.)]\s/.test(line)) {
-            const start0 = i;
-            const olItems: { indent: number; num: string; text: string }[] = [];
-            while (i < lines.length && /^\s*\d+[.)]\s/.test(lines[i])) {
-                const m = lines[i].match(/^(\s*)(\d+)[.)]\s+(.*)/);
-                if (m) {
-                    olItems.push({ indent: m[1].length, num: m[2], text: m[3] });
-                }
-                i++;
-            }
-            if (olItems.length === 0) {
-                pushBlock(start0, start0, <p style={{ margin: '4px 0', lineHeight: 1.6, color: ink.body }}>{renderMdInline(line, ink)}</p>);
-                continue;
-            }
-            const baseIndent = Math.min(...olItems.map(it => it.indent));
-            pushBlock(start0, i - 1, (
-                <ol className="cpm-ol">
-                    {olItems.map((item, li) => (
-                        <li key={li} value={parseInt(item.num, 10)} style={{ marginLeft: (item.indent - baseIndent) * 10, marginBottom: 2 }}>
-                            {renderMdInline(item.text, ink)}
-                        </li>
-                    ))}
-                </ol>
-            ));
-            continue;
-        }
-
-        // Horizontal rule
-        if (/^[-*_]{3,}\s*$/.test(line.trim()) && !line.trim().startsWith('|')) {
-            pushBlock(i, i, <hr style={{ border: 'none', borderTop: `1px solid ${ink.rule}`, margin: '12px 0' }} />);
-            i++;
-            continue;
-        }
-
-        // Image on its own line. A linked image keeps the picture and the page apart.
-        const trimmedLine = line.trim();
-        if (trimmedLine.startsWith("[![")) {
-            const wrappedImage = readWrappedMarkdownImage(trimmedLine, 0);
-            if (wrappedImage && wrappedImage.end === trimmedLine.length) {
-                pushBlock(i, i, (
-                    <div className="cpm-img-wrap">
-                        <MarkdownLinkedImage alt={wrappedImage.alt} src={wrappedImage.url} pageURL={wrappedImage.pageURL} block document linkColor={ink.link} />
-                    </div>
-                ));
-                i++;
-                continue;
-            }
-        }
-        if (trimmedLine.startsWith("![")) {
-            const blockImage = parseMarkdownImageAt(trimmedLine, 0, documentMarkdownImageSrc);
-            if (blockImage && blockImage.end === trimmedLine.length) {
-                pushBlock(i, i, (
-                    <div className="cpm-img-wrap">
-                        <MarkdownImagePreview src={blockImage.src} alt={blockImage.alt} block document />
-                    </div>
-                ));
-                i++;
-                continue;
-            }
-        }
-
-        // Definition list: term followed by : definition
-        if (i + 1 < lines.length && line.trim() !== '' && /^\s*:\s+/.test(lines[i + 1])) {
-            const start0 = i;
-            const term = line.trim();
-            const defs: string[] = [];
-            i++;
-            while (i < lines.length && /^\s*:\s+/.test(lines[i])) {
-                defs.push(lines[i].replace(/^\s*:\s+/, ''));
-                i++;
-            }
-            pushBlock(start0, i - 1, (
-                <dl className="cpm-dl">
-                    <dt style={{ fontWeight: 600, color: ink.emphasis }}>{renderMdInline(term, ink)}</dt>
-                    {defs.map((d, di) => (
-                        <dd key={di} style={{ marginLeft: 20, margin: '2px 0 2px 20px', color: ink.body }}>{renderMdInline(d, ink)}</dd>
-                    ))}
-                </dl>
-            ));
-            continue;
-        }
-
-        // Empty line
-        if (line.trim() === '') {
-            pushBlock(i, i, <div className="cpm-spacer" />);
-            i++;
-            continue;
-        }
-
-        // Default: paragraph
-        pushBlock(i, i, <p style={{ margin: '4px 0', lineHeight: 1.6, color: ink.body }}>{renderMdInline(line, ink)}</p>);
-        i++;
-    }
-    flushTable();
-    return out;
+        },
+        section: ({ node, className, children }: any) => wrap(node, <section className={className} style={{ fontSize: 13 }}>{children}</section>),
+    };
 }
 
 export const MarkdownPreview = React.memo(function MarkdownPreview({
@@ -423,104 +323,29 @@ export const MarkdownPreview = React.memo(function MarkdownPreview({
     const matchSet = useMemo(() => new Set(matchLineIndexes), [matchLineIndexes]);
     const ink = useMemo(() => markdownPreviewInkFromBg(theme.bg), [theme.bg]);
 
-    const blocks = useMemo(() => parseMarkdownBlocks(content, ink), [content, ink]);
-
-    // Cheap find-highlight wrap — re-runs on match navigation without re-parsing markdown.
-    const elements = useMemo(
-        () => blocks.map((b, i) => wrapMdFindBlock(i, b.start0, b.end0, matchSet, activeMatchLine, b.child)),
-        [activeMatchLine, blocks, matchSet],
+    const components = useMemo(
+        () => buildMarkdownComponents({ ink, matchSet, activeMatchLine }),
+        [activeMatchLine, ink, matchSet],
     );
+
+    const rendered = useMemo(() => (
+        <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkMath, remarkDocMathFixups, remarkMarkHighlight]}
+            rehypePlugins={[rehypeBareBr, rehypeKatex]}
+            skipHtml
+            includeElementIndex
+            components={components}
+        >
+            {content}
+        </ReactMarkdown>
+    ), [components, content]);
 
     return (
         <div
             data-testid="code-preview-markdown-view"
             style={{ padding: '16px 20px', fontSize: 14, lineHeight: 1.6, color: ink.body, fontFamily: 'inherit', wordBreak: 'break-word' }}
         >
-            {elements}
+            {rendered}
         </div>
     );
 });
-
-// One compiled pattern. Recursion saves and restores lastIndex.
-const mdInlinePattern = /(`[^`]+`|\*\*\*(?!\s)(?:[^*]|\*(?!\*\*))+\*\*\*|\*\*(?!\*)(?:[^*]|\*(?!\*))+\*\*|~~[^~]+~~|==[^=]+==|!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)|\*(?!\s|\*)[^*]+(?<!\s)\*)/g;
-
-function renderMdInline(text: string, ink: MarkdownPreviewInk, insideLink = false): React.ReactNode {
-    const parts: React.ReactNode[] = [];
-    // Order matters: longer/more specific patterns first.
-    // Patterns: inline code, bold+italic (***), bold (**), strikethrough (~~),
-    //           highlight (==), image (![]()), link ([]()), italic (*)
-    // NOTE: italic(*) requires non-space after opening * and before closing * to avoid
-    //       matching multiplication like "2 * 3 * 4".
-    //       Underscore italic (_) is NOT supported to avoid false positives in identifiers.
-    // The scan stops at the first ")". A balanced re-read below keeps a ")" that belongs to the URL.
-    const re = mdInlinePattern;
-    const savedLastIndex = re.lastIndex;
-    re.lastIndex = 0;
-    let lastIndex = 0;
-    let match: RegExpExecArray | null;
-    let key = 0;
-    try {
-    while ((match = re.exec(text)) !== null) {
-        if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
-        const m = match[0];
-        if (m.startsWith('`')) {
-            // Inline code
-            parts.push(<code key={key++} style={{ background: ink.wash, padding: '1px 4px', borderRadius: 3, fontSize: '0.9em', color: ink.body }}>{m.slice(1, -1)}</code>);
-        } else if (m.startsWith('***') && m.endsWith('***')) {
-            const inner = m.slice(3, -3);
-            parts.push(<strong key={key++} style={{ color: ink.emphasis }}><em>{inlineHasNestedMarkup(inner) ? renderMdInline(inner, ink, insideLink) : inner}</em></strong>);
-        } else if (m.startsWith('**')) {
-            const inner = m.slice(2, -2);
-            parts.push(<strong key={key++} style={{ color: ink.emphasis }}>{inlineHasNestedMarkup(inner) ? renderMdInline(inner, ink, insideLink) : inner}</strong>);
-        } else if (m.startsWith('~~')) {
-            const inner = m.slice(2, -2);
-            parts.push(<del key={key++} className="cpm-del">{inlineHasNestedMarkup(inner) ? renderMdInline(inner, ink, insideLink) : inner}</del>);
-        } else if (m.startsWith('==')) {
-            const inner = m.slice(2, -2);
-            parts.push(<mark key={key++} style={{ background: ink.wash, color: ink.emphasis, padding: '0 2px', borderRadius: 2 }}>{inlineHasNestedMarkup(inner) ? renderMdInline(inner, ink, insideLink) : inner}</mark>);
-        } else if (m.startsWith('![')) {
-            const raw = readMarkdownImageAt(text, match.index);
-            if (!raw) {
-                parts.push(m);
-            } else {
-                if (raw.end > re.lastIndex) re.lastIndex = raw.end;
-                const src = insideLink ? "" : documentMarkdownImageSrc(raw.url);
-                if (src) parts.push(<MarkdownImagePreview key={key++} className="cpm-inline-img" src={src} alt={raw.alt} document />);
-                else if (raw.alt) parts.push(raw.alt);
-            }
-        } else if (m.startsWith('[')) {
-            const wrapped = insideLink ? null : readWrappedMarkdownImage(text, match.index);
-            if (wrapped) {
-                if (wrapped.end > re.lastIndex) re.lastIndex = wrapped.end;
-                parts.push(<MarkdownLinkedImage key={key++} alt={wrapped.alt} src={wrapped.url} pageURL={wrapped.pageURL} className="cpm-inline-img" linkColor={ink.link} document />);
-            } else {
-            const read = readMarkdownLinkAt(text, match.index);
-            if (read) {
-                if (read.end > re.lastIndex) re.lastIndex = read.end;
-                const href = safeHttpURL(read.url);
-                const shown = visibleMarkdownLinkLabel(read.label, href || read.url);
-                if (insideLink) {
-                    parts.push(shown);
-                } else {
-                const label = href && shown !== href && inlineHasNestedMarkup(shown) ? renderMdInline(shown, ink, true) : shown;
-                if (href) parts.push(<MarkdownExternalLink key={key++} href={href} color={ink.link}>{label}</MarkdownExternalLink>);
-                else parts.push(<span key={key++} style={{ color: ink.link, textDecoration: 'underline' }}>{label}</span>);
-                }
-            } else {
-                parts.push(m);
-            }
-            }
-        } else if (m.startsWith('*') && m.endsWith('*')) {
-            // Italic
-            parts.push(<em key={key++} style={{ color: ink.body }}>{m.slice(1, -1)}</em>);
-        } else {
-            parts.push(m);
-        }
-        lastIndex = re.lastIndex;
-    }
-    if (lastIndex < text.length) parts.push(text.slice(lastIndex));
-    return <>{parts}</>;
-    } finally {
-        re.lastIndex = savedLastIndex;
-    }
-}

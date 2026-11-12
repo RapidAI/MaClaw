@@ -95,4 +95,61 @@ describe("MarkdownPreview ink", () => {
         expect(container.textContent).not.toContain("evil.example");
         expect(container.textContent).toContain("next");
     });
+
+    it("renders inline and display math through KaTeX", () => {
+        const theme = createCodePreviewTheme(fluentLightScheme.assistantTheme);
+        const doc = [
+            "Observation process $\\mathcal{O}_{t,p}$ with budget $t$ and loss $p$.",
+            "",
+            "$$F_1 = 2 \\cdot \\frac{P \\cdot R}{P + R}$$",
+            "",
+            "Macro-F1 reaches $0.905 \\pm 0.012$.",
+        ].join("\n");
+        const { container } = render(<MarkdownPreview content={doc} theme={theme} />);
+        expect(container.querySelectorAll(".katex").length).toBeGreaterThanOrEqual(4);
+        expect(container.querySelector(".math.math-display")).toBeTruthy();
+        // KaTeX keeps the raw TeX in a MathML <annotation>; the $ delimiters must be gone.
+        expect(container.textContent).not.toContain("$\\mathcal");
+        expect(container.textContent).not.toContain("$0.905");
+        expect(container.textContent).not.toContain("$$");
+    });
+
+    it("keeps currency dollar amounts as prose", () => {
+        const theme = createCodePreviewTheme(fluentLightScheme.assistantTheme);
+        const { container } = render(<MarkdownPreview content={"It costs $5 and $1,200 total."} theme={theme} />);
+        expect(container.querySelector(".katex")).toBeNull();
+        expect(container.textContent).toContain("$5 and $1,200 total.");
+    });
+
+    it("renders GFM markup the line painter never reached", () => {
+        const theme = createCodePreviewTheme(fluentLightScheme.assistantTheme);
+        const doc = [
+            "A ~~gone~~ word and a footnote.[^1]",
+            "",
+            "[^1]: The note body.",
+            "",
+            "- [x] done item",
+        ].join("\n");
+        const { container } = render(<MarkdownPreview content={doc} theme={theme} />);
+        expect(container.querySelector("del")?.textContent).toBe("gone");
+        expect(container.querySelector("sup")).toBeTruthy();
+        expect(container.querySelector('input[type="checkbox"]')).toBeTruthy();
+        expect(container.textContent).toContain("The note body.");
+    });
+
+    it("renders ==highlight== as a mark element", () => {
+        const theme = createCodePreviewTheme(fluentLightScheme.assistantTheme);
+        const { container } = render(<MarkdownPreview content={"some ==key phrase== text"} theme={theme} />);
+        expect(container.querySelector("mark")?.textContent).toBe("key phrase");
+    });
+
+    it("drops raw html instead of showing or executing it", () => {
+        const theme = createCodePreviewTheme(fluentLightScheme.assistantTheme);
+        const { container } = render(<MarkdownPreview content={'keep <a id="sec-i"></a> text <script>window.x=1</script>'} theme={theme} />);
+        expect(container.querySelector("script")).toBeNull();
+        expect(container.querySelector("a")).toBeNull();
+        expect(container.textContent).toContain("keep");
+        expect(container.textContent).toContain("text");
+        expect(container.textContent).not.toContain("sec-i");
+    });
 });

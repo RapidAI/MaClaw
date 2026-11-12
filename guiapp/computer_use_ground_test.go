@@ -81,7 +81,7 @@ func TestGrounderRoleIsUnusedUntilPinned(t *testing.T) {
 	if !errors.Is(err, errGrounderNotConfigured) {
 		t.Fatalf("inherit must mean not used: %v", err)
 	}
-	if err := validateMaclawLLMRoleAssignment("grounder", corelib.MaclawLLMRoleAssignment{InheritHub: new(bool)}); err == nil {
+	if err := validateMaclawLLMRoleAssignment("grounder", corelib.MaclawLLMRoleAssignment{InheritHub: new(bool)}, nil); err == nil {
 		t.Fatal("a pinned grounder needs a model")
 	}
 }

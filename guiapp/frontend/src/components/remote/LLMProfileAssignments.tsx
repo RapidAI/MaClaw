@@ -10,7 +10,7 @@ import { presetProviderDisplayName } from "./presetProviderLabel";
 import type { AgentProviderSwitchTarget } from "./agentProviderSwitchOffer";
 
 type Profile = { provider_id?: string; model?: string; inherit_assistant?: boolean };
-type RoleAssignment = { model?: string; inherit_hub?: boolean };
+type RoleAssignment = { provider_id?: string; model?: string; inherit_hub?: boolean };
 type RoleKey = "foreground" | "background" | "computer_use" | "grounder";
 type Provider = { id: string; name: string; model?: string; models?: string[]; connection_test_passed?: boolean; is_hub_service?: boolean; supports_vision?: boolean; vision_models?: string[]; vision_tested_models?: string[] };
 type Summary = { provider_id?: string; provider_name?: string; model?: string; inherit_assistant?: boolean; health?: string };
@@ -427,11 +427,15 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
             assistant?.provider_id,
             codingFollows ? "" : coding?.provider_id,
             caption?.provider_id,
+            draft?.foreground?.provider_id,
+            draft?.background?.provider_id,
+            draft?.computer_use?.provider_id,
+            draft?.grounder?.provider_id,
         ].map(value => String(value || "").trim()).filter(Boolean);
         for (const id of Array.from(new Set(ids))) {
             void refreshProviderCatalog(id);
         }
-    }, [assistant?.provider_id, caption?.provider_id, coding?.provider_id, codingFollows, refreshProviderCatalog]);
+    }, [assistant?.provider_id, caption?.provider_id, coding?.provider_id, codingFollows, draft?.foreground?.provider_id, draft?.background?.provider_id, draft?.computer_use?.provider_id, draft?.grounder?.provider_id, refreshProviderCatalog]);
 
     const providerModels = (providerID?: string) => {
         const id = String(providerID || "").trim();
@@ -544,17 +548,42 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         });
         invalidateProbeResults("coding");
     };
+    const roleProviderSeeds = (role: RoleKey, current: RoleAssignment) => {
+        const hubProvider = providers.find(provider => provider.is_hub_service);
+        if (!String(current.provider_id || "").trim()) {
+            current.provider_id = String(hubProvider?.id || assistant?.provider_id || providers[0]?.id || "").trim();
+        }
+        if (!String(current.model || "").trim()) {
+            const provider = providerByID.get(providerLookupKey(current.provider_id));
+            const hub = state?.hub_role_models;
+            const hubModel = role === "grounder" ? "" : role === "computer_use" ? hub?.computer_use : hub?.[role];
+            current.model = provider?.is_hub_service
+                ? (capabilityBandName(String(hubModel || provider?.model || "")) || "auto")
+                : String(provider?.model || assistant?.model || "").trim();
+        }
+    };
     const setRoleInherit = (role: RoleKey, inherit: boolean) => {
         setDraft(prev => {
             if (!prev) return prev;
             const current = { ...(prev[role] || {}) };
             current.inherit_hub = inherit;
-            if (!inherit && !String(current.model || "").trim()) {
-                const hub = state?.hub_role_models;
-                const hubModel = role === "grounder" ? "" : role === "computer_use" ? hub?.computer_use : hub?.[role];
-                current.model = String(hubModel || "auto");
-            }
+            if (!inherit) roleProviderSeeds(role, current);
             return { ...prev, [role]: current };
+        });
+    };
+    const setRoleProvider = (role: RoleKey, providerID: string) => {
+        setDraft(prev => {
+            if (!prev) return prev;
+            const provider = providerByID.get(providerLookupKey(providerID));
+            const models = providerModels(providerID);
+            const preferredRaw = String(provider?.model || "").trim();
+            const preferred = provider?.is_hub_service
+                ? (capabilityBandName(preferredRaw) || "auto")
+                : preferredRaw;
+            const preferredMatch = preferred
+                ? models.find(model => model.toLowerCase() === preferred.toLowerCase())
+                : "";
+            return { ...prev, [role]: { ...(prev[role] || {}), inherit_hub: false, provider_id: providerID, model: preferredMatch || models[0] || "" } };
         });
     };
     const setRoleModel = (role: RoleKey, model: string) => {
@@ -736,10 +765,15 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         );
     };
 
-    const roleModelOptions = () => {
-        const hub = providers.find(provider => provider.is_hub_service);
-        const base = hub ? hubOfficialModelAliases() : providerModels(draft?.assistant.provider_id);
-        return Array.from(new Set(["auto", ...base].map(value => String(value || "").trim()).filter(Boolean)));
+    // A pinned role picks any eligible provider. A legacy model-only pin has
+    // no provider id; it resolves to the Hub provider when one exists,
+    // otherwise to the assistant provider, so the picker shows that effective
+    // provider.
+    const roleEffectiveProviderID = (assignment: RoleAssignment) => {
+        const pinned = String(assignment.provider_id || "").trim();
+        if (pinned) return pinned;
+        const hubProvider = providers.find(provider => provider.is_hub_service);
+        return String(hubProvider?.id || assistant?.provider_id || "").trim();
     };
     const header = (
         <div className="llm-profile-assignments__head">
@@ -786,24 +820,48 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         const effective = foregroundUsesAssistant && assistantSelectionPending
             ? <>{t("Effective after save: ", "保存后生效：")}{followingAssistantProviderName} · {followingAssistantModel}</>
             : <>{t("Effective now: ", "当前生效：", "目前生效：")}{!isGrounder && summary?.provider_name ? `${presetProviderDisplayName(lang, summary.provider_name)} · ` : ""}{shown}</>;
+        const pinnedProviderID = roleEffectiveProviderID(assignment);
         const modelPicker = inherits
             ? <div aria-live="polite" className={isRoles ? "bot-role-assignments__effective" : undefined} style={isRoles ? undefined : { color: colors.textSecondary, fontSize: "0.74rem" }}>{effective}</div>
-            : <SuggestCombobox
-                listboxId={`${key}-role-models`}
-                ariaLabel={aria}
-                value={String(assignment.model || "")}
-                options={roleModelOptions()}
-                onChange={model => setRoleModel(key, model)}
-                placeholder={t("Select or enter model ID", "选择或输入模型 ID", "選擇或輸入模型 ID")}
-                disabled={controlsLocked}
-                openOnEnter
-                toggleLabel={t("Show model list", "显示模型列表", "顯示模型列表")}
-                emptyText={t("No matching models", "没有匹配的模型", "沒有匹配的模型")}
-                inputStyle={inputStyle}
-            />;
+            : (
+                <div className="bot-role-assignments__fields">
+                    <div className="bot-role-assignments__field">
+                        <span className="bot-role-assignments__field-label">{t("Provider", "服务商", "服務商")}</span>
+                        <select
+                            aria-label={`${title} ${t("provider", "服务商", "服務商")}`}
+                            value={pinnedProviderID}
+                            disabled={controlsLocked}
+                            onChange={e => setRoleProvider(key, e.target.value)}
+                            data-testid={isRoles ? `bot-role-${key}-provider` : undefined}
+                            style={{ ...inputStyle, cursor: "pointer" }}
+                        >
+                            {pinnedProviderID === "" ? <option value="">{t("Select provider", "选择服务商")}</option> : null}
+                            {pinnedProviderID !== "" && !providerByID.has(providerLookupKey(pinnedProviderID))
+                                ? <option value={pinnedProviderID}>{pinnedProviderID}</option> : null}
+                            {providers.map(provider => <option key={provider.id} value={provider.id}>{presetProviderDisplayName(lang, provider.name)}</option>)}
+                        </select>
+                    </div>
+                    <div className="bot-role-assignments__field">
+                        <span className="bot-role-assignments__field-label">{t("Model", "模型", "模型")}</span>
+                        <SuggestCombobox
+                            listboxId={`${key}-role-models`}
+                            ariaLabel={`${title} ${t("model", "模型", "模型")}`}
+                            value={modelFieldValue(pinnedProviderID, String(assignment.model || ""))}
+                            options={providerModels(pinnedProviderID)}
+                            onChange={model => setRoleModel(key, model)}
+                            placeholder={t("Select or enter model ID", "选择或输入模型 ID", "選擇或輸入模型 ID")}
+                            disabled={controlsLocked}
+                            openOnEnter
+                            toggleLabel={t("Show model list", "显示模型列表", "顯示模型列表")}
+                            emptyText={t("No matching models", "没有匹配的模型", "沒有匹配的模型")}
+                            inputStyle={inputStyle}
+                        />
+                    </div>
+                </div>
+            );
         if (isRoles) {
             return (
-                <div key={key} className="bot-role-assignments__row" data-testid={`bot-role-${key}`}>
+                <div key={key} className={"bot-role-assignments__row" + (inherits ? "" : " is-customized")} data-testid={`bot-role-${key}`}>
                     <div className="bot-role-assignments__head">
                         <div className="bot-role-assignments__label" title={hint}>
                             <span className="bot-role-assignments__title">{title}</span>

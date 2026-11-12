@@ -84,6 +84,23 @@
   guiapp 10-minute-idle heap release; `MACLAW_GO_MEMLIMIT_MB` sets a soft Go
   heap cap (same knob as MaClawSrv).
 
+## Markdown document preview (guiapp/frontend)
+
+- `MarkdownPreview` (`src/components/ai/CodePreviewMarkdown.tsx`) renders
+  `.md` documents and office extracts via `react-markdown@8` +
+  `remark-gfm` + `remark-math` + `rehype-katex`. Find/go-to-line rides on
+  `data-line-start`/`data-line-end` wrappers built from hast positions
+  (1-based; `matchLineIndexes`/`activeMatchLine` are 0-based).
+- Plugin majors must match `unified@10` (react-markdown@8's ecosystem):
+  `remark-math@5` / `rehype-katex@6`. The current majors (`remark-math@6`,
+  `rehype-katex@7`) pull `unified@11` and break `Pluggable` typing and the
+  mdast/hast node shapes.
+- Raw HTML is dropped (`skipHtml`) for safety, so `<script>`/event handlers
+  can't run; a small rehype plugin promotes bare `<br>` raws because docs
+  put them inside table cells. `\(...\)`/`\[...\]` TeX delimiters are not
+  supported (same as the chat renderer); `$`/`$$` are. `==mark==` is kept
+  by a tiny remark plugin.
+
 ## Logs
 
 - `~/.maclaw/logs/maclaw.log` — shared by main app, companion, and quit relays.
