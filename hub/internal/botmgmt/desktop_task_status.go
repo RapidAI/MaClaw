@@ -94,6 +94,7 @@ func newRunningDesktopTask(job admittedDesktopFollow) *desktopAdmitState {
 		phase:           strings.TrimSpace(job.Phase),
 		started:         started,
 		clientMessageID: strings.TrimSpace(job.ClientMessageID),
+		session:         strings.TrimSpace(job.Session),
 	}
 }
 

@@ -264,6 +264,9 @@ type DesktopBotBusySnapshot struct {
 	Seq   int64                `json:"seq"`
 	Marks []DesktopBotBusyMark `json:"marks"`
 	Runs  []string             `json:"runs"`
+	// RunCounts is how many of each bot's runs are on the keyboard: one bot
+	// may run several jobs at once, so the page tracks a set, not one run.
+	RunCounts map[string]int `json:"run_counts"`
 }
 
 // GetDesktopBotBusy lists schedule holds for owner. An empty owner lists every
@@ -290,6 +293,31 @@ func (a *App) GetDesktopBotBusy(owner string) DesktopBotBusySnapshot {
 	})
 	desktopBotBusyMu.Unlock()
 	out.Runs = desktopDrivingRuns(owner)
+	out.RunCounts = desktopDrivingRunCounts(owner)
+	return out
+}
+
+// desktopDrivingRunCounts counts each bot's turns still on the keyboard, with
+// the same owner rule as desktopDrivingRuns.
+func desktopDrivingRunCounts(owner string) map[string]int {
+	owner = strings.TrimSpace(owner)
+	activeDesktopRunsMu.Lock()
+	defer activeDesktopRunsMu.Unlock()
+	out := map[string]int{}
+	for _, run := range activeDesktopRuns {
+		if run == nil || run.WaitingForUser {
+			continue
+		}
+		botID := strings.TrimSpace(run.BotID)
+		if botID == "" {
+			continue
+		}
+		runOwner := desktopRunOwner(run.SessionKey)
+		if owner != "" && runOwner != "" && runOwner != owner {
+			continue
+		}
+		out[botID]++
+	}
 	return out
 }
 
@@ -334,22 +362,28 @@ func desktopDrivingRuns(owner string) []string {
 }
 
 func desktopRunDriving(botID string) (bool, string) {
+	count, owner := desktopRunDrivingCount(botID)
+	return count > 0, owner
+}
+
+// desktopRunDrivingCount is how many of this bot's runs are on the keyboard.
+func desktopRunDrivingCount(botID string) (int, string) {
 	botID = strings.TrimSpace(botID)
 	activeDesktopRunsMu.Lock()
 	defer activeDesktopRunsMu.Unlock()
 	owner := ""
-	driving := false
+	count := 0
 	prefix := botID + desktopRunSeparator
 	for key, run := range activeDesktopRuns {
 		if run == nil || !strings.HasPrefix(key, prefix) || run.WaitingForUser {
 			continue
 		}
-		driving = true
+		count++
 		if owner == "" {
 			owner = desktopRunOwner(run.SessionKey)
 		}
 	}
-	return driving, owner
+	return count, owner
 }
 
 // publishDesktopRunDriving tells the Bot page whether this bot's turn still
@@ -359,11 +393,12 @@ func (a *App) publishDesktopRunDriving(botID string) {
 	if a == nil || botID == "" {
 		return
 	}
-	driving, owner := desktopRunDriving(botID)
+	count, owner := desktopRunDrivingCount(botID)
 	raw, err := json.Marshal(map[string]any{
 		"bot_id":      botID,
 		"owner_id":    owner,
-		"run_driving": driving,
+		"run_driving": count > 0,
+		"run_count":   count,
 	})
 	if err != nil {
 		return

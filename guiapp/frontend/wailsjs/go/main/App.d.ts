@@ -2577,7 +2577,7 @@ export function GetDesktopBotSupplements(arg1:string,arg2:string):Promise<Array<
 
 export function GetActiveDesktopRuns(arg1:string):Promise<Array<{bot_id:string,run_id:string,request_id:string,session_key:string,task_text:string,phase:string,started_at:string,waiting_for_user:boolean}>>;
 
-export function GetDesktopBotBusy(arg1:string):Promise<{seq:number,marks:Array<{owner_id:string,bot_id:string,count:number}>,runs?:Array<string>}>;
+export function GetDesktopBotBusy(arg1:string):Promise<{seq:number,marks:Array<{owner_id:string,bot_id:string,count:number}>,runs?:Array<string>,run_counts?:Record<string, number>}>;
 
 export function PersistDesktopBotPreference(arg1:string,arg2:string):Promise<void>;
 

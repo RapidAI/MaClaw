@@ -64,6 +64,43 @@ type desktopAdmitState struct {
 	progressWhere string
 	progressNext  string
 	progressOpen  string
+	// session is the srv conversation this post/run uses: the bot's main
+	// one (the bot id) or a per-run thread (see desktopThreadSession).
+	session string
+}
+
+// desktopAskOwner is a conversation whose run ended with a question.
+type desktopAskOwner struct {
+	session string
+	at      time.Time
+}
+
+// desktopAskOwnerFor is how long a question keeps the next message.
+const desktopAskOwnerFor = 6 * time.Hour
+
+// desktopThreadSession is a per-run conversation of one bot. Runs that go
+// beside the main conversation get one, so their histories do not interleave.
+func desktopThreadSession(botID, clientMessageID string) string {
+	return strings.TrimSpace(botID) + "#t-" + strings.TrimSpace(clientMessageID)
+}
+
+// desktopTurnOf names a turn for hold ownership.
+func desktopTurnOf(clientMessageID, runID string) string {
+	if id := strings.TrimSpace(clientMessageID); id != "" {
+		return id
+	}
+	if id := strings.TrimSpace(runID); id != "" {
+		return "run:" + id
+	}
+	return ""
+}
+
+// desktopClaim is what claimDesktopTurn decided for one post.
+type desktopClaim struct {
+	// siblings is how many other runs of this bot are live.
+	siblings int
+	// session is the srv conversation for this post.
+	session string
 }
 
 // desktopRunActivityText keeps a working-row phrase. The closed set lives in
@@ -99,6 +136,8 @@ type admittedDesktopFollow struct {
 	Isolated        bool
 	Started         time.Time
 	ClientMessageID string
+	// Session is the srv conversation the run is in (bot id or a thread).
+	Session string
 }
 
 type desktopRunView struct {
@@ -212,9 +251,22 @@ func (s *Service) dropAbandonedDesktopReserves(tenantID, userID, botID string, n
 // bot's own runs refuse it only at the per-bot cap (botParallelRuns). The returned
 // function drops the empty reserve when the post ends without a real run id.
 func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, task, phase string) (func(), error) {
+	release, _, err := s.claimDesktopTurnFor(tenantID, userID, botID, clientMessageID, task, phase)
+	return release, err
+}
+
+// claimDesktopTurnFor is claimDesktopTurn that also says how many sibling
+// runs are live and which conversation the post goes to:
+//   - the same turn key again keeps the conversation it had;
+//   - a run that ended with a question owns the next message (its answer);
+//   - otherwise the bot's main conversation, unless a live run is already in
+//     it, in which case the post gets its own thread.
+//
+// Hub-started turns (delegates, wakes) keep their own threads as before.
+func (s *Service) claimDesktopTurnFor(tenantID, userID, botID, clientMessageID, task, phase string) (func(), desktopClaim, error) {
 	noop := func() {}
 	if s == nil {
-		return noop, ErrSettingsUnavailable
+		return noop, desktopClaim{}, ErrSettingsUnavailable
 	}
 	s.ensureTaskPatrol()
 	clientMessageID = strings.TrimSpace(clientMessageID)
@@ -241,8 +293,10 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 	reserveKey := desktopReserveKey(tenantID, userID, botID, clientMessageID)
 	var sameEmpty *desktopAdmitState
 	sameReal := false
+	sameSession := ""
 	otherLive := false
 	ownLive := 0
+	mainBusy := false
 	for key, state := range s.desktopAdmits {
 		if state == nil || !strings.HasPrefix(key, userPrefix) {
 			continue
@@ -251,6 +305,7 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 		live := !state.done
 		id := strings.TrimSpace(state.clientMessageID)
 		runID := strings.TrimSpace(state.runID)
+		session := strings.TrimSpace(state.session)
 		state.mu.Unlock()
 		if !live {
 			continue
@@ -259,14 +314,19 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 		sameKey := clientMessageID != "" && id == clientMessageID && sameBot
 		if sameKey && runID == "" {
 			sameEmpty = state
+			sameSession = session
 			continue
 		}
 		if sameKey {
 			sameReal = true
+			sameSession = session
 			continue
 		}
 		if sameBot {
 			ownLive++ // this bot's other runs count toward its cap
+			if session == "" || session == botID {
+				mainBusy = true
+			}
 			continue
 		}
 		if desktopOf(desktopAdmitBot(key, userPrefix)) != mine {
@@ -280,7 +340,31 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 	}
 	if otherLive || (!sameReal && sameEmpty == nil && ownLive >= s.botParallelRuns()) {
 		s.mu.Unlock()
-		return noop, ErrDesktopBusy
+		return noop, desktopClaim{}, ErrDesktopBusy
+	}
+	claim := desktopClaim{siblings: ownLive, session: sameSession}
+	if claim.session == "" && (sameReal || sameEmpty != nil) {
+		claim.session = desktopSessionKey(botID, clientMessageID)
+	}
+	if claim.session == "" {
+		switch {
+		case hubStartedTurn(clientMessageID):
+			claim.session = desktopSessionKey(botID, clientMessageID)
+		default:
+			if owner, ok := s.desktopAskSession[botPrefix]; ok {
+				delete(s.desktopAskSession, botPrefix)
+				if now.Sub(owner.at) <= desktopAskOwnerFor && owner.session != "" {
+					claim.session = owner.session
+				}
+			}
+			if claim.session == "" {
+				if mainBusy && clientMessageID != "" {
+					claim.session = desktopThreadSession(botID, clientMessageID)
+				} else {
+					claim.session = botID
+				}
+			}
+		}
 	}
 	hold := false
 	if sameEmpty != nil {
@@ -299,11 +383,12 @@ func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, tas
 			phase:           strings.TrimSpace(phase),
 			posting:         1,
 			started:         now,
+			session:         claim.session,
 		}
 		hold = true
 	}
 	s.mu.Unlock()
-	return func() { s.releaseDesktopTurn(reserveKey, clientMessageID, hold) }, nil
+	return func() { s.releaseDesktopTurn(reserveKey, clientMessageID, hold) }, claim, nil
 }
 
 // releaseDesktopTurn drops the empty reserve this post was holding. A real
@@ -649,6 +734,7 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 			Metadata:    desktopRunOutcomeMeta(view.Message.Metadata, view.Metadata),
 			Attachments: view.Message.Attachments,
 			Waiting:     strings.TrimSpace(job.ClientMessageID) != "",
+			Turn:        desktopTurnOf(job.ClientMessageID, job.RunID),
 		}
 		if view.DesktopHandoff && !job.Isolated && !job.Opened && strings.TrimSpace(job.Novnc) == "" {
 			if url, did, openErr := s.openDesktop(context.Background(), job.TenantID, job.UserID, job.InstanceID, job.BotID); openErr == nil {
@@ -668,7 +754,9 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 			state.status = "succeeded"
 		}
 		runStatus := state.status
+		session := state.session
 		state.mu.Unlock()
+		s.noteDesktopAskOwner(job.TenantID, job.UserID, job.BotID, session, reply)
 		s.persistDesktopTasks(job.TenantID)
 		s.reportDelegateRunEnd(job.TenantID, job.UserID, job.BotID, job.RunID, runStatus, reply, settleErr)
 		// The desktop is free again: start the next queued delegate or wake.
@@ -1169,6 +1257,7 @@ func (s *Service) readmitDesktopRun(ctx context.Context, tenantID, userID, botID
 		Metadata:    desktopRunOutcomeMeta(view.Message.Metadata, view.Metadata),
 		Attachments: view.Message.Attachments,
 		Waiting:     strings.TrimSpace(view.Message.Metadata["client_message_id"]) != "",
+		Turn:        desktopTurnOf(view.Message.Metadata["client_message_id"], runID),
 	}
 	body.CallErr = desktopTerminalMiss(runID, view.Status, body.Text, view.Error, body.Handoff)
 	// Settling is claimed, not repeated. The caller polls again whenever the
@@ -1243,5 +1332,31 @@ func (s *Service) botDesktopUsers(tenantID, userID string) func(string) string {
 			return u
 		}
 		return owner
+	}
+}
+
+// noteDesktopAskOwner remembers the conversation of a run that ended asking
+// the person, so their next message (the answer) goes back to that run's
+// thread even when other runs started meanwhile. A run that ends without a
+// question gives up the claim if it held it.
+func (s *Service) noteDesktopAskOwner(tenantID, userID, botID, session string, reply Reply) {
+	session = strings.TrimSpace(session)
+	if s == nil || session == "" {
+		return
+	}
+	asks := strings.TrimSpace(reply.AskUserQuestion) != "" || strings.TrimSpace(reply.AskUserSecretName) != "" ||
+		desktopTaskChoiceLine(reply.AskUserOptionsJSON) != ""
+	key := desktopAdmitKey(tenantID, userID, botID, "")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if asks {
+		if s.desktopAskSession == nil {
+			s.desktopAskSession = map[string]desktopAskOwner{}
+		}
+		s.desktopAskSession[key] = desktopAskOwner{session: session, at: s.now()}
+		return
+	}
+	if owner, ok := s.desktopAskSession[key]; ok && owner.session == session {
+		delete(s.desktopAskSession, key)
 	}
 }

@@ -194,6 +194,16 @@ type Service struct {
 	// timeout pin is not a login, so a later failure must not hand the
 	// keyboard over and let the person type on a page the agent still owns.
 	desktopKeyboardTaken map[string]string
+	// desktopHoldTurn / desktopKeyboardTurn name the turn (client message id,
+	// or "run:"+run id) that owns the hold and the taken keyboard of a desktop.
+	// With several runs of one bot going at once, only that turn may clear the
+	// hold or hand the keyboard back; a sibling run settling leaves them. Not
+	// persisted: after a restart they are empty and the old rules apply.
+	desktopHoldTurn     map[string]string
+	desktopKeyboardTurn map[string]string
+	// desktopAskSession is, per bot, the conversation of the run that last
+	// ended asking the person; their next message answers it there.
+	desktopAskSession map[string]desktopAskOwner
 	// desktopAdminView is when an admin last opened this user's desktop in
 	// the admin console. While that hold is fresh, a bot command finishing
 	// must leave the desktop up, or the picture the admin is watching goes

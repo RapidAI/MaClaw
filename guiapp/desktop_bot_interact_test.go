@@ -2,6 +2,9 @@ package guiapp
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -148,5 +151,47 @@ func TestEvaluateDesktopTaskSupplementDecisions(t *testing.T) {
 	got, _ := (&App{}).EvaluateDesktopTaskSupplement("整理周报", "你好", "zh-Hans")
 	if got.Decision != "chat" {
 		t.Fatalf("small talk fallback: %+v", got)
+	}
+}
+
+// TestWaitUntilDesktopFreeStartsBelowTheCap: a job Hub refused at the per-bot
+// cap goes as soon as one of the bot's runs ends, not when all of them did.
+func TestWaitUntilDesktopFreeStartsBelowTheCap(t *testing.T) {
+	prev := desktopBotBusyPoll
+	desktopBotBusyPoll = 2 * time.Millisecond
+	t.Cleanup(func() {
+		desktopBotBusyPoll = prev
+		desktopBotExchangeOverride = nil
+	})
+	var mu sync.Mutex
+	polls := 0
+	desktopBotExchangeOverride = func(_ context.Context, method, path string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+		if method != http.MethodGet || !strings.Contains(path, "/tasks") {
+			return 0, fmt.Errorf("unexpected %s %s", method, path)
+		}
+		mu.Lock()
+		polls++
+		n := polls
+		mu.Unlock()
+		items := []map[string]any{
+			{"run_id": "run-1", "bot_id": "bot_1", "status": "running"},
+			{"run_id": "run-2", "bot_id": "bot_1", "status": "running"},
+			{"run_id": "run-3", "bot_id": "bot_1", "status": "running"},
+		}
+		if n >= 3 {
+			items[0]["status"] = "succeeded" // one of three ended; two still run
+		}
+		raw, _ := json.Marshal(map[string]any{"items": items})
+		return http.StatusOK, json.Unmarshal(raw, dest)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := (&App{}).waitUntilDesktopFree(ctx, "bot_1"); err != nil {
+		t.Fatalf("wait err = %v (polls %d)", err, polls)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if polls < 3 {
+		t.Fatalf("returned before a run ended: polls=%d", polls)
 	}
 }

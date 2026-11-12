@@ -5811,6 +5811,31 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByText('好，这个等手上的做完我就做。')).toBeNull();
     });
 
+    it('keeps a bot driving while one of its runs is left and starts the queued job when a slot frees', async () => {
+        setDesktopBotParallelRuns(2);
+        onTestFinished(() => setDesktopBotParallelRuns(3));
+        listBotTasks.mockResolvedValue([{ run_id: 'run-1', bot_id: 'bot_1', status: 'running', task: '早报' }]);
+        sendTask.mockResolvedValue({ request_id: 'req-slot', deferred: true, session_key: 'alice:bot_1' });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
+        expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
+        act(() => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', run_driving: true, run_count: 2 });
+        });
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('好，这个等手上的做完我就做。')).toBeTruthy();
+        expect(sendTask).not.toHaveBeenCalled();
+        // One of the two runs ends: the bot still drives, and the queued job
+        // takes the freed slot without waiting for the other run.
+        act(() => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', run_driving: true, run_count: 1 });
+        });
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+        expect(sendTask).toHaveBeenCalledWith('bot_1', childOrder('打开示例网站'), 'execute');
+    });
+
     it('waits for the desktop that is already driving, then sends the order once', async () => {
         setDesktopBotParallelRuns(1);
         onTestFinished(() => setDesktopBotParallelRuns(3));

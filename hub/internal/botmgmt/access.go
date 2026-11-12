@@ -445,7 +445,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	}
 	// One non-terminal admit per user. The reserve is visible to the next
 	// scan before the lock drops. The long message post stays outside it.
-	releaseTurn, busyErr := s.claimDesktopTurn(tenantID, userID, botID, clientMessageID, content, phase)
+	releaseTurn, claim, busyErr := s.claimDesktopTurnFor(tenantID, userID, botID, clientMessageID, content, phase)
 	if busyErr != nil {
 		traceBot(botID, "desktop_busy", busyErr, "dur_ms", traceMS(time.Since(pipelineStarted)))
 		return BotAdmission{}, busyErr
@@ -461,7 +461,11 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	// cloud desktop; the first tool that needs a machine does that. A waiting
 	// login still hands the keyboard back. err stays nil: this step no longer
 	// calls Desktop.Open.
-	s.releaseDesktopKeyboard(tenantID, desktopUser, botID)
+	// A post beside a live sibling run is not the person saying the login is
+	// done: only a post with no sibling takes the keyboard back.
+	if claim.siblings == 0 {
+		s.releaseDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
+	}
 	traceBot(botID, "open_desktop", err,
 		"instance", instanceID,
 		"opened", traceYes(opened),
@@ -471,7 +475,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	if err != nil {
 		// The desktop did not change hands. If this bot was already waiting
 		// for a login, the person still needs the keyboard on that browser.
-		s.restoreDesktopKeyboard(tenantID, desktopUser, botID)
+		s.restoreDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
 		return BotAdmission{}, err
 	}
 	var payload struct {
@@ -496,7 +500,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	fresh, token, tokenErr := s.ownerToken(ctx, tenantID, userID)
 	traceBot(botID, "owner_token", tokenErr, "dur_ms", traceMS(time.Since(step)))
 	if tokenErr != nil {
-		s.restoreDesktopKeyboard(tenantID, desktopUser, botID)
+		s.restoreDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
 		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
 		return BotAdmission{}, tokenErr
 	}
@@ -510,7 +514,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	metadata, writeMetadata, metaErr := s.desktopIdentityMetadata(ctx, &fresh, &token, instancePath, userID, tenantID, rec.Bots[index])
 	traceBot(botID, "read_instance", metaErr, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
 	if metaErr != nil {
-		s.restoreDesktopKeyboard(tenantID, desktopUser, botID)
+		s.restoreDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
 		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
 		return BotAdmission{}, metaErr
 	}
@@ -523,7 +527,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"metadata": metadata,
 	}, nil); err != nil {
 		traceBot(botID, "patch_instance", err, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
-		s.restoreDesktopKeyboard(tenantID, desktopUser, botID)
+		s.restoreDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
 		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
 		return BotAdmission{}, err
 	} else {
@@ -536,7 +540,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"dur_ms", traceMS(time.Since(step)),
 	)
 	if llmErr != nil {
-		s.restoreDesktopKeyboard(tenantID, desktopUser, botID)
+		s.restoreDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
 		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
 		return BotAdmission{}, llmErr
 	}
@@ -558,7 +562,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	}
 	messageBody := map[string]any{
 		"content":            content,
-		"client_session_key": desktopSessionKey(rec.Bots[index].ID, clientMessageID),
+		"client_session_key": claim.session,
 		"metadata":           messageMeta,
 		// The per-turn key travels in the body, where MaClawSrv reads it as
 		// client_message_id. A repeated key replays the run it already
@@ -614,6 +618,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			Isolated:        isolated,
 			Started:         pipelineStarted,
 			ClientMessageID: clientMessageID,
+			Session:         claim.session,
 		})
 		traceBot(botID, "admit", nil,
 			"instance", instanceID,
@@ -638,6 +643,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		Attention:   payload.AttentionReason,
 		Metadata:    desktopRunOutcomeMeta(payload.Message.Metadata, payload.Run.Metadata),
 		Attachments: payload.Message.Attachments,
+		Turn:        clientMessageID,
 		Waiting:     strings.TrimSpace(clientMessageID) != "",
 	})
 	if settleErr != nil {
@@ -667,6 +673,9 @@ type desktopCommandBody struct {
 	Metadata    map[string]string
 	Attachments []replyAttachment
 	Waiting     bool
+	// Turn owns this settle (desktopTurnOf). A sibling run's settle leaves
+	// the hold and keyboard another turn owns.
+	Turn string
 }
 
 func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novnc string, opened bool, body desktopCommandBody) (Reply, error) {
@@ -678,7 +687,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 		if body.Handoff {
 			// This run handed the desktop over and then failed. The person
 			// still needs that browser, so this failure must not stop it.
-			s.noteDesktopHeld(tenantID, userID, botID)
+			s.noteDesktopHeld(tenantID, userID, botID, body.Turn)
 			if reason != "" {
 				s.noteDesktopAttention(tenantID, userID, botID, reason)
 			}
@@ -687,7 +696,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 			// The instance may already be waiting for a login. Stopping here
 			// would close that browser before the person can use it. A failed
 			// continuation did not take the keyboard, so the person keeps it.
-			s.restoreDesktopKeyboard(tenantID, userID, botID)
+			s.restoreDesktopKeyboard(tenantID, userID, botID, body.Turn)
 			s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
 		} else {
 			// The browser is still open. Keep it so the website login stays
@@ -696,9 +705,9 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 			// not be treated as a login.
 			if s.desktopViewURL(tenantID, userID) != "" {
 				if s.desktopHeldByPerson(tenantID, userID) {
-					s.restoreDesktopKeyboard(tenantID, userID, botID)
+					s.restoreDesktopKeyboard(tenantID, userID, botID, body.Turn)
 				} else {
-					s.keepDesktopWithoutKeyboard(tenantID, userID, botID)
+					s.keepDesktopWithoutKeyboard(tenantID, userID, botID, body.Turn)
 				}
 			}
 			s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
@@ -751,12 +760,12 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 	if quiet.Missed {
 		emptyErr := fmt.Errorf("run ended without a result")
 		traceBot(botID, "empty_result", emptyErr, "instance", instanceID, "handoff", traceYes(body.Handoff))
-		s.restoreDesktopKeyboard(tenantID, userID, botID)
+		s.restoreDesktopKeyboard(tenantID, userID, botID, body.Turn)
 		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
 		return Reply{}, emptyErr
 	}
 	if quiet.Quiet {
-		s.clearDesktopHeld(tenantID, userID, botID)
+		s.clearDesktopHeld(tenantID, userID, botID, body.Turn)
 		s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
 		return Reply{}, nil
 	}
@@ -779,7 +788,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 		// picture yet; a later session can still publish one. Clearing the
 		// hold here would let the next failure close the browser before the
 		// person can sign in, and the website login would be gone.
-		s.noteDesktopHeld(tenantID, userID, botID)
+		s.noteDesktopHeld(tenantID, userID, botID, body.Turn)
 		if reason != "" {
 			s.noteDesktopAttention(tenantID, userID, botID, reason)
 		}
@@ -790,7 +799,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 			reply.NovncURL = s.gateDesktopHandoff(novnc)
 		}
 	} else {
-		s.clearDesktopHeld(tenantID, userID, botID)
+		s.clearDesktopHeld(tenantID, userID, botID, body.Turn)
 		if reason != "" {
 			s.noteDesktopAttention(tenantID, userID, botID, reason)
 			reply.AttentionReason = reason
@@ -1068,7 +1077,7 @@ func (s *Service) HoldDesktop(ctx context.Context, tenantID, userID, instanceID 
 // keepDesktopWithoutKeyboard stops a later failure from closing this
 // user's browser. The person does not get the keyboard; that only happens
 // for a login handoff.
-func (s *Service) keepDesktopWithoutKeyboard(tenantID, userID, botID string) {
+func (s *Service) keepDesktopWithoutKeyboard(tenantID, userID, botID string, turn ...string) {
 	if s == nil {
 		return
 	}
@@ -1094,6 +1103,7 @@ func (s *Service) keepDesktopWithoutKeyboard(tenantID, userID, botID string) {
 	}
 	s.desktopHeld[key] = botID
 	s.desktopAwaiting[key] = false
+	s.setDesktopTurnLocked(&s.desktopHoldTurn, key, turn)
 	s.persistDesktopState(tenantID)
 }
 
@@ -1206,7 +1216,7 @@ func (s *Service) StopDesktopIfIdle(ctx context.Context, tenantID, userID, insta
 	return true, nil
 }
 
-func (s *Service) noteDesktopHeld(tenantID, userID, botID string) {
+func (s *Service) noteDesktopHeld(tenantID, userID, botID string, turn ...string) {
 	if s == nil {
 		return
 	}
@@ -1224,16 +1234,18 @@ func (s *Service) noteDesktopHeld(tenantID, userID, botID string) {
 		s.desktopAwaiting = map[string]bool{}
 	}
 	key := desktopViewKey(tenantID, userID)
+	s.setDesktopTurnLocked(&s.desktopHoldTurn, key, turn)
 	if s.desktopHeld[key] == botID && s.desktopAwaiting[key] && s.desktopKeyboardTaken[key] == "" {
 		return // already pinned exactly like this — skip the disk write
 	}
 	s.desktopHeld[key] = botID
 	s.desktopAwaiting[key] = true
 	delete(s.desktopKeyboardTaken, key)
+	delete(s.desktopKeyboardTurn, key)
 	s.persistDesktopState(tenantID)
 }
 
-func (s *Service) releaseDesktopKeyboard(tenantID, userID, botID string) {
+func (s *Service) releaseDesktopKeyboard(tenantID, userID, botID string, turn ...string) {
 	if s == nil {
 		return
 	}
@@ -1242,11 +1254,16 @@ func (s *Service) releaseDesktopKeyboard(tenantID, userID, botID string) {
 	key := desktopViewKey(tenantID, userID)
 	holder, ok := s.desktopHeld[key]
 	botID = strings.TrimSpace(botID)
+	if ok && holder == botID {
+		// The posting turn now owns this bot's pin: its end clears it.
+		s.setDesktopTurnLocked(&s.desktopHoldTurn, key, turn)
+	}
 	if !ok || holder != botID || !s.desktopAwaiting[key] {
 		s.mu.Unlock()
 		return
 	}
 	s.desktopAwaiting[key] = false
+	s.setDesktopTurnLocked(&s.desktopKeyboardTurn, key, turn)
 	if s.desktopKeyboardTaken == nil {
 		s.desktopKeyboardTaken = map[string]string{}
 	}
@@ -1255,7 +1272,7 @@ func (s *Service) releaseDesktopKeyboard(tenantID, userID, botID string) {
 	s.mu.Unlock()
 }
 
-func (s *Service) restoreDesktopKeyboard(tenantID, userID, botID string) {
+func (s *Service) restoreDesktopKeyboard(tenantID, userID, botID string, turn ...string) {
 	if s == nil {
 		return
 	}
@@ -1263,6 +1280,11 @@ func (s *Service) restoreDesktopKeyboard(tenantID, userID, botID string) {
 	s.ensureDesktopHydrated(tenantID)
 	key := desktopViewKey(tenantID, userID)
 	botID = strings.TrimSpace(botID)
+	if !s.desktopTurnOwnsLocked(s.desktopKeyboardTurn, key, turn) {
+		s.mu.Unlock()
+		return // a sibling run's keyboard: only the turn that took it gives it back
+	}
+	delete(s.desktopKeyboardTurn, key)
 	taken := s.desktopKeyboardTaken[key]
 	delete(s.desktopKeyboardTaken, key)
 	if taken != botID {
@@ -1289,13 +1311,17 @@ func (s *Service) restoreDesktopKeyboard(tenantID, userID, botID string) {
 	s.mu.Unlock()
 }
 
-func (s *Service) clearDesktopHeld(tenantID, userID, botID string) {
+func (s *Service) clearDesktopHeld(tenantID, userID, botID string, turn ...string) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	s.ensureDesktopHydrated(tenantID)
 	key := desktopViewKey(tenantID, userID)
+	if !s.desktopTurnOwnsLocked(s.desktopHoldTurn, key, turn) {
+		s.mu.Unlock()
+		return // a sibling run settling leaves the hold its owner still needs
+	}
 	holder, hadHolder := s.desktopHeld[key]
 	_, hadAwaiting := s.desktopAwaiting[key]
 	_, hadKeyboard := s.desktopKeyboardTaken[key]
@@ -1303,6 +1329,8 @@ func (s *Service) clearDesktopHeld(tenantID, userID, botID string) {
 		delete(s.desktopHeld, key)
 		delete(s.desktopAwaiting, key)
 		delete(s.desktopKeyboardTaken, key)
+		delete(s.desktopHoldTurn, key)
+		delete(s.desktopKeyboardTurn, key)
 		if hadHolder || hadAwaiting || hadKeyboard {
 			s.persistDesktopState(tenantID)
 		}
@@ -1767,4 +1795,27 @@ func desktopSessionKey(botID, clientMessageID string) string {
 // wake) rather than one the person sent from the chat.
 func hubStartedTurn(clientMessageID string) bool {
 	return strings.HasPrefix(clientMessageID, "xdel-") || strings.HasPrefix(clientMessageID, "xwake-")
+}
+
+// setDesktopTurnLocked records the owning turn of a desktop's hold or taken
+// keyboard. No turn (an older caller) records nothing. Callers hold s.mu.
+func (s *Service) setDesktopTurnLocked(m *map[string]string, key string, turn []string) {
+	if len(turn) == 0 || strings.TrimSpace(turn[0]) == "" {
+		return
+	}
+	if *m == nil {
+		*m = map[string]string{}
+	}
+	(*m)[key] = strings.TrimSpace(turn[0])
+}
+
+// desktopTurnOwnsLocked reports whether this turn may release what the map
+// records: no recorded owner, no turn given (an older caller), or the same
+// turn. Callers hold s.mu.
+func (s *Service) desktopTurnOwnsLocked(m map[string]string, key string, turn []string) bool {
+	owner := strings.TrimSpace(m[key])
+	if owner == "" || len(turn) == 0 || strings.TrimSpace(turn[0]) == "" {
+		return true
+	}
+	return owner == strings.TrimSpace(turn[0])
 }

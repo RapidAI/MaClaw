@@ -190,6 +190,11 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 		return
 	}
 	botID := strings.TrimSpace(in.ClientSessionKey)
+	// A thread of a bot ("bot#t-…" for a parallel run, "bot#xdel-…") logs
+	// under the bot itself.
+	if i := strings.Index(botID, "#"); i > 0 {
+		botID = botID[:i]
+	}
 	phase := ""
 	if in.Metadata != nil {
 		phase = strings.TrimSpace(in.Metadata["bot_phase"])

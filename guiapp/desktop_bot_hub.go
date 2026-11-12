@@ -1371,20 +1371,29 @@ func (a *App) relayDesktopBotWhenFree(ctx context.Context, botID, text, phase, r
 	}
 }
 
-// waitUntilDesktopFree returns when this bot has no non-terminal desktop
-// admit. Hub has already refused, so a list that does not show the work yet
-// still waits one poll: sending again in the same instant spins. A task-list
-// error is not "free". The context ending during the wait is a skipped
-// occurrence, not the busy sentence.
+// waitUntilDesktopFree returns when this bot has room for one more run: Hub
+// refused at its per-bot cap, so the job may go as soon as the bot has fewer
+// live runs than when it was refused (one of them ended), or none. Hub has
+// already refused, so a list that does not show the work yet still waits one
+// poll: sending again in the same instant spins. A task-list error is not
+// "free". The context ending during the wait is a skipped occurrence, not
+// the busy sentence.
 func (a *App) waitUntilDesktopFree(ctx context.Context, botID string) error {
 	sawPause := false
+	refusedAt := -1
 	for {
 		if err := ctx.Err(); err != nil {
 			return errDesktopOccurrenceSkipped
 		}
-		busy, unknown := a.desktopUserBusy(ctx, botID)
-		if sawPause && !busy && !unknown {
+		live, unknown := a.desktopLiveRuns(ctx, botID)
+		if !unknown && refusedAt < 0 {
+			refusedAt = live
+		}
+		if sawPause && !unknown && (live == 0 || (refusedAt > 0 && live < refusedAt)) {
 			return nil
+		}
+		if !unknown && live > refusedAt {
+			refusedAt = live // another job took the room first: wait for that one too
 		}
 		sawPause = true
 		timer := time.NewTimer(desktopBotBusyPoll)
@@ -1414,16 +1423,30 @@ func (a *App) desktopUserBusy(ctx context.Context, botID string) (busy bool, unk
 	if botID == "" {
 		return false, true
 	}
+	live, unknown := a.desktopLiveRuns(ctx, botID)
+	return live > 0, unknown
+}
+
+// desktopLiveRuns counts this bot's non-terminal desktop admits. A task-list
+// failure is unknown.
+func (a *App) desktopLiveRuns(ctx context.Context, botID string) (live int, unknown bool) {
+	if ctx.Err() != nil {
+		return 0, true
+	}
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return 0, true
+	}
 	items, err := a.listDesktopBotTasks(ctx, botID)
 	if err != nil {
-		return false, true
+		return 0, true
 	}
 	for _, item := range items {
 		if !desktopTaskTerminal(item.Status) {
-			return true, false
+			live++
 		}
 	}
-	return false, false
+	return live, false
 }
 
 func desktopTaskTerminal(status string) bool {

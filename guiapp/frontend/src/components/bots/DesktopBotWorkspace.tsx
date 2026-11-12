@@ -2396,10 +2396,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [desktopBusyByBot, setDesktopBusyByBot] = useState<Record<string, number>>({});
     // Chat turns still on the keyboard. A stale bubble is not enough to know
     // the run ended, and a run that asked the person is absent here.
-    const [desktopRunByBot, setDesktopRunByBot] = useState<Record<string, boolean>>({});
+    // How many of each bot's runs are on the keyboard (a set kept by the Go
+    // side; one bot may run several jobs at once). 0 / absent: not driving.
+    const [desktopRunByBot, setDesktopRunByBot] = useState<Record<string, number>>({});
     // The send closure can be older than the latest busy event. The ref is the
     // gate; the state is what the page paints.
-    const desktopRunByBotRef = useRef<Record<string, boolean>>({});
+    const desktopRunByBotRef = useRef<Record<string, number>>({});
     const drainDeskRef = useRef<(botId: string, fromList?: boolean) => void>(() => undefined);
     const drainAllDeskRef = useRef<() => void>(() => undefined);
     const drivingSinceRef = useRef<Record<string, number>>({});
@@ -2678,7 +2680,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (view?.userControl === true || (view?.attentionReason || '') !== '') return false;
         const latest = latestAssistantTurn(botId);
         if (latest && (latest.userControl || latest.attentionReason)) return false;
-        return desktopRunByBot[botId] === true;
+        return (desktopRunByBot[botId] || 0) > 0;
     };
     const agentOperating = !!selected && botUsingDesktop(selected.id);
     const takeoverHeld = !!selected && !!takeoverHoldByBot[selected.id];
@@ -3389,11 +3391,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if ('run_driving' in data || 'RunDriving' in data) {
                 runEpochRef.current += 1;
                 const driving = data.run_driving === true || data.RunDriving === true;
+                const countRaw = Number(data.run_count ?? data.RunCount ?? 0);
+                const count = driving ? Math.max(1, Number.isFinite(countRaw) ? Math.floor(countRaw) : 1) : 0;
                 const prev = desktopRunByBotRef.current;
                 let next = prev;
                 if (driving) {
                     drivingSinceRef.current[botId] = Date.now();
-                    if (!prev[botId]) next = { ...prev, [botId]: true };
+                    if (prev[botId] !== count) next = { ...prev, [botId]: count };
                 } else if (prev[botId]) {
                     next = { ...prev };
                     delete next[botId];
@@ -3402,7 +3406,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     desktopRunByBotRef.current = next;
                     setDesktopRunByBot(next);
                 }
-                if (!driving && next !== prev) drainAllDeskRef.current();
+                // A run ending frees a slot: drain when none drive, or when
+                // fewer drive than before (below the cap a queued job can go).
+                if (next !== prev && (!driving || count < (prev[botId] || 0))) drainAllDeskRef.current();
                 if (!('busy' in data) && !('Busy' in data) && !('count' in data) && !('Count' in data)) return;
             }
             const seq = Number(data.seq || data.Seq || 0);
@@ -3539,10 +3545,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 setDesktopBusyByBot(next);
             }
             if (runEpochRef.current === seenRuns) {
-                const runs: Record<string, boolean> = {};
+                const runs: Record<string, number> = {};
                 for (const id of view?.runs || []) {
                     const botId = String(id || '').trim();
-                    if (botId) runs[botId] = true;
+                    if (botId) runs[botId] = Math.max(1, Number(view?.run_counts?.[botId] || 0));
                 }
                 desktopRunByBotRef.current = runs;
                 setDesktopRunByBot(runs);
@@ -5607,7 +5613,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // One bot runs up to DESKTOP_BOT_PARALLEL_RUNS jobs side by side
             // (Hub admits them; MaClawSrv gives each its own scratch folder and
             // hands the screen over in turn). Only a bot at that cap queues.
-            if (mode === 'now' && sendPhase === 'execute' && desktopRunByBotRef.current[botId] && Math.max(1, liveRunsOf(botId, pending)) >= DESKTOP_BOT_PARALLEL_RUNS) {
+            if (mode === 'now' && sendPhase === 'execute' && desktopRunByBotRef.current[botId] && Math.max(desktopRunByBotRef.current[botId] || 0, liveRunsOf(botId, pending)) >= DESKTOP_BOT_PARALLEL_RUNS) {
                 pending.settled = true;
                 pendingRef.current.delete(ticket);
                 clearLiveBotTurn(ownerId, botId, assistantMessage.id);
@@ -5836,7 +5842,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (stopHoldRef.current.has(botId)) return;
         const queue = queueRef.current.get(botId);
         if (!queue || queue.length === 0) return;
-        if (!fromList && desktopRunByBotRef.current[botId]) return;
+        // A queued job waits only while the bot is at its parallel cap.
+        if (!fromList && Math.max(desktopRunByBotRef.current[botId] || 0, liveRunsOf(botId)) >= DESKTOP_BOT_PARALLEL_RUNS) return;
         if (turnStillReading(botId) || pendingBubbleHoldsQueue(botId)) return;
         const nextSend = takeNextQueued(botId, queue);
         if (!nextSend) return;
@@ -6717,8 +6724,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 commit(botId, [...current, { id: qid, role: 'assistant', content: qline, ack: true }]);
                 upgradeLine(userId, botId, qid, 'queued', qline, order);
             };
+            const atCap = () => Math.max(desktopRunByBotRef.current[botId] || 0, liveRunsOf(botId)) >= DESKTOP_BOT_PARALLEL_RUNS;
             if (!noteId) {
-                if (desktopRunByBotRef.current[botId]) {
+                if (atCap()) {
                     queueOrder(false);
                     return;
                 }
@@ -6733,7 +6741,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 } catch {
                     return;
                 }
-                if (desktopRunByBotRef.current[botId]) {
+                if (atCap()) {
                     queueOrder(true);
                     return;
                 }
