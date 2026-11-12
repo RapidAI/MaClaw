@@ -1,0 +1,20 @@
+[
+  {"host": "csdn.net", "name": "CSDN"},
+  {"host": "zhihu.com", "name": "知乎"},
+  {"host": "xiaohongshu.com", "name": "小红书"},
+  {"host": "weibo.com", "name": "微博"},
+  {"host": "juejin.cn", "name": "掘金"},
+  {"host": "bilibili.com", "name": "B站"},
+  {"host": "douyin.com", "name": "抖音"},
+  {"host": "mp.weixin.qq.com", "name": "公众号"},
+  {"host": "toutiao.com", "name": "头条"},
+  {"host": "github.com", "name": "GitHub"},
+  {"host": "baidu.com", "name": "百度"},
+  {"host": "taobao.com", "name": "淘宝"},
+  {"host": "jd.com", "name": "京东"},
+  {"host": "feishu.cn", "name": "飞书"},
+  {"host": "dingtalk.com", "name": "钉钉"},
+  {"host": "mail.qq.com", "name": "邮箱"},
+  {"host": "mail.163.com", "name": "邮箱"},
+  {"host": "mypapers.top", "name": "论文站"}
+]
