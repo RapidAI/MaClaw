@@ -88,6 +88,7 @@ func (s *HTTPServer) handleBotIntake(w http.ResponseWriter, r *http.Request, p a
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
+	persistDesktopBotSchedule(p, r.PathValue("instanceId"), in, out)
 	writeJSON(w, http.StatusOK, out)
 }
 
