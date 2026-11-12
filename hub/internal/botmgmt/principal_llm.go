@@ -90,6 +90,10 @@ type PrincipalLLMView struct {
 	Model  string                 `json:"model,omitempty"`
 	KeySet bool                   `json:"key_set"`
 	Roles  *PrincipalLLMRolesView `json:"roles,omitempty"`
+	// Effective is what the service resolves for each role (administrator pins
+	// and the current provider). It carries no keys. The desktop uses it under
+	// 默认, and for a custom role left unset.
+	Effective *PrincipalLLMRolesView `json:"effective,omitempty"`
 	// Stored is false only when this owner has never saved a choice and has
 	// no legacy single-provider override. The desktop uses that to decide
 	// whether local pins may still be copied up.
@@ -165,7 +169,9 @@ func (s *Service) GetPrincipalLLM(ctx context.Context, tenantID, hubUserID strin
 	if err != nil {
 		return PrincipalLLMView{}, err
 	}
-	return choice.view(stored), nil
+	view := choice.view(stored)
+	view.Effective = effectiveServiceRoles(s.llmSettingsSnapshot(ctx, tenantID))
+	return view, nil
 }
 
 // SavePrincipalLLM stores an owner's role choice and writes it to that
@@ -203,6 +209,7 @@ func (s *Service) SavePrincipalLLM(ctx context.Context, tenantID, hubUserID stri
 	s.mu.Unlock()
 
 	view := next.view(true)
+	view.Effective = effectiveServiceRoles(s.llmSettingsSnapshot(ctx, tenantID))
 	if pushErr := s.pushPrincipalLLM(ctx, tenantID, hubUserID); pushErr != nil {
 		view.Warning = pushErr.Error()
 	}

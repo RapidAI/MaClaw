@@ -582,6 +582,38 @@ func TestSavePrincipalLLMRolesAreTheOnlySrvSource(t *testing.T) {
 	}
 }
 
+func TestDefaultViewIncludesEffectiveRolesWithoutKeys(t *testing.T) {
+	rec := ownerLLMTestRecordWithAdminDefault()
+	rec.LLM.Roles = LLMRoles{
+		Background: LLMRoleAssignment{Mode: "pin", Provider: "lp_admin0000000001"},
+		Grounder:   LLMRoleAssignment{Mode: "pin", Provider: "maclaw_official_group"},
+	}
+	svc, _ := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, rec)
+	view, err := svc.GetPrincipalLLM(context.Background(), "tenant-a", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Mode != "default" || view.Stored || view.Effective == nil {
+		t.Fatalf("view = %#v", view)
+	}
+	if view.Effective.Foreground.Name != "Admin Pick" || view.Effective.Foreground.Model != "claude-sonnet-4-5" {
+		t.Fatalf("foreground effective = %#v", view.Effective.Foreground)
+	}
+	if view.Effective.Background.Name != "Admin Pick" || view.Effective.Background.Model != "claude-sonnet-4-5" {
+		t.Fatalf("background effective = %#v", view.Effective.Background)
+	}
+	if !view.Effective.Grounder.Official || view.Effective.Grounder.Model != "auto" {
+		t.Fatalf("grounder effective = %#v", view.Effective.Grounder)
+	}
+	raw, err := json.Marshal(view.Effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "sk-") || strings.Contains(string(raw), "key") {
+		t.Fatalf("effective view leaked a key: %s", raw)
+	}
+}
+
 func TestOfficialForegroundIsDefaultForTheOldDialog(t *testing.T) {
 	svc, _ := newPrincipalLLMFixture(t, &countingOwnerLLM{url: ownerLLMTestEndpoint}, record{})
 	view, err := svc.SavePrincipalLLM(context.Background(), "tenant-a", "alice", PrincipalLLMInput{

@@ -491,6 +491,7 @@ type DesktopBotLLM struct {
 	Roles         *DesktopBotLLMRoles `json:"roles,omitempty"`
 	Stored        bool                `json:"stored"`
 	Choice        string              `json:"choice,omitempty"`
+	Effective     *DesktopBotLLMRoles `json:"effective,omitempty"`
 	NeedsRoleSave bool                `json:"needs_role_save,omitempty"`
 	Warning       string              `json:"warning,omitempty"`
 }
@@ -613,8 +614,26 @@ func (a *App) SaveDesktopBotLLM(in DesktopBotLLMInput) (*DesktopBotLLM, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.rememberDesktopBotLLM(a.configuredRemoteUserID(), out)
+	a.finishUserBotLLMSave(out)
 	return &out, nil
+}
+
+// finishUserBotLLMSave records a dialog save. That choice replaces any local
+// pins still waiting to be copied, including ones that needed a key.
+func (a *App) finishUserBotLLMSave(view DesktopBotLLM) {
+	if a == nil {
+		return
+	}
+	owner := a.configuredRemoteUserID()
+	cfg, err := a.LoadConfig()
+	clear := []string(nil)
+	if err == nil {
+		clear = pinnedRoleNames(cfg.MaclawLLMProfiles)
+	}
+	if err := a.patchDesktopBotLLMAccount(owner, true, clear, nil, view); err != nil {
+		log.Printf("[bot-llm] could not record the saved bot model: %s", err.Error())
+	}
+	a.rememberDesktopBotLLM(owner, view)
 }
 
 func (a *App) putDesktopBotLLM(in DesktopBotLLMInput) (DesktopBotLLM, error) {

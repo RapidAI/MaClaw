@@ -37,25 +37,38 @@ func (a *App) ResolveMaclawLLMGrounder() (corelib.MaclawLLMConfig, error) {
 }
 
 func (a *App) resolveGrounderFromChoice(choice DesktopBotLLM) (corelib.MaclawLLMConfig, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return corelib.MaclawLLMConfig{}, err
+	}
+	state := a.maclawLLMProvidersFromConfig(&cfg)
 	mode := strings.TrimSpace(choice.Choice)
 	if mode == "" {
 		mode = strings.TrimSpace(choice.Mode)
 	}
-	if mode == "custom" && choice.Roles != nil {
-		spec := choice.Roles.Grounder
-		if !spec.Inherit && !spec.Unused && strings.TrimSpace(spec.Model) != "" {
-			cfg, err := a.LoadConfig()
-			if err != nil {
-				return corelib.MaclawLLMConfig{}, err
-			}
-			state := a.maclawLLMProvidersFromConfig(&cfg)
-			resolved, err := a.materializeDesktopHubRole(maclawLLMRoleGrounder, spec, state.Providers)
-			if err != nil {
-				return corelib.MaclawLLMConfig{}, err
+	try := func(spec DesktopBotLLMRole, ok bool) (corelib.MaclawLLMConfig, bool) {
+		if !ok || spec.Unused || spec.Inherit || strings.TrimSpace(spec.Model) == "" {
+			return corelib.MaclawLLMConfig{}, false
+		}
+		resolved, matErr := a.materializeDesktopHubRole(maclawLLMRoleGrounder, spec, state.Providers)
+		if matErr != nil {
+			return corelib.MaclawLLMConfig{}, false
+		}
+		resolved.SupportsVision = true
+		return resolved, true
+	}
+	if mode == "custom" {
+		if spec, explicit := explicitDesktopBotRole(choice, maclawLLMRoleGrounder); explicit {
+			resolved, matErr := a.materializeDesktopHubRole(maclawLLMRoleGrounder, spec, state.Providers)
+			if matErr != nil {
+				return corelib.MaclawLLMConfig{}, matErr
 			}
 			resolved.SupportsVision = true
 			return resolved, nil
 		}
+	}
+	if resolved, ok := try(effectiveDesktopBotRole(choice, maclawLLMRoleGrounder)); ok {
+		return resolved, nil
 	}
 	return corelib.MaclawLLMConfig{}, errGrounderNotConfigured
 }

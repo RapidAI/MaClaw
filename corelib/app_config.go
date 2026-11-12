@@ -902,8 +902,11 @@ const (
 // DesktopBotLLMAccount is one Hub user's cached bot-model view on the desktop.
 // ChoiceJSON is the view without credentials.
 type DesktopBotLLMAccount struct {
-	Migrated   bool   `json:"migrated,omitempty"`
-	ChoiceJSON string `json:"choice_json,omitempty"`
+	Migrated   bool     `json:"migrated,omitempty"`
+	ChoiceJSON string   `json:"choice_json,omitempty"`
+	// Pending are local role pins that still need a save before Hub has them.
+	// They must not be cleared just because another role was stored.
+	Pending []string `json:"pending,omitempty"`
 }
 
 // MaclawHubBotRole is one Bot-management role assignment. Mode inherit (or

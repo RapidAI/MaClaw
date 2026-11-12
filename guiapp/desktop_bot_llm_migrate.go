@@ -13,37 +13,39 @@ var errBotLLMApp = fmt.Errorf("app is nil")
 
 // SyncDesktopBotLLM reads the Hub bot-model choice and, once per Hub account,
 // reconciles local role pins with it. A choice Hub already stored wins: local
-// pins are cleared and not uploaded. Pins are copied up only when Hub has
-// never stored a choice. API keys are not uploaded here; a pin that needs one
-// stays on this computer until the owner saves the Model tab.
+// pins are cleared and not uploaded, except pins still waiting for a save
+// because they need a key. Pins are copied up only when Hub has never stored
+// a choice. API keys are not uploaded here; a pin that needs one stays on
+// this computer until the owner saves the Model tab.
 func (a *App) SyncDesktopBotLLM() (*DesktopBotLLM, error) {
 	if a == nil {
 		return nil, errBotLLMApp
 	}
-	a.botLLMMu.Lock()
-	defer a.botLLMMu.Unlock()
+	a.botLLMSyncMu.Lock()
+	defer a.botLLMSyncMu.Unlock()
 	view, err := a.fetchDesktopBotLLM()
 	if err != nil {
-		if cached, ok := a.desktopBotLLMChoiceLocked(a.configuredRemoteUserID()); ok {
+		if cached, ok := a.desktopBotLLMChoice(a.configuredRemoteUserID()); ok {
 			return &cached, nil
 		}
 		return nil, err
 	}
-	return a.reconcileDesktopBotLLMLocked(view)
+	return a.reconcileDesktopBotLLM(view)
 }
 
-func (a *App) reconcileDesktopBotLLMLocked(view DesktopBotLLM) (*DesktopBotLLM, error) {
+func (a *App) reconcileDesktopBotLLM(view DesktopBotLLM) (*DesktopBotLLM, error) {
 	owner := a.configuredRemoteUserID()
 	cfg, err := a.LoadConfig()
 	if err != nil {
-		a.rememberDesktopBotLLMLocked(owner, view)
+		a.rememberDesktopBotLLM(owner, view)
 		return &view, nil
 	}
-	if owner != "" && desktopBotLLMAccount(cfg, owner).Migrated {
-		a.rememberDesktopBotLLMLocked(owner, view)
+	account := desktopBotLLMAccount(cfg, owner)
+	if owner != "" && account.Migrated {
+		a.rememberDesktopBotLLM(owner, view)
 		return &view, nil
 	}
-	plan := planLocalBotRoleMigration(cfg, view)
+	plan := planLocalBotRoleMigration(cfg, view, account.Pending)
 	next := view
 	if plan.Upload {
 		savedView, saveErr := a.putDesktopBotLLM(plan.Input)
@@ -52,7 +54,7 @@ func (a *App) reconcileDesktopBotLLMLocked(view DesktopBotLLM) (*DesktopBotLLM, 
 			log.Printf("[bot-llm] could not store role rows: %s", saveErr.Error())
 			display := overlayPendingRoles(view, cfg, plan.Pending)
 			display.NeedsRoleSave = true
-			a.rememberDesktopBotLLMLocked(owner, view)
+			a.rememberDesktopBotLLM(owner, view)
 			return &display, nil
 		}
 		if saved != nil {
@@ -60,7 +62,7 @@ func (a *App) reconcileDesktopBotLLMLocked(view DesktopBotLLM) (*DesktopBotLLM, 
 		}
 		if next.Roles == nil {
 			log.Printf("[bot-llm] hub did not return role rows; local pins were left in place")
-			a.rememberDesktopBotLLMLocked(owner, view)
+			a.rememberDesktopBotLLM(owner, view)
 			return &view, nil
 		}
 		view = next
@@ -72,10 +74,10 @@ func (a *App) reconcileDesktopBotLLMLocked(view DesktopBotLLM) (*DesktopBotLLM, 
 	if plan.Upload && next.Roles == nil {
 		mark = false
 	}
-	if err := a.patchDesktopBotLLMAccount(owner, mark, plan.Clear, view); err != nil {
+	if err := a.patchDesktopBotLLMAccount(owner, mark, plan.Clear, plan.Pending, view); err != nil {
 		log.Printf("[bot-llm] could not record the bot model view: %s", err.Error())
 	} else {
-		a.rememberDesktopBotLLMLocked(owner, view)
+		a.rememberDesktopBotLLM(owner, view)
 	}
 	display := next
 	if len(plan.Pending) > 0 {
@@ -94,12 +96,22 @@ type localBotRoleMigration struct {
 	Mark    bool
 }
 
-func planLocalBotRoleMigration(cfg corelib.AppConfig, server DesktopBotLLM) localBotRoleMigration {
+func planLocalBotRoleMigration(cfg corelib.AppConfig, server DesktopBotLLM, keptPending []string) localBotRoleMigration {
 	profiles := cfg.MaclawLLMProfiles
 	pinned := pinnedRoleNames(profiles)
 	if server.Stored {
-		plan := localBotRoleMigration{Mark: true, Clear: pinned}
-		return plan
+		if len(keptPending) == 0 {
+			return localBotRoleMigration{Mark: true, Clear: pinned}
+		}
+		var clear, still []string
+		for _, name := range pinned {
+			if containsRole(keptPending, name) {
+				still = append(still, name)
+				continue
+			}
+			clear = append(clear, name)
+		}
+		return localBotRoleMigration{Clear: clear, Pending: still, Mark: len(still) == 0}
 	}
 	if len(pinned) == 0 {
 		return localBotRoleMigration{Mark: true}
@@ -172,6 +184,15 @@ func classifyLocalPin(role string, assignment corelib.MaclawLLMRoleAssignment, p
 		return DesktopBotLLMRoleInput{}, "role " + role + " kept locally: provider " + strings.TrimSpace(provider.Name) + " has no API key until you save"
 	}
 	return DesktopBotLLMRoleInput{}, "role " + role + " kept locally: provider " + strings.TrimSpace(provider.Name) + " key is sent only when you save"
+}
+
+func containsRole(names []string, name string) bool {
+	for _, item := range names {
+		if item == name {
+			return true
+		}
+	}
+	return false
 }
 
 func pinnedRoleNames(profiles *corelib.MaclawLLMProfiles) []string {
@@ -266,7 +287,7 @@ func providerForRolePin(providers []corelib.MaclawLLMProvider, assignment coreli
 	return corelib.MaclawLLMProvider{}, false
 }
 
-func (a *App) patchDesktopBotLLMAccount(owner string, migrated bool, clear []string, view DesktopBotLLM) error {
+func (a *App) patchDesktopBotLLMAccount(owner string, migrated bool, clear []string, pending []string, view DesktopBotLLM) error {
 	if a == nil || owner == "" && len(clear) == 0 {
 		return nil
 	}
@@ -296,6 +317,9 @@ func (a *App) patchDesktopBotLLMAccount(owner string, migrated bool, clear []str
 		account := cfg.DesktopBotLLMAccounts[owner]
 		if migrated {
 			account.Migrated = true
+			account.Pending = nil
+		} else {
+			account.Pending = append([]string(nil), pending...)
 		}
 		raw, err := json.Marshal(viewWithoutHint(view))
 		if err == nil {
@@ -318,18 +342,17 @@ func desktopBotLLMAccount(cfg corelib.AppConfig, owner string) corelib.DesktopBo
 	return cfg.DesktopBotLLMAccounts[owner]
 }
 
-func (a *App) rememberDesktopBotLLMLocked(owner string, view DesktopBotLLM) {
+func (a *App) rememberDesktopBotLLM(owner string, view DesktopBotLLM) {
+	if a == nil {
+		return
+	}
+	a.botLLMCacheMu.Lock()
 	if a.botLLMChoice == nil {
 		a.botLLMChoice = map[string]DesktopBotLLM{}
 	}
 	a.botLLMChoice[owner] = viewWithoutHint(view)
-}
-
-func (a *App) rememberDesktopBotLLM(owner string, view DesktopBotLLM) {
-	a.botLLMMu.Lock()
-	a.rememberDesktopBotLLMLocked(owner, view)
-	a.botLLMMu.Unlock()
-	if a == nil || owner == "" {
+	a.botLLMCacheMu.Unlock()
+	if owner == "" {
 		return
 	}
 	raw, err := json.Marshal(viewWithoutHint(view))
@@ -350,22 +373,18 @@ func (a *App) rememberDesktopBotLLM(owner string, view DesktopBotLLM) {
 	}, configMutateOpts{caller: "desktop-bot-llm-cache"})
 }
 
-func (a *App) desktopBotLLMChoiceLocked(owner string) (DesktopBotLLM, bool) {
-	if a != nil && a.botLLMChoice != nil {
-		if view, ok := a.botLLMChoice[owner]; ok && (view.Choice != "" || view.Mode != "" || view.Stored) {
-			return view, true
-		}
-	}
-	return DesktopBotLLM{}, false
-}
-
 func (a *App) desktopBotLLMChoice(owner string) (DesktopBotLLM, bool) {
 	if a == nil {
 		return DesktopBotLLM{}, false
 	}
-	a.botLLMMu.Lock()
-	view, ok := a.desktopBotLLMChoiceLocked(owner)
-	a.botLLMMu.Unlock()
+	a.botLLMCacheMu.RLock()
+	var view DesktopBotLLM
+	ok := false
+	if a.botLLMChoice != nil {
+		view, ok = a.botLLMChoice[owner]
+		ok = ok && (view.Choice != "" || view.Mode != "" || view.Stored || view.Effective != nil)
+	}
+	a.botLLMCacheMu.RUnlock()
 	if ok {
 		return view, true
 	}

@@ -187,6 +187,45 @@ func (choice ownerBotLLM) view(stored bool) PrincipalLLMView {
 	return view
 }
 
+// effectiveServiceRoles is the model each role uses when the owner does not
+// pin it. Names and models only; the provider key stays in the settings record.
+func effectiveServiceRoles(settings llmSettings) *PrincipalLLMRolesView {
+	roles := llmRolesView(settings.Roles)
+	return &PrincipalLLMRolesView{
+		Foreground:  effectiveServiceRole(settings, roles.Foreground, false),
+		Background:  effectiveServiceRole(settings, roles.Background, false),
+		ComputerUse: effectiveServiceRole(settings, roles.ComputerUse, false),
+		Grounder:    effectiveServiceRole(settings, roles.Grounder, true),
+	}
+}
+
+func effectiveServiceRole(settings llmSettings, role LLMRoleAssignment, grounder bool) PrincipalLLMRoleView {
+	mode := strings.ToLower(strings.TrimSpace(role.Mode))
+	if grounder && (mode == "" || mode == corelib.MaclawHubBotRoleUnused) {
+		return PrincipalLLMRoleView{Unused: true}
+	}
+	if mode == corelib.MaclawHubBotRolePin {
+		return serviceProviderView(settings, role.Provider)
+	}
+	if selected, ok := selectedBotLLMProvider(settings); ok {
+		return PrincipalLLMRoleView{Name: selected.Name, Model: selected.Model}
+	}
+	return PrincipalLLMRoleView{Official: true, Model: botLLMModel}
+}
+
+func serviceProviderView(settings llmSettings, id string) PrincipalLLMRoleView {
+	name := roleProviderName(settings, id)
+	if name == botLLMProviderName || isBotDefaultServiceGroup(id) {
+		return PrincipalLLMRoleView{Official: true, Model: botLLMModel}
+	}
+	for _, item := range settings.Providers {
+		if item.ID == strings.TrimSpace(id) || corelib.MaclawLLMProviderNameEqual(item.Name, name) {
+			return PrincipalLLMRoleView{Name: item.Name, Model: item.Model}
+		}
+	}
+	return PrincipalLLMRoleView{Name: name}
+}
+
 func firstConcreteRole(choice ownerBotLLM) *ownerLLMOverride {
 	for _, role := range []*ownerLLMOverride{choice.Foreground, choice.Background, choice.ComputerUse, choice.Grounder} {
 		if role == nil || role.Official || strings.TrimSpace(role.Name) == "" {
