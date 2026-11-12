@@ -304,7 +304,7 @@ func callDesktopBotUnderstandLLM(ctx context.Context, app *App, req desktopBotUn
 // catalog is one JSON object naming the account's bots. Wails unmarshals each
 // argument into that parameter's own type. A variadic parameter is a slice,
 // and the page's string is then rejected before the reading starts.
-func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []string, persona, catalog string) (*DesktopBotUnderstanding, error) {
+func (a *App) understandDesktopBotTask(content, phase, lang string, earlier []string, persona, catalog string) (*DesktopBotUnderstanding, error) {
 	text := strings.TrimSpace(content)
 	if text == "" {
 		return nil, fmt.Errorf("message text is required")
@@ -1073,7 +1073,7 @@ var desktopTaskSupplementBudget = 6 * time.Second
 
 // EvaluateDesktopTaskSupplement decides what a message sent while a task is
 // running does to that task (see DesktopTaskSupplementEval).
-func (a *App) EvaluateDesktopTaskSupplement(activeTask, newMessage, lang string) (*DesktopTaskSupplementEval, error) {
+func (a *App) evaluateDesktopTaskSupplement(activeTask, newMessage, lang string) (*DesktopTaskSupplementEval, error) {
 	activeTask = strings.TrimSpace(activeTask)
 	newMessage = strings.TrimSpace(newMessage)
 	if activeTask == "" || newMessage == "" {

@@ -4,31 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestDesktopBotUnderstandCatalogBindsAsOneString(t *testing.T) {
-	method, ok := reflect.TypeOf((*App)(nil)).MethodByName("UnderstandDesktopBotTask")
-	if !ok {
-		t.Fatal("missing UnderstandDesktopBotTask")
-	}
-	catalogType := method.Type.In(method.Type.NumIn() - 1)
-	if catalogType.Kind() != reflect.String {
-		t.Fatalf("catalog type = %s", catalogType)
-	}
+func TestDesktopBotRosterParsesTheCatalogString(t *testing.T) {
 	page := `{"self":"bot_1","bots":[{"id":"bot_6","name":"Bot 6","primary":false},{"id":"bot_1","name":"值班","primary":true}]}`
-	encoded, err := json.Marshal(page)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dest := reflect.New(catalogType).Interface()
-	if err := json.Unmarshal(encoded, dest); err != nil {
-		t.Fatal(err)
-	}
-	roster := parseDesktopBotRoster(reflect.ValueOf(dest).Elem().String())
+	roster := parseDesktopBotRoster(page)
 	if roster == nil || roster.Self != "bot_1" || len(roster.Bots) != 2 {
 		t.Fatalf("roster = %+v", roster)
 	}

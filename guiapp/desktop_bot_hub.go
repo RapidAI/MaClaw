@@ -1523,6 +1523,66 @@ func desktopTaskTerminal(status string) bool {
 	}
 }
 
+// desktopBotWireSchedule is the timer the server decided. This process
+// owns the clock, so the relay arms it and does not choose it.
+type desktopBotWireSchedule struct {
+	Name            string `json:"name"`
+	Mode            string `json:"mode"`
+	IntervalMinutes int    `json:"interval_minutes"`
+	Hour            *int   `json:"hour"`
+	Minute          *int   `json:"minute"`
+	DayOfWeek       *int   `json:"day_of_week"`
+}
+
+func (a *App) emitDesktopBotIntake(botID, requestID, kind, ack string, queued, held bool, runID string) {
+	if a == nil {
+		return
+	}
+	a.emitEvent("desktop-bot-intake", map[string]any{
+		"bot_id":      strings.TrimSpace(botID),
+		"request_id":  strings.TrimSpace(requestID),
+		"kind":        strings.TrimSpace(kind),
+		"ack":         strings.TrimSpace(ack),
+		"queued":      queued,
+		"held":        held,
+		"run_id":      strings.TrimSpace(runID),
+	})
+}
+
+// pollDesktopBotQueue waits until Hub has started a parked message or
+// dropped it. The run id is empty when the message was answered without
+// a desktop run.
+func (a *App) pollDesktopBotQueue(ctx context.Context, botID, clientMessageID string) (string, error) {
+	path := "/api/v1/bots/" + url.PathEscape(strings.TrimSpace(botID)) + "/queue/" + url.PathEscape(strings.TrimSpace(clientMessageID))
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		var view struct {
+			State string `json:"state"`
+			RunID string `json:"run_id"`
+		}
+		_, err := a.desktopBotExchange(ctx, http.MethodGet, path, nil, &view, 15*time.Second, nil)
+		if err == nil {
+			switch strings.TrimSpace(view.State) {
+			case "running":
+				if strings.TrimSpace(view.RunID) != "" {
+					return strings.TrimSpace(view.RunID), nil
+				}
+			case "done", "missing":
+				return strings.TrimSpace(view.RunID), nil
+			}
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID string) (desktopBotRelayResult, error) {
 	if desktopBotRelayOverride != nil {
 		return desktopBotRelayOverride(ctx, botID, text, phase)
@@ -1554,8 +1614,18 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		Session         string `json:"session"`
 		RoutedVia       string `json:"routed_via"`
 		RoutedTitle     string `json:"routed_title"`
+		Kind            string `json:"kind"`
+		Ack             string `json:"ack"`
+		Queued          bool   `json:"queued"`
+		Held            bool   `json:"held"`
+		Position        int    `json:"position"`
+		Schedule        *desktopBotWireSchedule `json:"schedule"`
 	}
 	body := map[string]any{"content": text, "client_message_id": requestID}
+	if text == desktopBotReturnTask {
+		// The login-done sentence is the button the GUI itself sends.
+		body["action"] = "return"
+	}
 	if phase = strings.TrimSpace(phase); phase != "" {
 		body["phase"] = phase
 	}
@@ -1653,6 +1723,37 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 	}
 	if err != nil {
 		return desktopBotRelayResult{}, err
+	}
+	a.emitDesktopBotIntake(botID, requestID, out.Kind, out.Ack, out.Queued, out.Held, strings.TrimSpace(out.RunID))
+	if strings.EqualFold(out.Kind, "schedule") && out.Schedule != nil {
+		day := -1
+		if out.Schedule.DayOfWeek != nil {
+			day = *out.Schedule.DayOfWeek
+		}
+		hour, minute := 0, 0
+		if out.Schedule.Hour != nil {
+			hour = *out.Schedule.Hour
+		}
+		if out.Schedule.Minute != nil {
+			minute = *out.Schedule.Minute
+		}
+		if _, armErr := a.ArmDesktopBotSchedule(botID, out.Schedule.Name, out.Schedule.Mode, text, out.Schedule.IntervalMinutes, hour, minute, day); armErr != nil {
+			botlog.Write(botID, "gui.schedule", armErr)
+		}
+	}
+	if out.Queued && strings.TrimSpace(out.RunID) == "" {
+		a.noteDesktopBotQueued(botID, "")
+		runID, pollErr := a.pollDesktopBotQueue(ctx, botID, requestID)
+		if pollErr != nil {
+			return desktopBotRelayResult{}, pollErr
+		}
+		if runID == "" {
+			result, wireErr := a.desktopRelayFromWire(firstNonEmpty(out.Ack, out.Text), "", "", "", "", "", "", "", false, nil, nil, "", "")
+			return result, wireErr
+		}
+		out.RunID = runID
+		out.Text = ""
+		status = http.StatusAccepted
 	}
 	if status == http.StatusAccepted && strings.TrimSpace(out.RunID) != "" && strings.TrimSpace(out.Text) == "" {
 		botlog.Write(botID, "gui.admit", nil,
@@ -2957,22 +3058,3 @@ type DesktopBotFollowUpRoute struct {
 	RunID  string `json:"run_id,omitempty"`
 }
 
-// RouteDesktopBotFollowUp asks Hub to pass the person's message straight to
-// the teammate subscribed to it (subscription passthrough). Not routed:
-// the bot reads the message as usual.
-func (a *App) RouteDesktopBotFollowUp(botID, content string) (*DesktopBotFollowUpRoute, error) {
-	botID = strings.TrimSpace(botID)
-	content = strings.TrimSpace(content)
-	if botID == "" || content == "" {
-		return &DesktopBotFollowUpRoute{Reason: "empty"}, nil
-	}
-	var out DesktopBotFollowUpRoute
-	path := "/api/v1/bots/" + url.PathEscape(botID) + "/followup"
-	if err := a.desktopBotCall(context.Background(), http.MethodPost, path, map[string]string{"content": content}, &out, 8*time.Second); err != nil {
-		return nil, err
-	}
-	if out.Routed {
-		botlog.Write(botID, "gui.followup_routed", nil, "to", out.BotID, "run", out.RunID)
-	}
-	return &out, nil
-}

@@ -271,6 +271,15 @@ func (s *Service) runDispatchJob(tenantID, userID string, job dispatchJob) (bool
 	adm, err := admit(ctx, tenantID, userID, job.botID, job.content, "execute", job.key)
 	cancel()
 	if errors.Is(err, ErrDesktopBusy) {
+		// A busy target waits in Hub's queue. The dispatch retry still
+		// runs; the same turn key makes a second admit a replay.
+		_, _ = s.enqueueDesktopMessage(tenantID, userID, job.botID, desktopQueueItem{
+			ClientMessageID: job.key,
+			Content:         job.content,
+			Phase:           "execute",
+			Kind:            "new",
+			Instruction:     job.content,
+		})
 		s.undoDispatchMark(tenantID, userID, job)
 		return false, true
 	}

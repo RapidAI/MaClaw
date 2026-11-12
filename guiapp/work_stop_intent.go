@@ -500,7 +500,7 @@ func (h *IMMessageHandler) workStopRequestVerdict(loop *LoopContext, sessionKey,
 // ClassifyDesktopWorkStop is the desktop bot's fast check while a run is
 // active. unknown means the call failed or timed out; the chat then continues
 // and can still stop through the reading.
-func (a *App) ClassifyDesktopWorkStop(text, lang string) string {
+func (a *App) classifyDesktopWorkStop(text, lang string) string {
 	text = strings.TrimSpace(text)
 	if a == nil || text == "" {
 		return "unknown"

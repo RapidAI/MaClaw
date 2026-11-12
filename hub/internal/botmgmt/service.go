@@ -204,6 +204,15 @@ type Service struct {
 	// desktopAskSession is, per bot, the conversation a later message may
 	// continue: a question just asked, or a recently finished task thread.
 	desktopAskSession map[string]desktopAskOwner
+	// desktopQueues is the per-bot FIFO of messages waiting for a free slot
+	// or for the person to return the keyboard. desktop queue keys are
+	// tenant, user, bot.
+	desktopQueues map[string][]*desktopQueueItem
+	queueDraining  map[string]bool
+	queueDrainOnce sync.Once
+	// queueDrainOff skips the background drain timer. Tests that park a
+	// message and assert it was not posted set this.
+	queueDrainOff bool
 	// desktopAdminView is when an admin last opened this user's desktop in
 	// the admin console. While that hold is fresh, a bot command finishing
 	// must leave the desktop up, or the picture the admin is watching goes

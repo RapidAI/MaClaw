@@ -30,6 +30,15 @@ func (s *Service) noteDesktopAttention(tenantID, userID, botID, reason string) {
 	s.desktopAttention[desktopAttentionKey(tenantID, userID, botID)] = reason
 }
 
+func (s *Service) forgetDesktopAttention(tenantID, userID, botID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forgetDesktopAttentionLocked(tenantID, userID, botID)
+}
+
 func (s *Service) forgetDesktopAttentionLocked(tenantID, userID, botID string) {
 	if s == nil || s.desktopAttention == nil {
 		return

@@ -68,15 +68,19 @@ func TestAdmitDesktopMessageRefusesASecondExecute(t *testing.T) {
 		t.Fatal("first execute did not reach the message post")
 	}
 
-	refused := make(chan error, 1)
+	type queuedAdmit struct {
+		adm BotAdmission
+		err error
+	}
+	refused := make(chan queuedAdmit, 1)
 	go func() {
-		_, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "再开一个", "execute", "turn-b")
-		refused <- err
+		adm, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "再开一个", "execute", "turn-b")
+		refused <- queuedAdmit{adm, err}
 	}()
 	select {
-	case err := <-refused:
-		if !errors.Is(err, ErrDesktopBusy) {
-			t.Fatalf("second execute err = %v", err)
+	case got := <-refused:
+		if got.err != nil || !got.adm.Queued || got.adm.Position != 1 {
+			t.Fatalf("second execute = %+v %v", got.adm, got.err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("busy check waited on the message post")
@@ -141,8 +145,9 @@ func TestAdmitDesktopMessageRefusesASecondExecute(t *testing.T) {
 		}
 	}
 
-	if _, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "第三件", "execute", "turn-c"); !errors.Is(err, ErrDesktopBusy) {
-		t.Fatalf("third execute err = %v", err)
+	third, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "第三件", "execute", "turn-c")
+	if err != nil || !third.Queued {
+		t.Fatalf("third execute = %+v %v", third, err)
 	}
 	mu.Lock()
 	if posts != 2 {
@@ -243,8 +248,9 @@ func TestPostingEmptyReserveStillCountsAsBusy(t *testing.T) {
 	if len(items) != 1 || items[0].Status != "running" || items[0].RunID != "" {
 		t.Fatalf("posting reserve = %q %#v", text, items)
 	}
-	if _, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "另一件", "execute", "turn-other"); !errors.Is(err, ErrDesktopBusy) {
-		t.Fatalf("err = %v", err)
+	parked, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "另一件", "execute", "turn-other")
+	if err != nil || !parked.Queued {
+		t.Fatalf("parked = %+v %v", parked, err)
 	}
 	if posts != 0 {
 		t.Fatalf("posts = %d", posts)
@@ -327,8 +333,9 @@ func TestRestoredRunReplaysTheStoredClientMessage(t *testing.T) {
 	restarted.BotParallelRuns = 1
 	restarted.admitPollInterval = 10 * time.Millisecond
 	restarted.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
-	if _, err := restarted.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开", "execute", "turn-other"); !errors.Is(err, ErrDesktopBusy) {
-		t.Fatalf("other key after restart err = %v", err)
+	other, err := restarted.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开", "execute", "turn-other")
+	if err != nil || !other.Queued {
+		t.Fatalf("other key after restart = %+v %v", other, err)
 	}
 	srvSvc.mu.Lock()
 	before := len(srvSvc.messages)

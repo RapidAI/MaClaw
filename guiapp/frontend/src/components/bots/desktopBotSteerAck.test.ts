@@ -44,9 +44,8 @@ describe('steer (supplement) acknowledgement', () => {
         expect(desktopBotIsPlaceholderAck(slow, 'zh-Hans')).toBe(true);
     });
 
-    it('replaces the fold fallback in the same bubble with a late line', () => {
-        expect(workspace).toContain('desktopBotFoldFallback(kind, lang, folded)');
-        expect(workspace).toMatch(/item\.id === assistantMessage\.id \? \{ \.\.\.item, content: late \}/);
-        expect(workspace).toMatch(/item\.id === noteId \? \{ \.\.\.item, content: late \}/);
+    it('does not decide a running-job fold in the page', () => {
+        expect(workspace).not.toContain('EvaluateDesktopTaskSupplement');
+        expect(workspace).not.toContain('desktopBotFoldFallback(kind, lang, folded)');
     });
 });

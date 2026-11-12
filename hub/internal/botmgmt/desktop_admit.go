@@ -812,8 +812,10 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 		s.noteDesktopAskOwner(job.TenantID, job.UserID, job.BotID, session, reply)
 		s.persistDesktopTasks(job.TenantID)
 		s.reportDelegateRunEnd(job.TenantID, job.UserID, job.BotID, job.RunID, runStatus, reply, settleErr)
-		// The desktop is free again: start the next queued delegate or wake.
+		// The desktop is free again: start the next queued delegate or wake,
+		// and any message this bot was holding for a free slot.
 		s.kickDispatch(job.TenantID, job.UserID)
+		s.drainDesktopQueue(job.TenantID, job.UserID, job.BotID)
 		s.sayUnfetchedResultLater(job.TenantID, job.UserID, job.BotID, job.RunID, reply)
 		traceBot(job.BotID, "post_end", settleErr,
 			"instance", job.InstanceID,
@@ -1410,14 +1412,20 @@ func (s *Service) noteDesktopAskOwner(tenantID, userID, botID, session string, r
 	}
 	if asks {
 		s.desktopAskSession[key] = desktopAskOwner{session: session, at: s.now(), asks: true}
+		s.ensureDesktopHydrated(tenantID)
+		s.persistDesktopState(tenantID)
 		return
 	}
 	if desktopSessionIsThread(botID, session) {
 		s.desktopAskSession[key] = desktopAskOwner{session: session, at: s.now(), asks: false}
+		s.ensureDesktopHydrated(tenantID)
+		s.persistDesktopState(tenantID)
 		return
 	}
 	if owner, ok := s.desktopAskSession[key]; ok && owner.session == session {
 		delete(s.desktopAskSession, key)
+		s.ensureDesktopHydrated(tenantID)
+		s.persistDesktopState(tenantID)
 	}
 }
 

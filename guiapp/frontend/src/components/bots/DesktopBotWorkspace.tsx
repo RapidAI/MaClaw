@@ -44,7 +44,6 @@ import {
     CreateDesktopBot,
     CancelDesktopBotRun,
     AppendDesktopBotSupplement,
-    RouteDesktopBotFollowUp,
     UploadDesktopBotMaterialChunk,
     DeleteDesktopBot,
     DeleteDesktopBotSchedule,
@@ -52,7 +51,6 @@ import {
     GetDesktopBotScreen,
     HandBackDesktopBot,
     SetDesktopBotDesktopMode,
-    EvaluateDesktopTaskSupplement,
     FillBotSecret,
     GetActiveDesktopRuns,
     GetDesktopBotBusy,
@@ -90,8 +88,6 @@ import {
     SaveBotSecret,
     SendDesktopBotTaskTo,
     ShowItemInFolder,
-    UnderstandDesktopBotTask,
-    ClassifyDesktopWorkStop,
     WatchDesktopBot,
     WakeDesktopBot,
 } from '../../../wailsjs/go/main/App';
@@ -490,36 +486,16 @@ function crossOf(understood: Record<string, unknown>): { kind: string; target: s
 }
 
 async function readDesktopBotTurn(
-    content: string,
-    phase: BotPhase,
-    lang: string,
-    earlier: string[],
-    persona: string,
-    catalog = '',
+    _content: string,
+    _phase: BotPhase,
+    _lang: string,
+    _earlier: string[],
+    _persona: string,
+    _catalog = '',
 ): Promise<BotReading> {
-    let understood: Record<string, unknown>;
-    try {
-        understood = await UnderstandDesktopBotTask(content, phase, lang, earlier, persona, catalog) as Record<string, unknown>;
-    } catch (error) {
-        // The reading itself could not be attempted: no text, no backend. That
-        // is not this person's fault and it is not a reading.
-        throw new Error(failureMessage(error).trim() || 'desktop bot reading failed');
-    }
-    understood = understood ?? {};
-    switch (String(understood.reading ?? understood.Reading ?? '').trim()) {
-        case 'unreachable': return { kind: 'unreachable' };
-        case 'unscheduled': return { kind: 'unscheduled' };
-        case 'unread': return { kind: 'unread' };
-    }
-    const told = String(understood.told ?? understood.Told ?? '').trim();
-    const instruction = String(understood.instruction ?? understood.Instruction ?? '').trim();
-    const personaRaw = String(understood.persona ?? understood.Persona ?? '').trim();
-    let pace = workPace(understood, phase);
-    // No destructive upgrade to a confirm button here: the worker's own gates
-    // (peer review, the payment-password stop) guard consequential calls.
-    const decided = emptyOrderPace(pace, instruction, personaRaw, phase, scheduleOf(understood).mode);
-    if (decided === 'failed') return { kind: 'unread' };
-    return { kind: 'read', told, instruction, persona: personaRaw, pace: decided, understood };
+    // Reading moved to the server. A caller that still asks here gets no
+    // local verdict, so nothing is invented in its place.
+    return { kind: 'unreachable' };
 }
 
 // DESKTOP_BOT_SEND_FIRST_MS: how long a new order may wait for its reading
@@ -3838,6 +3814,25 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         return () => { if (typeof off === 'function') off(); };
     }, [userId]);
 
+    // The server's first sentence. This page only shows it.
+    useEffect(() => {
+        const off = EventsOn('desktop-bot-intake', (payload: unknown) => {
+            const data = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
+            const botId = String(data.bot_id || '').trim();
+            const requestId = String(data.request_id || '').trim();
+            const ack = String(data.ack || '').trim();
+            if (!botId || !ack || desktopBotIsPlaceholderAck(ack, lang)) return;
+            const stored = messagesForBot(userId, botId);
+            const anchor = requestId ? stored.find(item => item.requestId === requestId) : undefined;
+            if (stored.some(item => item.ack && item.content === ack)) return;
+            const line = { id: messageID(), role: 'assistant' as const, content: ack, ack: true, understood: true };
+            const at = anchor ? stored.findIndex(item => item.id === anchor.id) : -1;
+            const next = at >= 0 ? [...stored.slice(0, at), line, ...stored.slice(at)] : [...stored, line];
+            commit(botId, next);
+        });
+        return () => { if (typeof off === 'function') off(); };
+    }, [userId, lang]);
+
     useEffect(() => {
         const handler = (payload: unknown) => {
             let data: Record<string, unknown>;
@@ -4928,13 +4923,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             sayTypedConfirm(botId);
             return;
         }
-        if (!literal) {
-            const control = desktopBotLocalControl(content);
-            if (control) {
-                answerDesktopControl(botId, content, control, mode);
-                return;
-            }
-        }
         const turnPhase = phaseFor(content, phase);
         // A second job starts beside one that is already going. It must not
         // take the keyboard or the desktop watch away from that job. Only the
@@ -5105,20 +5093,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             markUnderstanding(botId, false);
         };
         if (!verbatim && mode === 'now') {
+            // The server's first sentence arrives with the admission. If it
+            // does not, one neutral line goes up at about two seconds.
             setTimeout(() => {
                 if (ackSaid || ownerLeft() || bubbleGone()) return;
+                ackSaid = true;
                 receiptPosted = true;
-                understandingShown = true;
-                markUnderstanding(botId, true);
-                // A late model line still gets DESKTOP_BOT_LATE_ACK_BUDGET_MS;
-                // past that the status row has said everything there is.
-                setTimeout(endUnderstanding, DESKTOP_BOT_LATE_ACK_BUDGET_MS + 2000);
-                // The turn already went on without a first line of its own:
-                // ask for one now.
-                const upgrade = upgradeReceipt;
-                upgradeReceipt = null;
-                if (upgrade) upgrade();
-            }, DESKTOP_BOT_FIRST_ACK_BUDGET_MS);
+                const line = desktopBotNeutralAck({ kind: 'accept', lang });
+                commit(botId, putAckLine(messagesForBot(ownerId, botId), line, undefined, assistantMessage.id));
+            }, 2000);
         }
         // A line written after the work started upgrades the receipt in
         // place when one is up, otherwise it goes above the wait bubble,
@@ -5172,236 +5155,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 }
                 sendPhase = prepared.pace === 'direct' ? 'execute' : turnPhase;
             } else {
-                let pace: WorkPace = 'confirm';
-                let understood: Record<string, unknown> = {};
-                let keepIdentity = '';
-                try {
-                    // The reading may take long (its own budget serves the
-                    // work); the receipt timer above covers the person.
-                    const reading = await readDesktopBotTurnOrSend(content, turnPhase, lang, earlier, personaForBot(ownerId, botId), desktopBotCatalog(botId, botsRef.current), botIsPrimary(botId, botsRef.current) ? 0 : DESKTOP_BOT_SEND_FIRST_MS, lateTold => {
-                        if (userIdRef.current !== ownerId) return;
-                        const stored = messagesForBot(ownerId, botId);
-                        if (!receiptPosted || ackLanded) return;
-                        ackSaid = true;
-                        endUnderstanding();
-                        commit(botId, putAckLine(stored, lateTold));
-                    });
-                    if (reading.kind !== 'read') {
-                        // This turn has not started. It stops here with the
-                        // sentence that was typed, which is why the reading
-                        // failing is not the same as the turn failing.
-                        if (!ownerLeft()) parkNoReading(reading.kind);
-                        else leaveAccount();
-                        return;
-                    }
-                    understood = reading.understood;
-                    understoodForAck = understood;
-                    told = reading.told;
-                    options = desktopBotOptionsOf(reading.understood);
-                    instruction = reading.instruction;
-                    pace = reading.pace;
-                    keepIdentity = reading.persona;
-                    if (ownerLeft()) {
-                        leaveAccount();
-                        return;
-                    }
-                    if (bubbleGone()) return;
-                    const classified = stopClassRef.current.get(`${botId}\0${content.trim()}`) || 'skip';
-                    stopClassRef.current.delete(`${botId}\0${content.trim()}`);
-                    if (desktopFalseStopClaim(classified, told)) {
-                        pending.settled = true;
-                        pendingRef.current.delete(ticket);
-                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                        commit(botId, messagesForBot(ownerId, botId).filter(item => item.id !== assistantMessage.id));
-                        answerDesktopControl(botId, content, 'stop', 'quiet', 'reading-stop');
-                        return;
-                    }
-                    if ((told || '').trim() === 'STOP_WORK') {
-                        told = '';
-                        instruction = content.trim();
-                        pace = 'direct';
-                    }
-                    if (keepIdentity) {
-                        keepPersona(ownerId, botId, keepIdentity);
-                        // The worker runs on the server, so a preference kept
-                        // only here would never shape future work. This is a
-                        // hint for later turns and must not fail the turn.
-                        // A hyphen withdraws it, and that has to reach the
-                        // server too: a preference still honoured after being
-                        // taken back explains itself nowhere on screen.
-                        void PersistDesktopBotPreference(botId, keepIdentity).catch(() => undefined);
-                    }
-                    const cross = crossOf(understood);
-                    if (cross) {
-                        const delivered = await deliverCross(botId, cross);
-                        if (ownerLeft()) {
-                            leaveAccount();
-                            return;
-                        }
-                        if (bubbleGone()) return;
-                        pending.settled = true;
-                        pendingRef.current.delete(ticket);
-                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                        const stored = messagesForBot(ownerId, botId);
-                        commit(botId, stored.map(item => item.id === assistantMessage.id ? {
-                            ...item,
-                            content: delivered.content,
-                            pending: false,
-                            chat: delivered.ask ? undefined : true,
-                            phase: undefined,
-                            askUser: delivered.ask ? { question: delivered.content } : undefined,
-                            noticeBots: delivered.noticeBots,
-                        } : item));
-                        drainIfIdle(botId);
-                        return;
-                    }
-                    if (pace === 'ask') {
-                        if (ownerLeft()) {
-                            leaveAccount();
-                            return;
-                        }
-                        if (bubbleGone()) return;
-                        pending.settled = true;
-                        pendingRef.current.delete(ticket);
-                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                        const question = told || instruction;
-                        const stored = messagesForBot(ownerId, botId);
-                        // A question answered here is not a desktop turn. Leave the
-                        // phase off so it does not cover an arrangement still waiting.
-                        const settled = stored.map(item => item.id === assistantMessage.id ? {
-                            ...item,
-                            content: question,
-                            pending: false,
-                            phase: undefined,
-                            askUser: { question },
-                        } : item);
-                        commit(botId, settled);
-                        drainIfIdle(botId);
-                        return;
-                    }
-                    if (pace === 'status') {
-                        let answer = '';
-                        try {
-                            answer = String(await QueryDesktopBotTaskStatus(botId, instruction || content, lang) || '').trim();
-                        } catch (error) {
-                            if (ownerLeft()) {
-                                leaveAccount();
-                                return;
-                            }
-                            failPending(friendlyFailure(failureMessage(error), lang) || text.unavailable);
-                            return;
-                        }
-                        if (!answer) {
-                            failPending(text.unavailable);
-                            return;
-                        }
-                        if (ownerLeft()) {
-                            leaveAccount();
-                            return;
-                        }
-                        if (bubbleGone()) return;
-                        pending.settled = true;
-                        pendingRef.current.delete(ticket);
-                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                        const stored = messagesForBot(ownerId, botId);
-                        commit(botId, stored.map(item => item.id === assistantMessage.id ? {
-                            ...item,
-                            content: answer,
-                            pending: false,
-                            chat: true,
-                            phase: undefined,
-                        } : item));
-                        drainIfIdle(botId);
-                        return;
-                    }
-                    if (pace === 'reply') {
-                        if (ownerLeft()) {
-                            leaveAccount();
-                            return;
-                        }
-                        if (bubbleGone()) return;
-                        pending.settled = true;
-                        pendingRef.current.delete(ticket);
-                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                        const answer = told || instruction;
-                        const stored = messagesForBot(ownerId, botId);
-                        commit(botId, stored.map(item => item.id === assistantMessage.id ? {
-                            ...item,
-                            content: answer,
-                            pending: false,
-                            chat: true,
-                            phase: undefined,
-                        } : item));
-                        drainIfIdle(botId);
-                        return;
-                    }
-                    if (pace === 'schedule') {
-                        if (ownerLeft()) {
-                            leaveAccount();
-                            return;
-                        }
-                        if (bubbleGone()) return;
-                        await armDesktopSchedule(botId, understood, instruction);
-                        if (ownerLeft()) {
-                            leaveAccount();
-                            return;
-                        }
-                        if (bubbleGone()) return;
-                        pending.settled = true;
-                        pendingRef.current.delete(ticket);
-                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                        const answer = scheduleAck(told, scheduleOf(understood).mode, text);
-                        const stored = messagesForBot(ownerId, botId);
-                        commit(botId, stored.map(item => item.id === assistantMessage.id ? {
-                            ...item,
-                            content: answer,
-                            pending: false,
-                            chat: true,
-                            phase: undefined,
-                        } : item));
-                        drainIfIdle(botId);
-                        return;
-                    }
-                    // There is no bare "proceed?" step: a confirm reading goes ahead now.
-                    // A real question or real options come back as ask instead.
-                    if (pace === 'confirm' && protocolControl(content) !== 'resume') pace = 'direct';
-                    if (false as boolean) {
-                        if (ownerLeft()) {
-                            leaveAccount();
-                            return;
-                        }
-                        if (bubbleGone()) return;
-                        pending.settled = true;
-                        pendingRef.current.delete(ticket);
-                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                        const arrangement = told || oneLine(content);
-                        const stored = messagesForBot(ownerId, botId);
-                        commit(botId, stored.map(item => item.id === assistantMessage.id ? {
-                            ...item,
-                            content: arrangement,
-                            pending: false,
-                            phase: 'plan' as const,
-                            workOrder: instruction,
-                        } : item));
-                        drainIfIdle(botId);
-                        return;
-                    }
-                    if (pace === 'direct' && turnPhase !== 'execute') {
-                        const stored = messagesForBot(ownerId, botId);
-                        commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, phase: 'execute' as const } : item));
-                    }
-                    sendPhase = pace === 'direct' ? 'execute' : turnPhase;
-                } catch (error) {
-                    // Nothing went to the desktop: either the reading could not
-                    // even be attempted, or a timer named by nobody was refused.
-                    if (ownerLeft()) {
-                        leaveAccount();
-                        return;
-                    }
-                    const raw = missedSchedule(error) ? text.scheduleNone : friendlyFailure(failureMessage(error), lang) || text.unavailable;
-                    failPending(raw);
-                    return;
-                }
+                // The server reads the words. This page forwards them as typed.
+                instruction = content.trim();
             }
             if (ownerLeft()) {
                 leaveAccount();
@@ -5479,115 +5234,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 if (ownerLeft()) leaveAccount();
                 return;
             }
-            // A turn already running may still want this message. Ask before
-            // sending it as new work: once words are inside another run's
-            // context there is no taking them back. Each live run is asked
-            // on its own. One match is that run. Several matches have to be
-            // named by the person. None means this is a separate job.
-            try {
-                const candidates = foldCandidates;
-                if (deferFirst) {
-                    const checked = await Promise.all(candidates.map(async candidate => {
-                        // A slow or hung model must not keep the message from going out.
-                        const verdict = await withinBudget(EvaluateDesktopTaskSupplement(String(candidate.task_text || ''), content.trim(), lang) as Promise<{ is_supplement?: boolean; decision?: string; instruction?: string } | null>, 8000);
-                        return { candidate, verdict };
-                    }));
-                    // "stop" for any live run: the person asked to stop, so the
-                    // stop path runs (it names the job and confirms the stop).
-                    if (checked.some(item => item.verdict?.decision === 'stop')) {
-                        pending.settled = true;
-                        pendingRef.current.delete(ticket);
-                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                        endUnderstanding();
-                        commit(botId, messagesForBot(ownerId, botId).filter(item => item.id !== assistantMessage.id));
-                        answerDesktopControl(botId, content, 'stop', 'quiet', 'fold-stop');
-                        return;
-                    }
-                    const matches = checked.filter(item => item.verdict && item.verdict.is_supplement);
-                    if (matches.length === 0 && checked.some(item => item.verdict?.decision === 'new')) {
-                        // A separate job while another runs: its first line says so.
-                        foldKind = 'parallel';
-                    }
-                    if (matches.length > 0) {
-                        const targetID = matches.length === 1 ? String(matches[0].candidate.run_id || '') : '';
-                        const receipt = await AppendDesktopBotSupplement(botId, targetID, String(matches[0].verdict?.instruction || content.trim())) as { accepted?: boolean; stage?: string; message?: string; supplement_id?: string } | null;
-                        const note = String(receipt?.message || '');
-                        const supplementFiles = splitAckMaterials(content).paths;
-                        if (receipt?.stage === 'queued') {
-                            // Only the receipt's ids go on the bubble. The
-                            // terminal answer (applied / missed) arrives later
-                            // from the run itself and lands on these ids.
-                            const supplementId = String(receipt.supplement_id || '').trim();
-                            const kind = matches[0].verdict?.decision === 'change' ? 'change' : 'supplement';
-                            const folded = String(matches[0].verdict?.instruction || content.trim());
-                            const ackCtx: DesktopBotAckContext = {
-                                kind,
-                                message: content,
-                                lang,
-                                persona: personaForBot(ownerId, botId),
-                                files: supplementFiles.map(item => item.split('/').pop() || item),
-                                running_task: String(matches[0].candidate.task_text || ''),
-                                instruction: folded,
-                            };
-                            // Every interjection gets one visible line that
-                            // says how it was folded in (rule 3): the model's
-                            // own line inside the first-reply budget, or the
-                            // fold head with the folded words, which a later
-                            // model line replaces in place. The reading's
-                            // sentence, if any, is dropped for this one line:
-                            // it did not say the words joined the running job.
-                            ackSaid = true;
-                            let line = sentence && sentence !== content.trim()
-                                ? desktopBotWithFoldHead(kind, lang, sentence)
-                                : await desktopBotAck(ackCtx, undefined, Math.max(ackLeftMs(), 1500));
-                            const wrote = !desktopBotIsPlaceholderAck(line, lang);
-                            if (!wrote) line = desktopBotFoldFallback(kind, lang, folded);
-                            endUnderstanding();
-                            const settled = messagesForBot(ownerId, botId).map(item => item.id === assistantMessage.id ? {
-                                ...item,
-                                content: line || note,
-                                pending: false,
-                                ack: true,
-                                understood: true,
-                                supplementId: supplementId || undefined,
-                                supplementRunId: targetID || undefined,
-                            } : item);
-                            const placed = foldPlanConfirmation(settled, settled.findIndex(item => item.id === assistantMessage.id));
-                            // Storage alone leaves the open chat on the typing
-                            // bubble, so the person never sees that these words
-                            // joined the job already running.
-                            if (ownerLeft()) saveBotMessages(ownerId, botId, placed);
-                            else commit(botId, placed);
-                            clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                            pending.settled = true;
-                            pendingRef.current.delete(ticket);
-                            drainIfIdle(botId);
-                            if (!wrote) {
-                                void desktopBotAck({ ...ackCtx, late: true }, undefined, DESKTOP_BOT_LATE_ACK_BUDGET_MS).then(late => {
-                                    if (userIdRef.current !== ownerId || desktopBotIsPlaceholderAck(late, lang)) return;
-                                    const stored = messagesForBot(ownerId, botId);
-                                    commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, content: late } : item));
-                                });
-                            }
-                            return;
-                        }
-                        // Several runs matched and the server will not guess.
-                        // The words stay here, with the reason, until the
-                        // person says which job they belong to.
-                        if (receipt?.stage === 'ambiguous') {
-                            if (!ownerLeft()) parkUnrouted(note, content.trim(), turnPhase);
-                            else leaveAccount();
-                            return;
-                        }
-                        // The run ended, or it is waiting for an answer. The
-                        // receipt says this line goes out on its own, so it
-                        // is sent. Parking it would leave that promise undone.
-                    }
-                }
-            } catch {
-                // Falling through and sending as a new task is honest: it does
-                // what the person asked, just without folding into the run.
-            }
             if (pending.settled || ownerLeft() || bubbleGone()) {
                 if (ownerLeft()) leaveAccount();
                 return;
@@ -5617,51 +5263,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     }
                 }
             }
-            // "继续" while that job is already running again (for example right
-            // after a hand-back) is not a new order: say it is continuing.
-            if (mode === 'now' && sendPhase === 'execute' && desktopRunByBotRef.current[botId] && isBareContinue(content)) {
-                pending.settled = true;
-                pendingRef.current.delete(ticket);
-                clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                const sentence = desktopBotVariedFallback('continuing', lang, desktopBotContinuingSentence(lang), recentChat(ownerId, botId));
-                const stored = messagesForBot(ownerId, botId);
-                commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, content: sentence, pending: false, ack: true, phase: undefined } : item));
-                upgradeLine(ownerId, botId, assistantMessage.id, 'continuing', sentence, content.trim());
-                return;
-            }
-            // One bot runs up to DESKTOP_BOT_PARALLEL_RUNS jobs side by side
-            // (Hub admits them; MaClawSrv gives each its own scratch folder and
-            // hands the screen over in turn). Only a bot at that cap queues.
-            if (mode === 'now' && sendPhase === 'execute' && desktopRunByBotRef.current[botId] && Math.max(desktopRunByBotRef.current[botId] || 0, liveRunsOf(botId, pending)) >= DESKTOP_BOT_PARALLEL_RUNS) {
-                pending.settled = true;
-                pendingRef.current.delete(ticket);
-                clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                const sentence = desktopBotQueuedSentence(lang);
-                const stored = messagesForBot(ownerId, botId);
-                commit(botId, stored.map(item => {
-                    if (item.id === assistantMessage.id) {
-                        return { ...item, content: sentence, pending: false, ack: true, phase: undefined };
-                    }
-                    if (item.id === userMessage.id) return { ...item, queued: true };
-                    return item;
-                }));
-                upgradeLine(ownerId, botId, assistantMessage.id, 'queued', sentence, content.trim());
-                const queued = queueRef.current.get(botId) || [];
-                queued.push({ text: instruction, phase: sendPhase, verbatim: true, literal, userText: content.trim(), continueSession });
-                queueRef.current.set(botId, queued);
-                return;
-            }
             if (deferFirst) {
                 // The fold check found no run to join: this is a separate
                 // job, and its first line says so.
-                const kindNow = foldKind === 'parallel' ? 'parallel' : 'accept';
                 const running = String(foldCandidates[0]?.task_text || '');
                 if (sentence && sentence !== content.trim()) {
                     ackSaid = true;
-                    commit(botId, putAckLine(messagesForBot(ownerId, botId), kindNow === 'parallel' ? desktopBotWithFoldHead('parallel', lang, sentence) : sentence, options.length >= 2 ? options : undefined, assistantMessage.id));
+                    commit(botId, putAckLine(messagesForBot(ownerId, botId), sentence, options.length >= 2 ? options : undefined, assistantMessage.id));
                     endUnderstanding();
                 } else {
-                    postLaterAck(botId, assistantMessage.id, { ...acceptAckCtx, kind: kindNow, running_task: running || undefined, files: ackFiles.map(item => item.split('/').pop() || item) }, options.length >= 2 ? options : undefined);
+                    postLaterAck(botId, assistantMessage.id, { ...acceptAckCtx, kind: 'accept', running_task: running || undefined, files: ackFiles.map(item => item.split('/').pop() || item) }, options.length >= 2 ? options : undefined);
                 }
             } else if (desktopAckOwedOnDispatch({ sentence, verbatim, phase: sendPhase, earlyAckPosted })) {
                 // A new job that had no line yet: say a short one now, above
@@ -6071,10 +5682,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     requestId: `${id}:target`,
                     chat: true,
                 });
-                const busy = !!desktopRunByBotRef.current[target] || turnStillReading(target) || pendingBubbleHoldsQueue(target);
-                const queued = queueRef.current.get(target) || [];
-                queueRef.current.set(target, [...queued, { text: body, phase: 'execute', verbatim: true, crossNoteId: id }]);
-                if (!busy) drainIfIdle(target);
             } else {
                 appendDesktopBotReport(userId, target, {
                     content: desktopBotCrossTargetText(kind, text),
@@ -6285,255 +5892,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             sayTypedConfirm(botId);
             return;
         }
-        // A generic status question or an exact stop is answered from the live
-        // run. It does not wait for a reading that is already in flight, and
-        // it does not become a queued order.
-        if (!literal) {
-            const control = desktopBotLocalControl(content);
-            if (control) {
-                if (!preset) setCommand('');
-                applyFollowRef.current(true);
-                answerDesktopControl(botId, content, control, 'now');
-                return;
-            }
-        }
-        // Subscription passthrough: changes to a live task go straight to the
-        // worker that owns it (Hub decides by rules). New unrelated jobs fall
-        // through so the router can dispatch another worker. Tried even while
-        // this bot looks busy, so an old task's update never waits on the router.
-        if (!literal && !preset && !verbatim) {
-            const route = await withinBudget(RouteDesktopBotFollowUp(botId, content), 4000).catch(() => undefined);
-            if (userIdRef.current !== userId) return;
-            if (route && route.routed) {
-                setCommand('');
-                applyFollowRef.current(true);
-                commit(botId, [...messagesForBot(userId, botId), { id: messageID(), role: 'user', content }]);
-                return;
-            }
-        }
-        // Sending is a new line the person just asked to see.
+        // Sending is a new line the person just asked to see. Stop, pause,
+        // supplement, and where the words belong are decided on the server.
+        // This page only forwards the words.
         applyFollowRef.current(true);
         const turnPhase = phaseFor(content, phase);
-        // The login handoff is idle, so the composer would otherwise start a
-        // desktop turn and take the keyboard back. A short answer still stays
-        // here. Desktop work waits until the person returns the keyboard.
-        // A button preset is the continuation itself, so it is not held.
-        const personHasKeyboard = messagesForBot(userId, botId).some(item => item.userControl || !!item.attentionReason);
-        // A running job does not block the next message. Hold only while an
-        // earlier line is still being read, or while this person has the
-        // keyboard and a new desktop command would take it away.
-        let stillReading = turnStillReading(botId) || readAheadOpen(userId, botId);
-        const waitingOnPerson = !preset && personHasKeyboard;
-        // A line that starts now is classified before the reading. The check
-        // is made again after that call: another line sent in the same moment
-        // may have begun its reading while this one was waiting.
-        if (!(stillReading || waitingOnPerson)) {
-            if (!verbatim && desktopWorkActive(botId)) {
-                if (!preset) setCommand('');
-                const classified = String(await withinBudget(ClassifyDesktopWorkStop(content, lang), 2500) || '').trim();
-                if (userIdRef.current !== userId) return;
-                const intent = classified || 'unknown';
-                stopClassRef.current.set(`${botId}\0${content}`, intent);
-                if (intent === 'stop' || intent === 'pause') {
-                    answerDesktopControl(botId, content, intent, 'now');
-                    return;
-                }
-                stillReading = turnStillReading(botId) || readAheadOpen(userId, botId);
-            } else {
-                stopClassRef.current.set(`${botId}\0${content}`, 'skip');
-            }
-        }
-        if (stillReading || waitingOnPerson) {
-            if (!preset) setCommand('');
-            const prior = messagesForBot(userId, botId);
-            const userMessage: DesktopBotMessage = { id: messageID(), role: 'user', content, phase: turnPhase };
-            commit(botId, [...prior, userMessage]);
-            const earlier = earlierUserAsks(prior, content, 'now');
-            const ownerId = userId;
-            const slot: ReadAhead = { text: content, phase: turnPhase, settled: false, enqueue: false, verbatim, literal, prepared };
-            const readKey = `${ownerId}\0${botId}`;
-            const pendingReads = readAheadRef.current.get(readKey) || [];
-            pendingReads.push(slot);
-            readAheadRef.current.set(readKey, pendingReads);
-            void (async () => {
-                let enqueue = false;
-                try {
-                    if (content.trim() === CONFIRM_COMMAND || desktopBotLocalControl(content)) {
-                        return;
-                    }
-                    if (!slot.verbatim && !slot.prepared && desktopWorkActive(botId)) {
-                        const classified = String(await withinBudget(ClassifyDesktopWorkStop(content, lang), 2500) || '').trim();
-                        let spins = 0;
-                        while (stopHoldRef.current.has(botId) && spins < 40) {
-                            spins += 1;
-                            await new Promise(resolve => setTimeout(resolve, 15));
-                        }
-                        if (userIdRef.current !== ownerId || slot.drop || stopHoldRef.current.has(botId)) return;
-                        const intent = classified || 'unknown';
-                        stopClassRef.current.set(`${botId}\0${content}`, intent);
-                        if (intent === 'stop' || intent === 'pause') {
-                            slot.drop = true;
-                            answerDesktopControl(botId, content, intent, 'quiet', 'classified');
-                            return;
-                        }
-                    } else {
-                        stopClassRef.current.set(`${botId}\0${content}`, 'skip');
-                    }
-                    if (slot.verbatim || slot.prepared) {
-                        // Nothing to read. Verbatim is the person's own words.
-                        // A prepared confirm already has the arrangement they
-                        // approved, so a second reading cannot drop it.
-                        enqueue = true;
-                    } else {
-                        let pace: WorkPace = 'confirm';
-                        let told = '';
-                        let instruction = '';
-                        let understood: Record<string, unknown> = {};
-                        const reading = await readDesktopBotTurnOrSend(content, turnPhase, lang, earlier, personaForBot(ownerId, botId), desktopBotCatalog(botId, botsRef.current), botIsPrimary(botId, botsRef.current) ? 0 : DESKTOP_BOT_SEND_FIRST_MS);
-                        if (userIdRef.current !== ownerId || slot.drop) return;
-                        if (reading.kind !== 'read') {
-                            // Nothing is queued and nothing was sent: the queue
-                            // only holds work somebody stated.
-                            const stored = messagesForBot(ownerId, botId);
-                            commit(botId, [...stored, { id: messageID(), role: 'assistant', ...noReadingReply(reading.kind, text, content, turnPhase) }]);
-                            return;
-                        }
-                        understood = reading.understood;
-                        told = reading.told;
-                        instruction = reading.instruction;
-                        pace = reading.pace;
-                        const classified = stopClassRef.current.get(`${botId}\0${content.trim()}`) || 'skip';
-                    stopClassRef.current.delete(`${botId}\0${content.trim()}`);
-                        if (desktopFalseStopClaim(classified, told)) {
-                            slot.drop = true;
-                            answerDesktopControl(botId, content, 'stop', 'quiet', 'reading-stop');
-                            return;
-                        }
-                        if ((told || '').trim() === 'STOP_WORK') {
-                            told = '';
-                            instruction = content.trim();
-                            pace = 'direct';
-                        }
-                        if (reading.persona && userIdRef.current === ownerId) keepPersona(ownerId, botId, reading.persona);
-                        const cross = crossOf(understood);
-                        if (cross) {
-                            if (userIdRef.current !== ownerId || slot.drop) return;
-                            const delivered = await deliverCross(botId, cross);
-                            if (userIdRef.current !== ownerId || slot.drop) return;
-                            const stored = messagesForBot(ownerId, botId);
-                            const local: DesktopBotMessage = delivered.ask
-                                ? { id: messageID(), role: 'assistant', content: delivered.content, askUser: { question: delivered.content } }
-                                : { id: messageID(), role: 'assistant', content: delivered.content, chat: true, noticeBots: delivered.noticeBots };
-                            commit(botId, [...stored, local]);
-                            return;
-                        }
-                        if (pace === 'status') {
-                            let answer = '';
-                            try {
-                                answer = String(await QueryDesktopBotTaskStatus(botId, instruction || content, lang) || '').trim();
-                            } catch (error) {
-                                if (userIdRef.current !== ownerId || slot.drop) return;
-                                const raw = friendlyFailure(failureMessage(error), lang) || text.unavailable;
-                                const stored = messagesForBot(ownerId, botId);
-                                const noteId = messageID();
-                                commit(botId, [...stored, { id: noteId, role: 'assistant', content: raw, failed: true }]);
-                                upgradeLine(ownerId, botId, noteId, 'error', raw, oneLine(told || ''), { stop_reason: raw });
-                                return;
-                            }
-                            if (userIdRef.current !== ownerId || slot.drop) return;
-                            if (!answer) {
-                                const stored = messagesForBot(ownerId, botId);
-                                commit(botId, [...stored, { id: messageID(), role: 'assistant', content: text.unavailable, failed: true }]);
-                                return;
-                            }
-                            const stored = messagesForBot(ownerId, botId);
-                            commit(botId, [...stored, { id: messageID(), role: 'assistant', content: answer, chat: true }]);
-                            return;
-                        }
-                        if (pace === 'schedule') {
-                            const spec = scheduleOf(understood);
-                            try {
-                                await armDesktopSchedule(botId, understood, instruction);
-                            } catch (error) {
-                                if (userIdRef.current !== ownerId || slot.drop) return;
-                                const raw = missedSchedule(error)
-                                    ? text.scheduleNone
-                                    : friendlyFailure(failureMessage(error), lang) || text.unavailable;
-                                const stored = messagesForBot(ownerId, botId);
-                                const noteId = messageID();
-                                commit(botId, [...stored, { id: noteId, role: 'assistant', content: raw, failed: true }]);
-                                upgradeLine(ownerId, botId, noteId, 'error', raw, oneLine(told || ''), { stop_reason: raw });
-                                return;
-                            }
-                            if (userIdRef.current !== ownerId || slot.drop) return;
-                            const answer = scheduleAck(told, spec.mode, text);
-                            const stored = messagesForBot(ownerId, botId);
-                            commit(botId, [...stored, { id: messageID(), role: 'assistant', content: answer, chat: true }]);
-                            return;
-                        }
-                        // There is no bare "proceed?" step: a confirm reading goes ahead now.
-                    // A real question or real options come back as ask instead.
-                    if (pace === 'confirm' && protocolControl(content) !== 'resume') pace = 'direct';
-                    if (false as boolean) {
-                            if (userIdRef.current !== ownerId || slot.drop) return;
-                            const arrangement = told || oneLine(content);
-                            const stored = messagesForBot(ownerId, botId);
-                            const at = stored.findIndex(item => item.id === userMessage.id);
-                            const plan: DesktopBotMessage = {
-                                id: messageID(),
-                                role: 'assistant',
-                                content: arrangement,
-                                phase: 'plan',
-                                workOrder: instruction,
-                            };
-                            const user = { ...userMessage, queued: false };
-                            const next = at >= 0
-                                ? [...stored.slice(0, at), user, plan, ...stored.slice(at + 1)]
-                                : [...stored, user, plan];
-                            commit(botId, next);
-                            return;
-                        }
-                        // Small talk and a missing-fact question are answered here.
-                        // They do not wait for the desktop turn, and they are not sent on.
-                        if (pace === 'reply' || pace === 'ask') {
-                            const answer = told || instruction;
-                            if (!answer) {
-                                pace = 'direct';
-                            } else {
-                                const stored = messagesForBot(ownerId, botId);
-                                const local: DesktopBotMessage = pace === 'ask'
-                                    ? { id: messageID(), role: 'assistant', content: answer, askUser: { question: answer } }
-                                    : { id: messageID(), role: 'assistant', content: answer, chat: true };
-                                commit(botId, [...stored, local]);
-                                return;
-                            }
-                        }
-                        slot.prepared = {
-                            told,
-                            instruction,
-                            pace: pace === 'direct' ? 'direct' : 'confirm',
-                            persona: reading.persona || '',
-                            earlier,
-                        };
-                        const stored = messagesForBot(ownerId, botId);
-                        const at = stored.findIndex(item => item.id === userMessage.id);
-                        const queuedUser: DesktopBotMessage = { ...userMessage, queued: true };
-                        const ackMessage: DesktopBotMessage = { id: messageID(), role: 'assistant', content: (told || '').trim() && !['STOP_WORK', content.trim()].includes((told || '').trim()) ? told.trim() : queuedAckReply(content, lang, waitingOnPerson ? 'keyboard' : 'ahead'), ack: true };
-                        const next = at >= 0
-                            ? [...stored.slice(0, at), queuedUser, ackMessage, ...stored.slice(at + 1)]
-                            : [...stored, queuedUser, ackMessage];
-                        commit(botId, next);
-                        enqueue = true;
-                    }
-                } finally {
-                    slot.wanted = enqueue && userIdRef.current === ownerId;
-                    slot.settled = true;
-                    slot.enqueue = !!slot.wanted && !slot.drop;
-                    if (!slot.drop) releaseReadAhead(ownerId, botId);
-                }
-            })();
-            return;
-        }
         startTask(botId, content, turnPhase, 'now', verbatim, prepared, literal, continueSession);
         if (!preset) setCommand('');
     };

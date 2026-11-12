@@ -385,6 +385,17 @@ type BotAdmission struct {
 	// task it went to, for the client to show.
 	RoutedVia   string
 	RoutedTitle string
+	// Kind is the server's decision for this message (new, supplement,
+	// change, stop, pause, continue, reply, ask, schedule, status).
+	// Ack is the first sentence, when one was ready inside the budget.
+	// Queued means Hub is holding the message until a slot or the keyboard
+	// is free. Held means the person still has the keyboard.
+	Kind     string
+	Ack      string
+	Queued   bool
+	Held     bool
+	Position int
+	Schedule *DesktopSchedule
 }
 
 // PostMessagePhase is PostMessage with the bot turn phase. An empty phase
@@ -399,7 +410,7 @@ func (s *Service) PostMessagePhase(ctx context.Context, tenantID, userID, botID,
 // conversation the caller is following up in, or the bot id for a new
 // independent message.
 func (s *Service) PostMessagePhaseIn(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string) (Reply, error) {
-	admission, err := s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, continueSession, false)
+	admission, err := s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, continueSession, false, "")
 	return admission.Reply, err
 }
 
@@ -418,10 +429,17 @@ func (s *Service) AdmitDesktopMessage(ctx context.Context, tenantID, userID, bot
 
 // AdmitDesktopMessageIn is AdmitDesktopMessage with a continue_session.
 func (s *Service) AdmitDesktopMessageIn(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string) (BotAdmission, error) {
-	return s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, continueSession, true)
+	return s.AdmitDesktopMessageAct(ctx, tenantID, userID, botID, content, phase, clientMessageID, continueSession, "")
 }
 
-func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string, admit bool) (BotAdmission, error) {
+// AdmitDesktopMessageAct is AdmitDesktopMessageIn with an explicit keyboard
+// action. "return" is the 交还 button: it gives the keyboard back. Any other
+// post leaves the keyboard where it is.
+func (s *Service) AdmitDesktopMessageAct(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession, action string) (BotAdmission, error) {
+	return s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, continueSession, true, action)
+}
+
+func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string, admit bool, action string) (BotAdmission, error) {
 	content = strings.TrimSpace(content)
 	phase = strings.TrimSpace(phase)
 	if content == "" {
@@ -486,29 +504,58 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			}
 		}
 	}
+	action = strings.ToLower(strings.TrimSpace(action))
+	if action == "return" {
+		s.releaseDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
+		defer s.drainDesktopQueue(tenantID, userID, botID)
+	}
+	var intakeAck, intakeKind string
+	if !desktopReplay(ctx) {
+		next, steered, handled := s.steerDesktopMessage(ctx, desktopSteerRequest{
+			TenantID: tenantID, UserID: userID, DesktopUser: desktopUser, BotID: botID,
+			InstanceID: instanceID, Content: content, Phase: phase,
+			ClientMessageID: clientMessageID, ContinueSession: continueSession,
+			Action: action, Admit: admit, TokenRec: &fresh, Token: &token, HaveToken: haveToken,
+		})
+		if handled {
+			if steered.ClientMessageID == "" {
+				steered.ClientMessageID = clientMessageID
+			}
+			return steered, nil
+		}
+		content = next
+		intakeAck, intakeKind = steered.Ack, steered.Kind
+	}
 	// One non-terminal admit per user. The reserve is visible to the next
 	// scan before the lock drops. The long message post stays outside it.
 	releaseTurn, claim, busyErr := s.claimDesktopTurnPref(tenantID, userID, botID, clientMessageID, content, phase, continueSession)
 	if busyErr != nil {
 		traceBot(botID, "desktop_busy", busyErr, "dur_ms", traceMS(time.Since(pipelineStarted)))
+		if admit && errors.Is(busyErr, ErrDesktopBusy) && !desktopQueueSuppressed(ctx) && !hubStartedTurn(clientMessageID) {
+			pos, qerr := s.enqueueDesktopMessage(tenantID, userID, botID, desktopQueueItem{
+				ClientMessageID: clientMessageID,
+				Content:         content,
+				Phase:           phase,
+				ContinueSession: continueSession,
+				Kind:            "new",
+				Instruction:     content,
+				Ack:             intakeAck,
+			})
+			if qerr == nil {
+				return BotAdmission{Accepted: true, Queued: true, Position: pos, Ack: intakeAck, Kind: "new", ClientMessageID: clientMessageID}, nil
+			}
+		}
 		return BotAdmission{}, busyErr
 	}
 	defer releaseTurn()
-	// The person finished logging in and sent the next command. The agent
-	// uses the same browser now. The keyboard is returned only after this
-	// command is counted, so a stop cannot shut the browser in between.
+	// The keyboard stays with the person until they press 交还 (action
+	// "return"). A post on its own does not take it back.
 	step := time.Now()
 	var novnc string
 	var opened bool
 	// Accepting a message starts the server worker. It does not open the
-	// cloud desktop; the first tool that needs a machine does that. A waiting
-	// login still hands the keyboard back. err stays nil: this step no longer
-	// calls Desktop.Open.
-	// A post beside a live sibling run is not the person saying the login is
-	// done: only a post with no sibling takes the keyboard back.
-	if claim.siblings == 0 {
-		s.releaseDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
-	}
+	// cloud desktop; the first tool that needs a machine does that. err stays
+	// nil: this step no longer calls Desktop.Open.
 	traceBot(botID, "open_desktop", err,
 		"instance", instanceID,
 		"opened", traceYes(opened),
@@ -673,7 +720,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			"dur_ms", traceMS(time.Since(pipelineStarted)),
 		)
 		via, title := routedFor(route, botID, claim.session)
-		return BotAdmission{Accepted: true, RunID: payload.Run.ID, ClientMessageID: clientMessageID, Session: claim.session, RoutedVia: via, RoutedTitle: title}, nil
+		return BotAdmission{Accepted: true, RunID: payload.Run.ID, ClientMessageID: clientMessageID, Session: claim.session, RoutedVia: via, RoutedTitle: title, Kind: intakeKind, Ack: intakeAck}, nil
 	}
 	if !isolated && payload.DesktopHandoff && !opened && strings.TrimSpace(novnc) == "" {
 		// The worker asked this person to look. That open is the handoff,
@@ -707,7 +754,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"dur_ms", traceMS(time.Since(pipelineStarted)),
 	)
 	via, title := routedFor(route, botID, claim.session)
-	return BotAdmission{Settled: true, Reply: reply, ClientMessageID: clientMessageID, Session: claim.session, RoutedVia: via, RoutedTitle: title}, nil
+	return BotAdmission{Settled: true, Reply: reply, ClientMessageID: clientMessageID, Session: claim.session, RoutedVia: via, RoutedTitle: title, Kind: intakeKind, Ack: intakeAck}, nil
 }
 
 // desktopCommandBody is the MaClawSrv message result, whether it arrived on
@@ -851,6 +898,10 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 		if reason != "" {
 			s.noteDesktopAttention(tenantID, userID, botID, reason)
 			reply.AttentionReason = reason
+		} else if !s.botHasLiveRun(tenantID, userID, botID) {
+			// A finished reply ends the handoff reason. The keyboard itself
+			// stays until the person presses 交还.
+			s.forgetDesktopAttention(tenantID, userID, botID)
 		}
 	}
 	s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
