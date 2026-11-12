@@ -360,9 +360,10 @@ func TestDefaultChoiceUsesEffectiveOfficialModelAndFallsBack(t *testing.T) {
 	app.rememberDesktopBotLLM("alice", DesktopBotLLM{
 		Mode: "default", Choice: "default", Stored: true,
 		Effective: &DesktopBotLLMRoles{
-			Foreground: DesktopBotLLMRole{Official: true, Model: "official-mid"},
-			Background: DesktopBotLLMRole{Name: "Admin Pick", Model: "claude-sonnet"},
-			Grounder:   DesktopBotLLMRole{Official: true, Model: "ground-model"},
+			Foreground:  DesktopBotLLMRole{Official: true, Model: "official-mid"},
+			Background:  DesktopBotLLMRole{Name: "Admin Pick", Model: "claude-sonnet"},
+			ComputerUse: DesktopBotLLMRole{Name: "Qwen", Model: "qwen-admin"},
+			Grounder:    DesktopBotLLMRole{Official: true, Model: "ground-model"},
 		},
 	})
 	fg, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground)
@@ -372,6 +373,10 @@ func TestDefaultChoiceUsesEffectiveOfficialModelAndFallsBack(t *testing.T) {
 	bg, err := app.ResolveMaclawLLMRole(maclawLLMRoleBackground)
 	if err != nil || bg.Model == "claude-sonnet" || bg.Model == "stale-local" {
 		t.Fatalf("unavailable admin model did not fall back: %+v err=%v", bg, err)
+	}
+	cu, err := app.ResolveMaclawLLMRole(maclawLLMRoleComputerUse)
+	if err != nil || cu.Model != "qwen-admin" || cu.ProviderName != "Qwen" || strings.Contains(cu.URL, "hub.example") {
+		t.Fatalf("local admin pin was not used: %+v err=%v", cu, err)
 	}
 	gr, err := app.ResolveMaclawLLMGrounder()
 	if err != nil || gr.Model != "ground-model" || !gr.SupportsVision {
