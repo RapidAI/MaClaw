@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // Desktop service outage ride-out (papers 2026-11-11 08:32–08:35, Bot 2
@@ -46,8 +47,9 @@ var desktopHTTPStatusRe = regexp.MustCompile(`HTTP (\d{3})`)
 var desktopInfraBlockTTL = 2 * time.Minute
 
 // desktopColdStart: the isolated bot's own screen was not open yet.
+// The stable code is BOT_SCREEN_CLOSED; the sentence covers an older desktopd.
 func desktopColdStart(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "desktop is not open yet")
+	return desktopbot.IsBotScreenClosed(err)
 }
 
 func desktopOutageFailure(err error) bool {
@@ -57,10 +59,12 @@ func desktopOutageFailure(err error) bool {
 	return desktopOutageErrRe.MatchString(err.Error())
 }
 
-// desktopNonRetryableStatus is an HTTP 4xx. Waiting 90s cannot change it.
-// 5xx stays on the outage path.
+// desktopNonRetryableStatus is a client mistake (400/401/403/404/422).
+// 408, 409, 423 and 429 stay off this list: a lock, a conflict, or a rate
+// limit can clear, and DESKTOP_ASLEEP is a 409. A closed bot screen is a
+// 400 with its own code and is not this either. 5xx stays on the outage path.
 func desktopNonRetryableStatus(err error) bool {
-	if err == nil {
+	if err == nil || desktopbot.IsBotScreenClosed(err) || desktopbot.IsDesktopAsleep(err) || desktopbot.IsWaking(err) {
 		return false
 	}
 	match := desktopHTTPStatusRe.FindStringSubmatch(err.Error())
@@ -68,7 +72,15 @@ func desktopNonRetryableStatus(err error) bool {
 		return false
 	}
 	code, convErr := strconv.Atoi(match[1])
-	return convErr == nil && code >= 400 && code < 500
+	if convErr != nil {
+		return false
+	}
+	switch code {
+	case 400, 401, 403, 404, 405, 406, 410, 411, 413, 414, 415, 422:
+		return true
+	default:
+		return false
+	}
 }
 
 func desktopOutageDisabled() bool {

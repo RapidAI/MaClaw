@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -39,13 +40,20 @@ func (s *Service) specDisplay(ctx context.Context, spec Spec, requested string) 
 	// Open it here, idempotently, instead of answering 400 and leaving the
 	// caller to guess. A second caller of the same bot waits on the same open.
 	if openErr := s.ensureBotScreen(ctx, spec); openErr != nil {
-		return "", fmt.Errorf("%w: this bot's desktop is not open yet", ErrInvalid)
+		return "", botScreenClosedErr()
 	}
 	display, err = s.readBotDisplay(ctx, spec)
 	if err != nil {
-		return "", fmt.Errorf("%w: this bot's desktop is not open yet", ErrInvalid)
+		return "", botScreenClosedErr()
 	}
 	return display, nil
+}
+
+// botScreenClosedErr is the stable 400. The code travels in the JSON body
+// and in the sentence, so a caller can match BOT_SCREEN_CLOSED without
+// depending on the surrounding words.
+func botScreenClosedErr() error {
+	return fmt.Errorf("%w: %s: this bot's desktop is not open yet", ErrInvalid, desktopbot.CodeBotScreenClosed)
 }
 
 func (s *Service) readBotDisplay(ctx context.Context, spec Spec) (string, error) {
@@ -86,32 +94,37 @@ func (s *Service) ensureBotScreen(ctx context.Context, spec Spec) error {
 	return s.flightErr("botscreen\x00"+key, ctx, func(ctx context.Context) error {
 		name := containerName(spec.TenantID, spec.UserID)
 		deadline := time.Now().Add(botScreenOpenWait)
+		timer := time.NewTimer(botScreenOpenGap)
+		defer timer.Stop()
 		var last error
 		for {
 			out, execErr := s.docker(ctx, "exec", name, "python3", "/desktop_supervisor.py", "ensure", key)
 			if execErr == nil {
-				if _, parseErr := desktop.ParseEnsure(out); parseErr == nil {
-					s.noteBotOwner(spec)
-					return nil
-				} else {
-					last = parseErr
+				if _, parseErr := desktop.ParseEnsure(out); parseErr != nil {
+					return parseErr
 				}
-			} else {
-				last = execErr
+				s.noteBotOwner(spec)
+				log.Printf("[desktopd] bot screen ensured tenant=%s user=%s bot=%s", spec.TenantID, spec.UserID, spec.BotID)
+				return nil
 			}
+			last = execErr
 			if botScreenOpenWait <= 0 || time.Now().After(deadline) || ctx.Err() != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				if last == nil {
-					last = fmt.Errorf("bot screen did not open")
-				}
 				return last
 			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(botScreenOpenGap)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(botScreenOpenGap):
+			case <-timer.C:
 			}
 		}
 	})

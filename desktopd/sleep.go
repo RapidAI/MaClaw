@@ -248,13 +248,22 @@ func (s *Service) Ensure(ctx context.Context, spec Spec) error {
 	s.noteWake(spec.TenantID, spec.UserID)
 	defer s.clearWake(spec.TenantID, spec.UserID)
 	if done, err := s.ensureWithoutExclusiveGate(ctx, spec); done {
-		return err
+		if err != nil {
+			return err
+		}
+		// Each caller opens its own bot screen. The shared ensure flight
+		// only starts the container, and it must not hold the user lock
+		// while a screen comes up.
+		return s.openNamedBotScreen(ctx, spec)
 	}
-	return s.flightErr(ensureFlightKey(spec), ctx, func(ctx context.Context) error {
+	if err := s.flightErr(ensureFlightKey(spec), ctx, func(ctx context.Context) error {
 		return s.withUser(spec.TenantID, spec.UserID, func() error {
 			return s.runtime().Ensure(ctx, spec)
 		})
-	})
+	}); err != nil {
+		return err
+	}
+	return s.openNamedBotScreen(ctx, spec)
 }
 
 func (s *Service) ensureUnlocked(ctx context.Context, spec Spec) error {
@@ -277,9 +286,6 @@ func (s *Service) ensureUnlocked(ctx context.Context, spec Spec) error {
 		if _, err := s.createUnlocked(ctx, spec); err != nil {
 			return err
 		}
-		if err := s.openNamedBotScreen(ctx, spec); err != nil {
-			return err
-		}
 		return s.warmBudget(started)
 	}
 	if !current.Running {
@@ -291,18 +297,22 @@ func (s *Service) ensureUnlocked(ctx context.Context, spec Spec) error {
 		}
 	}
 	s.markComputerRunning(spec)
-	// reason=bot-desktop starts this user's container. An isolated bot's own
-	// screen is a second step; without it the first bash answers 400.
-	if err := s.openNamedBotScreen(ctx, spec); err != nil {
-		return err
-	}
 	return s.warmBudget(started)
 }
 
-// openNamedBotScreen opens the bot named on spec. An owner ensure has no bot
-// and does not open anyone's screen.
+// openNamedBotScreen opens the bot named on spec after the container lock is
+// released. An owner ensure has no bot and does not open anyone's screen.
+// A missing or still-stopped container is left alone: session create owns that.
 func (s *Service) openNamedBotScreen(ctx context.Context, spec Spec) error {
 	if strings.TrimSpace(spec.BotID) == "" {
+		return nil
+	}
+	name := containerName(spec.TenantID, spec.UserID)
+	running, err := s.containerRunning(ctx, name)
+	if err != nil {
+		return err
+	}
+	if !running {
 		return nil
 	}
 	return s.ensureBotScreen(ctx, spec)

@@ -463,13 +463,18 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 			}
 		}
 		if err != nil && ctx.Err() == nil && desktopColdStart(err) {
-			// The screen was still closed. Open it and run this step once
-			// more. This is not an outage and does not count as infra_timeout.
+			// Exactly one retry. The screen was still closed. Open it and
+			// run this step once more. This is not an outage.
 			first := err
 			if openErr := ensureBotScreen(ctx, scope, true); openErr != nil {
-				err = fmt.Errorf("%w (opening this bot's screen: %v)", first, openErr)
+				err = fmt.Errorf("%s: this bot's screen did not open (%v). Retry this same step once; do not switch method", desktopbot.CodeBotScreenClosed, openErr)
 			} else {
 				out, err = operateDesktopWithTimeout(opCtx, scope, opArgs)
+				if err == nil {
+					out = "(this bot's screen was not open; it was opened and this step ran again)\n" + out
+				} else if desktopColdStart(err) {
+					err = fmt.Errorf("%s: this bot's screen is still not open after one open. Retry this same step once; do not switch method (%w)", desktopbot.CodeBotScreenClosed, first)
+				}
 			}
 		}
 		if err != nil && ctx.Err() == nil && desktopOutageAllowed(desktopOwner(scope), actionName, err) {

@@ -87,16 +87,53 @@ func TestThreeBotsOpenScreensConcurrently(t *testing.T) {
 }
 
 func TestClosedScreenIsNotAnOutageAnd4xxDoesNotWait(t *testing.T) {
-	if desktopOutageFailure(errors.New(d97NotOpen)) {
+	if desktopOutageFailure(errors.New(d97NotOpen)) || desktopOutageFailure(errors.New("BOT_SCREEN_CLOSED: this bot's desktop is not open yet")) {
 		t.Fatal("not open yet waited as an outage")
+	}
+	if !desktopNonRetryableStatus(errors.New("docker service rejected the desktop request (HTTP 400): invalid desktop request: bad command")) {
+		t.Fatal("a plain HTTP 400 should not be waited out")
 	}
 	if desktopOutageFailure(errors.New("docker service rejected the desktop request (HTTP 400): invalid desktop request: bad command")) {
 		t.Fatal("HTTP 400 waited")
+	}
+	for _, msg := range []string{
+		"docker service rejected the desktop request (HTTP 409): DESKTOP_ASLEEP",
+		"docker service rejected the desktop request (HTTP 423): locked",
+		"docker service rejected the desktop request (HTTP 429): slow down",
+		"桌面正在唤醒，再试一次。",
+	} {
+		if desktopNonRetryableStatus(errors.New(msg)) {
+			t.Fatalf("recoverable status treated as a hard 4xx: %s", msg)
+		}
 	}
 	if !desktopOutageFailure(errors.New("docker service rejected the desktop request (HTTP 502): 502 Bad Gateway")) {
 		t.Fatal("HTTP 502 must still be an outage")
 	}
 	if !desktopOutageFailure(errors.New(d97Refused)) {
 		t.Fatal("connection refused must still be an outage")
+	}
+}
+
+func TestBotScreenClosedRetriesExactlyOnce(t *testing.T) {
+	req := d97Env(t)
+	opens := 0
+	openBotScreen = func(context.Context, agentruntime.Scope) error {
+		opens++
+		return nil
+	}
+	calls := 0
+	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+		calls++
+		return "", errors.New("BOT_SCREEN_CLOSED: this bot's desktop is not open yet")
+	}
+	_, err := invoke(t, req, map[string]any{"action": "bash", "command": "echo hi"})
+	if err == nil || !strings.Contains(err.Error(), "still not open") || !strings.Contains(err.Error(), "BOT_SCREEN_CLOSED") {
+		t.Fatalf("err=%v", err)
+	}
+	if calls != 2 || opens != 2 {
+		t.Fatalf("calls=%d opens=%d", calls, opens)
+	}
+	if desktopOutageWasSeen(req.Scope.RunID) {
+		t.Fatal("the bounded retry was an outage wait")
 	}
 }

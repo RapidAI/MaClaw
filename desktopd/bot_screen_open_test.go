@@ -99,7 +99,9 @@ func TestEnsureStartOpensTheNamedBotScreen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inspect := "false|" + desktop.DefaultShmSize + "|" + inspectMounts(t, spec) + "|" + desktop.DefaultImage + "|" + desktop.DefaultImage + "|"
+	down := "false|" + desktop.DefaultShmSize + "|" + inspectMounts(t, spec) + "|" + desktop.DefaultImage + "|" + desktop.DefaultImage + "|"
+	up := "true|" + desktop.DefaultShmSize + "|" + inspectMounts(t, spec) + "|" + desktop.DefaultImage + "|" + desktop.DefaultImage + "|"
+	running := false
 	var ensured, started int
 	svc := &Service{
 		EnforceWakeReason: true,
@@ -109,9 +111,19 @@ func TestEnsureStartOpensTheNamedBotScreen(t *testing.T) {
 			}
 			switch args[0] {
 			case "inspect":
-				return inspect, nil
+				if strings.Contains(strings.Join(args, " "), "{{.State.Running}}") && !strings.Contains(strings.Join(args, " "), "maclaw.shm") {
+					if running {
+						return "true", nil
+					}
+					return "false", nil
+				}
+				if running {
+					return up, nil
+				}
+				return down, nil
 			case "start":
 				started++
+				running = true
 				return "", nil
 			case "exec":
 				if strings.Contains(strings.Join(args, " "), " ensure ") {
@@ -122,17 +134,29 @@ func TestEnsureStartOpensTheNamedBotScreen(t *testing.T) {
 			return "", nil
 		},
 	}
-	if err := svc.ensureUnlocked(context.Background(), spec); err != nil {
+	if err := svc.Ensure(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if started != 1 || ensured != 1 {
 		t.Fatalf("started=%d ensured=%d", started, ensured)
+	}
+	// A second bot of the same owner opens its own screen. The shared
+	// container start does not do that for it.
+	other := spec
+	other.BotID = "bot_b"
+	other.UserID = "alice"
+	if err := svc.Ensure(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
+	if started != 1 || ensured != 2 {
+		t.Fatalf("second bot started=%d ensured=%d", started, ensured)
 	}
 	owner, err := normalize(Spec{TenantID: "tenant", UserID: "alice"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ownerInspect := "true|" + desktop.DefaultShmSize + "|" + inspectMounts(t, owner) + "|" + desktop.DefaultImage + "|" + desktop.DefaultImage + "|"
+	before := ensured
 	svc.Run = func(_ context.Context, args ...string) (string, error) {
 		if len(args) > 0 && args[0] == "inspect" {
 			return ownerInspect, nil
@@ -142,8 +166,11 @@ func TestEnsureStartOpensTheNamedBotScreen(t *testing.T) {
 		}
 		return "", nil
 	}
-	if err := svc.ensureUnlocked(context.Background(), owner); err != nil {
+	if err := svc.Ensure(context.Background(), owner); err != nil {
 		t.Fatal(err)
+	}
+	if ensured != before {
+		t.Fatalf("owner ensure opened a screen: %d -> %d", before, ensured)
 	}
 }
 

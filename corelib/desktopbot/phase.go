@@ -16,6 +16,10 @@ const (
 	CodeDesktopAsleep = "DESKTOP_ASLEEP"
 	// CodeDesktopWaking is Hub's 503 when a warm start is still unfinished.
 	CodeDesktopWaking = "DESKTOP_WAKING"
+	// CodeBotScreenClosed is desktopd's 400 when an isolated bot's own screen
+	// is not open yet. The container may already be running. It is not an
+	// outage: open the screen and retry the same step once.
+	CodeBotScreenClosed = "BOT_SCREEN_CLOSED"
 )
 
 // AsleepError is a coded refusal to exec a stopped desktop container.
@@ -37,6 +41,16 @@ func (WakingError) Code() string     { return CodeDesktopWaking }
 func IsWaking(err error) bool {
 	var waking WakingError
 	return errors.As(err, &waking)
+}
+
+// IsBotScreenClosed reports desktopd's coded 400, or the sentence an older
+// desktopd returns before it learned the code.
+func IsBotScreenClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, CodeBotScreenClosed) || strings.Contains(s, "desktop is not open yet")
 }
 
 // IsDesktopAsleep reports a coded asleep error, or the narrow docker message

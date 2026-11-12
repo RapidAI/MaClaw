@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // Handler is the Docker service API Hub calls, plus the /admin operator
@@ -609,7 +610,11 @@ func writeServiceErr(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, ErrInvalid) {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		body := map[string]any{"ok": false, "message": err.Error(), "error": err.Error()}
+		if desktopbot.IsBotScreenClosed(err) {
+			body["code"] = desktopbot.CodeBotScreenClosed
+		}
+		writeJSON(w, http.StatusBadRequest, body)
 		return
 	}
 	if errors.Is(err, ErrNoDesktop) {

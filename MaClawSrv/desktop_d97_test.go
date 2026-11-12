@@ -23,6 +23,8 @@ const (
 
 func d97Env(t *testing.T) agentruntime.TurnRequest {
 	t.Helper()
+	// Trajectory writes are async and read test globals the cleanup restores.
+	t.Setenv("MACLAW_DESKTOP_TRAJECTORY", "off")
 	recoveryTestEnv(t)
 	oldCtl, oldLedger := desktopRemoteCtl, desktopLedgerDir
 	oldBack, oldRe, oldStep, oldRun := desktopOutageBackoff, desktopOutageReconnect, desktopOutageStepWindow, desktopOutageRunWindow
@@ -98,7 +100,7 @@ func TestDesktopD97BashOpensTheScreenAndRetriesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bash after the screen opened: %v", err)
 	}
-	if calls != 2 || opens < 2 || reconnects != 0 || !strings.Contains(out, "ssh ok") || strings.Contains(out, "unavailable") {
+	if calls != 2 || opens != 2 || reconnects != 0 || !strings.Contains(out, "ssh ok") || strings.Contains(out, "unavailable") {
 		t.Fatalf("calls=%d opens=%d reconnects=%d out=%q", calls, opens, reconnects, out)
 	}
 	if desktopOutageWasSeen(req.Scope.RunID) {

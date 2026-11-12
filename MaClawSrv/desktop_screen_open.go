@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -95,19 +96,25 @@ func ensureBotScreen(ctx context.Context, scope agentruntime.Scope, force bool) 
 	if bot == "" {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	runID := strings.TrimSpace(scope.RunID)
 	if !force && botScreenAlready(runID) {
 		return nil
 	}
 	key := scope.TenantID + "\x00" + scope.UserID
 	started := time.Now()
-	err := doBotScreen(key, func() error { return openBotScreen(ctx, scope) })
+	err := doBotScreen(ctx, key, func(ctx context.Context) error { return openBotScreen(ctx, scope) })
 	if errors.Is(err, errBotScreenUnconfigured) {
 		return nil
 	}
 	if err != nil {
 		// A dial failure is the outage path on the step itself. A screen that
 		// is still closed is opened by the desktop call, then retried once.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if desktopOutageFailure(err) || desktopColdStart(err) {
 			return nil
 		}
@@ -118,16 +125,41 @@ func ensureBotScreen(ctx context.Context, scope agentruntime.Scope, force bool) 
 	return nil
 }
 
-func doBotScreen(key string, fn func() error) error {
+// botScreenOpenBudget bounds one shared open. It is not tied to the first
+// caller's cancel, so one stopped step does not abort the open another bot
+// step is waiting on.
+const botScreenOpenBudget = 60 * time.Second
+
+func doBotScreen(ctx context.Context, key string, fn func(context.Context) error) error {
 	fresh := &botScreenCall{done: make(chan struct{})}
 	actual, loaded := botScreenInflight.LoadOrStore(key, fresh)
 	call := actual.(*botScreenCall)
 	if loaded {
-		<-call.done
-		return call.err
+		select {
+		case <-call.done:
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return call.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-	call.err = fn()
+	defer func() {
+		if rec := recover(); rec != nil {
+			call.err = fmt.Errorf("bot screen open panicked: %v", rec)
+			close(call.done)
+			botScreenInflight.Delete(key)
+			panic(rec)
+		}
+	}()
+	workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), botScreenOpenBudget)
+	defer cancel()
+	call.err = fn(workCtx)
 	close(call.done)
 	botScreenInflight.Delete(key)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	return call.err
 }
