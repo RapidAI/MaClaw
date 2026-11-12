@@ -206,6 +206,27 @@ func dispatchDestructive(text string) bool {
 	return dispatchInstallWord.MatchString(lower)
 }
 
+// noteConfirm is the server's choice for a delegated order. The GUI renders
+// it. "install" and "confirm" wait for the person; "none" runs. An empty
+// value is an older note, which an older GUI still decides for itself.
+func noteConfirm(text string) string {
+	if dispatchInstall(text) {
+		return "install"
+	}
+	if dispatchDestructive(text) {
+		return "confirm"
+	}
+	return "none"
+}
+
+func dispatchInstall(text string) bool {
+	text = dispatchNegated.ReplaceAllString(text, " ")
+	if strings.Contains(text, "安装") {
+		return true
+	}
+	return dispatchInstallWord.MatchString(strings.ToLower(text))
+}
+
 const dispatchWakePrompt = "你的 Hub 信箱里有其他机器人发来的新消息（见说明里的 Messages），它们的报告主人已经在动态里看到了。需要回复队友就用 action=notify_main kind=reply，还要别的机器人干活就用 action=delegate；主人的任务还没完成就接着做完。只是确认、致谢或收尾的消息不用回复。最后给主人的话只说新增的东西，没有就一句话结束，不要描述信箱或工具回执。/ New messages from teammate bots are in your Hub mailbox; the person already sees their reports. Reply with notify_main kind=reply or hand work on with delegate, finish the person's task if it is not done, and do not reply to acknowledgements. Tell the person only what is new, else one short sentence; never describe the mailbox or tool receipts."
 
 // dispatchOnce runs at most one job. It reports true when the desktop was

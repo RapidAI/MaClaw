@@ -38,6 +38,8 @@ func TestRouteDirectModeMatrix(t *testing.T) {
 		"172.17.0.2": containerName("t1", "alice"),
 		"172.17.0.3": containerName("t1", "bob"),
 		"172.17.0.4": containerName("t1", "carol"),
+		// Workspace traffic is stored under the owner's desktop name.
+		"172.17.0.8": containerName("t1", "alice"),
 	}
 	store := modeStoreWith(t, "", ips)
 	ctx := context.Background()
@@ -65,6 +67,9 @@ func TestRouteDirectModeMatrix(t *testing.T) {
 		{"172.17.0.4:5000", "www.google.com:443", false},
 		{"172.17.0.4:5000", "notjd.com:443", false},
 		{"172.17.0.4:5000", "example.cn:443", true},
+		// The headless workspace uses its owner's mode, not the host default.
+		{"172.17.0.8:5000", "www.jd.com:443", false},
+		{"172.17.0.8:5000", "www.google.com:443", false},
 		// Unknown source IP: host default (smart), never another user's mode.
 		{"172.17.0.99:5000", "www.jd.com:443", true},
 		{"172.17.0.99:5000", "www.google.com:443", false},
@@ -110,23 +115,27 @@ func TestProxyModePersistsAcrossRestart(t *testing.T) {
 func TestProxyModeSwitchDropsOnlyThatDesktopsTunnels(t *testing.T) {
 	store := modeStoreWith(t, "", map[string]string{
 		"172.17.0.2": containerName("t1", "alice"),
+		"172.17.0.8": containerName("t1", "alice"),
 		"172.17.0.3": containerName("t1", "bob"),
 	})
 	p := NewForwardProxy(ProxyConfig{Modes: store})
 	aliceClient, aliceRemote := net.Pipe()
+	workClient, workRemote := net.Pipe()
 	bobClient, bobRemote := net.Pipe()
 	defer aliceRemote.Close()
 	defer bobRemote.Close()
+	defer workRemote.Close()
 	p.mu.Lock()
 	p.tunnel[aliceClient] = "172.17.0.2"
+	p.tunnel[workClient] = "172.17.0.8"
 	p.tunnel[bobClient] = "172.17.0.3"
 	p.mu.Unlock()
 	changed, err := store.Set(context.Background(), "t1", "alice", "direct")
 	if err != nil || !changed {
 		t.Fatalf("Set = %v, %v", changed, err)
 	}
-	if !connClosed(aliceClient) {
-		t.Fatal("alice's tunnel survived the switch")
+	if !connClosed(aliceClient) || !connClosed(workClient) {
+		t.Fatal("alice's desktop or workspace tunnel survived the switch")
 	}
 	if connClosed(bobClient) {
 		t.Fatal("bob's tunnel was closed by alice's switch")
@@ -165,12 +174,18 @@ func TestDirectModeStillRefusesPrivateTargets(t *testing.T) {
 }
 
 func TestParseContainerIPs(t *testing.T) {
-	got := parseContainerIPs("/maclaw-desktop-abc 172.17.0.2\n/other 172.17.0.9\n/maclaw-desktop-def 172.18.0.3 10.1.0.4\n/maclaw-desktop-x <no value>\n")
+	got := parseContainerIPs("/maclaw-desktop-abc 172.17.0.2\n/other 172.17.0.9\n/maclaw-desktop-def 172.18.0.3 10.1.0.4\n/maclaw-desktop-x <no value>\n/maclaw-work-abc 172.17.0.8\n/maclaw-work- 172.17.0.7\n")
 	if got["172.17.0.2"] != "maclaw-desktop-abc" || got["172.18.0.3"] != "maclaw-desktop-def" || got["10.1.0.4"] != "maclaw-desktop-def" {
 		t.Fatalf("parse = %v", got)
 	}
-	if _, ok := got["172.17.0.9"]; ok || len(got) != 3 {
+	if got["172.17.0.8"] != "maclaw-desktop-abc" {
+		t.Fatalf("workspace IP = %q, want the owner's desktop", got["172.17.0.8"])
+	}
+	if _, ok := got["172.17.0.9"]; ok || len(got) != 4 {
 		t.Fatalf("unexpected entries: %v", got)
+	}
+	if _, ok := got["172.17.0.7"]; ok {
+		t.Fatal("a workspace with no owner key was mapped")
 	}
 }
 

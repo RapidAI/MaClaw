@@ -340,6 +340,20 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			return
 		}
 		body, status, kind, err := svc.HTTPGet(r.Context(), in.TenantID, in.UserID, in.URL)
+		if errors.Is(err, ErrDesktopAsleep) || errors.Is(err, ErrWakeDenied) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"ok": false, "code": "DESKTOP_ASLEEP", "error": ErrDesktopAsleep.Error(), "message": err.Error(),
+			})
+			return
+		}
+		var waking WarmStartError
+		if errors.As(err, &waking) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"ok": false, "retryable": true, "code": "DESKTOP_WAKING",
+				"error": waking.Error(), "message": waking.Error(),
+			})
+			return
+		}
 		if err != nil {
 			writeOp(w, "", err)
 			return

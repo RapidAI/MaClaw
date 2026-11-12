@@ -255,6 +255,9 @@ func TestDesktopBotMetaCases(t *testing.T) {
 			return "ok\n", 0, nil
 		}
 		svc.Now = func() time.Time { return now.Add(-6 * time.Minute) }
+		// HTTP runs in the desktop container. The reaper's short names are a
+		// different inspect key; the real container is up for this fetch.
+		docker.running[containerName("tenant-a", "k1")] = true
 		if _, _, _, err := svc.HTTPGet(context.Background(), "tenant-a", "k1", "https://example.com"); err != nil {
 			t.Fatal(err)
 		}

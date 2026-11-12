@@ -4,6 +4,8 @@
 package desktopbot
 
 import (
+	_ "embed"
+	"encoding/json"
 	"regexp"
 	"strings"
 )
@@ -65,12 +67,31 @@ func ActivitySiteForHost(host string) string {
 	return ""
 }
 
-var activityHostSites = [][2]string{
-	{"csdn.net", "CSDN"}, {"zhihu.com", "知乎"}, {"xiaohongshu.com", "小红书"}, {"weibo.com", "微博"},
-	{"juejin.cn", "掘金"}, {"bilibili.com", "B站"}, {"douyin.com", "抖音"}, {"mp.weixin.qq.com", "公众号"},
-	{"toutiao.com", "头条"}, {"github.com", "GitHub"}, {"baidu.com", "百度"}, {"taobao.com", "淘宝"},
-	{"jd.com", "京东"}, {"feishu.cn", "飞书"}, {"dingtalk.com", "钉钉"}, {"mail.qq.com", "邮箱"},
-	{"mail.163.com", "邮箱"}, {"mypapers.top", "论文站"},
+// activity_sites.json is the host → working-row name table. Domains stay in
+// that file so Go code does not name a site.
+//
+//go:embed activity_sites.json
+var activitySitesFile []byte
+
+var activityHostSites [][2]string
+
+func init() {
+	var rows []struct {
+		Host string `json:"host"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(activitySitesFile, &rows); err != nil {
+		panic("activity sites: " + err.Error())
+	}
+	activityHostSites = make([][2]string, 0, len(rows))
+	for _, row := range rows {
+		host := strings.ToLower(strings.TrimSpace(row.Host))
+		name := strings.TrimSpace(row.Name)
+		if host == "" || name == "" {
+			continue
+		}
+		activityHostSites = append(activityHostSites, [2]string{host, name})
+	}
 }
 
 var activityBlocked = map[string]struct{}{

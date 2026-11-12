@@ -773,7 +773,7 @@ export function desktopBotAccountId(config: { remote_user_id?: unknown; remote_e
 // desktopTaskStep decides the next step from the request and this reply.
 // A screenshot that is already attached finished a look. An arrangement that
 // still names later work keeps the confirm control. A login handoff does not.
-export function desktopTaskStep(userText: string, reply: Pick<DesktopBotMessage, 'content' | 'images' | 'files' | 'localPaths' | 'userControl' | 'attentionReason' | 'askUser' | 'askResolved' | 'workOrder'>): DesktopTaskStep {
+export function desktopTaskStep(userText: string, reply: Pick<DesktopBotMessage, 'content' | 'images' | 'files' | 'localPaths' | 'userControl' | 'attentionReason' | 'askUser' | 'askResolved' | 'workOrder' | 'confirm'>): DesktopTaskStep {
     if (reply.userControl || (reply.attentionReason || '').trim()) return 'assist';
     const ask = reply.askUser;
     if (ask && !reply.askResolved && (ask.question || ask.secretName || (ask.options && ask.options.length > 0))) return 'ask';
@@ -785,10 +785,11 @@ export function desktopTaskStep(userText: string, reply: Pick<DesktopBotMessage,
     if (!remaining && reply.images && reply.images.length > 0 && SCREEN_REQUEST.test(userText) && !FURTHER_WORK.test(userText) && !isProgramTask(userText)) return 'done';
     if (!remaining && OPEN_QUESTION.test(content) && ASKS_HOW.test(content)) return 'ask';
     if (isProgramTask(userText) && ((reply.images && reply.images.length > 0) || FINISHED_REPORT.test(content))) return 'arrange';
-    // A destructive order still needs the one button. The pace machine already
-    // turned that reading into a plan. This is that control, not a prose default.
+    // A confirm the server already chose is rendered here. An older server
+    // leaves the field empty, and the local check stays for that reply only.
     const order = reply.workOrder || '';
-    if (desktopBotDestructive(userText) || desktopBotDestructive(order) || desktopBotDestructive(content)) return 'arrange';
+    if (reply.confirm === 'install' || reply.confirm === 'confirm') return 'arrange';
+    if (reply.confirm !== 'none' && (desktopBotDestructive(userText) || desktopBotDestructive(order) || desktopBotDestructive(content))) return 'arrange';
     if (remaining) return 'arrange';
     // 「先打开网站，再告诉你结果。」 and any other planning prose are not a button.
     return 'done';
@@ -851,6 +852,9 @@ export interface DesktopBotMessage {
     // The worker order for a confirm arrangement. The visible content is the
     // short plan; this is what the accept button sends. It is not a user bubble.
     workOrder?: string;
+    // The server's confirm decision for this bubble. install and confirm
+    // keep the one accept step. none does not. Absent means an older server.
+    confirm?: DesktopBotConfirm;
     // Instant "colleague accepted the task" reply. It never carries a handoff
     // or a result, so result lookups skip it.
     ack?: boolean;
@@ -1451,12 +1455,36 @@ export function desktopBotHubStartedText(runId: string): string {
         : '已在服务器上开始做这件，关掉 MaClaw 也会继续，做完结果会交回主 Bot。';
 }
 
+export type DesktopBotConfirm = 'install' | 'confirm' | 'none';
+
+// desktopBotNoteConfirm reads the server's field. An older Hub omits it,
+// and the previous local check is used only then.
+export function desktopBotNoteConfirm(note: { confirm?: unknown; order?: unknown; text?: unknown } | null | undefined): DesktopBotConfirm {
+    const server = String(note?.confirm ?? '').trim();
+    if (server === 'install' || server === 'confirm' || server === 'none') return server;
+    return desktopBotLocalConfirm(String(note?.order || note?.text || ''));
+}
+
+function desktopBotLocalConfirm(text: string): DesktopBotConfirm {
+    if (!desktopBotDestructive(text)) return 'none';
+    if (/安装/.test(text) || DESKTOP_BOT_INSTALL_WORD.test(text)) return 'install';
+    return 'confirm';
+}
+
 export function desktopBotDestructive(text: string): boolean {
     const value = text || '';
     if (/安装|卸载|刪除|删除|付款|支付|代发|代發|清空/.test(value)) return true;
     const lower = value.toLowerCase();
     if (lower.includes('uninstall') || lower.includes('wipe') || lower.includes('delete')) return true;
     return DESKTOP_BOT_INSTALL_WORD.test(lower);
+}
+
+// desktopBotWirePhase is what the page forwards. An explicit button (arrange
+// or run) keeps its phase. An ordinary send forwards nothing; the server
+// chooses plan or execute.
+export function desktopBotWirePhase(requested?: BotPhase | ''): BotPhase | '' {
+    if (requested === 'execute' || requested === 'plan') return requested;
+    return '';
 }
 
 // A working-row phrase is 正在 plus two to six Han characters. Typed text,
@@ -1557,7 +1585,7 @@ export function takeDesktopBotCrossRun(userId: string, botId: string): DesktopBo
 // The same request id is written once, so the open page and the store can
 // both hear the event. A scheduled report passes no phase, so it does not
 // take the confirm control. A destructive delegate passes phase plan.
-export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean; feed?: BotFeedMeta; runId?: string; conversation?: string; conversationAt?: number }) {
+export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; confirm?: DesktopBotConfirm; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean; feed?: BotFeedMeta; runId?: string; conversation?: string; conversationAt?: number }) {
     const requestId = (patch.requestId || '').trim();
     const runId = (patch.runId || '').trim();
     const current = messagesForBot(userId, botId);
@@ -1583,6 +1611,7 @@ export function appendDesktopBotReport(userId: string, botId: string, patch: { c
         files: patch.failed || localPaths ? undefined : desktopBotFiles(patch.files),
         phase: patch.phase,
         workOrder: patch.workOrder || undefined,
+        confirm: patch.confirm,
         crossNoteId: (patch.crossNoteId || '').trim() || undefined,
         noticeBots: patch.noticeBots && patch.noticeBots.length > 0 ? patch.noticeBots : undefined,
         chat: patch.chat === true ? true : undefined,

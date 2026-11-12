@@ -575,10 +575,11 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 	if !desktopAvailable() || !desktopTurnUsesContainer(request) {
 		return "", nil
 	}
-	if botPhaseFromTurn(request) == "plan" {
+	if desktopTurnPhase(request) == "plan" {
 		return desktopStylePrompt(request, promptparts.Voice, promptparts.Honesty) +
 			"The current user has one cloud desktop through the desktop tool. " +
 			"This turn only inspects it. " +
+			"The computer wakes by itself when a step needs it. Never ask the person to start, wake, or confirm starting the desktop. Do not use ask_user for permission to proceed in this phase. " +
 			"Use only probe, screenshot, app_list, file_read, file_list, or skill_list. That limit is this turn only. " +
 			"action=skill_list shows browser scripts already saved. This turn does not run them. " +
 			"Judge whether this turn already finished the request. A finished look or screenshot is the result: say it is done, and do not leave an arrangement. " +
@@ -596,7 +597,8 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 			"If the page needs a password, phone number, or verification code, the arrangement says this chat will ask for it. A cookie notice is accepted while carrying out the work. Only a QR-code login, a captcha, or a payment confirmation is finished by the person on this computer. Describe that and stop. Do not keep looking. " +
 			"This user's bots share this desktop. Other users have separate desktops.", nil
 	}
-	prompt := "The current user has one cloud desktop through the desktop tool. "
+	prompt := "The current user has one cloud desktop through the desktop tool. " +
+		"The computer wakes by itself when a step needs it. Never ask the person to start, wake, or confirm starting the desktop. "
 	if scope, _, err := desktopScopeForTurn(request); err == nil {
 		prompt += desktopExperienceText(scope, "")
 		prompt += desktopLedgerPromptText(scope)
@@ -4314,7 +4316,17 @@ func desktopWakeForStep(ctx context.Context, scope agentruntime.Scope, userKey s
 type desktopWakeError struct{ cause error }
 
 func (e desktopWakeError) Error() string {
-	return "DESKTOP_WAKE_FAILED: 电脑没能唤醒，这一步需要用电脑（浏览器）所以没做成。已完成的写作和资料不受影响。告诉对方：电脑暂时没唤醒，稍后再试或让我重新开始这一步；不要说成已完成，也不要转述下面的原因。\ncause: " + e.cause.Error()
+	// A missing binding or an unconfigured Hub is not a power failure: the
+	// caller still needs that sentence. A machine that did not wake is a
+	// system fault. The raw cause stays in the log from desktopWakeForStep.
+	if e.cause != nil && !machineWakeFailure(e.cause) {
+		return e.cause.Error()
+	}
+	return desktopbot.WakeSystemFault
+}
+
+func machineWakeFailure(err error) bool {
+	return desktopbot.IsDesktopAsleep(err) || desktopbot.IsWaking(err)
 }
 
 func (e desktopWakeError) Unwrap() error { return e.cause }

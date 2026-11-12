@@ -37,7 +37,7 @@ func TestContainerFileAndBashStayInTheDesktop(t *testing.T) {
 	})
 	plan := agentruntime.TurnRequest{
 		Scope: scope,
-		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan"}}},
+		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan", "bot_intake_phase": "plan"}}},
 	}
 	mod := desktopRuntimeModule{}
 	read, err := mod.InvokeTool(context.Background(), plan, "desktop", map[string]any{
