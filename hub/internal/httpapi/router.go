@@ -510,6 +510,7 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/v1/bots/{id}", DeleteBotUserHandler(botSvc, identity))
 	mux.HandleFunc("GET "+localrelay.LinkPath, GetLocalRelayLinkHandler(identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/messages", PostBotMessageHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/{id}/queue/{cmid}", GetBotQueueHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/runs/{runID}/supplement", PostBotRunSupplementHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/followup", PostBotFollowUpHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/runs/{runID}/supplements", GetBotRunSupplementsHandler(botSvc, identity))

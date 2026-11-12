@@ -1,7 +1,6 @@
 package guiapp
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -481,20 +480,6 @@ func TestParseWorkStopIntent(t *testing.T) {
 	}
 	if workStopClassifyTimeout > 3*time.Second {
 		t.Fatalf("timeout = %s", workStopClassifyTimeout)
-	}
-}
-
-func TestDesktopBotStopPaceBecomesTheCancelToken(t *testing.T) {
-	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
-		return `{"told":"stopping","instruction":"keep going","pace":"stop","persona":""}`, nil
-	}
-	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
-	got, err := (&App{}).UnderstandDesktopBotTask("算了别弄了", "plan", "zh-Hans", nil, "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Pace != "reply" || got.Told != "STOP_WORK" || got.Instruction != "" {
-		t.Fatalf("stop pace = %#v", got)
 	}
 }
 

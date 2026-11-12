@@ -19,7 +19,7 @@ func TestDesktopBotReadingQuotaExhaustedGoesStraightToHub(t *testing.T) {
 		}
 		return `{"told":"我去打开。","instruction":"打开百度首页。","pace":"direct"}`, nil
 	}
-	got, err := (&App{}).UnderstandDesktopBotTask("打开百度", "plan", "zh-Hans", nil, "", "")
+	got, err := (&App{}).understandDesktopBotTask("打开百度", "plan", "zh-Hans", nil, "", "")
 	if err != nil || got == nil || got.Instruction == "" {
 		t.Fatalf("got=%#v err=%v", got, err)
 	}
@@ -33,7 +33,7 @@ func TestDesktopBotReadingFailureStillForwardsTheWords(t *testing.T) {
 	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return "", nil // 200 with nothing in content or reasoning
 	}
-	got, err := (&App{}).UnderstandDesktopBotTask("把知乎回答发出去", "plan", "zh-Hans", nil, "", "")
+	got, err := (&App{}).understandDesktopBotTask("把知乎回答发出去", "plan", "zh-Hans", nil, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

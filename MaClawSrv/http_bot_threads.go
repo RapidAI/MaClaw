@@ -71,8 +71,57 @@ func (s *HTTPServer) handleRouteBotMessage(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, route)
 }
 
+// POST /api/v1/instances/{instanceId}/bot-intake: what a message does
+// (new task, supplement, stop, pause, continue, reply, ask, schedule,
+// status). Hub applies the result. On timeout the body is a new task.
+func (s *HTTPServer) handleBotIntake(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	var in agentservice.BotIntakeInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.IntakeBotMessage(r.Context(), p, r.PathValue("instanceId"), in, s.botIntakeClassifier(p))
+	if errors.Is(err, agentservice.ErrBotThreadsBadBot) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		writeRedactedError(w, err, s.svc.DataRoot())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// botIntakeClassifierOverride lets tests answer for the model.
+var botIntakeClassifierOverride agentservice.BotIntakeClassifier
+
 // botRouteClassifierOverride lets tests answer for the model.
 var botRouteClassifierOverride agentservice.BotRouteClassifier
+
+func (s *HTTPServer) botIntakeClassifier(p agentservice.Principal) agentservice.BotIntakeClassifier {
+	if botIntakeClassifierOverride != nil {
+		return botIntakeClassifierOverride
+	}
+	return func(ctx context.Context, system, user string) (string, error) {
+		cfg, err := s.svc.DemoSkillLLMConfig(p)
+		if err != nil {
+			return "", err
+		}
+		cfg = srvIntentLLMConfig(cfg)
+		if cfg.MaxOutputTokens == 0 || cfg.MaxOutputTokens > 500 {
+			cfg.MaxOutputTokens = 500
+		}
+		messages := []interface{}{
+			map[string]string{"role": "system", "content": system},
+			map[string]string{"role": "user", "content": user},
+		}
+		client := &http.Client{Timeout: agentservice.BotIntakeBudget + time.Second}
+		resp, err := agent.DoSimpleLLMRequestContext(ctx, cfg, messages, client, agentservice.BotIntakeBudget)
+		if err != nil {
+			return "", err
+		}
+		return resp.Content, nil
+	}
+}
 
 // botRouteClassifier asks the owner's bot model (the bot run path's config,
 // with the lightweight hints and thinking off, as the intent classifier

@@ -70,7 +70,7 @@ func TestDesktopBotDirectReadingKeepsTheModelsUnderstanding(t *testing.T) {
 		desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
 			return `{"told":"` + c.told + `","instruction":"` + c.order + `","pace":"direct","persona":""}`, nil
 		}
-		got, err := (&App{}).UnderstandDesktopBotTask(c.text, "plan", "zh-Hans", nil, "", "")
+		got, err := (&App{}).understandDesktopBotTask(c.text, "plan", "zh-Hans", nil, "", "")
 		if err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
@@ -90,7 +90,7 @@ func TestDesktopBotFollowUpCarriesTheRunningJob(t *testing.T) {
 	}
 	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
 	earlier := []string{"搜索一篇dailypapers中的热门论文，做图文摘要后发到csdn"}
-	if _, err := (&App{}).UnderstandDesktopBotTask("配图要三张", "plan", "zh-Hans", earlier, "", ""); err != nil {
+	if _, err := (&App{}).understandDesktopBotTask("配图要三张", "plan", "zh-Hans", earlier, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(user, earlier[0]) || !strings.Contains(user, "配图要三张") {

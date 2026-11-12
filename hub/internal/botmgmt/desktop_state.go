@@ -50,6 +50,16 @@ type desktopStateRecord struct {
 	// stays until the GUI has been given the result, so a client that was
 	// offline can pick it up after the process restarts.
 	Tasks map[string]*desktopTaskPin `json:"tasks,omitempty"`
+	// Queues is each bot's waiting messages (tenant\x00user\x00bot).
+	Queues map[string][]*desktopQueueItem `json:"queues,omitempty"`
+	// Ask is the sticky conversation window, keyed like desktopAskSession.
+	Ask map[string]*desktopAskPin `json:"ask,omitempty"`
+}
+
+type desktopAskPin struct {
+	Session string `json:"session"`
+	At      string `json:"at"`
+	Asks    bool   `json:"asks"`
 }
 
 // ensureDesktopHydrated restores the persisted desktop state into memory once
@@ -145,6 +155,62 @@ func (s *Service) ensureDesktopHydrated(tenantID string) {
 		s.desktopUserView[key] = last
 	}
 	s.restoreDesktopTasks(tenantID, rec.Desktop.Tasks)
+	s.restoreDesktopQueues(tenantID, rec.Desktop.Queues)
+	s.restoreDesktopAsk(tenantID, rec.Desktop.Ask)
+}
+
+func (s *Service) restoreDesktopQueues(tenantID string, queues map[string][]*desktopQueueItem) {
+	if len(queues) == 0 {
+		return
+	}
+	prefix := desktopTenantPrefix(tenantID)
+	now := s.now()
+	if s.desktopQueues == nil {
+		s.desktopQueues = map[string][]*desktopQueueItem{}
+	}
+	for key, items := range queues {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		var kept []*desktopQueueItem
+		for _, item := range items {
+			if item == nil || item.ClientMessageID == "" || now.Sub(item.EnqueuedAt) > desktopQueueTTL {
+				continue
+			}
+			kept = append(kept, item)
+		}
+		if len(kept) > 0 {
+			s.desktopQueues[key] = kept
+		}
+	}
+}
+
+func (s *Service) restoreDesktopAsk(tenantID string, ask map[string]*desktopAskPin) {
+	if len(ask) == 0 {
+		return
+	}
+	prefix := desktopTenantPrefix(tenantID)
+	now := s.now()
+	if s.desktopAskSession == nil {
+		s.desktopAskSession = map[string]desktopAskOwner{}
+	}
+	for key, pin := range ask {
+		if pin == nil || !strings.HasPrefix(key, prefix) || strings.TrimSpace(pin.Session) == "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339, pin.At)
+		if err != nil {
+			continue
+		}
+		window := desktopRecentThreadFor
+		if pin.Asks {
+			window = desktopAskOwnerFor
+		}
+		if now.Sub(at) > window {
+			continue
+		}
+		s.desktopAskSession[key] = desktopAskOwner{session: pin.Session, at: at, asks: pin.Asks}
+	}
 }
 
 // persistDesktopState writes the in-memory desktop pins and views of this
@@ -228,6 +294,12 @@ func (s *Service) persistDesktopState(tenantID string) {
 	if tasks := s.desktopTaskPins(tenantID); len(tasks) > 0 {
 		st.Tasks = tasks
 	}
+	if queues := s.desktopQueuePins(tenantID); len(queues) > 0 {
+		st.Queues = queues
+	}
+	if ask := s.desktopAskPins(tenantID); len(ask) > 0 {
+		st.Ask = ask
+	}
 	rec, err := s.load(ctx, tenantID)
 	if err != nil {
 		log.Printf("[botmgmt] desktop state persist skipped: %v", err)
@@ -271,4 +343,52 @@ func tokenOfGatedPath(gated string) string {
 
 func desktopTenantPrefix(tenantID string) string {
 	return tenantID + "\x00"
+}
+
+func (s *Service) desktopQueuePins(tenantID string) map[string][]*desktopQueueItem {
+	prefix := desktopTenantPrefix(tenantID)
+	now := s.now()
+	out := map[string][]*desktopQueueItem{}
+	for key, items := range s.desktopQueues {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		var kept []*desktopQueueItem
+		for _, item := range items {
+			if item == nil || now.Sub(item.EnqueuedAt) > desktopQueueTTL {
+				continue
+			}
+			kept = append(kept, item)
+		}
+		if len(kept) > 0 {
+			out[key] = kept
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (s *Service) desktopAskPins(tenantID string) map[string]*desktopAskPin {
+	prefix := desktopTenantPrefix(tenantID)
+	now := s.now()
+	out := map[string]*desktopAskPin{}
+	for key, owner := range s.desktopAskSession {
+		if !strings.HasPrefix(key, prefix) || strings.TrimSpace(owner.session) == "" {
+			continue
+		}
+		window := desktopRecentThreadFor
+		if owner.asks {
+			window = desktopAskOwnerFor
+		}
+		if now.Sub(owner.at) > window {
+			continue
+		}
+		out[key] = &desktopAskPin{Session: owner.session, At: owner.at.UTC().Format(time.RFC3339), Asks: owner.asks}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

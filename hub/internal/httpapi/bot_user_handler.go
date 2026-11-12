@@ -232,6 +232,7 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 			ClientMessageID  string `json:"client_message_id"`
 			ContinueSession  string `json:"continue_session"`
 			ClientSessionKey string `json:"client_session_key"`
+			Action           string `json:"action"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, botMessageBodyLimit)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
@@ -253,21 +254,36 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 			continueSession = strings.TrimSpace(in.ClientSessionKey)
 		}
 		if wantsAsyncBotReply(r) {
-			admission, err := svc.AdmitDesktopMessageIn(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase, clientMessageID, continueSession)
+			admission, err := svc.AdmitDesktopMessageAct(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase, clientMessageID, continueSession, in.Action)
 			if err != nil {
 				writeBotUserError(w, r, principal, err, clientMessageID)
 				return
 			}
-			if admission.Accepted && !admission.Settled {
-				writeJSON(w, http.StatusAccepted, map[string]any{
-					"accepted":          true,
+			if admission.Queued || (admission.Accepted && !admission.Settled) || (admission.Kind != "" && admission.Kind != "new") {
+				status := http.StatusOK
+				if admission.Queued || (admission.Accepted && !admission.Settled && strings.TrimSpace(admission.Reply.Text) == "") {
+					status = http.StatusAccepted
+				}
+				body := map[string]any{
+					"accepted":          admission.Accepted,
 					"run_id":            admission.RunID,
 					"status":            "running",
 					"client_message_id": admission.ClientMessageID,
 					"session":           admission.Session,
 					"routed_via":        admission.RoutedVia,
 					"routed_title":      admission.RoutedTitle,
-				})
+					"kind":              admission.Kind,
+					"ack":               admission.Ack,
+					"queued":            admission.Queued,
+					"held":              admission.Held,
+					"position":          admission.Position,
+					"text":              admission.Reply.Text,
+					"schedule":          admission.Schedule,
+				}
+				if admission.Queued {
+					body["status"] = "queued"
+				}
+				writeJSON(w, status, body)
 				return
 			}
 			writeJSON(w, http.StatusOK, admission.Reply)
@@ -706,6 +722,23 @@ func GetBotActiveRunsHandler(svc *botmgmt.Service, identity botAuthenticator) ht
 			items = []botmgmt.ActiveDesktopRun{}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// GetBotQueueHandler GET /api/v1/bots/{id}/queue/{cmid}
+// The relay polls this while a message is parked. state is queued, held,
+// running, done, or missing.
+func GetBotQueueHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		view := svc.DesktopQueueStatus(principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("cmid"))
+		writeJSON(w, http.StatusOK, view)
 	}
 }
 

@@ -2564,11 +2564,6 @@ export function SendBtwQuery(arg1:string,arg2:string):Promise<main.IMAgentRespon
 export function SendDesktopBotTask(arg1:string,arg2:string,arg3:string):Promise<main.IMAgentResponse>;
 export function SendDesktopBotTaskTo(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.IMAgentResponse>;
 
-export function UnderstandDesktopBotTask(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string,arg6?:string):Promise<{told:string,instruction:string,pace?:string,persona?:string,reading?:string,schedule?:{name?:string,mode?:string,interval_minutes?:number,hour?:number,minute?:number,day_of_week?:number},cross?:{kind?:string,target?:string,text?:string,order?:string}}>;
-
-export function ClassifyDesktopWorkStop(arg1:string,arg2:string):Promise<string>;
-
-export function EvaluateDesktopTaskSupplement(arg1:string,arg2:string,arg3:string):Promise<{is_supplement:boolean,decision?:string,reason?:string,instruction?:string}>;
 
 export function UploadDesktopBotMaterialChunk(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number,arg6:string):Promise<{upload_id:string,name:string,received:number,total:number,done:boolean,path?:string}>;
 
@@ -3223,8 +3218,6 @@ export function DistillDesktopDemoRecording(arg1:string,arg2:Record<string,any>,
 export function GetDesktopDemoShot(arg1:string,arg2:string,arg3:string):Promise<Record<string,any>>;
 export function RedistillDesktopDemoSkill(arg1:string,arg2:string,arg3:string):Promise<Record<string,any>>;
 export function UpdateDesktopDemoSkill(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>):Promise<Record<string,any>>;
-
-export function RouteDesktopBotFollowUp(arg1:string,arg2:string):Promise<{routed:boolean,reason:string,bot_id?:string,run_id?:string}>;
 
 export function StartAgentGroupRun(arg1:string,arg2:string,arg3:Array<{id:string,name:string,role:string,capabilities?:Array<string>}>):Promise<{id:string,goal:string,router_bot_id?:string,status:string,sub_tasks:Array<any>,summary?:string,progress?:Array<string>,created_at:string,updated_at:string}>;
 export function GetAgentGroupRun(arg1:string):Promise<{id:string,goal:string,router_bot_id?:string,status:string,sub_tasks:Array<any>,summary?:string,progress?:Array<string>,created_at:string,updated_at:string}>;
