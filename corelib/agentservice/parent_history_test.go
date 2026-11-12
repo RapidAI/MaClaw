@@ -92,7 +92,14 @@ func TestThreadRunSeesRecentMainHistory(t *testing.T) {
 	if !containsAll(got, "先看一下上周的订单", "把缺货的标出来", "同步把退货也列出来") {
 		t.Fatalf("thread history = %v", got)
 	}
-	if exec.req.History[0].Metadata["parent_context"] != "1" {
+	first := exec.req.History[0]
+	for _, msg := range exec.req.History {
+		if msg.Metadata["task_board"] != "1" {
+			first = msg
+			break
+		}
+	}
+	if first.Metadata["parent_context"] != "1" {
 		t.Fatal("parent messages should be marked as context")
 	}
 	// The thread's own store does not receive a copy of main.

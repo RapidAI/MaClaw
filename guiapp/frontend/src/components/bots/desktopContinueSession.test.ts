@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { continueSessionForSend, desktopThreadOf, lastSettledConversation, DESKTOP_RECENT_THREAD_MS } from './desktopContinueSession';
+import { contentRoutingApplies, continueSessionForSend, desktopThreadOf, lastSettledConversation, recentThreadCandidates, DESKTOP_RECENT_THREAD_MS } from './desktopContinueSession';
 
 describe('continueSessionForSend', () => {
     const bot = 'bot_p';
@@ -49,5 +49,31 @@ describe('continueSessionForSend', () => {
     it('ignores conversations that are not this bot', () => {
         expect(desktopThreadOf(bot, 'other#t-1')).toBe('');
         expect(continueSessionForSend(bot, [{ role: 'assistant', conversation: 'other#t-1' }])).toBe('');
+    });
+});
+
+describe('recentThreadCandidates', () => {
+    const now = 10 * 24 * 60 * 60 * 1000;
+    it('lists finished threads of the last day, newest first, bounded', () => {
+        const msgs: any[] = [];
+        for (let i = 0; i < 8; i++) {
+            msgs.push({ role: 'user', content: `任务${i}` });
+            msgs.push({ role: 'assistant', content: `结果${i}`, conversation: `bot_1#t-${i}`, conversationAt: now - (8 - i) * 60_000 });
+        }
+        msgs.push({ role: 'user', content: '旧的' });
+        msgs.push({ role: 'assistant', content: '很早', conversation: 'bot_1#t-old', conversationAt: now - 25 * 60 * 60 * 1000 });
+        msgs.push({ role: 'user', content: '在跑' });
+        msgs.push({ role: 'assistant', content: '', pending: true, conversation: 'bot_1#t-live', conversationAt: now });
+        msgs.push({ role: 'assistant', content: '主线', conversation: 'bot_1', conversationAt: now });
+        const got = recentThreadCandidates('bot_1', msgs, now);
+        expect(got.map(c => c.session)).toEqual(['bot_1#t-7', 'bot_1#t-6', 'bot_1#t-5', 'bot_1#t-4', 'bot_1#t-3']);
+        expect(got[0]).toEqual({ session: 'bot_1#t-7', title: '任务7', goal: undefined, result: '结果7' });
+    });
+    it('applies only without an explicit choice or sticky thread', () => {
+        expect(contentRoutingApplies('bot_1', '')).toBe(true);
+        expect(contentRoutingApplies('bot_1', 'bot_1')).toBe(true);
+        expect(contentRoutingApplies('bot_1', 'bot_1#t-a')).toBe(false);
+        expect(contentRoutingApplies('bot_1', 'bot_1', { main: true })).toBe(false);
+        expect(contentRoutingApplies('bot_1', '', { session: 'bot_1#t-a' })).toBe(false);
     });
 });

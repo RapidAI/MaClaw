@@ -911,6 +911,12 @@ export interface DesktopBotMessage {
     // When this conversation was last attached to the bubble, for the
     // short sticky window on the page.
     conversationAt?: number;
+    // On the person's line: the earlier task thread the page routed it to
+    // by content (ClassifyDesktopFollowUp), its title for the visible
+    // line, and whether the person undid that choice.
+    routedTo?: string;
+    routedTitle?: string;
+    routedUndone?: boolean;
     // Set on a bubble another client of this person wrote (multi-client
     // sync): the Hub journal's first sequence and that client's id. Such a
     // bubble is shown only; this client never sends or recovers it.

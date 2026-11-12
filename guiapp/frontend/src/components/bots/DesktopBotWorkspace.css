@@ -4268,3 +4268,12 @@ button.desktop-bot-feed__file {
 .bot-local-prompt-backdrop { z-index: 10050; }
 .bot-local-prompt { max-width: 460px; }
 .bot-local-prompt__action { font-weight: 600; word-break: break-all; }
+
+.desktop-bot-chat__routed {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    font-size: 12px;
+    opacity: 0.75;
+}

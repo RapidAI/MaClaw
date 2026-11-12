@@ -12,6 +12,7 @@ import { DialogProvider } from '../CustomDialog';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sendTask = vi.hoisted(() => vi.fn<(...args: any[]) => any>());
 const continueSessionSent = vi.hoisted(() => vi.fn<(session: string) => void>());
+const classifyFollowUp = vi.hoisted(() => vi.fn<(...args: any[]) => any>());
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const understandTask = vi.hoisted(() => vi.fn<(...args: any[]) => any>());
 const classifyWorkStop = vi.hoisted(() => vi.fn<(...args: any[]) => any>());
@@ -155,6 +156,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     GetActiveDesktopRuns: (botId: string) => listActiveRuns(botId),
     GetDesktopBotBusy: (owner: string) => getDesktopBusy(owner),
     EvaluateDesktopTaskSupplement: (taskText: string, content: string, lang: string) => evaluateSupplement(taskText, content, lang),
+    ClassifyDesktopFollowUp: (...args: any[]) => classifyFollowUp(...args),
     // stopped/idle/pause come back empty here so the minimal lines are checked.
     WriteDesktopBotAck: (ctx?: { kind?: string }) => Promise.resolve(ctx?.kind === 'stopping' ? '还在收尾，停稳了告诉你。' : ['stopped', 'idle', 'pause', 'queued', 'stop_failed', 'continuing', 'status_notice', 'error', 'interrupted'].includes(ctx?.kind || '') ? '' : "好，这就去办。"),
     AppendDesktopBotSupplement: (botId: string, runId: string, instruction: string) => appendSupplement(botId, runId, instruction),
@@ -267,6 +269,8 @@ beforeEach(() => {
     localStorage.setItem('maclaw.desktop.viewer', 'vnc');
     sendTask.mockReset();
     continueSessionSent.mockReset();
+    classifyFollowUp.mockReset();
+    classifyFollowUp.mockResolvedValue({ session: '', confidence: 0 });
     getSupplements.mockReset();
     getSupplements.mockResolvedValue([]);
     pullCross.mockReset();
@@ -436,6 +440,58 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '另外一件事' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
         await waitFor(() => expect(continueSessionSent).toHaveBeenCalledWith('bot_1'));
+    });
+
+    it('routes a follow-up to an older thread by content, shows it, and can undo it', async () => {
+        const hoursAgo = Date.now() - 3 * 60 * 60 * 1000;
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_1: [
+                    { id: 'u-old', role: 'user', content: '整理上周订单报表' },
+                    { id: 'm-old', role: 'assistant', content: '已生成 订单报表.xlsx', pending: false, conversation: 'bot_1#t-old', conversationAt: hoursAgo },
+                    { id: 'm-main', role: 'assistant', content: '好的', pending: false, conversation: 'bot_1', conversationAt: hoursAgo + 1000 },
+                ],
+            },
+        }));
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-follow', deferred: true, session_key: 'alice:bot_1' });
+        classifyFollowUp.mockResolvedValue({ session: 'bot_1#t-old', title: '整理上周订单报表', confidence: 0.9 });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        // Outside the sticky window: no chip, the content decides.
+        expect(screen.queryByTestId('desktop-bot-continue')).toBeNull();
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '把报表金额改成两位小数' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(continueSessionSent).toHaveBeenCalledWith('bot_1#t-old'));
+        const [, candidates] = classifyFollowUp.mock.calls[0];
+        expect(candidates).toEqual([expect.objectContaining({ session: 'bot_1#t-old', title: '整理上周订单报表', result: '已生成 订单报表.xlsx' })]);
+        expect((await screen.findByTestId('desktop-bot-routed')).textContent).toContain('整理上周订单报表');
+        continueSessionSent.mockClear();
+        fireEvent.click(screen.getByTestId('desktop-bot-routed-undo'));
+        await waitFor(() => expect(continueSessionSent).toHaveBeenCalledWith('bot_1'));
+        expect(screen.queryByTestId('desktop-bot-routed')).toBeNull();
+    });
+
+    it('keeps an unsure follow-up in main', async () => {
+        const hoursAgo = Date.now() - 3 * 60 * 60 * 1000;
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_1: [
+                    { id: 'u-old', role: 'user', content: '整理上周订单报表' },
+                    { id: 'm-old', role: 'assistant', content: '已生成', pending: false, conversation: 'bot_1#t-old', conversationAt: hoursAgo },
+                ],
+            },
+        }));
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-follow', deferred: true, session_key: 'alice:bot_1' });
+        classifyFollowUp.mockResolvedValue({ session: '', confidence: 0.4 });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '查一下明天天气' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(continueSessionSent).toHaveBeenCalledWith('bot_1'));
+        expect(classifyFollowUp).toHaveBeenCalled();
+        expect(screen.queryByTestId('desktop-bot-routed')).toBeNull();
     });
 
     it('sends a choice label as written, including 停下, in that turn phase', async () => {

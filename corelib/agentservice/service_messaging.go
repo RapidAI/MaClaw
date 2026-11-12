@@ -429,6 +429,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		history = dropAbandonedUserTurns(history, runs, userMsg.ID)
 	}
 	history = s.withParentSessionHistory(p, instanceID, sess, history)
+	history = s.withTaskBoard(p, instanceID, sess, history)
 	execMsg := userMsg
 	execMsg.Content = effectiveContent
 	execCtx, cancelExec := context.WithCancel(ctx)
