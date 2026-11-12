@@ -362,15 +362,24 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 }
 
 // ErrDesktopAsleep is a fetch that would have docker-exec'd curl into a
-// stopped desktop. Callers wake with bot-desktop and retry. This process
-// does not start the container here: requireWakeToStart stays the only start.
+// stopped desktop. With the workspace on, the caller leaves the GUI asleep.
+// With the workspace off, HTTPGet wakes once with bot-desktop and retries.
 var ErrDesktopAsleep = errors.New("desktop_asleep")
+
+// httpUsesWorkspace is the headless path: curl can run while the GUI sleeps.
+// A machine runtime has no Docker sibling, so it wakes the desktop instead.
+func (s *Service) httpUsesWorkspace() bool {
+	return s != nil && s.ToolWorkspace && s.Machines == nil
+}
 
 // HTTPGet fetches one URL with curl. A running desktop is used, so the
 // proxy and the network are the same ones the browser has. While the
-// desktop sleeps, curl runs in the headless workspace and does not start
-// the GUI. With no workspace, a stopped desktop is a coded asleep error
-// and is not exec'd.
+// desktop sleeps and the workspace is on, curl runs in the headless
+// workspace and does not start the GUI. With the workspace off, or on a
+// machine runtime, a stopped desktop is woken with bot-desktop. A warm
+// start still in progress is WarmStartError, which the HTTP route returns
+// as 503 DESKTOP_WAKING. A wake that does not come up is that error, not
+// an empty success.
 func (s *Service) HTTPGet(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
 	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
 	if err != nil {
@@ -379,11 +388,23 @@ func (s *Service) HTTPGet(ctx context.Context, tenantID, userID, rawURL string) 
 	if _, err = desktop.CurlGetArgs(containerName(spec.TenantID, spec.UserID), rawURL, desktop.HTTPBodyMax); err != nil {
 		return "", 0, "", err
 	}
+	body, status, kind, err := s.httpGet(ctx, spec, rawURL)
+	if err == nil || !errors.Is(err, ErrDesktopAsleep) || s.httpUsesWorkspace() {
+		return body, status, kind, err
+	}
+	spec.WakeReason = WakeReasonBotDesktop
+	if werr := s.Ensure(ctx, spec); werr != nil {
+		return "", 0, "", werr
+	}
+	return s.httpGet(ctx, spec, rawURL)
+}
+
+func (s *Service) httpGet(ctx context.Context, spec Spec, rawURL string) (string, int, string, error) {
 	var output string
 	var exitCode int
 	var container string
 	var onDesktop bool
-	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+	err := s.withUserRead(spec.TenantID, spec.UserID, func() error {
 		c, desk, cErr := s.toolContainer(ctx, spec)
 		if cErr != nil {
 			return cErr
@@ -391,6 +412,11 @@ func (s *Service) HTTPGet(ctx context.Context, tenantID, userID, rawURL string) 
 		container, onDesktop = c, desk
 		if desk {
 			running, runErr := s.containerRunning(ctx, c)
+			// A machine runtime is not a Docker inspect. Treat a missing
+			// or unreadable container as asleep so the caller can wake it.
+			if runErr != nil && !s.httpUsesWorkspace() {
+				return ErrDesktopAsleep
+			}
 			if runErr != nil {
 				return runErr
 			}

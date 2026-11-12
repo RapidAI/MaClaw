@@ -104,7 +104,7 @@ import {
     desktopBotActivityText,
     desktopBotAskingLabel,
     desktopBotCrossTargetText,
-    desktopBotDestructive,
+    desktopBotNoteConfirm,
     desktopBotWirePhase,
     desktopAckWorthSaying,
     desktopAckOwedOnDispatch,
@@ -5640,27 +5640,29 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             }
             if (from && known.has(from) && !desktopBotNoticeSeen(userId, `${id}:from`)) {
                 const name = bots.find(bot => bot.id === target)?.title || target;
+                const fromChoice = kind === 'notify' ? 'none' : desktopBotNoteConfirm({ confirm: (note as { confirm?: unknown }).confirm, order, text });
                 const line = kind === 'notify'
                     ? `跟 ${name} 说了一声：${text}`
-                    : desktopBotDestructive(order || text)
-                        ? (desktopBotDestructive(order || text) && (/安装/.test(order || text) || /(?:^|[^a-z])install(?:[^a-z]|$)/i.test(order || text))
-                            ? `交给 ${name} 了。装软件还是得你在他那边点一下。`
-                            : `交给 ${name} 了。这一步还是得你在他那边点一下。`)
-                        : `交给 ${name} 了，他现在去做。`;
+                    : fromChoice === 'install'
+                        ? `交给 ${name} 了。装软件还是得你在他那边点一下。`
+                        : fromChoice === 'confirm'
+                            ? `交给 ${name} 了。这一步还是得你在他那边点一下。`
+                            : `交给 ${name} 了，他现在去做。`;
                 appendDesktopBotReport(userId, from, { content: line, failed: false, requestId: `${id}:from`, chat: true });
                 markDesktopBotNotice(userId, `${id}:from`);
                 show(from);
             }
             if (!target || !known.has(target) || desktopBotNoticeSeen(userId, `${id}:target`)) continue;
             const body = order || text;
-            const destructive = kind === 'delegate' && desktopBotDestructive(body);
-            if (destructive) {
+            const choice = kind === 'delegate' ? desktopBotNoteConfirm({ confirm: (note as { confirm?: unknown }).confirm, order: body, text: body }) : 'none';
+            if (choice === 'install' || choice === 'confirm') {
                 appendDesktopBotReport(userId, target, {
                     content: desktopBotCrossTargetText(kind, text || order),
                     failed: false,
                     requestId: `${id}:target`,
                     phase: 'plan',
                     workOrder: body,
+                    confirm: choice,
                     crossNoteId: id,
                 });
             } else if (kind === 'delegate' && (String((note as { started_by?: string }).started_by || '') === 'hub' || String((note as { run_id?: string }).run_id || '').trim() !== '')) {

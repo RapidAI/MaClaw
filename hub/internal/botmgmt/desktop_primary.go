@@ -67,6 +67,10 @@ type BotCrossNote struct {
 	// from AckedAt (the bot's agent took it): a server-side wake acks a
 	// message, but the GUI still shows it when it opens (bot_feed.go).
 	ShownAt string `json:"shown_at,omitempty"`
+	// Confirm is the server's decision for a delegate: "install", "confirm",
+	// or "none". The GUI renders it. Empty means an older Hub left the
+	// choice to the client.
+	Confirm string `json:"confirm,omitempty"`
 	// Assignment protocol (assignments.go; MACLAW_ASSIGNMENTS=off ignores it).
 	// State is a report's structured state; ExpectsReply marks a question
 	// that ends the sender's turn; AnswerTo is the question a message answers.
@@ -280,6 +284,7 @@ func (s *Service) PostBotCrossTalk(ctx context.Context, tenantID, userID, fromBo
 		}
 		proto.apply(&note)
 		if kind == "delegate" {
+			note.Confirm = noteConfirm(firstNonEmptyString(note.Order, note.Text))
 			note.Reviewer = assignmentReviewer(rec, userID, fromBotID, target, firstNonEmptyString(note.Order, note.Text), in.Reviewer)
 		}
 		rec.CrossNotes = append(rec.CrossNotes, note)

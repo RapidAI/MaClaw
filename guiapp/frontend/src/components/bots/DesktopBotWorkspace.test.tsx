@@ -4121,6 +4121,21 @@ describe('DesktopBotWorkspace', () => {
         expect(armCross.mock.invocationCallOrder[0]).toBeLessThan(sendTask.mock.invocationCallOrder[0]);
     });
 
+    it('renders the server confirm field and does not re-decide an install', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1', primary: true },
+            { id: 'bot_6', title: 'Bot 6', description: '记录', instance_id: 'inst_6', primary: false },
+        ]);
+        pullCross.mockResolvedValue([
+            { id: 'n-none', from: 'bot_1', target: 'bot_6', kind: 'delegate', text: '装一下', order: '安装一个pdf阅读器', confirm: 'none' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        expect(await screen.findByText('交给 Bot 6 了，他现在去做。')).toBeTruthy();
+        expect(screen.queryByText('交给 Bot 6 了。装软件还是得你在他那边点一下。')).toBeNull();
+        expect(sendTask).not.toHaveBeenCalled();
+    });
+
     it('does not arm or send a handoff another client already claimed', async () => {
         listBots.mockResolvedValue([
             { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1', primary: true },

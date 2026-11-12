@@ -145,6 +145,25 @@ func TestHubHoldsDestructiveDelegateForThePerson(t *testing.T) {
 	}
 }
 
+func TestDelegateConfirmIsStampedForTheGUI(t *testing.T) {
+	svc, _ := dispatchFixture(t)
+	svc.BotDispatch = false
+	ctx := context.Background()
+	cases := []struct{ text, want string }{
+		{"安装 vscode", "install"},
+		{"please install evince", "install"},
+		{"删除旧订单", "confirm"},
+		{"不要删除这些文件", "none"},
+		{"打开示例网站", "none"},
+	}
+	for _, c := range cases {
+		d, err := svc.PostBotCrossTalk(ctx, "tenant-a", "alice", "bot_main", BotCrossNote{Kind: "delegate", Target: "bot_pub", Text: c.text, Key: c.want + c.text})
+		if err != nil || d.Confirm != c.want {
+			t.Fatalf("%q confirm=%q err=%v", c.text, d.Confirm, err)
+		}
+	}
+}
+
 func TestReportIdempotencyKey(t *testing.T) {
 	svc, _ := dispatchFixture(t)
 	svc.BotDispatch = false

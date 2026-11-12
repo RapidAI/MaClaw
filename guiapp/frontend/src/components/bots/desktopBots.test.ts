@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
-import { addDesktopBot, desktopAckOwedOnDispatch, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, clearedBotMessages, isDesktopBotClearCommand, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotWirePhase, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
+import { addDesktopBot, desktopAckOwedOnDispatch, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, clearedBotMessages, isDesktopBotClearCommand, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotNoteConfirm, desktopBotWirePhase, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
 import type { DesktopBotMessage } from './desktopBots';
 
 beforeEach(() => {
@@ -133,6 +133,13 @@ describe('desktop bots', () => {
             content: '图片已附在上方，可直接查看。',
             images: [{ mime: 'image/png', data: 'iVBORw0KGgo=' }],
         })).toBe('arrange');
+        expect(desktopTaskStep('打开页面', { content: '好的。', confirm: 'confirm' })).toBe('arrange');
+        expect(desktopTaskStep('删除全部文件', { content: '好的。', confirm: 'none' })).toBe('done');
+        expect(desktopTaskStep('删除全部文件', { content: '好的。' })).toBe('arrange');
+        expect(desktopBotNoteConfirm({ confirm: 'none', order: '安装一个pdf阅读器' })).toBe('none');
+        expect(desktopBotNoteConfirm({ confirm: 'install', text: '打开页面' })).toBe('install');
+        expect(desktopBotNoteConfirm({ order: '安装一个pdf阅读器' })).toBe('install');
+        expect(desktopBotNoteConfirm({ text: '删除旧草稿' })).toBe('confirm');
     });
 
     it('keeps one confirmation when the arrangement follows the reading', () => {

@@ -3,10 +3,14 @@ package desktopd
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
@@ -72,7 +76,7 @@ func TestHTTPGetDoesNotExecAStoppedContainer(t *testing.T) {
 	svc := &Service{
 		Run: func(_ context.Context, args ...string) (string, error) {
 			if len(args) > 0 && args[0] == "inspect" {
-				return "false", nil
+				return "", errors.New("no such container")
 			}
 			return "", nil
 		},
@@ -84,6 +88,132 @@ func TestHTTPGetDoesNotExecAStoppedContainer(t *testing.T) {
 	_, _, _, err := svc.HTTPGet(context.Background(), "tenant", "alice", "https://example.com")
 	if !errors.Is(err, ErrDesktopAsleep) || called {
 		t.Fatalf("err=%v exec=%v", err, called)
+	}
+}
+
+func TestHTTPGetWakesWhenTheWorkspaceIsOff(t *testing.T) {
+	running := false
+	mounts := readyMounts(t, "tenant", "alice")
+	var starts int
+	svc := &Service{
+		EnforceWakeReason: true,
+		Run: func(_ context.Context, args ...string) (string, error) {
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, "{{.State.Running}}") && !strings.Contains(joined, "maclaw.shm") {
+				if running {
+					return "true", nil
+				}
+				return "false", nil
+			}
+			if len(args) > 0 && args[0] == "inspect" {
+				state := "false"
+				if running {
+					state = "true"
+				}
+				return state + "|1g|" + mounts + "|maclaw-gui:2|maclaw-gui:2|", nil
+			}
+			if len(args) > 0 && args[0] == "start" {
+				starts++
+				running = true
+				return "", nil
+			}
+			return "", nil
+		},
+		RunCommand: func(_ context.Context, _ io.Reader, args ...string) (string, int, error) {
+			if !running || !strings.Contains(strings.Join(args, " "), " curl ") {
+				t.Fatalf("curl before the desktop was up: %v", args)
+			}
+			return "hello" + "\n__MACLAW_HTTP__" + "200 text/plain", 0, nil
+		},
+	}
+	body, status, kind, err := svc.HTTPGet(context.Background(), "tenant", "alice", "https://example.com/papers")
+	if err != nil || body != "hello" || status != 200 || kind != "text/plain" || starts != 1 {
+		t.Fatalf("body=%q status=%d kind=%q starts=%d err=%v", body, status, kind, starts, err)
+	}
+}
+
+func TestHTTPGetWarmStartStaysRetryable(t *testing.T) {
+	t0 := time.Date(2026, 11, 12, 1, 0, 0, 0, time.UTC)
+	var tick int
+	curled := false
+	mounts := readyMounts(t, "tenant", "alice")
+	svc := &Service{
+		EnforceWakeReason: true,
+		Now: func() time.Time {
+			tick++
+			return t0.Add(time.Duration(tick) * 30 * time.Second)
+		},
+		Run: func(_ context.Context, args ...string) (string, error) {
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, "{{.State.Running}}") && !strings.Contains(joined, "maclaw.shm") {
+				return "false", nil
+			}
+			if len(args) > 0 && args[0] == "inspect" {
+				return "false|1g|" + mounts + "|maclaw-gui:2|maclaw-gui:2|", nil
+			}
+			return "", nil
+		},
+		RunCommand: func(context.Context, io.Reader, ...string) (string, int, error) {
+			curled = true
+			return "should-not-run", 0, nil
+		},
+	}
+	_, _, _, err := svc.HTTPGet(context.Background(), "tenant", "alice", "https://example.com/papers")
+	wake, ok := err.(WarmStartError)
+	if !ok || !wake.Retryable() || curled {
+		t.Fatalf("err=%v curled=%v", err, curled)
+	}
+}
+
+func TestHTTPGetMachineRuntimeWakesInsteadOfAsleep(t *testing.T) {
+	var reason string
+	ensured := 0
+	svc := &Service{
+		ToolWorkspace: true,
+		Machines: &wakeTape{ensure: func(_ context.Context, spec Spec) error {
+			ensured++
+			reason = spec.WakeReason
+			return WarmStartError{}
+		}},
+		Run: func(_ context.Context, args ...string) (string, error) {
+			if len(args) > 0 && args[0] == "inspect" {
+				return "", errors.New("no such container")
+			}
+			return "", nil
+		},
+		RunCommand: func(context.Context, io.Reader, ...string) (string, int, error) {
+			t.Fatal("curl ran without a wake")
+			return "", 0, nil
+		},
+	}
+	_, _, _, err := svc.HTTPGet(context.Background(), "tenant", "alice", "https://example.com/papers")
+	if _, ok := err.(WarmStartError); !ok || ensured != 1 || reason != WakeReasonBotDesktop {
+		t.Fatalf("err=%v ensured=%d reason=%q", err, ensured, reason)
+	}
+}
+
+func TestHTTPRouteReturnsWakingWhileTheDesktopStarts(t *testing.T) {
+	svc := &Service{
+		Machines: &wakeTape{ensure: func(context.Context, Spec) error { return WarmStartError{} }},
+		Run: func(_ context.Context, args ...string) (string, error) {
+			if len(args) > 0 && args[0] == "inspect" {
+				return "", errors.New("no such container")
+			}
+			return "", nil
+		},
+	}
+	h := Handler(svc, "tok", "", nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/desktops/http", strings.NewReader(`{"tenant_id":"tenant","user_id":"alice","url":"https://example.com/papers"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"code":"DESKTOP_WAKING"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body["retryable"] != true {
+		t.Fatalf("body=%s err=%v", rec.Body.String(), err)
 	}
 }
 
