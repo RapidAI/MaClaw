@@ -3,6 +3,7 @@ package desktopd
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -13,24 +14,32 @@ import (
 func TestContainerFileAndBashStayInTheUsersContainer(t *testing.T) {
 	var commands [][]string
 	var stdin string
-	svc := &Service{RunCommand: func(_ context.Context, in io.Reader, args ...string) (string, int, error) {
-		commands = append(commands, append([]string(nil), args...))
-		if in != nil {
-			raw, _ := io.ReadAll(in)
-			stdin = string(raw)
-		}
-		joined := strings.Join(args, " ")
-		switch {
-		case strings.Contains(joined, " curl "):
-			return "hello" + "\n__MACLAW_HTTP__" + "200 text/html", 0, nil
-		case strings.Contains(joined, " /desktop_supervisor.py command "):
-			return "hi\n", 0, nil
-		case strings.Contains(joined, " file read "):
-			return "int main(){}\n", 0, nil
-		default:
-			return "", 0, nil
-		}
-	}}
+	svc := &Service{
+		Run: func(_ context.Context, args ...string) (string, error) {
+			if len(args) > 0 && args[0] == "inspect" {
+				return "true", nil
+			}
+			return "", nil
+		},
+		RunCommand: func(_ context.Context, in io.Reader, args ...string) (string, int, error) {
+			commands = append(commands, append([]string(nil), args...))
+			if in != nil {
+				raw, _ := io.ReadAll(in)
+				stdin = string(raw)
+			}
+			joined := strings.Join(args, " ")
+			switch {
+			case strings.Contains(joined, " curl "):
+				return "hello" + "\n__MACLAW_HTTP__" + "200 text/html", 0, nil
+			case strings.Contains(joined, " /desktop_supervisor.py command "):
+				return "hi\n", 0, nil
+			case strings.Contains(joined, " file read "):
+				return "int main(){}\n", 0, nil
+			default:
+				return "", 0, nil
+			}
+		},
+	}
 	text, err := svc.WriteFile(context.Background(), "tenant", "alice", "~/Desktop/a.c", "int main(){}\n")
 	if err != nil || !strings.Contains(text, "/home/desktop/Desktop/a.c") || stdin != "int main(){}\n" {
 		t.Fatalf("write=%q stdin=%q err=%v", text, stdin, err)
@@ -55,6 +64,26 @@ func TestContainerFileAndBashStayInTheUsersContainer(t *testing.T) {
 	}
 	if len(commands) != 4 {
 		t.Fatalf("docker calls=%d", len(commands))
+	}
+}
+
+func TestHTTPGetDoesNotExecAStoppedContainer(t *testing.T) {
+	called := false
+	svc := &Service{
+		Run: func(_ context.Context, args ...string) (string, error) {
+			if len(args) > 0 && args[0] == "inspect" {
+				return "false", nil
+			}
+			return "", nil
+		},
+		RunCommand: func(context.Context, io.Reader, ...string) (string, int, error) {
+			called = true
+			return "should-not-run", 0, nil
+		},
+	}
+	_, _, _, err := svc.HTTPGet(context.Background(), "tenant", "alice", "https://example.com")
+	if !errors.Is(err, ErrDesktopAsleep) || called {
+		t.Fatalf("err=%v exec=%v", err, called)
 	}
 }
 

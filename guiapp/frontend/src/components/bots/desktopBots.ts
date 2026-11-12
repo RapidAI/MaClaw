@@ -1459,6 +1459,25 @@ export function desktopBotDestructive(text: string): boolean {
     return DESKTOP_BOT_INSTALL_WORD.test(lower);
 }
 
+// desktopBotNeedsPlan is the local mirror of the server's plan judgment.
+// The bubble uses it so a destructive order can show its confirm control.
+// The page does not send this as the turn phase: the server decides.
+// Publishing is not in the list; it has its own gate.
+export function desktopBotNeedsPlan(text: string): boolean {
+    const value = text || '';
+    if (/安装|卸载|刪除|删除|付款|支付|清空|格式化|转账/.test(value)) return true;
+    return /(^|[^a-z])(install|uninstall|delete|remove|wipe|format|pay|purchase|checkout|transfer money)([^a-z]|$)/i.test(value)
+        || /rm\s+-rf|drop\s+table/i.test(value);
+}
+
+// desktopBotWirePhase is what the page forwards. An explicit button (arrange,
+// run, an ask_user answer) keeps its phase. An ordinary send forwards nothing
+// and the server chooses.
+export function desktopBotWirePhase(requested?: BotPhase | ''): BotPhase | '' {
+    if (requested === 'execute' || requested === 'plan') return requested;
+    return '';
+}
+
 // A working-row phrase is 正在 plus two to six Han characters. Typed text,
 // a tool name, and the spoken word 正在处理 are not phrases. 正在一点点推进
 // is the row's own fallback, and 正在询问 is composed with the other bot's name.

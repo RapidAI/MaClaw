@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
@@ -855,10 +856,30 @@ func (p *Pool) RunBash(ctx context.Context, tenantID, userID, command string) (s
 }
 
 // RunHTTP fetches one URL from inside the user's desktop container.
+// A stopped container is woken with bot-desktop and the fetch is retried
+// once. This never docker-execs into a container that is still stopped.
 func (p *Pool) RunHTTP(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
 	if _, err := desktop.PublicURL(rawURL); err != nil {
 		return "", 0, "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
 	}
+	if err := p.EnsureReason(ctx, tenantID, userID, WakeReasonBot); err != nil {
+		return "", 0, "", desktopbot.AsWakeFault(err)
+	}
+	body, status, kind, err := p.runHTTPOnce(ctx, tenantID, userID, rawURL)
+	if err == nil || !desktopbot.IsDesktopAsleep(err) {
+		return body, status, kind, desktopbot.AsWakeFault(err)
+	}
+	if err := p.EnsureReason(ctx, tenantID, userID, WakeReasonBot); err != nil {
+		return "", 0, "", desktopbot.AsWakeFault(err)
+	}
+	body, status, kind, err = p.runHTTPOnce(ctx, tenantID, userID, rawURL)
+	if err != nil {
+		return "", 0, "", desktopbot.AsWakeFault(err)
+	}
+	return body, status, kind, nil
+}
+
+func (p *Pool) runHTTPOnce(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
 	server, err := p.resolve(ctx, tenantID, userID)
 	if err != nil {
 		return "", 0, "", err

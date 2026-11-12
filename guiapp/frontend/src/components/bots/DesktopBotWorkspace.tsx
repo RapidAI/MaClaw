@@ -105,6 +105,8 @@ import {
     desktopBotAskingLabel,
     desktopBotCrossTargetText,
     desktopBotDestructive,
+    desktopBotNeedsPlan,
+    desktopBotWirePhase,
     desktopAckWorthSaying,
     desktopAckOwedOnDispatch,
     desktopBotHubStartedText,
@@ -377,9 +379,10 @@ function withinBudget<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
     });
 }
 
-function phaseFor(content: string, requested: BotPhase): BotPhase {
-    if (planSaveName(content)) return 'plan';
-    return requested === 'execute' ? 'execute' : 'plan';
+function phaseFor(content: string, requested?: BotPhase): BotPhase {
+    if (requested === 'execute' || requested === 'plan') return requested;
+    if (planSaveName(content) || desktopBotNeedsPlan(content)) return 'plan';
+    return 'execute';
 }
 
 type WorkPace = 'direct' | 'confirm' | 'ask' | 'reply' | 'schedule' | 'status';
@@ -4910,7 +4913,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const prior = messagesForBot(userId, botId);
         commit(botId, [...prior, { id: messageID(), role: 'assistant', content: desktopBotTypedConfirmSentence(lang), chat: true }]);
     };
-    const startTask = (botId: string, content: string, phase: BotPhase, mode: 'now' | 'fromQueue', verbatim = false, prepared?: PreparedTurn, literal = false, continueSession = '') => {
+    const startTask = (botId: string, content: string, phase: BotPhase, mode: 'now' | 'fromQueue', verbatim = false, prepared?: PreparedTurn, literal = false, continueSession = '', wirePhase?: BotPhase | '') => {
         // A stop watch left from an earlier stop belongs to that stop. It
         // must not release or answer for the job starting now.
         const leftover = stopWatchRef.current.get(botId);
@@ -5130,7 +5133,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             let told = '';
             let options: string[] = [];
             let understoodForAck: Record<string, unknown> = {};
-            let sendPhase: BotPhase = turnPhase;
+            let sendPhase: BotPhase | '' = wirePhase !== undefined ? desktopBotWirePhase(wirePhase) : phase;
             if (verbatim) {
                 // No reading was made. The person asked for their own words,
                 // and those words are still the clearest order there is.
@@ -5860,10 +5863,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (userIdRef.current !== ownerId) return;
         continueForceByBotRef.current = { ...continueForceByBotRef.current, [botId]: { main: true } };
         setContinueForceByBot(current => ({ ...current, [botId]: { main: true } }));
-        await send(String(message.content || ''), 'plan');
+        await send(String(message.content || ''));
     };
 
-    const send = async (preset?: string, phase: BotPhase = 'plan', verbatim = false, prepared?: PreparedTurn, literal = false, continueIn?: string) => {
+    const send = async (preset?: string, phase?: BotPhase, verbatim = false, prepared?: PreparedTurn, literal = false, continueIn?: string) => {
         if (!selected) return;
         if (!preset && secretOpenRef.current) return;
         const botId = selected.id;
@@ -5898,8 +5901,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         // supplement, and where the words belong are decided on the server.
         // This page only forwards the words.
         applyFollowRef.current(true);
-        const turnPhase = phaseFor(content, phase);
-        startTask(botId, content, turnPhase, 'now', verbatim, prepared, literal, continueSession);
+        const explicit = phase === 'plan' || phase === 'execute';
+        const turnPhase = phaseFor(content, explicit ? phase : undefined);
+        startTask(botId, content, turnPhase, 'now', verbatim, prepared, literal, continueSession, explicit ? phase : '');
         if (!preset) setCommand('');
     };
 
@@ -5952,7 +5956,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             return;
         }
         markAskResolved(botId, messageId);
-        await send(saveSentence(name), 'plan');
+        await send(saveSentence(name));
     };
 
     const resumeFromScreenHandoff = (botId: string) => {
@@ -6728,7 +6732,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             lang={lang}
                                             onSubmit={reply => {
                                                 markAskResolved(selected.id, message.id);
-                                                void send(reply, message.phase === 'execute' ? 'execute' : 'plan', true, undefined, true, message.conversation);
+                                                void send(reply, 'execute', true, undefined, true, message.conversation);
                                             }}
                                         />
                                     ) : null}

@@ -639,10 +639,19 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	}
 	path := instancePath + "/messages"
 	messageMeta := map[string]string{"bot_id": rec.Bots[index].ID}
+	// The client's phase is a hint. An ordinary task runs even when an older
+	// GUI sent plan. An explicit execute is the arrange/run button and stays
+	// execute, including the computer-helper mark that button already carried.
+	// An empty phase is left unset so a caller that never spoke in phases
+	// keeps that shape; MaClawSrv decides when it runs the turn.
+	requested := phase
+	if phase == "plan" || phase == "execute" {
+		phase = desktopbot.ResolvePhase(tenantID, userID, rec.Bots[index].ID, phase, content)
+	}
 	if phase == "plan" || phase == "execute" {
 		messageMeta["bot_phase"] = phase
 	}
-	if phase == "execute" {
+	if requested == "execute" {
 		messageMeta["computer_helper"] = "1"
 	}
 	if strings.HasPrefix(clientMessageID, "xwake-") {

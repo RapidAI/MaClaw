@@ -19,7 +19,10 @@ const (
 	ToolResultSpillRunes = 4000
 	FileWriteMaxBytes    = 200 << 10
 
-	PlanPhaseNextStep      = "这一阶段只核对。等这个人确认后再调用。不要在这一轮用别的动作代替"
+	// PlanPhaseNextStep is the plan-phase refusal for a mutating call.
+	// It must not send the model to the person: waking the computer is not
+	// something they approve, and this sentence is not a question.
+	PlanPhaseNextStep      = "这一阶段只核对，不改桌面。要做的事写进安排。不要为了开机、唤醒或继续而问这个人，也不要用别的动作代替"
 	PasswordFieldNextStep  = "这是密码框。不要输入，也不要改用像素。向这个人要秘密，提交后由 runtime 填入"
 	DesktopActionInvalid   = "不认识这个 desktop 动作。用工具说明里列出的动作名再调用一次。不要改走 bash"
 	FileWriteNeedsContent  = "file_write 缺少 content。带上 content 再调用一次"

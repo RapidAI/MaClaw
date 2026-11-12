@@ -1,10 +1,12 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 func contTurn(user, content, phase string) agentruntime.TurnRequest {
@@ -19,6 +21,8 @@ func contTurn(user, content, phase string) agentruntime.TurnRequest {
 }
 
 func TestDesktopHandBackContinuationExecutes(t *testing.T) {
+	desktopbot.ResetPhaseMemory()
+	t.Cleanup(desktopbot.ResetPhaseMemory)
 	hb := "我已经在桌面上完成了需要我做的操作（登录/验证），桌面交还给你，请继续刚才的任务。"
 	if got := desktopTurnPhase(contTurn("u_a", hb, "")); got != "execute" {
 		t.Fatalf("hand-back phase %q", got)
@@ -27,9 +31,47 @@ func TestDesktopHandBackContinuationExecutes(t *testing.T) {
 	if got := desktopTurnPhase(contTurn("u_b", "继续", "")); got != "execute" {
 		t.Fatalf("inherited phase %q", got)
 	}
-	desktopTurnPhase(contTurn("u_c", "看看", "plan"))
-	if got := desktopTurnPhase(contTurn("u_c", "嗯", "")); got != "plan" {
-		t.Fatalf("plan must not become execute: %q", got)
+	// An older GUI labels every ordinary message plan. That hint does not stick.
+	if got := desktopTurnPhase(contTurn("u_c", "看看", "plan")); got != "execute" {
+		t.Fatalf("ordinary plan hint %q", got)
+	}
+	if got := desktopTurnPhase(contTurn("u_c", "嗯", "")); got != "execute" {
+		t.Fatalf("follow-up of an ordinary turn %q", got)
+	}
+	if got := desktopTurnPhase(contTurn("u_hold", "删除日志", "plan")); got != "plan" {
+		t.Fatalf("destructive order %q", got)
+	}
+	if got := desktopTurnPhase(contTurn("u_hold", "嗯", "")); got != "plan" {
+		t.Fatalf("short reply inside a destructive plan %q", got)
+	}
+}
+
+func TestAskUserAnswerLeavesPlan(t *testing.T) {
+	desktopbot.ResetPhaseMemory()
+	t.Cleanup(desktopbot.ResetPhaseMemory)
+	if got := desktopTurnPhase(contTurn("u_ask", "把日志删除掉", "plan")); got != "plan" {
+		t.Fatalf("plan %q", got)
+	}
+	desktopbot.NotePlanAsk("t", "u_ask", "bot_x")
+	if got := desktopTurnPhase(contTurn("u_ask", "删除", "plan")); got != "execute" {
+		t.Fatalf("ask answer %q", got)
+	}
+}
+
+func TestOrdinaryPlanHintDoesNotAskToWake(t *testing.T) {
+	desktopbot.ResetPhaseMemory()
+	t.Cleanup(desktopbot.ResetPhaseMemory)
+	task := "使用最新的dailypaper, 挑一篇最热门的，做图文综述，发到知乎、csdn以及小红书"
+	turn := contTurn("u_paper", task, "plan")
+	if got := desktopTurnPhase(turn); got != "execute" {
+		t.Fatalf("phase %q", got)
+	}
+	content, meta := desktopTurnMessage(turn)
+	if content == "" || meta["bot_phase"] != "execute" || meta["bot_phase_decided"] != "1" {
+		t.Fatalf("stamp content=%q meta=%v", content, meta)
+	}
+	if strings.Contains(desktopbot.PlanPhaseNextStep, "等这个人确认") {
+		t.Fatal(desktopbot.PlanPhaseNextStep)
 	}
 }
 

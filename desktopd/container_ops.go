@@ -361,21 +361,34 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 	return desktop.ProgramOutput(output, exitCode, false), nil
 }
 
+// ErrDesktopAsleep is a fetch that would have docker-exec'd curl into a
+// stopped desktop. Callers wake with bot-desktop and retry. This process
+// does not start the container here: requireWakeToStart stays the only start.
+var ErrDesktopAsleep = errors.New("desktop_asleep")
+
 // HTTPGet fetches one URL with curl inside the user's desktop container.
-// The container's network and proxy are the ones curl uses.
+// The container's network and proxy are the ones curl uses. A stopped
+// container returns ErrDesktopAsleep and is not exec'd.
 func (s *Service) HTTPGet(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
 	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
 	if err != nil {
 		return "", 0, "", err
 	}
-	args, err := desktop.CurlGetArgs(containerName(spec.TenantID, spec.UserID), rawURL, desktop.HTTPBodyMax)
+	name := containerName(spec.TenantID, spec.UserID)
+	args, err := desktop.CurlGetArgs(name, rawURL, desktop.HTTPBodyMax)
 	if err != nil {
 		return "", 0, "", err
 	}
 	var output string
 	var exitCode int
 	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
-		var runErr error
+		running, runErr := s.containerRunning(ctx, name)
+		if runErr != nil {
+			return runErr
+		}
+		if !running {
+			return ErrDesktopAsleep
+		}
 		output, exitCode, runErr = s.runCommand(ctx, nil, args...)
 		return runErr
 	})

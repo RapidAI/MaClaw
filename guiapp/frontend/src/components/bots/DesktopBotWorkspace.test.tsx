@@ -492,6 +492,28 @@ describe('DesktopBotWorkspace', () => {
         expect(cancelRun).not.toHaveBeenCalled();
     });
 
+    it('sends an answer to a plan-phase question in execute', async () => {
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_1: [{
+                    id: 'm-ask-plan',
+                    role: 'assistant',
+                    content: '要我现在启动桌面并继续吗',
+                    pending: false,
+                    phase: 'plan',
+                    askUser: { options: ['确认', '取消'], inputType: 'choice', question: '要我现在启动桌面并继续吗' },
+                }],
+            },
+        }));
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-wake', deferred: true, session_key: 'alice:bot_1' });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        const chat = await screen.findByTestId('desktop-bot-chat');
+        fireEvent.click(within(chat).getByRole('button', { name: '确认' }));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '确认', 'execute'));
+    });
+
 
 
     it('lists a bot with its description and opens the chat on the right', async () => {
@@ -2499,7 +2521,7 @@ describe('DesktopBotWorkspace', () => {
 
 
 
-    it('does not send the stock confirm sentence, and still sends resume and fill on the plan phase', async () => {
+    it('does not send the stock confirm sentence, and lets the server choose the phase for a typed resume', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
         sendTask.mockImplementation(async (botId: string) => ({
             request_id: 'desktop-bot-discuss',
@@ -2526,7 +2548,7 @@ describe('DesktopBotWorkspace', () => {
             fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: sentence } });
             fireEvent.click(screen.getByTestId('desktop-bot-send'));
             await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(calls));
-            expect(sendTask).toHaveBeenLastCalledWith('bot_1', sentence, 'plan');
+            expect(sendTask).toHaveBeenLastCalledWith('bot_1', sentence, '');
             await waitFor(() => expect(screen.getAllByText('好，我按讨论来。')).toHaveLength(calls));
         }
         expect(screen.queryByText(CONFIRM_TASK)).toBeNull();
@@ -4335,7 +4357,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.keyDown(box, { key: 'Enter' });
         expect(shiftPrevented).toBe(true);
         document.removeEventListener('keydown', markPrevented);
-        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '看一下', 'plan'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '看一下', ''));
 
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
         const panel = screen.getByTestId('desktop-bot-panel');
@@ -4365,7 +4387,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-tab-details'));
         const details = screen.getByTestId('desktop-bot-details');
         expect(details.textContent).toContain('状态');
-        expect(details.textContent).toContain('安排中');
+        expect(details.textContent).toContain('工作中');
         expect(details.textContent).toContain('描述');
         expect(details.textContent).toContain('远程电脑上的7x24小时数字助理。');
         expect(details.textContent).toContain('创建时间');
@@ -4373,7 +4395,7 @@ describe('DesktopBotWorkspace', () => {
         expect(details.textContent).not.toContain(formatCreated(Date.now()));
         expect(details.textContent).toContain('Bot为24小时驻守远程电脑上的数字助理。');
         expect(details.querySelector('.desktop-bot-panel__sheet')).toBeTruthy();
-        expect(details.querySelector('.desktop-bot-panel__badge')?.textContent).toContain('安排中');
+        expect(details.querySelector('.desktop-bot-panel__badge')?.textContent).toContain('工作中');
         expect(details.querySelector('.desktop-bot-panel__note')?.textContent).toContain('Bot为24小时驻守远程电脑上的数字助理。');
         expect(screen.queryByTestId('desktop-bot-computer')).toBeNull();
         expect(screen.queryByTestId('desktop-bot-stage')).toBeNull();
@@ -4440,7 +4462,7 @@ describe('the page forwards words and renders the server decision', () => {
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-ack', deferred: true, session_key: 'alice:bot_1' });
         await openDuty();
         await typeAndSend('打开示例网站');
-        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '打开示例网站', 'plan'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '打开示例网站', ''));
         expect(understandTask).not.toHaveBeenCalled();
         expect(classifyWorkStop).not.toHaveBeenCalled();
         expect(evaluateSupplement).not.toHaveBeenCalled();
@@ -4459,8 +4481,8 @@ describe('the page forwards words and renders the server decision', () => {
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-2', deferred: true, session_key: 'alice:bot_1' });
         await typeAndSend('再做那个');
         await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
-        expect(sendTask).toHaveBeenNthCalledWith(1, 'bot_1', '先做这个', 'plan');
-        expect(sendTask).toHaveBeenNthCalledWith(2, 'bot_1', '再做那个', 'plan');
+        expect(sendTask).toHaveBeenNthCalledWith(1, 'bot_1', '先做这个', '');
+        expect(sendTask).toHaveBeenNthCalledWith(2, 'bot_1', '再做那个', '');
         expect(screen.queryByText(/等手头这件做完/)).toBeNull();
     });
 
@@ -4468,7 +4490,7 @@ describe('the page forwards words and renders the server decision', () => {
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-q', deferred: true, session_key: 'alice:bot_1' });
         await openDuty();
         await typeAndSend('再开一个');
-        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '再开一个', 'plan'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '再开一个', ''));
         intake({ bot_id: 'bot_1', request_id: 'desktop-bot-q', kind: 'new', ack: '先记着。', queued: true, held: false });
         expect(await screen.findByText('先记着。')).toBeTruthy();
         expect(await screen.findByText('好，这个等手上的做完我就做。')).toBeTruthy();
@@ -4478,7 +4500,7 @@ describe('the page forwards words and renders the server decision', () => {
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-h', deferred: true, session_key: 'alice:bot_1' });
         await openDuty();
         await typeAndSend('下一件');
-        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '下一件', 'plan'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '下一件', ''));
         intake({ bot_id: 'bot_1', request_id: 'desktop-bot-h', kind: 'new', ack: '等你交还。', queued: true, held: true });
         expect(await screen.findByText('等你交还。')).toBeTruthy();
         expect(await screen.findByText('好，这个等手上的做完我就做。')).toBeTruthy();
@@ -4489,7 +4511,7 @@ describe('the page forwards words and renders the server decision', () => {
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-sup', deferred: true, session_key: 'alice:bot_1' });
         await openDuty();
         await typeAndSend('只要前五条');
-        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '只要前五条', 'plan'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '只要前五条', ''));
         intake({ bot_id: 'bot_1', request_id: 'desktop-bot-sup', kind: 'supplement', ack: '好，只留前五条。', queued: false, held: false, run_id: 'run_a' });
         expect(await screen.findByText('好，只留前五条。')).toBeTruthy();
         expect(appendSupplement).not.toHaveBeenCalled();
@@ -4504,7 +4526,7 @@ describe('the page forwards words and renders the server decision', () => {
             cancelRun.mockClear();
             armAdmitCancel.mockClear();
             await typeAndSend(word);
-            await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', word, 'plan'));
+            await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', word, ''));
             expect(cancelRun).not.toHaveBeenCalled();
             expect(armAdmitCancel).not.toHaveBeenCalled();
             expect(classifyWorkStop).not.toHaveBeenCalled();
@@ -4526,7 +4548,7 @@ describe('the page forwards words and renders the server decision', () => {
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-go', deferred: true, session_key: 'alice:bot_1' });
         await openDuty();
         await typeAndSend('继续');
-        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '继续', 'plan'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '继续', ''));
         intake({ bot_id: 'bot_1', request_id: 'desktop-bot-go', kind: 'continue', ack: '正在接着做。', queued: false, held: false, run_id: 'run_a' });
         expect(await screen.findByText('正在接着做。')).toBeTruthy();
         expect(screen.queryByText('好，这个等手上的做完我就做。')).toBeNull();
@@ -4536,7 +4558,7 @@ describe('the page forwards words and renders the server decision', () => {
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-hi', deferred: true, session_key: 'alice:bot_1' });
         await openDuty();
         await typeAndSend('你好');
-        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '你好', 'plan'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '你好', ''));
         result({ request_id: 'desktop-bot-hi', session_key: 'alice:bot_1', text: '在的，说吧。', send_to_user: '在的，说吧。' });
         expect(await screen.findByText('在的，说吧。')).toBeTruthy();
     });
@@ -4545,7 +4567,7 @@ describe('the page forwards words and renders the server decision', () => {
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-st', deferred: true, session_key: 'alice:bot_1' });
         await openDuty();
         await typeAndSend('任务现在怎么样了');
-        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '任务现在怎么样了', 'plan'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '任务现在怎么样了', ''));
         expect(queryTaskStatus).not.toHaveBeenCalled();
         result({ request_id: 'desktop-bot-st', session_key: 'alice:bot_1', text: '「下载报表」还在进行。', send_to_user: '「下载报表」还在进行。' });
         expect(await screen.findByText('「下载报表」还在进行。')).toBeTruthy();
@@ -4555,7 +4577,7 @@ describe('the page forwards words and renders the server decision', () => {
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-sch', deferred: true, session_key: 'alice:bot_1' });
         await openDuty();
         await typeAndSend('每个工作日早上做简报');
-        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '每个工作日早上做简报', 'plan'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '每个工作日早上做简报', ''));
         expect(armSchedule).not.toHaveBeenCalled();
         intake({ bot_id: 'bot_1', request_id: 'desktop-bot-sch', kind: 'schedule', ack: '工作日早上的简报记下了。', queued: false, held: false });
         expect(await screen.findByText('工作日早上的简报记下了。')).toBeTruthy();
@@ -4565,9 +4587,9 @@ describe('the page forwards words and renders the server decision', () => {
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-go2', deferred: true, session_key: 'alice:bot_1' });
         await openDuty();
         await typeAndSend('今天天气怎样？');
-        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '今天天气怎样？', 'plan'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '今天天气怎样？', ''));
         await typeAndSend('安装一个pdf阅读器');
-        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '安装一个pdf阅读器', 'plan'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '安装一个pdf阅读器', ''));
         expect(screen.queryByTestId('desktop-bot-confirm')).toBeNull();
     });
 

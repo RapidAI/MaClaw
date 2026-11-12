@@ -58,7 +58,7 @@ func TestDesktopWakeFailureIsWordedForThePerson(t *testing.T) {
 	t.Cleanup(func() { desktopRemoteSession = nil; desktopRoundWakes.Delete("run_wf") })
 	_, err := ensureDesktopRound(context.Background(), agentruntime.Scope{TenantID: "t", UserID: "u", RunID: "run_wf"}, "", true)
 	var we desktopWakeError
-	if !errors.As(err, &we) || !strings.Contains(err.Error(), "电脑没能唤醒") {
+	if !errors.As(err, &we) || !strings.Contains(err.Error(), "电脑没能唤醒") || strings.Contains(err.Error(), "告诉对方") || strings.Contains(err.Error(), "要不要开机") {
 		t.Fatalf("err=%v", err)
 	}
 }

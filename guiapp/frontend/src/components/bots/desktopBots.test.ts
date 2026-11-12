@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
-import { addDesktopBot, desktopAckOwedOnDispatch, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, clearedBotMessages, isDesktopBotClearCommand, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
+import { addDesktopBot, desktopAckOwedOnDispatch, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, clearedBotMessages, isDesktopBotClearCommand, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotNeedsPlan, desktopBotWirePhase, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
 import type { DesktopBotMessage } from './desktopBots';
 
 beforeEach(() => {
@@ -675,6 +675,13 @@ describe('desktop bots', () => {
         expect(desktopBotDestructive('请 uninstall 这个包')).toBe(true);
         expect(desktopBotDestructive('please install it')).toBe(true);
         expect(desktopBotDestructive('打开示例网站')).toBe(false);
+        const paper = '使用最新的dailypaper, 挑一篇最热门的，做图文综述，发到知乎、csdn以及小红书';
+        expect(desktopBotNeedsPlan(paper)).toBe(false);
+        expect(desktopBotNeedsPlan('把日志删除掉')).toBe(true);
+        expect(desktopBotNeedsPlan('安装一个pdf阅读器')).toBe(true);
+        expect(desktopBotWirePhase()).toBe('');
+        expect(desktopBotWirePhase('execute')).toBe('execute');
+        expect(desktopBotWirePhase('plan')).toBe('plan');
         expect(desktopBotDestructive('安装包的说明')).toBe(true);
         expect(desktopBotCrossTargetText('notify', '到了')).toBe('主 Bot 说：到了');
         expect(desktopBotCrossTargetText('delegate', '装一下')).toBe('主 Bot 交代：装一下');

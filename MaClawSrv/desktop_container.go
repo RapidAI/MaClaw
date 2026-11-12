@@ -118,6 +118,23 @@ func desktopProxyModeText(ctx context.Context, tenantID, userID string) (string,
 }
 
 func desktopContainerHTTP(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
+	body, status, kind, err := desktopContainerHTTPCall(ctx, tenantID, userID, rawURL)
+	if err == nil || !desktopbot.IsDesktopAsleep(err) {
+		return body, status, kind, desktopbot.AsWakeFault(err)
+	}
+	// The container was stopped. Wake it with the bot-desktop path and retry
+	// the fetch once. Waking is not something the person approves.
+	if wakeErr := wakeDesktopContainer(ctx, tenantID, userID); wakeErr != nil {
+		return "", 0, "", wakeErr
+	}
+	body, status, kind, err = desktopContainerHTTPCall(ctx, tenantID, userID, rawURL)
+	if err != nil {
+		return "", 0, "", desktopbot.AsWakeFault(err)
+	}
+	return body, status, kind, nil
+}
+
+func desktopContainerHTTPCall(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
 	if desktopRemoteHTTP != nil {
 		return desktopRemoteHTTP(ctx, tenantID, userID, rawURL)
 	}
@@ -125,6 +142,21 @@ func desktopContainerHTTP(ctx context.Context, tenantID, userID, rawURL string) 
 		return client.HTTP(ctx, tenantID, userID, rawURL)
 	}
 	return "", 0, "", fmt.Errorf("this bot's desktop is the person's cloud desktop, and the connection is not configured")
+}
+
+// wakeDesktopContainer starts a stopped desktop for a container network call.
+// desktopWakeForStep is the bot-desktop wake (Hub session / Ensure). It is
+// not the file/bash short-circuit, which leaves a sleeping GUI container down.
+func wakeDesktopContainer(ctx context.Context, tenantID, userID string) error {
+	userKey, err := desktop.UserKey(tenantID, userID)
+	if err != nil {
+		return desktopbot.AsWakeFault(err)
+	}
+	scope := agentruntime.Scope{TenantID: tenantID, UserID: userID}
+	if _, err := desktopWakeForStep(ctx, scope, userKey); err != nil {
+		return err
+	}
+	return nil
 }
 
 func operateDesktopContainer(ctx context.Context, scope agentruntime.Scope, action string, args map[string]any) (string, error) {

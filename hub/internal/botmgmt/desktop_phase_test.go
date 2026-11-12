@@ -70,8 +70,10 @@ func TestPlanPhaseIsMessageMetadataAndAttentionStaysWithTheBot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(bodies[0], `"bot_phase":"plan"`) || strings.Contains(bodies[0], "s3cret-value") || strings.Contains(bodies[0], "computer_helper") {
-		t.Fatalf("plan body=%s", bodies[0])
+	// "先看首页" is an ordinary look. An older GUI's plan hint does not keep it in plan,
+	// and it is not the computer-helper execute button.
+	if !strings.Contains(bodies[0], `"bot_phase":"execute"`) || strings.Contains(bodies[0], `"bot_phase":"plan"`) || strings.Contains(bodies[0], "s3cret-value") || strings.Contains(bodies[0], "computer_helper") {
+		t.Fatalf("ordinary plan hint body=%s", bodies[0])
 	}
 	if reply.Handoff || reply.AttentionReason != "" || reply.AskUserSecretName != "SITE_PASSWORD" || reply.AskUserInputType != "secret" {
 		t.Fatalf("plan reply=%#v", reply)
@@ -123,6 +125,12 @@ func TestPlanPhaseIsMessageMetadataAndAttentionStaysWithTheBot(t *testing.T) {
 	}
 	if !strings.Contains(bodies[0], `"bot_id":"bot_alice"`) || strings.Contains(bodies[2], "bot_phase") {
 		t.Fatalf("bot id metadata missing or plain message gained a phase: %s", bodies[2])
+	}
+	if _, err := svc.PostMessagePhase(ctx, "tenant-a", "alice", "bot_alice", "把日志删除掉", "plan", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(bodies[3], `"bot_phase":"plan"`) || strings.Contains(bodies[3], "computer_helper") {
+		t.Fatalf("destructive order left plan: %s", bodies[3])
 	}
 }
 

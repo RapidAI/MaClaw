@@ -340,6 +340,12 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			return
 		}
 		body, status, kind, err := svc.HTTPGet(r.Context(), in.TenantID, in.UserID, in.URL)
+		if errors.Is(err, ErrDesktopAsleep) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"ok": false, "code": "DESKTOP_ASLEEP", "error": ErrDesktopAsleep.Error(), "message": ErrDesktopAsleep.Error(),
+			})
+			return
+		}
 		if err != nil {
 			writeOp(w, "", err)
 			return

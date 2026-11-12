@@ -422,7 +422,7 @@ func TestPlanCopyListsOnlyInspection(t *testing.T) {
 			t.Fatalf("plan prompt still teaches %s: %s", banned, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "one arrangement") || !strings.Contains(prompt, "Do not ask the user") || !strings.Contains(prompt, "say it is done") || !strings.Contains(prompt, "does not start it") || strings.Contains(prompt, "action=deliver") {
+	if !strings.Contains(prompt, "one arrangement") || !strings.Contains(prompt, "Do not ask the user") || !strings.Contains(prompt, "say it is done") || !strings.Contains(prompt, "does not start it") || !strings.Contains(prompt, "wakes by itself") || !strings.Contains(prompt, "ask_user") || strings.Contains(prompt, "action=deliver") {
 		t.Fatalf("plan copy does not keep the arrangement to one confirmation: %s", prompt)
 	}
 	if !strings.Contains(prompt, "Do not paste the document") || !strings.Contains(prompt, "copy it into Word") || !strings.Contains(prompt, "task order") {

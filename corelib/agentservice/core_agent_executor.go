@@ -605,11 +605,43 @@ func (c *coreAgentCallbacks) UpgradeLightPromptToFull(reason string) bool {
 	return true
 }
 
+// resolveDesktopBotPhase stamps the server's plan-or-execute choice onto the
+// message before any tool or prompt reads bot_phase. The client's value is a
+// hint. Turns that are not a desktop bot are left alone.
+func resolveDesktopBotPhase(req *ExecuteRequest) {
+	if req == nil {
+		return
+	}
+	meta := req.Message.Metadata
+	hint, botID := "", ""
+	if meta != nil {
+		hint = strings.TrimSpace(meta["bot_phase"])
+		botID = strings.TrimSpace(meta["bot_id"])
+	}
+	hub := strings.TrimSpace(req.Instance.Metadata["hub_bot"]) == "1"
+	if hint == "" && botID == "" && !hub {
+		return
+	}
+	if meta == nil {
+		meta = map[string]string{}
+		req.Message.Metadata = meta
+	}
+	if strings.TrimSpace(meta["bot_phase_decided"]) == "1" {
+		return
+	}
+	phase := desktopbot.ResolvePhase(req.Principal.TenantID, req.Principal.UserID, botID, hint, req.Message.Content)
+	if phase == "plan" || phase == "execute" {
+		meta["bot_phase"] = phase
+		meta["bot_phase_decided"] = "1"
+	}
+}
+
 // Execute runs ordinary requests directly, while an explicitly marked local
 // coding workflow phase is wrapped in the shared durable runtime. The latter
 // path stays in agentservice so Principal/Tenant/User/Instance/Session are
 // constructed and authorized by Service before any model or tool call.
 func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (res *ExecuteResult, err error) {
+	resolveDesktopBotPhase(&req)
 	botID := botlog.FromMeta(req.Message.Metadata)
 	started := time.Now()
 	if botID != "" {
@@ -3117,6 +3149,15 @@ func (c *coreAgentCallbacks) executeToolStructuredUnguarded(name, argsJSON strin
 		}
 		return sshToolResult(sshtool.ToolSSH(c.sshDeps, validated))
 	case "ask_user":
+		// A plan turn that asks the person is answered in execute. Waking
+		// and ordinary work are not held in plan by that answer.
+		if c != nil && strings.TrimSpace(c.messageMetadata["bot_phase"]) == "plan" {
+			botID := ""
+			if c.messageMetadata != nil {
+				botID = c.messageMetadata["bot_id"]
+			}
+			desktopbot.NotePlanAsk(c.principal.TenantID, c.principal.UserID, botID)
+		}
 		return toolTextResult(agent.ToolAskUser(args))
 	case "task":
 		return toolTextResult(agent.ToolTask(c.tasks, args))

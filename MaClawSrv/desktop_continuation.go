@@ -1,28 +1,24 @@
 package main
 
 import (
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
-// Continuation turns. Hub's hand-back (交还给 bot) posts "请继续刚才的任务"
-// with no bot_phase. The plan gate treated that as "not execute", so the
-// continued task could only look (10-22 run_d8638514: click and bash refused
-// with 这一阶段只核对…, the run ended after 8 steps and asked nobody). The
-// same turn also lost the publish approval the person gave in the original
-// task. Both are remembered per bot conversation for a while and inherited
-// by a turn that names no phase.
+// Continuation turns. The plan-or-execute choice lives in
+// desktopbot.ResolvePhase: the client's bot_phase is a hint, an ordinary
+// task runs, and an answer to a plan-phase ask_user runs in execute.
+// Publish approval is remembered here, separate from that phase. A hand-back
+// with no phase used to be treated as "not execute" (10-22 run_d8638514).
 
 const desktopTurnMemoryTTL = 3 * time.Hour
 
 type desktopTurnMemory struct {
-	phase      string
-	phaseAt    time.Time
 	approved   bool
 	approvedAt time.Time
 }
@@ -37,8 +33,6 @@ var (
 // desktopPublishIntentRe: the same site-free publish-request test as the
 // coach's (site names come from the site profiles).
 var desktopPublishIntentRe = desktopPublishAskRe
-
-var desktopHandBackRe = regexp.MustCompile(`桌面交还给你|请继续刚才的任务|hand(ed)? (the desktop )?back`)
 
 func desktopTurnMessage(request agentruntime.TurnRequest) (string, map[string]string) {
 	switch input := request.Input.(type) {
@@ -60,46 +54,30 @@ func desktopTurnMemKey(request agentruntime.TurnRequest, meta map[string]string)
 	return request.Scope.TenantID + "\x00" + request.Scope.UserID + "\x00" + bot
 }
 
-// desktopTurnPhase is botPhaseFromTurn with continuation memory.
+// desktopTurnPhase is the server's plan-or-execute choice for this turn.
+// The client's bot_phase is a hint. An ordinary task runs. A plan hint from
+// an older GUI does not keep it in plan. An answer to an ask_user from a
+// plan turn runs in execute. The choice is stamped on the message so the
+// prompt, the ssh gate, and the desktop tool all see the same phase.
 func desktopTurnPhase(request agentruntime.TurnRequest) string {
-	phase := botPhaseFromTurn(request)
 	content, meta := desktopTurnMessage(request)
-	key := desktopTurnMemKey(request, meta)
-	if key == "" {
-		if phase == "" {
-			return "execute"
+	if meta != nil && strings.TrimSpace(meta["bot_phase_decided"]) == "1" {
+		phase := strings.TrimSpace(meta["bot_phase"])
+		if phase == "plan" || phase == "execute" {
+			return phase
 		}
-		return phase
 	}
-	now := time.Now()
-	desktopTurnMemMu.Lock()
-	defer desktopTurnMemMu.Unlock()
-	mem := desktopTurnMem[key]
-	if mem == nil {
-		mem = &desktopTurnMemory{}
-		desktopTurnMem[key] = mem
+	hint := botPhaseFromTurn(request)
+	bot := ""
+	if meta != nil {
+		bot = meta["bot_id"]
 	}
-	if phase != "" {
-		mem.phase, mem.phaseAt = phase, now
-		return phase
+	phase := desktopbot.ResolvePhase(request.Scope.TenantID, request.Scope.UserID, bot, hint, content)
+	if meta != nil && (phase == "plan" || phase == "execute") {
+		meta["bot_phase"] = phase
+		meta["bot_phase_decided"] = "1"
 	}
-	if mem.phase == "execute" && now.Sub(mem.phaseAt) < desktopTurnMemoryTTL {
-		return "execute"
-	}
-	if desktopHandBackRe.MatchString(content) {
-		// The person handed the desktop back for a task already under way.
-		return "execute"
-	}
-	if mem.phase == "plan" && now.Sub(mem.phaseAt) < desktopTurnMemoryTTL {
-		// The GUI's plan->execute flow: a reply inside a plan stays in plan
-		// until the GUI sends execute.
-		return "plan"
-	}
-	// No phase and no plan under way (API, Hub wake, replay, a chat with no
-	// GUI): ordinary web and desktop steps just run. Asking "要我继续吗" here
-	// stalled replays on papers 2026-10-30. Publishing still asks first: that
-	// gate is desktopTurnPublishApproved, independent of the phase.
-	return "execute"
+	return phase
 }
 
 // desktopTurnPublishApproved: explicit "publish without asking", or the
