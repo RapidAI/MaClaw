@@ -95,6 +95,29 @@ func (h *fakeHost) service(t *testing.T) *Service {
 	}
 }
 
+func TestHTTPWhileTheDesktopSleepsRunsInTheWorkspace(t *testing.T) {
+	h := &fakeHost{desktop: "stopped"}
+	svc := h.service(t)
+	svc.RunCommand = func(_ context.Context, _ io.Reader, a ...string) (string, int, error) {
+		h.execs = append(h.execs, strings.Join(a, " "))
+		return "hello\n__MACLAW_HTTP__200 text/html", 0, nil
+	}
+	body, status, kind, err := svc.HTTPGet(context.Background(), "tenant", "alice", "https://example.com/papers")
+	if err != nil || body != "hello" || status != 200 || kind != "text/html" {
+		t.Fatalf("body=%q status=%d kind=%q err=%v", body, status, kind, err)
+	}
+	work := workspaceName("tenant", "alice")
+	desk := containerName("tenant", "alice")
+	for _, c := range h.calls {
+		if strings.HasPrefix(c, "start "+desk) {
+			t.Fatalf("desktop started: %s", c)
+		}
+	}
+	if len(h.execs) != 1 || !strings.Contains(h.execs[0], "exec "+work+" ") || strings.Contains(h.execs[0], "exec "+desk+" ") {
+		t.Fatalf("execs=%v", h.execs)
+	}
+}
+
 func TestBashWhileTheDesktopSleepsRunsInTheWorkspace(t *testing.T) {
 	h := &fakeHost{desktop: "stopped"}
 	svc := h.service(t)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
@@ -117,7 +118,42 @@ func desktopProxyModeText(ctx context.Context, tenantID, userID string) (string,
 	return text + " Only the person can change it (Desktop Bot > Settings > Network); ask them if a site needs a different route.", nil
 }
 
+// desktopWakeRetryBudget is how long a fetch waits out a warm start.
+// Fetch and search do not start the GUI; they only retry a 503 that says
+// the machine is already waking.
+var (
+	desktopWakeRetryBudget = 60 * time.Second
+	desktopWakeRetryGap    = 2 * time.Second
+)
+
 func desktopContainerHTTP(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	deadline := time.Now().Add(desktopWakeRetryBudget)
+	var body, kind string
+	var status int
+	var err error
+	for {
+		body, status, kind, err = desktopContainerHTTPCall(ctx, tenantID, userID, rawURL)
+		if err == nil || !desktopbot.IsWaking(err) || time.Now().After(deadline) {
+			break
+		}
+		timer := time.NewTimer(desktopWakeRetryGap)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", 0, "", ctx.Err()
+		case <-timer.C:
+		}
+	}
+	if err != nil && (desktopbot.IsWaking(err) || desktopbot.IsDesktopAsleep(err)) {
+		return "", 0, "", desktopbot.AsWakeFault(err)
+	}
+	return body, status, kind, err
+}
+
+func desktopContainerHTTPCall(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
 	if desktopRemoteHTTP != nil {
 		return desktopRemoteHTTP(ctx, tenantID, userID, rawURL)
 	}

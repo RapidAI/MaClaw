@@ -103,7 +103,7 @@ func runPlanMutateStaysListed(t *testing.T, c desktopToolCase) {
 	}
 	turn := agentruntime.TurnRequest{
 		Scope: agentruntime.Scope{TenantID: "tenant-case", UserID: "alice", InstanceID: "case-bot"},
-		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan"}}},
+		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan", "bot_intake_phase": "plan"}}},
 	}
 	for _, action := range c.Mutating {
 		_, err := (desktopRuntimeModule{}).InvokeTool(context.Background(), turn, "desktop", map[string]any{

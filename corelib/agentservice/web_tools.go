@@ -7,8 +7,19 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
+
+// webDesktopFault is the tool text for a container fetch or search that
+// failed. A stopped desktop becomes a system fault, not a question about
+// whether to wake the computer.
+func webDesktopFault(kind string, err error) string {
+	if desktopbot.IsDesktopAsleep(err) {
+		return "Error: " + desktopbot.AsWakeFault(err).Error()
+	}
+	return fmt.Sprintf("Error: %s failed: %v", kind, err)
+}
 
 // executeWebSearch handles the web_search tool.
 func (c *coreAgentCallbacks) executeWebSearch(args map[string]interface{}) string {
@@ -26,7 +37,7 @@ func (c *coreAgentCallbacks) executeWebSearch(args map[string]interface{}) strin
 		}
 		text, err := DesktopWeb(c.parentContext(), tenantID, userID, "search", query, "", 0)
 		if err != nil {
-			return fmt.Sprintf("Error: search failed: %v", err)
+			return webDesktopFault("search", err)
 		}
 		return text
 	}
@@ -84,7 +95,7 @@ func (c *coreAgentCallbacks) executeWebFetch(args map[string]interface{}) string
 		}
 		text, err := DesktopWeb(c.parentContext(), tenantID, userID, "fetch", "", rawURL, maxChars)
 		if err != nil {
-			return fmt.Sprintf("Error: fetch failed: %v", err)
+			return webDesktopFault("fetch", err)
 		}
 		return text
 	}

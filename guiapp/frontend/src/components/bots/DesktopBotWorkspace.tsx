@@ -104,7 +104,8 @@ import {
     desktopBotActivityText,
     desktopBotAskingLabel,
     desktopBotCrossTargetText,
-    desktopBotDestructive,
+    desktopBotNoteConfirm,
+    desktopBotWirePhase,
     desktopAckWorthSaying,
     desktopAckOwedOnDispatch,
     desktopBotHubStartedText,
@@ -150,7 +151,6 @@ import {
     protocolControl,
     stripConfirmedOrderLead,
     BOT_RETURN_TASK,
-    BOT_SAVED_TASK,
     saveBotMessages,
     applySupplementOutcomes,
     type BotPhase,
@@ -377,9 +377,9 @@ function withinBudget<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
     });
 }
 
-function phaseFor(content: string, requested: BotPhase): BotPhase {
-    if (planSaveName(content)) return 'plan';
-    return requested === 'execute' ? 'execute' : 'plan';
+function phaseFor(_content: string, requested?: BotPhase): BotPhase {
+    if (requested === 'execute' || requested === 'plan') return requested;
+    return 'execute';
 }
 
 type WorkPace = 'direct' | 'confirm' | 'ask' | 'reply' | 'schedule' | 'status';
@@ -710,11 +710,6 @@ function scheduleNext(iso: string, lang: string): string {
     const pad = (n: number) => String(n).padStart(2, '0');
     const stamp = `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
     return `${localizeText(lang, 'Next', '下次', '下次')} ${stamp}`;
-}
-
-function planSaveName(content: string): string {
-    const match = BOT_SAVED_TASK.exec(content.trim());
-    return match ? match[1] : '';
 }
 
 function saveSentence(name: string): string {
@@ -4910,7 +4905,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const prior = messagesForBot(userId, botId);
         commit(botId, [...prior, { id: messageID(), role: 'assistant', content: desktopBotTypedConfirmSentence(lang), chat: true }]);
     };
-    const startTask = (botId: string, content: string, phase: BotPhase, mode: 'now' | 'fromQueue', verbatim = false, prepared?: PreparedTurn, literal = false, continueSession = '') => {
+    const startTask = (botId: string, content: string, phase: BotPhase, mode: 'now' | 'fromQueue', verbatim = false, prepared?: PreparedTurn, literal = false, continueSession = '', wirePhase?: BotPhase | '', askRun = '') => {
         // A stop watch left from an earlier stop belongs to that stop. It
         // must not release or answer for the job starting now.
         const leftover = stopWatchRef.current.get(botId);
@@ -5130,7 +5125,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             let told = '';
             let options: string[] = [];
             let understoodForAck: Record<string, unknown> = {};
-            let sendPhase: BotPhase = turnPhase;
+            let sendPhase: BotPhase | '' = wirePhase !== undefined ? desktopBotWirePhase(wirePhase) : phase;
             if (verbatim) {
                 // No reading was made. The person asked for their own words,
                 // and those words are still the clearest order there is.
@@ -5293,7 +5288,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             try {
                 // A nil Go struct serializes to null; treat it as an empty result
                 // instead of crashing the send path reading fields off it.
-                const response = (await SendDesktopBotTaskTo(botId, instruction, sendPhase, continueSession) ?? {}) as { request_id?: string; RequestID?: string; deferred?: boolean; Deferred?: boolean; text?: string; Text?: string; error?: string; Error?: string; send_to_user?: string; SendToUser?: string };
+                const response = (await SendDesktopBotTaskTo(botId, instruction, sendPhase, continueSession, askRun) ?? {}) as { request_id?: string; RequestID?: string; deferred?: boolean; Deferred?: boolean; text?: string; Text?: string; error?: string; Error?: string; send_to_user?: string; SendToUser?: string };
                 if (ownerLeft()) {
                     pending.settled = true;
                     pendingRef.current.delete(ticket);
@@ -5645,27 +5640,29 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             }
             if (from && known.has(from) && !desktopBotNoticeSeen(userId, `${id}:from`)) {
                 const name = bots.find(bot => bot.id === target)?.title || target;
+                const fromChoice = kind === 'notify' ? 'none' : desktopBotNoteConfirm({ confirm: (note as { confirm?: unknown }).confirm, order, text });
                 const line = kind === 'notify'
                     ? `跟 ${name} 说了一声：${text}`
-                    : desktopBotDestructive(order || text)
-                        ? (desktopBotDestructive(order || text) && (/安装/.test(order || text) || /(?:^|[^a-z])install(?:[^a-z]|$)/i.test(order || text))
-                            ? `交给 ${name} 了。装软件还是得你在他那边点一下。`
-                            : `交给 ${name} 了。这一步还是得你在他那边点一下。`)
-                        : `交给 ${name} 了，他现在去做。`;
+                    : fromChoice === 'install'
+                        ? `交给 ${name} 了。装软件还是得你在他那边点一下。`
+                        : fromChoice === 'confirm'
+                            ? `交给 ${name} 了。这一步还是得你在他那边点一下。`
+                            : `交给 ${name} 了，他现在去做。`;
                 appendDesktopBotReport(userId, from, { content: line, failed: false, requestId: `${id}:from`, chat: true });
                 markDesktopBotNotice(userId, `${id}:from`);
                 show(from);
             }
             if (!target || !known.has(target) || desktopBotNoticeSeen(userId, `${id}:target`)) continue;
             const body = order || text;
-            const destructive = kind === 'delegate' && desktopBotDestructive(body);
-            if (destructive) {
+            const choice = kind === 'delegate' ? desktopBotNoteConfirm({ confirm: (note as { confirm?: unknown }).confirm, order: body, text: body }) : 'none';
+            if (choice === 'install' || choice === 'confirm') {
                 appendDesktopBotReport(userId, target, {
                     content: desktopBotCrossTargetText(kind, text || order),
                     failed: false,
                     requestId: `${id}:target`,
                     phase: 'plan',
                     workOrder: body,
+                    confirm: choice,
                     crossNoteId: id,
                 });
             } else if (kind === 'delegate' && (String((note as { started_by?: string }).started_by || '') === 'hub' || String((note as { run_id?: string }).run_id || '').trim() !== '')) {
@@ -5860,10 +5857,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (userIdRef.current !== ownerId) return;
         continueForceByBotRef.current = { ...continueForceByBotRef.current, [botId]: { main: true } };
         setContinueForceByBot(current => ({ ...current, [botId]: { main: true } }));
-        await send(String(message.content || ''), 'plan');
+        await send(String(message.content || ''));
     };
 
-    const send = async (preset?: string, phase: BotPhase = 'plan', verbatim = false, prepared?: PreparedTurn, literal = false, continueIn?: string) => {
+    const send = async (preset?: string, phase?: BotPhase, verbatim = false, prepared?: PreparedTurn, literal = false, continueIn?: string, askRun = '') => {
         if (!selected) return;
         if (!preset && secretOpenRef.current) return;
         const botId = selected.id;
@@ -5898,8 +5895,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         // supplement, and where the words belong are decided on the server.
         // This page only forwards the words.
         applyFollowRef.current(true);
-        const turnPhase = phaseFor(content, phase);
-        startTask(botId, content, turnPhase, 'now', verbatim, prepared, literal, continueSession);
+        const explicit = phase === 'plan' || phase === 'execute';
+        const turnPhase = phaseFor(content, explicit ? phase : undefined);
+        startTask(botId, content, turnPhase, 'now', verbatim, prepared, literal, continueSession, explicit ? phase : '', askRun);
         if (!preset) setCommand('');
     };
 
@@ -5952,7 +5950,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             return;
         }
         markAskResolved(botId, messageId);
-        await send(saveSentence(name), 'plan');
+        await send(saveSentence(name));
     };
 
     const resumeFromScreenHandoff = (botId: string) => {
@@ -6728,7 +6726,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             lang={lang}
                                             onSubmit={reply => {
                                                 markAskResolved(selected.id, message.id);
-                                                void send(reply, message.phase === 'execute' ? 'execute' : 'plan', true, undefined, true, message.conversation);
+                                                void send(reply, undefined, true, undefined, true, message.conversation, message.runId || '');
                                             }}
                                         />
                                     ) : null}

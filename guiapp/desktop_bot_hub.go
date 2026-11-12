@@ -114,6 +114,36 @@ var desktopBotWatchOverride func(ctx context.Context, botID string) (novncURL st
 // Hub post reads it. An empty value is not stored.
 var desktopContinueByRequest sync.Map
 
+// desktopAskRunByRequest is the plan-phase ask this send answers, keyed by
+// the per-turn request id. An empty value is not stored.
+var desktopAskRunByRequest sync.Map
+
+func setDesktopAskRun(requestID, runID string) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		desktopAskRunByRequest.Delete(requestID)
+		return
+	}
+	desktopAskRunByRequest.Store(requestID, runID)
+}
+
+func takeDesktopAskRun(requestID string) string {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return ""
+	}
+	value, ok := desktopAskRunByRequest.LoadAndDelete(requestID)
+	if !ok {
+		return ""
+	}
+	runID, _ := value.(string)
+	return strings.TrimSpace(runID)
+}
+
 func setDesktopContinueSession(requestID, session string) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
@@ -1628,6 +1658,9 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 	}
 	if phase = strings.TrimSpace(phase); phase != "" {
 		body["phase"] = phase
+	}
+	if askRun := takeDesktopAskRun(requestID); askRun != "" {
+		body["ask_run"] = askRun
 	}
 	if session := takeDesktopContinueSession(requestID); session != "" {
 		body["continue_session"] = session

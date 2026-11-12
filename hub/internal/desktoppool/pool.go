@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
@@ -854,11 +855,48 @@ func (p *Pool) RunBash(ctx context.Context, tenantID, userID, command string) (s
 	return out.Output, nil
 }
 
-// RunHTTP fetches one URL from inside the user's desktop container.
+// RunHTTP fetches one URL through the desktop service. It does not Ensure:
+// curl runs in the running desktop or in the workspace that stays up while
+// the GUI sleeps. A 503 DESKTOP_WAKING stays a WakeError so the handler
+// returns 503 and the caller can wait.
 func (p *Pool) RunHTTP(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
 	if _, err := desktop.PublicURL(rawURL); err != nil {
 		return "", 0, "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
 	}
+	body, status, kind, err := p.runHTTPOnce(ctx, tenantID, userID, rawURL)
+	if err != nil {
+		return "", 0, "", classifyDesktopOp(err)
+	}
+	return body, status, kind, nil
+}
+
+// classifyDesktopOp keeps a warm-start and a stopped-container refusal typed.
+// Other failures stay as the service returned them.
+func classifyDesktopOp(err error) error {
+	if err == nil || IsDesktopWake(err) {
+		return err
+	}
+	var statusErr *upstream.StatusError
+	if !errors.As(err, &statusErr) {
+		if desktopbot.IsDesktopAsleep(err) {
+			return desktopbot.AsleepError{}
+		}
+		return err
+	}
+	text := statusErr.Error()
+	if statusErr.Status == http.StatusServiceUnavailable && strings.Contains(text, desktopbot.CodeDesktopWaking) {
+		return WakeError{}
+	}
+	if statusErr.Status == http.StatusConflict && strings.Contains(text, desktopbot.CodeDesktopAsleep) {
+		return desktopbot.AsleepError{}
+	}
+	if desktopbot.IsDesktopAsleep(err) {
+		return desktopbot.AsleepError{}
+	}
+	return err
+}
+
+func (p *Pool) runHTTPOnce(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
 	server, err := p.resolve(ctx, tenantID, userID)
 	if err != nil {
 		return "", 0, "", err

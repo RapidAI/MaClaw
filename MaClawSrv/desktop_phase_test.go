@@ -20,7 +20,7 @@ func TestPlanPhaseDoesNotMutateOrHandOffLogin(t *testing.T) {
 	})
 	plan := agentruntime.TurnRequest{
 		Scope: scope,
-		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan"}}},
+		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan", "bot_intake_phase": "plan"}}},
 	}
 	mod := desktopRuntimeModule{}
 	for _, action := range []string{"navigate", "click", "type", "press", "task_run", "script", "skill_run", "app_run", "app_open", "install", "deliver", "file_write", "file_edit", "bash"} {
@@ -397,7 +397,7 @@ func assertDesktopReadsBeforeKeystrokes(t *testing.T, calls [][]string, payload 
 func TestPlanCopyListsOnlyInspection(t *testing.T) {
 	t.Setenv(desktopCDPEnv, "http://127.0.0.1:9222/")
 	plan := agentruntime.TurnRequest{
-		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan"}}},
+		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan", "bot_intake_phase": "plan"}}},
 	}
 	tools, err := desktopRuntimeModule{}.Tools(context.Background(), plan)
 	if err != nil || len(tools) != 1 {
@@ -422,7 +422,7 @@ func TestPlanCopyListsOnlyInspection(t *testing.T) {
 			t.Fatalf("plan prompt still teaches %s: %s", banned, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "one arrangement") || !strings.Contains(prompt, "Do not ask the user") || !strings.Contains(prompt, "say it is done") || !strings.Contains(prompt, "does not start it") || strings.Contains(prompt, "action=deliver") {
+	if !strings.Contains(prompt, "one arrangement") || !strings.Contains(prompt, "Do not ask the user") || !strings.Contains(prompt, "say it is done") || !strings.Contains(prompt, "does not start it") || !strings.Contains(prompt, "wakes by itself") || !strings.Contains(prompt, "ask_user") || strings.Contains(prompt, "action=deliver") {
 		t.Fatalf("plan copy does not keep the arrangement to one confirmation: %s", prompt)
 	}
 	if !strings.Contains(prompt, "Do not paste the document") || !strings.Contains(prompt, "copy it into Word") || !strings.Contains(prompt, "task order") {

@@ -16,6 +16,16 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 )
 
+type desktopAskRunKey struct{}
+
+// WithDesktopAskRun marks this post as the answer to one plan-phase ask.
+func WithDesktopAskRun(ctx context.Context, run string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, desktopAskRunKey{}, strings.TrimSpace(run))
+}
+
 const (
 	ScopeGlobal     = "global"
 	ScopeDepartment = "department"
@@ -392,6 +402,7 @@ type BotAdmission struct {
 	// is free. Held means the person still has the keyboard.
 	Kind     string
 	Ack      string
+	Phase    string
 	Queued   bool
 	Held     bool
 	Position int
@@ -509,7 +520,8 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		s.releaseDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
 		defer s.drainDesktopQueue(tenantID, userID, botID)
 	}
-	var intakeAck, intakeKind string
+	var intakeAck, intakeKind, intakePhase string
+	button := strings.TrimSpace(phase) == "execute"
 	if !desktopReplay(ctx) {
 		next, steered, handled := s.steerDesktopMessage(ctx, desktopSteerRequest{
 			TenantID: tenantID, UserID: userID, DesktopUser: desktopUser, BotID: botID,
@@ -525,6 +537,14 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		}
 		content = next
 		intakeAck, intakeKind = steered.Ack, steered.Kind
+		intakePhase = steered.Phase
+	}
+	if !button {
+		if intakePhase == "plan" {
+			phase = "plan"
+		} else {
+			phase = "execute"
+		}
 	}
 	// One non-terminal admit per user. The reserve is visible to the next
 	// scan before the lock drops. The long message post stays outside it.
@@ -639,11 +659,20 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	}
 	path := instancePath + "/messages"
 	messageMeta := map[string]string{"bot_id": rec.Bots[index].ID}
-	if phase == "plan" || phase == "execute" {
-		messageMeta["bot_phase"] = phase
-	}
-	if phase == "execute" {
+	// The client's phase is ignored except an explicit execute, which is the
+	// arrange/run button. Otherwise the intake phase is posted, and a missing
+	// intake answer is execute. There is no keyword list.
+	if button {
+		phase = "execute"
+		messageMeta["bot_phase_button"] = "1"
 		messageMeta["computer_helper"] = "1"
+	} else if phase != "plan" {
+		phase = "execute"
+	}
+	messageMeta["bot_phase"] = phase
+	messageMeta["bot_intake_phase"] = phase
+	if askRun, _ := ctx.Value(desktopAskRunKey{}).(string); strings.TrimSpace(askRun) != "" {
+		messageMeta["bot_ask_run"] = strings.TrimSpace(askRun)
 	}
 	if strings.HasPrefix(clientMessageID, "xwake-") {
 		// MaClawSrv words a mailbox wake as a turn the person did not send:

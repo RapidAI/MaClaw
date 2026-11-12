@@ -315,6 +315,9 @@ type DesktopBotCrossNote struct {
 	WakeRunID string `json:"wake_run_id,omitempty"`
 	WokenAt   string `json:"woken_at,omitempty"`
 	ShownAt   string `json:"shown_at,omitempty"`
+	// Confirm is the server's decision for a delegate: install, confirm, or
+	// none. Empty means an older Hub, and the page keeps its previous check.
+	Confirm string `json:"confirm,omitempty"`
 }
 
 // DesktopBotMailFile is one file on a Hub message.

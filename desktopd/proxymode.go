@@ -267,23 +267,45 @@ func (s *ProxyModeStore) Snapshot() map[string]string {
 }
 
 // DesktopContainerIPs is the ContainerIPResolver backed by docker: every
-// running maclaw-desktop-* container and its network IPs.
+// running desktop and its headless workspace, with each IP keyed to the
+// owner's desktop container. The workspace shares that owner's network mode.
 func (s *Service) DesktopContainerIPs(ctx context.Context) (map[string]string, error) {
-	ids, err := s.docker(ctx, "ps", "-q", "--filter", "name=maclaw-desktop-")
-	if err != nil {
-		return nil, err
+	var ids []string
+	for _, prefix := range []string{"maclaw-desktop-", workspacePrefix} {
+		text, err := s.docker(ctx, "ps", "-q", "--filter", "name="+prefix)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, strings.Fields(text)...)
 	}
-	out := map[string]string{}
-	fields := strings.Fields(ids)
-	if len(fields) == 0 {
-		return out, nil
+	if len(ids) == 0 {
+		return map[string]string{}, nil
 	}
-	args := append([]string{"inspect", "--format", "{{.Name}}{{range .NetworkSettings.Networks}} {{.IPAddress}}{{end}}"}, fields...)
+	args := append([]string{"inspect", "--format", "{{.Name}}{{range .NetworkSettings.Networks}} {{.IPAddress}}{{end}}"}, ids...)
 	text, err := s.docker(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
 	return parseContainerIPs(text), nil
+}
+
+// ownerDesktopContainer is the desktop container a mode is stored under.
+// A workspace (maclaw-work-<user key>) belongs to the same owner as
+// maclaw-desktop-<user key>, so its traffic uses that mode.
+func ownerDesktopContainer(name string) string {
+	name = strings.TrimPrefix(name, "/")
+	switch {
+	case strings.HasPrefix(name, "maclaw-desktop-"):
+		return name
+	case strings.HasPrefix(name, workspacePrefix):
+		key := strings.TrimPrefix(name, workspacePrefix)
+		if key == "" || key == name {
+			return ""
+		}
+		return "maclaw-desktop-" + key
+	default:
+		return ""
+	}
 }
 
 func parseContainerIPs(text string) map[string]string {
@@ -293,8 +315,8 @@ func parseContainerIPs(text string) map[string]string {
 		if len(parts) < 2 {
 			continue
 		}
-		name := strings.TrimPrefix(parts[0], "/")
-		if !strings.HasPrefix(name, "maclaw-desktop-") {
+		name := ownerDesktopContainer(parts[0])
+		if name == "" {
 			continue
 		}
 		for _, ip := range parts[1:] {

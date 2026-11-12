@@ -16,6 +16,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 const (
@@ -291,6 +292,21 @@ func (c *desktopHubClient) screenshot(ctx context.Context, tenantID, userID, dis
 	return data, saved, nil
 }
 
+func desktopStatusError(status int, payload []byte) error {
+	var parsed struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(payload, &parsed)
+	code := strings.TrimSpace(parsed.Code)
+	if status == http.StatusServiceUnavailable && code == desktopbot.CodeDesktopWaking {
+		return desktopbot.WakingError{}
+	}
+	if status == http.StatusConflict && code == desktopbot.CodeDesktopAsleep {
+		return desktopbot.AsleepError{}
+	}
+	return fmt.Errorf("%s", desktopRejectedMessage(payload))
+}
+
 func desktopRejectedMessage(payload []byte) string {
 	var parsed struct {
 		Message string `json:"message"`
@@ -361,7 +377,7 @@ func (c *desktopHubClient) postLimit(ctx context.Context, path string, body any,
 	defer resp.Body.Close()
 	payload, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s", desktopRejectedMessage(payload))
+		return desktopStatusError(resp.StatusCode, payload)
 	}
 	if dest != nil && len(bytes.TrimSpace(payload)) > 0 {
 		if err := json.Unmarshal(payload, dest); err != nil {
