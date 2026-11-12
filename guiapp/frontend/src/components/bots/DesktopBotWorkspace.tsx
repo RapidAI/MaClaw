@@ -56,6 +56,7 @@ import {
     GetDesktopBotBusy,
     GetDesktopBotSupplements,
     GetDesktopBotLLM,
+    SyncDesktopBotLLM,
     GetDesktopProxyMode,
     GetDesktopComputer,
     RestartDesktopComputer,
@@ -170,7 +171,7 @@ import { DesktopBotComposer } from './DesktopBotComposer';
 import { BotEditDialog } from './BotEditDialog';
 import { BotAvatar } from './BotAvatar';
 import { appearancesForUser, botNameTaken, captureBotLookRevisions, defaultAppearance, hubAppearance, hydrateBotLooks, looksToMigrate, markLookMigrated, mergeLooks, nextAppearance, saveBotAppearance, storeHubLooks, type BotAppearance } from './botAppearance';
-import { BotLLMSettingsDialog, type BotLLMProviderOption, type BotLLMSettingsSubmit } from './BotLLMSettingsDialog';
+import { BotLLMSettingsDialog, type BotLLMProviderOption, type BotLLMRolesSetting, type BotLLMRoleSetting, type BotLLMSettingsSubmit } from './BotLLMSettingsDialog';
 import { BotComputerSettingsDialog, type DesktopComputerAction, type DesktopComputerState } from './BotComputerSettingsDialog';
 import { BotStyleDialog } from './BotStyleDialog';
 import { BotLocalAccessSettingsDialog } from './BotLocalAccessSettingsDialog';
@@ -299,9 +300,40 @@ function customModelDetail(choice: { name?: string; model?: string } | null | un
     return `${name} · ${model}`;
 }
 
-function modelRouteFrom(choice: { mode?: string; name?: string; model?: string } | null | undefined): { route: 'default' | 'custom'; detail: string } {
-    if (choice?.mode !== 'custom') return { route: 'default', detail: '' };
+function modelRouteFrom(choice: { mode?: string; choice?: string; name?: string; model?: string } | null | undefined): { route: 'default' | 'custom'; detail: string } {
+    const mode = choice?.choice || choice?.mode;
+    if (mode !== 'custom') return { route: 'default', detail: '' };
     return { route: 'custom', detail: customModelDetail(choice) };
+}
+
+function roleSettingFrom(raw: unknown): BotLLMRoleSetting {
+    const role = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const text = (lower: string, upper: string) => {
+        const value = role[lower] ?? role[upper];
+        return typeof value === 'string' ? value.trim() : '';
+    };
+    return {
+        unused: role.unused === true || role.Unused === true,
+        official: role.official === true || role.Official === true,
+        inherit: role.inherit === true || role.Inherit === true,
+        name: text('name', 'Name'),
+        url: text('url', 'URL'),
+        model: text('model', 'Model'),
+        protocol: text('protocol', 'Protocol'),
+        wireAPI: text('wire_api', 'WireAPI'),
+    };
+}
+
+function rolesFromBotLLM(choice: { roles?: unknown; Roles?: unknown } | null | undefined): BotLLMRolesSetting | null {
+    const raw = choice?.roles ?? choice?.Roles;
+    if (!raw || typeof raw !== 'object') return null;
+    const roles = raw as Record<string, unknown>;
+    return {
+        foreground: roleSettingFrom(roles.foreground ?? roles.Foreground),
+        background: roleSettingFrom(roles.background ?? roles.Background),
+        computer_use: roleSettingFrom(roles.computer_use ?? roles.ComputerUse),
+        grounder: roleSettingFrom(roles.grounder ?? roles.Grounder),
+    };
 }
 
 // vnc.html treats a checkbox query as on unless the value is 0, no, or false.
@@ -1023,17 +1055,17 @@ function copy(lang: string) {
             pcActiveRuns: (count: number) => `${count} bot task(s) are running. Continuing will interrupt them.`,
             pcBusy: 'A bot is using the computer for a task right now. Continuing will interrupt that task.',
             llmTitle: 'Model for your bots',
-            llmSharedHint: 'Every bot of this account runs on the same model. Changing it here moves all of them.',
+            llmSharedHint: 'Every bot on this account shares these models. A change here applies to all of them.',
             llmUseDefault: 'Default',
-            llmDefaultHint: 'Hand the bots back to whatever the service resolves for you — either your own route, or the provider an administrator picked.',
-            llmUseProvider: 'Pick a provider from this computer',
+            llmDefaultHint: 'The service decides every role — your Hub route, or the provider an administrator picked.',
+            llmUseCustom: 'Custom',
+            llmCustomHint: 'Choose a provider and model for each role on this computer.',
             llmProviderLabel: 'Provider',
             llmModelLabel: 'Model',
             llmModelLoading: 'Loading the model list…',
             llmModelEmpty: 'This provider has no models to pick from yet.',
             llmNoProviders: 'No provider on this computer has a key yet. Add one under Settings → Providers first.',
-            llmRoleSection: 'Model configuration',
-            llmRoleHint: 'Foreground, background, computer use, and grounding. These apply to every bot on this account.',
+            llmRoleSaveHint: 'Some roles are still only on this computer. Save once to apply them to your bots.',
             llmCustomMark: (detail: string) => detail ? `Using your own model: ${detail}` : 'Using your own model',
         };
         return (normalizeLang(lang) === 'mn' ? localizeBotCopy(lang, english) : english) as typeof english;
@@ -1247,17 +1279,17 @@ function copy(lang: string) {
             pcActiveRuns: (count: number) => `目前有 ${count} 個 Bot 任務在執行，繼續會中斷它們。`,
             pcBusy: '有 Bot 正在用這台電腦執行任務，繼續會中斷該任務。',
             llmTitle: 'Bot 用的模型',
-            llmSharedHint: '這個帳號底下的所有 Bot 都跑同一個模型，這裡改了會一起生效。',
+            llmSharedHint: '這個帳號底下的所有 Bot 共用這裡的模型，改了一起生效。',
             llmUseDefault: '預設',
-            llmDefaultHint: '交回服務自己決定：可能是你在 Hub 上的線路，也可能是管理員指定的服務商。',
-            llmUseProvider: '從這台電腦的服務商裡挑一個',
+            llmDefaultHint: '交回服務自己決定：前台、後台、電腦操作和定位都跟著 Hub 或管理員的預設。',
+            llmUseCustom: '自訂',
+            llmCustomHint: '在這台電腦上為每個角色指定服務商和模型。',
             llmProviderLabel: '服務商',
             llmModelLabel: '模型',
             llmModelLoading: '正在取得模型清單…',
             llmModelEmpty: '這個服務商暫時沒有可選模型。',
             llmNoProviders: '這台電腦還沒有填好 key 的服務商。先到設定 → 服務商新增一個。',
-            llmRoleSection: '模型配置',
-            llmRoleHint: '前台交互、後台執行、電腦操作和定位模型。這個帳號底下的所有 Bot 共用。',
+            llmRoleSaveHint: '有些角色還只在這台電腦上。儲存一次後才會交給 Bot。',
             llmCustomMark: (detail: string) => detail ? `正在使用自訂模型：${detail}` : '正在使用自訂模型',
         };
     }
@@ -1469,17 +1501,17 @@ function copy(lang: string) {
         pcActiveRuns: (count: number) => `当前有 ${count} 个 Bot 任务在运行，继续会中断它们。`,
         pcBusy: '有 Bot 正在用这台电脑执行任务，继续会中断该任务。',
         llmTitle: 'Bot 用的模型',
-        llmSharedHint: '这个账号下的所有 Bot 都跑同一个模型，这里改了会一起生效。',
+        llmSharedHint: '这个账号下的所有 Bot 共用这里的模型，改了一起生效。',
         llmUseDefault: '默认',
-        llmDefaultHint: '交回服务自己决定：可能是你在 Hub 上的线路，也可能是管理员指定的服务商。',
-        llmUseProvider: '从这台电脑的服务商里挑一个',
+        llmDefaultHint: '交回服务自己决定：前台、后台、电脑操作和定位都跟着 Hub 或管理员的默认。',
+        llmUseCustom: '自定义',
+        llmCustomHint: '在这台电脑上为每个角色指定服务商和模型。',
         llmProviderLabel: '服务商',
         llmModelLabel: '模型',
         llmModelLoading: '正在获取模型列表…',
         llmModelEmpty: '这个服务商暂时没有可选模型。',
         llmNoProviders: '这台电脑还没有填好 key 的服务商。先到设置 → 服务商添加一个。',
-        llmRoleSection: '模型配置',
-        llmRoleHint: '前台交互、后台执行、电脑操作和定位模型。这个账号下的所有 Bot 共用。',
+        llmRoleSaveHint: '有些角色还只在这台电脑上。保存一次后才会交给 Bot。',
         llmCustomMark: (detail: string) => detail ? `正在使用自定义模型：${detail}` : '正在使用自定义模型',
     };
 }
@@ -2289,6 +2321,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [llmMode, setLlmMode] = useState<'default' | 'custom'>('default');
     const [llmName, setLlmName] = useState('');
     const [llmModel, setLlmModel] = useState('');
+    const [llmRoles, setLlmRoles] = useState<BotLLMRolesSetting | null>(null);
+    const [llmNeedsRoleSave, setLlmNeedsRoleSave] = useState(false);
     const [llmSaving, setLlmSaving] = useState(false);
     const [llmNotice, setLlmNotice] = useState('');
     // Settings dialog: the Model tab is the model dialog above, the Network tab
@@ -4257,6 +4291,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         };
     }, [userId, creditEpoch]);
 
+    // Reconcile local role pins once per account. This is not the credits poll:
+    // that read only refreshes the cached choice.
+    useEffect(() => {
+        let cancelled = false;
+        void SyncDesktopBotLLM().then(current => {
+            if (cancelled || !current) return;
+            const route = modelRouteFrom(current);
+            setCreditRoute(route.route);
+            setCustomModelDetailText(route.detail);
+            setLlmNeedsRoleSave(current.needs_role_save === true);
+        }).catch(() => {
+            // The next settings open tries again.
+        });
+        return () => { cancelled = true; };
+    }, [userId]);
+
     // Both halves of the model dialog load together: without the provider list
     // the saved choice cannot be shown as selected, and without the saved choice
     // the list has nothing to point at. Either failing leaves nothing to show.
@@ -4266,11 +4316,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setLlmNotice('');
         try {
             const [current, rawProviders] = await Promise.all([
-                GetDesktopBotLLM(),
+                SyncDesktopBotLLM(),
                 GetMaclawLLMProviders() as Promise<{ providers?: DesktopProviderWire[]; Providers?: DesktopProviderWire[] } | null>,
             ]);
             if (gen !== loadGen.current) return;
             const entries = rawProviders?.providers ?? rawProviders?.Providers ?? [];
+            setLlmNeedsRoleSave(current?.needs_role_save === true);
             const route = modelRouteFrom(current);
             // The dialog and the header read the same response. A failed poll
             // must not leave the mark blank once this read has the choice.
@@ -4280,6 +4331,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setLlmMode(route.route);
             setLlmName(String(current?.name ?? '').trim());
             setLlmModel(String(current?.model ?? '').trim());
+            setLlmRoles(rolesFromBotLLM(current));
             setLlmOpen(true);
         } catch (error) {
             if (gen !== loadGen.current) return;
@@ -4401,19 +4453,20 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const gen = loadGen.current;
         setLlmSaving(true);
         setLlmNotice('');
-        let saved: { mode?: string; name?: string; model?: string; warning?: string } | undefined;
+        let saved: { mode?: string; name?: string; model?: string; warning?: string; roles?: BotLLMRolesSetting | null } | undefined;
         try {
             if (payload.mode === 'default') {
                 saved = await SaveDesktopBotLLM({ mode: 'default' });
-            } else if (payload.provider) {
+            } else if (payload.roles) {
                 saved = await SaveDesktopBotLLM({
                     mode: 'custom',
-                    name: payload.provider.name,
-                    url: payload.provider.url,
-                    key: payload.provider.key,
+                    name: payload.name,
+                    url: payload.url,
+                    key: payload.key,
                     model: payload.model,
-                    protocol: payload.provider.protocol,
-                    wire_api: payload.provider.wireAPI,
+                    protocol: payload.protocol,
+                    wire_api: payload.wire_api,
+                    roles: payload.roles,
                 });
             }
         } catch (error) {
@@ -4437,10 +4490,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setLlmMode('custom');
             setLlmName(String(saved.name ?? '').trim());
             setLlmModel(String(saved.model ?? '').trim());
+            setLlmRoles(rolesFromBotLLM(saved));
         } else {
             setLlmMode('default');
             setLlmName('');
             setLlmModel('');
+            setLlmRoles(null);
         }
         if (saved.warning) {
             setLlmNotice(saved.warning);
@@ -7245,14 +7300,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         sharedHint: text.llmSharedHint,
                         useDefault: text.llmUseDefault,
                         defaultHint: text.llmDefaultHint,
-                        useProvider: text.llmUseProvider,
+                        useCustom: text.llmUseCustom,
+                        customHint: text.llmCustomHint,
                         providerLabel: text.llmProviderLabel,
                         modelLabel: text.llmModelLabel,
                         modelLoading: text.llmModelLoading,
                         modelEmpty: text.llmModelEmpty,
                         noProviders: text.llmNoProviders,
-                        roleSection: text.llmRoleSection,
-                        roleHint: text.llmRoleHint,
+                        roleSaveHint: text.llmRoleSaveHint,
                         save: text.save,
                         cancel: text.cancel,
                         close: text.close,
@@ -7263,6 +7318,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     initialMode={llmMode}
                     initialName={llmName}
                     initialModel={llmModel}
+                    initialRoles={llmRoles}
+                    needsRoleSave={llmNeedsRoleSave}
                     notice={llmNotice}
                     saving={llmSaving}
                     lang={lang}

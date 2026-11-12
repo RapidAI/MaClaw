@@ -117,11 +117,16 @@ type record struct {
 	// SystemFreeCreditDebits remembers request ids already added to
 	// SystemFreeCreditsUsed so a billing retry does not charge twice.
 	SystemFreeCreditDebits []systemFreeCreditDebit `json:"system_free_credit_debits,omitempty"`
-	// OwnerLLMOverrides is the provider each bot owner picked for their own
-	// bots, keyed by hub user id. It lives on the record rather than on the
+	// OwnerLLMOverrides is the legacy single provider each bot owner picked,
+	// keyed by hub user id. Reads migrate it into OwnerBotLLMs and then drop
+	// it. New saves do not write it.
+	OwnerLLMOverrides map[string]*ownerLLMOverride `json:"owner_llm_overrides,omitempty"`
+	// OwnerBotLLMs is the one model choice for each owner's bots, keyed by
+	// hub user id. Mode default leaves every role to the service. Mode custom
+	// stores the four role rows. It lives on the record rather than on the
 	// principal so the choice survives a principal that has not been
 	// provisioned yet; it is applied on that owner's first bot open.
-	OwnerLLMOverrides map[string]*ownerLLMOverride `json:"owner_llm_overrides,omitempty"`
+	OwnerBotLLMs map[string]*ownerBotLLM `json:"owner_bot_llms,omitempty"`
 	// OwnerDesktopModeDefaults is the desktop_mode a new bot of that owner
 	// starts with, keyed by hub user id. Absent means shared, as before; it
 	// does not change existing bots or other owners.

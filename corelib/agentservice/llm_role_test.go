@@ -156,6 +156,44 @@ func TestResolveTurnLLMRoleUsesBackgroundForLongJobWatch(t *testing.T) {
 	}
 }
 
+func TestResolveLLMRoleModeSelectsOneSource(t *testing.T) {
+	cfg := testRoleProviders()
+	cfg.MaclawHubBotRoles.Background = corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRolePin, Provider: "Claude"}
+	cfg.MaclawLLMProfiles = &corelib.MaclawLLMProfiles{
+		Background: corelib.MaclawLLMRoleAssignment{InheritHub: inheritFalse(), ProviderID: corelib.MaclawLLMLegacyProviderID("DeepSeek"), Model: "deepseek-reasoner"},
+	}
+
+	// Empty mode is a config Hub has not rewritten: the profile pin still wins.
+	legacy, err := ResolveLLMRole(cfg, LLMRoleBackground)
+	if err != nil || legacy.Model != "deepseek-reasoner" || legacy.ProviderName != "DeepSeek" {
+		t.Fatalf("legacy pin = %+v err=%v", legacy, err)
+	}
+
+	// Default ignores the pin and uses the service (here, the administrator pin).
+	cfg.MaclawBotLLMMode = corelib.MaclawBotLLMModeDefault
+	service, err := ResolveLLMRole(cfg, LLMRoleBackground)
+	if err != nil || service.ProviderName != "Claude" || service.Model != "claude-sonnet" {
+		t.Fatalf("default mode = %+v err=%v", service, err)
+	}
+	if _, err := ResolveLLMRole(cfg, LLMRoleGrounder); err != ErrGrounderUnused {
+		t.Fatalf("default grounder = %v", err)
+	}
+
+	// Custom ignores the administrator pin and reads only the profile pin.
+	cfg.MaclawBotLLMMode = corelib.MaclawBotLLMModeCustom
+	custom, err := ResolveLLMRole(cfg, LLMRoleBackground)
+	if err != nil || custom.Model != "deepseek-reasoner" || custom.Key != "sk-ds" {
+		t.Fatalf("custom mode = %+v err=%v", custom, err)
+	}
+	fg, err := ResolveLLMRole(cfg, LLMRoleForeground)
+	if err != nil || fg.ProviderName != "DeepSeek" || fg.Model != "deepseek-chat" {
+		t.Fatalf("unset custom foreground should follow the service, got %+v err=%v", fg, err)
+	}
+	if _, err := ResolveLLMRole(cfg, LLMRoleGrounder); err != ErrGrounderUnused {
+		t.Fatalf("custom grounder without a pin = %v", err)
+	}
+}
+
 func TestResolveLLMRoleDoesNotExposeOtherProviderKeys(t *testing.T) {
 	cfg := testRoleProviders()
 	cfg.MaclawHubBotRoles.Background = corelib.MaclawHubBotRole{Mode: corelib.MaclawHubBotRolePin, Provider: "Claude"}

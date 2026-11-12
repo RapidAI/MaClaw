@@ -308,6 +308,8 @@ var maclawSrvHiddenConfigKeys = map[string]struct{}{
 	// sharedClientConfigKeys, so publishing it in the MaClawSrv or user-web
 	// schema would expose a toggle that never applies to those surfaces.
 	"default_proxy_scope_coding_tools": {},
+	// Desktop-only migration marker. The bot model itself lives on Hub.
+	"desktop_bot_llm_accounts": {},
 }
 
 var userWebComplexConfigKeys = map[string]struct{}{
@@ -323,7 +325,10 @@ var userWebHiddenConfigKeys = map[string]struct{}{
 	"show_codex": {}, "show_opencode": {}, "show_codebuddy": {}, "show_iflow": {}, "show_kilo": {},
 	"extra_tool_configs": {}, "use_windows_terminal": {}, "nl_skills": {},
 	"default_proxy_scope_coding_tools": {},
-	"llm_token_usage":                  {}, "mcp_servers": {}, "local_mcp_servers": {}, "ssh_hosts": {},
+	"desktop_bot_llm_accounts":         {},
+	// Hub writes this onto the MaClawSrv user. It is not a form field.
+	"maclaw_bot_llm_mode": {},
+	"llm_token_usage":     {}, "mcp_servers": {}, "local_mcp_servers": {}, "ssh_hosts": {},
 	"skill_hub_urls": {}, "external_skill_dirs": {}, "skill_sources_allowed": {},
 	"remote_user_id": {}, "remote_tenant_id": {}, "remote_tenant_name": {}, "remote_machine_id": {},
 	"remote_machine_name": {}, "remote_machine_token": {}, "remote_viewer_token": {},

@@ -44,6 +44,9 @@ func (a *App) ResolveMaclawLLMRole(role string) (corelib.MaclawLLMConfig, error)
 	if a == nil {
 		return corelib.MaclawLLMConfig{}, fmt.Errorf("app is nil")
 	}
+	if choice, ok := a.desktopBotLLMChoice(a.configuredRemoteUserID()); ok {
+		return a.resolveMaclawLLMRoleFromChoice(role, choice)
+	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return corelib.MaclawLLMConfig{}, err
@@ -102,6 +105,112 @@ func (a *App) resolveMaclawLLMRoleFromConfig(role string, cfg corelib.AppConfig,
 	// Lost entitlement clears the Hub snapshot, so every role falls back here.
 	// Only the official provider borrows vision for auto.
 	return ensureHubAutoRoleVision(assistant, providerIsHubService(provider)), nil
+}
+
+// resolveMaclawLLMRoleFromChoice follows the Hub-stored bot model. Local
+// role pins are ignored once that view has been read.
+func (a *App) resolveMaclawLLMRoleFromChoice(role string, choice DesktopBotLLM) (corelib.MaclawLLMConfig, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return corelib.MaclawLLMConfig{}, err
+	}
+	state := a.maclawLLMProvidersFromConfig(&cfg)
+	mode := strings.TrimSpace(choice.Choice)
+	if mode == "" {
+		mode = strings.TrimSpace(choice.Mode)
+	}
+	if mode == "custom" {
+		if spec, explicit := explicitDesktopBotRole(choice, role); explicit {
+			return a.materializeDesktopHubRole(role, spec, state.Providers)
+		}
+	}
+	if spec, ok := effectiveDesktopBotRole(choice, role); ok {
+		if resolved, matErr := a.materializeDesktopHubRole(role, spec, state.Providers); matErr == nil {
+			return resolved, nil
+		}
+	}
+	cleared := cfg
+	if cleared.MaclawLLMProfiles != nil {
+		profiles := *cleared.MaclawLLMProfiles
+		profiles.Foreground = corelib.MaclawLLMRoleAssignment{}
+		profiles.Background = corelib.MaclawLLMRoleAssignment{}
+		profiles.ComputerUse = corelib.MaclawLLMRoleAssignment{}
+		cleared.MaclawLLMProfiles = &profiles
+	}
+	return a.resolveMaclawLLMRoleFromConfig(role, cleared, state.Providers, state.Current)
+}
+
+func explicitDesktopBotRole(choice DesktopBotLLM, role string) (DesktopBotLLMRole, bool) {
+	if choice.Roles == nil {
+		return DesktopBotLLMRole{}, false
+	}
+	spec := choice.Roles.Foreground
+	switch role {
+	case maclawLLMRoleBackground:
+		spec = choice.Roles.Background
+	case maclawLLMRoleComputerUse:
+		spec = choice.Roles.ComputerUse
+	case maclawLLMRoleGrounder:
+		spec = choice.Roles.Grounder
+	}
+	if spec.Inherit || spec.Unused {
+		return spec, false
+	}
+	if spec.Official && strings.TrimSpace(spec.Model) != "" {
+		return spec, true
+	}
+	if strings.TrimSpace(spec.Name) != "" && strings.TrimSpace(spec.Model) != "" {
+		return spec, true
+	}
+	return spec, false
+}
+
+func effectiveDesktopBotRole(choice DesktopBotLLM, role string) (DesktopBotLLMRole, bool) {
+	if choice.Effective == nil {
+		return DesktopBotLLMRole{}, false
+	}
+	spec := choice.Effective.Foreground
+	switch role {
+	case maclawLLMRoleBackground:
+		spec = choice.Effective.Background
+	case maclawLLMRoleComputerUse:
+		spec = choice.Effective.ComputerUse
+	case maclawLLMRoleGrounder:
+		spec = choice.Effective.Grounder
+	}
+	if spec.Unused || spec.Inherit {
+		return spec, false
+	}
+	if spec.Official && strings.TrimSpace(spec.Model) != "" {
+		return spec, true
+	}
+	if strings.TrimSpace(spec.Name) != "" && strings.TrimSpace(spec.Model) != "" {
+		return spec, true
+	}
+	return spec, false
+}
+
+func (a *App) materializeDesktopHubRole(role string, spec DesktopBotLLMRole, providers []corelib.MaclawLLMProvider) (corelib.MaclawLLMConfig, error) {
+	model := normalizeDesktopRoleModel(spec.Model)
+	if spec.Official || strings.TrimSpace(spec.Name) == "" {
+		provider, ok := findHubServiceProvider(providers)
+		if !ok {
+			return corelib.MaclawLLMConfig{}, fmt.Errorf("LLM role %q has no Hub provider", role)
+		}
+		return a.materializeResolvedRole(role, provider, model), nil
+	}
+	for _, provider := range providers {
+		if !corelib.MaclawLLMProviderNameEqual(provider.Name, spec.Name) {
+			continue
+		}
+		// A named provider without a local key cannot be called from here.
+		// The caller falls back to the Hub gateway path.
+		if strings.TrimSpace(provider.Key) == "" {
+			return corelib.MaclawLLMConfig{}, fmt.Errorf("LLM role %q provider %s has no local key", role, spec.Name)
+		}
+		return a.materializeResolvedRole(role, provider, model), nil
+	}
+	return corelib.MaclawLLMConfig{}, fmt.Errorf("LLM role %q provider %s is not on this computer", role, spec.Name)
 }
 
 func maclawLLMRoleAssignment(profiles corelib.MaclawLLMProfiles, role string) corelib.MaclawLLMRoleAssignment {

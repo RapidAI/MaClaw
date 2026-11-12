@@ -173,7 +173,7 @@ func systemFreeCreditsView(rec record, hubUserID string) SystemFreeCreditsView {
 }
 
 func systemFreeRouteActive(rec record, hubUserID string) bool {
-	if effectiveOwnerLLMOverride(rec, hubUserID) != nil {
+	if ownerBotLLMIsCustom(rec, hubUserID) {
 		return false
 	}
 	// Blank, the legacy system-free id, and the official id are one route.

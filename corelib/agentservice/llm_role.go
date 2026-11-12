@@ -24,15 +24,18 @@ var ErrGrounderUnused = fmt.Errorf("no grounding model is configured")
 
 // ResolveLLMRole returns the model for one bot role.
 //
-// Precedence (same idea as the GUI's ResolveMaclawLLMRole, applied on the
-// MaClawSrv user config Hub writes):
-//  1. A local maclaw_llm_profiles pin (inherit_hub=false plus a model) wins.
-//  2. A Hub Bot-management pin (maclaw_hub_bot_roles) selects that provider.
-//  3. Otherwise the default current provider (ResolveLLMConfig).
+// MaclawBotLLMMode picks the one source Hub wrote for this user:
+//   - custom: an explicit maclaw_llm_profiles role pin. A role with no pin
+//     follows the service, so an administrator pin still applies there.
+//   - default: the service. A Hub Bot-management pin (maclaw_hub_bot_roles)
+//     selects that provider; otherwise the current provider (ResolveLLMConfig).
+//     Profile pins are ignored.
+//   - empty: a config Hub has not rewritten. The older combined precedence
+//     still applies (profile pin, then the service) so those bots do not
+//     change until the next push.
 //
 // Grounder is optional. Unused or an empty assignment means it is not
-// configured (the GUI default). Inherit follows the default current provider
-// (Hub Bot management 跟随默认). A pin selects that provider.
+// configured. Inherit, on the service path, follows the current provider.
 func ResolveLLMRole(cfg corelib.AppConfig, role string) (corelib.MaclawLLMConfig, error) {
 	role = strings.ToLower(strings.TrimSpace(role))
 	switch role {
@@ -43,14 +46,39 @@ func ResolveLLMRole(cfg corelib.AppConfig, role string) (corelib.MaclawLLMConfig
 	if role == "" {
 		role = LLMRoleForeground
 	}
+	switch strings.ToLower(strings.TrimSpace(cfg.MaclawBotLLMMode)) {
+	case corelib.MaclawBotLLMModeCustom:
+		return resolveCustomBotRole(cfg, role)
+	case corelib.MaclawBotLLMModeDefault:
+		return resolveServiceBotRole(cfg, role)
+	default:
+		if pinned, ok, err := resolveProfileRolePin(cfg, role); ok {
+			if err != nil {
+				return corelib.MaclawLLMConfig{}, err
+			}
+			return pinned, nil
+		}
+		return resolveServiceBotRole(cfg, role)
+	}
+}
 
-	if pinned, ok, err := resolveProfileRolePin(cfg, role); ok {
+// resolveCustomBotRole uses an explicit role pin when one is stored. A role
+// left unset follows the service (administrator pin or current provider), so
+// an admin pin still applies to the rows the owner did not set.
+func resolveCustomBotRole(cfg corelib.AppConfig, role string) (corelib.MaclawLLMConfig, error) {
+	pinned, ok, err := resolveProfileRolePin(cfg, role)
+	if ok {
 		if err != nil {
 			return corelib.MaclawLLMConfig{}, err
 		}
 		return pinned, nil
 	}
+	return resolveServiceBotRole(cfg, role)
+}
 
+// resolveServiceBotRole is the administrator / Hub route. It does not consult
+// maclaw_llm_profiles.
+func resolveServiceBotRole(cfg corelib.AppConfig, role string) (corelib.MaclawLLMConfig, error) {
 	assignment := hubBotRole(cfg.MaclawHubBotRoles, role)
 	mode := strings.ToLower(strings.TrimSpace(assignment.Mode))
 	if role == LLMRoleGrounder && (mode == "" || mode == corelib.MaclawHubBotRoleUnused) {

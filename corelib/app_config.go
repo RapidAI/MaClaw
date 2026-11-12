@@ -125,8 +125,20 @@ type AppConfig struct {
 	// wrote for this MaClawSrv user. It carries no credentials; a pin names a
 	// provider already listed in maclaw_llm_providers (or the official hub-llm
 	// row). Empty or inherit follows MaclawLLMCurrentProvider.
-	MaclawHubBotRoles MaclawHubBotRoles    `json:"maclaw_hub_bot_roles,omitempty"`
-	LLMPromptCache    LLMPromptCacheConfig `json:"llm_prompt_cache,omitempty"`
+	// Read only when MaclawBotLLMMode is default (or empty, for a config Hub
+	// has not rewritten yet).
+	MaclawHubBotRoles MaclawHubBotRoles `json:"maclaw_hub_bot_roles,omitempty"`
+	// MaclawBotLLMMode is the one switch for how this MaClawSrv user picks a
+	// model per bot role. "custom" uses an explicit maclaw_llm_profiles pin
+	// when one is stored and otherwise the service. "default" reads
+	// MaclawHubBotRoles and the current provider. Empty keeps the older
+	// combined precedence so a config Hub has not rewritten still behaves as
+	// it did.
+	MaclawBotLLMMode string `json:"maclaw_bot_llm_mode,omitempty"`
+	// DesktopBotLLMAccounts is per Hub user on this desktop: the migration
+	// marker and the last bot-model view (no credentials). MaClawSrv ignores it.
+	DesktopBotLLMAccounts map[string]DesktopBotLLMAccount `json:"desktop_bot_llm_accounts,omitempty"`
+	LLMPromptCache        LLMPromptCacheConfig            `json:"llm_prompt_cache,omitempty"`
 	// AnswerCache is retained only as the one-time migration source for legacy
 	// single-bot Lansenger installations. New reply-cache policies live on each
 	// LansengerBotProfile; runtime code must not use this application-wide value
@@ -879,7 +891,23 @@ const (
 	MaclawHubBotRoleInherit = "inherit"
 	MaclawHubBotRolePin     = "pin"
 	MaclawHubBotRoleUnused  = "unused"
+	// MaclawBotLLMModeDefault means the service (Hub route or an administrator
+	// role assignment) chooses every bot role.
+	MaclawBotLLMModeDefault = "default"
+	// MaclawBotLLMModeCustom means the owner's per-role pins are the only
+	// source for bot role models. A role left unset still follows the service.
+	MaclawBotLLMModeCustom = "custom"
 )
+
+// DesktopBotLLMAccount is one Hub user's cached bot-model view on the desktop.
+// ChoiceJSON is the view without credentials.
+type DesktopBotLLMAccount struct {
+	Migrated   bool     `json:"migrated,omitempty"`
+	ChoiceJSON string   `json:"choice_json,omitempty"`
+	// Pending are local role pins that still need a save before Hub has them.
+	// They must not be cleared just because another role was stored.
+	Pending []string `json:"pending,omitempty"`
+}
 
 // MaclawHubBotRole is one Bot-management role assignment. Mode inherit (or
 // empty) follows the default current provider. Pin requires Provider, which
