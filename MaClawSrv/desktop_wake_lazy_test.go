@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 func TestRunAdmissionLeavesTheDesktopAsleepUntilAStepNeedsIt(t *testing.T) {
@@ -53,7 +54,7 @@ func TestRunAdmissionLeavesTheDesktopAsleepUntilAStepNeedsIt(t *testing.T) {
 
 func TestDesktopWakeFailureIsWordedForThePerson(t *testing.T) {
 	desktopRemoteSession = func(context.Context, string, string) (desktopEndpoint, error) {
-		return desktopEndpoint{}, errors.New("pool exhausted")
+		return desktopEndpoint{}, desktopbot.WakingError{}
 	}
 	t.Cleanup(func() { desktopRemoteSession = nil; desktopRoundWakes.Delete("run_wf") })
 	_, err := ensureDesktopRound(context.Background(), agentruntime.Scope{TenantID: "t", UserID: "u", RunID: "run_wf"}, "", true)

@@ -122,4 +122,44 @@ func TestIntakeTimeoutAndGarbageBecomeANewTask(t *testing.T) {
 	if _, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "telegram:1", Content: "hi"}, nil); err != ErrBotThreadsBadBot {
 		t.Fatalf("bad bot err = %v", err)
 	}
+	if got.Phase != "execute" {
+		t.Fatalf("unreadable phase = %q", got.Phase)
+	}
+}
+
+func TestIntakePhaseComesFromTheModelAndTimeoutStaysExecute(t *testing.T) {
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	// These sentences used to match a keyword list and enter plan. The
+	// phase is whatever the model returns; a missing phase is execute.
+	for _, text := range []string{"用支付宝查一下账单", "删除重复段落后发布", "format as a table", "please pay attention", "remove the watermark"} {
+		got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: text}, func(context.Context, string, string) (string, error) {
+			return `{"kind":"new","run":0,"instruction":"do it","ack":"好。","pace":"direct"}`, nil
+		})
+		if err != nil || got.Phase != "execute" {
+			t.Fatalf("%s phase=%q err=%v", text, got.Phase, err)
+		}
+	}
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "删掉我电脑里的全部文件"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"instruction":"删除这个人自己的全部文件","ack":"这步要先安排。","pace":"direct","phase":"plan"}`, nil
+	})
+	if err != nil || got.Phase != "plan" || got.Kind != "new" {
+		t.Fatalf("destructive = %+v %v", got, err)
+	}
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "确认，开始吧"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"continue","run":0,"instruction":"","ack":"开始。","pace":"direct","phase":"plan"}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Phase != "execute" {
+		t.Fatalf("confirm follow-up = %+v %v", got, err)
+	}
+	prev := BotIntakeBudget
+	BotIntakeBudget = 40 * time.Millisecond
+	defer func() { BotIntakeBudget = prev }()
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "删除 /data 下所有文件"}, func(ctx context.Context, _, _ string) (string, error) {
+		<-ctx.Done()
+		return `{"kind":"new","run":0,"phase":"plan","ack":"安排","pace":"direct"}`, nil
+	})
+	if err != nil || got.Reason != "timeout" || got.Phase != "execute" {
+		t.Fatalf("timeout must not fall back to keywords: %+v %v", got, err)
+	}
 }

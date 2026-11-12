@@ -34,6 +34,7 @@ type desktopIntake struct {
 	Persona     string           `json:"persona"`
 	Schedule    *DesktopSchedule `json:"schedule"`
 	Reason      string           `json:"reason"`
+	Phase       string           `json:"phase"`
 }
 
 type desktopRunBrief struct {
@@ -88,9 +89,13 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 			decision.Instruction = content
 		}
 	}
+	if strings.TrimSpace(decision.Phase) != "plan" {
+		decision.Phase = "execute"
+	}
 	base := BotAdmission{
 		Kind:            decision.Kind,
 		Ack:             decision.Ack,
+		Phase:           decision.Phase,
 		RunID:           decision.RunID,
 		ClientMessageID: in.ClientMessageID,
 		Schedule:        decision.Schedule,
@@ -219,7 +224,7 @@ func (s *Service) desktopLiveRunBriefs(tenantID, userID, botID string) []desktop
 }
 
 func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest, running []desktopRunBrief) desktopIntake {
-	fallback := desktopIntake{Kind: "new", Instruction: strings.TrimSpace(in.Content), Pace: "direct", Reason: "fallback"}
+	fallback := desktopIntake{Kind: "new", Instruction: strings.TrimSpace(in.Content), Pace: "direct", Phase: "execute", Reason: "fallback"}
 	if s == nil || strings.TrimSpace(in.InstanceID) == "" {
 		return fallback
 	}
@@ -263,5 +268,8 @@ func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest
 	}
 	out.Kind = strings.ToLower(strings.TrimSpace(out.Kind))
 	out.RunID = strings.TrimSpace(out.RunID)
+	if strings.TrimSpace(out.Phase) != "plan" {
+		out.Phase = "execute"
+	}
 	return out
 }

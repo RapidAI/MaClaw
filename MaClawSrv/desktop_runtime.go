@@ -4326,19 +4326,7 @@ func (e desktopWakeError) Error() string {
 }
 
 func machineWakeFailure(err error) bool {
-	if err == nil {
-		return false
-	}
-	if desktopbot.IsDesktopAsleep(err) {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	for _, part := range []string{"pool exhausted", "warm start", "再试一次", "桌面正在唤醒"} {
-		if strings.Contains(msg, part) {
-			return true
-		}
-	}
-	return false
+	return desktopbot.IsDesktopAsleep(err) || desktopbot.IsWaking(err)
 }
 
 func (e desktopWakeError) Unwrap() error { return e.cause }

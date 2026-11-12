@@ -104,7 +104,7 @@ func TestPlanPhaseIsMessageMetadataAndAttentionStaysWithTheBot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plain.Handoff || plain.AttentionReason != "" || strings.Contains(bodies[2], "bot_phase") {
+	if plain.Handoff || plain.AttentionReason != "" || !strings.Contains(bodies[2], `"bot_phase":"execute"`) || strings.Contains(bodies[2], `"bot_phase":"plan"`) || strings.Contains(bodies[2], "computer_helper") {
 		t.Fatalf("plain reply=%#v body=%s", plain, bodies[2])
 	}
 	if svc.DesktopAttention("tenant-a", "alice", "bot_alice") != "" {
@@ -123,14 +123,16 @@ func TestPlanPhaseIsMessageMetadataAndAttentionStaysWithTheBot(t *testing.T) {
 	if strings.Contains(text, "secret-token") || strings.Contains(text, "bearer-alice") || strings.Contains(text, "key-alice") || strings.Contains(text, "admin-secret") {
 		t.Fatalf("bot log leaked a credential\n%s", text)
 	}
-	if !strings.Contains(bodies[0], `"bot_id":"bot_alice"`) || strings.Contains(bodies[2], "bot_phase") {
-		t.Fatalf("bot id metadata missing or plain message gained a phase: %s", bodies[2])
+	if !strings.Contains(bodies[0], `"bot_id":"bot_alice"`) || !strings.Contains(bodies[2], `"bot_phase":"execute"`) || strings.Contains(bodies[2], "computer_helper") {
+		t.Fatalf("plain message should run, not stay unlabeled or become the helper: %s", bodies[2])
 	}
+	// No intake answer: a destructive-looking sentence is still execute.
+	// Keywords must not choose plan.
 	if _, err := svc.PostMessagePhase(ctx, "tenant-a", "alice", "bot_alice", "把日志删除掉", "plan", ""); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(bodies[3], `"bot_phase":"plan"`) || strings.Contains(bodies[3], "computer_helper") {
-		t.Fatalf("destructive order left plan: %s", bodies[3])
+	if !strings.Contains(bodies[3], `"bot_phase":"execute"`) || strings.Contains(bodies[3], "computer_helper") || strings.Contains(bodies[3], `"bot_phase":"plan"`) {
+		t.Fatalf("keyword must not force plan: %s", bodies[3])
 	}
 }
 

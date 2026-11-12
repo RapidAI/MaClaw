@@ -20,7 +20,7 @@ func TestPlanPhaseDoesNotMutateOrHandOffLogin(t *testing.T) {
 	})
 	plan := agentruntime.TurnRequest{
 		Scope: scope,
-		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan"}}},
+		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan", "bot_intake_phase": "plan"}}},
 	}
 	mod := desktopRuntimeModule{}
 	for _, action := range []string{"navigate", "click", "type", "press", "task_run", "script", "skill_run", "app_run", "app_open", "install", "deliver", "file_write", "file_edit", "bash"} {
@@ -397,7 +397,7 @@ func assertDesktopReadsBeforeKeystrokes(t *testing.T, calls [][]string, payload 
 func TestPlanCopyListsOnlyInspection(t *testing.T) {
 	t.Setenv(desktopCDPEnv, "http://127.0.0.1:9222/")
 	plan := agentruntime.TurnRequest{
-		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan"}}},
+		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan", "bot_intake_phase": "plan"}}},
 	}
 	tools, err := desktopRuntimeModule{}.Tools(context.Background(), plan)
 	if err != nil || len(tools) != 1 {

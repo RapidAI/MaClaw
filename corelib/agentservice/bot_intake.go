@@ -55,6 +55,9 @@ type BotIntake struct {
 	Persona     string             `json:"persona,omitempty"`
 	Schedule    *BotIntakeSchedule `json:"schedule,omitempty"`
 	Reason      string             `json:"reason,omitempty"`
+	// Phase is execute or plan. execute is the default. plan is only when
+	// this message itself orders something destructive or irreversible.
+	Phase string `json:"phase,omitempty"`
 }
 
 // BotIntakeClassifier answers the intake prompt with the model's raw text.
@@ -92,7 +95,9 @@ kind:
 When no task is running, do not use supplement, change, stop, pause, or continue.
 A clear request is direct work. Do not ask only for permission to proceed.
 If you are unsure which running task a message belongs to, kind is new and run is 0.
-Do not match the message against a list of phrases.`
+Do not match the message against a list of phrases.
+
+phase is execute or plan. execute is the default. Use plan only when this message itself orders something destructive or irreversible: deleting the person's own data, paying, wiping a machine, or sending a message to many other people. Fetching, writing, publishing, and continuing work already arranged are execute. A follow-up that continues arranged work or answers a previous question is kind continue or reply and phase execute. If you are unsure, phase is execute.`
 
 // IntakeBotMessage decides what a message does. A classifier that fails,
 // times out, or answers something unusable yields a new task whose
@@ -100,7 +105,7 @@ Do not match the message against a list of phrases.`
 func (s *Service) IntakeBotMessage(ctx context.Context, p Principal, instanceID string, in BotIntakeInput, classify BotIntakeClassifier) (BotIntake, error) {
 	bot := strings.TrimSpace(in.BotID)
 	content := strings.TrimSpace(in.Content)
-	fallback := BotIntake{Kind: "new", Instruction: content, Pace: "direct", Reason: "fallback"}
+	fallback := BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Reason: "fallback"}
 	if _, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID); err != nil {
 		return BotIntake{}, err
 	}
@@ -172,7 +177,7 @@ func intakeUserPromptClean(content string, in BotIntakeInput, running []BotIntak
 	}
 	phase := strings.TrimSpace(in.Phase)
 	if phase == "" {
-		phase = "plan"
+		phase = "unspecified"
 	}
 	b.WriteString("language: ")
 	b.WriteString(oneLineRunes(lang, 40))
@@ -247,6 +252,7 @@ func parseBotIntake(raw string) (BotIntake, bool) {
 		Persona     string             `json:"persona"`
 		Schedule    *BotIntakeSchedule `json:"schedule"`
 		Reason      string             `json:"reason"`
+		Phase       string             `json:"phase"`
 	}
 	if json.Unmarshal([]byte(raw[start:end+1]), &v) != nil || v.Run == nil {
 		return BotIntake{}, false
@@ -260,6 +266,7 @@ func parseBotIntake(raw string) (BotIntake, bool) {
 		Persona:     strings.TrimSpace(v.Persona),
 		Schedule:    v.Schedule,
 		Reason:      oneLineRunes(v.Reason, 120),
+		Phase:       strings.ToLower(strings.TrimSpace(v.Phase)),
 	}
 	out.RunID = itoa(*v.Run) // temporary: the index, rewritten by normalize
 	if *v.Run < 0 {
@@ -285,10 +292,10 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) Bo
 		runID = running[0].RunID
 	}
 	if needsRun && runID == "" {
-		return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Ack: in.Ack, Reason: "no run"}
+		return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Ack: in.Ack, Reason: "no run"}
 	}
 	if kind == "continue" && len(running) == 0 {
-		return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Ack: in.Ack, Reason: "nothing to continue"}
+		return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Ack: in.Ack, Reason: "nothing to continue"}
 	}
 	instruction := strings.TrimSpace(in.Instruction)
 	if instruction == "" && (kind == "new" || kind == "supplement" || kind == "change") {
@@ -313,7 +320,7 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) Bo
 	if kind == "schedule" {
 		sched, ok := validIntakeSchedule(in.Schedule)
 		if !ok {
-			return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Ack: in.Ack, Reason: "bad schedule"}
+			return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Ack: in.Ack, Reason: "bad schedule"}
 		}
 		out.Schedule = sched
 		out.Pace = "schedule"
@@ -337,7 +344,7 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) Bo
 			out.Told = out.Ack
 		}
 		if strings.TrimSpace(out.Told) == "" && strings.TrimSpace(out.Ack) == "" {
-			return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Reason: "empty reply"}
+			return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Reason: "empty reply"}
 		}
 		out.Instruction = ""
 	}
@@ -348,7 +355,21 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) Bo
 	if kind == "continue" {
 		out.Instruction = ""
 	}
+	out.Phase = intakePhase(kind, in.Phase)
 	return out
+}
+
+// intakePhase is the model's phase, with execute as the only default.
+// continue and reply are follow-ups and always run. Anything other than
+// the word plan is execute. There is no keyword list over the message.
+func intakePhase(kind, raw string) string {
+	if kind == "continue" || kind == "reply" {
+		return "execute"
+	}
+	if strings.EqualFold(strings.TrimSpace(raw), "plan") {
+		return "plan"
+	}
+	return "execute"
 }
 
 func canonicalIntakeKind(kind, pace string) string {

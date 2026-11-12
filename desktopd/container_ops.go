@@ -366,36 +366,50 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 // does not start the container here: requireWakeToStart stays the only start.
 var ErrDesktopAsleep = errors.New("desktop_asleep")
 
-// HTTPGet fetches one URL with curl inside the user's desktop container.
-// The container's network and proxy are the ones curl uses. A stopped
-// container returns ErrDesktopAsleep and is not exec'd.
+// HTTPGet fetches one URL with curl. A running desktop is used, so the
+// proxy and the network are the same ones the browser has. While the
+// desktop sleeps, curl runs in the headless workspace and does not start
+// the GUI. With no workspace, a stopped desktop is a coded asleep error
+// and is not exec'd.
 func (s *Service) HTTPGet(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
 	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
 	if err != nil {
 		return "", 0, "", err
 	}
-	name := containerName(spec.TenantID, spec.UserID)
-	args, err := desktop.CurlGetArgs(name, rawURL, desktop.HTTPBodyMax)
-	if err != nil {
+	if _, err = desktop.CurlGetArgs(containerName(spec.TenantID, spec.UserID), rawURL, desktop.HTTPBodyMax); err != nil {
 		return "", 0, "", err
 	}
 	var output string
 	var exitCode int
+	var container string
+	var onDesktop bool
 	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
-		running, runErr := s.containerRunning(ctx, name)
-		if runErr != nil {
-			return runErr
+		c, desk, cErr := s.toolContainer(ctx, spec)
+		if cErr != nil {
+			return cErr
 		}
-		if !running {
-			return ErrDesktopAsleep
+		container, onDesktop = c, desk
+		if desk {
+			running, runErr := s.containerRunning(ctx, c)
+			if runErr != nil {
+				return runErr
+			}
+			if !running {
+				return ErrDesktopAsleep
+			}
 		}
+		args, argsErr := desktop.CurlGetArgs(c, rawURL, desktop.HTTPBodyMax)
+		if argsErr != nil {
+			return argsErr
+		}
+		var runErr error
 		output, exitCode, runErr = s.runCommand(ctx, nil, args...)
 		return runErr
 	})
 	if err != nil {
 		return "", 0, "", err
 	}
-	s.noteComputerActivity(spec.TenantID, spec.UserID)
+	s.noteToolUse(spec, container, onDesktop)
 	body, status, kind := desktop.SplitCurl(output)
 	if exitCode != 0 && status == 0 {
 		return "", 0, "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))

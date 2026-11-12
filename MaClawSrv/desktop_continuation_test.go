@@ -20,6 +20,13 @@ func contTurn(user, content, phase string) agentruntime.TurnRequest {
 	return agentruntime.TurnRequest{Scope: agentruntime.Scope{TenantID: "t", UserID: user}, Input: req}
 }
 
+func contIntake(user, content, intake string) agentruntime.TurnRequest {
+	turn := contTurn(user, content, "plan")
+	_, meta := desktopTurnMessage(turn)
+	meta["bot_intake_phase"] = intake
+	return turn
+}
+
 func TestDesktopHandBackContinuationExecutes(t *testing.T) {
 	desktopbot.ResetPhaseMemory()
 	t.Cleanup(desktopbot.ResetPhaseMemory)
@@ -27,34 +34,34 @@ func TestDesktopHandBackContinuationExecutes(t *testing.T) {
 	if got := desktopTurnPhase(contTurn("u_a", hb, "")); got != "execute" {
 		t.Fatalf("hand-back phase %q", got)
 	}
-	desktopTurnPhase(contTurn("u_b", "做摘要发到知乎", "execute"))
-	if got := desktopTurnPhase(contTurn("u_b", "继续", "")); got != "execute" {
-		t.Fatalf("inherited phase %q", got)
-	}
-	// An older GUI labels every ordinary message plan. That hint does not stick.
+	// A client plan label does not stick, and a typed follow-up is not held in plan.
 	if got := desktopTurnPhase(contTurn("u_c", "看看", "plan")); got != "execute" {
-		t.Fatalf("ordinary plan hint %q", got)
+		t.Fatalf("client plan hint %q", got)
 	}
-	if got := desktopTurnPhase(contTurn("u_c", "嗯", "")); got != "execute" {
-		t.Fatalf("follow-up of an ordinary turn %q", got)
+	if got := desktopTurnPhase(contTurn("u_c", "确认，开始吧", "plan")); got != "execute" {
+		t.Fatalf("typed follow-up %q", got)
 	}
-	if got := desktopTurnPhase(contTurn("u_hold", "删除日志", "plan")); got != "plan" {
-		t.Fatalf("destructive order %q", got)
+	if got := desktopTurnPhase(contIntake("u_hold", "删掉我的全部文件", "plan")); got != "plan" {
+		t.Fatalf("intake plan %q", got)
 	}
-	if got := desktopTurnPhase(contTurn("u_hold", "嗯", "")); got != "plan" {
-		t.Fatalf("short reply inside a destructive plan %q", got)
+	if got := desktopTurnPhase(contTurn("u_hold", "确认，开始吧", "")); got != "execute" {
+		t.Fatalf("follow-up must not inherit plan: %q", got)
 	}
 }
 
-func TestAskUserAnswerLeavesPlan(t *testing.T) {
+func TestAskUserAnswerIsTiedToTheRun(t *testing.T) {
 	desktopbot.ResetPhaseMemory()
 	t.Cleanup(desktopbot.ResetPhaseMemory)
-	if got := desktopTurnPhase(contTurn("u_ask", "把日志删除掉", "plan")); got != "plan" {
-		t.Fatalf("plan %q", got)
+	desktopbot.NotePlanAsk("t", "u_ask", "bot_x", "ask-9", "run-9")
+	fresh := contIntake("u_ask", "删除 /data 下所有文件", "plan")
+	if got := desktopTurnPhase(fresh); got != "plan" {
+		t.Fatalf("unrelated order %q", got)
 	}
-	desktopbot.NotePlanAsk("t", "u_ask", "bot_x")
-	if got := desktopTurnPhase(contTurn("u_ask", "删除", "plan")); got != "execute" {
-		t.Fatalf("ask answer %q", got)
+	answer := contTurn("u_ask", "确认", "")
+	_, meta := desktopTurnMessage(answer)
+	meta["bot_ask_run"] = "run-9"
+	if got := desktopTurnPhase(answer); got != "execute" {
+		t.Fatalf("answer %q", got)
 	}
 }
 

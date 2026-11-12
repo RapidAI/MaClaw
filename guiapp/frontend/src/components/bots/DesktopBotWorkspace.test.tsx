@@ -105,9 +105,9 @@ const syncLiveWatchView = (payload: unknown) => {
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
     SendDesktopBotTask: (...args: unknown[]) => sendTask(...args),
-    SendDesktopBotTaskTo: (botId: string, text: string, phase: string, continueSession?: string) => {
+    SendDesktopBotTaskTo: (botId: string, text: string, phase: string, continueSession?: string, askRun?: string) => {
         continueSessionSent(String(continueSession || ''));
-        return sendTask(botId, text, phase);
+        return askRun ? sendTask(botId, text, phase, askRun) : sendTask(botId, text, phase);
     },
     UnderstandDesktopBotTask: (content: string, phase: string, lang: string, earlier?: string[], persona?: string, catalog?: string) => understandTask(content, phase, lang, earlier || [], persona || '', catalog || ''),
     ClassifyDesktopWorkStop: (text: string, lang: string) => classifyWorkStop(text, lang),
@@ -476,7 +476,8 @@ describe('DesktopBotWorkspace', () => {
                     role: 'assistant',
                     content: '继续\n停下',
                     pending: false,
-                    phase: 'execute',
+                    phase: 'plan',
+                    runId: 'run-ask',
                     askUser: { options: ['继续', '停下'], inputType: 'choice' },
                 }],
             },
@@ -487,7 +488,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(await screen.findByText('值班'));
         const chat = await screen.findByTestId('desktop-bot-chat');
         fireEvent.click(within(chat).getByRole('button', { name: '停下' }));
-        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '停下', 'execute'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '停下', '', 'run-ask'));
         expect(understandTask).not.toHaveBeenCalled();
         expect(cancelRun).not.toHaveBeenCalled();
     });
@@ -501,6 +502,7 @@ describe('DesktopBotWorkspace', () => {
                     content: '要我现在启动桌面并继续吗',
                     pending: false,
                     phase: 'plan',
+                    runId: 'run-wake',
                     askUser: { options: ['确认', '取消'], inputType: 'choice', question: '要我现在启动桌面并继续吗' },
                 }],
             },
@@ -511,7 +513,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(await screen.findByText('值班'));
         const chat = await screen.findByTestId('desktop-bot-chat');
         fireEvent.click(within(chat).getByRole('button', { name: '确认' }));
-        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '确认', 'execute'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '确认', '', 'run-wake'));
     });
 
 

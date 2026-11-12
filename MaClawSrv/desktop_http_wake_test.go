@@ -2,14 +2,14 @@ package main
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
-func TestWebFetchWakesAStoppedContainerAndReturnsThePage(t *testing.T) {
+func TestWebFetchRetriesASlowWakeWithoutStartingTheDesktop(t *testing.T) {
 	woke := 0
 	calls := 0
 	desktopRemoteSession = func(context.Context, string, string) (desktopEndpoint, error) {
@@ -19,39 +19,37 @@ func TestWebFetchWakesAStoppedContainerAndReturnsThePage(t *testing.T) {
 	desktopRemoteHTTP = func(context.Context, string, string, string) (string, int, string, error) {
 		calls++
 		if calls == 1 {
-			return "", 0, "", errors.New(`docker: container is not running`)
+			return "", 0, "", desktopbot.WakingError{}
 		}
 		return "<html>daily paper</html>", 200, "text/html", nil
 	}
+	prevGap, prevBudget := desktopWakeRetryGap, desktopWakeRetryBudget
+	desktopWakeRetryGap = time.Millisecond
+	desktopWakeRetryBudget = time.Second
 	t.Cleanup(func() {
-		desktopRemoteSession = nil
-		desktopRemoteHTTP = nil
+		desktopRemoteSession, desktopRemoteHTTP = nil, nil
+		desktopWakeRetryGap, desktopWakeRetryBudget = prevGap, prevBudget
 	})
 	body, status, kind, err := desktopContainerHTTP(context.Background(), "tenant", "alice", "https://example.com/papers")
-	if err != nil || status != 200 || kind != "text/html" || !strings.Contains(body, "daily paper") {
-		t.Fatalf("body=%q status=%d kind=%q err=%v", body, status, kind, err)
-	}
-	if woke != 1 || calls != 2 {
-		t.Fatalf("woke=%d calls=%d", woke, calls)
+	if err != nil || status != 200 || kind != "text/html" || !strings.Contains(body, "daily paper") || woke != 0 || calls != 2 {
+		t.Fatalf("body=%q status=%d kind=%q woke=%d calls=%d err=%v", body, status, kind, woke, calls, err)
 	}
 }
 
-func TestWebFetchWakeFailureIsAFaultNotAQuestion(t *testing.T) {
+func TestWebFetchAsleepDoesNotWakeTheGUI(t *testing.T) {
+	woke := 0
 	desktopRemoteSession = func(context.Context, string, string) (desktopEndpoint, error) {
-		return desktopEndpoint{}, errors.New("pool exhausted")
+		woke++
+		return desktopEndpoint{}, nil
 	}
 	desktopRemoteHTTP = func(context.Context, string, string, string) (string, int, string, error) {
-		return "", 0, "", errors.New("desktop_asleep")
+		return "", 0, "", desktopbot.AsleepError{}
 	}
 	t.Cleanup(func() {
-		desktopRemoteSession = nil
-		desktopRemoteHTTP = nil
+		desktopRemoteSession, desktopRemoteHTTP = nil, nil
 	})
 	_, _, _, err := desktopContainerHTTP(context.Background(), "tenant", "alice", "https://example.com/papers")
-	if err == nil || !strings.Contains(err.Error(), "系统故障") || strings.Contains(err.Error(), "要不要开机") || strings.Contains(err.Error(), "ask_user") {
-		t.Fatalf("err=%v", err)
-	}
-	if !strings.Contains(desktopbot.WakeSystemFault, "系统故障") {
-		t.Fatal(desktopbot.WakeSystemFault)
+	if err == nil || woke != 0 || !strings.Contains(err.Error(), "系统故障") {
+		t.Fatalf("woke=%d err=%v", woke, err)
 	}
 }

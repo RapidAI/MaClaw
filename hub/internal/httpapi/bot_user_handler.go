@@ -233,6 +233,7 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 			ContinueSession  string `json:"continue_session"`
 			ClientSessionKey string `json:"client_session_key"`
 			Action           string `json:"action"`
+			AskRun           string `json:"ask_run"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, botMessageBodyLimit)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
@@ -253,8 +254,12 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 		if continueSession == "" {
 			continueSession = strings.TrimSpace(in.ClientSessionKey)
 		}
+		callCtx := r.Context()
+		if ask := strings.TrimSpace(in.AskRun); ask != "" {
+			callCtx = botmgmt.WithDesktopAskRun(callCtx, ask)
+		}
 		if wantsAsyncBotReply(r) {
-			admission, err := svc.AdmitDesktopMessageAct(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase, clientMessageID, continueSession, in.Action)
+			admission, err := svc.AdmitDesktopMessageAct(callCtx, principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase, clientMessageID, continueSession, in.Action)
 			if err != nil {
 				writeBotUserError(w, r, principal, err, clientMessageID)
 				return
@@ -289,7 +294,7 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 			writeJSON(w, http.StatusOK, admission.Reply)
 			return
 		}
-		reply, err := svc.PostMessagePhaseIn(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase, clientMessageID, continueSession)
+		reply, err := svc.PostMessagePhaseIn(callCtx, principal.TenantID, principal.UserID, r.PathValue("id"), in.Content, in.Phase, clientMessageID, continueSession)
 		if err != nil {
 			writeBotUserError(w, r, principal, err, clientMessageID)
 			return

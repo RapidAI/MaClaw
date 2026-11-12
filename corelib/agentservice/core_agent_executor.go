@@ -605,9 +605,9 @@ func (c *coreAgentCallbacks) UpgradeLightPromptToFull(reason string) bool {
 	return true
 }
 
-// resolveDesktopBotPhase stamps the server's plan-or-execute choice onto the
-// message before any tool or prompt reads bot_phase. The client's value is a
-// hint. Turns that are not a desktop bot are left alone.
+// resolveDesktopBotPhase stamps the intake's plan-or-execute choice onto the
+// message before any tool or prompt reads bot_phase. A client phase is not
+// used. Turns that are not a desktop bot are left alone.
 func resolveDesktopBotPhase(req *ExecuteRequest) {
 	if req == nil {
 		return
@@ -629,11 +629,17 @@ func resolveDesktopBotPhase(req *ExecuteRequest) {
 	if strings.TrimSpace(meta["bot_phase_decided"]) == "1" {
 		return
 	}
-	phase := desktopbot.ResolvePhase(req.Principal.TenantID, req.Principal.UserID, botID, hint, req.Message.Content)
-	if phase == "plan" || phase == "execute" {
-		meta["bot_phase"] = phase
-		meta["bot_phase_decided"] = "1"
-	}
+	phase := desktopbot.ApplyTurnPhase(desktopbot.TurnPhaseInput{
+		Button: strings.TrimSpace(meta["bot_phase_button"]) == "1",
+		Intake: meta["bot_intake_phase"],
+		AskID:  meta["bot_ask_id"],
+		AskRun: meta["bot_ask_run"],
+		Tenant: req.Principal.TenantID,
+		User:   req.Principal.UserID,
+		Bot:    botID,
+	})
+	meta["bot_phase"] = phase
+	meta["bot_phase_decided"] = "1"
 }
 
 // Execute runs ordinary requests directly, while an explicitly marked local
@@ -3149,14 +3155,14 @@ func (c *coreAgentCallbacks) executeToolStructuredUnguarded(name, argsJSON strin
 		}
 		return sshToolResult(sshtool.ToolSSH(c.sshDeps, validated))
 	case "ask_user":
-		// A plan turn that asks the person is answered in execute. Waking
-		// and ordinary work are not held in plan by that answer.
+		// Remember this one question. Only a later message that names its
+		// id or its run runs in execute; a new order is judged again.
 		if c != nil && strings.TrimSpace(c.messageMetadata["bot_phase"]) == "plan" {
 			botID := ""
 			if c.messageMetadata != nil {
 				botID = c.messageMetadata["bot_id"]
 			}
-			desktopbot.NotePlanAsk(c.principal.TenantID, c.principal.UserID, botID)
+			desktopbot.NotePlanAsk(c.principal.TenantID, c.principal.UserID, botID, agentruntime.ToolCallID(c.parentContext()), c.runID)
 		}
 		return toolTextResult(agent.ToolAskUser(args))
 	case "task":

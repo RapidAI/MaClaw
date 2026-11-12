@@ -2562,7 +2562,7 @@ export function SendAIAssistantMessage(arg1:main.AIAssistantSendRequest):Promise
 export function SendBtwQuery(arg1:string,arg2:string):Promise<main.IMAgentResponse>;
 
 export function SendDesktopBotTask(arg1:string,arg2:string,arg3:string):Promise<main.IMAgentResponse>;
-export function SendDesktopBotTaskTo(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.IMAgentResponse>;
+export function SendDesktopBotTaskTo(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<main.IMAgentResponse>;
 
 
 export function UploadDesktopBotMaterialChunk(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number,arg6:string):Promise<{upload_id:string,name:string,received:number,total:number,done:boolean,path?:string}>;

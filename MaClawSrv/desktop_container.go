@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
@@ -117,21 +118,39 @@ func desktopProxyModeText(ctx context.Context, tenantID, userID string) (string,
 	return text + " Only the person can change it (Desktop Bot > Settings > Network); ask them if a site needs a different route.", nil
 }
 
+// desktopWakeRetryBudget is how long a fetch waits out a warm start.
+// Fetch and search do not start the GUI; they only retry a 503 that says
+// the machine is already waking.
+var (
+	desktopWakeRetryBudget = 60 * time.Second
+	desktopWakeRetryGap    = 2 * time.Second
+)
+
 func desktopContainerHTTP(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
-	body, status, kind, err := desktopContainerHTTPCall(ctx, tenantID, userID, rawURL)
-	if err == nil || !desktopbot.IsDesktopAsleep(err) {
-		return body, status, kind, desktopbot.AsWakeFault(err)
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	// The container was stopped. Wake it with the bot-desktop path and retry
-	// the fetch once. Waking is not something the person approves.
-	if wakeErr := wakeDesktopContainer(ctx, tenantID, userID); wakeErr != nil {
-		return "", 0, "", wakeErr
+	deadline := time.Now().Add(desktopWakeRetryBudget)
+	var body, kind string
+	var status int
+	var err error
+	for {
+		body, status, kind, err = desktopContainerHTTPCall(ctx, tenantID, userID, rawURL)
+		if err == nil || !desktopbot.IsWaking(err) || time.Now().After(deadline) {
+			break
+		}
+		timer := time.NewTimer(desktopWakeRetryGap)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", 0, "", ctx.Err()
+		case <-timer.C:
+		}
 	}
-	body, status, kind, err = desktopContainerHTTPCall(ctx, tenantID, userID, rawURL)
-	if err != nil {
+	if err != nil && (desktopbot.IsWaking(err) || desktopbot.IsDesktopAsleep(err)) {
 		return "", 0, "", desktopbot.AsWakeFault(err)
 	}
-	return body, status, kind, nil
+	return body, status, kind, err
 }
 
 func desktopContainerHTTPCall(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
@@ -142,21 +161,6 @@ func desktopContainerHTTPCall(ctx context.Context, tenantID, userID, rawURL stri
 		return client.HTTP(ctx, tenantID, userID, rawURL)
 	}
 	return "", 0, "", fmt.Errorf("this bot's desktop is the person's cloud desktop, and the connection is not configured")
-}
-
-// wakeDesktopContainer starts a stopped desktop for a container network call.
-// desktopWakeForStep is the bot-desktop wake (Hub session / Ensure). It is
-// not the file/bash short-circuit, which leaves a sleeping GUI container down.
-func wakeDesktopContainer(ctx context.Context, tenantID, userID string) error {
-	userKey, err := desktop.UserKey(tenantID, userID)
-	if err != nil {
-		return desktopbot.AsWakeFault(err)
-	}
-	scope := agentruntime.Scope{TenantID: tenantID, UserID: userID}
-	if _, err := desktopWakeForStep(ctx, scope, userKey); err != nil {
-		return err
-	}
-	return nil
 }
 
 func operateDesktopContainer(ctx context.Context, scope agentruntime.Scope, action string, args map[string]any) (string, error) {

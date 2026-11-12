@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
@@ -156,6 +157,8 @@ func writeDesktopError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", desktoppool.ServiceFailureMessage(err))
 	case desktoppool.IsDesktopWake(err):
 		writeError(w, http.StatusServiceUnavailable, "DESKTOP_WAKING", err.Error())
+	case desktopbot.IsDesktopAsleep(err):
+		writeError(w, http.StatusConflict, "DESKTOP_ASLEEP", err.Error())
 	default:
 		writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", "docker service rejected the desktop request")
 	}
