@@ -1121,6 +1121,11 @@ func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec deskt
 		sayJob = &cp
 	}
 	if err := desktopLongJobSay(ctx, sayJob, desktopLongJobNoticeText(j, dec)); err != nil {
+		// A 404 on this say is not the decision. Only a missing resume
+		// target (the job's instance) ends the watch.
+		if desktopHubNotFound(err) && desktopLongJobResumeTargetGone(j) {
+			return ErrLongJobOwnerGone
+		}
 		return err
 	}
 	if dec == longJobResume {
@@ -1382,11 +1387,19 @@ func desktopLongJobStopWatch(j *desktopLongJob) {
 	j.ScheduleID = ""
 }
 
-// ErrLongJobOwnerGone is permanent: Hub answered that the bot or assignment
-// does not exist, or this server has no instance for the job. A down Hub
-// is not this error. Callers tell it apart with errors.Is, not with the
-// message text.
+// ErrLongJobOwnerGone is permanent: the instance this job resumes does not
+// exist. A Hub 404, including NOT_FOUND on the say call, is not this error
+// by itself. Callers tell it apart with errors.Is, not with the message text.
 var ErrLongJobOwnerGone = errors.New("long job owner is gone")
+
+func desktopLongJobResumeTargetGone(j *desktopLongJob) bool {
+	svc := desktopLongJobService
+	if svc == nil || j == nil || strings.TrimSpace(j.InstanceID) == "" {
+		return false
+	}
+	_, ok := svc.InstanceOwner(j.InstanceID)
+	return !ok
+}
 
 func desktopLongJobPermanent(err error) error {
 	if errors.Is(err, ErrLongJobOwnerGone) || errors.Is(err, agentservice.ErrInstanceNotFound) {
@@ -1435,38 +1448,48 @@ func desktopLongJobAbandon(j *desktopLongJob, reason string) {
 	_ = desktopLongJobSave(j)
 }
 
-func desktopLongJobCancelInstance(instanceID string) {
+func desktopLongJobSameTenant(j *desktopLongJob, tenantID string) bool {
+	if j == nil || strings.TrimSpace(tenantID) == "" {
+		return false
+	}
+	if strings.TrimSpace(j.PrincipalTenant) != "" {
+		return j.PrincipalTenant == tenantID
+	}
+	return j.TenantID == tenantID
+}
+
+func desktopLongJobCancelInstance(tenantID, instanceID string) {
+	tenantID = strings.TrimSpace(tenantID)
 	instanceID = strings.TrimSpace(instanceID)
-	if instanceID == "" {
+	if tenantID == "" || instanceID == "" {
 		return
 	}
-	bots := map[string]struct{}{}
 	for _, j := range desktopLongJobAll() {
-		if j.InstanceID != instanceID {
+		if j.InstanceID != instanceID || !desktopLongJobSameTenant(j, tenantID) {
 			continue
-		}
-		if j.BotID != "" {
-			bots[j.BotID] = struct{}{}
 		}
 		if desktopLongJobOpen(j) || j.ScheduleID != "" {
 			desktopLongJobAbandon(j, "orphaned: instance deleted")
 		}
 	}
-	for botID := range bots {
-		desktopLongJobCancelBot(botID)
-	}
 }
 
-func desktopLongJobCancelBot(botID string) {
-	botID = strings.TrimSpace(botID)
-	if botID == "" {
+// desktopLongJobKillProcess stops the job's process. Marking the job
+// cancelled without this leaves the process running.
+func desktopLongJobKillProcess(ctx context.Context, j *desktopLongJob) {
+	if j == nil || (strings.TrimSpace(j.PID) == "" && strings.TrimSpace(j.PidFile) == "") {
 		return
 	}
-	for _, j := range desktopLongJobAll() {
-		if j.BotID == botID && (desktopLongJobOpen(j) || j.ScheduleID != "") {
-			desktopLongJobAbandon(j, "orphaned: bot deleted")
-		}
+	if ctx == nil {
+		ctx = context.Background()
 	}
+	script := strings.Join([]string{
+		"pidf=" + desktopLongJobQuote(j.PidFile),
+		"pid=" + desktopLongJobQuote(strings.TrimSpace(j.PID)),
+		`if [ -f "$pidf" ]; then pid=$(cat "$pidf"); fi`,
+		`if [ -n "$pid" ]; then kill -TERM "$pid" 2>/dev/null || true; sleep 0.2; kill -KILL "$pid" 2>/dev/null || true; fi`,
+	}, "\n")
+	_, _ = desktopLongJobRun(ctx, desktopLongJobScope(j), script)
 }
 
 func desktopLongJobCancelSourceRun(instanceID, runID string) {
@@ -1474,6 +1497,8 @@ func desktopLongJobCancelSourceRun(instanceID, runID string) {
 	if runID == "" {
 		return
 	}
+	// A watch-report run is not the job. Cancelling it leaves the process
+	// and its watch in place. Only the run that started the job stops it.
 	for _, j := range desktopLongJobAll() {
 		if j.SourceRun != runID {
 			continue
@@ -1482,12 +1507,8 @@ func desktopLongJobCancelSourceRun(instanceID, runID string) {
 			continue
 		}
 		if desktopLongJobOpen(j) || j.ScheduleID != "" {
+			desktopLongJobKillProcess(context.Background(), j)
 			desktopLongJobAbandon(j, "orphaned: run cancelled")
-		}
-	}
-	if parent := desktopLongJobWatchParent(runID); parent != nil && (instanceID == "" || parent.InstanceID == "" || parent.InstanceID == instanceID) {
-		if desktopLongJobOpen(parent) || parent.ScheduleID != "" {
-			desktopLongJobAbandon(parent, "orphaned: run cancelled")
 		}
 	}
 }
@@ -1509,6 +1530,9 @@ func desktopLongJobReconcileOwners() {
 		reason, gone := desktopLongJobOwnerMissing(svc, j)
 		if !gone {
 			continue
+		}
+		if reason == "orphaned: run cancelled" {
+			desktopLongJobKillProcess(context.Background(), j)
 		}
 		desktopLongJobAbandon(j, reason)
 	}

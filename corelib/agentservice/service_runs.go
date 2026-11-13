@@ -77,8 +77,9 @@ func (s *Service) GetRun(ctx context.Context, p Principal, instanceID, runID str
 	return &enriched, nil
 }
 
-// AfterRunCancelled runs after a run is recorded cancelled. The host drops
-// background watches that run started. Nil is a no-op.
+// AfterRunCancelled runs after a run is recorded cancelled. The host stops
+// a background job that this run started. A watch report of another job is
+// not that run. Nil is a no-op.
 var AfterRunCancelled func(instanceID, runID string)
 
 func (s *Service) CancelRun(ctx context.Context, p Principal, instanceID, runID string) (*Run, error) {

@@ -325,10 +325,12 @@ func (e *desktopAPIError) Error() string {
 	return e.Code
 }
 
-// Is reports a permanent missing bot or assignment. A 502 or an unreachable
-// Hub is not this error, so a watch keeps trying those.
-func (e *desktopAPIError) Is(target error) bool {
-	return e != nil && target == ErrLongJobOwnerGone && e.Status == http.StatusNotFound && e.Code == "NOT_FOUND"
+// desktopHubNotFound reports a Hub 404 whose code is NOT_FOUND. That status
+// is not itself a missing resume target: a file or another resource uses
+// the same code. The caller checks the instance it was resuming.
+func desktopHubNotFound(err error) bool {
+	var api *desktopAPIError
+	return errors.As(err, &api) && api.Status == http.StatusNotFound && api.Code == "NOT_FOUND"
 }
 
 func desktopRejectedMessage(payload []byte) string {

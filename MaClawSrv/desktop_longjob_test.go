@@ -802,15 +802,15 @@ func TestD115WatchTurnFilesGoWithTheReply(t *testing.T) {
 }
 
 func TestLongJobOwnerGoneIsTypedNotText(t *testing.T) {
-	gone := desktopStatusError(http.StatusNotFound, []byte(`{"code":"NOT_FOUND","message":"no such bot or assignment"}`))
-	if !errors.Is(gone, ErrLongJobOwnerGone) {
-		t.Fatalf("404 NOT_FOUND is permanent: %v", gone)
+	notFound := desktopStatusError(http.StatusNotFound, []byte(`{"code":"NOT_FOUND","message":"no such bot or assignment"}`))
+	if errors.Is(notFound, ErrLongJobOwnerGone) || !desktopHubNotFound(notFound) {
+		t.Fatalf("a Hub 404 is not the resume target: %v", notFound)
 	}
-	if err := desktopStatusError(http.StatusBadGateway, []byte(`{"code":"DOCKER_SERVICE_REQUEST_FAILED","message":"no such bot or assignment"}`)); errors.Is(err, ErrLongJobOwnerGone) {
+	if err := desktopStatusError(http.StatusBadGateway, []byte(`{"code":"DOCKER_SERVICE_REQUEST_FAILED","message":"no such bot or assignment"}`)); errors.Is(err, ErrLongJobOwnerGone) || desktopHubNotFound(err) {
 		t.Fatal("502 with the same message is transient")
 	}
-	if err := desktopStatusError(http.StatusNotFound, []byte(`{"code":"OTHER","message":"no such bot or assignment"}`)); errors.Is(err, ErrLongJobOwnerGone) {
-		t.Fatal("404 with a different code is not the owner-gone error")
+	if err := desktopStatusError(http.StatusNotFound, []byte(`{"code":"OTHER","message":"no such bot or assignment"}`)); desktopHubNotFound(err) {
+		t.Fatal("404 with a different code is not the assignment lookup")
 	}
 	if errors.Is(errors.New("no such bot or assignment"), ErrLongJobOwnerGone) {
 		t.Fatal("the log sentence is not the decision")
@@ -828,7 +828,7 @@ func TestLongJobPermanentOwnerErrorStopsTheWatch(t *testing.T) {
 	calls := 0
 	desktopLongJobTalk = func(context.Context, *desktopLongJob, desktopLongJobDecision) error {
 		calls++
-		return desktopStatusError(http.StatusNotFound, []byte(`{"code":"NOT_FOUND","message":"no such bot or assignment"}`))
+		return ErrLongJobOwnerGone
 	}
 	if _, err := desktopLongJobWatchTick(context.Background(), j.ID); err != nil {
 		t.Fatal(err)
@@ -860,11 +860,23 @@ func TestLongJobPermanentOwnerErrorStopsTheWatch(t *testing.T) {
 	if kept.Status == "cancelled" || kept.ScheduleID == "" || !longJobTaskNamed(mgr, "watch-job:"+keep.ID) {
 		t.Fatalf("text match cancelled a live watch: %+v", kept)
 	}
+	// A 404 on the talk path is not the resume target. The watch stays.
+	miss := longJobUndelivered("job_404", "inst_404", "bot_404", "run_404")
+	longJobArmWatch(t, miss)
+	desktopLongJobTalk = func(context.Context, *desktopLongJob, desktopLongJobDecision) error {
+		return desktopStatusError(http.StatusNotFound, []byte(`{"code":"NOT_FOUND","message":"no such bot or assignment"}`))
+	}
+	if _, err := desktopLongJobWatchTick(context.Background(), miss.ID); err == nil {
+		t.Fatal("talk 404 was treated as a successful delivery")
+	}
+	if got := desktopLongJobGet(miss.ID); got.Status == "cancelled" || !longJobTaskNamed(mgr, "watch-job:"+miss.ID) {
+		t.Fatalf("talk 404 cancelled the watch: %+v", got)
+	}
 }
 
 func TestLongJobTalkMapsMissingInstance(t *testing.T) {
 	d100Env(t)
-	svc, _, p, _ := longJobOwnerService(t)
+	svc, _, p, inst := longJobOwnerService(t)
 	prevSay := desktopLongJobSayFunc
 	prevSvc := desktopLongJobService
 	t.Cleanup(func() {
@@ -887,6 +899,15 @@ func TestLongJobTalkMapsMissingInstance(t *testing.T) {
 	if err := desktopLongJobTalkDefault(context.Background(), j, longJobResume); errors.Is(err, ErrLongJobOwnerGone) {
 		t.Fatal("say 502 must stay transient")
 	}
+	notFound := desktopStatusError(http.StatusNotFound, []byte(`{"code":"NOT_FOUND","message":"no such bot or assignment"}`))
+	desktopLongJobSayFunc = func(context.Context, map[string]any) error { return notFound }
+	if err := desktopLongJobTalkDefault(context.Background(), j, longJobNotice); !errors.Is(err, ErrLongJobOwnerGone) {
+		t.Fatalf("missing resume target after say 404: %v", err)
+	}
+	j.InstanceID = inst.ID
+	if err := desktopLongJobTalkDefault(context.Background(), j, longJobNotice); errors.Is(err, ErrLongJobOwnerGone) {
+		t.Fatal("say 404 while the instance exists was treated as the resume target")
+	}
 }
 
 func TestLongJobDeleteAndCancelDropWatches(t *testing.T) {
@@ -901,32 +922,69 @@ func TestLongJobDeleteAndCancelDropWatches(t *testing.T) {
 	if err := store.SaveRun(agentservice.Run{ID: "run_busy", TenantID: p.TenantID, UserID: p.UserID, InstanceID: inst.ID, SessionID: "sess", Status: agentservice.RunStatusRunning, StartedAt: started}); err != nil {
 		t.Fatal(err)
 	}
+	var killed []string
+	desktopLongJobExec = func(_ context.Context, _ agentruntime.Scope, command string) (string, error) {
+		killed = append(killed, command)
+		return "ok", nil
+	}
 	onRun := longJobUndelivered("job_run", inst.ID, "bot_a", "run_busy")
+	onRun.PID = "4242"
+	onRun.PrincipalTenant = p.TenantID
 	otherRun := longJobUndelivered("job_other_run", inst.ID, "bot_a", "run_other")
+	otherRun.PrincipalTenant = p.TenantID
 	longJobArmWatch(t, onRun)
 	longJobArmWatch(t, otherRun)
+	parent := longJobUndelivered("job_parent", inst.ID, "bot_a", "run_parent")
+	parent.Status = "running"
+	parent.Alive = true
+	parent.PID = "111"
+	parent.PrincipalTenant = p.TenantID
+	if err := desktopLongJobSave(parent); err != nil {
+		t.Fatal(err)
+	}
+	desktopLongJobNoteWatchRun("run_report", parent.ID)
+	if err := store.SaveRun(agentservice.Run{ID: "run_report", TenantID: p.TenantID, UserID: p.UserID, InstanceID: inst.ID, SessionID: "sess", Status: agentservice.RunStatusRunning, StartedAt: started}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CancelRun(context.Background(), p, inst.ID, "run_report"); err != nil {
+		t.Fatal(err)
+	}
+	if got := desktopLongJobGet(parent.ID); got.Status != "running" || !got.Alive || len(killed) != 0 {
+		t.Fatalf("watch report abandoned the job %+v kills %#v", got, killed)
+	}
 	if _, err := svc.CancelRun(context.Background(), p, inst.ID, "run_busy"); err != nil {
 		t.Fatal(err)
 	}
-	if got := desktopLongJobGet(onRun.ID); got.Status != "cancelled" || got.EndReason != "orphaned: run cancelled" || longJobTaskNamed(mgr, "watch-job:"+onRun.ID) {
+	if got := desktopLongJobGet(onRun.ID); got.Status != "cancelled" || got.EndReason != "orphaned: run cancelled" || got.Alive || longJobTaskNamed(mgr, "watch-job:"+onRun.ID) {
 		t.Fatalf("cancelled run job %+v", got)
+	}
+	if len(killed) != 1 || !strings.Contains(killed[0], "kill -TERM") || !strings.Contains(killed[0], "4242") {
+		t.Fatalf("process was not killed: %#v", killed)
 	}
 	if got := desktopLongJobGet(otherRun.ID); got.Status != "failed" || !longJobTaskNamed(mgr, "watch-job:"+otherRun.ID) {
 		t.Fatalf("other run on the same bot was dropped: %+v", got)
 	}
 
 	sameBot := longJobUndelivered("job_same_bot", other.ID, "bot_a", "run_elsewhere")
+	sameBot.PrincipalTenant = p.TenantID
 	untouched := longJobUndelivered("job_untouched", other.ID, "bot_b", "run_b")
+	untouched.PrincipalTenant = p.TenantID
+	foreign := longJobUndelivered("job_foreign", inst.ID, "bot_a", "run_foreign")
+	foreign.PrincipalTenant = "other-tenant"
 	longJobArmWatch(t, sameBot)
 	longJobArmWatch(t, untouched)
+	longJobArmWatch(t, foreign)
 	if err := svc.DeleteInstance(context.Background(), p, inst.ID); err != nil {
 		t.Fatal(err)
 	}
 	if got := desktopLongJobGet(otherRun.ID); got.Status != "cancelled" || !strings.Contains(got.EndReason, "orphaned:") || longJobTaskNamed(mgr, "watch-job:"+otherRun.ID) {
 		t.Fatalf("instance delete left %+v", got)
 	}
-	if got := desktopLongJobGet(sameBot.ID); got.Status != "cancelled" || got.EndReason != "orphaned: bot deleted" || longJobTaskNamed(mgr, "watch-job:"+sameBot.ID) {
-		t.Fatalf("same bot on another instance %+v", got)
+	if got := desktopLongJobGet(sameBot.ID); got.Status == "cancelled" || !longJobTaskNamed(mgr, "watch-job:"+sameBot.ID) {
+		t.Fatalf("same bot on another instance was cancelled %+v", got)
+	}
+	if got := desktopLongJobGet(foreign.ID); got.Status == "cancelled" || !longJobTaskNamed(mgr, "watch-job:"+foreign.ID) {
+		t.Fatalf("other tenant on the same instance was cancelled %+v", got)
 	}
 	if got := desktopLongJobGet(untouched.ID); got.Status != "failed" || !longJobTaskNamed(mgr, "watch-job:"+untouched.ID) {
 		t.Fatalf("other bot %+v", got)
@@ -947,7 +1005,13 @@ func TestLongJobStartupReconcileDropsOrphanWatchesOnce(t *testing.T) {
 	live := longJobUndelivered("job_live", inst.ID, "bot_live", "run_ok")
 	missing := longJobUndelivered("job_missing", "inst_deleted", "bot_deleted", "run_old")
 	cancelledRun := longJobUndelivered("job_cancelled_run", inst.ID, "bot_live", "run_cancelled")
+	cancelledRun.PID = "5150"
 	live.Status, missing.Status, cancelledRun.Status = "running", "running", "running"
+	var killed []string
+	desktopLongJobExec = func(_ context.Context, _ agentruntime.Scope, command string) (string, error) {
+		killed = append(killed, command)
+		return "ok", nil
+	}
 	longJobArmWatch(t, live)
 	longJobArmWatch(t, missing)
 	longJobArmWatch(t, cancelledRun)
@@ -968,6 +1032,9 @@ func TestLongJobStartupReconcileDropsOrphanWatchesOnce(t *testing.T) {
 	}
 	if got := desktopLongJobGet(cancelledRun.ID); got.Status != "cancelled" || got.EndReason != "orphaned: run cancelled" || longJobTaskNamed(mgr, "watch-job:"+cancelledRun.ID) {
 		t.Fatalf("cancelled run %+v", got)
+	}
+	if len(killed) != 1 || !strings.Contains(killed[0], "5150") || !strings.Contains(killed[0], "kill -TERM") {
+		t.Fatalf("startup did not kill the cancelled run's process: %#v", killed)
 	}
 	if got := desktopLongJobGet(live.ID); got.Status != "running" || got.ScheduleID != liveSchedule || !longJobTaskNamed(mgr, "watch-job:"+live.ID) {
 		t.Fatalf("live job %+v", got)
