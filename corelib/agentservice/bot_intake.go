@@ -15,6 +15,12 @@ import (
 type BotIntakeRun struct {
 	RunID string `json:"run_id"`
 	Task  string `json:"task"`
+	// Status is running, paused, cancelled, failed, or interrupted.
+	// A paused run can be resumed. A cancelled, failed, or interrupted run
+	// stays resumable: continue relaunches that task, not the word 继续.
+	Status string `json:"status,omitempty"`
+	// Progress is the last measured note for a resumable run.
+	Progress string `json:"progress,omitempty"`
 }
 
 // BotIntakeInput is one message to judge.
@@ -162,7 +168,10 @@ func liveIntakeRuns(in []BotIntakeRun) []BotIntakeRun {
 			continue
 		}
 		seen[id] = true
-		out = append(out, BotIntakeRun{RunID: id, Task: oneLineRunes(r.Task, 400)})
+		out = append(out, BotIntakeRun{
+			RunID: id, Task: oneLineRunes(r.Task, 400),
+			Status: oneLineRunes(r.Status, 40), Progress: oneLineRunes(r.Progress, 200),
+		})
 		if len(out) == 8 {
 			break
 		}
@@ -217,6 +226,15 @@ func intakeUserPromptClean(content string, in BotIntakeInput, running []BotIntak
 				task = "(no description)"
 			}
 			b.WriteString(oneLineRunes(task, 300))
+			if status := strings.TrimSpace(r.Status); status != "" && status != "running" {
+				b.WriteString(" [")
+				b.WriteString(oneLineRunes(status, 40))
+				b.WriteString("]")
+			}
+			if progress := strings.TrimSpace(r.Progress); progress != "" {
+				b.WriteString(" progress: ")
+				b.WriteString(oneLineRunes(progress, 160))
+			}
 		}
 	}
 	b.WriteString("\nnew message:\n")
@@ -288,15 +306,23 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) Bo
 	if idx >= 1 && idx <= len(running) {
 		runID = running[idx-1].RunID
 	}
+	if kind == "continue" || ((kind == "new" || kind == "") && (bareContinue(content) || bareContinue(in.Instruction))) {
+		if resumed, ok := continueResumable(kind, in, content, running); ok {
+			return resumed
+		}
+		if len(running) == 0 {
+			return nothingToContinue(in.Ack)
+		}
+	}
 	needsRun := kind == "supplement" || kind == "change" || kind == "stop" || kind == "pause" || kind == "continue"
-	if needsRun && runID == "" && len(running) == 1 {
+	if needsRun && runID == "" && len(running) == 1 && !resumableStopped(running[0]) {
 		runID = running[0].RunID
 	}
 	if needsRun && runID == "" {
 		return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Ack: in.Ack, Reason: "no run"}
 	}
-	if kind == "continue" && len(running) == 0 {
-		return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Ack: in.Ack, Reason: "nothing to continue"}
+	if intakeSaysNoWork(in.Ack) && kind == "new" && !bareContinue(content) {
+		return nothingToContinue(in.Ack)
 	}
 	instruction := strings.TrimSpace(in.Instruction)
 	if instruction == "" && (kind == "new" || kind == "supplement" || kind == "change") {
@@ -435,6 +461,103 @@ func validIntakeSchedule(s *BotIntakeSchedule) (*BotIntakeSchedule, bool) {
 		out.DayOfWeek = &d
 	}
 	return out, true
+}
+
+func bareContinue(s string) bool {
+	s = strings.ToLower(strings.Trim(strings.TrimSpace(s), "。！!？?，, "))
+	switch s {
+	case "继续", "接着", "接着做", "继续做", "继续吧", "continue", "go on", "resume":
+		return true
+	}
+	return false
+}
+
+func intakeSaysNoWork(ack string) bool {
+	a := strings.ToLower(strings.TrimSpace(ack))
+	if a == "" {
+		return false
+	}
+	for _, m := range []string{"没有可以继续", "没有在做", "没在做", "无任务", "nothing to continue", "no work", "nothing running", "不用继续"} {
+		if strings.Contains(a, m) {
+			return true
+		}
+	}
+	return false
+}
+
+func nothingToContinue(ack string) BotIntake {
+	text := "现在没有可以继续的事。"
+	if intakeSaysNoWork(ack) {
+		text = oneLineRunes(ack, 200)
+	}
+	return BotIntake{Kind: "reply", Ack: text, Told: text, Pace: "reply", Reason: "nothing to continue"}
+}
+
+func resumableStopped(r BotIntakeRun) bool {
+	switch strings.ToLower(strings.TrimSpace(r.Status)) {
+	case "cancelled", "canceled", "failed", "interrupted":
+		return true
+	}
+	return false
+}
+
+func relaunchStopped(r BotIntakeRun) BotIntake {
+	task := strings.TrimSpace(r.Task)
+	if task == "" {
+		task = "刚才停下的那项"
+	}
+	instr := task
+	if p := strings.TrimSpace(r.Progress); p != "" {
+		instr = task + "\n上次进度：" + p
+	}
+	return BotIntake{
+		Kind: "new", Instruction: instr, Ack: "接着做：" + oneLineRunes(task, 80),
+		Pace: "direct", Phase: "execute", Reason: "resume " + strings.TrimSpace(r.Status),
+	}
+}
+
+func continueResumable(kind string, in BotIntake, content string, running []BotIntakeRun) (BotIntake, bool) {
+	if kind != "continue" && !bareContinue(content) && !bareContinue(in.Instruction) {
+		return BotIntake{}, false
+	}
+	idx := 0
+	if n, ok := atoi(in.RunID); ok {
+		idx = n
+	}
+	if idx >= 1 && idx <= len(running) {
+		picked := running[idx-1]
+		if resumableStopped(picked) {
+			return relaunchStopped(picked), true
+		}
+		ack := strings.TrimSpace(in.Ack)
+		if ack == "" || intakeSaysNoWork(ack) {
+			ack = "接着做。"
+		}
+		return BotIntake{Kind: "continue", RunID: picked.RunID, Ack: ack, Pace: "direct", Phase: "execute", Reason: "resume"}, true
+	}
+	var live, stopped []BotIntakeRun
+	for _, r := range running {
+		if resumableStopped(r) {
+			stopped = append(stopped, r)
+			continue
+		}
+		live = append(live, r)
+	}
+	if len(live) == 1 {
+		ack := strings.TrimSpace(in.Ack)
+		if ack == "" || intakeSaysNoWork(ack) {
+			ack = "接着做。"
+		}
+		return BotIntake{Kind: "continue", RunID: live[0].RunID, Ack: ack, Pace: "direct", Phase: "execute", Reason: "resume"}, true
+	}
+	if len(live) == 0 && len(stopped) == 1 {
+		return relaunchStopped(stopped[0]), true
+	}
+	if len(live) == 0 && len(stopped) > 1 {
+		text := "有好几件停了，说一下要继续哪一件。"
+		return BotIntake{Kind: "reply", Ack: text, Told: text, Pace: "reply", Reason: "which run"}, true
+	}
+	return BotIntake{}, false
 }
 
 func clipPersona(s string) string {

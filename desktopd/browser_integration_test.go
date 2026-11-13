@@ -244,7 +244,8 @@ print(json.dumps({"changed_again": changed, "policy": policy, "autostart": first
 		`"changed_again": false`,
 		`"TranslateEnabled": false`, `"PromptForDownloadLocation": false`, `"DownloadDirectory": "${home}/Downloads"`,
 		`"PasswordManagerEnabled": false`, `"AutofillAddressEnabled": false`, `"AutofillCreditCardEnabled": false`,
-		`"DefaultNotificationsSetting": 2`, `Hidden=true`, `do-not-disturb\" type=\"bool\" value=\"true`,
+		`"DefaultNotificationsSetting": 2`, `"URLBlocklist"`, `openapp.*://*`, `*app://*`, `intent:*`,
+		`Hidden=true`, `do-not-disturb\" type=\"bool\" value=\"true`,
 		`"package_kept": "[Desktop Entry]`, `"geometry": "1440x900x24"`,
 	} {
 		if !strings.Contains(out, want) {

@@ -59,10 +59,34 @@ func TestIntakeStopPauseContinueNeedALiveRun(t *testing.T) {
 		t.Fatalf("ambiguous stop fell through as %+v %v", got, err)
 	}
 	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "继续"}, func(context.Context, string, string) (string, error) {
-		return `{"kind":"continue","run":1,"instruction":"","ack":"接着做。","pace":"direct"}`, nil
+		return `{"kind":"continue","run":1,"instruction":"继续","ack":"没有可以继续的事。","pace":"direct"}`, nil
 	})
-	if err != nil || got.Kind != "new" {
-		t.Fatalf("continue with nothing running = %+v %v", got, err)
+	if err != nil || got.Kind != "reply" || got.Instruction != "" || !intakeSaysNoWork(got.Ack) {
+		t.Fatalf("continue with nothing must not start a run: %+v %v", got, err)
+	}
+}
+
+func TestContinueRelaunchesACancelledRunWithItsTask(t *testing.T) {
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	stopped := []BotIntakeRun{{RunID: "run_old", Task: "在京东下单", Status: "cancelled", Progress: "已打开商品页"}}
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{
+		BotID: "bot_p", Content: "继续", Earlier: []string{"在京东下单"}, Running: stopped,
+	}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"new","run":0,"instruction":"继续","ack":"没有可以继续的事。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "new" || !strings.Contains(got.Instruction, "在京东下单") || strings.TrimSpace(got.Instruction) == "继续" {
+		t.Fatalf("relaunch = %+v %v", got, err)
+	}
+	if !strings.Contains(got.Instruction, "已打开商品页") || intakeSaysNoWork(got.Ack) || !strings.Contains(got.Ack, "在京东下单") {
+		t.Fatalf("ack and progress = %+v", got)
+	}
+	paused := []BotIntakeRun{{RunID: "run_hold", Task: "在京东下单", Status: "paused"}}
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "继续", Running: paused}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"continue","run":0,"instruction":"","ack":"没有可以继续的事。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "continue" || got.RunID != "run_hold" || intakeSaysNoWork(got.Ack) {
+		t.Fatalf("paused resume = %+v %v", got, err)
 	}
 }
 
@@ -149,7 +173,7 @@ func TestIntakePhaseComesFromTheModelAndTimeoutStaysExecute(t *testing.T) {
 	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "确认，开始吧"}, func(context.Context, string, string) (string, error) {
 		return `{"kind":"continue","run":0,"instruction":"","ack":"开始。","pace":"direct","phase":"plan"}`, nil
 	})
-	if err != nil || got.Kind != "new" || got.Phase != "execute" {
+	if err != nil || got.Kind != "reply" || got.Instruction != "" || got.Reason != "nothing to continue" {
 		t.Fatalf("confirm follow-up = %+v %v", got, err)
 	}
 	prev := BotIntakeBudget

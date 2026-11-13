@@ -256,36 +256,58 @@ func (s *Service) holdAtStepBoundary(runID string) {
 	if g.heldAt.IsZero() {
 		g.heldAt = s.now()
 	}
-	wake, wait := g.wake, time.Until(g.expires)
+	wake := g.wake
+	reason := g.reason
 	s.pauses.mu.Unlock()
 	botlog.Write(runID, "srv.run_held", nil, "run", runID)
-	if wait < 0 {
-		wait = 0
-	}
-	t := time.NewTimer(wait)
-	defer t.Stop()
-	select {
-	case <-wake:
-		return
-	case <-t.C:
-	}
-	// Timed out: end the pause and cancel the run under the pauser's own
-	// principal, so it is recorded exactly like a person pressing stop.
-	s.pauses.mu.Lock()
-	cur, still := s.pauses.gates[runID]
-	if still && cur == g {
-		delete(s.pauses.gates, runID)
-		g.woken = true
-		close(g.wake)
+	for {
+		s.pauses.mu.Lock()
+		cur, still := s.pauses.gates[runID]
+		if !still || cur != g {
+			s.pauses.mu.Unlock()
+			return
+		}
+		wait := time.Until(g.expires)
+		s.pauses.mu.Unlock()
+		if wait < 0 {
+			wait = 0
+		}
+		t := time.NewTimer(wait)
+		select {
+		case <-wake:
+			t.Stop()
+			return
+		case <-t.C:
+		}
+		// A takeover pause is the person holding the screen. It ends when
+		// they hand it back or explicitly stop the run, not on a timer.
+		if reason == "takeover" {
+			s.pauses.mu.Lock()
+			if cur, ok := s.pauses.gates[runID]; ok && cur == g {
+				g.expires = s.now().Add(g.timeout)
+			}
+			s.pauses.mu.Unlock()
+			continue
+		}
+		// Timed out: end the pause and cancel the run under the pauser's own
+		// principal, so it is recorded exactly like a person pressing stop.
+		s.pauses.mu.Lock()
+		cur, still = s.pauses.gates[runID]
+		if still && cur == g {
+			delete(s.pauses.gates, runID)
+			g.woken = true
+			close(g.wake)
+			s.pauses.finish(runID, "timed_out")
+		}
+		s.pauses.mu.Unlock()
+		if !still || cur != g {
+			return
+		}
+		botlog.Write(runID, "srv.run_pause_timeout", nil, "run", runID)
+		_, _ = s.CancelRun(context.Background(), g.principal, g.instanceID, runID)
+		s.pauses.mu.Lock()
 		s.pauses.finish(runID, "timed_out")
-	}
-	s.pauses.mu.Unlock()
-	if !still || cur != g {
+		s.pauses.mu.Unlock()
 		return
 	}
-	botlog.Write(runID, "srv.run_pause_timeout", nil, "run", runID)
-	_, _ = s.CancelRun(context.Background(), g.principal, g.instanceID, runID)
-	s.pauses.mu.Lock()
-	s.pauses.finish(runID, "timed_out")
-	s.pauses.mu.Unlock()
 }

@@ -39,9 +39,15 @@ type desktopIntake struct {
 }
 
 type desktopRunBrief struct {
-	RunID string
-	Task  string
+	RunID    string
+	Task     string
+	Status   string
+	Progress string
 }
+
+// desktopResumeWindow is how long a cancelled, failed, or interrupted run
+// stays available for "继续".
+const desktopResumeWindow = 30 * time.Minute
 
 type desktopSteerRequest struct {
 	TenantID        string
@@ -71,10 +77,10 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 	}
 	explicitNew := desktopCanonicalContinue(in.BotID, in.ContinueSession) == strings.TrimSpace(in.BotID)
 	actionReturn := strings.EqualFold(strings.TrimSpace(in.Action), "return")
-	running := s.desktopLiveRunBriefs(in.TenantID, in.UserID, in.BotID)
+	running, earlier := s.desktopIntakeContext(in.TenantID, in.UserID, in.BotID)
 	decision := desktopIntake{Kind: "new", Instruction: content, Pace: "direct", Reason: "explicit"}
 	if !explicitNew && !actionReturn {
-		decision = s.fetchDesktopIntake(ctx, in, running)
+		decision = s.fetchDesktopIntake(ctx, in, running, earlier)
 	}
 	if supplementOff() && (decision.Kind == "supplement" || decision.Kind == "change") {
 		decision.Kind = "new"
@@ -220,12 +226,81 @@ func (s *Service) desktopLiveRunBriefs(tenantID, userID, botID string) []desktop
 		if done || runID == "" {
 			continue
 		}
-		out = append(out, desktopRunBrief{RunID: runID, Task: task})
+		status := "running"
+		if s.runPauseStatus(tenantID, userID, botID, runID) == "paused" {
+			status = "paused"
+		}
+		out = append(out, desktopRunBrief{RunID: runID, Task: task, Status: status})
 	}
 	return out
 }
 
-func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest, running []desktopRunBrief) desktopIntake {
+func (s *Service) runPauseStatus(tenantID, userID, botID, runID string) string {
+	if s == nil {
+		return ""
+	}
+	if v, ok := s.runPauses.Load(runPauseKey(tenantID, userID, botID, runID)); ok {
+		if st, _ := v.(RunPauseState); st.Paused {
+			return "paused"
+		}
+	}
+	return ""
+}
+
+func resumableDesktopStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "cancelled", "canceled", "failed", "interrupted":
+		return true
+	}
+	return false
+}
+
+// desktopIntakeContext is the live runs plus recently stopped ones, and a
+// few earlier task lines so intake can tell "继续" from a new chore.
+func (s *Service) desktopIntakeContext(tenantID, userID, botID string) ([]desktopRunBrief, []string) {
+	live := s.desktopLiveRunBriefs(tenantID, userID, botID)
+	if s == nil {
+		return live, nil
+	}
+	prefix := desktopAdmitKey(tenantID, userID, botID, "")
+	now := s.now()
+	s.mu.Lock()
+	var stopped []desktopRunBrief
+	for key, state := range s.desktopAdmits {
+		if state == nil || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		state.mu.Lock()
+		done, status, task, runID, progress, finished := state.done, state.status, state.task, state.runID, state.progressWhere, state.finished
+		state.mu.Unlock()
+		if !done || !resumableDesktopStatus(status) || strings.TrimSpace(runID) == "" {
+			continue
+		}
+		if !finished.IsZero() && now.Sub(finished) > desktopResumeWindow {
+			continue
+		}
+		stopped = append(stopped, desktopRunBrief{RunID: runID, Task: task, Status: status, Progress: progress})
+	}
+	s.mu.Unlock()
+	out := append(live, stopped...)
+	var earlier []string
+	for _, r := range out {
+		line := strings.TrimSpace(r.Task)
+		if line == "" {
+			continue
+		}
+		if r.Status != "" && r.Status != "running" {
+			line += " [" + r.Status + "]"
+		}
+		earlier = append(earlier, line)
+		if len(earlier) == 6 {
+			break
+		}
+	}
+	return out, earlier
+}
+
+func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest, running []desktopRunBrief, earlier []string) desktopIntake {
 	fallback := desktopIntake{Kind: "new", Instruction: strings.TrimSpace(in.Content), Pace: "direct", Phase: "execute", Reason: "fallback"}
 	if s == nil || strings.TrimSpace(in.InstanceID) == "" {
 		return fallback
@@ -255,9 +330,19 @@ func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest
 	if len(running) > 0 {
 		rows := make([]map[string]string, 0, len(running))
 		for _, r := range running {
-			rows = append(rows, map[string]string{"run_id": r.RunID, "task": r.Task})
+			row := map[string]string{"run_id": r.RunID, "task": r.Task}
+			if r.Status != "" {
+				row["status"] = r.Status
+			}
+			if r.Progress != "" {
+				row["progress"] = r.Progress
+			}
+			rows = append(rows, row)
 		}
 		body["running"] = rows
+	}
+	if len(earlier) > 0 {
+		body["earlier"] = earlier
 	}
 	var out desktopIntake
 	path := "/api/v1/instances/" + url.PathEscape(in.InstanceID) + "/bot-intake"

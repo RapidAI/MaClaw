@@ -744,6 +744,11 @@ func desktopBlockedByPerson(scope agentruntime.Scope) error {
 
 func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
 	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
+	if action == "probe" || action == "navigate" || action == "screenshot" {
+		if text, blocked := desktopBlockingDialog(scope); blocked {
+			return text, nil
+		}
+	}
 	command := desktopArg(args, "command")
 	if !desktopbot.SideEffect(action, command) {
 		return operateDesktopBody(ctx, scope, args)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
 
@@ -39,7 +40,13 @@ func runPauseKey(tenantID, userID, botID, runID string) string {
 
 // PauseDesktopRun pauses one of the owner's runs at its next step boundary.
 func (s *Service) PauseDesktopRun(ctx context.Context, tenantID, userID, botID, runID, reason string, timeoutSec int64) (*RunPauseState, error) {
-	body := map[string]any{"reason": strings.TrimSpace(reason)}
+	reason = strings.TrimSpace(reason)
+	body := map[string]any{"reason": reason}
+	if strings.EqualFold(reason, "takeover") && timeoutSec <= 0 {
+		// The person has the screen. A short pause timeout would cancel
+		// the run they are in the middle of.
+		timeoutSec = int64((6 * time.Hour).Seconds())
+	}
 	if timeoutSec > 0 {
 		body["timeout_sec"] = timeoutSec
 	}
@@ -48,9 +55,62 @@ func (s *Service) PauseDesktopRun(ctx context.Context, tenantID, userID, botID, 
 		return nil, err
 	}
 	if st.Paused {
+		if strings.TrimSpace(st.Reason) == "" {
+			st.Reason = reason
+		}
 		s.runPauses.Store(runPauseKey(tenantID, userID, bot, st.RunID), *st)
 	}
+	if strings.EqualFold(reason, "takeover") {
+		s.beginDesktopTakeover(ctx, tenantID, userID, bot)
+	}
 	return st, nil
+}
+
+// beginDesktopTakeover hands this bot's display to the person. A desktop
+// that has no control channel is unchanged; the pause still holds the run.
+func (s *Service) beginDesktopTakeover(ctx context.Context, tenantID, userID, botID string) {
+	if s == nil {
+		return
+	}
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return
+	}
+	index := indexOf(rec.Bots, botID)
+	if index < 0 || !botIsolated(rec.Bots[index]) {
+		return
+	}
+	ctl, ok := s.Desktop.(DesktopCtl)
+	if !ok || ctl == nil {
+		return
+	}
+	dUser := desktopUserForBot(userID, rec.Bots[index])
+	_, _ = ctl.Ctl(ctx, tenantID, dUser, map[string]any{"op": desktop.CtlTakeoverBegin, "reason": "takeover"})
+}
+
+// ResumeTakeoverRuns continues runs this Hub paused so the person could use
+// the screen. The same run goes on. There is no second run.
+func (s *Service) ResumeTakeoverRuns(ctx context.Context, tenantID, userID, botID string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	prefix := desktopAdmitKey(tenantID, userID, botID, "")
+	var ids []string
+	s.runPauses.Range(func(k, v any) bool {
+		key, _ := k.(string)
+		st, _ := v.(RunPauseState)
+		if strings.HasPrefix(key, prefix) && st.Paused && strings.EqualFold(st.Reason, "takeover") && st.RunID != "" {
+			ids = append(ids, st.RunID)
+		}
+		return true
+	})
+	resumed := ""
+	for _, id := range ids {
+		if _, err := s.ResumeDesktopRun(ctx, tenantID, userID, botID, id); err == nil && resumed == "" {
+			resumed = id
+		}
+	}
+	return resumed, resumed != ""
 }
 
 // ResumeDesktopRun releases a paused run; the same run continues.

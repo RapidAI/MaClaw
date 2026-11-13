@@ -44,6 +44,7 @@ import {
     LogFrontendDiagnostic,
     CreateDesktopBot,
     CancelDesktopBotRun,
+    PauseDesktopBotRun,
     AppendDesktopBotSupplement,
     UploadDesktopBotMaterialChunk,
     DeleteDesktopBot,
@@ -933,10 +934,10 @@ function copy(lang: string) {
             demoNotesPlaceholder: 'Notes (optional)',
             demoBusy: 'Working…',
             takeoverHint: 'Fullscreen the desktop and take the keyboard from the bot.',
-            takeoverBusyHint: 'This bot is using its desktop. Take over to stop it and take the keyboard.',
-            botDrivingNote: 'The bot is using the desktop. Stop it first if you need the computer.',
+            takeoverBusyHint: 'This bot is using its desktop. Take over pauses it and gives you the keyboard. Hand it back to continue the same task.',
+            botDrivingNote: 'The bot is using the desktop. Take over to pause it, or stop to cancel it.',
             stopBot: 'Stop',
-            stopWork: 'Stop',
+            stopWork: 'Pause',
             takeoverActive: 'You have the desktop. Release it to hand the keyboard back.',
             myDesktop: 'My desktop',
             sharedScreen: 'Shared',
@@ -1157,10 +1158,10 @@ function copy(lang: string) {
             demoNotesPlaceholder: '備註（可選）',
             demoBusy: '處理中…',
             takeoverHint: '全螢幕顯示桌面，並把鍵盤交給你。',
-            takeoverBusyHint: '這個 Bot 正在操作桌面。接管會先停下它。',
-            botDrivingNote: 'Bot 正在操作桌面，需要的話可以先停止它。',
+            takeoverBusyHint: '這個 Bot 正在操作桌面。接管會先暫停它，交還後同一項繼續。',
+            botDrivingNote: 'Bot 正在操作桌面。可以接管，同一項會暫停，交還後繼續；停止才會取消。',
             stopBot: '停止',
-            stopWork: '停下',
+            stopWork: '暫停',
             takeoverActive: '你已接管桌面。完成後退出接管，把鍵盤交還。',
             myDesktop: '我的桌面',
             sharedScreen: '共享',
@@ -1379,10 +1380,10 @@ function copy(lang: string) {
         demoNotesPlaceholder: '备注（可选）',
         demoBusy: '处理中…',
         takeoverHint: '全屏显示桌面，并把键盘交给你。',
-        takeoverBusyHint: '这个 Bot 正在操作桌面。接管会先停下它。',
-        botDrivingNote: 'Bot 正在操作桌面，需要的话可以先停止它。',
+        takeoverBusyHint: '这个 Bot 正在操作桌面。接管会先暂停它，交还后同一项继续。',
+        botDrivingNote: 'Bot 正在操作桌面。可以接管，同一项会暂停，交还后继续；停止才会取消。',
         stopBot: '停止',
-        stopWork: '停下',
+        stopWork: '暂停',
         takeoverActive: '你已接管桌面。完成后退出接管，把键盘交回。',
         myDesktop: '我的桌面',
         sharedScreen: '共享',
@@ -4778,6 +4779,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
         const admitting = !!desktopRunByBotRef.current[botId];
         if (!local || local.length === 0) {
+            if (admitting && kind === 'pause') {
+                held.release(false);
+                return '';
+            }
             if (admitting) {
                 // Hub names the run only when the admit call returns, which
                 // can take the whole 45-minute budget. Arm the cancel now
@@ -4798,6 +4803,23 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             return desktopBotLine('idle', { lang, persona: personaForBot(ownerId, botId), recent: recentChat(ownerId, botId) }, desktopBotStopIdleSentence(lang));
         }
         const hadNext = held.hadNext;
+        if (kind === 'pause') {
+            held.release(false);
+            let reason = '';
+            const why = asked ? 'pause' : 'takeover';
+            for (const run of local) {
+                try {
+                    await PauseDesktopBotRun(botId, run.runId, why, 0);
+                } catch (error) {
+                    reason = failureMessage(error).trim();
+                    break;
+                }
+            }
+            if (userIdRef.current !== ownerId) return '';
+            if (reason) return desktopBotLine('stop_failed', { lang, persona: personaForBot(ownerId, botId), recent: recentChat(ownerId, botId), instruction: reason }, desktopBotStopFailedSentence(reason, lang));
+            if (!asked) return '';
+            return lang.startsWith('zh') ? '先暂停了。交还或说继续后，同一项接着做。' : 'Paused. Hand it back or say continue, and the same task goes on.';
+        }
         held.release(true);
         let reason = '';
         for (const run of local) {
@@ -4950,7 +4972,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
           }
         })();
     };
-    stopForTakeoverRef.current = (botId: string) => answerDesktopControl(botId, '', 'stop', 'quiet', 'takeover');
+    stopForTakeoverRef.current = (botId: string) => answerDesktopControl(botId, '', 'pause', 'quiet', 'takeover');
 
     const deliverCross = async (botId: string, cross: { kind: string; target: string; text: string; order: string }) => {
         const self = botsRef.current.find(item => item.id === botId);
@@ -6888,7 +6910,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         ) : null}
                         {botPending(selected.id) ? (
                             <p className="desktop-bot-chat__processing" data-testid="desktop-bot-processing" role="status">
-                                <button type="button" className="desktop-bot-chat__processing-mark" data-testid="desktop-bot-pause" aria-label={text.stopWork} onClick={() => answerDesktopControl(selected.id, '', 'stop', 'quiet', 'pause-button')} />
+                                <button type="button" className="desktop-bot-chat__processing-mark" data-testid="desktop-bot-pause" aria-label={text.stopWork} onClick={() => answerDesktopControl(selected.id, '', 'pause', 'quiet', 'pause-button')} />
                                 <span className="desktop-bot-chat__processing-label">{understandingByBot[selected.id] && !askingByBot[selected.id] ? desktopBotUnderstandingLabel(lang) : desktopBotWorkingLabel(askingByBot[selected.id] || '', shownDesktopBotActivity(activityByBot[selected.id]))}{liveRunsOf(selected.id) > 1 ? <span className="desktop-bot-chat__processing-count" data-testid="desktop-bot-run-count">{lang.startsWith('zh') ? ` · ${liveRunsOf(selected.id)} 件同时在做` : ` · ${liveRunsOf(selected.id)} jobs at once`}</span> : null}</span>
                                 {statusByBot[selected.id]?.text ? (
                                     <span className="desktop-bot-chat__processing-status" data-testid="desktop-bot-status-line" title={statusByBot[selected.id].text}>{statusByBot[selected.id].text}</span>
@@ -7183,7 +7205,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                 <ScreenWatchIcon />
                                                 {text.viewOnly}
                                             </button>
-                                            {botDriving ? null : <button
+                                            <button
                                                 type="button"
                                                 className="desktop-bot-stage__mode-btn"
                                                 data-testid="desktop-bot-take-control"
@@ -7194,7 +7216,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             >
                                                 <ScreenControlIcon />
                                                 {text.takeControl}
-                                            </button>}
+                                            </button>
                                         </div>
                                         <button
                                             type="button"
@@ -7251,6 +7273,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 {botDriving ? (
                                     <>
                                         <span className="desktop-bot-chat__ops-note" role="status">{text.botDrivingNote}</span>
+                                        <button
+                                            type="button"
+                                            data-testid="desktop-bot-takeover"
+                                            className="desktop-bot-chat__takeover"
+                                            disabled={otherIsolated}
+                                            title={text.takeoverBusyHint}
+                                            onClick={() => enterTakeover(selected.id)}
+                                        >{text.takeover}</button>
                                         <button
                                             type="button"
                                             data-testid="desktop-bot-panel-stop"

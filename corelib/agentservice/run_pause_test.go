@@ -116,6 +116,33 @@ func TestRunPauseTimeoutCancels(t *testing.T) {
 	}
 }
 
+func TestTakeoverPauseDoesNotCancel(t *testing.T) {
+	svc, p, inst, run, done := livePausableRun(t)
+	defer done()
+	if _, err := svc.PauseRun(context.Background(), p, inst.ID, run.ID, "takeover", 40*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	held := heldIn(svc, run.ID)
+	time.Sleep(120 * time.Millisecond)
+	select {
+	case <-held:
+		t.Fatal("takeover pause ended on the timer")
+	default:
+	}
+	got, _ := svc.store.GetRun(p.TenantID, p.UserID, inst.ID, run.ID)
+	if got.Status != RunStatusRunning {
+		t.Fatalf("status %s", got.Status)
+	}
+	if _, err := svc.ResumeRun(context.Background(), p, inst.ID, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-held:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resume did not release the takeover pause")
+	}
+}
+
 func TestRunPauseTimeoutEnv(t *testing.T) {
 	t.Setenv("MACLAW_RUN_PAUSE_TIMEOUT_SEC", "90")
 	if runPauseTimeoutFromEnv() != 90*time.Second {
