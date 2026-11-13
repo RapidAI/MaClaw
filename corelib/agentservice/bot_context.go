@@ -3,7 +3,9 @@ package agentservice
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -82,12 +84,7 @@ func (c BotContext) snapshot(session string) BotContextSnapshot {
 			j--
 		}
 	}
-	var asks []BotContextAsk
-	for _, ask := range c.Asks {
-		if !ask.Withdrawn {
-			asks = append(asks, ask)
-		}
-	}
+	asks := append([]BotContextAsk(nil), c.Asks...)
 	state := c.State
 	if state == "" {
 		state = "discuss"
@@ -163,7 +160,39 @@ func (s *Service) sessionForBot(ctx context.Context, p Principal, instanceID, se
 	return s.resolveSendSession(ctx, p, instanceID, SendMessageInput{ClientSessionKey: sessionKey})
 }
 
+var errBotContextStale = errors.New("bot context revision changed")
+
+var botContextMu sync.Map
+
+func botContextLock(key string) func() {
+	v, _ := botContextMu.LoadOrStore(key, &sync.Mutex{})
+	v.(*sync.Mutex).Lock()
+	return v.(*sync.Mutex).Unlock
+}
+
+func compactBotContext(state *BotContext) {
+	const maxMessages, maxTasks, maxAsks = 80, 16, 40
+	if len(state.Messages) > maxMessages {
+		state.Messages = append([]BotContextMessage(nil), state.Messages[len(state.Messages)-maxMessages:]...)
+	}
+	if len(state.Tasks) > maxTasks {
+		state.Tasks = append([]BotContextTask(nil), state.Tasks[len(state.Tasks)-maxTasks:]...)
+	}
+	if len(state.Asks) > maxAsks {
+		state.Asks = append([]BotContextAsk(nil), state.Asks[len(state.Asks)-maxAsks:]...)
+	}
+}
+
 func (s *Service) writeBotContext(ctx context.Context, p Principal, instanceID string, sess *Session, state BotContext) error {
+	fresh, err := s.store.GetSession(p.TenantID, p.UserID, instanceID, sess.ID)
+	if err != nil {
+		return err
+	}
+	current := readBotContext(fresh.Metadata)
+	if current.Revision != state.Revision {
+		return errBotContextStale
+	}
+	compactBotContext(&state)
 	state.Revision++
 	raw, err := json.Marshal(state)
 	if err != nil {
@@ -197,7 +226,9 @@ func (s *Service) loadBotContext(ctx context.Context, p Principal, instanceID, s
 // BeginBotTurn records the person's line, withdraws asks that this new
 // message replaces, and returns the earlier lines and resumable tasks the
 // decision should see. The line just written is not part of Earlier.
-func (s *Service) BeginBotTurn(ctx context.Context, p Principal, instanceID, sessionKey, text, clientMessageID string) ([]string, []BotIntakeRun, error) {
+func (s *Service) BeginBotTurn(ctx context.Context, p Principal, instanceID, sessionKey, text, clientMessageID, answerRun string) ([]string, []BotIntakeRun, error) {
+	unlock := botContextLock(p.TenantID + "\x00" + p.UserID + "\x00" + instanceID + "\x00" + sessionKey)
+	defer unlock()
 	sess, state, err := s.loadBotContext(ctx, p, instanceID, sessionKey)
 	if err != nil {
 		return nil, nil, err
@@ -210,16 +241,25 @@ func (s *Service) BeginBotTurn(ctx context.Context, p Principal, instanceID, ses
 	}
 	if clientMessageID != "" {
 		for _, msg := range state.Messages {
-			if msg.ID == clientMessageID || (msg.Role == "user" && msg.Text == text && msg.ID == clientMessageID) {
+			if msg.ID == clientMessageID {
 				return earlier, tasks, nil
 			}
 		}
 	}
 	for i := range state.Asks {
-		if !state.Asks[i].Withdrawn {
-			state.Asks[i].Withdrawn = true
-			state.Asks[i].Because = "newer_message"
+		if state.Asks[i].Withdrawn {
+			continue
 		}
+		// The message that answers an ask closes that ask. It is not a
+		// newer message that superseded it.
+		if answerRun != "" && state.Asks[i].RunID == answerRun {
+			state.Asks[i].Answer = text
+			state.Asks[i].Because = "answered"
+			state.Asks[i].Withdrawn = true
+			continue
+		}
+		state.Asks[i].Withdrawn = true
+		state.Asks[i].Because = "newer_message"
 	}
 	id := strings.TrimSpace(clientMessageID)
 	if id == "" {
@@ -237,6 +277,8 @@ func (s *Service) BeginBotTurn(ctx context.Context, p Principal, instanceID, ses
 // FinishBotTurn records the reply and, when a run is actually starting,
 // the task. A reply that says there is nothing to do does not record a task.
 func (s *Service) FinishBotTurn(ctx context.Context, p Principal, instanceID, sessionKey, ack, kind, instruction, runID string) error {
+	unlock := botContextLock(p.TenantID + "\x00" + p.UserID + "\x00" + instanceID + "\x00" + sessionKey)
+	defer unlock()
 	sess, state, err := s.loadBotContext(ctx, p, instanceID, sessionKey)
 	if err != nil {
 		return err
@@ -257,6 +299,8 @@ func (s *Service) FinishBotTurn(ctx context.Context, p Principal, instanceID, se
 
 // NoteBotTask records or updates a task on the conversation.
 func (s *Service) NoteBotTask(ctx context.Context, p Principal, instanceID, sessionKey string, task BotContextTask) error {
+	unlock := botContextLock(p.TenantID + "\x00" + p.UserID + "\x00" + instanceID + "\x00" + sessionKey)
+	defer unlock()
 	sess, state, err := s.loadBotContext(ctx, p, instanceID, sessionKey)
 	if err != nil {
 		return err
@@ -296,6 +340,8 @@ func (s *Service) NoteBotTask(ctx context.Context, p Principal, instanceID, sess
 
 // NoteBotAsk records a question bound to a run.
 func (s *Service) NoteBotAsk(ctx context.Context, p Principal, instanceID, sessionKey string, ask BotContextAsk) error {
+	unlock := botContextLock(p.TenantID + "\x00" + p.UserID + "\x00" + instanceID + "\x00" + sessionKey)
+	defer unlock()
 	sess, state, err := s.loadBotContext(ctx, p, instanceID, sessionKey)
 	if err != nil {
 		return err
@@ -312,6 +358,8 @@ func (s *Service) NoteBotAsk(ctx context.Context, p Principal, instanceID, sessi
 
 // NoteBotAttention stores the handoff notice for this bot's conversation.
 func (s *Service) NoteBotAttention(ctx context.Context, p Principal, instanceID, sessionKey, id, reason string) error {
+	unlock := botContextLock(p.TenantID + "\x00" + p.UserID + "\x00" + instanceID + "\x00" + sessionKey)
+	defer unlock()
 	sess, state, err := s.loadBotContext(ctx, p, instanceID, sessionKey)
 	if err != nil {
 		return err
