@@ -924,7 +924,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 			// still needs that browser, so this failure must not stop it.
 			s.noteDesktopHeld(tenantID, userID, botID, body.Turn)
 			if reason != "" {
-				s.noteDesktopAttention(tenantID, userID, botID, reason)
+				s.noteDesktopAttentionFor(tenantID, userID, botID, body.Turn, reason)
 			}
 			s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
 		} else if !desktopCallTimedOut(body.CallErr) {
@@ -960,7 +960,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 				reply.NovncURL = s.gateDesktopHandoff(novnc)
 			}
 		} else if reason != "" {
-			s.noteDesktopAttention(tenantID, userID, botID, reason)
+			s.noteDesktopAttentionFor(tenantID, userID, botID, body.Turn, reason)
 			reply.AttentionReason = reason
 		}
 		return reply, body.CallErr
@@ -1025,7 +1025,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 		// person can sign in, and the website login would be gone.
 		s.noteDesktopHeld(tenantID, userID, botID, body.Turn)
 		if reason != "" {
-			s.noteDesktopAttention(tenantID, userID, botID, reason)
+			s.noteDesktopAttentionFor(tenantID, userID, botID, body.Turn, reason)
 		}
 		reply.Handoff = true
 		reply.AttentionReason = reason
@@ -1036,7 +1036,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 	} else {
 		s.clearDesktopHeld(tenantID, userID, botID, body.Turn)
 		if reason != "" {
-			s.noteDesktopAttention(tenantID, userID, botID, reason)
+			s.noteDesktopAttentionFor(tenantID, userID, botID, body.Turn, reason)
 			reply.AttentionReason = reason
 		} else if !s.botHasLiveRun(tenantID, userID, botID) {
 			// A finished reply ends the handoff reason. The keyboard itself

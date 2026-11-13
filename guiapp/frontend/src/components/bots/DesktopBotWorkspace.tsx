@@ -50,6 +50,7 @@ import {
     DeleteDesktopBotSchedule,
     DesktopBotDesktopAdmin,
     GetDesktopBotScreen,
+    GetHubConnectionState,
     HandBackDesktopBot,
     SetDesktopBotDesktopMode,
     FillBotSecret,
@@ -2404,7 +2405,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [screenByBot, setScreenByBot] = useState<Record<string, BotScreen>>({});
     const [screenPick, setScreenPick] = useState('mine');
     const [screenPickTouched, setScreenPickTouched] = useState(false);
-    const [handoffNotice, setHandoffNotice] = useState<{ botId: string; reason: string; url: string } | null>(null);
+    // Hub's current handoff for each bot. The map is not a latch: a bot is
+    // here only while Hub still reports that attention id and reason.
+    const [handoffByBot, setHandoffByBot] = useState<Record<string, { botId: string; attentionId: string; reason: string; url: string }>>({});
+    const handoffSeenAt = useRef<Record<string, number>>({});
     const [desktopAdmin, setDesktopAdmin] = useState(false);
     const [modeSaving, setModeSaving] = useState(false);
     // Which bot a hand-back is in flight for; the label follows that bot only.
@@ -2775,7 +2779,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // A handoff keeps the keyboard when this bot is not using it.
     const botAskedForDesktop = (botId: string) => {
         if (!botId) return false;
-        if (handoffNotice?.botId === botId) return true;
+        if (handoffByBot[botId]?.reason) return true;
         const view = liveDesktop[botId];
         if (view?.userControl || view?.attentionReason) return true;
         return messagesForBot(userId, botId).some(item => item.userControl || !!item.attentionReason);
@@ -3038,6 +3042,49 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // A URL by itself never opens the stage. Force-open is the rising edge of
     // one handoff. While that handoff is latched, a collapsed panel ignores
     // the same keyboard report and does not write the live flags back.
+    const forgetHandoff = (botId: string) => {
+        if (!botId) return;
+        setHandoffByBot(prev => {
+            if (!prev[botId]) return prev;
+            const next = { ...prev };
+            delete next[botId];
+            return next;
+        });
+    };
+    // Hub names the current ask. A missing id or a blank reason is not a notice.
+    const rememberHandoff = (botId: string, attentionId: string, reason: string, url: string) => {
+        const id = attentionId.trim();
+        const text = reason.trim();
+        if (!botId || !id || !text) return;
+        handoffSeenAt.current[botId] = Date.now();
+        setHandoffByBot(prev => {
+            const cur = prev[botId];
+            const nextUrl = url || cur?.url || '';
+            if (cur && cur.attentionId === id && cur.reason === text && cur.url === nextUrl) return prev;
+            return { ...prev, [botId]: { botId, attentionId: id, reason: text, url: nextUrl } };
+        });
+    };
+    const applyServerHandoff = (botId: string, view: { attention_reason?: string; attention_id?: string; novnc_url?: string } | null | undefined, requestedAt: number) => {
+        if (!botId || !view) return;
+        // A desktop poll that does not carry Hub's attention fields is not a
+        // report. The watch and the screen read always send them, including
+        // an empty reason when the ask is over.
+        if (!('attention_reason' in view) && !('attention_id' in view)) return;
+        const reason = String(view.attention_reason || '').trim();
+        const id = String(view.attention_id || '').trim();
+        if (reason && id) {
+            rememberHandoff(botId, id, reason, String(view.novnc_url || ''));
+            return;
+        }
+        if (reason) return;
+        setHandoffByBot(prev => {
+            const cur = prev[botId];
+            if (!cur || (handoffSeenAt.current[botId] || 0) > requestedAt) return prev;
+            const next = { ...prev };
+            delete next[botId];
+            return next;
+        });
+    };
     const applyScreen = (botId: string, screen: ScreenEvent, requestId = '') => {
         if (!botId) return;
         const foreignQuiet = requestId !== '' && latchRequestRef.current[botId] !== undefined && latchRequestRef.current[botId] !== '' && requestId !== latchRequestRef.current[botId] && handoffHeldBesideSibling(botId);
@@ -3050,6 +3097,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (foreignQuiet || anotherAdmittedTurn) return;
             latchRef.current[botId] = false;
             delete latchRequestRef.current[botId];
+            forgetHandoff(botId);
             setLiveDesktop(prev => prev[botId] ? { ...prev, [botId]: undefined } : prev);
             setDesktopPanels(prev => prev[botId] === 'user' ? prev : { ...prev, [botId]: 'off' });
             setScreenExpandedByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
@@ -3057,11 +3105,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
         const attention = screen.userControl || screen.reason !== '';
         const latched = latchRef.current[botId] === true;
-        if (screen.reported && !screen.userControl && screen.reason === '' && latched) {
+        if (screen.reported && !screen.userControl && screen.reason === '') {
             if (foreignQuiet) return;
+            // Hub says this bot is not waiting. The notice follows that
+            // report even when this page never latched the handoff itself.
+            forgetHandoff(botId);
+            if (!latched) return;
             latchRef.current[botId] = false;
             delete latchRequestRef.current[botId];
-            setHandoffNotice(prev => prev?.botId === botId ? null : prev);
             const panel = panelsRef.current[botId];
             if (panel === 'auto' || panel === 'user') {
                 const url = screen.url || liveRef.current[botId]?.url || '';
@@ -3077,21 +3128,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             latchRef.current[botId] = true;
             if (requestId) latchRequestRef.current[botId] = requestId;
             syncLive(botId, { url: screen.url || liveRef.current[botId]?.url || '', userControl: screen.userControl, attentionReason: screen.reason });
-            setHandoffNotice({ botId, reason: screen.reason, url: screen.url });
-            // The runtime's own reason is a fact, not the line to show.
-            if (screen.reason) {
-                const owner = userIdRef.current;
-                const raw = screen.reason;
-                void desktopBotLine('status_notice', {
-                    lang: langRef.current,
-                    persona: personaForBot(owner, botId),
-                    recent: recentChat(owner, botId),
-                    status: { takeover: screen.userControl ? 'person has the desktop' : 'bot needs the person on the desktop', stop_reason: raw },
-                }, raw).then(line => {
-                    if (userIdRef.current !== owner || !line || line === raw) return;
-                    setHandoffNotice(prev => prev?.botId === botId && prev.reason === raw ? { ...prev, reason: line } : prev);
-                });
-            }
+            // The sentence Hub sent is the notice. An empty reason is not a
+            // handoff, and a rewritten line must not replace who asked.
+            rememberHandoff(botId, screen.attentionId || requestId, screen.reason, screen.url);
             openPanel(botId, 'auto', true);
             showComputer(botId);
             setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
@@ -3156,8 +3195,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             pending = true;
             try {
                 const requestedAt = Date.now();
-                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string; desktop_mode?: string } | undefined;
+                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string; attention_id?: string; desktop_mode?: string } | undefined;
                 if (!alive) return;
+                applyServerHandoff(botId, view, requestedAt);
                 const url = String(view?.novnc_url || '');
                 if (!url) {
                     // Asleep is the normal idle state. Do not start the desktop
@@ -3631,6 +3671,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setDesktopPanels({});
         setSectionByBot({});
         setLiveDesktop({});
+        setHandoffByBot({});
         setTakeoverByBot({});
         setTakeoverHoldByBot({});
         setDesktopBusyByBot({});
@@ -3674,6 +3715,25 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const merged = mergeListed(list);
             botsRef.current = merged;
             setBots(merged);
+            const known = new Set(merged.map(bot => bot.id));
+            setHandoffByBot(prev => {
+                let changed = false;
+                const next = { ...prev };
+                for (const id of Object.keys(next)) {
+                    if (!known.has(id)) {
+                        delete next[id];
+                        changed = true;
+                    }
+                }
+                return changed ? next : prev;
+            });
+            for (const bot of merged) {
+                const askedAt = Date.now();
+                void GetDesktopBotScreen(bot.id).then(view => {
+                    if (gen !== loadGen.current) return;
+                    applyServerHandoff(bot.id, view, askedAt);
+                }).catch(() => undefined);
+            }
             if (pendingCrossNotes.current.length > 0) landCrossRef.current(pendingCrossNotes.current);
             // The live queue is this session's authority. Storage is only the
             // reload copy, so a list that arrives after the user already queued
@@ -3704,6 +3764,44 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setListNotice(error instanceof Error && error.message ? error.message : text.unavailable);
         });
         return () => { loadGen.current += 1; };
+    }, [userId]);
+
+    useEffect(() => {
+        const known = new Set(bots.map(bot => bot.id));
+        setHandoffByBot(prev => {
+            let changed = false;
+            const next = { ...prev };
+            for (const id of Object.keys(next)) {
+                if (!known.has(id) || !next[id].reason.trim() || !next[id].attentionId.trim()) {
+                    delete next[id];
+                    changed = true;
+                }
+            }
+            return changed ? next : prev;
+        });
+    }, [bots]);
+
+    useEffect(() => {
+        let alive = true;
+        // The event carries no body. The badge reads GetHubConnectionState
+        // the same way: a reconnect that is still trying must not drop a
+        // notice Hub has not been asked about yet.
+        const off = EventsOn('hub-connection-state', () => {
+            void GetHubConnectionState().then(st => {
+                if (!alive || String(st?.state || '') !== 'connected') return;
+                for (const bot of botsRef.current) {
+                    const askedAt = Date.now();
+                    void GetDesktopBotScreen(bot.id).then(view => {
+                        if (!alive) return;
+                        applyServerHandoff(bot.id, view, askedAt);
+                    }).catch(() => undefined);
+                }
+            }).catch(() => undefined);
+        });
+        return () => {
+            alive = false;
+            if (typeof off === 'function') off();
+        };
     }, [userId]);
 
     const screenIsStale = (sessionKey: string, requestId: string, inFlight?: PendingSend) => {
@@ -4090,7 +4188,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             ));
             if (messageId) stored.push({ id: messageId, role: 'assistant', content: '', pending: true, phase: 'execute', requestId });
             commit(botId, stored);
-            setHandoffNotice(prev => prev?.botId === botId ? null : prev);
+            forgetHandoff(botId);
             clearLiveFlags(botId);
             latchRef.current[botId] = false;
             delete latchRequestRef.current[botId];
@@ -4113,7 +4211,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     item.userControl || item.attentionReason ? { ...item, userControl: false, attentionReason: '' } : item
                 ));
                 commit(botId, stored);
-                setHandoffNotice(prev => prev?.botId === botId ? null : prev);
+                forgetHandoff(botId);
                 clearLiveFlags(botId);
                 latchRef.current[botId] = false;
                 delete latchRequestRef.current[botId];
@@ -6555,17 +6653,32 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             data-user-id={userId}
             style={{ '--desktop-bot-list-width': `${listWidth}px` } as CSSProperties}
         >
-            {handoffNotice ? (
-                <button
-                    type="button"
-                    className="desktop-bot-handoff-notice"
-                    data-testid="desktop-bot-handoff-notice"
-                    onClick={() => openHandoffScreen(handoffNotice)}
-                >
-                    <strong>{bots.find(bot => bot.id === handoffNotice.botId)?.title || text.myDesktop}</strong>
-                    <span>{handoffNotice.reason || text.handoffFallback}</span>
-                </button>
-            ) : null}
+            {(() => {
+                const notices = Object.values(handoffByBot).flatMap(notice => {
+                    const bot = bots.find(item => item.id === notice.botId);
+                    const reason = notice.reason.trim();
+                    if (!bot || !bot.title.trim() || !reason || !notice.attentionId.trim()) return [];
+                    return [{ ...notice, title: bot.title }];
+                });
+                if (notices.length === 0) return null;
+                return (
+                    <div className="desktop-bot-handoff-notices" data-testid="desktop-bot-handoff-notices">
+                        {notices.map(notice => (
+                            <button
+                                key={notice.botId + ':' + notice.attentionId}
+                                type="button"
+                                className="desktop-bot-handoff-notice"
+                                data-testid="desktop-bot-handoff-notice"
+                                data-bot-id={notice.botId}
+                                onClick={() => openHandoffScreen(notice)}
+                            >
+                                <strong>{notice.title}</strong>
+                                <span>{notice.reason}</span>
+                            </button>
+                        ))}
+                    </div>
+                );
+            })()}
             <aside className="desktop-bot-workspace__list-pane" aria-label={text.listTitle}>
                 <header className="desktop-bot-workspace__bar">
                     <div className="desktop-bot-workspace__bar-head">

@@ -92,6 +92,9 @@ func TestPlanPhaseIsMessageMetadataAndAttentionStaysWithTheBot(t *testing.T) {
 	if svc.DesktopAttention("tenant-a", "alice", "bot_alice") != "payment_confirm" {
 		t.Fatal("payment attention was not kept for the next poll")
 	}
+	if svc.DesktopAttentionID("tenant-a", "alice", "bot_alice") == "" {
+		t.Fatal("payment attention has no id")
+	}
 	if svc.DesktopAttention("tenant-a", "alice", "bot_other") != "" {
 		t.Fatal("another bot saw this handoff reason")
 	}
@@ -107,7 +110,7 @@ func TestPlanPhaseIsMessageMetadataAndAttentionStaysWithTheBot(t *testing.T) {
 	if plain.Handoff || plain.AttentionReason != "" || !strings.Contains(bodies[2], `"bot_phase":"execute"`) || strings.Contains(bodies[2], `"bot_phase":"plan"`) || strings.Contains(bodies[2], "computer_helper") {
 		t.Fatalf("plain reply=%#v body=%s", plain, bodies[2])
 	}
-	if svc.DesktopAttention("tenant-a", "alice", "bot_alice") != "" {
+	if svc.DesktopAttention("tenant-a", "alice", "bot_alice") != "" || svc.DesktopAttentionID("tenant-a", "alice", "bot_alice") != "" {
 		t.Fatal("a finished reply left the attention reason up")
 	}
 	logged, err := os.ReadFile(filepath.Join(logDir, "bot_alice.log"))

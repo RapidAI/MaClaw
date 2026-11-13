@@ -605,6 +605,7 @@ func GetBotDesktopHandler(svc *botmgmt.Service, identity botAuthenticator) http.
 			"novnc_url":        novnc,
 			"user_control":     userControl,
 			"attention_reason": svc.DesktopAttention(principal.TenantID, principal.UserID, botID),
+			"attention_id":     svc.DesktopAttentionID(principal.TenantID, principal.UserID, botID),
 			"desktop_mode":     botDesktopModeOf(r, svc, principal.TenantID, principal.UserID, botID),
 		})
 	}
@@ -653,6 +654,7 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator)
 			"novnc_url":        novnc,
 			"user_control":     userControl,
 			"attention_reason": svc.DesktopAttention(principal.TenantID, principal.UserID, botID),
+			"attention_id":     svc.DesktopAttentionID(principal.TenantID, principal.UserID, botID),
 			"desktop_mode":     botDesktopModeOf(r, svc, principal.TenantID, principal.UserID, botID),
 		})
 	}

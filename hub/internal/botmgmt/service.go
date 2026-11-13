@@ -187,9 +187,10 @@ type Service struct {
 	// desktopHeld maps a user to the bot that handed the desktop over.
 	// A later failed message, or another bot finishing, must not stop it.
 	desktopHeld map[string]string
-	// desktopAttention is why that bot handed the screen over. It is not
-	// persisted. Polls keep reporting it until that handoff is cleared.
-	desktopAttention map[string]string
+	// desktopAttention is the current handoff for that bot: an id plus the
+	// reason. It is not persisted. A process restart has none, and polls
+	// keep reporting one until that handoff is cleared.
+	desktopAttention map[string]desktopAttention
 	// desktopAwaiting is true only while that person still has the keyboard.
 	// The continuation takes the keyboard back as soon as it starts, but the
 	// desktop stays up until that bot finishes.
@@ -485,6 +486,7 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 		return err
 	}
 	rec.Bots = append(rec.Bots[:index], rec.Bots[index+1:]...)
+	s.forgetDesktopAttentionLocked(tenantID, bot.OwnerUserID, botID)
 	// The slot is cleared in this same save. The next earliest remaining bot
 	// becomes primary by the read rule. The next id is not written here.
 	if rec.PrimaryBot != nil && strings.TrimSpace(rec.PrimaryBot[bot.OwnerUserID]) == bot.ID {
