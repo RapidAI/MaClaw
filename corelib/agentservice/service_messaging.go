@@ -597,9 +597,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		// alone turns a provider period-quota exhaustion — wait six hours and
 		// resend — into a dead end. Keep both, executor reason last.
 		if errors.Is(execErr, agent.ErrRestartYield) || (s.drainingNow() && (errors.Is(execErr, context.Canceled) || execCanceled)) {
-			uncertain := restartUncertain(runTool(run.ID))
-			NoteRunTool(run.ID, "")
-			s.finishInterrupted(&run, uncertain)
+			s.finishInterrupted(&run)
 			terminalStatus = string(RunStatusInterrupted)
 			return &run, nil, execErr
 		}

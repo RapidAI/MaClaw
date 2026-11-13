@@ -440,6 +440,7 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 		return nil, fmt.Errorf("reconcile dynamic operation ledger: %w", err)
 	}
 	service := &Service{store: store, records: records, dynamicOperations: dynamicOperations, dynamicCapabilities: dynamicCapabilities, runEvents: runEvents, executor: executor, runtime: NewRuntimeExecutorWithModules(executor, runtimeModules), runtimeModules: runtimeModules, runtimeHost: agentruntime.HeadlessHostCapabilities{}, metrics: agentruntime.NewRuntimeMetrics(cfg.RuntimeMetricsTenantLimit), rateLimiter: agentruntime.NewTenantTokenBucket(cfg.RuntimeRateLimitRate, cfg.RuntimeRateLimitBurst, cfg.RuntimeRateLimitTenantLimit), distributedLimiter: cfg.DistributedRateLimiter, tokens: NewTokenManager(cfg.TokenSecret, cfg.TokenTTL), dataRoot: cfg.DataRoot, credentialPepper: cfg.CredentialPepper, now: time.Now}
+	service.drainCond = sync.NewCond(&service.runMu)
 	// Recover AgentService-owned directory transactions during startup, not
 	// only immediately before a later import.  A pending/unreadable record is
 	// retained as a fail-closed admission condition while read-only APIs remain

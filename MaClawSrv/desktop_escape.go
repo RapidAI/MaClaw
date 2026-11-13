@@ -21,8 +21,18 @@ import (
 // (request_takeover) are always permitted, in every phase, and every refusal
 // carries the facts for an honest final answer. Mutating steps stay guarded.
 
-// desktopObserveActions do not change the page, the files or the site.
-var desktopObserveActions = map[string]bool{"screenshot": true, "probe": true, "file_read": true, "file_list": true, "skill_list": true, "check_inbox": true, "wait": true}
+// desktopObserveActions do not change the page, the files, a process, or a
+// message. desktopCallChangesState is the inverse: every other action of the
+// desktop tool is side-effecting, including one that is added later and not
+// listed here. A restart must not run those again without a state check.
+var desktopObserveActions = map[string]bool{
+	"screenshot": true, "probe": true, "file_read": true, "file_list": true,
+	"skill_list": true, "check_inbox": true, "wait": true, "speculate": true,
+	"app_list": true, "job_status": true, "job_list": true, "app_probe": true,
+	"clipboard_get": true, "window_list": true, "screen_info": true,
+	"list_assignments": true, "shop_readback": true, "shop_compare_offers": true,
+	"proxy_mode": true, "goal_check": true,
+}
 
 // desktopEscapeAction: observation, or handing the step to the person.
 func desktopEscapeAction(action string) bool {

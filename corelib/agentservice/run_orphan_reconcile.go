@@ -85,6 +85,6 @@ func (s *Service) reconcileOrphanRuns() int {
 // markRunInterrupted stores the run as interrupted with a checkpoint.
 func (s *Service) markRunInterrupted(run Run) bool {
 	s.reapRunSupplements(run.ID)
-	s.finishInterrupted(&run, restartUncertain(runTool(run.ID)))
+	s.finishInterrupted(&run)
 	return run.Status == RunStatusInterrupted
 }

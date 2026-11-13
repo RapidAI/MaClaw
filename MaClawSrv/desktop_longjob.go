@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os/exec"
 	"path"
 	"regexp"
 	"strconv"
@@ -140,6 +141,9 @@ type desktopLongJob struct {
 	CheckReason string    `json:"check_reason,omitempty"`
 	CheckSet    bool      `json:"check_set,omitempty"` // the bot set NextCheck
 	CheckMisses int       `json:"check_misses,omitempty"`
+	// HubMisses counts Hub 404s while the instance row is still here.
+	// The watch backs off, then stops. It does not retry forever.
+	HubMisses   int       `json:"hub_misses,omitempty"`
 	EstimateEnd time.Time `json:"estimate_end,omitempty"`
 	OverdueSaid bool      `json:"overdue_said,omitempty"`
 	// DeadlineSaid: the person was told the estimate runs past the
@@ -1053,6 +1057,9 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 		return desktopLongJobView(j), nil
 	}
 	now := desktopLongJobNow()
+	if j.HubMisses > 0 && !j.NextPoll.IsZero() && now.Before(j.NextPoll) {
+		return "", nil
+	}
 	unreported := j.ReportedStatus != "" && j.ReportedStatus != j.Status
 	if !unreported && !j.NextPoll.IsZero() && now.Before(j.NextPoll.Add(-5*time.Second)) && !j.LastPoll.IsZero() {
 		return "", nil
@@ -1106,10 +1113,28 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 			desktopLongJobAbandon(j, "orphaned: owner gone")
 			return desktopLongJobView(desktopLongJobGet(j.ID)), nil
 		}
+		if desktopHubNotFound(err) && desktopLongJobInstancePresent(j) {
+			fresh := desktopLongJobGet(j.ID)
+			if fresh == nil {
+				fresh = j
+			}
+			fresh.HubMisses++
+			if fresh.HubMisses >= desktopLongJobHubMissLimit {
+				desktopLongJobAbandon(fresh, "hub assignment missing")
+				log.Printf("[desktop-longjob] job=%s stopped after %d Hub 404s while the instance was still stored", fresh.ID, fresh.HubMisses)
+				return desktopLongJobView(desktopLongJobGet(fresh.ID)), nil
+			}
+			fresh.NextPoll = desktopLongJobNow().Add(desktopLongJobHubBackoff(fresh.HubMisses))
+			fresh.LastPoll = desktopLongJobNow()
+			_ = desktopLongJobSave(fresh)
+			log.Printf("[desktop-longjob] job=%s %s not delivered (hub 404 %d/%d, next %s): %v", fresh.ID, dec, fresh.HubMisses, desktopLongJobHubMissLimit, fresh.NextPoll.Format(time.RFC3339), err)
+			return desktopLongJobView(fresh), err
+		}
 		// A transient failure is retried on the next tick.
 		log.Printf("[desktop-longjob] job=%s %s not delivered: %v", j.ID, dec, err)
 		return desktopLongJobView(j), err
 	}
+	j.HubMisses = 0
 	if dec == longJobCheck {
 		// A bot turn reads the job; it speaks for itself if anything is new.
 		log.Printf("[desktop-longjob] job=%s check turn started (log has no measurable progress)", j.ID)
@@ -1414,6 +1439,35 @@ func desktopLongJobStopWatch(j *desktopLongJob) {
 	// A restart can leave the row under its name after the id was lost.
 	_ = mgr.DeleteByName(desktopLongJobTaskPrefix + j.ID)
 	j.ScheduleID = ""
+}
+
+const desktopLongJobHubMissLimit = 5
+
+func desktopLongJobHubBackoff(misses int) time.Duration {
+	if misses < 1 {
+		misses = 1
+	}
+	if misses > desktopLongJobHubMissLimit {
+		misses = desktopLongJobHubMissLimit
+	}
+	return time.Minute << (misses - 1)
+}
+
+func desktopProcAlive(pid string) bool {
+	pid = strings.TrimSpace(pid)
+	if pid == "" || strings.ContainsAny(pid, " \t\n") {
+		return false
+	}
+	return exec.Command("kill", "-0", pid).Run() == nil
+}
+
+func desktopLongJobInstancePresent(j *desktopLongJob) bool {
+	svc := desktopLongJobService
+	if svc == nil || j == nil || strings.TrimSpace(j.InstanceID) == "" {
+		return false
+	}
+	_, err := svc.InstanceOwner(j.InstanceID)
+	return err == nil
 }
 
 // ErrLongJobOwnerGone is permanent: the instance this job resumes does not

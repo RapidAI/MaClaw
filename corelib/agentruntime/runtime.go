@@ -59,6 +59,10 @@ type ToolDefinition struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
+	// ChangesState reports whether one call can change something outside this
+	// process. The host reads it before dispatch and does not send it to the
+	// model. Nil means the host has not classified the tool.
+	ChangesState func(args map[string]any) bool `json:"-"`
 }
 
 // ModuleRegistry is the single deterministic registration point shared by GUI

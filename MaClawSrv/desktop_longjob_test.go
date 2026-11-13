@@ -1086,16 +1086,64 @@ func TestLongJobStartupReconcileDropsOrphanWatchesOnce(t *testing.T) {
 	}
 }
 
-func TestDesktopReplaySkipsTheUncertainAction(t *testing.T) {
-	armDesktopReplay("sess_replay", "publish")
-	if !consumeDesktopReplay("sess_replay", "publish") {
-		t.Fatal("publish was not held for re-verify")
+func TestDesktopSideEffectIsAPropertyOfTheTool(t *testing.T) {
+	for _, action := range []string{"type", "key", "paste", "upload", "bash", "say", "publish", "click", "press"} {
+		if !desktopCallChangesState(map[string]any{"action": action}) {
+			t.Fatalf("%s was classified as read-only", action)
+		}
 	}
-	if consumeDesktopReplay("sess_replay", "publish") {
-		t.Fatal("the same action would run twice")
+	for _, action := range []string{"probe", "screenshot", "file_read", "file_list"} {
+		if desktopCallChangesState(map[string]any{"action": action}) {
+			t.Fatalf("%s was classified as a side effect", action)
+		}
 	}
-	if consumeDesktopReplay("sess_replay", "click") {
-		t.Fatal("a different action was consumed")
+}
+
+func TestLongJobHub404BackoffThenStops(t *testing.T) {
+	d100Env(t)
+	mgr := longJobTestClock(t)
+	svc, _, _, inst := longJobOwnerService(t)
+	prevSvc := desktopLongJobService
+	prevTalk := desktopLongJobTalk
+	prevNow := desktopLongJobNow
+	t.Cleanup(func() {
+		desktopLongJobService = prevSvc
+		desktopLongJobTalk = prevTalk
+		desktopLongJobNow = prevNow
+	})
+	desktopLongJobService = svc
+	now := time.Date(2026, 11, 13, 15, 0, 0, 0, time.Local)
+	desktopLongJobNow = func() time.Time { return now }
+	j := longJobUndelivered("job_hub404", inst.ID, "bot_hub", "run_hub")
+	longJobArmWatch(t, j)
+	calls := 0
+	notFound := desktopStatusError(http.StatusNotFound, []byte(`{"code":"NOT_FOUND","message":"no such bot or assignment"}`))
+	desktopLongJobTalk = func(context.Context, *desktopLongJob, desktopLongJobDecision) error {
+		calls++
+		return notFound
+	}
+	for i := 1; i <= desktopLongJobHubMissLimit; i++ {
+		_, err := desktopLongJobWatchTick(context.Background(), j.ID)
+		got := desktopLongJobGet(j.ID)
+		if i < desktopLongJobHubMissLimit {
+			if err == nil || got == nil || got.Status == "cancelled" || got.HubMisses != i {
+				t.Fatalf("miss %d err=%v job=%+v", i, err, got)
+			}
+			now = got.NextPoll
+			continue
+		}
+		if err != nil || got == nil || got.Status != "cancelled" || got.EndReason != "hub assignment missing" {
+			t.Fatalf("after limit err=%v job=%+v", err, got)
+		}
+		if longJobTaskNamed(mgr, "watch-job:"+j.ID) {
+			t.Fatal("watch still scheduled")
+		}
+	}
+	if calls != desktopLongJobHubMissLimit {
+		t.Fatalf("talk calls %d", calls)
+	}
+	if _, err := desktopLongJobWatchTick(context.Background(), j.ID); err != nil || calls != desktopLongJobHubMissLimit {
+		t.Fatalf("stopped watch talked again calls=%d err=%v", calls, err)
 	}
 }
 

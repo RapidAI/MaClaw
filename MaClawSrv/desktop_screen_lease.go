@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -53,7 +54,7 @@ const desktopScreenWaitPhrase = "正在等待屏幕"
 
 // desktopScreenQueueSentence is the queued state a person and Hub can read.
 // It is not a timeout to lengthen.
-const desktopScreenQueueSentence = "waiting for the screen, another task of this bot is using it"
+const desktopScreenQueueSentence = "正在等待屏幕，这个 bot 的另一个任务正在用"
 
 var desktopScreenHalts sync.Map // run id -> *agentservice.RunHaltedError
 
@@ -262,7 +263,7 @@ func (m *screenLeases) acquire(ctx context.Context, key, run string, onWait func
 				m.abandon(key, w)
 				desktopScreenQueues.Delete(run)
 				log.Printf("[screen-lease] screen=%s run=%s gave up after %s: run=%s still has the screen", screenLeaseKeyLabel(key), run, now.Sub(start).Round(time.Second), holder)
-				halt := &agentservice.RunHaltedError{Sentence: "screen_busy: " + desktopScreenQueueSentence}
+				halt := &agentservice.RunHaltedError{Code: "screen_busy", Sentence: desktopScreenQueueSentence}
 				desktopScreenHalts.Store(run, halt)
 				return func() {}, now.Sub(start), "", halt
 			}
@@ -409,6 +410,9 @@ func (m *screenLeases) waitingFor(run string) (string, int, bool) {
 // desktopScreenLeaseEndRun is called when a run ends (or its round finishes).
 func desktopScreenLeaseEndRun(runID, why string) {
 	desktopScreenLeases.endRun(runID, why)
+	runID = strings.TrimSpace(runID)
+	desktopScreenHalts.Delete(runID)
+	desktopScreenQueues.Delete(runID)
 }
 
 // desktopScreenLeaseStatus is the status-line text of a run that waits.
@@ -432,35 +436,42 @@ func init() {
 		err, _ := v.(error)
 		return err
 	}
-	agentservice.OnRunResumed = func(sessionID, action string) {
-		armDesktopReplay(sessionID, action)
+	agentservice.ResumeProbe = desktopResumeProbe
+	agentservice.RunEnded = func(runID string) {
+		runID = strings.TrimSpace(runID)
+		desktopScreenHalts.Delete(runID)
+		desktopScreenQueues.Delete(runID)
 	}
 }
 
-var desktopReplayOnce sync.Map
-
-func armDesktopReplay(sessionID, action string) {
-	sessionID = strings.TrimSpace(sessionID)
-	action = strings.ToLower(strings.TrimSpace(action))
-	if sessionID == "" || action == "" {
-		return
+func desktopResumeProbe(ctx context.Context, tenantID, userID, instanceID, sessionID, runID string, call agentservice.RestartInFlight) string {
+	var args map[string]any
+	_ = json.Unmarshal([]byte(call.Args), &args)
+	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
+	if action == "bash" {
+		return desktopBashStateProbe(runID)
 	}
-	desktopReplayOnce.Store(sessionID, action)
+	scope := agentruntime.Scope{TenantID: tenantID, UserID: userID, InstanceID: instanceID, SessionID: sessionID, RunID: runID}
+	out, err := operateDesktop(ctx, scope, map[string]any{"action": "probe"})
+	if err != nil {
+		return "probe: " + err.Error()
+	}
+	return out
 }
 
-func consumeDesktopReplay(sessionID, action string) bool {
-	sessionID = strings.TrimSpace(sessionID)
-	action = strings.ToLower(strings.TrimSpace(action))
-	v, ok := desktopReplayOnce.Load(sessionID)
-	if !ok {
-		return false
+func desktopBashStateProbe(runID string) string {
+	j := desktopLongJobForRun(runID)
+	if j == nil {
+		return "bash: no recorded process; do not run the command again"
 	}
-	got, _ := v.(string)
-	if got != action {
-		return false
+	alive := j.PID != "" && desktopProcAlive(j.PID)
+	exitText := ""
+	if strings.TrimSpace(j.ExitFile) != "" {
+		if b, err := os.ReadFile(j.ExitFile); err == nil {
+			exitText = strings.TrimSpace(string(b))
+		}
 	}
-	desktopReplayOnce.Delete(sessionID)
-	return true
+	return fmt.Sprintf("bash: alive=%t exit=%s", alive, exitText)
 }
 
 func desktopScreenLeaseStatus(runID string) string {

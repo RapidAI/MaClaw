@@ -2543,8 +2543,65 @@ func (c *coreAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 // can replay the original outcome after reconnect instead of consuming a
 // second invocation grant or dispatching the provider again.
 func (c *coreAgentCallbacks) ExecuteToolCall(name, argsJSON, callID string) agent.ToolExecutionResult {
+	recorded := c.recordSideEffect(name, argsJSON, callID)
 	result := c.executeToolCallLegacy(name, argsJSON, callID)
+	// A return while the run is still alive means the call finished, even
+	// when the result is an error. A cancel during the call leaves the
+	// record so resume can rewrite that result instead of running it again.
+	if recorded && !RestartYielding() && (c.ctx == nil || c.ctx.Err() == nil) {
+		c.clearSideEffect(callID)
+	}
 	return c.finishBotToolResult(name, argsJSON, result)
+}
+
+func (c *coreAgentCallbacks) toolChangesState(name, argsJSON string) bool {
+	if c == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	for _, def := range c.runtimeTools {
+		if strings.TrimSpace(def.Name) != name || def.ChangesState == nil {
+			continue
+		}
+		args := map[string]any{}
+		if strings.TrimSpace(argsJSON) != "" {
+			parsed, err := agentruntime.ParseToolArgumentsObject(argsJSON)
+			if err != nil {
+				return true
+			}
+			args = parsed
+		}
+		return def.ChangesState(args)
+	}
+	return false
+}
+
+func (c *coreAgentCallbacks) recordSideEffect(name, argsJSON, callID string) bool {
+	if c == nil || c.executor == nil || strings.TrimSpace(callID) == "" || strings.TrimSpace(c.runID) == "" {
+		return false
+	}
+	if !c.toolChangesState(name, argsJSON) {
+		return false
+	}
+	svc := c.executor.getService()
+	if svc == nil {
+		return false
+	}
+	err := svc.RecordInFlight(c.principal, c.instance.ID, c.runID, RestartInFlight{
+		ID: callID, Name: name, Args: argsJSON,
+	})
+	return err == nil
+}
+
+func (c *coreAgentCallbacks) clearSideEffect(callID string) {
+	if c == nil || c.executor == nil {
+		return
+	}
+	svc := c.executor.getService()
+	if svc == nil {
+		return
+	}
+	_ = svc.ClearInFlight(c.principal, c.instance.ID, c.runID, callID)
 }
 
 // executeToolCallLegacy is the full legacy entry point. ExecuteToolCall

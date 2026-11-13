@@ -57,13 +57,21 @@ const restartNoticeStopped = "这项任务被服务重启打断了，没法接�
 // cancel and not a model retry.
 type RunHaltedError struct {
 	Sentence string
+	// Code is a stable log token. The person sees Sentence, not Code.
+	Code string
 }
 
 func (e *RunHaltedError) Error() string {
 	if e == nil {
 		return "run halted"
 	}
-	return e.Sentence
+	if e.Code != "" && e.Sentence != "" {
+		return e.Code + ": " + e.Sentence
+	}
+	if e.Sentence != "" {
+		return e.Sentence
+	}
+	return e.Code
 }
 
 // RestartYielding is set while the process is draining so a loop stops at
@@ -76,47 +84,43 @@ func RestartYielding() bool { return restartYielding.Load() }
 // before another model call. Nil means none.
 var RunHaltReason func(runID string) error
 
-var runInFlightTool sync.Map // run id -> desktop action name
+var runInFlightTool sync.Map // run id -> RestartInFlight
 
-// NoteRunTool records the desktop action a run is inside. An empty action
-// clears it. Shutdown reads it so a click that may have landed is not repeated.
-func NoteRunTool(runID, action string) {
-	runID = strings.TrimSpace(runID)
-	action = strings.TrimSpace(action)
-	if runID == "" {
-		return
-	}
-	if action == "" {
-		runInFlightTool.Delete(runID)
-		return
-	}
-	runInFlightTool.Store(runID, action)
+// RunEnded drops process-local run state. The host sets it to clear its own
+// maps. Nil is a no-op.
+var RunEnded func(runID string)
+
+// ClearRunTool drops the in-memory in-flight call for a run that has ended.
+func ClearRunTool(runID string) {
+	runInFlightTool.Delete(strings.TrimSpace(runID))
 }
 
-func runTool(runID string) string {
-	v, ok := runInFlightTool.Load(strings.TrimSpace(runID))
-	if !ok {
-		return ""
-	}
-	s, _ := v.(string)
-	return s
+// RestartInFlight is one side-effecting call that had been dispatched and
+// had not returned. The id is the model tool_call_id, so resume rewrites
+// that call's result and leaves every other call alone.
+type RestartInFlight struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Args string `json:"args"`
 }
 
-func restartUncertain(action string) string {
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "publish", "click", "press":
-		return strings.ToLower(strings.TrimSpace(action))
-	default:
-		return ""
-	}
-}
+// restartOutcomeUnknown replaces the stored result of a call that was in
+// flight when the process stopped. It is not a successful result and not an
+// instruction to run the call again.
+const restartOutcomeUnknown = "outcome unknown: interrupted by restart, verify before repeating"
 
 type restartCheckpoint struct {
-	SessionID       string `json:"session_id"`
-	InstanceID      string `json:"instance_id"`
-	UncertainAction string `json:"uncertain_action,omitempty"`
-	Resumed         bool   `json:"resumed,omitempty"`
+	SessionID  string           `json:"session_id"`
+	InstanceID string           `json:"instance_id"`
+	Resumed    bool             `json:"resumed,omitempty"`
+	Attempts   int              `json:"attempts,omitempty"`
+	InFlight   *RestartInFlight `json:"in_flight,omitempty"`
 }
+
+// ResumeProbe is one read of the world at the start of a resumed turn.
+// The host sets it. A desktop call reads the page; a bash call reads the
+// exit file and the process. Nil leaves the unknown result without a probe.
+var ResumeProbe func(ctx context.Context, tenantID, userID, instanceID, sessionID, runID string, call RestartInFlight) string
 
 func (s *Service) drainingNow() bool {
 	return s != nil && s.draining.Load()
@@ -142,26 +146,29 @@ func (s *Service) Drain(ctx context.Context) {
 	s.draining.Store(true)
 	restartYielding.Store(true)
 	defer restartYielding.Store(false)
-	for {
-		s.runMu.Lock()
-		n := len(s.runningRuns)
-		s.runMu.Unlock()
-		if n == 0 || ctx.Err() != nil {
-			break
-		}
-		timer := time.NewTimer(15 * time.Millisecond)
+	s.runMu.Lock()
+	if s.drainCond == nil {
+		s.drainCond = sync.NewCond(&s.runMu)
+	}
+	stopped := make(chan struct{})
+	go func() {
 		select {
 		case <-ctx.Done():
-			timer.Stop()
-		case <-timer.C:
+			s.runMu.Lock()
+			s.drainCond.Broadcast()
+			s.runMu.Unlock()
+		case <-stopped:
 		}
+	}()
+	for len(s.runningRuns) > 0 && ctx.Err() == nil {
+		s.drainCond.Wait()
 	}
-	s.runMu.Lock()
 	cancels := make([]context.CancelFunc, 0, len(s.runningRuns))
 	for _, cancel := range s.runningRuns {
 		cancels = append(cancels, cancel)
 	}
 	s.runMu.Unlock()
+	close(stopped)
 	for _, cancel := range cancels {
 		cancel()
 	}
@@ -169,7 +176,34 @@ func (s *Service) Drain(ctx context.Context) {
 	s.markStillRunningInterrupted()
 }
 
-func (s *Service) finishInterrupted(run *Run, uncertain string) {
+func (s *Service) mergedCheckpoint(run Run) restartCheckpoint {
+	var cp restartCheckpoint
+	if run.Metadata != nil {
+		_ = json.Unmarshal([]byte(run.Metadata[metaRestartCheckpoint]), &cp)
+	}
+	if s != nil && s.store != nil && strings.TrimSpace(run.ID) != "" {
+		if stored, err := s.store.GetRun(run.TenantID, run.UserID, run.InstanceID, run.ID); err == nil && stored.Metadata != nil {
+			var disk restartCheckpoint
+			_ = json.Unmarshal([]byte(stored.Metadata[metaRestartCheckpoint]), &disk)
+			if disk.Resumed {
+				cp.Resumed = true
+			}
+			if disk.Attempts > cp.Attempts {
+				cp.Attempts = disk.Attempts
+			}
+			if cp.InFlight == nil {
+				cp.InFlight = disk.InFlight
+			}
+			cp.SessionID = firstNonEmpty(cp.SessionID, disk.SessionID)
+			cp.InstanceID = firstNonEmpty(cp.InstanceID, disk.InstanceID)
+		}
+	}
+	cp.SessionID = firstNonEmpty(cp.SessionID, run.SessionID)
+	cp.InstanceID = firstNonEmpty(cp.InstanceID, run.InstanceID)
+	return cp
+}
+
+func (s *Service) finishInterrupted(run *Run) {
 	if run == nil {
 		return
 	}
@@ -183,16 +217,28 @@ func (s *Service) finishInterrupted(run *Run, uncertain string) {
 	if run.Metadata == nil {
 		run.Metadata = map[string]string{}
 	}
-	raw, _ := json.Marshal(restartCheckpoint{SessionID: run.SessionID, InstanceID: run.InstanceID, UncertainAction: uncertain})
+	cp := s.mergedCheckpoint(*run)
+	raw, _ := json.Marshal(cp)
 	run.Metadata[metaRestartCheckpoint] = string(raw)
-	if v, ok := restartTrajectories.LoadAndDelete(run.ID); ok {
+	// A run that already resumed once is not offered a second trajectory.
+	// A fresh interrupt replaces the trajectory, or deletes it when this
+	// process has none, so the next start cannot continue from a stale one.
+	if cp.Resumed || cp.Attempts >= 1 {
+		delete(run.Metadata, metaRestartTrajectory)
+		restartTrajectories.Delete(run.ID)
+	} else if v, ok := restartTrajectories.LoadAndDelete(run.ID); ok {
 		if traj, ok := v.(restartTrajectory); ok && len(traj.Entries) > 0 {
 			if body, err := json.Marshal(traj); err == nil {
 				run.Metadata[metaRestartTrajectory] = string(body)
 			}
+		} else {
+			delete(run.Metadata, metaRestartTrajectory)
 		}
+	} else {
+		delete(run.Metadata, metaRestartTrajectory)
 	}
-	ev := runTerminalEventFor(*run, "run.interrupted", map[string]any{"error": run.Error, "uncertain_action": uncertain})
+	ClearRunTool(run.ID)
+	ev := runTerminalEventFor(*run, "run.interrupted", map[string]any{"error": run.Error})
 	committed, err := s.saveRunTerminalWithEvents(*run, []RunEvent{ev})
 	if err != nil {
 		_ = s.store.SaveRun(*run)
@@ -228,17 +274,12 @@ func (s *Service) markStillRunningInterrupted() {
 					if _, live := s.peekRunCancel(run.ID); live {
 						continue
 					}
-					uncertain := restartUncertain(runTool(run.ID))
-					s.finishInterrupted(&run, uncertain)
+					s.finishInterrupted(&run)
 				}
 			}
 		}
 	}
 }
-
-// OnRunResumed tells the host a session is continuing and which action must
-// be re-checked instead of repeated. Nil is a no-op.
-var OnRunResumed func(sessionID, uncertainAction string)
 
 // ResumeInterruptedRuns continues each interrupted desktop run once. A run
 // that cannot continue is ended with restartNoticeStopped.
@@ -295,25 +336,37 @@ func (s *Service) resumeOne(ctx context.Context, p Principal, inst Instance, run
 	if run.Metadata != nil {
 		_ = json.Unmarshal([]byte(run.Metadata[metaRestartCheckpoint]), &cp)
 	}
-	if cp.Resumed {
+	if cp.Resumed || cp.Attempts >= 1 {
 		// The flag was stored and the process died before the run was
-		// executing again. Continuing now would be a second start.
+		// executing again, or a resumed run was interrupted. Continuing
+		// now would be a second start.
 		if run.Status == RunStatusInterrupted {
 			s.endInterrupted(p, run, restartNoticeStopped)
 		}
 		return false
 	}
 	cp.Resumed = true
+	cp.Attempts = 1
 	cp.SessionID = firstNonEmpty(cp.SessionID, run.SessionID)
 	cp.InstanceID = firstNonEmpty(cp.InstanceID, run.InstanceID)
-	raw, _ := json.Marshal(cp)
 	if run.Metadata == nil {
 		run.Metadata = map[string]string{}
 	}
+	traj, trajOK := loadRestartTrajectory(run.Metadata[metaRestartTrajectory])
+	if trajOK && cp.InFlight != nil && strings.TrimSpace(cp.InFlight.ID) != "" {
+		probe := ""
+		if ResumeProbe != nil {
+			probe = ResumeProbe(ctx, p.TenantID, p.UserID, cp.InstanceID, cp.SessionID, run.ID, *cp.InFlight)
+		}
+		traj.Entries = rewriteInterruptedResult(traj.Entries, *cp.InFlight, probe)
+		if body, err := json.Marshal(traj); err == nil {
+			run.Metadata[metaRestartTrajectory] = string(body)
+		}
+	}
+	raw, _ := json.Marshal(cp)
 	run.Metadata[metaRestartCheckpoint] = string(raw)
 	// Stored before the run is admitted again, so a crash cannot start it twice.
 	_ = s.store.SaveRun(run)
-	_, trajOK := loadRestartTrajectory(run.Metadata[metaRestartTrajectory])
 	instLive, err := s.store.GetInstance(p.TenantID, p.UserID, cp.InstanceID)
 	desktop := err == nil && strings.TrimSpace(instLive.Metadata["hub_bot"]) == "1"
 	if err != nil || !desktop || strings.TrimSpace(cp.SessionID) == "" || !trajOK {
@@ -322,13 +375,7 @@ func (s *Service) resumeOne(ctx context.Context, p Principal, inst Instance, run
 	}
 	_ = inst
 	s.sayRestart(p, cp.InstanceID, cp.SessionID, restartNoticeContinue)
-	if OnRunResumed != nil && cp.UncertainAction != "" {
-		OnRunResumed(cp.SessionID, cp.UncertainAction)
-	}
 	meta := map[string]string{"restart_resume": "1", "restart_from": run.ID}
-	if cp.UncertainAction != "" {
-		meta["restart_uncertain"] = cp.UncertainAction
-	}
 	continuing := run
 	_, err = s.PostMessageAsync(ctx, p, cp.InstanceID, cp.SessionID, PostMessageInput{
 		Content:   restartNoticeContinue,
@@ -396,6 +443,83 @@ func (c *coreAgentCallbacks) SaveWorkingState(state *agent.WorkingState) {
 		return
 	}
 	c.restartWorking = state
+}
+
+// rewriteInterruptedResult replaces the result of the in-flight call.
+// A different call, including another click, is left as it was stored.
+func rewriteInterruptedResult(entries []agent.ConversationEntry, call RestartInFlight, probe string) []agent.ConversationEntry {
+	id := strings.TrimSpace(call.ID)
+	if id == "" {
+		return entries
+	}
+	body := restartOutcomeUnknown
+	if text := strings.TrimSpace(probe); text != "" {
+		body += "\n" + text
+	}
+	out := append([]agent.ConversationEntry(nil), entries...)
+	found := false
+	for i := range out {
+		if out[i].Role != "tool" || strings.TrimSpace(out[i].ToolCallID) != id {
+			continue
+		}
+		out[i].Content = body
+		out[i].ToolOutcome = "uncertain"
+		found = true
+	}
+	if !found {
+		out = append(out, agent.ConversationEntry{
+			Role: "tool", ToolCallID: id, ToolName: call.Name, Content: body, ToolOutcome: "uncertain",
+		})
+	}
+	return out
+}
+
+// RecordInFlight stores the call on the run before it is dispatched.
+func (s *Service) RecordInFlight(p Principal, instanceID, runID string, call RestartInFlight) error {
+	if s == nil || s.store == nil || strings.TrimSpace(runID) == "" || strings.TrimSpace(call.ID) == "" {
+		return nil
+	}
+	run, err := s.store.GetRun(p.TenantID, p.UserID, instanceID, runID)
+	if err != nil {
+		return err
+	}
+	cp := s.mergedCheckpoint(run)
+	cp.InFlight = &call
+	raw, err := json.Marshal(cp)
+	if err != nil {
+		return err
+	}
+	if run.Metadata == nil {
+		run.Metadata = map[string]string{}
+	}
+	run.Metadata[metaRestartCheckpoint] = string(raw)
+	runInFlightTool.Store(runID, call)
+	return s.store.SaveRun(run)
+}
+
+// ClearInFlight drops the recorded call after it has returned.
+func (s *Service) ClearInFlight(p Principal, instanceID, runID, toolCallID string) error {
+	if s == nil || s.store == nil || strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	run, err := s.store.GetRun(p.TenantID, p.UserID, instanceID, runID)
+	if err != nil {
+		return err
+	}
+	cp := s.mergedCheckpoint(run)
+	if cp.InFlight != nil && (toolCallID == "" || cp.InFlight.ID == toolCallID) {
+		cp.InFlight = nil
+	}
+	raw, err := json.Marshal(cp)
+	if err != nil {
+		return err
+	}
+	if run.Metadata == nil {
+		run.Metadata = map[string]string{}
+	}
+	run.Metadata[metaRestartCheckpoint] = string(raw)
+	ClearRunTool(runID)
+	return s.store.SaveRun(run)
 }
 
 func (s *Service) sayRestart(p Principal, instanceID, sessionID, text string) {

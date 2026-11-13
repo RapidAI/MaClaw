@@ -55,10 +55,14 @@ func (s *Service) clearRunCancel(runID string) {
 		return
 	}
 	s.runMu.Lock()
-	defer s.runMu.Unlock()
 	delete(s.runningRuns, runID)
 	if s.draining.Load() && s.drainCond != nil {
 		s.drainCond.Broadcast()
+	}
+	s.runMu.Unlock()
+	ClearRunTool(runID)
+	if RunEnded != nil {
+		RunEnded(runID)
 	}
 }
 

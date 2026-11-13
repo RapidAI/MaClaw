@@ -3,6 +3,7 @@ package agentservice
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -65,10 +66,6 @@ func TestResumeInterruptedRunOnce(t *testing.T) {
 	if err := svc.store.SaveRun(run); err != nil {
 		t.Fatal(err)
 	}
-	var resumed []string
-	prev := OnRunResumed
-	OnRunResumed = func(sessionID, action string) { resumed = append(resumed, sessionID+" "+action) }
-	t.Cleanup(func() { OnRunResumed = prev })
 	if n := svc.ResumeInterruptedRuns(context.Background()); n != 1 {
 		t.Fatalf("resumed %d", n)
 	}
@@ -87,9 +84,6 @@ func TestResumeInterruptedRunOnce(t *testing.T) {
 	}
 	if !saw {
 		t.Fatalf("notice missing: %+v", msgs)
-	}
-	if len(resumed) != 1 || !strings.Contains(resumed[0], "publish") {
-		t.Fatalf("replay arm %v", resumed)
 	}
 }
 
@@ -204,11 +198,14 @@ func TestFinishInterruptedStoresTrajectory(t *testing.T) {
 		ID: NewID("run"), TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID,
 		Status: RunStatusRunning, StartedAt: time.Now().Add(-time.Minute),
 	}
+	if err := svc.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
 	stashRestartTrajectory(run.ID, []agent.ConversationEntry{
 		{Role: "user", Content: "publish the answer"},
 		{Role: "tool", Content: "the page", ToolName: "desktop"},
 	}, nil)
-	svc.finishInterrupted(&run, "publish")
+	svc.finishInterrupted(&run)
 	got, err := svc.store.GetRun(principal.TenantID, principal.UserID, inst.ID, run.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -220,8 +217,71 @@ func TestFinishInterruptedStoresTrajectory(t *testing.T) {
 	if !ok || len(traj.Entries) != 2 || traj.Entries[1].ToolName != "desktop" {
 		t.Fatalf("trajectory %+v", got.Metadata[metaRestartTrajectory])
 	}
-	if !strings.Contains(got.Metadata[metaRestartCheckpoint], `"uncertain_action":"publish"`) {
-		t.Fatalf("checkpoint %s", got.Metadata[metaRestartCheckpoint])
+}
+
+func TestFinishInterruptedDoesNotResumeTwice(t *testing.T) {
+	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
+	defer svc.Close()
+	updated, err := svc.UpdateInstance(context.Background(), principal, inst.ID, UpdateInstanceInput{Metadata: map[string]string{"hub_bot": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst = *updated
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "crash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := Run{
+		ID: NewID("run"), TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID, SessionID: sess.ID,
+		Status: RunStatusRunning, StartedAt: time.Now().Add(-time.Minute),
+		Metadata: map[string]string{
+			metaRestartCheckpoint: `{"session_id":"` + sess.ID + `","instance_id":"` + inst.ID + `","resumed":true,"attempts":1}`,
+			metaRestartTrajectory: `{"entries":[{"role":"user","content":"keep going"},{"role":"tool","content":"cancelled","tool_call_id":"call_type"}]}`,
+		},
+	}
+	if err := svc.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	// The resumed run dies. The next interrupt must keep the claim and drop
+	// the trajectory. Writing a fresh checkpoint here used to resume forever.
+	svc.finishInterrupted(&run)
+	got, err := svc.store.GetRun(principal.TenantID, principal.UserID, inst.ID, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Metadata[metaRestartCheckpoint], `"resumed":true`) {
+		t.Fatalf("claim dropped: %s", got.Metadata[metaRestartCheckpoint])
+	}
+	if strings.TrimSpace(got.Metadata[metaRestartTrajectory]) != "" {
+		t.Fatalf("stale trajectory kept: %s", got.Metadata[metaRestartTrajectory])
+	}
+	if n := svc.ResumeInterruptedRuns(context.Background()); n != 0 {
+		t.Fatalf("resumed the crashed continuation %d", n)
+	}
+	got, err = svc.store.GetRun(principal.TenantID, principal.UserID, inst.ID, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != RunStatusFailed || got.Metadata["task_outcome_evidence"] != "interrupted by restart" {
+		t.Fatalf("got %+v", got.Status)
+	}
+}
+
+func TestInterruptedSideEffectIsNotReplayed(t *testing.T) {
+	entries := []agent.ConversationEntry{
+		{Role: "assistant", ToolCalls: []any{map[string]any{"id": "call_type"}}},
+		{Role: "tool", ToolCallID: "call_type", ToolName: "desktop", Content: "cancelled"},
+		{Role: "assistant", ToolCalls: []any{map[string]any{"id": "call_click"}}},
+		{Role: "tool", ToolCallID: "call_click", ToolName: "desktop", Content: "clicked save"},
+	}
+	for _, action := range []string{"type", "bash", "say"} {
+		got := rewriteInterruptedResult(entries, RestartInFlight{ID: "call_type", Name: "desktop", Args: `{"action":"` + action + `"}`}, "probe: editor open")
+		if got[1].Content == "cancelled" || !strings.Contains(fmt.Sprint(got[1].Content), restartOutcomeUnknown) || !strings.Contains(fmt.Sprint(got[1].Content), "probe: editor open") {
+			t.Fatalf("%s result %v", action, got[1].Content)
+		}
+		if got[3].Content != "clicked save" {
+			t.Fatalf("%s swallowed the other click: %v", action, got[3].Content)
+		}
 	}
 }
 
