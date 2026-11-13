@@ -33,8 +33,8 @@ func TestIntakeSupplementChangeAndNew(t *testing.T) {
 	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "查一下天气", Running: running}, func(context.Context, string, string) (string, error) {
 		return `{"kind":"new","run":0,"instruction":"查询今天的天气","ack":"我去查天气。","pace":"direct"}`, nil
 	})
-	if err != nil || got.Kind != "new" || got.RunID != "" || got.Instruction != "查询今天的天气" {
-		t.Fatalf("new = %+v %v", got, err)
+	if err != nil || got.Kind != "discuss" || got.RunID != "" || got.Instruction != "" || got.Plan == nil || got.Plan.Goal != "查询今天的天气" {
+		t.Fatalf("discuss = %+v %v", got, err)
 	}
 }
 
@@ -55,13 +55,13 @@ func TestIntakeStopPauseContinueNeedALiveRun(t *testing.T) {
 	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "停一下", Running: two}, func(context.Context, string, string) (string, error) {
 		return `{"kind":"stop","run":0,"instruction":"","ack":"停。","pace":"direct"}`, nil
 	})
-	if err != nil || got.Kind != "new" || got.Instruction != "停一下" {
+	if err != nil || got.Kind != "discuss" || got.Instruction != "" || got.Reason != "no run" {
 		t.Fatalf("ambiguous stop fell through as %+v %v", got, err)
 	}
 	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "继续"}, func(context.Context, string, string) (string, error) {
 		return `{"kind":"continue","run":1,"instruction":"","ack":"接着做。","pace":"direct"}`, nil
 	})
-	if err != nil || got.Kind != "new" {
+	if err != nil || got.Kind != "discuss" || (got.Reason != "nothing to continue" && got.Reason != "no run") {
 		t.Fatalf("continue with nothing running = %+v %v", got, err)
 	}
 }
@@ -85,7 +85,7 @@ func TestIntakeReplyAskScheduleAndStatus(t *testing.T) {
 	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "以后再说"}, func(context.Context, string, string) (string, error) {
 		return `{"kind":"schedule","run":0,"ack":"好。","pace":"schedule","schedule":{"mode":"create"}}`, nil
 	})
-	if err != nil || got.Kind != "new" || got.Reason != "bad schedule" {
+	if err != nil || got.Kind != "discuss" || got.Reason != "bad schedule" {
 		t.Fatalf("bad schedule = %+v %v", got, err)
 	}
 	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "现在怎么样"}, func(context.Context, string, string) (string, error) {
@@ -108,22 +108,22 @@ func TestIntakeTimeoutAndGarbageBecomeANewTask(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		return `{"kind":"stop","run":1,"ack":"停","pace":"direct"}`, nil
 	})
-	if err != nil || got.Kind != "new" || got.Reason != "timeout" || got.Instruction != "打开报表" || got.Ack != "" || time.Since(start) > time.Second {
+	if err != nil || got.Kind != "discuss" || got.Reason != "timeout" || got.Instruction != "" || got.Pace == "direct" || time.Since(start) > time.Second {
 		t.Fatalf("timeout = %+v %v after %v", got, err, time.Since(start))
 	}
 	for _, raw := range []string{`nope`, `{"kind":"stop"}`, `{"run":1}`} {
 		got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "打开报表"}, func(context.Context, string, string) (string, error) {
 			return raw, nil
 		})
-		if err != nil || got.Kind != "new" || got.Instruction != "打开报表" {
+		if err != nil || got.Kind != "discuss" || got.Instruction != "" || got.Pace == "direct" {
 			t.Fatalf("%s -> %+v %v", raw, got, err)
 		}
 	}
 	if _, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "telegram:1", Content: "hi"}, nil); err != ErrBotThreadsBadBot {
 		t.Fatalf("bad bot err = %v", err)
 	}
-	if got.Phase != "execute" {
-		t.Fatalf("unreadable phase = %q", got.Phase)
+	if got.Phase == "plan" || got.Kind != "discuss" {
+		t.Fatalf("unreadable = %+v", got)
 	}
 }
 
@@ -136,8 +136,8 @@ func TestIntakePhaseComesFromTheModelAndTimeoutStaysExecute(t *testing.T) {
 		got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: text}, func(context.Context, string, string) (string, error) {
 			return `{"kind":"new","run":0,"instruction":"do it","ack":"好。","pace":"direct"}`, nil
 		})
-		if err != nil || got.Phase != "execute" {
-			t.Fatalf("%s phase=%q err=%v", text, got.Phase, err)
+		if err != nil || got.Kind != "discuss" || got.Phase == "plan" || got.Instruction != "" {
+			t.Fatalf("%s = %+v %v", text, got, err)
 		}
 	}
 	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "删掉我电脑里的全部文件"}, func(context.Context, string, string) (string, error) {
@@ -149,7 +149,7 @@ func TestIntakePhaseComesFromTheModelAndTimeoutStaysExecute(t *testing.T) {
 	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "确认，开始吧"}, func(context.Context, string, string) (string, error) {
 		return `{"kind":"continue","run":0,"instruction":"","ack":"开始。","pace":"direct","phase":"plan"}`, nil
 	})
-	if err != nil || got.Kind != "new" || got.Phase != "execute" {
+	if err != nil || got.Kind != "discuss" || got.Phase == "plan" || got.Instruction != "" {
 		t.Fatalf("confirm follow-up = %+v %v", got, err)
 	}
 	prev := BotIntakeBudget
@@ -159,7 +159,7 @@ func TestIntakePhaseComesFromTheModelAndTimeoutStaysExecute(t *testing.T) {
 		<-ctx.Done()
 		return `{"kind":"new","run":0,"phase":"plan","ack":"安排","pace":"direct"}`, nil
 	})
-	if err != nil || got.Reason != "timeout" || got.Phase != "execute" {
-		t.Fatalf("timeout must not fall back to keywords: %+v %v", got, err)
+	if err != nil || got.Reason != "timeout" || got.Kind != "discuss" || got.Phase == "plan" || got.Pace == "direct" {
+		t.Fatalf("timeout must not start the work: %+v %v", got, err)
 	}
 }

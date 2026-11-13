@@ -289,6 +289,7 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 					"position":          admission.Position,
 					"text":              admission.Reply.Text,
 					"schedule":          admission.Schedule,
+					"discuss":           admission.Discuss,
 				}
 				if admission.Queued {
 					body["status"] = "queued"
