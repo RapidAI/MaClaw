@@ -284,6 +284,20 @@ func desktopSeedNotesFor(site string) []string {
 	return nil
 }
 
+// desktopActionSite is the host an action names before it runs. The step
+// log uses it so the start line and the end line are the same site when
+// the action itself carries the address.
+func desktopActionSite(action string, args map[string]any) string {
+	var raw string
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "navigate":
+		raw = desktopArg(args, "url")
+	case "publish":
+		raw = desktopArg(args, "editor_url")
+	}
+	return browser.HostOfURL(raw)
+}
+
 // desktopSiteOf is the host a step is about: a navigate's URL, else the
 // attached page.
 func desktopSiteOf(action string, args map[string]any, session *browser.BrowserAgentSession) string {

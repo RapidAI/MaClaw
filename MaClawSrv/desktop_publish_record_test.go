@@ -25,6 +25,12 @@ func TestPublishRecordFromReportAndIdempotent(t *testing.T) {
 	if got, _ := desktopPublishRecordOf("run-rec-1"); got.Calls != 1 {
 		t.Fatalf("second call ran the pipeline: %+v", got)
 	}
+	inc := agentruntime.Scope{RunID: "run-rec-inc"}
+	desktopRecordPublish(inc, spec, &browser.PublishReport{State: browser.PublishLiveIncomplete, ResultURL: "https://zhuanlan.zhihu.com/p/1", Missing: "picture 9 missing"})
+	_, err = desktopPublish(inc, nil, map[string]any{"title": "t", "body": "b", "editor_url": "https://zhuanlan.zhihu.com/write"})
+	if err == nil || !strings.Contains(err.Error(), "picture 9 missing") || !strings.Contains(err.Error(), "live_incomplete") {
+		t.Fatalf("incomplete repeat must stay a failure: %v", err)
+	}
 }
 
 func TestPublishRecordStatesTell(t *testing.T) {

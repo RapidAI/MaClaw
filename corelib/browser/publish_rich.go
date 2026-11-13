@@ -318,7 +318,7 @@ func (p *publishRun) fillRich(obj string) (string, error) {
 // publishStructureFn checks a container (the editor, or the published
 // article) for the pictures in order at their anchors and for the bold and
 // heading formatting. It returns JSON {imgs, misplaced:[...], bold, heads}.
-const publishStructureFn = `function(spec) { const n = s => (s || '').replace(/\s+/g, ''); let txt = ''; const imgs = []; let pending = 0; const w = document.createTreeWalker(this, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT); for (let x = w.currentNode; x; x = w.nextNode()) { if (x.nodeType === 3) { const p = x.parentElement; if (p && p.closest('script,style,noscript')) continue; txt += n(x.nodeValue); } else if (x.tagName === 'IMG') { const r = x.getBoundingClientRect(); const stored = [...x.attributes].some(a => /^https?:\/\//.test(a.value)); const big = stored || Math.max(x.naturalWidth || 0, r.width || 0) >= 60; if (big) { imgs.push(txt.length); if (!stored) pending++; } } } const mis = [], missing = []; for (let i = 0; i < spec.anchors; i++) { const at = imgs[i]; if (at === undefined) { mis.push('picture ' + (i + 1) + ' missing'); missing.push(i); continue; } const a = n(spec.before[i]).slice(-12), b = n(spec.after[i]).slice(0, 12); const ia = a ? txt.indexOf(a) : 0; const ib = b ? txt.indexOf(b, ia < 0 ? 0 : ia) : txt.length; if (ia < 0 || ib < 0) { mis.push('text around picture ' + (i + 1) + ' not found'); continue; } if (at < ia + a.length - 1 || at > ib + 1) mis.push('picture ' + (i + 1) + ' is not after "' + spec.before[i].slice(-12) + '"'); } const bel = [...this.querySelectorAll('strong,b')].concat([...this.querySelectorAll('span,em')].filter(e => parseInt(getComputedStyle(e).fontWeight) >= 600)); const btxt = n(bel.map(e => e.innerText).join('|')); const boldOK = spec.bold.filter(b => btxt.includes(n(b).slice(0, 8))).length; const qt = n([...this.querySelectorAll('blockquote')].filter(q => !q.parentElement.closest('blockquote')).map(q => q.innerText).join('')).length; return JSON.stringify({missing: missing, quote: txt.length ? qt / txt.length : 0, pending: pending, imgs: imgs.length, misplaced: mis, bold: boldOK, heads: this.querySelectorAll('h1,h2,h3,h4,h5,h6').length}); }`
+const publishStructureFn = `function(spec) { const n = s => (s || '').replace(/\s+/g, ''); let txt = ''; const imgs = []; let pending = 0; const w = document.createTreeWalker(this, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT); for (let x = w.currentNode; x; x = w.nextNode()) { if (x.nodeType === 3) { const p = x.parentElement; if (p && p.closest('script,style,noscript')) continue; txt += n(x.nodeValue); } else if (x.tagName === 'IMG') { const r = x.getBoundingClientRect(); const remote = [...x.attributes].some(a => /^https?:\/\//i.test((a.value || '').trim())); const big = remote || Math.max(x.naturalWidth || 0, r.width || 0) >= 60; if (big) { imgs.push(txt.length); if (!remote) pending++; } } } const mis = [], missing = []; for (let i = 0; i < spec.anchors; i++) { const at = imgs[i]; if (at === undefined) { mis.push('picture ' + (i + 1) + ' missing'); missing.push(i); continue; } const a = n(spec.before[i]).slice(-12), b = n(spec.after[i]).slice(0, 12); const ia = a ? txt.indexOf(a) : 0; const ib = b ? txt.indexOf(b, ia < 0 ? 0 : ia) : txt.length; if (ia < 0 || ib < 0) { mis.push('text around picture ' + (i + 1) + ' not found'); continue; } if (at < ia + a.length - 1 || at > ib + 1) mis.push('picture ' + (i + 1) + ' is not after "' + spec.before[i].slice(-12) + '"'); } const bel = [...this.querySelectorAll('strong,b')].concat([...this.querySelectorAll('span,em')].filter(e => parseInt(getComputedStyle(e).fontWeight) >= 600)); const btxt = n(bel.map(e => e.innerText).join('|')); const boldOK = spec.bold.filter(b => btxt.includes(n(b).slice(0, 8))).length; const qt = n([...this.querySelectorAll('blockquote')].filter(q => !q.parentElement.closest('blockquote')).map(q => q.innerText).join('')).length; return JSON.stringify({missing: missing, quote: txt.length ? qt / txt.length : 0, pending: pending, imgs: imgs.length, misplaced: mis, bold: boldOK, heads: this.querySelectorAll('h1,h2,h3,h4,h5,h6').length}); }`
 
 type structureResult struct {
 	Imgs      int      `json:"imgs"`
@@ -355,19 +355,35 @@ func (p *publishRun) checkStructure(obj, where string) (string, error) {
 	start := time.Now()
 	fallback := start.Add(minDur(2*p.spec.StepBudget-15*time.Second, 45*time.Second))
 	for {
-		sum, pending, err := p.checkStructureOnce(obj, where)
-		if err != nil || pending == 0 {
+		sum, pending, missing, err := p.checkStructureOnce(obj, where)
+		// A formatting problem is terminal. A picture the structure walk
+		// recorded as missing, or one still only a local preview, is the
+		// same wait: the upload pipeline has not finished.
+		if err != nil && !structurePictureGap(missing) {
 			return sum, err
+		}
+		if err == nil && pending == 0 {
+			return sum, nil
 		}
 		if p.net == nil {
 			if time.Now().After(fallback) {
+				if err != nil {
+					return sum, err
+				}
 				return sum, fmt.Errorf("%s: %d picture(s) are not stored by the site yet; publishing now would drop them", where, pending)
 			}
 		} else {
 			if fails := p.net.uploadFailedSince(start.Add(-publishUploadLookback)); len(fails) > 0 {
-				return sum, fmt.Errorf("%s: %d picture(s) not stored: the site's upload failed (%s)", where, pending, strings.Join(fails, "; "))
+				n := pending
+				if n == 0 {
+					n = 1
+				}
+				return sum, fmt.Errorf("%s: %d picture(s) not stored: the site's upload failed (%s)", where, n, strings.Join(fails, "; "))
 			}
-			if n, since := p.net.idleFor(); n == 0 && since > publishUploadIdle {
+			if n, since := p.net.idleFor(); n == 0 && since > publishUploadIdle && !p.progressBusy() {
+				if err != nil {
+					return sum, err
+				}
 				return sum, fmt.Errorf("%s: %d picture(s) not stored and the page has made no request about them for %s", where, pending, publishUploadIdle)
 			}
 		}
@@ -383,10 +399,10 @@ const (
 	publishUploadLookback = 5 * time.Minute
 )
 
-func (p *publishRun) checkStructureOnce(obj, where string) (string, int, error) {
+func (p *publishRun) checkStructureOnce(obj, where string) (string, int, []int, error) {
 	raw, err := p.send("Runtime.callFunctionOn", map[string]interface{}{"objectId": obj, "functionDeclaration": publishStructureFn, "arguments": []map[string]interface{}{{"value": p.structureSpec()}}, "returnByValue": true})
 	if err != nil {
-		return "", 0, err
+		return "", 0, nil, err
 	}
 	var out struct {
 		Result struct {
@@ -410,9 +426,9 @@ func (p *publishRun) checkStructureOnce(obj, where string) (string, int, error) 
 	}
 	sum := fmt.Sprintf("%s: %d picture(s), %d/%d bold, %d heading(s)", where, r.Imgs, r.Bold, len(p.doc.bold), r.Heads)
 	if len(bad) > 0 {
-		return sum, 0, fmt.Errorf("%s: %s", where, strings.Join(bad, "; "))
+		return sum, 0, r.Missing, fmt.Errorf("%s: %s", where, strings.Join(bad, "; "))
 	}
-	return sum + " — pictures in place, formatting kept", r.Pending, nil
+	return sum + " — pictures in place, formatting kept", r.Pending, nil, nil
 }
 
 // articleExpr finds the published article: the smallest element holding the
