@@ -276,6 +276,10 @@ func desktopFinishTurn(scope agentruntime.Scope, args map[string]any) (string, e
 	return "finish outcome=" + outcome, nil
 }
 
+func desktopClearFinish(runID string) {
+	desktopFinishes.Delete(strings.TrimSpace(runID))
+}
+
 func desktopDeclaredOutcome(runID string) string {
 	v, ok := desktopFinishes.Load(strings.TrimSpace(runID))
 	if !ok {

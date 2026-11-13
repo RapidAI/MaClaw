@@ -428,30 +428,44 @@ type ToolSurfaceInvocationPolicyProvider interface {
 	ToolSurfaceInvocationPolicy(iteration int) (ToolSurfaceInvocationPolicy, error)
 }
 
+// DesktopFinishGate is a desktop host. A turn that stops without a declared
+// finish gets one more model step that can call only that tool.
+type DesktopFinishGate interface {
+	DesktopNeedsFinish() bool
+	ArmDesktopFinishStep()
+	// DesktopFinishArmed reports the forced step and the tool that must be called.
+	DesktopFinishArmed() (bool, string)
+}
+
 func toolSurfaceInvocationPolicyForRequest(cb LoopCallbacks, cfg corelib.MaclawLLMConfig, iteration int) (ToolSurfaceInvocationPolicy, error) {
 	expected := toolSurfaceInvocationPolicyForConfig(cfg)
-	provider, ok := cb.(ToolSurfaceInvocationPolicyProvider)
-	if !ok {
-		return expected, nil
+	policy := expected
+	if provider, ok := cb.(ToolSurfaceInvocationPolicyProvider); ok {
+		got, err := provider.ToolSurfaceInvocationPolicy(iteration)
+		if err != nil {
+			return ToolSurfaceInvocationPolicy{}, fmt.Errorf("tool surface invocation policy: %w", err)
+		}
+		policy, err = normalizeToolSurfaceInvocationPolicy(got)
+		if err != nil {
+			return ToolSurfaceInvocationPolicy{}, fmt.Errorf("tool surface invocation policy: %w", err)
+		}
+		if policy.Envelope != expected.Envelope {
+			return ToolSurfaceInvocationPolicy{}, fmt.Errorf("tool surface invocation policy envelope %q does not match request envelope %q", policy.Envelope, expected.Envelope)
+		}
+		// Anthropic's Messages API does not currently have a reviewed native
+		// projection for these controls. Do not accept an apparently meaningful
+		// policy only to have the builder silently omit it; that would make the
+		// manifest authorize a different surface than the provider observed.
+		if policy.Envelope == ToolSurfaceEnvelopeAnthropic &&
+			(policy.ToolChoice.Mode != ToolSurfaceToolChoiceProviderDefault || policy.ParallelToolCalls.Present) {
+			return ToolSurfaceInvocationPolicy{}, fmt.Errorf("tool surface invocation policy is not qualified for anthropic envelope")
+		}
 	}
-	policy, err := provider.ToolSurfaceInvocationPolicy(iteration)
-	if err != nil {
-		return ToolSurfaceInvocationPolicy{}, fmt.Errorf("tool surface invocation policy: %w", err)
-	}
-	policy, err = normalizeToolSurfaceInvocationPolicy(policy)
-	if err != nil {
-		return ToolSurfaceInvocationPolicy{}, fmt.Errorf("tool surface invocation policy: %w", err)
-	}
-	if policy.Envelope != expected.Envelope {
-		return ToolSurfaceInvocationPolicy{}, fmt.Errorf("tool surface invocation policy envelope %q does not match request envelope %q", policy.Envelope, expected.Envelope)
-	}
-	// Anthropic's Messages API does not currently have a reviewed native
-	// projection for these controls. Do not accept an apparently meaningful
-	// policy only to have the builder silently omit it; that would make the
-	// manifest authorize a different surface than the provider observed.
-	if policy.Envelope == ToolSurfaceEnvelopeAnthropic &&
-		(policy.ToolChoice.Mode != ToolSurfaceToolChoiceProviderDefault || policy.ParallelToolCalls.Present) {
-		return ToolSurfaceInvocationPolicy{}, fmt.Errorf("tool surface invocation policy is not qualified for anthropic envelope")
+	if gate, ok := cb.(DesktopFinishGate); ok {
+		if armed, name := gate.DesktopFinishArmed(); armed && name != "" && policy.Envelope != ToolSurfaceEnvelopeAnthropic {
+			policy.ToolChoice = ToolSurfaceToolChoice{Mode: ToolSurfaceToolChoiceSpecific, Name: name}
+			policy.ParallelToolCalls = ToolSurfaceOptionalBool{Present: true, Value: false}
+		}
 	}
 	return policy, nil
 }
@@ -1550,6 +1564,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	storedFactNudges := 0
 	skillObligationNudges := 0
 	contentRetrievalStopNudges := 0
+	desktopFinishForced := false
 	// preNudgeAnswer is the user-facing reply written before the one-shot
 	// stored-fact nudge. A follow-up that only acknowledges that instruction
 	// must not replace it.
@@ -3491,6 +3506,18 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				continue
 			}
 			finalText = next
+			// A desktop turn that stopped without action=finish gets one more
+			// model step whose only callable tool is finish (tool_choice).
+			// One try. A model that still does not call it ends on the
+			// measured outcome, not on this missing call.
+			if !desktopFinishForced && iteration+1 < maxIter {
+				if gate, ok := cb.(DesktopFinishGate); ok && gate.DesktopNeedsFinish() {
+					desktopFinishForced = true
+					gate.ArmDesktopFinishStep()
+					disposeSurface(ToolSurfaceResponseSettled)
+					continue
+				}
+			}
 			// Note: we do NOT call cb.OnToken here. The final text is returned
 			// via LoopResult.Text, and the caller (handleChatSend) sends it as
 			// ChatResponseMsg. Calling OnToken would cause duplicate display.
@@ -5566,6 +5593,11 @@ func buildToolsForModelRequest(cb LoopCallbacks, userText string, iteration int)
 		tools = cb.BuildTools(userText)
 	}
 	tools = FilterToolDefinitionsByAuthorizer(cb, tools)
+	if gate, ok := cb.(DesktopFinishGate); ok {
+		if armed, name := gate.DesktopFinishArmed(); armed {
+			tools = finishOnlyTools(tools, name)
+		}
+	}
 	if pinner, ok := cb.(PromptToolPinner); ok {
 		tools = pinner.PinModelTools(tools)
 	}
@@ -5575,6 +5607,39 @@ func buildToolsForModelRequest(cb LoopCallbacks, userText string, iteration int)
 		sync.SyncDirectoryToRenderedTools(tools)
 	}
 	return tools
+}
+
+// finishOnlyTools keeps one tool and limits its action enum to finish.
+// The forced step cannot call any other action.
+func finishOnlyTools(tools []map[string]interface{}, name string) []map[string]interface{} {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	for _, tool := range tools {
+		if tooldef.Name(tool) != name {
+			continue
+		}
+		raw, err := json.Marshal(tool)
+		if err != nil {
+			return nil
+		}
+		var clone map[string]interface{}
+		if json.Unmarshal(raw, &clone) != nil {
+			return nil
+		}
+		fn, _ := clone["function"].(map[string]interface{})
+		params, _ := fn["parameters"].(map[string]interface{})
+		props, _ := params["properties"].(map[string]interface{})
+		if action, _ := props["action"].(map[string]interface{}); action != nil {
+			action["enum"] = []interface{}{"finish"}
+		}
+		if params != nil {
+			params["required"] = []interface{}{"action", "outcome"}
+		}
+		return []map[string]interface{}{clone}
+	}
+	return nil
 }
 
 // renderedToolDirectory is optional. A host that describes its tool list in

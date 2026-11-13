@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -48,8 +49,11 @@ func TestInlineSecretIsRedactedAndALaterAnswerResumesTheGoal(t *testing.T) {
 		return "ok", nil
 	}
 	t.Cleanup(func() { desktopRemoteFile, desktopRemoteBash = prevFile, prevBash })
-	if _, err := desktopContainerBash(context.Background(), scope, "echo hi"); err != nil {
+	if _, err := desktopContainerBashSecrets(context.Background(), scope, "echo hi", []string{"SSH_PASSWORD", "HUB_TOKEN"}); err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(ran, "unset HUB_TOKEN SSH_PASSWORD") {
+		t.Fatalf("names were not unset: %q", ran)
 	}
 	if strings.Contains(ran, "s3cret-value") || strings.Contains(ran, "hub-value") || !strings.Contains(ran, "echo hi") || !strings.Contains(ran, "rm -f") {
 		t.Fatalf("command line %q", ran)
@@ -59,6 +63,99 @@ func TestInlineSecretIsRedactedAndALaterAnswerResumesTheGoal(t *testing.T) {
 	}
 	if got := desktopScrubSecrets("value s3cret-value", desktopSecretsForScope(scope)); strings.Contains(got, "s3cret-value") {
 		t.Fatalf("scrub: %s", got)
+	}
+	if strings.Contains(written, "hub-value") && !strings.Contains(written, "HUB_TOKEN") {
+		t.Fatalf("hub token value without its name: %q", written)
+	}
+}
+
+func TestSecretFileIsNotWrittenForARejectedCommand(t *testing.T) {
+	botID := "bot_secret_reject"
+	desktopBotTurns.Delete(botID)
+	desktopPrepareUserTurn(botID, "密码：s3cret-value", nil)
+	scope := agentruntime.Scope{TenantID: "t", UserID: desktop.BotDesktopUser("alice", botID)}
+	writes := 0
+	prevFile, prevBash := desktopRemoteFile, desktopRemoteBash
+	desktopRemoteFile = func(context.Context, string, string, string, string, string, string, string) (string, error) {
+		writes++
+		return "ok", nil
+	}
+	desktopRemoteBash = func(context.Context, string, string, string) (string, error) {
+		t.Fatal("bash ran")
+		return "", nil
+	}
+	t.Cleanup(func() { desktopRemoteFile, desktopRemoteBash = prevFile, prevBash })
+	if _, err := desktopContainerBashSecrets(context.Background(), scope, "", []string{"SSH_PASSWORD"}); err == nil {
+		t.Fatal("empty command was accepted")
+	}
+	if writes != 0 {
+		t.Fatalf("secret file writes=%d", writes)
+	}
+}
+
+func TestSecretFileIsRemovedWhenBashFails(t *testing.T) {
+	botID := "bot_secret_cleanup"
+	desktopBotTurns.Delete(botID)
+	desktopPrepareUserTurn(botID, "密码：s3cret-value", nil)
+	scope := agentruntime.Scope{TenantID: "t", UserID: desktop.BotDesktopUser("alice", botID)}
+	var cmds []string
+	prevFile, prevBash := desktopRemoteFile, desktopRemoteBash
+	desktopRemoteFile = func(context.Context, string, string, string, string, string, string, string) (string, error) {
+		return "ok", nil
+	}
+	desktopRemoteBash = func(_ context.Context, _, _, command string) (string, error) {
+		cmds = append(cmds, command)
+		if strings.Contains(command, "echo hi") {
+			return "", fmt.Errorf("transport down")
+		}
+		return "ok", nil
+	}
+	t.Cleanup(func() { desktopRemoteFile, desktopRemoteBash = prevFile, prevBash })
+	if _, err := desktopContainerBashSecrets(context.Background(), scope, "echo hi", []string{"SSH_PASSWORD"}); err == nil {
+		t.Fatal("transport error was ignored")
+	}
+	if len(cmds) < 2 || !strings.HasPrefix(cmds[len(cmds)-1], "rm -f ") || strings.Contains(cmds[0], "s3cret-value") {
+		t.Fatalf("commands %#v", cmds)
+	}
+}
+
+func TestBashInjectsOnlyDeclaredSecrets(t *testing.T) {
+	botID := "bot_secret_declared"
+	desktopBotTurns.Delete(botID)
+	meta := map[string]string{"bot_secret.SSH_PASSWORD": "s3cret-value", "bot_secret.HUB_TOKEN": "hub-value"}
+	desktopPrepareUserTurn(botID, "用已保存的密钥", meta)
+	scope := agentruntime.Scope{TenantID: "t", UserID: desktop.BotDesktopUser("alice", botID)}
+	var body, ran string
+	prevFile, prevBash := desktopRemoteFile, desktopRemoteBash
+	desktopRemoteFile = func(_ context.Context, _, _, action, _, content, _, _ string) (string, error) {
+		if action == "write" {
+			body = content
+		}
+		return "ok", nil
+	}
+	desktopRemoteBash = func(_ context.Context, _, _, command string) (string, error) {
+		ran = command
+		return "ok", nil
+	}
+	t.Cleanup(func() { desktopRemoteFile, desktopRemoteBash = prevFile, prevBash })
+	if _, err := desktopContainerBashSecrets(context.Background(), scope, "echo hi", []string{"SSH_PASSWORD"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "hub-value") || !strings.Contains(body, "s3cret-value") || strings.Contains(ran, "s3cret-value") || strings.Contains(ran, "hub-value") {
+		t.Fatalf("body=%q cmd=%q", body, ran)
+	}
+	if _, err := desktopContainerBash(context.Background(), scope, "echo hi"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(ran, ".maclaw-secret-") {
+		t.Fatalf("an undeclared command was staged: %q", ran)
+	}
+	internal := withDesktopBashSecrets(desktopLongJobInternalCall(context.Background()), nil)
+	if _, err := operateDesktopContainer(internal, scope, "bash", map[string]any{"command": "echo poll"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(ran, ".maclaw-secret-") {
+		t.Fatalf("an internal poll was staged: %q", ran)
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -235,22 +236,57 @@ func TestDesktopD95SuccessHasOutcome(t *testing.T) {
 	}
 }
 
-func TestProseQuestionWithoutAskUserIsNotDone(t *testing.T) {
-	run := "run-ask-prose"
+func TestNoFinishSuccessfulRunIsDoneUndeclared(t *testing.T) {
+	run := "run-no-finish"
 	desktopRecStateMu.Lock()
 	desktopRecRunSteps[run] = true
 	desktopRecStateMu.Unlock()
 	defer func() { desktopRecStateMu.Lock(); delete(desktopRecRunSteps, run); desktopRecStateMu.Unlock() }()
-	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "请把 SSH 密码发给我。"})
-	if md[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeDone || md[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeAwaitingUser {
-		t.Fatalf("prose ask succeeded: %v", md)
+	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "贪吃蛇做好了。"})
+	if md[agentservice.TaskOutcomeKey] != agentservice.TaskOutcomeDone || md["task_outcome_evidence"] != "undeclared" {
+		t.Fatalf("metadata %v", md)
 	}
-	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "ask_user", "text": "请把 SSH 密码发给我。"}); err != nil {
+}
+
+func TestDeclaredFailedIsBlocked(t *testing.T) {
+	run := "run-finish-failed"
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps[run] = true
+	desktopRecStateMu.Unlock()
+	defer desktopRecoveryEndRun(run)
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "failed", "text": "这件没做成。"}); err != nil {
 		t.Fatal(err)
 	}
-	md = desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "请把 SSH 密码发给我。"})
-	if md[agentservice.TaskOutcomeKey] != agentservice.TaskOutcomeBlocked {
-		t.Fatalf("ask_user without the tool: %v", md)
+	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "这件没做成。"})
+	if md[agentservice.TaskOutcomeKey] != agentservice.TaskOutcomeBlocked || !strings.Contains(md["task_outcome_evidence"], "declared failed") {
+		t.Fatalf("metadata %v", md)
+	}
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "ask_user", "text": "把密码给我。"}); err != nil {
+		t.Fatal(err)
+	}
+	md = desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "把密码给我。"})
+	if md[agentservice.TaskOutcomeKey] != agentservice.TaskOutcomeBlocked || !strings.Contains(md["task_outcome_evidence"], "ask_user") {
+		t.Fatalf("ask without tool %v", md)
+	}
+}
+
+func TestDeclaredDoneWithoutWorkIsNotUndeclared(t *testing.T) {
+	run := "run-finish-idle"
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-finish-idle", RunID: run}
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps[run] = true
+	desktopRecStateMu.Unlock()
+	defer desktopRecoveryEndRun(run)
+	desktopNoteStepResult(scope, fmt.Errorf("step failed"))
+	if _, err := desktopFinishTurn(scope, map[string]any{"outcome": "done", "text": "做好了。"}); err != nil {
+		t.Fatal(err)
+	}
+	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "做好了。"})
+	if md[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeDone || strings.Contains(md["task_outcome_evidence"], "undeclared") || strings.Contains(md["task_outcome_evidence"], "without a declared outcome") {
+		t.Fatalf("metadata %v", md)
+	}
+	if !strings.Contains(md["task_outcome_evidence"], "no successful desktop work") {
+		t.Fatalf("metadata %v", md)
 	}
 }
 

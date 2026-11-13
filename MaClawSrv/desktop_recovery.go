@@ -1244,6 +1244,7 @@ func desktopRecoveryOutcome(runID string) (string, string) {
 
 // desktopRecoveryEndRun drops a finished run's in-process bookkeeping.
 func desktopRecoveryEndRun(runID string) {
+	desktopClearFinish(runID)
 	desktopRecStateMu.Lock()
 	defer desktopRecStateMu.Unlock()
 	delete(desktopRecRuns, runID)

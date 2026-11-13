@@ -748,19 +748,24 @@ func desktopRunOutcomeMeasured(runID string, msg *agentservice.Message) (string,
 	if outcome == "" && asked {
 		return "awaiting_user", "waiting for the person's answer"
 	}
-	// The turn's own finish action is the outcome. Prose is not one: a
-	// question written instead of ask_user does not succeed.
-	if outcome == "" && steps {
-		switch desktopDeclaredOutcome(runID) {
-		case "done":
-			if desktopRunWorked(runID) {
-				return agentservice.TaskOutcomeDone, ""
-			}
-		case "ask_user":
-			if !asked {
-				return agentservice.TaskOutcomeBlocked, "finish said ask_user but this turn did not call ask_user"
-			}
-		case "failed":
+	// A declared finish is the turn's outcome. A missing finish is not a
+	// failure: the loop already offered one finish-only step, and the
+	// measured result stands with evidence "undeclared".
+	switch desktopDeclaredOutcome(runID) {
+	case "done":
+		if outcome != "" {
+			break
+		}
+		if steps && desktopRunWorked(runID) {
+			return agentservice.TaskOutcomeDone, ""
+		}
+		return agentservice.TaskOutcomePartial, "finish said done but the run did no successful desktop work"
+	case "ask_user":
+		if outcome == "" && !asked {
+			return agentservice.TaskOutcomeBlocked, "finish said ask_user but this turn did not call ask_user"
+		}
+	case "failed":
+		if outcome == "" {
 			return agentservice.TaskOutcomeBlocked, "the turn declared failed"
 		}
 	}
@@ -777,9 +782,8 @@ func desktopRunOutcomeMeasured(runID string, msg *agentservice.Message) (string,
 		}
 	}
 	if outcome == "" && steps && msg != nil && strings.TrimSpace(msg.Content) != "" && desktopRunWorked(runID) {
-		// A watchdog stop is measured on its own. Missing finish does not hide it.
 		if _, stopped := desktopWatchdogStopped(runID); !stopped {
-			return agentservice.TaskOutcomeBlocked, "the turn ended without a declared outcome"
+			return agentservice.TaskOutcomeDone, "undeclared"
 		}
 	}
 	return outcome, why

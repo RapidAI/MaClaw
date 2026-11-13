@@ -148,6 +148,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"command":            map[string]any{"type": "string", "description": "Command for action=bash. It runs in this container and the result is its output. A minutes-long job uses background=true so this turn does not wait."},
 				"background":         map[string]any{"type": "boolean", "description": "action=bash: start the command detached and let the watcher poll it. Use this for training, a compile, a download, or any job expected to run minutes or more."},
 				"keep_running":       map[string]any{"type": "boolean", "description": "action=bash: true only when the started process is itself the result the person asked to leave running (a game, a demo, a local server, the app window). It starts detached, is not watched, and the task can finish once that is delivered. Default false: training, builds, downloads and any other job whose end is the result stay watched."},
+				"secrets":            map[string]any{"type": "array", "description": "action=bash: environment names this command needs, such as SSH_PASSWORD. Only these are injected, then unset. Omit to inject none. A background or keep_running job gets them only when they are listed here.", "items": map[string]any{"type": "string"}},
 				"outcome":            map[string]any{"type": "string", "description": "action=finish: done, ask_user, or failed. ask_user counts only when this turn called the ask_user tool. A turn that does not finish with done is not done.", "enum": []string{"done", "ask_user", "failed"}},
 				"expect_minutes":     map[string]any{"type": "integer", "description": "action=bash: how many minutes the command is expected to run. 2 or more starts it in the background."},
 				"job_id":             map[string]any{"type": "string", "description": "action=job_status: the background job to inspect. Default is this bot's latest job."},
@@ -882,6 +883,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		return desktopLongJobList(scope), nil
 	}
 	if action == "bash" && !desktopLongJobInternal(ctx) && desktopLongJobShouldStart(args) {
+		ctx = withDesktopBashSecrets(ctx, desktopBashSecretNames(args))
 		defer beginDesktopActivity(scope.RunID, "正在后台启动任务")()
 		out, err := desktopLongJobStart(ctx, scope, principal, args)
 		if err == nil {
@@ -2693,6 +2695,7 @@ func ensureDesktopRound(ctx context.Context, scope agentruntime.Scope, userKey s
 // still uses is kept, so one bot finishing does not cut another bot's browser.
 // The next tool after the computer sleeps calls Ensure again.
 func finishDesktopRound(tenantID, userID, runID string) {
+	desktopClearFinish(runID)
 	runID = strings.TrimSpace(runID)
 	if runID == "" {
 		// No round to scope by: keep the old per-user behavior.
