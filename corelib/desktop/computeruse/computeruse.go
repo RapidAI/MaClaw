@@ -7,6 +7,7 @@ package computeruse
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -211,7 +212,19 @@ func modifierList(raw string) ([]string, error) {
 	return out, nil
 }
 
-func ParseSteps(raw any) ([]Step, error) {
+// ErrArgShape is a step rejected before it ran because the arguments were
+// not the shape the tool accepts. Callers classify it with errors.Is.
+var ErrArgShape = errors.New("computer use argument shape")
+
+func markArgShape(err error) error {
+	if err == nil || errors.Is(err, ErrArgShape) {
+		return err
+	}
+	return fmt.Errorf("%s: %w", err.Error(), ErrArgShape)
+}
+
+func ParseSteps(raw any) (steps []Step, err error) {
+	defer func() { err = markArgShape(err) }()
 	if raw == nil {
 		return nil, fmt.Errorf("desktop steps are required (received %s)", valueShape(raw))
 	}
@@ -227,7 +240,7 @@ func ParseSteps(raw any) ([]Step, error) {
 	if len(loose) == 0 || len(loose) > MaxSteps {
 		return nil, fmt.Errorf("desktop steps accept 1 to %d actions (received %d)", MaxSteps, len(loose))
 	}
-	steps := make([]Step, 0, len(loose))
+	steps = make([]Step, 0, len(loose))
 	for i, item := range loose {
 		obj, err := stepObject(unwrapJSONValue(item))
 		if err != nil {
@@ -310,7 +323,8 @@ func valueShape(raw any) string {
 	}
 }
 
-func ParseStep(m map[string]any) (Step, error) {
+func ParseStep(m map[string]any) (step Step, err error) {
+	defer func() { err = markArgShape(err) }()
 	// Anthropic tool_use block {name:"computer", input:{...}}.
 	if input, ok := m["input"].(map[string]any); ok {
 		m = input

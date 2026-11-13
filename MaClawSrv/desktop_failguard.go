@@ -1,8 +1,8 @@
 package main
 
 import (
+	"errors"
 	"fmt"
-	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"log"
 	"net/url"
 	"regexp"
@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
+	"github.com/RapidAI/CodeClaw/corelib/desktop/computeruse"
 )
 
 // Failure-class guard. The repeat guard only sees identical calls; a stuck
@@ -96,7 +98,7 @@ func desktopErrorClass(out string, err error) string {
 		return "element_not_found"
 	case strings.Contains(msg, "timeout") || strings.Contains(msg, "timed out") || strings.Contains(msg, "超时"):
 		return "timeout"
-	case argShapeError(msg):
+	case errors.Is(err, computeruse.ErrArgShape):
 		return "bad_args"
 	}
 	if err != nil && !desktopUncountedError(msg) {
@@ -115,17 +117,6 @@ func desktopUncountedError(msg string) bool {
 	default:
 		return false
 	}
-}
-
-// argShapeError is a call the tool rejected before it ran, because the
-// arguments were not the shape it accepts.
-func argShapeError(msg string) bool {
-	return strings.Contains(msg, "needs \"action\"") ||
-		strings.Contains(msg, "not allowed") ||
-		strings.Contains(msg, "requires") ||
-		strings.Contains(msg, "must be") ||
-		strings.Contains(msg, "are required") ||
-		strings.Contains(msg, "received ")
 }
 
 // desktopFailClassCheck refuses a call whose intent class is blocked.

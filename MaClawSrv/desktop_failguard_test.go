@@ -2,10 +2,12 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/desktop/computeruse"
 )
 
 func TestDesktopErrorClass(t *testing.T) {
@@ -20,7 +22,8 @@ func TestDesktopErrorClass(t *testing.T) {
 		{"", errors.New("wait timed out"), "timeout"},
 		{"ok", nil, ""},
 		{"", errors.New("not_password_field"), ""},
-		{"", errors.New(`step 1: each step needs "action" (one of click)`), "bad_args"},
+		{"", fmt.Errorf(`step 1: each step needs "action" (one of click): %w`, computeruse.ErrArgShape), "bad_args"},
+		{"", errors.New("the password must be set before checkout"), "failed"},
 		{"", errors.New("the window manager returned 1"), "failed"},
 	}
 	for _, c := range cases {
@@ -67,7 +70,7 @@ func TestAppRunArgShapeBlocksTheNextCall(t *testing.T) {
 	scope := agentruntime.Scope{TenantID: "t", UserID: "u-apprun", InstanceID: "i", RunID: "run-apprun-shape"}
 	first := map[string]any{"steps": []any{map[string]any{"x": 1, "y": 2}}}
 	second := map[string]any{"steps": []any{map[string]any{"x": 9, "y": 8, "text": "other"}}}
-	shape := errors.New(`step 1: each step needs "action"; received {x:number,y:number}`)
+	shape := fmt.Errorf(`step 1: each step needs "action"; received {x:number,y:number}: %w`, computeruse.ErrArgShape)
 	if err := desktopFailClassCheck(scope, "app_run", first); err != nil {
 		t.Fatal(err)
 	}
