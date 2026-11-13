@@ -93,6 +93,7 @@ import {
     SaveBotSecret,
     StageDesktopBotSecret,
     SendDesktopBotTaskTo,
+    StartDesktopBotPlan,
     ShowItemInFolder,
     WatchDesktopBot,
     WakeDesktopBot,
@@ -2363,6 +2364,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [pcNoticeTone, setPcNoticeTone] = useState<'success' | 'error'>('error');
     const [messagesByBot, setMessagesByBot] = useState<Record<string, DesktopBotMessage[]>>({});
     const [command, setCommand] = useState('');
+    // The server's discuss / planned state for each bot. The start control
+    // only sends the action; Hub decides whether a run begins.
+    const [discussByBot, setDiscussByBot] = useState<Record<string, { state: string; session: string; goal: string; constraints: string[]; success: string[]; open: string[] }>>({});
     const [listNotice, setListNotice] = useState('');
     const [askingByBot, setAskingByBot] = useState<Record<string, string>>({});
     // understandingByBot: the first reply is still being written past its
@@ -3630,6 +3634,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setMessagesByBot({});
         setPersonaByBot(personasForUser(userId));
         setCommand('');
+        setDiscussByBot({});
         setDesktopPanels({});
         setSectionByBot({});
         setLiveDesktop({});
@@ -3882,6 +3887,29 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const requestId = String(data.request_id || '').trim();
             const ack = String(data.ack || '').trim();
             if (!botId) return;
+            const discussState = String(data.discuss_state || '').trim();
+            const goal = String(data.plan_goal || '').trim();
+            const lines = (value: unknown) => Array.isArray(value) ? value.map(item => String(item).trim()).filter(Boolean) : [];
+            if (discussState === 'discuss' || discussState === 'planned') {
+                setDiscussByBot(prev => ({
+                    ...prev,
+                    [botId]: {
+                        state: discussState,
+                        session: String(data.discuss_session || botId),
+                        goal,
+                        constraints: lines(data.plan_constraints),
+                        success: lines(data.plan_success),
+                        open: lines(data.plan_open),
+                    },
+                }));
+            } else if (discussState === 'executing' || (String(data.kind || '') === 'new' && String(data.run_id || '').trim() !== '')) {
+                setDiscussByBot(prev => {
+                    if (!prev[botId]) return prev;
+                    const next = { ...prev };
+                    delete next[botId];
+                    return next;
+                });
+            }
             if (data.queued === true || data.held === true) noteQueuedRef.current(botId);
             if (!ack || desktopBotIsPlaceholderAck(ack, lang)) return;
             const stored = messagesForBot(userId, botId);
@@ -6936,6 +6964,24 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 >{lang.startsWith('zh') ? '改为新的事' : 'New message'}</button>
                             </div>
                         ) : null}
+                        {(() => {
+                            const plan = discussByBot[selected.id];
+                            if (!plan || (plan.state !== 'discuss' && plan.state !== 'planned')) return null;
+                            if (!plan.goal && plan.constraints.length === 0 && plan.success.length === 0 && plan.open.length === 0) return null;
+                            return (
+                                <div className="desktop-bot-plan" data-testid="desktop-bot-plan" data-bot-id={selected.id} data-state={plan.state}>
+                                    <p data-testid="desktop-bot-plan-goal">{selected.title}{plan.goal ? `：${plan.goal}` : ''}</p>
+                                    {plan.open.length > 0 ? <p data-testid="desktop-bot-plan-open">{plan.open.join('；')}</p> : null}
+                                    {plan.goal ? (
+                                        <button
+                                            type="button"
+                                            data-testid="desktop-bot-plan-start"
+                                            onClick={() => { void StartDesktopBotPlan(selected.id, plan.session || selected.id); }}
+                                        >按这个计划开始</button>
+                                    ) : null}
+                                </div>
+                            );
+                        })()}
                         <DesktopBotComposer
                             userId={userId}
                             botId={selected.id}

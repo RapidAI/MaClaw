@@ -192,6 +192,10 @@ type Service struct {
 	// desktopAttention is why that bot handed the screen over. It is not
 	// persisted. Polls keep reporting it until that handoff is cleared.
 	desktopAttention map[string]string
+	// discussCache is this process's copy of each conversation's plan.
+	// The session on MaClawSrv is the stored copy. Intake reads this one
+	// so a discussion turn does not add a desktop read.
+	discussCache sync.Map
 	// desktopAwaiting is true only while that person still has the keyboard.
 	// The continuation takes the keyboard back as soon as it starts, but the
 	// desktop stays up until that bot finishes.
