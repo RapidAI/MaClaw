@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 var (
-	ErrServiceDraining = errors.New("service is shutting down")
-	ErrUnauthorized    = errors.New("unauthorized")
+	ErrServiceDraining    = errors.New("service is shutting down")
+	ErrUnauthorized       = errors.New("unauthorized")
 	ErrForbidden          = errors.New("forbidden")
 	ErrTenantNotFound     = errors.New("tenant not found")
 	ErrUserNotFound       = errors.New("user not found")
@@ -121,6 +123,8 @@ func ErrorCode(err error) string {
 		return "rate_limited"
 	case errors.Is(err, ErrLLMPeriodLimited):
 		return "llm_period_limited"
+	case errors.Is(err, desktop.ErrMemoryAdmission):
+		return desktop.AdmissionMemoryBusy
 	case errors.Is(err, ErrInvalidConfig):
 		return "invalid_config"
 	case errors.Is(err, ErrAlreadyExists):

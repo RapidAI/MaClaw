@@ -1692,32 +1692,35 @@ func (a *App) emitDesktopBotIntake(botID, requestID, kind, ack string, queued, h
 // pollDesktopBotQueue waits until Hub has started a parked message or
 // dropped it. The run id is empty when the message was answered without
 // a desktop run.
-func (a *App) pollDesktopBotQueue(ctx context.Context, botID, clientMessageID string) (string, error) {
+func (a *App) pollDesktopBotQueue(ctx context.Context, botID, clientMessageID string) (string, string, error) {
 	path := "/api/v1/bots/" + url.PathEscape(strings.TrimSpace(botID)) + "/queue/" + url.PathEscape(strings.TrimSpace(clientMessageID))
 	for {
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return "", "", err
 		}
 		var view struct {
-			State string `json:"state"`
-			RunID string `json:"run_id"`
+			State   string `json:"state"`
+			RunID   string `json:"run_id"`
+			Outcome string `json:"outcome"`
 		}
 		_, err := a.desktopBotExchange(ctx, http.MethodGet, path, nil, &view, 15*time.Second, nil)
 		if err == nil {
 			switch strings.TrimSpace(view.State) {
 			case "running":
 				if strings.TrimSpace(view.RunID) != "" {
-					return strings.TrimSpace(view.RunID), nil
+					return strings.TrimSpace(view.RunID), "", nil
 				}
+			case "gave_up":
+				return "", strings.TrimSpace(view.Outcome), nil
 			case "done", "missing":
-				return strings.TrimSpace(view.RunID), nil
+				return strings.TrimSpace(view.RunID), "", nil
 			}
 		}
 		timer := time.NewTimer(time.Second)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return "", ctx.Err()
+			return "", "", ctx.Err()
 		case <-timer.C:
 		}
 	}
@@ -1890,9 +1893,13 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 	}
 	if out.Queued && strings.TrimSpace(out.RunID) == "" {
 		a.noteDesktopBotQueued(botID, "")
-		runID, pollErr := a.pollDesktopBotQueue(ctx, botID, requestID)
+		runID, outcome, pollErr := a.pollDesktopBotQueue(ctx, botID, requestID)
 		if pollErr != nil {
 			return desktopBotRelayResult{}, pollErr
+		}
+		if outcome != "" {
+			result, wireErr := a.desktopRelayFromWire(outcome, "", "", "", "", "", "", "", false, nil, nil, "", "")
+			return result, wireErr
 		}
 		if runID == "" {
 			result, wireErr := a.desktopRelayFromWire(firstNonEmpty(out.Ack, out.Text), "", "", "", "", "", "", "", false, nil, nil, "", "")

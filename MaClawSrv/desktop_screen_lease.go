@@ -538,7 +538,7 @@ var desktopMemoryWaitMax = 2 * time.Minute
 
 const desktopMemoryWaitLine = "这台电脑内存紧张，这项先排着，空出来再做。"
 
-const desktopMemoryGiveUpLine = "这台电脑内存紧张，等了两分钟还是满的，这次先不做。"
+const desktopMemoryGiveUpLine = desktop.MemoryBusyOutcome
 
 // waitDesktopMemory holds a new screen lease until the container is under
 // the line. Cancelling the run ends the wait. The wait has a ceiling: past
@@ -558,7 +558,7 @@ func waitDesktopMemory(ctx context.Context, tenantID, userID, runID string) erro
 		}
 		_ = line
 		if !time.Now().Before(deadline) {
-			return fmt.Errorf("memory_busy: %s", desktopMemoryGiveUpLine)
+			return &desktop.MemoryAdmission{Sentence: desktopMemoryGiveUpLine}
 		}
 		// The working row only accepts a short phrase. The full sentence is
 		// the queue acknowledgement the person sees.

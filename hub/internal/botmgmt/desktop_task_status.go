@@ -381,6 +381,7 @@ func (s *Service) PendingDesktopDeliveries(ctx context.Context, tenantID, userID
 			needs = append(needs, pendingMedia{state: state, instanceID: instanceID, runID: item.RunID, index: len(out) - 1})
 		}
 	}
+	out = append(out, s.memoryGiveUpDeliveriesLocked(tenantID, userID)...)
 	s.mu.Unlock()
 	s.fillPendingMedia(ctx, tenantID, userID, needs, out)
 	sortDesktopDeliveries(out)
@@ -520,6 +521,9 @@ func (s *Service) AckDesktopTask(ctx context.Context, tenantID, userID, botID, r
 	s.ensureDesktopHydrated(tenantID)
 	state := s.desktopAdmits[desktopAdmitKey(tenantID, userID, botID, runID)]
 	if state == nil {
+		if s.ackMemoryGiveUpLocked(tenantID, userID, botID, runID) {
+			s.persistDesktopState(tenantID)
+		}
 		return nil
 	}
 	state.mu.Lock()

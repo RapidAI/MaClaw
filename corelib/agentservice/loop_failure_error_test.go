@@ -8,6 +8,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -88,6 +89,22 @@ func TestLoopFailureErrorWithoutCause(t *testing.T) {
 	}
 	if err := loopFailureError(nil); err == nil {
 		t.Fatal("loopFailureError(nil) returned nil, want a non-nil error")
+	}
+}
+
+func TestErrorCodeClassifiesMemoryAdmission(t *testing.T) {
+	err := loopFailureError(&agent.LoopResult{
+		Error: desktop.MemoryBusyOutcome,
+		Err:   &desktop.MemoryAdmission{Sentence: desktop.MemoryBusyOutcome},
+	})
+	if err == nil || err.Error() != desktop.MemoryBusyOutcome {
+		t.Fatalf("Error()=%v", err)
+	}
+	if !errors.Is(err, desktop.ErrMemoryAdmission) {
+		t.Fatal("typed admission did not survive the executor boundary")
+	}
+	if code := ErrorCode(err); code != desktop.AdmissionMemoryBusy {
+		t.Fatalf("ErrorCode=%q", code)
 	}
 }
 

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 func TestScreenLeaseWaitsWhileMemoryIsHigh(t *testing.T) {
@@ -50,7 +52,8 @@ func TestMemoryWaitGivesUpInsteadOfWaitingForever(t *testing.T) {
 		return true, desktopMemoryWaitLine
 	}
 	err := waitDesktopMemory(context.Background(), "tenant-a", "alice", "run-mem-giveup")
-	if err == nil || !strings.Contains(err.Error(), "memory_busy") || !strings.Contains(err.Error(), "两分钟") {
+	var admit *desktop.MemoryAdmission
+	if !errors.As(err, &admit) || admit.Kind() != desktop.AdmissionMemoryBusy || admit.Error() != desktop.MemoryBusyOutcome {
 		t.Fatalf("err = %v", err)
 	}
 }

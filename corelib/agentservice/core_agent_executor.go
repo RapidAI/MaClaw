@@ -27,6 +27,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/demoskill"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
@@ -2691,6 +2692,14 @@ func (c *coreAgentCallbacks) executeToolCallLegacy(name, argsJSON, callID string
 		result, handled, err := c.runtimeToolInvoker.InvokeRuntimeTool(toolCtx, strings.TrimSpace(name), args)
 		if handled {
 			if err != nil {
+				var admit *desktop.MemoryAdmission
+				if errors.As(err, &admit) {
+					return agent.ToolExecutionResult{
+						Result:      admit.Error(),
+						Outcome:     agent.ToolExecutionOutcomeError,
+						FailureKind: agent.ToolFailureAdmissionMemory,
+					}
+				}
 				return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: runtime tool %s: %v", name, err), Outcome: agent.ToolExecutionOutcomeError}
 			}
 			// Module tools may attach an image for vision models (for example
