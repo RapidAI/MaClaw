@@ -453,7 +453,10 @@ func replyImages(attachments []replyAttachment) []ReplyImage {
 // this user has no run left. A transport failure here also stops it, because
 // MaClawSrv never saw the command.
 func (s *Service) PostMessage(ctx context.Context, tenantID, userID, botID, content string) (Reply, error) {
-	return s.PostMessagePhase(ctx, tenantID, userID, botID, content, "", "")
+	// "run" is the synchronous command API: a classifier failure still posts
+	// the words, and it is not the arrange/run button. A chat admission with
+	// no phase is a discussion until the person starts it.
+	return s.PostMessagePhase(ctx, tenantID, userID, botID, content, "run", "")
 }
 
 // BotAdmission is one desktop command MaClawSrv has accepted.
@@ -488,6 +491,9 @@ type BotAdmission struct {
 	Held     bool
 	Position int
 	Schedule *DesktopSchedule
+	// Discuss is the conversation's plan when this turn did not start a run,
+	// and the plan a start action is about to run.
+	Discuss *DesktopDiscuss
 }
 
 // PostMessagePhase is PostMessage with the bot turn phase. An empty phase
@@ -619,19 +625,31 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		}
 	}
 	action = strings.ToLower(strings.TrimSpace(action))
+	if action == "start" {
+		phase = "execute"
+	}
 	if action == "return" {
 		s.releaseDesktopKeyboard(tenantID, desktopUser, botID, clientMessageID)
 		defer s.drainDesktopQueue(tenantID, userID, botID)
 	}
 	var intakeAck, intakeKind, intakePhase string
 	button := strings.TrimSpace(phase) == "execute"
+	var discussSession string
 	if !desktopReplay(ctx) {
-		next, steered, handled := s.steerDesktopMessage(ctx, desktopSteerRequest{
+		next, steered, handled, steerErr := s.steerDesktopMessage(ctx, desktopSteerRequest{
 			TenantID: tenantID, UserID: userID, DesktopUser: desktopUser, BotID: botID,
 			InstanceID: instanceID, Content: content, Phase: phase,
 			ClientMessageID: clientMessageID, ContinueSession: continueSession,
-			Action: action, Admit: admit, TokenRec: &fresh, Token: &token, HaveToken: haveToken,
+			Action: action, Button: button, Admit: admit, TokenRec: &fresh, Token: &token, HaveToken: haveToken,
 		})
+		if steerErr != nil {
+			traceBot(botID, "steer", steerErr, "dur_ms", traceMS(time.Since(pipelineStarted)))
+			return BotAdmission{}, steerErr
+		}
+		if action == "start" && strings.TrimSpace(steered.Session) != "" {
+			continueSession = steered.Session
+			discussSession = steered.Session
+		}
 		if handled {
 			if steered.ClientMessageID == "" {
 				steered.ClientMessageID = clientMessageID
@@ -827,6 +845,17 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	}
 	if callErr == nil {
 		s.clearOwnerLLMRepairNote(ctx, tenantID, userID)
+		if action == "start" {
+			session := discussSession
+			if session == "" {
+				session = claim.session
+			}
+			tok := token
+			_ = s.markDesktopDiscussionExecuting(ctx, desktopSteerRequest{
+				TenantID: tenantID, UserID: userID, BotID: botID, InstanceID: instanceID,
+				TokenRec: &fresh, Token: &tok, HaveToken: true,
+			}, session)
+		}
 	}
 	traceBot(botID, "post_message", callErr,
 		"instance", instanceID,
@@ -924,7 +953,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 			// still needs that browser, so this failure must not stop it.
 			s.noteDesktopHeld(tenantID, userID, botID, body.Turn)
 			if reason != "" {
-				s.noteDesktopAttention(tenantID, userID, botID, reason)
+				s.noteDesktopAttentionFor(tenantID, userID, botID, body.Turn, reason)
 			}
 			s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
 		} else if !desktopCallTimedOut(body.CallErr) {
@@ -960,7 +989,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 				reply.NovncURL = s.gateDesktopHandoff(novnc)
 			}
 		} else if reason != "" {
-			s.noteDesktopAttention(tenantID, userID, botID, reason)
+			s.noteDesktopAttentionFor(tenantID, userID, botID, body.Turn, reason)
 			reply.AttentionReason = reason
 		}
 		return reply, body.CallErr
@@ -1025,7 +1054,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 		// person can sign in, and the website login would be gone.
 		s.noteDesktopHeld(tenantID, userID, botID, body.Turn)
 		if reason != "" {
-			s.noteDesktopAttention(tenantID, userID, botID, reason)
+			s.noteDesktopAttentionFor(tenantID, userID, botID, body.Turn, reason)
 		}
 		reply.Handoff = true
 		reply.AttentionReason = reason
@@ -1036,7 +1065,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 	} else {
 		s.clearDesktopHeld(tenantID, userID, botID, body.Turn)
 		if reason != "" {
-			s.noteDesktopAttention(tenantID, userID, botID, reason)
+			s.noteDesktopAttentionFor(tenantID, userID, botID, body.Turn, reason)
 			reply.AttentionReason = reason
 		} else if !s.botHasLiveRun(tenantID, userID, botID) {
 			// A finished reply ends the handoff reason. The keyboard itself

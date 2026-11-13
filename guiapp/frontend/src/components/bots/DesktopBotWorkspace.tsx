@@ -41,15 +41,19 @@ import { openSettingsTab } from '../../utils/settingsNavigation';
 import {
     ArmDesktopBotSchedule,
     ArmDesktopBotAdmitCancel,
+    ArmDesktopBotAdmitPause,
     LogFrontendDiagnostic,
     CreateDesktopBot,
     CancelDesktopBotRun,
+    PauseDesktopBotRun,
     AppendDesktopBotSupplement,
     UploadDesktopBotMaterialChunk,
     DeleteDesktopBot,
     DeleteDesktopBotSchedule,
     DesktopBotDesktopAdmin,
     GetDesktopBotScreen,
+    GetDesktopBotConversation,
+    GetHubConnectionState,
     HandBackDesktopBot,
     SetDesktopBotDesktopMode,
     FillBotSecret,
@@ -91,6 +95,7 @@ import {
     SaveBotSecret,
     StageDesktopBotSecret,
     SendDesktopBotTaskTo,
+    StartDesktopBotPlan,
     ShowItemInFolder,
     WatchDesktopBot,
     WakeDesktopBot,
@@ -156,6 +161,7 @@ import {
     stripConfirmedOrderLead,
     BOT_RETURN_TASK,
     saveBotMessages,
+    orderDesktopTranscript,
     applySupplementOutcomes,
     type BotPhase,
     type DesktopBot,
@@ -933,10 +939,10 @@ function copy(lang: string) {
             demoNotesPlaceholder: 'Notes (optional)',
             demoBusy: 'Working…',
             takeoverHint: 'Fullscreen the desktop and take the keyboard from the bot.',
-            takeoverBusyHint: 'This bot is using its desktop. Take over to stop it and take the keyboard.',
-            botDrivingNote: 'The bot is using the desktop. Stop it first if you need the computer.',
+            takeoverBusyHint: 'This bot is using its desktop. Take over pauses it and gives you the keyboard. Hand it back to continue the same task.',
+            botDrivingNote: 'The bot is using the desktop. Take over to pause it, or stop to cancel it.',
             stopBot: 'Stop',
-            stopWork: 'Stop',
+            stopWork: 'Pause',
             takeoverActive: 'You have the desktop. Release it to hand the keyboard back.',
             myDesktop: 'My desktop',
             sharedScreen: 'Shared',
@@ -1157,10 +1163,10 @@ function copy(lang: string) {
             demoNotesPlaceholder: '備註（可選）',
             demoBusy: '處理中…',
             takeoverHint: '全螢幕顯示桌面，並把鍵盤交給你。',
-            takeoverBusyHint: '這個 Bot 正在操作桌面。接管會先停下它。',
-            botDrivingNote: 'Bot 正在操作桌面，需要的話可以先停止它。',
+            takeoverBusyHint: '這個 Bot 正在操作桌面。接管會先暫停它，交還後同一項繼續。',
+            botDrivingNote: 'Bot 正在操作桌面。可以接管，同一項會暫停，交還後繼續；停止才會取消。',
             stopBot: '停止',
-            stopWork: '停下',
+            stopWork: '暫停',
             takeoverActive: '你已接管桌面。完成後退出接管，把鍵盤交還。',
             myDesktop: '我的桌面',
             sharedScreen: '共享',
@@ -1379,10 +1385,10 @@ function copy(lang: string) {
         demoNotesPlaceholder: '备注（可选）',
         demoBusy: '处理中…',
         takeoverHint: '全屏显示桌面，并把键盘交给你。',
-        takeoverBusyHint: '这个 Bot 正在操作桌面。接管会先停下它。',
-        botDrivingNote: 'Bot 正在操作桌面，需要的话可以先停止它。',
+        takeoverBusyHint: '这个 Bot 正在操作桌面。接管会先暂停它，交还后同一项继续。',
+        botDrivingNote: 'Bot 正在操作桌面。可以接管，同一项会暂停，交还后继续；停止才会取消。',
         stopBot: '停止',
-        stopWork: '停下',
+        stopWork: '暂停',
         takeoverActive: '你已接管桌面。完成后退出接管，把键盘交回。',
         myDesktop: '我的桌面',
         sharedScreen: '共享',
@@ -2361,6 +2367,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [pcNoticeTone, setPcNoticeTone] = useState<'success' | 'error'>('error');
     const [messagesByBot, setMessagesByBot] = useState<Record<string, DesktopBotMessage[]>>({});
     const [command, setCommand] = useState('');
+    // The server's discuss / planned state for each bot. The start control
+    // only sends the action; Hub decides whether a run begins.
+    const [discussByBot, setDiscussByBot] = useState<Record<string, { state: string; session: string; goal: string; constraints: string[]; success: string[]; open: string[] }>>({});
     const [listNotice, setListNotice] = useState('');
     const [askingByBot, setAskingByBot] = useState<Record<string, string>>({});
     // understandingByBot: the first reply is still being written past its
@@ -2404,7 +2413,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [screenByBot, setScreenByBot] = useState<Record<string, BotScreen>>({});
     const [screenPick, setScreenPick] = useState('mine');
     const [screenPickTouched, setScreenPickTouched] = useState(false);
-    const [handoffNotice, setHandoffNotice] = useState<{ botId: string; reason: string; url: string } | null>(null);
+    // Hub's current handoff for each bot. The map is not a latch: a bot is
+    // here only while Hub still reports that attention id and reason.
+    const [handoffByBot, setHandoffByBot] = useState<Record<string, { botId: string; attentionId: string; reason: string; url: string }>>({});
+    const handoffSeenAt = useRef<Record<string, number>>({});
     const [desktopAdmin, setDesktopAdmin] = useState(false);
     const [modeSaving, setModeSaving] = useState(false);
     // Which bot a hand-back is in flight for; the label follows that bot only.
@@ -2570,6 +2582,44 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const stageEpoch = useRef(0);
     const selected = bots.find(bot => bot.id === selectedId) || null;
     const messages = selected ? (messagesByBot[selected.id] || []) : [];
+    useEffect(() => {
+        if (!selectedId) return;
+        let cancel = false;
+        void Promise.resolve(GetDesktopBotConversation(selectedId)).then(raw => {
+            if (cancel || !raw) return;
+            const snap = raw as {
+                messages?: Array<{ id?: string; role?: string; text?: string; at?: string; kind?: string; run_id?: string }>;
+                asks?: Array<{ run_id?: string; question?: string; options?: string[]; withdrawn?: boolean }>;
+            };
+            const rows = snap.messages || [];
+            if (rows.length === 0) return;
+            const asks = snap.asks || [];
+            const askAttached = new Set<string>();
+            const next = rows.map(row => {
+                const at = Date.parse(String(row.at || ''));
+                const runID = String(row.run_id || '');
+                const ask = row.role === 'assistant' && runID && !askAttached.has(runID)
+                    ? asks.find(item => item.run_id === runID)
+                    : undefined;
+                if (ask && runID) askAttached.add(runID);
+                const options = Array.isArray(ask?.options) ? ask.options.filter(Boolean) : [];
+                return {
+                    id: String(row.id || ''),
+                    role: (row.role === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
+                    content: String(row.text || ''),
+                    chat: true,
+                    runId: String(row.run_id || '') || undefined,
+                    serverAt: Number.isFinite(at) ? at : undefined,
+                    askUser: ask && options.length > 0 ? { question: ask.question, options } : undefined,
+                    askWithdrawn: ask?.withdrawn === true,
+                    askResolved: ask?.withdrawn === true,
+                };
+            }).filter(row => row.id && row.content);
+            if (next.length === 0) return;
+            setMessagesByBot(prev => ({ ...prev, [selectedId]: orderDesktopTranscript(next) }));
+        }).catch(() => undefined);
+        return () => { cancel = true; };
+    }, [selectedId]);
     useEffect(() => {
         if (!selected) return;
         releaseSettledAckCommands(ackCommandsRef.current, selected.id, messages);
@@ -2775,7 +2825,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // A handoff keeps the keyboard when this bot is not using it.
     const botAskedForDesktop = (botId: string) => {
         if (!botId) return false;
-        if (handoffNotice?.botId === botId) return true;
+        if (handoffByBot[botId]?.reason) return true;
         const view = liveDesktop[botId];
         if (view?.userControl || view?.attentionReason) return true;
         return messagesForBot(userId, botId).some(item => item.userControl || !!item.attentionReason);
@@ -3038,6 +3088,49 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // A URL by itself never opens the stage. Force-open is the rising edge of
     // one handoff. While that handoff is latched, a collapsed panel ignores
     // the same keyboard report and does not write the live flags back.
+    const forgetHandoff = (botId: string) => {
+        if (!botId) return;
+        setHandoffByBot(prev => {
+            if (!prev[botId]) return prev;
+            const next = { ...prev };
+            delete next[botId];
+            return next;
+        });
+    };
+    // Hub names the current ask. A missing id or a blank reason is not a notice.
+    const rememberHandoff = (botId: string, attentionId: string, reason: string, url: string) => {
+        const id = attentionId.trim();
+        const text = reason.trim();
+        if (!botId || !id || !text) return;
+        handoffSeenAt.current[botId] = Date.now();
+        setHandoffByBot(prev => {
+            const cur = prev[botId];
+            const nextUrl = url || cur?.url || '';
+            if (cur && cur.attentionId === id && cur.reason === text && cur.url === nextUrl) return prev;
+            return { ...prev, [botId]: { botId, attentionId: id, reason: text, url: nextUrl } };
+        });
+    };
+    const applyServerHandoff = (botId: string, view: { attention_reason?: string; attention_id?: string; novnc_url?: string } | null | undefined, requestedAt: number) => {
+        if (!botId || !view) return;
+        // A desktop poll that does not carry Hub's attention fields is not a
+        // report. The watch and the screen read always send them, including
+        // an empty reason when the ask is over.
+        if (!('attention_reason' in view) && !('attention_id' in view)) return;
+        const reason = String(view.attention_reason || '').trim();
+        const id = String(view.attention_id || '').trim();
+        if (reason && id) {
+            rememberHandoff(botId, id, reason, String(view.novnc_url || ''));
+            return;
+        }
+        if (reason) return;
+        setHandoffByBot(prev => {
+            const cur = prev[botId];
+            if (!cur || (handoffSeenAt.current[botId] || 0) > requestedAt) return prev;
+            const next = { ...prev };
+            delete next[botId];
+            return next;
+        });
+    };
     const applyScreen = (botId: string, screen: ScreenEvent, requestId = '') => {
         if (!botId) return;
         const foreignQuiet = requestId !== '' && latchRequestRef.current[botId] !== undefined && latchRequestRef.current[botId] !== '' && requestId !== latchRequestRef.current[botId] && handoffHeldBesideSibling(botId);
@@ -3050,6 +3143,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (foreignQuiet || anotherAdmittedTurn) return;
             latchRef.current[botId] = false;
             delete latchRequestRef.current[botId];
+            forgetHandoff(botId);
             setLiveDesktop(prev => prev[botId] ? { ...prev, [botId]: undefined } : prev);
             setDesktopPanels(prev => prev[botId] === 'user' ? prev : { ...prev, [botId]: 'off' });
             setScreenExpandedByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
@@ -3057,11 +3151,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
         const attention = screen.userControl || screen.reason !== '';
         const latched = latchRef.current[botId] === true;
-        if (screen.reported && !screen.userControl && screen.reason === '' && latched) {
+        if (screen.reported && !screen.userControl && screen.reason === '') {
             if (foreignQuiet) return;
+            // Hub says this bot is not waiting. The notice follows that
+            // report even when this page never latched the handoff itself.
+            forgetHandoff(botId);
+            if (!latched) return;
             latchRef.current[botId] = false;
             delete latchRequestRef.current[botId];
-            setHandoffNotice(prev => prev?.botId === botId ? null : prev);
             const panel = panelsRef.current[botId];
             if (panel === 'auto' || panel === 'user') {
                 const url = screen.url || liveRef.current[botId]?.url || '';
@@ -3077,21 +3174,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             latchRef.current[botId] = true;
             if (requestId) latchRequestRef.current[botId] = requestId;
             syncLive(botId, { url: screen.url || liveRef.current[botId]?.url || '', userControl: screen.userControl, attentionReason: screen.reason });
-            setHandoffNotice({ botId, reason: screen.reason, url: screen.url });
-            // The runtime's own reason is a fact, not the line to show.
-            if (screen.reason) {
-                const owner = userIdRef.current;
-                const raw = screen.reason;
-                void desktopBotLine('status_notice', {
-                    lang: langRef.current,
-                    persona: personaForBot(owner, botId),
-                    recent: recentChat(owner, botId),
-                    status: { takeover: screen.userControl ? 'person has the desktop' : 'bot needs the person on the desktop', stop_reason: raw },
-                }, raw).then(line => {
-                    if (userIdRef.current !== owner || !line || line === raw) return;
-                    setHandoffNotice(prev => prev?.botId === botId && prev.reason === raw ? { ...prev, reason: line } : prev);
-                });
-            }
+            // The sentence Hub sent is the notice. An empty reason is not a
+            // handoff, and a rewritten line must not replace who asked.
+            rememberHandoff(botId, screen.attentionId || requestId, screen.reason, screen.url);
             openPanel(botId, 'auto', true);
             showComputer(botId);
             setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
@@ -3156,8 +3241,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             pending = true;
             try {
                 const requestedAt = Date.now();
-                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string; desktop_mode?: string } | undefined;
+                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string; attention_id?: string; desktop_mode?: string } | undefined;
                 if (!alive) return;
+                applyServerHandoff(botId, view, requestedAt);
                 const url = String(view?.novnc_url || '');
                 if (!url) {
                     // Asleep is the normal idle state. Do not start the desktop
@@ -3628,9 +3714,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setMessagesByBot({});
         setPersonaByBot(personasForUser(userId));
         setCommand('');
+        setDiscussByBot({});
         setDesktopPanels({});
         setSectionByBot({});
         setLiveDesktop({});
+        setHandoffByBot({});
         setTakeoverByBot({});
         setTakeoverHoldByBot({});
         setDesktopBusyByBot({});
@@ -3674,6 +3762,25 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const merged = mergeListed(list);
             botsRef.current = merged;
             setBots(merged);
+            const known = new Set(merged.map(bot => bot.id));
+            setHandoffByBot(prev => {
+                let changed = false;
+                const next = { ...prev };
+                for (const id of Object.keys(next)) {
+                    if (!known.has(id)) {
+                        delete next[id];
+                        changed = true;
+                    }
+                }
+                return changed ? next : prev;
+            });
+            for (const bot of merged) {
+                const askedAt = Date.now();
+                void GetDesktopBotScreen(bot.id).then(view => {
+                    if (gen !== loadGen.current) return;
+                    applyServerHandoff(bot.id, view, askedAt);
+                }).catch(() => undefined);
+            }
             if (pendingCrossNotes.current.length > 0) landCrossRef.current(pendingCrossNotes.current);
             // The live queue is this session's authority. Storage is only the
             // reload copy, so a list that arrives after the user already queued
@@ -3704,6 +3811,44 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setListNotice(error instanceof Error && error.message ? error.message : text.unavailable);
         });
         return () => { loadGen.current += 1; };
+    }, [userId]);
+
+    useEffect(() => {
+        const known = new Set(bots.map(bot => bot.id));
+        setHandoffByBot(prev => {
+            let changed = false;
+            const next = { ...prev };
+            for (const id of Object.keys(next)) {
+                if (!known.has(id) || !next[id].reason.trim() || !next[id].attentionId.trim()) {
+                    delete next[id];
+                    changed = true;
+                }
+            }
+            return changed ? next : prev;
+        });
+    }, [bots]);
+
+    useEffect(() => {
+        let alive = true;
+        // The event carries no body. The badge reads GetHubConnectionState
+        // the same way: a reconnect that is still trying must not drop a
+        // notice Hub has not been asked about yet.
+        const off = EventsOn('hub-connection-state', () => {
+            void GetHubConnectionState().then(st => {
+                if (!alive || String(st?.state || '') !== 'connected') return;
+                for (const bot of botsRef.current) {
+                    const askedAt = Date.now();
+                    void GetDesktopBotScreen(bot.id).then(view => {
+                        if (!alive) return;
+                        applyServerHandoff(bot.id, view, askedAt);
+                    }).catch(() => undefined);
+                }
+            }).catch(() => undefined);
+        });
+        return () => {
+            alive = false;
+            if (typeof off === 'function') off();
+        };
     }, [userId]);
 
     const screenIsStale = (sessionKey: string, requestId: string, inFlight?: PendingSend) => {
@@ -3880,6 +4025,29 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const requestId = String(data.request_id || '').trim();
             const ack = String(data.ack || '').trim();
             if (!botId) return;
+            const discussState = String(data.discuss_state || '').trim();
+            const goal = String(data.plan_goal || '').trim();
+            const lines = (value: unknown) => Array.isArray(value) ? value.map(item => String(item).trim()).filter(Boolean) : [];
+            if (discussState === 'discuss' || discussState === 'planned') {
+                setDiscussByBot(prev => ({
+                    ...prev,
+                    [botId]: {
+                        state: discussState,
+                        session: String(data.discuss_session || botId),
+                        goal,
+                        constraints: lines(data.plan_constraints),
+                        success: lines(data.plan_success),
+                        open: lines(data.plan_open),
+                    },
+                }));
+            } else if (discussState === 'executing' || (String(data.kind || '') === 'new' && String(data.run_id || '').trim() !== '')) {
+                setDiscussByBot(prev => {
+                    if (!prev[botId]) return prev;
+                    const next = { ...prev };
+                    delete next[botId];
+                    return next;
+                });
+            }
             if (data.queued === true || data.held === true) noteQueuedRef.current(botId);
             if (!ack || desktopBotIsPlaceholderAck(ack, lang)) return;
             const stored = messagesForBot(userId, botId);
@@ -4090,7 +4258,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             ));
             if (messageId) stored.push({ id: messageId, role: 'assistant', content: '', pending: true, phase: 'execute', requestId });
             commit(botId, stored);
-            setHandoffNotice(prev => prev?.botId === botId ? null : prev);
+            forgetHandoff(botId);
             clearLiveFlags(botId);
             latchRef.current[botId] = false;
             delete latchRequestRef.current[botId];
@@ -4113,7 +4281,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     item.userControl || item.attentionReason ? { ...item, userControl: false, attentionReason: '' } : item
                 ));
                 commit(botId, stored);
-                setHandoffNotice(prev => prev?.botId === botId ? null : prev);
+                forgetHandoff(botId);
                 clearLiveFlags(botId);
                 latchRef.current[botId] = false;
                 delete latchRequestRef.current[botId];
@@ -4778,6 +4946,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
         const admitting = !!desktopRunByBotRef.current[botId];
         if (!local || local.length === 0) {
+            if (admitting && kind === 'pause') {
+                held.release(false);
+                try {
+                    await ArmDesktopBotAdmitPause(botId, asked ? 'pause' : 'takeover');
+                } catch {
+                    return desktopBotStopFailedSentence('', lang);
+                }
+                if (userIdRef.current !== ownerId) return '';
+                return lang.startsWith('zh') ? '先暂停了。交还或说继续后，同一项接着做。' : 'Paused. Hand it back or say continue, and the same task goes on.';
+            }
             if (admitting) {
                 // Hub names the run only when the admit call returns, which
                 // can take the whole 45-minute budget. Arm the cancel now
@@ -4798,6 +4976,23 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             return desktopBotLine('idle', { lang, persona: personaForBot(ownerId, botId), recent: recentChat(ownerId, botId) }, desktopBotStopIdleSentence(lang));
         }
         const hadNext = held.hadNext;
+        if (kind === 'pause') {
+            held.release(false);
+            let reason = '';
+            const why = asked ? 'pause' : 'takeover';
+            for (const run of local) {
+                try {
+                    await PauseDesktopBotRun(botId, run.runId, why, 0);
+                } catch (error) {
+                    reason = failureMessage(error).trim();
+                    break;
+                }
+            }
+            if (userIdRef.current !== ownerId) return '';
+            if (reason) return desktopBotLine('stop_failed', { lang, persona: personaForBot(ownerId, botId), recent: recentChat(ownerId, botId), instruction: reason }, desktopBotStopFailedSentence(reason, lang));
+            if (!asked) return '';
+            return lang.startsWith('zh') ? '先暂停了。交还或说继续后，同一项接着做。' : 'Paused. Hand it back or say continue, and the same task goes on.';
+        }
         held.release(true);
         let reason = '';
         for (const run of local) {
@@ -4950,7 +5145,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
           }
         })();
     };
-    stopForTakeoverRef.current = (botId: string) => answerDesktopControl(botId, '', 'stop', 'quiet', 'takeover');
+    stopForTakeoverRef.current = (botId: string) => answerDesktopControl(botId, '', 'pause', 'quiet', 'takeover');
 
     const deliverCross = async (botId: string, cross: { kind: string; target: string; text: string; order: string }) => {
         const self = botsRef.current.find(item => item.id === botId);
@@ -6555,17 +6750,32 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             data-user-id={userId}
             style={{ '--desktop-bot-list-width': `${listWidth}px` } as CSSProperties}
         >
-            {handoffNotice ? (
-                <button
-                    type="button"
-                    className="desktop-bot-handoff-notice"
-                    data-testid="desktop-bot-handoff-notice"
-                    onClick={() => openHandoffScreen(handoffNotice)}
-                >
-                    <strong>{bots.find(bot => bot.id === handoffNotice.botId)?.title || text.myDesktop}</strong>
-                    <span>{handoffNotice.reason || text.handoffFallback}</span>
-                </button>
-            ) : null}
+            {(() => {
+                const notices = Object.values(handoffByBot).flatMap(notice => {
+                    const bot = bots.find(item => item.id === notice.botId);
+                    const reason = notice.reason.trim();
+                    if (!bot || !bot.title.trim() || !reason || !notice.attentionId.trim()) return [];
+                    return [{ ...notice, title: bot.title }];
+                });
+                if (notices.length === 0) return null;
+                return (
+                    <div className="desktop-bot-handoff-notices" data-testid="desktop-bot-handoff-notices">
+                        {notices.map(notice => (
+                            <button
+                                key={notice.botId + ':' + notice.attentionId}
+                                type="button"
+                                className="desktop-bot-handoff-notice"
+                                data-testid="desktop-bot-handoff-notice"
+                                data-bot-id={notice.botId}
+                                onClick={() => openHandoffScreen(notice)}
+                            >
+                                <strong>{notice.title}</strong>
+                                <span>{notice.reason}</span>
+                            </button>
+                        ))}
+                    </div>
+                );
+            })()}
             <aside className="desktop-bot-workspace__list-pane" aria-label={text.listTitle}>
                 <header className="desktop-bot-workspace__bar">
                     <div className="desktop-bot-workspace__bar-head">
@@ -6806,7 +7016,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         />
                                     ) : null}
                                     {/* No confirm button: an arranged plan continues on its own (runArrangedPlan). */}
-                                    {message.askUser?.options && message.askUser.options.length > 0 && !message.askResolved && !message.userControl ? (
+                                    {message.askWithdrawn ? (
+                                        <p className="desktop-bot-chat__ask-withdrawn" data-testid="desktop-bot-ask-withdrawn">
+                                            {lang.startsWith('zh') ? '这个问题已经过去了。' : 'This question has passed.'}
+                                        </p>
+                                    ) : null}
+                                    {message.askUser?.options && message.askUser.options.length > 0 && !message.askResolved && !message.askWithdrawn && !message.userControl ? (
                                         <DesktopBotInquiryCard
                                             question={message.askUser.question}
                                             options={message.askUser.options}
@@ -6888,7 +7103,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         ) : null}
                         {botPending(selected.id) ? (
                             <p className="desktop-bot-chat__processing" data-testid="desktop-bot-processing" role="status">
-                                <button type="button" className="desktop-bot-chat__processing-mark" data-testid="desktop-bot-pause" aria-label={text.stopWork} onClick={() => answerDesktopControl(selected.id, '', 'stop', 'quiet', 'pause-button')} />
+                                <button type="button" className="desktop-bot-chat__processing-mark" data-testid="desktop-bot-pause" aria-label={text.stopWork} onClick={() => answerDesktopControl(selected.id, '', 'pause', 'quiet', 'pause-button')} />
                                 <span className="desktop-bot-chat__processing-label">{understandingByBot[selected.id] && !askingByBot[selected.id] ? desktopBotUnderstandingLabel(lang) : desktopBotWorkingLabel(askingByBot[selected.id] || '', shownDesktopBotActivity(activityByBot[selected.id]))}{liveRunsOf(selected.id) > 1 ? <span className="desktop-bot-chat__processing-count" data-testid="desktop-bot-run-count">{lang.startsWith('zh') ? ` · ${liveRunsOf(selected.id)} 件同时在做` : ` · ${liveRunsOf(selected.id)} jobs at once`}</span> : null}</span>
                                 {statusByBot[selected.id]?.text ? (
                                     <span className="desktop-bot-chat__processing-status" data-testid="desktop-bot-status-line" title={statusByBot[selected.id].text}>{statusByBot[selected.id].text}</span>
@@ -6907,6 +7122,24 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 >{lang.startsWith('zh') ? '改为新的事' : 'New message'}</button>
                             </div>
                         ) : null}
+                        {(() => {
+                            const plan = discussByBot[selected.id];
+                            if (!plan || (plan.state !== 'discuss' && plan.state !== 'planned')) return null;
+                            if (!plan.goal && plan.constraints.length === 0 && plan.success.length === 0 && plan.open.length === 0) return null;
+                            return (
+                                <div className="desktop-bot-plan" data-testid="desktop-bot-plan" data-bot-id={selected.id} data-state={plan.state}>
+                                    <p data-testid="desktop-bot-plan-goal">{selected.title}{plan.goal ? `：${plan.goal}` : ''}</p>
+                                    {plan.open.length > 0 ? <p data-testid="desktop-bot-plan-open">{plan.open.join('；')}</p> : null}
+                                    {plan.goal ? (
+                                        <button
+                                            type="button"
+                                            data-testid="desktop-bot-plan-start"
+                                            onClick={() => { void StartDesktopBotPlan(selected.id, plan.session || selected.id); }}
+                                        >按这个计划开始</button>
+                                    ) : null}
+                                </div>
+                            );
+                        })()}
                         <DesktopBotComposer
                             userId={userId}
                             botId={selected.id}
@@ -7183,7 +7416,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                 <ScreenWatchIcon />
                                                 {text.viewOnly}
                                             </button>
-                                            {botDriving ? null : <button
+                                            <button
                                                 type="button"
                                                 className="desktop-bot-stage__mode-btn"
                                                 data-testid="desktop-bot-take-control"
@@ -7194,7 +7427,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             >
                                                 <ScreenControlIcon />
                                                 {text.takeControl}
-                                            </button>}
+                                            </button>
                                         </div>
                                         <button
                                             type="button"
@@ -7251,6 +7484,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 {botDriving ? (
                                     <>
                                         <span className="desktop-bot-chat__ops-note" role="status">{text.botDrivingNote}</span>
+                                        <button
+                                            type="button"
+                                            data-testid="desktop-bot-takeover"
+                                            className="desktop-bot-chat__takeover"
+                                            disabled={otherIsolated}
+                                            title={text.takeoverBusyHint}
+                                            onClick={() => enterTakeover(selected.id)}
+                                        >{text.takeover}</button>
                                         <button
                                             type="button"
                                             data-testid="desktop-bot-panel-stop"

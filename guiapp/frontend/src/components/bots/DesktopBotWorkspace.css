@@ -4318,3 +4318,9 @@ button.desktop-bot-feed__file {
     font-size: 12px;
     opacity: 0.75;
 }
+
+.desktop-bot-chat__ask-withdrawn {
+    margin: 6px 0 0;
+    font-size: 12px;
+    color: var(--theme-text-muted, #8a8175);
+}

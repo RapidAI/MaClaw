@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
-import { addDesktopBot, desktopAckOwedOnDispatch, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, clearedBotMessages, isDesktopBotClearCommand, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotNoteConfirm, desktopBotWirePhase, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
+import { addDesktopBot, desktopAckOwedOnDispatch, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, clearedBotMessages, isDesktopBotClearCommand, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotNoteConfirm, desktopBotWirePhase, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, orderDesktopTranscript, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
 import type { DesktopBotMessage } from './desktopBots';
 
 beforeEach(() => {
@@ -744,6 +744,33 @@ describe('/clear', () => {
             { id: 'd', role: 'user', content: 'next', queued: true },
         ] as DesktopBotMessage[]);
         expect(kept.map(item => item.id)).toEqual(['c', 'd']);
+    });
+});
+
+describe('transcript order and withdrawn asks', () => {
+    it('anchors a late reply to the user turn it answers and greys the old card', () => {
+        const transcript: DesktopBotMessage[] = [
+            { id: 'u1', role: 'user', content: 'buy a drink', serverAt: 100 },
+            { id: 'ask', role: 'assistant', content: 'Which one?', runId: 'run_6', askUser: { question: 'Which one?', options: ['tea', 'coffee'] }, serverAt: 200 },
+            { id: 'u2', role: 'user', content: 'tea', serverAt: 300 },
+            { id: 'u3', role: 'user', content: 'something else', serverAt: 400 },
+            { id: 'late', role: 'assistant', content: 'Got the tea.', runId: 'run_6', serverAt: 900 },
+        ];
+        const ordered = orderDesktopTranscript(transcript);
+        expect(ordered.map(item => item.id)).toEqual(['u1', 'ask', 'u2', 'late', 'u3']);
+        const ask = ordered.find(item => item.id === 'ask');
+        expect(ask?.askWithdrawn).toBe(true);
+        expect(ask?.askResolved).toBe(true);
+        expect(desktopTaskStep('buy a drink', ask || transcript[1])).not.toBe('ask');
+    });
+
+    it('keeps a late report with an earlier server time ahead of a newer turn', () => {
+        saveBotMessages('alice', 'bot_1', [
+            { id: 'u1', role: 'user', content: 'first', serverAt: 100 },
+            { id: 'u2', role: 'user', content: 'second', serverAt: 300 },
+        ]);
+        appendDesktopBotReport('alice', 'bot_1', { content: 'answer to the first', failed: false, runId: 'run_a', requestId: 'req-late', serverAt: 150 });
+        expect(messagesForBot('alice', 'bot_1').map(item => item.content)).toEqual(['first', 'answer to the first', 'second']);
     });
 });
 

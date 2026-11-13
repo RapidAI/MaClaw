@@ -744,6 +744,11 @@ func desktopBlockedByPerson(scope agentruntime.Scope) error {
 
 func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
 	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
+	if action == "probe" || action == "navigate" || action == "screenshot" {
+		if text, blocked := desktopBlockingDialog(scope); blocked {
+			return text, nil
+		}
+	}
 	command := desktopArg(args, "command")
 	if !desktopbot.SideEffect(action, command) {
 		return operateDesktopBody(ctx, scope, args)
@@ -2331,8 +2336,9 @@ func listDesktopOpenPages(addr, attachedID string) string {
 		log.Printf("[desktop] open-page list dropped: attached=%q not in the %d listed target(s)", attachedID, len(targets))
 		return ""
 	}
+	noteDesktopOwnedTab(addr, attachedID)
 	targets = trimDesktopTabs(addr, attachedID, targets)
-	lines := make([]string, 0, len(targets))
+	var yours, foreign []string
 	for _, target := range targets {
 		if target.Type != "page" || strings.TrimSpace(target.ID) == "" {
 			continue
@@ -2341,16 +2347,18 @@ func listDesktopOpenPages(addr, attachedID string) string {
 		if title == "" {
 			title = "(untitled)"
 		}
-		mark := "-"
-		if target.ID == attachedID {
-			mark = "- attached"
+		line := title + " — " + desktopPageLocation(target.URL)
+		if desktopTabOwned(addr, target.ID, attachedID) {
+			yours = append(yours, "- yours: "+line)
+			continue
 		}
-		lines = append(lines, mark+" "+title+" — "+desktopPageLocation(target.URL))
+		foreign = append(foreign, "- not yours: "+line)
 	}
-	if len(lines) == 0 {
+	if len(yours) == 0 && len(foreign) == 0 {
 		return ""
 	}
-	return "Open browser pages (" + strconv.Itoa(len(lines)) + "), including tabs behind the front window:\n" + strings.Join(lines, "\n")
+	lines := append(yours, foreign...)
+	return "Open browser pages (" + strconv.Itoa(len(lines)) + "). Pages marked yours belong to this bot. A page marked not yours belongs to another bot: do not click it, do not publish, do not buy, and do not offer it as a task.\n" + strings.Join(lines, "\n")
 }
 
 // desktopPagesBelongToAttached: the listed targets include the page this
@@ -4277,13 +4285,43 @@ var desktopCloseTab = func(addr, id string) error {
 	return browser.CloseTargetHTTP(ctx, addr, id)
 }
 
-// trimDesktopTabs closes the oldest pages beyond desktopMaxTabs, never the
-// attached one. DevTools lists the most recently used pages first.
+// desktopOwnedTabs records pages this bot opened on a browser address.
+// The attached page is always this bot's. Every other page in the shared
+// Chromium belongs to whoever opened it, and is not a task for this bot.
+var desktopOwnedTabs sync.Map
+
+func noteDesktopOwnedTab(addr, id string) {
+	addr, id = strings.TrimSpace(addr), strings.TrimSpace(id)
+	if addr == "" || id == "" {
+		return
+	}
+	desktopOwnedTabs.Store(addr+"\x00"+id, struct{}{})
+}
+
+func desktopTabOwned(addr, id, attached string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	if id == strings.TrimSpace(attached) {
+		return true
+	}
+	_, ok := desktopOwnedTabs.Load(strings.TrimSpace(addr) + "\x00" + id)
+	return ok
+}
+
+// trimDesktopTabs closes this bot's oldest pages beyond desktopMaxTabs,
+// never the attached one, and never a page another bot owns. DevTools
+// lists the most recently used pages first.
 func trimDesktopTabs(addr, attachedID string, targets []browser.TargetInfo) []browser.TargetInfo {
 	pages := 0
 	out := make([]browser.TargetInfo, 0, len(targets))
 	for _, t := range targets {
 		if t.Type != "page" || strings.TrimSpace(t.ID) == "" {
+			out = append(out, t)
+			continue
+		}
+		if !desktopTabOwned(addr, t.ID, attachedID) {
 			out = append(out, t)
 			continue
 		}

@@ -8,24 +8,35 @@ import (
 )
 
 // Intake decides what one new message does. The GUI only forwards the
-// words and shows the result. On a timeout or a bad answer the message is
-// a new task: nothing is folded into a run the model did not name.
+// words and shows the result. A timeout or a bad answer does not start
+// work: the message stays a discussion. Nothing is folded into a run the
+// model did not name.
 
 // BotIntakeRun is one task this bot is already doing.
 type BotIntakeRun struct {
 	RunID string `json:"run_id"`
 	Task  string `json:"task"`
+	// Status is running, paused, cancelled, failed, or interrupted.
+	// A paused run can be resumed. A cancelled, failed, or interrupted run
+	// is not started again until the person confirms.
+	Status string `json:"status,omitempty"`
+	// Progress is the last measured note for a resumable run.
+	Progress string `json:"progress,omitempty"`
+	// CompletedSteps are host-recorded steps already finished. A relaunch
+	// must confirm before repeating any of them.
+	CompletedSteps []string `json:"completed_steps,omitempty"`
 }
 
 // BotIntakeInput is one message to judge.
 type BotIntakeInput struct {
-	BotID   string         `json:"bot_id"`
-	Content string         `json:"content"`
-	Lang    string         `json:"lang,omitempty"`
-	Persona string         `json:"persona,omitempty"`
-	Phase   string         `json:"phase,omitempty"`
-	Earlier []string       `json:"earlier,omitempty"`
-	Running []BotIntakeRun `json:"running,omitempty"`
+	BotID            string         `json:"bot_id"`
+	Content          string         `json:"content"`
+	Lang             string         `json:"lang,omitempty"`
+	Persona          string         `json:"persona,omitempty"`
+	Phase            string         `json:"phase,omitempty"`
+	ClientSessionKey string         `json:"client_session_key,omitempty"`
+	Earlier          []string       `json:"earlier,omitempty"`
+	Running          []BotIntakeRun `json:"running,omitempty"`
 }
 
 // BotIntakeSchedule is a timer. The decision is made here. MaClawSrv writes
@@ -40,12 +51,23 @@ type BotIntakeSchedule struct {
 	DayOfWeek       *int   `json:"day_of_week,omitempty"`
 }
 
+// BotIntakePlan is the current plan for this conversation. Empty fields
+// are left as they were. A present empty list clears that list.
+type BotIntakePlan struct {
+	Goal        string    `json:"goal,omitempty"`
+	Constraints *[]string `json:"constraints,omitempty"`
+	Success     *[]string `json:"success,omitempty"`
+	Open        *[]string `json:"open_questions,omitempty"`
+}
+
 // BotIntake is the decision.
 //
-// Kind is new, supplement, change, stop, pause, continue, reply, ask,
-// schedule, or status. RunID names the live run for the first six when
-// one applies. Instruction is the work order. Ack is the first sentence
-// the person sees; empty means the caller shows its own neutral line.
+// Kind is discuss, plan_amend, new, supplement, change, stop, pause,
+// continue, reply, ask, schedule, or status. discuss and plan_amend never
+// start a run. new with phase plan is a destructive order and still starts
+// a plan-phase run. RunID names the live run when one applies. Instruction
+// is the work order. Ack is the first sentence the person sees; empty
+// means the caller shows its own neutral line.
 type BotIntake struct {
 	Kind        string             `json:"kind"`
 	RunID       string             `json:"run_id,omitempty"`
@@ -55,17 +77,24 @@ type BotIntake struct {
 	Told        string             `json:"told,omitempty"`
 	Persona     string             `json:"persona,omitempty"`
 	Schedule    *BotIntakeSchedule `json:"schedule,omitempty"`
+	Plan        *BotIntakePlan     `json:"plan,omitempty"`
 	Reason      string             `json:"reason,omitempty"`
 	// Phase is execute or plan. execute is the default. plan is only when
-	// this message itself orders something destructive or irreversible.
+	// this message itself orders something destructive or irreversible,
+	// or when a stopped run must be confirmed before it continues.
 	Phase string `json:"phase,omitempty"`
+	// CompletedSteps are steps the host already finished on a stopped run.
+	CompletedSteps []string `json:"completed_steps,omitempty"`
+	// ConfirmBefore are those steps that must not run again until the
+	// person confirms the relaunch.
+	ConfirmBefore []string `json:"confirm_before,omitempty"`
 }
 
 // BotIntakeClassifier answers the intake prompt with the model's raw text.
 type BotIntakeClassifier func(ctx context.Context, system, user string) (string, error)
 
 // BotIntakeBudget bounds the whole decision, including the first sentence.
-// On timeout the message is a new task and Ack is empty.
+// On timeout the message stays a discussion and Ack is empty.
 var BotIntakeBudget = 2 * time.Second
 
 const botIntakeChangeMark = "【改变做法】"
@@ -73,15 +102,18 @@ const botIntakeChangeMark = "【改变做法】"
 const botIntakeSystem = `You decide what one new message does for a desktop assistant. You do not touch the desktop and you have no tools. Return one JSON object and nothing else.
 
 The object has these fields:
-- kind: one of new, supplement, change, stop, pause, continue, reply, ask, schedule, status.
+- kind: one of discuss, plan_amend, new, supplement, change, stop, pause, continue, reply, ask, schedule, status.
 - run: the number of a running task this message acts on, or 0 when it acts on none.
-- instruction: the work order for the desktop helper when there is desktop work, otherwise an empty string. For supplement or change it is the whole updated order, not only the new sentence.
+- instruction: the work order for the desktop helper when there is desktop work already running, otherwise an empty string. For supplement or change it is the whole updated order, not only the new sentence. For discuss and plan_amend it is empty.
 - ack: one short sentence the person sees at once, in the language named below, in your own words. It must not claim the work is already done. Empty only when kind is status.
-- pace: direct, reply, ask, schedule, or status.
+- pace: discuss, direct, reply, ask, schedule, or status.
 - persona: the whole identity to keep after this message, or an empty string when it did not change, or a single hyphen when they withdraw it.
+- plan: an object for discuss and plan_amend. goal is one sentence. constraints and success are lists of short lines. open_questions lists what is still missing. Omit a list to leave it unchanged. An empty list clears it.
 - schedule: an object only when kind is schedule. mode is create or cancel. name is a short stable name. For create, either interval_minutes is a positive number of minutes, or hour (0-23) and minute (0-59) name a clock time. day_of_week is 0 for Sunday through 6 for Saturday; omit it to run every day. For cancel, name is the timer to stop, or empty to stop every timer of this bot.
 
 kind:
+- discuss: the person is shaping work that has not started. This includes a first description and a sentence that only says to begin.
+- plan_amend: the person changes a plan that is already being discussed and has not started.
 - supplement: the message adds a constraint, detail, or material to a running task and does not change that task's goal.
 - change: the message redirects a running task, so work already under way must take a new direction.
 - stop: the message asks to stop or abandon a running task.
@@ -91,22 +123,21 @@ kind:
 - ask: a fact only this person knows is missing, so the work cannot start.
 - schedule: they want work at a later time or on a repeat, or they want that timer stopped.
 - status: they ask how work is going or what it already produced. Do not invent the answer.
-- new: an independent job, or anything you are not sure about.
+- new: only when this message itself orders something destructive or irreversible. Otherwise task talk is discuss or plan_amend.
 
 When no task is running, do not use supplement, change, stop, pause, or continue.
-A clear request is direct work. Do not ask only for permission to proceed.
-If you are unsure which running task a message belongs to, kind is new and run is 0.
+Saying to start or confirm does not by itself make kind new. It stays discuss or plan_amend.
+If you are unsure which running task a message belongs to, kind is discuss and run is 0.
 Do not match the message against a list of phrases.
 
 phase is execute or plan. execute is the default. Use plan only when this message itself orders something destructive or irreversible: deleting the person's own data, paying, wiping a machine, or sending a message to many other people. Fetching, writing, publishing, and continuing work already arranged are execute. A follow-up that continues arranged work or answers a previous question is kind continue or reply and phase execute. If you are unsure, phase is execute.`
 
 // IntakeBotMessage decides what a message does. A classifier that fails,
-// times out, or answers something unusable yields a new task whose
-// instruction is the person's own words.
+// times out, or answers something unusable leaves the message as a
+// discussion. It does not become a task.
 func (s *Service) IntakeBotMessage(ctx context.Context, p Principal, instanceID string, in BotIntakeInput, classify BotIntakeClassifier) (BotIntake, error) {
 	bot := strings.TrimSpace(in.BotID)
 	content := strings.TrimSpace(in.Content)
-	fallback := BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Reason: "fallback"}
 	if _, err := s.store.GetInstance(p.TenantID, p.UserID, instanceID); err != nil {
 		return BotIntake{}, err
 	}
@@ -114,13 +145,27 @@ func (s *Service) IntakeBotMessage(ctx context.Context, p Principal, instanceID 
 		return BotIntake{}, ErrBotThreadsBadBot
 	}
 	if content == "" {
-		fallback.Reason = "empty"
-		return fallback, nil
+		return discussIntake("empty"), nil
 	}
-	running := liveIntakeRuns(in.Running)
+	sessionKey := strings.TrimSpace(in.ClientSessionKey)
+	if sessionKey == "" {
+		sessionKey = bot
+	}
+	var storedEarlier []string
+	var storedTasks []BotIntakeRun
+	if turned, tasks, turnErr := s.BeginBotTurn(ctx, p, instanceID, sessionKey, content, "", ""); turnErr == nil {
+		storedEarlier, storedTasks = turned, tasks
+	}
+	var stoppedLines []string
+	for _, task := range storedTasks {
+		if line := strings.TrimSpace(task.Task); line != "" {
+			stoppedLines = append(stoppedLines, line)
+		}
+	}
+	in.Earlier = mergeIntakeLines(stoppedLines, storedEarlier, in.Earlier)
+	running := liveIntakeRuns(append(storedTasks, in.Running...))
 	if classify == nil {
-		fallback.Reason = "no classifier"
-		return fallback, nil
+		return discussIntake("no classifier"), nil
 	}
 	user := intakeUserPromptClean(content, in, running)
 	cctx, cancel := context.WithTimeout(ctx, BotIntakeBudget)
@@ -138,19 +183,47 @@ func (s *Service) IntakeBotMessage(ctx context.Context, p Principal, instanceID 
 	select {
 	case got = <-done:
 	case <-cctx.Done():
-		fallback.Reason = "timeout"
-		return fallback, nil
+		return discussIntake("timeout"), nil
 	}
 	if got.err != nil {
-		fallback.Reason = "classifier unavailable"
-		return fallback, nil
+		return discussIntake("classifier unavailable"), nil
 	}
 	parsed, ok := parseBotIntake(got.raw)
 	if !ok {
-		fallback.Reason = "unreadable"
-		return fallback, nil
+		return discussIntake("unreadable"), nil
 	}
-	return normalizeBotIntake(parsed, content, running), nil
+	out := normalizeBotIntake(parsed, content, running, in.Earlier)
+	_ = s.FinishBotTurn(ctx, p, instanceID, sessionKey, firstNonEmptyIntake(out.Ack, out.Told), out.Kind, out.Instruction, out.RunID)
+	return out, nil
+}
+
+func firstNonEmptyIntake(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func mergeIntakeLines(groups ...[]string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, group := range groups {
+		for _, line := range group {
+			line = strings.TrimSpace(line)
+			if line == "" || seen[line] {
+				continue
+			}
+			seen[line] = true
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func discussIntake(reason string) BotIntake {
+	return BotIntake{Kind: "discuss", Pace: "discuss", Reason: reason}
 }
 
 func liveIntakeRuns(in []BotIntakeRun) []BotIntakeRun {
@@ -162,7 +235,18 @@ func liveIntakeRuns(in []BotIntakeRun) []BotIntakeRun {
 			continue
 		}
 		seen[id] = true
-		out = append(out, BotIntakeRun{RunID: id, Task: oneLineRunes(r.Task, 400)})
+		steps := make([]string, 0, len(r.CompletedSteps))
+		for _, step := range r.CompletedSteps {
+			step = oneLineRunes(step, 200)
+			if step != "" {
+				steps = append(steps, step)
+			}
+		}
+		out = append(out, BotIntakeRun{
+			RunID: id, Task: oneLineRunes(r.Task, 400),
+			Status: oneLineRunes(r.Status, 40), Progress: oneLineRunes(r.Progress, 200),
+			CompletedSteps: steps,
+		})
 		if len(out) == 8 {
 			break
 		}
@@ -217,6 +301,15 @@ func intakeUserPromptClean(content string, in BotIntakeInput, running []BotIntak
 				task = "(no description)"
 			}
 			b.WriteString(oneLineRunes(task, 300))
+			if status := strings.TrimSpace(r.Status); status != "" && status != "running" {
+				b.WriteString(" [")
+				b.WriteString(oneLineRunes(status, 40))
+				b.WriteString("]")
+			}
+			if progress := strings.TrimSpace(r.Progress); progress != "" {
+				b.WriteString(" progress: ")
+				b.WriteString(oneLineRunes(progress, 160))
+			}
 		}
 	}
 	b.WriteString("\nnew message:\n")
@@ -252,11 +345,16 @@ func parseBotIntake(raw string) (BotIntake, bool) {
 		Told        string             `json:"told"`
 		Persona     string             `json:"persona"`
 		Schedule    *BotIntakeSchedule `json:"schedule"`
+		Plan        *BotIntakePlan     `json:"plan"`
 		Reason      string             `json:"reason"`
 		Phase       string             `json:"phase"`
 	}
-	if json.Unmarshal([]byte(raw[start:end+1]), &v) != nil || v.Run == nil {
+	if json.Unmarshal([]byte(raw[start:end+1]), &v) != nil {
 		return BotIntake{}, false
+	}
+	run := 0
+	if v.Run != nil {
+		run = *v.Run
 	}
 	out := BotIntake{
 		Kind:        strings.ToLower(strings.TrimSpace(v.Kind)),
@@ -266,19 +364,18 @@ func parseBotIntake(raw string) (BotIntake, bool) {
 		Told:        oneLineRunes(v.Told, 400),
 		Persona:     strings.TrimSpace(v.Persona),
 		Schedule:    v.Schedule,
+		Plan:        clipIntakePlan(v.Plan),
 		Reason:      oneLineRunes(v.Reason, 120),
 		Phase:       strings.ToLower(strings.TrimSpace(v.Phase)),
 	}
-	out.RunID = itoa(*v.Run) // temporary: the index, rewritten by normalize
-	if *v.Run < 0 {
-		out.RunID = "0"
+	if run < 0 {
+		run = 0
 	}
-	// stash the numeric index in Reason's neighbor via RunID prefix
-	out.RunID = itoa(*v.Run)
+	out.RunID = itoa(run)
 	return out, true
 }
 
-func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) BotIntake {
+func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun, earlier []string) BotIntake {
 	kind := canonicalIntakeKind(in.Kind, in.Pace)
 	idx := 0
 	if n, ok := atoi(in.RunID); ok {
@@ -288,19 +385,56 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) Bo
 	if idx >= 1 && idx <= len(running) {
 		runID = running[idx-1].RunID
 	}
+	// Only the structured kind continues a run. The sentence is not a second decision.
+	if kind == "continue" {
+		if resumed, ok := continueResumable(in, running); ok {
+			return resumed
+		}
+		if len(running) == 0 {
+			return discussIntake("nothing to continue")
+		}
+	}
 	needsRun := kind == "supplement" || kind == "change" || kind == "stop" || kind == "pause" || kind == "continue"
-	if needsRun && runID == "" && len(running) == 1 {
+	if needsRun && runID == "" && len(running) == 1 && !resumableStopped(running[0]) {
 		runID = running[0].RunID
 	}
 	if needsRun && runID == "" {
-		return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Ack: in.Ack, Reason: "no run"}
-	}
-	if kind == "continue" && len(running) == 0 {
-		return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Ack: in.Ack, Reason: "nothing to continue"}
+		return discussIntake("no run")
 	}
 	instruction := strings.TrimSpace(in.Instruction)
+	phase := intakePhase(kind, in.Phase)
+	// Ordinary task talk is a discussion. A destructive order keeps the
+	// plan-phase run it already had.
+	if kind == "new" && phase != "plan" {
+		kind = "discuss"
+		if in.Plan == nil {
+			in.Plan = &BotIntakePlan{}
+		}
+		goal := instruction
+		if strings.TrimSpace(goal) == "" {
+			goal = content
+		}
+		var contextLines []string
+		for _, run := range running {
+			if resumableStopped(run) && strings.TrimSpace(run.Task) != "" {
+				contextLines = append(contextLines, strings.TrimSpace(run.Task))
+			}
+		}
+		if len(contextLines) == 0 && len(running) == 0 {
+			contextLines = earlier
+		}
+		goal = foldEarlierIntoInstruction(goal, contextLines)
+		if strings.TrimSpace(in.Plan.Goal) == "" && strings.TrimSpace(goal) != "" {
+			in.Plan.Goal = oneLineRunes(goal, 2000)
+		}
+		instruction = ""
+		phase = ""
+	}
 	if instruction == "" && (kind == "new" || kind == "supplement" || kind == "change") {
 		instruction = content
+	}
+	if kind == "new" {
+		instruction = foldEarlierIntoInstruction(instruction, earlier)
 	}
 	if kind == "change" && instruction != "" && !strings.HasPrefix(instruction, botIntakeChangeMark) {
 		instruction = botIntakeChangeMark + instruction
@@ -321,7 +455,9 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) Bo
 	if kind == "schedule" {
 		sched, ok := validIntakeSchedule(in.Schedule)
 		if !ok {
-			return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Ack: in.Ack, Reason: "bad schedule"}
+			held := discussIntake("bad schedule")
+			held.Ack = in.Ack
+			return held
 		}
 		out.Schedule = sched
 		out.Pace = "schedule"
@@ -345,7 +481,7 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) Bo
 			out.Told = out.Ack
 		}
 		if strings.TrimSpace(out.Told) == "" && strings.TrimSpace(out.Ack) == "" {
-			return BotIntake{Kind: "new", Instruction: content, Pace: "direct", Phase: "execute", Reason: "empty reply"}
+			return discussIntake("empty reply")
 		}
 		out.Instruction = ""
 	}
@@ -356,14 +492,54 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) Bo
 	if kind == "continue" {
 		out.Instruction = ""
 	}
-	out.Phase = intakePhase(kind, in.Phase)
+	if kind == "discuss" || kind == "plan_amend" {
+		out.Instruction = ""
+		out.Plan = in.Plan
+		if out.Pace == "" || out.Pace == "direct" {
+			out.Pace = "discuss"
+		}
+		phase = ""
+	}
+	out.Phase = phase
 	return out
+}
+
+func clipIntakePlan(in *BotIntakePlan) *BotIntakePlan {
+	if in == nil {
+		return nil
+	}
+	out := &BotIntakePlan{Goal: oneLineRunes(in.Goal, 300)}
+	out.Constraints = clipPlanLines(in.Constraints)
+	out.Success = clipPlanLines(in.Success)
+	out.Open = clipPlanLines(in.Open)
+	return out
+}
+
+func clipPlanLines(in *[]string) *[]string {
+	if in == nil {
+		return nil
+	}
+	lines := make([]string, 0, len(*in))
+	for _, line := range *in {
+		line = oneLineRunes(line, 200)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		if len(lines) == 8 {
+			break
+		}
+	}
+	return &lines
 }
 
 // intakePhase is the model's phase, with execute as the only default.
 // continue and reply are follow-ups and always run. Anything other than
 // the word plan is execute. There is no keyword list over the message.
 func intakePhase(kind, raw string) string {
+	if kind == "discuss" || kind == "plan_amend" {
+		return ""
+	}
 	if kind == "continue" || kind == "reply" {
 		return "execute"
 	}
@@ -375,8 +551,10 @@ func intakePhase(kind, raw string) string {
 
 func canonicalIntakeKind(kind, pace string) string {
 	switch kind {
-	case "new", "supplement", "change", "stop", "pause", "continue", "reply", "ask", "schedule", "status":
+	case "discuss", "plan_amend", "new", "supplement", "change", "stop", "pause", "continue", "reply", "ask", "schedule", "status":
 		return kind
+	case "plan":
+		return "plan_amend"
 	case "chat", "small_talk":
 		return "reply"
 	case "new_task", "parallel", "separate":
@@ -395,6 +573,52 @@ func canonicalIntakeKind(kind, pace string) string {
 		return "status"
 	}
 	return "new"
+}
+
+func intakeSaysNoWork(ack string) bool {
+	a := strings.ToLower(strings.TrimSpace(ack))
+	if a == "" {
+		return false
+	}
+	for _, part := range []string{"没有可以继续", "没有在做", "没在做", "无任务", "nothing to continue", "no work", "nothing running"} {
+		if strings.Contains(a, part) {
+			return true
+		}
+	}
+	return false
+}
+
+// FoldEarlierIntoInstruction keeps recent turns in a new run's order when
+// the order does not already repeat them.
+func FoldEarlierIntoInstruction(instruction string, earlier []string) string {
+	instruction = strings.TrimSpace(instruction)
+	if instruction == "" || len(earlier) == 0 {
+		return instruction
+	}
+	var missing []string
+	for _, line := range earlier {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Contains(instruction, line) {
+			continue
+		}
+		missing = append(missing, line)
+		if len(missing) == 8 {
+			break
+		}
+	}
+	if len(missing) == 0 {
+		return instruction
+	}
+	var b strings.Builder
+	b.WriteString("此前对话：\n")
+	for _, line := range missing {
+		b.WriteString("- ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	b.WriteString("这次：")
+	b.WriteString(instruction)
+	return b.String()
 }
 
 func validIntakeSchedule(s *BotIntakeSchedule) (*BotIntakeSchedule, bool) {
@@ -435,6 +659,87 @@ func validIntakeSchedule(s *BotIntakeSchedule) (*BotIntakeSchedule, bool) {
 		out.DayOfWeek = &d
 	}
 	return out, true
+}
+
+func foldEarlierIntoInstruction(instruction string, earlier []string) string {
+	return FoldEarlierIntoInstruction(instruction, earlier)
+}
+
+func nothingToContinue(ack string) BotIntake {
+	text := "现在没有可以继续的事。"
+	if intakeSaysNoWork(ack) {
+		text = oneLineRunes(ack, 200)
+	}
+	return BotIntake{Kind: "reply", Ack: text, Told: text, Pace: "reply", Reason: "nothing to continue"}
+}
+
+func resumableStopped(r BotIntakeRun) bool {
+	switch strings.ToLower(strings.TrimSpace(r.Status)) {
+	case "cancelled", "canceled", "failed", "interrupted":
+		return true
+	}
+	return false
+}
+
+func relaunchStopped(r BotIntakeRun) BotIntake {
+	task := strings.TrimSpace(r.Task)
+	steps := make([]string, 0, len(r.CompletedSteps)+1)
+	for _, step := range r.CompletedSteps {
+		step = strings.TrimSpace(step)
+		if step != "" {
+			steps = append(steps, step)
+		}
+	}
+	if p := strings.TrimSpace(r.Progress); p != "" {
+		steps = append(steps, p)
+	}
+	ack := "这项停过。确认后才接着做，已经做过的步骤不会再自动做一遍。"
+	return BotIntake{
+		Kind: "ask", Instruction: task, Ack: ack, Told: ack,
+		Pace: "ask", Phase: "plan", Reason: "confirm resume " + strings.TrimSpace(r.Status),
+		CompletedSteps: steps, ConfirmBefore: append([]string(nil), steps...),
+	}
+}
+
+func continueResumable(in BotIntake, running []BotIntakeRun) (BotIntake, bool) {
+	idx := 0
+	if n, ok := atoi(in.RunID); ok {
+		idx = n
+	}
+	if idx >= 1 && idx <= len(running) {
+		picked := running[idx-1]
+		if resumableStopped(picked) {
+			return relaunchStopped(picked), true
+		}
+		ack := strings.TrimSpace(in.Ack)
+		if ack == "" || intakeSaysNoWork(ack) {
+			ack = "接着做。"
+		}
+		return BotIntake{Kind: "continue", RunID: picked.RunID, Ack: ack, Pace: "direct", Phase: "execute", Reason: "resume"}, true
+	}
+	var live, stopped []BotIntakeRun
+	for _, r := range running {
+		if resumableStopped(r) {
+			stopped = append(stopped, r)
+			continue
+		}
+		live = append(live, r)
+	}
+	if len(live) == 1 {
+		ack := strings.TrimSpace(in.Ack)
+		if ack == "" || intakeSaysNoWork(ack) {
+			ack = "接着做。"
+		}
+		return BotIntake{Kind: "continue", RunID: live[0].RunID, Ack: ack, Pace: "direct", Phase: "execute", Reason: "resume"}, true
+	}
+	if len(live) == 0 && len(stopped) == 1 {
+		return relaunchStopped(stopped[0]), true
+	}
+	if len(live) == 0 && len(stopped) > 1 {
+		text := "有好几件停了，说一下要继续哪一件。"
+		return BotIntake{Kind: "reply", Ack: text, Told: text, Pace: "reply", Reason: "which run"}, true
+	}
+	return BotIntake{}, false
 }
 
 func clipPersona(s string) string {

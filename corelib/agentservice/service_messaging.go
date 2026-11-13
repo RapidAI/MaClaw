@@ -339,7 +339,12 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	effectiveContent, pendingAskReq := buildEffectiveUserContent(sess, content)
 	now := s.now()
 	userMsg := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleUser, InputType: defaultString(in.InputType, "text/plain"), Content: content, Attachments: attachments, Metadata: cloneMap(in.Metadata), CreatedAt: now}
-	run := Run{ID: NewID("run"), TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, SessionID: sess.ID, UserMessageID: userMsg.ID, Status: RunStatusRunning, StartedAt: now, Metadata: correlationMetadata(ctx)}
+	// An answer that names the ask's run continues that run. A new id would
+	// leave the asking run waiting forever and start a second execute.
+	run, resumedAsk := s.resumeAwaitingRun(p, instanceID, sess.ID, in.Metadata, userMsg.ID)
+	if !resumedAsk {
+		run = Run{ID: NewID("run"), TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, SessionID: sess.ID, UserMessageID: userMsg.ID, Status: RunStatusRunning, StartedAt: now, Metadata: correlationMetadata(ctx)}
+	}
 	// Preserve the inbound parent span for compatibility while assigning a
 	// distinct deterministic child span to the durable run. The child id is
 	// stable for this run and can therefore link events/audits across process
@@ -392,6 +397,9 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	if !admissionEventCommitted {
 		s.emitRunEvent(run, admissionEvent.Type, admissionEvent.Payload)
 	}
+	// A newer message or a newer run retires every other ask on this
+	// conversation. The run that is executing now is the one that stays.
+	s.supersedeWaitingAsks(p, instanceID, sess.ID, run.ID)
 	if in.onRunCreated != nil {
 		in.onRunCreated(run)
 		if in.asyncAdmission && releaseIdempotency != nil {
@@ -542,6 +550,9 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	// cancellation all converge on this line, and each of them owes the person
 	// an honest report for anything queued but unconsumed.
 	s.reapRunSupplements(run.ID)
+	if s.pauses.release(run.ID) {
+		s.persistPauses()
+	}
 	run.CompletedAt = &completed
 	run.DurationMs = completed.Sub(run.StartedAt).Milliseconds()
 	if execErr != nil {
@@ -650,6 +661,102 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	_ = s.store.SaveSession(sess)
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.succeeded", ResourceType: "run", ResourceID: run.ID, ActorType: "system", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: mergeCorrelationMetadata(ctx, map[string]string{"instance_id": instanceID, "session_id": sessionID, "assistant_message_id": assistant.ID})})
 	return &run, &assistant, nil
+}
+
+// resumeAwaitingRun reopens the run named by bot_ask_run when that run is
+// still waiting on the person. The answer is a new user message on the same
+// run, not a new execute.
+var askResumeMu sync.Map
+
+func (s *Service) resumeAwaitingRun(p Principal, instanceID, sessionID string, meta map[string]string, userMessageID string) (Run, bool) {
+	if s == nil || s.store == nil || meta == nil {
+		return Run{}, false
+	}
+	id := strings.TrimSpace(meta["bot_ask_run"])
+	if id == "" {
+		return Run{}, false
+	}
+	gate, _ := askResumeMu.LoadOrStore(id, &sync.Mutex{})
+	gate.(*sync.Mutex).Lock()
+	defer gate.(*sync.Mutex).Unlock()
+	existing, err := s.store.GetRun(p.TenantID, p.UserID, instanceID, id)
+	if err != nil || existing.SessionID != sessionID {
+		return Run{}, false
+	}
+	waiting := existing.WaitingForUser
+	if existing.Metadata != nil && existing.Metadata[TaskOutcomeKey] == TaskOutcomeAwaitingUser {
+		waiting = true
+	}
+	if !waiting {
+		return Run{}, false
+	}
+	existing.Status = RunStatusRunning
+	existing.WaitingForUser = false
+	existing.CompletedAt = nil
+	existing.DurationMs = 0
+	existing.Error = ""
+	existing.ResponseSource = ""
+	existing.UserMessageID = userMessageID
+	existing.AssistantMessageID = ""
+	if existing.Metadata == nil {
+		existing.Metadata = map[string]string{}
+	}
+	delete(existing.Metadata, TaskOutcomeKey)
+	existing.Metadata["resumed_from_ask"] = "1"
+	// Persist the claim before returning. A second answer then sees the run
+	// is no longer waiting and does not start another execute.
+	if err := s.store.SaveRun(existing); err != nil {
+		return Run{}, false
+	}
+	return existing, true
+}
+
+// clearWaitingRun drops waiting_for_user when the run that asked has ended.
+func (s *Service) clearWaitingRun(p Principal, instanceID, runID, because string) {
+	runID = strings.TrimSpace(runID)
+	if s == nil || s.store == nil || runID == "" {
+		return
+	}
+	run, err := s.store.GetRun(p.TenantID, p.UserID, instanceID, runID)
+	if err != nil || !run.WaitingForUser {
+		return
+	}
+	run.WaitingForUser = false
+	if run.Metadata == nil {
+		run.Metadata = map[string]string{}
+	}
+	if run.Metadata[TaskOutcomeKey] == TaskOutcomeAwaitingUser {
+		delete(run.Metadata, TaskOutcomeKey)
+	}
+	run.Metadata["ask_superseded"] = strings.TrimSpace(because)
+	_ = s.store.SaveRun(run)
+}
+
+// supersedeWaitingAsks clears waiting_for_user on every other run in this
+// conversation. A newer message or a newer run means those questions are
+// over. The run kept is the one this post is executing.
+func (s *Service) supersedeWaitingAsks(p Principal, instanceID, sessionID, keepRunID string) {
+	if s == nil || s.store == nil {
+		return
+	}
+	runs, err := s.store.ListRuns(p.TenantID, p.UserID, instanceID)
+	if err != nil {
+		return
+	}
+	for _, item := range runs {
+		if item.ID == keepRunID || item.SessionID != sessionID || !item.WaitingForUser {
+			continue
+		}
+		item.WaitingForUser = false
+		if item.Metadata == nil {
+			item.Metadata = map[string]string{}
+		}
+		if item.Metadata[TaskOutcomeKey] == TaskOutcomeAwaitingUser {
+			delete(item.Metadata, TaskOutcomeKey)
+		}
+		item.Metadata["ask_superseded"] = "1"
+		_ = s.store.SaveRun(item)
+	}
 }
 
 // enforceRuntimeRateLimit is intentionally placed after idempotency replay

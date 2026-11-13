@@ -2780,7 +2780,17 @@ func (a *App) SendDesktopBotTask(botID, text, phase string) (*IMAgentResponse, e
 // SendDesktopBotTaskTo is SendDesktopBotTask with the srv conversation the
 // person is following up in (or the bot id for a new, independent message).
 // askRun, when set, is the run id of the plan-phase ask_user this message answers.
+// StartDesktopBotPlan is the explicit start control. The sentence is not the
+// instruction: Hub runs the plan stored for this conversation.
+func (a *App) StartDesktopBotPlan(botID, continueSession string) (*IMAgentResponse, error) {
+	return a.sendDesktopBotTask(botID, "开始", "", continueSession, "", "start")
+}
+
 func (a *App) SendDesktopBotTaskTo(botID, text, phase, continueSession, askRun string) (*IMAgentResponse, error) {
+	return a.sendDesktopBotTask(botID, text, phase, continueSession, askRun, "")
+}
+
+func (a *App) sendDesktopBotTask(botID, text, phase, continueSession, askRun, action string) (*IMAgentResponse, error) {
 	if a == nil {
 		return nil, fmt.Errorf("AI assistant backend is unavailable")
 	}
@@ -2797,6 +2807,7 @@ func (a *App) SendDesktopBotTaskTo(botID, text, phase, continueSession, askRun s
 	requestID := fmt.Sprintf("desktop-bot-%d", time.Now().UnixNano())
 	setDesktopContinueSession(requestID, continueSession)
 	setDesktopAskRun(requestID, askRun)
+	setDesktopBotAction(requestID, action)
 	log.Printf("[desktop bot] enqueue request_id=%s user=%q instance=%q phase=%s text_len=%d", requestID, userID, instanceID, phase, len(text))
 	botlog.Write(botID, "gui.enqueue", nil,
 		"request_id", requestID,

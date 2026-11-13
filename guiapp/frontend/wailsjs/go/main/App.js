@@ -5179,8 +5179,16 @@ export function CancelDesktopBotRun(arg1, arg2) {
   return window['go']['main']['App']['CancelDesktopBotRun'](arg1, arg2);
 }
 
+export function PauseDesktopBotRun(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['PauseDesktopBotRun'](arg1, arg2, arg3, arg4);
+}
+
 export function ArmDesktopBotAdmitCancel(arg1) {
   return window['go']['main']['App']['ArmDesktopBotAdmitCancel'](arg1);
+}
+
+export function ArmDesktopBotAdmitPause(arg1, arg2) {
+  return window['go']['main']['App']['ArmDesktopBotAdmitPause'](arg1, arg2);
 }
 
 export function PullDesktopBotDeliveries() {
@@ -6356,6 +6364,10 @@ export function WatchDesktopBot(arg1, arg2) {
 }
 export function WakeDesktopBot(arg1, arg2) {
   return window['go']['main']['App']['WakeDesktopBot'](arg1, arg2);
+}
+
+export function GetDesktopBotConversation(arg1) {
+  return window['go']['main']['App']['GetDesktopBotConversation'](arg1);
 }
 
 export function GetDesktopBotScreen(arg1) {

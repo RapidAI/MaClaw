@@ -2583,7 +2583,11 @@ export function QueryDesktopBotTaskStatus(arg1:string,arg2:string,arg3:string):P
 
 export function CancelDesktopBotRun(arg1:string,arg2:string):Promise<void>;
 
+export function PauseDesktopBotRun(arg1:string,arg2:string,arg3:string,arg4:number):Promise<any>;
+
 export function ArmDesktopBotAdmitCancel(arg1:string):Promise<void>;
+
+export function ArmDesktopBotAdmitPause(arg1:string,arg2:string):Promise<void>;
 
 export function PullDesktopBotDeliveries():Promise<void>;
 
@@ -3148,6 +3152,8 @@ export function TokenBankWithdrawGift(arg1:string,arg2:string,arg3:number):Promi
 
 export function WatchDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
 export function WakeDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
+
+export function GetDesktopBotConversation(arg1:string):Promise<any>;
 
 export function GetDesktopBotScreen(arg1:string):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode:string}>;
 

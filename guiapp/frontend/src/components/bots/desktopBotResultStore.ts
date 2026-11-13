@@ -81,15 +81,16 @@ export function runWasInterrupted(raw: string): boolean {
     return /interrupted|service restarted|中断|中斷|被打断|重启/i.test(raw || '');
 }
 
-export type DesktopBotScreenEvent = { url: string; reported: boolean; userControl: boolean; reason: string; cleared: boolean };
+export type DesktopBotScreenEvent = { url: string; reported: boolean; userControl: boolean; reason: string; attentionId: string; cleared: boolean };
 
 export function screenOf(data: Record<string, unknown>): DesktopBotScreenEvent {
     const url = String(data.novnc_url || data.NovncURL || data.desktop_handoff_url || data.DesktopHandoffURL || '');
     const reported = ['user_control', 'desktop_user_control', 'UserControl', 'DesktopUserControl', 'desktop_handoff', 'DesktopHandoff'].some(key => Object.prototype.hasOwnProperty.call(data, key));
     const userControl = data.user_control === true || data.desktop_user_control === true || data.UserControl === true || data.DesktopUserControl === true || data.desktop_handoff === true || data.DesktopHandoff === true;
     const reason = String(data.attention_reason || data.desktop_attention_reason || data.AttentionReason || '').trim();
+    const attentionId = String(data.attention_id || data.AttentionID || data.run_id || data.RunID || data.request_id || data.RequestID || '').trim();
     const cleared = data.cleared === true || data.Cleared === true;
-    return { url, reported, userControl, reason, cleared };
+    return { url, reported, userControl, reason, attentionId, cleared };
 }
 
 export function askFrom(data: Record<string, unknown>): DesktopBotAsk | undefined {

@@ -110,7 +110,9 @@ type record struct {
 	Rooms   map[string]*BotRoom `json:"rooms,omitempty"`
 	Grants  []Grant             `json:"grants,omitempty"`
 	Desktop *desktopStateRecord `json:"desktop,omitempty"`
-	LLM     llmSettings         `json:"llm,omitempty"`
+	// PausedRuns survives a Hub restart. The key is the pause key.
+	PausedRuns map[string]RunPauseState `json:"paused_runs,omitempty"`
+	LLM        llmSettings              `json:"llm,omitempty"`
 	// SystemFreeCreditsUsed is the credits each bot owner has spent on
 	// system-free, keyed by hub user id. It is independent of new-user benefits.
 	SystemFreeCreditsUsed map[string]float64 `json:"system_free_credits_used,omitempty"`
@@ -187,9 +189,14 @@ type Service struct {
 	// desktopHeld maps a user to the bot that handed the desktop over.
 	// A later failed message, or another bot finishing, must not stop it.
 	desktopHeld map[string]string
-	// desktopAttention is why that bot handed the screen over. It is not
-	// persisted. Polls keep reporting it until that handoff is cleared.
-	desktopAttention map[string]string
+	// desktopAttention is the current handoff for that bot: an id plus the
+	// reason. The MaClawSrv conversation is the stored copy. This map is
+	// the copy polls read until the snapshot replaces it.
+	desktopAttention map[string]desktopAttention
+	// discussCache is this process's copy of each conversation's plan.
+	// The session on MaClawSrv is the stored copy. Intake reads this one
+	// so a discussion turn does not add a desktop read.
+	discussCache sync.Map
 	// desktopAwaiting is true only while that person still has the keyboard.
 	// The continuation takes the keyboard back as soon as it starts, but the
 	// desktop stays up until that bot finishes.
@@ -485,6 +492,7 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 		return err
 	}
 	rec.Bots = append(rec.Bots[:index], rec.Bots[index+1:]...)
+	s.forgetDesktopAttentionLocked(tenantID, bot.OwnerUserID, botID)
 	// The slot is cleared in this same save. The next earliest remaining bot
 	// becomes primary by the read rule. The next id is not written here.
 	if rec.PrimaryBot != nil && strings.TrimSpace(rec.PrimaryBot[bot.OwnerUserID]) == bot.ID {
@@ -570,6 +578,11 @@ func (s *Service) load(ctx context.Context, tenantID string) (record, error) {
 	}
 	if out.Grants == nil {
 		out.Grants = []Grant{}
+	}
+	for key, st := range out.PausedRuns {
+		if st.Paused {
+			s.runPauses.Store(key, st)
+		}
 	}
 	return out, nil
 }
