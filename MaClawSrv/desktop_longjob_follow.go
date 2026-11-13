@@ -114,6 +114,11 @@ func desktopLongJobFollowRunFiles(ctx context.Context, p agentservice.Principal,
 			log.Printf("[desktop-longjob] job=%s watch run %s (%s): nothing new, silent", jobID, runID, dec)
 			return
 		}
+		text = desktopLongJobHideRaw(text, desktopLongJobRecordedRaws())
+		if text == "" && len(attached) == 0 {
+			log.Printf("[desktop-longjob] job=%s watch run %s (%s): reply was only the raw log", jobID, runID, dec)
+			return
+		}
 		text = desktopWatchFilesText(text, attached)
 		cur := desktopLongJobGet(jobID)
 		if cur == nil {

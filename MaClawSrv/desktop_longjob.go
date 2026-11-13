@@ -108,19 +108,27 @@ type desktopLongJob struct {
 	ProcStart string `json:"proc_start,omitempty"`
 	Status    string `json:"status"` // running, stalled, failed, done, cancelled
 	// EndReason is why a cancelled job stopped. It is not parsed from a log line.
-	EndReason   string        `json:"end_reason,omitempty"`
-	Alive       bool          `json:"alive"`
-	ExitCode    *int          `json:"exit_code,omitempty"`
-	Progress    string        `json:"progress,omitempty"`
-	LastTail    string        `json:"last_tail,omitempty"`
-	Fingerprint string        `json:"fingerprint,omitempty"`
-	ScheduleID  string        `json:"schedule_id,omitempty"`
-	Started     time.Time     `json:"started"`
-	LastPoll    time.Time     `json:"last_poll,omitempty"`
-	LastChange  time.Time     `json:"last_change,omitempty"`
-	LastNotice  time.Time     `json:"last_notice,omitempty"`
-	NextPoll    time.Time     `json:"next_poll,omitempty"`
-	StallAfter  time.Duration `json:"stall_after,omitempty"`
+	EndReason string `json:"end_reason,omitempty"`
+	Alive     bool   `json:"alive"`
+	ExitCode  *int   `json:"exit_code,omitempty"`
+	// OutcomeGoal groups terminal jobs that share one conversation goal.
+	// OutcomeState is pending, queued, sent, or folded. OutcomeRun is the
+	// one summary turn. OutcomeWait is a run that has to end before that
+	// turn starts. The raw log stays on LastTail and in the completion file.
+	OutcomeGoal  string        `json:"outcome_goal,omitempty"`
+	OutcomeState string        `json:"outcome_state,omitempty"`
+	OutcomeRun   string        `json:"outcome_run,omitempty"`
+	OutcomeWait  string        `json:"outcome_wait,omitempty"`
+	Progress     string        `json:"progress,omitempty"`
+	LastTail     string        `json:"last_tail,omitempty"`
+	Fingerprint  string        `json:"fingerprint,omitempty"`
+	ScheduleID   string        `json:"schedule_id,omitempty"`
+	Started      time.Time     `json:"started"`
+	LastPoll     time.Time     `json:"last_poll,omitempty"`
+	LastChange   time.Time     `json:"last_change,omitempty"`
+	LastNotice   time.Time     `json:"last_notice,omitempty"`
+	NextPoll     time.Time     `json:"next_poll,omitempty"`
+	StallAfter   time.Duration `json:"stall_after,omitempty"`
 	// KeepRunning is the bot's declaration (keep_running=true) that this
 	// process is the deliverable, not pending work. See desktopLongJobKeepsRunning.
 	KeepRunning bool `json:"keep_running,omitempty"`
@@ -1193,6 +1201,10 @@ func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec deskt
 	if dec == longJobCheck {
 		return desktopLongJobResumeAs(ctx, j, longJobCheck)
 	}
+	if dec == longJobResume && desktopLongJobTerminal(j) {
+		// The raw log is context for one summary turn. It is not a chat message.
+		return desktopLongJobScheduleOutcome(ctx, j)
+	}
 	sayJob := j
 	if dec == longJobHeartbeat {
 		// Same status and output as the last line: its own key, so Hub's
@@ -1712,6 +1724,7 @@ func desktopLongJobCancelSourceRun(instanceID, runID string) {
 		}
 		desktopLongJobStopStartedRun(j)
 	}
+	desktopLongJobReleaseOutcomes(runID)
 }
 
 // desktopLongJobReconcileOwners drops watches whose instance is gone.
@@ -1829,6 +1842,7 @@ func desktopLongJobTicker() {
 }
 
 func desktopLongJobTickDue() {
+	desktopLongJobSweepOutcomes()
 	now := desktopLongJobNow()
 	for _, j := range desktopLongJobRunning() {
 		if j.NextPoll.IsZero() || !now.Before(j.NextPoll) {

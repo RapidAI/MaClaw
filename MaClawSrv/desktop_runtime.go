@@ -2749,6 +2749,7 @@ func ensureDesktopRound(ctx context.Context, scope agentruntime.Scope, userKey s
 // still uses is kept, so one bot finishing does not cut another bot's browser.
 // The next tool after the computer sleeps calls Ensure again.
 func finishDesktopRound(tenantID, userID, runID string) {
+	desktopLongJobReleaseOutcomes(runID)
 	desktopClearFinish(runID)
 	runID = strings.TrimSpace(runID)
 	if runID == "" {

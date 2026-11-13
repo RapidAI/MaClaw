@@ -174,6 +174,11 @@ func desktopSay(ctx context.Context, request agentruntime.TurnRequest, args map[
 	if !desktopSayRuns.allow(runKey+"|"+room, update, time.Now()) {
 		return "SKIPPED already_said_this_run: you already told the person in this run. Do not say it again; only call say with update=true if there is information they have not had yet.", nil
 	}
+	text = desktopLongJobHideRaw(text, desktopLongJobRecordedRaws())
+	if text == "" {
+		desktopSayRuns.undo(runKey+"|"+room, time.Now())
+		return "NOT SENT raw_log: the background job's log stays in its record. Tell the person the outcome in your own words, without pasting the log.", nil
+	}
 	body := map[string]any{
 		"tenant_id":   strings.TrimSpace(inst.Metadata["hub_tenant_id"]),
 		"user_id":     user,

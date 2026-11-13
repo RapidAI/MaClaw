@@ -888,7 +888,7 @@ func TestLongJobTalkMapsMissingInstance(t *testing.T) {
 	desktopLongJobSayFunc = func(context.Context, map[string]any) error { return nil }
 	j := &desktopLongJob{
 		ID: "job_resume_gone", TenantID: "t", UserID: "u::desk::bot_x", InstanceID: "inst_missing",
-		SessionID: "s", PrincipalTenant: p.TenantID, PrincipalUser: p.UserID, Status: "failed",
+		SessionID: "s", PrincipalTenant: p.TenantID, PrincipalUser: p.UserID, Status: "stalled",
 	}
 	err := desktopLongJobTalkDefault(context.Background(), j, longJobResume)
 	if !errors.Is(err, ErrLongJobOwnerGone) {
