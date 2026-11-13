@@ -390,6 +390,12 @@ func (desktopRuntimeModule) invokeDesktopTool(ctx context.Context, request agent
 		return "", failErr
 	}
 	started := time.Now()
+	// The step's site is the page this action is for, not whatever page the
+	// previous step left open. A publish names it with editor_url; a
+	// navigate names it with url.
+	if site := desktopActionSite(desktopArg(args, "action"), args); site != "" {
+		desktopRunNoteSite(desktopOwner(scope), site)
+	}
 	desktopEmitStepStart(scope, desktopOwner(scope), args, desktopModelLabel(request))
 	actionName := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
 	npErr := desktopNoProgressCheckStep(ctx, desktopOwner(scope), actionName, args)

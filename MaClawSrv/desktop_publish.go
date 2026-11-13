@@ -117,7 +117,13 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		return "", fmt.Errorf("publish refused: title or body is a placeholder (%q / %q); pass the full finished title and body text (nothing was filled or posted)", desktopRuneHead(spec.Title, 20), desktopRuneHead(spec.Body, 20))
 	}
 	if r, ok := desktopPublishRecordOf(scope.RunID); ok && r.posted() {
-		return desktopPublishStepText(scope, r), nil
+		text := desktopPublishStepText(scope, r)
+		// Already on the site with pictures missing: do not post again,
+		// and do not report the repeat as a success.
+		if r.State == browser.PublishLiveIncomplete {
+			return "", fmt.Errorf("%s", text)
+		}
+		return text, nil
 	}
 	if out, done, err := desktopPublishLedgerGuard(scope, session, spec, args); done {
 		return out, err
@@ -186,6 +192,18 @@ func desktopPublishFinish(scope agentruntime.Scope, spec browser.PublishSpec, si
 		if bt := siteExpBlockText(siteExpBlocks(scope, site)); bt != "" {
 			out += "\n" + bt
 		}
+	}
+	if rec.State == browser.PublishLiveIncomplete {
+		// The post is on the site and pictures are missing. That is a
+		// failure the bot and the person must see, not a successful step
+		// whose only trace is a log line.
+		if err == nil {
+			err = fmt.Errorf("published but incomplete")
+		}
+		if rec.Missing != "" && !strings.Contains(err.Error(), rec.Missing) {
+			err = fmt.Errorf("%w: %s", err, rec.Missing)
+		}
+		return "", fmt.Errorf("%s\n%s\n%s", err.Error(), out, desktopPublishStepText(scope, rec))
 	}
 	if rec.posted() {
 		return out + "\n" + desktopPublishStepText(scope, rec), nil

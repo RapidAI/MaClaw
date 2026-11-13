@@ -31,6 +31,33 @@ var pageStateJS = `(() => {
   return JSON.stringify({said: said.slice(0, 5), overlays: JSON.parse(` + openOverlayJS + `), url: location.href});
 })()`
 
+// publishProgressJS reports a visible aria-busy node or an unfinished
+// progressbar. It does not read the node's words: those differ by site.
+const publishProgressJS = `(() => {
+  const vis = e => { const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) !== 0; };
+  if ([...document.querySelectorAll('[aria-busy=true]')].some(vis)) return 'aria-busy';
+  const bar = [...document.querySelectorAll('[role=progressbar]')].some(e => {
+    if (!vis(e)) return false;
+    const now = Number(e.getAttribute('aria-valuenow')), max = Number(e.getAttribute('aria-valuemax'));
+    if (e.hasAttribute('aria-valuenow') && e.hasAttribute('aria-valuemax') && now >= max) return false;
+    return true;
+  });
+  return bar ? 'progressbar' : '';
+})()`
+
+// progressBusy is set when the page exposes an unfinished progress state.
+func (p *publishRun) progressBusy() bool {
+	v, err := p.evalWithin(publishProgressJS, 2*time.Second)
+	return err == nil && strings.TrimSpace(v) != ""
+}
+
+// publishPictureGap is a structure error that names a picture not in the
+// editor yet, as opposed to a formatting problem.
+func publishPictureGap(err string) bool {
+	return strings.Contains(err, "picture") && strings.Contains(err, "missing")
+}
+
 // closeOverlays shuts open popups the generic way a person would: Escape,
 // then leaving the field that opened them. It reports what it closed.
 func (p *publishRun) closeOverlays() string {

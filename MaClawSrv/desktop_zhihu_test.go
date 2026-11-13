@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +93,47 @@ func TestDesktopPendingStepStartInSummary(t *testing.T) {
 	raw, _ := os.ReadFile(files[0])
 	if p := desktopEventPretty(strings.TrimSpace(string(raw))); !strings.Contains(p, "probe") || !strings.Contains(p, "started") {
 		t.Fatalf("pretty=%q", p)
+	}
+}
+
+func TestPublishStepStartsOnItsEditorSite(t *testing.T) {
+	dir := t.TempDir()
+	old := desktopEventsRoot
+	desktopEventsRoot = dir
+	defer func() { desktopEventsRoot = old }()
+	scope := agentruntime.Scope{TenantID: "t1", UserID: "u-site", RunID: "run-site"}
+	owner := desktopOwner(scope)
+	desktopRunFor(owner)
+	desktopRunNoteSite(owner, "editor.csdn.net")
+	args := map[string]any{"action": "publish", "editor_url": "https://creator.xiaohongshu.com/publish/publish"}
+	site := desktopActionSite("publish", args)
+	if site != "creator.xiaohongshu.com" {
+		t.Fatalf("target site=%q", site)
+	}
+	desktopRunNoteSite(owner, site)
+	desktopEmitStepStart(scope, owner, args, "m")
+	desktopEmitStep(scope, owner, args, "m", "", nil, time.Second, "")
+	files, _ := filepath.Glob(filepath.Join(dir, "*", "*", "*.jsonl"))
+	if len(files) != 1 {
+		t.Fatalf("files=%v", files)
+	}
+	raw, _ := os.ReadFile(files[0])
+	if strings.Contains(string(raw), "editor.csdn.net") || strings.Count(string(raw), "creator.xiaohongshu.com") < 2 {
+		t.Fatalf("events=%s", raw)
+	}
+}
+
+func TestIncompletePublishIsReturned(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t1", UserID: "u-inc", RunID: "run-inc-pic"}
+	rep := &browser.PublishReport{
+		State:     browser.PublishLiveIncomplete,
+		ResultURL: "https://zhuanlan.zhihu.com/p/2104508429444425524",
+		Missing:   "picture 9 missing; picture 10 missing (repair failed: edit page)",
+	}
+	_, err := desktopPublishFinish(scope, browser.PublishSpec{Title: "综述", EditorURL: "https://zhuanlan.zhihu.com/write"}, "zhihu", false, rep,
+		fmt.Errorf("published at %s but %s", rep.ResultURL, rep.Missing))
+	if err == nil || !strings.Contains(err.Error(), "picture 9 missing") || !strings.Contains(err.Error(), "repair failed") {
+		t.Fatalf("err=%v", err)
 	}
 }
 

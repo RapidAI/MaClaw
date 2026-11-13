@@ -1503,40 +1503,60 @@ var (
 // declared text, the newest visible button whose short label starts with a
 // submit verb.
 func (p *publishRun) clickSubmit() error {
-	if !p.discoverSubmit {
-		return p.clickText(p.spec.SubmitTexts, true)
-	}
-	want := map[string]bool{}
-	for _, t := range p.spec.SubmitTexts {
-		want[normText(t)] = true
-	}
-	// Exact defaults and verb-led labels alike; the newest one (a panel's
-	// own confirm button comes after the editor's) is pressed.
-	hits, err := p.findWhere(func(n *domNode, txt string) bool {
-		if want[txt] {
-			return true
-		}
-		// Links are navigation ("Posts", "Published (3)"): exact only.
-		if n.NodeName == "A" || len([]rune(txt)) > 10 || submitNot.MatchString(txt) {
-			return false
-		}
-		low := strings.ToLower(txt)
-		for _, v := range submitVerbs {
-			if strings.HasPrefix(low, v) {
-				return true
-			}
-		}
-		return false
-	}, true)
+	id, err := p.submitControl()
 	if err != nil {
 		return err
 	}
+	return p.clickBackendNode(id)
+}
+
+// submitControl is the backend node the next submit click would press: the
+// newest visible submit button, so a panel's own confirm (added after the
+// editor's button) is the one named.
+func (p *publishRun) submitControl() (int, error) {
+	var hits []*domNode
+	var err error
+	if !p.discoverSubmit {
+		hits, err = p.findByText(p.spec.SubmitTexts, true)
+	} else {
+		want := map[string]bool{}
+		for _, t := range p.spec.SubmitTexts {
+			want[normText(t)] = true
+		}
+		hits, err = p.findWhere(func(n *domNode, txt string) bool {
+			if want[txt] {
+				return true
+			}
+			// Links are navigation ("Posts", "Published (3)"): exact only.
+			if n.NodeName == "A" || len([]rune(txt)) > 10 || submitNot.MatchString(txt) {
+				return false
+			}
+			low := strings.ToLower(txt)
+			for _, v := range submitVerbs {
+				if strings.HasPrefix(low, v) {
+					return true
+				}
+			}
+			return false
+		}, true)
+	}
+	if err != nil {
+		return 0, err
+	}
 	for i := len(hits) - 1; i >= 0; i-- {
-		if x, y, berr := p.boxCenter(map[string]interface{}{"backendNodeId": hits[i].BackendNodeID}); berr == nil {
-			return p.mouseClick(x, y)
+		if _, _, berr := p.boxCenter(map[string]interface{}{"backendNodeId": hits[i].BackendNodeID}); berr == nil {
+			return hits[i].BackendNodeID, nil
 		}
 	}
-	return fmt.Errorf("no visible enabled submit button (tried %q and labels starting with a submit verb); pass submit_texts", strings.Join(p.spec.SubmitTexts, "/"))
+	return 0, fmt.Errorf("no visible enabled submit button (tried %q and labels starting with a submit verb); pass submit_texts", strings.Join(p.spec.SubmitTexts, "/"))
+}
+
+func (p *publishRun) clickBackendNode(id int) error {
+	x, y, err := p.boxCenter(map[string]interface{}{"backendNodeId": id})
+	if err != nil {
+		return err
+	}
+	return p.mouseClick(x, y)
 }
 
 // clickText clicks the last visible node with that exact text.
@@ -1610,8 +1630,16 @@ func (p *publishRun) submit() (string, error) {
 		}
 	}
 	before, _ := p.eval("document.body ? document.body.innerText.slice(0, 20000) : ''")
+	// Submit is one state, not a timer: every expected picture has a remote
+	// URL, no upload request is in flight, and no progress element is busy.
+	if err := p.waitEditorReady(); err != nil {
+		return "", err
+	}
 	// Set before the click: a page that freezes on publish never answers it.
 	closed := p.closeOverlays()
+	if err := p.waitEditorReady(); err != nil {
+		return "", err
+	}
 	p.see(p.pageURL())
 	// Toasts ("published") can live for a second or two, shorter than one
 	// poll that also waits on hasEditor: record text added after the click.
@@ -1620,6 +1648,7 @@ func (p *publishRun) submit() (string, error) {
 	p.submitClicked.Store(true)
 	clickedAt := time.Now()
 	p.clickedAt = clickedAt
+	clickedID, _ := p.submitControl()
 	if err := p.clickSubmit(); err != nil {
 		if strings.Contains(err.Error(), "timeout") {
 			// The page froze inside the click handler: the click went
@@ -1629,10 +1658,12 @@ func (p *publishRun) submit() (string, error) {
 		return "", err
 	}
 	confirmed := false
-	reclicks, panels := 0, 0
+	retried, panels := false, 0
 	panelNote := ""
 	lastClick := time.Now()
-	deadline := time.Now().Add(2*p.spec.StepBudget - 5*time.Second)
+	// The step budget is the safety cap. The loop ends when the outcome
+	// is decided, not when a second, longer timer expires.
+	deadline := time.Now().Add(p.spec.StepBudget)
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
 		// The site's answer to the publish write is the signal: a refused
@@ -1685,13 +1716,44 @@ func (p *publishRun) submit() (string, error) {
 				}
 			}
 		}
-		// A click that sent no write and opened no panel may have hit a
-		// button that was not ready: press it again. A click that sent a
-		// write was taken: pressing again could post twice.
-		if reclicks < 2 && !p.panelConfirmed && panelNote == "" && time.Since(lastClick) > 3*time.Second && (p.net == nil || (len(p.net.submitWritesSince(clickedAt)) == 0 && p.net.draftWritesSince(clickedAt) == 0)) {
-			reclicks++
+		// A new submit control (a settings panel's own button) is not a
+		// retry of the click we already made. Press it once when the first
+		// click sent no publish write. The same control is never pressed
+		// again: that is how a duplicate post is made.
+		if time.Since(lastClick) > 1500*time.Millisecond && !p.panelConfirmed && panelNote == "" && (p.net == nil || (len(p.net.submitWritesSince(clickedAt)) == 0 && p.net.draftWritesSince(clickedAt) == 0)) {
+			if id, err := p.submitControl(); err == nil && id != 0 && id != clickedID {
+				clickedID = id
+				lastClick = time.Now()
+				if err := p.clickBackendNode(id); err != nil {
+					return "", err
+				}
+				continue
+			}
+		}
+		// One outcome. A second click of the same control happens only when
+		// the editor is still up, the platform's own list does not contain
+		// the post, and the editor is ready again.
+		facts := p.observeSubmit(clickedAt, true)
+		switch submitOutcome(facts) {
+		case submitPublished:
+			return "submit outcome published", nil
+		case submitPending:
+			continue
+		case submitInEditor:
+			if retried || p.panelConfirmed || panelNote != "" {
+				return "", fmt.Errorf("submit outcome still-in-editor: the platform's list does not contain the post; %s", p.afterSubmitState(clickedAt))
+			}
+			if ready, _ := editorReady(p.editorFacts()); !ready {
+				continue
+			}
+			retried = true
 			lastClick = time.Now()
-			_ = p.clickSubmit()
+			if err := p.clickSubmit(); err != nil {
+				return "", err
+			}
+		default:
+			// Unknown is not a retry. Keep watching for a published signal
+			// until the step budget, and do not click again.
 		}
 	}
 	after, _ := p.eval("document.body ? document.body.innerText.slice(0, 20000) : ''")
