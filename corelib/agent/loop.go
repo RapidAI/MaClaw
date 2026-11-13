@@ -236,9 +236,17 @@ const (
 	ToolExecutionOutcomeError   ToolExecutionOutcome = "error"
 )
 
+// ToolFailureAdmissionMemory is a desktop admission that waited out the
+// memory ceiling. The turn ends with the result sentence. The model is not
+// given the failure as a tool error it can call again.
+const ToolFailureAdmissionMemory = "admission_memory_busy"
+
 type ToolExecutionResult struct {
-	Result  string
-	Outcome ToolExecutionOutcome
+	Result string
+	// FailureKind is a structured reason. Empty means an ordinary result.
+	// ToolFailureAdmissionMemory ends the turn.
+	FailureKind string
+	Outcome     ToolExecutionOutcome
 	// ModelImages are screenshots (or other images) that should be shown to a
 	// vision-capable chat model on the next LLM round. They are never treated as
 	// user-facing outbound artifacts.
@@ -3590,6 +3598,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// that distinguish different completed tools in one model response.
 		executedToolNames := make([]string, 0, len(choice.Message.ToolCalls))
 		batchHadSuccess := false
+		// admissionOutcome ends the turn when a desktop admission waited out
+		// its memory ceiling. The sentence is the result. The model does not
+		// get another call that would wait again.
+		admissionOutcome := ""
 		// batchProgressMiss is an attempted call that did not succeed: an
 		// execution, a policy denial, a schema reject, or a host message that
 		// did not publish a new surface. A first surface grant is neither.
@@ -3821,6 +3833,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// Track last tool for empty-response recovery context.
 			lastToolName = tc.Function.Name
 			lastToolOutcome = toolOutcomeFromExecutionResult(execResult)
+			if execResult.FailureKind == ToolFailureAdmissionMemory && admissionOutcome == "" {
+				admissionOutcome = strings.TrimSpace(execResult.Result)
+			}
 
 			if toolExecuted {
 				executedTools++
@@ -4095,6 +4110,14 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					HardExit:   true,
 				})
 			}
+		}
+		if admissionOutcome != "" {
+			disposeSurface(ToolSurfaceToolBatchSettled)
+			return finish(LoopResult{
+				Text:       admissionOutcome,
+				Iterations: iteration + 1,
+				ToolCalls:  totalToolCalls,
+			})
 		}
 		if noProgressHardStop {
 			// The paired batch is already committed. Abandoned is the

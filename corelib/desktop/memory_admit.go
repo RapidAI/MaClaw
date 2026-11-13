@@ -1,10 +1,40 @@
 package desktop
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
 )
+
+// AdmissionMemoryBusy is the structured kind of a desktop admission that
+// waited out the memory ceiling. Callers match it with errors.Is. The
+// sentence is the outcome the person reads. It is not a tool error the
+// model is asked to retry.
+const AdmissionMemoryBusy = "admission_memory_busy"
+
+// MemoryBusyOutcome is that sentence.
+const MemoryBusyOutcome = "这台电脑内存紧张，等了两分钟还是满的，这次先不做。"
+
+// ErrMemoryAdmission marks a MemoryAdmission. The loop ends the turn on it.
+var ErrMemoryAdmission = errors.New(AdmissionMemoryBusy)
+
+// MemoryAdmission is one failed admission. Sentence is the person-facing
+// outcome. Kind is AdmissionMemoryBusy.
+type MemoryAdmission struct {
+	Sentence string
+}
+
+func (e *MemoryAdmission) Error() string {
+	if e == nil || strings.TrimSpace(e.Sentence) == "" {
+		return MemoryBusyOutcome
+	}
+	return e.Sentence
+}
+
+func (e *MemoryAdmission) Unwrap() error { return ErrMemoryAdmission }
+
+func (e *MemoryAdmission) Kind() string { return AdmissionMemoryBusy }
 
 // MemoryAdmitFraction is the container memory line above which a new desktop
 // run or screen lease waits. MACLAW_DESKTOP_MEM_PERCENT is 1–99. Anything

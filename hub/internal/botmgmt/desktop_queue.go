@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 // A bot's waiting messages. The GUI used to keep this queue. Hub keeps it
@@ -14,7 +16,14 @@ import (
 const (
 	desktopQueueMax = 20
 	desktopQueueTTL = 6 * time.Hour
+	// desktopQueueWaitMemory marks a message parked because the container
+	// was over the memory line. It is not inferred from the ack text.
+	desktopQueueWaitMemory = "memory"
 )
+
+// desktopMemoryQueueMax is how long a memory-parked message stays queued.
+// Past it the person gets an outcome and the message is not started.
+var desktopMemoryQueueMax = 2 * time.Minute
 
 // ErrDesktopQueueFull means this bot already has desktopQueueMax messages waiting.
 var ErrDesktopQueueFull = errors.New("这个机器人排队的事已经满了。")
@@ -36,6 +45,11 @@ type desktopQueueItem struct {
 	EnqueuedAt time.Time         `json:"enqueued_at"`
 	Held       bool              `json:"held,omitempty"`
 	State      string            `json:"state,omitempty"`
+	// WaitKind is why the message is parked. desktopQueueWaitMemory is the
+	// memory line. Empty means the ordinary busy or keyboard queue.
+	WaitKind string `json:"wait_kind,omitempty"`
+	// Outcome is the sentence once a memory wait has given up.
+	Outcome string `json:"outcome,omitempty"`
 }
 
 // DesktopQueueView is what a relay polls.
@@ -44,6 +58,7 @@ type DesktopQueueView struct {
 	RunID    string `json:"run_id,omitempty"`
 	Held     bool   `json:"held"`
 	Position int    `json:"position"`
+	Outcome  string `json:"outcome,omitempty"`
 }
 
 func desktopQueueKey(tenantID, userID, botID string) string {
@@ -167,6 +182,9 @@ func (s *Service) DesktopQueueStatus(tenantID, userID, botID, clientMessageID st
 	defer s.mu.Unlock()
 	s.ensureDesktopHydrated(tenantID)
 	s.dropExpiredQueueLocked(key)
+	if s.expireMemoryQueueLocked(key) {
+		s.persistDesktopState(tenantID)
+	}
 	pos := 0
 	for _, item := range s.desktopQueues[key] {
 		if item == nil {
@@ -182,7 +200,7 @@ func (s *Service) DesktopQueueStatus(tenantID, userID, botID, clientMessageID st
 		if state == "" {
 			state = "queued"
 		}
-		return DesktopQueueView{State: state, RunID: item.RunID, Held: item.Held || state == "held", Position: pos}
+		return DesktopQueueView{State: state, RunID: item.RunID, Held: item.Held || state == "held", Position: pos, Outcome: item.Outcome}
 	}
 	if runID, done := s.queueAdmitLocked(tenantID, userID, botID, clientMessageID); runID != "" {
 		state := "running"
@@ -229,6 +247,7 @@ func (s *Service) drainDesktopQueue(tenantID, userID, botID string) {
 	}
 	s.queueDraining[key] = true
 	s.mu.Unlock()
+	s.expireMemoryQueue(tenantID, userID, botID)
 	defer func() {
 		s.mu.Lock()
 		delete(s.queueDraining, key)
@@ -251,6 +270,40 @@ func (s *Service) drainDesktopQueue(tenantID, userID, botID string) {
 	}
 }
 
+// expireMemoryQueue marks memory-parked messages that have waited out the
+// ceiling. They stay in the queue as gave_up so a poll can read the outcome.
+func (s *Service) expireMemoryQueue(tenantID, userID, botID string) {
+	if s == nil {
+		return
+	}
+	key := desktopQueueKey(tenantID, userID, botID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.expireMemoryQueueLocked(key) {
+		s.persistDesktopState(tenantID)
+	}
+}
+
+func (s *Service) expireMemoryQueueLocked(key string) bool {
+	now := s.now()
+	changed := false
+	for _, item := range s.desktopQueues[key] {
+		if item == nil || item.WaitKind != desktopQueueWaitMemory {
+			continue
+		}
+		if item.State != "" && item.State != "queued" && item.State != "held" {
+			continue
+		}
+		if now.Sub(item.EnqueuedAt) < desktopMemoryQueueMax {
+			continue
+		}
+		item.State = "gave_up"
+		item.Outcome = desktop.MemoryBusyOutcome
+		changed = true
+	}
+	return changed
+}
+
 func (s *Service) popDesktopQueue(tenantID, userID, botID string) *desktopQueueItem {
 	key := desktopQueueKey(tenantID, userID, botID)
 	keyboard := s.personHasBotKeyboard(tenantID, userID, botID)
@@ -263,6 +316,10 @@ func (s *Service) popDesktopQueue(tenantID, userID, botID string) *desktopQueueI
 		head := items[0]
 		items = items[1:]
 		if head == nil || head.State == "running" || head.State == "done" {
+			continue
+		}
+		if head.State == "gave_up" {
+			items = append(items, head)
 			continue
 		}
 		if runID, _ := s.queueAdmitLocked(tenantID, userID, botID, head.ClientMessageID); runID != "" {
