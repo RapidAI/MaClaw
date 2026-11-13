@@ -25,6 +25,7 @@ func TestGetDesktopBotScreenReadsTheBotDisplay(t *testing.T) {
 			"novnc_url":        "/api/v1/desktop-handoff/bot/vnc.html",
 			"user_control":     true,
 			"attention_reason": "请登录 Google",
+			"attention_id":     "run_login",
 			"desktop_mode":     "isolated",
 		})
 		return http.StatusOK, nil
@@ -37,7 +38,7 @@ func TestGetDesktopBotScreenReadsTheBotDisplay(t *testing.T) {
 	if method != http.MethodGet || path != "/api/v1/bots/bot%2F1/desktop" {
 		t.Fatalf("call = %s %s", method, path)
 	}
-	if got.DesktopMode != "isolated" || got.AttentionReason != "请登录 Google" || !got.UserControl {
+	if got.DesktopMode != "isolated" || got.AttentionReason != "请登录 Google" || got.AttentionID != "run_login" || !got.UserControl {
 		t.Fatalf("screen = %#v", got)
 	}
 	// A configured Hub turns the relative path into an absolute viewer URL.

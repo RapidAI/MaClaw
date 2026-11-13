@@ -4681,6 +4681,128 @@ describe('the page forwards words and renders the server decision', () => {
         expect(screen.queryByTestId('desktop-bot-confirm')).toBeNull();
     });
 
+    it('clears a handoff notice when the run ends and does not invent one for an empty reason', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
+            { id: 'bot_2', title: 'Bot B', description: '自己的桌面', instance_id: 'inst_2' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('Bot B'));
+        act(() => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'run_takeover',
+                session_key: 'alice:bot_2',
+                novnc_url: 'http://hub.example/api/v1/desktop-handoff/bot-b/vnc.html?autoconnect=1',
+                desktop_handoff: true,
+                attention_reason: '要你在桌面上登录',
+                attention_id: 'run_takeover',
+            });
+        });
+        const notice = await screen.findByTestId('desktop-bot-handoff-notice');
+        expect(notice.textContent).toContain('Bot B');
+        expect(notice.textContent).toContain('要你在桌面上登录');
+        expect(notice.textContent).not.toContain('我这边卡住了');
+        act(() => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'run_takeover',
+                session_key: 'alice:bot_2',
+                novnc_url: 'http://hub.example/api/v1/desktop-handoff/bot-b/vnc.html?autoconnect=1',
+                desktop_handoff: false,
+                user_control: false,
+                attention_reason: '',
+                attention_id: '',
+            });
+        });
+        await waitFor(() => expect(screen.queryByTestId('desktop-bot-handoff-notice')).toBeNull());
+        act(() => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'run_empty',
+                session_key: 'alice:bot_2',
+                desktop_handoff: true,
+                attention_reason: '',
+            });
+        });
+        expect(screen.queryByTestId('desktop-bot-handoff-notice')).toBeNull();
+        expect(screen.queryByText('我这边卡住了，要你帮我在桌面上弄一下，点这里过来。')).toBeNull();
+    });
+
+    it('removes a deleted bot handoff notice', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
+            { id: 'bot_179fcb2919aac7d6', title: '登录助手', description: '', instance_id: 'inst_x' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('登录助手'));
+        act(() => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'run_old',
+                session_key: 'alice:bot_179fcb2919aac7d6',
+                desktop_handoff: true,
+                attention_reason: '要你帮我登录',
+                attention_id: 'run_old',
+            });
+        });
+        expect((await screen.findByTestId('desktop-bot-handoff-notice')).textContent).toContain('登录助手');
+        clickBotAction('bot_179fcb2919aac7d6', 'delete');
+        await confirmBotDelete();
+        await waitFor(() => expect(screen.queryByTestId('desktop-bot-handoff-notice')).toBeNull());
+        expect(screen.queryByText('我的桌面')).toBeNull();
+        expect(screen.queryByText('我这边卡住了，要你帮我在桌面上弄一下，点这里过来。')).toBeNull();
+    });
+
+    it('does not show another bot handoff without that bot name', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
+            { id: 'bot_2', title: 'Bot B', description: '自己的桌面', instance_id: 'inst_2' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        act(() => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'run_b',
+                session_key: 'alice:bot_2',
+                desktop_handoff: true,
+                attention_reason: '要你在桌面上登录',
+                attention_id: 'run_b',
+            });
+        });
+        const notice = await screen.findByTestId('desktop-bot-handoff-notice');
+        expect(notice.getAttribute('data-bot-id')).toBe('bot_2');
+        expect(notice.textContent).toContain('Bot B');
+        expect(notice.textContent).toContain('要你在桌面上登录');
+        expect(notice.textContent).not.toContain('值班要你');
+        fireEvent.click(screen.getByTestId('desktop-bot-bot_2').querySelector('button.desktop-bot-workspace__open') as HTMLButtonElement);
+        const onB = screen.getByTestId('desktop-bot-handoff-notice');
+        expect(onB.getAttribute('data-bot-id')).toBe('bot_2');
+        expect(onB.textContent).toContain('Bot B');
+    });
+
+    it('drops a handoff notice when Hub reconnects and no longer reports it', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_179fcb2919aac7d6', title: '登录助手', description: '', instance_id: 'inst_x' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('登录助手'));
+        act(() => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'run_old',
+                session_key: 'alice:bot_179fcb2919aac7d6',
+                desktop_handoff: true,
+                attention_reason: '要你帮我登录',
+                attention_id: 'run_old',
+            });
+        });
+        expect((await screen.findByTestId('desktop-bot-handoff-notice')).textContent).toContain('登录助手');
+        hubLink.mockResolvedValueOnce({ state: 'connecting' });
+        act(() => { responseListeners.byEvent['hub-connection-state']?.({}); });
+        expect(screen.getByTestId('desktop-bot-handoff-notice').textContent).toContain('要你帮我登录');
+        getScreen.mockResolvedValue({ novnc_url: '', user_control: false, attention_reason: '', attention_id: '', desktop_mode: 'shared' });
+        hubLink.mockResolvedValue({ state: 'connected' });
+        act(() => { responseListeners.byEvent['hub-connection-state']?.({}); });
+        await waitFor(() => expect(screen.queryByTestId('desktop-bot-handoff-notice')).toBeNull());
+        expect(screen.queryByText('我这边卡住了，要你帮我在桌面上弄一下，点这里过来。')).toBeNull();
+    });
+
     it('shows one neutral line when the server sends no ack in time', async () => {
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-late', deferred: true, session_key: 'alice:bot_1' });
         await openDuty();

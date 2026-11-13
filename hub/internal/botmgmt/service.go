@@ -189,9 +189,10 @@ type Service struct {
 	// desktopHeld maps a user to the bot that handed the desktop over.
 	// A later failed message, or another bot finishing, must not stop it.
 	desktopHeld map[string]string
-	// desktopAttention is why that bot handed the screen over. It is not
-	// persisted. Polls keep reporting it until that handoff is cleared.
-	desktopAttention map[string]string
+	// desktopAttention is the current handoff for that bot: an id plus the
+	// reason. The MaClawSrv conversation is the stored copy. This map is
+	// the copy polls read until the snapshot replaces it.
+	desktopAttention map[string]desktopAttention
 	// discussCache is this process's copy of each conversation's plan.
 	// The session on MaClawSrv is the stored copy. Intake reads this one
 	// so a discussion turn does not add a desktop read.
@@ -491,6 +492,7 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 		return err
 	}
 	rec.Bots = append(rec.Bots[:index], rec.Bots[index+1:]...)
+	s.forgetDesktopAttentionLocked(tenantID, bot.OwnerUserID, botID)
 	// The slot is cleared in this same save. The next earliest remaining bot
 	// becomes primary by the read rule. The next id is not written here.
 	if rec.PrimaryBot != nil && strings.TrimSpace(rec.PrimaryBot[bot.OwnerUserID]) == bot.ID {

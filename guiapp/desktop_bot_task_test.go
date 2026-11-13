@@ -151,8 +151,8 @@ func TestTimeoutAttachesTheDesktopOnlyWhenThePersonHasIt(t *testing.T) {
 		return desktopBotRelayResult{}, timeoutErr
 	}
 
-	desktopBotWatchOverride = func(context.Context, string) (string, bool, string, error) {
-		return "https://hub.example/vnc", false, "", nil
+	desktopBotWatchOverride = func(context.Context, string) (string, bool, string, string, error) {
+		return "https://hub.example/vnc", false, "", "", nil
 	}
 	app.finishDesktopBotTask("desktop-bot-timeout", "alice:bot_1", "bot_1", "open site", "execute")
 	if got == nil || got.DesktopHandoffURL != "" || got.DesktopUserControl || got.Error == "" {
@@ -164,8 +164,8 @@ func TestTimeoutAttachesTheDesktopOnlyWhenThePersonHasIt(t *testing.T) {
 
 	got = nil
 	views = nil
-	desktopBotWatchOverride = func(context.Context, string) (string, bool, string, error) {
-		return "https://hub.example/vnc", true, "login_wall", nil
+	desktopBotWatchOverride = func(context.Context, string) (string, bool, string, string, error) {
+		return "https://hub.example/vnc", true, "login_wall", "run_login", nil
 	}
 	app.finishDesktopBotTask("desktop-bot-timeout-hand", "alice:bot_1", "bot_1", "open site", "execute")
 	if got == nil || got.DesktopHandoffURL != "https://hub.example/vnc" || !got.DesktopUserControl || got.Error != "" {
@@ -185,8 +185,8 @@ func TestTimeoutAttachesTheDesktopOnlyWhenThePersonHasIt(t *testing.T) {
 	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
 		return desktopBotRelayResult{}, fmt.Errorf("MaClawSrv 不可达")
 	}
-	desktopBotWatchOverride = func(context.Context, string) (string, bool, string, error) {
-		return "https://hub.example/vnc", true, "login_wall", nil
+	desktopBotWatchOverride = func(context.Context, string) (string, bool, string, string, error) {
+		return "https://hub.example/vnc", true, "login_wall", "run_login", nil
 	}
 	app.finishDesktopBotTask("desktop-bot-down", "alice:bot_1", "bot_1", "open site", "execute")
 	if got == nil || got.DesktopHandoffURL != "" || got.DesktopUserControl || !strings.Contains(got.Error, "不可达") {
