@@ -12,9 +12,6 @@ export function desktopBotAttachCorrection(lang: string): string {
 }
 
 export function desktopBotCorrectAttachClaim(text: string, delivered: boolean, lang: string): string {
-    if (delivered && text) {
-        text = text.replace(/上一条(消息|回复)/g, '这条$1');
-    }
     if (delivered || !text || !ATTACH_CLAIM.test(text)) return text;
     if (/更正|Correction:/.test(text)) return text;
     return text.replace(/\s+$/, '') + '\n' + desktopBotAttachCorrection(lang);

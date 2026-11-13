@@ -109,8 +109,8 @@ func TestD100StartAndPollAndDecisions(t *testing.T) {
 	if j == nil || j.PID != "4242" || j.SourceRun != "run_x" || j.PrincipalTenant != "tenant_srv" || j.PrincipalUser != "user_srv" {
 		t.Fatalf("stored %+v", j)
 	}
-	if desktopLongJobIsServedApp("cd 414472ac-32d && ./snake --demo") == false || desktopLongJobIsServedApp("python train.py --epochs 3") {
-		t.Fatal("served app vs training")
+	if desktopLongJobKeepsRunning(j) || desktopLongJobKeepsRunning(&desktopLongJob{Command: "./snake --demo"}) || !desktopLongJobKeepsRunning(&desktopLongJob{Command: "python train.py", KeepRunning: true}) {
+		t.Fatal("keep_running is the declared flag, not the command text")
 	}
 	oc, why, ok := desktopLongJobOutcome("run_x")
 	if !ok || oc != "running" || !strings.Contains(why, desktopLongJobShortID(j.ID)) || !strings.Contains(why, "python train.py") {

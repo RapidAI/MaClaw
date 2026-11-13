@@ -111,6 +111,9 @@ type desktopLongJob struct {
 	LastNotice  time.Time     `json:"last_notice,omitempty"`
 	NextPoll    time.Time     `json:"next_poll,omitempty"`
 	StallAfter  time.Duration `json:"stall_after,omitempty"`
+	// KeepRunning is the bot's declaration (keep_running=true) that this
+	// process is the deliverable, not pending work. See desktopLongJobKeepsRunning.
+	KeepRunning bool `json:"keep_running,omitempty"`
 	// PrincipalTenant/User own the bot's runs on this server. TenantID and
 	// UserID above are the desktop (Hub) account, which is not a principal
 	// here: a resume posted with it found no instance (papers 2026-11-11).
@@ -156,7 +159,7 @@ func (j *desktopLongJob) stallBound() time.Duration {
 // desktopLongJobShouldStart: an explicit background flag, a detach-shaped
 // command, or a long-running intent (not a short help/version call).
 func desktopLongJobShouldStart(args map[string]any) bool {
-	if desktopArgBool(args, "background") || desktopArgBool(args, "detach") || desktopArgBool(args, "async") {
+	if desktopArgBool(args, "background") || desktopArgBool(args, "detach") || desktopArgBool(args, "async") || desktopArgBool(args, "keep_running") {
 		return true
 	}
 	if n := desktopLongJobExpectMinutes(args); n >= 2 {
@@ -544,25 +547,26 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 	id := strings.ReplaceAll(agentservice.NewID("job"), "-", "")
 	dir := desktopLongJobScratch(scope, id)
 	j := &desktopLongJob{
-		ID:         id,
-		TenantID:   scope.TenantID,
-		UserID:     scope.UserID,
-		InstanceID: scope.InstanceID,
-		SessionID:  scope.SessionID,
-		SourceRun:  scope.RunID,
-		Command:    cmd,
-		Dir:        dir,
-		LogFile:    path.Join(dir, "job.log"),
-		PidFile:    path.Join(dir, "job.pid"),
-		ExitFile:   path.Join(dir, "job.exit"),
-		Status:     "running",
-		Alive:      true,
-		Started:    desktopLongJobNow(),
-		LastChange: desktopLongJobNow(),
-		NextPoll:   desktopLongJobNow().Add(time.Minute),
-		StallAfter: desktopLongJobStallAfter,
-		Lineage:    lineage,
-		Round:      round,
+		ID:          id,
+		TenantID:    scope.TenantID,
+		UserID:      scope.UserID,
+		InstanceID:  scope.InstanceID,
+		SessionID:   scope.SessionID,
+		SourceRun:   scope.RunID,
+		Command:     cmd,
+		Dir:         dir,
+		LogFile:     path.Join(dir, "job.log"),
+		PidFile:     path.Join(dir, "job.pid"),
+		ExitFile:    path.Join(dir, "job.exit"),
+		Status:      "running",
+		Alive:       true,
+		Started:     desktopLongJobNow(),
+		LastChange:  desktopLongJobNow(),
+		NextPoll:    desktopLongJobNow().Add(time.Minute),
+		StallAfter:  desktopLongJobStallAfter,
+		Lineage:     lineage,
+		Round:       round,
+		KeepRunning: desktopArgBool(args, "keep_running"),
 	}
 	if _, bot := desktop.SplitDesktopUser(scope.UserID); bot != "" {
 		j.BotID = bot
@@ -596,7 +600,9 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 	if j.NextCheck.IsZero() {
 		desktopLongJobPlanCheck(j, desktopLongJobNow())
 	}
-	j.ScheduleID = desktopLongJobEnsureWatch(j)
+	if !desktopLongJobKeepsRunning(j) {
+		j.ScheduleID = desktopLongJobEnsureWatch(j)
+	}
 	if err := desktopLongJobSave(j); err != nil {
 		return "", err
 	}
@@ -1012,7 +1018,7 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 	if j == nil {
 		return "", fmt.Errorf("watch: job %s not found", jobID)
 	}
-	if desktopLongJobIsServedApp(j.Command) {
+	if desktopLongJobKeepsRunning(j) {
 		desktopLongJobStopWatch(j)
 		return desktopLongJobView(j), nil
 	}
@@ -1427,24 +1433,14 @@ func desktopLongJobTickDue() {
 	}
 }
 
-// desktopLongJobIsServedApp reports a process the person asked to leave
-// running (a demo, a game, the app itself). That process is the result, not
-// unfinished work, so the chat must not promise later progress checks.
-// Training, a build, and a download stay pending work.
-func desktopLongJobIsServedApp(cmd string) bool {
-	cmd = strings.TrimSpace(desktopLongJobStripHeredocs(cmd))
-	if cmd == "" {
-		return false
-	}
-	last := cmd
-	if inner := desktopLongJobInnerCommands(cmd); len(inner) > 0 {
-		last = inner[len(inner)-1]
-	}
-	if desktopLongJobIntentRe.MatchString(last) && !regexp.MustCompile(`(?i)--demo\b`).MatchString(last) {
-		return false
-	}
-	return regexp.MustCompile(`(?i)(^|[^\w./])(?:--demo\b|snake\b|pygame\b|sdl2?\b)`).MatchString(last) ||
-		regexp.MustCompile(`(?i)(?:^|[;&]|&&)\s*\./[A-Za-z0-9_.-]+\s+--demo\b`).MatchString(cmd)
+// desktopLongJobKeepsRunning: the bot started this process as the result
+// itself (a demo, a game, a server the person asked to leave open), declared
+// with keep_running=true on the bash call. It is not unfinished work, so the
+// watcher does not follow it and the run's outcome is not "running". The
+// default is false: an undeclared background job is pending work and stays
+// watched, whatever its command looks like.
+func desktopLongJobKeepsRunning(j *desktopLongJob) bool {
+	return j != nil && j.KeepRunning
 }
 
 // desktopLongJobOutcome: a run that handed off a still-running job is not
@@ -1455,7 +1451,7 @@ func desktopLongJobOutcome(runID string) (string, string, bool) {
 	if j == nil || (j.Status != "running" && j.Status != "stalled") {
 		return "", "", false
 	}
-	if desktopLongJobIsServedApp(j.Command) {
+	if desktopLongJobKeepsRunning(j) {
 		return "", "", false
 	}
 	why := "后台在跑：" + desktopLongJobLabel(j.Command) + "（任务 " + desktopLongJobShortID(j.ID) + "，" + j.Status + "）"

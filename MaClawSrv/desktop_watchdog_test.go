@@ -9,25 +9,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
-func TestPasswordQuestionIsNotAFinishedTask(t *testing.T) {
-	const runID = "run_need_pw"
-	desktopRecStateMu.Lock()
-	desktopRecRunSteps[runID] = true
-	desktopRecStateMu.Unlock()
-	t.Cleanup(func() {
-		desktopRecStateMu.Lock()
-		delete(desktopRecRunSteps, runID)
-		desktopRecStateMu.Unlock()
-	})
-	msg := agentservice.Message{Content: "连接家里的 macmini 需要认证，请提供 SSH 登录密码。名称用 SITE_PASSWORD。"}
-	outcome, _ := desktopRunOutcome(runID, &msg)
-	if outcome != "awaiting_user" {
-		t.Fatalf("outcome %q", outcome)
-	}
-	meta := desktopTaskOutcomeMetadata(runID, msg)
-	if meta["task_outcome"] != "awaiting_user" || meta["response_source"] != "ask_user" || meta["ask_user_secret_name"] != "SITE_PASSWORD" {
-		t.Fatalf("%v", meta)
-	}
+func TestRunningNoticeKeepsTheJobOutOfTheSentence(t *testing.T) {
 	notice := desktopOutcomeNotice("running", "后台在跑：cd x && ./snake --demo（任务 fae1faef，running）", "")
 	if strings.Contains(notice, "依据") || strings.Contains(notice, "fae1faef") || strings.Contains(notice, "snake") {
 		t.Fatalf("notice leaked the job: %q", notice)

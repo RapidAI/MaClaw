@@ -90,7 +90,7 @@ func TestVisiblePlanningProseIsNotArrange(t *testing.T) {
 
 func TestCleanUserTextDropsEvidenceRuleTalkAndRepeats(t *testing.T) {
 	in := "后台任务还在跑，我会定时查看进度并告诉你。\n" +
-		"后台任务还在跑，我会每 10 分钟左右把进度发给你。（依据：后台在跑：cd 414472ac-32d && ./snake --demo（任务 fae1faef，running））\n" +
+		"后台任务还在跑，我会定时查看进度并告诉你。（依据：后台在跑：cd 414472ac-32d && ./snake --demo（任务 fae1faef，running））\n" +
 		"贪吃蛇已经在桌面上运行了。\n" +
 		"关于地址要求：这个任务全程只用了本地编译，没有调用任何需要 URL 的工具，不存在代理替换的问题。\n" +
 		"贪吃蛇已经在桌面上运行了。"

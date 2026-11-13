@@ -80,7 +80,7 @@ func desktopOutcomeStatusLine(outcome string, hant, en bool) string {
 func desktopOutcomeSentence(outcome, sentence string) string {
 	sentence = desktopbot.CleanUserText(strings.TrimSpace(sentence))
 	line := desktopOutcomeStatusLine(outcome, false, false)
-	if line == "" || sentence == "" || strings.Contains(sentence, line) || strings.Contains(sentence, "后台任务还在跑") {
+	if line == "" || sentence == "" || strings.Contains(sentence, line) {
 		return sentence
 	}
 	return line + "\n" + sentence

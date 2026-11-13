@@ -142,7 +142,7 @@ func ActivityPhrase(phrase string) string {
 // Arrange is always false here: planning prose is not a confirm button.
 // evidenceClause is the measured cause a host used to glue onto a status
 // line (a shell command, a job id, a log tail). It stays in logs.
-var evidenceClause = regexp.MustCompile(`（依据：[^）]*）`)
+var evidenceClause = regexp.MustCompile(`（依据：(?:[^（）]|（[^（）]*）)*）`)
 
 // ruleTalk is the model answering an internal instruction (proxy, URL
 // policy, "the system said") instead of the person's task.
@@ -164,13 +164,6 @@ func CleanUserText(text string) string {
 		key := strings.Join(strings.Fields(line), "")
 		if key == "" || seen[key] {
 			continue
-		}
-		// Two different "still running" lines are the same announcement.
-		if strings.HasPrefix(line, "后台任务还在跑") {
-			key = "后台任务还在跑"
-			if seen[key] {
-				continue
-			}
 		}
 		seen[key] = true
 		kept = append(kept, line)

@@ -1434,7 +1434,14 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		}
 		// The bytes stay on the server attachment or the computer volume.
 		// This event carries the id. The next open fetches it.
-		pictures := append([]DesktopBotImage{}, result.Images...)
+		var pictures []DesktopBotImage
+		for _, image := range result.Images {
+			// Only a real picture is saved for the chat; another type on
+			// Images (an HTML page, a stray payload) stays an attachment id.
+			if mime := strings.ToLower(strings.TrimSpace(image.MIME)); mime == "image/png" || mime == "image/jpeg" {
+				pictures = append(pictures, image)
+			}
+		}
 		if len(pictures) == 0 {
 			for _, file := range result.Files {
 				mime := strings.ToLower(strings.TrimSpace(file.MIME))

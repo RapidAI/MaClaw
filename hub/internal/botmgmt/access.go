@@ -499,6 +499,10 @@ func (s *Service) AdmitDesktopMessageAct(ctx context.Context, tenantID, userID, 
 }
 
 func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string, admit bool, action string) (BotAdmission, error) {
+	// A password typed into the message is taken out here, before routing,
+	// intake (an LLM call that may write a schedule row), the turn queue, or
+	// any log sees the text. The value rides only in the MaClawSrv metadata.
+	content, inlineSecrets := desktopbot.CaptureInlineSecrets(strings.TrimSpace(content))
 	content = strings.TrimSpace(content)
 	phase = strings.TrimSpace(phase)
 	if content == "" {
@@ -725,6 +729,9 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	if secret, ok := ctx.Value(desktopSecretKey{}).(desktopSecret); ok && secret.name != "" && secret.value != "" {
 		messageMeta["bot_secret_name"] = secret.name
 		messageMeta["bot_secret_value"] = secret.value
+	}
+	for name, value := range inlineSecrets {
+		messageMeta[desktopbot.SecretMetaPrefix+name] = value
 	}
 	if strings.HasPrefix(clientMessageID, "xwake-") {
 		// MaClawSrv words a mailbox wake as a turn the person did not send:

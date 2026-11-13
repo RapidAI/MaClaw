@@ -3,12 +3,14 @@ package main
 import (
 	"errors"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // One bot's open task. A run that stopped to ask keeps its goal here so the
@@ -76,100 +78,79 @@ func desktopClearWaiting(botID string) {
 	turn.mu.Unlock()
 }
 
-var (
-	desktopSavedSecretRe  = regexp.MustCompile(`^已在本机保存 ([A-Z][A-Z0-9_]{0,63})。$`)
-	desktopInlineSecretRe = regexp.MustCompile(`(?i)(?:^|[\s,，;；])((?:[A-Z][A-Z0-9_]{0,40})?(?:PASSWORD|PASSWD|SECRET|TOKEN)|密码|口令)\s*[:：=]\s*([^\s,，;；。]+)`)
-)
-
 // desktopPrepareUserTurn redacts a secret the person already typed and, when
 // they are answering a run that stopped to ask, puts the original goal back
-// in front of that answer. The secret value does not remain in the text.
+// in front of that answer. The secret value does not remain in the text, and
+// every secret carried in meta is removed from meta before it is stored.
 func desktopPrepareUserTurn(botID, content string, meta map[string]string) string {
 	turn := desktopBotTurnOf(botID)
 	if turn == nil {
 		return content
 	}
 	content = strings.TrimSpace(content)
-	if meta != nil {
-		name := strings.TrimSpace(meta["bot_secret_name"])
-		value := strings.TrimSpace(meta["bot_secret_value"])
-		delete(meta, "bot_secret_value")
-		if agent.ValidSecretName(name) && value != "" {
-			if turn.secrets == nil {
-				turn.secrets = map[string]string{}
-			}
-			turn.mu.Lock()
-			turn.secrets[name] = value
-			turn.mu.Unlock()
-		}
-	}
-	redacted, found := desktopCaptureInlineSecrets(content)
+	carried := desktopTakeMetaSecrets(meta)
+	redacted, found := desktopbot.CaptureInlineSecrets(content)
 	turn.mu.Lock()
 	defer turn.mu.Unlock()
 	if turn.secrets == nil {
 		turn.secrets = map[string]string{}
 	}
+	for name, value := range carried {
+		turn.secrets[name] = value
+	}
 	for name, value := range found {
 		turn.secrets[name] = value
 	}
-	if name := desktopSavedSecretRe.FindStringSubmatch(redacted); turn.waiting && turn.goal != "" && name != nil {
-		use := name[1]
-		if _, ok := turn.secrets[use]; !ok {
-			for key := range turn.secrets {
-				use = key
-				break
-			}
+	// The answer to a stopped run is the secret the GUI saved and carried
+	// with this message (bot_secret_name/value metadata). That structured
+	// value, not the wording of the message, resumes the original goal.
+	if turn.waiting && turn.goal != "" && len(carried) > 0 {
+		names := make([]string, 0, len(carried))
+		for name := range carried {
+			names = append(names, name)
 		}
-		if _, ok := turn.secrets[use]; ok {
-			return desktopResumeText(turn.goal, use)
-		}
-		return "继续原来的任务，不要另起一件。\n原来的任务：\n" + turn.goal + "\n用户说已经保存了 " + name[1] + "，但这台运行环境里没有这个值。不要声称它已经在环境里，也不要去其他机器人的目录里找。用一句话说明还需要这个人再提供一次。"
+		sort.Strings(names)
+		turn.waiting = false
+		return desktopResumeText(turn.goal, names[0], redacted)
 	}
-	if !desktopSavedSecretRe.MatchString(redacted) {
-		turn.goal = redacted
-	}
+	turn.goal = redacted
 	return redacted
 }
 
-func desktopResumeText(goal, name string) string {
-	return "继续原来的任务，不要另起一件。\n原来的任务：\n" + goal +
-		"\n用户已经把 " + name + " 保存在这台电脑上。它在环境变量 " + name +
-		" 里。用 $" + name + "，不要打印它的值，不要在磁盘或其他机器人的目录里寻找它，也不要再向用户索要。"
+// desktopTakeMetaSecrets removes every secret value from message metadata
+// (the GUI's staged secret and Hub's inline captures) and returns them.
+func desktopTakeMetaSecrets(meta map[string]string) map[string]string {
+	out := map[string]string{}
+	if meta == nil {
+		return out
+	}
+	name := strings.TrimSpace(meta["bot_secret_name"])
+	value := strings.TrimSpace(meta["bot_secret_value"])
+	delete(meta, "bot_secret_value")
+	if desktopbot.ValidSecretName(name) && value != "" {
+		out[name] = value
+	}
+	for key, value := range meta {
+		if !strings.HasPrefix(key, desktopbot.SecretMetaPrefix) {
+			continue
+		}
+		delete(meta, key)
+		name := strings.TrimPrefix(key, desktopbot.SecretMetaPrefix)
+		if value = strings.TrimSpace(value); desktopbot.ValidSecretName(name) && value != "" {
+			out[name] = value
+		}
+	}
+	return out
 }
 
-// desktopCaptureInlineSecrets removes secret values from text and returns
-// the names it kept. A value is never part of the redacted text.
-func desktopCaptureInlineSecrets(text string) (string, map[string]string) {
-	found := map[string]string{}
-	redacted := desktopInlineSecretRe.ReplaceAllStringFunc(text, func(match string) string {
-		parts := desktopInlineSecretRe.FindStringSubmatch(match)
-		if len(parts) < 3 {
-			return match
-		}
-		name := strings.ToUpper(strings.TrimSpace(parts[1]))
-		name = strings.Map(func(r rune) rune {
-			switch r {
-			case '密', '码', '口', '令':
-				return -1
-			}
-			return r
-		}, name)
-		name = strings.Trim(name, "_")
-		if name == "" || name == "PASSWORD" || name == "PASSWD" || name == "SECRET" || name == "TOKEN" {
-			name = "SSH_PASSWORD"
-		}
-		if !agent.ValidSecretName(name) {
-			name = "SSH_PASSWORD"
-		}
-		value := strings.Trim(parts[2], `"'`)
-		if value == "" || value == "***" {
-			return match
-		}
-		found[name] = value
-		prefix := match[:strings.Index(match, parts[1])]
-		return prefix + name + "=（已保存为 " + name + "，在环境变量里，不要再索要，不要打印）"
-	})
-	return redacted, found
+func desktopResumeText(goal, name, said string) string {
+	text := "继续原来的任务，不要另起一件。\n原来的任务：\n" + goal +
+		"\n用户已经把 " + name + " 保存在这台电脑上。它在环境变量 " + name +
+		" 里。用 $" + name + "，不要打印它的值，不要在磁盘或其他机器人的目录里寻找它，也不要再向用户索要。"
+	if said = strings.TrimSpace(said); said != "" {
+		text += "\n用户这次说：" + said
+	}
+	return text
 }
 
 func desktopSecretsForScope(scope agentruntime.Scope) map[string]string {
@@ -231,10 +212,15 @@ func desktopScrubSecrets(text string, secrets map[string]string) string {
 	return text
 }
 
-var desktopForeignTreeRe = regexp.MustCompile(`(?:/home/desktop/work|~/素材|/home/desktop/素材|\$HOME/素材|\$\{HOME\}/素材)/([^/\s;&|'"\\]+)`)
+// The roots that hold one folder per bot, in every spelling a shell sees.
+var (
+	desktopForeignTreeRe = regexp.MustCompile(`(?:/home/desktop|~|\$HOME|\$\{HOME\})/(?:work|素材)/([^/\s;&|'"\\)]+)`)
+	desktopForeignRootRe = regexp.MustCompile(`(?:/home/desktop|~|\$HOME|\$\{HOME\})/(?:work|素材)/?(?:$|[\s;&|'"\\)*])`)
+)
 
 // desktopBashConfined rejects a command that lists another bot's project
-// tree or the shared git credential file. This bot's own folder is allowed.
+// tree, the root that holds every bot's tree, or the shared git credential
+// file. This bot's own folders are allowed.
 func desktopBashConfined(scope agentruntime.Scope, command string) error {
 	_, bot := desktop.SplitDesktopUser(scope.UserID)
 	if bot == "" {
@@ -243,21 +229,17 @@ func desktopBashConfined(scope agentruntime.Scope, command string) error {
 	if bot == "" {
 		return nil
 	}
-	safe := desktopWorkdirSafe.ReplaceAllString(bot, "_")
 	if strings.Contains(command, ".git-credentials") {
 		return errDesktopBashConfined
 	}
+	safe := desktopWorkdirSafe.ReplaceAllString(bot, "_")
 	for _, m := range desktopForeignTreeRe.FindAllStringSubmatch(command, -1) {
-		seg := m[1]
-		if seg != bot && seg != safe && seg != "." && seg != ".." {
+		if seg := m[1]; seg != bot && seg != safe {
 			return errDesktopBashConfined
 		}
 	}
-	flat := strings.Join(strings.Fields(command), " ")
-	for _, parent := range []string{"/home/desktop/work", "~/素材", "/home/desktop/素材"} {
-		if strings.Contains(flat, parent) && !strings.Contains(flat, parent+"/"+bot) && !strings.Contains(flat, parent+"/"+safe) {
-			return errDesktopBashConfined
-		}
+	if desktopForeignRootRe.MatchString(command) {
+		return errDesktopBashConfined
 	}
 	return nil
 }

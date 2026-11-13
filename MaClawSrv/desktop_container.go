@@ -239,6 +239,9 @@ func desktopContainerBash(ctx context.Context, scope agentruntime.Scope, command
 	} else {
 		text, err = desktopLocalBash(ctx, command)
 	}
+	if err != nil && len(secrets) > 0 {
+		err = errors.New(desktopScrubSecrets(err.Error(), secrets))
+	}
 	return desktopScrubSecrets(text, secrets), err
 }
 

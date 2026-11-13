@@ -406,10 +406,12 @@ func (s *HTTPServer) decorateAssistantMessageMetadata(ctx context.Context, p age
 	desktopRecRecheckAtEnd(ctx, run.ID)
 	out := desktopTaskOutcomeMetadata(run.ID, msg)
 	if botID := desktopBotOfInstance(run.InstanceID); botID != "" && out != nil {
-		switch out[agentservice.TaskOutcomeKey] {
-		case agentservice.TaskOutcomeAwaitingUser:
+		// Only a run that stopped to ask keeps the goal open. Done, failed,
+		// blocked or cancelled ends the wait, so a later "saved" sentence
+		// does not revive a task that is over.
+		if out[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeAwaitingUser {
 			desktopMarkWaiting(botID)
-		case agentservice.TaskOutcomeDone:
+		} else {
 			desktopClearWaiting(botID)
 		}
 	}
