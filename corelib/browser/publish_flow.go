@@ -754,6 +754,10 @@ func (p *publishRun) upload() (string, error) {
 			continue
 		}
 		out, done, err := p.waitUpload(t0, before, images, fmt.Sprintf("file input %d", i+1))
+		if done && err == nil && images && p.canPasteImages() && p.bodyImageCount() < len(p.spec.Files) {
+			p.pasteLater = true
+			return joinTried(tried, out+"; the editor body does not show them, so they will be dropped onto the editor"), nil
+		}
 		if done {
 			return joinTried(tried, out), err
 		}
@@ -781,6 +785,10 @@ func (p *publishRun) upload() (string, error) {
 			return "", fmt.Errorf("clicking %q opened no file chooser (err=%v)", p.spec.UploadTrigger, err)
 		}
 		out, done, err := p.waitUpload(t0, before, images, "intercepted chooser")
+		if done && err == nil && images && p.canPasteImages() && p.bodyImageCount() < len(p.spec.Files) {
+			p.pasteLater = true
+			return joinTried(tried, out+"; the editor body does not show them, so they will be dropped onto the editor"), nil
+		}
 		if done {
 			return joinTried(tried, out), err
 		}
@@ -2085,6 +2093,14 @@ func publishImageTabJS(texts []string) string {
 
 // canPasteImages: image files and a rich body editor; editors such as Zhihu's
 // take pictures pasted into the text rather than through a file input.
+func (p *publishRun) bodyImageCount() int {
+	obj, err := p.element(p.bodyExpr())
+	if err != nil || obj == "" {
+		return 0
+	}
+	return p.imgCount(obj)
+}
+
 func (p *publishRun) canPasteImages() bool {
 	if p.spec.Body == "" || !isImageExt(fileExt(p.spec.Files)) {
 		return false
