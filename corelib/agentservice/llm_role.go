@@ -56,7 +56,7 @@ func ResolveLLMRole(cfg corelib.AppConfig, role string) (corelib.MaclawLLMConfig
 			if err != nil {
 				return corelib.MaclawLLMConfig{}, err
 			}
-			return pinned, nil
+			return roleVisionOverride(cfg, role, pinned), nil
 		}
 		return resolveServiceBotRole(cfg, role)
 	}
