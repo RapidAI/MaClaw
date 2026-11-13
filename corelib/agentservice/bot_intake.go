@@ -156,7 +156,7 @@ func (s *Service) IntakeBotMessage(ctx context.Context, p Principal, instanceID 
 		fallback.Reason = "unreadable"
 		return fallback, nil
 	}
-	return normalizeBotIntake(parsed, content, running), nil
+	return normalizeBotIntake(parsed, content, running, in.Earlier), nil
 }
 
 func liveIntakeRuns(in []BotIntakeRun) []BotIntakeRun {
@@ -296,7 +296,7 @@ func parseBotIntake(raw string) (BotIntake, bool) {
 	return out, true
 }
 
-func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) BotIntake {
+func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun, earlier []string) BotIntake {
 	kind := canonicalIntakeKind(in.Kind, in.Pace)
 	idx := 0
 	if n, ok := atoi(in.RunID); ok {
@@ -327,6 +327,12 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) Bo
 	instruction := strings.TrimSpace(in.Instruction)
 	if instruction == "" && (kind == "new" || kind == "supplement" || kind == "change") {
 		instruction = content
+	}
+	if kind == "new" {
+		instruction = foldEarlierIntoInstruction(instruction, earlier)
+		if said := strings.TrimSpace(content); said != "" && !strings.Contains(instruction, said) {
+			instruction += "\n原话：" + said
+		}
 	}
 	if kind == "change" && instruction != "" && !strings.HasPrefix(instruction, botIntakeChangeMark) {
 		instruction = botIntakeChangeMark + instruction
@@ -461,6 +467,45 @@ func validIntakeSchedule(s *BotIntakeSchedule) (*BotIntakeSchedule, bool) {
 		out.DayOfWeek = &d
 	}
 	return out, true
+}
+
+// FoldEarlierIntoInstruction puts recent conversation turns in front of a
+// new run's order when that order does not already carry them. A short
+// follow-up such as "京东下单啊" then still has the earlier request
+// (what to buy, how many, which address) in the session the run sees.
+func FoldEarlierIntoInstruction(instruction string, earlier []string) string {
+	instruction = strings.TrimSpace(instruction)
+	if instruction == "" || len(earlier) == 0 {
+		return instruction
+	}
+	var missing []string
+	for _, line := range earlier {
+		line = strings.TrimSpace(line)
+		if line == "" || line == instruction || strings.Contains(instruction, line) {
+			continue
+		}
+		missing = append(missing, line)
+		if len(missing) == 8 {
+			break
+		}
+	}
+	if len(missing) == 0 {
+		return instruction
+	}
+	var b strings.Builder
+	b.WriteString("此前对话：\n")
+	for _, line := range missing {
+		b.WriteString("- ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	b.WriteString("这次：")
+	b.WriteString(instruction)
+	return b.String()
+}
+
+func foldEarlierIntoInstruction(instruction string, earlier []string) string {
+	return FoldEarlierIntoInstruction(instruction, earlier)
 }
 
 func bareContinue(s string) bool {
