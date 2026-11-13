@@ -1183,6 +1183,14 @@ func (s *Session) Eval(expression string) (string, error) {
 	return s.eval(expression, false, DefaultCmdTimeout)
 }
 
+// EvalTimeout is Eval with a caller-chosen limit.
+func (s *Session) EvalTimeout(expression string, timeout time.Duration) (string, error) {
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	return s.eval(expression, false, timeout)
+}
+
 // EvalAwait runs JavaScript that returns a promise and waits for it.
 func (s *Session) EvalAwait(expression string, timeout time.Duration) (string, error) {
 	if timeout <= 0 {

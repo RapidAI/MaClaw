@@ -3212,6 +3212,17 @@ AGENT_BROWSER_POLICY = json.dumps({
     "DefaultNotificationsSetting": 2,
     "DefaultBrowserSettingEnabled": False,
     "PromotionalTabsEnabled": False,
+    # Non-web schemes. A page that tries to leave the browser (openapp.*,
+    # an *app:// link, intent:) is blocked here instead of raising the
+    # "Open xdg-open?" dialog. This is not a list of shops, and it does not
+    # allow those schemes via AutoLaunchProtocolsFromOrigins.
+    "URLBlocklist": [
+        "openapp.*://*",
+        "openapp://*",
+        "*app://*",
+        "intent://*",
+        "intent:*",
+    ],
 }, indent=2, sort_keys=True) + "\n"
 
 # xfce4-notifyd draws popups over the screen the agent reads. It is not

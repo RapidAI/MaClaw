@@ -105,6 +105,23 @@ func (s *Session) pageReady() (PageReadyState, error) {
 	return st, nil
 }
 
+// LocationQuick reads the current URL with a short limit. A hung renderer
+// returns empty instead of blocking the caller for the navigation budget.
+func (s *BrowserAgentSession) LocationQuick() string {
+	if s == nil || s.session == nil {
+		return ""
+	}
+	raw, err := s.session.EvalTimeout("location.href", time.Second)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(raw)
+}
+
+// LoginWallURL reports a sign-in / passport / risk URL. Callers outside the
+// browser package use it when a step times out on the current page.
+func LoginWallURL(raw string) string { return loginWallURL(raw) }
+
 // loginWallURL reports a sign-in / passport / risk URL.
 func loginWallURL(raw string) string {
 	u := strings.ToLower(raw)
