@@ -100,6 +100,11 @@ type PublishSpec struct {
 	// EditorURL unless ReuseDraft (the person asked to continue a draft).
 	OwnDrafts  []string
 	ReuseDraft bool
+	// DraftURL is this task's draft on this site (an editor URL or article
+	// id page recorded by an earlier call). Later publishes open it.
+	// NewDraft is the only way to open a fresh editor instead.
+	DraftURL string
+	NewDraft bool
 	// BeforeSubmit, when set, runs right before the submit click; an error
 	// stops the publish with nothing submitted.
 	BeforeSubmit func() error `json:"-"`
@@ -559,22 +564,23 @@ func (p *publishRun) bodyExpr() string {
 // observe opens the editor (EditorURL) when the tab is elsewhere and waits
 // for it to show; a page without one is the named outcome no_editor.
 func (p *publishRun) observe() (string, error) {
-	if p.spec.EditorURL != "" {
+	if target := publishEditorTarget(p.spec); target != "" {
 		cur, _ := p.eval("location.href")
 		p.see(cur) // an earlier post's result page is never this run's
-		fresh := !samePage(cur, p.spec.EditorURL)
-		if !fresh && foreignDraft(cur, p.spec) {
+		fresh := !publishOnPage(cur, target)
+		if !fresh && p.spec.NewDraft && foreignDraft(cur, p.spec) {
 			// A restored tab on an old draft (editor.csdn.net/md?articleId=…
 			// of an earlier session): writing there edits that draft and its
 			// pictures and title leak into this post. A new post starts in a
 			// fresh editor.
 			fresh = true
+			target = p.spec.EditorURL
 			p.rep.fact("fresh_editor", 1)
 		}
 		if fresh {
-			if err := p.navigate(p.spec.EditorURL); err != nil {
+			if err := p.navigate(target); err != nil {
 				p.noEditor = true
-				return "", fmt.Errorf("could not open the editor %s: %v", p.spec.EditorURL, err)
+				return "", fmt.Errorf("could not open the editor %s: %v", target, err)
 			}
 		}
 	}
@@ -601,6 +607,35 @@ func (p *publishRun) observe() (string, error) {
 		detail += "; the page shows a notice: " + n
 	}
 	return detail, nil
+}
+
+// publishEditorTarget is the page a publish opens. A recorded draft wins
+// over the bare editor. NewDraft is the only request that opens a fresh one.
+func publishEditorTarget(spec PublishSpec) string {
+	if spec.NewDraft {
+		return spec.EditorURL
+	}
+	if u := strings.TrimSpace(spec.DraftURL); u != "" {
+		return u
+	}
+	return spec.EditorURL
+}
+
+// publishOnPage reports whether cur is already the editor we mean to write,
+// including its draft query. samePage ignores that query, so a bare /write
+// and /write?draft=1 would look like the same page and a retry would open
+// another draft.
+func publishOnPage(cur, target string) bool {
+	return publishURLKey(cur) == publishURLKey(target) && publishURLKey(target) != ""
+}
+
+func publishURLKey(u string) string {
+	u = strings.TrimSpace(u)
+	if u == "" {
+		return ""
+	}
+	u = strings.SplitN(u, "#", 2)[0]
+	return strings.TrimRight(u, "/")
 }
 
 // foreignDraft: cur is the editor page with a draft of its own (a query or

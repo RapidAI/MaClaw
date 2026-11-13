@@ -127,12 +127,14 @@ func deliverDesktopLargeAt(ctx context.Context, scope agentruntime.Scope, resolv
 	return desktopSayFile(ctx, scope, name, raw)
 }
 
-// desktopHubReplyFileMax is the largest base64 file a run reply carries
-// through Hub today (hub botmgmt replyFiles maxFile, 200 000 characters).
-// A larger file on the reply was dropped there without a word while the
-// bot said it was attached (papers 2026-11-12 06:28, Bot 4: a 365 KB PDF).
-// Such a file goes as its own message, which Hub stores up to 8 MB.
-const desktopHubReplyFileMax = 200_000
+// desktopHubReplyFileMax is the largest base64 file a run reply carries.
+// It is desktop.FileDeliverBase64Max, the same cap Hub uses. 200 000 pushed
+// a 378KB PNG onto the say path, where the chat drew it as a file chip.
+const desktopHubReplyFileMax = desktop.FileDeliverBase64Max
+
+func desktopDeliverOnReply(raw []byte) bool {
+	return base64.StdEncoding.EncodedLen(len(raw)) <= desktopHubReplyFileMax
+}
 
 // desktopSayFile sends one file to the person as its own chat message.
 func desktopSayFile(ctx context.Context, scope agentruntime.Scope, name string, raw []byte) (string, error) {

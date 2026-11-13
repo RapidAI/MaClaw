@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -91,9 +92,17 @@ func desktopSideNotePublish(runID string, spec browser.PublishSpec, rep *browser
 	if rep == nil {
 		return
 	}
+	ids := desktopArticleIDs(rep.EditorPage, rep.ResultURL, rep.PostID)
 	switch rep.State {
 	case browser.PublishLive, browser.PublishLiveIncomplete:
-		return // the reply link names live posts
+		// A draft note written before this publish must not survive: the
+		// same article id is not an unpublished draft.
+		desktopSideDropIDs(runID, ids)
+		return
+	}
+	if desktopArticlePublished(runID, ids, rep.ResultURL) {
+		desktopSideDropIDs(runID, ids)
+		return
 	}
 	submitted := false
 	for _, st := range rep.Steps {
@@ -124,6 +133,79 @@ func desktopSideNotePublish(runID string, spec browser.PublishSpec, rep *browser
 		b.WriteString("，没有发布")
 	}
 	desktopSideNote(runID, b.String())
+}
+
+var desktopArticleIDRe = regexp.MustCompile(`(?i)(?:articleId|article_id|noteId|note_id|post_id|postId)=([A-Za-z0-9_-]{4,})|(?:/article/details/|/p/)([A-Za-z0-9_-]{4,})`)
+
+func desktopArticleIDs(parts ...string) []string {
+	var ids []string
+	seen := map[string]bool{}
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if len(id) < 4 || seen[id] {
+			return
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	for _, part := range parts {
+		add(part)
+		for _, m := range desktopArticleIDRe.FindAllStringSubmatch(part, -1) {
+			for _, g := range m[1:] {
+				add(g)
+			}
+		}
+	}
+	return ids
+}
+
+func desktopArticlePublished(runID string, ids []string, url string) bool {
+	url = strings.TrimSpace(url)
+	for _, r := range desktopPublishRunRecords(runID) {
+		if !r.posted() {
+			continue
+		}
+		if url != "" && r.URL != "" && url == r.URL {
+			return true
+		}
+		if desktopLineHasID(r.PostID+" "+r.URL+" "+r.DraftIdentity, ids) {
+			return true
+		}
+	}
+	return false
+}
+
+func desktopLineHasID(line string, ids []string) bool {
+	if line == "" || len(ids) == 0 {
+		return false
+	}
+	for _, id := range ids {
+		if id != "" && strings.Contains(line, id) {
+			return true
+		}
+	}
+	return false
+}
+
+func desktopSideDropIDs(runID string, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	desktopSideMu.Lock()
+	defer desktopSideMu.Unlock()
+	list := desktopSideEffects[runID]
+	kept := list[:0]
+	for _, line := range list {
+		if desktopLineHasID(line, ids) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if len(kept) == 0 {
+		delete(desktopSideEffects, runID)
+		return
+	}
+	desktopSideEffects[runID] = kept
 }
 
 // desktopSideNotice is the extra notice lines for a run that is not done.

@@ -31,6 +31,17 @@ func TestReplyImageKeepsTheLatestScreenshot(t *testing.T) {
 	}
 }
 
+func TestChinesePNGAround378KBIsAnImage(t *testing.T) {
+	raw := strings.Repeat("A", 516096) // base64 length of a ~378KB file
+	got := replyImages([]replyAttachment{{Type: "file", FileName: "训练曲线.png", MimeType: "image/png", Data: raw}})
+	if len(got) != 1 || got[0].MIME != "image/png" || got[0].Data != raw {
+		t.Fatalf("images kept %d", len(got))
+	}
+	if files := replyFiles([]replyAttachment{{Type: "file", FileName: "训练曲线.png", MimeType: "image/png", Data: raw}}); files != nil {
+		t.Fatalf("png stayed a download: %#v", files[0].Name)
+	}
+}
+
 func TestDeliveredPNGIsAnImageNotADownload(t *testing.T) {
 	png := "iVBORw0KGgo="
 	got := replyImages([]replyAttachment{{Type: "file", FileName: "snake_window.png", MimeType: "image/png", Data: png}})

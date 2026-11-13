@@ -818,11 +818,19 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 	}
 	outcome, why := desktopRunOutcome(runID, &msg)
 	if outcome == "" {
+		outcome = desktopRecordsOutcome(desktopPublishRunRecords(runID))
+	}
+	if outcome == "" {
 		desktopSideTake(runID)
 		return nil
 	}
 	out := map[string]string{agentservice.TaskOutcomeKey: outcome}
-	n := desktopOutcomeNotice(outcome, why, msg.Content)
+	visible := msg.Content
+	if reply, ok := desktopReconcilePublishReply(runID, msg.Content); ok {
+		visible = reply
+		out[agentservice.TaskOutcomeReplyKey] = reply
+	}
+	n := desktopOutcomeNotice(outcome, why, visible)
 	if outcome != agentservice.TaskOutcomeDone && outcome != "awaiting_user" {
 		// The cause and what the run left behind (a draft, a click on
 		// publish), even when the reply already says it is not done.
@@ -832,9 +840,9 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 	} else {
 		desktopSideTake(runID)
 	}
-	if fix := desktopPostCorrection(runID, msg.Content); fix != "" {
+	if fix := desktopPostCorrection(runID, visible); fix != "" {
 		n = strings.TrimSpace(fix + "\n" + n)
-	} else if posted := desktopPostedNotice(runID, msg.Content); posted != "" {
+	} else if posted := desktopPostedNotice(runID, visible); posted != "" {
 		n = strings.TrimSpace(n + "\n" + posted)
 	}
 	if n != "" {
@@ -844,6 +852,9 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 		out["task_outcome_evidence"] = desktopRuneHead(why, 300)
 	}
 	if sentence, ok := desktopFinishSentence(runID); ok && sentence != "" {
+		if reply, ok := desktopReconcilePublishReply(runID, sentence); ok {
+			sentence = reply
+		}
 		out["send_to_user"] = sentence
 	}
 	return out

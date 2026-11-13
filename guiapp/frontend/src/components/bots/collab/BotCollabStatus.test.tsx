@@ -54,4 +54,20 @@ describe('BotSaidInline files', () => {
         expect(opened).toEqual(['n1/REPORT.md']);
         expect(screen.queryByText(/\*\*报告\*\*/)).toBeNull();
     });
+
+    it('paints a Chinese-named png inline instead of a file chip', async () => {
+        const png = 'iVBORw0KGgo=';
+        const { render, screen } = await import('@testing-library/react');
+        const { BotSaidInline } = await import('./BotSaidInline');
+        render(<BotSaidInline
+            items={[{ id: 'n2', from: 'b1', target: 'human', kind: 'say', text: '曲线', created_at: '', files: [{ name: '训练曲线.png', mime: 'image/png', size: 378 * 1024, sha256: 'def' }] }]}
+            bots={[{ id: 'b1', title: 'Bot 3' } as any]}
+            lookOf={() => ({} as any)}
+            loadImage={async () => ({ mime: 'image/png', data: png })}
+        />);
+        const img = await screen.findByTestId('bot-said-image-n2-训练曲线.png');
+        expect(img.tagName).toBe('IMG');
+        expect(img.getAttribute('src')).toBe(`data:image/png;base64,${png}`);
+        expect(screen.queryByTestId('bot-said-file-n2-训练曲线.png')).toBeNull();
+    });
 });

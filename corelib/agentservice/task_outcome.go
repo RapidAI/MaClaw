@@ -15,6 +15,9 @@ import "strings"
 const (
 	TaskOutcomeKey       = "task_outcome"
 	TaskOutcomeNoticeKey = "task_outcome_notice"
+	// TaskOutcomeReplyKey replaces the model reply with the host's
+	// record-backed text before the notice is attached. It is not stored.
+	TaskOutcomeReplyKey = "task_outcome_reply"
 
 	TaskOutcomeDone         = "done"
 	TaskOutcomePartial      = "partial"
@@ -48,7 +51,11 @@ func applyTaskOutcome(run *Run, msg *Message) string {
 	}
 	outcome := strings.TrimSpace(msg.Metadata[TaskOutcomeKey])
 	notice := strings.TrimSpace(msg.Metadata[TaskOutcomeNoticeKey])
+	if reply := strings.TrimSpace(msg.Metadata[TaskOutcomeReplyKey]); reply != "" {
+		msg.Content = reply
+	}
 	delete(msg.Metadata, TaskOutcomeNoticeKey)
+	delete(msg.Metadata, TaskOutcomeReplyKey)
 	if !ValidTaskOutcome(outcome) {
 		delete(msg.Metadata, TaskOutcomeKey)
 		return ""
