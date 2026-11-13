@@ -41,11 +41,11 @@ func TestBot4FollowUpResolvesToTheOriginalDrinkOrder(t *testing.T) {
 		}
 		return `{"kind":"continue","run":0,"instruction":"继续","ack":"没有可以继续的事。","pace":"direct"}`, nil
 	})
-	if err != nil || continued.Kind != "new" || continued.Phase != "execute" || intakeSaysNoWork(continued.Ack) {
+	if err != nil || continued.Kind != "ask" || continued.Phase != "plan" || intakeSaysNoWork(continued.Ack) {
 		t.Fatalf("continue = %+v %v", continued, err)
 	}
-	if !strings.Contains(continued.Instruction, "饮料") || !strings.Contains(continued.Instruction, "默认地址") || !strings.Contains(continued.Instruction, "已打开商品页") {
-		t.Fatalf("continue instruction = %q", continued.Instruction)
+	if !strings.Contains(continued.Instruction, "饮料") || !strings.Contains(continued.Instruction, "默认地址") || len(continued.ConfirmBefore) == 0 {
+		t.Fatalf("continue instruction = %+v", continued)
 	}
 	again, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{
 		BotID: session, ClientSessionKey: session, Content: follow,
@@ -55,7 +55,11 @@ func TestBot4FollowUpResolvesToTheOriginalDrinkOrder(t *testing.T) {
 		}
 		return `{"kind":"new","run":0,"instruction":"京东下单啊","ack":"好，去下单。","pace":"direct"}`, nil
 	})
-	if err != nil || !strings.Contains(again.Instruction, "饮料") || !strings.Contains(again.Instruction, "默认地址") || !strings.Contains(again.Instruction, follow) {
+	goal := ""
+	if again.Plan != nil {
+		goal = again.Plan.Goal
+	}
+	if err != nil || again.Kind != "discuss" || !strings.Contains(goal, "饮料") || !strings.Contains(goal, "默认地址") || !strings.Contains(goal, "京东下单") {
 		t.Fatalf("follow-up = %+v %v", again, err)
 	}
 	if intakeSaysNoWork(again.Ack) {
@@ -117,10 +121,18 @@ func TestStaleAskIsWithdrawnWhenANewerMessageArrives(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var found bool
 	for _, ask := range snap.Asks {
-		if ask.ID == "ask_old" {
+		if ask.ID != "ask_old" {
+			continue
+		}
+		found = true
+		if !ask.Withdrawn || ask.Because != "newer_message" {
 			t.Fatalf("stale ask still pending: %+v", ask)
 		}
+	}
+	if !found {
+		t.Fatal("withdrawn ask was dropped from the snapshot")
 	}
 }
 

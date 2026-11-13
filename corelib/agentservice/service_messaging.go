@@ -666,6 +666,8 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 // resumeAwaitingRun reopens the run named by bot_ask_run when that run is
 // still waiting on the person. The answer is a new user message on the same
 // run, not a new execute.
+var askResumeMu sync.Map
+
 func (s *Service) resumeAwaitingRun(p Principal, instanceID, sessionID string, meta map[string]string, userMessageID string) (Run, bool) {
 	if s == nil || s.store == nil || meta == nil {
 		return Run{}, false
@@ -674,6 +676,9 @@ func (s *Service) resumeAwaitingRun(p Principal, instanceID, sessionID string, m
 	if id == "" {
 		return Run{}, false
 	}
+	gate, _ := askResumeMu.LoadOrStore(id, &sync.Mutex{})
+	gate.(*sync.Mutex).Lock()
+	defer gate.(*sync.Mutex).Unlock()
 	existing, err := s.store.GetRun(p.TenantID, p.UserID, instanceID, id)
 	if err != nil || existing.SessionID != sessionID {
 		return Run{}, false
@@ -698,6 +703,11 @@ func (s *Service) resumeAwaitingRun(p Principal, instanceID, sessionID string, m
 	}
 	delete(existing.Metadata, TaskOutcomeKey)
 	existing.Metadata["resumed_from_ask"] = "1"
+	// Persist the claim before returning. A second answer then sees the run
+	// is no longer waiting and does not start another execute.
+	if err := s.store.SaveRun(existing); err != nil {
+		return Run{}, false
+	}
 	return existing, true
 }
 

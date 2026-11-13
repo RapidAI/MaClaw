@@ -85,9 +85,13 @@ func TestJDFollowUpResolvesAgainstTheEarlierOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	goal := got.Instruction
+	if got.Plan != nil && strings.TrimSpace(got.Plan.Goal) != "" {
+		goal = got.Plan.Goal
+	}
 	for _, part := range []string{original, explain, "饮料", "默认地址", "京东下单啊"} {
-		if !strings.Contains(got.Instruction, part) {
-			t.Fatalf("instruction missing %q in %q", part, got.Instruction)
+		if !strings.Contains(goal, part) {
+			t.Fatalf("plan missing %q in %q", part, goal)
 		}
 	}
 	if strings.Contains(got.Instruction, "原话：") {

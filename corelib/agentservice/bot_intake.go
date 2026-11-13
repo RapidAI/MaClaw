@@ -153,10 +153,16 @@ func (s *Service) IntakeBotMessage(ctx context.Context, p Principal, instanceID 
 	}
 	var storedEarlier []string
 	var storedTasks []BotIntakeRun
-	if turned, tasks, turnErr := s.BeginBotTurn(ctx, p, instanceID, sessionKey, content, ""); turnErr == nil {
+	if turned, tasks, turnErr := s.BeginBotTurn(ctx, p, instanceID, sessionKey, content, "", ""); turnErr == nil {
 		storedEarlier, storedTasks = turned, tasks
 	}
-	in.Earlier = mergeIntakeLines(storedEarlier, in.Earlier)
+	var stoppedLines []string
+	for _, task := range storedTasks {
+		if line := strings.TrimSpace(task.Task); line != "" {
+			stoppedLines = append(stoppedLines, line)
+		}
+	}
+	in.Earlier = mergeIntakeLines(stoppedLines, storedEarlier, in.Earlier)
 	running := liveIntakeRuns(append(storedTasks, in.Running...))
 	if classify == nil {
 		return discussIntake("no classifier"), nil
@@ -404,8 +410,22 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun, ea
 		if in.Plan == nil {
 			in.Plan = &BotIntakePlan{}
 		}
-		if strings.TrimSpace(in.Plan.Goal) == "" && instruction != "" {
-			in.Plan.Goal = oneLineRunes(instruction, 300)
+		goal := instruction
+		if strings.TrimSpace(goal) == "" {
+			goal = content
+		}
+		var contextLines []string
+		for _, run := range running {
+			if resumableStopped(run) && strings.TrimSpace(run.Task) != "" {
+				contextLines = append(contextLines, strings.TrimSpace(run.Task))
+			}
+		}
+		if len(contextLines) == 0 && len(running) == 0 {
+			contextLines = earlier
+		}
+		goal = foldEarlierIntoInstruction(goal, contextLines)
+		if strings.TrimSpace(in.Plan.Goal) == "" && strings.TrimSpace(goal) != "" {
+			in.Plan.Goal = oneLineRunes(goal, 2000)
 		}
 		instruction = ""
 		phase = ""
@@ -641,56 +661,8 @@ func validIntakeSchedule(s *BotIntakeSchedule) (*BotIntakeSchedule, bool) {
 	return out, true
 }
 
-// FoldEarlierIntoInstruction puts recent conversation turns in front of a
-// new run's order when that order does not already carry them. A short
-// follow-up such as "京东下单啊" then still has the earlier request
-// (what to buy, how many, which address) in the session the run sees.
-func FoldEarlierIntoInstruction(instruction string, earlier []string) string {
-	instruction = strings.TrimSpace(instruction)
-	if instruction == "" || len(earlier) == 0 {
-		return instruction
-	}
-	var missing []string
-	for _, line := range earlier {
-		line = strings.TrimSpace(line)
-		if line == "" || line == instruction || strings.Contains(instruction, line) {
-			continue
-		}
-		missing = append(missing, line)
-		if len(missing) == 8 {
-			break
-		}
-	}
-	if len(missing) == 0 {
-		return instruction
-	}
-	var b strings.Builder
-	b.WriteString("此前对话：\n")
-	for _, line := range missing {
-		b.WriteString("- ")
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
-	b.WriteString("这次：")
-	b.WriteString(instruction)
-	return b.String()
-}
-
 func foldEarlierIntoInstruction(instruction string, earlier []string) string {
 	return FoldEarlierIntoInstruction(instruction, earlier)
-}
-
-func intakeSaysNoWork(ack string) bool {
-	a := strings.ToLower(strings.TrimSpace(ack))
-	if a == "" {
-		return false
-	}
-	for _, m := range []string{"没有可以继续", "没有在做", "没在做", "无任务", "nothing to continue", "no work", "nothing running", "不用继续"} {
-		if strings.Contains(a, m) {
-			return true
-		}
-	}
-	return false
 }
 
 func nothingToContinue(ack string) BotIntake {
