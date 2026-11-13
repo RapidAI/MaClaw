@@ -212,6 +212,53 @@ func TestMobileStateMigrationAndIncrementalReopen(t *testing.T) {
 	}
 }
 
+func TestMobileStateMigrationImportsWhenTheDatabaseWasAlreadyMarkedInitialized(t *testing.T) {
+	// A persist can reach a new database before migration and write the
+	// initialized marker. The JSON file is still the source until it is retired.
+	clearMobileStateForTest(t)
+	root := t.TempDir()
+	statePath := filepath.Join(root, "custom-mobile.state")
+	setMobileStatePathForTest(t, statePath)
+	t.Setenv(mobileBlobDirEnv, filepath.Join(root, "blobs"))
+	now := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	legacy := mobilePersistentState{
+		Drafts: map[string]mobileDocumentDraftRecord{
+			"draft-a": {ID: "draft-a", TenantID: "tenant-a", OwnerID: "user-a", Title: "A", Markdown: "# from json", UpdatedAt: now},
+		},
+		SavedAt: now,
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, fallback, err := mobileOpenStateDB(statePath)
+	if err != nil || fallback {
+		t.Fatalf("open db: fallback=%v err=%v", fallback, err)
+	}
+	if _, err := db.Exec(`INSERT INTO mobile_state_meta(key,value) VALUES('initialized','1')`); err != nil {
+		t.Fatal(err)
+	}
+	mobileCloseStateDBForTest()
+	mobileResetStatePersistenceForTest()
+	mobileEnsureStateLoaded()
+
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("legacy state still active: %v", err)
+	}
+	if _, err := os.Stat(statePath + ".migrated.bak"); err != nil {
+		t.Fatalf("migration backup: %v", err)
+	}
+	mobileDocuments.Lock()
+	got := mobileDocuments.drafts["draft-a"]
+	mobileDocuments.Unlock()
+	if got.Markdown != "# from json" {
+		t.Fatalf("json draft was not imported: %#v", got)
+	}
+}
+
 func TestMobileStateMigrationFailureFallsBackToJSON(t *testing.T) {
 	clearMobileStateForTest(t)
 	root := t.TempDir()

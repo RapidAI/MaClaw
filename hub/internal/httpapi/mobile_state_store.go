@@ -304,6 +304,15 @@ type ioEmptyStateError struct{}
 func (ioEmptyStateError) Error() string { return "mobile state file is empty" }
 
 func mobileLoadPersistentState() mobilePersistentState {
+	// Hold the write lock for the whole import. A persist that arrives first
+	// can mark the new database initialized; without this, that marker makes
+	// the loader skip the JSON file and leave it as a second live store.
+	mobileStateWriteMu.Lock()
+	defer mobileStateWriteMu.Unlock()
+	return mobileLoadPersistentStateLocked()
+}
+
+func mobileLoadPersistentStateLocked() mobilePersistentState {
 	path := mobileStatePath()
 	if path == "" {
 		return mobilePersistentState{}
@@ -314,26 +323,30 @@ func mobileLoadPersistentState() mobilePersistentState {
 		mobileNormalizeLoadedState(&state)
 		return state
 	}
-	initialized, err := mobileStateInitialized(db)
-	if err != nil {
+	// The legacy file is the source until it is retired. An initialized
+	// marker written by a concurrent persist does not mean the file was imported.
+	legacy, legacyErr := mobileReadLegacyState(path)
+	if legacyErr == nil {
+		mobilePrepareLegacyStateForMigration(&legacy)
+		if err := mobileImportState(db, &legacy); err != nil {
+			mobileMarkStateFallback()
+			mobileNormalizeLoadedState(&legacy)
+			return legacy
+		}
+		if err := retireMobileLegacyState(path); err != nil {
+			log.Printf("[mobile-state] legacy file still active after import: %v", err)
+			mobileMarkStateFallback()
+			mobileNormalizeLoadedState(&legacy)
+			return legacy
+		}
+		mobileNormalizeLoadedState(&legacy)
+		return legacy
+	}
+	if _, err := mobileStateInitialized(db); err != nil {
 		mobileMarkStateFallback()
 		state, _ := mobileReadLegacyState(path)
 		mobileNormalizeLoadedState(&state)
 		return state
-	}
-	if !initialized {
-		legacy, legacyErr := mobileReadLegacyState(path)
-		if legacyErr == nil {
-			mobilePrepareLegacyStateForMigration(&legacy)
-			if err := mobileImportState(db, &legacy); err != nil {
-				mobileMarkStateFallback()
-				mobileNormalizeLoadedState(&legacy)
-				return legacy
-			}
-			_ = os.Rename(path, path+".migrated.bak")
-			mobileNormalizeLoadedState(&legacy)
-			return legacy
-		}
 	}
 	state, err := mobileReadStateDB(db)
 	if err != nil {
@@ -344,6 +357,17 @@ func mobileLoadPersistentState() mobilePersistentState {
 	}
 	mobileNormalizeLoadedState(&state)
 	return state
+}
+
+// retireMobileLegacyState moves the live JSON file aside. The database is
+// already committed, so a later startup must not read the file again.
+func retireMobileLegacyState(path string) error {
+	backup := path + ".migrated.bak"
+	err := os.Rename(path, backup)
+	if err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func mobileMarkStateFallback() {
