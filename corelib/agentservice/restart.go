@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -99,9 +101,10 @@ func ClearRunTool(runID string) {
 // had not returned. The id is the model tool_call_id, so resume rewrites
 // that call's result and leaves every other call alone.
 type RestartInFlight struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Args string `json:"args"`
+	RunID string `json:"run_id,omitempty"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Args  string `json:"args"`
 }
 
 // restartOutcomeUnknown replaces the stored result of a call that was in
@@ -353,12 +356,30 @@ func (s *Service) resumeOne(ctx context.Context, p Principal, inst Instance, run
 		run.Metadata = map[string]string{}
 	}
 	traj, trajOK := loadRestartTrajectory(run.Metadata[metaRestartTrajectory])
-	if trajOK && cp.InFlight != nil && strings.TrimSpace(cp.InFlight.ID) != "" {
-		probe := ""
-		if ResumeProbe != nil {
-			probe = ResumeProbe(ctx, p.TenantID, p.UserID, cp.InstanceID, cp.SessionID, run.ID, *cp.InFlight)
+	if trajOK {
+		calls := s.listInFlight(run.ID)
+		if cp.InFlight != nil && strings.TrimSpace(cp.InFlight.ID) != "" {
+			seen := false
+			for _, call := range calls {
+				if call.ID == cp.InFlight.ID {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				calls = append(calls, *cp.InFlight)
+			}
 		}
-		traj.Entries = rewriteInterruptedResult(traj.Entries, *cp.InFlight, probe)
+		for _, call := range calls {
+			if strings.TrimSpace(call.ID) == "" {
+				continue
+			}
+			probe := ""
+			if ResumeProbe != nil {
+				probe = ResumeProbe(ctx, p.TenantID, p.UserID, cp.InstanceID, cp.SessionID, run.ID, call)
+			}
+			traj.Entries = rewriteInterruptedResult(traj.Entries, call, probe)
+		}
 		if body, err := json.Marshal(traj); err == nil {
 			run.Metadata[metaRestartTrajectory] = string(body)
 		}
@@ -474,52 +495,109 @@ func rewriteInterruptedResult(entries []agent.ConversationEntry, call RestartInF
 	return out
 }
 
-// RecordInFlight stores the call on the run before it is dispatched.
-func (s *Service) RecordInFlight(p Principal, instanceID, runID string, call RestartInFlight) error {
-	if s == nil || s.store == nil || strings.TrimSpace(runID) == "" || strings.TrimSpace(call.ID) == "" {
-		return nil
-	}
-	run, err := s.store.GetRun(p.TenantID, p.UserID, instanceID, runID)
-	if err != nil {
-		return err
-	}
-	cp := s.mergedCheckpoint(run)
-	cp.InFlight = &call
-	raw, err := json.Marshal(cp)
-	if err != nil {
-		return err
-	}
-	if run.Metadata == nil {
-		run.Metadata = map[string]string{}
-	}
-	run.Metadata[metaRestartCheckpoint] = string(raw)
-	runInFlightTool.Store(runID, call)
-	return s.store.SaveRun(run)
+func inflightKey(runID, callID string) string {
+	return strings.TrimSpace(runID) + "\x00" + strings.TrimSpace(callID)
 }
 
-// ClearInFlight drops the recorded call after it has returned.
-func (s *Service) ClearInFlight(p Principal, instanceID, runID, toolCallID string) error {
-	if s == nil || s.store == nil || strings.TrimSpace(runID) == "" {
+func (s *Service) inflightPath() string {
+	if s == nil || strings.TrimSpace(s.dataRoot) == "" {
+		return ""
+	}
+	return filepath.Join(s.dataRoot, "restart-inflight.json")
+}
+
+func (s *Service) loadInFlight() {
+	if s == nil || s.inflightLoaded {
+		return
+	}
+	s.inflightLoaded = true
+	if s.inflight == nil {
+		s.inflight = map[string]RestartInFlight{}
+	}
+	path := s.inflightPath()
+	if path == "" {
+		return
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) == 0 {
+		return
+	}
+	var rows []RestartInFlight
+	if json.Unmarshal(raw, &rows) != nil {
+		return
+	}
+	for _, row := range rows {
+		if strings.TrimSpace(row.RunID) == "" || strings.TrimSpace(row.ID) == "" {
+			continue
+		}
+		s.inflight[inflightKey(row.RunID, row.ID)] = row
+	}
+}
+
+func (s *Service) flushInFlight() error {
+	path := s.inflightPath()
+	if path == "" {
 		return nil
 	}
-	run, err := s.store.GetRun(p.TenantID, p.UserID, instanceID, runID)
+	rows := make([]RestartInFlight, 0, len(s.inflight))
+	for _, row := range s.inflight {
+		rows = append(rows, row)
+	}
+	raw, err := json.Marshal(rows)
 	if err != nil {
 		return err
 	}
-	cp := s.mergedCheckpoint(run)
-	if cp.InFlight != nil && (toolCallID == "" || cp.InFlight.ID == toolCallID) {
-		cp.InFlight = nil
-	}
-	raw, err := json.Marshal(cp)
-	if err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	if run.Metadata == nil {
-		run.Metadata = map[string]string{}
+	return os.WriteFile(path, raw, 0o600)
+}
+
+// RecordInFlight stores one dispatched call in its own row. It does not
+// rewrite the run row. Several calls in one step each have a row.
+func (s *Service) RecordInFlight(p Principal, instanceID, runID string, call RestartInFlight) error {
+	if s == nil || strings.TrimSpace(runID) == "" || strings.TrimSpace(call.ID) == "" {
+		return nil
 	}
-	run.Metadata[metaRestartCheckpoint] = string(raw)
-	ClearRunTool(runID)
-	return s.store.SaveRun(run)
+	_ = p
+	_ = instanceID
+	call.RunID = runID
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	s.loadInFlight()
+	s.inflight[inflightKey(runID, call.ID)] = call
+	return s.flushInFlight()
+}
+
+// ClearInFlight drops one call that has returned, including during drain.
+func (s *Service) ClearInFlight(p Principal, instanceID, runID, toolCallID string) error {
+	if s == nil || strings.TrimSpace(runID) == "" || strings.TrimSpace(toolCallID) == "" {
+		return nil
+	}
+	_ = p
+	_ = instanceID
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	s.loadInFlight()
+	delete(s.inflight, inflightKey(runID, toolCallID))
+	return s.flushInFlight()
+}
+
+func (s *Service) listInFlight(runID string) []RestartInFlight {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	s.loadInFlight()
+	var out []RestartInFlight
+	prefix := strings.TrimSpace(runID) + "\x00"
+	for key, row := range s.inflight {
+		if strings.HasPrefix(key, prefix) {
+			out = append(out, row)
+		}
+	}
+	return out
 }
 
 func (s *Service) sayRestart(p Principal, instanceID, sessionID, text string) {

@@ -641,6 +641,7 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 	prompt := "The current user has one cloud desktop through the desktop tool. " +
 		"The computer wakes by itself when a step needs it. Never ask the person to start, wake, or confirm starting the desktop. "
 	if scope, _, err := desktopScopeForTurn(request); err == nil {
+		prompt += desktopUnwatchedJobsPrompt(scope)
 		prompt += desktopExperienceText(scope, "")
 		prompt += desktopLedgerPromptText(scope)
 		task := desktopTurnTask(request)

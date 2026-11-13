@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -449,7 +450,7 @@ func desktopResumeProbe(ctx context.Context, tenantID, userID, instanceID, sessi
 	_ = json.Unmarshal([]byte(call.Args), &args)
 	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
 	if action == "bash" {
-		return desktopBashStateProbe(runID)
+		return desktopBashStateProbe(ctx, call)
 	}
 	scope := agentruntime.Scope{TenantID: tenantID, UserID: userID, InstanceID: instanceID, SessionID: sessionID, RunID: runID}
 	out, err := operateDesktop(ctx, scope, map[string]any{"action": "probe"})
@@ -459,19 +460,22 @@ func desktopResumeProbe(ctx context.Context, tenantID, userID, instanceID, sessi
 	return out
 }
 
-func desktopBashStateProbe(runID string) string {
-	j := desktopLongJobForRun(runID)
+func desktopBashStateProbe(ctx context.Context, call agentservice.RestartInFlight) string {
+	j := desktopLongJobForToolCall(call.ID)
 	if j == nil {
-		return "bash: no recorded process; do not run the command again"
+		// A foreground bash has no job row. The result stays outcome unknown.
+		return ""
 	}
-	alive := j.PID != "" && desktopProcAlive(j.PID)
-	exitText := ""
-	if strings.TrimSpace(j.ExitFile) != "" {
-		if b, err := os.ReadFile(j.ExitFile); err == nil {
-			exitText = strings.TrimSpace(string(b))
-		}
+	out, err := desktopLongJobRun(ctx, desktopLongJobScope(j), desktopLongJobPollScript(j))
+	if err != nil {
+		return "bash poll failed: " + err.Error()
 	}
-	return fmt.Sprintf("bash: alive=%t exit=%s", alive, exitText)
+	p := desktopLongJobParsePoll(out)
+	exit := "-"
+	if p.ExitCode != nil {
+		exit = strconv.Itoa(*p.ExitCode)
+	}
+	return fmt.Sprintf("bash job %s alive=%t exit=%s", j.ID, p.Alive, exit)
 }
 
 func desktopScreenLeaseStatus(runID string) string {

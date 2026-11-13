@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 )
 
 func TestDrainInterruptsInsteadOfCancelling(t *testing.T) {
@@ -264,6 +265,79 @@ func TestFinishInterruptedDoesNotResumeTwice(t *testing.T) {
 	}
 	if got.Status != RunStatusFailed || got.Metadata["task_outcome_evidence"] != "interrupted by restart" {
 		t.Fatalf("got %+v", got.Status)
+	}
+}
+
+func TestInFlightIsItsOwnRow(t *testing.T) {
+	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
+	defer svc.Close()
+	run := Run{
+		ID: NewID("run"), TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID,
+		Status: RunStatusRunning, StartedAt: time.Now().Add(-time.Minute),
+		Metadata: map[string]string{"keep": "1"},
+	}
+	if err := svc.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordInFlight(principal, inst.ID, run.ID, RestartInFlight{ID: "c_write", Name: "write_file", Args: `{"path":"a"}`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordInFlight(principal, inst.ID, run.ID, RestartInFlight{ID: "c_bash", Name: "bash", Args: `{"command":"make"}`}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.store.GetRun(principal.TenantID, principal.UserID, inst.ID, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata["keep"] != "1" || strings.Contains(got.Metadata[metaRestartCheckpoint], "write_file") {
+		t.Fatalf("run row was rewritten: %+v", got.Metadata)
+	}
+	if len(svc.listInFlight(run.ID)) != 2 {
+		t.Fatalf("calls %+v", svc.listInFlight(run.ID))
+	}
+	if err := svc.ClearInFlight(principal, inst.ID, run.ID, "c_write"); err != nil {
+		t.Fatal(err)
+	}
+	left := svc.listInFlight(run.ID)
+	if len(left) != 1 || left[0].ID != "c_bash" {
+		t.Fatalf("cleared the wrong call: %+v", left)
+	}
+}
+
+func TestUnclassifiedToolChangesState(t *testing.T) {
+	desktop := []agentruntime.ToolDefinition{{
+		Name: "desktop",
+		ChangesState: func(args map[string]any) bool {
+			action, _ := args["action"].(string)
+			return action != "probe"
+		},
+	}}
+	for _, name := range []string{"write_file", "edit_file", "memory", "memory_write", "mcp_custom", "send_to_im"} {
+		if !toolCallChangesState(name, "", nil) {
+			t.Fatalf("%s was treated as a read", name)
+		}
+	}
+	for _, name := range []string{"read_file", "glob", "ripgrep", "web_search", "knowledge_search", "knowledge_context_pack"} {
+		if toolCallChangesState(name, "", nil) {
+			t.Fatalf("%s was treated as a side effect", name)
+		}
+	}
+	if toolCallChangesState("desktop", `{"action":"probe"}`, desktop) {
+		t.Fatal("probe changes state")
+	}
+	if !toolCallChangesState("desktop", `{"action":"click"}`, desktop) {
+		t.Fatal("click was treated as a read")
+	}
+}
+
+func TestInFlightCutOffIsTheCancelledCall(t *testing.T) {
+	if inFlightCutOff(context.Background()) || inFlightCutOff(nil) {
+		t.Fatal("a finished call was kept")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if !inFlightCutOff(ctx) {
+		t.Fatal("a cancelled call would be cleared")
 	}
 }
 

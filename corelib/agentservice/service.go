@@ -127,8 +127,13 @@ type Service struct {
 	closed           bool
 	idempotencyMu    sync.Mutex
 	idempotencyLocks map[string]*idempotencyLock
-	closeOnce        sync.Once
-	closeErr         error
+	// inflightMu guards the side-effect calls dispatched and not yet returned.
+	// They are their own rows, not fields of the run row.
+	inflightMu     sync.Mutex
+	inflightLoaded bool
+	inflight       map[string]RestartInFlight
+	closeOnce      sync.Once
+	closeErr       error
 	// skillInstallTxnMu serializes local Skill directory transactions and
 	// protects the service-owned cross-restart compensation journal.
 	skillInstallTxnMu sync.Mutex

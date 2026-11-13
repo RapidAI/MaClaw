@@ -1086,6 +1086,38 @@ func TestLongJobStartupReconcileDropsOrphanWatchesOnce(t *testing.T) {
 	}
 }
 
+func TestBashResumeProbePollsTheCallJobInTheContainer(t *testing.T) {
+	var script string
+	prev := desktopLongJobExec
+	desktopLongJobExec = func(_ context.Context, _ agentruntime.Scope, command string) (string, error) {
+		script = command
+		return "LONGJOB_ALIVE pid=9\nLONGJOB_EXIT=0\n", nil
+	}
+	t.Cleanup(func() { desktopLongJobExec = prev })
+	j := &desktopLongJob{
+		ID: "job_callbash", ToolCallID: "call_bash", Status: "running", Alive: true,
+		PidFile: "/container/job.pid", ExitFile: "/container/job.exit", LogFile: "/container/job.log",
+	}
+	if err := desktopLongJobSave(j); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		desktopLongJobMu.Lock()
+		delete(desktopLongJobMem, j.ID)
+		desktopLongJobMu.Unlock()
+	})
+	out := desktopBashStateProbe(context.Background(), agentservice.RestartInFlight{ID: "call_bash", Args: `{"action":"bash","command":"make"}`})
+	if !strings.Contains(script, "/container/job.pid") || !strings.Contains(script, "/container/job.exit") {
+		t.Fatalf("probe did not run the container poll script: %q", script)
+	}
+	if !strings.Contains(out, "job_callbash") || !strings.Contains(out, "alive=true") {
+		t.Fatalf("probe %q", out)
+	}
+	if other := desktopBashStateProbe(context.Background(), agentservice.RestartInFlight{ID: "call_foreground", Args: `{"action":"bash"}`}); other != "" {
+		t.Fatalf("foreground bash was given a process: %q", other)
+	}
+}
+
 func TestDesktopSideEffectIsAPropertyOfTheTool(t *testing.T) {
 	for _, action := range []string{"type", "key", "paste", "upload", "bash", "say", "publish", "click", "press"} {
 		if !desktopCallChangesState(map[string]any{"action": action}) {
@@ -1115,6 +1147,8 @@ func TestLongJobHub404BackoffThenStops(t *testing.T) {
 	now := time.Date(2026, 11, 13, 15, 0, 0, 0, time.Local)
 	desktopLongJobNow = func() time.Time { return now }
 	j := longJobUndelivered("job_hub404", inst.ID, "bot_hub", "run_hub")
+	j.Alive = true
+	j.PID = "4242"
 	longJobArmWatch(t, j)
 	calls := 0
 	notFound := desktopStatusError(http.StatusNotFound, []byte(`{"code":"NOT_FOUND","message":"no such bot or assignment"}`))
@@ -1132,8 +1166,17 @@ func TestLongJobHub404BackoffThenStops(t *testing.T) {
 			now = got.NextPoll
 			continue
 		}
-		if err != nil || got == nil || got.Status != "cancelled" || got.EndReason != "hub assignment missing" {
+		if err != nil || got == nil || got.Status != "unwatched" || !got.Alive || got.EndReason != "hub assignment missing" {
 			t.Fatalf("after limit err=%v job=%+v", err, got)
+		}
+		if view := desktopLongJobView(got); !strings.Contains(view, "无人值守") || !strings.Contains(view, got.ID) {
+			t.Fatalf("job_status view: %s", view)
+		}
+		if list := desktopLongJobList(agentruntime.Scope{InstanceID: got.InstanceID}); !strings.Contains(list, got.ID) || !strings.Contains(list, "无人值守") {
+			t.Fatalf("job_list: %s", list)
+		}
+		if note := desktopUnwatchedJobsPrompt(agentruntime.Scope{InstanceID: got.InstanceID}); !strings.Contains(note, got.ID) || !strings.Contains(note, "still running") {
+			t.Fatalf("next turn: %s", note)
 		}
 		if longJobTaskNamed(mgr, "watch-job:"+j.ID) {
 			t.Fatal("watch still scheduled")

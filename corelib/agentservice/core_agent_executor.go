@@ -1989,10 +1989,30 @@ type coreToolSpec struct {
 	Parameters     map[string]interface{}
 	Enabled        bool
 	DisabledReason string
+	// ReadsOnly is set from the tool definition. False means the call can
+	// change state, including when the name was never classified.
+	ReadsOnly bool
+}
+
+// coreToolReadsOnly is the read-only property of a built-in tool definition.
+// A name that is not listed changes state. Resume must not run it again
+// without a check. Knowledge imports, memory writes, and message sends are
+// not in this set.
+func coreToolReadsOnly(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "read_file", "read_files", "read_document", "read_tool_result",
+		"list_directory", "list_dir", "glob", "ripgrep", "grep", "search_files", "session_search",
+		"web_search", "web_fetch",
+		"knowledge_search", "knowledge_image_search", "knowledge_context_pack", "knowledge_export",
+		"memory_search":
+		return true
+	default:
+		return false
+	}
 }
 
 func specFromCoreTool(name, description string, enabled bool, disabledReason string) coreToolSpec {
-	spec := coreToolSpec{Name: name, Description: description, Enabled: enabled, DisabledReason: disabledReason}
+	spec := coreToolSpec{Name: name, Description: description, Enabled: enabled, DisabledReason: disabledReason, ReadsOnly: coreToolReadsOnly(name)}
 	if params, ok := agent.CoreToolJSONSchema(name); ok {
 		spec.Parameters = params
 	}
@@ -2210,6 +2230,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 			Description:    "Search only imported knowledge-base images by OCR text, visual description, filename, and surrounding document context. Use when the user asks to find, show, view, select, or compare stored images. Results include safe display markers; when the user asks to see an image, copy its exact marker unchanged onto its own line in the final answer.",
 			Enabled:        knowledgeOK,
 			DisabledReason: knowledgeReason,
+			ReadsOnly:      true,
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -2545,21 +2566,35 @@ func (c *coreAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 func (c *coreAgentCallbacks) ExecuteToolCall(name, argsJSON, callID string) agent.ToolExecutionResult {
 	recorded := c.recordSideEffect(name, argsJSON, callID)
 	result := c.executeToolCallLegacy(name, argsJSON, callID)
-	// A return while the run is still alive means the call finished, even
-	// when the result is an error. A cancel during the call leaves the
-	// record so resume can rewrite that result instead of running it again.
-	if recorded && !RestartYielding() && (c.ctx == nil || c.ctx.Err() == nil) {
+	// The call returned, including during drain, so its result is the real
+	// one and must not be rewritten to "outcome unknown". A cancel that
+	// cut the call off leaves the record.
+	if recorded && !inFlightCutOff(c.ctx) {
 		c.clearSideEffect(callID)
 	}
 	return c.finishBotToolResult(name, argsJSON, result)
 }
 
+// inFlightCutOff is a call that did not finish. Drain alone is not that:
+// a step that returns while the process is stopping has a real result.
+func inFlightCutOff(ctx context.Context) bool {
+	return ctx != nil && ctx.Err() != nil
+}
+
 func (c *coreAgentCallbacks) toolChangesState(name, argsJSON string) bool {
 	if c == nil {
-		return false
+		return true
 	}
+	return toolCallChangesState(name, argsJSON, c.runtimeTools)
+}
+
+// toolCallChangesState is the side-effect property of a tool definition.
+// A definition that classifies itself (ChangesState, or a known read-only
+// built-in) is authoritative. Every other name, including write_file,
+// edit_file, memory writes, MCP calls, and message sends, changes state.
+func toolCallChangesState(name, argsJSON string, defs []agentruntime.ToolDefinition) bool {
 	name = strings.TrimSpace(name)
-	for _, def := range c.runtimeTools {
+	for _, def := range defs {
 		if strings.TrimSpace(def.Name) != name || def.ChangesState == nil {
 			continue
 		}
@@ -2573,7 +2608,10 @@ func (c *coreAgentCallbacks) toolChangesState(name, argsJSON string) bool {
 		}
 		return def.ChangesState(args)
 	}
-	return false
+	if coreToolReadsOnly(name) {
+		return false
+	}
+	return true
 }
 
 func (c *coreAgentCallbacks) recordSideEffect(name, argsJSON, callID string) bool {
