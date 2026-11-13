@@ -21,7 +21,8 @@ type desktopRunFinish struct {
 	Results    []string
 	Blocker    string
 	Unblock    []string
-	Next       string
+	Next       string // improve, ask_user, or none
+	Plan       string
 	Remediated bool
 	Record     string
 }
@@ -179,7 +180,7 @@ func desktopComposeRunFinish(runID string, msg agentservice.Message, outcome, wh
 	fin := desktopRunFinish{Status: "failure", Next: "ask_user"}
 	if outcome == agentservice.TaskOutcomeDone {
 		fin.Status = "success"
-		fin.Next = "stop"
+		fin.Next = "none"
 		kind, self = "", false
 	}
 	fin.Results = desktopRunMeasuredResults(runID)
@@ -205,8 +206,11 @@ func desktopComposeRunFinish(runID string, msg agentservice.Message, outcome, wh
 			fin.Remediated = true
 		}
 		if desktopImprovementReady(kind, self, continued) {
-			fin.Next = "continue"
+			fin.Next = "improve"
 		}
+	}
+	if fin.Status == "success" {
+		fin.Next, fin.Plan = desktopSuccessImprovement(runID)
 	}
 	_ = why
 	return fin, true
@@ -255,6 +259,20 @@ func desktopRunFinishSentence(f desktopRunFinish) string {
 		if len(f.Results) > 0 {
 			s += "\n" + strings.Join(f.Results, "\n")
 		}
+		switch f.Next {
+		case "improve":
+			s += "\n接下来我继续改进"
+			if f.Plan != "" {
+				s += "：" + f.Plan
+			}
+			s += "。"
+		case "ask_user":
+			s += "\n这一步要你定"
+			if f.Plan != "" {
+				s += "：" + f.Plan
+			}
+			s += "。"
+		}
 		return s
 	}
 	var b strings.Builder
@@ -302,6 +320,31 @@ func desktopFinishSuggestion(f desktopRunFinish) string {
 // desktopImprovementReady is the gate for doing the next improvement instead
 // of ending. The blocker has to be one the bot can remove, and this run must
 // not already have tried that same step.
+// desktopSuccessImprovement reads the recorded job decision. continue
+// with the iteration gate open is improve. ask_user needs the person.
+// Anything else, including a continue the gate refuses, is none.
+func desktopSuccessImprovement(runID string) (next, plan string) {
+	next = "none"
+	for _, j := range desktopLongJobAll() {
+		if j.SourceRun != runID && j.OutcomeRun != runID {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(j.Decision)) {
+		case "ask_user":
+			return "ask_user", desktopPlainResult(j.DecisionReason)
+		case "continue":
+			if _, refuse := desktopLongJobIterationGate(j); refuse != "" {
+				continue
+			}
+			next = "improve"
+			if plan == "" {
+				plan = desktopPlainResult(j.DecisionReason)
+			}
+		}
+	}
+	return next, plan
+}
+
 func desktopImprovementReady(blocker string, self, alreadyTried bool) bool {
 	if alreadyTried || !self || blocker != "resource" {
 		return false

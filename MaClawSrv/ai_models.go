@@ -414,8 +414,12 @@ func (s *HTTPServer) decorateAssistantMessageMetadata(ctx context.Context, p age
 		// Only the declared sentence is shown. The finish note stays off it.
 		out["send_to_user"] = sentence
 	}
-	if s != nil && out != nil && out["outcome_next"] == "continue" {
-		if err := desktopRunContinueSend(ctx, s.svc, p, inst.ID, sess.ID, run.ID, out["outcome_blocker"], out["outcome_unblock"]); err != nil {
+	if s != nil && out != nil && out["outcome_next"] == "improve" {
+		plan := out["outcome_plan"]
+		if plan == "" {
+			plan = out["outcome_unblock"]
+		}
+		if err := desktopRunContinueSend(ctx, s.svc, p, inst.ID, sess.ID, run.ID, out["outcome_blocker"], plan); err != nil {
 			out["outcome_next"] = "ask_user"
 			out["outcome_remediated"] = "true"
 			out["send_to_user"] = desktopRunFinishSentence(desktopRunFinish{

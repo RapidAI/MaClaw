@@ -58,19 +58,21 @@ func applyTaskOutcome(run *Run, msg *Message) string {
 		run.Metadata = map[string]string{}
 	}
 	run.Metadata[TaskOutcomeKey] = outcome
-	for _, key := range []string{"outcome_status", "outcome_results", "outcome_blocker", "outcome_unblock", "outcome_next", "outcome_remediated", "outcome_record"} {
+	for _, key := range []string{"outcome_status", "outcome_results", "outcome_blocker", "outcome_unblock", "outcome_next", "outcome_plan", "outcome_remediated", "outcome_record"} {
 		if v := strings.TrimSpace(msg.Metadata[key]); v != "" {
 			run.Metadata[key] = v
 		}
 	}
-	if msg.Metadata["outcome_next"] == "continue" {
-		// The bot can remove this blocker itself, so this run does not
-		// end in a user-facing failure. A follow-up run does the work.
-		delete(msg.Metadata, "send_to_user")
+	improving := msg.Metadata["outcome_next"] == "improve"
+	if improving {
+		// A follow-up run does the next step. The brief sentence already
+		// in send_to_user stays; the raw reply does not replace it, and
+		// the run does not wait for a reply.
 		run.WaitingForUser = false
-		return outcome
-	}
-	if TaskOutcomeNeedsUser(outcome) {
+		if strings.TrimSpace(msg.Metadata["send_to_user"]) == "" {
+			return outcome
+		}
+	} else if TaskOutcomeNeedsUser(outcome) {
 		run.WaitingForUser = true
 	}
 	// The host sends a notice only when the reply needs one: the task is
@@ -89,7 +91,7 @@ func applyTaskOutcome(run *Run, msg *Message) string {
 	// 2026-11-11: Bot 3's 「这件没做成…桌面始终未能唤醒」 and Bot 2's post links
 	// never appeared). The reply, with its outcome notice, becomes the
 	// sentence. A question to the person keeps its own path.
-	if outcome != TaskOutcomeAwaitingUser && strings.TrimSpace(msg.Metadata["send_to_user"]) == "" && strings.TrimSpace(msg.Content) != "" {
+	if !improving && outcome != TaskOutcomeAwaitingUser && strings.TrimSpace(msg.Metadata["send_to_user"]) == "" && strings.TrimSpace(msg.Content) != "" {
 		msg.Metadata["send_to_user"] = strings.TrimSpace(msg.Content)
 		if strings.TrimSpace(msg.Metadata["send_to_user_kind"]) == "" {
 			msg.Metadata["send_to_user_kind"] = "report"

@@ -51,7 +51,7 @@ func TestRunFinishSuccessStatesTheResult(t *testing.T) {
 	if strings.Contains(got, "BEST_VAL_METRICS") || strings.Contains(got, "{") {
 		t.Fatalf("raw leaked %q", got)
 	}
-	if md["outcome_status"] != "success" || md["outcome_next"] != "stop" {
+	if md["outcome_status"] != "success" || md["outcome_next"] != "none" {
 		t.Fatalf("fields %v", md)
 	}
 	body, err := os.ReadFile(md["outcome_record"])
@@ -94,7 +94,7 @@ func TestRunFinishContinuesWhenTheBotCanFixIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "trace:\n" + strings.Repeat("x", 40)})
-	if md["outcome_next"] != "continue" || md["outcome_blocker"] != "resource" || md["send_to_user"] != "" {
+	if md["outcome_next"] != "improve" || md["outcome_blocker"] != "resource" || !strings.Contains(md["send_to_user"], "建议：") {
 		t.Fatalf("should continue without a terminal sentence: %v", md)
 	}
 	child := "run-finish-retry-2"
@@ -114,5 +114,63 @@ func TestRunFinishContinuesWhenTheBotCanFixIt(t *testing.T) {
 	}
 	if strings.Contains(got, "still") || strings.Contains(got, "{") {
 		t.Fatalf("raw leaked %q", got)
+	}
+}
+
+func TestRunFinishSuccessNamesAndStartsAnImprovement(t *testing.T) {
+	d100Env(t)
+	run := "run-finish-improve"
+	finishRunSteps(t, run)
+	metric := 0.62
+	if err := desktopLongJobSave(&desktopLongJob{
+		ID: "job_improve", SourceRun: run, Status: "done",
+		Decision: "continue", DecisionReason: "给少数类加权后再训一轮",
+		RoundMetric: &metric, RoundMetricName: "f1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "done", "text": "这一轮可以用。"}); err != nil {
+		t.Fatal(err)
+	}
+	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: `{"f1":0.62}`})
+	got := md["send_to_user"]
+	if md["outcome_status"] != "success" || md["outcome_next"] != "improve" || md["outcome_plan"] != "给少数类加权后再训一轮" {
+		t.Fatalf("fields %v", md)
+	}
+	if !strings.HasPrefix(got, "做成了。") || !strings.Contains(got, "接下来我继续改进：给少数类加权后再训一轮") || strings.Contains(got, "{") {
+		t.Fatalf("sentence %q", got)
+	}
+
+	ask := "run-finish-ask-improve"
+	finishRunSteps(t, ask)
+	if err := desktopLongJobSave(&desktopLongJob{
+		ID: "job_ask_improve", SourceRun: ask, Status: "done",
+		Decision: "ask_user", DecisionReason: "要不要改目标指标",
+		RoundMetric: &metric, RoundMetricName: "f1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: ask}, map[string]any{"outcome": "done", "text": "这一轮可以用。"}); err != nil {
+		t.Fatal(err)
+	}
+	asked := desktopTaskOutcomeMetadata(ask, agentservice.Message{Content: "done"})
+	if asked["outcome_next"] != "ask_user" || !strings.Contains(asked["send_to_user"], "这一步要你定：要不要改目标指标") {
+		t.Fatalf("ask %v", asked)
+	}
+
+	blocked := "run-finish-no-improve"
+	finishRunSteps(t, blocked)
+	if err := desktopLongJobSave(&desktopLongJob{
+		ID: "job_no_metric", SourceRun: blocked, Status: "done",
+		Decision: "continue", DecisionReason: "再训一轮",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: blocked}, map[string]any{"outcome": "done", "text": "先这样。"}); err != nil {
+		t.Fatal(err)
+	}
+	stopped := desktopTaskOutcomeMetadata(blocked, agentservice.Message{Content: "done"})
+	if stopped["outcome_next"] != "none" || strings.Contains(stopped["send_to_user"], "接下来我继续改进") {
+		t.Fatalf("preconditions not met but it improved: %v", stopped)
 	}
 }

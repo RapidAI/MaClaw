@@ -851,17 +851,20 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 		out["outcome_blocker"] = fin.Blocker
 		out["outcome_unblock"] = strings.Join(fin.Unblock, "\n")
 		out["outcome_next"] = fin.Next
+		if fin.Plan != "" {
+			out["outcome_plan"] = fin.Plan
+		}
 		if fin.Remediated {
 			out["outcome_remediated"] = "true"
 		}
 		if fin.Record != "" {
 			out["outcome_record"] = fin.Record
 		}
-		if fin.Next != "continue" {
-			out["send_to_user"] = fin.Sentence()
-			if out["send_to_user_kind"] == "" {
-				out["send_to_user_kind"] = "report"
-			}
+		out["send_to_user"] = fin.Sentence()
+		if out["send_to_user_kind"] == "" {
+			out["send_to_user_kind"] = "report"
+		}
+		if fin.Next != "improve" {
 			desktopLongJobReconcileRun(runID, fin.Status)
 		}
 	} else if sentence, ok := desktopFinishSentence(runID); ok && sentence != "" {
