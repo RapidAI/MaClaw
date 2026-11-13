@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,6 +32,26 @@ func TestScreenLeaseWaitsWhileMemoryIsHigh(t *testing.T) {
 	}
 	if got := loadDesktopActivity("run-mem"); got != "正在等待内存" {
 		t.Fatalf("activity %q", got)
+	}
+}
+
+func TestMemoryWaitGivesUpInsteadOfWaitingForever(t *testing.T) {
+	prev := desktopMemoryPressured
+	prevWait := desktopMemoryRecheck
+	prevMax := desktopMemoryWaitMax
+	t.Cleanup(func() {
+		desktopMemoryPressured = prev
+		desktopMemoryRecheck = prevWait
+		desktopMemoryWaitMax = prevMax
+	})
+	desktopMemoryRecheck = time.Millisecond
+	desktopMemoryWaitMax = 5 * time.Millisecond
+	desktopMemoryPressured = func(context.Context, string, string) (bool, string) {
+		return true, desktopMemoryWaitLine
+	}
+	err := waitDesktopMemory(context.Background(), "tenant-a", "alice", "run-mem-giveup")
+	if err == nil || !strings.Contains(err.Error(), "memory_busy") || !strings.Contains(err.Error(), "两分钟") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

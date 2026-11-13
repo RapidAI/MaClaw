@@ -532,14 +532,22 @@ func readDesktopMemoryPressure(ctx context.Context, tenantID, userID string) (bo
 // desktopMemoryRecheck is how often a waiting lease re-reads the gauge.
 var desktopMemoryRecheck = 2 * time.Second
 
+// desktopMemoryWaitMax is how long a new admission waits for memory. After
+// that the step fails instead of waiting for the rest of the run.
+var desktopMemoryWaitMax = 2 * time.Minute
+
 const desktopMemoryWaitLine = "这台电脑内存紧张，这项先排着，空出来再做。"
 
+const desktopMemoryGiveUpLine = "这台电脑内存紧张，等了两分钟还是满的，这次先不做。"
+
 // waitDesktopMemory holds a new screen lease until the container is under
-// the line. Cancelling the run ends the wait.
+// the line. Cancelling the run ends the wait. The wait has a ceiling: past
+// it the admission fails with a sentence the person can read.
 func waitDesktopMemory(ctx context.Context, tenantID, userID, runID string) error {
 	if desktopMemoryPressured == nil {
 		return nil
 	}
+	deadline := time.Now().Add(desktopMemoryWaitMax)
 	for {
 		pressed, line := desktopMemoryPressured(ctx, tenantID, userID)
 		if !pressed {
@@ -549,6 +557,9 @@ func waitDesktopMemory(ctx context.Context, tenantID, userID, runID string) erro
 			line = desktopMemoryWaitLine
 		}
 		_ = line
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("memory_busy: %s", desktopMemoryGiveUpLine)
+		}
 		// The working row only accepts a short phrase. The full sentence is
 		// the queue acknowledgement the person sees.
 		setDesktopActivity(runID, "正在等待内存")

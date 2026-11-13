@@ -23,6 +23,8 @@ type tabNote struct {
 	bot  string
 	run  string
 	used time.Time
+	// kept is a result or deliverable page. Ending the run does not close it.
+	kept bool
 }
 
 func NewTabLedger(cap int) *TabLedger {
@@ -103,6 +105,24 @@ func (l *TabLedger) Touch(targetID string) {
 	}
 }
 
+// KeepRunTab marks a tab as the run's result or deliverable page so ending
+// the run leaves it open.
+func KeepRunTab(targetID string) {
+	runTabs.Keep(targetID)
+}
+
+func (l *TabLedger) Keep(targetID string) {
+	if l == nil {
+		return
+	}
+	targetID = strings.TrimSpace(targetID)
+	l.mu.Lock()
+	if cur := l.tabs[targetID]; cur != nil {
+		cur.kept = true
+	}
+	l.mu.Unlock()
+}
+
 func (l *TabLedger) EndRun(runID string) []string {
 	runID = strings.TrimSpace(runID)
 	if l == nil || runID == "" {
@@ -112,10 +132,16 @@ func (l *TabLedger) EndRun(runID string) []string {
 	defer l.mu.Unlock()
 	var ids []string
 	for id, note := range l.tabs {
-		if note != nil && note.run == runID {
-			ids = append(ids, id)
-			delete(l.tabs, id)
+		if note == nil || note.run != runID {
+			continue
 		}
+		if note.kept {
+			// Still this bot's page, no longer this run's to close.
+			note.run = ""
+			continue
+		}
+		ids = append(ids, id)
+		delete(l.tabs, id)
 	}
 	return ids
 }

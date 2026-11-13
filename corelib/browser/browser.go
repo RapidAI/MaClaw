@@ -2383,8 +2383,15 @@ func (s *Session) noteOpenedTab(targetID string) {
 	}
 }
 
-// CloseRunTabs closes the tabs this run opened and no others.
+// CloseRunTabs closes the tabs this run opened and no others. The page left
+// in front is the result the person is looking at, so it stays open.
 func (s *Session) CloseRunTabs(runID string) {
+	if s != nil {
+		s.mu.Lock()
+		keep := s.activeTabID
+		s.mu.Unlock()
+		KeepRunTab(keep)
+	}
 	for _, id := range EndRunTabs(runID) {
 		s.closeTargetBestEffort(id)
 	}

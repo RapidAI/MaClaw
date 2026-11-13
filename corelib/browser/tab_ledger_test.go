@@ -22,6 +22,20 @@ func TestRunTabsCloseOnlyWhatThatRunOpened(t *testing.T) {
 	}
 }
 
+func TestEndRunLeavesAKeptResultPageOpen(t *testing.T) {
+	led := NewTabLedger(6)
+	led.Opened("bot_a", "run_a", "scratch")
+	led.Opened("bot_a", "run_a", "result")
+	led.Keep("result")
+	closed := led.EndRun("run_a")
+	if len(closed) != 1 || closed[0] != "scratch" {
+		t.Fatalf("closed %v, want only the scratch tab", closed)
+	}
+	if again := led.EndRun("run_a"); len(again) != 0 {
+		t.Fatalf("result page closed on a second end: %v", again)
+	}
+}
+
 func TestBotTabCapDropsThatBotsOldestTab(t *testing.T) {
 	led := NewTabLedger(2)
 	t0 := time.Date(2026, 11, 13, 16, 0, 0, 0, time.UTC)
