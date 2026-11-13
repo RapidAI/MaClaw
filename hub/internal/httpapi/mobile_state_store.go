@@ -137,6 +137,30 @@ var mobileStateBeforeMigrationCommitForTest func() error
 
 var mobilePurgeTombstonesLoaded atomic.Bool
 
+// mobileStateGen invalidates a persist that was started against an older
+// state path. Tests switch MACLAW_MOBILE_STATE_PATH between cases; a goroutine
+// still in flight must not open or recreate the next test's file.
+var mobileStateGen atomic.Uint64
+
+type mobileStateLease struct {
+	path string
+	gen  uint64
+}
+
+func mobileCurrentStateLease() mobileStateLease {
+	return mobileStateLease{path: mobileStatePath(), gen: mobileStateGen.Load()}
+}
+
+func mobileBumpStateGeneration() {
+	mobileStateWriteMu.Lock()
+	mobileStateGen.Add(1)
+	mobileStateWriteMu.Unlock()
+}
+
+func (l mobileStateLease) current() bool {
+	return l.gen == mobileStateGen.Load() && l.path == mobileStatePath()
+}
+
 func mobileStateDBPath(statePath string) string {
 	statePath = strings.TrimSpace(statePath)
 	if statePath == "" {
@@ -766,11 +790,18 @@ func mobileWriteSSHConfigTx(tx *sql.Tx, record mobileSSHVaultRecord) error {
 }
 
 func mobileRunStateTransaction(write func(*sql.Tx) error) {
+	mobileRunStateTransactionLease(mobileCurrentStateLease(), write)
+}
+
+func mobileRunStateTransactionLease(lease mobileStateLease, write func(*sql.Tx) error) {
 	mobileStateWriteMu.Lock()
 	defer mobileStateWriteMu.Unlock()
-	db, fallback, err := mobileOpenStateDB(mobileStatePath())
+	if !lease.current() {
+		return
+	}
+	db, fallback, err := mobileOpenStateDB(lease.path)
 	if err != nil || fallback {
-		mobilePersistLegacyStateLocked()
+		mobilePersistLegacyStateAt(lease.path)
 		return
 	}
 	tx, err := db.Begin()
@@ -801,8 +832,21 @@ type mobileStateOwner struct {
 }
 
 func mobileRunOwnedStateTransaction(owners []mobileStateOwner, write func(*sql.Tx) error) {
-	if db, fallback, err := mobileOpenStateDB(mobileStatePath()); err == nil && !fallback {
+	mobileRunOwnedStateTransactionLease(mobileCurrentStateLease(), owners, write)
+}
+
+func mobileRunOwnedStateTransactionLease(lease mobileStateLease, owners []mobileStateOwner, write func(*sql.Tx) error) {
+	mobileStateWriteMu.Lock()
+	if !lease.current() {
+		mobileStateWriteMu.Unlock()
+		return
+	}
+	if db, fallback, err := mobileOpenStateDB(lease.path); err == nil && !fallback {
 		mobileSyncPurgeTombstones(db)
+	}
+	mobileStateWriteMu.Unlock()
+	if !lease.current() {
+		return
 	}
 	mobileKnowledgePurgeState.RLock()
 	for _, owner := range owners {
@@ -812,7 +856,7 @@ func mobileRunOwnedStateTransaction(owners []mobileStateOwner, write func(*sql.T
 		}
 	}
 	mobileKnowledgePurgeState.RUnlock()
-	mobileRunStateTransaction(func(tx *sql.Tx) error {
+	mobileRunStateTransactionLease(lease, func(tx *sql.Tx) error {
 		for _, owner := range owners {
 			purged, err := mobileOwnerPurgedTx(tx, owner.tenantID, owner.ownerID)
 			if err != nil {
@@ -1038,8 +1082,20 @@ func mobilePersistPushUser(tenantID, ownerID string) {
 }
 
 func mobilePersistServerProfiles(tenantID, ownerID, sourceMachineID string, replaceSource bool, records []mobileServerProfileRecord) {
+	mobilePersistServerProfilesLease(mobileCurrentStateLease(), tenantID, ownerID, sourceMachineID, replaceSource, records)
+}
+
+func mobilePersistServerProfilesAsync(tenantID, ownerID, sourceMachineID string, replaceSource bool, records []mobileServerProfileRecord) {
+	lease := mobileCurrentStateLease()
+	go mobilePersistServerProfilesLease(lease, tenantID, ownerID, sourceMachineID, replaceSource, records)
+}
+
+func mobilePersistServerProfilesLease(lease mobileStateLease, tenantID, ownerID, sourceMachineID string, replaceSource bool, records []mobileServerProfileRecord) {
+	if !lease.current() {
+		return
+	}
 	owners := []mobileStateOwner{{tenantID: tenantID, ownerID: ownerID}}
-	mobileRunOwnedStateTransaction(owners, func(tx *sql.Tx) error {
+	mobileRunOwnedStateTransactionLease(lease, owners, func(tx *sql.Tx) error {
 		if replaceSource {
 			if _, err := tx.Exec(`DELETE FROM server_profiles WHERE tenant_id=? AND owner_id=? AND source_machine_id=?`, tenantID, ownerID, sourceMachineID); err != nil {
 				return err
@@ -1055,8 +1111,20 @@ func mobilePersistServerProfiles(tenantID, ownerID, sourceMachineID string, repl
 }
 
 func mobilePersistSSHQuick(profile mobileServerProfileRecord, secret mobileSSHVaultRecord) {
+	mobilePersistSSHQuickLease(mobileCurrentStateLease(), profile, secret)
+}
+
+func mobilePersistSSHQuickAsync(profile mobileServerProfileRecord, secret mobileSSHVaultRecord) {
+	lease := mobileCurrentStateLease()
+	go mobilePersistSSHQuickLease(lease, profile, secret)
+}
+
+func mobilePersistSSHQuickLease(lease mobileStateLease, profile mobileServerProfileRecord, secret mobileSSHVaultRecord) {
+	if !lease.current() {
+		return
+	}
 	owners := []mobileStateOwner{{tenantID: secret.TenantID, ownerID: secret.OwnerID}}
-	mobileRunOwnedStateTransaction(owners, func(tx *sql.Tx) error {
+	mobileRunOwnedStateTransactionLease(lease, owners, func(tx *sql.Tx) error {
 		if err := mobileWriteServerProfileTx(tx, profile); err != nil {
 			return err
 		}
@@ -1065,12 +1133,36 @@ func mobilePersistSSHQuick(profile mobileServerProfileRecord, secret mobileSSHVa
 }
 
 func mobilePersistSSHConfig(secret mobileSSHVaultRecord) {
+	mobilePersistSSHConfigLease(mobileCurrentStateLease(), secret)
+}
+
+func mobilePersistSSHConfigAsync(secret mobileSSHVaultRecord) {
+	lease := mobileCurrentStateLease()
+	go mobilePersistSSHConfigLease(lease, secret)
+}
+
+func mobilePersistSSHConfigLease(lease mobileStateLease, secret mobileSSHVaultRecord) {
+	if !lease.current() {
+		return
+	}
 	owners := []mobileStateOwner{{tenantID: secret.TenantID, ownerID: secret.OwnerID}}
-	mobileRunOwnedStateTransaction(owners, func(tx *sql.Tx) error { return mobileWriteSSHConfigTx(tx, secret) })
+	mobileRunOwnedStateTransactionLease(lease, owners, func(tx *sql.Tx) error { return mobileWriteSSHConfigTx(tx, secret) })
 }
 
 func mobileDeleteSSHConfig(tenantID, ownerID, profileID string) {
-	mobileRunStateTransaction(func(tx *sql.Tx) error {
+	mobileDeleteSSHConfigLease(mobileCurrentStateLease(), tenantID, ownerID, profileID)
+}
+
+func mobileDeleteSSHConfigAsync(tenantID, ownerID, profileID string) {
+	lease := mobileCurrentStateLease()
+	go mobileDeleteSSHConfigLease(lease, tenantID, ownerID, profileID)
+}
+
+func mobileDeleteSSHConfigLease(lease mobileStateLease, tenantID, ownerID, profileID string) {
+	if !lease.current() {
+		return
+	}
+	mobileRunStateTransactionLease(lease, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`DELETE FROM ssh_configs WHERE tenant_id=? AND owner_id=? AND profile_id=?`, tenantID, ownerID, profileID)
 		return err
 	})

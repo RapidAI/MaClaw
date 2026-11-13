@@ -460,8 +460,11 @@ func mobileNormalizePersistedTenantID(tenantID *string) bool {
 // mobilePersistLegacyStateLocked is used only when SQLite initialization or
 // migration failed and the original JSON file remains the active store.
 func mobilePersistLegacyStateLocked() {
-	path := mobileStatePath()
-	if path == "" {
+	mobilePersistLegacyStateAt(mobileStatePath())
+}
+
+func mobilePersistLegacyStateAt(path string) {
+	if path == "" || path != mobileStatePath() {
 		return
 	}
 	state := mobilePersistentState{
@@ -551,6 +554,7 @@ func mobilePersistLegacyStateLocked() {
 }
 
 func mobileResetStatePersistenceForTest() {
+	mobileBumpStateGeneration()
 	mobileStopMeetingRecordingRetentionCleanupForTest()
 	mobileCloseStateDBForTest()
 	mobileStatePersistence.Lock()
@@ -7100,7 +7104,7 @@ func MobileServerProfilesHandler(identity *auth.IdentityService) http.HandlerFun
 			for _, record := range next {
 				records = append(records, record)
 			}
-			go mobilePersistServerProfiles(tenantID, ownerID, sourceMachineID, !viewerUpsert, records)
+			mobilePersistServerProfilesAsync(tenantID, ownerID, sourceMachineID, !viewerUpsert, records)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status": "ok",
 				"count":  len(next),
