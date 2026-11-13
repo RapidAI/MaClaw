@@ -58,11 +58,17 @@ func TestDesktopPageListIncludesEveryTab(t *testing.T) {
 	defer srv.Close()
 
 	text := listDesktopOpenPages(srv.URL, "fb")
-	if !strings.Contains(text, "this bot's page only") || !strings.Contains(text, "- attached (20+) Facebook — https://www.facebook.com/") {
+	if !strings.Contains(text, "- yours: (20+) Facebook — https://www.facebook.com/") {
 		t.Fatalf("text=%q", text)
 	}
-	if strings.Contains(text, "YouTube") || strings.Contains(text, "secret") || strings.Contains(text, "worker") {
-		t.Fatalf("another tab was offered as this bot's page: %q", text)
+	if !strings.Contains(text, "- not yours: A long YouTube title — https://www.youtube.com/watch") {
+		t.Fatalf("foreign page was hidden or rewritten: %q", text)
+	}
+	if !strings.Contains(text, "do not publish") || !strings.Contains(text, "do not buy") || !strings.Contains(text, "do not offer it as a task") {
+		t.Fatalf("foreign page was not marked off-limits: %q", text)
+	}
+	if strings.Contains(text, "secret") || strings.Contains(text, "worker") || strings.Contains(text, "- yours: A long YouTube") {
+		t.Fatalf("foreign page was offered as this bot's: %q", text)
 	}
 }
 

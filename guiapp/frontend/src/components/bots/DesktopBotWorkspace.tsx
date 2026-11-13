@@ -161,6 +161,7 @@ import {
     stripConfirmedOrderLead,
     BOT_RETURN_TASK,
     saveBotMessages,
+    orderDesktopTranscript,
     applySupplementOutcomes,
     type BotPhase,
     type DesktopBot,
@@ -2586,17 +2587,36 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         let cancel = false;
         void Promise.resolve(GetDesktopBotConversation(selectedId)).then(raw => {
             if (cancel || !raw) return;
-            const snap = raw as { messages?: Array<{ id?: string; role?: string; text?: string; at?: string; kind?: string; run_id?: string }> };
+            const snap = raw as {
+                messages?: Array<{ id?: string; role?: string; text?: string; at?: string; kind?: string; run_id?: string }>;
+                asks?: Array<{ run_id?: string; question?: string; options?: string[]; withdrawn?: boolean }>;
+            };
             const rows = snap.messages || [];
             if (rows.length === 0) return;
-            const next = rows.map(row => ({
-                id: String(row.id || ''),
-                role: (row.role === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
-                content: String(row.text || ''),
-                chat: true,
-            })).filter(row => row.id && row.content);
+            const asks = snap.asks || [];
+            const askAttached = new Set<string>();
+            const next = rows.map(row => {
+                const at = Date.parse(String(row.at || ''));
+                const runID = String(row.run_id || '');
+                const ask = row.role === 'assistant' && runID && !askAttached.has(runID)
+                    ? asks.find(item => item.run_id === runID)
+                    : undefined;
+                if (ask && runID) askAttached.add(runID);
+                const options = Array.isArray(ask?.options) ? ask.options.filter(Boolean) : [];
+                return {
+                    id: String(row.id || ''),
+                    role: (row.role === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
+                    content: String(row.text || ''),
+                    chat: true,
+                    runId: String(row.run_id || '') || undefined,
+                    serverAt: Number.isFinite(at) ? at : undefined,
+                    askUser: ask && options.length > 0 ? { question: ask.question, options } : undefined,
+                    askWithdrawn: ask?.withdrawn === true,
+                    askResolved: ask?.withdrawn === true,
+                };
+            }).filter(row => row.id && row.content);
             if (next.length === 0) return;
-            setMessagesByBot(prev => ({ ...prev, [selectedId]: next }));
+            setMessagesByBot(prev => ({ ...prev, [selectedId]: orderDesktopTranscript(next) }));
         }).catch(() => undefined);
         return () => { cancel = true; };
     }, [selectedId]);
@@ -6996,7 +7016,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         />
                                     ) : null}
                                     {/* No confirm button: an arranged plan continues on its own (runArrangedPlan). */}
-                                    {message.askUser?.options && message.askUser.options.length > 0 && !message.askResolved && !message.userControl ? (
+                                    {message.askWithdrawn ? (
+                                        <p className="desktop-bot-chat__ask-withdrawn" data-testid="desktop-bot-ask-withdrawn">
+                                            {lang.startsWith('zh') ? '这个问题已经过去了。' : 'This question has passed.'}
+                                        </p>
+                                    ) : null}
+                                    {message.askUser?.options && message.askUser.options.length > 0 && !message.askResolved && !message.askWithdrawn && !message.userControl ? (
                                         <DesktopBotInquiryCard
                                             question={message.askUser.question}
                                             options={message.askUser.options}
