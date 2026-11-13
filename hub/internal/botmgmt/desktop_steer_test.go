@@ -18,6 +18,7 @@ type intakeSrv struct {
 	turnKeySrv
 	mu      sync.Mutex
 	intake  string
+	bodies  []string
 	posts   []string
 	supps   []string
 	cancels int
@@ -28,7 +29,9 @@ type intakeSrv struct {
 func (s *intakeSrv) handle(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/bot-intake"):
+		raw, _ := io.ReadAll(r.Body)
 		s.mu.Lock()
+		s.bodies = append(s.bodies, string(raw))
 		body := s.intake
 		s.mu.Unlock()
 		if body == "" {
@@ -66,6 +69,50 @@ func (s *intakeSrv) handle(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"async":true,"run":{"id":"run_turn","status":"running"}}`))
 	default:
 		s.handler(w, r)
+	}
+}
+
+func TestJDFollowUpKeepsTheCancelledOrderInTheNewRun(t *testing.T) {
+	const (
+		original = "我帮去京东下单买一件饮料，默认地址发货"
+		explain  = "是别的任务，我说明一下"
+		follow   = "京东下单阿"
+	)
+	fake := &intakeSrv{intake: `{"kind":"new","instruction":"` + original + `","ack":"好。","pace":"direct"}`}
+	srv := httptest.NewServer(http.HandlerFunc(fake.handle))
+	defer srv.Close()
+	svc := newTurnKeyService(t, srv)
+	first, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", original, "execute", "turn-jd-1")
+	if err != nil || first.Kind == "reply" {
+		t.Fatalf("first = %+v %v", first, err)
+	}
+	fake.mu.Lock()
+	fake.intake = `{"kind":"reply","instruction":"","ack":"你说。","told":"你说。","pace":"reply"}`
+	fake.mu.Unlock()
+	second, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", explain, "execute", "turn-jd-2")
+	if err != nil || second.Kind != "reply" {
+		t.Fatalf("explain = %+v %v", second, err)
+	}
+	fake.mu.Lock()
+	fake.intake = `{"kind":"new","instruction":"京东下单啊","ack":"好，去下单。","pace":"direct"}`
+	fake.mu.Unlock()
+	third, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", follow, "execute", "turn-jd-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.bodies) < 3 || !strings.Contains(fake.bodies[2], original) || !strings.Contains(fake.bodies[2], explain) {
+		t.Fatalf("intake earlier = %v", fake.bodies)
+	}
+	if len(fake.posts) < 2 {
+		t.Fatalf("posts = %v", fake.posts)
+	}
+	posted := fake.posts[len(fake.posts)-1]
+	for _, part := range []string{original, explain, "饮料", "默认地址", follow} {
+		if !strings.Contains(posted, part) {
+			t.Fatalf("run instruction missing %q in %s (admission %+v)", part, posted, third)
+		}
 	}
 }
 

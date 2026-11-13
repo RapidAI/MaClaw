@@ -29,8 +29,8 @@ type DesktopBotRunPause struct {
 }
 
 // PauseDesktopBotRun holds a running remote run at its next step boundary.
-// timeoutSec <= 0 uses the server default (30 minutes); when the pause
-// times out the server cancels the run.
+// A person pause (reason pause) and a takeover do not cancel on a timer.
+// timeoutSec <= 0 uses the server policy for that reason.
 func (a *App) PauseDesktopBotRun(botID, runID, reason string, timeoutSec int) (*DesktopBotRunPause, error) {
 	body := map[string]any{"reason": strings.TrimSpace(reason)}
 	if timeoutSec > 0 {

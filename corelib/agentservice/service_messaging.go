@@ -542,6 +542,9 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	// cancellation all converge on this line, and each of them owes the person
 	// an honest report for anything queued but unconsumed.
 	s.reapRunSupplements(run.ID)
+	if s.pauses.release(run.ID) {
+		s.persistPauses()
+	}
 	run.CompletedAt = &completed
 	run.DurationMs = completed.Sub(run.StartedAt).Milliseconds()
 	if execErr != nil {

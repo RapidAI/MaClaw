@@ -115,6 +115,12 @@ func operateDesktopWithTimeout(ctx context.Context, scope agentruntime.Scope, ar
 			return "", ctx.Err()
 		}
 		log.Printf("[desktop-step] action=%s timed out after %s (hard step timeout)", action, limit)
+		if text, ask, ok := desktopTimeoutHandoff(scope, action); ok {
+			if ask {
+				return finishDesktopActionPhase(scope, text, nil, "execute")
+			}
+			return text, nil
+		}
 		desktopDropStuckBinding(scope)
 		if note := desktopUnstickAfterTimeout(scope, action, args); note != "" {
 			return "", fmt.Errorf("desktop %s timed out after %ds (hard step timeout); %s", action, int(limit.Seconds()), note)

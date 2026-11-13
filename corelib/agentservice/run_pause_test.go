@@ -3,6 +3,8 @@ package agentservice
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -96,23 +98,63 @@ func TestRunPauseCancelWakesHeldRun(t *testing.T) {
 	}
 }
 
-func TestRunPauseTimeoutCancels(t *testing.T) {
+func TestUserPauseNeverAutoCancels(t *testing.T) {
 	svc, p, inst, run, done := livePausableRun(t)
 	defer done()
-	if _, err := svc.PauseRun(context.Background(), p, inst.ID, run.ID, "", 80*time.Millisecond); err != nil {
+	st, err := svc.PauseRun(context.Background(), p, inst.ID, run.ID, "pause", 40*time.Millisecond)
+	if err != nil || st.OnTimeout != "hold" || st.TimeoutSec != 0 {
+		t.Fatalf("pause: %v %+v", err, st)
+	}
+	held := heldIn(svc, run.ID)
+	select {
+	case <-held:
+		t.Fatal("a user pause ended by itself")
+	case <-time.After(120 * time.Millisecond):
+	}
+	got, _ := svc.store.GetRun(p.TenantID, p.UserID, inst.ID, run.ID)
+	if got.Status != RunStatusRunning {
+		t.Fatalf("status %s", got.Status)
+	}
+	if _, err := os.Stat(filepath.Join(svc.DataRoot(), "run-pauses.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ResumeRun(context.Background(), p, inst.ID, run.ID); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case <-heldIn(svc, run.ID):
-	case <-time.After(3 * time.Second):
-		t.Fatal("pause never timed out")
+	case <-held:
+	case <-time.After(time.Second):
+		t.Fatal("resume did not release the user pause")
+	}
+}
+
+func TestTakeoverPauseDoesNotCancel(t *testing.T) {
+	svc, p, inst, run, done := livePausableRun(t)
+	defer done()
+	if _, err := svc.PauseRun(context.Background(), p, inst.ID, run.ID, "takeover", 40*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	held := heldIn(svc, run.ID)
+	time.Sleep(120 * time.Millisecond)
+	select {
+	case <-held:
+		t.Fatal("takeover pause ended on the timer")
+	default:
 	}
 	got, _ := svc.store.GetRun(p.TenantID, p.UserID, inst.ID, run.ID)
-	if got.Status != RunStatusCancelled {
-		t.Fatalf("timed-out pause left run %s", got.Status)
+	if got.Status != RunStatusRunning || !got.WaitingForUser {
+		t.Fatalf("status %s waiting %v", got.Status, got.WaitingForUser)
 	}
-	if st, _ := svc.RunPause(context.Background(), p, inst.ID, run.ID); st.Outcome != "timed_out" {
-		t.Fatalf("outcome %+v", st)
+	if _, err := svc.HeartbeatRunPause(context.Background(), p, inst.ID, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ResumeRun(context.Background(), p, inst.ID, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-held:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resume did not release the takeover pause")
 	}
 }
 

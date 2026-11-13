@@ -59,10 +59,66 @@ func TestIntakeStopPauseContinueNeedALiveRun(t *testing.T) {
 		t.Fatalf("ambiguous stop fell through as %+v %v", got, err)
 	}
 	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "继续"}, func(context.Context, string, string) (string, error) {
-		return `{"kind":"continue","run":1,"instruction":"","ack":"接着做。","pace":"direct"}`, nil
+		return `{"kind":"continue","run":1,"instruction":"继续","ack":"没有可以继续的事。","pace":"direct"}`, nil
 	})
-	if err != nil || got.Kind != "new" {
-		t.Fatalf("continue with nothing running = %+v %v", got, err)
+	if err != nil || got.Kind != "reply" || got.Instruction != "" || !intakeSaysNoWork(got.Ack) {
+		t.Fatalf("continue with nothing must not start a run: %+v %v", got, err)
+	}
+}
+
+func TestJDFollowUpResolvesAgainstTheEarlierOrder(t *testing.T) {
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	const (
+		original = "我帮去京东下单买一件饮料，默认地址发货"
+		explain  = "是别的任务，我说明一下"
+		follow   = "京东下单阿"
+	)
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{
+		BotID: "bot_p", Content: follow, Earlier: []string{original, explain},
+	}, func(_ context.Context, _, user string) (string, error) {
+		if !strings.Contains(user, original) || !strings.Contains(user, explain) {
+			t.Fatalf("intake prompt dropped earlier turns:\n%s", user)
+		}
+		return `{"kind":"new","run":0,"instruction":"京东下单啊","ack":"好，去下单。","pace":"direct"}`, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, part := range []string{original, explain, "饮料", "默认地址", "京东下单啊"} {
+		if !strings.Contains(got.Instruction, part) {
+			t.Fatalf("instruction missing %q in %q", part, got.Instruction)
+		}
+	}
+	if strings.Contains(got.Instruction, "原话：") {
+		t.Fatalf("instruction appended the raw sentence: %q", got.Instruction)
+	}
+}
+
+func TestContinueRelaunchesACancelledRunWithItsTask(t *testing.T) {
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	stopped := []BotIntakeRun{{
+		RunID: "run_old", Task: "在京东下单", Status: "cancelled", Progress: "已打开商品页",
+		CompletedSteps: []string{"打开商品页"},
+	}}
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{
+		BotID: "bot_p", Content: "继续", Earlier: []string{"在京东下单"}, Running: stopped,
+	}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"continue","run":1,"instruction":"继续","ack":"没有可以继续的事。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Phase != "plan" || got.Instruction != "在京东下单" {
+		t.Fatalf("relaunch must wait for confirmation: %+v %v", got, err)
+	}
+	if len(got.ConfirmBefore) == 0 || got.ConfirmBefore[0] != "打开商品页" {
+		t.Fatalf("completed steps were not carried: %+v", got)
+	}
+	paused := []BotIntakeRun{{RunID: "run_hold", Task: "在京东下单", Status: "paused"}}
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "继续", Running: paused}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"continue","run":0,"instruction":"","ack":"没有可以继续的事。","pace":"direct"}`, nil
+	})
+	if err != nil || got.Kind != "continue" || got.RunID != "run_hold" || intakeSaysNoWork(got.Ack) {
+		t.Fatalf("paused resume = %+v %v", got, err)
 	}
 }
 
@@ -149,7 +205,7 @@ func TestIntakePhaseComesFromTheModelAndTimeoutStaysExecute(t *testing.T) {
 	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "确认，开始吧"}, func(context.Context, string, string) (string, error) {
 		return `{"kind":"continue","run":0,"instruction":"","ack":"开始。","pace":"direct","phase":"plan"}`, nil
 	})
-	if err != nil || got.Kind != "new" || got.Phase != "execute" {
+	if err != nil || got.Kind != "reply" || got.Instruction != "" || got.Reason != "nothing to continue" {
 		t.Fatalf("confirm follow-up = %+v %v", got, err)
 	}
 	prev := BotIntakeBudget

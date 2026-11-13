@@ -73,6 +73,15 @@ func PostBotDesktopHandBackHandler(svc *botmgmt.Service, identity botAuthenticat
 			writeBotUserError(w, r, principal, err, "")
 			return
 		}
+		if runID, ok := svc.ResumeTakeoverRuns(r.Context(), principal.TenantID, principal.UserID, botID); ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"handed_back": true,
+				"accepted":    true,
+				"run_id":      runID,
+				"status":      "running",
+			})
+			return
+		}
 		if in.Resume != nil && !*in.Resume {
 			writeJSON(w, http.StatusOK, map[string]any{"handed_back": true})
 			return

@@ -63,7 +63,9 @@ const listBotTasks = vi.hoisted(() => vi.fn(async (_botId?: string) => [] as Arr
 const listActiveRuns = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<Array<Record<string, unknown>>> => []));
 const listTaskRuns = vi.hoisted(() => vi.fn(async (_botId?: string) => [] as Array<Record<string, unknown>>));
 const cancelRun = vi.hoisted(() => vi.fn(async (_botId?: string, _runId?: string) => undefined));
+const pauseRun = vi.hoisted(() => vi.fn(async (_botId?: string, _runId?: string, _reason?: string) => ({ run_id: _runId, paused: true })));
 const armAdmitCancel = vi.hoisted(() => vi.fn(async (_botId?: string) => undefined));
+const armAdmitPause = vi.hoisted(() => vi.fn(async (_botId?: string, _reason?: string) => undefined));
 type DesktopBusyMock = { seq: number; marks: Array<{ owner_id?: string; bot_id: string; count: number }>; runs?: string[] };
 const getDesktopBusy = vi.hoisted(() => vi.fn(async (_owner?: string): Promise<DesktopBusyMock> => ({ seq: 0, marks: [] })));
 const evaluateSupplement = vi.hoisted(() => vi.fn(async (_taskText?: string, _content?: string, _lang?: string): Promise<{ is_supplement?: boolean; decision?: string; instruction?: string } | null> => null));
@@ -156,7 +158,9 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     QueryDesktopBotTaskStatus: (botId: string, hint: string, lang: string) => queryTaskStatus(botId, hint, lang),
     ListDesktopBotTasks: (botId: string) => listBotTasks(botId),
     CancelDesktopBotRun: (botId: string, runId: string) => cancelRun(botId, runId),
+    PauseDesktopBotRun: (botId: string, runId: string, reason?: string) => pauseRun(botId, runId, reason),
     ArmDesktopBotAdmitCancel: (botId: string) => armAdmitCancel(botId),
+    ArmDesktopBotAdmitPause: (botId: string, reason?: string) => armAdmitPause(botId, reason),
     GetActiveDesktopRuns: (botId: string) => listActiveRuns(botId),
     GetDesktopBotBusy: (owner: string) => getDesktopBusy(owner),
     EvaluateDesktopTaskSupplement: (taskText: string, content: string, lang: string) => evaluateSupplement(taskText, content, lang),
@@ -234,10 +238,10 @@ function told(text: string, phase: BotPhase = 'plan'): string {
     return `表述:${text}`;
 }
 
-// While the bot drives, the panel offers only 停止: no takeover controls.
+// While the bot drives, the panel offers takeover (pause) and an explicit stop.
 function expectStopOnly() {
-    expect(screen.queryByTestId('desktop-bot-takeover')).toBeNull();
-    expect(screen.queryByTestId('desktop-bot-take-control')).toBeNull();
+    expect(screen.getByTestId('desktop-bot-takeover')).toBeTruthy();
+    expect(screen.getByTestId('desktop-bot-take-control')).toBeTruthy();
     expect(screen.getByTestId('desktop-bot-panel-stop')).toBeTruthy();
 }
 
@@ -331,6 +335,8 @@ beforeEach(() => {
     listActiveRuns.mockResolvedValue([]);
     cancelRun.mockReset();
     cancelRun.mockResolvedValue(undefined);
+    pauseRun.mockReset();
+    pauseRun.mockResolvedValue({ paused: true });
     armAdmitCancel.mockReset();
     armAdmitCancel.mockResolvedValue(undefined);
     queryTaskStatus.mockReset();
@@ -845,7 +851,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
         await screen.findByTestId('desktop-bot-panel-stop');
         expectStopOnly();
-        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('Bot 正在操作桌面，需要的话可以先停止它');
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('Bot 正在操作桌面。可以接管，同一项会暂停，交还后继续；停止才会取消。');
         const chatWhileDriving = screen.getByTestId('desktop-bot-chat');
         const panelWhileDriving = screen.getByTestId('desktop-bot-panel');
         const drivingSrc = (await screen.findByTestId('desktop-bot-handoff')).getAttribute('src') || '';
@@ -862,7 +868,8 @@ describe('DesktopBotWorkspace', () => {
             text: '已打开 example.org',
             send_to_user: '已打开 example.org',
         });
-        const idle = await screen.findByTestId('desktop-bot-takeover');
+        await waitFor(() => expect(screen.queryByTestId('desktop-bot-panel-stop')).toBeNull());
+        const idle = screen.getByTestId('desktop-bot-takeover');
         expect((idle as HTMLButtonElement).disabled).toBe(false);
         const watching = screen.getByTestId('desktop-bot-handoff');
         fireEvent.click(idle);
@@ -924,7 +931,7 @@ describe('DesktopBotWorkspace', () => {
         });
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
         await screen.findByTestId('desktop-bot-panel-stop'); expectStopOnly();
-        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('Bot 正在操作桌面，需要的话可以先停止它');
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('Bot 正在操作桌面。可以接管，同一项会暂停，交还后继续；停止才会取消。');
 
         openRow('bot_2');
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
@@ -1006,7 +1013,7 @@ describe('DesktopBotWorkspace', () => {
         });
         expectStopOnly();
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
-        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('Bot 正在操作桌面，需要的话可以先停止它');
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('Bot 正在操作桌面。可以接管，同一项会暂停，交还后继续；停止才会取消。');
 
         await act(async () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', busy: false });
@@ -1166,7 +1173,7 @@ describe('DesktopBotWorkspace', () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: true });
         });
         expectStopOnly();
-        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('Bot 正在操作桌面，需要的话可以先停止它');
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('Bot 正在操作桌面。可以接管，同一项会暂停，交还后继续；停止才会取消。');
     });
 
     it('keeps a login handoff when another bot is using its own desktop', async () => {
@@ -2370,10 +2377,11 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
         await waitFor(() => expect(sendTask).toHaveBeenCalled());
         const pause = await screen.findByTestId('desktop-bot-pause');
-        expect(pause.getAttribute('aria-label')).toBe('停下');
+        expect(pause.getAttribute('aria-label')).toBe('暂停');
         fireEvent.click(pause);
-        expect(await screen.findByText('停了。去小红书打招呼 不再继续。')).toBeTruthy();
-        expect(cancelRun).toHaveBeenCalledWith('bot_1', 'run-xhs');
+        expect(await screen.findByText('先暂停了。交还或说继续后，同一项接着做。')).toBeTruthy();
+        expect(pauseRun).toHaveBeenCalledWith('bot_1', 'run-xhs', 'pause');
+        expect(cancelRun).not.toHaveBeenCalled();
     });
 
     it('stops a run this window did not start, found on Hub, once per tap burst', async () => {
@@ -2393,9 +2401,10 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(pause);
         fireEvent.click(pause);
         fireEvent.click(pause);
-        await waitFor(() => expect(cancelRun).toHaveBeenCalledWith('bot_1', 'run_eafb6f42'));
-        expect(await screen.findByText('停了。做摘要发知乎 不再继续。')).toBeTruthy();
-        expect(cancelRun).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect(pauseRun).toHaveBeenCalledWith('bot_1', 'run_eafb6f42', 'pause'));
+        expect(await screen.findByText('先暂停了。交还或说继续后，同一项接着做。')).toBeTruthy();
+        expect(pauseRun).toHaveBeenCalledTimes(1);
+        expect(cancelRun).not.toHaveBeenCalled();
         expect(screen.queryByText(/nothing|Say plainly/i)).toBeNull();
     });
 
@@ -4610,15 +4619,16 @@ describe('the page forwards words and renders the server decision', () => {
         }
     });
 
-    it('still cancels from the stop control, which is an explicit action', async () => {
+    it('pauses from the pause control and does not cancel', async () => {
         listActiveRuns.mockResolvedValue([{ run_id: 'run_live', task_text: '打开示例网站', status: 'running' }]);
         sendTask.mockResolvedValue({ request_id: 'desktop-bot-live', deferred: true, session_key: 'alice:bot_1' });
         await openDuty();
         await typeAndSend('打开示例网站');
         const mark = await screen.findByTestId('desktop-bot-pause');
         fireEvent.click(mark);
-        await waitFor(() => expect(cancelRun).toHaveBeenCalledWith('bot_1', 'run_live'));
-        expect(await screen.findByText('还在收尾，停稳了告诉你。')).toBeTruthy();
+        await waitFor(() => expect(pauseRun).toHaveBeenCalledWith('bot_1', 'run_live', 'pause'));
+        expect(cancelRun).not.toHaveBeenCalled();
+        expect(await screen.findByText('先暂停了。交还或说继续后，同一项接着做。')).toBeTruthy();
     });
 
     it('forwards 继续 instead of treating it as a keyword', async () => {

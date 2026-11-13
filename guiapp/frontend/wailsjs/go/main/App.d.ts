@@ -2583,7 +2583,11 @@ export function QueryDesktopBotTaskStatus(arg1:string,arg2:string,arg3:string):P
 
 export function CancelDesktopBotRun(arg1:string,arg2:string):Promise<void>;
 
+export function PauseDesktopBotRun(arg1:string,arg2:string,arg3:string,arg4:number):Promise<any>;
+
 export function ArmDesktopBotAdmitCancel(arg1:string):Promise<void>;
+
+export function ArmDesktopBotAdmitPause(arg1:string,arg2:string):Promise<void>;
 
 export function PullDesktopBotDeliveries():Promise<void>;
 
