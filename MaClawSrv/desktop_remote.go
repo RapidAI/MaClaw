@@ -304,7 +304,33 @@ func desktopStatusError(status int, payload []byte) error {
 	if status == http.StatusConflict && code == desktopbot.CodeDesktopAsleep {
 		return desktopbot.AsleepError{}
 	}
-	return fmt.Errorf("%s", desktopRejectedMessage(payload))
+	return &desktopAPIError{Status: status, Code: code, Msg: desktopRejectedMessage(payload)}
+}
+
+// desktopAPIError is a Hub rejection. Code and status are the contract.
+// The message text is only for logs.
+type desktopAPIError struct {
+	Status int
+	Code   string
+	Msg    string
+}
+
+func (e *desktopAPIError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Msg != "" {
+		return e.Msg
+	}
+	return e.Code
+}
+
+// desktopHubNotFound reports a Hub 404 whose code is NOT_FOUND. That status
+// is not itself a missing resume target: a file or another resource uses
+// the same code. The caller checks the instance it was resuming.
+func desktopHubNotFound(err error) bool {
+	var api *desktopAPIError
+	return errors.As(err, &api) && api.Status == http.StatusNotFound && api.Code == "NOT_FOUND"
 }
 
 func desktopRejectedMessage(payload []byte) string {

@@ -114,8 +114,15 @@ func (s *Service) DeleteInstance(ctx context.Context, p Principal, instanceID st
 		return err
 	}
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "instance.deleted", ResourceType: "instance", ResourceID: instanceID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID})
+	if AfterInstanceDeleted != nil {
+		AfterInstanceDeleted(p.TenantID, instanceID)
+	}
 	return nil
 }
+
+// AfterInstanceDeleted runs once the instance row is gone. The host drops
+// background watches for this tenant and instance. Nil is a no-op.
+var AfterInstanceDeleted func(tenantID, instanceID string)
 
 func (s *Service) StopInstance(ctx context.Context, p Principal, instanceID string) (*Instance, error) {
 	_ = ctx

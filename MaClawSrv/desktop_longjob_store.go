@@ -82,6 +82,18 @@ func desktopLongJobListFor(scope agentruntime.Scope) []*desktopLongJob {
 	return out
 }
 
+func desktopLongJobAll() []*desktopLongJob {
+	desktopLongJobMu.Lock()
+	defer desktopLongJobMu.Unlock()
+	desktopLongJobLoadLocked()
+	out := make([]*desktopLongJob, 0, len(desktopLongJobMem))
+	for _, j := range desktopLongJobMem {
+		cp := *j
+		out = append(out, &cp)
+	}
+	return out
+}
+
 func desktopLongJobRunning() []*desktopLongJob {
 	desktopLongJobMu.Lock()
 	defer desktopLongJobMu.Unlock()

@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"path"
@@ -85,20 +86,26 @@ func desktopLongJobInternal(ctx context.Context) bool {
 }
 
 type desktopLongJob struct {
-	ID          string        `json:"id"`
-	TenantID    string        `json:"tenant_id"`
-	UserID      string        `json:"user_id"`
-	InstanceID  string        `json:"instance_id"`
-	SessionID   string        `json:"session_id"`
-	BotID       string        `json:"bot_id,omitempty"`
-	SourceRun   string        `json:"source_run,omitempty"`
-	Command     string        `json:"command"`
-	Dir         string        `json:"dir"`
-	LogFile     string        `json:"log_file"`
-	PidFile     string        `json:"pid_file"`
-	ExitFile    string        `json:"exit_file"`
-	PID         string        `json:"pid,omitempty"`
-	Status      string        `json:"status"` // running, stalled, failed, done
+	ID         string `json:"id"`
+	TenantID   string `json:"tenant_id"`
+	UserID     string `json:"user_id"`
+	InstanceID string `json:"instance_id"`
+	SessionID  string `json:"session_id"`
+	BotID      string `json:"bot_id,omitempty"`
+	SourceRun  string `json:"source_run,omitempty"`
+	Command    string `json:"command"`
+	Dir        string `json:"dir"`
+	LogFile    string `json:"log_file"`
+	PidFile    string `json:"pid_file"`
+	ExitFile   string `json:"exit_file"`
+	PID        string `json:"pid,omitempty"`
+	// PGID is the process group setsid gave this job. ProcStart is the
+	// leader's /proc starttime, so a recycled pid is not killed.
+	PGID      string `json:"pgid,omitempty"`
+	ProcStart string `json:"proc_start,omitempty"`
+	Status    string `json:"status"` // running, stalled, failed, done, cancelled
+	// EndReason is why a cancelled job stopped. It is not parsed from a log line.
+	EndReason   string        `json:"end_reason,omitempty"`
 	Alive       bool          `json:"alive"`
 	ExitCode    *int          `json:"exit_code,omitempty"`
 	Progress    string        `json:"progress,omitempty"`
@@ -390,7 +397,7 @@ func desktopLongJobInjectRemoteNohup(cmd string) string {
 	return cmd[:loc[0]] + `"` + strings.ReplaceAll(wrapped, `"`, `\"`) + `"` + cmd[loc[1]:]
 }
 
-func desktopLongJobStartScript(cmd, dir, logFile, pidFile, exitFile string) string {
+func desktopLongJobStartScript(jobID, cmd, dir, logFile, pidFile, exitFile string) string {
 	cmd = desktopLongJobInjectRemoteNohup(cmd)
 	return strings.Join([]string{
 		"set -e",
@@ -399,9 +406,17 @@ func desktopLongJobStartScript(cmd, dir, logFile, pidFile, exitFile string) stri
 		"log=" + desktopLongJobQuote(logFile),
 		"pidf=" + desktopLongJobQuote(pidFile),
 		"exf=" + desktopLongJobQuote(exitFile),
-		"nohup bash -lc \"$cmd; echo \\$? > \\\"$exf\\\"\" > \"$log\" 2>&1 &",
+		"job=" + desktopLongJobQuote(jobID),
+		// setsid is the process group. The command and its children share
+		// that pgid, so cancelling the job can signal them together. nohup
+		// on a lone bash left those children running after the wrapper died.
+		// The marker is in the environment at exec: /proc does not show a
+		// variable exported later by the shell.
+		"MACLAW_LONGJOB_ID=\"$job\" setsid bash -lc \"$cmd; echo \\$? > \\\"$exf\\\"\" > \"$log\" 2>&1 < /dev/null &",
 		"echo $! > \"$pidf\"",
-		"echo LONGJOB_STARTED pid=$(cat \"$pidf\") log=$log exit_file=$exf",
+		"pid=$(cat \"$pidf\")",
+		"start=$(awk -F ')' '{print $NF}' /proc/$pid/stat | awk '{print $20}')",
+		"echo LONGJOB_STARTED pid=$pid pgid=$pid start=$start log=$log exit_file=$exf",
 	}, "\n")
 }
 
@@ -417,7 +432,12 @@ func desktopLongJobPollScript(j *desktopLongJob) string {
 	}, "\n")
 }
 
-func desktopLongJobParseStart(out string) (pid, log, exit string) {
+type desktopLongJobStarted struct {
+	PID, PGID, ProcStart, Log, Exit string
+}
+
+func desktopLongJobParseStart(out string) desktopLongJobStarted {
+	var started desktopLongJobStarted
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "LONGJOB_STARTED") {
@@ -430,15 +450,19 @@ func desktopLongJobParseStart(out string) (pid, log, exit string) {
 			}
 			switch k {
 			case "pid":
-				pid = v
+				started.PID = v
+			case "pgid":
+				started.PGID = v
+			case "start":
+				started.ProcStart = v
 			case "log":
-				log = v
+				started.Log = v
 			case "exit_file":
-				exit = v
+				started.Exit = v
 			}
 		}
 	}
-	return pid, log, exit
+	return started
 }
 
 type desktopLongJobPoll struct {
@@ -578,21 +602,26 @@ func desktopLongJobStart(ctx context.Context, scope, principal agentruntime.Scop
 	}
 	j.ReportedStatus = "running"
 	desktopLongJobSetCheck(j, args, j.Started)
-	script := desktopLongJobStartScript(cmd, dir, j.LogFile, j.PidFile, j.ExitFile)
+	script := desktopLongJobStartScript(j.ID, cmd, dir, j.LogFile, j.PidFile, j.ExitFile)
 	out, err := desktopLongJobRun(ctx, scope, script)
 	if err != nil {
 		return "", fmt.Errorf("could not start the background job: %w", err)
 	}
-	pid, log, exit := desktopLongJobParseStart(out)
-	if pid == "" {
+	started := desktopLongJobParseStart(out)
+	if started.PID == "" {
 		return "", fmt.Errorf("the background job did not report a pid:\n%s", desktopRuneHead(out, 400))
 	}
-	j.PID = pid
-	if log != "" {
-		j.LogFile = log
+	j.PID = started.PID
+	j.PGID = started.PGID
+	if j.PGID == "" {
+		j.PGID = started.PID
 	}
-	if exit != "" {
-		j.ExitFile = exit
+	j.ProcStart = started.ProcStart
+	if started.Log != "" {
+		j.LogFile = started.Log
+	}
+	if started.Exit != "" {
+		j.ExitFile = started.Exit
 	}
 	if inline, err, ended := desktopLongJobGraceWait(ctx, j); ended {
 		return inline, err
@@ -1019,11 +1048,7 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 	if j == nil {
 		return "", fmt.Errorf("watch: job %s not found", jobID)
 	}
-	if desktopLongJobKeepsRunning(j) {
-		desktopLongJobStopWatch(j)
-		return desktopLongJobView(j), nil
-	}
-	if (j.Status == "done" || j.Status == "failed") && j.ReportedStatus == j.Status {
+	if desktopLongJobKeepsRunning(j) || j.Status == "cancelled" || ((j.Status == "done" || j.Status == "failed") && j.ReportedStatus == j.Status) {
 		desktopLongJobStopWatch(j)
 		return desktopLongJobView(j), nil
 	}
@@ -1076,7 +1101,12 @@ func desktopLongJobWatchTick(ctx context.Context, jobID string) (string, error) 
 		return "", nil
 	}
 	if err := desktopLongJobTalk(ctx, j, dec); err != nil {
-		// Nothing reached the person: the next tick reports again.
+		if errors.Is(err, ErrLongJobOwnerGone) {
+			// The bot or assignment is gone. The watch must not fire again.
+			desktopLongJobAbandon(j, "orphaned: owner gone")
+			return desktopLongJobView(desktopLongJobGet(j.ID)), nil
+		}
+		// A transient failure is retried on the next tick.
 		log.Printf("[desktop-longjob] job=%s %s not delivered: %v", j.ID, dec, err)
 		return desktopLongJobView(j), err
 	}
@@ -1117,10 +1147,18 @@ func desktopLongJobTalkDefault(ctx context.Context, j *desktopLongJob, dec deskt
 		sayJob = &cp
 	}
 	if err := desktopLongJobSay(ctx, sayJob, desktopLongJobNoticeText(j, dec)); err != nil {
+		// A 404 on this say is not the decision. Only a missing resume
+		// target (the job's instance) ends the watch.
+		if desktopHubNotFound(err) && desktopLongJobResumeTargetGone(j) {
+			return ErrLongJobOwnerGone
+		}
 		return err
 	}
 	if dec == longJobResume {
 		if err := desktopLongJobResume(ctx, j); err != nil {
+			if errors.Is(err, ErrLongJobOwnerGone) {
+				return err
+			}
 			log.Printf("[desktop-longjob] job=%s resume not started: %v", j.ID, err)
 		}
 	}
@@ -1242,9 +1280,12 @@ func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopL
 	if j.PrincipalUser == "" {
 		if a, ok := desktopInstancePrincipal(j.InstanceID); ok {
 			j.PrincipalTenant, j.PrincipalUser = a.TenantID, a.UserID
-		} else if p, ok := svc.InstanceOwner(j.InstanceID); ok {
-			// After a restart: the instance's owner from the service store.
-			j.PrincipalTenant, j.PrincipalUser = p.TenantID, p.UserID
+		} else if svc != nil {
+			if p, err := svc.InstanceOwner(j.InstanceID); err == nil {
+				// After a restart: the instance's owner from the service store.
+				// A store error is not "no owner".
+				j.PrincipalTenant, j.PrincipalUser = p.TenantID, p.UserID
+			}
 		}
 	}
 	if svc == nil || j.PrincipalUser == "" {
@@ -1254,7 +1295,7 @@ func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopL
 	if j.SessionID != "" {
 		runs, err := svc.ListRuns(ctx, principal, j.InstanceID, agentservice.ListRunsInput{Status: agentservice.RunStatusRunning, SessionID: j.SessionID})
 		if err != nil {
-			return err
+			return desktopLongJobPermanent(err)
 		}
 		if len(runs) > 0 {
 			return nil
@@ -1266,11 +1307,14 @@ func desktopLongJobResumeAs(ctx context.Context, j *desktopLongJob, dec desktopL
 	files := &desktopWatchFiles{}
 	in.PrepareExecution = files.prepare
 	_, run, err := svc.SendMessageAsync(context.WithoutCancel(ctx), principal, j.InstanceID, in)
-	if err == nil && run != nil {
+	if err != nil {
+		return desktopLongJobPermanent(err)
+	}
+	if run != nil {
 		desktopLongJobNoteWatchRun(run.ID, j.ID)
 		go desktopLongJobFollowRunFiles(context.WithoutCancel(ctx), principal, j, run.ID, dec, files)
 	}
-	return err
+	return nil
 }
 
 func desktopOwnerUserID(userID string) string {
@@ -1356,11 +1400,270 @@ func desktopLongJobEnsureWatch(j *desktopLongJob) string {
 }
 
 func desktopLongJobStopWatch(j *desktopLongJob) {
-	if j == nil || j.ScheduleID == "" {
+	if j == nil {
 		return
 	}
-	if mgr := getSrvSchedulerManager(); mgr != nil {
-		_ = mgr.Pause(j.ScheduleID)
+	mgr := getSrvSchedulerManager()
+	if mgr == nil {
+		j.ScheduleID = ""
+		return
+	}
+	if id := strings.TrimSpace(j.ScheduleID); id != "" {
+		_ = mgr.ForceDelete(id)
+	}
+	// A restart can leave the row under its name after the id was lost.
+	_ = mgr.DeleteByName(desktopLongJobTaskPrefix + j.ID)
+	j.ScheduleID = ""
+}
+
+// ErrLongJobOwnerGone is permanent: the instance this job resumes does not
+// exist. A Hub 404, including NOT_FOUND on the say call, is not this error
+// by itself. Callers tell it apart with errors.Is, not with the message text.
+var ErrLongJobOwnerGone = errors.New("long job owner is gone")
+
+func desktopLongJobResumeTargetGone(j *desktopLongJob) bool {
+	svc := desktopLongJobService
+	if svc == nil || j == nil || strings.TrimSpace(j.InstanceID) == "" {
+		return false
+	}
+	_, err := svc.InstanceOwner(j.InstanceID)
+	return errors.Is(err, agentservice.ErrInstanceNotFound)
+}
+
+func desktopLongJobPermanent(err error) error {
+	if errors.Is(err, ErrLongJobOwnerGone) || errors.Is(err, agentservice.ErrInstanceNotFound) {
+		return ErrLongJobOwnerGone
+	}
+	return err
+}
+
+// longJobOwnerFate is what startup reconcile should do with one job. It is
+// not a sentence compared later.
+type longJobOwnerFate int
+
+const (
+	longJobFateKeep longJobOwnerFate = iota
+	longJobFateMissing
+	longJobFateRunCancelled
+)
+
+func desktopLongJobOwnerFate(svc *agentservice.Service, j *desktopLongJob) (longJobOwnerFate, error) {
+	if svc == nil || j == nil || strings.TrimSpace(j.InstanceID) == "" {
+		return longJobFateKeep, nil
+	}
+	p, err := svc.InstanceOwner(j.InstanceID)
+	if err != nil {
+		if errors.Is(err, agentservice.ErrInstanceNotFound) {
+			return longJobFateMissing, nil
+		}
+		return longJobFateKeep, err
+	}
+	if strings.TrimSpace(j.SourceRun) == "" {
+		return longJobFateKeep, nil
+	}
+	run, err := svc.GetRun(context.Background(), p, j.InstanceID, j.SourceRun)
+	if errors.Is(err, agentservice.ErrRunNotFound) {
+		return longJobFateKeep, nil
+	}
+	if err != nil {
+		return longJobFateKeep, err
+	}
+	if run != nil && run.Status == agentservice.RunStatusCancelled {
+		return longJobFateRunCancelled, nil
+	}
+	return longJobFateKeep, nil
+}
+
+func desktopLongJobOpen(j *desktopLongJob) bool {
+	return j != nil && (j.Status == "running" || j.Status == "stalled" || j.Status == "")
+}
+
+// desktopLongJobShouldStopProcess is an open job or one whose process is
+// still alive. A finished job is not this, even if its watch row remains.
+func desktopLongJobShouldStopProcess(j *desktopLongJob) bool {
+	return desktopLongJobOpen(j) || (j != nil && j.Alive)
+}
+
+// desktopLongJobAbandon ends a job whose owner is gone and takes its watch
+// off the scheduler.
+func desktopLongJobAbandon(j *desktopLongJob, reason string) {
+	if j == nil {
+		return
+	}
+	fresh := desktopLongJobGet(j.ID)
+	if fresh != nil {
+		j = fresh
+	}
+	j.Status = "cancelled"
+	j.Alive = false
+	j.EndReason = reason
+	j.ReportedStatus = "cancelled"
+	desktopLongJobStopWatch(j)
+	_ = desktopLongJobSave(j)
+}
+
+func desktopLongJobSameTenant(j *desktopLongJob, tenantID string) bool {
+	if j == nil || strings.TrimSpace(tenantID) == "" {
+		return false
+	}
+	if strings.TrimSpace(j.PrincipalTenant) != "" {
+		return j.PrincipalTenant == tenantID
+	}
+	return j.TenantID == tenantID
+}
+
+func desktopLongJobCancelInstance(tenantID, instanceID string) {
+	tenantID = strings.TrimSpace(tenantID)
+	instanceID = strings.TrimSpace(instanceID)
+	if tenantID == "" || instanceID == "" {
+		return
+	}
+	for _, j := range desktopLongJobAll() {
+		if j.InstanceID != instanceID || !desktopLongJobSameTenant(j, tenantID) {
+			continue
+		}
+		if desktopLongJobOpen(j) || j.ScheduleID != "" {
+			desktopLongJobAbandon(j, "orphaned: instance deleted")
+		}
+	}
+}
+
+// desktopLongJobKillPolls is how many times cancel confirms the group is
+// gone before it escalates to KILL. The interval is the poll, not a wait
+// that stands in for the signal.
+const desktopLongJobKillPolls = 25
+
+func desktopLongJobProcID(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// desktopLongJobKillProcess signals the job's process group, and only after
+// the leader's start time and job marker still match this job.
+func desktopLongJobKillProcess(ctx context.Context, j *desktopLongJob) {
+	if !desktopLongJobShouldStopProcess(j) {
+		return
+	}
+	pgid := strings.TrimSpace(j.PGID)
+	if pgid == "" {
+		pgid = strings.TrimSpace(j.PID)
+	}
+	if !desktopLongJobProcID(pgid) || strings.TrimSpace(j.ProcStart) == "" || strings.TrimSpace(j.ID) == "" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	script := strings.Join([]string{
+		"pgid=" + desktopLongJobQuote(pgid),
+		"want=" + desktopLongJobQuote(strings.TrimSpace(j.ProcStart)),
+		"marker=" + desktopLongJobQuote("MACLAW_LONGJOB_ID="+strings.TrimSpace(j.ID)),
+		`if [ ! -r "/proc/$pgid/stat" ] || [ ! -r "/proc/$pgid/environ" ]; then exit 0; fi`,
+		`start=$(awk -F ')' '{print $NF}' "/proc/$pgid/stat" | awk '{print $20}')`,
+		`if [ "$start" != "$want" ]; then exit 0; fi`,
+		`if ! tr '\0' '\n' < "/proc/$pgid/environ" | grep -qxF "$marker"; then exit 0; fi`,
+		`kill -TERM -- "-$pgid" 2>/dev/null || true`,
+		`i=0`,
+		fmt.Sprintf(`while [ "$i" -lt %d ]; do`, desktopLongJobKillPolls),
+		`  if ! kill -0 -- "-$pgid" 2>/dev/null; then exit 0; fi`,
+		`  sleep 0.1`,
+		`  i=$((i+1))`,
+		`done`,
+		`kill -KILL -- "-$pgid" 2>/dev/null || true`,
+	}, "\n")
+	_, _ = desktopLongJobRun(ctx, desktopLongJobScope(j), script)
+}
+
+func desktopLongJobDropWatch(j *desktopLongJob) {
+	if j == nil {
+		return
+	}
+	fresh := desktopLongJobGet(j.ID)
+	if fresh != nil {
+		j = fresh
+	}
+	desktopLongJobStopWatch(j)
+	_ = desktopLongJobSave(j)
+}
+
+func desktopLongJobStopStartedRun(j *desktopLongJob) {
+	if desktopLongJobShouldStopProcess(j) {
+		desktopLongJobKillProcess(context.Background(), j)
+		desktopLongJobAbandon(j, "orphaned: run cancelled")
+		return
+	}
+	desktopLongJobDropWatch(j)
+}
+
+func desktopLongJobCancelSourceRun(instanceID, runID string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	// A watch-report run is not the job. Cancelling it leaves the process
+	// and its watch in place. Only the run that started the job stops it.
+	for _, j := range desktopLongJobAll() {
+		if j.SourceRun != runID {
+			continue
+		}
+		if instanceID != "" && j.InstanceID != "" && j.InstanceID != instanceID {
+			continue
+		}
+		desktopLongJobStopStartedRun(j)
+	}
+}
+
+// desktopLongJobReconcileOwners drops watches whose instance is gone.
+// It runs once when the service is bound, not on a timer.
+func desktopLongJobReconcileOwners() {
+	svc := desktopLongJobService
+	if svc == nil {
+		return
+	}
+	for _, j := range desktopLongJobAll() {
+		if j.InstanceID == "" {
+			continue
+		}
+		if !desktopLongJobOpen(j) && j.ScheduleID == "" {
+			continue
+		}
+		fate, err := desktopLongJobOwnerFate(svc, j)
+		if err != nil {
+			log.Printf("[desktop-longjob] reconcile skipped: %v", err)
+			return
+		}
+		switch fate {
+		case longJobFateMissing:
+			if desktopLongJobShouldStopProcess(j) {
+				desktopLongJobAbandon(j, "orphaned: owner missing at startup")
+			} else {
+				desktopLongJobDropWatch(j)
+			}
+		case longJobFateRunCancelled:
+			desktopLongJobStopStartedRun(j)
+		}
+	}
+	mgr := getSrvSchedulerManager()
+	if mgr == nil {
+		return
+	}
+	for _, task := range mgr.List() {
+		id := desktopLongJobIDFromTask(&task)
+		if id == "" {
+			continue
+		}
+		j := desktopLongJobGet(id)
+		if j == nil || j.Status == "cancelled" {
+			_ = mgr.ForceDelete(task.ID)
+		}
 	}
 }
 
@@ -1399,7 +1702,13 @@ var (
 
 func bindDesktopLongJobService(svc *agentservice.Service) {
 	desktopLongJobService = svc
+	desktopLongJobReconcileOwners()
 	desktopLongJobEnsureTicker()
+}
+
+func init() {
+	agentservice.AfterInstanceDeleted = desktopLongJobCancelInstance
+	agentservice.AfterRunCancelled = desktopLongJobCancelSourceRun
 }
 
 // desktopLongJobTickerDisabled is set by tests so the process-wide ticker
