@@ -413,6 +413,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/bots/settings", requireTenantAdmin(GetBotSettingsAdminHandler(botSvc)))
 	mux.HandleFunc("PUT /api/admin/bots/settings", requireTenantAdmin(PutBotSettingsAdminHandler(botSvc, adminAudit)))
 	mux.HandleFunc("PUT /api/admin/bots/llm", requireTenantAdmin(PutBotLLMSettingsAdminHandler(botSvc, adminAudit)))
+	mux.HandleFunc("POST /api/admin/bots/llm/models", requireTenantAdmin(PostBotLLMModelsAdminHandler(botSvc)))
 	mux.HandleFunc("POST /api/admin/bots/connection/test", requireTenantAdmin(TestBotConnectionAdminHandler(botSvc)))
 	mux.HandleFunc("POST /api/admin/bots/grants", requireTenantAdmin(PostBotGrantAdminHandler(botSvc, adminAudit)))
 	mux.HandleFunc("PUT /api/admin/bots/{id}/desktop-mode", requireTenantAdmin(PutBotDesktopModeAdminHandler(botSvc)))

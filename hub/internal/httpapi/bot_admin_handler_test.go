@@ -127,6 +127,40 @@ func TestBotLLMSettingsSaveIsAuditedWithoutTheKey(t *testing.T) {
 	}
 }
 
+func TestBotLLMModelsAdminHandlerListsProviderCatalog(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") && r.Header.Get("Authorization") == "Bearer sk-live-secret" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"m1","name":"M one"},{"id":"m2"}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(provider.Close)
+
+	svc := botmgmt.NewService(&botSettingsMem{})
+	admin := func(r *http.Request) *http.Request {
+		return r.WithContext(context.WithValue(r.Context(), adminUserContextKey, &store.AdminUser{ID: "admin-1", Scope: "tenant", TenantID: "tenant-a"}))
+	}
+	body := `{"provider_id":"","protocol":"openai","url":"` + provider.URL + `","key":"sk-live-secret"}`
+	req := admin(httptest.NewRequest(http.MethodPost, "/api/admin/bots/llm/models", strings.NewReader(body)))
+	rec := httptest.NewRecorder()
+	PostBotLLMModelsAdminHandler(svc).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `{"models":[{"id":"m1","name":"M one"},{"id":"m2","name":"m2"}]}`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	bad := admin(httptest.NewRequest(http.MethodPost, "/api/admin/bots/llm/models", strings.NewReader(`{"protocol":"openai","url":"` + provider.URL + `","key":"sk-wrong"}`)))
+	badRec := httptest.NewRecorder()
+	PostBotLLMModelsAdminHandler(svc).ServeHTTP(badRec, bad)
+	if badRec.Code != http.StatusBadRequest || !strings.Contains(badRec.Body.String(), "llm provider key is invalid") {
+		t.Fatalf("status=%d body=%s", badRec.Code, badRec.Body.String())
+	}
+	if strings.Contains(badRec.Body.String(), "sk-live-secret") {
+		t.Fatalf("response leaked a key: %s", badRec.Body.String())
+	}
+}
+
 func TestBotGrantChangesAreAudited(t *testing.T) {
 	svc := botmgmt.NewService(&botSettingsMem{})
 	audit := &botAuditMem{}

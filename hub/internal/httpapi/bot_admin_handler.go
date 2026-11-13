@@ -226,6 +226,44 @@ func PutBotLLMSettingsAdminHandler(svc *botmgmt.Service, audit store.AdminAuditR
 	}
 }
 
+// PostBotLLMModelsAdminHandler POST /api/admin/bots/llm/models
+//
+// Lists one provider's models so the administrator picks from the catalog
+// instead of copying an id out of the provider console. The browser cannot
+// call the provider directly (CORS), so the hub performs the fetch, and the
+// key the settings already store stays server-side: the card being edited
+// sends its typed key once here, which is the same trip a save would make.
+func PostBotLLMModelsAdminHandler(svc *botmgmt.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			return
+		}
+		var in botmgmt.LLMModelsInput
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot model list request")
+			return
+		}
+		items, err := svc.FetchLLMProviderModels(r.Context(), botTenantID(r), in)
+		if err != nil {
+			switch {
+			case errors.Is(err, botmgmt.ErrSettingsUnavailable):
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			case errors.Is(err, botmgmt.ErrInvalidInput):
+				writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", err.Error())
+			default:
+				log.Printf("[hub-bot] llm model list failed tenant=%q provider=%q err=%v", botTenantID(r), in.ProviderID, err)
+				writeError(w, http.StatusBadGateway, "LLM_PROVIDER_MODELS_FAILED", err.Error())
+			}
+			return
+		}
+		if items == nil {
+			items = []botmgmt.LLMModelItem{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"models": items})
+	}
+}
+
 // TestBotConnectionAdminHandler POST /api/admin/bots/connection/test
 func TestBotConnectionAdminHandler(svc *botmgmt.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
