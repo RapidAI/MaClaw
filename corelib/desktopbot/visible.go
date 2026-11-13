@@ -144,13 +144,10 @@ func ActivityPhrase(phrase string) string {
 // line (a shell command, a job id, a log tail). It stays in logs.
 var evidenceClause = regexp.MustCompile(`（依据：(?:[^（）]|（[^（）]*）)*）`)
 
-// ruleTalk is the model answering an internal instruction (proxy, URL
-// policy, "the system said") instead of the person's task.
-var ruleTalk = regexp.MustCompile(`关于地址要求|代理替换|不存在代理|系统规则|需要 URL 的工具|内部指令|internal rule|internal instruction`)
-
-// CleanUserText drops evidence clauses and system-rule commentary, and
-// keeps one copy of a repeated sentence. The order of the remaining lines
-// is the order they first appeared.
+// CleanUserText drops evidence clauses and keeps one copy of a repeated
+// sentence. The order of the remaining lines is the order they first
+// appeared. A compliance note is not filtered here: the finish action puts
+// it in its own field, and only the user-facing field is shown.
 func CleanUserText(text string) string {
 	text = evidenceClause.ReplaceAllString(text, "")
 	raw := strings.Split(text, "\n")
@@ -158,7 +155,7 @@ func CleanUserText(text string) string {
 	var kept []string
 	for _, line := range raw {
 		line = strings.TrimSpace(line)
-		if line == "" || ruleTalk.MatchString(line) {
+		if line == "" {
 			continue
 		}
 		key := strings.Join(strings.Fields(line), "")

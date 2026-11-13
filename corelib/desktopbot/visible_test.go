@@ -95,8 +95,11 @@ func TestCleanUserTextDropsEvidenceRuleTalkAndRepeats(t *testing.T) {
 		"关于地址要求：这个任务全程只用了本地编译，没有调用任何需要 URL 的工具，不存在代理替换的问题。\n" +
 		"贪吃蛇已经在桌面上运行了。"
 	got := CleanUserText(in)
-	if strings.Contains(got, "依据") || strings.Contains(got, "fae1faef") || strings.Contains(got, "代理") || strings.Count(got, "后台任务还在跑") != 1 {
+	if strings.Contains(got, "依据") || strings.Contains(got, "fae1faef") || strings.Count(got, "后台任务还在跑") != 1 {
 		t.Fatalf("%q", got)
+	}
+	if !strings.Contains(got, "关于地址要求") {
+		t.Fatalf("the user-facing sentence stays: %q", got)
 	}
 	if !strings.Contains(got, "贪吃蛇已经在桌面上运行了。") || strings.Count(got, "贪吃蛇已经在桌面上运行了。") != 1 {
 		t.Fatalf("%q", got)

@@ -223,9 +223,34 @@ func TestDesktopD95SuccessHasOutcome(t *testing.T) {
 	desktopRecRunSteps[run] = true
 	desktopRecStateMu.Unlock()
 	defer func() { desktopRecStateMu.Lock(); delete(desktopRecRunSteps, run); desktopRecStateMu.Unlock() }()
-	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "贪吃蛇做好了，截图在这条消息里。"})
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "done", "text": "贪吃蛇做好了，截图在这条消息里。", "note": "关于地址要求：没有代理替换。"}); err != nil {
+		t.Fatal(err)
+	}
+	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "贪吃蛇做好了，截图在这条消息里。\n关于地址要求：没有代理替换。"})
 	if md[agentservice.TaskOutcomeKey] != agentservice.TaskOutcomeDone {
 		t.Fatalf("metadata %v", md)
+	}
+	if md["send_to_user"] != "贪吃蛇做好了，截图在这条消息里。" {
+		t.Fatalf("sentence %v", md)
+	}
+}
+
+func TestProseQuestionWithoutAskUserIsNotDone(t *testing.T) {
+	run := "run-ask-prose"
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps[run] = true
+	desktopRecStateMu.Unlock()
+	defer func() { desktopRecStateMu.Lock(); delete(desktopRecRunSteps, run); desktopRecStateMu.Unlock() }()
+	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "请把 SSH 密码发给我。"})
+	if md[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeDone || md[agentservice.TaskOutcomeKey] == agentservice.TaskOutcomeAwaitingUser {
+		t.Fatalf("prose ask succeeded: %v", md)
+	}
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "ask_user", "text": "请把 SSH 密码发给我。"}); err != nil {
+		t.Fatal(err)
+	}
+	md = desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "请把 SSH 密码发给我。"})
+	if md[agentservice.TaskOutcomeKey] != agentservice.TaskOutcomeBlocked {
+		t.Fatalf("ask_user without the tool: %v", md)
 	}
 }
 

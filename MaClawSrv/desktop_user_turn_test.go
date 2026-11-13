@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -33,10 +34,28 @@ func TestInlineSecretIsRedactedAndALaterAnswerResumesTheGoal(t *testing.T) {
 	if !strings.Contains(next, "继续原来的任务") || !strings.Contains(next, "训练分类器") || strings.Contains(next, "s3cret-value") {
 		t.Fatalf("resume: %s", next)
 	}
-	scope := agentruntime.Scope{UserID: desktop.BotDesktopUser("alice", botID)}
-	cmd := desktopExportSecrets("echo hi", desktopSecretsForScope(scope))
-	if !strings.Contains(cmd, "export SSH_PASSWORD=") || strings.Contains(cmd, "echo hi") == false {
-		t.Fatalf("export: %s", cmd)
+	scope := agentruntime.Scope{TenantID: "t", UserID: desktop.BotDesktopUser("alice", botID)}
+	var written, ran string
+	prevFile, prevBash := desktopRemoteFile, desktopRemoteBash
+	desktopRemoteFile = func(_ context.Context, _, _, action, filePath, content, _, _ string) (string, error) {
+		if action == "write" {
+			written = filePath + "\n" + content
+		}
+		return "ok", nil
+	}
+	desktopRemoteBash = func(_ context.Context, _, _, command string) (string, error) {
+		ran = command
+		return "ok", nil
+	}
+	t.Cleanup(func() { desktopRemoteFile, desktopRemoteBash = prevFile, prevBash })
+	if _, err := desktopContainerBash(context.Background(), scope, "echo hi"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(ran, "s3cret-value") || strings.Contains(ran, "hub-value") || !strings.Contains(ran, "echo hi") || !strings.Contains(ran, "rm -f") {
+		t.Fatalf("command line %q", ran)
+	}
+	if !strings.Contains(written, "s3cret-value") || !strings.Contains(written, ".maclaw-secret-") {
+		t.Fatalf("env file %q", written)
 	}
 	if got := desktopScrubSecrets("value s3cret-value", desktopSecretsForScope(scope)); strings.Contains(got, "s3cret-value") {
 		t.Fatalf("scrub: %s", got)

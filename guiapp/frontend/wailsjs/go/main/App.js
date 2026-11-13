@@ -4501,6 +4501,10 @@ export function ReadBBS() {
   return window['go']['main']['App']['ReadBBS']();
 }
 
+export function FetchDesktopBotAttachment(arg1, arg2) {
+  return window['go']['main']['App']['FetchDesktopBotAttachment'](arg1, arg2);
+}
+
 export function ReadDesktopBotShot(arg1) {
   return window['go']['main']['App']['ReadDesktopBotShot'](arg1);
 }

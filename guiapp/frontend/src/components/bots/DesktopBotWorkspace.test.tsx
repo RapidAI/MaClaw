@@ -39,6 +39,7 @@ const openFile = vi.hoisted(() => vi.fn(async (_path?: string) => undefined));
 const showFile = vi.hoisted(() => vi.fn(async (_path?: string) => undefined));
 const previewFile = vi.hoisted(() => vi.fn(async (_path?: string) => ({ preview_url: '' })));
 const readShot = vi.hoisted(() => vi.fn(async (_path?: string) => ({ mime: 'image/png', data: 'iVBORw0KGgo=' })));
+const fetchShot = vi.hoisted(() => vi.fn(async (_botId?: string, _id?: string) => ({ mime: 'image/png', data: 'iVBORw0KGgo=' })));
 type BotLLMRole = { unused?: boolean; official?: boolean; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string };
 type BotLLMView = { mode: string; name?: string; url?: string; model?: string; key_set: boolean; warning?: string; roles?: { foreground?: BotLLMRole; background?: BotLLMRole; computer_use?: BotLLMRole; grounder?: BotLLMRole } };
 type BotLLMIn = { mode?: string; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string; roles?: BotLLMView['roles'] };
@@ -140,6 +141,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     OpenFileOrShowInFolder: (path: string) => openFile(path),
     ShowItemInFolder: (path: string) => showFile(path),
     PreviewTaskResultFile: (path: string) => previewFile(path),
+    FetchDesktopBotAttachment: (botId: string, id: string) => fetchShot(botId, id),
     ReadDesktopBotShot: (path: string) => readShot(path),
     GetDesktopBotLLM: () => getBotLLM(),
     SyncDesktopBotLLM: () => getBotLLM(),
@@ -1995,6 +1997,35 @@ describe('DesktopBotWorkspace', () => {
         const stored = localStorage.getItem('maclaw.desktopBotMessages.v1') || '';
         expect(stored).toContain(JSON.stringify(shotPath));
         expect(stored).not.toContain('SHOULD_NOT_STORE');
+        expect(stored).not.toContain(png);
+    });
+
+    it('fetches a screenshot by attachment id and does not keep the bytes', async () => {
+        const png = 'iVBORw0KGgo=';
+        fetchShot.mockResolvedValue({ mime: 'image/png', data: png });
+        listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 1', description: '共用桌面', instance_id: 'inst_1' }]);
+        sendTask.mockImplementation(async (botId: string) => ({
+            request_id: 'desktop-bot-shot-id',
+            deferred: true,
+            session_key: `alice:${botId}`,
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('Bot 1'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '看一下环境' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('看一下环境')).toBeTruthy();
+        responseListeners.byEvent['ai-assistant-response']?.({
+            request_id: 'desktop-bot-shot-id',
+            session_key: 'alice:bot_1',
+            text: '桌面截图已生成',
+            send_to_user: '桌面截图已生成',
+            desktop_attachment_ids: ['shot-1'],
+        });
+        const img = await screen.findByTestId('desktop-bot-screenshot');
+        expect(img.getAttribute('src')).toBe(`data:image/png;base64,${png}`);
+        expect(fetchShot).toHaveBeenCalledWith('bot_1', 'shot-1');
+        const stored = localStorage.getItem('maclaw.desktopBotMessages.v1') || '';
+        expect(stored).toContain('shot-1');
         expect(stored).not.toContain(png);
     });
 

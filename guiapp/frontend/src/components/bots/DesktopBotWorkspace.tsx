@@ -16,6 +16,7 @@ import {
     handleDesktopBotReport,
     handleDesktopBotResult,
     handleDesktopBotView,
+    attachmentIdsFrom,
     imagesFrom,
     reportDesktopBotCrossResult,
     responseText,
@@ -85,6 +86,7 @@ import {
     SaveDesktopBotLLM,
     SaveDesktopProxyMode,
     OpenFileOrShowInFolder,
+    FetchDesktopBotAttachment,
     ReadDesktopBotShot,
     SaveBotSecret,
     StageDesktopBotSecret,
@@ -93,7 +95,7 @@ import {
     WatchDesktopBot,
     WakeDesktopBot,
 } from '../../../wailsjs/go/main/App';
-import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, DESKTOP_BOT_LATE_ACK_BUDGET_MS, bindAckCommand, desktopBotAck, desktopBotFoldFallback, desktopBotWithFoldHead, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotStoppingLine, desktopBotUnderstandingLabel, desktopBotVariedFallback, firstAckCommandKeys, landFirstAck, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
+import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, DESKTOP_BOT_LATE_ACK_BUDGET_MS, bindAckCommand, desktopBotAck, desktopBotFoldFallback, desktopBotWithFoldHead, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotStoppingLine, desktopBotUnderstandingLabel, desktopBotVariedFallback, firstAckCommandKeys, landFirstAck, releaseSettledAckCommands, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { continueSessionForSend, desktopThreadOf, routedLine } from './desktopContinueSession';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
@@ -1697,6 +1699,23 @@ function BotShotPreview({ src, alt, closeLabel, onClose }: { src: string; alt: s
     return createPortal(overlay, document.body);
 }
 
+const AttachmentShot = memo(function AttachmentShot({ botId, id, alt, openLabel, onOpen }: { botId: string; id: string; alt: string; openLabel: string; onOpen: (src: string, trigger: HTMLButtonElement) => void }) {
+    const [src, setSrc] = useState('');
+    useEffect(() => {
+        let live = true;
+        void FetchDesktopBotAttachment(botId, id).then(shot => {
+            const record = shot as { mime?: unknown; MIME?: unknown; data?: unknown; Data?: unknown } | undefined;
+            const mime = String(record?.mime || record?.MIME || '').trim().toLowerCase();
+            const data = String(record?.data || record?.Data || '').replace(/\s+/g, '');
+            if (!live || (mime !== 'image/png' && mime !== 'image/jpeg') || !data) return;
+            setSrc(`data:${mime};base64,${data}`);
+        }).catch(() => undefined);
+        return () => { live = false; };
+    }, [botId, id]);
+    if (!src) return null;
+    return <ChatShot src={src} alt={alt} openLabel={openLabel} onOpen={onOpen} />;
+});
+
 const BotShot = memo(function BotShot({ path, alt, openLabel, onOpen }: { path: string; alt: string; openLabel: string; onOpen: (src: string, trigger: HTMLButtonElement) => void }) {
     const [src, setSrc] = useState('');
     useEffect(() => {
@@ -2551,6 +2570,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const stageEpoch = useRef(0);
     const selected = bots.find(bot => bot.id === selectedId) || null;
     const messages = selected ? (messagesByBot[selected.id] || []) : [];
+    useEffect(() => {
+        if (!selected) return;
+        releaseSettledAckCommands(ackCommandsRef.current, selected.id, messages);
+    }, [selected, messages]);
     // pendingRef is the turn this process admitted. Message age is only the
     // escape hatch after a reload, when that map is empty.
     // Runs of this bot this window is following right now. Hub admits up to
@@ -3755,9 +3778,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const ask = askFrom(data);
                 const attached = attachedFiles(data, result.failed);
                 const shots = result.failed ? undefined : shotPathsFrom(data);
-                const images = result.failed || shots ? undefined : imagesFrom(data);
+                const attachmentIds = result.failed ? undefined : attachmentIdsFrom(data);
+                const images = result.failed || shots || attachmentIds ? undefined : imagesFrom(data);
                 const stored = messagesForBot(userId, botId);
-                if (!turnHasVisibleResult(result, ask, images, shots, attached)) {
+                if (!turnHasVisibleResult(result, ask, images, shots, attached, attachmentIds)) {
                     clearLiveBotTurn(userId, botId, pending.messageId);
                     commit(botId, stored.filter(item => item.id !== pending.messageId));
                 } else {
@@ -3774,6 +3798,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         askUser: ask || item.askUser,
                         images,
                         shotPaths: shots,
+                        attachmentIds,
                         localPaths: attached.localPaths,
                         files: attached.files,
                         runId: String(data.run_id || data.RunID || '').trim() || item.runId,
@@ -6686,7 +6711,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 const sentMaterials = message.role === 'user' ? splitMaterials(message.content || '') : { text: message.content, paths: [] as string[] };
                                 const rawBody = desktopBotBubbleBody(sentMaterials.text, message.failed === true, message.askUser?.question || '', lang);
                                 const fullBody = message.role === 'assistant'
-                                    ? desktopBotCorrectAttachClaim(stripConfirmedOrderLead(rawBody), !!(message.files?.length || message.localPaths?.length || message.images?.length || message.shotPaths?.length), lang)
+                                    ? desktopBotCorrectAttachClaim(stripConfirmedOrderLead(rawBody), !!(message.files?.length || message.localPaths?.length || message.images?.length || message.shotPaths?.length || message.attachmentIds?.length), lang)
                                     : rawBody;
                                 // Separate beats the bot split with a "---" line show as separate
                                 // short bubbles; attachments, options and cards stay on the last one.
@@ -6722,7 +6747,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                 ))}
                                             </span>
                                         ) : null}
-                                        {message.role === 'assistant' && !message.failed && message.shotPaths?.length ? message.shotPaths.map(path => (
+                                        {message.role === 'assistant' && !message.failed && message.attachmentIds?.length && selected ? message.attachmentIds.map(id => (
+                                            <AttachmentShot key={id} botId={selected.id} id={id} alt={text.screenshot} openLabel={text.viewShot} onOpen={openShot} />
+                                        )) : null}
+                                        {message.role === 'assistant' && !message.failed && !message.attachmentIds?.length && message.shotPaths?.length ? message.shotPaths.map(path => (
                                             <BotShot key={path} path={path} alt={text.screenshot} openLabel={text.viewShot} onOpen={openShot} />
                                         )) : null}
                                         {message.role === 'assistant' && !message.failed && !message.shotPaths?.length && message.images?.length ? message.images.map((image, index) => (

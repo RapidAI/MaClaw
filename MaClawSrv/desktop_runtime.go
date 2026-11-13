@@ -42,9 +42,9 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"batch", "rich_fill", "speculate", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "job_status", "job_list", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode", "recover", "goal_check"}
+var desktopExecuteActions = []string{"batch", "rich_fill", "speculate", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "job_status", "job_list", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode", "recover", "goal_check", "finish"}
 
-var desktopPlanActions = []string{"probe", "screenshot", "speculate", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode", "job_status", "job_list", "recover", "goal_check"}
+var desktopPlanActions = []string{"probe", "screenshot", "speculate", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode", "job_status", "job_list", "recover", "goal_check", "finish"}
 
 func desktopActionAllowed(action string) bool {
 	for _, allowed := range desktopExecuteActions {
@@ -137,7 +137,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"expects_reply":      map[string]any{"type": "boolean", "description": "report: true when you need an answer; then end the turn."},
 				"answer_to":          map[string]any{"type": "string", "description": "report: id of the question you answer."},
 				"assignment_id":      map[string]any{"type": "string", "description": "accept_result/return_result: the assignment id from list_assignments."},
-				"note":               map[string]any{"type": "string", "description": "return_result: what to fix. accept_result: optional."},
+				"note":               map[string]any{"type": "string", "description": "return_result: what to fix. accept_result: optional. action=finish: a note for you (a rule you followed). It is not shown to the person."},
 				"parent_id":          map[string]any{"type": "string", "description": "delegate: the assignment this one follows from."},
 				"reviewer":           map[string]any{"type": "string", "description": "delegate: a teammate bot that reviews the result (name, partial name or id)."},
 				"reason":             map[string]any{"type": "string", "description": "request_takeover: one short sentence for the person, what they need to do on this desktop (log in, enter the 2FA code, solve the captcha)."},
@@ -148,6 +148,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"command":            map[string]any{"type": "string", "description": "Command for action=bash. It runs in this container and the result is its output. A minutes-long job uses background=true so this turn does not wait."},
 				"background":         map[string]any{"type": "boolean", "description": "action=bash: start the command detached and let the watcher poll it. Use this for training, a compile, a download, or any job expected to run minutes or more."},
 				"keep_running":       map[string]any{"type": "boolean", "description": "action=bash: true only when the started process is itself the result the person asked to leave running (a game, a demo, a local server, the app window). It starts detached, is not watched, and the task can finish once that is delivered. Default false: training, builds, downloads and any other job whose end is the result stay watched."},
+				"outcome":            map[string]any{"type": "string", "description": "action=finish: done, ask_user, or failed. ask_user counts only when this turn called the ask_user tool. A turn that does not finish with done is not done.", "enum": []string{"done", "ask_user", "failed"}},
 				"expect_minutes":     map[string]any{"type": "integer", "description": "action=bash: how many minutes the command is expected to run. 2 or more starts it in the background."},
 				"job_id":             map[string]any{"type": "string", "description": "action=job_status: the background job to inspect. Default is this bot's latest job."},
 				"next_check_minutes": map[string]any{"type": "number", "description": "action=bash (background) or job_status: when the watcher should next look at the job, in minutes (2 to 360), from your own estimate, e.g. time per epoch × epochs left. Without it the watcher estimates from the log's progress."},
@@ -160,7 +161,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"url":                map[string]any{"type": "string", "description": "URL for navigate"},
 				"ref":                map[string]any{"type": "string", "description": "Element ref from probe, such as e3"},
 				"snapshot_id":        map[string]any{"type": "string", "description": "snapshot_id returned with the ref"},
-				"text":               map[string]any{"type": "string", "description": "Text for type, or visible text for click when ref is empty"},
+				"text":               map[string]any{"type": "string", "description": "Text for type, or visible text for click when ref is empty. action=finish: the one sentence the person sees."},
 				"replace":            map[string]any{"type": "boolean", "description": "rich_fill: select all in the editor first so the text replaces it"},
 				"selector":           map[string]any{"type": "string", "description": "rich_fill: CSS selector of the field to fill when it is not the page's main editor, e.g. the title input (input/textarea/contenteditable)"},
 				"key":                map[string]any{"type": "string", "description": "Key for press"},
@@ -805,6 +806,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	// Deliver attaches one file to this chat. A path reads that file from the
 	// desktop. A name and content build the file here. A login in progress
 	// must not turn "send me the file" into another question.
+	if action == "finish" {
+		return desktopFinishTurn(scope, args)
+	}
 	if action == "deliver" {
 		if phase, keyed := desktopPhase(ctx); keyed && phase != "execute" {
 			return "", fmt.Errorf("%s", desktopbot.PlanPhaseNextStep)
@@ -1589,6 +1593,7 @@ const desktopReplyShape = "Start with the conclusion in one sentence; then, only
 	"When the reply has separate things to say (a result, then a caveat, then a question), put each in its own short message by separating them with a line that contains only ---; never more than four. " +
 	"Write links, commit ids and file paths plainly (a bare URL, a short commit hash, an absolute path), not inside prose like 点这里; the chat turns them into clickable cards. " +
 	"When you need the person to choose, call ask_user with the question and two to four short options instead of writing a long question; their tap comes back as their reply. " +
+	"End the turn with action=finish: outcome is done, ask_user, or failed. text is the only sentence the person sees. note is for you and is never shown. outcome=ask_user counts only when this turn called the ask_user tool. A turn that stops without finish outcome=done is not done. " +
 	"Say a file is attached only when action=deliver succeeded in this turn; otherwise give its path. "
 
 // desktopVoiceHint: the bot talks like a person (Daniel 10-31: "bot的消息比较

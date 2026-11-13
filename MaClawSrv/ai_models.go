@@ -405,6 +405,13 @@ func (s *HTTPServer) decorateAssistantMessageMetadata(ctx context.Context, p age
 	// the round's desktop is still bound, so the outcome is measured.
 	desktopRecRecheckAtEnd(ctx, run.ID)
 	out := desktopTaskOutcomeMetadata(run.ID, msg)
+	if sentence, ok := desktopFinishSentence(run.ID); ok && sentence != "" {
+		if out == nil {
+			out = map[string]string{}
+		}
+		// Only the declared sentence is shown. The finish note stays off it.
+		out["send_to_user"] = sentence
+	}
 	if botID := desktopBotOfInstance(run.InstanceID); botID != "" && out != nil {
 		// Only a run that stopped to ask keeps the goal open. Done, failed,
 		// blocked or cancelled ends the wait, so a later "saved" sentence

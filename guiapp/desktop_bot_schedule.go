@@ -499,7 +499,7 @@ func (a *App) reportDesktopBotSchedule(task *scheduler.ScheduledTask, text strin
 		owner = "local"
 	}
 	requestID := fmt.Sprintf("desktop-bot-sched-%s-%d", strings.TrimSpace(task.ID), time.Now().UnixNano())
-	ids := desktopAttachmentIDs(result.Images, result.Files)
+	ids := stageDesktopPictures(botID, result.Images, result.Files)
 	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: result.SendToUser})
 	payload := map[string]any{
 		"request_id":      requestID,

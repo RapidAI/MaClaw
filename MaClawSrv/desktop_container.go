@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -224,12 +226,14 @@ func desktopContainerBash(ctx context.Context, scope agentruntime.Scope, command
 		return "", err
 	}
 	secrets := desktopSecretsForScope(scope)
-	command = desktopExportSecrets(command, secrets)
+	command, err := desktopStageSecretEnv(ctx, scope, command, secrets)
+	if err != nil {
+		return "", err
+	}
 	if _, err := desktop.BashArgs(desktopContainerName(), command); err != nil {
 		return "", fmt.Errorf("desktop bash rejected the command: %w", err)
 	}
 	var text string
-	var err error
 	if desktopRemoteBash != nil {
 		text, err = desktopRemoteBash(ctx, scope.TenantID, scope.UserID, strings.TrimSpace(command))
 	} else if client := desktopHubClientFromEnv(); client != nil {
@@ -243,6 +247,52 @@ func desktopContainerBash(ctx context.Context, scope agentruntime.Scope, command
 		err = errors.New(desktopScrubSecrets(err.Error(), secrets))
 	}
 	return desktopScrubSecrets(text, secrets), err
+}
+
+// desktopStageSecretEnv writes each secret to a 0600 file in this bot's own
+// scratch directory and wraps the command so the shell sources that file and
+// deletes it. The value is not part of the process command line. A command
+// that already contains a value is refused.
+func desktopStageSecretEnv(ctx context.Context, scope agentruntime.Scope, command string, secrets map[string]string) (string, error) {
+	if len(secrets) == 0 {
+		return command, nil
+	}
+	var body strings.Builder
+	for name, value := range secrets {
+		if !desktopbot.ValidSecretName(name) || value == "" {
+			continue
+		}
+		if strings.Contains(command, value) {
+			return "", fmt.Errorf("the command would put a secret on the process command line")
+		}
+		body.WriteString(name)
+		body.WriteByte('=')
+		body.WriteString(bashSingleQuote(value))
+		body.WriteByte('\n')
+	}
+	if body.Len() == 0 {
+		return command, nil
+	}
+	path := desktopSecretEnvPath(scope)
+	if _, err := desktopContainerFile(ctx, scope, "file_write", map[string]any{"path": path, "content": body.String()}); err != nil {
+		return "", err
+	}
+	quoted := bashSingleQuote(path)
+	return "chmod 0600 " + quoted + "; set -a; . " + quoted + "; set +a; rm -f " + quoted + "; " + command, nil
+}
+
+func desktopSecretEnvPath(scope agentruntime.Scope) string {
+	_, bot := desktop.SplitDesktopUser(scope.UserID)
+	if bot == "" {
+		bot = desktopBotOfInstance(scope.InstanceID)
+	}
+	var buf [8]byte
+	_, _ = rand.Read(buf[:])
+	name := ".maclaw-secret-" + hex.EncodeToString(buf[:])
+	if bot == "" {
+		return "/tmp/" + name
+	}
+	return "/home/desktop/work/" + desktopWorkdirSafe.ReplaceAllString(bot, "_") + "/" + name
 }
 
 func desktopLocalFile(ctx context.Context, action, filePath, content, oldString, newString string) (string, error) {

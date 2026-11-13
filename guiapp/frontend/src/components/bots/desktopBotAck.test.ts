@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../wailsjs/go/main/App', () => ({ WriteDesktopBotAck: vi.fn() }));
 
-import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, bindAckCommand, desktopBotAck, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotReceiptAck, desktopBotStoppingLine, firstAckCommandKeys, landFirstAck, type DesktopBotAckContext } from './desktopBotAck';
+import { DESKTOP_BOT_FIRST_ACK_BUDGET_MS, bindAckCommand, desktopBotAck, desktopBotIsPlaceholderAck, desktopBotLine, desktopBotNeutralAck, desktopBotReceiptAck, desktopBotStoppingLine, firstAckCommandKeys, landFirstAck, releaseSettledAckCommands, type DesktopBotAckContext } from './desktopBotAck';
 
 describe('desktopBotAck', () => {
     it('uses the model line', async () => {
@@ -124,6 +124,17 @@ describe('one ack bubble per command', () => {
             expect(messages.filter(item => item.ack).map(item => item.content)).toEqual([lines[i]]);
         });
         expect(bindAckCommand(registry, 'bot_1', ['m-bot_1'])).not.toContain('req-bot_3');
+    });
+    it('drops a command’s keys once its bubble is no longer pending', () => {
+        const registry = new Map<string, Set<string>>();
+        bindAckCommand(registry, 'bot_1', ['m-1', 'desktop-bot-1']);
+        bindAckCommand(registry, 'bot_1', ['m-2', 'desktop-bot-2']);
+        releaseSettledAckCommands(registry, 'bot_1', [
+            { id: 'm-2', role: 'assistant', pending: true, requestId: 'desktop-bot-2' },
+            { id: 'm-1', role: 'assistant', pending: false, requestId: 'desktop-bot-1' },
+        ]);
+        expect(bindAckCommand(registry, 'bot_1', ['m-2'])).toEqual(expect.arrayContaining(['m-2', 'desktop-bot-2']));
+        expect(bindAckCommand(registry, 'bot_1', ['fresh'])).not.toContain('m-1');
     });
 });
 

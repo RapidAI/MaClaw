@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -245,3 +246,50 @@ func desktopBashConfined(scope agentruntime.Scope, command string) error {
 }
 
 var errDesktopBashConfined = errors.New("this bot can only read its own project folder")
+
+// A turn ends by declaring one outcome. The person sees Text. Note is the
+// model's own compliance remark and is never copied into the sentence.
+type desktopFinish struct {
+	Outcome string
+	Text    string
+	Note    string
+}
+
+var desktopFinishes sync.Map // run id -> desktopFinish
+
+func desktopFinishTurn(scope agentruntime.Scope, args map[string]any) (string, error) {
+	outcome := strings.ToLower(strings.TrimSpace(desktopArg(args, "outcome")))
+	switch outcome {
+	case "done", "ask_user", "failed":
+	default:
+		return "", fmt.Errorf("finish requires outcome done, ask_user, or failed")
+	}
+	runID := strings.TrimSpace(scope.RunID)
+	if runID == "" {
+		return "", fmt.Errorf("finish requires a run")
+	}
+	desktopFinishes.Store(runID, desktopFinish{
+		Outcome: outcome,
+		Text:    strings.TrimSpace(desktopArg(args, "text")),
+		Note:    strings.TrimSpace(desktopArg(args, "note")),
+	})
+	return "finish outcome=" + outcome, nil
+}
+
+func desktopDeclaredOutcome(runID string) string {
+	v, ok := desktopFinishes.Load(strings.TrimSpace(runID))
+	if !ok {
+		return ""
+	}
+	return v.(desktopFinish).Outcome
+}
+
+// desktopFinishSentence is the user-facing sentence of a declared finish.
+// The note is not part of it. ok is false when this run did not finish.
+func desktopFinishSentence(runID string) (string, bool) {
+	v, ok := desktopFinishes.Load(strings.TrimSpace(runID))
+	if !ok {
+		return "", false
+	}
+	return v.(desktopFinish).Text, true
+}

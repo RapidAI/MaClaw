@@ -1888,6 +1888,9 @@ def file_write(path, body):
                 if not chunk:
                     break
                 handle.write(chunk)
+    base = posixpath.basename(path)
+    if base.startswith(".maclaw-secret-"):
+        os.chmod(path, 0o600)
     return b""
 
 

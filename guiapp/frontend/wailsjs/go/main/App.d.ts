@@ -2245,6 +2245,8 @@ export function RateHubSkill(arg1:string,arg2:number):Promise<void>;
 
 export function ReadBBS():Promise<string>;
 
+export function FetchDesktopBotAttachment(arg1:string,arg2:string):Promise<{ mime?: string; data?: string; attachment_id?: string }>;
+
 export function ReadDesktopBotShot(arg1:string):Promise<{ mime?: string; data?: string }>;
 
 export function ReadErrorLog():Promise<Array<string>>;

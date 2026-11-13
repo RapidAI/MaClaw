@@ -277,6 +277,49 @@ export interface FirstAckMessage {
 // timer land on the same ack even when they learn the ids in either order.
 // The map is keyed by bot as well as id: two bots started together do not
 // share a command.
+// One command's ack keys stay until that command's pending bubble is gone.
+// The map is also capped so a long-lived window cannot grow it without bound.
+export const FIRST_ACK_REGISTRY_MAX = 256;
+
+export function releaseSettledAckCommands(
+    registry: Map<string, Set<string>>,
+    botId: string,
+    messages: Array<{ id?: string; role?: string; pending?: boolean; requestId?: string }>,
+) {
+    const owner = String(botId || '').trim();
+    if (!owner) return;
+    const live = new Set<string>();
+    for (const item of messages) {
+        if (item.role === 'assistant' && item.pending) {
+            if (item.id) live.add(item.id);
+            if (item.requestId) live.add(item.requestId);
+        }
+    }
+    const seen = new Set<Set<string>>();
+    for (const [mapKey, set] of registry) {
+        if (!mapKey.startsWith(`${owner}\0`)) continue;
+        if (seen.has(set)) continue;
+        seen.add(set);
+        let pending = false;
+        for (const key of set) {
+            if (live.has(key)) pending = true;
+        }
+        if (pending) continue;
+        for (const key of set) registry.delete(`${owner}\0${key}`);
+    }
+    while (registry.size > FIRST_ACK_REGISTRY_MAX) {
+        const oldest = registry.keys().next().value;
+        if (oldest === undefined) break;
+        const set = registry.get(oldest);
+        registry.delete(oldest);
+        if (!set) continue;
+        for (const key of set) {
+            const prefix = oldest.slice(0, oldest.indexOf('\0'));
+            registry.delete(`${prefix}\0${key}`);
+        }
+    }
+}
+
 export function bindAckCommand(registry: Map<string, Set<string>>, botId: string, keys: Array<string | undefined | null>): string[] {
     const fresh = uniqueKeys(keys);
     const owner = String(botId || '').trim();

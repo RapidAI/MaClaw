@@ -744,8 +744,25 @@ func desktopRunOutcomeMeasured(runID string, msg *agentservice.Message) (string,
 	desktopRecStateMu.Lock()
 	steps := desktopRecRunSteps[runID]
 	desktopRecStateMu.Unlock()
-	if outcome == "" && steps && msg != nil && msg.Metadata["response_source"] == "ask_user" {
+	asked := steps && msg != nil && msg.Metadata["response_source"] == "ask_user"
+	if outcome == "" && asked {
 		return "awaiting_user", "waiting for the person's answer"
+	}
+	// The turn's own finish action is the outcome. Prose is not one: a
+	// question written instead of ask_user does not succeed.
+	if outcome == "" && steps {
+		switch desktopDeclaredOutcome(runID) {
+		case "done":
+			if desktopRunWorked(runID) {
+				return agentservice.TaskOutcomeDone, ""
+			}
+		case "ask_user":
+			if !asked {
+				return agentservice.TaskOutcomeBlocked, "finish said ask_user but this turn did not call ask_user"
+			}
+		case "failed":
+			return agentservice.TaskOutcomeBlocked, "the turn declared failed"
+		}
 	}
 	if outcome == "" && steps && msg != nil && msg.Metadata["response_source"] != "ask_user" {
 		// Nothing was done and the last step failed: the run stopped on a
@@ -759,10 +776,11 @@ func desktopRunOutcomeMeasured(runID string, msg *agentservice.Message) (string,
 			return agentservice.TaskOutcomePartial, "the last step failed"
 		}
 	}
-	if outcome == "" && msg != nil && strings.TrimSpace(msg.Content) != "" && desktopRunWorked(runID) && !desktopOutcomeSaysNotDone.MatchString(msg.Content) {
-		// A run that did its work and answered without a measured gap is
-		// done: every finished desktop run carries an outcome.
-		return agentservice.TaskOutcomeDone, ""
+	if outcome == "" && steps && msg != nil && strings.TrimSpace(msg.Content) != "" && desktopRunWorked(runID) {
+		// A watchdog stop is measured on its own. Missing finish does not hide it.
+		if _, stopped := desktopWatchdogStopped(runID); !stopped {
+			return agentservice.TaskOutcomeBlocked, "the turn ended without a declared outcome"
+		}
 	}
 	return outcome, why
 }
@@ -816,6 +834,9 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 	}
 	if why != "" {
 		out["task_outcome_evidence"] = desktopRuneHead(why, 300)
+	}
+	if sentence, ok := desktopFinishSentence(runID); ok && sentence != "" {
+		out["send_to_user"] = sentence
 	}
 	return out
 }
